@@ -493,13 +493,14 @@ impl GameState {
         // reserves every visible panel before any window is presented.
         let available = (viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN).max(100.0);
         let max_width = (viewport.x - 2.0 * PANEL_MARGIN).max(240.0);
-        let debug_width = 330.0_f32.min(max_width);
-        let left_width = if (760.0..1100.0).contains(&viewport.x) {
-            (viewport.x - debug_width - 3.0 * PANEL_MARGIN - PANEL_GAP)
-                .max(260.0)
-                .min(max_width)
+        let (left_width, debug_width) = if viewport.x < 1100.0 {
+            let debug_width = (viewport.x * 0.43).clamp(220.0, 330.0).min(max_width);
+            let left_width = (viewport.x - debug_width - 3.0 * PANEL_MARGIN - PANEL_GAP)
+                .max(210.0)
+                .min(max_width);
+            (left_width, debug_width)
         } else {
-            560.0_f32.min(max_width)
+            (560.0_f32.min(max_width), 330.0_f32.min(max_width))
         };
         let queue_height = measure_panel(ui, &queue, fonts, left_width).min(225.0);
         let mut tray_height = measure_panel(ui, &tray, fonts, left_width).min(available);
@@ -674,6 +675,20 @@ mod tests {
             Some(Vec2::new(420.0, 225.0)),
             Some(Vec2::new(330.0, 330.0)),
             Some(Vec2::new(345.0, 190.0)),
+        ];
+        let positions = ImGuiLayoutState::default().plan(viewport, &mut sizes);
+        assert!(positions[..3].iter().all(Option::is_some));
+        assert_fits_without_overlap(viewport, sizes, positions);
+    }
+
+    #[test]
+    fn high_dpi_logical_viewport_still_has_room_for_debug() {
+        let viewport = Vec2::new(640.0, 480.0);
+        let mut sizes = [
+            Some(Vec2::new(315.0, 167.0)),
+            Some(Vec2::new(315.0, 225.0)),
+            Some(Vec2::new(275.0, 400.0)),
+            None,
         ];
         let positions = ImGuiLayoutState::default().plan(viewport, &mut sizes);
         assert!(positions[..3].iter().all(Option::is_some));
