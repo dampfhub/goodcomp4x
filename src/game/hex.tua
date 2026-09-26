@@ -1,0 +1,126 @@
+//! Flat-top hexes in axial coordinates, and the hexagon-shaped grid the map is. The math
+//! follows <https://www.redblobgames.com/grids/hexagons/>.
+
+use std.collections.Key;
+use std.collections.Map;
+use std.collections.mix;
+use std.core.Eq;
+use std.fmt.Show;
+use std.fmt.show_i64;
+use std.iter.View;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.math.Float;
+use std.math.max;
+use std.math.min;
+use game.terrain.Terrain;
+
+/// Center-to-corner radius of a hex, in world units.
+pub const HEX_SIZE: f32 = 1.0;
+
+pub struct Hex { q: i32, r: i32 }
+
+/// Renders as `Hex { q: 1, r: -2 }`, as the combat log names a hex.
+impl Show for Hex {
+    fn show(&self) can {Out} {
+        Out.put("Hex { q: ");
+        show_i64(self.q as i64);
+        Out.put(", r: ");
+        show_i64(self.r as i64);
+        Out.put(" }");
+    }
+}
+
+impl Hex {
+    pub fn new(q: i32, r: i32) -> Hex { Hex { q, r } }
+
+    pub fn to_world(self) -> Vec2 {
+        let sqrt3 = (3.0 as f32).sqrt();
+        let (q, r) = (self.q as f32, self.r as f32);
+        vec2(1.5 * q, sqrt3 * (0.5 * q + r)).scale(HEX_SIZE)
+    }
+
+    /// The hex containing a world-space point.
+    pub fn from_world(pos: Vec2) -> Hex {
+        let q = (2.0 / 3.0 * pos.x) / HEX_SIZE;
+        let r = (-1.0 / 3.0 * pos.x + (3.0 as f32).sqrt() / 3.0 * pos.y) / HEX_SIZE;
+        Hex.round(q, r)
+    }
+
+    /// Rounds fractional axial coordinates via cube coordinates (q + r + s = 0): round all
+    /// three, then recompute whichever drifted most from the others.
+    fn round(q: f32, r: f32) -> Hex {
+        let s = -q - r;
+        let mut rq = q.round();
+        let mut rr = r.round();
+        let rs = s.round();
+        let (dq, dr, ds) = ((rq - q).abs(), (rr - r).abs(), (rs - s).abs());
+        if dq > dr && dq > ds {
+            rq = -rr - rs;
+        } else if dr > ds {
+            rr = -rq - rs;
+        }
+        Hex.new(rq as i32, rr as i32)
+    }
+
+    pub fn distance(self, other: Hex) -> i32 {
+        let dq = self.q - other.q;
+        let dr = self.r - other.r;
+        (dq.abs() + dr.abs() + (dq + dr).abs()) / 2
+    }
+
+    pub fn neighbors(self) -> [Hex; 6] {
+        [
+            Hex.new(self.q + 1, self.r),
+            Hex.new(self.q + 1, self.r - 1),
+            Hex.new(self.q, self.r - 1),
+            Hex.new(self.q - 1, self.r),
+            Hex.new(self.q - 1, self.r + 1),
+            Hex.new(self.q, self.r + 1),
+        ]
+    }
+}
+
+impl Eq for Hex {
+    fn eq(self, other: Hex) -> bool { self.q == other.q && self.r == other.r }
+}
+
+impl Key for Hex {
+    fn hash(self) -> i64 { mix(mix(0, self.q as i64), self.r as i64) }
+    fn eq(self, other: Hex) -> bool { self.q == other.q && self.r == other.r }
+}
+
+/// A hexagon-shaped grid of hexes within `radius` of the origin. Hexes not listed in
+/// `terrain` are plains.
+pub struct HexGrid {
+    radius: i32,
+    terrain: Map[Hex, Terrain],
+}
+
+impl HexGrid {
+    pub fn new(radius: i32, terrain: &[(Hex, Terrain)]) -> HexGrid {
+        let mut grid = HexGrid { radius, terrain: Map.new() };
+        for i in 0..terrain.len() {
+            let (hex, kind) = terrain[i];
+            grid.terrain.insert(hex, kind);
+        }
+        grid
+    }
+
+    pub fn contains(&self, hex: Hex) -> bool { hex.distance(Hex.new(0, 0)) <= self.radius }
+
+    pub fn terrain(&self, hex: Hex) -> Terrain { self.terrain.get(hex).unwrap_or(Terrain.Plains) }
+
+    /// On the grid and not blocked by terrain (units aside).
+    pub fn is_passable(&self, hex: Hex) -> bool { self.contains(hex) && self.terrain(hex).is_passable() }
+
+    /// Every hex of the grid, column by column.
+    pub fn hexes(&self) can {View[Hex]} {
+        let n = self.radius;
+        for q in -n..=n {
+            for r in max(-n, -q - n)..=min(n, -q + n) {
+                View.view(&Hex.new(q, r));
+            }
+        }
+    }
+}

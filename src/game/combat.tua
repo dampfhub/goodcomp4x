@@ -1,0 +1,60 @@
+//! Civ-style combat math: damage grows exponentially with the gap between an attacker's
+//! attack and the target's defense (boosted by the terrain it stands on), with ±20% variance.
+
+use std.fmt.show_f64_fixed;
+use std.math.Float;
+use std.math.clamp;
+use std.rand.Rand;
+use std.rand.unit;
+use game.ability.Ability;
+use game.hex.HexGrid;
+use game.terrain.Terrain;
+use game.unit.Unit;
+
+/// Damage `attacker` deals to `target` in one blow. The variance is one draw of `Rand`, so a
+/// seeded handler makes a blow reproducible.
+pub fn roll_damage(attacker: &Unit, target: &Unit, grid: &HexGrid) -> f32 can {Rand} {
+    let defense = target.stats().defense * grid.terrain(target.pos).defense_multiplier();
+    let base = 30.0 * ((attacker.stats().attack - defense) * 0.04).exp();
+    let variance = 0.8 + 0.4 * unit() as f32;
+    clamp(base * variance, 1.0, 100.0)
+}
+
+/// Melee attacks draw retaliation from a surviving defender; ranged ones don't.
+pub fn draws_retaliation(attacker: &Unit) -> bool { attacker.unit_type.stats().attack_range == 1 }
+
+/// Combat-relevant conditions on `unit`, like ` (on hills, shield wall)`, for combat log lines.
+/// Renders nothing when there are none.
+pub fn show_note(unit: &Unit, grid: &HexGrid) can {Out} {
+    let mut any = false;
+    if grid.terrain(unit.pos) == Terrain.Hills { any = note(any, "on hills"); }
+    if unit.deployed { any = note(any, "deployed"); }
+    if unit.ability_queued {
+        match unit.ability() {
+            Ability.ShieldWall => { any = note(any, "shield wall"); }
+            Ability.Charge => { any = note(any, "charging"); }
+            Ability.Volley | Ability.Deploy => {}
+        }
+    }
+    if any { Out.put(")"); }
+}
+
+/// One entry of a note list: the list opens before the first entry and a comma separates the
+/// rest. Answers that the list is open.
+fn note(open: bool, text: str) -> bool can {Out} {
+    Out.put(if open { ", " } else { " (" });
+    Out.put(text);
+    true
+}
+
+/// `55/100 hp`, or `destroyed`.
+pub fn show_hp(unit: &Unit) can {Out} {
+    if unit.is_alive() {
+        show_f64_fixed(unit.hp as f64, 0);
+        Out.put("/");
+        show_f64_fixed(unit.max_hp() as f64, 0);
+        Out.put(" hp");
+    } else {
+        Out.put("destroyed");
+    }
+}

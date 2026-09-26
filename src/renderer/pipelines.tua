@@ -1,0 +1,14 @@
+//! The one pipeline, generated at build time from `shaders/mesh.vert` and `shaders/mesh.frag`:
+//! alpha-blended, vertex-coloured triangles, the batch's view-projection matrix a push constant.
+//! This module receives `Mesh`, `MeshVertex`, `MeshPush` and their functions
+//! (the Vulkan library's shaders spec).
+use vulkan.shaders.shader_set;
+
+#run {
+    let mut s = shader_set();
+    let vert = s.glsl("mesh.vert");
+    let frag = s.glsl("mesh.frag");
+    s.graphics_blended("Mesh", vert, frag);
+    let text = s.bindings();
+    Eye.emit(Code.parse_items(&text));
+}

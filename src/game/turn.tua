@@ -1,0 +1,379 @@
+//! Turn resolution: queued orders play out step by step, in an order set by each unit type's
+//! role. All units in a step act simultaneously.
+
+use std.collections.Map;
+use std.core.Keep;
+use std.fmt.Show;
+use std.fmt.show_f64_fixed;
+use std.fmt.show_u64;
+use std.rand.Rand;
+use log.Log;
+use log.info;
+use game.GameState;
+use game.AI_TEAM;
+use game.ability.Ability;
+use game.ability.VOLLEY_DAMAGE;
+use game.combat.draws_retaliation;
+use game.combat.roll_damage;
+use game.combat.show_hp;
+use game.combat.show_note;
+use game.hex.Hex;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+/// Seconds between steps while a turn plays out, and how long the units that just acted stay
+/// highlighted. Staggering steps makes the order legible.
+const STEP_INTERVAL: f32 = 0.6;
+const HIGHLIGHT_DURATION: f32 = 0.4;
+
+pub enum Phase { Move, Attack }
+
+impl Show for Phase {
+    fn show(&self) can {Out} {
+        match *self { Phase.Move => Out.put("Move"), Phase.Attack => Out.put("Attack") }
+    }
+}
+
+/// When each unit type moves and attacks within a turn:
+/// - Cavalry moves before anyone attacks, so it can't be caught mid-charge.
+/// - Ranged fires before melee closes in, then repositions (shoot, then move).
+/// - Melee moves and fights in the middle, screening for ranged and siege.
+/// - Siege is slow: it moves and fires last, and may die before it acts.
+pub const RESOLUTION_ORDER: [(UnitType, Phase); 8] = [
+    (UnitType.Cavalry, Phase.Move),
+    (UnitType.Melee, Phase.Move),
+    (UnitType.Ranged, Phase.Attack),
+    (UnitType.Cavalry, Phase.Attack),
+    (UnitType.Melee, Phase.Attack),
+    (UnitType.Ranged, Phase.Move),
+    (UnitType.Siege, Phase.Move),
+    (UnitType.Siege, Phase.Attack),
+];
+
+/// Where `unit_type` falls (1 = first) among all the steps of `phase`. Every unit type has a
+/// move and an attack step, which a test checks, so the `0` after the loop is never reached.
+pub fn step_rank(unit_type: UnitType, phase: Phase) -> u32 {
+    let mut rank = 0;
+    for i in 0..8 {
+        let (t, p) = RESOLUTION_ORDER[i];
+        if p == phase {
+            rank = rank + 1;
+            if t == unit_type { return rank; }
+        }
+    }
+    0
+}
+
+/// One attacker striking one defender within an attack step.
+struct Engagement {
+    attacker: i32,
+    defender: i32,
+    /// Multiplier on the damage dealt, below 1 for volley hits.
+    damage_scale: f32,
+}
+
+impl GameState {
+    pub fn is_resolving(&self) -> bool { !self.pending_steps.is_empty() }
+
+    /// Plans the AI's turn, then queues every step for `update` to play out. Runs on its own
+    /// once every one of the player's units has acted.
+    pub fn resolve_turn(&mut self) can {Log} {
+        if self.is_resolving() { return; }
+        self.turn = self.turn + 1;
+        let turn = self.turn;
+        info(fn() can {Out} { Out.put("=== resolving turn "); show_u64(turn as u64); Out.put(" ==="); });
+        self.selected = Option.None;
+
+        self.plan_ai_turn(AI_TEAM);
+        for i in 0..8 { self.pending_steps.push_back(RESOLUTION_ORDER[i]); }
+
+        // Pause before the first step so the last order placed can be seen.
+        self.step_timer = STEP_INTERVAL;
+    }
+
+    /// Advances turn playback by `dt` seconds, playing the next step once `STEP_INTERVAL` has
+    /// passed. Steps where nobody acts are skipped.
+    pub fn update(&mut self, dt: f32) can {Log, Rand} {
+        self.camera.update(dt);
+        self.highlight_timer = self.highlight_timer - dt;
+        if self.highlight_timer <= 0.0 { self.recent_actors.clear(); }
+
+        if !self.is_resolving() { return; }
+        self.step_timer = self.step_timer - dt;
+        if self.step_timer > 0.0 { return; }
+
+        while let Option.Some((unit_type, phase)) = self.pending_steps.pop_front() {
+            let actors = self.resolve_step(unit_type, phase);
+            if !actors.is_empty() {
+                self.recent_actors = actors;
+                self.highlight_timer = HIGHLIGHT_DURATION;
+                self.step_timer = STEP_INTERVAL;
+                break;
+            }
+        }
+
+        if !self.is_resolving() {
+            for i in 0..self.units.len() {
+                let unit = self.units[i];
+                if unit.ability_queued && unit.ability() == Ability.Deploy {
+                    let state = if unit.deployed { "packed up" } else { "set up" };
+                    info(fn() can {Out} { unit.show(); Out.put(" has "); Out.put(state); });
+                }
+                self.units[i].end_turn();
+            }
+            let turn = self.turn;
+            info(fn() can {Out} { Out.put("=== turn "); show_u64(turn as u64); Out.put(" resolved ==="); });
+            self.select_next_or_end_turn(Option.None);
+        }
+    }
+
+    /// Resolves one step, returning the ids of the units that acted in it.
+    pub fn resolve_step(&mut self, unit_type: UnitType, phase: Phase) -> Vec[u32] can {Log, Rand} {
+        let mut actors: Vec[i32] = Vec.new();
+        for i in 0..self.units.len() {
+            if self.units[i].unit_type != unit_type { continue; }
+            let acts = match phase {
+                Phase.Move => self.units[i].planned_move.is_some(),
+                // Units in a contested hex fight whether or not they have orders.
+                Phase.Attack => self.units[i].planned_attack.is_some() || self.rival_of(i).is_some(),
+            };
+            if acts { actors.push(i); }
+        }
+        // A swap partner moves together with its ally, even if its own type moves later.
+        if phase == Phase.Move {
+            let movers = actors.len();
+            for m in 0..movers {
+                if let Option.Some(partner) = self.swap_partner(actors[m]) {
+                    if !actors.contains(partner) { actors.push(partner); }
+                }
+            }
+        }
+        let mut ids: Vec[u32] = Vec.new();
+        if actors.is_empty() { return ids; }
+
+        info(fn() can {Out} { Out.put("-- "); unit_type.show(); Out.put(" "); phase.show(); Out.put(" --"); });
+        for a in 0..actors.len() { ids.push(self.units[actors[a]].id); }
+        match phase {
+            Phase.Move => self.resolve_moves(&actors),
+            Phase.Attack => self.resolve_attacks(&actors),
+        }
+        ids
+    }
+
+    /// Moves `movers` simultaneously:
+    /// - Two enemies heading for the same hex both take it, contesting it. Any other pile-up
+    ///   on one hex bounces everyone involved.
+    /// - Enemies can't swap places by moving through each other; allies can.
+    /// - A unit can move into a hex whose occupants are all leaving this step, so chains and
+    ///   rotations work, but not one where anyone stays put.
+    fn resolve_moves(&mut self, movers: &Vec[i32]) can {Log} {
+        let n = movers.len();
+        let mut dests: Vec[Hex] = Vec.new();
+        let mut moving: Vec[bool] = Vec.new();
+        for m in 0..n {
+            dests.push(self.units[movers[m]].planned_move.unwrap_or(self.units[movers[m]].pos));
+            moving.push(true);
+        }
+
+        // Every destination with the movers claiming it, in first-claim order.
+        let mut contests: Vec[(i32, i32, Hex)] = Vec.new();
+        let mut seen: Vec[Hex] = Vec.new();
+        for m in 0..n {
+            let dest = dests[m];
+            if seen.contains(dest) { continue; }
+            seen.push(dest);
+            let mut claimants: Vec[i32] = Vec.new();
+            for k in m..n {
+                if dests[k] == dest { claimants.push(k); }
+            }
+            if claimants.len() == 1 { continue; }
+            let (a, b) = (claimants[0], if claimants.len() > 1 { claimants[1] } else { claimants[0] });
+            if claimants.len() == 2 && self.units[movers[a]].team != self.units[movers[b]].team {
+                contests.push((a, b, dest));
+            } else {
+                let units = &self.units;
+                info(fn() can {Out} {
+                    for c in 0..claimants.len() {
+                        if c > 0 { Out.put(" and "); }
+                        units[movers[claimants[c]]].show();
+                    }
+                    Out.put(" collide at ");
+                    dest.show();
+                    Out.put("; none of them moves");
+                });
+                for c in 0..claimants.len() { moving[claimants[c]] = false; }
+            }
+        }
+
+        let mut swaps: Vec[(i32, i32)] = Vec.new();
+        for a in 0..n {
+            for b in a + 1..n {
+                let (unit_a, unit_b) = (self.units[movers[a]], self.units[movers[b]]);
+                if dests[a] != unit_b.pos || dests[b] != unit_a.pos { continue; }
+                if unit_a.team == unit_b.team {
+                    swaps.push((a, b));
+                } else {
+                    info(fn() can {Out} { unit_a.show(); Out.put(" and "); unit_b.show(); Out.put(" can't move through each other"); });
+                    moving[a] = false;
+                    moving[b] = false;
+                }
+            }
+        }
+
+        // A move is blocked if anyone in the destination hex isn't moving away. Each block
+        // can strand another mover, so repeat until nothing changes.
+        loop {
+            let mut changed = false;
+            for m in 0..n {
+                if !moving[m] { continue; }
+                // A `let` until the scrutinee's argument loan ends at the call (#1530).
+                let staying = self.staying_occupant(dests[m], movers, &moving);
+                if let Option.Some(occupant) = staying {
+                    let (who, holder) = (self.units[movers[m]], self.units[occupant]);
+                    info(fn() can {Out} { who.show(); Out.put(" move blocked: "); holder.show(); Out.put(" holds the hex"); });
+                    moving[m] = false;
+                    changed = true;
+                }
+            }
+            if !changed { break; }
+        }
+
+        for s in 0..swaps.len() {
+            let (a, b) = swaps[s];
+            if moving[a] && moving[b] {
+                let (ua, ub) = (self.units[movers[a]], self.units[movers[b]]);
+                info(fn() can {Out} { ua.show(); Out.put(" and "); ub.show(); Out.put(" swap places"); });
+            }
+        }
+        for m in 0..n {
+            if moving[m] && self.rival_of(movers[m]).is_some() {
+                let unit = self.units[movers[m]];
+                info(fn() can {Out} { unit.show(); Out.put(" withdraws from the contested hex at "); unit.pos.show(); });
+            }
+        }
+        for c in 0..contests.len() {
+            let (a, b, dest) = contests[c];
+            if moving[a] && moving[b] {
+                let (ua, ub) = (self.units[movers[a]], self.units[movers[b]]);
+                info(fn() can {Out} { ua.show(); Out.put(" and "); ub.show(); Out.put(" clash at "); dest.show(); Out.put("; the hex is contested"); });
+            }
+        }
+
+        // Every mover's order is spent, whether or not it got through.
+        for m in 0..n {
+            let i = movers[m];
+            if moving[m] { self.units[i].pos = dests[m]; }
+            self.units[i].planned_move = Option.None;
+        }
+    }
+
+    /// A unit in `hex` that is not one of `movers` moving away this step.
+    fn staying_occupant(&self, hex: Hex, movers: &Vec[i32], moving: &Vec[bool]) -> Option[i32] {
+        for i in 0..self.units.len() {
+            if self.units[i].pos != hex { continue; }
+            let mut leaving = false;
+            for m in 0..movers.len() {
+                if movers[m] == i && moving[m] { leaving = true; }
+            }
+            if !leaving { return Option.Some(i); }
+        }
+        Option.None
+    }
+
+    /// Resolves `attackers` simultaneously: every attack sees the board as it was at the start
+    /// of the step and damage lands at the end, so a unit killed this step still gets its own
+    /// attack off. An attack hits whichever enemy occupies the target hex now, not necessarily
+    /// the one there at planning time. A unit in a contested hex fights its rival instead.
+    fn resolve_attacks(&mut self, attackers: &Vec[i32]) can {Log, Rand} {
+        let mut engagements: Vec[Engagement] = Vec.new();
+        for k in 0..attackers.len() {
+            let a = attackers[k];
+            let attacker = self.units[a];
+            if let Option.Some(rival) = self.rival_of(a) {
+                if attacker.planned_attack.is_some() {
+                    info(fn() can {Out} { attacker.show(); Out.put(" is locked in its contested hex and can't attack elsewhere"); });
+                }
+                engagements.push(Engagement { attacker: a, defender: rival, damage_scale: 1.0 });
+                continue;
+            }
+
+            let target = attacker.planned_attack.unwrap_or(attacker.pos);
+            if attacker.pos.distance(target) > attacker.stats().attack_range {
+                info(fn() can {Out} { attacker.show(); Out.put("'s attack canceled: target out of range after moves"); });
+                continue;
+            }
+
+            let volley = attacker.ability_queued && attacker.ability() == Ability.Volley;
+            let scale = if volley { VOLLEY_DAMAGE } else { 1.0 };
+            let mut hit_any = false;
+            if let Option.Some(d) = self.enemy_of_team_at(target, attacker.team) {
+                engagements.push(Engagement { attacker: a, defender: d, damage_scale: scale });
+                hit_any = true;
+            }
+            if volley {
+                let around = target.neighbors();
+                for h in 0..6 {
+                    if let Option.Some(d) = self.enemy_of_team_at(around[h], attacker.team) {
+                        engagements.push(Engagement { attacker: a, defender: d, damage_scale: scale });
+                        hit_any = true;
+                    }
+                }
+            }
+            if !hit_any {
+                info(fn() can {Out} { attacker.show(); Out.put(" attacks "); target.show(); Out.put(" but hits nothing"); });
+            }
+        }
+
+        let mut damage: Vec[f32] = Vec.new();
+        for _ in 0..self.units.len() { damage.push(0.0); }
+        for e in 0..engagements.len() {
+            let engagement = engagements[e];
+            let (a, d) = (engagement.attacker, engagement.defender);
+            // Two units attacking each other in the same step is a single exchange of blows,
+            // not two attacks that each draw retaliation.
+            let mut reverse: Option[f32] = Option.None;
+            for r in 0..engagements.len() {
+                if engagements[r].attacker == d && engagements[r].defender == a {
+                    reverse = Option.Some(engagements[r].damage_scale);
+                }
+            }
+            if reverse.is_some() && d < a { continue; }
+            let (attacker, defender) = (self.units[a], self.units[d]);
+            let hit = engagement.damage_scale * roll_damage(&attacker, &defender, &self.grid);
+            damage[d] = damage[d] + hit;
+            let verb = if engagement.damage_scale < 1.0 { "volleys" } else { "hits" };
+
+            let retaliation_scale = match reverse {
+                Option.Some(scale) => Option.Some(scale),
+                Option.None if draws_retaliation(&attacker) && defender.hp > hit => Option.Some(1.0),
+                Option.None => Option.None,
+            };
+            let grid = &self.grid;
+            if let Option.Some(back_scale) = retaliation_scale {
+                let back = back_scale * roll_damage(&defender, &attacker, grid);
+                damage[a] = damage[a] + back;
+                let verb = if reverse.is_some() { "trades blows with" } else { verb };
+                info(fn() can {Out} {
+                    attacker.show(); show_note(&attacker, grid); Out.put(" "); Out.put(verb); Out.put(" ");
+                    defender.show(); show_note(&defender, grid); Out.put(" for "); show_f64_fixed(hit as f64, 0);
+                    Out.put(", taking "); show_f64_fixed(back as f64, 0); Out.put(" back");
+                });
+            } else {
+                info(fn() can {Out} {
+                    attacker.show(); show_note(&attacker, grid); Out.put(" "); Out.put(verb); Out.put(" ");
+                    defender.show(); show_note(&defender, grid); Out.put(" for "); show_f64_fixed(hit as f64, 0);
+                });
+            }
+        }
+
+        for i in 0..self.units.len() {
+            if damage[i] > 0.0 {
+                let hp = self.units[i].hp - damage[i];
+                self.units[i].hp = if hp > 0.0 { hp } else { 0.0 };
+                let unit = self.units[i];
+                info(fn() can {Out} { Out.put("  "); unit.show(); Out.put(": "); show_hp(&unit); });
+            }
+        }
+        handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume u.is_alive() } }
+    }
+}

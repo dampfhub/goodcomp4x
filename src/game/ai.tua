@@ -1,0 +1,102 @@
+//! A deliberately minimal AI opponent.
+
+use std.collections.Deque;
+use std.collections.Map;
+use game.GameState;
+use game.hex.Hex;
+use game.unit.Team;
+
+/// The steps from a walk's origin to every hex it can reach.
+type Distances = Map[Hex, i32];
+
+/// A walk's steps to `hex`, or a distance no reachable hex has.
+fn steps_to(distances: &Distances, hex: Hex) -> i32 { distances.get(hex).unwrap_or(2147483647) }
+
+impl GameState {
+    /// Each unit closes on its nearest enemy: it attacks if already in range, otherwise moves
+    /// as close as it can and attacks if that brings it into range. Units in a contested hex
+    /// stay and fight. No coordination beyond not sending two units to the same hex, and no
+    /// retreating.
+    pub fn plan_ai_turn(&mut self, team: Team) {
+        for idx in 0..self.units.len() {
+            if self.units[idx].team != team || self.rival_of(idx).is_some() { continue; }
+            let Option.Some(target) = self.nearest_enemy_pos(idx) else { continue; };
+
+            let unit = self.units[idx];
+            let stats = unit.stats();
+            let dest = if unit.pos.distance(target) <= stats.attack_range {
+                unit.pos
+            } else {
+                let to_target = self.walking_distances(target);
+                let reachable = self.reachable_hexes(unit.pos, stats.move_range);
+                let mut best: Option[Hex] = Option.None;
+                for hex in reachable.each() {
+                    if self.claimed_by(team, *hex) { continue; }
+                    let better = match best {
+                        Option.None => true,
+                        Option.Some(b) => closer(steps_to(&to_target, *hex), *hex, steps_to(&to_target, b), b),
+                    };
+                    if better { best = Option.Some(*hex); }
+                }
+                best.unwrap_or(unit.pos)
+            };
+
+            let unit = &mut self.units[idx];
+            if dest != unit.pos { unit.planned_move = Option.Some(dest); }
+            if dest.distance(target) <= stats.attack_range { unit.planned_attack = Option.Some(target); }
+        }
+    }
+
+    /// Whether a unit of `team` is already heading for `hex`.
+    fn claimed_by(&self, team: Team, hex: Hex) -> bool {
+        for i in 0..self.units.len() {
+            if self.units[i].team == team && self.units[i].planned_move == Option.Some(hex) { return true; }
+        }
+        false
+    }
+
+    /// Position of the enemy closest on foot, routing around terrain; ties go to the enemy
+    /// listed first.
+    fn nearest_enemy_pos(&self, idx: i32) -> Option[Hex] {
+        let unit = self.units[idx];
+        let from_unit = self.walking_distances(unit.pos);
+        let mut best: Option[(i32, Hex)] = Option.None;
+        for i in 0..self.units.len() {
+            let other = self.units[i];
+            if other.team == unit.team { continue; }
+            let d = steps_to(&from_unit, other.pos);
+            let better = match best { Option.None => true, Option.Some((bd, _)) => d < bd };
+            if better { best = Option.Some((d, other.pos)); }
+        }
+        match best { Option.Some((_, pos)) => Option.Some(pos), Option.None => Option.None }
+    }
+
+    /// Steps from `origin` to every hex it can walk to, around impassable terrain but ignoring
+    /// units, since those will have moved by the time anyone gets there.
+    fn walking_distances(&self, origin: Hex) -> Distances {
+        let mut distances: Distances = Map.new();
+        distances.insert(origin, 0);
+        let mut queue: Deque[Hex] = Deque.new();
+        queue.push_back(origin);
+        while let Option.Some(hex) = queue.pop_front() {
+            let next_distance = steps_to(&distances, hex) + 1;
+            let around = hex.neighbors();
+            for k in 0..6 {
+                let neighbor = around[k];
+                if self.grid.is_passable(neighbor) && !distances.has(neighbor) {
+                    distances.insert(neighbor, next_distance);
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        distances
+    }
+}
+
+/// Whether `(steps, hex)` orders before `(best_steps, best)`: fewer steps, then the smaller
+/// `q`, then the smaller `r`, so the choice never depends on iteration order.
+fn closer(steps: i32, hex: Hex, best_steps: i32, best: Hex) -> bool {
+    if steps != best_steps { return steps < best_steps; }
+    if hex.q != best.q { return hex.q < best.q; }
+    hex.r < best.r
+}

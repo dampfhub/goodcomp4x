@@ -1,0 +1,41 @@
+//! Shape helpers: every shape is appended to a triangle list as vertices.
+
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.linalg.vec2_from_angle;
+use std.math.Float;
+use std.math.tau;
+use renderer.pipelines.MeshVertex;
+
+/// An RGBA colour, each channel `0.0..=1.0`.
+pub type Color = [f32; 4];
+
+/// Appends a filled regular polygon, as a triangle fan around its center.
+pub fn regular_polygon(center: Vec2, radius: f32, sides: u32, rotation: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    let step = tau() as f32 / sides as f32;
+    let corner = fn(i: u32) -> Vec2 { center.add(vec2_from_angle(rotation + step * i as f32).scale(radius)) };
+    for i in 0..sides {
+        push_triangle(out, center, corner(i), corner(i + 1), color);
+    }
+}
+
+/// Appends an axis-aligned filled rectangle spanning `min`..`max`.
+pub fn quad(min: Vec2, max: Vec2, color: Color, out: &mut Vec[MeshVertex]) {
+    let bottom_right = vec2(max.x, min.y);
+    let top_left = vec2(min.x, max.y);
+    push_triangle(out, min, bottom_right, max, color);
+    push_triangle(out, min, max, top_left, color);
+}
+
+/// Appends a straight line from `a` to `b`, `width` world units thick.
+pub fn segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    let side = b.sub(a).perp().normalize().scale(width / 2.0);
+    push_triangle(out, a.sub(side), b.sub(side), b.add(side), color);
+    push_triangle(out, a.sub(side), b.add(side), a.add(side), color);
+}
+
+fn push_triangle(out: &mut Vec[MeshVertex], a: Vec2, b: Vec2, c: Vec2, color: Color) {
+    out.push(MeshVertex { pos: [a.x, a.y, 0.0], color });
+    out.push(MeshVertex { pos: [b.x, b.y, 0.0], color });
+    out.push(MeshVertex { pos: [c.x, c.y, 0.0], color });
+}

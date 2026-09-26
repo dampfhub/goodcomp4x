@@ -1,0 +1,338 @@
+//! Builds each frame's geometry from the game state.
+
+use std.collections.Set;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.linalg.vec2_from_angle;
+use std.math.pi;
+use std.math.tau;
+use renderer.pipelines.MeshVertex;
+use game.GameState;
+use game.font.push_glyph;
+use game.hex.HEX_SIZE;
+use game.hex.Hex;
+use game.mesh.Color;
+use game.mesh.quad;
+use game.mesh.regular_polygon;
+use game.mesh.segment;
+use game.terrain.Terrain;
+use game.turn.Phase;
+use game.turn.step_rank;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitStats;
+
+const BORDER_COLOR: Color = [0.10, 0.10, 0.13, 1.0];
+const PLAINS_COLOR: Color = [0.22, 0.22, 0.27, 1.0];
+const HILLS_COLOR: Color = [0.28, 0.27, 0.23, 1.0];
+const HILL_PEAK_COLOR: Color = [0.50, 0.46, 0.32, 1.0];
+const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
+const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
+const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
+const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
+const CONTESTED_COLOR: Color = [0.55, 0.32, 0.10, 1.0];
+const MOVE_RANGE_COLOR: Color = [0.24, 0.42, 0.26, 1.0];
+const ATTACK_RANGE_COLOR: Color = [0.45, 0.22, 0.22, 1.0];
+const ATTACK_RANGE_EMPTY_COLOR: Color = [0.36, 0.24, 0.20, 1.0];
+const LABEL_COLOR: Color = [0.05, 0.05, 0.05, 1.0];
+const HEALTH_BAR_BG_COLOR: Color = [0.08, 0.08, 0.08, 1.0];
+
+/// Sizes below are for a unit drawn at full scale, alone in its hex.
+const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.42;
+const LABEL_HEIGHT: f32 = UNIT_ICON_RADIUS * 0.9;
+/// Icon growth while a unit is highlighted for having just acted.
+const ACTED_SCALE: f32 = 1.35;
+
+/// Rings drawn behind a unit's icon: gold while its ability is queued, steel while a siege
+/// engine is deployed.
+const ABILITY_RING_COLOR: Color = [0.95, 0.78, 0.25, 1.0];
+const ABILITY_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.32;
+const DEPLOYED_RING_COLOR: Color = [0.62, 0.66, 0.72, 1.0];
+const DEPLOYED_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.18;
+
+/// The two units sharing a contested hex are drawn at this scale, stacked vertically with Blue
+/// on top.
+const CONTESTED_SCALE: f32 = 0.5;
+const CONTESTED_OFFSET_Y: f32 = 0.38;
+
+/// Turn-order badges beside each unit: move order on the left, attack order on the right.
+const BADGE_OFFSET_X: f32 = 0.62;
+const BADGE_RADIUS: f32 = 0.17;
+const BADGE_DIGIT_HEIGHT: f32 = 0.2;
+const BADGE_BG_COLOR: Color = [0.06, 0.06, 0.08, 0.9];
+const MOVE_ORDER_COLOR: Color = [0.45, 0.70, 1.00, 1.0];
+const ATTACK_ORDER_COLOR: Color = [1.00, 0.40, 0.35, 1.0];
+
+const HEALTH_BAR_WIDTH: f32 = 0.9;
+const HEALTH_BAR_HEIGHT: f32 = 0.14;
+const HEALTH_BAR_OFFSET_Y: f32 = 0.78;
+
+/// A queued move is drawn as a faded copy of the unit at its destination.
+const GHOST_ALPHA: f32 = 0.4;
+const GHOST_FAN_RADIUS: f32 = HEX_SIZE * 0.3;
+
+/// A queued swap is drawn as a link between the two allies.
+const SWAP_LINK_WIDTH: f32 = 0.1;
+const SWAP_LINK_ALPHA: f32 = 0.8;
+
+const ATTACK_MARKER_RADIUS: f32 = HEX_SIZE * 0.16;
+const ATTACK_MARKER_OFFSET_X: f32 = 0.5;
+const ATTACK_MARKER_OFFSET_Y: f32 = 0.5;
+const ATTACK_MARKER_FAN_RADIUS: f32 = HEX_SIZE * 0.18;
+
+/// What the selected unit can do this turn, computed once per frame.
+struct Selection {
+    pos: Hex,
+    planned_pos: Hex,
+    team: Team,
+    stats: UnitStats,
+    reachable: Set[Hex],
+    /// Locked in a contested hex, so it can't attack anything else.
+    locked: bool,
+}
+
+impl GameState {
+    /// The whole scene as a triangle list, back to front: hex grid, queued order markers, then
+    /// units.
+    pub fn build_vertices(&self) -> Vec[MeshVertex] {
+        let mut out: Vec[MeshVertex] = Vec.new();
+
+        let selection = match self.selected {
+            Option.Some(idx) => {
+                let unit = self.units[idx];
+                let stats = unit.stats();
+                Option.Some(Selection {
+                    pos: unit.pos,
+                    planned_pos: unit.planned_pos(),
+                    team: unit.team,
+                    stats,
+                    reachable: self.reachable_hexes(unit.pos, stats.move_range),
+                    locked: self.rival_of(idx).is_some(),
+                })
+            }
+            Option.None => Option.None,
+        };
+
+        for h in self.grid.hexes() {
+            let hex = *h;
+            let center = hex.to_world();
+            let fill = self.hex_fill(hex, &selection);
+            regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
+            regular_polygon(center, HEX_SIZE * 0.92, 6, 0.0, fill, &mut out);
+            push_terrain_symbol(center, self.grid.terrain(hex), &mut out);
+        }
+
+        self.push_order_markers(&mut out);
+
+        for idx in 0..self.units.len() {
+            let unit = self.units[idx];
+            let (center, scale) = self.unit_layout(idx);
+            let (icon_scale, color) = if self.recent_actors.contains(unit.id) {
+                (scale * ACTED_SCALE, brighten(unit.team.color()))
+            } else {
+                (scale, unit.team.color())
+            };
+            push_status_rings(center, &unit, scale, &mut out);
+            push_unit_icon(center, &unit, icon_scale, color, &mut out);
+            push_order_badges(center, &unit, scale, &mut out);
+            push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
+        }
+        out
+    }
+
+    /// Ghosts at queued move destinations, links between allies queued to swap, and diamonds on
+    /// attacked hexes. Markers for units sharing a target hex are fanned out so each order
+    /// stays visible.
+    fn push_order_markers(&self, out: &mut Vec[MeshVertex]) {
+        let n = self.units.len();
+        let mut swapping: Vec[bool] = Vec.new();
+        for i in 0..n { swapping.push(self.swap_partner(i).is_some()); }
+
+        // Groups by target hex in first-seen order, so marker layout is stable across frames.
+        let mut move_targets: Vec[Hex] = Vec.new();
+        for i in 0..n {
+            if let Option.Some(hex) = self.units[i].planned_move {
+                if !swapping[i] && !move_targets.contains(hex) { move_targets.push(hex); }
+            }
+        }
+        for t in 0..move_targets.len() {
+            let hex = move_targets[t];
+            let total = self.count_matching(n, &swapping, hex, true);
+            let mut k = 0;
+            for i in 0..n {
+                let unit = self.units[i];
+                if !swapping[i] && unit.planned_move == Option.Some(hex) {
+                    let pos = fan_position(hex.to_world(), k, total, GHOST_FAN_RADIUS);
+                    push_unit_icon(pos, &unit, 1.0, with_alpha(unit.team.color(), GHOST_ALPHA), out);
+                    k = k + 1;
+                }
+            }
+        }
+
+        for idx in 0..n {
+            if let Option.Some(partner) = self.swap_partner(idx) {
+                if partner > idx {
+                    let color = with_alpha(self.units[idx].team.color(), SWAP_LINK_ALPHA);
+                    segment(self.units[idx].pos.to_world(), self.units[partner].pos.to_world(), SWAP_LINK_WIDTH, color, out);
+                }
+            }
+        }
+
+        let mut attack_targets: Vec[Hex] = Vec.new();
+        for i in 0..n {
+            if let Option.Some(hex) = self.units[i].planned_attack {
+                if !attack_targets.contains(hex) { attack_targets.push(hex); }
+            }
+        }
+        for t in 0..attack_targets.len() {
+            let hex = attack_targets[t];
+            let total = self.count_matching(n, &swapping, hex, false);
+            let base = hex.to_world().add(vec2(ATTACK_MARKER_OFFSET_X, ATTACK_MARKER_OFFSET_Y));
+            let mut k = 0;
+            for i in 0..n {
+                let unit = self.units[i];
+                if unit.planned_attack == Option.Some(hex) {
+                    let pos = fan_position(base, k, total, ATTACK_MARKER_FAN_RADIUS);
+                    regular_polygon(pos, ATTACK_MARKER_RADIUS, 4, pi() as f32 / 4.0, unit.team.color(), out);
+                    k = k + 1;
+                }
+            }
+        }
+    }
+
+    /// How many units target `hex`: with a plain queued move when `moves`, else with an attack.
+    fn count_matching(&self, n: i32, swapping: &Vec[bool], hex: Hex, moves: bool) -> i32 {
+        let mut total = 0;
+        for i in 0..n {
+            let unit = self.units[i];
+            let hit = if moves { !swapping[i] && unit.planned_move == Option.Some(hex) } else { unit.planned_attack == Option.Some(hex) };
+            if hit { total = total + 1; }
+        }
+        total
+    }
+
+    /// Where to draw a unit and at what scale: full size in the middle of its hex, or half size
+    /// and offset when it shares a contested hex.
+    fn unit_layout(&self, idx: i32) -> (Vec2, f32) {
+        let unit = self.units[idx];
+        let center = unit.pos.to_world();
+        if self.rival_of(idx).is_none() { return (center, 1.0); }
+        let offset_y = if unit.team == Team.Blue { CONTESTED_OFFSET_Y } else { -CONTESTED_OFFSET_Y };
+        (center.add(vec2(0.0, offset_y)), CONTESTED_SCALE)
+    }
+
+    /// The terrain's color, unless the hex is selected, contested, or in the selected unit's
+    /// move or attack range. Mountains are never highlighted since nothing can move to or stand
+    /// on them.
+    fn hex_fill(&self, hex: Hex, selection: &Option[Selection]) -> Color {
+        let terrain = self.grid.terrain(hex);
+        let base = terrain_color(terrain);
+        if !terrain.is_passable() { return base; }
+        let &Option.Some(sel) = selection else {
+            return if self.is_contested(hex) { CONTESTED_COLOR } else { base };
+        };
+        if sel.pos == hex { return SELECTED_COLOR; }
+        if self.is_contested(hex) { return CONTESTED_COLOR; }
+
+        let in_attack_range = !sel.locked && sel.planned_pos.distance(hex) <= sel.stats.attack_range;
+        let has_enemy = self.enemy_of_team_at(hex, sel.team).is_some();
+        if self.is_occupied(hex) {
+            return if has_enemy && in_attack_range { ATTACK_RANGE_COLOR } else { base };
+        }
+        if sel.reachable.contains(hex) {
+            MOVE_RANGE_COLOR
+        } else if in_attack_range {
+            ATTACK_RANGE_EMPTY_COLOR
+        } else {
+            base
+        }
+    }
+}
+
+fn terrain_color(terrain: Terrain) -> Color {
+    match terrain {
+        Terrain.Plains => PLAINS_COLOR,
+        Terrain.Hills => HILLS_COLOR,
+        Terrain.Mountains => MOUNTAIN_COLOR,
+    }
+}
+
+/// A triangle rotated a quarter turn points straight up.
+fn peak(center: Vec2, offset: Vec2, radius: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    regular_polygon(center.add(offset), radius, 3, pi() as f32 / 2.0, color, out);
+}
+
+/// Peak symbols drawn over the hex fill, so terrain stays recognizable under selection
+/// highlights. Hills get two small peaks tucked below where a unit icon sits; mountains get one
+/// large snow-capped peak.
+fn push_terrain_symbol(center: Vec2, terrain: Terrain, out: &mut Vec[MeshVertex]) {
+    match terrain {
+        Terrain.Plains => {}
+        Terrain.Hills => {
+            peak(center, vec2(-0.3, -0.5), 0.2, HILL_PEAK_COLOR, out);
+            peak(center, vec2(0.25, -0.47), 0.17, HILL_PEAK_COLOR, out);
+        }
+        Terrain.Mountains => {
+            let (base, radius, cap_radius) = (vec2(0.0, -0.05), 0.55, 0.2);
+            peak(center, base, radius, MOUNTAIN_PEAK_COLOR, out);
+            // Same shape scaled down so it shares the big peak's apex.
+            peak(center, base.add(vec2(0.0, radius - cap_radius)), cap_radius, SNOW_COLOR, out);
+        }
+    }
+}
+
+/// Spreads `total` markers evenly around a small circle at `base`, or returns `base` itself
+/// when there's only one.
+fn fan_position(base: Vec2, index: i32, total: i32, radius: f32) -> Vec2 {
+    if total <= 1 { return base; }
+    base.add(vec2_from_angle(tau() as f32 * index as f32 / total as f32).scale(radius))
+}
+
+/// A polygon whose side count encodes the unit type, with its letter on top.
+fn push_unit_icon(center: Vec2, unit: &Unit, scale: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    // A quarter turn so odd-sided shapes (the melee triangle) point up.
+    regular_polygon(center, UNIT_ICON_RADIUS * scale, unit.unit_type.icon_sides(), pi() as f32 / 2.0, color, out);
+    push_glyph(center, LABEL_HEIGHT * scale, unit.unit_type.letter(), with_alpha(LABEL_COLOR, color[3]), out);
+}
+
+/// Status rings behind the icon. They're filled discs, so only the rim shows once the icon is
+/// drawn on top; the larger one goes first so both stay visible.
+fn push_status_rings(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec[MeshVertex]) {
+    if unit.ability_queued {
+        regular_polygon(center, ABILITY_RING_RADIUS * scale, 24, 0.0, ABILITY_RING_COLOR, out);
+    }
+    if unit.deployed {
+        regular_polygon(center, DEPLOYED_RING_RADIUS * scale, 24, 0.0, DEPLOYED_RING_COLOR, out);
+    }
+}
+
+/// Small numbered badges showing where the unit's type moves and attacks in the turn order.
+fn push_order_badges(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec[MeshVertex]) {
+    let badges = [
+        (-BADGE_OFFSET_X, Phase.Move, MOVE_ORDER_COLOR),
+        (BADGE_OFFSET_X, Phase.Attack, ATTACK_ORDER_COLOR),
+    ];
+    for b in 0..2 {
+        let (offset_x, phase, color) = badges[b];
+        let pos = center.add(vec2(offset_x * scale, 0.0));
+        let digit = (48 + step_rank(unit.unit_type, phase)) as u8 as char;
+        regular_polygon(pos, BADGE_RADIUS * scale, 12, 0.0, BADGE_BG_COLOR, out);
+        push_glyph(pos, BADGE_DIGIT_HEIGHT * scale, digit, color, out);
+    }
+}
+
+fn push_health_bar(unit_center: Vec2, hp_fraction: f32, scale: f32, out: &mut Vec[MeshVertex]) {
+    let hp = if hp_fraction < 0.0 { 0.0 } else if hp_fraction > 1.0 { 1.0 } else { hp_fraction };
+    let size = vec2(HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT).scale(scale);
+    let min = unit_center.add(vec2(0.0, HEALTH_BAR_OFFSET_Y * scale)).sub(size.scale(0.5));
+    quad(min, min.add(size), HEALTH_BAR_BG_COLOR, out);
+    quad(min, min.add(vec2(size.x * hp, size.y)), [1.0 - hp, hp, 0.08, 1.0], out);
+}
+
+fn brighten(c: Color) -> Color {
+    [bright(c[0]), bright(c[1]), bright(c[2]), c[3]]
+}
+
+fn bright(v: f32) -> f32 { if v + 0.35 < 1.0 { v + 0.35 } else { 1.0 } }
+
+fn with_alpha(c: Color, a: f32) -> Color { [c[0], c[1], c[2], a] }
