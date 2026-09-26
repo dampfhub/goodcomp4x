@@ -26,6 +26,8 @@ pub enum UnitType {
     Ranged,
     Cavalry,
     Siege,
+    /// Fast and far-sighted, but hardly a fighter: for exploring.
+    Scout,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -40,13 +42,14 @@ pub struct UnitStats {
 impl UnitType {
     /// Melee is the balanced baseline; ranged trades toughness for reach,
     /// cavalry trades defense for mobility, and siege hits hardest but folds
-    /// once anything reaches it.
+    /// once anything reaches it. Scouts give up fighting for speed and sight.
     pub fn stats(self) -> UnitStats {
         let (max_hp, attack, defense, move_range, attack_range) = match self {
             UnitType::Melee => (100.0, 22.0, 20.0, 1, 1),
             UnitType::Ranged => (75.0, 24.0, 10.0, 1, 2),
             UnitType::Cavalry => (100.0, 24.0, 14.0, 2, 1),
             UnitType::Siege => (65.0, 32.0, 6.0, 1, 2),
+            UnitType::Scout => (60.0, 8.0, 10.0, 3, 1),
         };
         UnitStats {
             max_hp,
@@ -57,22 +60,21 @@ impl UnitType {
         }
     }
 
-    /// Side count of the placeholder icon polygon.
-    pub fn icon_sides(self) -> u32 {
-        match self {
-            UnitType::Melee => 3,
-            UnitType::Ranged => 4,
-            UnitType::Cavalry => 5,
-            UnitType::Siege => 8,
-        }
-    }
-
     pub fn letter(self) -> char {
         match self {
             UnitType::Melee => 'M',
             UnitType::Ranged => 'R',
             UnitType::Cavalry => 'C',
             UnitType::Siege => 'S',
+            UnitType::Scout => 'X',
+        }
+    }
+
+    /// How many hexes around it the unit sees through the fog of war.
+    pub fn sight(self) -> i32 {
+        match self {
+            UnitType::Scout | UnitType::Cavalry => 3,
+            _ => 2,
         }
     }
 }
@@ -100,6 +102,9 @@ pub struct Unit {
     /// Like `holding`, but lasting across turns: the unit stays put and is
     /// skipped in the turn order until it's given an order or unguarded.
     pub guarding: bool,
+    /// Scout only: spent last turn on lookout, so it sees farther until the
+    /// end of this one.
+    pub lookout: bool,
 }
 
 impl Unit {
@@ -117,6 +122,7 @@ impl Unit {
             deployed: false,
             holding: false,
             guarding: false,
+            lookout: false,
         }
     }
 
@@ -139,6 +145,8 @@ impl Unit {
                 }
                 // Busy setting up or packing up.
                 Ability::Deploy => stats.move_range = 0,
+                // Standing still, watching.
+                Ability::Lookout => stats.move_range = 0,
                 Ability::Volley => {}
             }
         }
@@ -178,8 +186,10 @@ impl Unit {
     }
 
     /// End-of-turn bookkeeping: puts a used ability on cooldown (or ticks the
-    /// cooldown down), completes a siege setup or pack-up, and clears orders.
+    /// cooldown down), completes a siege setup or pack-up, starts or ends a
+    /// scout's lookout, and clears orders.
     pub fn end_turn(&mut self) {
+        self.lookout = self.ability_queued && self.ability() == Ability::Lookout;
         if self.ability_queued {
             self.ability_cooldown = self.ability().cooldown();
             if self.ability() == Ability::Deploy {

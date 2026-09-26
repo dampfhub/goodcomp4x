@@ -148,11 +148,12 @@ enum Target {
     Focus(LaborFocus),
     ConfirmBarracks,
     EndTurn,
-    /// Debug panel: scenario pages, the savestate and playback pacing.
+    /// Debug panel: scenario pages, the savestate, playback pacing and fog.
     Scenario(Scenario),
     SaveState,
     LoadState,
     TogglePlayback,
+    ToggleFog,
 }
 
 /// An order for the selected unit.
@@ -355,6 +356,7 @@ impl GameState {
             Target::SaveState => self.save_state(),
             Target::LoadState => self.load_state(),
             Target::TogglePlayback => self.toggle_instant_playback(),
+            Target::ToggleFog => self.toggle_fog(),
         }
         true
     }
@@ -449,6 +451,12 @@ impl GameState {
                 })
                 .collect(),
         );
+        if let Some(seed) = self.map_seed {
+            panel.text(
+                SMALL,
+                vec![(format!("MAP SEED {seed}"), fade(DIM_TEXT, true))],
+            );
+        }
         panel.gap(GAP);
         panel.compact_buttons(vec![
             debug_button(
@@ -476,10 +484,21 @@ impl GameState {
         } else {
             "PLAYBACK: STEP BY STEP"
         };
+        let fog = if self.fog_of_war {
+            "FOG OF WAR: ON"
+        } else {
+            "FOG OF WAR: OFF"
+        };
         panel.compact_buttons(vec![debug_button(
             Target::TogglePlayback,
             playback,
             "F8",
+            ButtonState::Ready,
+        )]);
+        panel.compact_buttons(vec![debug_button(
+            Target::ToggleFog,
+            fog,
+            "F9",
             ButtonState::Ready,
         )]);
         let top_left = Vec2::new(MARGIN, size.y - TOP_BAR_HEIGHT - MARGIN);
@@ -551,7 +570,7 @@ impl GameState {
         let unit = &self.units[idx];
         let base = unit.unit_type.stats();
         let stats = unit.stats();
-        let terrain = self.grid.terrain(unit.pos);
+        let terrain = self.grid.tile(unit.pos);
         let defense = stats.defense * terrain.defense_multiplier();
         let (role, _) = self.unit_role(unit);
 
@@ -619,13 +638,16 @@ impl GameState {
         let mut notes = Vec::new();
         if terrain.defense_multiplier() != 1.0 {
             let bonus = (terrain.defense_multiplier() - 1.0) * 100.0;
-            notes.push(format!("ON {terrain:?}: +{bonus:.0}% DEFENSE").to_uppercase());
+            notes.push(format!("+{bonus:.0}% DEFENSE FROM TERRAIN"));
         }
         if unit.deployed {
-            notes.push("DEPLOYED: +1 RANGE, CANNOT MOVE".to_string());
+            notes.push("DEPLOYED".to_string());
+        }
+        if unit.lookout {
+            notes.push(format!("LOOKOUT: +{} SIGHT", super::fog::LOOKOUT_SIGHT));
         }
         if self.rival_of(idx).is_some() {
-            notes.push("CONTESTED: FIGHTING FOR THIS HEX".to_string());
+            notes.push("CONTESTED".to_string());
         }
         if self.is_player_controlled(idx) {
             let mut orders = Vec::new();
@@ -1044,23 +1066,52 @@ impl GameState {
 
     /// Everything about a map hex: terrain, what it yields, and what's on it.
     fn tile_tooltip_lines(&self, hex: Hex) -> Vec<(u32, Line)> {
-        let terrain = self.grid.terrain(hex);
-        let city = self.cities.iter().find(|c| c.pos == hex);
-        let barracks = self.cities.iter().find(|c| c.barracks == Some(hex));
-        let title = match (city, barracks) {
-            (Some(city), _) => (
+        if !self.is_explored(hex) {
+            return vec![(BODY, vec![("UNEXPLORED".into(), DIM_TEXT)])];
+        }
+        let fog = self.fog();
+        // Out of sight, other sides' cities and everything else that can
+        // change are described as last seen.
+        let seen_now = fog.sees(hex);
+        let memory = if seen_now {
+            None
+        } else {
+            self.remembered(hex)
+        };
+        let tile = self.grid.tile(hex);
+        let terrain = tile.terrain;
+        let city = self
+            .cities
+            .iter()
+            .find(|c| c.pos == hex && (seen_now || c.team == super::PLAYER_TEAM));
+        let barracks = self
+            .cities
+            .iter()
+            .find(|c| c.barracks == Some(hex) && (seen_now || c.team == super::PLAYER_TEAM));
+        let seen_city = memory.and_then(|m| m.city.filter(|c| c.team != super::PLAYER_TEAM));
+        let seen_barracks = memory.and_then(|m| m.barracks.filter(|b| b.team != super::PLAYER_TEAM));
+        let title = match (city, barracks, seen_city, seen_barracks) {
+            (Some(city), ..) => (
                 format!("{:?} CITY {}", city.team, city.id + 1).to_uppercase(),
                 city.team.color(),
             ),
-            (None, Some(city)) => (
+            (None, Some(city), ..) => (
                 format!("{:?} BARRACKS", city.team).to_uppercase(),
                 city.team.color(),
             ),
-            (None, None) => (format!("{terrain:?}").to_uppercase(), TEXT),
+            (None, None, Some(seen), _) => (
+                format!("{:?} CITY {}", seen.team, seen.id + 1).to_uppercase(),
+                seen.team.color(),
+            ),
+            (None, None, None, Some(seen)) => (
+                format!("{:?} BARRACKS", seen.team).to_uppercase(),
+                seen.team.color(),
+            ),
+            (None, None, None, None) => (tile.name(), TEXT),
         };
         let mut lines = vec![(BODY, vec![title])];
 
-        if !terrain.is_passable() {
+        if !terrain.is_workable() {
             lines.push((SMALL, vec![("IMPASSABLE".into(), DIM_TEXT)]));
             return lines;
         }
@@ -1076,32 +1127,39 @@ impl GameState {
             let city_index = self.cities.iter().position(|c| c.pos == hex).unwrap();
             let (growth, _, _) = self.growth_status(city_index);
             let (_, production_per_turn) = self.income(city_index);
-            let queue = city.queue.first().map_or("EMPTY", |build| build.name());
-            lines.push((SMALL, vec![(format!("HP {:.0}/{:.0} · POP {growth}% · +{production_per_turn} PROD/T", city.hp, super::city::CITY_MAX_HP), GOLD_TEXT)]));
-            lines.push((SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]));
+            let queue = city.queue.first().map_or("NOTHING", |build| build.name());
+            lines.push((SMALL, vec![(format!("HP {:.0}/{:.0} · GROWTH {growth}% · +{production_per_turn} PRODUCTION", city.hp, super::city::CITY_MAX_HP), GOLD_TEXT)]));
+            lines.push((SMALL, vec![(format!("BUILDING {queue}"), DIM_TEXT)]));
         }
         if let Some(city) = barracks {
             let city_index = self.cities.iter().position(|c| c.barracks == Some(hex)).unwrap();
             let active = city.worked.first() == Some(&hex);
             let production_per_turn = active.then(|| (self.income(city_index).1 - 4).max(0)).unwrap_or(0);
-            let queue = city.barracks_queue.first().map_or("EMPTY", |build| build.name());
-            lines.push((SMALL, vec![(format!("HP {:.0}/{:.0} · +{production_per_turn} PROD/T", city.barracks_hp, super::city::BARRACKS_MAX_HP), GOLD_TEXT)]));
-            lines.push((SMALL, vec![(format!("TRAINING: {queue}"), DIM_TEXT)]));
+            let queue = city.barracks_queue.first().map_or("NOTHING", |build| build.name());
+            lines.push((SMALL, vec![(format!("HP {:.0}/{:.0} · +{production_per_turn} PRODUCTION", city.barracks_hp, super::city::BARRACKS_MAX_HP), GOLD_TEXT)]));
+            lines.push((SMALL, vec![(format!("TRAINING {queue}"), DIM_TEXT)]));
         }
 
         let mut notes = Vec::new();
-        if city.is_some() {
-            notes.push(format!("{terrain:?} city center").to_uppercase());
+        if self.grid.has_fresh_water(hex) {
+            notes.push("FRESH WATER: +1 FOOD".into());
         }
-        if terrain.defense_multiplier() != 1.0 {
-            let bonus = (terrain.defense_multiplier() - 1.0) * 100.0;
-            notes.push(format!("+{bonus:.0}% DEFENSE FOR UNITS HERE"));
+        if tile.defense_multiplier() != 1.0 {
+            let bonus = (tile.defense_multiplier() - 1.0) * 100.0;
+            notes.push(format!("+{bonus:.0}% DEFENSE"));
         }
-        if let Some(site) = self.sites.get(&hex) {
-            notes.push(format!("{:?} {}", site.team, site.label).to_uppercase());
+        let (site, road) = match memory {
+            Some(seen) => (seen.site, seen.road),
+            None => (
+                self.sites.get(&hex).map(|s| (s.label, s.team)),
+                self.roads.contains(&hex),
+            ),
+        };
+        if let Some((label, team)) = site {
+            notes.push(format!("{team:?} {label}").to_uppercase());
         }
-        if self.roads.contains(&hex) {
-            notes.push("DIRT ROAD: GOODS MOVE THROUGH MORE CHEAPLY".into());
+        if road {
+            notes.push("ROAD: GOODS TRAVEL CHEAPER".into());
         }
         if let Some(worker) = self.cities.iter().find(|c| c.worked.contains(&hex)) {
             notes.push(format!("WORKED BY CITY {}", worker.id + 1));
@@ -1119,17 +1177,19 @@ impl GameState {
                 None => notes.push(format!("OUT OF CITY {}'S REACH", city.id + 1)),
             }
         }
-        let units: Vec<String> = self
+        let describe = |unit: &Unit| format!("{:?} {}", unit.team, self.unit_role(unit).0).to_uppercase();
+        let mut units: Vec<String> = self
             .units_at(hex)
-            .map(|i| {
-                let unit = &self.units[i];
-                format!("{:?} {}", unit.team, self.unit_role(unit).0).to_uppercase()
-            })
+            .filter(|&i| fog.shows(&self.units[i]))
+            .map(|i| describe(&self.units[i]))
             .collect();
+        if let Some(seen) = memory {
+            units.extend(seen.units.iter().map(|(unit, _)| describe(unit)));
+        }
         if !units.is_empty() {
             notes.push(units.join(", "));
         }
-        if self.is_contested(hex) {
+        if self.is_contested(hex) && seen_now {
             notes.push("CONTESTED".into());
         }
         lines.extend(
@@ -1217,65 +1277,62 @@ impl GameState {
                 Target::Build(build) => (
                     build.name().into(),
                     build.shortcut().to_string(),
-                    format!(
-                        "{}. COSTS {} PRODUCTION; THE CITY SPENDS ITS STORED PRODUCTION \
-                         AND PLACES THE UNIT NEXT TO ITSELF ONCE THERE'S ENOUGH.",
-                        build.description(),
-                        quantity(build.cost())
-                    ),
+                    format!("{}. {} PRODUCTION.", build.description(), quantity(build.cost())),
                     None,
                 ),
-                Target::Building(building) => (building.name().into(), building.shortcut().to_string(), format!("{} COSTS {} PRODUCTION. ONE PER CITY.", building.description(), quantity(building.cost())), None),
-                Target::ChangeBarracksSite => ("CHANGE BARRACKS SITE".into(), "CLICK".into(), "CHOOSE A DIFFERENT SITE BEFORE FINALIZING THE COMPLETED BARRACKS.".into(), None),
-                Target::BarracksBuild(build) => (format!("TRAIN {}", build.name()), "BARRACKS".into(), format!("{} COSTS {} PRODUCTION FROM THE ACTIVE MANAGER'S WORK GROUP.", build.description(), quantity(build.cost())), None),
-                Target::OpenBarracks => ("SEE BARRACKS".into(), "CLICK".into(), "OPENS THE BARRACKS' OWN TRAINING AND QUEUE PANEL.".into(), None),
-                Target::OpenCity => ("OPEN CITY".into(), "CLICK".into(), "RETURNS TO THIS CITY'S LABOR AND MAIN PRODUCTION PANEL.".into(), None),
-                Target::CityQueueUp(_) | Target::BarracksQueueUp(_) => ("MOVE QUEUE ITEM UP".into(), "CLICK".into(), "MOVES THIS ITEM ONE POSITION EARLIER IN ITS QUEUE.".into(), None),
-                Target::CityQueueDown(_) | Target::BarracksQueueDown(_) => ("MOVE QUEUE ITEM DOWN".into(), "CLICK".into(), "MOVES THIS ITEM ONE POSITION LATER IN ITS QUEUE.".into(), None),
-                Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => ("REMOVE QUEUE ITEM".into(), "CLICK".into(), "REMOVES THIS ITEM. REMOVING THE ACTIVE ITEM DISCARDS ITS STORED PRODUCTION.".into(), None),
-                Target::Focus(focus) => (format!("{} FOCUS", focus.name()), "AUTO".into(), "REASSIGNS CITY LABOR WITH THIS AS ITS DEFAULT PRIORITY.".into(), None),
-                Target::ConfirmBarracks => ("CONFIRM BARRACKS".into(), "CLICK".into(), "FINALIZES THE SELECTED BARRACKS SITE.".into(), None),
+                Target::Building(building) => (
+                    building.name().into(),
+                    building.shortcut().to_string(),
+                    format!("{} {} PRODUCTION.", building.description(), quantity(building.cost())),
+                    None,
+                ),
+                Target::ChangeBarracksSite => ("CHANGE SITE".into(), "CLICK".into(), String::new(), None),
+                Target::BarracksBuild(build) => (
+                    format!("TRAIN {}", build.name()),
+                    "BARRACKS".into(),
+                    format!("{}. {} PRODUCTION.", build.description(), quantity(build.cost())),
+                    None,
+                ),
+                Target::OpenBarracks => ("OPEN BARRACKS".into(), "CLICK".into(), String::new(), None),
+                Target::OpenCity => ("OPEN CITY".into(), "CLICK".into(), String::new(), None),
+                Target::CityQueueUp(_) | Target::BarracksQueueUp(_) => ("MOVE UP".into(), "CLICK".into(), String::new(), None),
+                Target::CityQueueDown(_) | Target::BarracksQueueDown(_) => ("MOVE DOWN".into(), "CLICK".into(), String::new(), None),
+                Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => (
+                    "REMOVE".into(),
+                    "CLICK".into(),
+                    "REMOVING THE ACTIVE ITEM LOSES ITS PRODUCTION.".into(),
+                    None,
+                ),
+                Target::Focus(focus) => (
+                    format!("{} FOCUS", focus.name()),
+                    "AUTO".into(),
+                    "REASSIGNS CITIZENS TO FAVOR IT.".into(),
+                    None,
+                ),
+                Target::ConfirmBarracks => ("CONFIRM SITE".into(), "CLICK".into(), String::new(), None),
                 Target::Scenario(scenario) => (
-                    format!("{} SCENARIO", scenario.name()),
+                    scenario.name().into(),
                     scenario.key().into(),
                     match scenario {
-                        Scenario::Combat => {
-                            "THE ORIGINAL SMALL COMBAT MAP: FOUR UNITS A SIDE ACROSS A \
-                                             MOUNTAIN PASS."
-                        }
-                        Scenario::Cities => {
-                            "TWO CITIES WITH FARMS, MINES, ROADS AND ARMIES, TO TEST \
-                                             THE ECONOMY AND FIGHTING OVER IT."
-                        }
-                        Scenario::Frontier => {
-                            "A SETTLER AND A WARRIOR EACH AND NO CITIES YET. BOTH \
-                                               WARRIORS ARE YOURS TO MOVE."
-                        }
+                        Scenario::Combat => "FOUR UNITS A SIDE ACROSS A MOUNTAIN PASS.",
+                        Scenario::Cities => "TWO ESTABLISHED CITIES WITH ARMIES.",
+                        Scenario::Frontier => "A SETTLER, WORKER AND SCOUT EACH. BOTH SCOUTS ARE YOURS.",
+                        Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS.",
                     }
-                    .to_string()
-                        + " STARTS IT FRESH, OR RESTARTS IT IF IT'S THE CURRENT ONE; THE SAVESTATE IS KEPT.",
+                    .into(),
                     None,
                 ),
                 Target::SaveState => (
                     "SAVE".into(),
                     "F6".into(),
-                    "SAVES A SNAPSHOT OF THE WHOLE GAME (UNIT POSITIONS, HEALTH, ORDERS, CITIES, \
-                     TURN) FOR TESTING, REPLACING ANY EARLIER ONE. IT'S KEPT ONLY UNTIL THE \
-                     GAME CLOSES."
-                        .into(),
+                    "SNAPSHOTS THE WHOLE GAME UNTIL IT CLOSES.".into(),
                     self.is_resolving()
-                        .then(|| "CAN'T SAVE WHILE A TURN PLAYS OUT".to_string()),
+                        .then(|| "NOT WHILE A TURN PLAYS OUT".to_string()),
                 ),
                 Target::LoadState => (
                     "LOAD".into(),
                     "F7".into(),
-                    match self.saved_summary() {
-                        Some(saved) => format!(
-                            "RESTORES THE SNAPSHOT ({saved}). IT'S KEPT, SO YOU CAN LOAD IT \
-                             AGAIN TO RETRY."
-                        ),
-                        None => "RESTORES THE SNAPSHOT SAVED WITH F6.".into(),
-                    },
+                    self.saved_summary().unwrap_or_default(),
                     self.savestate
                         .is_none()
                         .then(|| "NOTHING SAVED YET".to_string()),
@@ -1283,29 +1340,25 @@ impl GameState {
                 Target::TogglePlayback => (
                     "PLAYBACK".into(),
                     "F8".into(),
-                    "SWITCHES HOW A TURN PLAYS OUT: ONE STEP AT A TIME IN THE RESOLUTION \
-                     ORDER, OR EVERY STEP AT ONCE. THE STEPS STILL RESOLVE IN THE SAME ORDER \
-                     EITHER WAY, SO THE OUTCOME IS THE SAME; ONLY THE PACING CHANGES."
-                        .into(),
+                    "STEP BY STEP OR ALL AT ONCE. THE OUTCOME IS THE SAME.".into(),
                     None,
                 ),
+                Target::ToggleFog => ("FOG OF WAR".into(), "F9".into(), String::new(), None),
                 Target::ToggleYields => (
                     "YIELDS".into(),
                     "Y".into(),
-                    "SHOWS THE FOOD AND PRODUCTION OF EACH TILE WITHIN THIS CITY'S REACH, \
-                     AND WHAT SHARE OF IT MAKES IT BACK TO THE CITY."
-                        .into(),
+                    "TILE YIELDS AROUND THIS CITY, AND THE SHARE THAT REACHES IT.".into(),
                     None,
                 ),
                 Target::EndTurn => (
                     "END TURN".into(),
                     "SPACE".into(),
-                    "RESOLVES EVERYONE'S ORDERS AND COLLECTS CITY INCOME. FIRST EVERY UNIT \
-                     NEEDS ORDERS (SPACE HOLDS ONE AS IT IS, G GUARDS IT FOR GOOD) AND EVERY \
-                     CITY NEEDS SOMETHING TO BUILD. CITIZENS CAN BE MOVED AT ANY TIME."
-                        .into(),
-                    pending_text(self.pending())
-                        .map(|waiting| format!("{waiting}: CLICKING SELECTS ONE")),
+                    if pending_text(self.pending()).is_some() {
+                        "SELECTS WHAT STILL NEEDS ORDERS.".into()
+                    } else {
+                        "RESOLVES EVERYONE'S ORDERS.".into()
+                    },
+                    None,
                 ),
             };
 
@@ -1337,18 +1390,14 @@ impl GameState {
             UnitAction::Move => (
                 "MOVE".into(),
                 "M",
-                "THE NEXT CLICK ON A GREEN HEX MOVES THERE. WITHOUT PICKING AN ACTION, \
-                 CLICKING A GREEN HEX MOVES AND CLICKING AN ENEMY ATTACKS. CLICK A QUEUED \
-                 ORDER AGAIN TO CANCEL IT."
-                    .into(),
+                "NEXT CLICK ON A GREEN HEX MOVES THERE. CLICK IT AGAIN TO CANCEL.".into(),
                 cannot_move,
             ),
             UnitAction::Attack => (
                 "ATTACK".into(),
                 "X OR SHIFT-CLICK",
-                "THE NEXT CLICK ATTACKS ANY HEX IN RANGE, OCCUPIED OR NOT: WHOEVER STANDS \
-                 THERE WHEN THE ATTACK LANDS IS HIT. RANGE COUNTS FROM WHERE THE UNIT WILL \
-                 BE AFTER ITS MOVE."
+                "NEXT CLICK ATTACKS A HEX IN RANGE, HITTING WHOEVER IS THERE WHEN IT LANDS. \
+                 RANGE COUNTS FROM WHERE THE UNIT ENDS ITS MOVE."
                     .into(),
                 if locked {
                     Some("LOCKED IN A CONTESTED HEX".into())
@@ -1361,9 +1410,7 @@ impl GameState {
             UnitAction::Swap => (
                 "SWAP".into(),
                 "CTRL-CLICK",
-                "THE NEXT CLICK ON AN ADJACENT ALLY SWAPS PLACES WITH IT. BOTH UNITS MUST \
-                 BE ABLE TO MOVE."
-                    .into(),
+                "NEXT CLICK ON AN ADJACENT ALLY SWAPS PLACES WITH IT.".into(),
                 if locked {
                     Some("LOCKED IN A CONTESTED HEX".into())
                 } else {
@@ -1374,7 +1421,7 @@ impl GameState {
                 let (name, description) = ability_text(unit);
                 let description = match unit.ability().cooldown() {
                     0 => format!("{description}."),
-                    turns => format!("{description}. COOLDOWN: {}.", turns_text(turns)),
+                    turns => format!("{description}. COOLDOWN {}.", turns_text(turns)),
                 };
                 let unavailable = (unit.ability_cooldown > 0)
                     .then(|| format!("READY IN {}", turns_text(unit.ability_cooldown)));
@@ -1383,38 +1430,33 @@ impl GameState {
             UnitAction::Hold => (
                 "HOLD".into(),
                 "SPACE",
-                "KEEP ANY ORDERS ALREADY QUEUED AND SKIP THE REST OF THIS UNIT'S TURN. \
-                 ONCE NOTHING NEEDS ORDERS, SPACE ENDS THE TURN. CTRL-RIGHT-CLICK CLEARS \
-                 ITS ORDERS AND THE HOLD."
-                    .into(),
+                "SKIPS THIS UNIT FOR THE TURN, KEEPING ANY QUEUED ORDERS.".into(),
                 None,
             ),
             UnitAction::Guard => (
                 "GUARD".into(),
                 "G",
-                "THE UNIT STAYS WHERE IT IS AND IS SKIPPED EVERY TURN, NOT JUST THIS ONE, \
-                 UNTIL YOU GIVE IT AN ORDER OR PRESS G AGAIN."
-                    .into(),
+                "SKIPS THIS UNIT EVERY TURN UNTIL IT'S GIVEN AN ORDER.".into(),
                 None,
             ),
             UnitAction::Settle => (
                 "FOUND CITY".into(),
                 "F",
-                "TURNS THIS SETTLER INTO A CITY ON ITS HEX. CITIES MUST BE SPACED APART.".into(),
+                "AT LEAST 3 HEXES FROM ANY OTHER CITY.".into(),
                 None,
             ),
             UnitAction::Road => (
                 "BUILD ROAD".into(),
                 "R",
-                "BUILDS A DIRT ROAD ON THIS WORKER'S HEX, LOWERING THE COST OF MOVING \
-                 GOODS THROUGH IT."
-                    .into(),
+                "GOODS TRAVEL MORE CHEAPLY ALONG ROADS.".into(),
                 None,
             ),
             UnitAction::Improve => (
                 "IMPROVE".into(),
                 "I",
-                "BUILDS A FARM OR MINE ON THIS WORKER'S HEX, RAISING WHAT IT YIELDS.".into(),
+                "MINE ON HILLS (+2 PRODUCTION), LUMBER MILL IN FOREST OR JUNGLE (+1), \
+                 FARM ELSEWHERE (+2 FOOD)."
+                    .into(),
                 None,
             ),
         }
@@ -1425,8 +1467,10 @@ impl GameState {
     fn unit_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option<usize> {
         let hex = self.hex_at_screen(cursor, screen_size)?;
         let point = self.camera.screen_to_world(cursor, screen_size);
+        let fog = self.fog();
         let distance = |idx: usize| self.unit_layout(idx).0.distance(point);
         self.units_at(hex)
+            .filter(|&i| fog.shows(&self.units[i]))
             .min_by(|&a, &b| distance(a).total_cmp(&distance(b)))
     }
 }
@@ -1484,12 +1528,22 @@ impl PanelBuilder {
 
     /// A row of equally wide buttons.
     fn buttons(&mut self, buttons: Vec<ButtonSpec>) {
+        self.space_button_rows();
         self.rows.push(Row::Buttons(buttons, false));
     }
 
     /// A row of equally wide one-line buttons.
     fn compact_buttons(&mut self, buttons: Vec<ButtonSpec>) {
+        self.space_button_rows();
         self.rows.push(Row::Buttons(buttons, true));
+    }
+
+    /// Button borders are drawn just outside their rows, so a row of buttons
+    /// right under another needs a gap to keep them from overlapping.
+    fn space_button_rows(&mut self) {
+        if matches!(self.rows.last(), Some(Row::Buttons(..))) {
+            self.rows.push(Row::Gap(GAP));
+        }
     }
 
     fn row_height(row: &Row) -> f32 {
@@ -1807,17 +1861,12 @@ fn wrap(text: &str, max_chars: usize) -> Vec<String> {
 /// The ability's name and a short description of what it does.
 fn ability_text(unit: &Unit) -> (&'static str, &'static str) {
     match unit.ability() {
-        Ability::ShieldWall => ("SHIELD WALL", "+50% DEFENSE THIS TURN, BUT CANNOT MOVE"),
-        Ability::Volley => (
-            "VOLLEY",
-            "THE ATTACK ALSO HITS ENEMIES NEXT TO THE TARGET, BUT EVERY HIT DEALS 60%",
-        ),
+        Ability::ShieldWall => ("SHIELD WALL", "+50% DEFENSE THIS TURN, NO MOVING"),
+        Ability::Volley => ("VOLLEY", "ALSO HITS ENEMIES NEXT TO THE TARGET, ALL AT 60%"),
         Ability::Charge => ("CHARGE", "+1 MOVE AND +50% ATTACK THIS TURN"),
-        Ability::Deploy if unit.deployed => ("PACK UP", "SPEND A TURN PACKING UP TO MOVE AGAIN"),
-        Ability::Deploy => (
-            "DEPLOY",
-            "SPEND A TURN SETTING UP, THEN +1 RANGE BUT CANNOT MOVE UNTIL PACKED UP",
-        ),
+        Ability::Deploy if unit.deployed => ("PACK UP", "A TURN PACKING UP, THEN IT CAN MOVE"),
+        Ability::Deploy => ("DEPLOY", "A TURN SETTING UP, THEN +1 RANGE BUT NO MOVING"),
+        Ability::Lookout => ("LOOKOUT", "NO MOVING THIS TURN, +2 SIGHT NEXT TURN"),
     }
 }
 
@@ -1840,12 +1889,24 @@ mod tests {
 
     #[test]
     fn hovering_an_enemy_describes_it() {
-        let game = GameState::new();
+        let mut game = GameState::new();
+        game.fog_of_war = false;
         let enemy = game.units.iter().find(|u| u.team == Team::Red).unwrap();
         let empty = hex_cursor(&game, Hex::new(0, 1));
         let plain = game.build_ui(SCREEN, Some(empty)).len();
         let hovered = game.build_ui(SCREEN, Some(hex_cursor(&game, enemy.pos)));
         assert!(hovered.len() > plain);
+    }
+
+    #[test]
+    fn hovering_an_enemy_out_of_sight_shows_nothing() {
+        let game = GameState::new();
+        let enemy = game.units.iter().find(|u| u.team == Team::Red).unwrap();
+        assert!(!game.fog().sees(enemy.pos), "the combat map starts with Red unseen");
+        let empty = hex_cursor(&game, Hex::new(0, 1));
+        let plain = game.build_ui(SCREEN, Some(empty)).len();
+        let hovered = game.build_ui(SCREEN, Some(hex_cursor(&game, enemy.pos)));
+        assert_eq!(hovered.len(), plain);
     }
 
     #[test]
