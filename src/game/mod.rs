@@ -298,6 +298,8 @@ impl GameState {
                 UnitType::Cavalry => "CAVALRY",
                 UnitType::Siege => "SIEGE",
                 UnitType::Scout => "SCOUT",
+                UnitType::Horse => "HORSE",
+                UnitType::Armored => "ARMORED",
             };
             (name, unit.unit_type.letter())
         }
@@ -324,7 +326,9 @@ impl GameState {
     }
 
     fn enemy_city_at(&self, hex: Hex, team: Team) -> Option<usize> {
-        self.cities.iter().position(|city| city.team != team && city.pos == hex && city.hp > 0.0)
+        self.cities
+            .iter()
+            .position(|city| city.team != team && city.pos == hex && city.hp > 0.0)
     }
 
     fn enemy_barracks_at(&self, hex: Hex, team: Team) -> Option<usize> {
@@ -952,25 +956,46 @@ mod tests {
     fn city_is_a_tanky_ranged_target_that_returns_fire() {
         let mut game = GameState::city_scenario();
         game.units.clear();
-        let target = game.cities.iter().position(|city| city.team == Team::Red).unwrap();
+        let target = game
+            .cities
+            .iter()
+            .position(|city| city.team == Team::Red)
+            .unwrap();
         let pos = game.cities[target].pos;
-        game.units.push(Unit::new(900, pos.neighbors()[0], Team::Blue, UnitType::Ranged));
+        game.units.push(Unit::new(
+            900,
+            pos.neighbors()[0],
+            Team::Blue,
+            UnitType::Ranged,
+        ));
         let city_hp = game.cities[target].hp;
         let unit_hp = game.units[0].hp;
         game.try_queue_attack(0, pos);
         game.resolve_step(UnitType::Ranged, Phase::Attack);
         assert!(game.cities[target].hp < city_hp);
-        assert!(game.units[0].hp < unit_hp, "the city should return ranged fire");
+        assert!(
+            game.units[0].hp < unit_hp,
+            "the city should return ranged fire"
+        );
     }
 
     #[test]
     fn barracks_is_tanky_but_does_not_return_fire() {
         let mut game = GameState::city_scenario();
         game.units.clear();
-        let target = game.cities.iter().position(|city| city.team == Team::Red).unwrap();
+        let target = game
+            .cities
+            .iter()
+            .position(|city| city.team == Team::Red)
+            .unwrap();
         let barracks = game.cities[target].pos.neighbors()[0];
         game.cities[target].barracks = Some(barracks);
-        game.units.push(Unit::new(901, barracks.neighbors()[0], Team::Blue, UnitType::Ranged));
+        game.units.push(Unit::new(
+            901,
+            barracks.neighbors()[0],
+            Team::Blue,
+            UnitType::Ranged,
+        ));
         let barracks_hp = game.cities[target].barracks_hp;
         let unit_hp = game.units[0].hp;
         game.try_queue_attack(0, barracks);

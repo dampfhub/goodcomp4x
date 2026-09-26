@@ -28,6 +28,8 @@ pub enum UnitType {
     Siege,
     /// Fast and far-sighted, but hardly a fighter: for exploring.
     Scout,
+    Horse,
+    Armored,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +52,8 @@ impl UnitType {
             UnitType::Cavalry => (100.0, 24.0, 14.0, 2, 1),
             UnitType::Siege => (65.0, 32.0, 6.0, 1, 2),
             UnitType::Scout => (60.0, 8.0, 10.0, 3, 1),
+            UnitType::Horse => (100.0, 28.0, 16.0, 3, 1),
+            UnitType::Armored => (140.0, 30.0, 28.0, 1, 1),
         };
         UnitStats {
             max_hp,
@@ -67,13 +71,15 @@ impl UnitType {
             UnitType::Cavalry => 'C',
             UnitType::Siege => 'S',
             UnitType::Scout => 'X',
+            UnitType::Horse => 'H',
+            UnitType::Armored => 'A',
         }
     }
 
     /// How many hexes around it the unit sees through the fog of war.
     pub fn sight(self) -> i32 {
         match self {
-            UnitType::Scout | UnitType::Cavalry => 3,
+            UnitType::Scout | UnitType::Cavalry | UnitType::Horse => 3,
             _ => 2,
         }
     }

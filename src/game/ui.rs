@@ -11,7 +11,7 @@
 use glam::{Mat4, Vec2, Vec3};
 
 use super::ability::Ability;
-use super::city::{Build, Building, BuildUnit, LaborFocus, delivered_share};
+use super::city::{Build, BuildUnit, Building, LaborFocus, delivered_share};
 use super::font::{self, Face};
 use super::hex::Hex;
 use super::orders::ClickMode;
@@ -270,7 +270,13 @@ impl GameState {
             .filter(|_| !over_ui)
             .and_then(|c| self.unit_at_screen(c, screen_size))
             .filter(|&idx| Some(idx) != self.selected || self.selected_city.is_some())
-            .filter(|_| !self.hovered_tile.is_some_and(|hex| self.cities.iter().any(|city| city.pos == hex || city.barracks == Some(hex))))
+            .filter(|_| {
+                !self.hovered_tile.is_some_and(|hex| {
+                    self.cities
+                        .iter()
+                        .any(|city| city.pos == hex || city.barracks == Some(hex))
+                })
+            })
         {
             // Top-right, clear of the debug panel at the top-left.
             let mut panel = PanelBuilder::default();
@@ -285,11 +291,21 @@ impl GameState {
             if let Some(city) = self.cities.iter().position(|city| city.pos == hex) {
                 let mut panel = PanelBuilder::default();
                 self.structure_hover_panel(city, false, &mut panel);
-                panel.place_bottom_left(Vec2::new(MARGIN, hover_panel_bottom(&layout, screen_size)), &mut layout);
-            } else if let Some(city) = self.cities.iter().position(|city| city.barracks == Some(hex)) {
+                panel.place_bottom_left(
+                    Vec2::new(MARGIN, hover_panel_bottom(&layout, screen_size)),
+                    &mut layout,
+                );
+            } else if let Some(city) = self
+                .cities
+                .iter()
+                .position(|city| city.barracks == Some(hex))
+            {
                 let mut panel = PanelBuilder::default();
                 self.structure_hover_panel(city, true, &mut panel);
-                panel.place_bottom_left(Vec2::new(MARGIN, hover_panel_bottom(&layout, screen_size)), &mut layout);
+                panel.place_bottom_left(
+                    Vec2::new(MARGIN, hover_panel_bottom(&layout, screen_size)),
+                    &mut layout,
+                );
             }
         }
 
@@ -341,13 +357,19 @@ impl GameState {
             Target::Building(building) => self.queue_selected_city_building(building),
             Target::ChangeBarracksSite => self.change_selected_barracks_site(),
             Target::BarracksBuild(build) => self.queue_selected_barracks_unit(build),
-            Target::OpenBarracks => if let Some(city) = self.selected_city { self.open_barracks(city) },
+            Target::OpenBarracks => {
+                if let Some(city) = self.selected_city {
+                    self.open_barracks(city)
+                }
+            }
             Target::OpenCity => self.open_selected_city_from_barracks(),
             Target::CityQueueUp(index) => self.move_selected_city_queue_item(index, true),
             Target::CityQueueDown(index) => self.move_selected_city_queue_item(index, false),
             Target::CityQueueRemove(index) => self.remove_selected_city_queue_item(index),
             Target::BarracksQueueUp(index) => self.move_selected_barracks_queue_item(index, true),
-            Target::BarracksQueueDown(index) => self.move_selected_barracks_queue_item(index, false),
+            Target::BarracksQueueDown(index) => {
+                self.move_selected_barracks_queue_item(index, false)
+            }
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
             Target::Focus(focus) => self.set_selected_city_focus(focus),
             Target::ConfirmBarracks => self.confirm_barracks(),
@@ -403,19 +425,13 @@ impl GameState {
             let mut queue = PanelBuilder::default();
             self.city_queue_panel(city, &mut queue);
             if !queue.rows.is_empty() {
-                queue.place_bottom_left(
-                    Vec2::new(MARGIN, MARGIN + tray_size.y + GAP),
-                    &mut layout,
-                );
+                queue.place_bottom_left(Vec2::new(MARGIN, MARGIN + tray_size.y + GAP), &mut layout);
             }
         } else if let Some(city) = self.selected_barracks {
             let mut queue = PanelBuilder::default();
             self.barracks_queue_panel(city, &mut queue);
             if !queue.rows.is_empty() {
-                queue.place_bottom_left(
-                    Vec2::new(MARGIN, MARGIN + tray_size.y + GAP),
-                    &mut layout,
-                );
+                queue.place_bottom_left(Vec2::new(MARGIN, MARGIN + tray_size.y + GAP), &mut layout);
             }
         }
         layout
@@ -814,10 +830,32 @@ impl GameState {
         if barracks {
             let tile = city.barracks.unwrap();
             let active = city.worked.first() == Some(&tile);
-            let production = active.then(|| (self.income(i).1 - 4).max(0)).unwrap_or(0);
-            let queue = city.barracks_queue.first().map_or("EMPTY", |build| build.name());
-            panel.text(TITLE, vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())]);
-            panel.text(SMALL, vec![(format!("HP {:.0}/{:.0} · +{production} PROD/T", city.barracks_hp, super::city::BARRACKS_MAX_HP), GOLD_TEXT)]);
+            let production = if active { self.barracks_income(i) } else { 0 };
+            let queue = city.barracks_queue.first().map_or_else(
+                || "EMPTY".into(),
+                |build| {
+                    format!(
+                        "{} · {} LEFT",
+                        build.name(),
+                        turns_at_rate(build.cost() - city.barracks_production, production)
+                    )
+                },
+            );
+            panel.text(
+                TITLE,
+                vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
+            );
+            panel.text(
+                SMALL,
+                vec![(
+                    format!(
+                        "HP {:.0}/{:.0} · +{production} PROD/T",
+                        city.barracks_hp,
+                        super::city::BARRACKS_MAX_HP
+                    ),
+                    GOLD_TEXT,
+                )],
+            );
             panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
             if let Some(build) = city.barracks_queue.first() {
                 panel.bar((city.barracks_production as f32 / build.cost() as f32).clamp(0.0, 1.0));
@@ -825,9 +863,31 @@ impl GameState {
         } else {
             let (growth, _, _) = self.growth_status(i);
             let (_, production) = self.income(i);
-            let queue = city.queue.first().map_or("EMPTY", |build| build.name());
-            panel.text(TITLE, vec![(format!("CITY {}", city.id + 1), city.team.color())]);
-            panel.text(SMALL, vec![(format!("HP {:.0}/{:.0} · POP {growth}% · +{production} PROD/T", city.hp, super::city::CITY_MAX_HP), GOLD_TEXT)]);
+            let queue = city.queue.first().map_or_else(
+                || "EMPTY".into(),
+                |build| {
+                    format!(
+                        "{} · {} LEFT",
+                        build.name(),
+                        turns_at_rate(build.cost() - city.production, production)
+                    )
+                },
+            );
+            panel.text(
+                TITLE,
+                vec![(format!("CITY {}", city.id + 1), city.team.color())],
+            );
+            panel.text(
+                SMALL,
+                vec![(
+                    format!(
+                        "HP {:.0}/{:.0} · POP {growth}% · +{production} PROD/T",
+                        city.hp,
+                        super::city::CITY_MAX_HP
+                    ),
+                    GOLD_TEXT,
+                )],
+            );
             panel.bar(growth as f32 / 100.0);
             panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
             if let Some(build) = city.queue.first() {
@@ -914,10 +974,22 @@ impl GameState {
         };
         panel.text(BODY, stat_spans(&[("BUILDING", building.0, building.1)]));
         panel.text(SMALL, vec![("LABOR FOCUS".into(), LABEL_TEXT)]);
-        panel.compact_buttons([LaborFocus::Food, LaborFocus::Production, LaborFocus::Balanced].into_iter().map(|focus| ButtonSpec {
-            target: Target::Focus(focus), label: focus.name().into(), hint: "AUTO".into(),
-            state: ButtonState::new(city.focus == focus, false), armed: false,
-        }).collect());
+        panel.compact_buttons(
+            [
+                LaborFocus::Food,
+                LaborFocus::Production,
+                LaborFocus::Balanced,
+            ]
+            .into_iter()
+            .map(|focus| ButtonSpec {
+                target: Target::Focus(focus),
+                label: focus.name().into(),
+                hint: "AUTO".into(),
+                state: ButtonState::new(city.focus == focus, false),
+                armed: false,
+            })
+            .collect(),
+        );
 
         panel.gap(GAP);
         panel.text(SMALL, vec![(growth_label, DIM_TEXT)]);
@@ -974,71 +1046,224 @@ impl GameState {
         panel.text(
             SMALL,
             vec![(
-                "CLICK TILES TO ASSIGN CITIZENS · A AUTO-ASSIGN · CLICK A UNIT TO LEAVE".into(),
+                "CLICK MANAGER TO MOVE · CLICK TILES TO ASSIGN · ESC OR SPACE TO EXIT".into(),
                 LABEL_TEXT,
             )],
         );
         let buildings = [Building::Granary, Building::Barracks];
-        panel.buttons(buildings.into_iter().filter(|&building| !(building == Building::Barracks && city.built.contains(&building))).map(|building| ButtonSpec {
-            target: Target::Building(building), label: building.name().into(),
-            hint: format!("{} · {} PROD", building.shortcut(), quantity(building.cost())),
-            state: ButtonState::new(city.queue.first() == Some(&Build::Building(building)) || (building == Building::Barracks && self.placing_barracks == Some(i)), city.pending_building == Some(building) || city.queue.contains(&Build::Building(building))),
-            armed: false,
-        }).collect());
+        panel.buttons(
+            buildings
+                .into_iter()
+                .filter(|&building| {
+                    !(building == Building::Barracks && city.built.contains(&building))
+                })
+                .map(|building| ButtonSpec {
+                    target: Target::Building(building),
+                    label: building.name().into(),
+                    hint: format!(
+                        "{} · {} PROD",
+                        building.shortcut(),
+                        quantity(building.cost())
+                    ),
+                    state: ButtonState::new(
+                        city.queue.first() == Some(&Build::Building(building))
+                            || (building == Building::Barracks && self.placing_barracks == Some(i)),
+                        city.pending_building == Some(building)
+                            || city.queue.contains(&Build::Building(building)),
+                    ),
+                    armed: false,
+                })
+                .collect(),
+        );
         if let Some(tile) = city.barracks {
             let active = city.worked.first() == Some(&tile);
-            let status = if active { "MANAGER ACTIVE" } else { "MOVE MANAGER ONTO BARRACKS" };
+            let status = if active {
+                "MANAGER ACTIVE"
+            } else {
+                "MOVE MANAGER ONTO BARRACKS"
+            };
             panel.gap(GAP);
-            panel.text(SMALL, vec![(format!("BARRACKS: {status}"), if active { BOOSTED_TEXT } else { REDUCED_TEXT })]);
-            panel.buttons(vec![ButtonSpec { target: Target::OpenBarracks, label: "SEE BARRACKS".into(), hint: "CLICK".into(), state: ButtonState::new(false, false), armed: false }]);
+            panel.text(
+                SMALL,
+                vec![(
+                    format!("BARRACKS: {status}"),
+                    if active { BOOSTED_TEXT } else { REDUCED_TEXT },
+                )],
+            );
+            panel.buttons(vec![ButtonSpec {
+                target: Target::OpenBarracks,
+                label: "SEE BARRACKS".into(),
+                hint: "CLICK".into(),
+                state: ButtonState::new(false, false),
+                armed: false,
+            }]);
         } else if city.planned_barracks.is_some() {
-            let site = city.planned_barracks.map(|h| format!("({}, {})", h.q, h.r)).unwrap_or_else(|| "NONE".into());
-            let label = if city.pending_building == Some(Building::Barracks) { "BARRACKS READY" } else { "BARRACKS PLANNED" };
+            let site = city
+                .planned_barracks
+                .map(|h| format!("({}, {})", h.q, h.r))
+                .unwrap_or_else(|| "NONE".into());
+            let label = if city.pending_building == Some(Building::Barracks) {
+                "BARRACKS READY"
+            } else {
+                "BARRACKS PLANNED"
+            };
             panel.text(SMALL, vec![(format!("{label}: SITE {site}"), GOLD_TEXT)]);
             panel.buttons(vec![ButtonSpec {
-                target: Target::ChangeBarracksSite, label: "CHANGE BARRACKS SITE".into(), hint: "CLICK".into(),
-                state: ButtonState::new(self.placing_barracks == Some(i), false), armed: false,
+                target: Target::ChangeBarracksSite,
+                label: "CHANGE BARRACKS SITE".into(),
+                hint: "CLICK".into(),
+                state: ButtonState::new(self.placing_barracks == Some(i), false),
+                armed: false,
             }]);
             if city.pending_building == Some(Building::Barracks) {
-                panel.buttons(vec![ButtonSpec { target: Target::ConfirmBarracks, label: "CONFIRM BARRACKS".into(), hint: "CLICK".into(), state: ButtonState::new(false, false), armed: false }]);
+                panel.buttons(vec![ButtonSpec {
+                    target: Target::ConfirmBarracks,
+                    label: "CONFIRM BARRACKS".into(),
+                    hint: "CLICK".into(),
+                    state: ButtonState::new(false, false),
+                    armed: false,
+                }]);
             }
         }
     }
 
     fn barracks_tray(&self, i: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
-        let Some(tile) = city.barracks else { return; };
+        let Some(tile) = city.barracks else {
+            return;
+        };
         let active = city.worked.first() == Some(&tile);
-        let (_, city_production) = self.income(i);
-        let barracks_production = if active { (city_production - 4).max(0) } else { 0 };
-        panel.text(TITLE, vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())]);
-        panel.text(BODY, stat_spans(&[("HP", format!("{:.0}/{:.0}", city.barracks_hp, super::city::BARRACKS_MAX_HP), GOLD_TEXT)]));
-        panel.text(SMALL, vec![(format!("{} · +{barracks_production} PROD/T", if active { "MANAGER ACTIVE" } else { "NEEDS MANAGER" }), if active { BOOSTED_TEXT } else { REDUCED_TEXT })]);
+        let barracks_production = if active { self.barracks_income(i) } else { 0 };
+        panel.text(
+            TITLE,
+            vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
+        );
+        panel.text(
+            BODY,
+            stat_spans(&[(
+                "HP",
+                format!(
+                    "{:.0}/{:.0}",
+                    city.barracks_hp,
+                    super::city::BARRACKS_MAX_HP
+                ),
+                GOLD_TEXT,
+            )]),
+        );
+        panel.text(
+            SMALL,
+            vec![(
+                format!(
+                    "{} · +{barracks_production} PROD/T",
+                    if active {
+                        "MANAGER ACTIVE"
+                    } else {
+                        "NEEDS MANAGER"
+                    }
+                ),
+                if active { BOOSTED_TEXT } else { REDUCED_TEXT },
+            )],
+        );
         if let Some(build) = city.barracks_queue.first().copied() {
-            panel.text(SMALL, vec![(format!("TRAINING {}: {} / {} PROD", build.name(), quantity(city.barracks_production.min(build.cost())), quantity(build.cost())), GOLD_TEXT)]);
+            panel.text(
+                SMALL,
+                vec![(
+                    format!(
+                        "TRAINING {}: {} / {} PROD",
+                        build.name(),
+                        quantity(city.barracks_production.min(build.cost())),
+                        quantity(build.cost())
+                    ),
+                    GOLD_TEXT,
+                )],
+            );
             panel.bar((city.barracks_production as f32 / build.cost() as f32).clamp(0.0, 1.0));
         }
-        let builds = [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Cavalry, BuildUnit::Siege];
+        let builds = [
+            BuildUnit::Melee,
+            BuildUnit::Ranged,
+            BuildUnit::Cavalry,
+            BuildUnit::Siege,
+            BuildUnit::Horse,
+            BuildUnit::Armored,
+        ];
         panel.gap(GAP);
-        panel.buttons(builds.into_iter().map(|build| ButtonSpec {
-            target: Target::BarracksBuild(build), label: format!("TRAIN {}", build.name()),
-            hint: format!("{} PROD", quantity(build.cost())),
-            state: ButtonState::new(city.barracks_queue.first() == Some(&build), false), armed: false,
-        }).collect());
-        panel.buttons(vec![ButtonSpec { target: Target::OpenCity, label: "OPEN CITY".into(), hint: "CLICK".into(), state: ButtonState::new(false, false), armed: false }]);
+        panel.buttons(
+            builds
+                .into_iter()
+                .map(|build| ButtonSpec {
+                    target: Target::BarracksBuild(build),
+                    label: format!("TRAIN {}", build.name()),
+                    hint: build.required_resource().map_or_else(
+                        || format!("{} PROD", quantity(build.cost())),
+                        |resource| format!("{} · {}", resource.name(), quantity(build.cost())),
+                    ),
+                    state: ButtonState::new(
+                        city.barracks_queue.first() == Some(&build),
+                        !self.barracks_can_train(i, build),
+                    ),
+                    armed: false,
+                })
+                .collect(),
+        );
+        panel.buttons(vec![ButtonSpec {
+            target: Target::OpenCity,
+            label: "OPEN CITY".into(),
+            hint: "CLICK".into(),
+            state: ButtonState::new(false, false),
+            armed: false,
+        }]);
     }
 
     fn barracks_queue_panel(&self, i: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
-        if city.barracks_queue.is_empty() { return; }
+        if city.barracks_queue.is_empty() {
+            return;
+        }
+        let production = self.barracks_income(i);
         panel.text(SMALL, vec![("BARRACKS QUEUE".into(), LABEL_TEXT)]);
         for (index, build) in city.barracks_queue.iter().copied().enumerate() {
             let prefix = if index == 0 { "▶ " } else { "  " };
-            panel.text(SMALL, vec![(format!("{prefix}{} · {} PROD", build.name(), quantity(build.cost())), if index == 0 { GOLD_TEXT } else { TEXT })]);
+            let remaining = build.cost()
+                - if index == 0 {
+                    city.barracks_production
+                } else {
+                    0
+                };
+            panel.text(
+                SMALL,
+                vec![(
+                    format!(
+                        "{prefix}{} · {} PROD · {} LEFT",
+                        build.name(),
+                        quantity(build.cost()),
+                        turns_at_rate(remaining, production)
+                    ),
+                    if index == 0 { GOLD_TEXT } else { TEXT },
+                )],
+            );
             panel.compact_buttons(vec![
-                ButtonSpec { target: Target::BarracksQueueUp(index), label: "UP".into(), hint: "↑".into(), state: ButtonState::new(false, index == 0), armed: false },
-                ButtonSpec { target: Target::BarracksQueueDown(index), label: "DOWN".into(), hint: "↓".into(), state: ButtonState::new(false, index + 1 == city.barracks_queue.len()), armed: false },
-                ButtonSpec { target: Target::BarracksQueueRemove(index), label: "REMOVE".into(), hint: "X".into(), state: ButtonState::new(false, false), armed: false },
+                ButtonSpec {
+                    target: Target::BarracksQueueUp(index),
+                    label: "UP".into(),
+                    hint: "↑".into(),
+                    state: ButtonState::new(false, index == 0),
+                    armed: false,
+                },
+                ButtonSpec {
+                    target: Target::BarracksQueueDown(index),
+                    label: "DOWN".into(),
+                    hint: "↓".into(),
+                    state: ButtonState::new(false, index + 1 == city.barracks_queue.len()),
+                    armed: false,
+                },
+                ButtonSpec {
+                    target: Target::BarracksQueueRemove(index),
+                    label: "REMOVE".into(),
+                    hint: "X".into(),
+                    state: ButtonState::new(false, false),
+                    armed: false,
+                },
             ]);
         }
     }
@@ -1050,15 +1275,52 @@ impl GameState {
         if city.queue.is_empty() {
             return;
         }
+        let (_, production) = self.income(i);
         if !city.queue.is_empty() {
-            panel.text(SMALL, vec![("CITY QUEUE · BACKSPACE CANCEL · PGDN PROMOTE".into(), LABEL_TEXT)]);
+            panel.text(
+                SMALL,
+                vec![(
+                    "CITY QUEUE · BACKSPACE CANCEL · PGDN PROMOTE".into(),
+                    LABEL_TEXT,
+                )],
+            );
             for (index, build) in city.queue.iter().copied().enumerate() {
                 let prefix = if index == 0 { "▶ " } else { "  " };
-                panel.text(SMALL, vec![(format!("{prefix}{} · {} PROD", build.name(), quantity(build.cost())), if index == 0 { GOLD_TEXT } else { TEXT })]);
+                let remaining = build.cost() - if index == 0 { city.production } else { 0 };
+                panel.text(
+                    SMALL,
+                    vec![(
+                        format!(
+                            "{prefix}{} · {} PROD · {} LEFT",
+                            build.name(),
+                            quantity(build.cost()),
+                            turns_at_rate(remaining, production)
+                        ),
+                        if index == 0 { GOLD_TEXT } else { TEXT },
+                    )],
+                );
                 panel.compact_buttons(vec![
-                    ButtonSpec { target: Target::CityQueueUp(index), label: "UP".into(), hint: "↑".into(), state: ButtonState::new(false, index == 0), armed: false },
-                    ButtonSpec { target: Target::CityQueueDown(index), label: "DOWN".into(), hint: "↓".into(), state: ButtonState::new(false, index + 1 == city.queue.len()), armed: false },
-                    ButtonSpec { target: Target::CityQueueRemove(index), label: "REMOVE".into(), hint: "X".into(), state: ButtonState::new(false, false), armed: false },
+                    ButtonSpec {
+                        target: Target::CityQueueUp(index),
+                        label: "UP".into(),
+                        hint: "↑".into(),
+                        state: ButtonState::new(false, index == 0),
+                        armed: false,
+                    },
+                    ButtonSpec {
+                        target: Target::CityQueueDown(index),
+                        label: "DOWN".into(),
+                        hint: "↓".into(),
+                        state: ButtonState::new(false, index + 1 == city.queue.len()),
+                        armed: false,
+                    },
+                    ButtonSpec {
+                        target: Target::CityQueueRemove(index),
+                        label: "REMOVE".into(),
+                        hint: "X".into(),
+                        state: ButtonState::new(false, false),
+                        armed: false,
+                    },
                 ]);
             }
         }
@@ -1132,9 +1394,17 @@ impl GameState {
             lines.push((SMALL, vec![(format!("BUILDING {queue}"), DIM_TEXT)]));
         }
         if let Some(city) = barracks {
-            let city_index = self.cities.iter().position(|c| c.barracks == Some(hex)).unwrap();
+            let city_index = self
+                .cities
+                .iter()
+                .position(|c| c.barracks == Some(hex))
+                .unwrap();
             let active = city.worked.first() == Some(&hex);
-            let production_per_turn = active.then(|| (self.income(city_index).1 - 4).max(0)).unwrap_or(0);
+            let production_per_turn = if active {
+                (self.income(city_index).1 - 4).max(0)
+            } else {
+                0
+            };
             let queue = city.barracks_queue.first().map_or("NOTHING", |build| build.name());
             lines.push((SMALL, vec![(format!("HP {:.0}/{:.0} · +{production_per_turn} PRODUCTION", city.barracks_hp, super::city::BARRACKS_MAX_HP), GOLD_TEXT)]));
             lines.push((SMALL, vec![(format!("TRAINING {queue}"), DIM_TEXT)]));
@@ -1160,6 +1430,9 @@ impl GameState {
         }
         if road {
             notes.push("ROAD: GOODS TRAVEL CHEAPER".into());
+        }
+        if let Some(resource) = self.grid.resource(hex) {
+            notes.push(format!("{} RESOURCE", resource.name()));
         }
         if let Some(worker) = self.cities.iter().find(|c| c.worked.contains(&hex)) {
             notes.push(format!("WORKED BY CITY {}", worker.id + 1));
@@ -1802,6 +2075,16 @@ fn signed_quantity(quarters: i32) -> String {
     format!("{sign}{}", quantity(quarters))
 }
 
+/// Turns required to finish a queue item at the delivery-adjusted rate shown
+/// in its structure panel. Completion is resolved on the next economy tick.
+fn turns_at_rate(remaining: i32, per_turn: i32) -> String {
+    if per_turn <= 0 {
+        return "—".into();
+    }
+    let turns = (remaining.max(1) + per_turn - 1) / per_turn;
+    format!("{turns}T")
+}
+
 /// The End Turn button's label: the next thing the turn is waiting on (units
 /// first, as that's what clicking selects first), or "END TURN" once nothing is.
 fn end_turn_label((units, cities): (usize, usize)) -> String {
@@ -2027,7 +2310,10 @@ mod tests {
         let cavalry = Target::Build(BuildUnit::Cavalry);
         game.handle_click(button_cursor(&game, cavalry), SCREEN, ClickMode::Normal);
         let city = game.selected_city.unwrap();
-        assert_eq!(game.cities[city].queue, vec![Build::Unit(BuildUnit::Cavalry)]);
+        assert_eq!(
+            game.cities[city].queue,
+            vec![Build::Unit(BuildUnit::Cavalry)]
+        );
     }
 
     /// The city scenario with the player's city open and the camera settled on it.
@@ -2049,7 +2335,8 @@ mod tests {
 
         // Use visible map tiles so this exercises UI hit testing as well as
         // city placement, rather than calling city_click directly.
-        let sites: Vec<_> = (-8..=8).flat_map(|q| (-8..=8).map(move |r| Hex::new(q, r)))
+        let sites: Vec<_> = (-8..=8)
+            .flat_map(|q| (-8..=8).map(move |r| Hex::new(q, r)))
             .filter(|&hex| {
                 let cursor = hex_cursor(&game, hex);
                 game.grid.is_passable(hex)
@@ -2057,7 +2344,9 @@ mod tests {
                     && (0.0..SCREEN.x).contains(&cursor.x)
                     && (0.0..SCREEN.y).contains(&cursor.y)
                     && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
-            }).take(2).collect();
+            })
+            .take(2)
+            .collect();
         assert_eq!(sites.len(), 2);
         game.handle_click(hex_cursor(&game, sites[0]), SCREEN, ClickMode::Normal);
         assert_eq!(game.placing_barracks, None);
@@ -2069,7 +2358,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_unit_leaves_the_city_view() {
+    fn city_clicks_do_not_select_units_without_exiting_city_view() {
         let mut game = city_view();
         // One of the player's units drawn clear of the top bar and the tray.
         let unit = (0..game.units.len())
@@ -2085,16 +2374,16 @@ mod tests {
             SCREEN,
             ClickMode::Normal,
         );
-        assert_eq!(game.selected_city, None);
-        assert_eq!(game.selected, Some(unit));
+        assert!(game.selected_city.is_some());
+        assert_ne!(game.selected, Some(unit));
     }
 
     #[test]
-    fn clicking_the_open_city_again_closes_it() {
+    fn clicking_the_open_city_keeps_city_management_open() {
         let mut game = city_view();
         let city = game.cities[game.selected_city.unwrap()].pos;
         game.handle_click(hex_cursor(&game, city), SCREEN, ClickMode::Normal);
-        assert_eq!(game.selected_city, None);
+        assert_eq!(game.selected_city, Some(0));
     }
 
     #[test]
@@ -2113,7 +2402,7 @@ mod tests {
 
         // Hovering a city without opening it no longer shows its yields.
         let city = game.cities[game.selected_city.unwrap()].pos;
-        game.close_city();
+        assert!(game.exit_structure_menu());
         game.update_hover(Some(hex_cursor(&game, city)), SCREEN, 0.0);
         assert!(game.hovered_city.is_some());
         assert_eq!(game.yields_city(), None);

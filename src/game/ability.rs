@@ -33,6 +33,8 @@ impl Ability {
             UnitType::Cavalry => Ability::Charge,
             UnitType::Siege => Ability::Deploy,
             UnitType::Scout => Ability::Lookout,
+            UnitType::Horse => Ability::Charge,
+            UnitType::Armored => Ability::ShieldWall,
         }
     }
 

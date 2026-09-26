@@ -1,7 +1,7 @@
 //! Builds each frame's geometry from the game state.
 
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_8, TAU};
 
 use glam::Vec2;
 
@@ -71,6 +71,9 @@ const ICON_OUTLINE_WIDTH: f32 = 0.06;
 /// Map markers: the granary beside a city, and improvement badges.
 const GRANARY_COLOR: Color = [0.95, 0.72, 0.22, 1.0];
 const SITE_BADGE_OFFSET: Vec2 = Vec2::new(-0.5, 0.36);
+/// Strategic resources: a gold-edged disc in the hex's top-right corner.
+const RESOURCE_BADGE_OFFSET: Vec2 = Vec2::new(0.5, 0.36);
+const RESOURCE_COLOR: Color = [0.95, 0.80, 0.35, 1.0];
 const SITE_BADGE_HALF: f32 = 0.16;
 const SITE_BADGE_COLOR: Color = [0.04, 0.04, 0.05, 0.92];
 const FARM_COLOR: Color = [0.95, 0.80, 0.30, 1.0];
@@ -188,6 +191,9 @@ impl GameState {
             mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
             mesh::regular_polygon(center, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
             push_tile_symbols(center, self.grid.tile(hex), &mut out);
+            if let Some(resource) = self.grid.resource(hex) {
+                push_resource_badge(center + RESOURCE_BADGE_OFFSET, resource.glyph(), &mut out);
+            }
         }
         push_rivers(&self.grid, |h| self.is_explored(h), &mut out);
 
@@ -422,9 +428,15 @@ impl GameState {
             }
             let manager_is_moving = self.moving_manager == Some(i);
             for (worker_index, h) in self.cities[i].worked.iter().enumerate() {
-                if manager_is_moving && worker_index == 0 { continue; }
+                if manager_is_moving && worker_index == 0 {
+                    continue;
+                }
                 let color = if routes.costs.contains_key(h) {
-                    if worker_index == 0 { [1.0, 0.78, 0.20, 1.0] } else { [0.25, 1.0, 0.4, 1.0] }
+                    if worker_index == 0 {
+                        [1.0, 0.78, 0.20, 1.0]
+                    } else {
+                        [0.25, 1.0, 0.4, 1.0]
+                    }
                 } else {
                     [1.0, 0.25, 0.2, 1.0]
                 };
@@ -441,8 +453,50 @@ impl GameState {
             }
             if !manager_is_moving && let Some(manager) = self.cities[i].worked.first() {
                 for worker in self.cities[i].worked.iter().skip(1) {
-                    push_dotted_segment(manager.to_world(), worker.to_world(), 0.045, [0.78, 0.88, 0.62, 0.9], out);
+                    push_dotted_segment(
+                        manager.to_world(),
+                        worker.to_world(),
+                        0.045,
+                        [0.78, 0.88, 0.62, 0.9],
+                        out,
+                    );
                 }
+                if self.hovered_tile == Some(*manager) {
+                    // Hovering the manager exposes each delivery link back to
+                    // the city center, alongside the percentage labels.
+                    for source in &self.cities[i].worked {
+                        push_dotted_segment(
+                            source.to_world(),
+                            self.cities[i].pos.to_world(),
+                            0.06,
+                            [0.35, 0.82, 1.0, 0.9],
+                            out,
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(i) = self.selected_barracks
+            && let Some(barracks) = self.cities[i].barracks
+        {
+            let routes = self.routes_from(self.cities[i].team, barracks);
+            for (hex, cost) in &routes.costs {
+                font::push_text(
+                    hex.to_world() + Vec2::new(-0.3, 0.52),
+                    0.18,
+                    &format!("{}%", super::city::delivered_share(*cost) * 25),
+                    [1.0, 0.70, 0.30, 1.0],
+                    out,
+                );
+            }
+            for source in &self.cities[i].worked {
+                push_dotted_segment(
+                    source.to_world(),
+                    barracks.to_world(),
+                    0.06,
+                    [1.0, 0.62, 0.20, 0.9],
+                    out,
+                );
             }
         }
         for &(h, label, team) in &view.sites {
@@ -456,13 +510,37 @@ impl GameState {
         // placement ring. The selected site remains as a faint preview until
         // the player confirms the finished building.
         for (i, city) in self.cities.iter().enumerate() {
-            if city.planned_barracks.is_none() { continue; }
-            let valid = |hex: Hex| self.grid.is_passable(hex) && self.is_explored(hex) && !self.cities.iter().any(|c| c.pos == hex);
-            let preview = if self.placing_barracks == Some(i) { self.hovered_tile.filter(|h| valid(*h)).or(city.planned_barracks) } else { city.planned_barracks };
+            if city.planned_barracks.is_none() {
+                continue;
+            }
+            let valid = |hex: Hex| {
+                self.grid.is_passable(hex)
+                    && self.is_explored(hex)
+                    && !self.cities.iter().any(|c| c.pos == hex)
+            };
+            let preview = if self.placing_barracks == Some(i) {
+                self.hovered_tile
+                    .filter(|h| valid(*h))
+                    .or(city.planned_barracks)
+            } else {
+                city.planned_barracks
+            };
             if let Some(hex) = preview {
                 let is_hovered = self.hovered_tile == Some(hex);
-                let color = if is_hovered { [1.0, 0.72, 0.20, 0.95] } else { [0.85, 0.42, 0.18, 0.55] };
-                mesh::polygon_outline(hex.to_world(), WORKED_OUTLINE_RADIUS, 0.09, 6, 0.0, color, out);
+                let color = if is_hovered {
+                    [1.0, 0.72, 0.20, 0.95]
+                } else {
+                    [0.85, 0.42, 0.18, 0.55]
+                };
+                mesh::polygon_outline(
+                    hex.to_world(),
+                    WORKED_OUTLINE_RADIUS,
+                    0.09,
+                    6,
+                    0.0,
+                    color,
+                    out,
+                );
                 push_barracks_marker(hex.to_world(), with_alpha(city.team.color(), 0.5), out);
             }
         }
@@ -860,6 +938,10 @@ fn icon_shape(unit: &Unit, look: UnitLook) -> (u32, f32, f32) {
         UnitType::Siege => (4, FRAC_PI_4, 0.92),
         // Small and round: light and quick.
         UnitType::Scout => (24, 0.0, 0.8),
+        // Heavy horse points down, unlike the cavalry pentagon.
+        UnitType::Horse => (5, -FRAC_PI_2, 1.0),
+        // A broad octagon: the toughest unit.
+        UnitType::Armored => (8, FRAC_PI_8, 1.05),
     }
 }
 
@@ -983,6 +1065,13 @@ fn push_site_badge(center: Vec2, label: &str, team: Team, out: &mut Vec<Vertex>)
         }
         other => font::push_glyph(center, 0.2, other.chars().next().unwrap_or('?'), team.color(), out),
     }
+}
+
+/// A strategic resource: a dark disc edged in gold with the resource's letter.
+fn push_resource_badge(center: Vec2, glyph: char, out: &mut Vec<Vertex>) {
+    mesh::regular_polygon(center, SITE_BADGE_HALF + ICON_OUTLINE_WIDTH, 16, 0.0, RESOURCE_COLOR, out);
+    mesh::regular_polygon(center, SITE_BADGE_HALF, 16, 0.0, SITE_BADGE_COLOR, out);
+    font::push_glyph(center, 0.2, glyph, RESOURCE_COLOR, out);
 }
 
 /// Status rings behind the icon. They're filled discs, so only the rim shows

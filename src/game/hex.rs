@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use glam::Vec2;
 
-use super::terrain::{Terrain, Tile};
+use super::terrain::{Resource, Terrain, Tile};
 
 /// Center-to-corner radius of a hex, in world units.
 pub const HEX_SIZE: f32 = 1.0;
@@ -95,6 +95,8 @@ pub struct HexGrid {
     /// Hex edges with a river, each as the pair of hexes it separates
     /// (see `edge`).
     rivers: HashSet<(Hex, Hex)>,
+    /// Strategic resources on hexes.
+    resources: HashMap<Hex, Resource>,
 }
 
 /// The edge between two adjacent hexes, the same whichever way round they're
@@ -133,7 +135,19 @@ impl HexGrid {
                 .map(|(hex, tile)| (hex, tile.into()))
                 .collect(),
             rivers: HashSet::new(),
+            resources: HashMap::new(),
         }
+    }
+
+    /// A hexagon of `radius` with strategic resources placed on it.
+    pub fn with_resources<T: Into<Tile>>(
+        radius: i32,
+        tiles: impl IntoIterator<Item = (Hex, T)>,
+        resources: impl IntoIterator<Item = (Hex, Resource)>,
+    ) -> Self {
+        let mut grid = Self::new(radius, tiles);
+        grid.resources = resources.into_iter().collect();
+        grid
     }
 
     pub fn with_rivers(mut self, rivers: HashSet<(Hex, Hex)>) -> Self {
@@ -187,6 +201,10 @@ impl HexGrid {
             && hex.neighbors().into_iter().any(|n| {
                 self.has_river(hex, n) || (self.contains(n) && self.terrain(n) == Terrain::Lake)
             })
+    }
+
+    pub fn resource(&self, hex: Hex) -> Option<Resource> {
+        self.resources.get(&hex).copied()
     }
 
     /// On the grid and not blocked by terrain (units aside).

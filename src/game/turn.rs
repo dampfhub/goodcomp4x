@@ -28,7 +28,7 @@ pub(super) enum Phase {
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-const RESOLUTION_ORDER: [(UnitType, Phase); 10] = [
+const RESOLUTION_ORDER: [(UnitType, Phase); 14] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
     (UnitType::Melee, Phase::Move),
@@ -39,6 +39,10 @@ const RESOLUTION_ORDER: [(UnitType, Phase); 10] = [
     (UnitType::Ranged, Phase::Move),
     (UnitType::Siege, Phase::Move),
     (UnitType::Siege, Phase::Attack),
+    (UnitType::Horse, Phase::Move),
+    (UnitType::Horse, Phase::Attack),
+    (UnitType::Armored, Phase::Move),
+    (UnitType::Armored, Phase::Attack),
 ];
 
 /// Where `unit_type` falls (1 = first) among all the steps of `phase`.
@@ -422,7 +426,11 @@ impl GameState {
 
         for (attacker, city, barracks, scale) in structure_hits {
             let attack = self.units[attacker].stats().attack;
-            let defense = if barracks { BARRACKS_DEFENSE } else { CITY_DEFENSE };
+            let defense = if barracks {
+                BARRACKS_DEFENSE
+            } else {
+                CITY_DEFENSE
+            };
             let hit = scale * combat::roll_damage_against(attack, defense, &mut self.rng);
             if barracks {
                 barracks_damage[city] += hit;
@@ -431,9 +439,10 @@ impl GameState {
                 // A city returns fire at every unit attacking from its range.
                 let unit = &self.units[attacker];
                 if self.cities[city].pos.distance(unit.pos) <= CITY_ATTACK_RANGE {
-                    let defense = unit.stats().defense
-                        * self.grid.tile(unit.pos).defense_multiplier();
-                    damage[attacker] += combat::roll_damage_against(CITY_ATTACK, defense, &mut self.rng);
+                    let defense =
+                        unit.stats().defense * self.grid.tile(unit.pos).defense_multiplier();
+                    damage[attacker] +=
+                        combat::roll_damage_against(CITY_ATTACK, defense, &mut self.rng);
                 }
             }
         }
@@ -458,15 +467,25 @@ impl GameState {
                     let city = &self.cities[i];
                     (city.pos.to_world(), city.hp <= taken)
                 };
-                self.play(Effect::Damage { at, amount: taken, fatal });
+                self.play(Effect::Damage {
+                    at,
+                    amount: taken,
+                    fatal,
+                });
                 self.cities[i].hp = (self.cities[i].hp - taken).max(0.0);
             }
         }
         for (i, &taken) in barracks_damage.iter().enumerate() {
             if taken > 0.0 {
-                let Some(at) = self.cities[i].barracks else { continue; };
+                let Some(at) = self.cities[i].barracks else {
+                    continue;
+                };
                 let fatal = self.cities[i].barracks_hp <= taken;
-                self.play(Effect::Damage { at: at.to_world(), amount: taken, fatal });
+                self.play(Effect::Damage {
+                    at: at.to_world(),
+                    amount: taken,
+                    fatal,
+                });
                 let city = &mut self.cities[i];
                 city.barracks_hp = (city.barracks_hp - taken).max(0.0);
                 if city.barracks_hp == 0.0 {
