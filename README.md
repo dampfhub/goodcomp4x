@@ -7,7 +7,7 @@ by unit type.
 
 ## Running it
 
-Requirements: a Rust toolchain with edition 2024 and let-chain support (1.88 or newer), a Vulkan driver, and
+Requirements: Rust 1.92 or newer, a Vulkan driver, and
 `glslc` for compiling shaders (it ships with the [Vulkan SDK](https://vulkan.lunarg.com/); the
 build looks in `$VULKAN_SDK/bin`, then `PATH`).
 
