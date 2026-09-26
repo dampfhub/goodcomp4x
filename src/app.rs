@@ -246,7 +246,7 @@ impl ApplicationHandler for App {
                 };
                 self.game.camera.zoom(steps);
             }
-            // Holding Escape quits; see `RedrawRequested`.
+            // Escape closes management first; otherwise holding it quits.
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -256,7 +256,13 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
-            } => self.quit_held_since = (state == ElementState::Pressed).then(Instant::now),
+            } => {
+                if state == ElementState::Pressed && self.game.exit_structure_menu() {
+                    self.quit_held_since = None;
+                } else {
+                    self.quit_held_since = (state == ElementState::Pressed).then(Instant::now);
+                }
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -267,7 +273,11 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => match key {
-                KeyCode::Space => self.game.hold_or_end_turn(),
+                KeyCode::Space => {
+                    if !self.game.exit_structure_menu() {
+                        self.game.hold_or_end_turn();
+                    }
+                }
                 KeyCode::Tab => self.game.select_next_unit(),
                 KeyCode::KeyQ => self.game.toggle_selected_ability(),
                 KeyCode::KeyC => self.game.select_city(),
@@ -289,8 +299,12 @@ impl ApplicationHandler for App {
                 KeyCode::Digit4 => self
                     .game
                     .queue_selected_city_unit(crate::game::BuildUnit::Siege),
-                KeyCode::Digit5 => self.game.queue_selected_city_building(crate::game::Building::Granary),
-                KeyCode::Digit6 => self.game.queue_selected_city_building(crate::game::Building::Barracks),
+                KeyCode::Digit5 => self
+                    .game
+                    .queue_selected_city_building(crate::game::Building::Granary),
+                KeyCode::Digit6 => self
+                    .game
+                    .queue_selected_city_building(crate::game::Building::Barracks),
                 // Queue management stays compact as the build catalogue grows:
                 // Backspace removes the active item; PageDown promotes the
                 // second item into production.

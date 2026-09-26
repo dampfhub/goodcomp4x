@@ -140,6 +140,15 @@ impl GameState {
             mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
             mesh::regular_polygon(center, HEX_SIZE * 0.92, 6, 0.0, fill, &mut out);
             push_terrain_symbol(center, self.grid.terrain(hex), &mut out);
+            if let Some(resource) = self.grid.resource(hex) {
+                font::push_glyph(
+                    center + Vec2::new(0.42, -0.45),
+                    0.22,
+                    resource.glyph(),
+                    [0.95, 0.80, 0.35, 1.0],
+                    &mut out,
+                );
+            }
         }
 
         self.push_city_map(&mut out);
@@ -318,9 +327,15 @@ impl GameState {
             }
             let manager_is_moving = self.moving_manager == Some(i);
             for (worker_index, h) in self.cities[i].worked.iter().enumerate() {
-                if manager_is_moving && worker_index == 0 { continue; }
+                if manager_is_moving && worker_index == 0 {
+                    continue;
+                }
                 let color = if routes.costs.contains_key(h) {
-                    if worker_index == 0 { [1.0, 0.78, 0.20, 1.0] } else { [0.25, 1.0, 0.4, 1.0] }
+                    if worker_index == 0 {
+                        [1.0, 0.78, 0.20, 1.0]
+                    } else {
+                        [0.25, 1.0, 0.4, 1.0]
+                    }
                 } else {
                     [1.0, 0.25, 0.2, 1.0]
                 };
@@ -337,8 +352,50 @@ impl GameState {
             }
             if !manager_is_moving && let Some(manager) = self.cities[i].worked.first() {
                 for worker in self.cities[i].worked.iter().skip(1) {
-                    push_dotted_segment(manager.to_world(), worker.to_world(), 0.045, [0.78, 0.88, 0.62, 0.9], out);
+                    push_dotted_segment(
+                        manager.to_world(),
+                        worker.to_world(),
+                        0.045,
+                        [0.78, 0.88, 0.62, 0.9],
+                        out,
+                    );
                 }
+                if self.hovered_tile == Some(*manager) {
+                    // Hovering the manager exposes each delivery link back to
+                    // the city center, alongside the percentage labels.
+                    for source in &self.cities[i].worked {
+                        push_dotted_segment(
+                            source.to_world(),
+                            self.cities[i].pos.to_world(),
+                            0.06,
+                            [0.35, 0.82, 1.0, 0.9],
+                            out,
+                        );
+                    }
+                }
+            }
+        }
+        if let Some(i) = self.selected_barracks
+            && let Some(barracks) = self.cities[i].barracks
+        {
+            let routes = self.routes_from(self.cities[i].team, barracks);
+            for (hex, cost) in &routes.costs {
+                font::push_text(
+                    hex.to_world() + Vec2::new(-0.3, 0.52),
+                    0.18,
+                    &format!("{}%", super::city::delivered_share(*cost) * 25),
+                    [1.0, 0.70, 0.30, 1.0],
+                    out,
+                );
+            }
+            for source in &self.cities[i].worked {
+                push_dotted_segment(
+                    source.to_world(),
+                    barracks.to_world(),
+                    0.06,
+                    [1.0, 0.62, 0.20, 0.9],
+                    out,
+                );
             }
         }
         for (h, site) in &self.sites {
@@ -352,23 +409,63 @@ impl GameState {
         }
         for city in &self.cities {
             if let Some(hex) = city.barracks {
-                mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, [0.72, 0.35, 0.18, 1.0], out);
+                mesh::regular_polygon(
+                    hex.to_world(),
+                    0.31,
+                    4,
+                    FRAC_PI_4,
+                    [0.72, 0.35, 0.18, 1.0],
+                    out,
+                );
                 font::push_glyph(hex.to_world(), 0.30, 'B', LABEL_COLOR, out);
-                push_health_bar(hex.to_world(), city.barracks_hp / super::city::BARRACKS_MAX_HP, 0.7, out);
+                push_health_bar(
+                    hex.to_world(),
+                    city.barracks_hp / super::city::BARRACKS_MAX_HP,
+                    0.7,
+                    out,
+                );
             }
         }
         // A Barracks under construction follows the map hover, with a bright
         // placement ring. The selected site remains as a faint preview until
         // the player confirms the finished building.
         for (i, city) in self.cities.iter().enumerate() {
-            if city.planned_barracks.is_none() { continue; }
-            let valid = |hex: Hex| self.grid.is_passable(hex) && !self.cities.iter().any(|c| c.pos == hex);
-            let preview = if self.placing_barracks == Some(i) { self.hovered_tile.filter(|h| valid(*h)).or(city.planned_barracks) } else { city.planned_barracks };
+            if city.planned_barracks.is_none() {
+                continue;
+            }
+            let valid =
+                |hex: Hex| self.grid.is_passable(hex) && !self.cities.iter().any(|c| c.pos == hex);
+            let preview = if self.placing_barracks == Some(i) {
+                self.hovered_tile
+                    .filter(|h| valid(*h))
+                    .or(city.planned_barracks)
+            } else {
+                city.planned_barracks
+            };
             if let Some(hex) = preview {
                 let is_hovered = self.hovered_tile == Some(hex);
-                let color = if is_hovered { [1.0, 0.72, 0.20, 0.95] } else { [0.85, 0.42, 0.18, 0.55] };
-                mesh::polygon_outline(hex.to_world(), WORKED_OUTLINE_RADIUS, 0.09, 6, 0.0, color, out);
-                mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, [0.72, 0.35, 0.18, 0.48], out);
+                let color = if is_hovered {
+                    [1.0, 0.72, 0.20, 0.95]
+                } else {
+                    [0.85, 0.42, 0.18, 0.55]
+                };
+                mesh::polygon_outline(
+                    hex.to_world(),
+                    WORKED_OUTLINE_RADIUS,
+                    0.09,
+                    6,
+                    0.0,
+                    color,
+                    out,
+                );
+                mesh::regular_polygon(
+                    hex.to_world(),
+                    0.31,
+                    4,
+                    FRAC_PI_4,
+                    [0.72, 0.35, 0.18, 0.48],
+                    out,
+                );
                 font::push_glyph(hex.to_world(), 0.30, 'B', [0.08, 0.05, 0.03, 0.65], out);
             }
         }

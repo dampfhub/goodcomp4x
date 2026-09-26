@@ -26,6 +26,8 @@ pub enum UnitType {
     Ranged,
     Cavalry,
     Siege,
+    Horse,
+    Armored,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -47,6 +49,8 @@ impl UnitType {
             UnitType::Ranged => (75.0, 24.0, 10.0, 1, 2),
             UnitType::Cavalry => (100.0, 24.0, 14.0, 2, 1),
             UnitType::Siege => (65.0, 32.0, 6.0, 1, 2),
+            UnitType::Horse => (100.0, 28.0, 16.0, 3, 1),
+            UnitType::Armored => (140.0, 30.0, 28.0, 1, 1),
         };
         UnitStats {
             max_hp,
@@ -64,6 +68,8 @@ impl UnitType {
             UnitType::Ranged => 4,
             UnitType::Cavalry => 5,
             UnitType::Siege => 8,
+            UnitType::Horse => 5,
+            UnitType::Armored => 6,
         }
     }
 
@@ -73,6 +79,8 @@ impl UnitType {
             UnitType::Ranged => 'R',
             UnitType::Cavalry => 'C',
             UnitType::Siege => 'S',
+            UnitType::Horse => 'H',
+            UnitType::Armored => 'A',
         }
     }
 }
