@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use glam::Vec2;
-use imgui::{Context as ImGuiContext, FontConfig, FontSource};
+use imgui::{Context as ImGuiContext, FontConfig, FontId, FontSource, StyleColor};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -44,6 +44,7 @@ pub struct App {
     game: GameState,
     imgui: Option<ImGuiContext>,
     imgui_platform: Option<WinitPlatform>,
+    imgui_fonts: Option<[FontId; 3]>,
     use_imgui: bool,
     last_frame: Option<Instant>,
     minimized: bool,
@@ -69,6 +70,7 @@ impl Default for App {
             game: GameState::city_scenario(),
             imgui: None,
             imgui_platform: None,
+            imgui_fonts: None,
             use_imgui: true,
             last_frame: None,
             minimized: false,
@@ -139,12 +141,59 @@ impl ApplicationHandler for App {
 
         let mut imgui = ImGuiContext::create();
         imgui.set_ini_filename(None);
-        imgui.fonts().add_font(&[FontSource::DefaultFontData {
-            config: Some(FontConfig {
-                size_pixels: 17.0,
-                ..FontConfig::default()
-            }),
-        }]);
+        // Use the host UI font when available. ImGui copies the bytes into its atlas.
+        let system_font = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf").ok();
+        let mut add_font = |size| {
+            if let Some(font) = &system_font {
+                imgui.fonts().add_font(&[FontSource::TtfData {
+                    data: font,
+                    size_pixels: size,
+                    config: None,
+                }])
+            } else {
+                imgui.fonts().add_font(&[FontSource::DefaultFontData {
+                    config: Some(FontConfig {
+                        size_pixels: size,
+                        ..FontConfig::default()
+                    }),
+                }])
+            }
+        };
+        let body_font = add_font(18.0);
+        let small_font = add_font(15.0);
+        let title_font = add_font(22.0);
+        let style = imgui.style_mut();
+        style.window_padding = [12.0, 10.0];
+        style.frame_padding = [10.0, 6.0];
+        style.item_spacing = [7.0, 6.0];
+        style.window_rounding = 4.0;
+        style.frame_rounding = 3.0;
+        style.scrollbar_rounding = 3.0;
+        style.window_border_size = 1.0;
+        style.frame_border_size = 1.0;
+        style.window_title_align = [0.0, 0.5];
+        style.button_text_align = [0.5, 0.5];
+        style.colors[StyleColor::Text as usize] = [0.91, 0.92, 0.91, 1.0];
+        style.colors[StyleColor::TextDisabled as usize] = [0.46, 0.48, 0.50, 1.0];
+        style.colors[StyleColor::WindowBg as usize] = [0.055, 0.066, 0.082, 0.96];
+        style.colors[StyleColor::PopupBg as usize] = [0.075, 0.085, 0.10, 0.97];
+        style.colors[StyleColor::Border as usize] = [0.26, 0.30, 0.34, 0.9];
+        style.colors[StyleColor::TitleBg as usize] = [0.10, 0.12, 0.15, 1.0];
+        style.colors[StyleColor::TitleBgActive as usize] = [0.15, 0.18, 0.21, 1.0];
+        style.colors[StyleColor::TitleBgCollapsed as usize] = [0.10, 0.12, 0.15, 0.9];
+        style.colors[StyleColor::FrameBg as usize] = [0.08, 0.10, 0.12, 1.0];
+        style.colors[StyleColor::FrameBgHovered as usize] = [0.15, 0.18, 0.21, 1.0];
+        style.colors[StyleColor::FrameBgActive as usize] = [0.19, 0.22, 0.25, 1.0];
+        style.colors[StyleColor::Button as usize] = [0.14, 0.17, 0.20, 1.0];
+        style.colors[StyleColor::ButtonHovered as usize] = [0.23, 0.28, 0.31, 1.0];
+        style.colors[StyleColor::ButtonActive as usize] = [0.29, 0.34, 0.34, 1.0];
+        style.colors[StyleColor::Header as usize] = [0.20, 0.25, 0.28, 1.0];
+        style.colors[StyleColor::HeaderHovered as usize] = [0.28, 0.34, 0.36, 1.0];
+        style.colors[StyleColor::ScrollbarBg as usize] = [0.07, 0.08, 0.10, 1.0];
+        style.colors[StyleColor::ScrollbarGrab as usize] = [0.32, 0.37, 0.39, 1.0];
+        style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.44, 0.50, 0.49, 1.0];
+        style.colors[StyleColor::PlotHistogram as usize] = [0.80, 0.69, 0.35, 1.0];
+        style.colors[StyleColor::DragDropTarget as usize] = [0.91, 0.77, 0.38, 1.0];
         let mut imgui_platform = WinitPlatform::new(&mut imgui);
         imgui_platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
 
@@ -160,6 +209,7 @@ impl ApplicationHandler for App {
         self.window = Some(window);
         self.imgui = Some(imgui);
         self.imgui_platform = Some(imgui_platform);
+        self.imgui_fonts = Some([small_font, body_font, title_font]);
         self.last_frame = Some(Instant::now());
     }
 
@@ -531,8 +581,10 @@ impl ApplicationHandler for App {
                     imgui.io_mut().update_delta_time(dt);
                     let _ = platform.prepare_frame(imgui.io_mut(), window);
                     let frame = imgui.frame();
-                    if self.use_imgui {
-                        self.game.draw_imgui(frame, size, self.cursor_pos);
+                    if self.use_imgui
+                        && let Some(fonts) = self.imgui_fonts
+                    {
+                        self.game.draw_imgui(frame, size, self.cursor_pos, &fonts);
                     }
                     platform.prepare_render(frame, window);
                     Some(imgui.render())
