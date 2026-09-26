@@ -15,6 +15,11 @@ their space so other panels avoid them. Only the production queue has a
 deliberately bounded height and scrolls when it grows beyond that bound.
 Hold Ctrl to show the title bars, collapse buttons, and resize grips for
 arranging panels. They stay hidden during normal play.
+The `imgui` dependency enables its `docking` feature. A transparent dockspace
+allows the Selection, Production Queue, and Debug windows to dock together
+while leaving the map visible; Inspect remains a transient floating panel.
+Docked windows use ImGui's geometry, while undocked panels use the measured
+layout. Floating panel height is corrected from the previous rendered frame.
 The world, tile overlays, selection rectangle, and quit hold prompt remain in
 the game's renderer. Native window positions can be moved and resized while
 the game is running. Queue panels show the full queue inside a scrollable

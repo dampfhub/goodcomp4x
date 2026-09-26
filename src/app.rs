@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use glam::Vec2;
-use imgui::{Context as ImGuiContext, FontConfig, FontId, FontSource, StyleColor};
+use imgui::{ConfigFlags, Context as ImGuiContext, FontConfig, FontId, FontSource, StyleColor};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -144,6 +144,10 @@ impl ApplicationHandler for App {
 
         let mut imgui = ImGuiContext::create();
         imgui.set_ini_filename(None);
+        imgui
+            .io_mut()
+            .config_flags
+            .insert(ConfigFlags::DOCKING_ENABLE);
         // Use the host UI font when available. ImGui copies the bytes into its atlas.
         let system_font = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf").ok();
         let mut add_font = |size| {

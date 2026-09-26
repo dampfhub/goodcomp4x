@@ -39,6 +39,9 @@ struct WindowGeometry {
     pos: Vec2,
     size: Vec2,
     manual: bool,
+    docked: bool,
+    content_height: f32,
+    title_visible: bool,
 }
 
 /// ImGui windows follow collision-free docks until the player drags a title
@@ -46,16 +49,26 @@ struct WindowGeometry {
 #[derive(Default)]
 pub struct ImGuiLayoutState {
     windows: [WindowGeometry; SLOT_COUNT],
+    selection_context: String,
 }
 
 impl ImGuiLayoutState {
+    fn selection_changed(&mut self, context: &str) -> bool {
+        if self.selection_context == context {
+            false
+        } else {
+            self.selection_context = context.into();
+            true
+        }
+    }
+
     fn begin_frame(&mut self, ui: &Ui, arranging: bool) {
         if !arranging || !ui.is_mouse_clicked(ImMouseButton::Left) {
             return;
         }
         let mouse = Vec2::from_array(ui.io().mouse_pos);
         for window in &mut self.windows {
-            if window.size == Vec2::ZERO {
+            if window.size == Vec2::ZERO || window.docked {
                 continue;
             }
             let relative = mouse - window.pos;
@@ -74,9 +87,21 @@ impl ImGuiLayoutState {
         }
     }
 
-    fn size(&self, slot: usize, measured: Vec2, viewport: Vec2) -> Vec2 {
-        let preferred = if self.windows[slot].manual {
+    fn size(&self, slot: usize, measured: Vec2, viewport: Vec2, arranging: bool) -> Vec2 {
+        let window = self.windows[slot];
+        let preferred = if window.manual {
             self.windows[slot].size
+        } else if window.content_height > 0.0 {
+            let chrome_delta = 30.0 * (arranging as i32 - window.title_visible as i32) as f32;
+            let observed = (window.content_height + chrome_delta).max(60.0);
+            Vec2::new(
+                measured.x,
+                if slot == QUEUE {
+                    observed.min(measured.y)
+                } else {
+                    observed
+                },
+            )
         } else {
             measured
         };
@@ -99,6 +124,10 @@ impl ImGuiLayoutState {
             STATUS_HEIGHT + PANEL_MARGIN,
         );
         for (slot, maybe_size) in sizes.iter().enumerate() {
+            if maybe_size.is_some() && self.windows[slot].docked {
+                positions[slot] = Some(self.windows[slot].pos);
+                continue;
+            }
             if let Some(size) = maybe_size
                 && self.windows[slot].manual
             {
@@ -160,9 +189,16 @@ impl ImGuiLayoutState {
         }
     }
 
-    fn record(&mut self, slot: usize, ui: &Ui) {
+    fn record(&mut self, slot: usize, ui: &Ui, arranging: bool) {
+        let docked = unsafe { ::imgui::sys::igIsWindowDocked() };
+        if self.windows[slot].docked && !docked {
+            self.windows[slot].manual = true;
+        }
         self.windows[slot].pos = Vec2::from_array(ui.window_pos());
         self.windows[slot].size = Vec2::from_array(ui.window_size());
+        self.windows[slot].docked = docked;
+        self.windows[slot].content_height = ui.cursor_pos()[1] + ui.clone_style().window_padding[1];
+        self.windows[slot].title_visible = arranging;
     }
 }
 
@@ -235,6 +271,7 @@ impl GameState {
         panel: &PanelBuilder,
         fonts: &[FontId; 3],
         arranging: bool,
+        reset_scroll: bool,
         actions: &mut Vec<Action>,
     ) {
         let condition = layout.condition(slot, viewport);
@@ -246,24 +283,32 @@ impl GameState {
         } else {
             Condition::Always
         };
-        ui.window(title)
-            .flags(panel_chrome(arranging))
-            .position(position.to_array(), condition)
-            .size(size.to_array(), size_condition)
-            .size_constraints(
-                [size.x.min(240.0), size.y.min(100.0)],
-                [
-                    viewport.x - 2.0 * PANEL_MARGIN,
-                    viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN,
-                ],
-            )
-            .build(|| {
-                if ui.is_window_appearing() {
-                    ui.set_scroll_y(0.0);
-                }
-                self.render_imgui_panel(ui, panel, fonts, actions);
-                layout.record(slot, ui);
-            });
+        let flags = panel_chrome(arranging)
+            | if slot == INSPECT {
+                WindowFlags::NO_DOCKING
+            } else {
+                WindowFlags::empty()
+            };
+        let mut window = ui.window(title).flags(flags);
+        if !layout.windows[slot].docked {
+            window = window
+                .position(position.to_array(), condition)
+                .size(size.to_array(), size_condition)
+                .size_constraints(
+                    [size.x.min(240.0), size.y.min(100.0)],
+                    [
+                        viewport.x - 2.0 * PANEL_MARGIN,
+                        viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN,
+                    ],
+                );
+        }
+        window.build(|| {
+            if reset_scroll || ui.is_window_appearing() {
+                ui.set_scroll_y(0.0);
+            }
+            self.render_imgui_panel(ui, panel, fonts, actions);
+            layout.record(slot, ui, arranging);
+        });
     }
 
     fn render_imgui_panel(
@@ -423,6 +468,7 @@ impl GameState {
         let viewport = Vec2::from_array(ui.io().display_size);
         let arranging = ui.io().key_ctrl;
         layout.begin_frame(ui, arranging);
+        ui.dockspace_over_main_viewport();
         let mut actions = Vec::new();
         let pending = self.pending();
         let turn = if self.is_resolving() {
@@ -435,6 +481,7 @@ impl GameState {
                 WindowFlags::NO_TITLE_BAR
                     | WindowFlags::NO_RESIZE
                     | WindowFlags::NO_MOVE
+                    | WindowFlags::NO_DOCKING
                     | WindowFlags::NO_SAVED_SETTINGS,
             )
             .position([0.0, 0.0], Condition::Always)
@@ -477,6 +524,18 @@ impl GameState {
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         }
+        let selection_context = if let Some(city) = self.selected_city {
+            format!("city-{city}")
+        } else if let Some(city) = self.selected_barracks {
+            format!("barracks-{city}")
+        } else if let Some(unit) = self.selected {
+            format!("unit-{}", self.units[unit].id)
+        } else if !self.group.is_empty() {
+            "group".into()
+        } else {
+            String::new()
+        };
+        let reset_selection_scroll = layout.selection_changed(&selection_context);
         let mut queue = PanelBuilder::default();
         if let Some(city) = self.selected_city {
             self.city_queue_panel(city, usize::MAX, &mut queue);
@@ -547,34 +606,23 @@ impl GameState {
             )),
         ];
         let mut sizes = std::array::from_fn(|slot| {
-            measured[slot].map(|size| layout.size(slot, size, viewport))
+            measured[slot].map(|size| layout.size(slot, size, viewport, arranging))
         });
         let positions = layout.plan(viewport, &mut sizes);
 
         if let (Some(position), Some(size)) = (positions[SELECTION], sizes[SELECTION]) {
-            let id = if let Some(city) = self.selected_city {
-                format!("City {}###selection-city-{city}", self.cities[city].id + 1)
-            } else if let Some(city) = self.selected_barracks {
-                format!(
-                    "Barracks {}###selection-barracks-{city}",
-                    self.cities[city].id + 1
-                )
-            } else if let Some(unit) = self.selected {
-                format!("Unit###selection-unit-{}", self.units[unit].id)
-            } else {
-                "Group###selection-group".into()
-            };
             self.render_imgui_window(
                 ui,
                 layout,
                 SELECTION,
-                &id,
+                "Selection",
                 position,
                 size,
                 viewport,
                 &tray,
                 fonts,
                 arranging,
+                reset_selection_scroll,
                 &mut actions,
             );
         }
@@ -590,6 +638,7 @@ impl GameState {
                 &queue,
                 fonts,
                 arranging,
+                false,
                 &mut actions,
             );
         }
@@ -605,6 +654,7 @@ impl GameState {
                 &debug,
                 fonts,
                 arranging,
+                false,
                 &mut actions,
             );
         }
@@ -620,6 +670,7 @@ impl GameState {
                 &hover,
                 fonts,
                 arranging,
+                false,
                 &mut actions,
             );
         }
@@ -650,6 +701,40 @@ mod tests {
                 | WindowFlags::NO_MOVE
                 | WindowFlags::NO_COLLAPSE
         ));
+    }
+
+    #[test]
+    fn observed_content_sizes_floaters_and_preserves_queue_cap() {
+        let mut layout = ImGuiLayoutState::default();
+        layout.windows[SELECTION].content_height = 310.0;
+        layout.windows[QUEUE].content_height = 310.0;
+        let viewport = Vec2::new(1200.0, 800.0);
+        assert_eq!(
+            layout
+                .size(SELECTION, Vec2::new(500.0, 250.0), viewport, false)
+                .y,
+            310.0
+        );
+        assert_eq!(
+            layout
+                .size(SELECTION, Vec2::new(500.0, 250.0), viewport, true)
+                .y,
+            340.0
+        );
+        assert_eq!(
+            layout
+                .size(QUEUE, Vec2::new(500.0, 225.0), viewport, false)
+                .y,
+            225.0
+        );
+    }
+
+    #[test]
+    fn selection_context_resets_scroll_only_when_it_changes() {
+        let mut layout = ImGuiLayoutState::default();
+        assert!(layout.selection_changed("city-1"));
+        assert!(!layout.selection_changed("city-1"));
+        assert!(layout.selection_changed("unit-7"));
     }
 
     fn assert_fits_without_overlap(
@@ -702,6 +787,9 @@ mod tests {
             pos: Vec2::new(510.0, 80.0),
             size: sizes[DEBUG].unwrap(),
             manual: true,
+            docked: false,
+            content_height: 0.0,
+            title_visible: false,
         };
         let positions = layout.plan(viewport, &mut sizes);
         assert!(positions[..3].iter().all(Option::is_some));
