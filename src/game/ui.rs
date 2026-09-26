@@ -1807,6 +1807,36 @@ mod tests {
     }
 
     #[test]
+    fn barracks_map_click_locks_site_and_exits_placement() {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap();
+        let button = button_cursor(&game, Target::Building(Building::Barracks));
+        game.handle_click(button, SCREEN, ClickMode::Normal);
+        assert_eq!(game.placing_barracks, Some(city));
+
+        // Use visible map tiles so this exercises UI hit testing as well as
+        // city placement, rather than calling city_click directly.
+        let sites: Vec<_> = (-8..=8).flat_map(|q| (-8..=8).map(move |r| Hex::new(q, r)))
+            .filter(|&hex| {
+                let cursor = hex_cursor(&game, hex);
+                game.grid.is_passable(hex)
+                    && !game.cities.iter().any(|c| c.pos == hex)
+                    && (0.0..SCREEN.x).contains(&cursor.x)
+                    && (0.0..SCREEN.y).contains(&cursor.y)
+                    && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
+            }).take(2).collect();
+        assert_eq!(sites.len(), 2);
+        game.handle_click(hex_cursor(&game, sites[0]), SCREEN, ClickMode::Normal);
+        assert_eq!(game.placing_barracks, None);
+        assert_eq!(game.cities[city].planned_barracks, Some(sites[0]));
+        game.update_hover(Some(hex_cursor(&game, sites[1])), SCREEN, 0.1);
+        game.handle_click(hex_cursor(&game, sites[1]), SCREEN, ClickMode::Normal);
+        assert_eq!(game.cities[city].planned_barracks, Some(sites[0]));
+        assert_eq!(game.placing_barracks, None);
+    }
+
+    #[test]
     fn clicking_a_unit_leaves_the_city_view() {
         let mut game = city_view();
         // One of the player's units drawn clear of the top bar and the tray.
