@@ -45,10 +45,12 @@ pub unsafe fn create_render_pass(
 }
 
 /// Alpha-blended, vertex-colored triangles with the camera's view-projection
-/// matrix as a push constant. Viewport and scissor are dynamic state.
+/// matrix as a push constant, optionally masked by the coverage atlas bound
+/// through `set_layout`. Viewport and scissor are dynamic state.
 pub unsafe fn create_graphics_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
+    set_layout: vk::DescriptorSetLayout,
 ) -> Result<(vk::PipelineLayout, vk::Pipeline)> {
     let vert_module = unsafe { create_shader_module(device, VERT_SPIRV) }?;
     let frag_module = unsafe { create_shader_module(device, FRAG_SPIRV) }?;
@@ -102,8 +104,10 @@ pub unsafe fn create_graphics_pipeline(
     let push_constant_ranges = [vk::PushConstantRange::default()
         .stage_flags(vk::ShaderStageFlags::VERTEX)
         .size(size_of::<[f32; 16]>() as u32)];
-    let layout_info =
-        vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&push_constant_ranges);
+    let set_layouts = [set_layout];
+    let layout_info = vk::PipelineLayoutCreateInfo::default()
+        .set_layouts(&set_layouts)
+        .push_constant_ranges(&push_constant_ranges);
     let pipeline_layout = unsafe { device.create_pipeline_layout(&layout_info, None) }?;
 
     let pipeline_info = vk::GraphicsPipelineCreateInfo::default()

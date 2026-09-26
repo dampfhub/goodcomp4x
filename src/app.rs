@@ -2,13 +2,13 @@ use std::time::{Duration, Instant};
 
 use glam::Vec2;
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::game::{ClickMode, GameState, ui_projection};
+use crate::game::{ClickMode, GameState, font_atlas, ui_projection};
 use crate::icon;
 use crate::renderer::{DrawBatch, Renderer};
 
@@ -16,6 +16,11 @@ use crate::renderer::{DrawBatch, Renderer};
 /// frames the display can't show.
 const TARGET_FPS: u64 = 165;
 const FRAME_DURATION: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
+const DRAG_THRESHOLD: f32 = 6.0;
+/// The window opens at this fraction of the primary monitor's size.
+const WINDOW_SCREEN_FRACTION: f32 = 0.8;
+/// Window size when the monitor's size can't be found.
+const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1600, 900);
 
 /// Window icon sizes, in pixels; Windows scales them to fit.
 const WINDOW_ICON_SIZE: u32 = 64;
@@ -32,6 +37,8 @@ pub struct App {
     minimized: bool,
     cursor_pos: Option<Vec2>,
     panning: bool,
+    left_press: Option<(Vec2, ClickMode, bool)>,
+    left_dragging: bool,
     modifiers: Modifiers,
 }
 
@@ -40,11 +47,13 @@ impl Default for App {
         Self {
             renderer: None,
             window: None,
-            game: GameState::new(),
+            game: GameState::city_scenario(),
             last_frame: None,
             minimized: false,
             cursor_pos: None,
             panning: false,
+            left_press: None,
+            left_dragging: false,
             modifiers: Modifiers::default(),
         }
     }
@@ -75,22 +84,35 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let attributes = Window::default_attributes()
+        // Most of the screen, centered, so there's room for the map and the UI.
+        let mut attributes = Window::default_attributes()
             .with_title("Hex Combat Sandbox")
-            .with_inner_size(PhysicalSize::new(1280, 720))
+            .with_inner_size(DEFAULT_WINDOW_SIZE)
             .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)));
         // Windows shows a separate, larger icon on the taskbar.
         #[cfg(windows)]
-        let attributes = {
+        {
             use winit::platform::windows::WindowAttributesExtWindows;
-            attributes.with_taskbar_icon(Some(icon::icon(TASKBAR_ICON_SIZE)))
-        };
+            attributes = attributes.with_taskbar_icon(Some(icon::icon(TASKBAR_ICON_SIZE)));
+        }
+        if let Some(monitor) = event_loop.primary_monitor() {
+            let (screen, origin) = (monitor.size(), monitor.position());
+            let size = PhysicalSize::new(
+                (screen.width as f32 * WINDOW_SCREEN_FRACTION) as u32,
+                (screen.height as f32 * WINDOW_SCREEN_FRACTION) as u32,
+            );
+            let position = PhysicalPosition::new(
+                origin.x + (screen.width - size.width) as i32 / 2,
+                origin.y + (screen.height - size.height) as i32 / 2,
+            );
+            attributes = attributes.with_inner_size(size).with_position(position);
+        }
         let window = event_loop
             .create_window(attributes)
             .expect("failed to create window");
 
         // Safety: `App` drops the renderer before the window (see field order).
-        match unsafe { Renderer::new(&window) } {
+        match unsafe { Renderer::new(&window, font_atlas()) } {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(err) => {
                 log::error!("failed to initialize renderer: {err:?}");
@@ -118,17 +140,34 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Vec2::new(position.x as f32, position.y as f32);
-                if self.panning
-                    && let (Some(last), Some(size)) = (self.cursor_pos, self.screen_size())
+                let mut pan_from = self.cursor_pos;
+                if let Some((origin, _, _)) = self.left_press
+                    && !self.left_dragging
+                    && pos.distance(origin) >= DRAG_THRESHOLD
+                {
+                    self.left_dragging = true;
+                    // Include motion below the threshold when the drag begins.
+                    if !self.panning {
+                        pan_from = Some(origin);
+                    }
+                }
+                if (self.panning || self.left_dragging)
+                    && let (Some(last), Some(size)) = (pan_from, self.screen_size())
                 {
                     self.game.camera.pan(pos - last, size);
                 }
                 self.cursor_pos = Some(pos);
             }
+            WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
+                self.left_press = None;
+                self.left_dragging = false;
+                self.panning = false;
+                self.cursor_pos = None;
+            }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) => {
-                    if let (Some(cursor), Some(size)) = (self.cursor_pos, self.screen_size()) {
+                    if let Some(cursor) = self.cursor_pos {
                         let keys = self.modifiers.state();
                         let mode = if keys.shift_key() {
                             ClickMode::Attack
@@ -137,11 +176,35 @@ impl ApplicationHandler for App {
                         } else {
                             ClickMode::Normal
                         };
-                        self.game.handle_click(cursor, size, mode);
+                        self.left_press = Some((cursor, mode, !self.game.is_resolving()));
+                        self.left_dragging = self.panning;
                     }
                 }
-                (ElementState::Pressed, MouseButton::Right) => self.game.handle_right_click(),
-                (ElementState::Pressed, MouseButton::Middle) => self.panning = true,
+                (ElementState::Released, MouseButton::Left) => {
+                    if let Some((origin, mode, may_click)) = self.left_press.take()
+                        && !self.left_dragging
+                        && may_click
+                        && let Some(size) = self.screen_size()
+                    {
+                        self.game.handle_click(origin, size, mode);
+                    }
+                    self.left_dragging = false;
+                }
+                (ElementState::Pressed, MouseButton::Right) => {
+                    if let (Some(cursor), Some(size)) = (self.cursor_pos, self.screen_size()) {
+                        self.game.handle_context_click(
+                            cursor,
+                            size,
+                            self.modifiers.state().control_key(),
+                        );
+                    }
+                }
+                (ElementState::Pressed, MouseButton::Middle) => {
+                    self.panning = true;
+                    if self.left_press.is_some() {
+                        self.left_dragging = true;
+                    }
+                }
                 (ElementState::Released, MouseButton::Middle) => self.panning = false,
                 _ => {}
             },
@@ -165,6 +228,30 @@ impl ApplicationHandler for App {
                 KeyCode::Space => self.game.hold_selected_unit(),
                 KeyCode::Tab => self.game.select_next_unit(),
                 KeyCode::KeyQ => self.game.toggle_selected_ability(),
+                KeyCode::Enter => self.game.end_planning(),
+                KeyCode::KeyC => self.game.select_city(),
+                KeyCode::Escape => self.game.cancel(),
+                KeyCode::KeyA => self.game.auto_assign_selected_city(),
+                KeyCode::KeyM => self.game.choose_move_action(),
+                KeyCode::KeyX => self.game.choose_attack_action(),
+                KeyCode::KeyR => self.game.build_worker_road_selected(),
+                KeyCode::KeyI => self.game.improve_worker_tile_selected(),
+                KeyCode::KeyF => self.game.found_city_selected(),
+                KeyCode::Digit1 => self
+                    .game
+                    .queue_selected_city_unit(crate::game::BuildUnit::Melee),
+                KeyCode::Digit2 => self
+                    .game
+                    .queue_selected_city_unit(crate::game::BuildUnit::Ranged),
+                KeyCode::Digit3 => self
+                    .game
+                    .queue_selected_city_unit(crate::game::BuildUnit::Cavalry),
+                KeyCode::Digit4 => self
+                    .game
+                    .queue_selected_city_unit(crate::game::BuildUnit::Siege),
+                KeyCode::F1 => self.game = GameState::new(),
+                KeyCode::F2 => self.game = GameState::city_scenario(),
+                KeyCode::F3 => self.game = GameState::frontier_scenario(),
                 KeyCode::F5 => self.toggle_fullscreen(),
                 _ => {}
             },
@@ -181,8 +268,9 @@ impl ApplicationHandler for App {
                 let Some(size) = self.screen_size() else {
                     return;
                 };
+                self.game.update_city_hover(self.cursor_pos, size);
                 let world = self.game.build_vertices();
-                let ui = self.game.build_ui(size);
+                let ui = self.game.build_ui(size, self.cursor_pos);
                 let batches = [
                     DrawBatch {
                         view_proj: self.game.camera.view_proj(size),

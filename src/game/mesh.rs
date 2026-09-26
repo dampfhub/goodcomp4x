@@ -1,6 +1,6 @@
 use glam::Vec2;
 
-use crate::renderer::Vertex;
+use crate::renderer::{SOLID_UV, Vertex};
 
 /// Appends a filled regular polygon, as a triangle fan around its center.
 pub fn regular_polygon(
@@ -39,5 +39,6 @@ fn push_triangle(out: &mut Vec<Vertex>, a: Vec2, b: Vec2, c: Vec2, color: [f32; 
     out.extend([a, b, c].map(|p| Vertex {
         pos: [p.x, p.y, 0.0],
         color,
+        uv: SOLID_UV,
     }));
 }
