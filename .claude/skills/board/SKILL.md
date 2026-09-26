@@ -66,8 +66,8 @@ dependency, not prose).
 ## Schema
 
 Type is a **label**, from the config's `labels`: `enhancement` (planned work), `bug`, `follow-up`
-(found while doing another item), `question` (an open design or rules question, like CLAUDE.md's
-"Open questions"), `documentation`.
+(found while doing another item), `question` (an open design or rules question, like those listed
+at the end of `docs/game-rules.md`), `documentation`.
 
 - `Status`: Todo · In Progress · Done. No "blocked" or "in review": blocking is a native dependency,
   and work under review is still In Progress.
