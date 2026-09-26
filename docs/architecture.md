@@ -20,7 +20,7 @@ vertex lists. File-level maps and the rules for editing each layer are in `src/A
 ```
 AGENTS.md            agent instructions for the whole repo (nested ones under src/)
 README.md            what this is and how to run it
-Cargo.toml, build.rs crate manifest; build.rs compiles shaders/ with glslc
+Cargo.toml, build.rs crate manifest (rust-version 1.92); build.rs compiles shaders/ with glslc
 src/main.rs          logger + event loop
 src/app.rs           App: window, input -> GameState calls, frame pacing (165 FPS), F5 fullscreen
 src/icon.rs          window/taskbar icon drawn in code
@@ -28,8 +28,10 @@ src/renderer/        Vulkan setup, swapchain, MSAA, the single pipeline, coverag
 src/game/            GameState and everything game-specific
 shaders/             mesh.vert (view-projection), mesh.frag (color x atlas coverage)
 docs/                architecture, rules, controls, design proposals, history (docs/README.md)
-tools/               commit-msg-lint.mjs
-.claude/             board config and the work-board skill
+tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
+.agents/skills/      agent skills, read by Codex (canonical)
+.claude/skills/      pointers to those skills, read by Claude Code
+.github/             CI workflow, PR template
 ```
 
 ## A frame
@@ -67,4 +69,5 @@ The rules each step applies are in `game-rules.md`.
 
 Scenarios (F1 combat, F2 cities, F3 frontier) are constructors on `GameState`; the savestate (F6
 save, F7 load) clones the whole `GameState`. Both live in `scenario.rs` and in memory only. Unit
-tests build a scenario and drive the same methods input does, so no window or GPU is needed.
+tests build a scenario and drive the same methods input does, so no window or GPU is needed;
+`simulation.rs` plays whole AI-vs-AI games that way and checks invariants every turn.

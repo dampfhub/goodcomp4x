@@ -50,5 +50,8 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 25. Debug toggle (F8) for instant turn playback.
 26. City buildings and labor (`codex/city-buildings-labor`): Granary and Barracks, the city
     manager and its work group, labor focus, worker roads and improvements, build queue controls.
-27. Agent-focused repo layout: AGENTS.md (root and nested) replaces CLAUDE.md; rules, controls,
-    architecture and history split into `docs/`; the work-board tool and commit-message lint.
+27. Agent-focused repo: AGENTS.md (root and nested) replaces CLAUDE.md, readable by Claude Code
+    and Codex; rules, controls, architecture and history in `docs/`, checked against the code;
+    the GitHub Projects work board (`tools/board/`, skill in `.agents/skills/`), a commit-message
+    lint, CI (fmt, clippy, tests, MSRV 1.92, tool self-tests), a PR template, and an AI-vs-AI
+    simulation test of board invariants.

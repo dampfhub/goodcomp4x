@@ -1,4 +1,4 @@
 /target
 
 # board.mjs whole-board read cache (10-minute TTL; regenerated on demand)
-.claude/board-cache.json
+tools/board/cache.json

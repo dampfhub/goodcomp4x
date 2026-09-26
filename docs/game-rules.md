@@ -249,6 +249,8 @@ hex coordinates, so it is deterministic.
 
 ## Open questions
 
+Known bugs link to their board item; the rest are design questions nobody has decided yet.
+
 - The AI never uses abilities. Deploying its siege on a good hex is the obvious first step.
 - The AI never attacks cities or uses workers.
 - Cities and barracks can be damaged but not captured.
@@ -262,9 +264,9 @@ hex coordinates, so it is deterministic.
 - Swaps only work between adjacent units.
 - Horse (move 3) moves in step 9, after every other type except Armored.
 - Worker roads and improvements are instant, can overwrite an enemy site, and are not blocked
-  while a turn plays out.
-- A destroyed Barracks stays in the city's built list, so it can never be rebuilt.
-- The Barracks card says "place on a worked tile", but any passable non-city tile is accepted.
-- MISS shows for a hit on an empty enemy city or barracks.
-- Tab leaves the city view but not the barracks view.
+  while a turn plays out (#11).
+- A destroyed Barracks stays in the city's built list, so it can never be rebuilt (#8).
+- The Barracks card says "place on a worked tile", but any passable non-city tile is accepted (#9).
+- MISS shows for a hit on an empty enemy city or barracks (#10).
+- Tab leaves the city view but not the barracks view (#7).
 - No victory condition; F1-F3 restart a scenario.

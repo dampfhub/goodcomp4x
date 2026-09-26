@@ -22,6 +22,7 @@ behavior.
 | `city.rs` | cities, sites, roads, logistics routes, citizens, growth, build queues, buildings, settlers and workers |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid`, terrain |
 | `scenario.rs` | test scenarios (F1-F3), savestate (F6/F7), instant playback (F8) |
+| `simulation.rs` | tests only: AI-vs-AI games in every scenario, board invariants checked each turn |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
 | `effects.rs` | attack animations during playback |
@@ -70,4 +71,6 @@ behavior.
 
 Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city.rs` and `ui.rs`
 hold most of them). Build a `GameState` from a scenario constructor, drive it through the same
-methods input uses, and assert on state. `cargo test` needs no GPU or window.
+methods input uses, and assert on state. `cargo test` needs no GPU or window. A new rule that
+constrains the board (occupancy, HP, population...) belongs in `simulation.rs`'s
+`check_invariants` too, so every scenario exercises it.

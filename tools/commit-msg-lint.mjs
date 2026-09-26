@@ -347,13 +347,13 @@ function messagesFromLog(repoDir, logArgs) {
   return out;
 }
 
-// The default branch comes from `.claude/board.config.json` when present, else the
+// The default branch comes from `tools/board/config.json` when present, else the
 // usual names are tried.
 function defaultRange(repoDir) {
   const names = [];
   try {
     const top = execFileSync('git', ['-C', repoDir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
-    const cfg = JSON.parse(fs.readFileSync(path.join(top, '.claude', 'board.config.json'), 'utf8'));
+    const cfg = JSON.parse(fs.readFileSync(path.join(top, 'tools', 'board', 'config.json'), 'utf8'));
     if (cfg.defaultBranch) names.push(cfg.defaultBranch);
   } catch {
     /* no config; fall through to the usual names */

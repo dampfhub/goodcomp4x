@@ -11,18 +11,18 @@
 //   3. `gh` is often not on Git Bash's PATH on Windows; we locate it.
 //
 // Everything project-specific (repo, project owner and number, field schema, labels)
-// lives in `.claude/board.config.json`, so this file carries no project knowledge.
+// lives in `tools/board/config.json`, so this file carries no project knowledge.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The script sits at <root>/.claude/skills/board/board.mjs, so the root is fixed by its
+// The script sits at <root>/tools/board/board.mjs, so the root is fixed by its
 // own location: the command works from any cwd, and from a worktree it answers about
 // that worktree's copy of the config.
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-const CONFIG_PATH = join(ROOT, '.claude', 'board.config.json');
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const CONFIG_PATH = join(ROOT, 'tools', 'board', 'config.json');
 
 // Exit code 1 is the verdict on any failure: every caller that has already written a
 // partial answer to stdout before a call that can fail must gather all its data before
@@ -96,7 +96,7 @@ const ALL_FIELDS = [...SELECT_FIELDS, ...TEXT_FIELDS];
 
 function projectNumber() {
   if (CFG.projectNumber === null) {
-    die(`no project configured. Create one and put its number in .claude/board.config.json:
+    die(`no project configured. Create one and put its number in tools/board/config.json:
   gh project create --owner ${OWNER} --title "${REPO_NAME}"
 then run \`board.mjs setup\` to see what the project is missing.`);
   }
@@ -258,7 +258,7 @@ function optionId(field, value) {
 // re-pages. Every mutating command patches the one entry it touched via a direct
 // by-number fetch, so a read right after a write sees the write.
 const CACHE_TTL_MS = 10 * 60 * 1000;
-function cachePath() { return join(ROOT, '.claude', 'board-cache.json'); }
+function cachePath() { return join(ROOT, 'tools', 'board', 'cache.json'); }
 
 function readCache() {
   try {
@@ -952,6 +952,16 @@ function cmdSelftest() {
   const base = { repo: 'o/r', projectOwner: 'o', selectFields: { Status: ['Todo', 'In Progress', 'Done'] } };
 
   check('the shipped config is valid', throws(() => normalizeConfig(JSON.parse(readFileSync(CONFIG_PATH, 'utf8')))), null);
+  // Claude Code reads skills from .claude/skills and Codex from .agents/skills. The Claude copy
+  // is a pointer to the canonical one, and both agents choose a skill by its frontmatter, so
+  // the two frontmatters must stay identical.
+  const frontmatter = p => {
+    try { return readFileSync(join(ROOT, p), 'utf8').replace(/\r\n/g, '\n').match(/^---\n[^]*?\n---\n/)?.[0] ?? null; }
+    catch { return null; }
+  };
+  const canonical = frontmatter('.agents/skills/board/SKILL.md');
+  check('the canonical skill has frontmatter', canonical !== null, true);
+  check('the Claude skill pointer has the same frontmatter', frontmatter('.claude/skills/board/SKILL.md'), canonical);
   check('a minimal config is valid', throws(() => normalizeConfig(base)), null);
   check('owner type defaults to user', normalizeConfig(base).projectOwnerType, 'user');
   check('a repo without an owner is refused', !!throws(() => normalizeConfig({ ...base, repo: 'r' })), true);
@@ -1025,7 +1035,7 @@ function cmdSelftest() {
 
 // ---------------------------------------------------------------- main
 
-const USAGE = `usage: node .claude/skills/board/board.mjs <command>
+const USAGE = `usage: node tools/board/board.mjs <command>
 
   Board: ${REPO} -> ${OWNER_KIND} ${OWNER}'s project #${CFG.projectNumber ?? '(unset)'}
   Fields: ${ALL_FIELDS.map(f => '--' + flagOf(f)).join(' ')}
