@@ -230,7 +230,13 @@ All geometry is rebuilt from game state every frame.
 | Cavalry | 100 | 24 | 14 | 2 | 1 | pentagon, C |
 | Siege | 65 | 32 | 6 | 1 | 2 | upright square, S |
 | Scout | 60 | 8 | 10 | 3 | 1 | small circle, X |
+| Horse | 100 | 28 | 16 | 3 | 1 | downward pentagon, H |
+| Armored | 140 | 30 | 28 | 1 | 1 | octagon, A |
 
+Horse and Armored are specialist units a barracks trains when it stands on a
+Horses or Iron resource (`Resource`, `HexGrid::resource`; placed in the city
+scenario). Resources show as a gold-edged disc with H or I in a hex's
+top-right corner. Horse charges and sees 3; Armored shield-walls.
 Every unit icon is its team color with a dark outline. Settlers (T) and
 workers (W) are civilians: a hollow hexagon (pale center, team-colored rim),
 with no attack-order badge. Map markers are primitives too: a city is a
