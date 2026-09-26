@@ -1,5 +1,6 @@
 //! Builds each frame's geometry from the game state.
 
+use std.collections.Map;
 use std.collections.Set;
 use std.fmt.Out;
 use std.fmt.show_i64;
@@ -19,6 +20,8 @@ use game.hex.Hex;
 use game.mesh.Color;
 use game.mesh.quad;
 use game.mesh.polygon_outline;
+use game.mesh.polyline;
+use game.mesh.triangle;
 use game.mesh.regular_polygon;
 use game.mesh.segment;
 use game.orders.ClickMode;
@@ -100,10 +103,21 @@ const GHOST_FAN_RADIUS: f32 = HEX_SIZE * 0.3;
 const SWAP_LINK_WIDTH: f32 = 0.1;
 const SWAP_LINK_ALPHA: f32 = 0.8;
 
-const ATTACK_MARKER_RADIUS: f32 = HEX_SIZE * 0.16;
-const ATTACK_MARKER_OFFSET_X: f32 = 0.5;
-const ATTACK_MARKER_OFFSET_Y: f32 = 0.5;
-const ATTACK_MARKER_FAN_RADIUS: f32 = HEX_SIZE * 0.18;
+/// A queued attack is drawn as a curved arrow from the attacker (or its ghost, if it's
+/// moving first) to the hex it's attacking.
+const ATTACK_ARC_COLOR: Color = [1.00, 0.45, 0.30, 1.0];
+const ATTACK_ARC_OUTLINE_COLOR: Color = [0.08, 0.03, 0.02, 1.0];
+const ATTACK_ARC_WIDTH: f32 = 0.07;
+const ATTACK_ARC_OUTLINE_WIDTH: f32 = 0.13;
+/// How far the arc bows sideways, as a share of its length.
+const ATTACK_ARC_BOW: f32 = 0.25;
+/// The arc starts at the edge of the attacker's icon and stops short of the target's
+/// center, so a unit drawn there doesn't hide the arrowhead.
+const ATTACK_ARC_START: f32 = UNIT_ICON_RADIUS;
+const ATTACK_ARC_STOP: f32 = HEX_SIZE * 0.55;
+const ATTACK_ARC_SEGMENTS: i32 = 20;
+const ATTACK_ARROW_LENGTH: f32 = 0.28;
+const ATTACK_ARROW_WIDTH: f32 = 0.26;
 
 /// What the selected unit can do this turn, computed once per frame.
 struct Selection {
@@ -171,18 +185,21 @@ impl GameState {
         }
 
         self.push_tile_yields(&mut out);
+        self.push_effects(&mut out);
         out
     }
 
-    /// Ghosts at queued move destinations, links between allies queued to swap, and diamonds on
-    /// attacked hexes. Markers for units sharing a target hex are fanned out so each order
-    /// stays visible.
+    /// Ghosts at queued move destinations, links between allies queued to swap, and arrows
+    /// for the player's queued attacks. Ghosts of units sharing a destination are fanned out so
+    /// each order stays visible.
     fn push_order_markers(&self, out: &mut Vec[MeshVertex]) {
         let n = self.units.len();
         let mut swapping: Vec[bool] = Vec.new();
         for i in 0..n { swapping.push(self.swap_partner(i).is_some()); }
 
-        // Groups by target hex in first-seen order, so marker layout is stable across frames.
+        // Where each moving unit's ghost is drawn, for its attack arc. Groups by target hex in
+        // first-seen order, so the layout is stable across frames.
+        let mut ghosts: Map[u32, Vec2] = Map.new();
         let mut move_targets: Vec[Hex] = Vec.new();
         for i in 0..n {
             if let Option.Some(hex) = self.units[i].planned_move {
@@ -191,13 +208,14 @@ impl GameState {
         }
         for t in 0..move_targets.len() {
             let hex = move_targets[t];
-            let total = self.count_matching(n, &swapping, hex, true);
+            let total = self.count_moving_to(n, &swapping, hex);
             let mut k = 0;
             for i in 0..n {
                 let unit = self.units[i];
                 if !swapping[i] && unit.planned_move == Option.Some(hex) {
                     let pos = fan_position(hex.to_world(), k, total, GHOST_FAN_RADIUS);
                     push_unit_icon(pos, &unit, self.unit_letter(&unit), 1.0, with_alpha(unit.team.color(), GHOST_ALPHA), out);
+                    let _old = ghosts.insert(unit.id, pos);
                     k = k + 1;
                 }
             }
@@ -212,42 +230,32 @@ impl GameState {
             }
         }
 
-        let mut attack_targets: Vec[Hex] = Vec.new();
-        for i in 0..n {
-            if let Option.Some(hex) = self.units[i].planned_attack {
-                if !attack_targets.contains(hex) { attack_targets.push(hex); }
-            }
-        }
-        for t in 0..attack_targets.len() {
-            let hex = attack_targets[t];
-            let total = self.count_matching(n, &swapping, hex, false);
-            let base = hex.to_world().add(vec2(ATTACK_MARKER_OFFSET_X, ATTACK_MARKER_OFFSET_Y));
-            let mut k = 0;
-            for i in 0..n {
-                let unit = self.units[i];
-                if unit.planned_attack == Option.Some(hex) {
-                    let pos = fan_position(base, k, total, ATTACK_MARKER_FAN_RADIUS);
-                    regular_polygon(pos, ATTACK_MARKER_RADIUS, 4, pi() as f32 / 4.0, unit.team.color(), out);
-                    k = k + 1;
-                }
-            }
+        // Only the player's own attacks: the AI's plans aren't theirs to see.
+        for idx in 0..n {
+            let unit = self.units[idx];
+            let Option.Some(target) = unit.planned_attack else { continue; };
+            if !self.is_player_controlled(idx) { continue; }
+            // Swapping units attack from their partner's hex.
+            let from = match ghosts.get(unit.id) {
+                Option.Some(ghost) => ghost,
+                Option.None => if unit.planned_move.is_some() { unit.planned_pos().to_world() } else { self.unit_layout(idx).0 },
+            };
+            push_attack_arc(from, target.to_world(), out);
         }
     }
 
-    /// How many units target `hex`: with a plain queued move when `moves`, else with an attack.
-    fn count_matching(&self, n: i32, swapping: &Vec[bool], hex: Hex, moves: bool) -> i32 {
+    /// How many units have a plain (not swapping) move queued to `hex`.
+    fn count_moving_to(&self, n: i32, swapping: &Vec[bool], hex: Hex) -> i32 {
         let mut total = 0;
         for i in 0..n {
-            let unit = self.units[i];
-            let hit = if moves { !swapping[i] && unit.planned_move == Option.Some(hex) } else { unit.planned_attack == Option.Some(hex) };
-            if hit { total = total + 1; }
+            if !swapping[i] && self.units[i].planned_move == Option.Some(hex) { total = total + 1; }
         }
         total
     }
 
     /// Where to draw a unit and at what scale: full size in the middle of its hex, or half size
     /// and offset when it shares a contested hex.
-    fn unit_layout(&self, idx: i32) -> (Vec2, f32) {
+    pub fn unit_layout(&self, idx: i32) -> (Vec2, f32) {
         let unit = self.units[idx];
         let center = unit.pos.to_world();
         if self.rival_of(idx).is_none() { return (center, 1.0); }
@@ -422,6 +430,52 @@ fn push_terrain_symbol(center: Vec2, terrain: Terrain, out: &mut Vec[MeshVertex]
 fn fan_position(base: Vec2, index: i32, total: i32, radius: f32) -> Vec2 {
     if total <= 1 { return base; }
     base.add(vec2_from_angle(tau() as f32 * index as f32 / total as f32).scale(radius))
+}
+
+/// A queued attack's arrow from `from` toward `to`.
+fn push_attack_arc(from: Vec2, to: Vec2, out: &mut Vec[MeshVertex]) {
+    let points = attack_arc_points(from, to, 1.0);
+    push_arrow(&points, ATTACK_ARC_COLOR, ATTACK_ARC_OUTLINE_COLOR, out);
+}
+
+/// Points along an attack's curve from `from` toward `to`: a quadratic curve bowing to the
+/// left of the direction of travel (so opposing attacks between two hexes don't overlap),
+/// from the edge of the attacker's icon to just short of the target. Only the first
+/// `progress` (0 to 1) of it, for an arrow still in flight. Empty if the two are too close for
+/// an arrow.
+pub fn attack_arc_points(from: Vec2, to: Vec2, progress: f32) -> Vec[Vec2] {
+    let mut points: Vec[Vec2] = Vec.new();
+    let chord = to.sub(from);
+    let length = chord.length();
+    if length <= ATTACK_ARC_START + ATTACK_ARC_STOP || progress <= 0.0 { return points; }
+    let control = from.add(to).scale(0.5).add(chord.perp().scale(ATTACK_ARC_BOW));
+    let start = ATTACK_ARC_START / length;
+    let end = start + (1.0 - ATTACK_ARC_STOP / length - start) * (if progress < 1.0 { progress } else { 1.0 });
+    for i in 0..=ATTACK_ARC_SEGMENTS {
+        let t = start + (end - start) * i as f32 / ATTACK_ARC_SEGMENTS as f32;
+        points.push(from.lerp(control, t).lerp(control.lerp(to, t), t));
+    }
+    points
+}
+
+/// Draws an arrow along `points` over a darker outline, its head at the last point.
+pub fn push_arrow(points: &Vec[Vec2], color: Color, outline: Color, out: &mut Vec[MeshVertex]) {
+    let n = points.len();
+    if n < 2 { return; }
+    let (before, tip) = (points[n - 2], points[n - 1]);
+    let d = tip.sub(before);
+    let direction = if d.length() > 0.0 { d.normalize() } else { vec2(0.0, 0.0) };
+    let passes = [(ATTACK_ARC_OUTLINE_WIDTH, outline), (ATTACK_ARC_WIDTH, color)];
+    for k in 0..2 {
+        let (width, c) = passes[k];
+        polyline(points, width, c, out);
+        // The outline pass draws its arrowhead a little bigger all round.
+        let grow = (width - ATTACK_ARC_WIDTH) / 2.0;
+        let base = tip.sub(direction.scale(grow));
+        let side = direction.perp().scale(ATTACK_ARROW_WIDTH / 2.0 + grow);
+        let point = tip.add(direction.scale(ATTACK_ARROW_LENGTH + grow));
+        triangle(point, base.add(side), base.sub(side), c, out);
+    }
 }
 
 /// A polygon whose side count encodes the unit type, with `letter` on top.

@@ -1,0 +1,142 @@
+//! Short animations of attacks resolving during turn playback, so it's clear whether each one
+//! landed: an arrow shoots from attacker to target, then a burst on a hit, a grey "MISS" if the
+//! hex was empty, or "OUT OF RANGE" if the target moved out of reach first. Every unit hurt
+//! shows a damage number rising from it, retaliation included.
+
+use std.core.Keep;
+use std.fmt.Out;
+use std.fmt.show_f64_fixed;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use renderer.pipelines.MeshVertex;
+use game.GameState;
+use game.text;
+use game.draw.attack_arc_points;
+use game.draw.push_arrow;
+use game.font.push_text;
+use game.font.world_text_width;
+use game.mesh.Color;
+use game.mesh.polygon_outline;
+
+/// Seconds the arrow takes to reach its target.
+const SHOT_TRAVEL: f32 = 0.3;
+/// Seconds the arrow and its outcome take to fade once it arrives.
+const SHOT_FADE: f32 = 0.5;
+/// Seconds a damage number rises and fades, starting when the arrow lands.
+const DAMAGE_TIME: f32 = 1.0;
+/// How far, in world units, a damage number rises.
+const DAMAGE_RISE: f32 = 0.5;
+
+const HIT_COLOR: Color = [1.00, 0.45, 0.30, 1.0];
+const MISS_COLOR: Color = [0.62, 0.62, 0.66, 1.0];
+const OUTLINE_COLOR: Color = [0.08, 0.03, 0.02, 1.0];
+const BURST_COLOR: Color = [1.00, 0.85, 0.55, 1.0];
+const DAMAGE_COLOR: Color = [1.00, 0.35, 0.28, 1.0];
+const TEXT_SHADOW: Color = [0.0, 0.0, 0.0, 0.9];
+const LABEL_HEIGHT: f32 = 0.24;
+const DAMAGE_HEIGHT: f32 = 0.3;
+
+pub enum Outcome {
+    /// Something was there to hit.
+    Hit,
+    /// The target hex was empty when the attack landed.
+    Miss,
+    /// The target was out of range after the moves, so it was called off.
+    OutOfRange,
+}
+
+pub enum Effect {
+    /// An attack's arrow from `from` to `to`, and what it met.
+    Shot(Vec2, Vec2, Outcome),
+    /// Damage taken at a unit's position, and whether it killed.
+    Damage(Vec2, f32, bool),
+}
+
+impl Effect {
+    /// Seconds from start to finish.
+    fn lifetime(self) -> f32 {
+        match self {
+            Effect.Shot(_, _, _) => SHOT_TRAVEL + SHOT_FADE,
+            Effect.Damage(_, _, _) => SHOT_TRAVEL + DAMAGE_TIME,
+        }
+    }
+}
+
+/// An effect and how many seconds it has played.
+pub struct Playing { animation: Effect, age: f32 }
+
+impl GameState {
+    /// Starts `animation` playing.
+    pub fn play(&mut self, animation: Effect) { self.effects.push(Playing { animation, age: 0.0 }); }
+
+    /// Moves every effect `dt` seconds on, dropping finished ones.
+    pub fn age_effects(&mut self, dt: f32) {
+        for i in 0..self.effects.len() { self.effects[i].age = self.effects[i].age + dt; }
+        handle { self.effects.retain(); } with Keep[Playing] { keep(p) => { resume p.age < p.animation.lifetime() } }
+    }
+
+    /// Draws every playing effect, on top of the units.
+    pub fn push_effects(&self, out: &mut Vec[MeshVertex]) {
+        for i in 0..self.effects.len() {
+            let p = self.effects[i];
+            match p.animation {
+                Effect.Shot(from, to, outcome) => push_shot(from, to, outcome, p.age, out),
+                Effect.Damage(at, amount, fatal) => push_damage(at, amount, fatal, p.age, out),
+            }
+        }
+    }
+}
+
+fn push_shot(from: Vec2, to: Vec2, outcome: Outcome, age: f32, out: &mut Vec[MeshVertex]) {
+    let arrived = (if age - SHOT_TRAVEL > 0.0 { age - SHOT_TRAVEL } else { 0.0 }) / SHOT_FADE;
+    let alpha = 1.0 - arrived;
+    if outcome == Outcome.OutOfRange {
+        let rise = vec2(0.0, 0.45 + 0.2 * (age / (SHOT_TRAVEL + SHOT_FADE)));
+        let fade = 1.0 - age / (SHOT_TRAVEL + SHOT_FADE);
+        push_label(from.add(rise), "OUT OF RANGE", MISS_COLOR, fade, out);
+        return;
+    }
+
+    let color = if outcome == Outcome.Hit { HIT_COLOR } else { MISS_COLOR };
+    let points = attack_arc_points(from, to, age / SHOT_TRAVEL);
+    push_arrow(&points, with_alpha(color, alpha), with_alpha(OUTLINE_COLOR, alpha), out);
+    if arrived <= 0.0 { return; }
+    match outcome {
+        // A ring bursting outward from the target.
+        Outcome.Hit => polygon_outline(to, 0.25 + 0.45 * arrived, 0.08 * (1.0 - arrived) + 0.02, 24, 0.0, with_alpha(BURST_COLOR, alpha), out),
+        Outcome.Miss => push_label(to.add(vec2(0.0, 0.3)), "MISS", MISS_COLOR, alpha, out),
+        Outcome.OutOfRange => {}
+    }
+}
+
+/// A damage number rising from `at`, once the arrow has landed.
+fn push_damage(at: Vec2, amount: f32, fatal: bool, age: f32, out: &mut Vec[MeshVertex]) {
+    let t = (age - SHOT_TRAVEL) / DAMAGE_TIME;
+    if t < 0.0 { return; }
+    let alpha = 1.0 - t * t;
+    let label = text(fn() can {Out} {
+        Out.put("-");
+        show_f64_fixed(amount as f64, 0);
+        if fatal { Out.put(" KILLED"); }
+    });
+    let position = at.add(vec2(0.0, 0.55 + DAMAGE_RISE * t));
+    push_text_centered(position, DAMAGE_HEIGHT, &label, DAMAGE_COLOR, alpha, out);
+}
+
+fn push_label(center: Vec2, label: str, color: Color, alpha: f32, out: &mut Vec[MeshVertex]) {
+    push_text_centered(center, LABEL_HEIGHT, label, color, alpha, out);
+}
+
+/// World text centered on `center`, over a dark shadow so it reads on any terrain.
+fn push_text_centered(center: Vec2, cap_height: f32, label: &str, color: Color, alpha: f32, out: &mut Vec[MeshVertex]) {
+    let width = world_text_width(label, cap_height);
+    let origin = center.sub(vec2(width / 2.0, cap_height / 2.0));
+    let shadow = vec2(0.02, -0.02);
+    push_text(origin.add(shadow), cap_height, label, with_alpha(TEXT_SHADOW, alpha), out);
+    push_text(origin, cap_height, label, with_alpha(color, alpha), out);
+}
+
+fn with_alpha(color: Color, alpha: f32) -> Color {
+    let a = if alpha < 0.0 { 0.0 } else if alpha > 1.0 { 1.0 } else { alpha };
+    [color[0], color[1], color[2], color[3] * a]
+}

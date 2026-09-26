@@ -16,6 +16,7 @@ use log.info;
 use game.camera.Camera;
 use game.city.City;
 use game.city.Site;
+use game.effects.Playing;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
 use game.hex.HexGrid;
@@ -106,6 +107,8 @@ pub struct GameState {
     /// Frontier sandbox units that the player may command despite being Red.
     player_controlled_units: Set[u32],
     next_unit_id: u32,
+    /// Attack animations playing out.
+    effects: Vec[Playing],
 }
 
 impl GameState {
@@ -171,6 +174,7 @@ impl GameState {
             workers: Set.new(),
             player_controlled_units: Set.new(),
             next_unit_id: 8,
+            effects: Vec.new(),
         };
         game.select_next_or_end_turn(Option.None);
         game

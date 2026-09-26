@@ -51,6 +51,41 @@ pub fn segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec[MeshVer
     push_triangle(out, a.sub(side), b.add(side), a.add(side), color);
 }
 
+/// Appends a line through `points`, `width` world units thick, as one ribbon whose pieces
+/// meet exactly at each bend: no gaps, and no overlaps to darken when the colour is
+/// see-through.
+pub fn polyline(points: &Vec[Vec2], width: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    let n = points.len();
+    if n < 2 { return; }
+    let mut sides: Vec[Vec2] = Vec.new();
+    for i in 0..n {
+        // At a bend, offset along the average of the two edges' normals, stretched so the
+        // ribbon keeps its width through the corner.
+        let before = if i > 0 { direction(points, i - 1) } else { direction(points, i) };
+        let after = if i + 1 < n { direction(points, i) } else { before };
+        let sum = before.add(after);
+        let normal = if sum.length() > 0.0 { sum.normalize() } else { after }.perp();
+        let dot = normal.dot(after.perp());
+        let stretch = if dot > 0.5 { dot } else { 0.5 };
+        sides.push(normal.scale(width / 2.0 / stretch));
+    }
+    for i in 0..n - 1 {
+        let (a, b) = (points[i], points[i + 1]);
+        let (side_a, side_b) = (sides[i], sides[i + 1]);
+        push_triangle(out, a.sub(side_a), b.sub(side_b), b.add(side_b), color);
+        push_triangle(out, a.sub(side_a), b.add(side_b), a.add(side_a), color);
+    }
+}
+
+/// The unit direction from point `i` to point `i + 1`, or zero where they coincide.
+fn direction(points: &Vec[Vec2], i: i32) -> Vec2 {
+    let d = points[i + 1].sub(points[i]);
+    if d.length() > 0.0 { d.normalize() } else { vec2(0.0, 0.0) }
+}
+
+/// Appends a filled triangle.
+pub fn triangle(a: Vec2, b: Vec2, c: Vec2, color: Color, out: &mut Vec[MeshVertex]) { push_triangle(out, a, b, c, color); }
+
 fn push_triangle(out: &mut Vec[MeshVertex], a: Vec2, b: Vec2, c: Vec2, color: Color) {
     out.push(MeshVertex { pos: [a.x, a.y, 0.0], color });
     out.push(MeshVertex { pos: [b.x, b.y, 0.0], color });

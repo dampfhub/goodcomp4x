@@ -17,6 +17,8 @@ use game.combat.draws_retaliation;
 use game.combat.roll_damage;
 use game.combat.show_hp;
 use game.combat.show_note;
+use game.effects.Effect;
+use game.effects.Outcome;
 use game.hex.Hex;
 use game.unit.Unit;
 use game.unit.UnitType;
@@ -97,6 +99,7 @@ impl GameState {
     /// passed. Steps where nobody acts are skipped.
     pub fn update(&mut self, dt: f32) can {Log, Rand} {
         self.camera.update(dt);
+        self.age_effects(dt);
         self.highlight_timer = self.highlight_timer - dt;
         if self.highlight_timer <= 0.0 { self.recent_actors.clear(); }
 
@@ -288,20 +291,26 @@ impl GameState {
     /// the one there at planning time. A unit in a contested hex fights its rival instead.
     fn resolve_attacks(&mut self, attackers: &Vec[i32]) can {Log, Rand} {
         let mut engagements: Vec[Engagement] = Vec.new();
+        // Each attack's animation, played once the step's damage is known.
+        let mut shots: Vec[Effect] = Vec.new();
         for k in 0..attackers.len() {
             let a = attackers[k];
             let attacker = self.units[a];
+            let from = self.unit_layout(a).0;
             if let Option.Some(rival) = self.rival_of(a) {
                 if attacker.planned_attack.is_some() {
                     info(fn() can {Out} { attacker.show(); Out.put(" is locked in its contested hex and can't attack elsewhere"); });
                 }
                 engagements.push(Engagement { attacker: a, defender: rival, damage_scale: 1.0 });
+                shots.push(Effect.Shot(from, self.unit_layout(rival).0, Outcome.Hit));
                 continue;
             }
 
             let target = attacker.planned_attack.unwrap_or(attacker.pos);
+            let to = target.to_world();
             if attacker.pos.distance(target) > attacker.stats().attack_range {
                 info(fn() can {Out} { attacker.show(); Out.put("'s attack canceled: target out of range after moves"); });
+                shots.push(Effect.Shot(from, to, Outcome.OutOfRange));
                 continue;
             }
 
@@ -324,6 +333,7 @@ impl GameState {
             if !hit_any {
                 info(fn() can {Out} { attacker.show(); Out.put(" attacks "); target.show(); Out.put(" but hits nothing"); });
             }
+            shots.push(Effect.Shot(from, to, if hit_any { Outcome.Hit } else { Outcome.Miss }));
         }
 
         let mut damage: Vec[f32] = Vec.new();
@@ -368,6 +378,14 @@ impl GameState {
             }
         }
 
+        for s in 0..shots.len() { self.play(shots[s]); }
+        for i in 0..self.units.len() {
+            if damage[i] > 0.0 {
+                let at = self.unit_layout(i).0;
+                let fatal = self.units[i].hp <= damage[i];
+                self.play(Effect.Damage(at, damage[i], fatal));
+            }
+        }
         for i in 0..self.units.len() {
             if damage[i] > 0.0 {
                 let hp = self.units[i].hp - damage[i];
@@ -376,6 +394,8 @@ impl GameState {
                 info(fn() can {Out} { Out.put("  "); unit.show(); Out.put(": "); show_hp(&unit); });
             }
         }
+        // The attacks have happened, so their planned arrows give way to the animations.
+        for k in 0..attackers.len() { self.units[attackers[k]].planned_attack = Option.None; }
         handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume u.is_alive() } }
     }
 }

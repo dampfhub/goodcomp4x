@@ -32,6 +32,9 @@ pub fn text_width(text: &str, height: f32) -> f32 {
     (if advances > 0 { advances - 1 } else { 0 }) as f32 * cell
 }
 
+/// Width of `text` drawn with glyphs `height` tall; world text sizes by its glyph height.
+pub fn world_text_width(text: &str, height: f32) -> f32 { text_width(text, height) }
+
 /// Draws a line of text with its bottom-left corner at `origin`.
 pub fn push_text(origin: Vec2, height: f32, text: &str, color: Color, out: &mut Vec[MeshVertex]) {
     let cell = height / ROWS as f32;

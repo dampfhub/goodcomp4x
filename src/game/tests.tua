@@ -10,10 +10,13 @@ use std.test.assert;
 use std.test.assert_fail;
 use std.test.Assert;
 use log.Log;
+use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.GRID_RADIUS;
 use game.city.BuildUnit;
 use game.combat.roll_damage;
+use game.effects.Effect;
+use game.effects.Outcome;
 use game.hex.Hex;
 use game.hex.HexGrid;
 use game.terrain.Terrain;
@@ -571,6 +574,56 @@ fn turn_waits_for_city_builds_but_not_citizens() {
         assert(nothing_pending(&game));
         game.hold_or_end_turn();
         assert(game.is_resolving());
+    });
+}
+
+@test
+fn a_queued_attack_draws_an_arc() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let ranged = find(&game, Team.Blue, UnitType.Ranged);
+        let before = game.build_vertices().len();
+        game.try_queue_attack(ranged, Hex.new(0, 1));
+        assert(game.units[ranged].planned_attack.is_some());
+        assert(game.build_vertices().len() > before);
+
+        // The AI's attacks aren't drawn.
+        let with_ours = game.build_vertices().len();
+        let enemy = find(&game, Team.Red, UnitType.Ranged);
+        game.units[enemy].planned_attack = Option.Some(Hex.new(0, 1));
+        assert(game.build_vertices().len() == with_ours);
+    });
+}
+
+@test
+fn a_resolved_attack_animates_and_clears_its_arrow() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let ranged = find(&game, Team.Blue, UnitType.Ranged);
+        // An empty hex: the shot plays out as a miss.
+        game.try_queue_attack(ranged, Hex.new(0, 1));
+        game.resolve_step(UnitType.Ranged, Phase.Attack);
+        assert(game.units[ranged].planned_attack == Option.None);
+        assert(game.effects.len() == 1);
+        let missed = match game.effects[0].animation { Effect.Shot(_, _, Outcome.Miss) => true, _ => false };
+        assert(missed);
+    });
+}
+
+@test
+fn effects_play_out_and_are_dropped() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.play(Effect.Damage(vec2(0.0, 0.0), 20.0, false));
+        let mut quiet: Vec[MeshVertex] = Vec.new();
+        game.push_effects(&mut quiet);
+        // The number shows once the shot lands, 0.3 seconds in.
+        game.age_effects(0.4);
+        let mut shown: Vec[MeshVertex] = Vec.new();
+        game.push_effects(&mut shown);
+        assert(shown.len() > quiet.len());
+        game.age_effects(10.0);
+        assert(game.effects.is_empty());
     });
 }
 
