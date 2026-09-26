@@ -17,7 +17,9 @@ changes.
   Vulkan SDK installed). Validation messages go through `log`; set `RUST_LOG`
   to change verbosity. The combat log prints at `info`.
 - `cargo test`, `cargo clippy --all-targets`, `cargo fmt`. Tests live in the
-  `tests` module at the bottom of `src/game/mod.rs`, plus one in `src/game/ui.rs`.
+  `tests` module at the bottom of `src/game/mod.rs`, plus UI tests in
+  `src/game/ui.rs`, font tests in `src/game/font.rs` and city tests in
+  `src/game/city.rs`.
 - Shaders are GLSL in `shaders/`. `build.rs` compiles each one with `glslc` from
   `$VULKAN_SDK` (falling back to `PATH`) into `OUT_DIR`, and the renderer embeds
   the SPIR-V with `include_bytes!`.
@@ -36,9 +38,10 @@ src/
     device.rs      GPU selection, logical device, queues
     swapchain.rs   swapchain + image views
     pipeline.rs    render pass + the single alpha-blended vertex-color pipeline
+    texture.rs     the coverage atlas (R8 + mips), uploaded once, bound as set 0
     buffer.rs      buffer + memory allocation
     sync.rs        per-frame semaphores and fences (2 frames in flight)
-    vertex.rs      Vertex { pos: [f32; 3], color: [f32; 4] }
+    vertex.rs      Vertex { pos, color, uv }; SOLID_UV marks untextured geometry
   game/            everything game-specific
     mod.rs         GameState, map/unit setup, shared queries (units_at, rival_of,
                    swap_partner, reachable_hexes), controls help text, tests
@@ -52,13 +55,21 @@ src/
     terrain.rs     Plains / Hills / Mountains
     camera.rs      top-down orthographic camera: pan, zoom, screen<->world
     draw.rs        world geometry: hexes, terrain symbols, order markers, units, badges
-    ui.rs          screen-space UI: the ability button
+    city.rs        cities, logistics routes, citizens, growth, builds, settlers/workers
+    ui.rs          screen-space UI: top bar, command tray, tooltips, hover info box
     mesh.rs        shape helpers: regular_polygon, quad, segment
-    font.rs        5x7 bitmap font (A-Z, 0-9, + - %) drawn as quads
+    font.rs        TrueType text (Hack via fontdue): glyph atlas, UI and world text
 shaders/
   mesh.vert        applies the batch's view-projection push constant
-  mesh.frag        passes vertex color through
+  mesh.frag        vertex color, times atlas coverage unless the UV is SOLID_UV
 ```
+
+Text: `font.rs` rasterizes printable ASCII from the Hack font (bundled by the
+`epaint_default_fonts` crate) once, into one R8 atlas with 4 mip levels, which
+the renderer uploads at startup (`Renderer::new(window, font_atlas())`). UI text
+uses glyphs rasterized at its exact pixel size (`font::ui(px)`, one of
+`UI_SIZES`) and snaps to whole pixels; world text (`push_glyph`, `push_text`,
+sized by capital-letter height) scales a 64px set and relies on the mips.
 
 The frame loop: `App` calls `GameState::update(dt)`, then builds two batches:
 world vertices (`build_vertices`) through `camera.view_proj`, and UI vertices
@@ -66,6 +77,55 @@ world vertices (`build_vertices`) through `camera.view_proj`, and UI vertices
 All geometry is rebuilt from game state every frame.
 
 ## Game rules as implemented
+
+### City experiment (current default)
+- The default scenario has a radius-six map, two cities, owned farms/mines/pastures,
+  and preplaced dirt roads. F1 resets to the original combat scenario; F2 resets
+  to cities. Both discard the running match.
+- `city.rs` contains city state, weighted logistics routes, citizen assignments,
+  food/growth/starvation, and stored production. Yields use quarter units and
+  route costs use half-hex units. Enemy occupation blocks routes; alternatives
+  are recalculated. Income is applied once after all eight combat steps.
+- C opens the player's city; click tiles to assign/release citizens, A auto-assigns,
+  Escape/Tab returns to units. The panel and map show income and route previews.
+- City hover or selection outlines worked tiles green (red if disrupted).
+  Tile badges show raw food as green grain and production as amber hammers,
+  with numeric counts. Badges and delivery percentages appear only while hovering
+  a city; badges cover its reachable/worked tiles. Selection alone keeps outlines.
+- Enter (or the End Turn button in the top bar) explicitly ends planning, after every
+  unit has orders or holds. Finishing unit orders no longer auto-resolves turns.
+  Cities without units can still advance. Input is ignored during playback.
+- Production is stored only. Construction, strategic materials, technology, site
+  capture, and city combat are future slices. See `docs/controls.md` and the
+  proposal in `docs/city-system.md`; proposal rules are not all implemented.
+- City unit queues are now a first construction slice: with a city panel open,
+  keys 1–4 queue melee/ranged/cavalry/siege. A unit completes once stored
+  production reaches its listed cost and deploys to an open neighboring hex.
+  F3 starts a frontier map with one T-marked settler per team; F founds the
+  selected player's city, while the AI settles at its first resolution.
+- Logistics uses weighted shortest paths, not radius or line distance. Enemy and
+  contested hexes block every route; a longer off-road detour delivers less.
+  Clicking a city tile previews that route. The city tray shows growth percent
+  and turns remaining. On growth or route disruption, citizen reconciliation
+  keeps valid manual assignments and fills/replaces the affected slot.
+- UI (`ui.rs`): each frame is laid out once into a `Layout` (panels, text,
+  buttons) that's then drawn or hit-tested, so clicks match what's shown.
+  Panels size themselves to their text (`PanelBuilder`), so nothing overlaps.
+  - Top bar: turn, units still needing orders, the latest `notice`, and an End
+    Turn button (gold once every unit is ready).
+  - Bottom-left command tray: the open city (stores, income, what it's
+    building, growth meter, 1–4 build cards), or else the selected unit (stats
+    with boosted values green and reduced red, notes, and buttons: Move, Attack,
+    Swap, then its ability / Found City / Build Road + Improve, then Hold).
+  - Move/Attack/Swap arm `ui_click_mode` for the next map click only (a held
+    modifier overrides it). Pressing the button again, right-click or Escape
+    disarms. The armed button has a bright border; queued orders turn their
+    button gold; unusable ones are dimmed. Hex highlights follow the armed
+    mode: no green move hexes while attacking, adjacent allies while swapping.
+  - Every button has a hover tooltip, drawn clear of its panel. Hovering any
+    unit on the map shows its stats in a box at the top-left.
+  - Colors are linear but the swapchain is sRGB, so they display much lighter
+    than their values suggest; dark panels need values around 0.01-0.05.
 
 ### Map
 - Hex grid of radius 3 (flat-top, axial coordinates).
@@ -87,6 +147,9 @@ All geometry is rebuilt from game state every frame.
 Everything that asks what a unit can do goes through it.
 
 ### Orders (planning)
+- Left-click actions occur on release. Dragging at least 6 pixels pans the map
+  and suppresses the click; middle-drag also pans. Losing focus or leaving the
+  window cancels the gesture.
 - Click one of your units to select it. Click a green hex to queue a move; click
   it again to cancel.
 - Click an enemy in range to queue an attack on its hex. Shift-click attacks any
@@ -96,8 +159,10 @@ Everything that asks what a unit can do goes through it.
   planned destination. Changing or cancelling the move drops an attack that's
   no longer in range.
 - Ctrl-click an adjacent ally to swap places (see below).
-- Right-click clears the selected unit's orders, including a hold.
-- Q or the on-screen button toggles the selected unit's ability.
+- Right-click queues a move to an open hex or an attack on an enemy (or
+  disarms an armed action); Ctrl-right-click clears the selected unit's
+  orders, including a hold.
+- Q or the ability button toggles the selected unit's ability.
 - Space holds the selected unit (`Unit::holding`): it keeps whatever it has
   queued and gives up the rest of its turn.
 - Selection flows through your units: the first unit needing orders is selected
@@ -113,10 +178,9 @@ Everything that asks what a unit can do goes through it.
   glide.
 - Movement is BFS through passable, unoccupied hexes, so units can't pass
   through each other or through mountains. Two allies can't head for the same hex.
-- There is no end-turn key: the turn resolves by itself
-  (`select_next_or_end_turn`) once no unit needs orders, after a 0.6s pause so
-  the last order is visible. That includes a turn that starts with every unit
-  contested. Input is ignored while a turn plays out.
+- Enter ends planning once no unit needs orders, after a 0.6s pause so the last
+  order is visible. Finishing unit orders leaves city planning open. Input is
+  ignored while a turn plays out.
 
 ### Turn resolution (`turn.rs`)
 The turn plays out in 8 steps, one every 0.6s, with the acting units flashing.
@@ -199,11 +263,18 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
   `retain` at the end of an attack step, which shifts indices, so code that
   spans a removal uses unit `id`s, not indices. `selected` is cleared before a
   turn resolves for the same reason.
-- **Font:** glyph bitmaps are `#[rustfmt::skip]` so they stay readable as pictures.
+- **Text sampling:** `mesh.frag` samples the atlas outside the solid-geometry
+  branch so mip selection always has valid derivatives. The atlas pads glyphs
+  by 8px so the smallest of its 4 mip levels doesn't bleed neighbors together.
+- **Window:** opens at 80% of the primary monitor, centered; the city scenarios
+  start with the camera on the whole map (`start_on_whole_map`).
+- **Line endings:** files checked out from git have CRLF endings on this
+  machine, so multi-line `sed`/`perl` substitutions silently miss; use a real
+  editor (or the Edit tool) for those.
 - **Frame pacing:** `App::about_to_wait` schedules redraws at 165 FPS with
   `ControlFlow::WaitUntil`.
-- **Verification:** there's no screenshot tooling, so visual changes are checked
-  by running under validation (`cargo run`) and by unit tests of the math. A
+- **Verification:** visual changes are checked by running under validation
+  (`cargo run`), screenshots, and unit tests of layout and hit-testing. A
   throwaway AI-vs-AI loop in a scratch test module is a quick way to exercise
   rules end to end.
 
@@ -239,6 +310,12 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
     (ability moved to Q); camera glides to the unit the game selects.
 16. Turns end automatically once every unit has acted; Enter removed. Space
     now holds a unit (keeps queued orders, forfeits the rest); Tab browses.
+17. City system (Codex, `codex/city-system`): cities, logistics, growth, builds,
+    settlers, workers; Enter ends planning again so cities can be planned.
+18. UI merge and text: antialiased TrueType text through a glyph atlas (renderer
+    gained textures); self-sizing panels fix overlapping city text; action
+    buttons (Move/Attack/Swap/ability/Hold) with tooltips and armed states;
+    hover info box; End Turn button; larger centered window, zoomed out.
 
 ## Open questions and ideas
 
@@ -253,5 +330,4 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
 - No line of sight: ranged and siege can shoot over mountains.
 - Hills cost the same to enter as plains (Civ charges extra movement).
 - Swaps only work between adjacent units.
-- No victory condition or restart; the game just runs until one side is gone.
-- The project has no git commits yet.
+- No victory condition; F1–F3 restart a scenario.

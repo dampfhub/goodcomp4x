@@ -35,7 +35,7 @@ pub unsafe fn create_buffer(
 }
 
 /// First memory type allowed by `type_bits` that has all of `properties`.
-unsafe fn find_memory_type(
+pub unsafe fn find_memory_type(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
     type_bits: u32,
