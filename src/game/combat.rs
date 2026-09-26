@@ -6,12 +6,11 @@ use rand::RngExt;
 
 use super::ability::Ability;
 use super::hex::HexGrid;
-use super::terrain::Terrain;
 use super::unit::Unit;
 
 /// Damage `attacker` deals to `target` in one blow.
 pub fn roll_damage(attacker: &Unit, target: &Unit, grid: &HexGrid, rng: &mut impl RngExt) -> f32 {
-    let defense = target.stats().defense * grid.terrain(target.pos).defense_multiplier();
+    let defense = target.stats().defense * grid.tile(target.pos).defense_multiplier();
     roll_damage_against(attacker.stats().attack, defense, rng)
 }
 
@@ -31,7 +30,10 @@ pub fn draws_retaliation(attacker: &Unit) -> bool {
 /// combat log lines. Empty when there are none.
 pub fn unit_note(unit: &Unit, grid: &HexGrid) -> String {
     let mut notes = Vec::new();
-    if grid.terrain(unit.pos) == Terrain::Hills {
+    if grid.tile(unit.pos).feature.is_some() {
+        notes.push("under cover");
+    }
+    if grid.tile(unit.pos).hills {
         notes.push("on hills");
     }
     if unit.deployed {
@@ -41,7 +43,7 @@ pub fn unit_note(unit: &Unit, grid: &HexGrid) -> String {
         match unit.ability() {
             Ability::ShieldWall => notes.push("shield wall"),
             Ability::Charge => notes.push("charging"),
-            Ability::Volley | Ability::Deploy => {}
+            Ability::Volley | Ability::Deploy | Ability::Lookout => {}
         }
     }
     if notes.is_empty() {

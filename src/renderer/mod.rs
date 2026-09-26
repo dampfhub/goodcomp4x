@@ -30,7 +30,8 @@ use texture::Texture;
 pub use texture::Atlas;
 pub use vertex::{SOLID_UV, Vertex};
 
-/// Most vertices one frame can draw; anything past this is dropped with a warning.
+/// Vertices each frame slot's buffer starts with room for. A frame that needs
+/// more grows its buffer (see `write_vertices`).
 const VERTEX_BUFFER_CAPACITY: usize = 65_536;
 
 const CLEAR_COLOR: [f32; 4] = [0.06, 0.06, 0.08, 1.0];
@@ -78,8 +79,8 @@ pub struct Renderer {
     texture: Texture,
 
     /// One vertex buffer per frame in flight, so the CPU can fill one while
-    /// the GPU still reads another.
-    vertex_buffers: Vec<(vk::Buffer, vk::DeviceMemory)>,
+    /// the GPU still reads another, each with its capacity in vertices.
+    vertex_buffers: Vec<(vk::Buffer, vk::DeviceMemory, usize)>,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -172,16 +173,13 @@ impl Renderer {
             create_framebuffers(&logical_device, render_pass, &swapchain_data, &color_target)
         }?;
 
-        let vertex_buffer_size = (VERTEX_BUFFER_CAPACITY * size_of::<Vertex>()) as vk::DeviceSize;
         let vertex_buffers = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| unsafe {
-                buffer::create_buffer(
+                create_vertex_buffer(
                     &vk_instance,
                     &logical_device,
                     physical_device,
-                    vertex_buffer_size,
-                    vk::BufferUsageFlags::VERTEX_BUFFER,
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                    VERTEX_BUFFER_CAPACITY,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -320,17 +318,14 @@ impl Renderer {
 
     /// Packs every batch's vertices back to back into this frame slot's vertex
     /// buffer, returning where each batch landed.
+    /// Grows the buffer (to the next power of two) when the frame needs more
+    /// room; the caller has already waited on this slot's fence, so the GPU is
+    /// done with the old one.
     unsafe fn write_vertices(&mut self, batches: &[DrawBatch]) -> Result<Vec<DrawRange>> {
         let mut ranges = Vec::with_capacity(batches.len());
         let mut used = 0;
         for batch in batches {
-            let count = batch.vertices.len().min(VERTEX_BUFFER_CAPACITY - used);
-            if count < batch.vertices.len() {
-                log::warn!(
-                    "dropping {} vertices past buffer capacity",
-                    batch.vertices.len() - count
-                );
-            }
+            let count = batch.vertices.len();
             ranges.push(DrawRange {
                 view_proj: batch.view_proj,
                 first: used as u32,
@@ -342,7 +337,22 @@ impl Renderer {
             return Ok(ranges);
         }
 
-        let (_, memory) = self.vertex_buffers[self.current_frame];
+        let (buffer, memory, capacity) = self.vertex_buffers[self.current_frame];
+        if used > capacity {
+            let capacity = used.next_power_of_two();
+            log::info!("growing vertex buffer to {capacity} vertices");
+            unsafe {
+                self.device.destroy_buffer(buffer, None);
+                self.device.free_memory(memory, None);
+                self.vertex_buffers[self.current_frame] = create_vertex_buffer(
+                    &self.instance,
+                    &self.device,
+                    self.physical_device,
+                    capacity,
+                )?;
+            }
+        }
+        let (_, memory, _) = self.vertex_buffers[self.current_frame];
         let size = (used * size_of::<Vertex>()) as vk::DeviceSize;
         unsafe {
             let dst = self
@@ -504,7 +514,7 @@ impl Drop for Renderer {
             self.cleanup_swapchain();
             self.texture.destroy(&self.device);
             self.sync.destroy(&self.device);
-            for &(buffer, memory) in &self.vertex_buffers {
+            for &(buffer, memory, _) in &self.vertex_buffers {
                 self.device.destroy_buffer(buffer, None);
                 self.device.free_memory(memory, None);
             }
@@ -571,4 +581,25 @@ fn mat4_to_bytes(m: &Mat4) -> [u8; 64] {
         chunk.copy_from_slice(&value.to_ne_bytes());
     }
     bytes
+}
+
+/// A host-visible vertex buffer with room for `capacity` vertices.
+unsafe fn create_vertex_buffer(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical_device: vk::PhysicalDevice,
+    capacity: usize,
+) -> Result<(vk::Buffer, vk::DeviceMemory, usize)> {
+    let size = (capacity * size_of::<Vertex>()) as vk::DeviceSize;
+    let (buffer, memory) = unsafe {
+        buffer::create_buffer(
+            instance,
+            device,
+            physical_device,
+            size,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+    }?;
+    Ok((buffer, memory, capacity))
 }

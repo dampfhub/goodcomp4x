@@ -58,8 +58,11 @@ src/
     ability.rs     the four abilities and their tuning constants
     unit.rs        Team, UnitType, base stats, Unit (with state-aware stats())
     ai.rs          the Red AI
-    hex.rs         axial hex math and HexGrid (with terrain)
-    terrain.rs     Plains / Hills / Mountains
+    hex.rs         axial hex math and HexGrid (terrain, plus rivers along hex edges)
+    terrain.rs     tiles: base Terrain + hills + Feature (forest/jungle); yields,
+                   passability, route cost, defense
+    mapgen.rs      seeded random maps for the F4 world scenario
+    fog.rs         fog of war: what the player sees and has explored
     camera.rs      top-down orthographic camera: pan, zoom, screen<->world
     draw.rs        world geometry: hexes, terrain symbols, move ghosts, attack arcs,
                    units, badges
@@ -89,14 +92,14 @@ All geometry is rebuilt from game state every frame.
 
 ### City experiment (current default)
 - The default scenario has a radius-six map, two cities, owned farms/mines/pastures,
-  and preplaced dirt roads. F1/F2/F3 start the combat, city or frontier
-  scenario (`scenario.rs`); pressing the current one's key restarts it.
+  and preplaced dirt roads. F1/F2/F3/F4 start the combat, city, frontier or
+  generated world scenario (`scenario.rs`); pressing the current one's key restarts it.
 - Testing savestate (`scenario.rs`): F6 clones the whole `GameState` into
   `savestate`, F7 restores a copy (keeping the snapshot, and the camera if
   it's the same scenario). It survives scenario switches and lives only in
   memory. The faded DEBUG panel (`ui::debug_panel`, top-left) has buttons for
   all of these; the hovered-unit info box sits top-right to stay clear of it.
-- Debug setting `instant_playback` (F8 or the panel): `update` resolves every
+- Debug setting `instant_playback` (F8 or the panel), on by default: `update` resolves every
   pending step in one call instead of one per `STEP_INTERVAL`. Steps still run
   in `RESOLUTION_ORDER`, so outcomes don't change; all animations fire
   together. Kept across scenario switches and savestate loads.
@@ -158,7 +161,61 @@ All geometry is rebuilt from game state every frame.
     than their values suggest; dark panels need values around 0.01-0.05.
 
 ### Map
-- Hex grid of radius 3 (flat-top, axial coordinates).
+- Fog of war (`fog.rs`, debug toggle F9, on by default and kept across
+  scenario switches and loads): the player's units (by `GameState::sight`),
+  cities (3) and barracks (1) see hexes, unless a mountain stands on the
+  line between (`in_line_of_sight` via `Hex::line_between`, tried nudged to
+  either side of an edge; the mountain itself is visible). Every frame (`explore`, from
+  `update`) each hex in sight is recorded in `memory` as a `Sighting`: other
+  sides' units (clones plus letters), city and barracks (team, number,
+  health), improvement and road. Three layers: in sight shows the live
+  state; remembered hexes out of sight draw their `Sighting` (`map_view`,
+  `push_remembered_units`) under a translucent grey veil with faint cloud puffs (`push_cloud_puffs`),
+  outlined in a darker grey where they meet hexes in
+  sight (`push_fog`, after the city map and remembered units, before orders
+  and live units); nothing at all is drawn on never-seen hexes, so the
+  background shows. Live units `Fog::shows` rejects are hidden,
+  with their ghosts and attack-range highlights; hover info ignores them and
+  tile tooltips describe remembered hexes from memory. The AI ignores it.
+- Tiles (`terrain.rs`): a base `Terrain` (grassland, plains, desert, tundra,
+  snow, marsh, mountains, coast, ocean, lake), a `hills` flag and an optional
+  `Feature` (forest, jungle). `Tile::yields` starts from the ground's and
+  adds hills (+1 production), forest (-1 food, +1 production) or jungle (+1
+  each). `route_cost` is 2 (3 on snow or marsh) plus 1 each for hills and a
+  feature; roads are 1. Defense adds up: hills +25%, forest or jungle +15%.
+  `HexGrid::tile` gives the whole tile, `terrain` just the ground. Water and
+  mountains are impassable to units; cities can work water (routes end on a
+  water tile but never continue across it), never mountains. A city's
+  manager (first worked tile) must be land. Unlisted hexes are plain plains;
+  `Tile::HILLS` (plains hills) and `Tile::MOUNTAINS` build the fixed maps.
+  Worker improvements add to the tile: mine +2 production on hills, lumber
+  mill +1 production under a feature, farm +2 food elsewhere (not snow).
+- Rivers are hex edges (`HexGrid::rivers`, pairs from `hex::edge`). Land
+  beside a river or lake has fresh water: +1 food in `tile_yield`, on top of
+  any site. They're drawn along the shared edge (`edge_corners`). They don't
+  affect movement or combat yet.
+- The F4 world (`mapgen.rs`, `WORLD_SHAPE`: a `Shape::Rectangle` of 61
+  columns by about 36 rows, wider than tall, sized for four players) is
+  generated from a `u32` seed with its own SplitMix64 RNG and value noise, so
+  a seed always rebuilds the same map; the seed shows in the debug panel. A
+  Pangea: an oval dome plus two noise layers sets the sea (42-52% water),
+  land apart from the biggest mass sinks unless it's an islet of at most
+  `MAX_ISLAND` (12) hexes, ridged noise picks mountain ranges and
+  hills (the hills flag stays whatever ground the climate picks), small
+  enclosed seas become lakes, rivers walk hex corners downhill
+  from high ground to water (or pool into a lake), and latitude plus noise
+  (temperature) and noise plus water (moisture) pick the ground: snow,
+  tundra, desert, marsh (warm, very wet, never hills), grassland or plains.
+  Forest grows on wetter grassland, plains and tundra (hills too), patchy
+  from its own noise; jungle covers about three quarters of marsh. Thresholds
+  use rank order, so each map has similar proportions. Starts are the pair
+  on the continent's largest passable stretch, ideally a third of the map's
+  width apart, with the best and most even yields within two hexes. Each
+  side gets a settler, worker and scout; `fair_start` / `start_units` put
+  the settler and worker on flat ground and the scout on hills, so starting
+  vision is equal. The camera starts on Blue's settler. `HexGrid` shapes: `Hexagon { radius }` (the fixed scenarios) or
+  `Rectangle { cols, rows }`; `edge_distance` is hexes in from the edge.
+- The combat scenario (F1) is hand-built: a hex grid of radius 3 (flat-top, axial coordinates).
 - Mountain ridges at (0,-3), (0,-2), (0,2), (0,3) leave a three-hex pass down
   the middle. Hills at (0,0) (center of the pass), (-2,2) and (2,-2), next to
   each side's ranged unit.
@@ -169,10 +226,27 @@ All geometry is rebuilt from game state every frame.
 | Type | HP | Attack | Defense | Move | Range | Icon |
 |---|---|---|---|---|---|---|
 | Melee | 100 | 22 | 20 | 1 | 1 | triangle, M |
-| Ranged | 75 | 24 | 10 | 1 | 2 | square, R |
+| Ranged | 75 | 24 | 10 | 1 | 2 | diamond, R |
 | Cavalry | 100 | 24 | 14 | 2 | 1 | pentagon, C |
-| Siege | 65 | 32 | 6 | 1 | 2 | octagon, S |
+| Siege | 65 | 32 | 6 | 1 | 2 | upright square, S |
+| Scout | 60 | 8 | 10 | 3 | 1 | small circle, X |
+| Horse | 100 | 28 | 16 | 3 | 1 | downward pentagon, H |
+| Armored | 140 | 30 | 28 | 1 | 1 | octagon, A |
 
+Horse and Armored are specialist units a barracks trains when it stands on a
+Horses or Iron resource (`Resource`, `HexGrid::resource`; placed in the city
+scenario). Resources show as a gold-edged disc with H or I in a hex's
+top-right corner. Horse charges and sees 3; Armored shield-walls.
+Every unit icon is its team color with a dark outline. Settlers (T) and
+workers (W) are civilians: a hollow hexagon (pale center, team-colored rim),
+with no attack-order badge. Map markers are primitives too: a city is a
+crenellated tower showing its population, plus a gold G disc once it has a
+granary; a barracks is a small house marked B, in its team color; an
+improvement is a dark badge edged in its owner's color in the hex's top-left
+corner, with rows (farm), a heap (mine), a fence (pasture) or logs (lumber
+mill).
+
+Sight (fog of war): 2 hexes, scouts and cavalry 3, +1 on hills.
 `Unit::stats()` applies ability effects and siege deployment on top of these.
 Everything that asks what a unit can do goes through it.
 
@@ -221,11 +295,11 @@ Everything that asks what a unit can do goes through it.
   nothing else.
 
 ### Turn resolution (`turn.rs`)
-The turn plays out in 8 steps, one every 0.6s, with the acting units flashing.
+The turn plays out in 10 steps, one every 0.6s, with the acting units flashing.
 Steps where nobody acts are skipped.
 
-1. Cavalry move  2. Melee move  3. Ranged attack  4. Cavalry attack
-5. Melee attack  6. Ranged move  7. Siege move  8. Siege attack
+1. Scout move  2. Cavalry move  3. Melee move  4. Ranged attack  5. Scout attack
+6. Cavalry attack  7. Melee attack  8. Ranged move  9. Siege move  10. Siege attack
 
 The badges on each unit show this: blue number = move order, red = attack order.
 
@@ -290,6 +364,7 @@ Everyone in a step acts simultaneously:
 | Ranged | Volley | attack also hits enemies adjacent to the target, all hits 60% | 2 turns |
 | Cavalry | Charge | +1 move, +50% attack this turn | 2 turns |
 | Siege | Deploy / Pack Up | spend a turn setting up (no move or attack); deployed: +1 range, can't move; packing up takes a turn too | none |
+| Scout | Lookout | stay put this turn; through the next turn, +2 sight | none |
 
 A queued ability shows as a gold ring and deployed siege as a steel ring.
 Cooldowns tick down at every turn end.
@@ -394,6 +469,14 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
 24. Attack arrows as clean ribbons, player's only; resolved attacks animate
     (shot, hit burst / miss / out of range, damage numbers).
 25. Debug toggle (F8) for instant turn playback.
+26. Map generation: eleven tile types with their own yields, rivers along hex
+    edges (fresh water +1 food), workable water, and a seeded random world
+    on F4.
+27. Hills and forest/jungle became modifiers on a base ground, with marsh
+    and jungle added; the Scout unit (Lookout ability); fog of war with an
+    F9 toggle; the vertex buffer grows as needed.
+28. The world became a Pangea on a 61x36 rectangular map (`Shape`), sized
+    for four players, starting each side with a settler, worker and scout.
 
 ## Open questions and ideas
 
@@ -406,6 +489,11 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
 - A move only checks its destination at resolution, not whether its planned
   path is still open.
 - No line of sight: ranged and siege can shoot over mountains.
-- Hills cost the same to enter as plains (Civ charges extra movement).
+- Hills and forest cost the same to enter as plains, and rivers don't slow
+  or penalize crossing units (Civ does both).
+- Generated maps have no resources yet, and the AI settles wherever its
+  settler starts. There are still only two sides on the four-player map.
+- The AI ignores the fog of war, and AI scouts just fight. Units can't path
+  through a hidden enemy, so the move range can hint at one in the fog.
 - Swaps only work between adjacent units.
 - No victory condition; F1–F3 restart a scenario.
