@@ -1,8 +1,9 @@
 //! A general-purpose 2D renderer that knows nothing about the game: one window, one
-//! alpha-blended vertex-colour pipeline, two frames in flight, and the swapchain recreated when
-//! the window's size changes. Each frame the program fills the vertices and the batches that
-//! draw them through `Scene`; a batch is a range of the vertices under its own view-projection
-//! matrix.
+//! alpha-blended vertex-colour pipeline that can also sample one coverage atlas (text), two
+//! frames in flight, and the swapchain recreated when the window's size changes. Polygon edges
+//! are smoothed with multisampling, at the most samples the GPU supports. Each frame the program
+//! fills the vertices and the batches that draw them through `Scene`; a batch is a range of the
+//! vertices under its own view-projection matrix.
 
 use vulkan.hl.instance.Vk;
 use vulkan.hl.instance.with_instance;
@@ -31,8 +32,9 @@ use vulkan.hl.device.Gpu;
 use vulkan.hl.device.NO_QUEUE_FAMILY;
 use vulkan.hl.swapchain.Surface;
 use vulkan.hl.swapchain.Swapchain;
-use vulkan.hl.swapchain.PresentQueue;
 use vulkan.hl.swapchain.present_queue;
+use vulkan.hl.swapchain.surface_choice;
+use vulkan.hl.swapchain.choice_format;
 use vulkan.hl.swapchain.create_surface;
 use vulkan.hl.swapchain.destroy_surface;
 use vulkan.hl.swapchain.win32_presentation_supported;
@@ -43,12 +45,27 @@ use vulkan.hl.swapchain.with_surface_format;
 use vulkan.hl.swapchain.with_present_mode;
 use vulkan.hl.swapchain.PresentMode;
 use vulkan.hl.swapchain.destroy_swapchain;
-use vulkan.hl.swapchain.swapchain_format;
 use vulkan.hl.swapchain.swapchain_width;
 use vulkan.hl.swapchain.swapchain_height;
 use vulkan.hl.memory.Allocator;
 use vulkan.hl.memory.create_allocator;
 use vulkan.hl.memory.destroy_allocator;
+use vulkan.hl.memory.alloc_for_image;
+use vulkan.hl.memory.free;
+use vulkan.hl.memory.upload_image;
+use vulkan.hl.image.Image;
+use vulkan.hl.image.ImageView;
+use vulkan.hl.image.create_image_levels;
+use vulkan.hl.image.create_image_multisampled;
+use vulkan.hl.image.destroy_image;
+use vulkan.hl.image.create_image_view;
+use vulkan.hl.image.destroy_image_view;
+use vulkan.hl.image.create_mip_sampler;
+use vulkan.hl.image.destroy_sampler;
+use vulkan.hl.instance.find_memory_type;
+use vulkan.hl.image.image_memory_type_bits;
+use vulkan.hl.physical.color_sample_counts;
+use vulkan.hl.descriptors.destroy_descriptor_pool;
 use vulkan.hl.format.Bgra8Srgb;
 use vulkan.hl.format.NoFormat;
 use vulkan.hl.format.bgra8_srgb;
@@ -57,9 +74,9 @@ use vulkan.hl.format.format_is;
 use vulkan.hl.render.RenderPass;
 use vulkan.hl.render.Framebuffers;
 use vulkan.hl.render.StreamVertexBuffer;
-use vulkan.hl.render.create_render_pass;
+use vulkan.hl.render.create_render_pass_multisampled;
 use vulkan.hl.render.destroy_render_pass;
-use vulkan.hl.render.create_framebuffers;
+use vulkan.hl.render.create_framebuffers_multisampled;
 use vulkan.hl.render.destroy_framebuffers;
 use vulkan.hl.render.framebuffer;
 use vulkan.hl.render.cmd_begin_render_pass_ring;
@@ -98,12 +115,28 @@ use vulkan.hl.ring.consume_frames;
 use vulkan.hl.ring.RingWords;
 use vulkan.hl.ring.frames_from_words;
 use vulkan.vk.VK_ERROR_OUT_OF_DATE_KHR;
+use vulkan.vk.VK_FORMAT_R8_UNORM;
+use vulkan.vk.VK_FORMAT_B8G8R8A8_SRGB;
+use vulkan.vk.VK_IMAGE_USAGE_SAMPLED_BIT;
+use vulkan.vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+use vulkan.vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+use vulkan.vk.VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+use vulkan.vk.VK_IMAGE_ASPECT_COLOR_BIT;
+use vulkan.vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+use vulkan.vk.VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+use vulkan.vk.VK_FILTER_LINEAR;
+use vulkan.vk.VK_SAMPLER_MIPMAP_MODE_LINEAR;
+use vulkan.vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+use vulkan.vk.VK_SAMPLE_COUNT_4_BIT;
+use vulkan.vk.VK_SAMPLE_COUNT_8_BIT;
+use vulkan.vk.VK_SAMPLE_COUNT_16_BIT;
 use std.time.Clock;
 use std.fmt.Out;
 use std.fmt.show_u64;
 use std.str.to_owned;
 use log.Log;
 use log.warn;
+use log.info;
 use win32.Win32Error;
 use win32.Window;
 use win32.open_window_at;
@@ -119,6 +152,7 @@ use win32.events.next_frame;
 use renderer.pipelines.Mesh;
 use renderer.pipelines.MeshVertex;
 use renderer.pipelines.MeshPush;
+use renderer.pipelines.MeshSet0;
 use renderer.pipelines.create_mesh;
 use renderer.pipelines.destroy_mesh;
 
@@ -135,8 +169,49 @@ const TARGET_FPS: i64 = 165;
 /// is typed at the sRGB format, so a surface that does not offer it is `HL_ERROR_NOT_FOUND`.
 fn chain_options() -> SwapchainOptions { with_present_mode(with_surface_format(swapchain_options(), bgra8_srgb()), PresentMode.Mailbox) }
 
+/// Sample counts to try, most first. Vulkan requires every device to support 4 for colour
+/// attachments, so the search always succeeds by then.
+const PREFERRED_SAMPLES: [u32; 3] = [VK_SAMPLE_COUNT_16_BIT, VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_4_BIT];
+
+/// The multisampled target is only ever resolved, never read back, so it can live in lazily
+/// allocated (tile) memory where the GPU offers it.
+fn target_usage() -> u32 { VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT }
+
+/// The most samples per pixel the device supports for a colour target of the swapchain's
+/// format: more samples mean smoother edges.
+fn pick_samples(pd: PhysicalDevice) -> u32 can {Vk} {
+    let supported = handle { color_sample_counts(pd, VK_FORMAT_B8G8R8A8_SRGB, target_usage()) } with VkError { fail(c) => { abort VK_SAMPLE_COUNT_4_BIT } };
+    for i in 0..3 {
+        if (supported & PREFERRED_SAMPLES[i]) != 0 { return PREFERRED_SAMPLES[i]; }
+    }
+    VK_SAMPLE_COUNT_4_BIT
+}
+
+/// The memory the multisampled target lives in: lazily allocated device memory where the GPU
+/// has it, else device-local.
+fn target_memory(pd: PhysicalDevice, img: &Image) -> u32 can {Vk, Gpu} {
+    let lazy = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT;
+    let bits = image_memory_type_bits(img);
+    handle { let _t = find_memory_type(pd, bits, lazy); lazy } with VkError { fail(c) => { abort VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT } }
+}
+
 /// A `stop` reason besides a `VkResult`: the program's `Scene` asked to stop.
 const STOP_DONE: i32 = 1;
+
+/// A single-channel (coverage) image and its mip chain, largest level first. Each level is
+/// `width >> i` by `height >> i` bytes, rows top to bottom.
+pub struct Atlas { width: i32, height: i32, levels: Vec[Vec[u8]] }
+
+/// Every level of `atlas`, level 0 first, as one tightly packed run of bytes: what the upload
+/// copies into the image's levels in turn.
+fn packed_levels(atlas: &Atlas) -> Vec[u8] {
+    let mut out: Vec[u8] = Vec.new();
+    for i in 0..atlas.levels.len() {
+        let level = &atlas.levels[i];
+        for k in 0..level.len() { out.push(level[k]); }
+    }
+    out
+}
 
 /// A range of the frame's vertices drawn under one view-projection matrix.
 pub struct DrawBatch { view_proj: [[f32; 4]; 4], first: u32, count: u32 }
@@ -195,7 +270,7 @@ fn give_up_acquired(pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlig
 struct Run { budget: i32, drawn: i32, stop: i32, pace: Pacer, vertices: Vec[MeshVertex], batches: Vec[DrawBatch] }
 
 /// Draws one frame through the ring and hands the idle ring back.
-fn draw_one(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
+fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
     let dt = pace(run, win);
     let w = swapchain_width(sc);
     let h = swapchain_height(sc);
@@ -217,6 +292,7 @@ fn draw_one(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapcha
         let mut draw = cmd_begin_render_pass_ring(rec, pass, bgra8_srgb(), no_format(), sc, &acquired, framebuffer(fbs, index), CLEAR_COLOR);
         cmd_set_viewport_scissor(&mut draw, w, h);
         mesh.bind(&mut draw);
+        mesh.bind_set0(&mut draw, set);
         mesh.bind_stream(&mut draw, &*sb, &acquired);
         for b in 0..run.batches.len() {
             let batch = run.batches[b];
@@ -235,7 +311,7 @@ fn draw_one(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapcha
     if rc != 0 { give_up_acquired(pool, t, acquired, rc) }
     let wait = point_of(t, 0);
     let rendering = submit_frame(q, t, sc, acquired, executable_from_words(cw), wait);
-    let idle = present(pq, sc, rendering);
+    let idle = present(q, sc, rendering);
     let pc = frame_code(&idle);
     if pc < 0 { run.stop = pc; return idle; }
     run.drawn = run.drawn + 1;
@@ -244,10 +320,10 @@ fn draw_one(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapcha
 }
 
 /// Draws frames through the ring until one reports a reason to stop.
-fn draw_frames(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
+fn draw_frames(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
     let mut r = ring;
     while run.stop == 0 {
-        r = draw_one(q, pq, win, sc, pass, fbs, mesh, sb, a, pool, t, r, run);
+        r = draw_one(q, win, sc, pass, fbs, mesh, set, sb, a, pool, t, r, run);
     }
     r
 }
@@ -262,23 +338,30 @@ fn wait_while_minimized(win: &mut Window, run: &mut Run) can {Scene, Clock} {
     }
 }
 
-/// One swapchain generation at the window's current client size. Frames are drawn until the
-/// program stops or the generation goes out of date; then the device is idled, the generation
-/// torn down, and the next one begun over the same ring.
-fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Surface, pass: &RenderPass[Bgra8Srgb, NoFormat], mesh: &Mesh[Bgra8Srgb, NoFormat], sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Vk, Scene, Clock} {
+/// One swapchain generation at the window's current client size, with the multisampled image
+/// the pass draws into at that size. Frames are drawn until the program stops or the generation
+/// goes out of date; then the device is idled, the generation torn down, and the next one begun
+/// over the same ring.
+fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Surface, pass: &RenderPass[Bgra8Srgb, NoFormat], samples: u32, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Vk, Scene, Clock} {
     wait_while_minimized(win, run);
     let mut raw: RingWords = consume_frames(ring);
     run.stop = 0;
     let mut ring_live = true;
     let rc = handle {
         let size = client_size(&*win);
-        let mut pq = present_queue(pd, surface, *q);
+        let pq = present_queue(pd, surface, &*q);
         let sc = create_swapchain_with(pd, surface, &pq, size[0], size[1], 0, chain_options());
         defer { destroy_swapchain(sc); }
-        let fbs = create_framebuffers(&sc, pass);
+        let target = create_image_multisampled(swapchain_width(&sc), swapchain_height(&sc), VK_FORMAT_B8G8R8A8_SRGB, target_usage(), VK_IMAGE_ASPECT_COLOR_BIT, samples);
+        defer { destroy_image(target); }
+        let target_al = alloc_for_image(a, &target, target_memory(pd, &target));
+        defer { free(a, target_al); }
+        let target_view = create_image_view(&target);
+        defer { destroy_image_view(target_view); }
+        let fbs = create_framebuffers_multisampled(&sc, pass, &target, &target_view);
         defer { destroy_framebuffers(fbs); }
         ring_live = false;
-        let r2 = draw_frames(q, &mut pq, win, &sc, pass, &fbs, mesh, sb, a, pool, t, frames_from_words(raw), run);
+        let r2 = draw_frames(q, win, &sc, pass, &fbs, mesh, set, sb, a, pool, t, frames_from_words(raw), run);
         raw = consume_frames(r2);
         ring_live = true;
         device_wait_idle();
@@ -288,13 +371,13 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Sur
     if rc != 0 { VkError.fail(rc) }
     if run.stop < 0 && run.stop != VK_ERROR_OUT_OF_DATE_KHR { give_up_ring(pool, t, frames_from_words(raw), run.stop) }
     if run.stop == VK_ERROR_OUT_OF_DATE_KHR {
-        generation(pd, q, win, surface, pass, mesh, sb, a, pool, t, frames_from_words(raw), run)
+        generation(pd, q, win, surface, pass, samples, mesh, set, sb, a, pool, t, frames_from_words(raw), run)
     } else {
         frames_from_words(raw)
     }
 }
 
-fn run_on_device(family: u32, title: &str, spec: WindowSpec, icons: &Icons, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock} {
+fn run_on_device(family: u32, title: &str, spec: WindowSpec, icons: &Icons, atlas: &Atlas, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} {
     let (width, height) = (spec.width, spec.height);
     let mut run = Run { budget: frames, drawn: 0, stop: 0, pace: pacer(TARGET_FPS), vertices: Vec.new(), batches: Vec.new() };
     let rc = handle { handle {
@@ -311,21 +394,35 @@ fn run_on_device(family: u32, title: &str, spec: WindowSpec, icons: &Icons, fram
         defer { destroy_command_pool(pool); }
         let mut t = create_timeline();
         defer { destroy_timeline(t); }
+        // The coverage atlas every draw can sample: uploaded once, with its mip chain.
+        let levels = atlas.levels.len() as u32;
+        let texture = create_image_levels(atlas.width as u32, atlas.height as u32, VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT, levels);
+        defer { destroy_image(texture); }
+        let texture_al = alloc_for_image(&mut alloc, &texture, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        defer { free(&mut alloc, texture_al); }
+        let bytes = packed_levels(atlas);
+        upload_image(&mut alloc, &mut q, &mut pool, &texture, &bytes, bytes.len() as i64);
+        let texture_view = create_image_view(&texture);
+        defer { destroy_image_view(texture_view); }
+        let sampler = create_mip_sampler(VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, levels as f32);
+        defer { destroy_sampler(sampler); }
         // The swapchain's format is the surface's; the pass's is a type, so the two are
         // checked here.
-        let probe_pq = present_queue(pd, &surface, q);
-        let probe = create_swapchain_with(pd, &surface, &probe_pq, width as u32, height as u32, 0, chain_options());
-        let format = swapchain_format(&probe);
-        destroy_swapchain(probe);
-        if !format_is(bgra8_srgb(), format) { VkError.fail(HL_ERROR_NOT_FOUND) }
-        let pass = create_render_pass(bgra8_srgb());
+        if !format_is(bgra8_srgb(), choice_format(&surface_choice(pd, &surface, chain_options()))) { VkError.fail(HL_ERROR_NOT_FOUND) }
+        let samples = pick_samples(pd);
+        info(fn() can {Out} { Out.put("antialiasing with "); show_u64(samples as u64); Out.put(" samples per pixel"); });
+        let pass = create_render_pass_multisampled(bgra8_srgb(), samples);
         defer { destroy_render_pass(pass); }
         let mesh = create_mesh(&pass);
         defer { destroy_mesh(mesh); }
+        let mut dpool = mesh.create_pool(1);
+        defer { destroy_descriptor_pool(dpool); }
+        let set = mesh.allocate_set0(&mut dpool);
+        mesh.write_atlas(&set, &texture, &texture_view, &sampler);
         let mut sb = mesh.create_stream_buffer(&mut alloc, FRAMES_IN_FLIGHT, MAX_VERTICES);
         defer { destroy_stream_vertex_buffer(&mut alloc, sb); }
         let ring = create_frames(FRAMES_IN_FLIGHT);
-        let ring2 = generation(pd, &mut q, &mut win, &surface, &pass, &mesh, &mut sb, &mut alloc, &mut pool, &mut t, ring, &mut run);
+        let ring2 = generation(pd, &mut q, &mut win, &surface, &pass, samples, &mesh, &set, &mut sb, &mut alloc, &mut pool, &mut t, ring, &mut run);
         destroy_frames(&mut pool, &mut t, ring2);
         0
     } with VkError { fail(c) => { abort c } }
@@ -352,12 +449,12 @@ fn report_validation(ring: &mut MessageRing) can {Log} {
 }
 
 /// Opens a window titled `title` where `spec` places it, with `icons`, and draws the program's
-/// `Scene` into it
+/// `Scene` into it, with `atlas` bound for its textured vertices to sample,
 /// until the program stops, or for `frames` frames when that is positive; `validate` runs
 /// under the Khronos validation layer, logs what it reported at `warn`, and fails when it
 /// reported anything. The exit code:
 /// 0, or `100 - code` for a negative `VkResult` or library code.
-pub fn run(title: &str, spec: WindowSpec, icons: &Icons, frames: i32, validate: bool) -> i32 can {Scene, Clock, Log} {
+pub fn run(title: &str, spec: WindowSpec, icons: &Icons, atlas: &Atlas, frames: i32, validate: bool) -> i32 can {Scene, Clock, Log} {
     handle {
         with_instance(true, validate, fn() -> i32 can {VkError, Vk, Scene, Clock, Log} {
             if validate && !validation_layer_present() { VkError.fail(HL_ERROR_NO_LAYER) }
@@ -370,7 +467,7 @@ pub fn run(title: &str, spec: WindowSpec, icons: &Icons, frames: i32, validate: 
                 let family = graphics_queue_family(pd);
                 if !win32_presentation_supported(pd, family) { VkError.fail(HL_ERROR_NOT_FOUND) }
                 out = with_device(pd, family, NO_QUEUE_FAMILY, true,
-                    fn(dev: &Device, f: u32) -> i32 can {VkError, Gpu, Vk, Scene, Clock} { run_on_device(f, title, spec, icons, frames) });
+                    fn(dev: &Device, f: u32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} { run_on_device(f, title, spec, icons, atlas, frames) });
                 0
             } with VkError { fail(c) => { abort c } };
             if rc != 0 { VkError.fail(rc) }

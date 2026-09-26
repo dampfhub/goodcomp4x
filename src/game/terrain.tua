@@ -9,6 +9,11 @@ pub enum Terrain {
 }
 
 impl Terrain {
+    /// The terrain's name as the UI prints it.
+    pub fn name(self) -> str {
+        match self { Terrain.Plains => "PLAINS", Terrain.Hills => "HILLS", Terrain.Mountains => "MOUNTAINS" }
+    }
+
     pub fn is_passable(self) -> bool { self != Terrain.Mountains }
 
     /// Multiplier on the defense of a unit standing on this terrain.

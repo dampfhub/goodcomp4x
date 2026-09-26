@@ -1,0 +1,102 @@
+//! The font's glyphs as build-time constants: this module's `#run` reads the font file (Hack),
+//! records the outlines of the characters the game draws, and lays out the atlas they are
+//! rasterized into, emitting `HACK_FACE`, `HACK_GLYPHS`, `hack_ops`, `PLACED`, `CAP_HEIGHTS` and
+//! `ATLAS_HEIGHT` here for `game.font` to read.
+
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.io.file_bytes;
+use std.io.read_file;
+use std.str.Str;
+use std.str.char_from_u32;
+use std.str.push;
+use std.str.push_char;
+use std.str.to_owned;
+use font.SubsetEntry;
+use font.SubsetFace;
+use font.font_of;
+use font.subset_source;
+use font.atlas.packer;
+use font.ttf.FontError;
+
+/// Pixel sizes of the atlas's glyph sets: the UI sizes, then the set world text scales.
+pub const FACE_SIZES: [i32; 4] = [15, 18, 22, 64];
+
+pub const ATLAS_WIDTH: i32 = 1024;
+pub const MIP_LEVELS: i32 = 4;
+/// Empty space around each glyph, enough that even the smallest mip level doesn't blend
+/// neighbouring glyphs together.
+const PADDING: i32 = 8;
+
+/// How many characters are drawn: printable ASCII, then a little punctuation for UI text.
+pub const GLYPH_COUNT: i32 = 99;
+pub const EXTRA: [char; 4] = ['·', '—', '×', '…'];
+
+/// Where a character's glyph for one size sits: its bitmap's place in the atlas (`x`, `y`, `w`,
+/// `h`, rows from the top) and the bitmap's bottom-left relative to the pen on the baseline
+/// (`xmin`, `ymin`, Y up).
+pub struct Placed { x: i32, y: i32, w: i32, h: i32, xmin: i32, ymin: i32 }
+
+/// The characters drawn, in the order the atlas lays them out.
+pub fn characters() -> Vec[char] {
+    let mut out: Vec[char] = Vec.new();
+    for code in 32..127 { out.push(char_from_u32(code as i64).unwrap_or('?')); }
+    for i in 0..4 { out.push(EXTRA[i]); }
+    out
+}
+
+#run {
+    let mut file = file_bytes();
+    let mut text = to_owned("");
+    let ok = match read_file("Hack-Regular.ttf", &mut file) { Result.Ok(_) => true, Result.Err(_) => false };
+    if !ok {
+        Diag.error("fonts/Hack-Regular.ttf could not be read");
+    } else {
+        let rc = handle {
+            let cs = characters();
+            subset_source(&file.bytes, &cs, "HACK", &mut text);
+            layout(&file.bytes, &cs, &mut text);
+            0
+        } with FontError { fail(code) => { abort code } };
+        if rc != 0 { Diag.error("fonts/Hack-Regular.ttf is not a font this game can read"); }
+    }
+    Eye.emit(Code.parse_items(&text));
+}
+
+/// Appends the atlas layout's source: `PLACED`, one `Placed` per size and character in the
+/// order the atlas packs them, `CAP_HEIGHTS` (the height of `H` at each size) and
+/// `ATLAS_HEIGHT`, rounded so every mip level halves evenly.
+fn layout(d: &[u8], cs: &Vec[char], out: &mut Str) can {FontError} {
+    let font = font_of(d, cs);
+    let mut p = packer(ATLAS_WIDTH, PADDING);
+    let mut placed = to_owned("");
+    let mut caps = to_owned("");
+    for s in 0..4 {
+        let px = FACE_SIZES[s] as f32;
+        for i in 0..cs.len() {
+            let m = font.metrics(cs[i], px);
+            let (x, y) = p.place(m.width, m.height);
+            render(&mut placed, fn() can {Out} {
+                Out.put("    Placed { x: "); show_i64(x as i64); Out.put(", y: "); show_i64(y as i64);
+                Out.put(", w: "); show_i64(m.width as i64); Out.put(", h: "); show_i64(m.height as i64);
+                Out.put(", xmin: "); show_i64(m.xmin as i64); Out.put(", ymin: "); show_i64(m.ymin as i64); Out.put(" },\n");
+            });
+        }
+        let cap = font.metrics('H', px).height;
+        render(&mut caps, fn() can {Out} { if s > 0 { Out.put(", "); } show_i64(cap as i64); });
+    }
+    let height = p.height(1 << (MIP_LEVELS - 1));
+    render(out, fn() can {Out} {
+        Out.put("pub const PLACED: [Placed; "); show_i64((4 * cs.len()) as i64); Out.put("] = [\n"); Out.put(&placed); Out.put("];\n");
+        Out.put("pub const CAP_HEIGHTS: [i32; 4] = ["); Out.put(&caps); Out.put("];\n");
+        Out.put("pub const ATLAS_HEIGHT: i32 = "); show_i64(height as i64); Out.put(";\n");
+    });
+}
+
+fn render(out: &mut Str, body: affine fn() can {Out}) {
+    handle { body(); } with Out {
+        put(t) => { push(out, t); resume }
+        put_char(c) => { push_char(out, c); resume }
+    }
+}
+

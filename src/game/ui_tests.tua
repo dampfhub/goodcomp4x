@@ -1,0 +1,300 @@
+//! The UI as clicked and hovered: tooltips, the unit and city buttons, the debug panel, the
+//! tile tooltip's delay, and the labels the panels print. Each test drives the game through
+//! `handle_click` and `update_hover` at the window positions of what it presses.
+
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.rand.Rand;
+use std.str.Str;
+use std.str.eq as str_eq;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.city.BuildUnit;
+use game.hex.Hex;
+use game.orders.ClickMode;
+use game.scenario.Scenario;
+use game.tests.find;
+use game.tests.sandbox;
+use game.ui.ButtonState;
+use game.ui.TILE_TOOLTIP_DELAY;
+use game.ui.Target;
+use game.ui.UnitAction;
+use game.ui.end_turn_label;
+use game.ui.to_ui;
+use game.ui.ui_projection;
+use game.ui.wrap;
+use game.unit.Team;
+use game.unit.UnitType;
+
+const SCREEN_W: f32 = 1600.0;
+const SCREEN_H: f32 = 900.0;
+
+fn screen() -> Vec2 { vec2(SCREEN_W, SCREEN_H) }
+
+@test
+fn hovering_a_button_shows_its_tooltip() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let card = button_cursor(&game, Target.Build(BuildUnit.Siege));
+        let plain = game.build_ui(screen(), Option.None).len();
+        assert(game.build_ui(screen(), Option.Some(card)).len() > plain);
+    });
+}
+
+@test
+fn hovering_an_enemy_describes_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let game = GameState.new();
+        let enemy = find(&game, Team.Red, UnitType.Melee);
+        let empty = hex_cursor(&game, Hex.new(0, 1));
+        let plain = game.build_ui(screen(), Option.Some(empty)).len();
+        let hovered = game.build_ui(screen(), Option.Some(hex_cursor(&game, game.units[enemy].pos)));
+        assert(hovered.len() > plain);
+    });
+}
+
+@test
+fn ui_projection_puts_the_origin_at_the_bottom_left() {
+    let m = ui_projection(screen());
+    // Vulkan clip space has Y = +1 at the bottom of the window.
+    let origin = m.project_point3(vec2(0.0, 0.0).extend(0.0)).xy();
+    assert(origin.approx_eq(vec2(0.0 - 1.0, 1.0), 0.00001));
+    let corner = m.project_point3(screen().extend(0.0)).xy();
+    assert(corner.approx_eq(vec2(1.0, 0.0 - 1.0), 0.00001));
+}
+
+/// Where to click, in window pixels, to press the button for `target`; the screen's centre,
+/// which no button covers, when none is shown.
+fn button_cursor(game: &GameState, target: Target) -> Vec2 {
+    let layout = game.layout(screen());
+    match layout.button_for(target) {
+        Option.Some(i) => {
+            let b = &layout.buttons[i];
+            to_ui(b.min.add(b.max).scale(0.5), screen())
+        }
+        Option.None => screen().scale(0.5),
+    }
+}
+
+/// Where `hex` is drawn, in window pixels.
+fn hex_cursor(game: &GameState, hex: Hex) -> Vec2 {
+    let camera = &game.camera;
+    let offset = hex.to_world().sub(camera.center).scale(1.0 / camera.half_height);
+    let ndc = vec2(offset.x * SCREEN_H / SCREEN_W, 0.0 - offset.y);
+    vec2((ndc.x + 1.0) / 2.0 * SCREEN_W, (ndc.y + 1.0) / 2.0 * SCREEN_H)
+}
+
+@test
+fn attack_button_arms_a_square_attack_for_the_next_click() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let melee = find(&game, Team.Blue, UnitType.Melee);
+        assert(game.selected == Option.Some(melee));
+        // An empty hex the melee could otherwise move to.
+        let target = Hex.new(0 - 1, 0);
+
+        let attack = Target.Unit(UnitAction.Attack);
+        game.handle_click(button_cursor(&game, attack), screen(), ClickMode.Normal);
+        assert(game.ui_click_mode == Option.Some(ClickMode.Attack));
+        game.handle_click(hex_cursor(&game, target), screen(), ClickMode.Normal);
+        assert(game.units[melee].planned_attack == Option.Some(target));
+        assert(game.units[melee].planned_move == Option.None);
+        // Armed for one click only.
+        assert(game.ui_click_mode == Option.None);
+    });
+}
+
+@test
+fn pressing_an_armed_button_again_disarms_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let swap = Target.Unit(UnitAction.Swap);
+        game.handle_click(button_cursor(&game, swap), screen(), ClickMode.Normal);
+        assert(game.ui_click_mode == Option.Some(ClickMode.Swap));
+        game.handle_click(button_cursor(&game, swap), screen(), ClickMode.Normal);
+        assert(game.ui_click_mode == Option.None);
+    });
+}
+
+@test
+fn hold_button_holds_the_selected_unit() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let first = game.selected.unwrap_or(0 - 1);
+        let hold = Target.Unit(UnitAction.Hold);
+        game.handle_click(button_cursor(&game, hold), screen(), ClickMode.Normal);
+        assert(game.units[first].holding);
+        assert(game.selected != Option.Some(first));
+    });
+}
+
+/// The state of the Load button, or `Ready` when it is not shown.
+fn load_state(game: &GameState) -> ButtonState {
+    let layout = game.layout(screen());
+    match layout.button_for(Target.LoadState) {
+        Option.Some(i) => layout.buttons[i].state,
+        Option.None => ButtonState.Ready,
+    }
+}
+
+@test
+fn debug_panel_saves_loads_and_switches_scenarios() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let unit = game.selected.unwrap_or(0 - 1);
+        let start = game.units[unit].pos;
+        // Nothing saved yet.
+        assert(match load_state(&game) { ButtonState.Disabled => true, _ => false });
+
+        game.handle_click(button_cursor(&game, Target.SaveState), screen(), ClickMode.Normal);
+        assert(match load_state(&game) { ButtonState.Ready => true, _ => false });
+        game.units[unit].pos = Hex.new(0, 1);
+        game.handle_click(button_cursor(&game, Target.LoadState), screen(), ClickMode.Normal);
+        assert(game.units[unit].pos == start);
+
+        let cities = Target.Scenario(Scenario.Cities);
+        game.handle_click(button_cursor(&game, cities), screen(), ClickMode.Normal);
+        assert(game.scenario == Scenario.Cities);
+    });
+}
+
+@test
+fn build_card_queues_its_unit() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let cavalry = Target.Build(BuildUnit.Cavalry);
+        game.handle_click(button_cursor(&game, cavalry), screen(), ClickMode.Normal);
+        let city = game.selected_city.unwrap_or(0 - 1);
+        assert(match game.cities[city].queue { Option.Some(BuildUnit.Cavalry) => true, _ => false });
+    });
+}
+
+/// The city scenario with the player's city open and the camera settled on it.
+fn city_view() -> GameState can {Log, Rand} {
+    let mut game = GameState.city_scenario();
+    game.select_city();
+    game.update(10.0);
+    game
+}
+
+@test
+fn clicking_a_unit_leaves_the_city_view() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        // One of the player's units drawn clear of the top bar and the tray.
+        let mut unit = 0 - 1;
+        for i in 0..game.units.len() {
+            let cursor = hex_cursor(&game, game.units[i].pos);
+            if unit < 0 && game.units[i].team == Team.Blue && cursor.y >= 100.0 && cursor.y < 500.0 && cursor.x >= 0.0 && cursor.x < SCREEN_W {
+                unit = i;
+            }
+        }
+        // A unit in view.
+        assert(unit >= 0);
+        game.handle_click(hex_cursor(&game, game.units[unit].pos), screen(), ClickMode.Normal);
+        assert(game.selected_city == Option.None);
+        assert(game.selected == Option.Some(unit));
+    });
+}
+
+@test
+fn clicking_the_open_city_again_closes_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        let city = game.cities[game.selected_city.unwrap_or(0 - 1)].pos;
+        game.handle_click(hex_cursor(&game, city), screen(), ClickMode.Normal);
+        assert(game.selected_city == Option.None);
+    });
+}
+
+@test
+fn yields_show_only_for_the_open_city_and_toggle() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        let shown = game.build_vertices().len();
+        game.handle_click(button_cursor(&game, Target.ToggleYields), screen(), ClickMode.Normal);
+        assert(!game.show_yields);
+        // Badges hidden.
+        assert(game.build_vertices().len() < shown);
+        game.toggle_yields();
+        assert(game.build_vertices().len() == shown);
+
+        // Hovering a city without opening it no longer shows its yields.
+        let city = game.cities[game.selected_city.unwrap_or(0 - 1)].pos;
+        game.close_city();
+        game.update_hover(Option.Some(hex_cursor(&game, city)), screen(), 0.0);
+        assert(game.hovered_city.is_some());
+        assert(game.yields_city() == Option.None);
+        assert(game.build_vertices().len() < shown);
+    });
+}
+
+@test
+fn resting_on_a_tile_shows_its_tooltip_after_a_delay() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let cursor = hex_cursor(&game, Hex.new(0, 1));
+        game.update_hover(Option.Some(cursor), screen(), 0.0);
+        let before = game.build_ui(screen(), Option.Some(cursor)).len();
+        game.update_hover(Option.Some(cursor), screen(), TILE_TOOLTIP_DELAY);
+        assert(game.hovered_tile == Option.Some(Hex.new(0, 1)));
+        assert(game.build_ui(screen(), Option.Some(cursor)).len() > before);
+
+        // Moving to another hex starts the wait over.
+        let elsewhere = hex_cursor(&game, Hex.new(1, 1));
+        game.update_hover(Option.Some(elsewhere), screen(), 0.1);
+        assert(game.hover_seconds == 0.0);
+    });
+}
+
+@test
+fn clicks_on_a_panel_do_not_reach_the_map() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let selected = game.selected;
+        // The top bar's left end, away from any button.
+        game.handle_click(vec2(4.0, 4.0), screen(), ClickMode.Normal);
+        assert(game.selected == selected);
+    });
+}
+
+fn label_is(label: Str, want: str) -> bool { str_eq(&label, want) }
+
+@test
+fn end_turn_button_names_what_is_waiting() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        assert(label_is(end_turn_label(3, 1), "3 UNITS NEED ORDERS"));
+        assert(label_is(end_turn_label(1, 1), "UNIT NEEDS ORDERS"));
+        assert(label_is(end_turn_label(0, 1), "CHOOSE PRODUCTION"));
+        assert(label_is(end_turn_label(0, 2), "2 CITIES NEED PRODUCTION"));
+        assert(label_is(end_turn_label(0, 0), "END TURN"));
+
+        let game = GameState.new();
+        let layout = game.layout(screen());
+        let shown = match layout.button_for(Target.EndTurn) {
+            Option.Some(i) => {
+                let label = &layout.buttons[i].label;
+                str_eq(label, "4 UNITS NEED ORDERS")
+            }
+            Option.None => false,
+        };
+        assert(shown);
+    });
+}
+
+@test
+fn wrap_breaks_between_words() {
+    let a = wrap("AB CD EF", 5);
+    assert(a.len() == 2 && line_is(&a, 0, "AB CD") && line_is(&a, 1, "EF"));
+    let b = wrap("ABCDEFG HI", 5);
+    assert(b.len() == 2 && line_is(&b, 0, "ABCDEFG") && line_is(&b, 1, "HI"));
+}
+
+fn line_is(lines: &Vec[Str], i: i32, want: str) -> bool {
+    let line = &lines[i];
+    str_eq(line, want)
+}

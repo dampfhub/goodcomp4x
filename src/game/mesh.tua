@@ -11,6 +11,10 @@ use renderer.pipelines.MeshVertex;
 /// An RGBA colour, each channel `0.0..=1.0`.
 pub type Color = [f32; 4];
 
+/// Texture coordinates for untextured geometry: the shader treats any negative `u` as full
+/// coverage instead of sampling the atlas.
+pub const SOLID_UV: [f32; 2] = [-1.0, -1.0];
+
 /// Appends a filled regular polygon, as a triangle fan around its center.
 pub fn regular_polygon(center: Vec2, radius: f32, sides: u32, rotation: f32, color: Color, out: &mut Vec[MeshVertex]) {
     let step = tau() as f32 / sides as f32;
@@ -87,7 +91,7 @@ fn direction(points: &Vec[Vec2], i: i32) -> Vec2 {
 pub fn triangle(a: Vec2, b: Vec2, c: Vec2, color: Color, out: &mut Vec[MeshVertex]) { push_triangle(out, a, b, c, color); }
 
 fn push_triangle(out: &mut Vec[MeshVertex], a: Vec2, b: Vec2, c: Vec2, color: Color) {
-    out.push(MeshVertex { pos: [a.x, a.y, 0.0], color });
-    out.push(MeshVertex { pos: [b.x, b.y, 0.0], color });
-    out.push(MeshVertex { pos: [c.x, c.y, 0.0], color });
+    out.push(MeshVertex { pos: [a.x, a.y, 0.0], color, uv: SOLID_UV });
+    out.push(MeshVertex { pos: [b.x, b.y, 0.0], color, uv: SOLID_UV });
+    out.push(MeshVertex { pos: [c.x, c.y, 0.0], color, uv: SOLID_UV });
 }

@@ -1,48 +1,103 @@
-//! Screen-space UI: the selected unit's ability button.
+//! Screen-space UI: the top status bar, the bottom-left command tray (the selected unit's stats
+//! and actions, or the open city's economy and build options), tooltips for every button, and
+//! an info box for a hovered unit.
 //!
-//! UI geometry is laid out in pixels with the origin at the window's bottom-left and Y pointing
-//! up, the same orientation as the world, so the shared shape and text helpers draw the same
-//! way in both.
+//! Each frame the UI is laid out once into panels, text and buttons (a `UiLayout`), which is then
+//! either drawn or hit-tested against a click, so what's clickable always matches what's shown.
+//! UI geometry is in pixels with the origin at the window's bottom-left and Y pointing up, the
+//! same orientation as the world.
 
+use std.core.Eq;
+use std.fmt.Out;
+use std.fmt.show_i64;
 use std.fmt.show_u64;
+use std.fmt.show_f64_fixed;
 use std.linalg.Mat4;
 use std.linalg.Vec2;
 use std.linalg.mat4_from_cols;
-use std.linalg.vec4;
 use std.linalg.vec2;
+use std.linalg.vec4;
 use std.math.Float;
+use std.mem.replace;
 use std.str.Str;
-use std.str.digit_char;
+use std.str.eq as str_eq;
+use std.str.len as str_len;
+use std.str.split_ascii_whitespace;
 use std.str.push;
 use std.str.push_char;
 use std.str.to_owned;
 use log.Log;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
+use game.show_rounded;
+use game.text;
 use game.ability.Ability;
-use game.font.push_text;
-use game.font.text_width;
+use game.city.BUILDS;
+use game.city.BuildUnit;
+use game.city.delivered_share;
+use game.font.TextSize;
+use game.font.ui;
+use game.hex.Hex;
 use game.mesh.Color;
 use game.mesh.quad;
+use game.orders.ClickMode;
+use game.scenario.SCENARIOS;
+use game.scenario.Scenario;
 use game.unit.Unit;
 
-const BUTTON_WIDTH: f32 = 600.0;
-const BUTTON_HEIGHT: f32 = 52.0;
-const BUTTON_BOTTOM: f32 = 28.0;
-const BUTTON_BORDER: f32 = 2.0;
-/// Text heights are multiples of the font's 7 rows so glyph cells land on whole pixels.
-const LABEL_HEIGHT: f32 = 21.0;
-const DESCRIPTION_HEIGHT: f32 = 14.0;
-const DESCRIPTION_GAP: f32 = 12.0;
+/// Gap between panels and the window's edges.
+const MARGIN: f32 = 18.0;
+/// Space between a panel's border and its contents.
+const PADDING: f32 = 16.0;
+/// Extra space between consecutive lines of text.
+const LINE_GAP: f32 = 4.0;
+/// Space between groups of rows in a panel, and between buttons.
+const GAP: f32 = 10.0;
+const BORDER: f32 = 2.0;
+const ARMED_BORDER: f32 = 3.0;
 
-const BORDER_COLOR: Color = [0.55, 0.58, 0.66, 1.0];
-const READY_BG: Color = [0.16, 0.18, 0.24, 0.95];
+const TOP_BAR_HEIGHT: f32 = 52.0;
+const END_TURN_HEIGHT: f32 = 38.0;
+const BUTTON_HEIGHT: f32 = 60.0;
+const BUTTON_MIN_WIDTH: f32 = 120.0;
+const BUTTON_PADDING: f32 = 16.0;
+const GROWTH_BAR_HEIGHT: f32 = 10.0;
+/// Tooltip descriptions wrap at this many characters.
+const TOOLTIP_WRAP: i32 = 50;
+const TOOLTIP_GAP: f32 = 8.0;
+/// Seconds the cursor rests on a map hex before its tooltip appears.
+pub const TILE_TOOLTIP_DELAY: f32 = 0.75;
+/// Where the tile tooltip's top-left corner sits relative to the cursor.
+const TILE_TOOLTIP_OFFSET_X: f32 = 20.0;
+const TILE_TOOLTIP_OFFSET_Y: f32 = -20.0;
+
+// The swapchain is sRGB, so these linear colours display much lighter than their values
+// suggest.
+const BORDER_COLOR: Color = [0.30, 0.32, 0.38, 1.0];
+const ARMED_BORDER_COLOR: Color = [1.00, 0.92, 0.55, 1.0];
+const PANEL_BG: Color = [0.012, 0.014, 0.02, 0.94];
+const BUTTON_BG: Color = [0.03, 0.035, 0.05, 0.95];
+const BUTTON_HOVER_BG: Color = [0.08, 0.09, 0.13, 0.95];
 const QUEUED_BG: Color = [0.78, 0.64, 0.20, 0.95];
-const COOLDOWN_BG: Color = [0.10, 0.10, 0.12, 0.95];
-const READY_TEXT: Color = [0.95, 0.95, 0.95, 1.0];
+const QUEUED_HOVER_BG: Color = [0.90, 0.76, 0.30, 0.95];
+const DISABLED_BG: Color = [0.02, 0.02, 0.025, 0.95];
+const BAR_BG: Color = [0.01, 0.02, 0.02, 1.0];
+const GROWTH_COLOR: Color = [0.30, 0.88, 0.35, 1.0];
+const TEXT: Color = [0.95, 0.95, 0.95, 1.0];
 const QUEUED_TEXT: Color = [0.08, 0.07, 0.04, 1.0];
-const COOLDOWN_TEXT: Color = [0.50, 0.50, 0.54, 1.0];
-const DESCRIPTION_TEXT: Color = [0.80, 0.80, 0.84, 1.0];
+const QUEUED_HINT_TEXT: Color = [0.25, 0.20, 0.08, 1.0];
+const DISABLED_TEXT: Color = [0.18, 0.18, 0.20, 1.0];
+const DIM_TEXT: Color = [0.55, 0.55, 0.60, 1.0];
+const LABEL_TEXT: Color = [0.30, 0.32, 0.38, 1.0];
+const NOTICE_TEXT: Color = [0.95, 0.85, 0.55, 1.0];
+const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
+const BOOSTED_TEXT: Color = [0.55, 0.92, 0.50, 1.0];
+const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
+const SELECTION_BOX_FILL: Color = [0.30, 0.55, 0.95, 0.12];
+const SELECTION_BOX_EDGE: Color = [0.55, 0.75, 1.00, 0.9];
+const SELECTION_BOX_BORDER: f32 = 2.0;
+/// Opacity the debug panel is drawn at, so it doesn't read as game UI.
+const DEBUG_ALPHA: f32 = 0.55;
 
 /// Maps UI pixels (origin bottom-left, Y up) to clip space.
 pub fn ui_projection(screen_size: Vec2) -> Mat4 {
@@ -54,80 +109,1196 @@ pub fn ui_projection(screen_size: Vec2) -> Mat4 {
     )
 }
 
+/// While Escape is held: a "hold to quit" prompt under the top bar with a bar filling toward
+/// `progress` = 1, when the game closes.
+pub fn quit_prompt(progress: f32, screen_size: Vec2, out: &mut Vec[MeshVertex]) {
+    let mut panel = panel_builder(false);
+    panel.text(TextSize.Body, "HOLD ESC TO QUIT", TEXT);
+    panel.bar(progress);
+    let size = panel.size();
+    let top_left = vec2((screen_size.x - size.x) / 2.0, screen_size.y - TOP_BAR_HEIGHT - MARGIN);
+    let mut layout = empty_layout();
+    panel.place_top_left(top_left, &mut layout);
+    layout.draw_shapes(out);
+}
+
+/// While Alt-dragging: the selection rectangle between `a` and `b` (window pixels, origin
+/// top-left), a translucent fill with a thin border.
+pub fn selection_box(a: Vec2, b: Vec2, screen_size: Vec2, out: &mut Vec[MeshVertex]) {
+    let (a, b) = (to_ui(a, screen_size), to_ui(b, screen_size));
+    let (min, max) = (a.min(b).round(), a.max(b).round());
+    quad(min, max, SELECTION_BOX_FILL, out);
+    let edge = vec2(SELECTION_BOX_BORDER, SELECTION_BOX_BORDER);
+    quad(min, vec2(max.x, min.y).add(edge), SELECTION_BOX_EDGE, out);
+    quad(vec2(min.x, max.y).sub(edge), max, SELECTION_BOX_EDGE, out);
+    quad(min, vec2(min.x, max.y).add(edge), SELECTION_BOX_EDGE, out);
+    quad(vec2(max.x, min.y).sub(edge), max, SELECTION_BOX_EDGE, out);
+}
+
+/// Something a button does.
+pub enum Target {
+    Unit(UnitAction),
+    Build(BuildUnit),
+    ToggleYields,
+    EndTurn,
+    /// Debug panel: scenario pages, the savestate and playback pacing.
+    Scenario(Scenario),
+    SaveState,
+    LoadState,
+    TogglePlayback,
+}
+
+impl Eq for Target {
+    fn eq(self, other: Target) -> bool {
+        match (self, other) {
+            (Target.Unit(a), Target.Unit(b)) => a == b,
+            (Target.Build(a), Target.Build(b)) => a == b,
+            (Target.Scenario(a), Target.Scenario(b)) => a == b,
+            (Target.ToggleYields, Target.ToggleYields) | (Target.EndTurn, Target.EndTurn) | (Target.SaveState, Target.SaveState)
+                | (Target.LoadState, Target.LoadState) | (Target.TogglePlayback, Target.TogglePlayback) => true,
+            _ => false,
+        }
+    }
+}
+
+/// An order for the selected unit.
+pub enum UnitAction { Move, Attack, Swap, Ability, Hold, Guard, Settle, Road, Improve }
+
+pub enum ButtonState {
+    Ready,
+    /// Already queued (or, for End Turn, ready to go).
+    Queued,
+    /// Not possible right now.
+    Disabled,
+}
+
+fn button_state(queued: bool, disabled: bool) -> ButtonState {
+    if disabled { ButtonState.Disabled } else if queued { ButtonState.Queued } else { ButtonState.Ready }
+}
+
+/// A span of text in one colour; a line is several, drawn left to right.
+pub struct Span { text: Str, color: Color }
+
+pub struct Button {
+    target: Target,
+    label: Str,
+    /// The keyboard shortcut or cost, shown under the label (or beside it on a single-line
+    /// button).
+    hint: Str,
+    state: ButtonState,
+    /// This button's action is what the next map click will do.
+    armed: bool,
+    /// Part of the debug panel, drawn see-through so it doesn't read as game UI.
+    faded: bool,
+    min: Vec2,
+    max: Vec2,
+}
+
+impl Button {
+    fn contains(&self, point: Vec2) -> bool { contains(self.min, self.max, point) }
+}
+
+/// A panel's rectangle, which swallows clicks.
+pub struct Rect { min: Vec2, max: Vec2 }
+
+/// Something drawn, in order: a panel, a line of text (an index into `UiLayout.texts`), or a bar.
+pub enum Shape {
+    Panel(Vec2, Vec2, bool),
+    Text(i32),
+    Bar(Vec2, Vec2, f32),
+}
+
+/// A line of text: where its first span starts, at what size, and its spans.
+pub struct TextShape { origin: Vec2, size: TextSize, spans: Vec[Span] }
+
+/// The UI for one frame. Panels also swallow clicks, so a click on the UI never falls through
+/// to the map.
+pub struct UiLayout { shapes: Vec[Shape], texts: Vec[TextShape], buttons: Vec[Button], panels: Vec[Rect] }
+
+fn empty_layout() -> UiLayout { UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new() } }
+
+impl UiLayout {
+    fn button_at(&self, point: Vec2) -> Option[i32] {
+        for i in 0..self.buttons.len() {
+            if self.buttons[i].contains(point) { return Option.Some(i); }
+        }
+        Option.None
+    }
+
+    pub fn button_for(&self, target: Target) -> Option[i32] {
+        for i in 0..self.buttons.len() {
+            if self.buttons[i].target == target { return Option.Some(i); }
+        }
+        Option.None
+    }
+
+    fn covers(&self, point: Vec2) -> bool {
+        for i in 0..self.panels.len() {
+            if contains(self.panels[i].min, self.panels[i].max, point) { return true; }
+        }
+        false
+    }
+
+    fn panel(&mut self, min: Vec2, max: Vec2, faded: bool) {
+        self.shapes.push(Shape.Panel(min, max, faded));
+        self.panels.push(Rect { min, max });
+    }
+
+    /// Adds a line of text with its capital letters centered vertically on `left_middle.y`,
+    /// starting at `left_middle.x`.
+    fn text_row(&mut self, left_middle: Vec2, size: TextSize, spans: Vec[Span]) {
+        let face = ui(size);
+        let origin = vec2(left_middle.x, left_middle.y - face.cap_height / 2.0);
+        self.shapes.push(Shape.Text(self.texts.len()));
+        self.texts.push(TextShape { origin, size, spans });
+    }
+
+    fn draw_shapes(&self, out: &mut Vec[MeshVertex]) {
+        for i in 0..self.shapes.len() {
+            match self.shapes[i] {
+                Shape.Panel(min, max, faded) => draw_box(min, max, fade(PANEL_BG, faded), BORDER, fade(BORDER_COLOR, faded), out),
+                Shape.Text(t) => {
+                    let line = &self.texts[t];
+                    let face = ui(line.size);
+                    let mut pen = line.origin.x;
+                    for k in 0..line.spans.len() {
+                        let s = &line.spans[k];
+                        let t = &s.text;
+                        face.push(vec2(pen, line.origin.y), t, s.color, out);
+                        pen = pen + face.width(t);
+                    }
+                }
+                Shape.Bar(min, max, fraction) => {
+                    quad(min, max, BAR_BG, out);
+                    let f = if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction };
+                    quad(min, vec2(min.x + (max.x - min.x) * f, max.y), GROWTH_COLOR, out);
+                }
+            }
+        }
+    }
+}
+
 impl GameState {
-    /// The UI as a triangle list in UI pixels: the ability button for the selected unit, if any.
-    pub fn build_ui(&self, screen_size: Vec2) -> Vec[MeshVertex] {
+    /// The UI as a triangle list in UI pixels. `cursor` is in window pixels with the origin at
+    /// the top-left.
+    pub fn build_ui(&self, screen_size: Vec2, cursor: Option[Vec2]) -> Vec[MeshVertex] {
+        let mut layout = self.layout(screen_size);
+        let point = match cursor { Option.Some(c) => Option.Some(to_ui(c, screen_size)), Option.None => Option.None };
+        let hovered = match point { Option.Some(p) => layout.button_at(p), Option.None => Option.None };
+
+        // Describe a unit under the cursor, unless it's the selected one (already in the tray)
+        // or the cursor is over the UI.
+        let over_ui = match point { Option.Some(p) => layout.covers(p), Option.None => false };
+        if let Option.Some(c) = cursor {
+            if !over_ui {
+                if let Option.Some(idx) = self.unit_at_screen(c, screen_size) {
+                    if Option.Some(idx) != self.selected || self.selected_city.is_some() {
+                        // Top-right, clear of the debug panel at the top-left.
+                        let mut panel = panel_builder(false);
+                        self.unit_info(idx, &mut panel);
+                        let top_left = vec2(screen_size.x - MARGIN - panel.size().x, screen_size.y - TOP_BAR_HEIGHT - MARGIN);
+                        panel.place_top_left(top_left, &mut layout);
+                    }
+                }
+            }
+        }
+
         let mut out: Vec[MeshVertex] = Vec.new();
-        let Option.Some(idx) = self.selected else { return out; };
-        let unit = self.units[idx];
-        let (name, description) = ability_text(&unit);
-
-        let mut label = to_owned(name);
-        let (bg, text_color) = if unit.ability_queued {
-            push(&mut label, " - ON");
-            (QUEUED_BG, QUEUED_TEXT)
-        } else if unit.ability_cooldown > 0 {
-            push(&mut label, " - READY IN ");
-            push_decimal(&mut label, unit.ability_cooldown);
-            push(&mut label, if unit.ability_cooldown == 1 { " TURN" } else { " TURNS" });
-            (COOLDOWN_BG, COOLDOWN_TEXT)
-        } else {
-            push(&mut label, " - Q");
-            (READY_BG, READY_TEXT)
-        };
-
-        let (min, max) = button_rect(screen_size);
-        let border = vec2(BUTTON_BORDER, BUTTON_BORDER);
-        quad(min.sub(border), max.add(border), BORDER_COLOR, &mut out);
-        quad(min, max, bg, &mut out);
-
-        let label_y = (min.y + max.y - LABEL_HEIGHT) / 2.0;
-        push_centered_text(screen_size.x, label_y, LABEL_HEIGHT, &label, text_color, &mut out);
-        let description_y = max.y + BUTTON_BORDER + DESCRIPTION_GAP;
-        push_centered_text(screen_size.x, description_y, DESCRIPTION_HEIGHT, description, DESCRIPTION_TEXT, &mut out);
+        layout.draw_shapes(&mut out);
+        for i in 0..layout.buttons.len() { draw_button(&layout.buttons[i], hovered == Option.Some(i), &mut out); }
+        if let Option.Some(i) = hovered { self.draw_tooltip(&layout.buttons[i], &layout, screen_size, &mut out); }
+        if let (Option.Some(p), Option.Some(hex)) = (point, self.hovered_tile) {
+            if self.hover_seconds >= TILE_TOOLTIP_DELAY && !over_ui { self.draw_tile_tooltip(hex, p, screen_size, &mut out); }
+        }
         out
     }
 
-    /// Handles a click on the UI, returning whether it hit anything (in which case it
-    /// shouldn't also count as a click on the map). `cursor` is in window pixels with the
-    /// origin at the top-left.
+    /// Handles a click on the UI, returning whether it hit anything (in which case it shouldn't
+    /// also count as a click on the map). `cursor` is in window pixels with the origin at the
+    /// top-left.
     pub fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2) -> bool can {Log} {
-        if self.selected.is_none() { return false; }
-        let point = vec2(cursor.x, screen_size.y - cursor.y);
-        let (min, max) = button_rect(screen_size);
-        let hit = point.x >= min.x && point.y >= min.y && point.x <= max.x && point.y <= max.y;
-        if hit { self.toggle_selected_ability(); }
-        hit
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        let Option.Some(i) = layout.button_at(point) else { return layout.covers(point); };
+        let (target, state) = (layout.buttons[i].target, layout.buttons[i].state);
+        if state == ButtonState.Disabled { return true; }
+        match target {
+            Target.Unit(action) => match action {
+                UnitAction.Move => self.choose_move_action(),
+                UnitAction.Attack => self.choose_attack_action(),
+                UnitAction.Swap => self.choose_swap_action(),
+                UnitAction.Ability => self.toggle_selected_ability(),
+                UnitAction.Hold => self.hold_selected_unit(),
+                UnitAction.Guard => self.toggle_guard(),
+                UnitAction.Settle => self.found_city_selected(),
+                UnitAction.Road => self.build_worker_road_selected(),
+                UnitAction.Improve => self.improve_worker_tile_selected(),
+            },
+            Target.Build(build) => self.queue_selected_city_unit(build),
+            Target.ToggleYields => self.toggle_yields(),
+            Target.EndTurn => self.end_planning(),
+            Target.Scenario(scenario) => self.switch_scenario(scenario),
+            Target.SaveState => self.save_state(),
+            Target.LoadState => self.load_state(),
+            Target.TogglePlayback => self.toggle_instant_playback(),
+        }
+        true
+    }
+
+    /// Tracks which map hex the cursor is over (ignoring the UI) and how long it has rested
+    /// there, for city hover outlines and the tile tooltip. `cursor` is in window pixels with
+    /// the origin at the top-left.
+    pub fn update_hover(&mut self, cursor: Option[Vec2], screen_size: Vec2, dt: f32) {
+        let layout = self.layout(screen_size);
+        let hex = match cursor {
+            Option.Some(c) => if layout.covers(to_ui(c, screen_size)) { Option.None } else { self.hex_at_screen(c, screen_size) },
+            Option.None => Option.None,
+        };
+        if hex == self.hovered_tile {
+            self.hover_seconds = self.hover_seconds + dt;
+        } else {
+            self.hovered_tile = hex;
+            self.hover_seconds = 0.0;
+        }
+        self.hovered_city = match hex { Option.Some(h) => self.city_at(h), Option.None => Option.None };
+    }
+
+    pub fn layout(&self, screen_size: Vec2) -> UiLayout {
+        let mut layout = empty_layout();
+        self.top_bar(screen_size, &mut layout);
+        self.debug_panel(screen_size, &mut layout);
+
+        let mut tray = panel_builder(false);
+        if let Option.Some(city) = self.selected_city {
+            self.city_tray(city, &mut tray);
+        } else if let Option.Some(idx) = self.selected {
+            self.unit_info(idx, &mut tray);
+            tray.gap(GAP);
+            self.unit_buttons(idx, &mut tray);
+        } else if !self.group.is_empty() {
+            self.group_tray(&mut tray);
+        } else {
+            return layout;
+        }
+        tray.place_bottom_left(vec2(MARGIN, MARGIN), &mut layout);
+        layout
+    }
+
+    /// Testing tools, top-left under the top bar and see-through so they don't read as game
+    /// UI: the scenario pages (the current one gold; pressing it again restarts it) and the
+    /// savestate.
+    fn debug_panel(&self, size: Vec2, layout: &mut UiLayout) {
+        let mut panel = panel_builder(true);
+        panel.text(TextSize.Small, "DEBUG", fade(LABEL_TEXT, true));
+        panel.begin_buttons();
+        for i in 0..3 {
+            let scenario = SCENARIOS[i];
+            panel.button(Target.Scenario(scenario), scenario.name(), scenario.key(), button_state(scenario == self.scenario, false), false);
+        }
+        panel.end_buttons(true);
+        panel.gap(GAP);
+        panel.begin_buttons();
+        panel.button(Target.SaveState, "SAVE", "F6", button_state(false, self.is_resolving()), false);
+        panel.button(Target.LoadState, "LOAD", "F7", button_state(false, self.savestate.is_none()), false);
+        panel.end_buttons(true);
+        if self.savestate.is_some() {
+            let saved = text(fn() can {Out} { Out.put("SAVED: "); self.show_saved(); });
+            panel.text_owned(TextSize.Small, saved, fade(DIM_TEXT, true));
+        }
+        panel.gap(GAP);
+        let playback = if self.instant_playback { "PLAYBACK: ALL AT ONCE" } else { "PLAYBACK: STEP BY STEP" };
+        panel.begin_buttons();
+        panel.button(Target.TogglePlayback, playback, "F8", ButtonState.Ready, false);
+        panel.end_buttons(true);
+        panel.place_top_left(vec2(MARGIN, size.y - TOP_BAR_HEIGHT - MARGIN), layout);
+    }
+
+    /// Turn number on the left, the latest notice in the middle, and on the right the End Turn
+    /// button, which names whatever the turn is still waiting on (clicking it selects that).
+    fn top_bar(&self, size: Vec2, layout: &mut UiLayout) {
+        let min = vec2(0.0, size.y - TOP_BAR_HEIGHT);
+        layout.panel(min, size, false);
+        let middle = min.y + TOP_BAR_HEIGHT / 2.0;
+
+        let (units, cities) = self.pending();
+        let turn = if self.is_resolving() { self.turn } else { self.turn + 1 };
+        let turn_text = text(fn() can {Out} { Out.put("TURN "); show_u64(turn as u64); });
+        let left_end = MARGIN + ui(TextSize.Title).width(&turn_text);
+        let mut spans: Vec[Span] = Vec.new();
+        spans.push(Span { text: turn_text, color: TEXT });
+        layout.text_row(vec2(MARGIN, middle), TextSize.Title, spans);
+
+        let label = if self.is_resolving() { to_owned("RESOLVING") } else { end_turn_label(units, cities) };
+        let hint = to_owned("SPACE");
+        let width = single_line_button_width(&label, &hint);
+        let button_min = vec2(size.x - MARGIN - width, middle - END_TURN_HEIGHT / 2.0);
+        let state = if self.is_resolving() { ButtonState.Disabled } else { button_state(units == 0 && cities == 0, false) };
+        let end_turn = Button {
+            target: Target.EndTurn,
+            label,
+            hint,
+            state,
+            armed: false,
+            faded: false,
+            min: button_min.round(),
+            max: button_min.add(vec2(width, END_TURN_HEIGHT)).round(),
+        };
+
+        // The notice sits centered in the space left between the two.
+        if !self.notice.is_empty() {
+            let notice = &self.notice;
+            let width = ui(TextSize.Body).width(notice);
+            let (from, to) = (left_end + 2.0 * GAP, end_turn.min.x - 2.0 * GAP);
+            let centered = (from + to - width) / 2.0;
+            let left = if centered > from { centered } else { from };
+            if left + width <= to {
+                let mut notice: Vec[Span] = Vec.new();
+                notice.push(Span { text: copy_str(&self.notice), color: NOTICE_TEXT });
+                layout.text_row(vec2(left, middle), TextSize.Body, notice);
+            }
+        }
+        layout.buttons.push(end_turn);
+    }
+
+    /// A unit's name, stats as they stand this turn, and anything notable about it. Stats
+    /// boosted above their base value are green, reduced red.
+    fn unit_info(&self, idx: i32, panel: &mut PanelBuilder) {
+        let unit = self.units[idx];
+        let base = unit.unit_type.stats();
+        let stats = unit.stats();
+        let terrain = self.grid.terrain(unit.pos);
+        let defense = stats.defense * terrain.defense_multiplier();
+        let (role, _) = self.unit_role(&unit);
+
+        let title = text(fn() can {Out} { Out.put(unit.team.name()); Out.put(" "); Out.put(role); });
+        panel.text_owned(TextSize.Title, title, unit.team.color());
+
+        let hp_color = if unit.hp < unit.max_hp() * 0.5 { REDUCED_TEXT } else { TEXT };
+        panel.begin_line();
+        panel.stat("HP", text(fn() can {Out} { show_rounded(unit.hp.ceil()); Out.put("/"); show_rounded(unit.max_hp()); }), hp_color);
+        panel.stat("ATTACK", text(fn() can {Out} { show_rounded(stats.attack); }), compare(stats.attack, base.attack));
+        panel.stat("DEFENSE", text(fn() can {Out} { show_rounded(defense); }), compare(defense, base.defense));
+        panel.end_line(TextSize.Body);
+
+        let (ability_name, _) = ability_text(&unit);
+        panel.begin_line();
+        panel.stat("RANGE", text(fn() can {Out} { show_i64(stats.attack_range as i64); }), compare(stats.attack_range as f32, base.attack_range as f32));
+        panel.stat("MOVE", text(fn() can {Out} { show_i64(stats.move_range as i64); }), compare(stats.move_range as f32, base.move_range as f32));
+        if !self.settlers.contains(unit.id) && !self.workers.contains(unit.id) {
+            panel.span_owned(text(fn() can {Out} { Out.put("   "); Out.put(ability_name); Out.put(" "); }), LABEL_TEXT);
+            if unit.ability_queued {
+                panel.span("QUEUED", GOLD_TEXT);
+            } else if unit.ability_cooldown > 0 {
+                panel.span_owned(text(fn() can {Out} { Out.put("IN "); show_turns(unit.ability_cooldown); }), DIM_TEXT);
+            } else {
+                panel.span("READY", TEXT);
+            }
+        }
+        panel.end_line(TextSize.Body);
+
+        if terrain.defense_multiplier() != 1.0 {
+            let bonus = (terrain.defense_multiplier() - 1.0) * 100.0;
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("ON "); Out.put(terrain.name()); Out.put(": +"); show_rounded(bonus); Out.put("% DEFENSE"); }), DIM_TEXT);
+        }
+        if unit.deployed { panel.text(TextSize.Small, "DEPLOYED: +1 RANGE, CANNOT MOVE", DIM_TEXT); }
+        if self.rival_of(idx).is_some() { panel.text(TextSize.Small, "CONTESTED: FIGHTING FOR THIS HEX", DIM_TEXT); }
+        if self.is_player_controlled(idx) {
+            let names = [(unit.planned_move.is_some(), "MOVE"), (unit.planned_attack.is_some(), "ATTACK"), (unit.holding, "HOLD"), (unit.guarding, "GUARD")];
+            let mut any = false;
+            for k in 0..4 {
+                let (on, _) = names[k];
+                if on { any = true; }
+            }
+            if any {
+                let orders = text(fn() can {Out} {
+                    Out.put("ORDERS: ");
+                    let mut first = true;
+                    for k in 0..4 {
+                        let (on, name) = names[k];
+                        if on {
+                            if !first { Out.put(", "); }
+                            Out.put(name);
+                            first = false;
+                        }
+                    }
+                });
+                panel.text_owned(TextSize.Small, orders, DIM_TEXT);
+            }
+        }
+    }
+
+    /// The selected unit's order buttons: what it can do depends on whether it's a fighter, a
+    /// settler or a worker.
+    fn unit_buttons(&self, idx: i32, panel: &mut PanelBuilder) {
+        let unit = self.units[idx];
+        let can_move = unit.stats().move_range > 0;
+        let locked = self.rival_of(idx).is_some();
+        let swapping = self.swap_partner(idx).is_some();
+        let worker = self.workers.contains(unit.id);
+        let settler = self.settlers.contains(unit.id);
+
+        panel.begin_buttons();
+        panel.button(Target.Unit(UnitAction.Move), "MOVE", "M", button_state(unit.planned_move.is_some() && !swapping, !can_move), self.armed(ClickMode.Move));
+        if !worker {
+            panel.button(Target.Unit(UnitAction.Attack), "ATTACK", "X \u{b7} SHIFT", button_state(unit.planned_attack.is_some(), !unit.can_attack() || locked), self.armed(ClickMode.Attack));
+        }
+        panel.button(Target.Unit(UnitAction.Swap), "SWAP", "CTRL", button_state(swapping, !can_move || locked), self.armed(ClickMode.Swap));
+        if settler {
+            panel.button(Target.Unit(UnitAction.Settle), "FOUND CITY", "F", ButtonState.Ready, false);
+        } else if worker {
+            panel.button(Target.Unit(UnitAction.Road), "BUILD ROAD", "R", ButtonState.Ready, false);
+            panel.button(Target.Unit(UnitAction.Improve), "IMPROVE", "I", ButtonState.Ready, false);
+        } else {
+            let (name, _) = ability_text(&unit);
+            let cooldown = unit.ability_cooldown;
+            let label = if cooldown == 0 {
+                to_owned(name)
+            } else {
+                text(fn() can {Out} { Out.put(name); Out.put(" ("); show_u64(cooldown as u64); Out.put(")"); })
+            };
+            panel.button(Target.Unit(UnitAction.Ability), &label, "Q", button_state(unit.ability_queued, cooldown > 0), false);
+        }
+        panel.button(Target.Unit(UnitAction.Hold), "HOLD", "SPACE", button_state(unit.holding, false), false);
+        panel.button(Target.Unit(UnitAction.Guard), "GUARD", "G", button_state(unit.guarding, false), false);
+        panel.end_buttons(false);
+    }
+
+    fn armed(&self, mode: ClickMode) -> bool { self.ui_click_mode == Option.Some(mode) }
+
+    /// A group of selected units: how many of each, how to order them, and buttons for what
+    /// every member can do at once.
+    fn group_tray(&self, panel: &mut PanelBuilder) {
+        // Each role and its count, in first-seen order.
+        let mut kinds: Vec[str] = Vec.new();
+        let mut counts: Vec[i32] = Vec.new();
+        for m in 0..self.group.len() {
+            let (role, _) = self.unit_role(&self.units[self.group[m]]);
+            let mut found = false;
+            for k in 0..kinds.len() {
+                if str_eq(kinds[k], role) {
+                    counts[k] = counts[k] + 1;
+                    found = true;
+                }
+            }
+            if !found {
+                kinds.push(role);
+                counts.push(1);
+            }
+        }
+        let count = self.group.len();
+        panel.text_owned(TextSize.Title, text(fn() can {Out} { show_i64(count as i64); Out.put(" UNITS SELECTED"); }), TEXT);
+        panel.text_owned(TextSize.Body, group_summary(&kinds, &counts), DIM_TEXT);
+        panel.text(TextSize.Small, "CLICK A HEX: EACH MOVES AS CLOSE TO IT AS IT CAN", LABEL_TEXT);
+        panel.text(TextSize.Small, "CLICK AN ENEMY: EVERY UNIT IN RANGE ATTACKS IT", LABEL_TEXT);
+        panel.text(TextSize.Small, "CLICK ONE UNIT TO SELECT JUST IT \u{b7} ALT-CLICK ADDS OR REMOVES", LABEL_TEXT);
+        panel.gap(GAP);
+
+        let mut all_guarding = true;
+        for m in 0..self.group.len() {
+            if !self.units[self.group[m]].guarding { all_guarding = false; }
+        }
+        panel.begin_buttons();
+        panel.button(Target.Unit(UnitAction.Move), "MOVE", "M", ButtonState.Ready, self.armed(ClickMode.Move));
+        panel.button(Target.Unit(UnitAction.Attack), "ATTACK", "X \u{b7} SHIFT", ButtonState.Ready, self.armed(ClickMode.Attack));
+        panel.button(Target.Unit(UnitAction.Hold), "HOLD", "SPACE", ButtonState.Ready, false);
+        panel.button(Target.Unit(UnitAction.Guard), "GUARD", "G", button_state(all_guarding, false), false);
+        panel.end_buttons(false);
+    }
+
+    /// The open city: population, stores and income, growth, what it's building, and a card
+    /// for each unit it can build.
+    fn city_tray(&self, i: i32, panel: &mut PanelBuilder) {
+        let city = &self.cities[i];
+        let (food, production) = self.income(i);
+        let net_food = food - city.population * 8;
+        let (growth_percent, _, growth_turns) = self.growth_status(i);
+        let (id, population, team, working) = (city.id, city.population, city.team, city.worked.len());
+        let (stored_food, stored_production, queue) = (city.food, city.production, city.queue);
+
+        panel.begin_line();
+        panel.span_owned(text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); }), team.color());
+        panel.span_owned(text(fn() can {Out} { Out.put("   POPULATION "); show_i64(population as i64); }), DIM_TEXT);
+        panel.end_line(TextSize.Title);
+        let net_color = if net_food > 0 { BOOSTED_TEXT } else if net_food < 0 { REDUCED_TEXT } else { TEXT };
+        panel.begin_line();
+        panel.stat("CITIZENS", text(fn() can {Out} { show_i64(working as i64); Out.put(" OF "); show_i64(population as i64); Out.put(" WORKING"); }), TEXT);
+        panel.end_line(TextSize.Body);
+        panel.begin_line();
+        panel.stat("FOOD", text(fn() can {Out} { show_quantity(stored_food); }), TEXT);
+        panel.span_owned(text(fn() can {Out} { Out.put("   "); show_signed_quantity(net_food); Out.put(" PER TURN"); }), net_color);
+        panel.end_line(TextSize.Body);
+        panel.begin_line();
+        panel.stat("PRODUCTION", text(fn() can {Out} { show_quantity(stored_production); }), TEXT);
+        panel.span_owned(text(fn() can {Out} { Out.put("   "); show_signed_quantity(production); Out.put(" PER TURN"); }), DIM_TEXT);
+        panel.end_line(TextSize.Body);
+        panel.begin_line();
+        match queue {
+            Option.Some(build) => {
+                let spent = if stored_production < build.cost() { stored_production } else { build.cost() };
+                panel.stat("BUILDING", text(fn() can {Out} {
+                    Out.put(build.name()); Out.put(" ("); show_quantity(spent); Out.put(" OF "); show_quantity(build.cost()); Out.put(")");
+                }), GOLD_TEXT);
+            }
+            Option.None => panel.stat("BUILDING", to_owned("NOTHING - CHOOSE BELOW"), DIM_TEXT),
+        }
+        panel.end_line(TextSize.Body);
+
+        panel.gap(GAP);
+        let growth = match growth_turns {
+            Option.Some(turns) => text(fn() can {Out} { Out.put("GROWTH IN "); show_i64(turns as i64); Out.put(" TURNS"); }),
+            Option.None => to_owned("NO GROWTH: NEED FOOD"),
+        };
+        panel.text_owned(TextSize.Small, growth, DIM_TEXT);
+        panel.bar(growth_percent as f32 / 100.0);
+
+        if let Option.Some(hex) = self.inspected_tile {
+            let (tile_food, tile_production) = self.tile_yield(hex);
+            let share = match self.routes(i).costs.get(hex) { Option.Some(cost) => delivered_share(cost), Option.None => 0 };
+            panel.gap(GAP);
+            panel.text_owned(TextSize.Small, text(fn() can {Out} {
+                Out.put("SELECTED TILE: "); show_i64(tile_food as i64); Out.put(" FOOD, "); show_i64(tile_production as i64);
+                Out.put(" PRODUCTION, "); show_i64((share * 25) as i64); Out.put("% DELIVERED");
+            }), DIM_TEXT);
+        }
+
+        panel.gap(GAP);
+        panel.begin_buttons();
+        for b in 0..4 {
+            let build = BUILDS[b];
+            let hint = text(fn() can {Out} { Out.put_char(build.shortcut()); Out.put(" \u{b7} "); show_quantity(build.cost()); Out.put(" PROD"); });
+            let queued = match queue { Option.Some(q) => q == build, Option.None => false };
+            panel.button(Target.Build(build), build.name(), &hint, button_state(queued, false), false);
+        }
+        panel.end_buttons(false);
+        panel.gap(GAP);
+        panel.begin_buttons();
+        panel.button(Target.ToggleYields, "YIELDS", "Y", button_state(self.show_yields, false), false);
+        panel.end_buttons(false);
+        panel.gap(GAP);
+        panel.text(TextSize.Small, "CLICK TILES TO ASSIGN CITIZENS \u{b7} A AUTO-ASSIGN \u{b7} CLICK A UNIT TO LEAVE", LABEL_TEXT);
+    }
+
+    /// Everything about a map hex: terrain, what it yields, and what's on it.
+    fn tile_tooltip(&self, hex: Hex, panel: &mut PanelBuilder) {
+        let terrain = self.grid.terrain(hex);
+        let city = self.city_at(hex);
+        match city {
+            Option.Some(c) => {
+                let (team, id) = (self.cities[c].team, self.cities[c].id);
+                panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(team.name()); Out.put(" CITY "); show_u64((id + 1) as u64); }), team.color());
+            }
+            Option.None => panel.text(TextSize.Body, terrain.name(), TEXT),
+        }
+        if !terrain.is_passable() {
+            panel.text(TextSize.Small, "IMPASSABLE", DIM_TEXT);
+            return;
+        }
+        let (food, production) = self.raw_yield(hex);
+        panel.begin_line();
+        panel.stat("FOOD", text(fn() can {Out} { show_i64(food as i64); }), BOOSTED_TEXT);
+        panel.stat("PRODUCTION", text(fn() can {Out} { show_i64(production as i64); }), GOLD_TEXT);
+        panel.end_line(TextSize.Small);
+
+        if city.is_some() {
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(terrain.name()); Out.put(" CITY CENTER"); }), DIM_TEXT);
+        }
+        if terrain.defense_multiplier() != 1.0 {
+            let bonus = (terrain.defense_multiplier() - 1.0) * 100.0;
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("+"); show_rounded(bonus); Out.put("% DEFENSE FOR UNITS HERE"); }), DIM_TEXT);
+        }
+        if let Option.Some(site) = self.sites.get(hex) {
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(site.team.name()); Out.put(" "); Out.put(site.kind.name()); }), DIM_TEXT);
+        }
+        if self.roads.contains(hex) { panel.text(TextSize.Small, "DIRT ROAD: GOODS MOVE THROUGH MORE CHEAPLY", DIM_TEXT); }
+        for c in 0..self.cities.len() {
+            if self.cities[c].worked.contains(hex) {
+                let id = self.cities[c].id;
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("WORKED BY CITY "); show_u64((id + 1) as u64); }), DIM_TEXT);
+                break;
+            }
+        }
+        if let Option.Some(open) = self.selected_city {
+            if self.cities[open].pos != hex {
+                let id = self.cities[open].id;
+                let note = match self.routes(open).costs.get(hex) {
+                    Option.Some(cost) => text(fn() can {Out} { show_i64((delivered_share(cost) * 25) as i64); Out.put("% REACHES CITY "); show_u64((id + 1) as u64); }),
+                    Option.None => text(fn() can {Out} { Out.put("OUT OF CITY "); show_u64((id + 1) as u64); Out.put("'S REACH"); }),
+                };
+                panel.text_owned(TextSize.Small, note, DIM_TEXT);
+            }
+        }
+        let mut here: Vec[i32] = Vec.new();
+        for i in 0..self.units.len() {
+            if self.units[i].pos == hex { here.push(i); }
+        }
+        if !here.is_empty() {
+            let names = text(fn() can {Out} {
+                for k in 0..here.len() {
+                    let unit = self.units[here[k]];
+                    let (role, _) = self.unit_role(&unit);
+                    if k > 0 { Out.put(", "); }
+                    Out.put(unit.team.name());
+                    Out.put(" ");
+                    Out.put(role);
+                }
+            });
+            panel.text_owned(TextSize.Small, names, DIM_TEXT);
+        }
+        if self.is_contested(hex) { panel.text(TextSize.Small, "CONTESTED", DIM_TEXT); }
+    }
+
+    /// The tile tooltip, just below and right of the cursor (`point`, in UI pixels), kept inside
+    /// the window.
+    fn draw_tile_tooltip(&self, hex: Hex, point: Vec2, screen_size: Vec2, out: &mut Vec[MeshVertex]) {
+        let mut panel = panel_builder(false);
+        self.tile_tooltip(hex, &mut panel);
+        let size = panel.size();
+        let at = point.add(vec2(TILE_TOOLTIP_OFFSET_X, TILE_TOOLTIP_OFFSET_Y));
+        let right_most = screen_size.x - MARGIN - size.x;
+        let low_most = MARGIN + size.y;
+        let top_left = vec2(if at.x < right_most { at.x } else { right_most }, if at.y > low_most { at.y } else { low_most });
+        let mut layout = empty_layout();
+        panel.place_top_left(top_left, &mut layout);
+        layout.draw_shapes(out);
+    }
+
+    /// A panel explaining what `button` does, above it (or below, for the top bar), kept inside
+    /// the window.
+    fn draw_tooltip(&self, button: &Button, layout: &UiLayout, screen_size: Vec2, out: &mut Vec[MeshVertex]) {
+        let mut panel = panel_builder(false);
+        if !self.tooltip(button.target, &mut panel) { return; }
+        let size = panel.size();
+        let centered = (button.min.x + button.max.x - size.x) / 2.0;
+        let right_most = screen_size.x - MARGIN - size.x;
+        let hi = if right_most > MARGIN { right_most } else { MARGIN };
+        let left = if centered < MARGIN { MARGIN } else if centered > hi { hi } else { centered };
+        // Clear of the panel the button sits in, so the tooltip doesn't hide what the panel
+        // says: below panels at the top of the window (the top bar, the debug panel), above
+        // those at the bottom (the tray).
+        let center = button.min.add(button.max).scale(0.5);
+        let mut holder = Rect { min: button.min, max: button.max };
+        for i in 0..layout.panels.len() {
+            let r = layout.panels[i];
+            if contains(r.min, r.max, center) {
+                holder = r;
+                break;
+            }
+        }
+        let near_top = (holder.min.y + holder.max.y) / 2.0 > screen_size.y / 2.0;
+        let bottom = if near_top { holder.min.y - TOOLTIP_GAP - 2.0 * BORDER - size.y } else { holder.max.y + TOOLTIP_GAP + 2.0 * BORDER };
+        let mut tip = empty_layout();
+        panel.place_bottom_left(vec2(left, bottom), &mut tip);
+        tip.draw_shapes(out);
+    }
+
+    /// A tooltip's title (with the shortcut), description, and why the button is unavailable,
+    /// if it is, into `panel`. Answers whether there is one.
+    fn tooltip(&self, target: Target, panel: &mut PanelBuilder) -> bool {
+        let mut title = to_owned("");
+        let mut shortcut = to_owned("");
+        let mut description = to_owned("");
+        let mut unavailable: Option[Str] = Option.None;
+        match target {
+            Target.Unit(action) => {
+                // A group's buttons are described for its first member.
+                let idx = match self.selected {
+                    Option.Some(i) => i,
+                    Option.None => { if self.group.is_empty() { return false; } self.group[0] }
+                };
+                self.unit_action_text(action, idx, &mut title, &mut shortcut, &mut description, &mut unavailable);
+            }
+            Target.Build(build) => {
+                title = to_owned(build.name());
+                shortcut = text(fn() can {Out} { Out.put_char(build.shortcut()); });
+                description = text(fn() can {Out} {
+                    Out.put(build.description()); Out.put(". COSTS "); show_quantity(build.cost());
+                    Out.put(" PRODUCTION; THE CITY SPENDS ITS STORED PRODUCTION AND PLACES THE UNIT NEXT TO ITSELF ONCE THERE'S ENOUGH.");
+                });
+            }
+            Target.Scenario(scenario) => {
+                title = text(fn() can {Out} { Out.put(scenario.name()); Out.put(" SCENARIO"); });
+                shortcut = to_owned(scenario.key());
+                let what = match scenario {
+                    Scenario.Combat => "THE ORIGINAL SMALL COMBAT MAP: FOUR UNITS A SIDE ACROSS A MOUNTAIN PASS.",
+                    Scenario.Cities => "TWO CITIES WITH FARMS, MINES, ROADS AND ARMIES, TO TEST THE ECONOMY AND FIGHTING OVER IT.",
+                    Scenario.Frontier => "A SETTLER AND A WARRIOR EACH AND NO CITIES YET. BOTH WARRIORS ARE YOURS TO MOVE.",
+                };
+                description = text(fn() can {Out} { Out.put(what); Out.put(" STARTS IT FRESH, OR RESTARTS IT IF IT'S THE CURRENT ONE; THE SAVESTATE IS KEPT."); });
+            }
+            Target.SaveState => {
+                title = to_owned("SAVE");
+                shortcut = to_owned("F6");
+                description = to_owned("SAVES A SNAPSHOT OF THE WHOLE GAME (UNIT POSITIONS, HEALTH, ORDERS, CITIES, TURN) FOR TESTING, REPLACING ANY EARLIER ONE. IT'S KEPT ONLY UNTIL THE GAME CLOSES.");
+                if self.is_resolving() { unavailable = Option.Some(to_owned("CAN'T SAVE WHILE A TURN PLAYS OUT")); }
+            }
+            Target.LoadState => {
+                title = to_owned("LOAD");
+                shortcut = to_owned("F7");
+                description = if self.savestate.is_some() {
+                    text(fn() can {Out} { Out.put("RESTORES THE SNAPSHOT ("); self.show_saved(); Out.put("). IT'S KEPT, SO YOU CAN LOAD IT AGAIN TO RETRY."); })
+                } else {
+                    to_owned("RESTORES THE SNAPSHOT SAVED WITH F6.")
+                };
+                if self.savestate.is_none() { unavailable = Option.Some(to_owned("NOTHING SAVED YET")); }
+            }
+            Target.TogglePlayback => {
+                title = to_owned("PLAYBACK");
+                shortcut = to_owned("F8");
+                description = to_owned("SWITCHES HOW A TURN PLAYS OUT: ONE STEP AT A TIME IN THE RESOLUTION ORDER, OR EVERY STEP AT ONCE. THE STEPS STILL RESOLVE IN THE SAME ORDER EITHER WAY, SO THE OUTCOME IS THE SAME; ONLY THE PACING CHANGES.");
+            }
+            Target.ToggleYields => {
+                title = to_owned("YIELDS");
+                shortcut = to_owned("Y");
+                description = to_owned("SHOWS THE FOOD AND PRODUCTION OF EACH TILE WITHIN THIS CITY'S REACH, AND WHAT SHARE OF IT MAKES IT BACK TO THE CITY.");
+            }
+            Target.EndTurn => {
+                title = to_owned("END TURN");
+                shortcut = to_owned("SPACE");
+                description = to_owned("RESOLVES EVERYONE'S ORDERS AND COLLECTS CITY INCOME. FIRST EVERY UNIT NEEDS ORDERS (SPACE HOLDS ONE AS IT IS, G GUARDS IT FOR GOOD) AND EVERY CITY NEEDS SOMETHING TO BUILD. CITIZENS CAN BE MOVED AT ANY TIME.");
+                let (units, cities) = self.pending();
+                if units + cities > 0 { unavailable = Option.Some(text(fn() can {Out} { show_pending(units, cities); Out.put(": CLICKING SELECTS ONE"); })); }
+            }
+        }
+        panel.begin_line();
+        panel.span_owned(title, TEXT);
+        panel.span_owned(spaced(&shortcut), LABEL_TEXT);
+        panel.end_line(TextSize.Body);
+        let lines = wrap(&description, TOOLTIP_WRAP);
+        for i in 0..lines.len() {
+            let line = &lines[i];
+            panel.text(TextSize.Small, line, DIM_TEXT);
+        }
+        if let Option.Some(reason) = unavailable { panel.text_owned(TextSize.Small, reason, REDUCED_TEXT); }
+        true
+    }
+
+    fn unit_action_text(&self, action: UnitAction, idx: i32, title: &mut Str, shortcut: &mut Str, description: &mut Str, unavailable: &mut Option[Str]) {
+        let unit = self.units[idx];
+        let can_move = unit.stats().move_range > 0;
+        let locked = self.rival_of(idx).is_some();
+        match action {
+            UnitAction.Move => {
+                *title = to_owned("MOVE");
+                *shortcut = to_owned("M");
+                *description = to_owned("THE NEXT CLICK ON A GREEN HEX MOVES THERE. WITHOUT PICKING AN ACTION, CLICKING A GREEN HEX MOVES AND CLICKING AN ENEMY ATTACKS. CLICK A QUEUED ORDER AGAIN TO CANCEL IT.");
+                if !can_move { *unavailable = Option.Some(to_owned("CANNOT MOVE THIS TURN")); }
+            }
+            UnitAction.Attack => {
+                *title = to_owned("ATTACK");
+                *shortcut = to_owned("X OR SHIFT-CLICK");
+                *description = to_owned("THE NEXT CLICK ATTACKS ANY HEX IN RANGE, OCCUPIED OR NOT: WHOEVER STANDS THERE WHEN THE ATTACK LANDS IS HIT. RANGE COUNTS FROM WHERE THE UNIT WILL BE AFTER ITS MOVE.");
+                if locked {
+                    *unavailable = Option.Some(to_owned("LOCKED IN A CONTESTED HEX"));
+                } else if !unit.can_attack() {
+                    *unavailable = Option.Some(to_owned("BUSY WITH ITS ABILITY THIS TURN"));
+                }
+            }
+            UnitAction.Swap => {
+                *title = to_owned("SWAP");
+                *shortcut = to_owned("CTRL-CLICK");
+                *description = to_owned("THE NEXT CLICK ON AN ADJACENT ALLY SWAPS PLACES WITH IT. BOTH UNITS MUST BE ABLE TO MOVE.");
+                if locked {
+                    *unavailable = Option.Some(to_owned("LOCKED IN A CONTESTED HEX"));
+                } else if !can_move {
+                    *unavailable = Option.Some(to_owned("CANNOT MOVE THIS TURN"));
+                }
+            }
+            UnitAction.Ability => {
+                let (name, what) = ability_text(&unit);
+                let cooldown = unit.ability().cooldown();
+                *title = to_owned(name);
+                *shortcut = to_owned("Q");
+                *description = text(fn() can {Out} {
+                    Out.put(what);
+                    Out.put(".");
+                    if cooldown > 0 { Out.put(" COOLDOWN: "); show_turns(cooldown); Out.put("."); }
+                });
+                let remaining = unit.ability_cooldown;
+                if remaining > 0 { *unavailable = Option.Some(text(fn() can {Out} { Out.put("READY IN "); show_turns(remaining); })); }
+            }
+            UnitAction.Hold => {
+                *title = to_owned("HOLD");
+                *shortcut = to_owned("SPACE");
+                *description = to_owned("KEEP ANY ORDERS ALREADY QUEUED AND SKIP THE REST OF THIS UNIT'S TURN. ONCE NOTHING NEEDS ORDERS, SPACE ENDS THE TURN. CTRL-RIGHT-CLICK CLEARS ITS ORDERS AND THE HOLD.");
+            }
+            UnitAction.Guard => {
+                *title = to_owned("GUARD");
+                *shortcut = to_owned("G");
+                *description = to_owned("THE UNIT STAYS WHERE IT IS AND IS SKIPPED EVERY TURN, NOT JUST THIS ONE, UNTIL YOU GIVE IT AN ORDER OR PRESS G AGAIN.");
+            }
+            UnitAction.Settle => {
+                *title = to_owned("FOUND CITY");
+                *shortcut = to_owned("F");
+                *description = to_owned("TURNS THIS SETTLER INTO A CITY ON ITS HEX. CITIES MUST BE SPACED APART.");
+            }
+            UnitAction.Road => {
+                *title = to_owned("BUILD ROAD");
+                *shortcut = to_owned("R");
+                *description = to_owned("BUILDS A DIRT ROAD ON THIS WORKER'S HEX, LOWERING THE COST OF MOVING GOODS THROUGH IT.");
+            }
+            UnitAction.Improve => {
+                *title = to_owned("IMPROVE");
+                *shortcut = to_owned("I");
+                *description = to_owned("BUILDS A FARM OR MINE ON THIS WORKER'S HEX, RAISING WHAT IT YIELDS.");
+            }
+        }
+    }
+
+    /// The unit drawn under `cursor` (window pixels, origin top-left). In a contested hex,
+    /// whichever of the two is nearer the cursor.
+    fn unit_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option[i32] {
+        let Option.Some(hex) = self.hex_at_screen(cursor, screen_size) else { return Option.None; };
+        let point = self.camera.screen_to_world(cursor, screen_size);
+        let mut best: Option[i32] = Option.None;
+        let mut best_distance: f32 = 0.0;
+        for i in 0..self.units.len() {
+            if self.units[i].pos != hex { continue; }
+            let d = self.unit_layout(i).0.distance(point);
+            if best.is_none() || d < best_distance {
+                best = Option.Some(i);
+                best_distance = d;
+            }
+        }
+        best
     }
 }
 
-/// The ability button's bottom-left and top-right corners, centered along the bottom of the
-/// window.
-fn button_rect(screen_size: Vec2) -> (Vec2, Vec2) {
-    let min = vec2(((screen_size.x - BUTTON_WIDTH) / 2.0).round(), BUTTON_BOTTOM);
-    (min, min.add(vec2(BUTTON_WIDTH, BUTTON_HEIGHT)))
+/// A button before it's placed.
+pub struct ButtonSpec { target: Target, label: Str, hint: Str, state: ButtonState, armed: bool }
+
+/// What a panel row holds.
+pub enum RowKind {
+    /// Spans `from..to` of the builder's.
+    Text,
+    Gap,
+    Bar,
+    /// Buttons `from..to` of equal width, a label over a hint.
+    Buttons,
+    /// Buttons `from..to` of equal width, one line each, label then hint.
+    CompactButtons,
 }
 
-/// The ability's button label and a one-line description of what it does.
+pub struct Row { kind: RowKind, size: TextSize, value: f32, from: i32, to: i32 }
+
+/// Stacks rows top to bottom in a panel sized to fit them.
+pub struct PanelBuilder {
+    rows: Vec[Row],
+    spans: Vec[Span],
+    specs: Vec[ButtonSpec],
+    /// Where the spans of the line in progress start.
+    line_from: i32,
+    /// Where the buttons of the row in progress start.
+    buttons_from: i32,
+    /// See-through, for the debug panel.
+    faded: bool,
+}
+
+fn panel_builder(faded: bool) -> PanelBuilder {
+    PanelBuilder { rows: Vec.new(), spans: Vec.new(), specs: Vec.new(), line_from: 0, buttons_from: 0, faded }
+}
+
+impl PanelBuilder {
+    /// A line of one span.
+    fn text(&mut self, size: TextSize, t: &str, color: Color) {
+        self.begin_line();
+        self.span(t, color);
+        self.end_line(size);
+    }
+
+    fn text_owned(&mut self, size: TextSize, t: Str, color: Color) {
+        self.begin_line();
+        self.span_owned(t, color);
+        self.end_line(size);
+    }
+
+    fn begin_line(&mut self) { self.line_from = self.spans.len(); }
+
+    fn span(&mut self, t: &str, color: Color) { self.spans.push(Span { text: to_owned(t), color }); }
+
+    fn span_owned(&mut self, t: Str, color: Color) { self.spans.push(Span { text: t, color }); }
+
+    /// A "LABEL value" pair on the line in progress: the label dim, the value in its own
+    /// colour, three spaces before every pair but the first.
+    fn stat(&mut self, label: str, value: Str, color: Color) {
+        let first = self.spans.len() == self.line_from;
+        self.span_owned(text(fn() can {Out} { if !first { Out.put("   "); } Out.put(label); Out.put(" "); }), LABEL_TEXT);
+        self.span_owned(value, color);
+    }
+
+    fn end_line(&mut self, size: TextSize) {
+        let to = self.spans.len();
+        self.rows.push(Row { kind: RowKind.Text, size, value: 0.0, from: self.line_from, to });
+    }
+
+    fn gap(&mut self, height: f32) { self.rows.push(Row { kind: RowKind.Gap, size: TextSize.Small, value: height, from: 0, to: 0 }); }
+
+    /// A progress bar across the panel, `fraction` full.
+    fn bar(&mut self, fraction: f32) { self.rows.push(Row { kind: RowKind.Bar, size: TextSize.Small, value: fraction, from: 0, to: 0 }); }
+
+    fn begin_buttons(&mut self) { self.buttons_from = self.specs.len(); }
+
+    fn button(&mut self, target: Target, label: &str, hint: &str, state: ButtonState, armed: bool) {
+        self.specs.push(ButtonSpec { target, label: to_owned(label), hint: to_owned(hint), state, armed });
+    }
+
+    /// Ends a row of equally wide buttons; `compact` ones are one line each.
+    fn end_buttons(&mut self, compact: bool) {
+        let kind = if compact { RowKind.CompactButtons } else { RowKind.Buttons };
+        let to = self.specs.len();
+        self.rows.push(Row { kind, size: TextSize.Small, value: 0.0, from: self.buttons_from, to });
+    }
+
+    fn row_height(&self, row: Row) -> f32 {
+        match row.kind {
+            RowKind.Text => ui(row.size).line_height + LINE_GAP,
+            RowKind.Gap => row.value,
+            RowKind.Bar => GROWTH_BAR_HEIGHT,
+            RowKind.Buttons => BUTTON_HEIGHT,
+            RowKind.CompactButtons => END_TURN_HEIGHT,
+        }
+    }
+
+    fn row_width(&self, row: Row) -> f32 {
+        match row.kind {
+            RowKind.Text => {
+                let face = ui(row.size);
+                let mut w: f32 = 0.0;
+                for i in row.from..row.to {
+                    let t = &self.spans[i].text;
+                    w = w + face.width(t);
+                }
+                w
+            }
+            RowKind.Gap | RowKind.Bar => 0.0,
+            RowKind.Buttons | RowKind.CompactButtons => {
+                let n = row.to - row.from;
+                let width = self.button_width(row);
+                n as f32 * width + (if n > 0 { n - 1 } else { 0 }) as f32 * GAP
+            }
+        }
+    }
+
+    /// Width every button in a row shares: enough for the widest one.
+    fn button_width(&self, row: Row) -> f32 {
+        let compact = row.kind == RowKind.CompactButtons;
+        let mut widest = if compact { 0.0 } else { BUTTON_MIN_WIDTH };
+        for i in row.from..row.to {
+            let b = &self.specs[i];
+            let label_text = &b.label;
+            let hint_text = &b.hint;
+            let w = if compact {
+                single_line_button_width(label_text, hint_text)
+            } else {
+                let label = ui(TextSize.Body).width(label_text);
+                let hint = ui(TextSize.Small).width(hint_text);
+                (if label > hint { label } else { hint }) + 2.0 * BUTTON_PADDING
+            };
+            if w > widest { widest = w; }
+        }
+        widest.ceil()
+    }
+
+    /// The panel's size, padding included.
+    fn size(&self) -> Vec2 {
+        let mut width: f32 = 0.0;
+        let mut height: f32 = 0.0;
+        for i in 0..self.rows.len() {
+            let w = self.row_width(self.rows[i]);
+            if w > width { width = w; }
+            height = height + self.row_height(self.rows[i]);
+        }
+        vec2(width + 2.0 * PADDING, height + 2.0 * PADDING).round()
+    }
+
+    fn place_bottom_left(self, min: Vec2, layout: &mut UiLayout) {
+        let top = min.y + self.size().y;
+        self.place_top_left(vec2(min.x, top), layout);
+    }
+
+    fn place_top_left(self, top_left: Vec2, layout: &mut UiLayout) {
+        let size = self.size();
+        let min = vec2(top_left.x, top_left.y - size.y).round();
+        let max = min.add(size);
+        layout.panel(min, max, self.faded);
+
+        let left = min.x + PADDING;
+        let inner_width = size.x - 2.0 * PADDING;
+        let mut top = max.y - PADDING;
+        for r in 0..self.rows.len() {
+            let row = self.rows[r];
+            let height = self.row_height(row);
+            match row.kind {
+                RowKind.Text => {
+                    // Center capital letters in the line, ignoring the gap.
+                    let middle = top - (height - LINE_GAP) / 2.0;
+                    let mut spans: Vec[Span] = Vec.new();
+                    for i in row.from..row.to { spans.push(Span { text: copy_str(&self.spans[i].text), color: self.spans[i].color }); }
+                    layout.text_row(vec2(left, middle), row.size, spans);
+                }
+                RowKind.Gap => {}
+                RowKind.Bar => layout.shapes.push(Shape.Bar(vec2(left, top - height), vec2(left + inner_width, top), row.value)),
+                RowKind.Buttons | RowKind.CompactButtons => {
+                    let width = self.button_width(row);
+                    for i in row.from..row.to {
+                        let spec = &self.specs[i];
+                        let bmin = vec2(left + (i - row.from) as f32 * (width + GAP), top - height);
+                        layout.buttons.push(Button {
+                            target: spec.target,
+                            label: copy_str(&spec.label),
+                            hint: copy_str(&spec.hint),
+                            state: spec.state,
+                            armed: spec.armed,
+                            faded: self.faded,
+                            min: bmin.round(),
+                            max: bmin.add(vec2(width, height)).round(),
+                        });
+                    }
+                }
+            }
+            top = top - height;
+        }
+    }
+}
+
+fn copy_str(s: &Str) -> Str { to_owned(s) }
+
+/// "3 MELEE, 1 RANGED": each role in a group and how many it has.
+fn group_summary(kinds: &Vec[str], counts: &Vec[i32]) -> Str {
+    text(fn() can {Out} {
+        for k in 0..kinds.len() {
+            if k > 0 { Out.put(", "); }
+            show_i64(counts[k] as i64);
+            Out.put(" ");
+            Out.put(kinds[k]);
+        }
+    })
+}
+
+/// A tooltip's shortcut, set apart from the title before it.
+fn spaced(shortcut: &Str) -> Str { text(fn() can {Out} { Out.put("   "); Out.put(shortcut); }) }
+
+fn single_line_button_width(label: &str, hint: &str) -> f32 {
+    (ui(TextSize.Body).width(label) + GAP + ui(TextSize.Small).width(hint) + 2.0 * BUTTON_PADDING).ceil()
+}
+
+fn contains(min: Vec2, max: Vec2, point: Vec2) -> bool {
+    point.x >= min.x && point.y >= min.y && point.x <= max.x && point.y <= max.y
+}
+
+/// Window pixels (origin top-left, Y down) to UI pixels (origin bottom-left, Y up).
+pub fn to_ui(cursor: Vec2, screen_size: Vec2) -> Vec2 { vec2(cursor.x, screen_size.y - cursor.y) }
+
+fn draw_button(button: &Button, hovered: bool, out: &mut Vec[MeshVertex]) {
+    let (bg, text_color, hint_color) = match (button.state, hovered) {
+        (ButtonState.Ready, false) => (BUTTON_BG, TEXT, DIM_TEXT),
+        (ButtonState.Ready, true) => (BUTTON_HOVER_BG, TEXT, DIM_TEXT),
+        (ButtonState.Queued, false) => (QUEUED_BG, QUEUED_TEXT, QUEUED_HINT_TEXT),
+        (ButtonState.Queued, true) => (QUEUED_HOVER_BG, QUEUED_TEXT, QUEUED_HINT_TEXT),
+        (ButtonState.Disabled, _) => (DISABLED_BG, DISABLED_TEXT, DISABLED_TEXT),
+    };
+    let (border, border_color) = if button.armed { (ARMED_BORDER, ARMED_BORDER_COLOR) } else { (BORDER, BORDER_COLOR) };
+    let faded = button.faded;
+    let (bg, border_color, text_color, hint_color) = (fade(bg, faded), fade(border_color, faded), fade(text_color, faded), fade(hint_color, faded));
+    draw_box(button.min, button.max, bg, border, border_color, out);
+
+    let (label_face, hint_face) = (ui(TextSize.Body), ui(TextSize.Small));
+    let label = &button.label;
+    let hint = &button.hint;
+    let center = button.min.add(button.max).scale(0.5);
+    let height = button.max.y - button.min.y;
+    if height < BUTTON_HEIGHT {
+        // One line: the label, then the hint beside it.
+        let width = label_face.width(label) + GAP + hint_face.width(hint);
+        let left = center.x - width / 2.0;
+        let baseline = center.y - label_face.cap_height / 2.0;
+        label_face.push(vec2(left, baseline), label, text_color, out);
+        let hint_left = left + label_face.width(label) + GAP;
+        hint_face.push(vec2(hint_left, baseline), hint, hint_color, out);
+    } else {
+        // Two lines: the label, with the hint under it.
+        let gap = LINE_GAP + 2.0;
+        let block = label_face.cap_height + gap + hint_face.cap_height;
+        let label_baseline = center.y + block / 2.0 - label_face.cap_height;
+        let hint_baseline = center.y - block / 2.0;
+        let label_left = center.x - label_face.width(label) / 2.0;
+        let hint_left = center.x - hint_face.width(hint) / 2.0;
+        label_face.push(vec2(label_left, label_baseline), label, text_color, out);
+        hint_face.push(vec2(hint_left, hint_baseline), hint, hint_color, out);
+    }
+}
+
+/// `color` made see-through for the debug panel, or unchanged.
+fn fade(color: Color, faded: bool) -> Color {
+    if faded { [color[0], color[1], color[2], color[3] * DEBUG_ALPHA] } else { color }
+}
+
+/// A filled box with a border drawn around the outside of `min`..`max`.
+fn draw_box(min: Vec2, max: Vec2, bg: Color, border: f32, border_color: Color, out: &mut Vec[MeshVertex]) {
+    let b = vec2(border, border);
+    quad(min.sub(b), max.add(b), border_color, out);
+    quad(min, max, bg, out);
+}
+
+/// Green if a stat is above its base value, red if below.
+fn compare(value: f32, base: f32) -> Color {
+    if value > base { BOOSTED_TEXT } else if value < base { REDUCED_TEXT } else { TEXT }
+}
+
+/// A city amount in quarter units, without decimals when it's whole.
+fn show_quantity(quarters: i32) can {Out} {
+    if quarters % 4 == 0 { show_i64((quarters / 4) as i64); } else { show_f64_fixed(quarters as f64 / 4.0, 2); }
+}
+
+fn show_signed_quantity(quarters: i32) can {Out} {
+    if quarters >= 0 { Out.put("+"); }
+    show_quantity(quarters);
+}
+
+/// The End Turn button's label: the next thing the turn is waiting on (units first, as that's
+/// what clicking selects first), or "END TURN" once nothing is.
+pub fn end_turn_label(units: i32, cities: i32) -> Str {
+    if units == 1 { return to_owned("UNIT NEEDS ORDERS"); }
+    if units == 0 && cities == 0 { return to_owned("END TURN"); }
+    if units == 0 && cities == 1 { return to_owned("CHOOSE PRODUCTION"); }
+    if units == 0 { return text(fn() can {Out} { show_i64(cities as i64); Out.put(" CITIES NEED PRODUCTION"); }); }
+    text(fn() can {Out} { show_i64(units as i64); Out.put(" UNITS NEED ORDERS"); })
+}
+
+/// What the turn is waiting on, like "2 UNITS AND 1 CITY NEED ORDERS"; nothing once nothing is.
+fn show_pending(units: i32, cities: i32) can {Out} {
+    if units > 0 { show_i64(units as i64); Out.put(if units == 1 { " UNIT" } else { " UNITS" }); }
+    if units > 0 && cities > 0 { Out.put(" AND "); }
+    if cities > 0 { show_i64(cities as i64); Out.put(if cities == 1 { " CITY" } else { " CITIES" }); }
+    if units + cities > 0 { Out.put(if units + cities == 1 { " NEEDS ORDERS" } else { " NEED ORDERS" }); }
+}
+
+fn show_turns(turns: u32) can {Out} {
+    show_u64(turns as u64);
+    Out.put(if turns == 1 { " TURN" } else { " TURNS" });
+}
+
+/// Splits `t` into lines of at most `max_chars`, breaking between words.
+pub fn wrap(t: &str, max_chars: i32) -> Vec[Str] {
+    let mut lines: Vec[Str] = Vec.new();
+    let mut line = to_owned("");
+    for word in split_ascii_whitespace(t) {
+        if !line.is_empty() && line.len() as i32 + 1 + str_len(*word) as i32 > max_chars {
+            lines.push(replace(&mut line, to_owned("")));
+        }
+        if !line.is_empty() { push_char(&mut line, ' '); }
+        push(&mut line, *word);
+    }
+    if !line.is_empty() { lines.push(line); }
+    lines
+}
+
+/// The ability's name and a short description of what it does.
 fn ability_text(unit: &Unit) -> (str, str) {
     match unit.ability() {
-        Ability.ShieldWall => ("SHIELD WALL", "+50% DEFENSE THIS TURN - CANNOT MOVE"),
-        Ability.Volley => ("VOLLEY", "ATTACK ALSO HITS ENEMIES NEXT TO THE TARGET - ALL HITS DEAL 60%"),
+        Ability.ShieldWall => ("SHIELD WALL", "+50% DEFENSE THIS TURN, BUT CANNOT MOVE"),
+        Ability.Volley => ("VOLLEY", "THE ATTACK ALSO HITS ENEMIES NEXT TO THE TARGET, BUT EVERY HIT DEALS 60%"),
         Ability.Charge => ("CHARGE", "+1 MOVE AND +50% ATTACK THIS TURN"),
         Ability.Deploy if unit.deployed => ("PACK UP", "SPEND A TURN PACKING UP TO MOVE AGAIN"),
-        Ability.Deploy => ("DEPLOY", "SPEND A TURN SETTING UP - THEN +1 RANGE BUT CANNOT MOVE"),
+        Ability.Deploy => ("DEPLOY", "SPEND A TURN SETTING UP, THEN +1 RANGE BUT CANNOT MOVE UNTIL PACKED UP"),
     }
-}
-
-/// Appends `n` in decimal.
-fn push_decimal(s: &mut Str, n: u32) {
-    if n >= 10 { push_decimal(s, n / 10); }
-    push_char(s, digit_char((n % 10) as i64));
-}
-
-/// Draws a line of text centered horizontally in the window, snapped to whole pixels so glyph
-/// cells stay crisp.
-fn push_centered_text(screen_width: f32, bottom: f32, height: f32, text: &str, color: Color, out: &mut Vec[MeshVertex]) {
-    let left = ((screen_width - text_width(text, height)) / 2.0).round();
-    push_text(vec2(left, bottom.round()), height, text, color, out);
 }

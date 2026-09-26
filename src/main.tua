@@ -33,9 +33,12 @@ use renderer.run;
 use renderer.pipelines.MeshVertex;
 use icon.icon;
 use game.GameState;
+use game.font.atlas;
 use game.city.BUILDS;
 use game.orders.ClickMode;
 use game.scenario.Scenario;
+use game.ui.quit_prompt;
+use game.ui.selection_box;
 use game.ui.ui_projection;
 
 const TITLE: str = "Hex Combat Sandbox";
@@ -47,6 +50,9 @@ const DEFAULT_HEIGHT: i32 = 900;
 /// Window icon sizes, in pixels; Windows scales them to fit.
 const WINDOW_ICON_SIZE: i32 = 64;
 const TASKBAR_ICON_SIZE: i32 = 256;
+
+/// How long Escape must be held to quit, in nanoseconds.
+const QUIT_HOLD: i64 = 1000000000;
 
 /// Dragging the left button at least this many pixels pans the map instead of clicking.
 const DRAG_THRESHOLD: f32 = 6.0;
@@ -65,6 +71,9 @@ struct Input {
     /// Where an Alt-drag selection box started, while the button is down.
     box_start: Option[Vec2],
     mods: Modifiers,
+    /// When Escape was pressed (`Clock.now_nanos`), while it's held; the game quits once it's
+    /// been held for `QUIT_HOLD`.
+    quit_held_since: Option[i64],
     closed: bool,
 }
 
@@ -74,11 +83,12 @@ fn forget_gestures(input: &mut Input) {
     input.left_dragging = false;
     input.panning = false;
     input.cursor = Option.None;
+    input.quit_held_since = Option.None;
     input.box_start = Option.None;
 }
 
 /// Applies one window event to the game, answering what the window should do about it.
-fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest can {Log} {
+fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest can {Log, Clock} {
     match e {
         Event.CloseRequested => { input.closed = true; }
         Event.Resized(w, h) => { input.size = vec2(w as f32, h as f32); }
@@ -148,12 +158,15 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
         Event.KeyDown(key, repeat) => {
             if !repeat {
                 match key {
+                    // Holding Escape quits; see `on_frame`.
+                    Key.Escape => { input.quit_held_since = Option.Some(Clock.now_nanos()); }
                     // F5: borderless fullscreen on the window's monitor, or back.
                     Key.Function(5) => { return WindowRequest.ToggleFullscreen; }
                     _ => on_key(game, key),
                 }
             }
         }
+        Event.KeyUp(key) => match key { Key.Escape => { input.quit_held_since = Option.None; } _ => {} },
         _ => {}
     }
     WindowRequest.Nothing
@@ -195,14 +208,25 @@ fn on_key(game: &mut GameState, key: Key) can {Log} {
 
 /// Plays one frame: advances the game by `dt` seconds and lays out the world and the UI as
 /// two batches. Answers whether to keep running.
-fn on_frame(game: &mut GameState, input: &Input, w: u32, h: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool can {Log, Rand} {
+fn on_frame(game: &mut GameState, input: &Input, w: u32, h: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool can {Log, Rand, Clock} {
     if input.closed { return false; }
     game.update(dt);
     let size = vec2(w as f32, h as f32);
+    game.update_hover(input.cursor, size, dt);
     let world = game.build_vertices();
     for i in 0..world.len() { vertices.push(world[i]); }
     batches.push(DrawBatch { view_proj: game.camera.view_proj(size).to_cols(), first: 0, count: world.len() as u32 });
-    let ui = game.build_ui(size);
+    let mut ui = game.build_ui(size, input.cursor);
+    if let Option.Some(since) = input.quit_held_since {
+        let progress = (Clock.now_nanos() - since) as f32 / QUIT_HOLD as f32;
+        if progress >= 1.0 { return false; }
+        quit_prompt(progress, size, &mut ui);
+    }
+    if let Option.Some(start) = input.box_start {
+        if let Option.Some(end) = input.cursor {
+            if start.distance(end) >= DRAG_THRESHOLD { selection_box(start, end, size, &mut ui); }
+        }
+    }
     for i in 0..ui.len() { vertices.push(ui[i]); }
     batches.push(DrawBatch { view_proj: ui_projection(size).to_cols(), first: world.len() as u32, count: ui.len() as u32 });
     true
@@ -223,6 +247,7 @@ fn window_spec() -> WindowSpec {
 fn play(frames: i32, validate: bool) -> i32 can {Log, Clock} {
     let mut rng = seed(Clock.now_nanos() as u64);
     let spec = window_spec();
+    let atlas = atlas();
     let icons = Icons { small: icon(WINDOW_ICON_SIZE), small_size: WINDOW_ICON_SIZE, big: icon(TASKBAR_ICON_SIZE), big_size: TASKBAR_ICON_SIZE };
     handle {
         let mut game = GameState.city_scenario();
@@ -234,9 +259,10 @@ fn play(frames: i32, validate: bool) -> i32 can {Log, Clock} {
             left_dragging: false,
             box_start: Option.None,
             mods: Modifiers { shift: false, control: false, alt: false },
+            quit_held_since: Option.None,
             closed: false,
         };
-        handle { run(TITLE, spec, &icons, frames, validate) } with Scene {
+        handle { run(TITLE, spec, &icons, &atlas, frames, validate) } with Scene {
             input(e) => { resume on_event(&mut game, &mut input, e) }
             frame(w, h, dt, vertices, batches) => { resume on_frame(&mut game, &input, w, h, dt, vertices, batches) }
         }

@@ -1,0 +1,27 @@
+//! The text atlas and the UI's faces.
+
+use std.test.assert;
+use game.font.TextSize;
+use game.font.atlas;
+use game.font.ui;
+use game.glyphs.MIP_LEVELS;
+
+@test
+fn atlas_levels_halve_in_size() {
+    let a = atlas();
+    assert(a.levels.len() == MIP_LEVELS);
+    for i in 0..a.levels.len() {
+        let expected = (a.width >> i) * (a.height >> i);
+        assert(a.levels[i].len() == expected);
+    }
+}
+
+@test
+fn every_ui_size_has_a_face() {
+    let sizes: [TextSize; 3] = [TextSize.Small, TextSize.Body, TextSize.Title];
+    for i in 0..3 {
+        let face = ui(sizes[i]);
+        assert(face.cap_height > 0.0 && face.line_height > face.cap_height);
+        assert(face.width("MOVE") > face.width("M"));
+    }
+}

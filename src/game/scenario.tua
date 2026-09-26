@@ -146,6 +146,8 @@ impl GameState {
             show_yields: self.show_yields,
             ui_click_mode: self.ui_click_mode,
             inspected_tile: self.inspected_tile,
+            hovered_tile: self.hovered_tile,
+            hover_seconds: self.hover_seconds,
             notice: copy_str(&self.notice),
             grid: HexGrid { radius: self.grid.radius, terrain: copy_map(&self.grid.terrain) },
             units: copy_vec(&self.units),

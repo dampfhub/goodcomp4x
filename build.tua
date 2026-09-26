@@ -1,4 +1,5 @@
-// The hex combat sandbox: the game under `src/`, its GLSL under `shaders/`, and the Tuatara
+// The hex combat sandbox: the game under `src/`, its GLSL under `shaders/`, its font under
+// `fonts/`, and the Tuatara
 // bundled libraries it uses, copied into `deps/` (ignored by git) by
 // `tools/vendor-libs.ps1 <tuatara checkout>`.
 //
@@ -8,9 +9,13 @@
     Build.depend("deps/vulkan");
     Build.depend("deps/win32");
     Build.depend("deps/log");
+    Build.depend("deps/font");
     Build.root("src");
     // The GLSL, a root holding no modules, so `Fs.read` resolves against it.
     Build.root("shaders");
+    // The font the text is drawn in, read by `src/game/glyphs.tua` at build time.
+    Build.root("fonts");
     Build.exe("hex.exe");
     grant "src/renderer/pipelines.tua" {Fs, Proc};
+    grant "src/game/glyphs.tua" {Fs, Cpu};
 }

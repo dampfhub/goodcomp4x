@@ -13,6 +13,11 @@ use game.mesh.Color;
 pub enum Team { Blue, Red }
 
 impl Team {
+    /// The team's name as the UI prints it.
+    pub fn name(self) -> str {
+        match self { Team.Blue => "BLUE", Team.Red => "RED" }
+    }
+
     pub fn color(self) -> Color {
         match self {
             Team.Blue => [0.30, 0.55, 0.95, 1.0],

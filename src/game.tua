@@ -6,6 +6,8 @@ use std.collections.Deque;
 use std.collections.Map;
 use std.collections.Set;
 use std.fmt.Out;
+use std.fmt.show_i64;
+use std.math.Float;
 use std.linalg.vec2;
 use std.str.Str;
 use std.str.to_owned;
@@ -86,6 +88,10 @@ pub struct GameState {
     /// The action a command-tray button (or M, X) armed for the next map click.
     ui_click_mode: Option[ClickMode],
     inspected_tile: Option[Hex],
+    /// The map hex under the cursor (not over the UI), and how long the cursor has rested on
+    /// it, for the tile tooltip.
+    hovered_tile: Option[Hex],
+    hover_seconds: f32,
     notice: Str,
     grid: HexGrid,
     /// Living units only: a unit is removed the moment it dies.
@@ -167,6 +173,8 @@ impl GameState {
             show_yields: true,
             ui_click_mode: Option.None,
             inspected_tile: Option.None,
+            hovered_tile: Option.None,
+            hover_seconds: 0.0,
             notice: to_owned(""),
             grid: HexGrid.new(GRID_RADIUS, &terrain),
             units,
@@ -328,6 +336,14 @@ impl GameState {
         }
         visited
     }
+}
+
+/// `x` with no decimals, a half rounding to the even neighbour as Rust's `{:.0}` does.
+pub fn show_rounded(x: f32) can {Out} {
+    let floor = x.floor();
+    let mut r = x.round();
+    if x - floor == 0.5 && (r as i64) % 2 != 0 { r = r - 1.0 * (if x > 0.0 { 1.0 } else { -1.0 }); }
+    show_i64(r as i64);
 }
 
 /// Renders `body`'s output into a new string: the game's `format!`.

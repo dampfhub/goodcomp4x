@@ -1,340 +1,181 @@
-//! A 5x7 bitmap font. There is no text pipeline, so each lit cell of a glyph is drawn as a
-//! quad like any other geometry.
+//! Text drawn with an embedded TrueType font (Hack). Every glyph is rasterized once, into a
+//! coverage atlas the renderer samples. UI text uses glyphs rasterized at its exact pixel size
+//! so it stays crisp; world text scales one large set, with mipmaps for when it's drawn small.
+//!
+//! The font file is read at build time (`game.glyphs`), which keeps the outlines of the
+//! characters drawn here and lays the atlas out as constants, so the game carries neither the
+//! file nor a parser. `atlas` rasterizes those outlines into the laid-out places once, at
+//! startup.
 
 use std.linalg.Vec2;
 use std.linalg.vec2;
-use std.str.byte_at;
-use std.str.char_count;
+use std.math.Float;
 use std.str.chars;
+use font.subset_font;
+use font.atlas.mip_chain;
+use renderer.Atlas;
 use renderer.pipelines.MeshVertex;
+use game.glyphs.ATLAS_HEIGHT;
+use game.glyphs.ATLAS_WIDTH;
+use game.glyphs.CAP_HEIGHTS;
+use game.glyphs.EXTRA;
+use game.glyphs.FACE_SIZES;
+use game.glyphs.GLYPH_COUNT;
+use game.glyphs.HACK_FACE;
+use game.glyphs.HACK_GLYPHS;
+use game.glyphs.MIP_LEVELS;
+use game.glyphs.PLACED;
+use game.glyphs.characters;
+use game.glyphs.hack_ops;
 use game.mesh.Color;
-use game.mesh.quad;
 
-const COLS: i32 = 5;
-const ROWS: i32 = 7;
-/// Horizontal advance per character, in cells: the glyph plus one of spacing.
-const ADVANCE: i32 = COLS + 1;
+/// The pixel sizes UI text is drawn at.
+pub enum TextSize { Small, Body, Title }
 
-/// A glyph's rows, top first; `X` is a lit cell.
-type Glyph = [str; 7];
-
-/// Draws `ch` centered on `center`, `height` world units tall.
-pub fn push_glyph(center: Vec2, height: f32, ch: char, color: Color, out: &mut Vec[MeshVertex]) {
-    let cell = height / ROWS as f32;
-    let top_left = center.add(vec2(-cell * COLS as f32, height).scale(0.5));
-    push_glyph_cells(top_left, cell, ch, color, out);
-}
-
-/// Width of `text` drawn at `height`.
-pub fn text_width(text: &str, height: f32) -> f32 {
-    let cell = height / ROWS as f32;
-    let advances = char_count(text) as i32 * ADVANCE;
-    (if advances > 0 { advances - 1 } else { 0 }) as f32 * cell
-}
-
-/// Width of `text` drawn with glyphs `height` tall; world text sizes by its glyph height.
-pub fn world_text_width(text: &str, height: f32) -> f32 { text_width(text, height) }
-
-/// Draws a line of text with its bottom-left corner at `origin`.
-pub fn push_text(origin: Vec2, height: f32, text: &str, color: Color, out: &mut Vec[MeshVertex]) {
-    let cell = height / ROWS as f32;
-    let mut i = 0;
-    for ch in chars(text) {
-        let top_left = origin.add(vec2((i * ADVANCE) as f32 * cell, height));
-        push_glyph_cells(top_left, cell, *ch, color, out);
-        i = i + 1;
+impl TextSize {
+    /// The size's glyph set in the atlas.
+    fn face_index(self) -> i32 {
+        match self { TextSize.Small => 0, TextSize.Body => 1, TextSize.Title => 2 }
     }
 }
 
-/// Characters without a glyph (including space) are left blank.
-fn push_glyph_cells(top_left: Vec2, cell: f32, ch: char, color: Color, out: &mut Vec[MeshVertex]) {
-    let Option.Some(rows) = glyph(ch) else { return; };
-    for row in 0..ROWS {
-        for col in 0..COLS {
-            if byte_at(rows[row], col as i64) == Option.Some('X' as i64) {
-                // Y points up, so each successive row sits lower.
-                let min = top_left.add(vec2(col as f32, -(row as f32 + 1.0)).scale(cell));
-                quad(min, min.add(vec2(cell, cell)), color, out);
-            }
+/// Which of the atlas's glyph sets world text scales.
+const WORLD_FACE: i32 = 3;
+
+/// A character's place among `characters()`; one the font lacks draws as '?'.
+fn slot(ch: char) -> i32 {
+    let code = ch as i32;
+    if code >= 32 && code <= 126 { return code - 32; }
+    for i in 0..4 {
+        if ch == EXTRA[i] { return 95 + i; }
+    }
+    ('?' as i32) - 32
+}
+
+/// One glyph of one size: its rectangle in the atlas (`uv_min` is the bitmap's top-left), its
+/// bitmap's bottom-left relative to the pen on the baseline (Y up) and size in pixels, and how
+/// far the pen advances.
+struct AtlasGlyph { uv_min: Vec2, uv_max: Vec2, offset: Vec2, size: Vec2, advance: f32 }
+
+/// The font rasterized at one pixel size.
+pub struct TextFace {
+    index: i32,
+    /// Height of capital letters above the baseline, in pixels.
+    cap_height: f32,
+    /// Distance between the baselines of consecutive lines, in pixels.
+    line_height: f32,
+}
+
+fn face_at(index: i32) -> TextFace {
+    let px = FACE_SIZES[index] as f32;
+    let scale = px / HACK_FACE.units_per_em as f32;
+    let line = (HACK_FACE.ascender - HACK_FACE.descender + HACK_FACE.line_gap) as f32;
+    TextFace { index, cap_height: CAP_HEIGHTS[index] as f32, line_height: line * scale }
+}
+
+/// The face for UI text of `size`.
+pub fn ui(size: TextSize) -> TextFace { face_at(size.face_index()) }
+
+impl TextFace {
+    fn glyph(&self, ch: char) -> AtlasGlyph {
+        let k = slot(ch);
+        let p = PLACED[self.index * GLYPH_COUNT + k];
+        let atlas = vec2(ATLAS_WIDTH as f32, ATLAS_HEIGHT as f32);
+        let min = vec2(p.x as f32, p.y as f32);
+        let size = vec2(p.w as f32, p.h as f32);
+        let scale = FACE_SIZES[self.index] as f32 / HACK_FACE.units_per_em as f32;
+        AtlasGlyph {
+            uv_min: min.div(atlas),
+            uv_max: min.add(size).div(atlas),
+            offset: vec2(p.xmin as f32, p.ymin as f32),
+            size,
+            // Entry 0 is the missing-character glyph, so a character's entry is one past its slot.
+            advance: scale * HACK_GLYPHS[k + 1].advance as f32,
+        }
+    }
+
+    /// Horizontal space `text` takes up.
+    pub fn width(&self, text: &str) -> f32 {
+        let mut w: f32 = 0.0;
+        for ch in chars(text) { w = w + self.glyph(*ch).advance; }
+        w
+    }
+
+    /// Draws `text` at this face's own size in screen space, with its baseline's left end at
+    /// `origin`. Glyphs snap to whole pixels.
+    pub fn push(&self, origin: Vec2, text: &str, color: Color, out: &mut Vec[MeshVertex]) {
+        let at = origin.round();
+        let mut pen: f32 = 0.0;
+        for ch in chars(text) {
+            let g = self.glyph(*ch);
+            let min = vec2((at.x + pen).round(), at.y).add(g.offset);
+            push_glyph_quad(min, min.add(g.size), g, color, out);
+            pen = pen + g.advance;
         }
     }
 }
 
-fn glyph(ch: char) -> Option[Glyph] {
-    match ch {
-        'A' => Option.Some([".XXX.",
-                            "X...X",
-                            "X...X",
-                            "XXXXX",
-                            "X...X",
-                            "X...X",
-                            "X...X"]),
-        'B' => Option.Some(["XXXX.",
-                            "X...X",
-                            "X...X",
-                            "XXXX.",
-                            "X...X",
-                            "X...X",
-                            "XXXX."]),
-        'C' => Option.Some([".XXX.",
-                            "X...X",
-                            "X....",
-                            "X....",
-                            "X....",
-                            "X...X",
-                            ".XXX."]),
-        'D' => Option.Some(["XXX..",
-                            "X..X.",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            "X..X.",
-                            "XXX.."]),
-        'E' => Option.Some(["XXXXX",
-                            "X....",
-                            "X....",
-                            "XXXX.",
-                            "X....",
-                            "X....",
-                            "XXXXX"]),
-        'F' => Option.Some(["XXXXX",
-                            "X....",
-                            "X....",
-                            "XXXX.",
-                            "X....",
-                            "X....",
-                            "X...."]),
-        'G' => Option.Some([".XXX.",
-                            "X...X",
-                            "X....",
-                            "X.XXX",
-                            "X...X",
-                            "X...X",
-                            ".XXXX"]),
-        'H' => Option.Some(["X...X",
-                            "X...X",
-                            "X...X",
-                            "XXXXX",
-                            "X...X",
-                            "X...X",
-                            "X...X"]),
-        'I' => Option.Some([".XXX.",
-                            "..X..",
-                            "..X..",
-                            "..X..",
-                            "..X..",
-                            "..X..",
-                            ".XXX."]),
-        'J' => Option.Some(["..XXX",
-                            "...X.",
-                            "...X.",
-                            "...X.",
-                            "...X.",
-                            "X..X.",
-                            ".XX.."]),
-        'K' => Option.Some(["X...X",
-                            "X..X.",
-                            "X.X..",
-                            "XX...",
-                            "X.X..",
-                            "X..X.",
-                            "X...X"]),
-        'L' => Option.Some(["X....",
-                            "X....",
-                            "X....",
-                            "X....",
-                            "X....",
-                            "X....",
-                            "XXXXX"]),
-        'M' => Option.Some(["X...X",
-                            "XX.XX",
-                            "X.X.X",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            "X...X"]),
-        'N' => Option.Some(["X...X",
-                            "X...X",
-                            "XX..X",
-                            "X.X.X",
-                            "X..XX",
-                            "X...X",
-                            "X...X"]),
-        'O' => Option.Some([".XXX.",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            ".XXX."]),
-        'P' => Option.Some(["XXXX.",
-                            "X...X",
-                            "X...X",
-                            "XXXX.",
-                            "X....",
-                            "X....",
-                            "X...."]),
-        'Q' => Option.Some([".XXX.",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            "X.X.X",
-                            "X..X.",
-                            ".XX.X"]),
-        'R' => Option.Some(["XXXX.",
-                            "X...X",
-                            "X...X",
-                            "XXXX.",
-                            "X.X..",
-                            "X..X.",
-                            "X...X"]),
-        'S' => Option.Some([".XXX.",
-                            "X...X",
-                            "X....",
-                            ".XXX.",
-                            "....X",
-                            "X...X",
-                            ".XXX."]),
-        'T' => Option.Some(["XXXXX",
-                            "..X..",
-                            "..X..",
-                            "..X..",
-                            "..X..",
-                            "..X..",
-                            "..X.."]),
-        'U' => Option.Some(["X...X",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            ".XXX."]),
-        'V' => Option.Some(["X...X",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            "X...X",
-                            ".X.X.",
-                            "..X.."]),
-        'W' => Option.Some(["X...X",
-                            "X...X",
-                            "X...X",
-                            "X.X.X",
-                            "X.X.X",
-                            "X.X.X",
-                            ".X.X."]),
-        'X' => Option.Some(["X...X",
-                            "X...X",
-                            ".X.X.",
-                            "..X..",
-                            ".X.X.",
-                            "X...X",
-                            "X...X"]),
-        'Y' => Option.Some(["X...X",
-                            "X...X",
-                            ".X.X.",
-                            "..X..",
-                            "..X..",
-                            "..X..",
-                            "..X.."]),
-        'Z' => Option.Some(["XXXXX",
-                            "....X",
-                            "...X.",
-                            "..X..",
-                            ".X...",
-                            "X....",
-                            "XXXXX"]),
-        '0' => Option.Some([".XXX.",
-                            "X...X",
-                            "X..XX",
-                            "X.X.X",
-                            "XX..X",
-                            "X...X",
-                            ".XXX."]),
-        '1' => Option.Some(["..X..",
-                            ".XX..",
-                            "..X..",
-                            "..X..",
-                            "..X..",
-                            "..X..",
-                            ".XXX."]),
-        '2' => Option.Some([".XXX.",
-                            "X...X",
-                            "....X",
-                            "...X.",
-                            "..X..",
-                            ".X...",
-                            "XXXXX"]),
-        '3' => Option.Some(["XXXXX",
-                            "...X.",
-                            "..X..",
-                            "...X.",
-                            "....X",
-                            "X...X",
-                            ".XXX."]),
-        '4' => Option.Some(["...X.",
-                            "..XX.",
-                            ".X.X.",
-                            "X..X.",
-                            "XXXXX",
-                            "...X.",
-                            "...X."]),
-        '5' => Option.Some(["XXXXX",
-                            "X....",
-                            "XXXX.",
-                            "....X",
-                            "....X",
-                            "X...X",
-                            ".XXX."]),
-        '6' => Option.Some(["..XX.",
-                            ".X...",
-                            "X....",
-                            "XXXX.",
-                            "X...X",
-                            "X...X",
-                            ".XXX."]),
-        '7' => Option.Some(["XXXXX",
-                            "....X",
-                            "...X.",
-                            "..X..",
-                            ".X...",
-                            ".X...",
-                            ".X..."]),
-        '8' => Option.Some([".XXX.",
-                            "X...X",
-                            "X...X",
-                            ".XXX.",
-                            "X...X",
-                            "X...X",
-                            ".XXX."]),
-        '9' => Option.Some([".XXX.",
-                            "X...X",
-                            "X...X",
-                            ".XXXX",
-                            "....X",
-                            "...X.",
-                            ".XX.."]),
-        '+' => Option.Some([".....",
-                            "..X..",
-                            "..X..",
-                            "XXXXX",
-                            "..X..",
-                            "..X..",
-                            "....."]),
-        '-' => Option.Some([".....",
-                            ".....",
-                            ".....",
-                            "XXXXX",
-                            ".....",
-                            ".....",
-                            "....."]),
-        '%' => Option.Some(["XX...",
-                            "XX..X",
-                            "...X.",
-                            "..X..",
-                            ".X...",
-                            "X..XX",
-                            "...XX"]),
-        _ => Option.None,
+/// Draws `ch` in world space with capital letters `cap_height` tall, its ink centered
+/// horizontally on `center` and its capital-letter box vertically.
+pub fn push_glyph(center: Vec2, cap_height: f32, ch: char, color: Color, out: &mut Vec[MeshVertex]) {
+    let face = face_at(WORLD_FACE);
+    let g = face.glyph(ch);
+    let scale = cap_height / face.cap_height;
+    let min = vec2(center.x - g.size.x * scale / 2.0, center.y - cap_height / 2.0 + g.offset.y * scale);
+    push_glyph_quad(min, min.add(g.size.scale(scale)), g, color, out);
+}
+
+/// Width of world-space `text` with capital letters `cap_height` tall.
+pub fn world_text_width(text: &str, cap_height: f32) -> f32 {
+    let face = face_at(WORLD_FACE);
+    face.width(text) * cap_height / face.cap_height
+}
+
+/// Draws a line of world-space text with capital letters `cap_height` tall and its baseline's
+/// left end at `origin`.
+pub fn push_text(origin: Vec2, cap_height: f32, text: &str, color: Color, out: &mut Vec[MeshVertex]) {
+    let face = face_at(WORLD_FACE);
+    let scale = cap_height / face.cap_height;
+    let mut pen: f32 = 0.0;
+    for ch in chars(text) {
+        let g = face.glyph(*ch);
+        let min = origin.add(vec2(pen, 0.0).add(g.offset).scale(scale));
+        push_glyph_quad(min, min.add(g.size.scale(scale)), g, color, out);
+        pen = pen + g.advance;
     }
+}
+
+fn push_glyph_quad(min: Vec2, max: Vec2, g: AtlasGlyph, color: Color, out: &mut Vec[MeshVertex]) {
+    if g.size.x == 0.0 { return; }
+    // Bitmap rows run top to bottom, so the quad's bottom edge samples the bitmap's last row.
+    let bottom_left = MeshVertex { pos: [min.x, min.y, 0.0], color, uv: [g.uv_min.x, g.uv_max.y] };
+    let bottom_right = MeshVertex { pos: [max.x, min.y, 0.0], color, uv: [g.uv_max.x, g.uv_max.y] };
+    let top_right = MeshVertex { pos: [max.x, max.y, 0.0], color, uv: [g.uv_max.x, g.uv_min.y] };
+    let top_left = MeshVertex { pos: [min.x, max.y, 0.0], color, uv: [g.uv_min.x, g.uv_min.y] };
+    out.push(bottom_left);
+    out.push(bottom_right);
+    out.push(top_right);
+    out.push(bottom_left);
+    out.push(top_right);
+    out.push(top_left);
+}
+
+/// Every glyph rasterized into the atlas, with its mip chain: what the renderer uploads.
+pub fn atlas() -> Atlas {
+    let ops = hack_ops();
+    let font = subset_font(HACK_FACE, &HACK_GLYPHS, &ops);
+    let cs = characters();
+    let width = ATLAS_WIDTH;
+    let mut pixels: Vec[u8] = Vec.with_capacity(width * ATLAS_HEIGHT);
+    for _ in 0..width * ATLAS_HEIGHT { pixels.push(0); }
+    for s in 0..4 {
+        for i in 0..cs.len() {
+            let (m, bitmap) = font.rasterize(cs[i], FACE_SIZES[s] as f32);
+            let p = PLACED[s * GLYPH_COUNT + i];
+            for row in 0..m.height {
+                for x in 0..m.width { pixels[(p.y + row) * width + p.x + x] = bitmap[row * m.width + x]; }
+            }
+        }
+    }
+    Atlas { width, height: ATLAS_HEIGHT, levels: mip_chain(&pixels, width, ATLAS_HEIGHT, MIP_LEVELS) }
 }
