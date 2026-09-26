@@ -1,0 +1,91 @@
+//! The economy as played: logistics routes, income, growth and starvation, founding a city
+//! and spending production on a unit.
+
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.city.BuildUnit;
+use game.hex.Hex;
+use game.tests.sandbox;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+@test
+fn roads_improve_delivery_and_enemy_occupation_blocks_the_site() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.roads.clear();
+        let tile = Hex.new(-1, 0);
+        assert(g.routes(0).costs.get(tile) == Option.Some(6));
+        for q in -3..=-1 { g.roads.insert(Hex.new(q, 0)); }
+        assert(g.routes(0).costs.get(tile) == Option.Some(3));
+        g.units.push(Unit.new(100, tile, Team.Red, UnitType.Melee));
+        assert(!g.routes(0).costs.has(tile));
+    });
+}
+
+@test
+fn economy_ticks_once_with_no_units_and_preserves_quarters() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.cities[0].worked.clear();
+        let tile = Hex.new(-1, 0);
+        g.roads.clear();
+        g.cities[0].worked.push(tile);
+        assert(g.income(0).0 == 12 && g.income(0).1 == 6);
+        // The turn waits until the city has something to build; siege costs more than one
+        // turn's production, so none is spent.
+        g.end_planning();
+        assert(!g.is_resolving());
+        g.cities[0].queue = Option.Some(BuildUnit.Siege);
+        g.end_planning();
+        g.update(1.0);
+        assert(g.cities[0].production == 6);
+        g.update(10.0);
+        assert(g.cities[0].production == 6);
+    });
+}
+
+@test
+fn growth_starvation_and_assignments_obey_population() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.cities[0].food = 100;
+        g.resolve_economy();
+        assert(g.cities[0].population == 3);
+        g.cities[0].food = -100;
+        g.resolve_economy();
+        // Starvation loses at most one citizen a turn.
+        assert(g.cities[0].population == 2);
+        g.auto_assign_city(0);
+        assert(g.cities[0].worked.len() == 2);
+        assert(!g.may_assign(1, g.cities[0].worked[0]));
+    });
+}
+
+@test
+fn frontier_settler_founds_city_and_city_spends_production_on_unit() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.frontier_scenario();
+        g.found_city_selected();
+        assert(g.cities.len() == 1);
+        // The opposing settler remains.
+        assert(g.settlers.len() == 1);
+        g.queue_selected_city_unit(BuildUnit.Melee);
+        g.cities[0].production = BuildUnit.Melee.cost();
+        g.complete_builds();
+        assert(g.cities[0].queue.is_none());
+        let mut finished: Option[i32] = Option.None;
+        for i in 0..g.units.len() {
+            if finished.is_none() && g.units[i].team == Team.Blue { finished = Option.Some(i); }
+        }
+        let Option.Some(f) = finished else { assert(false); return; };
+        assert(g.units[f].unit_type == UnitType.Melee);
+        assert(g.units[f].pos.distance(g.cities[0].pos) == 1);
+    });
+}

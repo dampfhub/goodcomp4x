@@ -28,6 +28,7 @@ use renderer.Scene;
 use renderer.run;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
+use game.city.BUILDS;
 use game.orders.ClickMode;
 use game.ui.ui_projection;
 
@@ -35,8 +36,25 @@ const TITLE: str = "Hex Combat Sandbox";
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 720;
 
+/// Dragging the left button at least this many pixels pans the map instead of clicking.
+const DRAG_THRESHOLD: f32 = 6.0;
+
+/// A left-button press waiting for its release: where it went down, the click mode the
+/// modifiers picked then, and whether a click was allowed then (not while a turn played out).
+struct Press { origin: Vec2, mode: ClickMode, may_click: bool }
+
 /// The input state the frame loop keeps between events.
-struct Input { cursor: Option[Vec2], size: Vec2, panning: bool, mods: Modifiers, closed: bool }
+struct Input {
+    cursor: Option[Vec2],
+    size: Vec2,
+    panning: bool,
+    left_press: Option[Press],
+    left_dragging: bool,
+    /// Where an Alt-drag selection box started, while the button is down.
+    box_start: Option[Vec2],
+    mods: Modifiers,
+    closed: bool,
+}
 
 /// Applies one window event to the game.
 fn on_event(game: &mut GameState, input: &mut Input, e: Event) can {Log} {
@@ -45,36 +63,100 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) can {Log} {
         Event.Resized(w, h) => { input.size = vec2(w as f32, h as f32); }
         Event.CursorMoved(x, y) => {
             let pos = vec2(x, y);
-            if input.panning && input.size.y > 0.0 {
-                if let Option.Some(last) = input.cursor { game.camera.pan(pos.sub(last), input.size); }
+            let mut pan_from = input.cursor;
+            if let Option.Some(press) = input.left_press {
+                if !input.left_dragging && pos.distance(press.origin) >= DRAG_THRESHOLD {
+                    input.left_dragging = true;
+                    // Include motion below the threshold when the drag begins.
+                    if !input.panning { pan_from = Option.Some(press.origin); }
+                }
+            }
+            if (input.panning || input.left_dragging) && input.size.y > 0.0 {
+                if let Option.Some(last) = pan_from { game.camera.pan(pos.sub(last), input.size); }
             }
             input.cursor = Option.Some(pos);
+        }
+        Event.Focused(focused) => {
+            if !focused {
+                // The release may never arrive once focus is gone.
+                input.left_press = Option.None;
+                input.left_dragging = false;
+                input.panning = false;
+                input.cursor = Option.None;
+                input.box_start = Option.None;
+            }
         }
         Event.ModifiersChanged(m) => { input.mods = m; }
         Event.MouseDown(b) => match b {
             Button.Left => {
                 if let Option.Some(cursor) = input.cursor {
+                    // Alt starts a selection box instead of a click or pan.
+                    if input.mods.alt {
+                        input.box_start = Option.Some(cursor);
+                        return;
+                    }
                     let mode = if input.mods.shift { ClickMode.Attack } else if input.mods.control { ClickMode.Swap } else { ClickMode.Normal };
-                    game.handle_click(cursor, input.size, mode);
+                    input.left_press = Option.Some(Press { origin: cursor, mode, may_click: !game.is_resolving() });
+                    input.left_dragging = input.panning;
                 }
             }
-            Button.Right => game.handle_right_click(),
-            Button.Middle => { input.panning = true; }
+            Button.Right => {
+                if let Option.Some(cursor) = input.cursor { game.handle_context_click(cursor, input.size, input.mods.control); }
+            }
+            Button.Middle => {
+                input.panning = true;
+                if input.left_press.is_some() { input.left_dragging = true; }
+            }
         },
         Event.MouseUp(b) => match b {
+            Button.Left => {
+                if let Option.Some(start) = input.box_start {
+                    input.box_start = Option.None;
+                    if let Option.Some(end) = input.cursor {
+                        // Barely moving makes it an Alt-click on one unit.
+                        if start.distance(end) < DRAG_THRESHOLD {
+                            game.toggle_in_selection(end, input.size);
+                        } else {
+                            game.select_in_box(start, end, input.size);
+                        }
+                        return;
+                    }
+                }
+                if let Option.Some(press) = input.left_press {
+                    if !input.left_dragging && press.may_click { game.handle_click(press.origin, input.size, press.mode); }
+                }
+                input.left_press = Option.None;
+                input.left_dragging = false;
+            }
             Button.Middle => { input.panning = false; }
-            _ => {}
+            Button.Right => {}
         },
         Event.Wheel(steps) => game.camera.zoom(steps),
-        Event.KeyDown(key, repeat) => {
-            if !repeat {
-                match key {
-                    Key.Space => game.hold_selected_unit(),
-                    Key.Tab => game.select_next_unit(),
-                    Key.Letter(c) => { if c == 81 { game.toggle_selected_ability(); } }
-                    _ => {}
-                }
-            }
+        Event.KeyDown(key, repeat) => { if !repeat { on_key(game, key); } }
+        _ => {}
+    }
+}
+
+/// A key going down, not repeating.
+fn on_key(game: &mut GameState, key: Key) can {Log} {
+    match key {
+        Key.Space => game.hold_or_end_turn(),
+        Key.Tab => game.select_next_unit(),
+        Key.Letter(c) => match c as char {
+            'Q' => game.toggle_selected_ability(),
+            'C' => game.select_city(),
+            'A' => game.auto_assign_selected_city(),
+            'M' => game.choose_move_action(),
+            'X' => game.choose_attack_action(),
+            'R' => game.build_worker_road_selected(),
+            'I' => game.improve_worker_tile_selected(),
+            'F' => game.found_city_selected(),
+            'Y' => game.toggle_yields(),
+            'G' => game.toggle_guard(),
+            _ => {}
+        },
+        Key.Digit(d) => {
+            if d >= 1 && d <= 4 { game.queue_selected_city_unit(BUILDS[(d - 1) as i32]); }
         }
         _ => {}
     }
@@ -100,7 +182,16 @@ fn play(frames: i32, validate: bool) -> i32 can {Log, Clock} {
     let mut rng = seed(Clock.now_nanos() as u64);
     handle {
         let mut game = GameState.new();
-        let mut input = Input { cursor: Option.None, size: vec2(WIDTH as f32, HEIGHT as f32), panning: false, mods: Modifiers { shift: false, control: false, alt: false }, closed: false };
+        let mut input = Input {
+            cursor: Option.None,
+            size: vec2(WIDTH as f32, HEIGHT as f32),
+            panning: false,
+            left_press: Option.None,
+            left_dragging: false,
+            box_start: Option.None,
+            mods: Modifiers { shift: false, control: false, alt: false },
+            closed: false,
+        };
         handle { run(TITLE, WIDTH, HEIGHT, frames, validate) } with Scene {
             input(e) => { on_event(&mut game, &mut input, e); resume }
             frame(w, h, dt, vertices, batches) => { resume on_frame(&mut game, &input, w, h, dt, vertices, batches) }

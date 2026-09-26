@@ -1,0 +1,697 @@
+//! First economy experiment: cities, the tiles their citizens work, logistics routes, food
+//! and growth, and stored production spent on units. Amounts are in quarter units; route
+//! costs are in half hexes.
+
+use std.collections.Map;
+use std.collections.Set;
+use std.core.Keep;
+use std.fmt.Out;
+use std.fmt.Show;
+use std.fmt.show_i64;
+use std.fmt.show_u64;
+use log.Log;
+use log.info;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.text;
+use game.hex.Hex;
+use game.hex.HexGrid;
+use game.terrain.Terrain;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+/// Camera zoom the city scenarios start at: most of the radius-six map in view.
+const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
+
+pub struct City {
+    id: u32,
+    team: Team,
+    pos: Hex,
+    population: i32,
+    food: i32,
+    production: i32,
+    worked: Vec[Hex],
+    queue: Option[BuildUnit],
+}
+
+/// A unit a city can build.
+pub enum BuildUnit { Melee, Ranged, Cavalry, Siege }
+
+/// The build cards, in the order the tray shows them and 1-4 pick them.
+pub const BUILDS: [BuildUnit; 4] = [BuildUnit.Melee, BuildUnit.Ranged, BuildUnit.Cavalry, BuildUnit.Siege];
+
+impl BuildUnit {
+    pub fn unit_type(self) -> UnitType {
+        match self {
+            BuildUnit.Melee => UnitType.Melee,
+            BuildUnit.Ranged => UnitType.Ranged,
+            BuildUnit.Cavalry => UnitType.Cavalry,
+            BuildUnit.Siege => UnitType.Siege,
+        }
+    }
+
+    pub fn name(self) -> str {
+        match self {
+            BuildUnit.Melee => "MELEE",
+            BuildUnit.Ranged => "RANGED",
+            BuildUnit.Cavalry => "CAVALRY",
+            BuildUnit.Siege => "SIEGE",
+        }
+    }
+
+    /// Production it takes, in quarters.
+    pub fn cost(self) -> i32 {
+        match self {
+            BuildUnit.Melee => 48,
+            BuildUnit.Ranged => 56,
+            BuildUnit.Cavalry => 64,
+            BuildUnit.Siege => 72,
+        }
+    }
+
+    pub fn description(self) -> str {
+        match self {
+            BuildUnit.Melee => "TOUGH CLOSE FIGHTER",
+            BuildUnit.Ranged => "FIRES FROM 2 TILES",
+            BuildUnit.Cavalry => "FAST FLANKER",
+            BuildUnit.Siege => "LONG RANGE, SLOW",
+        }
+    }
+
+    pub fn shortcut(self) -> char {
+        match self {
+            BuildUnit.Melee => '1',
+            BuildUnit.Ranged => '2',
+            BuildUnit.Cavalry => '3',
+            BuildUnit.Siege => '4',
+        }
+    }
+}
+
+/// What a worked improvement on a tile is.
+pub enum SiteKind { Farm, Mine, Pasture }
+
+impl SiteKind {
+    pub fn name(self) -> str {
+        match self {
+            SiteKind.Farm => "FARM",
+            SiteKind.Mine => "MINE",
+            SiteKind.Pasture => "PASTURE",
+        }
+    }
+
+    /// The letter marking it on the map.
+    pub fn letter(self) -> char {
+        match self {
+            SiteKind.Farm => 'F',
+            SiteKind.Mine => 'M',
+            SiteKind.Pasture => 'P',
+        }
+    }
+}
+
+/// An improvement owned by a team; only that team's cities may work it.
+pub struct Site { team: Team, food: i32, production: i32, kind: SiteKind }
+
+/// A city's logistics reach: every hex its goods can come from, with the cheapest route's cost.
+pub struct Routes { costs: Map[Hex, i32] }
+
+/// Quarters of a tile's yield that reach the city along a route of `cost`.
+pub fn delivered_share(cost: i32) -> i32 {
+    if cost <= 2 { 4 } else if cost <= 4 { 3 } else if cost <= 6 { 2 } else if cost <= 8 { 1 } else { 0 }
+}
+
+/// A quarter amount with two decimals, like `-1.25`.
+pub fn show_amount(quarters: i32) can {Out} {
+    if quarters < 0 { Out.put("-"); }
+    let q = if quarters < 0 { -quarters } else { quarters };
+    show_i64((q / 4) as i64);
+    Out.put(match q % 4 { 0 => ".00", 1 => ".25", 2 => ".50", _ => ".75" });
+}
+
+/// A candidate tile for a citizen: its delivered food and production.
+struct Candidate { hex: Hex, food: i32, production: i32 }
+
+/// Whether `a` sorts before `b` by `(-score, q, r)`.
+fn ranks_before(a: Candidate, a_score: i32, b: Candidate, b_score: i32) -> bool {
+    if a_score != b_score { return a_score > b_score; }
+    if a.hex.q != b.hex.q { return a.hex.q < b.hex.q; }
+    a.hex.r < b.hex.r
+}
+
+/// The candidate that ranks first under `score`: where the Rust sorts and takes the head.
+fn best_candidate(candidates: &Vec[Candidate], food_first: bool, weight: i32) -> i32 {
+    let mut best = 0;
+    for i in 1..candidates.len() {
+        let (a, b) = (candidates[i], candidates[best]);
+        if ranks_before(a, score(a, food_first, weight), b, score(b, food_first, weight)) { best = i; }
+    }
+    best
+}
+
+fn score(c: Candidate, food_first: bool, weight: i32) -> i32 {
+    if food_first { c.food * weight + c.production } else { c.production * weight + c.food }
+}
+
+/// Drops `candidates[at]`, keeping the rest in order.
+fn remove_candidate(candidates: &mut Vec[Candidate], at: i32) {
+    let mut i = 0;
+    handle { candidates.retain(); } with Keep[Candidate] { keep(c) => { i = i + 1; resume i - 1 != at } }
+}
+
+impl GameState {
+    pub fn is_road_hex(&self, hex: Hex) -> bool {
+        self.roads.contains(hex) || self.city_at(hex).is_some()
+    }
+
+    /// The city standing on `hex`, if any.
+    pub fn city_at(&self, hex: Hex) -> Option[i32] {
+        for i in 0..self.cities.len() {
+            if self.cities[i].pos == hex { return Option.Some(i); }
+        }
+        Option.None
+    }
+
+    /// Y or the Yields button: shows or hides tile yields around the open city.
+    pub fn toggle_yields(&mut self) { self.show_yields = !self.show_yields; }
+
+    /// The open city, if its tile yields are being shown.
+    pub fn yields_city(&self) -> Option[i32] {
+        if self.show_yields { self.selected_city } else { Option.None }
+    }
+
+    /// What `hex` produces when worked: a city center's own yield, a site's, or its terrain's.
+    pub fn raw_yield(&self, hex: Hex) -> (i32, i32) {
+        if self.city_at(hex).is_some() { (2, 1) } else { self.tile_yield(hex) }
+    }
+
+    pub fn setup_cities(&mut self) {
+        let terrain = [
+            (Hex.new(-2, 2), Terrain.Hills),
+            (Hex.new(2, -2), Terrain.Hills),
+            (Hex.new(0, 0), Terrain.Hills),
+            (Hex.new(0, -4), Terrain.Mountains),
+            (Hex.new(0, -3), Terrain.Mountains),
+            (Hex.new(0, -2), Terrain.Mountains),
+            (Hex.new(0, 2), Terrain.Mountains),
+            (Hex.new(0, 3), Terrain.Mountains),
+            (Hex.new(0, 4), Terrain.Mountains),
+        ];
+        self.grid = HexGrid.new(6, &terrain);
+        self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
+        let sides: [(u32, Team, i32); 2] = [(0, Team.Blue, -1), (1, Team.Red, 1)];
+        let sites = [
+            (4, -1, 4, 0, SiteKind.Farm),
+            (3, 0, 4, 0, SiteKind.Farm),
+            (2, -2, 0, 4, SiteKind.Mine),
+            (4, 1, 3, 1, SiteKind.Pasture),
+        ];
+        let roads = [(4, 0), (3, 0), (3, -1), (3, -2), (2, -2)];
+        for s in 0..2 {
+            let (id, team, sign) = sides[s];
+            let pos = Hex.new(sign * 4, 0);
+            self.cities.push(City { id, team, pos, population: 2, food: 32, production: 0, worked: Vec.new(), queue: Option.None });
+            for k in 0..4 {
+                let (q, r, food, production, kind) = sites[k];
+                self.sites.insert(Hex.new(sign * q, sign * r), Site { team, food, production, kind });
+            }
+            for k in 0..5 {
+                let (q, r) = roads[k];
+                self.roads.insert(Hex.new(sign * q, sign * r));
+            }
+            let worker_id = self.take_unit_id();
+            self.units.push(Unit.new(worker_id, Hex.new(sign * 4, sign * 2), team, UnitType.Melee));
+            self.workers.insert(worker_id);
+        }
+        for i in 0..self.cities.len() { self.auto_assign_city(i); }
+        self.notice = text(fn() can {Out} { Out.put("C CITY - SPACE HOLD OR END TURN - F1 COMBAT - F2 CITIES"); });
+    }
+
+    pub fn setup_frontier(&mut self) {
+        let terrain = [
+            (Hex.new(-1, 2), Terrain.Hills),
+            (Hex.new(1, -2), Terrain.Hills),
+            (Hex.new(0, 3), Terrain.Mountains),
+            (Hex.new(0, -3), Terrain.Mountains),
+        ];
+        self.grid = HexGrid.new(6, &terrain);
+        self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
+        let settlers = [(Team.Blue, Hex.new(-4, 0)), (Team.Red, Hex.new(4, 0))];
+        for s in 0..2 {
+            let (team, pos) = settlers[s];
+            let id = self.take_unit_id();
+            self.units.push(Unit.new(id, pos, team, UnitType.Melee));
+            self.settlers.insert(id);
+            let worker_id = self.take_unit_id();
+            let worker_pos = Hex.new(pos.q, pos.r + if team == Team.Blue { 1 } else { -1 });
+            self.units.push(Unit.new(worker_id, worker_pos, team, UnitType.Melee));
+            self.workers.insert(worker_id);
+        }
+        let warriors = [(Team.Blue, Hex.new(-3, -1)), (Team.Red, Hex.new(3, 1))];
+        for s in 0..2 {
+            let (team, pos) = warriors[s];
+            let id = self.take_unit_id();
+            self.units.push(Unit.new(id, pos, team, UnitType.Melee));
+            if team == Team.Red { self.player_controlled_units.insert(id); }
+        }
+        self.notice = text(fn() can {Out} { Out.put("F FOUND CITY - BOTH STARTING WARRIORS ARE YOURS TO TEST"); });
+        self.selected = self.unit_of_team_at(Hex.new(-4, 0), PLAYER_TEAM);
+    }
+
+    /// The next unused unit id.
+    pub fn take_unit_id(&mut self) -> u32 {
+        let id = self.next_unit_id;
+        self.next_unit_id = self.next_unit_id + 1;
+        id
+    }
+
+    pub fn set_notice(&mut self, message: str) {
+        self.notice = text(fn() can {Out} { Out.put(message); });
+    }
+
+    /// F or the Found City button: the selected settler becomes a city on its hex.
+    pub fn found_city_selected(&mut self) {
+        if self.is_resolving() { return; }
+        let Option.Some(index) = self.selected else {
+            self.set_notice("SELECT YOUR SETTLER FIRST");
+            return;
+        };
+        let unit = self.units[index];
+        if unit.team != PLAYER_TEAM || !self.settlers.contains(unit.id) {
+            self.set_notice("ONLY A SETTLER CAN FOUND A CITY");
+            return;
+        }
+        for i in 0..self.cities.len() {
+            if self.cities[i].pos.distance(unit.pos) < 3 {
+                self.set_notice("TOO CLOSE TO ANOTHER CITY");
+                return;
+            }
+        }
+        let id = self.cities.len() as u32;
+        self.cities.push(City { id, team: unit.team, pos: unit.pos, population: 1, food: 0, production: 0, worked: Vec.new(), queue: Option.None });
+        self.settlers.remove(unit.id);
+        self.remove_unit(unit.id);
+        self.selected = Option.None;
+        let city = self.cities.len() - 1;
+        self.auto_assign_city(city);
+        self.selected_city = Option.Some(city);
+        self.set_notice("CITY FOUNDED - PRESS 1-4 TO BUILD A UNIT");
+    }
+
+    /// Takes the unit with `id` off the map.
+    pub fn remove_unit(&mut self, id: u32) {
+        handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume u.id != id } }
+    }
+
+    /// R or the Build Road button: a road on the selected worker's hex.
+    pub fn build_worker_road_selected(&mut self) {
+        let Option.Some(i) = self.selected else { return; };
+        let unit = self.units[i];
+        if !self.workers.contains(unit.id) {
+            self.set_notice("ONLY A WORKER BUILDS ROADS");
+            return;
+        }
+        self.roads.insert(unit.pos);
+        self.set_notice("DIRT ROAD BUILT - IT LOWERS LOGISTICS COST");
+    }
+
+    /// I or the Improve button: a mine on hills, else a farm, on the selected worker's hex.
+    pub fn improve_worker_tile_selected(&mut self) {
+        let Option.Some(i) = self.selected else { return; };
+        let unit = self.units[i];
+        if !self.workers.contains(unit.id) {
+            self.set_notice("ONLY A WORKER IMPROVES TILES");
+            return;
+        }
+        let (food, production, kind) = if self.grid.terrain(unit.pos) == Terrain.Hills { (1, 4, SiteKind.Mine) } else { (4, 0, SiteKind.Farm) };
+        self.sites.insert(unit.pos, Site { team: unit.team, food, production, kind });
+        self.notice = text(fn() can {Out} { Out.put(kind.name()); Out.put(" BUILT"); });
+    }
+
+    /// 1-4 or a build card: what the open city builds next.
+    pub fn queue_selected_city_unit(&mut self, build: BuildUnit) {
+        if self.is_resolving() { return; }
+        let Option.Some(city) = self.selected_city else {
+            self.set_notice("OPEN A CITY WITH C BEFORE CHOOSING A BUILD");
+            return;
+        };
+        if self.cities[city].team != PLAYER_TEAM { return; }
+        self.cities[city].queue = Option.Some(build);
+        self.notice = text(fn() can {Out} {
+            Out.put("BUILDING "); Out.put(build.name()); Out.put(" - COST "); show_amount(build.cost()); Out.put(" PRODUCTION");
+        });
+    }
+
+    /// The cheapest route from each hex within the logistics budget to city `index`: roads
+    /// cost 1, hills 3, anything else 2, and nothing passes an enemy or an enemy city. Ties
+    /// between unsettled hexes go to the smaller `(q, r)`, so the answer never depends on
+    /// iteration order.
+    pub fn routes(&self, index: i32) -> Routes {
+        let city = &self.cities[index];
+        let mut result = Routes { costs: Map.new() };
+        if self.enemy_of_team_at(city.pos, city.team).is_some() { return result; }
+        result.costs.insert(city.pos, 0);
+        let mut visited: Set[Hex] = Set.new();
+        loop {
+            let mut next: Option[(Hex, i32)] = Option.None;
+            for i in 0..result.costs.len() {
+                let Option.Some(h) = result.costs.key_at(i) else { continue; };
+                let Option.Some(c) = result.costs.val_at(i) else { continue; };
+                if visited.contains(h) { continue; }
+                let better = match next {
+                    Option.None => true,
+                    Option.Some((bh, bc)) => c < bc || (c == bc && (h.q < bh.q || (h.q == bh.q && h.r < bh.r))),
+                };
+                if better { next = Option.Some((h, c)); }
+            }
+            let Option.Some((hex, cost)) = next else { break; };
+            visited.insert(hex);
+            let around = hex.neighbors();
+            for k in 0..6 {
+                let n = around[k];
+                if !self.grid.is_passable(n) || self.enemy_of_team_at(n, city.team).is_some() || self.enemy_city_at(n, city.team) {
+                    continue;
+                }
+                let step = if self.is_road_hex(n) { 1 } else if self.grid.terrain(n) == Terrain.Hills { 3 } else { 2 };
+                let total = cost + step;
+                let shorter = match result.costs.get(n) { Option.None => true, Option.Some(old) => total < old };
+                if total <= 8 && shorter { result.costs.insert(n, total); }
+            }
+        }
+        result
+    }
+
+    fn enemy_city_at(&self, hex: Hex, team: Team) -> bool {
+        for i in 0..self.cities.len() {
+            if self.cities[i].pos == hex && self.cities[i].team != team { return true; }
+        }
+        false
+    }
+
+    /// What a tile yields when worked: its site's, or its terrain's.
+    pub fn tile_yield(&self, hex: Hex) -> (i32, i32) {
+        match self.sites.get(hex) {
+            Option.Some(s) => (s.food, s.production),
+            Option.None => match self.grid.terrain(hex) {
+                Terrain.Plains => (2, 1),
+                Terrain.Hills => (1, 2),
+                Terrain.Mountains => (0, 0),
+            },
+        }
+    }
+
+    /// Whether city `index` may put a citizen on `hex`: no city stands there or works it, and
+    /// any site there is its own team's.
+    pub fn may_assign(&self, index: i32, hex: Hex) -> bool {
+        for i in 0..self.cities.len() {
+            if self.cities[i].pos == hex || self.cities[i].worked.contains(hex) { return false; }
+        }
+        match self.sites.get(hex) {
+            Option.Some(s) => s.team == self.cities[index].team,
+            Option.None => true,
+        }
+    }
+
+    /// Food and production reaching city `index` this turn, in quarters: the center's own
+    /// 2 and 1 whole units plus each worked tile's delivered share.
+    pub fn income(&self, index: i32) -> (i32, i32) {
+        let routes = self.routes(index);
+        let mut food = 8;
+        let mut production = 4;
+        let worked = &self.cities[index].worked;
+        for i in 0..worked.len() {
+            let hex = worked[i];
+            let share = match routes.costs.get(hex) { Option.Some(c) => delivered_share(c), Option.None => 0 };
+            let (f, p) = self.tile_yield(hex);
+            food = food + f * share;
+            production = production + p * share;
+        }
+        (food, production)
+    }
+
+    /// The reachable, assignable tiles of city `index` with their delivered yields.
+    fn candidates(&self, index: i32, routes: &Routes, reconciling: bool) -> Vec[Candidate] {
+        let mut out: Vec[Candidate] = Vec.new();
+        for i in 0..routes.costs.len() {
+            let Option.Some(hex) = routes.costs.key_at(i) else { continue; };
+            let Option.Some(cost) = routes.costs.val_at(i) else { continue; };
+            let open = if reconciling { self.free_for(index, hex) } else { self.may_assign(index, hex) };
+            if !open { continue; }
+            let (f, p) = self.tile_yield(hex);
+            let share = delivered_share(cost);
+            out.push(Candidate { hex, food: f * share, production: p * share });
+        }
+        out
+    }
+
+    /// Reconciling's test, which unlike `may_assign` admits a city center: not worked by
+    /// this city or any other, and any site there is its own team's.
+    fn free_for(&self, index: i32, hex: Hex) -> bool {
+        for i in 0..self.cities.len() {
+            if self.cities[i].worked.contains(hex) { return false; }
+        }
+        match self.sites.get(hex) {
+            Option.Some(s) => s.team == self.cities[index].team,
+            Option.None => true,
+        }
+    }
+
+    /// Puts every citizen of city `index` on the best tiles it reaches: food first while
+    /// the city is short of it, production after.
+    pub fn auto_assign_city(&mut self, index: i32) {
+        self.cities[index].worked.clear();
+        let routes = self.routes(index);
+        let mut tiles = self.candidates(index, &routes, false);
+        let mut food = 8;
+        while self.cities[index].worked.len() < self.cities[index].population && !tiles.is_empty() {
+            let needs_food = food < self.cities[index].population * 8 + 4;
+            let at = best_candidate(&tiles, needs_food, 4);
+            let pick = tiles[at];
+            remove_candidate(&mut tiles, at);
+            self.cities[index].worked.push(pick.hex);
+            food = food + pick.food;
+        }
+    }
+
+    /// Keeps manual choices where possible, drops tiles cut off by conflict or claimed by
+    /// another city, and fills new citizen slots after growth.
+    fn reconcile_citizens(&mut self, index: i32) {
+        let routes = self.routes(index);
+        let mut other_claims: Set[Hex] = Set.new();
+        for i in 0..self.cities.len() {
+            if i == index { continue; }
+            let worked = &self.cities[i].worked;
+            for k in 0..worked.len() { other_claims.insert(worked[k]); }
+        }
+        handle { self.cities[index].worked.retain(); } with Keep[Hex] {
+            keep(h) => { resume routes.costs.has(*h) && !other_claims.contains(*h) }
+        }
+        let mut candidates = self.candidates(index, &routes, true);
+        while self.cities[index].worked.len() < self.cities[index].population && !candidates.is_empty() {
+            let at = best_candidate(&candidates, true, 3);
+            let pick = candidates[at];
+            remove_candidate(&mut candidates, at);
+            self.cities[index].worked.push(pick.hex);
+        }
+    }
+
+    /// City `index`'s growth: percent of the way to the next citizen, the food that takes,
+    /// and how many turns at the current surplus.
+    pub fn growth_status(&self, index: i32) -> (i32, i32, Option[i32]) {
+        let city = &self.cities[index];
+        let threshold = (10 + 5 * city.population) * 4;
+        let net = self.income(index).0 - city.population * 8;
+        let turns = if net > 0 {
+            let missing = if threshold - city.food > 0 { threshold - city.food } else { 0 };
+            Option.Some((missing + net - 1) / net)
+        } else {
+            Option.None
+        };
+        let percent = city.food * 100 / threshold;
+        (if percent < 0 { 0 } else if percent > 100 { 100 } else { percent }, threshold, turns)
+    }
+
+    /// A: the open city's citizens are assigned afresh.
+    pub fn auto_assign_selected_city(&mut self) {
+        if self.is_resolving() { return; }
+        if let Option.Some(city) = self.selected_city {
+            self.auto_assign_city(city);
+            self.set_notice("CITIZENS AUTO ASSIGNED");
+        }
+    }
+
+    /// C: opens a city that needs something to build, or else the first of the player's cities.
+    pub fn select_city(&mut self) {
+        if self.is_resolving() { return; }
+        let mut city: Option[i32] = Option.None;
+        for i in 0..self.cities.len() {
+            if city.is_none() && self.city_needs_build(i) { city = Option.Some(i); }
+        }
+        for i in 0..self.cities.len() {
+            if city.is_none() && self.cities[i].team == PLAYER_TEAM { city = Option.Some(i); }
+        }
+        if let Option.Some(i) = city { self.open_city(i); }
+    }
+
+    /// Opens city `index`'s view and glides the camera to it.
+    pub fn open_city(&mut self, index: i32) {
+        self.selected_city = Option.Some(index);
+        self.selected = Option.None;
+        self.group.clear();
+        self.ui_click_mode = Option.None;
+        self.camera.focus_on(self.cities[index].pos.to_world());
+        if self.city_needs_build(index) {
+            let id = self.cities[index].id;
+            self.notice = text(fn() can {Out} { Out.put("CHOOSE WHAT CITY "); show_u64((id + 1) as u64); Out.put(" BUILDS - 1-4"); });
+        } else {
+            self.set_notice("CLICK TILES TO ASSIGN - A AUTO ASSIGN - CLICK A UNIT TO LEAVE");
+        }
+    }
+
+    /// One of the player's cities with nothing queued to build. The turn waits for these, as
+    /// it does for units without orders.
+    pub fn city_needs_build(&self, index: i32) -> bool {
+        let city = &self.cities[index];
+        city.team == PLAYER_TEAM && city.queue.is_none()
+    }
+
+    /// Clicking the open city again: back to the units, selecting the next one that needs
+    /// orders.
+    pub fn close_city(&mut self) {
+        if self.is_resolving() { return; }
+        self.leave_city_view();
+        self.select_next_unit();
+    }
+
+    pub fn leave_city_view(&mut self) {
+        self.selected_city = Option.None;
+        self.inspected_tile = Option.None;
+    }
+
+    /// A map click the city view takes: with no city open, clicking one of the player's
+    /// cities opens it; with one open, clicking a tile assigns or releases a citizen there,
+    /// and clicking one of the player's units or the city itself leaves. Answers whether the
+    /// click was the city view's.
+    pub fn city_click(&mut self, hex: Hex) -> bool {
+        let Option.Some(i) = self.selected_city else {
+            for c in 0..self.cities.len() {
+                if self.cities[c].pos == hex && self.cities[c].team == PLAYER_TEAM {
+                    self.open_city(c);
+                    return true;
+                }
+            }
+            return false;
+        };
+        if let Option.Some(unit) = self.controlled_unit_at(hex) {
+            self.leave_city_view();
+            self.selected = Option.Some(unit);
+            return true;
+        }
+        if hex == self.cities[i].pos {
+            self.close_city();
+            return true;
+        }
+        self.inspected_tile = Option.Some(hex);
+        if self.cities[i].worked.contains(hex) {
+            handle { self.cities[i].worked.retain(); } with Keep[Hex] { keep(h) => { resume *h != hex } }
+            self.set_notice("CITIZEN UNASSIGNED");
+        } else if !self.may_assign(i, hex) {
+            self.set_notice("CITY OR CLAIMED SITE - CANNOT ASSIGN");
+        } else if !self.routes(i).costs.has(hex) {
+            self.set_notice("NO OPEN ROUTE WITHIN LOGISTICS BUDGET");
+        } else if self.cities[i].worked.len() >= self.cities[i].population {
+            self.set_notice("ALL CITIZENS BUSY - RELEASE A WORKED TILE FIRST");
+        } else {
+            self.cities[i].worked.push(hex);
+            self.set_notice("CITIZEN ASSIGNED");
+        }
+        true
+    }
+
+    /// Space (once nothing needs orders) or the End Turn button: resolves the turn, unless a
+    /// unit still needs orders or a city needs something to build, in which case that's
+    /// selected instead.
+    pub fn end_planning(&mut self) can {Log} {
+        if self.is_resolving() { return; }
+        for i in 0..self.units.len() {
+            if self.is_player_controlled(i) && self.needs_orders(i) {
+                self.selected_city = Option.None;
+                self.selected = Option.Some(i);
+                self.camera.focus_on(self.units[i].pos.to_world());
+                self.set_notice("UNIT NEEDS ORDERS - SPACE TO HOLD");
+                return;
+            }
+        }
+        for i in 0..self.cities.len() {
+            if self.city_needs_build(i) {
+                self.open_city(i);
+                return;
+            }
+        }
+        for i in 0..self.cities.len() {
+            if self.cities[i].team != PLAYER_TEAM { self.auto_assign_city(i); }
+        }
+        self.selected_city = Option.None;
+        self.set_notice("RESOLVING ORDERS");
+        self.resolve_turn();
+    }
+
+    /// Once a turn has resolved: each city eats, grows or starves, stores production,
+    /// finishes a build it can afford, and reconciles its citizens.
+    pub fn resolve_economy(&mut self) can {Log} {
+        let mut income: Vec[(i32, i32)] = Vec.new();
+        for i in 0..self.cities.len() { income.push(self.income(i)); }
+        for i in 0..self.cities.len() {
+            let (food, production) = income[i];
+            let population = self.cities[i].population;
+            let mut city_food = self.cities[i].food + food - population * 8;
+            let mut grown = population;
+            let threshold = (10 + 5 * population) * 4;
+            if city_food >= threshold {
+                city_food = city_food - threshold;
+                grown = grown + 1;
+            }
+            if city_food < 0 {
+                grown = if grown - 1 > 1 { grown - 1 } else { 1 };
+                city_food = 0;
+            }
+            self.cities[i].food = city_food;
+            self.cities[i].production = self.cities[i].production + production;
+            self.cities[i].population = grown;
+            let mut kept = 0;
+            handle { self.cities[i].worked.retain(); } with Keep[Hex] { keep(h) => { kept = kept + 1; resume kept <= grown } }
+        }
+        self.complete_builds();
+        for i in 0..self.cities.len() { self.reconcile_citizens(i); }
+        self.set_notice("PLANNING - C CITY - SPACE HOLD OR END TURN");
+    }
+
+    /// Every city whose stored production covers its build places the unit on its first open
+    /// neighbouring hex. The AI's cities always build melee.
+    pub fn complete_builds(&mut self) can {Log} {
+        let mut spawn: Vec[(Team, Hex, UnitType)] = Vec.new();
+        for i in 0..self.cities.len() {
+            if self.cities[i].queue.is_none() && self.cities[i].team == Team.Red {
+                self.cities[i].queue = Option.Some(BuildUnit.Melee);
+            }
+            let Option.Some(build) = self.cities[i].queue else { continue; };
+            if self.cities[i].production < build.cost() { continue; }
+            let around = self.cities[i].pos.neighbors();
+            let mut open: Option[Hex] = Option.None;
+            for k in 0..6 {
+                if open.is_none() && self.grid.is_passable(around[k]) && !self.is_occupied(around[k]) { open = Option.Some(around[k]); }
+            }
+            let Option.Some(pos) = open else { continue; };
+            self.cities[i].production = self.cities[i].production - build.cost();
+            self.cities[i].queue = Option.None;
+            spawn.push((self.cities[i].team, pos, build.unit_type()));
+        }
+        for s in 0..spawn.len() {
+            let (team, pos, kind) = spawn[s];
+            let id = self.take_unit_id();
+            self.units.push(Unit.new(id, pos, team, kind));
+            info(fn() can {Out} { team.show(); Out.put(" city completed "); kind.show(); });
+        }
+    }
+}

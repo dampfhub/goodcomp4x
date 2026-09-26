@@ -1,0 +1,218 @@
+//! Ordering several units at once. Alt-drag a box (or Alt-click units) to select a group.
+//! Clicking a hex then sends every member toward it at its own speed, each taking the free
+//! hex nearest the target that it can reach; the nearest members choose first. Clicking an
+//! enemy has every member in range attack it. Members that can't get any closer, or reach,
+//! stay as they are.
+
+use std.collections.Set;
+use std.core.Ordering;
+use std.linalg.Vec2;
+use std.sort.Compare;
+use std.sort.sort;
+use game.GameState;
+use game.hex.Hex;
+use game.orders.ClickMode;
+
+impl GameState {
+    /// Alt-drag: selects the player's units drawn inside the rectangle between `a` and `b`
+    /// (window pixels, origin top-left).
+    pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2) {
+        if self.is_resolving() { return; }
+        let (min, max) = (a.min(b), a.max(b));
+        let mut inside: Vec[i32] = Vec.new();
+        for i in 0..self.units.len() {
+            if !self.is_player_controlled(i) { continue; }
+            let drawn_at = self.camera.world_to_screen(self.unit_layout(i).0, screen_size);
+            if drawn_at.x >= min.x && drawn_at.y >= min.y && drawn_at.x <= max.x && drawn_at.y <= max.y { inside.push(i); }
+        }
+        self.set_selection(inside);
+    }
+
+    /// Alt-click: adds the player's unit under the cursor to the selection, or takes it out
+    /// if it's already in.
+    pub fn toggle_in_selection(&mut self, cursor: Vec2, screen_size: Vec2) {
+        if self.is_resolving() { return; }
+        let Option.Some(hex) = self.hex_at_screen(cursor, screen_size) else { return; };
+        let Option.Some(unit) = self.controlled_unit_at(hex) else { return; };
+        let members = self.selection();
+        let mut next: Vec[i32] = Vec.new();
+        for i in 0..members.len() {
+            if members[i] != unit { next.push(members[i]); }
+        }
+        if !members.contains(unit) { next.push(unit); }
+        self.set_selection(next);
+    }
+
+    /// Every selected unit: the group, or else the one selected unit.
+    pub fn selection(&self) -> Vec[i32] {
+        let mut out: Vec[i32] = Vec.new();
+        if self.group.is_empty() {
+            if let Option.Some(i) = self.selected { out.push(i); }
+        } else {
+            for i in 0..self.group.len() { out.push(self.group[i]); }
+        }
+        out
+    }
+
+    /// Selects `units`: nothing, one unit as usual, or several as a group.
+    pub fn set_selection(&mut self, units: Vec[i32]) {
+        self.ui_click_mode = Option.None;
+        if !units.is_empty() { self.leave_city_view(); }
+        if units.len() > 1 {
+            self.selected = Option.None;
+            self.group = units;
+        } else {
+            self.selected = if units.is_empty() { Option.None } else { Option.Some(units[0]) };
+            self.group.clear();
+        }
+    }
+
+    /// A map click with a group selected. In the normal mode an enemy's hex is attacked and
+    /// any other hex is moved toward; an armed Move or Attack (or Shift) picks one. Swapping is
+    /// for single units.
+    pub fn group_order(&mut self, hex: Hex, mode: ClickMode) {
+        let team = self.units[self.group[0]].team;
+        match mode {
+            ClickMode.Attack => self.group_attack(hex),
+            ClickMode.Move => self.group_move(hex),
+            ClickMode.Normal => {
+                if self.enemy_of_team_at(hex, team).is_some() { self.group_attack(hex); } else { self.group_move(hex); }
+            }
+            ClickMode.Swap => {}
+        }
+    }
+
+    /// Every member that can reach `target` from where it's heading attacks it. Clicking a
+    /// target all of them already attack calls it off.
+    fn group_attack(&mut self, target: Hex) {
+        if !self.grid.is_passable(target) { return; }
+        let mut able: Vec[i32] = Vec.new();
+        for m in 0..self.group.len() {
+            let i = self.group[m];
+            let unit = self.units[i];
+            let reaches = unit.can_attack()
+                && !self.workers.contains(unit.id)
+                && self.rival_of(i).is_none()
+                && unit.planned_pos().distance(target) <= unit.stats().attack_range;
+            if reaches { able.push(i); }
+        }
+        let mut already = !able.is_empty();
+        for k in 0..able.len() {
+            if self.units[able[k]].planned_attack != Option.Some(target) { already = false; }
+        }
+        for k in 0..able.len() {
+            let i = able[k];
+            self.units[i].planned_attack = if already { Option.None } else { Option.Some(target) };
+            self.units[i].guarding = false;
+        }
+    }
+
+    /// Sends every member toward `target`, replacing their queued moves: each takes the
+    /// reachable hex nearest the target that nobody else on its side is heading for, nearest
+    /// members first. One that can't get any closer stays put.
+    fn group_move(&mut self, target: Hex) {
+        for m in 0..self.group.len() {
+            let i = self.group[m];
+            self.cancel_swap(i);
+            self.units[i].planned_move = Option.None;
+        }
+        let team = self.units[self.group[0]].team;
+        let mut claimed: Set[Hex] = Set.new();
+        for i in 0..self.units.len() {
+            if self.units[i].team != team { continue; }
+            if let Option.Some(dest) = self.units[i].planned_move { claimed.insert(dest); }
+        }
+
+        // Nearest to the target first, then by index.
+        let mut members: Vec[Member] = Vec.new();
+        for m in 0..self.group.len() {
+            let i = self.group[m];
+            members.push(Member { index: i, distance: self.units[i].pos.distance(target) });
+        }
+        // `&mut members.buf`: no `&mut Vec[T]` to `&mut [T]` coercion yet.
+        handle { sort(&mut members.buf); } with Compare[Member] {
+            cmp(a, b) => {
+                resume if a.distance != b.distance { order(a.distance, b.distance) } else { order(a.index, b.index) }
+            }
+        };
+        for m in 0..members.len() {
+            let i = members[m].index;
+            let start = self.units[i].pos;
+            let reachable = self.reachable_hexes(start, self.units[i].stats().move_range);
+            // Staying put wins ties, so nobody shuffles sideways for nothing.
+            let mut best: Option[Hex] = Option.None;
+            for hex in reachable.each() {
+                let h = *hex;
+                if h != start && claimed.contains(h) { continue; }
+                let better = match best {
+                    Option.None => true,
+                    Option.Some(b) => nearer(h, b, target, start),
+                };
+                if better { best = Option.Some(h); }
+            }
+            if let Option.Some(dest) = best {
+                if dest != start {
+                    claimed.insert(dest);
+                    self.units[i].planned_move = Option.Some(dest);
+                    self.units[i].drop_unreachable_attack();
+                    self.units[i].guarding = false;
+                }
+            }
+        }
+    }
+
+    /// Space or Hold with a group: every member holds, and selection moves on.
+    pub fn hold_group(&mut self) {
+        for m in 0..self.group.len() {
+            let i = self.group[m];
+            self.units[i].holding = true;
+        }
+        self.group.clear();
+        self.select_next_or_end_turn(Option.None);
+    }
+
+    /// G or Guard with a group: every member guards, or if they all already are, they all
+    /// stop.
+    pub fn toggle_group_guard(&mut self) {
+        let mut all_guarding = true;
+        for m in 0..self.group.len() {
+            if !self.units[self.group[m]].guarding { all_guarding = false; }
+        }
+        for m in 0..self.group.len() {
+            let i = self.group[m];
+            self.units[i].guarding = !all_guarding;
+        }
+        if !all_guarding {
+            self.group.clear();
+            self.select_next_or_end_turn(Option.None);
+        }
+    }
+
+    /// Ctrl-right-click with a group: clears every member's orders.
+    pub fn clear_group_orders(&mut self) {
+        for m in 0..self.group.len() {
+            let i = self.group[m];
+            self.cancel_swap(i);
+            self.units[i].clear_orders();
+            self.units[i].guarding = false;
+        }
+    }
+}
+
+/// A group member and its distance to the target, for ordering who chooses first.
+struct Member { index: i32, distance: i32 }
+
+fn order(a: i32, b: i32) -> Ordering {
+    if a < b { Ordering.Less } else if a > b { Ordering.Greater } else { Ordering.Equal }
+}
+
+/// Whether `a` beats `b` as a destination: nearer the target, then nearer the start, then by
+/// `(q, r)`.
+fn nearer(a: Hex, b: Hex, target: Hex, start: Hex) -> bool {
+    let (at, bt) = (a.distance(target), b.distance(target));
+    if at != bt { return at < bt; }
+    let (as_, bs) = (a.distance(start), b.distance(start));
+    if as_ != bs { return as_ < bs; }
+    if a.q != b.q { return a.q < b.q; }
+    a.r < b.r
+}

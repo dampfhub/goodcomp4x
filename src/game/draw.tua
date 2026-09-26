@@ -1,6 +1,8 @@
 //! Builds each frame's geometry from the game state.
 
 use std.collections.Set;
+use std.fmt.Out;
+use std.fmt.show_i64;
 use std.linalg.Vec2;
 use std.linalg.vec2;
 use std.linalg.vec2_from_angle;
@@ -8,13 +10,18 @@ use std.math.pi;
 use std.math.tau;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
+use game.text;
+use game.city.delivered_share;
 use game.font.push_glyph;
+use game.font.push_text;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
 use game.mesh.Color;
 use game.mesh.quad;
+use game.mesh.polygon_outline;
 use game.mesh.regular_polygon;
 use game.mesh.segment;
+use game.orders.ClickMode;
 use game.terrain.Terrain;
 use game.turn.Phase;
 use game.turn.step_rank;
@@ -49,6 +56,10 @@ const ABILITY_RING_COLOR: Color = [0.95, 0.78, 0.25, 1.0];
 const ABILITY_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.32;
 const DEPLOYED_RING_COLOR: Color = [0.62, 0.66, 0.72, 1.0];
 const DEPLOYED_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.18;
+/// A white hex outline around a guarding unit, outside any status rings.
+const GUARD_OUTLINE_COLOR: Color = [0.92, 0.94, 0.98, 1.0];
+const GUARD_OUTLINE_RADIUS: f32 = UNIT_ICON_RADIUS * 1.5;
+const GUARD_OUTLINE_WIDTH: f32 = 0.05;
 
 /// The two units sharing a contested hex are drawn at this scale, stacked vertically with Blue
 /// on top.
@@ -66,6 +77,20 @@ const ATTACK_ORDER_COLOR: Color = [1.00, 0.40, 0.35, 1.0];
 const HEALTH_BAR_WIDTH: f32 = 0.9;
 const HEALTH_BAR_HEIGHT: f32 = 0.14;
 const HEALTH_BAR_OFFSET_Y: f32 = 0.78;
+
+/// Outline around each tile the hovered or selected city works.
+const WORKED_OUTLINE_RADIUS: f32 = HEX_SIZE * 0.84;
+const WORKED_OUTLINE_WIDTH: f32 = 0.06;
+const WORKED_OUTLINE_RIM_WIDTH: f32 = 0.10;
+const WORKED_OUTLINE_RIM_COLOR: Color = [0.02, 0.05, 0.03, 1.0];
+
+const ROAD_COLOR: Color = [0.65, 0.45, 0.24, 1.0];
+const DELIVERY_TEXT_COLOR: Color = [0.65, 0.85, 0.65, 1.0];
+const WORKED_ROUTED_COLOR: Color = [0.25, 1.0, 0.4, 1.0];
+const WORKED_CUT_OFF_COLOR: Color = [1.0, 0.25, 0.2, 1.0];
+const YIELD_BADGE_COLOR: Color = [0.035, 0.045, 0.045, 0.94];
+const FOOD_COLOR: Color = [0.42, 0.96, 0.32, 1.0];
+const PRODUCTION_COLOR: Color = [1.0, 0.69, 0.22, 1.0];
 
 /// A queued move is drawn as a faded copy of the unit at its destination.
 const GHOST_ALPHA: f32 = 0.4;
@@ -89,6 +114,8 @@ struct Selection {
     reachable: Set[Hex],
     /// Locked in a contested hex, so it can't attack anything else.
     locked: bool,
+    /// Swap is armed, so adjacent allies are the hexes to highlight.
+    swapping: bool,
 }
 
 impl GameState {
@@ -101,13 +128,17 @@ impl GameState {
             Option.Some(idx) => {
                 let unit = self.units[idx];
                 let stats = unit.stats();
+                // A green hex means clicking moves there, which isn't true while an attack or
+                // swap is armed.
+                let shows_moves = match self.ui_click_mode { Option.None | Option.Some(ClickMode.Move) => true, _ => false };
                 Option.Some(Selection {
                     pos: unit.pos,
                     planned_pos: unit.planned_pos(),
                     team: unit.team,
                     stats,
-                    reachable: self.reachable_hexes(unit.pos, stats.move_range),
+                    reachable: if shows_moves { self.reachable_hexes(unit.pos, stats.move_range) } else { Set.new() },
                     locked: self.rival_of(idx).is_some(),
+                    swapping: self.ui_click_mode == Option.Some(ClickMode.Swap),
                 })
             }
             Option.None => Option.None,
@@ -122,6 +153,7 @@ impl GameState {
             push_terrain_symbol(center, self.grid.terrain(hex), &mut out);
         }
 
+        self.push_city_map(&mut out);
         self.push_order_markers(&mut out);
 
         for idx in 0..self.units.len() {
@@ -133,10 +165,12 @@ impl GameState {
                 (scale, unit.team.color())
             };
             push_status_rings(center, &unit, scale, &mut out);
-            push_unit_icon(center, &unit, icon_scale, color, &mut out);
+            push_unit_icon(center, &unit, self.unit_letter(&unit), icon_scale, color, &mut out);
             push_order_badges(center, &unit, scale, &mut out);
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
         }
+
+        self.push_tile_yields(&mut out);
         out
     }
 
@@ -163,7 +197,7 @@ impl GameState {
                 let unit = self.units[i];
                 if !swapping[i] && unit.planned_move == Option.Some(hex) {
                     let pos = fan_position(hex.to_world(), k, total, GHOST_FAN_RADIUS);
-                    push_unit_icon(pos, &unit, 1.0, with_alpha(unit.team.color(), GHOST_ALPHA), out);
+                    push_unit_icon(pos, &unit, self.unit_letter(&unit), 1.0, with_alpha(unit.team.color(), GHOST_ALPHA), out);
                     k = k + 1;
                 }
             }
@@ -228,11 +262,20 @@ impl GameState {
         let terrain = self.grid.terrain(hex);
         let base = terrain_color(terrain);
         if !terrain.is_passable() { return base; }
+        let mut in_group = false;
+        for m in 0..self.group.len() {
+            if self.units[self.group[m]].pos == hex { in_group = true; }
+        }
+        if in_group { return SELECTED_COLOR; }
         let &Option.Some(sel) = selection else {
             return if self.is_contested(hex) { CONTESTED_COLOR } else { base };
         };
         if sel.pos == hex { return SELECTED_COLOR; }
         if self.is_contested(hex) { return CONTESTED_COLOR; }
+        if sel.swapping {
+            let swappable = sel.pos.distance(hex) == 1 && self.controlled_unit_at(hex).is_some();
+            return if swappable { MOVE_RANGE_COLOR } else { base };
+        }
 
         let in_attack_range = !sel.locked && sel.planned_pos.distance(hex) <= sel.stats.attack_range;
         let has_enemy = self.enemy_of_team_at(hex, sel.team).is_some();
@@ -245,6 +288,99 @@ impl GameState {
             ATTACK_RANGE_EMPTY_COLOR
         } else {
             base
+        }
+    }
+}
+
+impl GameState {
+    /// Roads, the open or hovered city's worked tiles and delivery shares, site letters and
+    /// the cities themselves.
+    fn push_city_map(&self, out: &mut Vec[MeshVertex]) {
+        for r in 0..self.roads.len() {
+            let Option.Some(h) = self.roads.key_at(r) else { continue; };
+            regular_polygon(h.to_world(), 0.12, 8, 0.0, ROAD_COLOR, out);
+            let around = h.neighbors();
+            for k in 0..6 {
+                let n = around[k];
+                let ordered = h.q < n.q || (h.q == n.q && h.r < n.r);
+                if ordered && self.is_road_hex(n) { segment(h.to_world(), n.to_world(), 0.09, ROAD_COLOR, out); }
+            }
+        }
+        // Road segments reaching a city are drawn even though the city center itself is
+        // represented by its larger city marker.
+        for c in 0..self.cities.len() {
+            let pos = self.cities[c].pos;
+            let around = pos.neighbors();
+            for k in 0..6 {
+                if self.roads.contains(around[k]) { segment(pos.to_world(), around[k].to_world(), 0.09, ROAD_COLOR, out); }
+            }
+        }
+        let shown = match self.hovered_city { Option.Some(i) => Option.Some(i), Option.None => self.selected_city };
+        if let Option.Some(i) = shown {
+            let routes = self.routes(i);
+            if self.yields_city() == Option.Some(i) {
+                for r in 0..routes.costs.len() {
+                    let Option.Some(h) = routes.costs.key_at(r) else { continue; };
+                    let Option.Some(cost) = routes.costs.val_at(r) else { continue; };
+                    let label = text(fn() can {Out} { show_i64((delivered_share(cost) * 25) as i64); Out.put("%"); });
+                    push_text(h.to_world().add(vec2(-0.3, 0.52)), 0.18, &label, DELIVERY_TEXT_COLOR, out);
+                }
+            }
+            let worked = &self.cities[i].worked;
+            for w in 0..worked.len() {
+                let h = worked[w];
+                let color = if routes.costs.has(h) { WORKED_ROUTED_COLOR } else { WORKED_CUT_OFF_COLOR };
+                // A coloured ring on a slightly wider dark one, just inside the hex's fill so
+                // it doesn't blur into the grid lines.
+                let center = h.to_world();
+                polygon_outline(center, WORKED_OUTLINE_RADIUS, WORKED_OUTLINE_RIM_WIDTH, 6, 0.0, WORKED_OUTLINE_RIM_COLOR, out);
+                polygon_outline(center, WORKED_OUTLINE_RADIUS, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
+            }
+        }
+        for k in 0..self.sites.len() {
+            let Option.Some(h) = self.sites.key_at(k) else { continue; };
+            let Option.Some(site) = self.sites.val_at(k) else { continue; };
+            push_glyph(h.to_world().add(vec2(-0.55, 0.3)), 0.28, site.kind.letter(), site.team.color(), out);
+        }
+        for c in 0..self.cities.len() {
+            let pos = self.cities[c].pos.to_world();
+            quad(pos.sub(vec2(0.48, 0.48)), pos.add(vec2(0.48, 0.48)), self.cities[c].team.color(), out);
+            push_glyph(pos, 0.5, 'H', LABEL_COLOR, out);
+        }
+    }
+
+    /// Yield badges around the open city while yields are shown, limited to its economic
+    /// reach.
+    fn push_tile_yields(&self, out: &mut Vec[MeshVertex]) {
+        let Option.Some(city) = self.yields_city() else { return; };
+        let routes = self.routes(city);
+        for h in self.grid.hexes() {
+            let hex = *h;
+            if !self.grid.is_passable(hex) { continue; }
+            if !routes.costs.has(hex) && !self.cities[city].worked.contains(hex) { continue; }
+            let (food, production) = self.raw_yield(hex);
+            let center = hex.to_world().add(vec2(0.0, -0.49));
+            quad(center.sub(vec2(0.52, 0.18)), center.add(vec2(0.52, 0.18)), YIELD_BADGE_COLOR, out);
+            let badges = [(true, food, -0.37, FOOD_COLOR), (false, production, 0.14, PRODUCTION_COLOR)];
+            for b in 0..2 {
+                let (is_food, count, offset, color) = badges[b];
+                let p = center.add(vec2(offset, 0.0));
+                if is_food {
+                    // Grain stalk with paired kernels.
+                    segment(p.add(vec2(0.0, -0.12)), p.add(vec2(0.0, 0.12)), 0.025, color, out);
+                    let kernels = [(-0.05, -0.04), (0.05, -0.04), (-0.05, 0.04), (0.05, 0.04)];
+                    for k in 0..4 {
+                        let (x, y) = kernels[k];
+                        regular_polygon(p.add(vec2(x, y)), 0.045, 4, 0.0, color, out);
+                    }
+                } else {
+                    // Hammer: broad head and narrow handle.
+                    quad(p.add(vec2(-0.02, -0.12)), p.add(vec2(0.025, 0.06)), color, out);
+                    quad(p.add(vec2(-0.09, 0.04)), p.add(vec2(0.09, 0.12)), color, out);
+                }
+                let digits = text(fn() can {Out} { show_i64(count as i64); });
+                push_text(p.add(vec2(0.11, -0.105)), 0.21, &digits, color, out);
+            }
         }
     }
 }
@@ -288,16 +424,20 @@ fn fan_position(base: Vec2, index: i32, total: i32, radius: f32) -> Vec2 {
     base.add(vec2_from_angle(tau() as f32 * index as f32 / total as f32).scale(radius))
 }
 
-/// A polygon whose side count encodes the unit type, with its letter on top.
-fn push_unit_icon(center: Vec2, unit: &Unit, scale: f32, color: Color, out: &mut Vec[MeshVertex]) {
+/// A polygon whose side count encodes the unit type, with `letter` on top.
+fn push_unit_icon(center: Vec2, unit: &Unit, letter: char, scale: f32, color: Color, out: &mut Vec[MeshVertex]) {
     // A quarter turn so odd-sided shapes (the melee triangle) point up.
     regular_polygon(center, UNIT_ICON_RADIUS * scale, unit.unit_type.icon_sides(), pi() as f32 / 2.0, color, out);
-    push_glyph(center, LABEL_HEIGHT * scale, unit.unit_type.letter(), with_alpha(LABEL_COLOR, color[3]), out);
+    push_glyph(center, LABEL_HEIGHT * scale, letter, with_alpha(LABEL_COLOR, color[3]), out);
 }
 
 /// Status rings behind the icon. They're filled discs, so only the rim shows once the icon is
-/// drawn on top; the larger one goes first so both stay visible.
+/// drawn on top; the larger one goes first so both stay visible. A guarding unit also gets a
+/// hex outline around everything.
 fn push_status_rings(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec[MeshVertex]) {
+    if unit.guarding {
+        polygon_outline(center, GUARD_OUTLINE_RADIUS * scale, GUARD_OUTLINE_WIDTH * scale, 6, 0.0, GUARD_OUTLINE_COLOR, out);
+    }
     if unit.ability_queued {
         regular_polygon(center, ABILITY_RING_RADIUS * scale, 24, 0.0, ABILITY_RING_COLOR, out);
     }

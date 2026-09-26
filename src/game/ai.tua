@@ -4,6 +4,8 @@ use std.collections.Deque;
 use std.collections.Map;
 use game.GameState;
 use game.hex.Hex;
+use game.city.BuildUnit;
+use game.city.City;
 use game.unit.Team;
 
 /// The steps from a walk's origin to every hex it can reach.
@@ -18,8 +20,15 @@ impl GameState {
     /// stay and fight. No coordination beyond not sending two units to the same hex, and no
     /// retreating.
     pub fn plan_ai_turn(&mut self, team: Team) {
+        self.found_first_city(team);
         for idx in 0..self.units.len() {
-            if self.units[idx].team != team || self.rival_of(idx).is_some() { continue; }
+            let id = self.units[idx].id;
+            let skip = self.units[idx].team != team
+                || self.rival_of(idx).is_some()
+                || self.player_controlled_units.contains(id)
+                || self.settlers.contains(id)
+                || self.workers.contains(id);
+            if skip { continue; }
             let Option.Some(target) = self.nearest_enemy_pos(idx) else { continue; };
 
             let unit = self.units[idx];
@@ -45,6 +54,25 @@ impl GameState {
             if dest != unit.pos { unit.planned_move = Option.Some(dest); }
             if dest.distance(target) <= stats.attack_range { unit.planned_attack = Option.Some(target); }
         }
+    }
+
+    /// With no city yet, `team` founds one where its first settler stands, before its combat
+    /// orders, and starts it on melee.
+    fn found_first_city(&mut self, team: Team) {
+        for c in 0..self.cities.len() {
+            if self.cities[c].team == team { return; }
+        }
+        let mut settler: Option[i32] = Option.None;
+        for i in 0..self.units.len() {
+            if settler.is_none() && self.units[i].team == team && self.settlers.contains(self.units[i].id) { settler = Option.Some(i); }
+        }
+        let Option.Some(i) = settler else { return; };
+        let unit = self.units[i];
+        self.remove_unit(unit.id);
+        self.settlers.remove(unit.id);
+        let id = self.cities.len() as u32;
+        self.cities.push(City { id, team, pos: unit.pos, population: 1, food: 0, production: 0, worked: Vec.new(), queue: Option.Some(BuildUnit.Melee) });
+        self.auto_assign_city(self.cities.len() - 1);
     }
 
     /// Whether a unit of `team` is already heading for `hex`.

@@ -1,6 +1,7 @@
 //! The rules as played: pathing, contested hexes, swaps, simultaneous resolution, the four
 //! abilities, selection and the turn loop. Each test starts from `GameState.new()`'s layout.
 
+use std.core.Keep;
 use std.core.Option;
 use std.linalg.vec2;
 use std.rand.Rand;
@@ -11,6 +12,7 @@ use std.test.Assert;
 use log.Log;
 use game.GameState;
 use game.GRID_RADIUS;
+use game.city.BuildUnit;
 use game.combat.roll_damage;
 use game.hex.Hex;
 use game.hex.HexGrid;
@@ -24,7 +26,7 @@ use game.unit.UnitType;
 
 /// Runs `body` with the combat log discarded and a fixed random stream. Every rule a test
 /// checks holds whatever the damage rolls, so the seed only makes a failure reproducible.
-fn sandbox[E](body: affine fn() can {Log, Rand, ..E}) can {..E} {
+pub fn sandbox[E](body: affine fn() can {Log, Rand, ..E}) can {..E} {
     let mut g = seed(7);
     handle {
         handle { body(); } with Rand { rand() => { resume g.next() } }
@@ -36,7 +38,7 @@ fn sandbox[E](body: affine fn() can {Log, Rand, ..E}) can {..E} {
 
 /// The starting layout has exactly one unit of each type per team; -1, which no subscript
 /// accepts, when there is none.
-fn find(game: &GameState, team: Team, unit_type: UnitType) -> i32 {
+pub fn find(game: &GameState, team: Team, unit_type: UnitType) -> i32 {
     let mut i = 0;
     while i < game.units.len() {
         if game.units[i].team == team && game.units[i].unit_type == unit_type { return i; }
@@ -464,35 +466,111 @@ fn holding_keeps_orders_and_moves_on() {
     });
 }
 
+/// A neighbour of `hex` a unit could move to.
+pub fn open_neighbor(game: &GameState, hex: Hex) -> Option[Hex] {
+    let around = hex.neighbors();
+    for k in 0..6 {
+        let h = around[k];
+        if game.grid.is_passable(h) && !game.is_occupied(h) { return Option.Some(h); }
+    }
+    Option.None
+}
+
+/// Whether no unit needs orders and no city needs a build. `pending() == (0, 0)` has no `Eq`
+/// to call: a tuple has no `impl Eq`.
+pub fn nothing_pending(game: &GameState) -> bool {
+    let (units, cities) = game.pending();
+    units == 0 && cities == 0
+}
+
+fn blue_count(game: &GameState) -> i32 {
+    let mut n = 0;
+    for i in 0..game.units.len() {
+        if game.units[i].team == Team.Blue { n = n + 1; }
+    }
+    n
+}
+
 @test
-fn turn_resolves_once_every_unit_has_acted() {
+fn turn_waits_for_explicit_end_after_every_unit_has_acted() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.new();
-        let mut blue_count = 0;
-        for i in 0..game.units.len() {
-            if game.units[i].team == Team.Blue { blue_count = blue_count + 1; }
-        }
-        for _ in 1..blue_count { game.hold_selected_unit(); }
+        for _ in 1..blue_count(&game) { game.hold_selected_unit(); }
         // One unit is still to act.
         assert(!game.is_resolving());
         // The last unit finishes by queuing orders rather than holding.
         let Option.Some(last) = game.selected else { assert_fail("the last unit is selected"); return; };
         let from = game.units[last].pos;
-        let around = from.neighbors();
-        let mut dest = Option.None;
-        for k in 0..6 {
-            let h = around[k];
-            if dest == Option.None && game.grid.is_passable(h) && !game.is_occupied(h) { dest = Option.Some(h); }
-        }
-        let Option.Some(to) = dest else { assert_fail("the last unit has room to move"); return; };
+        let Option.Some(to) = open_neighbor(&game, from) else { assert_fail("the last unit has room to move"); return; };
         game.try_queue_move(last, to);
         game.try_queue_attack(last, from);
         game.advance_selection_if_done();
+        assert(!game.is_resolving());
+        game.end_planning();
         assert(game.is_resolving());
         // Playing the turn out starts the next one with the first unit selected.
         while game.is_resolving() { game.update(1.0); }
         for i in 0..game.units.len() { assert(!game.units[i].holding); }
         assert(game.selected.is_some());
+    });
+}
+
+@test
+fn space_holds_each_unit_then_ends_the_turn() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        for _ in 0..blue_count(&game) { game.hold_or_end_turn(); }
+        // Holding the last unit doesn't end the turn.
+        assert(!game.is_resolving());
+        assert(nothing_pending(&game));
+        game.hold_or_end_turn();
+        assert(game.is_resolving());
+    });
+}
+
+@test
+fn guarding_lasts_across_turns_until_an_order() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let melee = find(&game, Team.Blue, UnitType.Melee);
+        assert(game.selected == Option.Some(melee));
+        game.toggle_guard();
+        // Guarding moves on.
+        assert(game.selected != Option.Some(melee));
+
+        while !nothing_pending(&game) { game.hold_or_end_turn(); }
+        game.hold_or_end_turn();
+        while game.is_resolving() { game.update(1.0); }
+        let melee = find(&game, Team.Blue, UnitType.Melee);
+        // Still guarding next turn.
+        assert(game.units[melee].guarding);
+        assert(!game.needs_orders(melee));
+
+        // Giving it an order wakes it.
+        game.selected = Option.Some(melee);
+        let Option.Some(open) = open_neighbor(&game, game.units[melee].pos) else { assert_fail("the melee unit has room to move"); return; };
+        game.try_queue_move(melee, open);
+        assert(!game.units[melee].guarding);
+    });
+}
+
+@test
+fn turn_waits_for_city_builds_but_not_citizens() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team != Team.Blue } }
+        game.selected = Option.None;
+        assert(game.pending().0 == 0 && game.pending().1 == 1);
+
+        // Space opens the city that needs a build instead of ending the turn.
+        game.hold_or_end_turn();
+        assert(!game.is_resolving());
+        assert(game.selected_city == Option.Some(0));
+
+        game.queue_selected_city_unit(BuildUnit.Melee);
+        assert(nothing_pending(&game));
+        game.hold_or_end_turn();
+        assert(game.is_resolving());
     });
 }
 

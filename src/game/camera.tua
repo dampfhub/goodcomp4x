@@ -64,6 +64,14 @@ impl Camera {
         )
     }
 
+    /// The reverse of `screen_to_world`: where a world point is drawn, in pixels with the
+    /// origin at the top-left.
+    pub fn world_to_screen(&self, point: Vec2, screen_size: Vec2) -> Vec2 {
+        let offset = point.sub(self.center);
+        let ndc = vec2(offset.x / self.half_width(screen_size), -offset.y / self.half_height);
+        ndc.add(vec2(1.0, 1.0)).scale(0.5).mul(screen_size)
+    }
+
     /// Positive `steps` zoom in; each step scales the view by 10%.
     pub fn zoom(&mut self, steps: f32) {
         let factor = (1.1 as f32).powf(-steps);

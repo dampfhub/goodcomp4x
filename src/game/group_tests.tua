@@ -1,0 +1,118 @@
+//! Selecting several units and ordering them together.
+
+use std.collections.Set;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.camera.Camera;
+use game.hex.Hex;
+use game.orders.ClickMode;
+use game.tests.find;
+use game.tests.sandbox;
+use game.unit.Team;
+use game.unit.UnitType;
+
+const SCREEN_W: f32 = 1600.0;
+const SCREEN_H: f32 = 900.0;
+
+fn screen() -> Vec2 { vec2(SCREEN_W, SCREEN_H) }
+
+/// The indices of Blue's units, in unit order.
+fn blue(game: &GameState) -> Vec[i32] {
+    let mut out: Vec[i32] = Vec.new();
+    for i in 0..game.units.len() {
+        if game.units[i].team == Team.Blue { out.push(i); }
+    }
+    out
+}
+
+@test
+fn a_box_around_the_army_selects_it_as_a_group() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.select_in_box(vec2(0.0, 0.0), vec2(SCREEN_W / 2.0, SCREEN_H), screen());
+        // Only the player's units, all on the left, in unit order.
+        let units = blue(&game);
+        assert(game.group.len() == units.len());
+        for k in 0..units.len() { assert(game.group[k] == units[k]); }
+        assert(game.selected == Option.None);
+
+        // Alt-clicking members back out leaves an ordinary single selection.
+        for k in 1..units.len() {
+            let cursor = game.camera.world_to_screen(game.units[units[k]].pos.to_world(), screen());
+            game.toggle_in_selection(cursor, screen());
+        }
+        assert(game.group.is_empty());
+        assert(game.selected == Option.Some(units[0]));
+    });
+}
+
+@test
+fn a_group_converges_on_the_target_without_sharing_hexes() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let units = blue(&game);
+        // A `let` until two-phase borrows land: `game.set_selection(blue(&game))` is B0001.
+        let members = blue(&game);
+        game.set_selection(members);
+        let target = Hex.new(0, 1);
+        let mut before: Vec[i32] = Vec.new();
+        for k in 0..units.len() { before.push(game.units[units[k]].pos.distance(target)); }
+
+        game.group_order(target, ClickMode.Normal);
+        let mut destinations: Set[Hex] = Set.new();
+        let mut moves = 0;
+        for k in 0..units.len() {
+            if let Option.Some(dest) = game.units[units[k]].planned_move {
+                moves = moves + 1;
+                destinations.insert(dest);
+            }
+        }
+        // No two share a hex.
+        assert(destinations.len() == moves);
+        for k in 0..units.len() {
+            // Nobody ends up farther away.
+            assert(game.units[units[k]].planned_pos().distance(target) <= before[k]);
+        }
+        assert(moves > 0);
+    });
+}
+
+@test
+fn only_members_in_range_join_a_group_attack() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let melee = find(&game, Team.Blue, UnitType.Melee);
+        let ranged = find(&game, Team.Blue, UnitType.Ranged);
+        let mut pair: Vec[i32] = Vec.new();
+        pair.push(melee);
+        pair.push(ranged);
+        game.set_selection(pair);
+        // Two hexes from both: only the ranged unit reaches.
+        let target = Hex.new(0, 0);
+        assert(game.units[melee].pos.distance(target) == 2);
+        assert(game.units[ranged].pos.distance(target) == 2);
+
+        game.group_order(target, ClickMode.Attack);
+        assert(game.units[ranged].planned_attack == Option.Some(target));
+        assert(game.units[melee].planned_attack == Option.None);
+
+        // Again calls it off.
+        game.group_order(target, ClickMode.Attack);
+        assert(game.units[ranged].planned_attack == Option.None);
+    });
+}
+
+@test
+fn world_to_screen_undoes_screen_to_world() {
+    let camera = Camera.new(vec2(1.5, -2.0), 6.0);
+    let cursors = [vec2(0.0, 0.0), vec2(800.0, 450.0), vec2(1234.0, 56.0)];
+    for k in 0..3 {
+        let world = camera.screen_to_world(cursors[k], screen());
+        assert(camera.world_to_screen(world, screen()).approx_eq(cursors[k], 0.001));
+    }
+}

@@ -75,14 +75,16 @@ struct Engagement {
 impl GameState {
     pub fn is_resolving(&self) -> bool { !self.pending_steps.is_empty() }
 
-    /// Plans the AI's turn, then queues every step for `update` to play out. Runs on its own
-    /// once every one of the player's units has acted.
+    /// Plans the AI's turn, then queues every step for `update` to play out. Called after the
+    /// player explicitly ends planning.
     pub fn resolve_turn(&mut self) can {Log} {
         if self.is_resolving() { return; }
         self.turn = self.turn + 1;
         let turn = self.turn;
         info(fn() can {Out} { Out.put("=== resolving turn "); show_u64(turn as u64); Out.put(" ==="); });
+        // Indices shift as units die, so nothing stays selected.
         self.selected = Option.None;
+        self.group.clear();
 
         self.plan_ai_turn(AI_TEAM);
         for i in 0..8 { self.pending_steps.push_back(RESOLUTION_ORDER[i]); }
@@ -113,6 +115,7 @@ impl GameState {
         }
 
         if !self.is_resolving() {
+            self.resolve_economy();
             for i in 0..self.units.len() {
                 let unit = self.units[i];
                 if unit.ability_queued && unit.ability() == Ability.Deploy {
@@ -132,6 +135,7 @@ impl GameState {
         let mut actors: Vec[i32] = Vec.new();
         for i in 0..self.units.len() {
             if self.units[i].unit_type != unit_type { continue; }
+            if phase == Phase.Attack && self.workers.contains(self.units[i].id) { continue; }
             let acts = match phase {
                 Phase.Move => self.units[i].planned_move.is_some(),
                 // Units in a contested hex fight whether or not they have orders.

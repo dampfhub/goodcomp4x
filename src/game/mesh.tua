@@ -4,6 +4,7 @@ use std.linalg.Vec2;
 use std.linalg.vec2;
 use std.linalg.vec2_from_angle;
 use std.math.Float;
+use std.math.pi;
 use std.math.tau;
 use renderer.pipelines.MeshVertex;
 
@@ -16,6 +17,22 @@ pub fn regular_polygon(center: Vec2, radius: f32, sides: u32, rotation: f32, col
     let corner = fn(i: u32) -> Vec2 { center.add(vec2_from_angle(rotation + step * i as f32).scale(radius)) };
     for i in 0..sides {
         push_triangle(out, center, corner(i), corner(i + 1), color);
+    }
+}
+
+/// Appends the outline of a regular polygon: a band `width` thick centered on the polygon of
+/// `radius`, with mitered corners so the edges join cleanly.
+pub fn polygon_outline(center: Vec2, radius: f32, width: f32, sides: u32, rotation: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    // Moving an edge `width / 2` along its normal moves the corners further, since they're
+    // farther from the center than the edge's midpoint.
+    let corner_offset = width / 2.0 / (pi() as f32 / sides as f32).cos();
+    let corner = fn(i: u32, r: f32) -> Vec2 { center.add(vec2_from_angle(rotation + tau() as f32 * i as f32 / sides as f32).scale(r)) };
+    let (outer, inner) = (radius + corner_offset, radius - corner_offset);
+    for i in 0..sides {
+        let (a, b) = (corner(i, outer), corner(i + 1, outer));
+        let (c, d) = (corner(i, inner), corner(i + 1, inner));
+        push_triangle(out, a, b, d, color);
+        push_triangle(out, a, d, c, color);
     }
 }
 
