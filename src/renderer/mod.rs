@@ -1,6 +1,8 @@
 //! A small general-purpose 2D Vulkan renderer: each frame, the caller hands
 //! over one or more triangle lists, each with its own view-projection matrix
 //! (e.g. the world through a camera, then UI in screen space on top).
+//! Triangles are vertex-colored, and can be masked by a single-channel
+//! coverage atlas (e.g. font glyphs) supplied once at startup.
 
 mod buffer;
 mod device;
@@ -8,6 +10,7 @@ mod instance;
 mod pipeline;
 mod swapchain;
 mod sync;
+mod texture;
 mod vertex;
 
 use anyhow::Result;
@@ -19,8 +22,10 @@ use winit::window::Window;
 use device::QueueFamilyIndices;
 use swapchain::SwapchainData;
 use sync::{MAX_FRAMES_IN_FLIGHT, SyncObjects};
+use texture::Texture;
 
-pub use vertex::Vertex;
+pub use texture::Atlas;
+pub use vertex::{SOLID_UV, Vertex};
 
 /// Most vertices one frame can draw; anything past this is dropped with a warning.
 const VERTEX_BUFFER_CAPACITY: usize = 65_536;
@@ -62,6 +67,7 @@ pub struct Renderer {
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
+    texture: Texture,
 
     /// One vertex buffer per frame in flight, so the CPU can fill one while
     /// the GPU still reads another.
@@ -82,7 +88,7 @@ pub struct Renderer {
 impl Renderer {
     /// # Safety
     /// `window` must outlive the returned renderer.
-    pub unsafe fn new(window: &Window) -> Result<Self> {
+    pub unsafe fn new(window: &Window, atlas: &Atlas) -> Result<Self> {
         let display_handle = window.display_handle()?.as_raw();
         let window_handle = window.window_handle()?.as_raw();
         let window_size = window.inner_size().into();
@@ -118,10 +124,23 @@ impl Renderer {
             )
         }?;
 
+        let command_pool = unsafe { create_command_pool(&logical_device, queue_indices) }?;
+        let texture = unsafe {
+            Texture::new(
+                &vk_instance,
+                &logical_device,
+                physical_device,
+                command_pool,
+                graphics_queue,
+                atlas,
+            )
+        }?;
+
         let render_pass =
             unsafe { pipeline::create_render_pass(&logical_device, swapchain_data.format) }?;
-        let (pipeline_layout, gfx_pipeline) =
-            unsafe { pipeline::create_graphics_pipeline(&logical_device, render_pass) }?;
+        let (pipeline_layout, gfx_pipeline) = unsafe {
+            pipeline::create_graphics_pipeline(&logical_device, render_pass, texture.set_layout)
+        }?;
         let framebuffers =
             unsafe { create_framebuffers(&logical_device, render_pass, &swapchain_data) }?;
 
@@ -139,7 +158,6 @@ impl Renderer {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let command_pool = unsafe { create_command_pool(&logical_device, queue_indices) }?;
         let command_buffers =
             unsafe { create_command_buffers(&logical_device, command_pool, framebuffers.len()) }?;
 
@@ -163,6 +181,7 @@ impl Renderer {
             pipeline_layout,
             pipeline: gfx_pipeline,
             framebuffers,
+            texture,
             vertex_buffers,
             command_pool,
             command_buffers,
@@ -352,6 +371,14 @@ impl Renderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline,
             );
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[self.texture.set],
+                &[],
+            );
             device.cmd_bind_vertex_buffers(
                 command_buffer,
                 0,
@@ -394,8 +421,11 @@ impl Renderer {
                 self.window_size,
             )?;
             self.render_pass = pipeline::create_render_pass(&self.device, self.swapchain.format)?;
-            (self.pipeline_layout, self.pipeline) =
-                pipeline::create_graphics_pipeline(&self.device, self.render_pass)?;
+            (self.pipeline_layout, self.pipeline) = pipeline::create_graphics_pipeline(
+                &self.device,
+                self.render_pass,
+                self.texture.set_layout,
+            )?;
             self.framebuffers =
                 create_framebuffers(&self.device, self.render_pass, &self.swapchain)?;
             self.command_buffers =
@@ -427,6 +457,7 @@ impl Drop for Renderer {
         self.wait_idle();
         unsafe {
             self.cleanup_swapchain();
+            self.texture.destroy(&self.device);
             self.sync.destroy(&self.device);
             for &(buffer, memory) in &self.vertex_buffers {
                 self.device.destroy_buffer(buffer, None);

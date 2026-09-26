@@ -24,6 +24,7 @@ use rand::rngs::ThreadRng;
 
 pub use camera::Camera;
 pub use city::BuildUnit;
+pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
 use terrain::Terrain;
@@ -77,7 +78,6 @@ pub struct GameState {
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
     hovered_city: Option<usize>,
-    hovered_build: Option<city::BuildUnit>,
     ui_click_mode: Option<orders::ClickMode>,
     inspected_tile: Option<Hex>,
     notice: String,
@@ -141,7 +141,6 @@ impl GameState {
             roads: HashSet::new(),
             selected_city: None,
             hovered_city: None,
-            hovered_build: None,
             ui_click_mode: None,
             inspected_tile: None,
             notice: String::new(),
@@ -167,6 +166,7 @@ impl GameState {
     pub fn city_scenario() -> Self {
         let mut game = Self::new();
         game.setup_cities();
+        game.start_on_whole_map();
         game
     }
 
@@ -175,7 +175,16 @@ impl GameState {
         let mut game = Self::new();
         game.units.clear();
         game.setup_frontier();
+        game.start_on_whole_map();
         game
+    }
+
+    /// After a scenario replaces the combat setup: centers the camera on the
+    /// map (dropping any glide toward a unit that's gone) and selects the
+    /// first unit without moving the camera to it.
+    fn start_on_whole_map(&mut self) {
+        self.camera = Camera::new(Vec2::ZERO, self.camera.half_height);
+        self.selected = self.next_unit_needing_orders(None);
     }
 
     fn units_at(&self, hex: Hex) -> impl Iterator<Item = usize> + '_ {
@@ -183,11 +192,34 @@ impl GameState {
     }
 
     fn is_player_controlled(&self, idx: usize) -> bool {
-        self.units[idx].team == PLAYER_TEAM || self.player_controlled_units.contains(&self.units[idx].id)
+        self.units[idx].team == PLAYER_TEAM
+            || self.player_controlled_units.contains(&self.units[idx].id)
     }
 
     fn controlled_unit_at(&self, hex: Hex) -> Option<usize> {
         self.units_at(hex).find(|&i| self.is_player_controlled(i))
+    }
+
+    /// What the unit is, for display: settlers and workers are marked on
+    /// top of an ordinary unit type.
+    fn unit_role(&self, unit: &Unit) -> (&'static str, char) {
+        if self.settlers.contains(&unit.id) {
+            ("SETTLER", 'T')
+        } else if self.workers.contains(&unit.id) {
+            ("WORKER", 'W')
+        } else {
+            let name = match unit.unit_type {
+                UnitType::Melee => "MELEE",
+                UnitType::Ranged => "RANGED",
+                UnitType::Cavalry => "CAVALRY",
+                UnitType::Siege => "SIEGE",
+            };
+            (name, unit.unit_type.letter())
+        }
+    }
+
+    fn unit_letter(&self, unit: &Unit) -> char {
+        self.unit_role(unit).1
     }
 
     fn is_occupied(&self, hex: Hex) -> bool {

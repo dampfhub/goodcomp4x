@@ -2,13 +2,13 @@ use std::time::{Duration, Instant};
 
 use glam::Vec2;
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::game::{ClickMode, GameState, ui_projection};
+use crate::game::{ClickMode, GameState, font_atlas, ui_projection};
 use crate::renderer::{DrawBatch, Renderer};
 
 /// Cap on the render loop's frame rate, so it doesn't load the GPU with
@@ -16,6 +16,10 @@ use crate::renderer::{DrawBatch, Renderer};
 const TARGET_FPS: u64 = 165;
 const FRAME_DURATION: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
 const DRAG_THRESHOLD: f32 = 6.0;
+/// The window opens at this fraction of the primary monitor's size.
+const WINDOW_SCREEN_FRACTION: f32 = 0.8;
+/// Window size when the monitor's size can't be found.
+const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1600, 900);
 
 pub struct App {
     // Declared before `window` so it's dropped first: the Vulkan surface
@@ -62,15 +66,28 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let attributes = Window::default_attributes()
+        // Most of the screen, centered, so there's room for the map and the UI.
+        let mut attributes = Window::default_attributes()
             .with_title("Hex Combat Sandbox")
-            .with_inner_size(PhysicalSize::new(1280, 720));
+            .with_inner_size(DEFAULT_WINDOW_SIZE);
+        if let Some(monitor) = event_loop.primary_monitor() {
+            let (screen, origin) = (monitor.size(), monitor.position());
+            let size = PhysicalSize::new(
+                (screen.width as f32 * WINDOW_SCREEN_FRACTION) as u32,
+                (screen.height as f32 * WINDOW_SCREEN_FRACTION) as u32,
+            );
+            let position = PhysicalPosition::new(
+                origin.x + (screen.width - size.width) as i32 / 2,
+                origin.y + (screen.height - size.height) as i32 / 2,
+            );
+            attributes = attributes.with_inner_size(size).with_position(position);
+        }
         let window = event_loop
             .create_window(attributes)
             .expect("failed to create window");
 
         // Safety: `App` drops the renderer before the window (see field order).
-        match unsafe { Renderer::new(&window) } {
+        match unsafe { Renderer::new(&window, font_atlas()) } {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(err) => {
                 log::error!("failed to initialize renderer: {err:?}");
@@ -134,7 +151,6 @@ impl ApplicationHandler for App {
                         } else {
                             ClickMode::Normal
                         };
-                        let mode = self.game.take_ui_click_mode(mode);
                         self.left_press = Some((cursor, mode, !self.game.is_resolving()));
                         self.left_dragging = self.panning;
                     }
@@ -151,7 +167,11 @@ impl ApplicationHandler for App {
                 }
                 (ElementState::Pressed, MouseButton::Right) => {
                     if let (Some(cursor), Some(size)) = (self.cursor_pos, self.screen_size()) {
-                        self.game.handle_context_click(cursor, size, self.modifiers.state().control_key());
+                        self.game.handle_context_click(
+                            cursor,
+                            size,
+                            self.modifiers.state().control_key(),
+                        );
                     }
                 }
                 (ElementState::Pressed, MouseButton::Middle) => {
@@ -185,7 +205,7 @@ impl ApplicationHandler for App {
                 KeyCode::KeyQ => self.game.toggle_selected_ability(),
                 KeyCode::Enter => self.game.end_planning(),
                 KeyCode::KeyC => self.game.select_city(),
-                KeyCode::Escape => self.game.close_city(),
+                KeyCode::Escape => self.game.cancel(),
                 KeyCode::KeyA => self.game.auto_assign_selected_city(),
                 KeyCode::KeyM => self.game.choose_move_action(),
                 KeyCode::KeyX => self.game.choose_attack_action(),
@@ -223,9 +243,8 @@ impl ApplicationHandler for App {
                     return;
                 };
                 self.game.update_city_hover(self.cursor_pos, size);
-                self.game.update_ui_hover(self.cursor_pos, size);
                 let world = self.game.build_vertices();
-                let ui = self.game.build_ui(size);
+                let ui = self.game.build_ui(size, self.cursor_pos);
                 let batches = [
                     DrawBatch {
                         view_proj: self.game.camera.view_proj(size),

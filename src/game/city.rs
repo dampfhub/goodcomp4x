@@ -6,6 +6,9 @@ use super::terrain::Terrain;
 use super::unit::{Team, Unit, UnitType};
 use super::{GameState, PLAYER_TEAM};
 
+/// Camera zoom the city scenarios start at: most of the radius-six map in view.
+const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
+
 pub(super) struct City {
     pub id: u32,
     pub team: Team,
@@ -118,7 +121,7 @@ impl GameState {
         let mut terrain: Vec<_> = hills.into_iter().map(|h| (h, Terrain::Hills)).collect();
         terrain.extend([-4, -3, -2, 2, 3, 4].map(|r| (Hex::new(0, r), Terrain::Mountains)));
         self.grid = HexGrid::new(6, terrain);
-        self.camera.half_height = 8.0;
+        self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
         for (id, team, sign) in [(0, Team::Blue, -1), (1, Team::Red, 1)] {
             let pos = Hex::new(sign * 4, 0);
             self.cities.push(City {
@@ -152,7 +155,12 @@ impl GameState {
             }
             let worker_id = self.next_unit_id;
             self.next_unit_id += 1;
-            self.units.push(Unit::new(worker_id, Hex::new(sign * 4, sign * 2), team, UnitType::Melee));
+            self.units.push(Unit::new(
+                worker_id,
+                Hex::new(sign * 4, sign * 2),
+                team,
+                UnitType::Melee,
+            ));
             self.workers.insert(worker_id);
         }
         for i in 0..self.cities.len() {
@@ -171,7 +179,7 @@ impl GameState {
                 (Hex::new(0, -3), Terrain::Mountains),
             ],
         );
-        self.camera.half_height = 8.0;
+        self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
         for (team, pos) in [(Team::Blue, Hex::new(-4, 0)), (Team::Red, Hex::new(4, 0))] {
             let id = self.next_unit_id;
             self.next_unit_id += 1;
@@ -180,14 +188,17 @@ impl GameState {
             let worker_id = self.next_unit_id;
             self.next_unit_id += 1;
             let worker_pos = Hex::new(pos.q, pos.r + if team == Team::Blue { 1 } else { -1 });
-            self.units.push(Unit::new(worker_id, worker_pos, team, UnitType::Melee));
+            self.units
+                .push(Unit::new(worker_id, worker_pos, team, UnitType::Melee));
             self.workers.insert(worker_id);
         }
         for (team, pos) in [(Team::Blue, Hex::new(-3, -1)), (Team::Red, Hex::new(3, 1))] {
             let id = self.next_unit_id;
             self.next_unit_id += 1;
             self.units.push(Unit::new(id, pos, team, UnitType::Melee));
-            if team == Team::Red { self.player_controlled_units.insert(id); }
+            if team == Team::Red {
+                self.player_controlled_units.insert(id);
+            }
         }
         self.notice = "F FOUND CITY - BOTH STARTING WARRIORS ARE YOURS TO TEST".into();
         self.selected = self.unit_of_team_at(Hex::new(-4, 0), PLAYER_TEAM);
@@ -234,7 +245,10 @@ impl GameState {
     pub fn build_worker_road_selected(&mut self) {
         let Some(i) = self.selected else { return };
         let unit = &self.units[i];
-        if !self.workers.contains(&unit.id) { self.notice = "ONLY A WORKER BUILDS ROADS".into(); return; }
+        if !self.workers.contains(&unit.id) {
+            self.notice = "ONLY A WORKER BUILDS ROADS".into();
+            return;
+        }
         self.roads.insert(unit.pos);
         self.notice = "DIRT ROAD BUILT - IT LOWERS LOGISTICS COST".into();
     }
@@ -242,9 +256,24 @@ impl GameState {
     pub fn improve_worker_tile_selected(&mut self) {
         let Some(i) = self.selected else { return };
         let unit = &self.units[i];
-        if !self.workers.contains(&unit.id) { self.notice = "ONLY A WORKER IMPROVES TILES".into(); return; }
-        let (food, production, label) = if self.grid.terrain(unit.pos) == Terrain::Hills { (1, 4, "MINE") } else { (4, 0, "FARM") };
-        self.sites.insert(unit.pos, Site { team: unit.team, food, production, label });
+        if !self.workers.contains(&unit.id) {
+            self.notice = "ONLY A WORKER IMPROVES TILES".into();
+            return;
+        }
+        let (food, production, label) = if self.grid.terrain(unit.pos) == Terrain::Hills {
+            (1, 4, "MINE")
+        } else {
+            (4, 0, "FARM")
+        };
+        self.sites.insert(
+            unit.pos,
+            Site {
+                team: unit.team,
+                food,
+                production,
+                label,
+            },
+        );
         self.notice = format!("{} BUILT", label);
     }
 
@@ -376,15 +405,33 @@ impl GameState {
     /// and fills new citizen slots after growth.
     fn reconcile_citizens(&mut self, city: usize) {
         let routes = self.routes(city);
-        let other_claims: HashSet<Hex> = self.cities.iter().enumerate()
-            .filter(|(i, _)| *i != city).flat_map(|(_, c)| c.worked.iter().copied()).collect();
-        self.cities[city].worked.retain(|h| routes.costs.contains_key(h) && !other_claims.contains(h));
-        let mut candidates: Vec<_> = routes.costs.iter()
-            .filter(|(h, _)| !self.cities[city].worked.contains(h) && !other_claims.contains(h))
-            .filter(|(h, _)| self.sites.get(h).is_none_or(|s| s.team == self.cities[city].team))
-            .map(|(h, cost)| { let (f, p) = self.tile_yield(*h); (*h, f * delivered_share(*cost), p * delivered_share(*cost)) })
+        let other_claims: HashSet<Hex> = self
+            .cities
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != city)
+            .flat_map(|(_, c)| c.worked.iter().copied())
             .collect();
-        while self.cities[city].worked.len() < self.cities[city].population && !candidates.is_empty() {
+        self.cities[city]
+            .worked
+            .retain(|h| routes.costs.contains_key(h) && !other_claims.contains(h));
+        let mut candidates: Vec<_> = routes
+            .costs
+            .iter()
+            .filter(|(h, _)| !self.cities[city].worked.contains(h) && !other_claims.contains(h))
+            .filter(|(h, _)| {
+                self.sites
+                    .get(h)
+                    .is_none_or(|s| s.team == self.cities[city].team)
+            })
+            .map(|(h, cost)| {
+                let (f, p) = self.tile_yield(*h);
+                (*h, f * delivered_share(*cost), p * delivered_share(*cost))
+            })
+            .collect();
+        while self.cities[city].worked.len() < self.cities[city].population
+            && !candidates.is_empty()
+        {
             candidates.sort_by_key(|(h, f, p)| (-(f * 3 + p), h.q, h.r));
             self.cities[city].worked.push(candidates.remove(0).0);
         }
@@ -394,8 +441,16 @@ impl GameState {
         let c = &self.cities[city];
         let threshold = (10 + 5 * c.population as i32) * 4;
         let net = self.income(city).0 - c.population as i32 * 8;
-        let turns = if net > 0 { ((threshold - c.food).max(0) + net - 1) / net } else { 0 };
-        let label = if net > 0 { format!("GROWTH IN {turns} TURNS") } else { "NO GROWTH: NEED FOOD".into() };
+        let turns = if net > 0 {
+            ((threshold - c.food).max(0) + net - 1) / net
+        } else {
+            0
+        };
+        let label = if net > 0 {
+            format!("GROWTH IN {turns} TURNS")
+        } else {
+            "NO GROWTH: NEED FOOD".into()
+        };
         ((c.food * 100 / threshold).clamp(0, 100), threshold, label)
     }
 
@@ -464,8 +519,8 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
-        if let Some(i) = (0..self.units.len())
-            .find(|&i| self.is_player_controlled(i) && self.needs_orders(i))
+        if let Some(i) =
+            (0..self.units.len()).find(|&i| self.is_player_controlled(i) && self.needs_orders(i))
         {
             self.selected_city = None;
             self.selected = Some(i);
@@ -500,7 +555,9 @@ impl GameState {
             city.worked.truncate(city.population);
         }
         self.complete_builds();
-        for i in 0..self.cities.len() { self.reconcile_citizens(i); }
+        for i in 0..self.cities.len() {
+            self.reconcile_citizens(i);
+        }
         self.notice = "PLANNING - C CITY - SPACE HOLD - ENTER END TURN".into();
     }
 
@@ -582,7 +639,10 @@ mod tests {
         assert_eq!(g.cities[0].population, 3);
         g.cities[0].food = -100;
         g.resolve_economy();
-        assert_eq!(g.cities[0].population, 2, "starvation loses at most one population per turn");
+        assert_eq!(
+            g.cities[0].population, 2,
+            "starvation loses at most one population per turn"
+        );
         g.auto_assign_city(0);
         assert_eq!(g.cities[0].worked.len(), 2);
         assert!(!g.may_assign(1, g.cities[0].worked[0]));

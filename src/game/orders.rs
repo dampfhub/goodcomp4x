@@ -2,11 +2,11 @@
 
 use glam::Vec2;
 
-use super::hex::Hex;
 use super::GameState;
+use super::hex::Hex;
 
 /// What a left-click on a hex should do, based on the modifier keys held.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClickMode {
     /// Select a unit, or queue a move or attack for the selected one.
     Normal,
@@ -19,24 +19,47 @@ pub enum ClickMode {
 }
 
 impl GameState {
-    /// The command tray's next map action, consumed after the next map click.
-    pub fn take_ui_click_mode(&mut self, fallback: ClickMode) -> ClickMode {
-        self.ui_click_mode.take().unwrap_or(fallback)
-    }
-
+    /// M or the Move button: the next map click only moves.
     pub fn choose_move_action(&mut self) {
-        self.ui_click_mode = Some(ClickMode::Move);
-        self.notice = "MOVE: CLICK A GREEN HEX".into();
+        self.toggle_ui_click_mode(ClickMode::Move, "MOVE: CLICK A GREEN HEX");
     }
 
+    /// X or the Attack button: the next map click attacks that hex.
     pub fn choose_attack_action(&mut self) {
-        self.ui_click_mode = Some(ClickMode::Attack);
-        self.notice = "ATTACK: CLICK A TARGET HEX".into();
+        self.toggle_ui_click_mode(ClickMode::Attack, "ATTACK: CLICK A TARGET HEX");
     }
+
+    /// The Swap button: the next map click swaps with that adjacent ally.
+    pub fn choose_swap_action(&mut self) {
+        self.toggle_ui_click_mode(ClickMode::Swap, "SWAP: CLICK AN ADJACENT ALLY");
+    }
+
+    /// Arms `mode` for the next map click, or disarms it if it's already armed.
+    fn toggle_ui_click_mode(&mut self, mode: ClickMode, notice: &str) {
+        if self.is_resolving() || self.selected.is_none() {
+            return;
+        }
+        if self.ui_click_mode == Some(mode) {
+            self.ui_click_mode = None;
+        } else {
+            self.ui_click_mode = Some(mode);
+            self.notice = notice.into();
+        }
+    }
+
+    /// Escape: disarms an armed action, or else closes the city view.
+    pub fn cancel(&mut self) {
+        if self.ui_click_mode.take().is_none() {
+            self.close_city();
+        }
+    }
+
     /// Left-click: selects one of the player's units, or queues an order for
     /// the selected one. Clicking an already-queued order again cancels it.
-    /// Once the selected unit has nothing left to plan, selection moves on to
-    /// the next unit that does. Ignored while a turn is playing out.
+    /// An action armed from the command tray applies to this map click only,
+    /// unless a modifier key picked `mode` itself. Once the selected unit has
+    /// nothing left to plan, selection moves on to the next unit that does.
+    /// Ignored while a turn is playing out.
     pub fn handle_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) {
         if self.is_resolving() {
             return;
@@ -44,6 +67,11 @@ impl GameState {
         if self.click_ui(cursor, screen_size) {
             return;
         }
+        let armed = self.ui_click_mode.take();
+        let mode = match (mode, armed) {
+            (ClickMode::Normal, Some(armed)) => armed,
+            _ => mode,
+        };
         let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
             self.selected = None;
             return;
@@ -137,6 +165,7 @@ impl GameState {
     /// unit, not when the player clicks one they can already see.
     fn select_and_focus(&mut self, idx: Option<usize>) {
         self.selected = idx;
+        self.ui_click_mode = None;
         if let Some(idx) = idx {
             self.selected_city = None;
             self.camera.focus_on(self.units[idx].pos.to_world());
@@ -175,7 +204,8 @@ impl GameState {
             return false;
         }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
-        let may_attack = unit.planned_attack.is_none() && unit.can_attack() && !self.workers.contains(&unit.id);
+        let may_attack =
+            unit.planned_attack.is_none() && unit.can_attack() && !self.workers.contains(&unit.id);
         may_move || may_attack
     }
 
@@ -191,13 +221,29 @@ impl GameState {
     }
 
     /// Context order: right-click moves to an open hex or attacks an enemy.
-    /// Ctrl-right-click retains the explicit clear-order behavior.
+    /// Ctrl-right-click retains the explicit clear-order behavior. With an
+    /// action armed, right-click just disarms it.
     pub fn handle_context_click(&mut self, cursor: Vec2, screen_size: Vec2, clear: bool) {
-        if self.is_resolving() { return; }
-        if clear { self.handle_right_click(); return; }
-        let Some(selected) = self.selected else { return };
-        let Some(hex) = self.hex_at_screen(cursor, screen_size) else { return };
-        if self.enemy_of_team_at(hex, self.units[selected].team).is_some() {
+        if self.is_resolving() {
+            return;
+        }
+        if self.ui_click_mode.take().is_some() {
+            return;
+        }
+        if clear {
+            self.handle_right_click();
+            return;
+        }
+        let Some(selected) = self.selected else {
+            return;
+        };
+        let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
+            return;
+        };
+        if self
+            .enemy_of_team_at(hex, self.units[selected].team)
+            .is_some()
+        {
             self.try_queue_attack(selected, hex);
         } else {
             self.try_queue_move(selected, hex);
@@ -205,7 +251,7 @@ impl GameState {
         self.advance_selection_if_done();
     }
 
-    fn hex_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option<Hex> {
+    pub(super) fn hex_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option<Hex> {
         if screen_size.min_element() <= 0.0 {
             return None;
         }
@@ -241,7 +287,9 @@ impl GameState {
     /// no one can stand there, and a unit locked in a contested hex can only
     /// fight its rival there.
     pub(super) fn try_queue_attack(&mut self, idx: usize, target: Hex) {
-        let unable = !self.units[idx].can_attack() || self.workers.contains(&self.units[idx].id) || self.rival_of(idx).is_some();
+        let unable = !self.units[idx].can_attack()
+            || self.workers.contains(&self.units[idx].id)
+            || self.rival_of(idx).is_some();
         if unable || !self.grid.is_passable(target) {
             return;
         }

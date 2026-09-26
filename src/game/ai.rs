@@ -35,7 +35,8 @@ impl GameState {
             self.auto_assign_city(self.cities.len() - 1);
         }
         for idx in 0..self.units.len() {
-            if self.units[idx].team != team || self.rival_of(idx).is_some()
+            if self.units[idx].team != team
+                || self.rival_of(idx).is_some()
                 || self.player_controlled_units.contains(&self.units[idx].id)
                 || self.settlers.contains(&self.units[idx].id)
                 || self.workers.contains(&self.units[idx].id)

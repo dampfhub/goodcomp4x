@@ -10,24 +10,24 @@ red queues its orders when you end planning. There is no save system yet.
 | Click enemy in range | Queue attack |
 | Shift-click tile in range | Attack that tile, even if currently empty |
 | Ctrl-click adjacent ally | Queue a swap |
-| Right-click map | Queue move to an open hex, or attack an enemy |
+| Right-click map | Queue move to an open hex, or attack an enemy; with Move/Attack/Swap armed, disarm it instead |
 | Ctrl-right-click | Clear selected unit's orders |
 | Q / ability button | Toggle ability |
-| Space | Hold unit, keeping queued orders, then select next |
+| Space / Hold button | Hold unit, keeping queued orders, then select next |
 | Tab | Browse units without holding; leave city view |
-| Enter / top status bar | End planning after all units have orders or hold |
+| Enter / End Turn button | End planning after all units have orders or hold |
 | Wheel | Zoom |
 | Left drag / middle drag | Pan the map |
 | C / click your city center | Open city view |
 | Click tile in city view | Assign citizen, or release an assigned citizen |
 | A in city view | Auto-assign citizens, balancing food and production |
-| Escape | Return from city view to units |
+| Escape | Disarm Move/Attack/Swap, or return from city view to units |
 | F1 | Reset to original combat scenario; discards current match |
 | F2 | Reset to city scenario; discards current match |
 | F3 | Start the frontier scenario; both sides begin with a settler |
 | F, with a selected settler | Found a city |
 | 1 / 2 / 3 / 4 in city view | Queue melee / ranged / cavalry / siege |
-| M / X | Choose Move / Attack from the selected unit's command tray |
+| M / X | Arm Move / Attack for the next map click (press again to disarm) |
 
 A unit can queue a move and attack together. Attacks target tiles, and the
 different unit types move and fire at different steps. Orders resolve only
@@ -82,12 +82,23 @@ Both sides also begin with a warrior. The red starting warrior is player
 controlled in this scenario, so you can move either warrior to test route cuts,
 contests, and city labor without fighting the AI for input.
 
-Cities and units share one compact command tray in the bottom-left. Select a
-city to see its yields and four clickable build cards. Select a unit to see
-Move, Attack, Ability, and—only for settlers—Found City. Every card shows its
-shortcut inside it. Move and Attack remain selected until the next map click.
+The top bar shows the turn, how many units still need orders, the latest
+notice, and an End Turn button (gold once every unit is ready).
+
+Cities and units share one command tray in the bottom-left. Select a unit to
+see its stats (boosted values green, reduced ones red) and a row of buttons:
+Move, Attack, Swap, then its ability (or Found City for settlers, Build Road
+and Improve for workers), and Hold. Each button shows its shortcut. Move,
+Attack and Swap arm the next map click; the armed button has a bright border,
+and pressing it again, right-clicking or Escape disarms it. A queued order
+turns its button gold, and a button the unit can't use right now is dimmed.
+Hover any button for a tooltip explaining it. Hover any unit on the map (either
+team) to see its stats in a box at the top-left.
+
 Workers are marked `W`. Move one onto a tile, then choose Build Road or Improve
 Tile. Roads lower logistics cost; plains become farms and hills become mines.
 These worker actions complete immediately in this first version.
-Hover a build card to see its combat role and matching keyboard shortcut; click
-it or press that key to queue it. The selected build is gold.
+
+Select a city to see its population, food and production, what it's building,
+its growth meter, and four build cards. Hover a card to see what the unit does
+and costs; click it or press its number to queue it. The queued build is gold.
