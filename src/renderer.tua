@@ -11,7 +11,11 @@ use vulkan.hl.instance.graphics_queue_family;
 use vulkan.hl.instance.PhysicalDevice;
 use vulkan.hl.instance.validation_layer_present;
 use vulkan.hl.validation.message_ring;
+use vulkan.hl.validation.MessageRing;
 use vulkan.hl.validation.message_count;
+use vulkan.hl.validation.messages_dropped;
+use vulkan.hl.validation.drain;
+use vulkan.hl.validation.Validation;
 use vulkan.hl.validation.create_messenger;
 use vulkan.hl.validation.destroy_messenger;
 use vulkan.hl.error.HL_ERROR_VALIDATION;
@@ -90,6 +94,11 @@ use vulkan.hl.ring.RingWords;
 use vulkan.hl.ring.frames_from_words;
 use vulkan.vk.VK_ERROR_OUT_OF_DATE_KHR;
 use std.time.Clock;
+use std.fmt.Out;
+use std.fmt.show_u64;
+use std.str.to_owned;
+use log.Log;
+use log.warn;
 use win32.Win32Error;
 use win32.Window;
 use win32.open_window;
@@ -285,13 +294,31 @@ fn run_on_device(family: u32, title: &str, width: i32, height: i32, frames: i32)
     0
 }
 
+/// Logs each validation message the ring kept, at `warn`, and how many it had no room for.
+fn report_validation(ring: &mut MessageRing) can {Log} {
+    let _n = handle { drain(ring) } with Validation {
+        message(severity, kind, text) => {
+            // The text is the operation's argument and lives only until `resume`; the log's
+            // message closure reads its own copy.
+            let owned = to_owned(text);
+            warn(fn() can {Out} { Out.put("validation: "); Out.put(&owned); });
+            resume
+        }
+    };
+    let dropped = messages_dropped(&*ring);
+    if dropped > 0 {
+        warn(fn() can {Out} { Out.put("validation: "); show_u64(dropped as u64); Out.put(" more messages were not kept"); });
+    }
+}
+
 /// Opens a `width` by `height` window titled `title` and draws the program's `Scene` into it
 /// until the program stops, or for `frames` frames when that is positive; `validate` runs
-/// under the Khronos validation layer and fails when it reported anything. The exit code:
+/// under the Khronos validation layer, logs what it reported at `warn`, and fails when it
+/// reported anything. The exit code:
 /// 0, or `100 - code` for a negative `VkResult` or library code.
-pub fn run(title: &str, width: i32, height: i32, frames: i32, validate: bool) -> i32 can {Scene, Clock} {
+pub fn run(title: &str, width: i32, height: i32, frames: i32, validate: bool) -> i32 can {Scene, Clock, Log} {
     handle {
-        with_instance(true, validate, fn() -> i32 can {VkError, Vk, Scene, Clock} {
+        with_instance(true, validate, fn() -> i32 can {VkError, Vk, Scene, Clock, Log} {
             if validate && !validation_layer_present() { VkError.fail(HL_ERROR_NO_LAYER) }
             let mut ring = message_ring();
             let mut out: i32 = 0;
@@ -306,6 +333,7 @@ pub fn run(title: &str, width: i32, height: i32, frames: i32, validate: bool) ->
                 0
             } with VkError { fail(c) => { abort c } };
             if rc != 0 { VkError.fail(rc) }
+            report_validation(&mut ring);
             if message_count(&ring) != 0 { VkError.fail(HL_ERROR_VALIDATION) }
             out
         })
