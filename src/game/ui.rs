@@ -7,28 +7,34 @@
 use glam::{Mat4, Vec2, Vec3};
 
 use super::ability::Ability;
+use super::city::BuildUnit;
+use super::orders::ClickMode;
 use super::unit::Unit;
 use super::{GameState, font, mesh};
 use crate::renderer::Vertex;
 
 type Color = [f32; 4];
 
-const BUTTON_SIZE: Vec2 = Vec2::new(600.0, 52.0);
-const BUTTON_BOTTOM: f32 = 28.0;
-const BUTTON_BORDER: f32 = 2.0;
-/// Text heights are multiples of the font's 7 rows so glyph cells land on whole pixels.
-const LABEL_HEIGHT: f32 = 21.0;
-const DESCRIPTION_HEIGHT: f32 = 14.0;
-const DESCRIPTION_GAP: f32 = 12.0;
-
-const BORDER_COLOR: Color = [0.55, 0.58, 0.66, 1.0];
+/// Shared command-tray position. Cities and units use this same bottom-left area.
+const TRAY_MIN: Vec2 = Vec2::new(16.0, 48.0);
+const TRAY_MAX: Vec2 = Vec2::new(660.0, 282.0);
 const READY_BG: Color = [0.16, 0.18, 0.24, 0.95];
-const QUEUED_BG: Color = [0.78, 0.64, 0.20, 0.95];
-const COOLDOWN_BG: Color = [0.10, 0.10, 0.12, 0.95];
 const READY_TEXT: Color = [0.95, 0.95, 0.95, 1.0];
-const QUEUED_TEXT: Color = [0.08, 0.07, 0.04, 1.0];
-const COOLDOWN_TEXT: Color = [0.50, 0.50, 0.54, 1.0];
 const DESCRIPTION_TEXT: Color = [0.80, 0.80, 0.84, 1.0];
+const BUILD_BG: Color = [0.10, 0.13, 0.18, 0.98];
+const BUILD_HOVER_BG: Color = [0.27, 0.36, 0.47, 1.0];
+const BUILD_QUEUED_BG: Color = [0.52, 0.40, 0.15, 1.0];
+const BUILD_BORDER: Color = [0.42, 0.49, 0.57, 1.0];
+
+#[derive(Clone, Copy)]
+enum UnitAction {
+    Move,
+    Attack,
+    Ability,
+    Settle,
+    Road,
+    Improve,
+}
 
 /// Maps UI pixels (origin bottom-left, Y up) to clip space.
 pub fn ui_projection(screen_size: Vec2) -> Mat4 {
@@ -41,52 +47,13 @@ impl GameState {
     /// selected unit, if any.
     pub fn build_ui(&self, screen_size: Vec2) -> Vec<Vertex> {
         let mut out = Vec::new();
+        self.city_ui(screen_size, &mut out);
         let Some(idx) = self.selected else { return out };
-        let unit = &self.units[idx];
-        let (name, description) = ability_text(unit);
-
-        let (label, bg, text_color) = if unit.ability_queued {
-            (format!("{name} - ON"), QUEUED_BG, QUEUED_TEXT)
-        } else if unit.ability_cooldown > 0 {
-            let turns = unit.ability_cooldown;
-            let unit_word = if turns == 1 { "TURN" } else { "TURNS" };
-            (
-                format!("{name} - READY IN {turns} {unit_word}"),
-                COOLDOWN_BG,
-                COOLDOWN_TEXT,
-            )
-        } else {
-            (format!("{name} - Q"), READY_BG, READY_TEXT)
-        };
-
-        let (min, max) = button_rect(screen_size);
-        mesh::quad(
-            min - BUTTON_BORDER,
-            max + BUTTON_BORDER,
-            BORDER_COLOR,
-            &mut out,
-        );
-        mesh::quad(min, max, bg, &mut out);
-
-        let label_y = (min.y + max.y - LABEL_HEIGHT) / 2.0;
-        push_centered_text(
-            screen_size.x,
-            label_y,
-            LABEL_HEIGHT,
-            &label,
-            text_color,
-            &mut out,
-        );
-        let description_y = max.y + BUTTON_BORDER + DESCRIPTION_GAP;
-        push_centered_text(
-            screen_size.x,
-            description_y,
-            DESCRIPTION_HEIGHT,
-            description,
-            DESCRIPTION_TEXT,
-            &mut out,
-        );
-
+        // Cities own the tray while open; unit actions return after closing it.
+        if self.selected_city.is_some() {
+            return out;
+        }
+        self.unit_ui(idx, screen_size, &mut out);
         out
     }
 
@@ -94,27 +61,302 @@ impl GameState {
     /// case it shouldn't also count as a click on the map). `cursor` is in
     /// window pixels with the origin at the top-left.
     pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2) -> bool {
+        if cursor.y < 42.0 {
+            self.end_planning();
+            return true;
+        }
+        let point = Vec2::new(cursor.x, screen_size.y - cursor.y);
+        if self.selected_city.is_some()
+            && let Some(build) = build_option_at(point, screen_size)
+        {
+            self.queue_selected_city_unit(build);
+            return true;
+        }
+        if self.selected_city.is_some()
+            && point.cmpge(TRAY_MIN).all()
+            && point.cmple(TRAY_MAX).all()
+        {
+            return true;
+        }
         if self.selected.is_none() {
             return false;
         }
-        let point = Vec2::new(cursor.x, screen_size.y - cursor.y);
-        let (min, max) = button_rect(screen_size);
-        let hit = point.cmpge(min).all() && point.cmple(max).all();
-        if hit {
-            self.toggle_selected_ability();
+        if let Some(action) = unit_action_at(point, screen_size) {
+            match action {
+                UnitAction::Move => self.choose_move_action(),
+                UnitAction::Attack => self.choose_attack_action(),
+                UnitAction::Ability => self.toggle_selected_ability(),
+                UnitAction::Settle => self.found_city_selected(),
+                UnitAction::Road => self.build_worker_road_selected(),
+                UnitAction::Improve => self.improve_worker_tile_selected(),
+            }
+            return true;
         }
-        hit
+        false
+    }
+
+    pub fn update_ui_hover(&mut self, cursor: Option<Vec2>, screen_size: Vec2) {
+        self.hovered_build = self.selected_city.and_then(|_| {
+            cursor.and_then(|p| build_option_at(Vec2::new(p.x, screen_size.y - p.y), screen_size))
+        });
     }
 }
 
-/// The ability button's bottom-left and top-right corners, centered along the
-/// bottom of the window.
-fn button_rect(screen_size: Vec2) -> (Vec2, Vec2) {
+impl GameState {
+    fn unit_ui(&self, idx: usize, size: Vec2, out: &mut Vec<Vertex>) {
+        let unit = &self.units[idx];
+        mesh::quad(
+            TRAY_MIN - Vec2::splat(2.0),
+            TRAY_MAX + Vec2::splat(2.0),
+            BUILD_BORDER,
+            out,
+        );
+        mesh::quad(TRAY_MIN, TRAY_MAX, READY_BG, out);
+        font::push_text(
+            Vec2::new(30.0, 254.0),
+            14.0,
+            &format!("{:?} UNIT", unit.unit_type),
+            READY_TEXT,
+            out,
+        );
+        font::push_text(
+            Vec2::new(30.0, 230.0),
+            12.0,
+            "CHOOSE AN ACTION, THEN CLICK THE MAP",
+            DESCRIPTION_TEXT,
+            out,
+        );
+        let mut actions = vec![UnitAction::Move, UnitAction::Attack];
+        if self.settlers.contains(&unit.id) {
+            actions.push(UnitAction::Settle);
+        } else if self.workers.contains(&unit.id) {
+            actions.extend([UnitAction::Road, UnitAction::Improve]);
+        } else {
+            actions.push(UnitAction::Ability);
+        }
+        for (i, action) in actions.into_iter().enumerate() {
+            let (min, max) = unit_action_rect(i, size);
+            let (label, sub, active) = match action {
+                UnitAction::Move => (
+                    "[M] MOVE",
+                    "SELECT DESTINATION".to_string(),
+                    self.ui_click_mode == Some(ClickMode::Move),
+                ),
+                UnitAction::Attack => (
+                    "[X] ATTACK",
+                    "SELECT TARGET".to_string(),
+                    self.ui_click_mode == Some(ClickMode::Attack),
+                ),
+                UnitAction::Ability => {
+                    let (name, description) = ability_text(unit);
+                    (
+                        "[Q] ABILITY",
+                        format!("{}: {}", name, description),
+                        unit.ability_queued,
+                    )
+                }
+                UnitAction::Settle => ("[F] FOUND CITY", "CONSUMES SETTLER".to_string(), false),
+                UnitAction::Road => ("[R] BUILD ROAD", "ON THIS TILE".to_string(), false),
+                UnitAction::Improve => ("[I] IMPROVE", "FARM OR MINE".to_string(), false),
+            };
+            let bg = if active { BUILD_QUEUED_BG } else { BUILD_BG };
+            mesh::quad(
+                min - Vec2::splat(2.0),
+                max + Vec2::splat(2.0),
+                BUILD_BORDER,
+                out,
+            );
+            mesh::quad(min, max, bg, out);
+            font::push_text(min + Vec2::new(8.0, 34.0), 13.0, label, READY_TEXT, out);
+            font::push_text(min + Vec2::new(8.0, 14.0), 9.0, &sub, DESCRIPTION_TEXT, out);
+        }
+    }
+}
+
+impl GameState {
+    fn city_ui(&self, size: Vec2, out: &mut Vec<Vertex>) {
+        use super::city::{amount, delivered_share};
+        mesh::quad(Vec2::new(0.0, size.y - 42.0), size, READY_BG, out);
+        let pending = (0..self.units.len())
+            .filter(|&i| self.is_player_controlled(i) && self.needs_orders(i))
+            .count();
+        let header = if self.is_resolving() {
+            format!("TURN {} - RESOLVING", self.turn)
+        } else {
+            format!(
+                "TURN {} - {} UNITS NEED ORDERS - ENTER END PLANNING",
+                self.turn + 1,
+                pending
+            )
+        };
+        font::push_text(
+            Vec2::new(16.0, size.y - 28.0),
+            14.0,
+            &header,
+            READY_TEXT,
+            out,
+        );
+        font::push_text(
+            Vec2::new(700.0, size.y - 28.0),
+            12.0,
+            &self.notice,
+            READY_TEXT,
+            out,
+        );
+        let Some(i) = self.selected_city else { return };
+        let c = &self.cities[i];
+        let (food, production) = self.income(i);
+        let (growth_percent, _growth_needed, growth_label) = self.growth_status(i);
+        mesh::quad(
+            TRAY_MIN - Vec2::splat(2.0),
+            TRAY_MAX + Vec2::splat(2.0),
+            BUILD_BORDER,
+            out,
+        );
+        mesh::quad(TRAY_MIN, TRAY_MAX, READY_BG, out);
+        let mut lines = vec![
+            format!("CITY {}  |  POP {}", c.id + 1, c.population),
+            format!("WORKING {} OF {} CITIZENS", c.worked.len(), c.population),
+            format!(
+                "FOOD {}  NET {}",
+                amount(c.food),
+                amount(food - c.population as i32 * 8)
+            ),
+            format!("PROD {}  +{}", amount(c.production), amount(production)),
+            c.queue.map_or("BUILD: CHOOSE A UNIT AT RIGHT".into(), |b| {
+                format!(
+                    "BUILDING {}: {} / {}",
+                    b.name(),
+                    amount(c.production),
+                    amount(b.cost())
+                )
+            }),
+            "A AUTO ASSIGN  |  ESC CLOSE".into(),
+        ];
+        if let Some(h) = self.inspected_tile {
+            let (f, p) = self.tile_yield(h);
+            let routes = self.routes(i);
+            let share = routes.costs.get(&h).map_or(0, |c| delivered_share(*c));
+            lines.push(format!("TILE F{} P{}  DELIVERS {}%", f, p, share * 25));
+        }
+        for (row, line) in lines.iter().enumerate() {
+            font::push_text(
+                Vec2::new(30.0, 254.0 - row as f32 * 26.0),
+                12.0,
+                line,
+                READY_TEXT,
+                out,
+            );
+        }
+        let growth_min = Vec2::new(30.0, 82.0);
+        let growth_size = Vec2::new(274.0, 15.0);
+        mesh::quad(growth_min, growth_min + growth_size, [0.04, 0.06, 0.07, 1.0], out);
+        mesh::quad(growth_min, growth_min + growth_size * Vec2::new(growth_percent as f32 / 100.0, 1.0), [0.30, 0.88, 0.35, 1.0], out);
+        font::push_text(Vec2::new(30.0, 106.0), 11.0, &growth_label, READY_TEXT, out);
+        for build in [
+            BuildUnit::Melee,
+            BuildUnit::Ranged,
+            BuildUnit::Cavalry,
+            BuildUnit::Siege,
+        ] {
+            let (min, max) = build_option_rect(build, size);
+            let bg = if c.queue == Some(build) {
+                BUILD_QUEUED_BG
+            } else if self.hovered_build == Some(build) {
+                BUILD_HOVER_BG
+            } else {
+                BUILD_BG
+            };
+            mesh::quad(
+                min - Vec2::splat(2.0),
+                max + Vec2::splat(2.0),
+                BUILD_BORDER,
+                out,
+            );
+            mesh::quad(min, max, bg, out);
+            font::push_text(
+                min + Vec2::new(8.0, 34.0),
+                13.0,
+                &format!("[{}] {}", build.shortcut(), build.name()),
+                READY_TEXT,
+                out,
+            );
+            font::push_text(
+                min + Vec2::new(8.0, 14.0),
+                11.0,
+                &format!("{} PROD", super::city::amount(build.cost())),
+                DESCRIPTION_TEXT,
+                out,
+            );
+        }
+        if let Some(build) = self.hovered_build {
+            let tip = format!(
+                "{}: {}  |  CLICK OR PRESS [{}] TO QUEUE",
+                build.name(),
+                build.description(),
+                build.shortcut()
+            );
+            font::push_text(Vec2::new(334.0, 62.0), 12.0, &tip, DESCRIPTION_TEXT, out);
+        }
+    }
+}
+
+fn build_option_rect(build: BuildUnit, _size: Vec2) -> (Vec2, Vec2) {
+    let index = match build {
+        BuildUnit::Melee => 0,
+        BuildUnit::Ranged => 1,
+        BuildUnit::Cavalry => 2,
+        BuildUnit::Siege => 3,
+    };
     let min = Vec2::new(
-        ((screen_size.x - BUTTON_SIZE.x) / 2.0).round(),
-        BUTTON_BOTTOM,
+        334.0 + (index % 2) as f32 * 156.0,
+        142.0 - (index / 2) as f32 * 76.0,
     );
-    (min, min + BUTTON_SIZE)
+    (min, min + Vec2::new(154.0, 62.0))
+}
+
+fn build_option_at(point: Vec2, size: Vec2) -> Option<BuildUnit> {
+    [
+        BuildUnit::Melee,
+        BuildUnit::Ranged,
+        BuildUnit::Cavalry,
+        BuildUnit::Siege,
+    ]
+    .into_iter()
+    .find(|build| {
+        let (min, max) = build_option_rect(*build, size);
+        point.cmpge(min).all() && point.cmple(max).all()
+    })
+}
+
+fn unit_action_rect(index: usize, _size: Vec2) -> (Vec2, Vec2) {
+    let min = Vec2::new(
+        30.0 + (index % 2) as f32 * 306.0,
+        132.0 - (index / 2) as f32 * 76.0,
+    );
+    (min, min + Vec2::new(290.0, 62.0))
+}
+
+fn unit_action_at(point: Vec2, size: Vec2) -> Option<UnitAction> {
+    [
+        UnitAction::Move,
+        UnitAction::Attack,
+        UnitAction::Ability,
+        UnitAction::Settle,
+        UnitAction::Road,
+        UnitAction::Improve,
+    ]
+    .into_iter()
+    .find(|action| {
+        let index = match action {
+            UnitAction::Move => 0,
+            UnitAction::Attack => 1,
+            UnitAction::Ability | UnitAction::Settle | UnitAction::Road => 2,
+            UnitAction::Improve => 3,
+        };
+        let (min, max) = unit_action_rect(index, size);
+        point.cmpge(min).all() && point.cmple(max).all()
+    })
 }
 
 /// The ability's button label and a one-line description of what it does.
@@ -134,20 +376,6 @@ fn ability_text(unit: &Unit) -> (&'static str, &'static str) {
     }
 }
 
-/// Draws a line of text centered horizontally in the window, snapped to whole
-/// pixels so glyph cells stay crisp.
-fn push_centered_text(
-    screen_width: f32,
-    bottom: f32,
-    height: f32,
-    text: &str,
-    color: Color,
-    out: &mut Vec<Vertex>,
-) {
-    let left = ((screen_width - font::text_width(text, height)) / 2.0).round();
-    font::push_text(Vec2::new(left, bottom.round()), height, text, color, out);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +387,15 @@ mod tests {
         // Vulkan clip space has Y = +1 at the bottom of the window.
         assert!(clip(Vec2::ZERO).abs_diff_eq(Vec2::new(-1.0, 1.0), 1e-5));
         assert!(clip(size).abs_diff_eq(Vec2::new(1.0, -1.0), 1e-5));
+    }
+
+    #[test]
+    fn build_choice_hit_testing_matches_its_button() {
+        let size = Vec2::new(1280.0, 720.0);
+        let (min, max) = build_option_rect(BuildUnit::Cavalry, size);
+        assert_eq!(
+            build_option_at((min + max) / 2.0, size),
+            Some(BuildUnit::Cavalry)
+        );
     }
 }

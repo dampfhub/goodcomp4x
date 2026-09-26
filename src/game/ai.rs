@@ -12,8 +12,34 @@ impl GameState {
     /// range. Units in a contested hex stay and fight. No coordination beyond
     /// not sending two units to the same hex, and no retreating.
     pub(super) fn plan_ai_turn(&mut self, team: Team) {
+        // The computer founds its first city immediately, before combat orders.
+        if self.cities.iter().all(|c| c.team != team)
+            && let Some(i) = self
+                .units
+                .iter()
+                .position(|u| u.team == team && self.settlers.contains(&u.id))
+        {
+            let unit = self.units.remove(i);
+            self.settlers.remove(&unit.id);
+            let id = self.cities.len() as u32;
+            self.cities.push(super::city::City {
+                id,
+                team,
+                pos: unit.pos,
+                population: 1,
+                food: 0,
+                production: 0,
+                worked: Vec::new(),
+                queue: Some(super::city::BuildUnit::Melee),
+            });
+            self.auto_assign_city(self.cities.len() - 1);
+        }
         for idx in 0..self.units.len() {
-            if self.units[idx].team != team || self.rival_of(idx).is_some() {
+            if self.units[idx].team != team || self.rival_of(idx).is_some()
+                || self.player_controlled_units.contains(&self.units[idx].id)
+                || self.settlers.contains(&self.units[idx].id)
+                || self.workers.contains(&self.units[idx].id)
+            {
                 continue;
             }
             let Some(target) = self.nearest_enemy_pos(idx) else {

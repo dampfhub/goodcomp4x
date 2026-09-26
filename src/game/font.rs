@@ -20,13 +20,6 @@ pub fn push_glyph(center: Vec2, height: f32, ch: char, color: [f32; 4], out: &mu
     push_glyph_cells(top_left, cell, ch, color, out);
 }
 
-/// Width of `text` drawn at `height`.
-pub fn text_width(text: &str, height: f32) -> f32 {
-    let cell = height / ROWS as f32;
-    let chars = text.chars().count();
-    (chars * ADVANCE).saturating_sub(1) as f32 * cell
-}
-
 /// Draws a line of text with its bottom-left corner at `origin`.
 pub fn push_text(origin: Vec2, height: f32, text: &str, color: [f32; 4], out: &mut Vec<Vertex>) {
     let cell = height / ROWS as f32;
@@ -54,6 +47,7 @@ fn glyph(ch: char) -> Option<&'static Glyph> {
 
 #[rustfmt::skip]
 const GLYPHS: &[(char, Glyph)] = &[
+    ('.', [".....", ".....", ".....", ".....", ".....", ".XX..", ".XX.."]),
     ('A', [".XXX.",
            "X...X",
            "X...X",

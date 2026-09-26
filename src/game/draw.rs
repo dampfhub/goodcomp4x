@@ -109,6 +109,7 @@ impl GameState {
             push_terrain_symbol(center, self.grid.terrain(hex), &mut out);
         }
 
+        self.push_city_map(&mut out);
         self.push_order_markers(&mut out);
 
         for (idx, unit) in self.units.iter().enumerate() {
@@ -120,10 +121,23 @@ impl GameState {
             };
             push_status_rings(center, unit, scale, &mut out);
             push_unit_icon(center, unit, icon_scale, color, &mut out);
+            if self.settlers.contains(&unit.id) {
+                font::push_glyph(
+                    center,
+                    LABEL_HEIGHT * icon_scale,
+                    'T',
+                    LABEL_COLOR,
+                    &mut out,
+                );
+            }
+            if self.workers.contains(&unit.id) {
+                font::push_glyph(center, LABEL_HEIGHT * icon_scale, 'W', LABEL_COLOR, &mut out);
+            }
             push_order_badges(center, unit, scale, &mut out);
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
         }
 
+        self.push_tile_yields(&mut out);
         out
     }
 
@@ -214,6 +228,162 @@ impl GameState {
             ATTACK_RANGE_EMPTY_COLOR
         } else {
             base
+        }
+    }
+}
+
+impl GameState {
+    fn push_city_map(&self, out: &mut Vec<Vertex>) {
+        for &h in &self.roads {
+            mesh::regular_polygon(h.to_world(), 0.12, 8, 0.0, [0.65, 0.45, 0.24, 1.0], out);
+            for n in h.neighbors() {
+                if (h.q, h.r) < (n.q, n.r) && self.is_road_hex(n) {
+                    mesh::segment(
+                        h.to_world(),
+                        n.to_world(),
+                        0.09,
+                        [0.65, 0.45, 0.24, 1.0],
+                        out,
+                    );
+                }
+            }
+        }
+        // Road segments reaching a city are drawn even though the city center
+        // itself is represented by its larger city marker.
+        for city in &self.cities {
+            for neighbor in city.pos.neighbors() {
+                if self.roads.contains(&neighbor) {
+                    mesh::segment(city.pos.to_world(), neighbor.to_world(), 0.09, [0.65, 0.45, 0.24, 1.0], out);
+                }
+            }
+        }
+        if let Some(i) = self.hovered_city.or(self.selected_city) {
+            let routes = self.routes(i);
+            for (h, cost) in &routes.costs {
+                if self.hovered_city.is_none() {
+                    continue;
+                }
+                font::push_text(
+                    h.to_world() + Vec2::new(-0.3, 0.52),
+                    0.18,
+                    &format!("{}%", super::city::delivered_share(*cost) * 25),
+                    [0.65, 0.85, 0.65, 1.0],
+                    out,
+                );
+            }
+            for h in &self.cities[i].worked {
+                let color = if routes.costs.contains_key(h) {
+                    [0.25, 1.0, 0.4, 1.0]
+                } else {
+                    [1.0, 0.25, 0.2, 1.0]
+                };
+                for edge in 0..6 {
+                    let a = h.to_world() + Vec2::from_angle(TAU * edge as f32 / 6.0) * 0.91;
+                    let b = h.to_world() + Vec2::from_angle(TAU * (edge + 1) as f32 / 6.0) * 0.91;
+                    mesh::segment(a, b, 0.10, [0.02, 0.05, 0.03, 1.0], out);
+                    mesh::segment(a, b, 0.055, color, out);
+                }
+            }
+            if let Some(mut h) = self.inspected_tile {
+                while let Some(&parent) = routes.parents.get(&h) {
+                    mesh::segment(
+                        h.to_world(),
+                        parent.to_world(),
+                        0.06,
+                        [0.95, 0.9, 0.45, 1.0],
+                        out,
+                    );
+                    h = parent;
+                }
+            }
+        }
+        for (h, site) in &self.sites {
+            font::push_glyph(
+                h.to_world() + Vec2::new(-0.55, 0.3),
+                0.28,
+                site.label.chars().next().unwrap(),
+                site.team.color(),
+                out,
+            );
+        }
+        for c in &self.cities {
+            let pos = c.pos.to_world();
+            mesh::quad(
+                pos - Vec2::splat(0.48),
+                pos + Vec2::splat(0.48),
+                c.team.color(),
+                out,
+            );
+            font::push_glyph(pos, 0.5, 'H', LABEL_COLOR, out);
+        }
+    }
+}
+
+impl GameState {
+    /// Show yields only while hovering a city, limited to its economic reach.
+    fn push_tile_yields(&self, out: &mut Vec<Vertex>) {
+        let Some(city) = self.hovered_city else {
+            return;
+        };
+        let routes = self.routes(city);
+        for hex in self.grid.all_hexes().filter(|h| self.grid.is_passable(*h)) {
+            if !routes.costs.contains_key(&hex) && !self.cities[city].worked.contains(&hex) {
+                continue;
+            }
+            let (food, production) = if self.cities.iter().any(|c| c.pos == hex) {
+                (2, 1)
+            } else {
+                self.tile_yield(hex)
+            };
+            let center = hex.to_world() + Vec2::new(0.0, -0.49);
+            mesh::quad(
+                center - Vec2::new(0.52, 0.18),
+                center + Vec2::new(0.52, 0.18),
+                [0.035, 0.045, 0.045, 0.94],
+                out,
+            );
+            for (is_food, count, offset, color) in [
+                (true, food, -0.37, [0.42, 0.96, 0.32, 1.0]),
+                (false, production, 0.14, [1.0, 0.69, 0.22, 1.0]),
+            ] {
+                let p = center + Vec2::new(offset, 0.0);
+                if is_food {
+                    // Grain stalk with paired kernels.
+                    mesh::segment(
+                        p + Vec2::new(0.0, -0.12),
+                        p + Vec2::new(0.0, 0.12),
+                        0.025,
+                        color,
+                        out,
+                    );
+                    for y in [-0.04, 0.04] {
+                        for x in [-0.05, 0.05] {
+                            mesh::regular_polygon(p + Vec2::new(x, y), 0.045, 4, 0.0, color, out);
+                        }
+                    }
+                } else {
+                    // Hammer: broad head and narrow handle.
+                    mesh::quad(
+                        p + Vec2::new(-0.02, -0.12),
+                        p + Vec2::new(0.025, 0.06),
+                        color,
+                        out,
+                    );
+                    mesh::quad(
+                        p + Vec2::new(-0.09, 0.04),
+                        p + Vec2::new(0.09, 0.12),
+                        color,
+                        out,
+                    );
+                }
+                font::push_text(
+                    p + Vec2::new(0.11, -0.105),
+                    0.21,
+                    &count.to_string(),
+                    color,
+                    out,
+                );
+            }
         }
     }
 }

@@ -51,7 +51,7 @@ impl GameState {
     }
 
     /// Plans the AI's turn, then queues every step for `update` to play out.
-    /// Runs on its own once every one of the player's units has acted.
+    /// Called after the player explicitly ends planning.
     pub(super) fn resolve_turn(&mut self) {
         if self.is_resolving() {
             return;
@@ -95,6 +95,7 @@ impl GameState {
         }
 
         if !self.is_resolving() {
+            self.resolve_economy();
             for unit in &mut self.units {
                 if unit.ability_queued && unit.ability() == Ability::Deploy {
                     let state = if unit.deployed { "packed up" } else { "set up" };
@@ -130,6 +131,7 @@ impl GameState {
             // Units in a contested hex fight whether or not they have orders.
             Phase::Attack => (0..self.units.len())
                 .filter(of_type)
+                .filter(|&i| !self.workers.contains(&self.units[i].id))
                 .filter(|&i| self.units[i].planned_attack.is_some() || self.rival_of(i).is_some())
                 .collect(),
         };

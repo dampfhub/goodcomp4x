@@ -67,6 +67,41 @@ All geometry is rebuilt from game state every frame.
 
 ## Game rules as implemented
 
+### City experiment (current default)
+- The default scenario has a radius-six map, two cities, owned farms/mines/pastures,
+  and preplaced dirt roads. F1 resets to the original combat scenario; F2 resets
+  to cities. Both discard the running match.
+- `city.rs` contains city state, weighted logistics routes, citizen assignments,
+  food/growth/starvation, and stored production. Yields use quarter units and
+  route costs use half-hex units. Enemy occupation blocks routes; alternatives
+  are recalculated. Income is applied once after all eight combat steps.
+- C opens the player's city; click tiles to assign/release citizens, A auto-assigns,
+  Escape/Tab returns to units. The panel and map show income and route previews.
+- City hover or selection outlines worked tiles green (red if disrupted).
+  Tile badges show raw food as green grain and production as amber hammers,
+  with numeric counts. Badges and delivery percentages appear only while hovering
+  a city; badges cover its reachable/worked tiles. Selection alone keeps outlines.
+- Enter (or clicking the top status bar) explicitly ends planning, after every
+  unit has orders or holds. Finishing unit orders no longer auto-resolves turns.
+  Cities without units can still advance. Input is ignored during playback.
+- Production is stored only. Construction, strategic materials, technology, site
+  capture, and city combat are future slices. See `docs/controls.md` and the
+  proposal in `docs/city-system.md`; proposal rules are not all implemented.
+- City unit queues are now a first construction slice: with a city panel open,
+  keys 1–4 queue melee/ranged/cavalry/siege. A unit completes once stored
+  production reaches its listed cost and deploys to an open neighboring hex.
+  F3 starts a frontier map with one T-marked settler per team; F founds the
+  selected player's city, while the AI settles at its first resolution.
+- Logistics uses weighted shortest paths, not radius or line distance. Enemy and
+  contested hexes block every route; a longer off-road detour delivers less.
+  Clicking a city tile previews that route. The city tray shows growth percent
+  and turns remaining. On growth or route disruption, citizen reconciliation
+  keeps valid manual assignments and fills/replaces the affected slot.
+- Cities and units use one bottom-left command tray. City build cards carry
+  their 1–4 shortcuts; hovering shows a description and highlights the option,
+  while the queued option is gold. Selecting a unit uses the tray for its Q
+  ability card instead.
+
 ### Map
 - Hex grid of radius 3 (flat-top, axial coordinates).
 - Mountain ridges at (0,-3), (0,-2), (0,2), (0,3) leave a three-hex pass down
@@ -87,6 +122,9 @@ All geometry is rebuilt from game state every frame.
 Everything that asks what a unit can do goes through it.
 
 ### Orders (planning)
+- Left-click actions occur on release. Dragging at least 6 pixels pans the map
+  and suppresses the click; middle-drag also pans. Losing focus or leaving the
+  window cancels the gesture.
 - Click one of your units to select it. Click a green hex to queue a move; click
   it again to cancel.
 - Click an enemy in range to queue an attack on its hex. Shift-click attacks any
@@ -113,10 +151,9 @@ Everything that asks what a unit can do goes through it.
   glide.
 - Movement is BFS through passable, unoccupied hexes, so units can't pass
   through each other or through mountains. Two allies can't head for the same hex.
-- There is no end-turn key: the turn resolves by itself
-  (`select_next_or_end_turn`) once no unit needs orders, after a 0.6s pause so
-  the last order is visible. That includes a turn that starts with every unit
-  contested. Input is ignored while a turn plays out.
+- Enter ends planning once no unit needs orders, after a 0.6s pause so the last
+  order is visible. Finishing unit orders leaves city planning open. Input is
+  ignored while a turn plays out.
 
 ### Turn resolution (`turn.rs`)
 The turn plays out in 8 steps, one every 0.6s, with the acting units flashing.
