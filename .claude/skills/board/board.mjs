@@ -643,6 +643,7 @@ function cmdFile(flags) {
   // Validate every single-select value before creating anything: a bad value caught only
   // by applyFields would leave the issue created and orphaned on the board.
   for (const [name, val] of writes) if (SELECT_FIELDS.includes(name)) optionId(name, val);
+  if (!schema().canUpdate) die(`file: you cannot edit ${schema().url}, so the issue would be created off the board. Ask its owner for access (see \`setup\`).`);
   const args = ['issue', 'create', '--repo', REPO, '--title', flags.title];
   if (flags['body-file']) args.push('--body-file', flags['body-file']);
   else args.push('--body', flags.body);
