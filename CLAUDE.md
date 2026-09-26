@@ -39,7 +39,9 @@ src/
     instance.rs    instance + validation layer + debug messenger
     device.rs      GPU selection, logical device, queues
     swapchain.rs   swapchain + image views
-    pipeline.rs    render pass + the single alpha-blended vertex-color pipeline
+    pipeline.rs    render pass (4x MSAA target resolved into the swapchain image)
+                   + the single alpha-blended vertex-color pipeline
+    msaa.rs        the multisampled color target, rebuilt with the swapchain
     texture.rs     the coverage atlas (R8 + mips), uploaded once, bound as set 0
     buffer.rs      buffer + memory allocation
     sync.rs        per-frame semaphores and fences (2 frames in flight)
@@ -89,16 +91,24 @@ All geometry is rebuilt from game state every frame.
   route costs use half-hex units. Enemy occupation blocks routes; alternatives
   are recalculated. Income is applied once after all eight combat steps.
 - C opens the player's city; click tiles to assign/release citizens, A auto-assigns,
-  Escape/Tab returns to units. Clicking one of your units in the city view
+  Tab returns to units. Clicking one of your units in the city view
   selects it and leaves the view; so does clicking the city again or off the map.
   The panel shows income and the clicked tile's yield and delivery share.
 - City hover or selection outlines worked tiles green (red if disrupted), with
   `mesh::polygon_outline` rings so the corners join cleanly.
   Tile badges show raw food as green grain and production as amber hammers,
-  with numeric counts. Badges and delivery percentages appear only while hovering
-  a city; badges cover its reachable/worked tiles. Selection alone keeps outlines.
-- Enter (or the End Turn button in the top bar) explicitly ends planning, after every
-  unit has orders or holds. Finishing unit orders no longer auto-resolves turns.
+  with numeric counts. Badges and delivery percentages appear only for the open
+  city, while `show_yields` is on (Y or the tray's Yields button; on by
+  default), covering its reachable/worked tiles. Hovering only outlines.
+- `update_hover` (called each frame by `App`) tracks the map hex under the
+  cursor, ignoring the UI, and how long it's rested there. After 0.75s a tile
+  tooltip shows terrain or city, yields, defense, site, road, which city works
+  it, its delivery share to the open city, and units on it.
+- The turn waits on `GameState::pending()`: player units that still need
+  orders, and player cities with nothing queued (`city_needs_build`). Citizen
+  assignments never count. Space (or the End Turn button) ends the turn once
+  both are zero; otherwise it selects what's still waiting. When the last unit
+  is done, selection moves on to a city needing a build (`open_city`).
   Cities without units can still advance. Input is ignored during playback.
 - Production is stored only. Construction, strategic materials, technology, site
   capture, and city combat are future slices. See `docs/controls.md` and the
@@ -116,14 +126,15 @@ All geometry is rebuilt from game state every frame.
 - UI (`ui.rs`): each frame is laid out once into a `Layout` (panels, text,
   buttons) that's then drawn or hit-tested, so clicks match what's shown.
   Panels size themselves to their text (`PanelBuilder`), so nothing overlaps.
-  - Top bar: turn, units still needing orders, the latest `notice`, and an End
-    Turn button (gold once every unit is ready).
+  - Top bar: turn, the latest `notice`, and the End Turn button, whose label
+    (`end_turn_label`) names what's still waiting ("3 UNITS NEED ORDERS",
+    "CHOOSE PRODUCTION") until it turns gold and reads END TURN.
   - Bottom-left command tray: the open city (stores, income, what it's
     building, growth meter, 1–4 build cards), or else the selected unit (stats
     with boosted values green and reduced red, notes, and buttons: Move, Attack,
     Swap, then its ability / Found City / Build Road + Improve, then Hold).
   - Move/Attack/Swap arm `ui_click_mode` for the next map click only (a held
-    modifier overrides it). Pressing the button again, right-click or Escape
+    modifier overrides it). Pressing the button again or right-click
     disarms. The armed button has a bright border; queued orders turn their
     button gold; unusable ones are dimmed. Hex highlights follow the armed
     mode: no green move hexes while attacking, adjacent allies while swapping.
@@ -168,12 +179,17 @@ Everything that asks what a unit can do goes through it.
   disarms an armed action); Ctrl-right-click clears the selected unit's
   orders, including a hold.
 - Q or the ability button toggles the selected unit's ability.
-- Space holds the selected unit (`Unit::holding`): it keeps whatever it has
-  queued and gives up the rest of its turn.
+- Space (`hold_or_end_turn`) holds the selected unit (`Unit::holding`) if it
+  still needs orders: it keeps whatever it has queued and gives up the rest
+  of its turn. With nothing left waiting, Space ends the turn instead.
+- G or the Guard button toggles `Unit::guarding`: like holding, but it lasts
+  across turns (`end_turn` doesn't clear it), so the unit never comes back up
+  in the turn order. Queuing any move, attack or swap wakes it, as do G and
+  Ctrl-right-click. Guarding units get a white hex outline on the map.
 - Selection flows through your units: the first unit needing orders is selected
   at the start of each turn, and once the selected unit is done, the next one
   is selected automatically. "Done" (`needs_orders` in `orders.rs`) means it
-  is holding, or has a move queued (or can't move) and an attack queued (or
+  is holding or guarding, or has a move queued (or can't move) and an attack queued (or
   can't attack). Enemies in range don't matter, since square attacks are
   always possible. A unit in a contested hex is always done. Selecting a unit
   by clicking never auto-advances, so a finished unit can be reselected to
@@ -183,10 +199,12 @@ Everything that asks what a unit can do goes through it.
   glide.
 - Movement is BFS through passable, unoccupied hexes, so units can't pass
   through each other or through mountains. Two allies can't head for the same hex.
-- Enter ends planning once no unit needs orders, after a 0.6s pause so the last
-  order is visible. Finishing unit orders leaves city planning open. Input is
+- Resolution starts after a 0.6s pause so the last order is visible. Input is
   ignored while a turn plays out.
 - F5 toggles borderless fullscreen on the window's current monitor.
+- Holding Escape for a second quits (`App::quit_held_since`), with a
+  "HOLD ESC TO QUIT" bar (`ui::quit_prompt`) while it's held. Escape does
+  nothing else.
 
 ### Turn resolution (`turn.rs`)
 The turn plays out in 8 steps, one every 0.6s, with the acting units flashing.
@@ -323,6 +341,11 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
     buttons (Move/Attack/Swap/ability/Hold) with tooltips and armed states;
     hover info box; End Turn button; larger centered window, zoomed out.
 19. Window/taskbar icon drawn in code; F5 toggles borderless fullscreen.
+20. Worked-tile rings, click-a-unit to leave the city view, no route preview;
+    yields only in the city view with a Y toggle; tile tooltip on hover.
+21. Space ends the turn once nothing's waiting (Enter removed); the turn also
+    waits for city builds, not citizens; Guard (G) skips a unit every turn.
+    The End Turn button names what's waiting. Hold Escape to quit. 4x MSAA.
 
 ## Open questions and ideas
 

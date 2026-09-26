@@ -2,11 +2,13 @@
 //! over one or more triangle lists, each with its own view-projection matrix
 //! (e.g. the world through a camera, then UI in screen space on top).
 //! Triangles are vertex-colored, and can be masked by a single-channel
-//! coverage atlas (e.g. font glyphs) supplied once at startup.
+//! coverage atlas (e.g. font glyphs) supplied once at startup. Edges are
+//! smoothed with 4x multisampling.
 
 mod buffer;
 mod device;
 mod instance;
+mod msaa;
 mod pipeline;
 mod swapchain;
 mod sync;
@@ -20,6 +22,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window;
 
 use device::QueueFamilyIndices;
+use msaa::ColorTarget;
 use swapchain::SwapchainData;
 use sync::{MAX_FRAMES_IN_FLIGHT, SyncObjects};
 use texture::Texture;
@@ -62,6 +65,9 @@ pub struct Renderer {
 
     swapchain_loader: ash::khr::swapchain::Device,
     swapchain: SwapchainData,
+    /// Multisampled image each frame is drawn into, then resolved into the
+    /// swapchain image. Sized to match, so it's rebuilt with the swapchain.
+    color_target: ColorTarget,
 
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
@@ -136,13 +142,23 @@ impl Renderer {
             )
         }?;
 
+        let color_target = unsafe {
+            ColorTarget::new(
+                &vk_instance,
+                &logical_device,
+                physical_device,
+                swapchain_data.format,
+                swapchain_data.extent,
+            )
+        }?;
         let render_pass =
             unsafe { pipeline::create_render_pass(&logical_device, swapchain_data.format) }?;
         let (pipeline_layout, gfx_pipeline) = unsafe {
             pipeline::create_graphics_pipeline(&logical_device, render_pass, texture.set_layout)
         }?;
-        let framebuffers =
-            unsafe { create_framebuffers(&logical_device, render_pass, &swapchain_data) }?;
+        let framebuffers = unsafe {
+            create_framebuffers(&logical_device, render_pass, &swapchain_data, &color_target)
+        }?;
 
         let vertex_buffer_size = (VERTEX_BUFFER_CAPACITY * size_of::<Vertex>()) as vk::DeviceSize;
         let vertex_buffers = (0..MAX_FRAMES_IN_FLIGHT)
@@ -177,6 +193,7 @@ impl Renderer {
             present_queue,
             swapchain_loader,
             swapchain: swapchain_data,
+            color_target,
             render_pass,
             pipeline_layout,
             pipeline: gfx_pipeline,
@@ -420,14 +437,25 @@ impl Renderer {
                 self.queue_indices,
                 self.window_size,
             )?;
+            self.color_target = ColorTarget::new(
+                &self.instance,
+                &self.device,
+                self.physical_device,
+                self.swapchain.format,
+                self.swapchain.extent,
+            )?;
             self.render_pass = pipeline::create_render_pass(&self.device, self.swapchain.format)?;
             (self.pipeline_layout, self.pipeline) = pipeline::create_graphics_pipeline(
                 &self.device,
                 self.render_pass,
                 self.texture.set_layout,
             )?;
-            self.framebuffers =
-                create_framebuffers(&self.device, self.render_pass, &self.swapchain)?;
+            self.framebuffers = create_framebuffers(
+                &self.device,
+                self.render_pass,
+                &self.swapchain,
+                &self.color_target,
+            )?;
             self.command_buffers =
                 create_command_buffers(&self.device, self.command_pool, self.framebuffers.len())?;
         }
@@ -447,6 +475,7 @@ impl Renderer {
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
+            self.color_target.destroy(&self.device);
             self.swapchain.destroy(&self.device, &self.swapchain_loader);
         }
     }
@@ -474,16 +503,19 @@ impl Drop for Renderer {
     }
 }
 
+/// One framebuffer per swapchain image, each pairing the shared multisampled
+/// target with that image to resolve into.
 unsafe fn create_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     swapchain: &SwapchainData,
+    color_target: &ColorTarget,
 ) -> Result<Vec<vk::Framebuffer>> {
     swapchain
         .image_views
         .iter()
         .map(|&view| {
-            let attachments = [view];
+            let attachments = [color_target.view, view];
             let create_info = vk::FramebufferCreateInfo::default()
                 .render_pass(render_pass)
                 .attachments(&attachments)

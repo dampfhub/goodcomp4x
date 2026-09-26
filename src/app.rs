@@ -8,7 +8,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::game::{ClickMode, GameState, font_atlas, ui_projection};
+use crate::game::{ClickMode, GameState, font_atlas, quit_prompt, ui_projection};
 use crate::icon;
 use crate::renderer::{DrawBatch, Renderer};
 
@@ -21,6 +21,9 @@ const DRAG_THRESHOLD: f32 = 6.0;
 const WINDOW_SCREEN_FRACTION: f32 = 0.8;
 /// Window size when the monitor's size can't be found.
 const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1600, 900);
+
+/// How long Escape must be held to quit.
+const QUIT_HOLD: Duration = Duration::from_secs(1);
 
 /// Window icon sizes, in pixels; Windows scales them to fit.
 const WINDOW_ICON_SIZE: u32 = 64;
@@ -40,6 +43,9 @@ pub struct App {
     left_press: Option<(Vec2, ClickMode, bool)>,
     left_dragging: bool,
     modifiers: Modifiers,
+    /// When Escape was pressed, while it's held; the game quits once it's
+    /// been held for `QUIT_HOLD`.
+    quit_held_since: Option<Instant>,
 }
 
 impl Default for App {
@@ -55,6 +61,7 @@ impl Default for App {
             left_press: None,
             left_dragging: false,
             modifiers: Modifiers::default(),
+            quit_held_since: None,
         }
     }
 }
@@ -163,6 +170,8 @@ impl ApplicationHandler for App {
                 self.left_dragging = false;
                 self.panning = false;
                 self.cursor_pos = None;
+                // The release may never arrive once focus is gone.
+                self.quit_held_since = None;
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
@@ -215,6 +224,17 @@ impl ApplicationHandler for App {
                 };
                 self.game.camera.zoom(steps);
             }
+            // Holding Escape quits; see `RedrawRequested`.
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::Escape),
+                        state,
+                        repeat: false,
+                        ..
+                    },
+                ..
+            } => self.quit_held_since = (state == ElementState::Pressed).then(Instant::now),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -225,12 +245,10 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => match key {
-                KeyCode::Space => self.game.hold_selected_unit(),
+                KeyCode::Space => self.game.hold_or_end_turn(),
                 KeyCode::Tab => self.game.select_next_unit(),
                 KeyCode::KeyQ => self.game.toggle_selected_ability(),
-                KeyCode::Enter => self.game.end_planning(),
                 KeyCode::KeyC => self.game.select_city(),
-                KeyCode::Escape => self.game.cancel(),
                 KeyCode::KeyA => self.game.auto_assign_selected_city(),
                 KeyCode::KeyM => self.game.choose_move_action(),
                 KeyCode::KeyX => self.game.choose_attack_action(),
@@ -252,6 +270,8 @@ impl ApplicationHandler for App {
                 KeyCode::F1 => self.game = GameState::new(),
                 KeyCode::F2 => self.game = GameState::city_scenario(),
                 KeyCode::F3 => self.game = GameState::frontier_scenario(),
+                KeyCode::KeyY => self.game.toggle_yields(),
+                KeyCode::KeyG => self.game.toggle_guard(),
                 KeyCode::F5 => self.toggle_fullscreen(),
                 _ => {}
             },
@@ -268,9 +288,21 @@ impl ApplicationHandler for App {
                 let Some(size) = self.screen_size() else {
                     return;
                 };
-                self.game.update_city_hover(self.cursor_pos, size);
+                self.game
+                    .update_hover(self.cursor_pos, size, dt.as_secs_f32());
                 let world = self.game.build_vertices();
-                let ui = self.game.build_ui(size, self.cursor_pos);
+                let mut ui = self.game.build_ui(size, self.cursor_pos);
+                if let Some(since) = self.quit_held_since {
+                    let progress = since.elapsed().as_secs_f32() / QUIT_HOLD.as_secs_f32();
+                    if progress >= 1.0 {
+                        if let Some(renderer) = &self.renderer {
+                            renderer.wait_idle();
+                        }
+                        event_loop.exit();
+                        return;
+                    }
+                    ui.extend(quit_prompt(progress, size));
+                }
                 let batches = [
                     DrawBatch {
                         view_proj: self.game.camera.view_proj(size),

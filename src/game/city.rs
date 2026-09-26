@@ -104,15 +104,24 @@ impl GameState {
     pub(super) fn is_road_hex(&self, hex: Hex) -> bool {
         self.roads.contains(&hex) || self.cities.iter().any(|city| city.pos == hex)
     }
-    pub fn update_city_hover(&mut self, cursor: Option<glam::Vec2>, size: glam::Vec2) {
-        self.hovered_city = cursor
-            .filter(|p| {
-                p.y >= 42.0 && !(self.selected_city.is_some() && p.x < 660.0 && p.y < 330.0)
-            })
-            .and_then(|p| {
-                let hex = Hex::from_world(self.camera.screen_to_world(p, size));
-                self.cities.iter().position(|c| c.pos == hex)
-            });
+    /// Y or the Yields button: shows or hides tile yields around the open city.
+    pub fn toggle_yields(&mut self) {
+        self.show_yields = !self.show_yields;
+    }
+
+    /// The open city, if its tile yields are being shown.
+    pub(super) fn yields_city(&self) -> Option<usize> {
+        self.selected_city.filter(|_| self.show_yields)
+    }
+
+    /// What `hex` produces when worked: a city center's own yield, a site's,
+    /// or its terrain's.
+    pub(super) fn raw_yield(&self, hex: Hex) -> (i32, i32) {
+        if self.cities.iter().any(|c| c.pos == hex) {
+            (2, 1)
+        } else {
+            self.tile_yield(hex)
+        }
     }
 
     pub(super) fn setup_cities(&mut self) {
@@ -165,7 +174,7 @@ impl GameState {
         for i in 0..self.cities.len() {
             self.auto_assign_city(i);
         }
-        self.notice = "C SELECT CITY - ENTER END PLANNING - F1 COMBAT - F2 CITIES".into();
+        self.notice = "C CITY - SPACE HOLD OR END TURN - F1 COMBAT - F2 CITIES".into();
     }
 
     pub(super) fn setup_frontier(&mut self) {
@@ -461,19 +470,41 @@ impl GameState {
         }
     }
 
+    /// C: opens a city that needs something to build, or else the first of
+    /// the player's cities.
     pub fn select_city(&mut self) {
         if self.is_resolving() {
             return;
         }
-        if let Some(i) = self.cities.iter().position(|c| c.team == PLAYER_TEAM) {
-            self.selected_city = Some(i);
-            self.selected = None;
-            self.camera.focus_on(self.cities[i].pos.to_world());
-            self.notice = "CLICK TILES TO ASSIGN - A AUTO ASSIGN - ESC UNITS".into();
+        let city = (0..self.cities.len())
+            .find(|&i| self.city_needs_build(i))
+            .or_else(|| self.cities.iter().position(|c| c.team == PLAYER_TEAM));
+        if let Some(i) = city {
+            self.open_city(i);
         }
     }
 
-    /// Escape (or clicking the open city again): back to the units, selecting
+    /// Opens city `i`'s view and glides the camera to it.
+    pub(super) fn open_city(&mut self, i: usize) {
+        self.selected_city = Some(i);
+        self.selected = None;
+        self.ui_click_mode = None;
+        self.camera.focus_on(self.cities[i].pos.to_world());
+        self.notice = if self.city_needs_build(i) {
+            format!("CHOOSE WHAT CITY {} BUILDS - 1-4", self.cities[i].id + 1)
+        } else {
+            "CLICK TILES TO ASSIGN - A AUTO ASSIGN - CLICK A UNIT TO LEAVE".into()
+        };
+    }
+
+    /// One of the player's cities with nothing queued to build. The turn
+    /// waits for these, as it does for units without orders.
+    pub(super) fn city_needs_build(&self, i: usize) -> bool {
+        let city = &self.cities[i];
+        city.team == PLAYER_TEAM && city.queue.is_none()
+    }
+
+    /// Clicking the open city again: back to the units, selecting
     /// the next one that needs orders.
     pub fn close_city(&mut self) {
         if self.is_resolving() {
@@ -490,12 +521,12 @@ impl GameState {
 
     pub(super) fn city_click(&mut self, hex: Hex) -> bool {
         if self.selected_city.is_none() {
-            if self
+            if let Some(i) = self
                 .cities
                 .iter()
-                .any(|c| c.pos == hex && c.team == PLAYER_TEAM)
+                .position(|c| c.pos == hex && c.team == PLAYER_TEAM)
             {
-                self.select_city();
+                self.open_city(i);
                 return true;
             }
             return false;
@@ -529,6 +560,9 @@ impl GameState {
         true
     }
 
+    /// Space (once nothing needs orders) or the End Turn button: resolves the
+    /// turn, unless a unit still needs orders or a city needs something to
+    /// build, in which case that's selected instead.
     pub fn end_planning(&mut self) {
         if self.is_resolving() {
             return;
@@ -540,6 +574,10 @@ impl GameState {
             self.selected = Some(i);
             self.camera.focus_on(self.units[i].pos.to_world());
             self.notice = "UNIT NEEDS ORDERS - SPACE TO HOLD".into();
+            return;
+        }
+        if let Some(i) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
+            self.open_city(i);
             return;
         }
         for i in 0..self.cities.len() {
@@ -572,7 +610,7 @@ impl GameState {
         for i in 0..self.cities.len() {
             self.reconcile_citizens(i);
         }
-        self.notice = "PLANNING - C CITY - SPACE HOLD - ENTER END TURN".into();
+        self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
     }
 
     fn complete_builds(&mut self) {
@@ -639,6 +677,11 @@ mod tests {
         g.roads.clear();
         g.cities[0].worked.push(tile);
         assert_eq!(g.income(0), (12, 6));
+        // The turn waits until the city has something to build; siege costs
+        // more than one turn's production, so none is spent.
+        g.end_planning();
+        assert!(!g.is_resolving());
+        g.cities[0].queue = Some(BuildUnit::Siege);
         g.end_planning();
         g.update(1.0);
         assert_eq!(g.cities[0].production, 6);

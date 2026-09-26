@@ -1,33 +1,52 @@
 use anyhow::Result;
 use ash::vk;
 
+use super::msaa;
 use super::vertex::Vertex;
 
 const VERT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mesh.vert.spv"));
 const FRAG_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mesh.frag.spv"));
 
-/// A single color attachment and no depth buffer: the scene is flat, so
+/// Draws into a multisampled color attachment (0), resolved at the end of the
+/// pass into the swapchain image (1). No depth buffer: the scene is flat, so
 /// layering is just draw order.
 pub unsafe fn create_render_pass(
     device: &ash::Device,
     color_format: vk::Format,
 ) -> Result<vk::RenderPass> {
-    let attachments = [vk::AttachmentDescription::default()
-        .format(color_format)
-        .samples(vk::SampleCountFlags::TYPE_1)
-        .load_op(vk::AttachmentLoadOp::CLEAR)
-        .store_op(vk::AttachmentStoreOp::STORE)
-        .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
-        .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
-        .initial_layout(vk::ImageLayout::UNDEFINED)
-        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)];
+    let attachments = [
+        // The samples themselves are only needed until they're resolved.
+        vk::AttachmentDescription::default()
+            .format(color_format)
+            .samples(msaa::SAMPLES)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL),
+        // The resolve overwrites every pixel, so the old contents don't matter.
+        vk::AttachmentDescription::default()
+            .format(color_format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR),
+    ];
 
     let color_refs = [vk::AttachmentReference::default()
         .attachment(0)
         .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
+    let resolve_refs = [vk::AttachmentReference::default()
+        .attachment(1)
+        .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
     let subpasses = [vk::SubpassDescription::default()
         .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
-        .color_attachments(&color_refs)];
+        .color_attachments(&color_refs)
+        .resolve_attachments(&resolve_refs)];
 
     // Don't write to the swapchain image until presentation has released it.
     let dependencies = [vk::SubpassDependency::default()
@@ -86,8 +105,8 @@ pub unsafe fn create_graphics_pipeline(
         .cull_mode(vk::CullModeFlags::NONE)
         .line_width(1.0);
 
-    let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
-        .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+    let multisampling =
+        vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(msaa::SAMPLES);
 
     let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)

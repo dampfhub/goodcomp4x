@@ -47,13 +47,6 @@ impl GameState {
         }
     }
 
-    /// Escape: disarms an armed action, or else closes the city view.
-    pub fn cancel(&mut self) {
-        if self.ui_click_mode.take().is_none() {
-            self.close_city();
-        }
-    }
-
     /// Left-click: selects one of the player's units, or queues an order for
     /// the selected one. Clicking an already-queued order again cancels it.
     /// An action armed from the command tray applies to this map click only,
@@ -118,8 +111,22 @@ impl GameState {
         }
     }
 
-    /// Space: the selected unit holds, leaving any move or attack it hasn't
-    /// queued unused this turn, and selection moves on. Enter ends planning.
+    /// Space: holds the selected unit if it still needs orders, moving on to
+    /// whatever else does. Once nothing does, ends the turn.
+    pub fn hold_or_end_turn(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let selected_needs_orders = self.selected.is_some_and(|idx| self.needs_orders(idx));
+        if selected_needs_orders || self.pending() != (0, 0) {
+            self.hold_selected_unit();
+        } else {
+            self.end_planning();
+        }
+    }
+
+    /// The Hold button: the selected unit holds, leaving any move or attack
+    /// it hasn't queued unused this turn, and selection moves on.
     pub fn hold_selected_unit(&mut self) {
         if self.is_resolving() {
             return;
@@ -128,6 +135,33 @@ impl GameState {
             self.units[idx].holding = true;
         }
         self.select_next_or_end_turn(self.selected);
+    }
+
+    /// G or the Guard button: the selected unit stays put and is skipped in
+    /// the turn order every turn until it's given an order, or G unguards it.
+    pub fn toggle_guard(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(idx) = self.selected else { return };
+        let unit = &mut self.units[idx];
+        unit.guarding = !unit.guarding;
+        if unit.guarding {
+            self.select_next_or_end_turn(Some(idx));
+        }
+    }
+
+    /// How many of the player's units still need orders, and how many of
+    /// their cities still need something to build. The turn can't end until
+    /// both are zero; assigning citizens never holds it up.
+    pub(super) fn pending(&self) -> (usize, usize) {
+        let units = (0..self.units.len())
+            .filter(|&i| self.is_player_controlled(i) && self.needs_orders(i))
+            .count();
+        let cities = (0..self.cities.len())
+            .filter(|&i| self.city_needs_build(i))
+            .count();
+        (units, cities)
     }
 
     /// Tab: selects the next unit that still needs orders, or just the next
@@ -154,12 +188,15 @@ impl GameState {
     }
 
     /// Selects the next unit after `after` that still needs orders. If none
-    /// do, clear selection and wait for the player to end planning.
+    /// do, opens a city that needs something to build; failing that, clears
+    /// the selection and waits for the player to end the turn.
     pub(super) fn select_next_or_end_turn(&mut self, after: Option<usize>) {
-        match self.next_unit_needing_orders(after) {
-            Some(next) => self.select_and_focus(Some(next)),
-            // With no units left there's nothing to wait for or resolve.
-            None => self.selected = None,
+        if let Some(next) = self.next_unit_needing_orders(after) {
+            self.select_and_focus(Some(next));
+        } else if let Some(city) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
+            self.open_city(city);
+        } else {
+            self.selected = None;
         }
     }
 
@@ -198,11 +235,11 @@ impl GameState {
 
     /// Whether the unit still has something to plan: a move or an attack it
     /// could queue but hasn't. Any hex in range can be attacked, so a unit
-    /// that can attack needs orders until it does (or holds). A unit locked
-    /// in a contested hex already has its fight, so it's done.
+    /// that can attack needs orders until it does (or holds, or guards). A
+    /// unit locked in a contested hex already has its fight, so it's done.
     pub(super) fn needs_orders(&self, idx: usize) -> bool {
         let unit = &self.units[idx];
-        if unit.holding || self.rival_of(idx).is_some() {
+        if unit.holding || unit.guarding || self.rival_of(idx).is_some() {
             return false;
         }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
@@ -211,7 +248,8 @@ impl GameState {
         may_move || may_attack
     }
 
-    /// Right-click: clears all of the selected unit's orders, including a hold.
+    /// Ctrl-right-click: clears all of the selected unit's orders, including
+    /// a hold or guard.
     pub fn handle_right_click(&mut self) {
         if self.is_resolving() {
             return;
@@ -219,6 +257,7 @@ impl GameState {
         if let Some(selected) = self.selected {
             self.cancel_swap(selected);
             self.units[selected].clear_orders();
+            self.units[selected].guarding = false;
         }
     }
 
@@ -282,6 +321,8 @@ impl GameState {
             Some(dest)
         };
         unit.drop_unreachable_attack();
+        // Any order wakes a guarding unit.
+        unit.guarding = false;
     }
 
     /// Toggles an attack on `target`, measured from the unit's planned
@@ -302,6 +343,7 @@ impl GameState {
             } else {
                 Some(target)
             };
+            unit.guarding = false;
         }
     }
 
@@ -331,6 +373,7 @@ impl GameState {
         }
         for i in [idx, ally] {
             self.units[i].drop_unreachable_attack();
+            self.units[i].guarding = false;
         }
     }
 

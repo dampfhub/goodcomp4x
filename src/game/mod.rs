@@ -29,7 +29,7 @@ use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
 use terrain::Terrain;
 use turn::Phase;
-pub use ui::ui_projection;
+pub use ui::{quit_prompt, ui_projection};
 use unit::{Team, Unit, UnitType};
 
 const GRID_RADIUS: i32 = 3;
@@ -46,12 +46,15 @@ Controls:
   Ctrl-click an adjacent ally to swap places with it.
   Units can't move through occupied hexes, and two allies can't head for the same hex.
   Space holds the selected unit: it keeps any orders already queued and skips the rest.
-  Right-click clears the selected unit's orders (and a hold).
+  G guards it instead: it stays put and is skipped every turn until given an order.
+  Ctrl-right-click clears the selected unit's orders (and a hold or guard).
   Once a unit has queued a move and an attack (or can't do one of them), the next unit is
   selected automatically and the camera glides to it. Tab looks at the next unit without
   holding this one.
-  Enter ends planning after every unit has acted or held.
-  C selects your city. Click tiles to assign or release citizens. A auto-assigns.
+  Once every unit has acted, held or is guarding and every city has a build queued, Space
+  ends the turn. Assigning citizens never holds the turn up.
+  C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
+  Rest the cursor on any hex for a moment to see what it is and yields.
   1-4 queue city units: melee, ranged, cavalry, siege. F founds with a settler.
   F1 resets to combat; F2 resets to cities; F3 starts the settler frontier.
   Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
@@ -79,6 +82,12 @@ pub struct GameState {
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
     hovered_city: Option<usize>,
+    /// Whether the open city shows each tile's yields (Y toggles it).
+    show_yields: bool,
+    /// The map hex under the cursor (not over the UI), and how long the
+    /// cursor has rested on it, for the tile tooltip.
+    hovered_tile: Option<Hex>,
+    hover_seconds: f32,
     ui_click_mode: Option<orders::ClickMode>,
     inspected_tile: Option<Hex>,
     notice: String,
@@ -142,6 +151,9 @@ impl GameState {
             roads: HashSet::new(),
             selected_city: None,
             hovered_city: None,
+            show_yields: true,
+            hovered_tile: None,
+            hover_seconds: 0.0,
             ui_click_mode: None,
             inspected_tile: None,
             notice: String::new(),
@@ -738,5 +750,70 @@ mod tests {
         }
         assert!(game.units.iter().all(|u| !u.holding));
         assert!(game.selected.is_some());
+    }
+
+    #[test]
+    fn space_holds_each_unit_then_ends_the_turn() {
+        let mut game = GameState::new();
+        let blue_count = game.units.iter().filter(|u| u.team == Team::Blue).count();
+        for _ in 0..blue_count {
+            game.hold_or_end_turn();
+        }
+        assert!(
+            !game.is_resolving(),
+            "holding the last unit doesn't end the turn"
+        );
+        assert_eq!(game.pending(), (0, 0));
+        game.hold_or_end_turn();
+        assert!(game.is_resolving());
+    }
+
+    #[test]
+    fn guarding_lasts_across_turns_until_an_order() {
+        let mut game = GameState::new();
+        let melee = find(&game, Team::Blue, UnitType::Melee);
+        assert_eq!(game.selected, Some(melee));
+        game.toggle_guard();
+        assert_ne!(game.selected, Some(melee), "guarding moves on");
+
+        while game.pending() != (0, 0) {
+            game.hold_or_end_turn();
+        }
+        game.hold_or_end_turn();
+        while game.is_resolving() {
+            game.update(1.0);
+        }
+        let melee = find(&game, Team::Blue, UnitType::Melee);
+        assert!(game.units[melee].guarding, "still guarding next turn");
+        assert!(!game.needs_orders(melee));
+
+        // Giving it an order wakes it.
+        game.selected = Some(melee);
+        let open = game.units[melee]
+            .pos
+            .neighbors()
+            .into_iter()
+            .find(|&h| game.grid.is_passable(h) && !game.is_occupied(h))
+            .unwrap();
+        game.try_queue_move(melee, open);
+        assert!(!game.units[melee].guarding);
+    }
+
+    #[test]
+    fn turn_waits_for_city_builds_but_not_citizens() {
+        let mut game = GameState::city_scenario();
+        game.units.retain(|u| u.team != Team::Blue);
+        game.selected = None;
+        assert_eq!(game.pending(), (0, 1));
+
+        // Space opens the city that needs a build instead of ending the turn.
+        game.hold_or_end_turn();
+        assert!(!game.is_resolving());
+        assert_eq!(game.selected_city, Some(0));
+
+        game.queue_selected_city_unit(city::BuildUnit::Melee);
+        assert_eq!(game.pending(), (0, 0));
+        game.hold_or_end_turn();
+        assert!(game.is_resolving());
     }
 }

@@ -13,6 +13,7 @@ use glam::{Mat4, Vec2, Vec3};
 use super::ability::Ability;
 use super::city::{BuildUnit, delivered_share};
 use super::font::{self, Face};
+use super::hex::Hex;
 use super::orders::ClickMode;
 use super::unit::Unit;
 use super::{GameState, mesh};
@@ -47,6 +48,10 @@ const GROWTH_BAR_HEIGHT: f32 = 10.0;
 /// Tooltip descriptions wrap at this many characters.
 const TOOLTIP_WRAP: usize = 50;
 const TOOLTIP_GAP: f32 = 8.0;
+/// Seconds the cursor rests on a map hex before its tooltip appears.
+const TILE_TOOLTIP_DELAY: f32 = 0.75;
+/// Where the tile tooltip's top-left corner sits relative to the cursor.
+const TILE_TOOLTIP_OFFSET: Vec2 = Vec2::new(20.0, -20.0);
 
 // The swapchain is sRGB, so these linear colors display much lighter than
 // their values suggest.
@@ -77,11 +82,32 @@ pub fn ui_projection(screen_size: Vec2) -> Mat4 {
         * Mat4::from_scale(Vec3::new(2.0 / screen_size.x, -2.0 / screen_size.y, 1.0))
 }
 
+/// While Escape is held: a "hold to quit" prompt under the top bar with a
+/// bar filling toward `progress` = 1, when the game closes.
+pub fn quit_prompt(progress: f32, screen_size: Vec2) -> Vec<Vertex> {
+    let mut panel = PanelBuilder::default();
+    panel.text(BODY, vec![("HOLD ESC TO QUIT".into(), TEXT)]);
+    panel.bar(progress);
+    let size = panel.size();
+    let top_left = Vec2::new(
+        (screen_size.x - size.x) / 2.0,
+        screen_size.y - TOP_BAR_HEIGHT - MARGIN,
+    );
+    let mut layout = Layout::default();
+    panel.place_top_left(top_left, &mut layout);
+    let mut out = Vec::new();
+    for shape in &layout.shapes {
+        draw_shape(shape, &mut out);
+    }
+    out
+}
+
 /// Something a button does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Target {
     Unit(UnitAction),
     Build(BuildUnit),
+    ToggleYields,
     EndTurn,
 }
 
@@ -93,6 +119,7 @@ enum UnitAction {
     Swap,
     Ability,
     Hold,
+    Guard,
     Settle,
     Road,
     Improve,
@@ -202,6 +229,12 @@ impl GameState {
         if let Some(button) = hovered.and_then(|t| layout.buttons.iter().find(|b| b.target == t)) {
             self.draw_tooltip(button, &layout, screen_size, &mut out);
         }
+        if let (Some(point), Some(hex)) = (point, self.hovered_tile)
+            && self.hover_seconds >= TILE_TOOLTIP_DELAY
+            && !over_ui
+        {
+            self.draw_tile_tooltip(hex, point, screen_size, &mut out);
+        }
         out
     }
 
@@ -224,14 +257,33 @@ impl GameState {
                 UnitAction::Swap => self.choose_swap_action(),
                 UnitAction::Ability => self.toggle_selected_ability(),
                 UnitAction::Hold => self.hold_selected_unit(),
+                UnitAction::Guard => self.toggle_guard(),
                 UnitAction::Settle => self.found_city_selected(),
                 UnitAction::Road => self.build_worker_road_selected(),
                 UnitAction::Improve => self.improve_worker_tile_selected(),
             },
             Target::Build(build) => self.queue_selected_city_unit(build),
+            Target::ToggleYields => self.toggle_yields(),
             Target::EndTurn => self.end_planning(),
         }
         true
+    }
+
+    /// Tracks which map hex the cursor is over (ignoring the UI) and how long
+    /// it has rested there, for city hover outlines and the tile tooltip.
+    /// `cursor` is in window pixels with the origin at the top-left.
+    pub fn update_hover(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
+        let layout = self.layout(screen_size);
+        let hex = cursor
+            .filter(|&c| !layout.covers(to_ui(c, screen_size)))
+            .and_then(|c| self.hex_at_screen(c, screen_size));
+        if hex == self.hovered_tile {
+            self.hover_seconds += dt;
+        } else {
+            self.hovered_tile = hex;
+            self.hover_seconds = 0.0;
+        }
+        self.hovered_city = hex.and_then(|h| self.cities.iter().position(|c| c.pos == h));
     }
 
     fn layout(&self, screen_size: Vec2) -> Layout {
@@ -252,48 +304,35 @@ impl GameState {
         layout
     }
 
-    /// Turn number and status on the left, the latest notice in the middle,
-    /// and the End Turn button on the right.
+    /// Turn number on the left, the latest notice in the middle, and on the
+    /// right the End Turn button, which names whatever the turn is still
+    /// waiting on (clicking it selects that).
     fn top_bar(&self, size: Vec2, layout: &mut Layout) {
         let min = Vec2::new(0.0, size.y - TOP_BAR_HEIGHT);
         layout.panel(min, size);
         let middle = min.y + TOP_BAR_HEIGHT / 2.0;
 
-        let pending = (0..self.units.len())
-            .filter(|&i| self.is_player_controlled(i) && self.needs_orders(i))
-            .count();
-        let (turn, status) = if self.is_resolving() {
-            (self.turn, "RESOLVING ORDERS".to_string())
-        } else if pending > 0 {
-            let units = if pending == 1 {
-                "UNIT NEEDS"
-            } else {
-                "UNITS NEED"
-            };
-            (self.turn + 1, format!("{pending} {units} ORDERS"))
+        let pending = self.pending();
+        let turn = if self.is_resolving() {
+            self.turn
         } else {
-            (self.turn + 1, "READY TO END THE TURN".to_string())
+            self.turn + 1
         };
         let turn_text = format!("TURN {turn}");
-        let turn_width = font::ui(TITLE).width(&turn_text);
-        let mut left = MARGIN;
+        let left_end = MARGIN + font::ui(TITLE).width(&turn_text);
         push_text_row(
             layout,
-            Vec2::new(left, middle),
+            Vec2::new(MARGIN, middle),
             TITLE,
             vec![(turn_text, TEXT)],
         );
-        left += turn_width + 2.0 * GAP;
-        push_text_row(
-            layout,
-            Vec2::new(left, middle),
-            BODY,
-            vec![(status.clone(), DIM_TEXT)],
-        );
-        let left_end = left + font::ui(BODY).width(&status);
 
-        let label = "END TURN".to_string();
-        let hint = "ENTER".to_string();
+        let label = if self.is_resolving() {
+            "RESOLVING".to_string()
+        } else {
+            end_turn_label(pending)
+        };
+        let hint = "SPACE".to_string();
         let width = single_line_button_width(&label, &hint);
         let button_min = Vec2::new(size.x - MARGIN - width, middle - END_TURN_HEIGHT / 2.0);
         let end_turn = Button {
@@ -303,7 +342,7 @@ impl GameState {
             state: if self.is_resolving() {
                 ButtonState::Disabled
             } else {
-                ButtonState::new(pending == 0, false)
+                ButtonState::new(pending == (0, 0), false)
             },
             armed: false,
             min: button_min.round(),
@@ -416,6 +455,9 @@ impl GameState {
             if unit.holding {
                 orders.push("HOLD");
             }
+            if unit.guarding {
+                orders.push("GUARD");
+            }
             if !orders.is_empty() {
                 notes.push(format!("ORDERS: {}", orders.join(", ")));
             }
@@ -486,6 +528,13 @@ impl GameState {
             label: "HOLD".into(),
             hint: "SPACE".into(),
             state: ButtonState::new(unit.holding, false),
+            armed: false,
+        });
+        buttons.push(ButtonSpec {
+            target: Target::Unit(UnitAction::Guard),
+            label: "GUARD".into(),
+            hint: "G".into(),
+            state: ButtonState::new(unit.guarding, false),
             armed: false,
         });
         buttons
@@ -589,13 +638,118 @@ impl GameState {
                 .collect(),
         );
         panel.gap(GAP);
+        panel.buttons(vec![ButtonSpec {
+            target: Target::ToggleYields,
+            label: "YIELDS".into(),
+            hint: "Y".into(),
+            state: ButtonState::new(self.show_yields, false),
+            armed: false,
+        }]);
+        panel.gap(GAP);
         panel.text(
             SMALL,
             vec![(
-                "CLICK TILES TO ASSIGN CITIZENS · A AUTO-ASSIGN · ESC CLOSE".into(),
+                "CLICK TILES TO ASSIGN CITIZENS · A AUTO-ASSIGN · CLICK A UNIT TO LEAVE".into(),
                 LABEL_TEXT,
             )],
         );
+    }
+
+    /// Everything about a map hex: terrain, what it yields, and what's on it.
+    fn tile_tooltip_lines(&self, hex: Hex) -> Vec<(u32, Line)> {
+        let terrain = self.grid.terrain(hex);
+        let city = self.cities.iter().find(|c| c.pos == hex);
+        let title = match city {
+            Some(city) => (
+                format!("{:?} CITY {}", city.team, city.id + 1).to_uppercase(),
+                city.team.color(),
+            ),
+            None => (format!("{terrain:?}").to_uppercase(), TEXT),
+        };
+        let mut lines = vec![(BODY, vec![title])];
+
+        if !terrain.is_passable() {
+            lines.push((SMALL, vec![("IMPASSABLE".into(), DIM_TEXT)]));
+            return lines;
+        }
+        let (food, production) = self.raw_yield(hex);
+        lines.push((
+            SMALL,
+            stat_spans(&[
+                ("FOOD", food.to_string(), BOOSTED_TEXT),
+                ("PRODUCTION", production.to_string(), GOLD_TEXT),
+            ]),
+        ));
+
+        let mut notes = Vec::new();
+        if city.is_some() {
+            notes.push(format!("{terrain:?} city center").to_uppercase());
+        }
+        if terrain.defense_multiplier() != 1.0 {
+            let bonus = (terrain.defense_multiplier() - 1.0) * 100.0;
+            notes.push(format!("+{bonus:.0}% DEFENSE FOR UNITS HERE"));
+        }
+        if let Some(site) = self.sites.get(&hex) {
+            notes.push(format!("{:?} {}", site.team, site.label).to_uppercase());
+        }
+        if self.roads.contains(&hex) {
+            notes.push("DIRT ROAD: GOODS MOVE THROUGH MORE CHEAPLY".into());
+        }
+        if let Some(worker) = self.cities.iter().find(|c| c.worked.contains(&hex)) {
+            notes.push(format!("WORKED BY CITY {}", worker.id + 1));
+        }
+        if let Some(open) = self.selected_city
+            && self.cities[open].pos != hex
+        {
+            let city = &self.cities[open];
+            match self.routes(open).costs.get(&hex) {
+                Some(&cost) => notes.push(format!(
+                    "{}% REACHES CITY {}",
+                    delivered_share(cost) * 25,
+                    city.id + 1
+                )),
+                None => notes.push(format!("OUT OF CITY {}'S REACH", city.id + 1)),
+            }
+        }
+        let units: Vec<String> = self
+            .units_at(hex)
+            .map(|i| {
+                let unit = &self.units[i];
+                format!("{:?} {}", unit.team, self.unit_role(unit).0).to_uppercase()
+            })
+            .collect();
+        if !units.is_empty() {
+            notes.push(units.join(", "));
+        }
+        if self.is_contested(hex) {
+            notes.push("CONTESTED".into());
+        }
+        lines.extend(
+            notes
+                .into_iter()
+                .map(|note| (SMALL, vec![(note, DIM_TEXT)])),
+        );
+        lines
+    }
+
+    /// The tile tooltip, just below and right of the cursor (`point`, in UI
+    /// pixels), kept inside the window.
+    fn draw_tile_tooltip(&self, hex: Hex, point: Vec2, screen_size: Vec2, out: &mut Vec<Vertex>) {
+        let mut panel = PanelBuilder::default();
+        for (px, line) in self.tile_tooltip_lines(hex) {
+            panel.text(px, line);
+        }
+        let size = panel.size();
+        let top_left = point + TILE_TOOLTIP_OFFSET;
+        let top_left = Vec2::new(
+            top_left.x.min(screen_size.x - MARGIN - size.x),
+            top_left.y.max(MARGIN + size.y),
+        );
+        let mut layout = Layout::default();
+        panel.place_top_left(top_left, &mut layout);
+        for shape in &layout.shapes {
+            draw_shape(shape, out);
+        }
     }
 
     /// A panel explaining what `button` does, above it (or below, for the
@@ -660,20 +814,24 @@ impl GameState {
                     ),
                     None,
                 ),
-                Target::EndTurn => {
-                    let pending = (0..self.units.len())
-                        .filter(|&i| self.is_player_controlled(i) && self.needs_orders(i))
-                        .count();
-                    (
-                        "END TURN".into(),
-                        "ENTER".into(),
-                        "RESOLVES EVERYONE'S ORDERS AND COLLECTS CITY INCOME. EVERY UNIT \
-                         NEEDS ORDERS FIRST; HOLD ONE (SPACE) TO LEAVE IT AS IT IS."
-                            .into(),
-                        (pending > 0)
-                            .then(|| format!("{pending} STILL NEED ORDERS: CLICKING SELECTS ONE")),
-                    )
-                }
+                Target::ToggleYields => (
+                    "YIELDS".into(),
+                    "Y".into(),
+                    "SHOWS THE FOOD AND PRODUCTION OF EACH TILE WITHIN THIS CITY'S REACH, \
+                     AND WHAT SHARE OF IT MAKES IT BACK TO THE CITY."
+                        .into(),
+                    None,
+                ),
+                Target::EndTurn => (
+                    "END TURN".into(),
+                    "SPACE".into(),
+                    "RESOLVES EVERYONE'S ORDERS AND COLLECTS CITY INCOME. FIRST EVERY UNIT \
+                     NEEDS ORDERS (SPACE HOLDS ONE AS IT IS, G GUARDS IT FOR GOOD) AND EVERY \
+                     CITY NEEDS SOMETHING TO BUILD. CITIZENS CAN BE MOVED AT ANY TIME."
+                        .into(),
+                    pending_text(self.pending())
+                        .map(|waiting| format!("{waiting}: CLICKING SELECTS ONE")),
+                ),
             };
 
         let mut lines = vec![(
@@ -751,7 +909,16 @@ impl GameState {
                 "HOLD".into(),
                 "SPACE",
                 "KEEP ANY ORDERS ALREADY QUEUED AND SKIP THE REST OF THIS UNIT'S TURN. \
-                 CTRL-RIGHT-CLICK CLEARS ITS ORDERS AND THE HOLD."
+                 ONCE NOTHING NEEDS ORDERS, SPACE ENDS THE TURN. CTRL-RIGHT-CLICK CLEARS \
+                 ITS ORDERS AND THE HOLD."
+                    .into(),
+                None,
+            ),
+            UnitAction::Guard => (
+                "GUARD".into(),
+                "G",
+                "THE UNIT STAYS WHERE IT IS AND IS SKIPPED EVERY TURN, NOT JUST THIS ONE, \
+                 UNTIL YOU GIVE IT AN ORDER OR PRESS G AGAIN."
                     .into(),
                 None,
             ),
@@ -1078,6 +1245,36 @@ fn signed_quantity(quarters: i32) -> String {
     format!("{sign}{}", quantity(quarters))
 }
 
+/// The End Turn button's label: the next thing the turn is waiting on (units
+/// first, as that's what clicking selects first), or "END TURN" once nothing is.
+fn end_turn_label((units, cities): (usize, usize)) -> String {
+    match (units, cities) {
+        (1, _) => "UNIT NEEDS ORDERS".into(),
+        (0, 0) => "END TURN".into(),
+        (0, 1) => "CHOOSE PRODUCTION".into(),
+        (0, cities) => format!("{cities} CITIES NEED PRODUCTION"),
+        (units, _) => format!("{units} UNITS NEED ORDERS"),
+    }
+}
+
+/// What the turn is waiting on, like "2 UNITS AND 1 CITY NEED ORDERS", from
+/// `GameState::pending`; `None` once nothing is.
+fn pending_text((units, cities): (usize, usize)) -> Option<String> {
+    let plural = |count: usize, one: &str, many: &str| {
+        let word = if count == 1 { one } else { many };
+        format!("{count} {word}")
+    };
+    let mut parts = Vec::new();
+    if units > 0 {
+        parts.push(plural(units, "UNIT", "UNITS"));
+    }
+    if cities > 0 {
+        parts.push(plural(cities, "CITY", "CITIES"));
+    }
+    let verb = if units + cities == 1 { "NEEDS" } else { "NEED" };
+    (!parts.is_empty()).then(|| format!("{} {verb} ORDERS", parts.join(" AND ")))
+}
+
 fn turns_text(turns: u32) -> String {
     match turns {
         1 => "1 TURN".to_string(),
@@ -1124,7 +1321,7 @@ fn ability_text(unit: &Unit) -> (&'static str, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::hex::Hex;
+
     use crate::game::unit::{Team, UnitType};
 
     const SCREEN: Vec2 = Vec2::new(1600.0, 900.0);
@@ -1271,12 +1468,65 @@ mod tests {
     }
 
     #[test]
+    fn yields_show_only_for_the_open_city_and_toggle() {
+        let mut game = city_view();
+        let shown = game.build_vertices().len();
+        game.handle_click(
+            button_cursor(&game, Target::ToggleYields),
+            SCREEN,
+            ClickMode::Normal,
+        );
+        assert!(!game.show_yields);
+        assert!(game.build_vertices().len() < shown, "badges hidden");
+        game.toggle_yields();
+        assert_eq!(game.build_vertices().len(), shown);
+
+        // Hovering a city without opening it no longer shows its yields.
+        let city = game.cities[game.selected_city.unwrap()].pos;
+        game.close_city();
+        game.update_hover(Some(hex_cursor(&game, city)), SCREEN, 0.0);
+        assert!(game.hovered_city.is_some());
+        assert_eq!(game.yields_city(), None);
+        assert!(game.build_vertices().len() < shown);
+    }
+
+    #[test]
+    fn resting_on_a_tile_shows_its_tooltip_after_a_delay() {
+        let mut game = GameState::new();
+        let cursor = hex_cursor(&game, Hex::new(0, 1));
+        game.update_hover(Some(cursor), SCREEN, 0.0);
+        let before = game.build_ui(SCREEN, Some(cursor)).len();
+        game.update_hover(Some(cursor), SCREEN, TILE_TOOLTIP_DELAY);
+        assert_eq!(game.hovered_tile, Some(Hex::new(0, 1)));
+        assert!(game.build_ui(SCREEN, Some(cursor)).len() > before);
+
+        // Moving to another hex starts the wait over.
+        let elsewhere = hex_cursor(&game, Hex::new(1, 1));
+        game.update_hover(Some(elsewhere), SCREEN, 0.1);
+        assert_eq!(game.hover_seconds, 0.0);
+    }
+
+    #[test]
     fn clicks_on_a_panel_do_not_reach_the_map() {
         let mut game = GameState::new();
         let selected = game.selected;
         // The top bar's left end, away from any button.
         game.handle_click(Vec2::new(4.0, 4.0), SCREEN, ClickMode::Normal);
         assert_eq!(game.selected, selected);
+    }
+
+    #[test]
+    fn end_turn_button_names_what_is_waiting() {
+        assert_eq!(end_turn_label((3, 1)), "3 UNITS NEED ORDERS");
+        assert_eq!(end_turn_label((1, 1)), "UNIT NEEDS ORDERS");
+        assert_eq!(end_turn_label((0, 1)), "CHOOSE PRODUCTION");
+        assert_eq!(end_turn_label((0, 2)), "2 CITIES NEED PRODUCTION");
+        assert_eq!(end_turn_label((0, 0)), "END TURN");
+
+        let game = GameState::new();
+        let layout = game.layout(SCREEN);
+        let button = layout.buttons.iter().find(|b| b.target == Target::EndTurn);
+        assert_eq!(button.unwrap().label, "4 UNITS NEED ORDERS");
     }
 
     #[test]

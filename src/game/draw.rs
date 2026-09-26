@@ -42,6 +42,10 @@ const ABILITY_RING_COLOR: Color = [0.95, 0.78, 0.25, 1.0];
 const ABILITY_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.32;
 const DEPLOYED_RING_COLOR: Color = [0.62, 0.66, 0.72, 1.0];
 const DEPLOYED_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.18;
+/// A white hex outline around a guarding unit, outside any status rings.
+const GUARD_OUTLINE_COLOR: Color = [0.92, 0.94, 0.98, 1.0];
+const GUARD_OUTLINE_RADIUS: f32 = UNIT_ICON_RADIUS * 1.5;
+const GUARD_OUTLINE_WIDTH: f32 = 0.05;
 
 /// The two units sharing a contested hex are drawn at this scale, stacked
 /// vertically with Blue on top.
@@ -276,7 +280,7 @@ impl GameState {
         if let Some(i) = self.hovered_city.or(self.selected_city) {
             let routes = self.routes(i);
             for (h, cost) in &routes.costs {
-                if self.hovered_city.is_none() {
+                if self.yields_city() != Some(i) {
                     continue;
                 }
                 font::push_text(
@@ -325,9 +329,10 @@ impl GameState {
 }
 
 impl GameState {
-    /// Show yields only while hovering a city, limited to its economic reach.
+    /// Yield badges around the open city while yields are shown, limited to
+    /// its economic reach.
     fn push_tile_yields(&self, out: &mut Vec<Vertex>) {
-        let Some(city) = self.hovered_city else {
+        let Some(city) = self.yields_city() else {
             return;
         };
         let routes = self.routes(city);
@@ -335,11 +340,7 @@ impl GameState {
             if !routes.costs.contains_key(&hex) && !self.cities[city].worked.contains(&hex) {
                 continue;
             }
-            let (food, production) = if self.cities.iter().any(|c| c.pos == hex) {
-                (2, 1)
-            } else {
-                self.tile_yield(hex)
-            };
+            let (food, production) = self.raw_yield(hex);
             let center = hex.to_world() + Vec2::new(0.0, -0.49);
             mesh::quad(
                 center - Vec2::new(0.52, 0.18),
@@ -479,7 +480,19 @@ fn push_unit_icon(
 
 /// Status rings behind the icon. They're filled discs, so only the rim shows
 /// once the icon is drawn on top; the larger one goes first so both stay visible.
+/// A guarding unit also gets a hex outline around everything.
 fn push_status_rings(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec<Vertex>) {
+    if unit.guarding {
+        mesh::polygon_outline(
+            center,
+            GUARD_OUTLINE_RADIUS * scale,
+            GUARD_OUTLINE_WIDTH * scale,
+            6,
+            0.0,
+            GUARD_OUTLINE_COLOR,
+            out,
+        );
+    }
     if unit.ability_queued {
         mesh::regular_polygon(
             center,
