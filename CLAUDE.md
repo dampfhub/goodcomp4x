@@ -66,23 +66,28 @@ src/
     camera.rs      top-down orthographic camera: pan, zoom, screen<->world
     draw.rs        world geometry: hexes, terrain symbols, move ghosts, attack arcs,
                    units, badges
+    unit_icons.rs  unit pictograms (sword, bow, horse head, ...) built from shapes
     effects.rs     attack animations during playback: shots, hits, misses, damage
     city.rs        cities, logistics routes, citizens, growth, builds, settlers/workers
     ui.rs          screen-space UI: top bar, command tray, tooltips, hover info box
     ui/dock.rs     shared panel docking by screen zone and measured size
-    mesh.rs        shape helpers: regular_polygon, quad, segment
-    font.rs        TrueType text (Hack via fontdue): glyph atlas, UI and world text
+    mesh.rs        shape helpers: regular_polygon, polygon (ear clipping), quad, segment
+    font.rs        TrueType text (IBM Plex Mono via fontdue): glyph atlas, UI and world text
 shaders/
   mesh.vert        applies the batch's view-projection push constant
-  mesh.frag        vertex color, times atlas coverage unless the UV is SOLID_UV
+  mesh.frag        vertex color, times atlas coverage (or a thresholded distance
+                   field for world text) unless the UV is SOLID_UV
 ```
 
-Text: `font.rs` rasterizes printable ASCII from the Hack font (bundled by the
-`epaint_default_fonts` crate) once, into one R8 atlas with 4 mip levels, which
-the renderer uploads at startup (`Renderer::new(window, font_atlas())`). UI text
-uses glyphs rasterized at its exact pixel size (`font::ui(px)`, one of
-`UI_SIZES`) and snaps to whole pixels; world text (`push_glyph`, `push_text`,
-sized by capital-letter height) scales a 64px set and relies on the mips.
+Text: `font.rs` rasterizes printable ASCII from IBM Plex Mono SemiBold
+(`assets/fonts/`, SIL Open Font License) once, into one R8 atlas with 4 mip
+levels, which the renderer uploads at startup
+(`Renderer::new(window, font_atlas())`). UI text uses coverage glyphs rasterized
+at its exact pixel size (`font::ui(px)`, one of `UI_SIZES`) and snaps to whole
+pixels. World text (`push_glyph`, `push_text`, sized by capital-letter height)
+scales one 64px set of signed distance fields, measured on a 4x raster; the
+shader thresholds them so outlines stay sharp at any zoom. It tells them apart
+from coverage by `u` shifted up by 1 (solid geometry has negative `u`).
 
 The frame loop: `App` calls `GameState::update(dt)`, then builds two batches:
 world vertices (`build_vertices`) through `camera.view_proj`, and UI vertices
@@ -132,9 +137,9 @@ All geometry is rebuilt from game state every frame.
   capture, and city combat are future slices. See `docs/controls.md` and the
   proposal in `docs/city-system.md`; proposal rules are not all implemented.
 - City unit queues are now a first construction slice: with a city panel open,
-  keys 1–4 queue melee/ranged/cavalry/siege. A unit completes once stored
+  keys 1–3 queue melee/ranged/siege. A unit completes once stored
   production reaches its listed cost and deploys to an open neighboring hex.
-  F3 starts a frontier map with one T-marked settler per team; F founds the
+  F3 starts a frontier map with one settler (flag) per team; F founds the
   selected player's city, while the AI settles at its first resolution.
 - Logistics uses weighted shortest paths, not radius or line distance. Enemy and
   contested hexes block every route; a longer off-road detour delivers less.
@@ -150,7 +155,7 @@ All geometry is rebuilt from game state every frame.
     (`end_turn_label`) names what's still waiting ("3 UNITS NEED ORDERS",
     "CHOOSE PRODUCTION") until it turns gold and reads END TURN.
   - Bottom-left command tray: the open city (stores, income, what it's
-    building, growth meter, 1–4 build cards), or else the selected unit (stats
+    building, growth meter, 1–3 build cards), or else the selected unit (stats
     with boosted values green and reduced red, notes, and buttons: Move, Attack,
     Swap, then its ability / Found City / Build Road + Improve, then Hold).
   - Move/Attack/Swap arm `ui_click_mode` for the next map click only (a held
@@ -170,7 +175,7 @@ All geometry is rebuilt from game state every frame.
   line between (`in_line_of_sight` via `Hex::line_between`, tried nudged to
   either side of an edge; the mountain itself is visible). Every frame (`explore`, from
   `update`) each hex in sight is recorded in `memory` as a `Sighting`: other
-  sides' units (clones plus letters), city and barracks (team, number,
+  sides' units (clones plus their looks), city and barracks (team, number,
   health), improvement and road. Three layers: in sight shows the live
   state; remembered hexes out of sight draw their `Sighting` (`map_view`,
   `push_remembered_units`) under a translucent grey veil with faint cloud puffs (`push_cloud_puffs`),
@@ -228,20 +233,23 @@ All geometry is rebuilt from game state every frame.
 ### Units
 | Type | HP | Attack | Defense | Move | Range | Icon |
 |---|---|---|---|---|---|---|
-| Melee | 100 | 22 | 20 | 1 | 1 | triangle, M |
-| Ranged | 75 | 24 | 10 | 1 | 2 | diamond, R |
-| Cavalry | 100 | 24 | 14 | 2 | 1 | pentagon, C |
-| Siege | 65 | 32 | 6 | 1 | 2 | upright square, S |
-| Scout | 60 | 8 | 10 | 3 | 1 | small circle, X |
-| Horse | 100 | 28 | 16 | 3 | 1 | downward pentagon, H |
-| Armored | 140 | 30 | 28 | 1 | 1 | octagon, A |
+| Melee | 100 | 22 | 20 | 1 | 1 | sword |
+| Ranged | 75 | 24 | 10 | 1 | 2 | bow and arrow |
+| Cavalry | 100 | 24 | 14 | 2 | 1 | horse head |
+| Siege | 65 | 32 | 6 | 1 | 2 | catapult |
+| Scout | 60 | 8 | 10 | 3 | 1 | spyglass |
+| Armored | 140 | 30 | 28 | 1 | 1 | heater shield |
 
-Horse and Armored are specialist units a barracks trains when it stands on a
+Cavalry and Armored are specialist units a barracks trains when it stands on a
 Horses or Iron resource (`Resource`, `HexGrid::resource`; placed in the city
 scenario). Resources show as a gold-edged disc with H or I in a hex's
-top-right corner. Horse charges and sees 3; Armored shield-walls.
-Every unit icon is its team color with a dark outline. Settlers (T) and
-workers (W) are civilians: a hollow hexagon (pale center, team-colored rim),
+top-right corner. Cities can't build them. Cavalry charges and sees 3; Armored
+shield-walls.
+Every unit is a token in its team color with a dark outline and a dark
+pictogram on top (`unit_icons.rs`: rectangles, triangles, circles and lines;
+`mesh::polygon` ear-clips the concave ones). Military units stand on a disc.
+Settlers (a planted flag) and
+workers (a shovel) are civilians: a hollow hexagon (pale center, team-colored rim),
 with no attack-order badge. Map markers are primitives too: a city is a
 crenellated tower showing its population, plus a gold G disc once it has a
 granary; a barracks is a small house marked B, in its team color; an
@@ -298,11 +306,12 @@ Everything that asks what a unit can do goes through it.
   nothing else.
 
 ### Turn resolution (`turn.rs`)
-The turn plays out in 10 steps, one every 0.6s, with the acting units flashing.
+The turn plays out in 12 steps, one every 0.6s, with the acting units flashing.
 Steps where nobody acts are skipped.
 
 1. Scout move  2. Cavalry move  3. Melee move  4. Ranged attack  5. Scout attack
 6. Cavalry attack  7. Melee attack  8. Ranged move  9. Siege move  10. Siege attack
+11. Armored move  12. Armored attack
 
 The badges on each unit show this: blue number = move order, red = attack order.
 

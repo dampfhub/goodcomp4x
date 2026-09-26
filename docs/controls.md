@@ -45,8 +45,8 @@ current scenario is gold, and a generated map shows its seed. The savestate live
 survives switching scenarios; loading it returns to its scenario.
 | F5 | Toggle borderless fullscreen |
 | F, with a selected settler | Found a city |
-| 1 / 2 / 3 / 4 in city view | Queue melee / ranged / cavalry / siege |
-| 5 / 6 / 7 / 8 in city view | Queue Granary / Barracks / Mill / Workshop |
+| 1 / 2 / 3 in city view | Queue melee / ranged / siege (cavalry and armored train at a barracks on Horses / Iron) |
+| 4 / 5 / 6 / 7 in city view | Queue Granary / Barracks / Mill / Workshop |
 | M / X | Arm Move / Attack for the next map click (press again to disarm) |
 
 A unit can queue a move and attack together. Attacks target tiles, and the
@@ -73,7 +73,9 @@ Cities appear as team-colored crenellated towers showing their population, with
 a gold G disc once they have a granary; a barracks is a small house marked B.
 Improvements (farms, mines, pastures, lumber mills) show as small badges in a
 hex's top-left corner, edged in their owner's color: crop rows, an ore heap, a
-fence, or logs. Brown lines are dirt roads. Settlers (T) and workers (W) are
+fence, or logs. Brown lines are dirt roads. Each unit shows a pictogram of what
+it is: sword, bow, horse head, catapult, spyglass or shield. Settlers (a flag)
+and workers (a shovel) are
 drawn hollow, so civilians stand apart from fighters. Hover over a city or select it to see
 green outlines around its worked tiles; red outlines mark disrupted assignments.
 With a city open and yields shown (Y or the Yields button toggles them; on by
@@ -119,7 +121,7 @@ luxuries are not implemented. City centers currently remain economic markers;
 enemy occupation can interrupt external gathering but cannot capture them.
 
 In the frontier scenario, settlers use a `T` marker. Found your city with F,
-open it with C, then choose a unit with 1–4. Production accumulates at the end
+open it with C, then choose a unit with 1–3. Production accumulates at the end
 of each turn and a finished unit appears on an open adjacent hex. If every
 adjacent hex is occupied, the city keeps the completed build until one opens.
 Both sides also begin with a scout. The red starting scout is player

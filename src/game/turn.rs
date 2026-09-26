@@ -28,7 +28,7 @@ pub(super) enum Phase {
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-const RESOLUTION_ORDER: [(UnitType, Phase); 14] = [
+const RESOLUTION_ORDER: [(UnitType, Phase); 12] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
     (UnitType::Melee, Phase::Move),
@@ -39,8 +39,6 @@ const RESOLUTION_ORDER: [(UnitType, Phase); 14] = [
     (UnitType::Ranged, Phase::Move),
     (UnitType::Siege, Phase::Move),
     (UnitType::Siege, Phase::Attack),
-    (UnitType::Horse, Phase::Move),
-    (UnitType::Horse, Phase::Attack),
     (UnitType::Armored, Phase::Move),
     (UnitType::Armored, Phase::Attack),
 ];

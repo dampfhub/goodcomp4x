@@ -21,6 +21,7 @@ mod terrain;
 mod turn;
 mod ui;
 mod unit;
+mod unit_icons;
 
 use std::collections::{HashSet, VecDeque};
 
@@ -37,6 +38,7 @@ use terrain::Tile;
 use turn::Phase;
 pub use ui::{quit_prompt, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
+use unit_icons::UnitIcon;
 
 const GRID_RADIUS: i32 = 3;
 const PLAYER_TEAM: Team = Team::Blue;
@@ -63,7 +65,7 @@ Controls:
   Enter or End Turn holds unfinished units and ends the turn. Cities still need a build queued.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
-  1-4 queue city units; 5-8 queue buildings. Drag queue rows to reorder or click X to remove;
+  1-3 queue city units; 4-7 queue buildings. Cavalry and armored train at a barracks on Horses or Iron. Drag queue rows to reorder or click X to remove;
   Backspace removes the active city build and PageDown promotes the next item. F founds with a settler.
   F1 combat, F2 cities, F3 settler frontier, F4 random world (again to restart; F4 makes a new map). F6 saves a snapshot, F7 loads it, F8 changes playback, F9 completes production, F10 toggles fog of war.
   The faded DEBUG panel at the top-left has buttons for these.
@@ -291,31 +293,33 @@ impl GameState {
 
     /// What the unit is, for display: settlers and workers are marked on
     /// top of an ordinary unit type.
-    fn unit_role(&self, unit: &Unit) -> (&'static str, char) {
+    fn unit_role(&self, unit: &Unit) -> &'static str {
         if self.settlers.contains(&unit.id) {
-            ("SETTLER", 'T')
+            "SETTLER"
         } else if self.workers.contains(&unit.id) {
-            ("WORKER", 'W')
+            "WORKER"
         } else {
-            let name = match unit.unit_type {
+            match unit.unit_type {
                 UnitType::Melee => "MELEE",
                 UnitType::Ranged => "RANGED",
                 UnitType::Cavalry => "CAVALRY",
                 UnitType::Siege => "SIEGE",
                 UnitType::Scout => "SCOUT",
-                UnitType::Horse => "HORSE",
                 UnitType::Armored => "ARMORED",
-            };
-            (name, unit.unit_type.letter())
+            }
         }
     }
 
-    /// How to draw `unit`: its letter, and hollow if it's a civilian.
+    /// How to draw `unit`: its pictogram, and hollow if it's a civilian.
     fn unit_look(&self, unit: &Unit) -> draw::UnitLook {
-        draw::UnitLook {
-            letter: self.unit_role(unit).1,
-            civilian: self.settlers.contains(&unit.id) || self.workers.contains(&unit.id),
-        }
+        let (icon, civilian) = if self.settlers.contains(&unit.id) {
+            (UnitIcon::Flag, true)
+        } else if self.workers.contains(&unit.id) {
+            (UnitIcon::Shovel, true)
+        } else {
+            (UnitIcon::of(unit.unit_type), false)
+        };
+        draw::UnitLook { icon, civilian }
     }
 
     fn is_occupied(&self, hex: Hex) -> bool {

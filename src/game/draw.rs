@@ -1,7 +1,7 @@
 //! Builds each frame's geometry from the game state.
 
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_8, TAU};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 use glam::Vec2;
 
@@ -10,7 +10,8 @@ use super::hex::{HEX_SIZE, Hex, HexGrid, edge_corners};
 use super::orders::ClickMode;
 use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
-use super::unit::{Team, Unit, UnitStats, UnitType};
+use super::unit::{Team, Unit, UnitStats};
+use super::unit_icons::{self, UnitIcon};
 use super::{GameState, PLAYER_TEAM, font, mesh};
 use crate::renderer::Vertex;
 
@@ -63,7 +64,10 @@ const HEALTH_BAR_BG_COLOR: Color = [0.08, 0.08, 0.08, 1.0];
 
 /// Sizes below are for a unit drawn at full scale, alone in its hex.
 const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.42;
-const LABEL_HEIGHT: f32 = UNIT_ICON_RADIUS * 0.9;
+/// Sides of the disc military units stand on.
+const TOKEN_SIDES: u32 = 32;
+/// Civilian hexagons, relative to the military disc.
+const CIVILIAN_TOKEN_SIZE: f32 = 0.95;
 /// The dark edge around unit icons and map markers, so they stand out on any
 /// terrain.
 const ICON_OUTLINE_COLOR: Color = [0.03, 0.03, 0.04, 1.0];
@@ -214,7 +218,7 @@ impl GameState {
             };
             push_status_rings(center, unit, scale, &mut out);
             let look = self.unit_look(unit);
-            push_unit_icon(center, unit, look, icon_scale, color, &mut out);
+            push_unit_icon(center, look, icon_scale, color, &mut out);
             push_order_badges(center, unit, look, scale, &mut out);
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
         }
@@ -306,7 +310,7 @@ impl GameState {
             for (i, unit) in movers.iter().enumerate() {
                 let pos = fan_position(hex.to_world(), i, movers.len(), GHOST_FAN_RADIUS);
                 let color = with_alpha(unit.team.color(), GHOST_ALPHA);
-                push_unit_icon(pos, unit, self.unit_look(unit), 1.0, color, out);
+                push_unit_icon(pos, self.unit_look(unit), 1.0, color, out);
                 ghosts.insert(unit.id, pos);
             }
         }
@@ -660,7 +664,7 @@ impl GameState {
                 } else {
                     (hex.to_world(), 1.0)
                 };
-                push_unit_icon(center, unit, *look, scale, unit.team.color(), out);
+                push_unit_icon(center, *look, scale, unit.team.color(), out);
                 push_health_bar(center, unit.hp / unit.max_hp(), scale, out);
             }
         }
@@ -974,49 +978,24 @@ pub(super) fn push_arrow(points: &[Vec2], color: Color, outline: Color, out: &mu
     }
 }
 
-/// How a unit is drawn, beyond its type: its letter, and whether it's a
+/// How a unit is drawn, beyond its type: its pictogram, and whether it's a
 /// civilian (settler or worker), drawn hollow.
 #[derive(Clone, Copy)]
 pub(super) struct UnitLook {
-    pub letter: char,
+    pub icon: UnitIcon,
     pub civilian: bool,
 }
 
-/// The icon's side count, rotation and size (relative to the standard
-/// icon): a distinct silhouette for each kind of unit.
-fn icon_shape(unit: &Unit, look: UnitLook) -> (u32, f32, f32) {
-    if look.civilian {
-        // A pointy-top hexagon, unlike the flat-top map hexes.
-        return (6, FRAC_PI_2, 0.95);
-    }
-    match unit.unit_type {
-        // A quarter turn so the triangle points up.
-        UnitType::Melee => (3, FRAC_PI_2, 1.0),
-        UnitType::Ranged => (4, FRAC_PI_2, 1.0),
-        UnitType::Cavalry => (5, FRAC_PI_2, 1.0),
-        // An upright square: an eighth of a turn from the ranged diamond.
-        UnitType::Siege => (4, FRAC_PI_4, 0.92),
-        // Small and round: light and quick.
-        UnitType::Scout => (24, 0.0, 0.8),
-        // Heavy horse points down, unlike the cavalry pentagon.
-        UnitType::Horse => (5, -FRAC_PI_2, 1.0),
-        // A broad octagon: the toughest unit.
-        UnitType::Armored => (8, FRAC_PI_8, 1.05),
-    }
-}
-
-/// The unit's silhouette in its team color with a dark outline, so it reads
-/// on any terrain, and its letter on top. Civilians are hollow: a pale
-/// center inside a team-colored rim.
-fn push_unit_icon(
-    center: Vec2,
-    unit: &Unit,
-    look: UnitLook,
-    scale: f32,
-    color: Color,
-    out: &mut Vec<Vertex>,
-) {
-    let (sides, rotation, size) = icon_shape(unit, look);
+/// The unit's token in its team color with a dark outline, so it reads on
+/// any terrain, and its pictogram on top. Military units stand on a disc;
+/// civilians on a hollow pointy-top hexagon (a pale center inside a
+/// team-colored rim), unlike both the disc and the flat-top map hexes.
+fn push_unit_icon(center: Vec2, look: UnitLook, scale: f32, color: Color, out: &mut Vec<Vertex>) {
+    let (sides, rotation, size) = if look.civilian {
+        (6, FRAC_PI_2, CIVILIAN_TOKEN_SIZE)
+    } else {
+        (TOKEN_SIDES, 0.0, 1.0)
+    };
     let radius = UNIT_ICON_RADIUS * scale * size;
     let alpha = color[3];
     mesh::regular_polygon(center, radius, sides, rotation, color, out);
@@ -1034,12 +1013,11 @@ fn push_unit_icon(
         outline,
         out,
     );
-    let label_color = with_alpha(LABEL_COLOR, alpha);
-    font::push_glyph(
+    unit_icons::push_pictogram(
         center,
-        LABEL_HEIGHT * scale * size,
-        look.letter,
-        label_color,
+        radius,
+        look.icon,
+        with_alpha(LABEL_COLOR, alpha),
         out,
     );
 }

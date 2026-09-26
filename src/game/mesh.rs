@@ -102,10 +102,90 @@ pub fn triangle(a: Vec2, b: Vec2, c: Vec2, color: [f32; 4], out: &mut Vec<Vertex
     push_triangle(out, a, b, c, color);
 }
 
+/// Appends a filled simple polygon, convex or not, with its corners in either
+/// winding order. It's cut into triangles by clipping ears: repeatedly
+/// removing a corner that bulges outward with no other corner inside it.
+pub fn polygon(points: &[Vec2], color: [f32; 4], out: &mut Vec<Vertex>) {
+    // Twice the signed area: which way the corners wind.
+    let winding: f32 = (0..points.len())
+        .map(|i| points[i].perp_dot(points[(i + 1) % points.len()]))
+        .sum();
+    let mut left: Vec<usize> = (0..points.len()).collect();
+    while left.len() >= 3 {
+        let n = left.len();
+        let corner = |i: usize| {
+            (
+                points[left[(i + n - 1) % n]],
+                points[left[i]],
+                points[left[(i + 1) % n]],
+            )
+        };
+        let ear = (0..n).find(|&i| {
+            let (a, b, c) = corner(i);
+            let bulges = (b - a).perp_dot(c - b) * winding > 0.0;
+            bulges
+                && left
+                    .iter()
+                    .map(|&j| points[j])
+                    .all(|p| p == a || p == b || p == c || !inside_triangle(p, a, b, c))
+        });
+        // Only a degenerate outline (crossing itself, or all in a line) has
+        // no ear; stop with what's been cut so far.
+        let Some(i) = ear else { break };
+        let (a, b, c) = corner(i);
+        push_triangle(out, a, b, c, color);
+        left.remove(i);
+    }
+}
+
+/// On or inside the triangle `a`, `b`, `c`, whichever way round it winds.
+fn inside_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
+    let sides = [
+        (b - a).perp_dot(p - a),
+        (c - b).perp_dot(p - b),
+        (a - c).perp_dot(p - c),
+    ];
+    sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0)
+}
+
 fn push_triangle(out: &mut Vec<Vertex>, a: Vec2, b: Vec2, c: Vec2, color: [f32; 4]) {
     out.extend([a, b, c].map(|p| Vertex {
         pos: [p.x, p.y, 0.0],
         color,
         uv: SOLID_UV,
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn area(out: &[Vertex]) -> f32 {
+        out.chunks_exact(3)
+            .map(|t| {
+                let [a, b, c] = [0, 1, 2].map(|i| Vec2::new(t[i].pos[0], t[i].pos[1]));
+                (b - a).perp_dot(c - a).abs() / 2.0
+            })
+            .sum()
+    }
+
+    #[test]
+    fn concave_polygons_fill_exactly_their_area() {
+        // An L shape of area 3, in both winding orders.
+        let l = [
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 2.0),
+            (0.0, 2.0),
+        ]
+        .map(|(x, y)| Vec2::new(x, y));
+        for points in [l.to_vec(), l.iter().rev().copied().collect()] {
+            let mut out = Vec::new();
+            polygon(&points, [1.0; 4], &mut out);
+            assert_eq!(out.len(), 3 * (points.len() - 2));
+            assert!((area(&out) - 3.0).abs() < 1e-5);
+        }
+    }
 }

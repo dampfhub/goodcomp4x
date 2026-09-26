@@ -841,7 +841,7 @@ impl GameState {
         let stats = unit.stats();
         let terrain = self.grid.tile(unit.pos);
         let defense = stats.defense * terrain.defense_multiplier();
-        let (role, _) = self.unit_role(unit);
+        let role = self.unit_role(unit);
 
         panel.text(
             TITLE,
@@ -1020,7 +1020,7 @@ impl GameState {
         let members: Vec<&str> = self
             .group
             .iter()
-            .map(|&i| self.unit_role(&self.units[i]).0)
+            .map(|&i| self.unit_role(&self.units[i]))
             .collect();
         let mut kinds: Vec<(&str, usize)> = Vec::new();
         for role in members {
@@ -1274,12 +1274,7 @@ impl GameState {
         }
 
         panel.gap(GAP);
-        let builds = [
-            BuildUnit::Melee,
-            BuildUnit::Ranged,
-            BuildUnit::Cavalry,
-            BuildUnit::Siege,
-        ];
+        let builds = [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege];
         panel.buttons(
             builds
                 .into_iter()
@@ -1451,7 +1446,6 @@ impl GameState {
             BuildUnit::Ranged,
             BuildUnit::Cavalry,
             BuildUnit::Siege,
-            BuildUnit::Horse,
             BuildUnit::Armored,
         ];
         panel.gap(GAP);
@@ -1764,7 +1758,7 @@ impl GameState {
             }
         }
         let describe =
-            |unit: &Unit| format!("{:?} {}", unit.team, self.unit_role(unit).0).to_uppercase();
+            |unit: &Unit| format!("{:?} {}", unit.team, self.unit_role(unit)).to_uppercase();
         let mut units: Vec<String> = self
             .units_at(hex)
             .filter(|&i| fog.shows(&self.units[i]))
@@ -2792,13 +2786,10 @@ mod tests {
     fn build_card_queues_its_unit() {
         let mut game = GameState::city_scenario();
         game.select_city();
-        let cavalry = Target::Build(BuildUnit::Cavalry);
-        game.handle_click(button_cursor(&game, cavalry), SCREEN, ClickMode::Normal);
+        let siege = Target::Build(BuildUnit::Siege);
+        game.handle_click(button_cursor(&game, siege), SCREEN, ClickMode::Normal);
         let city = game.selected_city.unwrap();
-        assert_eq!(
-            game.cities[city].queue,
-            vec![Build::Unit(BuildUnit::Cavalry)]
-        );
+        assert_eq!(game.cities[city].queue, vec![Build::Unit(BuildUnit::Siege)]);
     }
 
     /// The city scenario with the player's city open and the camera settled on it.
@@ -3036,7 +3027,7 @@ mod tests {
         game.cities[city].queue = vec![
             Build::Unit(BuildUnit::Melee),
             Build::Unit(BuildUnit::Ranged),
-            Build::Unit(BuildUnit::Cavalry),
+            Build::Unit(BuildUnit::Siege),
         ];
         let layout = game.layout(SCREEN);
         let row_cursor = |index| {
@@ -3059,7 +3050,7 @@ mod tests {
         game.update_queue_drag_at(to, SCREEN);
         assert_eq!(game.queue_drag.unwrap().target, Some(0));
         game.finish_queue_drag_at(to, SCREEN);
-        assert_eq!(game.cities[city].queue[0], Build::Unit(BuildUnit::Cavalry));
+        assert_eq!(game.cities[city].queue[0], Build::Unit(BuildUnit::Siege));
         assert!(game.queue_drag.is_none());
 
         let x = button_cursor(&game, Target::CityQueueRemove(1));

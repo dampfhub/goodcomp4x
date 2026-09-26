@@ -90,10 +90,10 @@ impl Building {
     }
     pub fn shortcut(self) -> char {
         match self {
-            Self::Granary => '5',
-            Self::Barracks => '6',
-            Self::Mill => '7',
-            Self::Workshop => '8',
+            Self::Granary => '4',
+            Self::Barracks => '5',
+            Self::Mill => '6',
+            Self::Workshop => '7',
         }
     }
     pub fn description(self) -> &'static str {
@@ -159,7 +159,6 @@ pub enum BuildUnit {
     Ranged,
     Cavalry,
     Siege,
-    Horse,
     Armored,
 }
 
@@ -170,7 +169,6 @@ impl BuildUnit {
             Self::Ranged => UnitType::Ranged,
             Self::Cavalry => UnitType::Cavalry,
             Self::Siege => UnitType::Siege,
-            Self::Horse => UnitType::Horse,
             Self::Armored => UnitType::Armored,
         }
     }
@@ -180,7 +178,6 @@ impl BuildUnit {
             Self::Ranged => "RANGED",
             Self::Cavalry => "CAVALRY",
             Self::Siege => "SIEGE",
-            Self::Horse => "HORSE",
             Self::Armored => "ARMORED",
         }
     }
@@ -190,7 +187,6 @@ impl BuildUnit {
             Self::Ranged => 56,
             Self::Cavalry => 64,
             Self::Siege => 72,
-            Self::Horse => 68,
             Self::Armored => 80,
         }
     }
@@ -198,9 +194,8 @@ impl BuildUnit {
         match self {
             Self::Melee => "TOUGH CLOSE FIGHTER",
             Self::Ranged => "FIRES FROM 2 TILES",
-            Self::Cavalry => "FAST FLANKER",
+            Self::Cavalry => "FAST FLANKER, NEEDS HORSES",
             Self::Siege => "LONG RANGE, SLOW",
-            Self::Horse => "FAST RESOURCE CAVALRY",
             Self::Armored => "HEAVY IRON INFANTRY",
         }
     }
@@ -208,15 +203,14 @@ impl BuildUnit {
         match self {
             Self::Melee => '1',
             Self::Ranged => '2',
-            Self::Cavalry => '3',
-            Self::Siege => '4',
-            Self::Horse | Self::Armored => '-',
+            Self::Siege => '3',
+            Self::Cavalry | Self::Armored => '-',
         }
     }
 
     pub fn required_resource(self) -> Option<Resource> {
         match self {
-            Self::Horse => Some(Resource::Horses),
+            Self::Cavalry => Some(Resource::Horses),
             Self::Armored => Some(Resource::Iron),
             _ => None,
         }
@@ -523,6 +517,14 @@ impl GameState {
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
+            return;
+        }
+        if let Some(resource) = build.required_resource() {
+            self.notice = format!(
+                "{} TRAINS AT A BARRACKS ON {}",
+                build.name(),
+                resource.name()
+            );
             return;
         }
         // A city only retains production while it has an active build.
@@ -1992,13 +1994,13 @@ mod tests {
         let mut g = GameState::city_scenario();
         g.selected_city = Some(0);
         g.cities[0].barracks = Some(Hex::new(-2, 0));
-        assert!(g.barracks_can_train(0, BuildUnit::Horse));
+        assert!(g.barracks_can_train(0, BuildUnit::Cavalry));
         assert!(!g.barracks_can_train(0, BuildUnit::Armored));
-        g.queue_selected_barracks_unit(BuildUnit::Horse);
-        assert_eq!(g.cities[0].barracks_queue, vec![BuildUnit::Horse]);
+        g.queue_selected_barracks_unit(BuildUnit::Cavalry);
+        assert_eq!(g.cities[0].barracks_queue, vec![BuildUnit::Cavalry]);
         g.cities[0].barracks = Some(Hex::new(-2, 1));
         assert!(g.barracks_can_train(0, BuildUnit::Armored));
-        assert!(!g.barracks_can_train(0, BuildUnit::Horse));
+        assert!(!g.barracks_can_train(0, BuildUnit::Cavalry));
     }
 
     #[test]
