@@ -26,7 +26,7 @@ use glam::Vec2;
 use rand::rngs::ThreadRng;
 
 pub use camera::Camera;
-pub use city::BuildUnit;
+pub use city::{BuildUnit, Building};
 pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
@@ -58,11 +58,10 @@ Controls:
   Once a unit has queued a move and an attack (or can't do one of them), the next unit is
   selected automatically and the camera glides to it. Tab looks at the next unit without
   holding this one.
-  Once every unit has acted, held or is guarding and every city has a build queued, Space
-  ends the turn. Assigning citizens never holds the turn up.
+  Enter or End Turn holds unfinished units and ends the turn. Cities still need a build queued.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
-  1-4 queue city units: melee, ranged, cavalry, siege. F founds with a settler.
+  1-4 queue city units; 5/6 queue Granary/Barracks. F founds with a settler.
   F1 combat, F2 cities, F3 settler frontier (again to restart). F6 saves a snapshot, F7 loads it, F8 plays turns all at once.
   The faded DEBUG panel at the top-left has buttons for these.
   Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
@@ -90,6 +89,8 @@ pub struct GameState {
     sites: std::collections::HashMap<Hex, city::Site>,
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
+    /// City whose manager has been picked up and awaits a destination click.
+    moving_manager: Option<usize>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
@@ -171,6 +172,7 @@ impl GameState {
             sites: std::collections::HashMap::new(),
             roads: HashSet::new(),
             selected_city: None,
+            moving_manager: None,
             hovered_city: None,
             show_yields: true,
             hovered_tile: None,

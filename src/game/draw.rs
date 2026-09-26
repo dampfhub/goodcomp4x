@@ -1,7 +1,7 @@
 //! Builds each frame's geometry from the game state.
 
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::{FRAC_PI_2, TAU};
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 use glam::Vec2;
 
@@ -316,9 +316,11 @@ impl GameState {
                     out,
                 );
             }
-            for h in &self.cities[i].worked {
+            let manager_is_moving = self.moving_manager == Some(i);
+            for (worker_index, h) in self.cities[i].worked.iter().enumerate() {
+                if manager_is_moving && worker_index == 0 { continue; }
                 let color = if routes.costs.contains_key(h) {
-                    [0.25, 1.0, 0.4, 1.0]
+                    if worker_index == 0 { [1.0, 0.78, 0.20, 1.0] } else { [0.25, 1.0, 0.4, 1.0] }
                 } else {
                     [1.0, 0.25, 0.2, 1.0]
                 };
@@ -329,6 +331,14 @@ impl GameState {
                 let rim = WORKED_OUTLINE_RIM_COLOR;
                 mesh::polygon_outline(center, radius, WORKED_OUTLINE_RIM_WIDTH, 6, 0.0, rim, out);
                 mesh::polygon_outline(center, radius, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
+                if worker_index == 0 {
+                    font::push_glyph(center, 0.34, 'M', LABEL_COLOR, out);
+                }
+            }
+            if !manager_is_moving && let Some(manager) = self.cities[i].worked.first() {
+                for worker in self.cities[i].worked.iter().skip(1) {
+                    push_dotted_segment(manager.to_world(), worker.to_world(), 0.045, [0.78, 0.88, 0.62, 0.9], out);
+                }
             }
         }
         for (h, site) in &self.sites {
@@ -340,6 +350,12 @@ impl GameState {
                 out,
             );
         }
+        for city in &self.cities {
+            if let Some(hex) = city.barracks {
+                mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, [0.72, 0.35, 0.18, 1.0], out);
+                font::push_glyph(hex.to_world(), 0.30, 'B', LABEL_COLOR, out);
+            }
+        }
         for c in &self.cities {
             let pos = c.pos.to_world();
             mesh::quad(
@@ -350,6 +366,16 @@ impl GameState {
             );
             font::push_glyph(pos, 0.5, 'H', LABEL_COLOR, out);
         }
+    }
+}
+
+/// Short dashes communicate a labor relationship without looking like a road.
+fn push_dotted_segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec<Vertex>) {
+    const DASHES: usize = 7;
+    for index in 0..DASHES {
+        let start = (index as f32 + 0.18) / DASHES as f32;
+        let end = (index as f32 + 0.62) / DASHES as f32;
+        mesh::segment(a.lerp(b, start), a.lerp(b, end), width, color, out);
     }
 }
 

@@ -11,7 +11,7 @@
 use glam::{Mat4, Vec2, Vec3};
 
 use super::ability::Ability;
-use super::city::{BuildUnit, delivered_share};
+use super::city::{Build, Building, BuildUnit, LaborFocus, delivered_share};
 use super::font::{self, Face};
 use super::hex::Hex;
 use super::orders::ClickMode;
@@ -134,6 +134,10 @@ enum Target {
     Unit(UnitAction),
     Build(BuildUnit),
     ToggleYields,
+    Building(Building),
+    BarracksBuild(BuildUnit),
+    Focus(LaborFocus),
+    ConfirmBarracks,
     EndTurn,
     /// Debug panel: scenario pages, the savestate and playback pacing.
     Scenario(Scenario),
@@ -301,6 +305,10 @@ impl GameState {
             },
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
+            Target::Building(building) => self.queue_selected_city_building(building),
+            Target::BarracksBuild(build) => self.queue_selected_barracks_unit(build),
+            Target::Focus(focus) => self.set_selected_city_focus(focus),
+            Target::ConfirmBarracks => self.confirm_barracks(),
             Target::EndTurn => self.end_planning(),
             Target::Scenario(scenario) => self.switch_scenario(scenario),
             Target::SaveState => self.save_state(),
@@ -726,7 +734,14 @@ impl GameState {
             TITLE,
             vec![
                 (format!("CITY {}", city.id + 1), city.team.color()),
-                (format!("   POPULATION {}", city.population), DIM_TEXT),
+                (
+                    format!(
+                        "   POPULATION {}/{}",
+                        city.population,
+                        super::city::MAX_CITY_POPULATION
+                    ),
+                    DIM_TEXT,
+                ),
             ],
         );
         let net_color = match net_food.signum() {
@@ -738,7 +753,11 @@ impl GameState {
             BODY,
             stat_spans(&[(
                 "CITIZENS",
-                format!("{} OF {} WORKING", city.worked.len(), city.population),
+                format!(
+                    "{} OF {} WORKING",
+                    city.worked.len(),
+                    city.population.min(super::city::MAX_CITY_POPULATION)
+                ),
                 TEXT,
             )]),
         );
@@ -754,6 +773,21 @@ impl GameState {
             DIM_TEXT,
         ));
         panel.text(BODY, production_line);
+        if let Some(build) = city.queue {
+            panel.text(
+                SMALL,
+                vec![(
+                    format!(
+                        "{}: {} / {} PRODUCTION",
+                        build.name(),
+                        quantity(city.production.min(build.cost())),
+                        quantity(build.cost())
+                    ),
+                    GOLD_TEXT,
+                )],
+            );
+            panel.bar((city.production as f32 / build.cost() as f32).clamp(0.0, 1.0));
+        }
         let building = match city.queue {
             Some(build) => (
                 format!(
@@ -767,6 +801,12 @@ impl GameState {
             None => ("NOTHING - CHOOSE BELOW".to_string(), DIM_TEXT),
         };
         panel.text(BODY, stat_spans(&[("BUILDING", building.0, building.1)]));
+
+        panel.text(SMALL, vec![("LABOR FOCUS".into(), LABEL_TEXT)]);
+        panel.compact_buttons([LaborFocus::Food, LaborFocus::Production, LaborFocus::Balanced].into_iter().map(|focus| ButtonSpec {
+            target: Target::Focus(focus), label: focus.name().into(), hint: "AUTO".into(),
+            state: ButtonState::new(city.focus == focus, false), armed: false,
+        }).collect());
 
         panel.gap(GAP);
         panel.text(SMALL, vec![(growth_label, DIM_TEXT)]);
@@ -806,7 +846,7 @@ impl GameState {
                     target: Target::Build(build),
                     label: build.name().into(),
                     hint: format!("{} · {} PROD", build.shortcut(), quantity(build.cost())),
-                    state: ButtonState::new(city.queue == Some(build), false),
+                    state: ButtonState::new(city.queue == Some(Build::Unit(build)), false),
                     armed: false,
                 })
                 .collect(),
@@ -827,6 +867,35 @@ impl GameState {
                 LABEL_TEXT,
             )],
         );
+        let buildings = [Building::Granary, Building::Barracks];
+        panel.buttons(
+            buildings.into_iter().map(|building| ButtonSpec {
+                target: Target::Building(building),
+                label: building.name().into(),
+                hint: format!("{} · {} PROD", building.shortcut(), quantity(building.cost())),
+                state: ButtonState::new(city.queue == Some(Build::Building(building)), city.built.contains(&building) || city.pending_building == Some(building)),
+                armed: false,
+            }).collect(),
+        );
+        if let Some(tile) = city.barracks {
+            let active = city.worked.first() == Some(&tile);
+            let status = if active { "MANAGER ACTIVE" } else { "MOVE MANAGER ONTO BARRACKS" };
+            panel.gap(GAP);
+            panel.text(SMALL, vec![(format!("BARRACKS: {status}"), if active { BOOSTED_TEXT } else { REDUCED_TEXT })]);
+            if let Some(build) = city.barracks_queue {
+                panel.text(SMALL, vec![(format!("TRAINING {}: {} / {} PROD", build.name(), quantity(city.barracks_production.min(build.cost())), quantity(build.cost())), GOLD_TEXT)]);
+                panel.bar((city.barracks_production as f32 / build.cost() as f32).clamp(0.0, 1.0));
+            }
+            panel.buttons(builds.into_iter().map(|build| ButtonSpec {
+                target: Target::BarracksBuild(build), label: format!("TRAIN {}", build.name()),
+                hint: format!("{} PROD", quantity(build.cost())),
+                state: ButtonState::new(city.barracks_queue == Some(build), false), armed: false,
+            }).collect());
+        } else if city.pending_building == Some(Building::Barracks) {
+            let site = city.planned_barracks.map(|h| format!("({}, {})", h.q, h.r)).unwrap_or_else(|| "NONE".into());
+            panel.text(SMALL, vec![(format!("BARRACKS READY: SITE {site}"), GOLD_TEXT)]);
+            panel.buttons(vec![ButtonSpec { target: Target::ConfirmBarracks, label: "CONFIRM BARRACKS".into(), hint: "CLICK".into(), state: ButtonState::new(false, city.planned_barracks.is_none()), armed: false }]);
+        }
     }
 
     /// Everything about a map hex: terrain, what it yields, and what's on it.
@@ -991,6 +1060,10 @@ impl GameState {
                     ),
                     None,
                 ),
+                Target::Building(building) => (building.name().into(), building.shortcut().to_string(), format!("{} COSTS {} PRODUCTION. ONE PER CITY.", building.description(), quantity(building.cost())), None),
+                Target::BarracksBuild(build) => (format!("TRAIN {}", build.name()), "BARRACKS".into(), format!("{} COSTS {} PRODUCTION FROM THE ACTIVE MANAGER'S WORK GROUP.", build.description(), quantity(build.cost())), None),
+                Target::Focus(focus) => (format!("{} FOCUS", focus.name()), "AUTO".into(), "REASSIGNS CITY LABOR WITH THIS AS ITS DEFAULT PRIORITY.".into(), None),
+                Target::ConfirmBarracks => ("CONFIRM BARRACKS".into(), "CLICK".into(), "FINALIZES THE SELECTED BARRACKS SITE.".into(), None),
                 Target::Scenario(scenario) => (
                     format!("{} SCENARIO", scenario.name()),
                     scenario.key().into(),
@@ -1722,7 +1795,7 @@ mod tests {
         let cavalry = Target::Build(BuildUnit::Cavalry);
         game.handle_click(button_cursor(&game, cavalry), SCREEN, ClickMode::Normal);
         let city = game.selected_city.unwrap();
-        assert_eq!(game.cities[city].queue, Some(BuildUnit::Cavalry));
+        assert_eq!(game.cities[city].queue, Some(Build::Unit(BuildUnit::Cavalry)));
     }
 
     /// The city scenario with the player's city open and the camera settled on it.
