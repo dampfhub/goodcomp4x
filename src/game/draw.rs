@@ -356,6 +356,23 @@ impl GameState {
                 font::push_glyph(hex.to_world(), 0.30, 'B', LABEL_COLOR, out);
             }
         }
+        // A Barracks under construction follows the map hover, with a bright
+        // placement ring. The selected site remains as a faint preview until
+        // the player confirms the finished building.
+        if let Some(city) = self.selected_city.map(|i| &self.cities[i])
+            && (city.queue == Some(super::city::Build::Building(super::city::Building::Barracks))
+                || city.pending_building == Some(super::city::Building::Barracks))
+        {
+            let valid = |hex: Hex| self.grid.is_passable(hex) && !self.cities.iter().any(|c| c.pos == hex);
+            let preview = self.hovered_tile.filter(|h| valid(*h)).or(city.planned_barracks);
+            if let Some(hex) = preview {
+                let is_hovered = self.hovered_tile == Some(hex);
+                let color = if is_hovered { [1.0, 0.72, 0.20, 0.95] } else { [0.85, 0.42, 0.18, 0.55] };
+                mesh::polygon_outline(hex.to_world(), WORKED_OUTLINE_RADIUS, 0.09, 6, 0.0, color, out);
+                mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, [0.72, 0.35, 0.18, 0.48], out);
+                font::push_glyph(hex.to_world(), 0.30, 'B', [0.08, 0.05, 0.03, 0.65], out);
+            }
+        }
         for c in &self.cities {
             let pos = c.pos.to_world();
             mesh::quad(

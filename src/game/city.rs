@@ -812,9 +812,10 @@ impl GameState {
             city.food += food - city.population as i32 * 8;
             let barracks_active = city.barracks.is_some_and(|h| city.worked.first() == Some(&h));
             let worker_production = production - 4;
-            let city_production = if barracks_active { 4 } else { production };
             if city.queue.is_some() {
-                city.production += city_production;
+                // A manager at a Barracks directs the work group there, but
+                // does not stop the city itself benefiting from its labor.
+                city.production += production;
             } else {
                 city.production = 0;
             }
@@ -1028,10 +1029,11 @@ mod tests {
         g.cities[0].worked = vec![manager, worker];
         g.cities[0].barracks = Some(manager);
         g.cities[0].barracks_queue = Some(BuildUnit::Melee);
+        g.cities[0].queue = Some(Build::Unit(BuildUnit::Siege));
         let (_, total_production) = g.income(0);
         g.resolve_economy();
         assert_eq!(g.cities[0].barracks_production, total_production - 4);
-        assert_eq!(g.cities[0].production, 0, "an idle city stores no production");
+        assert_eq!(g.cities[0].production, total_production, "the city and Barracks both receive active group production");
 
         g.cities[0].worked.swap(0, 1);
         let stored = g.cities[0].barracks_production;
