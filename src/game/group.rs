@@ -86,7 +86,7 @@ impl GameState {
         match mode {
             ClickMode::Attack => self.group_attack(hex),
             ClickMode::Move => self.group_move(hex),
-            ClickMode::Normal if self.enemy_of_team_at(hex, team).is_some() => {
+            ClickMode::Normal if self.has_enemy_target_at(hex, team) => {
                 self.group_attack(hex)
             }
             ClickMode::Normal => self.group_move(hex),

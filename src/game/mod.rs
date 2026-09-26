@@ -61,7 +61,8 @@ Controls:
   Enter or End Turn holds unfinished units and ends the turn. Cities still need a build queued.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
-  1-4 queue city units; 5/6 queue Granary/Barracks. F founds with a settler.
+  1-4 queue city units; 5/6 queue Granary/Barracks. Click queue controls to reorder or remove items;
+  Backspace removes the active city build and PageDown promotes the next item. F founds with a settler.
   F1 combat, F2 cities, F3 settler frontier (again to restart). F6 saves a snapshot, F7 loads it, F8 plays turns all at once.
   The faded DEBUG panel at the top-left has buttons for these.
   Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
@@ -89,6 +90,8 @@ pub struct GameState {
     sites: std::collections::HashMap<Hex, city::Site>,
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
+    /// Barracks have their own production screen, separate from city labor.
+    selected_barracks: Option<usize>,
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option<usize>,
     /// City whose Barracks site is being chosen. This is deliberately
@@ -175,6 +178,7 @@ impl GameState {
             sites: std::collections::HashMap::new(),
             roads: HashSet::new(),
             selected_city: None,
+            selected_barracks: None,
             moving_manager: None,
             placing_barracks: None,
             hovered_city: None,
@@ -279,6 +283,22 @@ impl GameState {
 
     fn enemy_of_team_at(&self, hex: Hex, team: Team) -> Option<usize> {
         self.units_at(hex).find(|&i| self.units[i].team != team)
+    }
+
+    fn enemy_city_at(&self, hex: Hex, team: Team) -> Option<usize> {
+        self.cities.iter().position(|city| city.team != team && city.pos == hex && city.hp > 0.0)
+    }
+
+    fn enemy_barracks_at(&self, hex: Hex, team: Team) -> Option<usize> {
+        self.cities.iter().position(|city| {
+            city.team != team && city.barracks == Some(hex) && city.barracks_hp > 0.0
+        })
+    }
+
+    fn has_enemy_target_at(&self, hex: Hex, team: Team) -> bool {
+        self.enemy_of_team_at(hex, team).is_some()
+            || self.enemy_city_at(hex, team).is_some()
+            || self.enemy_barracks_at(hex, team).is_some()
     }
 
     /// Whether two enemies are fighting over this hex.
@@ -885,5 +905,36 @@ mod tests {
         assert_eq!(game.pending(), (0, 0));
         game.hold_or_end_turn();
         assert!(game.is_resolving());
+    }
+
+    #[test]
+    fn city_is_a_tanky_ranged_target_that_returns_fire() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let target = game.cities.iter().position(|city| city.team == Team::Red).unwrap();
+        let pos = game.cities[target].pos;
+        game.units.push(Unit::new(900, pos.neighbors()[0], Team::Blue, UnitType::Ranged));
+        let city_hp = game.cities[target].hp;
+        let unit_hp = game.units[0].hp;
+        game.try_queue_attack(0, pos);
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert!(game.cities[target].hp < city_hp);
+        assert!(game.units[0].hp < unit_hp, "the city should return ranged fire");
+    }
+
+    #[test]
+    fn barracks_is_tanky_but_does_not_return_fire() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let target = game.cities.iter().position(|city| city.team == Team::Red).unwrap();
+        let barracks = game.cities[target].pos.neighbors()[0];
+        game.cities[target].barracks = Some(barracks);
+        game.units.push(Unit::new(901, barracks.neighbors()[0], Team::Blue, UnitType::Ranged));
+        let barracks_hp = game.cities[target].barracks_hp;
+        let unit_hp = game.units[0].hp;
+        game.try_queue_attack(0, barracks);
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert!(game.cities[target].barracks_hp < barracks_hp);
+        assert_eq!(game.units[0].hp, unit_hp);
     }
 }

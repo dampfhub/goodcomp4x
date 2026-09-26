@@ -291,6 +291,11 @@ impl ApplicationHandler for App {
                     .queue_selected_city_unit(crate::game::BuildUnit::Siege),
                 KeyCode::Digit5 => self.game.queue_selected_city_building(crate::game::Building::Granary),
                 KeyCode::Digit6 => self.game.queue_selected_city_building(crate::game::Building::Barracks),
+                // Queue management stays compact as the build catalogue grows:
+                // Backspace removes the active item; PageDown promotes the
+                // second item into production.
+                KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
+                KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
                 KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
                 KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),
                 KeyCode::F3 => self.game.switch_scenario(Scenario::Frontier),

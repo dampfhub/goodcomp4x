@@ -10,6 +10,12 @@ use super::{GameState, PLAYER_TEAM};
 const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
 /// One manager and up to six nearby workers.
 pub(super) const MAX_CITY_POPULATION: usize = 7;
+pub(super) const CITY_MAX_HP: f32 = 320.0;
+pub(super) const BARRACKS_MAX_HP: f32 = 220.0;
+pub(super) const CITY_DEFENSE: f32 = 30.0;
+pub(super) const BARRACKS_DEFENSE: f32 = 25.0;
+pub(super) const CITY_ATTACK: f32 = 26.0;
+pub(super) const CITY_ATTACK_RANGE: i32 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LaborFocus { Food, Production, Balanced }
@@ -25,17 +31,22 @@ pub(super) struct City {
     pub population: usize,
     pub food: i32,
     pub production: i32,
+    pub hp: f32,
+    pub barracks_hp: f32,
     pub worked: Vec<Hex>,
     /// Manual tiles displaced by a blocked logistics route. They return when
     /// available unless the player changes the assignment.
     pub remembered_worked: Vec<Hex>,
     pub focus: LaborFocus,
-    pub queue: Option<Build>,
+    /// The city works the first item, then immediately continues with the
+    /// following items. Buildings and units deliberately share this queue.
+    pub queue: Vec<Build>,
     pub built: Vec<Building>,
     pub barracks: Option<Hex>,
     pub pending_building: Option<Building>,
     pub planned_barracks: Option<Hex>,
-    pub barracks_queue: Option<BuildUnit>,
+    /// Barracks production is independent of the city's main queue.
+    pub barracks_queue: Vec<BuildUnit>,
     pub barracks_production: i32,
 }
 
@@ -188,15 +199,17 @@ impl GameState {
                 population: 2,
                 food: 32,
                 production: 0,
+                hp: CITY_MAX_HP,
+                barracks_hp: BARRACKS_MAX_HP,
                 worked: Vec::new(),
                 remembered_worked: Vec::new(),
                 focus: LaborFocus::Balanced,
-                queue: None,
+                queue: Vec::new(),
                 built: Vec::new(),
                 barracks: None,
                 pending_building: None,
                 planned_barracks: None,
-                barracks_queue: None,
+                barracks_queue: Vec::new(),
                 barracks_production: 0,
             });
             for (q, r, food, production, label) in [
@@ -295,15 +308,17 @@ impl GameState {
             population: 1,
             food: 0,
             production: 0,
+            hp: CITY_MAX_HP,
+            barracks_hp: BARRACKS_MAX_HP,
             worked: Vec::new(),
             remembered_worked: Vec::new(),
             focus: LaborFocus::Balanced,
-            queue: None,
+            queue: Vec::new(),
             built: Vec::new(),
             barracks: None,
             pending_building: None,
             planned_barracks: None,
-            barracks_queue: None,
+            barracks_queue: Vec::new(),
             barracks_production: 0,
         });
         self.settlers.remove(&unit.id);
@@ -362,10 +377,10 @@ impl GameState {
             return;
         }
         // A city only retains production while it has an active build.
-        if self.cities[city].queue.is_none() {
+        if self.cities[city].queue.is_empty() {
             self.cities[city].production = 0;
         }
-        self.cities[city].queue = Some(Build::Unit(build));
+        self.cities[city].queue.push(Build::Unit(build));
         self.notice = format!(
             "BUILDING {} - COST {} PRODUCTION",
             build.name(),
@@ -381,17 +396,15 @@ impl GameState {
         };
         let c = &mut self.cities[city];
         if c.team != PLAYER_TEAM { return; }
-        if building == Building::Barracks && c.built.contains(&building) {
-            self.placing_barracks = Some(city);
-            self.notice = "MOVE BARRACKS - CLICK A NEW OPEN LAND TILE".into();
-            return;
-        }
-        if c.built.contains(&building) || c.pending_building == Some(building) {
+        if c.built.contains(&building) || c.pending_building == Some(building)
+            || c.queue.contains(&Build::Building(building)) {
             self.notice = format!("{} ALREADY EXISTS IN THIS CITY", building.name());
             return;
         }
-        if c.queue.is_none() { c.production = 0; }
-        c.queue = Some(Build::Building(building));
+        if c.queue.is_empty() { c.production = 0; }
+        c.queue.push(Build::Building(building));
+        // Site choice is part of queuing a Barracks, even if other work is
+        // ahead of it. This keeps the build from finishing without a site.
         if building == Building::Barracks {
             self.placing_barracks = Some(city);
             self.notice = "BARRACKS STARTED - CLICK ANY OPEN TILE TO CHOOSE ITS SITE".into();
@@ -427,13 +440,71 @@ impl GameState {
     }
 
     pub fn queue_selected_barracks_unit(&mut self, build: BuildUnit) {
-        let Some(city) = self.selected_city else { return; };
+        let Some(city) = self.selected_barracks.or(self.selected_city) else { return; };
         let c = &mut self.cities[city];
         if c.team != PLAYER_TEAM || c.barracks.is_none() { return; }
-        if c.barracks_queue.is_none() { c.barracks_production = 0; }
-        c.barracks_queue = Some(build);
+        if c.barracks_queue.is_empty() { c.barracks_production = 0; }
+        c.barracks_queue.push(build);
         self.notice = format!("BARRACKS TRAINING {} - NEEDS MANAGER ON BARRACKS", build.name());
     }
+
+    /// Reopens placement for a Barracks that is queued or complete but has
+    /// not been finalized yet. Completed Barracks are permanent.
+    pub fn change_selected_barracks_site(&mut self) {
+        let Some(city) = self.selected_city else { return; };
+        if self.cities[city].team != PLAYER_TEAM
+            || self.cities[city].barracks.is_some()
+            || self.cities[city].planned_barracks.is_none()
+        {
+            return;
+        }
+        self.placing_barracks = Some(city);
+        self.notice = "CHANGE BARRACKS SITE - CLICK A NEW OPEN LAND TILE".into();
+    }
+
+    pub fn move_selected_city_queue_item(&mut self, index: usize, up: bool) {
+        let Some(city) = self.selected_city else { return; };
+        let queue = &mut self.cities[city].queue;
+        let other = if up { index.checked_sub(1) } else { index.checked_add(1) };
+        if let Some(other) = other.filter(|&other| other < queue.len()) {
+            queue.swap(index, other);
+            self.notice = "CITY QUEUE REORDERED".into();
+        }
+    }
+
+    pub fn remove_selected_city_queue_item(&mut self, index: usize) {
+        let Some(city) = self.selected_city else { return; };
+        if index >= self.cities[city].queue.len() { return; }
+        let removed = self.cities[city].queue.remove(index);
+        if index == 0 { self.cities[city].production = 0; }
+        if removed == Build::Building(Building::Barracks) {
+            self.placing_barracks = None;
+            self.cities[city].planned_barracks = None;
+        }
+        self.notice = format!("REMOVED {} FROM CITY QUEUE", removed.name());
+    }
+
+    pub fn move_selected_barracks_queue_item(&mut self, index: usize, up: bool) {
+        let Some(city) = self.selected_barracks.or(self.selected_city) else { return; };
+        let queue = &mut self.cities[city].barracks_queue;
+        let other = if up { index.checked_sub(1) } else { index.checked_add(1) };
+        if let Some(other) = other.filter(|&other| other < queue.len()) {
+            queue.swap(index, other);
+            self.notice = "BARRACKS QUEUE REORDERED".into();
+        }
+    }
+
+    pub fn remove_selected_barracks_queue_item(&mut self, index: usize) {
+        let Some(city) = self.selected_barracks.or(self.selected_city) else { return; };
+        if index >= self.cities[city].barracks_queue.len() { return; }
+        let removed = self.cities[city].barracks_queue.remove(index);
+        if index == 0 { self.cities[city].barracks_production = 0; }
+        self.notice = format!("REMOVED {} FROM BARRACKS QUEUE", removed.name());
+    }
+
+    /// Queue hotkeys operate on the city line currently being produced.
+    pub fn remove_selected_city_queue_head(&mut self) { self.remove_selected_city_queue_item(0); }
+    pub fn move_selected_city_queue_head(&mut self, up: bool) { self.move_selected_city_queue_item(0, up); }
 
     pub(super) fn routes(&self, city: usize) -> Routes {
         let city = &self.cities[city];
@@ -682,6 +753,7 @@ impl GameState {
     /// Opens city `i`'s view and glides the camera to it.
     pub(super) fn open_city(&mut self, i: usize) {
         self.selected_city = Some(i);
+        self.selected_barracks = None;
         self.selected = None;
         self.group.clear();
         self.ui_click_mode = None;
@@ -697,7 +769,7 @@ impl GameState {
     /// waits for these, as it does for units without orders.
     pub(super) fn city_needs_build(&self, i: usize) -> bool {
         let city = &self.cities[i];
-        city.team == PLAYER_TEAM && city.queue.is_none()
+        city.team == PLAYER_TEAM && city.queue.is_empty()
     }
 
     /// Clicking the open city again: back to the units, selecting
@@ -712,13 +784,33 @@ impl GameState {
 
     pub(super) fn leave_city_view(&mut self) {
         self.selected_city = None;
+        self.selected_barracks = None;
         self.moving_manager = None;
         self.placing_barracks = None;
         self.inspected_tile = None;
     }
 
+    pub(super) fn open_barracks(&mut self, city: usize) {
+        if self.cities[city].barracks.is_none() { return; }
+        self.selected_city = None;
+        self.selected_barracks = Some(city);
+        self.selected = None;
+        self.group.clear();
+        self.ui_click_mode = None;
+        self.camera.focus_on(self.cities[city].barracks.unwrap().to_world());
+        self.notice = "BARRACKS - QUEUE TROOPS OR CLICK CITY TO RETURN".into();
+    }
+
+    pub fn open_selected_city_from_barracks(&mut self) {
+        if let Some(city) = self.selected_barracks { self.open_city(city); }
+    }
+
     pub(super) fn city_click(&mut self, hex: Hex) -> bool {
         if self.selected_city.is_none() {
+            if let Some(i) = self.cities.iter().position(|c| c.barracks == Some(hex) && c.team == PLAYER_TEAM) {
+                self.open_barracks(i);
+                return true;
+            }
             if let Some(i) = self
                 .cities
                 .iter()
@@ -730,6 +822,10 @@ impl GameState {
             return false;
         }
         let i = self.selected_city.unwrap();
+        if self.cities[i].barracks == Some(hex) {
+            self.open_barracks(i);
+            return true;
+        }
         if self.placing_barracks == Some(i) {
             if !self.grid.is_passable(hex) || self.cities.iter().any(|c| c.pos == hex) {
                 self.notice = "BARRACKS NEEDS AN OPEN LAND TILE".into();
@@ -824,16 +920,16 @@ impl GameState {
             city.food += food - city.population as i32 * 8;
             let barracks_active = city.barracks.is_some_and(|h| city.worked.first() == Some(&h));
             let worker_production = production - 4;
-            if city.queue.is_some() {
+            if !city.queue.is_empty() {
                 // A manager at a Barracks directs the work group there, but
                 // does not stop the city itself benefiting from its labor.
                 city.production += production;
             } else {
                 city.production = 0;
             }
-            if city.barracks_queue.is_some() && barracks_active {
+            if !city.barracks_queue.is_empty() && barracks_active {
                 city.barracks_production += worker_production;
-            } else if city.barracks_queue.is_none() {
+            } else if city.barracks_queue.is_empty() {
                 city.barracks_production = 0;
             }
             let threshold = (10 + 5 * city.population as i32) * 4;
@@ -858,10 +954,10 @@ impl GameState {
     fn complete_builds(&mut self) {
         let mut spawn = Vec::new();
         for i in 0..self.cities.len() {
-            if self.cities[i].queue.is_none() && self.cities[i].team == Team::Red {
-                self.cities[i].queue = Some(Build::Unit(BuildUnit::Melee));
+            if self.cities[i].queue.is_empty() && self.cities[i].team == Team::Red {
+                self.cities[i].queue.push(Build::Unit(BuildUnit::Melee));
             }
-            let Some(build) = self.cities[i].queue else {
+            let Some(build) = self.cities[i].queue.first().copied() else {
                 continue;
             };
             if self.cities[i].production < build.cost() {
@@ -869,7 +965,7 @@ impl GameState {
             }
             if let Build::Building(building) = build {
                 self.cities[i].production = 0;
-                self.cities[i].queue = None;
+                self.cities[i].queue.remove(0);
                 match building {
                     Building::Granary => {
                         self.cities[i].built.push(building);
@@ -892,18 +988,17 @@ impl GameState {
                 continue;
             };
             self.cities[i].production -= build.cost();
-            self.cities[i].queue = None;
-            self.cities[i].production = 0;
+            self.cities[i].queue.remove(0);
             let Build::Unit(unit) = build else { unreachable!() };
             spawn.push((self.cities[i].team, pos, unit.unit_type()));
         }
         for i in 0..self.cities.len() {
-            let Some(build) = self.cities[i].barracks_queue else { continue; };
+            let Some(build) = self.cities[i].barracks_queue.first().copied() else { continue; };
             if self.cities[i].barracks_production < build.cost() { continue; }
             let Some(barracks) = self.cities[i].barracks else { continue; };
             let Some(pos) = barracks.neighbors().into_iter().find(|h| self.grid.is_passable(*h) && !self.is_occupied(*h)) else { continue; };
             self.cities[i].barracks_production = 0;
-            self.cities[i].barracks_queue = None;
+            self.cities[i].barracks_queue.remove(0);
             spawn.push((self.cities[i].team, pos, build.unit_type()));
         }
         for (team, pos, kind) in spawn {
@@ -950,7 +1045,7 @@ mod tests {
         // more than one turn's production, so none is spent.
         g.end_planning();
         assert!(!g.is_resolving());
-        g.cities[0].queue = Some(Build::Unit(BuildUnit::Siege));
+        g.cities[0].queue = vec![Build::Unit(BuildUnit::Siege)];
         g.end_planning();
         g.update(1.0);
         assert_eq!(g.cities[0].production, 6);
@@ -963,7 +1058,7 @@ mod tests {
         let mut g = GameState::city_scenario();
         g.units.clear();
         g.cities[0].worked = vec![Hex::new(-1, 0)];
-        g.cities[0].queue = Some(Build::Unit(BuildUnit::Siege));
+        g.cities[0].queue = vec![Build::Unit(BuildUnit::Siege)];
         g.resolve_economy();
         assert!(g.cities[0].production > 0);
 
@@ -1011,7 +1106,7 @@ mod tests {
         g.queue_selected_city_unit(BuildUnit::Melee);
         g.cities[0].production = BuildUnit::Melee.cost();
         g.complete_builds();
-        assert!(g.cities[0].queue.is_none());
+        assert!(g.cities[0].queue.is_empty());
         let finished = g.units.iter().find(|u| u.team == Team::Blue).unwrap();
         assert_eq!(finished.unit_type, UnitType::Melee);
         assert_eq!(finished.pos.distance(g.cities[0].pos), 1);
@@ -1023,14 +1118,14 @@ mod tests {
         g.units.clear();
         g.cities[0].worked.clear();
         assert_eq!(g.income(0).0, 8);
-        g.cities[0].queue = Some(Build::Building(Building::Granary));
+        g.cities[0].queue = vec![Build::Building(Building::Granary)];
         g.cities[0].production = Building::Granary.cost();
         g.complete_builds();
         assert!(g.cities[0].built.contains(&Building::Granary));
         assert_eq!(g.income(0).0, 16);
         g.selected_city = Some(0);
         g.queue_selected_city_building(Building::Granary);
-        assert!(g.cities[0].queue.is_none());
+        assert!(g.cities[0].queue.is_empty());
     }
 
     #[test]
@@ -1041,8 +1136,8 @@ mod tests {
         let worker = Hex::new(-1, 1);
         g.cities[0].worked = vec![manager, worker];
         g.cities[0].barracks = Some(manager);
-        g.cities[0].barracks_queue = Some(BuildUnit::Melee);
-        g.cities[0].queue = Some(Build::Unit(BuildUnit::Siege));
+        g.cities[0].barracks_queue = vec![BuildUnit::Melee];
+        g.cities[0].queue = vec![Build::Unit(BuildUnit::Siege)];
         let (_, total_production) = g.income(0);
         g.resolve_economy();
         assert_eq!(g.cities[0].barracks_production, total_production - 4);
@@ -1083,5 +1178,81 @@ mod tests {
         assert!(g.cities[0].barracks.is_none());
         g.confirm_barracks();
         assert_eq!(g.cities[0].barracks, Some(site));
+    }
+
+    #[test]
+    fn city_queue_completes_in_order_and_can_be_reordered_or_removed() {
+        let mut g = GameState::city_scenario();
+        g.units.clear();
+        g.selected_city = Some(0);
+        g.queue_selected_city_unit(BuildUnit::Melee);
+        g.queue_selected_city_unit(BuildUnit::Ranged);
+        assert_eq!(g.cities[0].queue, vec![Build::Unit(BuildUnit::Melee), Build::Unit(BuildUnit::Ranged)]);
+        g.move_selected_city_queue_item(1, true);
+        assert_eq!(g.cities[0].queue[0], Build::Unit(BuildUnit::Ranged));
+        g.remove_selected_city_queue_item(1);
+        assert_eq!(g.cities[0].queue, vec![Build::Unit(BuildUnit::Ranged)]);
+        g.cities[0].production = BuildUnit::Ranged.cost();
+        g.complete_builds();
+        assert!(g.cities[0].queue.is_empty());
+        assert!(g.units.iter().any(|u| u.team == Team::Blue && u.unit_type == UnitType::Ranged));
+    }
+
+    #[test]
+    fn removing_a_queued_barracks_clears_its_placement_preview() {
+        let mut g = GameState::city_scenario();
+        g.selected_city = Some(0);
+        g.queue_selected_city_building(Building::Barracks);
+        g.city_click(Hex::new(-2, 0));
+        assert!(g.cities[0].planned_barracks.is_some());
+        g.remove_selected_city_queue_item(0);
+        assert!(g.cities[0].planned_barracks.is_none());
+        assert_eq!(g.placing_barracks, None);
+    }
+
+    #[test]
+    fn queued_barracks_opens_site_selection_behind_another_build() {
+        let mut g = GameState::city_scenario();
+        g.selected_city = Some(0);
+        g.queue_selected_city_unit(BuildUnit::Melee);
+        g.queue_selected_city_building(Building::Barracks);
+        assert_eq!(g.placing_barracks, Some(0));
+        let site = Hex::new(-2, 0);
+        g.city_click(site);
+        assert_eq!(g.cities[0].planned_barracks, Some(site));
+        assert_eq!(g.placing_barracks, None);
+    }
+
+    #[test]
+    fn planned_barracks_site_can_change_before_final_confirmation() {
+        let mut g = GameState::city_scenario();
+        g.selected_city = Some(0);
+        g.queue_selected_city_building(Building::Barracks);
+        let original = Hex::new(-2, 0);
+        let revised = Hex::new(-1, 0);
+        g.city_click(original);
+        g.change_selected_barracks_site();
+        assert_eq!(g.placing_barracks, Some(0));
+        g.city_click(revised);
+        assert_eq!(g.cities[0].planned_barracks, Some(revised));
+        assert!(g.cities[0].barracks.is_none());
+    }
+
+    #[test]
+    fn barracks_queue_is_independent_and_completes_in_order() {
+        let mut g = GameState::city_scenario();
+        g.units.clear();
+        g.selected_city = Some(0);
+        let site = Hex::new(-1, 0);
+        g.cities[0].barracks = Some(site);
+        g.cities[0].worked = vec![site];
+        g.queue_selected_barracks_unit(BuildUnit::Melee);
+        g.queue_selected_barracks_unit(BuildUnit::Ranged);
+        g.move_selected_barracks_queue_item(1, true);
+        assert_eq!(g.cities[0].barracks_queue[0], BuildUnit::Ranged);
+        g.cities[0].barracks_production = BuildUnit::Ranged.cost();
+        g.complete_builds();
+        assert_eq!(g.cities[0].barracks_queue, vec![BuildUnit::Melee]);
+        assert!(g.units.iter().any(|u| u.team == Team::Blue && u.unit_type == UnitType::Ranged));
     }
 }

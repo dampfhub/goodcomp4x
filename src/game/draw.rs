@@ -253,8 +253,8 @@ impl GameState {
 
         let in_attack_range =
             !sel.locked && sel.planned_pos.distance(hex) <= sel.stats.attack_range;
-        let has_enemy = self.enemy_of_team_at(hex, sel.team).is_some();
-        if self.is_occupied(hex) {
+        let has_enemy = self.has_enemy_target_at(hex, sel.team);
+        if self.is_occupied(hex) || has_enemy {
             return if has_enemy && in_attack_range {
                 ATTACK_RANGE_COLOR
             } else {
@@ -354,6 +354,7 @@ impl GameState {
             if let Some(hex) = city.barracks {
                 mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, [0.72, 0.35, 0.18, 1.0], out);
                 font::push_glyph(hex.to_world(), 0.30, 'B', LABEL_COLOR, out);
+                push_health_bar(hex.to_world(), city.barracks_hp / super::city::BARRACKS_MAX_HP, 0.7, out);
             }
         }
         // A Barracks under construction follows the map hover, with a bright
@@ -380,6 +381,7 @@ impl GameState {
                 out,
             );
             font::push_glyph(pos, 0.5, 'H', LABEL_COLOR, out);
+            push_health_bar(pos, c.hp / super::city::CITY_MAX_HP, 1.0, out);
         }
     }
 }
