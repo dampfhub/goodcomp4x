@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use glam::Vec2;
 
-use super::terrain::Terrain;
+use super::terrain::{Resource, Terrain};
 
 /// Center-to-corner radius of a hex, in world units.
 pub const HEX_SIZE: f32 = 1.0;
@@ -67,6 +67,7 @@ impl Hex {
 pub struct HexGrid {
     radius: i32,
     terrain: HashMap<Hex, Terrain>,
+    resources: HashMap<Hex, Resource>,
 }
 
 impl HexGrid {
@@ -74,6 +75,19 @@ impl HexGrid {
         Self {
             radius,
             terrain: terrain.into_iter().collect(),
+            resources: HashMap::new(),
+        }
+    }
+
+    pub fn with_resources(
+        radius: i32,
+        terrain: impl IntoIterator<Item = (Hex, Terrain)>,
+        resources: impl IntoIterator<Item = (Hex, Resource)>,
+    ) -> Self {
+        Self {
+            radius,
+            terrain: terrain.into_iter().collect(),
+            resources: resources.into_iter().collect(),
         }
     }
 
@@ -83,6 +97,10 @@ impl HexGrid {
 
     pub fn terrain(&self, hex: Hex) -> Terrain {
         self.terrain.get(&hex).copied().unwrap_or_default()
+    }
+
+    pub fn resource(&self, hex: Hex) -> Option<Resource> {
+        self.resources.get(&hex).copied()
     }
 
     /// On the grid and not blocked by terrain (units aside).

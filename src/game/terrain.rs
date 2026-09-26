@@ -8,6 +8,29 @@ pub enum Terrain {
     Mountains,
 }
 
+/// Strategic resources unlock specialist units when a Barracks occupies the
+/// resource tile.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Resource {
+    Horses,
+    Iron,
+}
+
+impl Resource {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Horses => "HORSES",
+            Self::Iron => "IRON",
+        }
+    }
+    pub fn glyph(self) -> char {
+        match self {
+            Self::Horses => 'H',
+            Self::Iron => 'I',
+        }
+    }
+}
+
 impl Terrain {
     pub fn is_passable(self) -> bool {
         self != Terrain::Mountains
