@@ -1,13 +1,13 @@
 // The hex combat sandbox: the game under `src/`, its GLSL under `shaders/`, and the Tuatara
-// bundled libraries it uses, copied into `target/deps/libs` (ignored by git) by
+// bundled libraries it uses, copied into `deps/` (ignored by git) by
 // `tools/vendor-libs.ps1 <tuatara checkout>`.
 //
 // `tua build .` emits `hex.exe`; `tua test .` runs the rules' tests in `src/game/tests.tua`.
 #run {
     Build.package("hex", "0.1.0");
-    Build.depend("target/deps/libs/vulkan");
-    Build.depend("target/deps/libs/win32");
-    Build.depend("target/deps/libs/log");
+    Build.depend("deps/vulkan");
+    Build.depend("deps/win32");
+    Build.depend("deps/log");
     Build.root("src");
     // The GLSL, a root holding no modules, so `Fs.read` resolves against it.
     Build.root("shaders");
