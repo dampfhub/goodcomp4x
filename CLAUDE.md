@@ -29,7 +29,9 @@ changes.
 ```
 src/
   main.rs          entry point: logger + winit event loop
-  app.rs           window, input events, frame pacing (165 FPS cap), builds each frame
+  app.rs           window, input events, frame pacing (165 FPS cap), builds each frame,
+                   F5 borderless fullscreen toggle
+  icon.rs          window/taskbar icon drawn in code (blue hex, white triangle)
   renderer/        general-purpose 2D Vulkan renderer, knows nothing about the game
     mod.rs         Renderer: setup, draw_frame(&[DrawBatch]), swapchain recreation, teardown
     instance.rs    instance + validation layer + debug messenger
@@ -117,6 +119,7 @@ Everything that asks what a unit can do goes through it.
   (`select_next_or_end_turn`) once no unit needs orders, after a 0.6s pause so
   the last order is visible. That includes a turn that starts with every unit
   contested. Input is ignored while a turn plays out.
+- F5 toggles borderless fullscreen on the window's current monitor.
 
 ### Turn resolution (`turn.rs`)
 The turn plays out in 8 steps, one every 0.6s, with the acting units flashing.
@@ -239,6 +242,7 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
     (ability moved to Q); camera glides to the unit the game selects.
 16. Turns end automatically once every unit has acted; Enter removed. Space
     now holds a unit (keeps queued orders, forfeits the rest); Tab browses.
+17. Window/taskbar icon drawn in code; F5 toggles borderless fullscreen.
 
 ## Open questions and ideas
 

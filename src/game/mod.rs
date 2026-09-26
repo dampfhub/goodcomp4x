@@ -48,7 +48,7 @@ Controls:
   selected automatically and the camera glides to it. Tab looks at the next unit without
   holding this one.
   The turn resolves by itself once every unit has acted or held.
-  Scroll to zoom, middle-drag to pan.
+  Scroll to zoom, middle-drag to pan. F5 toggles fullscreen.
 Turn order:
   Each unit's blue number is when it moves and its red number when it attacks (1 = first).
   Units of the same type act simultaneously; simultaneous attacks all land before anyone is removed.

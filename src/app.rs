@@ -6,15 +6,21 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::game::{ClickMode, GameState, ui_projection};
+use crate::icon;
 use crate::renderer::{DrawBatch, Renderer};
 
 /// Cap on the render loop's frame rate, so it doesn't load the GPU with
 /// frames the display can't show.
 const TARGET_FPS: u64 = 165;
 const FRAME_DURATION: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
+
+/// Window icon sizes, in pixels; Windows scales them to fit.
+const WINDOW_ICON_SIZE: u32 = 64;
+#[cfg(windows)]
+const TASKBAR_ICON_SIZE: u32 = 256;
 
 pub struct App {
     // Declared before `window` so it's dropped first: the Vulkan surface
@@ -45,6 +51,18 @@ impl Default for App {
 }
 
 impl App {
+    /// F5: switches between a borderless fullscreen window on the current
+    /// monitor and a normal window. The renderer picks up the new size from
+    /// the resize event.
+    fn toggle_fullscreen(&self) {
+        let Some(window) = &self.window else { return };
+        let fullscreen = match window.fullscreen() {
+            Some(_) => None,
+            None => Some(Fullscreen::Borderless(None)),
+        };
+        window.set_fullscreen(fullscreen);
+    }
+
     fn screen_size(&self) -> Option<Vec2> {
         let (width, height) = self.renderer.as_ref()?.window_size();
         Some(Vec2::new(width as f32, height as f32))
@@ -59,7 +77,14 @@ impl ApplicationHandler for App {
 
         let attributes = Window::default_attributes()
             .with_title("Hex Combat Sandbox")
-            .with_inner_size(PhysicalSize::new(1280, 720));
+            .with_inner_size(PhysicalSize::new(1280, 720))
+            .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)));
+        // Windows shows a separate, larger icon on the taskbar.
+        #[cfg(windows)]
+        let attributes = {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attributes.with_taskbar_icon(Some(icon::icon(TASKBAR_ICON_SIZE)))
+        };
         let window = event_loop
             .create_window(attributes)
             .expect("failed to create window");
@@ -140,6 +165,7 @@ impl ApplicationHandler for App {
                 KeyCode::Space => self.game.hold_selected_unit(),
                 KeyCode::Tab => self.game.select_next_unit(),
                 KeyCode::KeyQ => self.game.toggle_selected_ability(),
+                KeyCode::F5 => self.toggle_fullscreen(),
                 _ => {}
             },
             WindowEvent::RedrawRequested => {
