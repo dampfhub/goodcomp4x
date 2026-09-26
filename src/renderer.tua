@@ -36,7 +36,12 @@ use vulkan.hl.swapchain.present_queue;
 use vulkan.hl.swapchain.create_surface;
 use vulkan.hl.swapchain.destroy_surface;
 use vulkan.hl.swapchain.win32_presentation_supported;
-use vulkan.hl.swapchain.create_swapchain;
+use vulkan.hl.swapchain.create_swapchain_with;
+use vulkan.hl.swapchain.SwapchainOptions;
+use vulkan.hl.swapchain.swapchain_options;
+use vulkan.hl.swapchain.with_surface_format;
+use vulkan.hl.swapchain.with_present_mode;
+use vulkan.hl.swapchain.PresentMode;
 use vulkan.hl.swapchain.destroy_swapchain;
 use vulkan.hl.swapchain.swapchain_format;
 use vulkan.hl.swapchain.swapchain_width;
@@ -44,9 +49,9 @@ use vulkan.hl.swapchain.swapchain_height;
 use vulkan.hl.memory.Allocator;
 use vulkan.hl.memory.create_allocator;
 use vulkan.hl.memory.destroy_allocator;
-use vulkan.hl.format.Bgra8Unorm;
+use vulkan.hl.format.Bgra8Srgb;
 use vulkan.hl.format.NoFormat;
-use vulkan.hl.format.bgra8_unorm;
+use vulkan.hl.format.bgra8_srgb;
 use vulkan.hl.format.no_format;
 use vulkan.hl.format.format_is;
 use vulkan.hl.render.RenderPass;
@@ -116,11 +121,18 @@ use renderer.pipelines.create_mesh;
 use renderer.pipelines.destroy_mesh;
 
 const FRAMES_IN_FLIGHT: u32 = 2;
+/// The background, in linear colour.
+const CLEAR_COLOR: [f32; 4] = [0.06, 0.06, 0.08, 1.0];
 /// The most vertices one frame draws; a frame's vertices past this are not drawn.
 const MAX_VERTICES: u32 = 131072;
 /// The cap on the frame rate, so the loop does not load the GPU with frames the display
 /// cannot show.
 const TARGET_FPS: i64 = 165;
+/// The swapchain every generation asks for: sRGB B8G8R8A8, so the linear colour the shader
+/// writes is encoded for display, and MAILBOX when the surface offers it, else FIFO. The pass
+/// is typed at the sRGB format, so a surface that does not offer it is `HL_ERROR_NOT_FOUND`.
+fn chain_options() -> SwapchainOptions { with_present_mode(with_surface_format(swapchain_options(), bgra8_srgb()), PresentMode.Mailbox) }
+
 /// A `stop` reason besides a `VkResult`: the program's `Scene` asked to stop.
 const STOP_DONE: i32 = 1;
 
@@ -158,7 +170,7 @@ fn give_up_acquired(pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlig
 struct Run { budget: i32, drawn: i32, stop: i32, pace: Pacer, vertices: Vec[MeshVertex], batches: Vec[DrawBatch] }
 
 /// Draws one frame through the ring and hands the idle ring back.
-fn draw_one(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Unorm, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Unorm, NoFormat], sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
+fn draw_one(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
     let dt = pace(run, win);
     let w = swapchain_width(sc);
     let h = swapchain_height(sc);
@@ -177,7 +189,7 @@ fn draw_one(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapcha
         stream_vertices(a, sb, &acquired, &run.vertices, n);
         let initial = allocate_primary(pool);
         let rec = begin(pool, initial);
-        let mut draw = cmd_begin_render_pass_ring(rec, pass, bgra8_unorm(), no_format(), sc, &acquired, framebuffer(fbs, index), [0.05, 0.05, 0.08, 1.0]);
+        let mut draw = cmd_begin_render_pass_ring(rec, pass, bgra8_srgb(), no_format(), sc, &acquired, framebuffer(fbs, index), CLEAR_COLOR);
         cmd_set_viewport_scissor(&mut draw, w, h);
         mesh.bind(&mut draw);
         mesh.bind_stream(&mut draw, &*sb, &acquired);
@@ -197,7 +209,7 @@ fn draw_one(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapcha
     } with VkError { fail(e) => { abort e } };
     if rc != 0 { give_up_acquired(pool, t, acquired, rc) }
     let wait = point_of(t, 0);
-    let rendering = submit_frame(q, t, acquired, executable_from_words(cw), wait);
+    let rendering = submit_frame(q, t, sc, acquired, executable_from_words(cw), wait);
     let idle = present(pq, sc, rendering);
     let pc = frame_code(&idle);
     if pc < 0 { run.stop = pc; return idle; }
@@ -207,7 +219,7 @@ fn draw_one(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapcha
 }
 
 /// Draws frames through the ring until one reports a reason to stop.
-fn draw_frames(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Unorm, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Unorm, NoFormat], sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
+fn draw_frames(q: &mut Queue, pq: &mut PresentQueue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
     let mut r = ring;
     while run.stop == 0 {
         r = draw_one(q, pq, win, sc, pass, fbs, mesh, sb, a, pool, t, r, run);
@@ -228,14 +240,14 @@ fn wait_while_minimized(win: &mut Window, run: &mut Run) can {Scene, Clock} {
 /// One swapchain generation at the window's current client size. Frames are drawn until the
 /// program stops or the generation goes out of date; then the device is idled, the generation
 /// torn down, and the next one begun over the same ring.
-fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Surface, pass: &RenderPass[Bgra8Unorm, NoFormat], mesh: &Mesh[Bgra8Unorm, NoFormat], sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Vk, Scene, Clock} {
+fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Surface, pass: &RenderPass[Bgra8Srgb, NoFormat], mesh: &Mesh[Bgra8Srgb, NoFormat], sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Vk, Scene, Clock} {
     wait_while_minimized(win, run);
     let mut raw: RingWords = consume_frames(ring);
     run.stop = 0;
     let mut ring_live = true;
     let rc = handle {
         let size = client_size(&*win);
-        let sc = create_swapchain(pd, surface, size[0], size[1], 0);
+        let sc = create_swapchain_with(pd, surface, size[0], size[1], 0, chain_options());
         defer { destroy_swapchain(sc); }
         let mut pq = present_queue(pd, surface, *q);
         let fbs = create_framebuffers(&sc, pass);
@@ -274,11 +286,11 @@ fn run_on_device(family: u32, title: &str, width: i32, height: i32, frames: i32)
         defer { destroy_timeline(t); }
         // The colour format is the surface's first; the pass's is a type, so the two are
         // checked here.
-        let probe = create_swapchain(pd, &surface, width as u32, height as u32, 0);
+        let probe = create_swapchain_with(pd, &surface, width as u32, height as u32, 0, chain_options());
         let format = swapchain_format(&probe);
         destroy_swapchain(probe);
-        if !format_is(bgra8_unorm(), format) { VkError.fail(HL_ERROR_NOT_FOUND) }
-        let pass = create_render_pass(bgra8_unorm());
+        if !format_is(bgra8_srgb(), format) { VkError.fail(HL_ERROR_NOT_FOUND) }
+        let pass = create_render_pass(bgra8_srgb());
         defer { destroy_render_pass(pass); }
         let mesh = create_mesh(&pass);
         defer { destroy_mesh(mesh); }

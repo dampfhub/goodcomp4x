@@ -66,9 +66,7 @@ impl GameState {
     pub fn hold_selected_unit(&mut self) can {Log} {
         if self.is_resolving() { return; }
         if let Option.Some(idx) = self.selected { self.units[idx].holding = true; }
-        // A `let` until two-phase borrows land (#1530).
-        let selected = self.selected;
-        self.select_next_or_end_turn(selected);
+        self.select_next_or_end_turn(self.selected);
     }
 
     /// Tab: selects the next unit that still needs orders, or just the next unit if they all
