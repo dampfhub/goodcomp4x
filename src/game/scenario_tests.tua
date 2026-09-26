@@ -1,0 +1,65 @@
+//! The testing aids: scenario pages, the savestate, and instant playback.
+
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.hex.Hex;
+use game.scenario.Scenario;
+use game.tests.nothing_pending;
+use game.tests.sandbox;
+
+@test
+fn loading_restores_the_snapshot_and_keeps_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let Option.Some(unit) = game.selected else { assert(false); return; };
+        let start = game.units[unit].pos;
+        game.save_state();
+
+        game.units[unit].pos = Hex.new(0, 1);
+        game.units[unit].hp = 1.0;
+        game.load_state();
+        assert(game.units[unit].pos == start);
+        assert(game.units[unit].hp == game.units[unit].max_hp());
+
+        // It can be loaded again, even from another scenario.
+        game.units[unit].hp = 1.0;
+        game.switch_scenario(Scenario.Cities);
+        assert(game.scenario == Scenario.Cities);
+        game.load_state();
+        assert(game.scenario == Scenario.Combat);
+        assert(game.units[unit].hp == game.units[unit].max_hp());
+    });
+}
+
+@test
+fn switching_to_the_current_scenario_restarts_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.switch_scenario(Scenario.Frontier);
+        game.units.clear();
+        game.switch_scenario(Scenario.Frontier);
+        assert(game.scenario == Scenario.Frontier);
+        assert(!game.units.is_empty());
+    });
+}
+
+@test
+fn instant_playback_resolves_the_whole_turn_at_once() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.toggle_instant_playback();
+        game.switch_scenario(Scenario.Combat);
+        // Kept across a scenario switch.
+        assert(game.instant_playback);
+
+        while !nothing_pending(&game) { game.hold_or_end_turn(); }
+        game.hold_or_end_turn();
+        assert(game.is_resolving());
+        game.update(0.0);
+        // Every step played in one update.
+        assert(!game.is_resolving());
+    });
+}

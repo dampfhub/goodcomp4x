@@ -30,6 +30,7 @@ use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.city.BUILDS;
 use game.orders.ClickMode;
+use game.scenario.Scenario;
 use game.ui.ui_projection;
 
 const TITLE: str = "Hex Combat Sandbox";
@@ -153,6 +154,15 @@ fn on_key(game: &mut GameState, key: Key) can {Log} {
             'F' => game.found_city_selected(),
             'Y' => game.toggle_yields(),
             'G' => game.toggle_guard(),
+            _ => {}
+        },
+        Key.Function(f) => match f {
+            1 => game.switch_scenario(Scenario.Combat),
+            2 => game.switch_scenario(Scenario.Cities),
+            3 => game.switch_scenario(Scenario.Frontier),
+            6 => game.save_state(),
+            7 => game.load_state(),
+            8 => game.toggle_instant_playback(),
             _ => {}
         },
         Key.Digit(d) => {

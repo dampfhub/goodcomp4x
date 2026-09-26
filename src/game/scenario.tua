@@ -1,0 +1,194 @@
+//! Testing aids: switching between the scenario pages (F1-F3; pressing the current one's key
+//! again restarts it), and a savestate (F6 saves, F7 loads) holding a snapshot of the whole
+//! game. The savestate survives switching pages, and loading it can be repeated to retry the
+//! same situation.
+
+use std.collections.Deque;
+use std.collections.Key;
+use std.collections.Map;
+use std.collections.Set;
+use std.fmt.Out;
+use std.fmt.show_u64;
+use std.mem.swap;
+use std.str.Str;
+use std.str.to_owned;
+use log.Log;
+use game.GameState;
+use game.text;
+use game.city.City;
+use game.hex.HexGrid;
+use game.turn.Phase;
+use game.unit.UnitType;
+
+/// The test scenarios F1-F3 switch between.
+pub enum Scenario {
+    /// The original small combat map.
+    Combat,
+    /// Two cities with their economies set up.
+    Cities,
+    /// A settler each and no cities yet.
+    Frontier,
+}
+
+pub const SCENARIOS: [Scenario; 3] = [Scenario.Combat, Scenario.Cities, Scenario.Frontier];
+
+impl Scenario {
+    pub fn name(self) -> str {
+        match self {
+            Scenario.Combat => "COMBAT",
+            Scenario.Cities => "CITIES",
+            Scenario.Frontier => "FRONTIER",
+        }
+    }
+
+    /// The function key that switches to it.
+    pub fn key(self) -> str {
+        match self {
+            Scenario.Combat => "F1",
+            Scenario.Cities => "F2",
+            Scenario.Frontier => "F3",
+        }
+    }
+
+    fn start(self) -> GameState can {Log} {
+        match self {
+            Scenario.Combat => GameState.new(),
+            Scenario.Cities => GameState.city_scenario(),
+            Scenario.Frontier => GameState.frontier_scenario(),
+        }
+    }
+}
+
+impl GameState {
+    /// F1-F3: starts `scenario` afresh (restarting it, if it's the current one), keeping the
+    /// savestate and debug settings.
+    pub fn switch_scenario(&mut self, scenario: Scenario) can {Log} {
+        let mut next = scenario.start();
+        swap(&mut next.savestate, &mut self.savestate);
+        next.instant_playback = self.instant_playback;
+        *self = next;
+    }
+
+    /// F8: switches turn playback between one step at a time and all at once.
+    pub fn toggle_instant_playback(&mut self) {
+        self.instant_playback = !self.instant_playback;
+        if self.instant_playback {
+            self.set_notice("TURNS NOW PLAY OUT ALL AT ONCE - F8 FOR STEP BY STEP");
+        } else {
+            self.set_notice("TURNS NOW PLAY OUT STEP BY STEP - F8 FOR ALL AT ONCE");
+        }
+    }
+
+    /// F6: saves a snapshot of the whole game, replacing any earlier one.
+    pub fn save_state(&mut self) {
+        if self.is_resolving() {
+            self.set_notice("CAN'T SAVE WHILE A TURN PLAYS OUT");
+            return;
+        }
+        // Drop the old snapshot first so it isn't copied into the new one.
+        self.savestate = Option.None;
+        let snapshot = self.snapshot();
+        self.savestate = Option.Some(box snapshot);
+        self.notice = text(fn() can {Out} { Out.put("SAVED "); self.show_saved(); Out.put(" - F7 LOADS IT"); });
+    }
+
+    /// F7: restores the saved snapshot, keeping it to load again. The camera stays where it
+    /// is, unless the snapshot is from another scenario.
+    pub fn load_state(&mut self) {
+        let Option.Some(mut restored) = self.saved_snapshot() else {
+            self.set_notice("NOTHING SAVED YET - F6 SAVES");
+            return;
+        };
+        let loaded = text(fn() can {Out} { Out.put("LOADED "); self.show_saved(); });
+        if restored.scenario == self.scenario { restored.camera = self.camera; }
+        restored.instant_playback = self.instant_playback;
+        restored.notice = loaded;
+        // The snapshot is kept: it moves into the restored game.
+        swap(&mut restored.savestate, &mut self.savestate);
+        *self = restored;
+    }
+
+    /// A fresh copy of the saved snapshot, if there is one.
+    fn saved_snapshot(&self) -> Option[GameState] {
+        match &self.savestate {
+            &Option.Some(saved) => Option.Some(saved.snapshot()),
+            &Option.None => Option.None,
+        }
+    }
+
+    /// What's saved, like `TURN 3 OF CITIES`; nothing when nothing is.
+    pub fn show_saved(&self) can {Out} {
+        if let &Option.Some(saved) = &self.savestate {
+            Out.put("TURN ");
+            show_u64((saved.turn + 1) as u64);
+            Out.put(" OF ");
+            Out.put(saved.scenario.name());
+        }
+    }
+
+    /// A copy of the whole game without its savestate: what F6 keeps.
+    pub fn snapshot(&self) -> GameState {
+        let mut cities: Vec[City] = Vec.new();
+        for i in 0..self.cities.len() {
+            let c = &self.cities[i];
+            cities.push(City { id: c.id, team: c.team, pos: c.pos, population: c.population, food: c.food, production: c.production, worked: copy_vec(&c.worked), queue: c.queue });
+        }
+        let mut pending_steps: Deque[(UnitType, Phase)] = Deque.new();
+        for i in 0..self.pending_steps.len() {
+            if let Option.Some(step) = self.pending_steps.at(i) { pending_steps.push_back(step); }
+        }
+        GameState {
+            cities,
+            sites: copy_map(&self.sites),
+            roads: copy_set(&self.roads),
+            selected_city: self.selected_city,
+            hovered_city: self.hovered_city,
+            show_yields: self.show_yields,
+            ui_click_mode: self.ui_click_mode,
+            inspected_tile: self.inspected_tile,
+            notice: copy_str(&self.notice),
+            grid: HexGrid { radius: self.grid.radius, terrain: copy_map(&self.grid.terrain) },
+            units: copy_vec(&self.units),
+            selected: self.selected,
+            group: copy_vec(&self.group),
+            scenario: self.scenario,
+            savestate: Option.None,
+            effects: copy_vec(&self.effects),
+            instant_playback: self.instant_playback,
+            turn: self.turn,
+            camera: self.camera,
+            pending_steps,
+            step_timer: self.step_timer,
+            recent_actors: copy_vec(&self.recent_actors),
+            highlight_timer: self.highlight_timer,
+            settlers: copy_set(&self.settlers),
+            workers: copy_set(&self.workers),
+            player_controlled_units: copy_set(&self.player_controlled_units),
+            next_unit_id: self.next_unit_id,
+        }
+    }
+}
+
+fn copy_vec[T](v: &Vec[T]) -> Vec[T] {
+    let mut out: Vec[T] = Vec.new();
+    for i in 0..v.len() { out.push(v[i]); }
+    out
+}
+
+fn copy_set[K: Key](s: &Set[K]) -> Set[K] {
+    let mut out: Set[K] = Set.new();
+    for i in 0..s.len() {
+        if let Option.Some(k) = s.key_at(i) { let _new = out.insert(k); }
+    }
+    out
+}
+
+fn copy_map[K: Key, V](m: &Map[K, V]) -> Map[K, V] {
+    let mut out: Map[K, V] = Map.new();
+    for i in 0..m.len() {
+        if let (Option.Some(k), Option.Some(v)) = (m.key_at(i), m.val_at(i)) { let _old = out.insert(k, v); }
+    }
+    out
+}
+
+fn copy_str(s: &Str) -> Str { to_owned(s) }

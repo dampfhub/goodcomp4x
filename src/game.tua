@@ -17,6 +17,7 @@ use game.camera.Camera;
 use game.city.City;
 use game.city.Site;
 use game.effects.Playing;
+use game.scenario.Scenario;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
 use game.hex.HexGrid;
@@ -93,6 +94,13 @@ pub struct GameState {
     selected: Option[i32],
     /// Several units selected together, in place of `selected`; empty unless at least two are.
     group: Vec[i32],
+    /// Which test scenario this is, for restarting it.
+    scenario: Scenario,
+    /// A snapshot of the game saved for testing (F6), restored by F7.
+    savestate: Option[Box[GameState]],
+    /// Debug setting (F8): play a turn's steps all at once instead of one every
+    /// `STEP_INTERVAL`. Kept across scenario switches and loads.
+    instant_playback: bool,
     turn: u32,
     camera: Camera,
     /// Steps of the turn currently playing out, drained one at a time by `update`.
@@ -164,6 +172,9 @@ impl GameState {
             units,
             selected: Option.None,
             group: Vec.new(),
+            scenario: Scenario.Combat,
+            savestate: Option.None,
+            instant_playback: false,
             turn: 0,
             camera: Camera.new(vec2(0.0, 0.0), (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
             pending_steps: Deque.new(),
@@ -183,6 +194,7 @@ impl GameState {
     /// Two cities with their economies, farms, mines and roads, beside the two armies.
     pub fn city_scenario() -> GameState can {Log} {
         let mut game = GameState.new();
+        game.scenario = Scenario.Cities;
         game.setup_cities();
         game.start_on_whole_map();
         game
@@ -191,6 +203,7 @@ impl GameState {
     /// Fresh economy match: each side begins with one settler and no city.
     pub fn frontier_scenario() -> GameState can {Log} {
         let mut game = GameState.new();
+        game.scenario = Scenario.Frontier;
         game.units.clear();
         game.setup_frontier();
         game.start_on_whole_map();
