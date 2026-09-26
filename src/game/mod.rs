@@ -91,6 +91,9 @@ pub struct GameState {
     selected_city: Option<usize>,
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option<usize>,
+    /// City whose Barracks site is being chosen. This is deliberately
+    /// separate from city selection so a placement click returns to normal UI.
+    placing_barracks: Option<usize>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
@@ -173,6 +176,7 @@ impl GameState {
             roads: HashSet::new(),
             selected_city: None,
             moving_manager: None,
+            placing_barracks: None,
             hovered_city: None,
             show_yields: true,
             hovered_tile: None,

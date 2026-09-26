@@ -871,9 +871,9 @@ impl GameState {
         panel.buttons(
             buildings.into_iter().map(|building| ButtonSpec {
                 target: Target::Building(building),
-                label: building.name().into(),
+                label: if building == Building::Barracks && city.built.contains(&building) { "MOVE BARRACKS".into() } else { building.name().into() },
                 hint: format!("{} · {} PROD", building.shortcut(), quantity(building.cost())),
-                state: ButtonState::new(city.queue == Some(Build::Building(building)), city.built.contains(&building) || city.pending_building == Some(building)),
+                state: ButtonState::new(city.queue == Some(Build::Building(building)) || (building == Building::Barracks && self.placing_barracks == Some(i)), (building != Building::Barracks && city.built.contains(&building)) || city.pending_building == Some(building)),
                 armed: false,
             }).collect(),
         );
@@ -891,7 +891,7 @@ impl GameState {
                 hint: format!("{} PROD", quantity(build.cost())),
                 state: ButtonState::new(city.barracks_queue == Some(build), false), armed: false,
             }).collect());
-        } else if city.pending_building == Some(Building::Barracks) {
+        } else if city.pending_building == Some(Building::Barracks) || (city.built.contains(&Building::Barracks) && city.planned_barracks.is_some() && city.planned_barracks != city.barracks) {
             let site = city.planned_barracks.map(|h| format!("({}, {})", h.q, h.r)).unwrap_or_else(|| "NONE".into());
             panel.text(SMALL, vec![(format!("BARRACKS READY: SITE {site}"), GOLD_TEXT)]);
             panel.buttons(vec![ButtonSpec { target: Target::ConfirmBarracks, label: "CONFIRM BARRACKS".into(), hint: "CLICK".into(), state: ButtonState::new(false, city.planned_barracks.is_none()), armed: false }]);

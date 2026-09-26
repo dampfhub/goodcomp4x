@@ -381,6 +381,11 @@ impl GameState {
         };
         let c = &mut self.cities[city];
         if c.team != PLAYER_TEAM { return; }
+        if building == Building::Barracks && c.built.contains(&building) {
+            self.placing_barracks = Some(city);
+            self.notice = "MOVE BARRACKS - CLICK A NEW OPEN LAND TILE".into();
+            return;
+        }
         if c.built.contains(&building) || c.pending_building == Some(building) {
             self.notice = format!("{} ALREADY EXISTS IN THIS CITY", building.name());
             return;
@@ -388,6 +393,7 @@ impl GameState {
         if c.queue.is_none() { c.production = 0; }
         c.queue = Some(Build::Building(building));
         if building == Building::Barracks {
+            self.placing_barracks = Some(city);
             self.notice = "BARRACKS STARTED - CLICK ANY OPEN TILE TO CHOOSE ITS SITE".into();
             return;
         }
@@ -407,12 +413,16 @@ impl GameState {
         let Some(site) = self.cities[city].planned_barracks else {
             self.notice = "CHOOSE A BARRACKS SITE ON THE MAP FIRST".into(); return;
         };
-        if self.cities[city].pending_building != Some(Building::Barracks) {
+        if self.cities[city].pending_building != Some(Building::Barracks)
+            && !self.cities[city].built.contains(&Building::Barracks) {
             self.notice = "BARRACKS IS STILL UNDER CONSTRUCTION".into(); return;
         }
         self.cities[city].pending_building = None;
         self.cities[city].barracks = Some(site);
-        self.cities[city].built.push(Building::Barracks);
+        self.cities[city].planned_barracks = None;
+        if !self.cities[city].built.contains(&Building::Barracks) {
+            self.cities[city].built.push(Building::Barracks);
+        }
         self.notice = "BARRACKS FINALIZED - MOVE MANAGER ONTO IT TO TRAIN TROOPS".into();
     }
 
@@ -703,6 +713,7 @@ impl GameState {
     pub(super) fn leave_city_view(&mut self) {
         self.selected_city = None;
         self.moving_manager = None;
+        self.placing_barracks = None;
         self.inspected_tile = None;
     }
 
@@ -719,12 +730,13 @@ impl GameState {
             return false;
         }
         let i = self.selected_city.unwrap();
-        if self.cities[i].queue == Some(Build::Building(Building::Barracks)) || self.cities[i].pending_building == Some(Building::Barracks) {
+        if self.placing_barracks == Some(i) {
             if !self.grid.is_passable(hex) || self.cities.iter().any(|c| c.pos == hex) {
                 self.notice = "BARRACKS NEEDS AN OPEN LAND TILE".into();
             } else {
                 self.cities[i].planned_barracks = Some(hex);
-                self.notice = if self.cities[i].pending_building.is_some() { "BARRACKS SITE SELECTED - CLICK CONFIRM IN THE CITY TRAY".into() } else { "BARRACKS SITE SELECTED - CONSTRUCTION CONTINUES".into() };
+                self.placing_barracks = None;
+                self.notice = if self.cities[i].pending_building.is_some() || self.cities[i].built.contains(&Building::Barracks) { "BARRACKS SITE SELECTED - CLICK CONFIRM IN THE CITY TRAY".into() } else { "BARRACKS SITE SELECTED - CONSTRUCTION CONTINUES".into() };
             }
             return true;
         }
@@ -865,6 +877,7 @@ impl GameState {
                     }
                     Building::Barracks => {
                         self.cities[i].pending_building = Some(building);
+                        if self.cities[i].planned_barracks.is_none() { self.placing_barracks = Some(i); }
                         self.notice = "BARRACKS COMPLETE - CHOOSE A SITE, THEN CONFIRM".into();
                     }
                 }

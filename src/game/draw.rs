@@ -359,12 +359,10 @@ impl GameState {
         // A Barracks under construction follows the map hover, with a bright
         // placement ring. The selected site remains as a faint preview until
         // the player confirms the finished building.
-        if let Some(city) = self.selected_city.map(|i| &self.cities[i])
-            && (city.queue == Some(super::city::Build::Building(super::city::Building::Barracks))
-                || city.pending_building == Some(super::city::Building::Barracks))
-        {
+        for (i, city) in self.cities.iter().enumerate() {
+            if city.planned_barracks.is_none() { continue; }
             let valid = |hex: Hex| self.grid.is_passable(hex) && !self.cities.iter().any(|c| c.pos == hex);
-            let preview = self.hovered_tile.filter(|h| valid(*h)).or(city.planned_barracks);
+            let preview = if self.placing_barracks == Some(i) { self.hovered_tile.filter(|h| valid(*h)).or(city.planned_barracks) } else { city.planned_barracks };
             if let Some(hex) = preview {
                 let is_hovered = self.hovered_tile == Some(hex);
                 let color = if is_hovered { [1.0, 0.72, 0.20, 0.95] } else { [0.85, 0.42, 0.18, 0.55] };
