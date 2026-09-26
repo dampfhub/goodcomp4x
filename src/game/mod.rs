@@ -17,6 +17,8 @@ mod mapgen;
 mod mesh;
 mod orders;
 mod scenario;
+#[cfg(test)]
+mod simulation;
 mod terrain;
 mod turn;
 mod ui;
