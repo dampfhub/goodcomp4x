@@ -15,6 +15,7 @@ use super::city::{BuildUnit, delivered_share};
 use super::font::{self, Face};
 use super::hex::Hex;
 use super::orders::ClickMode;
+use super::scenario::Scenario;
 use super::unit::Unit;
 use super::{GameState, mesh};
 use crate::renderer::Vertex;
@@ -75,6 +76,11 @@ const NOTICE_TEXT: Color = [0.95, 0.85, 0.55, 1.0];
 const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
 const BOOSTED_TEXT: Color = [0.55, 0.92, 0.50, 1.0];
 const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
+const SELECTION_BOX_FILL: Color = [0.30, 0.55, 0.95, 0.12];
+const SELECTION_BOX_EDGE: Color = [0.55, 0.75, 1.00, 0.9];
+const SELECTION_BOX_BORDER: f32 = 2.0;
+/// Opacity the debug panel is drawn at, so it doesn't read as game UI.
+const DEBUG_ALPHA: f32 = 0.55;
 
 /// Maps UI pixels (origin bottom-left, Y up) to clip space.
 pub fn ui_projection(screen_size: Vec2) -> Mat4 {
@@ -102,6 +108,26 @@ pub fn quit_prompt(progress: f32, screen_size: Vec2) -> Vec<Vertex> {
     out
 }
 
+/// While Alt-dragging: the selection rectangle between `a` and `b` (window
+/// pixels, origin top-left), a translucent fill with a thin border.
+pub fn selection_box(a: Vec2, b: Vec2, screen_size: Vec2) -> Vec<Vertex> {
+    let (a, b) = (to_ui(a, screen_size), to_ui(b, screen_size));
+    let (min, max) = (a.min(b).round(), a.max(b).round());
+    let mut out = Vec::new();
+    mesh::quad(min, max, SELECTION_BOX_FILL, &mut out);
+    let edge = Vec2::splat(SELECTION_BOX_BORDER);
+    let edges = [
+        (min, Vec2::new(max.x, min.y) + edge),
+        (Vec2::new(min.x, max.y) - edge, max),
+        (min, Vec2::new(min.x, max.y) + edge),
+        (Vec2::new(max.x, min.y) - edge, max),
+    ];
+    for (from, to) in edges {
+        mesh::quad(from, to, SELECTION_BOX_EDGE, &mut out);
+    }
+    out
+}
+
 /// Something a button does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Target {
@@ -109,6 +135,11 @@ enum Target {
     Build(BuildUnit),
     ToggleYields,
     EndTurn,
+    /// Debug panel: scenario pages, the savestate and playback pacing.
+    Scenario(Scenario),
+    SaveState,
+    LoadState,
+    TogglePlayback,
 }
 
 /// An order for the selected unit.
@@ -155,6 +186,8 @@ struct Button {
     state: ButtonState,
     /// This button's action is what the next map click will do.
     armed: bool,
+    /// Part of the debug panel, drawn see-through so it doesn't read as game UI.
+    faded: bool,
     min: Vec2,
     max: Vec2,
 }
@@ -166,7 +199,7 @@ impl Button {
 }
 
 enum Shape {
-    Panel { min: Vec2, max: Vec2 },
+    Panel { min: Vec2, max: Vec2, faded: bool },
     Text { origin: Vec2, px: u32, line: Line },
     Bar { min: Vec2, max: Vec2, fraction: f32 },
 }
@@ -191,8 +224,8 @@ impl Layout {
             .any(|&(min, max)| contains(min, max, point))
     }
 
-    fn panel(&mut self, min: Vec2, max: Vec2) {
-        self.shapes.push(Shape::Panel { min, max });
+    fn panel(&mut self, min: Vec2, max: Vec2, faded: bool) {
+        self.shapes.push(Shape::Panel { min, max, faded });
         self.panels.push((min, max));
     }
 }
@@ -213,9 +246,13 @@ impl GameState {
             .and_then(|c| self.unit_at_screen(c, screen_size))
             .filter(|&idx| Some(idx) != self.selected || self.selected_city.is_some())
         {
+            // Top-right, clear of the debug panel at the top-left.
             let mut panel = PanelBuilder::default();
             self.unit_info(idx, &mut panel);
-            let top_left = Vec2::new(MARGIN, screen_size.y - TOP_BAR_HEIGHT - MARGIN);
+            let top_left = Vec2::new(
+                screen_size.x - MARGIN - panel.size().x,
+                screen_size.y - TOP_BAR_HEIGHT - MARGIN,
+            );
             panel.place_top_left(top_left, &mut layout);
         }
 
@@ -265,6 +302,10 @@ impl GameState {
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
             Target::EndTurn => self.end_planning(),
+            Target::Scenario(scenario) => self.switch_scenario(scenario),
+            Target::SaveState => self.save_state(),
+            Target::LoadState => self.load_state(),
+            Target::TogglePlayback => self.toggle_instant_playback(),
         }
         true
     }
@@ -289,6 +330,7 @@ impl GameState {
     fn layout(&self, screen_size: Vec2) -> Layout {
         let mut layout = Layout::default();
         self.top_bar(screen_size, &mut layout);
+        self.debug_panel(screen_size, &mut layout);
 
         let mut tray = PanelBuilder::default();
         if let Some(city) = self.selected_city {
@@ -297,6 +339,8 @@ impl GameState {
             self.unit_info(idx, &mut tray);
             tray.gap(GAP);
             tray.buttons(self.unit_buttons(idx));
+        } else if !self.group.is_empty() {
+            self.group_tray(&mut tray);
         } else {
             return layout;
         }
@@ -304,12 +348,79 @@ impl GameState {
         layout
     }
 
+    /// Testing tools, top-left under the top bar and see-through so they
+    /// don't read as game UI: the scenario pages (the current one gold;
+    /// pressing it again restarts it) and the savestate.
+    fn debug_panel(&self, size: Vec2, layout: &mut Layout) {
+        let mut panel = PanelBuilder {
+            faded: true,
+            ..PanelBuilder::default()
+        };
+        panel.text(SMALL, vec![("DEBUG".into(), fade(LABEL_TEXT, true))]);
+        let debug_button = |target, label: &str, hint: &str, state| ButtonSpec {
+            target,
+            label: label.into(),
+            hint: hint.into(),
+            state,
+            armed: false,
+        };
+        panel.compact_buttons(
+            Scenario::ALL
+                .into_iter()
+                .map(|scenario| {
+                    let current = ButtonState::new(scenario == self.scenario, false);
+                    debug_button(
+                        Target::Scenario(scenario),
+                        scenario.name(),
+                        scenario.key(),
+                        current,
+                    )
+                })
+                .collect(),
+        );
+        panel.gap(GAP);
+        panel.compact_buttons(vec![
+            debug_button(
+                Target::SaveState,
+                "SAVE",
+                "F6",
+                ButtonState::new(false, self.is_resolving()),
+            ),
+            debug_button(
+                Target::LoadState,
+                "LOAD",
+                "F7",
+                ButtonState::new(false, self.savestate.is_none()),
+            ),
+        ]);
+        if let Some(saved) = self.saved_summary() {
+            panel.text(
+                SMALL,
+                vec![(format!("SAVED: {saved}"), fade(DIM_TEXT, true))],
+            );
+        }
+        panel.gap(GAP);
+        let playback = if self.instant_playback {
+            "PLAYBACK: ALL AT ONCE"
+        } else {
+            "PLAYBACK: STEP BY STEP"
+        };
+        panel.compact_buttons(vec![debug_button(
+            Target::TogglePlayback,
+            playback,
+            "F8",
+            ButtonState::Ready,
+        )]);
+        let top_left = Vec2::new(MARGIN, size.y - TOP_BAR_HEIGHT - MARGIN);
+        panel.place_top_left(top_left, layout);
+    }
+
     /// Turn number on the left, the latest notice in the middle, and on the
     /// right the End Turn button, which names whatever the turn is still
     /// waiting on (clicking it selects that).
     fn top_bar(&self, size: Vec2, layout: &mut Layout) {
         let min = Vec2::new(0.0, size.y - TOP_BAR_HEIGHT);
-        layout.panel(min, size);
+        layout.panel(min, size, false);
         let middle = min.y + TOP_BAR_HEIGHT / 2.0;
 
         let pending = self.pending();
@@ -345,6 +456,7 @@ impl GameState {
                 ButtonState::new(pending == (0, 0), false)
             },
             armed: false,
+            faded: false,
             min: button_min.round(),
             max: (button_min + Vec2::new(width, END_TURN_HEIGHT)).round(),
         };
@@ -538,6 +650,68 @@ impl GameState {
             armed: false,
         });
         buttons
+    }
+
+    /// A group of selected units: how many of each, how to order them, and
+    /// buttons for what every member can do at once.
+    fn group_tray(&self, panel: &mut PanelBuilder) {
+        let members: Vec<&str> = self
+            .group
+            .iter()
+            .map(|&i| self.unit_role(&self.units[i]).0)
+            .collect();
+        let mut kinds: Vec<(&str, usize)> = Vec::new();
+        for role in members {
+            match kinds.iter_mut().find(|(kind, _)| *kind == role) {
+                Some((_, count)) => *count += 1,
+                None => kinds.push((role, 1)),
+            }
+        }
+        let summary: Vec<String> = kinds
+            .into_iter()
+            .map(|(kind, count)| format!("{count} {kind}"))
+            .collect();
+
+        panel.text(
+            TITLE,
+            vec![(format!("{} UNITS SELECTED", self.group.len()), TEXT)],
+        );
+        panel.text(BODY, vec![(summary.join(", "), DIM_TEXT)]);
+        for help in [
+            "CLICK A HEX: EACH MOVES AS CLOSE TO IT AS IT CAN",
+            "CLICK AN ENEMY: EVERY UNIT IN RANGE ATTACKS IT",
+            "CLICK ONE UNIT TO SELECT JUST IT · ALT-CLICK ADDS OR REMOVES",
+        ] {
+            panel.text(SMALL, vec![(help.into(), LABEL_TEXT)]);
+        }
+        panel.gap(GAP);
+
+        let armed = |mode| self.ui_click_mode == Some(mode);
+        let all_guarding = self.group.iter().all(|&i| self.units[i].guarding);
+        panel.buttons(vec![
+            ButtonSpec {
+                target: Target::Unit(UnitAction::Move),
+                label: "MOVE".into(),
+                hint: "M".into(),
+                state: ButtonState::Ready,
+                armed: armed(ClickMode::Move),
+            },
+            ButtonSpec {
+                target: Target::Unit(UnitAction::Attack),
+                label: "ATTACK".into(),
+                hint: "X · SHIFT".into(),
+                state: ButtonState::Ready,
+                armed: armed(ClickMode::Attack),
+            },
+            ButtonSpec::plain(UnitAction::Hold, "HOLD", "SPACE"),
+            ButtonSpec {
+                target: Target::Unit(UnitAction::Guard),
+                label: "GUARD".into(),
+                hint: "G".into(),
+                state: ButtonState::new(all_guarding, false),
+                armed: false,
+            },
+        ]);
     }
 
     /// The open city: population, stores and income, growth, what it's
@@ -770,7 +944,8 @@ impl GameState {
         let left = ((button.min.x + button.max.x - size.x) / 2.0)
             .clamp(MARGIN, (screen_size.x - MARGIN - size.x).max(MARGIN));
         // Clear of the panel the button sits in, so the tooltip doesn't hide
-        // what the panel says: below the top bar, above the tray.
+        // what the panel says: below panels at the top of the window (the top
+        // bar, the debug panel), above those at the bottom (the tray).
         let center = (button.min + button.max) / 2.0;
         let (panel_min, panel_max) = layout
             .panels
@@ -778,7 +953,8 @@ impl GameState {
             .copied()
             .find(|&(min, max)| contains(min, max, center))
             .unwrap_or((button.min, button.max));
-        let bottom = if button.target == Target::EndTurn {
+        let near_top = (panel_min.y + panel_max.y) / 2.0 > screen_size.y / 2.0;
+        let bottom = if near_top {
             panel_min.y - TOOLTIP_GAP - 2.0 * BORDER - size.y
         } else {
             panel_max.y + TOOLTIP_GAP + 2.0 * BORDER
@@ -796,7 +972,8 @@ impl GameState {
         let (title, shortcut, description, unavailable): (String, String, String, Option<String>) =
             match button.target {
                 Target::Unit(action) => {
-                    let Some(idx) = self.selected else {
+                    // A group's buttons are described for its first member.
+                    let Some(idx) = self.selected.or(self.group.first().copied()) else {
                         return Vec::new();
                     };
                     let (title, shortcut, description, unavailable) =
@@ -812,6 +989,60 @@ impl GameState {
                         build.description(),
                         quantity(build.cost())
                     ),
+                    None,
+                ),
+                Target::Scenario(scenario) => (
+                    format!("{} SCENARIO", scenario.name()),
+                    scenario.key().into(),
+                    match scenario {
+                        Scenario::Combat => {
+                            "THE ORIGINAL SMALL COMBAT MAP: FOUR UNITS A SIDE ACROSS A \
+                                             MOUNTAIN PASS."
+                        }
+                        Scenario::Cities => {
+                            "TWO CITIES WITH FARMS, MINES, ROADS AND ARMIES, TO TEST \
+                                             THE ECONOMY AND FIGHTING OVER IT."
+                        }
+                        Scenario::Frontier => {
+                            "A SETTLER AND A WARRIOR EACH AND NO CITIES YET. BOTH \
+                                               WARRIORS ARE YOURS TO MOVE."
+                        }
+                    }
+                    .to_string()
+                        + " STARTS IT FRESH, OR RESTARTS IT IF IT'S THE CURRENT ONE; THE SAVESTATE IS KEPT.",
+                    None,
+                ),
+                Target::SaveState => (
+                    "SAVE".into(),
+                    "F6".into(),
+                    "SAVES A SNAPSHOT OF THE WHOLE GAME (UNIT POSITIONS, HEALTH, ORDERS, CITIES, \
+                     TURN) FOR TESTING, REPLACING ANY EARLIER ONE. IT'S KEPT ONLY UNTIL THE \
+                     GAME CLOSES."
+                        .into(),
+                    self.is_resolving()
+                        .then(|| "CAN'T SAVE WHILE A TURN PLAYS OUT".to_string()),
+                ),
+                Target::LoadState => (
+                    "LOAD".into(),
+                    "F7".into(),
+                    match self.saved_summary() {
+                        Some(saved) => format!(
+                            "RESTORES THE SNAPSHOT ({saved}). IT'S KEPT, SO YOU CAN LOAD IT \
+                             AGAIN TO RETRY."
+                        ),
+                        None => "RESTORES THE SNAPSHOT SAVED WITH F6.".into(),
+                    },
+                    self.savestate
+                        .is_none()
+                        .then(|| "NOTHING SAVED YET".to_string()),
+                ),
+                Target::TogglePlayback => (
+                    "PLAYBACK".into(),
+                    "F8".into(),
+                    "SWITCHES HOW A TURN PLAYS OUT: ONE STEP AT A TIME IN THE RESOLUTION \
+                     ORDER, OR EVERY STEP AT ONCE. THE STEPS STILL RESOLVE IN THE SAME ORDER \
+                     EITHER WAY, SO THE OUTCOME IS THE SAME; ONLY THE PACING CHANGES."
+                        .into(),
                     None,
                 ),
                 Target::ToggleYields => (
@@ -981,13 +1212,16 @@ enum Row {
     Text(u32, Line),
     Gap(f32),
     Bar(f32),
-    Buttons(Vec<ButtonSpec>),
+    /// Buttons of equal width; compact ones are one line, label then hint.
+    Buttons(Vec<ButtonSpec>, bool),
 }
 
 /// Stacks rows top to bottom in a panel sized to fit them.
 #[derive(Default)]
 struct PanelBuilder {
     rows: Vec<Row>,
+    /// See-through, for the debug panel.
+    faded: bool,
 }
 
 impl PanelBuilder {
@@ -1006,7 +1240,12 @@ impl PanelBuilder {
 
     /// A row of equally wide buttons.
     fn buttons(&mut self, buttons: Vec<ButtonSpec>) {
-        self.rows.push(Row::Buttons(buttons));
+        self.rows.push(Row::Buttons(buttons, false));
+    }
+
+    /// A row of equally wide one-line buttons.
+    fn compact_buttons(&mut self, buttons: Vec<ButtonSpec>) {
+        self.rows.push(Row::Buttons(buttons, true));
     }
 
     fn row_height(row: &Row) -> f32 {
@@ -1014,7 +1253,8 @@ impl PanelBuilder {
             Row::Text(px, _) => font::ui(*px).line_height + LINE_GAP,
             Row::Gap(height) => *height,
             Row::Bar(_) => GROWTH_BAR_HEIGHT,
-            Row::Buttons(_) => BUTTON_HEIGHT,
+            Row::Buttons(_, false) => BUTTON_HEIGHT,
+            Row::Buttons(_, true) => END_TURN_HEIGHT,
         }
     }
 
@@ -1022,8 +1262,8 @@ impl PanelBuilder {
         match row {
             Row::Text(px, line) => line_width(font::ui(*px), line),
             Row::Gap(_) | Row::Bar(_) => 0.0,
-            Row::Buttons(buttons) => {
-                let width = button_width(buttons);
+            Row::Buttons(buttons, compact) => {
+                let width = button_width(buttons, *compact);
                 buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
             }
         }
@@ -1045,7 +1285,7 @@ impl PanelBuilder {
         let size = self.size();
         let min = Vec2::new(top_left.x, top_left.y - size.y).round();
         let max = min + size;
-        layout.panel(min, max);
+        layout.panel(min, max, self.faded);
 
         let left = min.x + PADDING;
         let inner_width = size.x - 2.0 * PADDING;
@@ -1064,8 +1304,8 @@ impl PanelBuilder {
                     max: Vec2::new(left + inner_width, top),
                     fraction,
                 }),
-                Row::Buttons(buttons) => {
-                    let width = button_width(&buttons);
+                Row::Buttons(buttons, compact) => {
+                    let width = button_width(&buttons, compact);
                     for (i, spec) in buttons.into_iter().enumerate() {
                         let min = Vec2::new(left + i as f32 * (width + GAP), top - height);
                         layout.buttons.push(Button {
@@ -1074,6 +1314,7 @@ impl PanelBuilder {
                             hint: spec.hint,
                             state: spec.state,
                             armed: spec.armed,
+                            faded: self.faded,
                             min: min.round(),
                             max: (min + Vec2::new(width, height)).round(),
                         });
@@ -1086,15 +1327,18 @@ impl PanelBuilder {
 }
 
 /// Width every button in a row shares: enough for the widest one.
-fn button_width(buttons: &[ButtonSpec]) -> f32 {
+fn button_width(buttons: &[ButtonSpec], compact: bool) -> f32 {
     buttons
         .iter()
         .map(|b| {
+            if compact {
+                return single_line_button_width(&b.label, &b.hint);
+            }
             let label = font::ui(BODY).width(&b.label);
             let hint = font::ui(SMALL).width(&b.hint);
             label.max(hint) + 2.0 * BUTTON_PADDING
         })
-        .fold(BUTTON_MIN_WIDTH, f32::max)
+        .fold(if compact { 0.0 } else { BUTTON_MIN_WIDTH }, f32::max)
         .ceil()
 }
 
@@ -1125,7 +1369,10 @@ fn to_ui(cursor: Vec2, screen_size: Vec2) -> Vec2 {
 
 fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
     match shape {
-        Shape::Panel { min, max } => draw_box(*min, *max, PANEL_BG, BORDER, BORDER_COLOR, out),
+        Shape::Panel { min, max, faded } => {
+            let (bg, border) = (fade(PANEL_BG, *faded), fade(BORDER_COLOR, *faded));
+            draw_box(*min, *max, bg, BORDER, border, out)
+        }
         Shape::Text { origin, px, line } => {
             let face = font::ui(*px);
             let mut pen = origin.x;
@@ -1155,6 +1402,8 @@ fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>) {
     } else {
         (BORDER, BORDER_COLOR)
     };
+    let [bg, border_color, text_color, hint_color] =
+        [bg, border_color, text_color, hint_color].map(|color| fade(color, button.faded));
     draw_box(button.min, button.max, bg, border, border_color, out);
 
     let (label_face, hint_face) = (font::ui(BODY), font::ui(SMALL));
@@ -1193,6 +1442,16 @@ fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>) {
             hint_color,
             out,
         );
+    }
+}
+
+/// `color` made see-through for the debug panel, or unchanged.
+fn fade(color: Color, faded: bool) -> Color {
+    let [r, g, b, a] = color;
+    if faded {
+        [r, g, b, a * DEBUG_ALPHA]
+    } else {
+        color
     }
 }
 
@@ -1418,6 +1677,42 @@ mod tests {
         game.handle_click(button_cursor(&game, hold), SCREEN, ClickMode::Normal);
         assert!(game.units[first].holding);
         assert_ne!(game.selected, Some(first));
+    }
+
+    #[test]
+    fn debug_panel_saves_loads_and_switches_scenarios() {
+        let mut game = GameState::new();
+        let unit = game.selected.unwrap();
+        let start = game.units[unit].pos;
+        let load = Target::LoadState;
+        let load_state = |game: &GameState| {
+            let layout = game.layout(SCREEN);
+            layout
+                .buttons
+                .iter()
+                .find(|b| b.target == load)
+                .unwrap()
+                .state
+        };
+        assert_eq!(
+            load_state(&game),
+            ButtonState::Disabled,
+            "nothing saved yet"
+        );
+
+        game.handle_click(
+            button_cursor(&game, Target::SaveState),
+            SCREEN,
+            ClickMode::Normal,
+        );
+        assert_eq!(load_state(&game), ButtonState::Ready);
+        game.units[unit].pos = Hex::new(0, 1);
+        game.handle_click(button_cursor(&game, load), SCREEN, ClickMode::Normal);
+        assert_eq!(game.units[unit].pos, start);
+
+        let cities = Target::Scenario(Scenario::Cities);
+        game.handle_click(button_cursor(&game, cities), SCREEN, ClickMode::Normal);
+        assert_eq!(game.scenario, Scenario::Cities);
     }
 
     #[test]

@@ -36,7 +36,7 @@ impl GameState {
 
     /// Arms `mode` for the next map click, or disarms it if it's already armed.
     fn toggle_ui_click_mode(&mut self, mode: ClickMode, notice: &str) {
-        if self.is_resolving() || self.selected.is_none() {
+        if self.is_resolving() || self.selection().is_empty() {
             return;
         }
         if self.ui_click_mode == Some(mode) {
@@ -67,7 +67,7 @@ impl GameState {
         };
         // Clicking off the map deselects, and leaves the city view.
         let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
-            self.selected = None;
+            self.set_selection(Vec::new());
             self.leave_city_view();
             return;
         };
@@ -77,6 +77,15 @@ impl GameState {
         }
 
         let ally = self.controlled_unit_at(hex);
+        // With a group selected, clicking one of your units picks just it;
+        // anything else is an order for the whole group.
+        if !self.group.is_empty() {
+            match ally {
+                Some(ally) if mode == ClickMode::Normal => self.set_selection(vec![ally]),
+                _ => self.group_order(hex, mode),
+            }
+            return;
+        }
         let Some(selected) = self.selected else {
             self.selected = ally;
             return;
@@ -111,10 +120,14 @@ impl GameState {
         }
     }
 
-    /// Space: holds the selected unit if it still needs orders, moving on to
-    /// whatever else does. Once nothing does, ends the turn.
+    /// Space: holds the selected unit (or group) if it still needs orders,
+    /// moving on to whatever else does. Once nothing does, ends the turn.
     pub fn hold_or_end_turn(&mut self) {
         if self.is_resolving() {
+            return;
+        }
+        if !self.group.is_empty() {
+            self.hold_group();
             return;
         }
         let selected_needs_orders = self.selected.is_some_and(|idx| self.needs_orders(idx));
@@ -131,6 +144,10 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
+        if !self.group.is_empty() {
+            self.hold_group();
+            return;
+        }
         if let Some(idx) = self.selected {
             self.units[idx].holding = true;
         }
@@ -141,6 +158,10 @@ impl GameState {
     /// the turn order every turn until it's given an order, or G unguards it.
     pub fn toggle_guard(&mut self) {
         if self.is_resolving() {
+            return;
+        }
+        if !self.group.is_empty() {
+            self.toggle_group_guard();
             return;
         }
         let Some(idx) = self.selected else { return };
@@ -204,6 +225,7 @@ impl GameState {
     /// unit, not when the player clicks one they can already see.
     fn select_and_focus(&mut self, idx: Option<usize>) {
         self.selected = idx;
+        self.group.clear();
         self.ui_click_mode = None;
         if let Some(idx) = idx {
             self.selected_city = None;
@@ -248,10 +270,14 @@ impl GameState {
         may_move || may_attack
     }
 
-    /// Ctrl-right-click: clears all of the selected unit's orders, including
-    /// a hold or guard.
+    /// Ctrl-right-click: clears all of the selected unit's (or group's)
+    /// orders, including a hold or guard.
     pub fn handle_right_click(&mut self) {
         if self.is_resolving() {
+            return;
+        }
+        if !self.group.is_empty() {
+            self.clear_group_orders();
             return;
         }
         if let Some(selected) = self.selected {
@@ -273,6 +299,12 @@ impl GameState {
         }
         if clear {
             self.handle_right_click();
+            return;
+        }
+        if !self.group.is_empty() {
+            if let Some(hex) = self.hex_at_screen(cursor, screen_size) {
+                self.group_order(hex, ClickMode::Normal);
+            }
             return;
         }
         let Some(selected) = self.selected else {
@@ -410,7 +442,7 @@ impl GameState {
     }
 
     /// If `idx` is swapping with an ally, cancels both halves of the swap.
-    fn cancel_swap(&mut self, idx: usize) {
+    pub(super) fn cancel_swap(&mut self, idx: usize) {
         if let Some(partner) = self.swap_partner(idx) {
             for i in [idx, partner] {
                 self.units[i].planned_move = None;

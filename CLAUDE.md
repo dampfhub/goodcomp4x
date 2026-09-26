@@ -51,6 +51,8 @@ src/
     mod.rs         GameState, map/unit setup, shared queries (units_at, rival_of,
                    swap_partner, reachable_hexes), controls help text, tests
     orders.rs      player input and order planning (click, right-click, swap, ability toggle)
+    group.rs       selecting several units (Alt-drag box, Alt-click) and group orders
+    scenario.rs    testing aids: scenario pages (F1-F3) and the savestate (F6/F7)
     turn.rs        RESOLUTION_ORDER and simultaneous step resolution (moves, attacks)
     combat.rs      damage formula, retaliation rule, combat log helpers
     ability.rs     the four abilities and their tuning constants
@@ -59,7 +61,9 @@ src/
     hex.rs         axial hex math and HexGrid (with terrain)
     terrain.rs     Plains / Hills / Mountains
     camera.rs      top-down orthographic camera: pan, zoom, screen<->world
-    draw.rs        world geometry: hexes, terrain symbols, order markers, units, badges
+    draw.rs        world geometry: hexes, terrain symbols, move ghosts, attack arcs,
+                   units, badges
+    effects.rs     attack animations during playback: shots, hits, misses, damage
     city.rs        cities, logistics routes, citizens, growth, builds, settlers/workers
     ui.rs          screen-space UI: top bar, command tray, tooltips, hover info box
     mesh.rs        shape helpers: regular_polygon, quad, segment
@@ -85,8 +89,17 @@ All geometry is rebuilt from game state every frame.
 
 ### City experiment (current default)
 - The default scenario has a radius-six map, two cities, owned farms/mines/pastures,
-  and preplaced dirt roads. F1 resets to the original combat scenario; F2 resets
-  to cities. Both discard the running match.
+  and preplaced dirt roads. F1/F2/F3 start the combat, city or frontier
+  scenario (`scenario.rs`); pressing the current one's key restarts it.
+- Testing savestate (`scenario.rs`): F6 clones the whole `GameState` into
+  `savestate`, F7 restores a copy (keeping the snapshot, and the camera if
+  it's the same scenario). It survives scenario switches and lives only in
+  memory. The faded DEBUG panel (`ui::debug_panel`, top-left) has buttons for
+  all of these; the hovered-unit info box sits top-right to stay clear of it.
+- Debug setting `instant_playback` (F8 or the panel): `update` resolves every
+  pending step in one call instead of one per `STEP_INTERVAL`. Steps still run
+  in `RESOLUTION_ORDER`, so outcomes don't change; all animations fire
+  together. Kept across scenario switches and savestate loads.
 - `city.rs` contains city state, weighted logistics routes, citizen assignments,
   food/growth/starvation, and stored production. Yields use quarter units and
   route costs use half-hex units. Enemy occupation blocks routes; alternatives
@@ -245,6 +258,31 @@ Everyone in a step acts simultaneously:
 - Clicking again, re-ordering either unit, or right-clicking cancels both
   halves. Not allowed for units in a contested hex or units that can't move.
 
+### Groups (`group.rs`)
+- Alt-drag a box to select the player's units drawn inside it (via
+  `Camera::world_to_screen`); Alt-click adds or removes one unit. Two or more
+  become `GameState::group` (with `selected` cleared); one is an ordinary
+  selection. The group's hexes are highlighted and the tray summarizes it.
+- Clicking a hex (or Move) converges: members' old moves are dropped, then,
+  nearest to the target first, each takes the reachable hex closest to the
+  target that no ally is heading for, staying put if it can't get closer.
+  Members keep their own speeds, so the group doesn't hold formation. Normal
+  pathing applies, so members can't step into each other's current hexes.
+- Clicking an enemy (or Attack/Shift) has every member that can reach the hex
+  attack it; clicking a target they all already attack calls it off.
+- Space/Hold holds every member, G guards them all (or unguards if all are),
+  Ctrl-right-click clears their orders, clicking one member selects just it.
+- The group is cleared when a turn resolves, since indices shift as units die.
+- Queued attacks are drawn as curved arrows (`push_attack_arc`) from the
+  attacker, or its ghost if it moves first, to just short of the target. Each
+  arrow is one ribbon (`mesh::polyline`) so pieces never overlap. Only the
+  player's own attacks get arrows; the AI's plans stay hidden.
+- When an attack resolves, `resolve_attacks` clears its `planned_attack` and
+  plays effects (`effects.rs`, aged in `update`): the arrow shoots from
+  attacker to target, then a burst on a hit, "MISS" on an empty hex, or "OUT
+  OF RANGE" if the target moved away; every unit hurt (retaliation included)
+  shows a rising damage number, "KILLED" if it died. Enemy attacks animate too.
+
 ### Abilities (`ability.rs`)
 | Unit | Ability | Effect | Cooldown |
 |---|---|---|---|
@@ -348,6 +386,14 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
     waits for city builds, not citizens; Guard (G) skips a unit every turn.
     The End Turn button names what's waiting. Hold Escape to quit. MSAA, at
     the highest sample count the GPU supports.
+22. Group orders: Alt-drag/Alt-click to select several units; they converge
+    on a clicked hex or all attack a clicked enemy. Attack arcs replace the
+    little target markers.
+23. Testing aids: a savestate (F6 save, F7 load) and a faded DEBUG panel with
+    buttons for the scenario pages and savestate.
+24. Attack arrows as clean ribbons, player's only; resolved attacks animate
+    (shot, hit burst / miss / out of range, damage numbers).
+25. Debug toggle (F8) for instant turn playback.
 
 ## Open questions and ideas
 

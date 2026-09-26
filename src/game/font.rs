@@ -109,6 +109,12 @@ pub fn push_glyph(center: Vec2, cap_height: f32, ch: char, color: Color, out: &m
     push_glyph_quad(min, min + glyph.size * scale, glyph, color, out);
 }
 
+/// Width of world-space `text` with capital letters `cap_height` tall.
+pub fn world_text_width(text: &str, cap_height: f32) -> f32 {
+    let face = &FONT.world;
+    face.width(text) * cap_height / face.cap_height
+}
+
 /// Draws a line of world-space text with capital letters `cap_height` tall
 /// and its baseline's left end at `origin`.
 pub fn push_text(origin: Vec2, cap_height: f32, text: &str, color: Color, out: &mut Vec<Vertex>) {

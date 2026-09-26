@@ -8,10 +8,13 @@ mod camera;
 mod city;
 mod combat;
 mod draw;
+mod effects;
 mod font;
+mod group;
 mod hex;
 mod mesh;
 mod orders;
+mod scenario;
 mod terrain;
 mod turn;
 mod ui;
@@ -27,9 +30,10 @@ pub use city::BuildUnit;
 pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
+pub use scenario::Scenario;
 use terrain::Terrain;
 use turn::Phase;
-pub use ui::{quit_prompt, ui_projection};
+pub use ui::{quit_prompt, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
 
 const GRID_RADIUS: i32 = 3;
@@ -44,6 +48,9 @@ Controls:
   Shift-click any hex in range to attack that square instead: whoever stands there when the attack resolves gets hit.
   A unit can queue a move and an attack; it attacks from its new hex.
   Ctrl-click an adjacent ally to swap places with it.
+  Alt-drag a box (or Alt-click units) to select a group: clicking a hex sends each member as
+  close to it as it can get, and clicking an enemy has every member in range attack it.
+  Queued attacks are drawn as arrows from the attacker (or its ghost) to the target.
   Units can't move through occupied hexes, and two allies can't head for the same hex.
   Space holds the selected unit: it keeps any orders already queued and skips the rest.
   G guards it instead: it stays put and is skipped every turn until given an order.
@@ -56,7 +63,8 @@ Controls:
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
   1-4 queue city units: melee, ranged, cavalry, siege. F founds with a settler.
-  F1 resets to combat; F2 resets to cities; F3 starts the settler frontier.
+  F1 combat, F2 cities, F3 settler frontier (again to restart). F6 saves a snapshot, F7 loads it, F8 plays turns all at once.
+  The faded DEBUG panel at the top-left has buttons for these.
   Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
   F5 toggles fullscreen.
 Turn order:
@@ -76,6 +84,7 @@ Terrain:
   Hills (small peaks): +25% defense for the unit standing there.
   Mountains (large snowy peak): impassable.";
 
+#[derive(Clone)]
 pub struct GameState {
     cities: Vec<city::City>,
     sites: std::collections::HashMap<Hex, city::Site>,
@@ -96,6 +105,18 @@ pub struct GameState {
     units: Vec<Unit>,
     /// Index into `units` of the player's selected unit.
     selected: Option<usize>,
+    /// Several units selected together (see `group.rs`), in place of
+    /// `selected`; empty unless at least two are.
+    group: Vec<usize>,
+    /// Which test scenario this is, for restarting it.
+    scenario: Scenario,
+    /// A snapshot of the game saved for testing (F6), restored by F7.
+    savestate: Option<Box<GameState>>,
+    /// Attack animations playing out, with how many seconds each has run.
+    effects: Vec<(effects::Effect, f32)>,
+    /// Debug setting (F8): play a turn's steps all at once instead of one
+    /// every `STEP_INTERVAL`. Kept across scenario switches and loads.
+    instant_playback: bool,
     turn: u32,
     pub camera: Camera,
     rng: ThreadRng,
@@ -160,6 +181,11 @@ impl GameState {
             grid: HexGrid::new(GRID_RADIUS, terrain),
             units,
             selected: None,
+            group: Vec::new(),
+            scenario: Scenario::Combat,
+            savestate: None,
+            effects: Vec::new(),
+            instant_playback: false,
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
             rng: rand::rng(),
@@ -178,6 +204,7 @@ impl GameState {
 
     pub fn city_scenario() -> Self {
         let mut game = Self::new();
+        game.scenario = Scenario::Cities;
         game.setup_cities();
         game.start_on_whole_map();
         game
@@ -186,6 +213,7 @@ impl GameState {
     /// Fresh economy match: each side begins with one settler and no city.
     pub fn frontier_scenario() -> Self {
         let mut game = Self::new();
+        game.scenario = Scenario::Frontier;
         game.units.clear();
         game.setup_frontier();
         game.start_on_whole_map();
@@ -797,6 +825,42 @@ mod tests {
             .unwrap();
         game.try_queue_move(melee, open);
         assert!(!game.units[melee].guarding);
+    }
+
+    #[test]
+    fn a_queued_attack_draws_an_arc() {
+        let mut game = GameState::new();
+        let ranged = find(&game, Team::Blue, UnitType::Ranged);
+        let before = game.build_vertices().len();
+        game.try_queue_attack(ranged, Hex::new(0, 1));
+        assert!(game.units[ranged].planned_attack.is_some());
+        assert!(game.build_vertices().len() > before);
+
+        // The AI's attacks aren't drawn.
+        let with_ours = game.build_vertices().len();
+        let enemy = find(&game, Team::Red, UnitType::Ranged);
+        game.units[enemy].planned_attack = Some(Hex::new(0, 1));
+        assert_eq!(game.build_vertices().len(), with_ours);
+    }
+
+    #[test]
+    fn a_resolved_attack_animates_and_clears_its_arrow() {
+        let mut game = GameState::new();
+        let ranged = find(&game, Team::Blue, UnitType::Ranged);
+        // An empty hex: the shot plays out as a miss.
+        game.try_queue_attack(ranged, Hex::new(0, 1));
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert_eq!(game.units[ranged].planned_attack, None);
+        assert!(matches!(
+            game.effects[..],
+            [(
+                effects::Effect::Shot {
+                    outcome: effects::Outcome::Miss,
+                    ..
+                },
+                _
+            )]
+        ));
     }
 
     #[test]

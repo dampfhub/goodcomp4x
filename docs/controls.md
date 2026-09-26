@@ -10,6 +10,10 @@ red queues its orders when you end planning. There is no save system yet.
 | Click enemy in range | Queue attack |
 | Shift-click tile in range | Attack that tile, even if currently empty |
 | Ctrl-click adjacent ally | Queue a swap |
+| Alt-drag a box | Select every one of your units inside it as a group |
+| Alt-click a unit | Add it to, or remove it from, the selection |
+| Click a hex with a group | Each member moves as close to it as it can get |
+| Click an enemy with a group | Every member in range attacks it (again to call it off) |
 | Right-click map | Queue move to an open hex, or attack an enemy; with Move/Attack/Swap armed, disarm it instead |
 | Ctrl-right-click | Clear selected unit's orders, hold and guard |
 | Q / ability button | Toggle ability |
@@ -25,9 +29,16 @@ red queues its orders when you end planning. There is no save system yet.
 | Y / Yields button in city view | Show or hide tile yields around the city |
 | Rest the cursor on a hex | After 0.75s, a tooltip shows its terrain, yields, and what's on it |
 | Hold Escape for 1s | Quit the game (a prompt shows while it's held) |
-| F1 | Reset to original combat scenario; discards current match |
-| F2 | Reset to city scenario; discards current match |
-| F3 | Start the frontier scenario; both sides begin with a settler |
+| F1 | Start the original combat scenario (again to restart it) |
+| F2 | Start the city scenario (again to restart it) |
+| F3 | Start the frontier scenario, a settler each (again to restart it) |
+| F6 | Save a snapshot of the whole game (testing savestate) |
+| F7 | Load the snapshot; it's kept, so it can be loaded again |
+| F8 | Toggle turn playback: step by step, or every step at once (same outcome) |
+
+The faded DEBUG panel at the top-left has buttons for F1-F3 and F6-F8; the
+current scenario is gold. The savestate lives only until the game closes and
+survives switching scenarios; loading it returns to its scenario.
 | F5 | Toggle borderless fullscreen |
 | F, with a selected settler | Found a city |
 | 1 / 2 / 3 / 4 in city view | Queue melee / ranged / cavalry / siege |
@@ -46,6 +57,12 @@ the left button pans instead, without selecting a tile or issuing an order.
 Abilities: melee Shield Wall improves defense but prevents movement; ranged
 Volley deals reduced splash damage; cavalry Charge improves movement and attack;
 siege Deploy spends a turn setting up for longer range, with Q again to pack up.
+
+Your queued attacks show as orange arrows from the attacker (or its ghost) to
+the target; the AI's don't. As the turn plays out, each attack's arrow shoots
+to its target: a burst means it hit, a grey MISS that the hex was empty, and
+OUT OF RANGE that the target moved away first. Damage numbers rise from every
+unit hurt, attackers taking retaliation included.
 
 Cities appear as team-colored H squares. F/M/P label preplaced farms, mines,
 and pastures; brown lines are dirt roads. Hover over a city or select it to see

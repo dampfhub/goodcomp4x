@@ -8,7 +8,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::game::{ClickMode, GameState, font_atlas, quit_prompt, ui_projection};
+use crate::game::{
+    ClickMode, GameState, Scenario, font_atlas, quit_prompt, selection_box, ui_projection,
+};
 use crate::icon;
 use crate::renderer::{DrawBatch, Renderer};
 
@@ -46,6 +48,8 @@ pub struct App {
     /// When Escape was pressed, while it's held; the game quits once it's
     /// been held for `QUIT_HOLD`.
     quit_held_since: Option<Instant>,
+    /// Where an Alt-drag selection box started, while the button is down.
+    box_start: Option<Vec2>,
 }
 
 impl Default for App {
@@ -62,6 +66,7 @@ impl Default for App {
             left_dragging: false,
             modifiers: Modifiers::default(),
             quit_held_since: None,
+            box_start: None,
         }
     }
 }
@@ -172,12 +177,18 @@ impl ApplicationHandler for App {
                 self.cursor_pos = None;
                 // The release may never arrive once focus is gone.
                 self.quit_held_since = None;
+                self.box_start = None;
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) => {
                     if let Some(cursor) = self.cursor_pos {
                         let keys = self.modifiers.state();
+                        // Alt starts a selection box instead of a click or pan.
+                        if keys.alt_key() {
+                            self.box_start = Some(cursor);
+                            return;
+                        }
                         let mode = if keys.shift_key() {
                             ClickMode::Attack
                         } else if keys.control_key() {
@@ -190,6 +201,17 @@ impl ApplicationHandler for App {
                     }
                 }
                 (ElementState::Released, MouseButton::Left) => {
+                    if let (Some(start), Some(end), Some(size)) =
+                        (self.box_start.take(), self.cursor_pos, self.screen_size())
+                    {
+                        // Barely moving makes it an Alt-click on one unit.
+                        if start.distance(end) < DRAG_THRESHOLD {
+                            self.game.toggle_in_selection(end, size);
+                        } else {
+                            self.game.select_in_box(start, end, size);
+                        }
+                        return;
+                    }
                     if let Some((origin, mode, may_click)) = self.left_press.take()
                         && !self.left_dragging
                         && may_click
@@ -267,12 +289,15 @@ impl ApplicationHandler for App {
                 KeyCode::Digit4 => self
                     .game
                     .queue_selected_city_unit(crate::game::BuildUnit::Siege),
-                KeyCode::F1 => self.game = GameState::new(),
-                KeyCode::F2 => self.game = GameState::city_scenario(),
-                KeyCode::F3 => self.game = GameState::frontier_scenario(),
+                KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
+                KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),
+                KeyCode::F3 => self.game.switch_scenario(Scenario::Frontier),
                 KeyCode::KeyY => self.game.toggle_yields(),
                 KeyCode::KeyG => self.game.toggle_guard(),
                 KeyCode::F5 => self.toggle_fullscreen(),
+                KeyCode::F6 => self.game.save_state(),
+                KeyCode::F7 => self.game.load_state(),
+                KeyCode::F8 => self.game.toggle_instant_playback(),
                 _ => {}
             },
             WindowEvent::RedrawRequested => {
@@ -302,6 +327,11 @@ impl ApplicationHandler for App {
                         return;
                     }
                     ui.extend(quit_prompt(progress, size));
+                }
+                if let (Some(start), Some(end)) = (self.box_start, self.cursor_pos)
+                    && start.distance(end) >= DRAG_THRESHOLD
+                {
+                    ui.extend(selection_box(start, end, size));
                 }
                 let batches = [
                     DrawBatch {

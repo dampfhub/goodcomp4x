@@ -77,6 +77,7 @@ impl UnitType {
     }
 }
 
+#[derive(Clone)]
 pub struct Unit {
     pub id: u32,
     pub pos: Hex,

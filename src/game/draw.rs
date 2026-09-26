@@ -1,7 +1,7 @@
 //! Builds each frame's geometry from the game state.
 
-use std::collections::HashSet;
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
+use std::collections::{HashMap, HashSet};
+use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::Vec2;
 
@@ -78,9 +78,21 @@ const GHOST_FAN_RADIUS: f32 = HEX_SIZE * 0.3;
 const SWAP_LINK_WIDTH: f32 = 0.1;
 const SWAP_LINK_ALPHA: f32 = 0.8;
 
-const ATTACK_MARKER_RADIUS: f32 = HEX_SIZE * 0.16;
-const ATTACK_MARKER_OFFSET: Vec2 = Vec2::new(0.5, 0.5);
-const ATTACK_MARKER_FAN_RADIUS: f32 = HEX_SIZE * 0.18;
+/// A queued attack is drawn as a curved arrow from the attacker (or its ghost,
+/// if it's moving first) to the hex it's attacking.
+const ATTACK_ARC_COLOR: Color = [1.00, 0.45, 0.30, 1.0];
+const ATTACK_ARC_OUTLINE_COLOR: Color = [0.08, 0.03, 0.02, 1.0];
+const ATTACK_ARC_WIDTH: f32 = 0.07;
+const ATTACK_ARC_OUTLINE_WIDTH: f32 = 0.13;
+/// How far the arc bows sideways, as a share of its length.
+const ATTACK_ARC_BOW: f32 = 0.25;
+/// The arc starts at the edge of the attacker's icon and stops short of the
+/// target's center, so a unit drawn there doesn't hide the arrowhead.
+const ATTACK_ARC_START: f32 = UNIT_ICON_RADIUS;
+const ATTACK_ARC_STOP: f32 = HEX_SIZE * 0.55;
+const ATTACK_ARC_SEGMENTS: usize = 20;
+const ATTACK_ARROW_LENGTH: f32 = 0.28;
+const ATTACK_ARROW_WIDTH: f32 = 0.26;
 
 /// What the selected unit can do this turn, computed once per frame.
 struct Selection {
@@ -148,6 +160,7 @@ impl GameState {
         }
 
         self.push_tile_yields(&mut out);
+        self.push_effects(&mut out);
         out
     }
 
@@ -160,6 +173,8 @@ impl GameState {
             .map(|i| self.units[i].id)
             .collect();
 
+        // Where each moving unit's ghost is drawn, for its attack arc.
+        let mut ghosts: HashMap<u32, Vec2> = HashMap::new();
         let plain_moves = group_by_target(&self.units, |u| {
             u.planned_move.filter(|_| !swapping.contains(&u.id))
         });
@@ -168,6 +183,7 @@ impl GameState {
                 let pos = fan_position(hex.to_world(), i, movers.len(), GHOST_FAN_RADIUS);
                 let color = with_alpha(unit.team.color(), GHOST_ALPHA);
                 push_unit_icon(pos, unit, self.unit_letter(unit), 1.0, color, out);
+                ghosts.insert(unit.id, pos);
             }
         }
 
@@ -179,13 +195,21 @@ impl GameState {
             }
         }
 
-        for (hex, attackers) in group_by_target(&self.units, |u| u.planned_attack) {
-            let base = hex.to_world() + ATTACK_MARKER_OFFSET;
-            for (i, unit) in attackers.iter().enumerate() {
-                let pos = fan_position(base, i, attackers.len(), ATTACK_MARKER_FAN_RADIUS);
-                let color = unit.team.color();
-                mesh::regular_polygon(pos, ATTACK_MARKER_RADIUS, 4, FRAC_PI_4, color, out);
-            }
+        // Only the player's own attacks: the AI's plans aren't theirs to see.
+        for (idx, unit) in self.units.iter().enumerate() {
+            let Some(target) = unit
+                .planned_attack
+                .filter(|_| self.is_player_controlled(idx))
+            else {
+                continue;
+            };
+            // Swapping units attack from their partner's hex.
+            let from = match ghosts.get(&unit.id) {
+                Some(&ghost) => ghost,
+                None if unit.planned_move.is_some() => unit.planned_pos().to_world(),
+                None => self.unit_layout(idx).0,
+            };
+            push_attack_arc(from, target.to_world(), out);
         }
     }
 
@@ -214,7 +238,8 @@ impl GameState {
         if !terrain.is_passable() {
             return base;
         }
-        if selection.is_some_and(|sel| sel.pos == hex) {
+        let in_group = self.group.iter().any(|&i| self.units[i].pos == hex);
+        if in_group || selection.is_some_and(|sel| sel.pos == hex) {
             return SELECTED_COLOR;
         }
         if self.is_contested(hex) {
@@ -453,6 +478,53 @@ fn fan_position(base: Vec2, index: usize, total: usize, radius: f32) -> Vec2 {
         return base;
     }
     base + Vec2::from_angle(TAU * index as f32 / total as f32) * radius
+}
+
+/// A queued attack's arrow from `from` toward `to`.
+fn push_attack_arc(from: Vec2, to: Vec2, out: &mut Vec<Vertex>) {
+    let points = attack_arc_points(from, to, 1.0);
+    push_arrow(&points, ATTACK_ARC_COLOR, ATTACK_ARC_OUTLINE_COLOR, out);
+}
+
+/// Points along an attack's curve from `from` toward `to`: a quadratic curve
+/// bowing to the left of the direction of travel (so opposing attacks
+/// between two hexes don't overlap), from the edge of the attacker's icon to
+/// just short of the target. Only the first `progress` (0 to 1) of it, for an
+/// arrow still in flight. Empty if the two are too close for an arrow.
+pub(super) fn attack_arc_points(from: Vec2, to: Vec2, progress: f32) -> Vec<Vec2> {
+    let chord = to - from;
+    let length = chord.length();
+    if length <= ATTACK_ARC_START + ATTACK_ARC_STOP || progress <= 0.0 {
+        return Vec::new();
+    }
+    let control = (from + to) / 2.0 + chord.perp() * ATTACK_ARC_BOW;
+    let point = |t: f32| from.lerp(control, t).lerp(control.lerp(to, t), t);
+    let start = ATTACK_ARC_START / length;
+    let end = start + (1.0 - ATTACK_ARC_STOP / length - start) * progress.min(1.0);
+    (0..=ATTACK_ARC_SEGMENTS)
+        .map(|i| point(start + (end - start) * i as f32 / ATTACK_ARC_SEGMENTS as f32))
+        .collect()
+}
+
+/// Draws an arrow along `points` over a darker outline, its head at the last
+/// point.
+pub(super) fn push_arrow(points: &[Vec2], color: Color, outline: Color, out: &mut Vec<Vertex>) {
+    let &[.., before, tip] = points else {
+        return;
+    };
+    let direction = (tip - before).normalize_or_zero();
+    for (width, color) in [
+        (ATTACK_ARC_OUTLINE_WIDTH, outline),
+        (ATTACK_ARC_WIDTH, color),
+    ] {
+        mesh::polyline(points, width, color, out);
+        // The outline pass draws its arrowhead a little bigger all round.
+        let grow = (width - ATTACK_ARC_WIDTH) / 2.0;
+        let base = tip - direction * grow;
+        let side = direction.perp() * (ATTACK_ARROW_WIDTH / 2.0 + grow);
+        let point = tip + direction * (ATTACK_ARROW_LENGTH + grow);
+        mesh::triangle(point, base + side, base - side, color, out);
+    }
 }
 
 /// A polygon whose side count encodes the unit type, with `letter` on top.

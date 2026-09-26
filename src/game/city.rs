@@ -9,6 +9,7 @@ use super::{GameState, PLAYER_TEAM};
 /// Camera zoom the city scenarios start at: most of the radius-six map in view.
 const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
 
+#[derive(Clone)]
 pub(super) struct City {
     pub id: u32,
     pub team: Team,
@@ -71,6 +72,7 @@ impl BuildUnit {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct Site {
     pub team: Team,
     pub food: i32,
@@ -488,6 +490,7 @@ impl GameState {
     pub(super) fn open_city(&mut self, i: usize) {
         self.selected_city = Some(i);
         self.selected = None;
+        self.group.clear();
         self.ui_click_mode = None;
         self.camera.focus_on(self.cities[i].pos.to_world());
         self.notice = if self.city_needs_build(i) {

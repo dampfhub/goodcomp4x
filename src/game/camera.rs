@@ -7,6 +7,7 @@ const GLIDE_RATE: f32 = 10.0;
 
 /// Top-down orthographic camera. World +Y is screen-up, and `half_height` is
 /// the zoom level: world units from the view's center to its top edge.
+#[derive(Clone)]
 pub struct Camera {
     pub center: Vec2,
     pub half_height: f32,
@@ -66,6 +67,17 @@ impl Camera {
         )
     }
 
+    /// The reverse of `screen_to_world`: where a world point is drawn, in
+    /// pixels with the origin at the top-left.
+    pub fn world_to_screen(&self, point: Vec2, screen_size: Vec2) -> Vec2 {
+        let offset = point - self.center;
+        let ndc = Vec2::new(
+            offset.x / self.half_width(screen_size),
+            -offset.y / self.half_height,
+        );
+        (ndc + 1.0) / 2.0 * screen_size
+    }
+
     /// Positive `steps` zoom in; each step scales the view by 10%.
     pub fn zoom(&mut self, steps: f32) {
         let factor = 1.1f32.powf(-steps);
@@ -81,5 +93,24 @@ impl Camera {
 
     fn half_width(&self, screen_size: Vec2) -> f32 {
         self.half_height * screen_size.x / screen_size.y
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn world_to_screen_undoes_screen_to_world() {
+        let camera = Camera::new(Vec2::new(1.5, -2.0), 6.0);
+        let size = Vec2::new(1600.0, 900.0);
+        for cursor in [Vec2::ZERO, Vec2::new(800.0, 450.0), Vec2::new(1234.0, 56.0)] {
+            let world = camera.screen_to_world(cursor, size);
+            assert!(
+                camera
+                    .world_to_screen(world, size)
+                    .abs_diff_eq(cursor, 1e-3)
+            );
+        }
     }
 }
