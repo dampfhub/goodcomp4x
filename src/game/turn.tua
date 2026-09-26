@@ -226,9 +226,7 @@ impl GameState {
             let mut changed = false;
             for m in 0..n {
                 if !moving[m] { continue; }
-                // A `let` until the scrutinee's argument loan ends at the call (#1530).
-                let staying = self.staying_occupant(dests[m], movers, &moving);
-                if let Option.Some(occupant) = staying {
+                if let Option.Some(occupant) = self.staying_occupant(dests[m], movers, &moving) {
                     let (who, holder) = (self.units[movers[m]], self.units[occupant]);
                     info(fn() can {Out} { who.show(); Out.put(" move blocked: "); holder.show(); Out.put(" holds the hex"); });
                     moving[m] = false;
