@@ -20,6 +20,33 @@ pub fn regular_polygon(
     }
 }
 
+/// Appends the outline of a regular polygon: a band `width` thick centered on
+/// the polygon of `radius`, with mitered corners so the edges join cleanly.
+pub fn polygon_outline(
+    center: Vec2,
+    radius: f32,
+    width: f32,
+    sides: u32,
+    rotation: f32,
+    color: [f32; 4],
+    out: &mut Vec<Vertex>,
+) {
+    // Moving an edge `width / 2` along its normal moves the corners further,
+    // since they're farther from the center than the edge's midpoint.
+    let corner_offset = width / 2.0 / (std::f32::consts::PI / sides as f32).cos();
+    let corner = |i: u32, radius: f32| {
+        let angle = rotation + std::f32::consts::TAU * i as f32 / sides as f32;
+        center + Vec2::from_angle(angle) * radius
+    };
+    let (outer, inner) = (radius + corner_offset, radius - corner_offset);
+    for i in 0..sides {
+        let (a, b) = (corner(i, outer), corner(i + 1, outer));
+        let (c, d) = (corner(i, inner), corner(i + 1, inner));
+        push_triangle(out, a, b, d, color);
+        push_triangle(out, a, d, c, color);
+    }
+}
+
 /// Appends an axis-aligned filled rectangle spanning `min`..`max`.
 pub fn quad(min: Vec2, max: Vec2, color: [f32; 4], out: &mut Vec<Vertex>) {
     let bottom_right = Vec2::new(max.x, min.y);

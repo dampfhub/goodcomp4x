@@ -1233,6 +1233,43 @@ mod tests {
         assert_eq!(game.cities[city].queue, Some(BuildUnit::Cavalry));
     }
 
+    /// The city scenario with the player's city open and the camera settled on it.
+    fn city_view() -> GameState {
+        let mut game = GameState::city_scenario();
+        game.select_city();
+        game.update(10.0);
+        game
+    }
+
+    #[test]
+    fn clicking_a_unit_leaves_the_city_view() {
+        let mut game = city_view();
+        // One of the player's units drawn clear of the top bar and the tray.
+        let unit = (0..game.units.len())
+            .find(|&i| {
+                let cursor = hex_cursor(&game, game.units[i].pos);
+                game.units[i].team == Team::Blue
+                    && (100.0..500.0).contains(&cursor.y)
+                    && (0.0..SCREEN.x).contains(&cursor.x)
+            })
+            .expect("a unit in view");
+        game.handle_click(
+            hex_cursor(&game, game.units[unit].pos),
+            SCREEN,
+            ClickMode::Normal,
+        );
+        assert_eq!(game.selected_city, None);
+        assert_eq!(game.selected, Some(unit));
+    }
+
+    #[test]
+    fn clicking_the_open_city_again_closes_it() {
+        let mut game = city_view();
+        let city = game.cities[game.selected_city.unwrap()].pos;
+        game.handle_click(hex_cursor(&game, city), SCREEN, ClickMode::Normal);
+        assert_eq!(game.selected_city, None);
+    }
+
     #[test]
     fn clicks_on_a_panel_do_not_reach_the_map() {
         let mut game = GameState::new();

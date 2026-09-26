@@ -72,8 +72,10 @@ impl GameState {
             (ClickMode::Normal, Some(armed)) => armed,
             _ => mode,
         };
+        // Clicking off the map deselects, and leaves the city view.
         let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
             self.selected = None;
+            self.leave_city_view();
             return;
         };
 

@@ -60,6 +60,12 @@ const HEALTH_BAR_WIDTH: f32 = 0.9;
 const HEALTH_BAR_HEIGHT: f32 = 0.14;
 const HEALTH_BAR_OFFSET_Y: f32 = 0.78;
 
+/// Outline around each tile the hovered or selected city works.
+const WORKED_OUTLINE_RADIUS: f32 = HEX_SIZE * 0.84;
+const WORKED_OUTLINE_WIDTH: f32 = 0.06;
+const WORKED_OUTLINE_RIM_WIDTH: f32 = 0.10;
+const WORKED_OUTLINE_RIM_COLOR: Color = [0.02, 0.05, 0.03, 1.0];
+
 /// A queued move is drawn as a faded copy of the unit at its destination.
 const GHOST_ALPHA: f32 = 0.4;
 const GHOST_FAN_RADIUS: f32 = HEX_SIZE * 0.3;
@@ -287,24 +293,13 @@ impl GameState {
                 } else {
                     [1.0, 0.25, 0.2, 1.0]
                 };
-                for edge in 0..6 {
-                    let a = h.to_world() + Vec2::from_angle(TAU * edge as f32 / 6.0) * 0.91;
-                    let b = h.to_world() + Vec2::from_angle(TAU * (edge + 1) as f32 / 6.0) * 0.91;
-                    mesh::segment(a, b, 0.10, [0.02, 0.05, 0.03, 1.0], out);
-                    mesh::segment(a, b, 0.055, color, out);
-                }
-            }
-            if let Some(mut h) = self.inspected_tile {
-                while let Some(&parent) = routes.parents.get(&h) {
-                    mesh::segment(
-                        h.to_world(),
-                        parent.to_world(),
-                        0.06,
-                        [0.95, 0.9, 0.45, 1.0],
-                        out,
-                    );
-                    h = parent;
-                }
+                // A colored ring on a slightly wider dark one, just inside the
+                // hex's fill so it doesn't blur into the grid lines.
+                let center = h.to_world();
+                let radius = WORKED_OUTLINE_RADIUS;
+                let rim = WORKED_OUTLINE_RIM_COLOR;
+                mesh::polygon_outline(center, radius, WORKED_OUTLINE_RIM_WIDTH, 6, 0.0, rim, out);
+                mesh::polygon_outline(center, radius, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
             }
         }
         for (h, site) in &self.sites {

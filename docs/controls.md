@@ -49,8 +49,8 @@ Only while hovering a city, small green grain and amber hammer icons show raw fo
 with numeric counts, including zero. Dark backgrounds keep them readable.
 Icons are limited to that city's reachable and worked tiles. Selected-city outlines
 remain visible after the pointer moves away. Hover-only percentages show
-delivery efficiency, and clicking a tile draws its cheapest available route.
-The preview assumes current unit positions; combat can change the final harvest.
+delivery efficiency. They assume current unit positions; combat can change the
+final harvest.
 
 Each population works one tile and consumes 2 food per turn. The center adds
 2 food and 1 production automatically. Excess food grows population; shortages
@@ -60,9 +60,12 @@ consume reserves and eventually reduce population. New citizens need assignments
 Enemy occupation blocks transport through that hex. Roads lower transport cost,
 and goods reroute when possible. Opposing improvements and already assigned tiles
 cannot be claimed through the city panel. Both cities use the same economy rules.
-The yellow route shown after clicking a tile is that tile's cheapest logistics
-path, not a road order. Routes use total terrain/road cost, never straight-line
-distance, and cannot pass through an enemy or contested hex.
+Each tile's goods travel its cheapest logistics path. Routes use total
+terrain/road cost, never straight-line distance, and cannot pass through an
+enemy or contested hex.
+
+In the city view, clicking one of your units selects it and closes the view;
+so does clicking the city again or clicking off the map.
 
 The city tray has a green growth meter. Its fill shows food progress toward the
 next population; its label shows turns remaining. When population grows, the

@@ -89,8 +89,11 @@ All geometry is rebuilt from game state every frame.
   route costs use half-hex units. Enemy occupation blocks routes; alternatives
   are recalculated. Income is applied once after all eight combat steps.
 - C opens the player's city; click tiles to assign/release citizens, A auto-assigns,
-  Escape/Tab returns to units. The panel and map show income and route previews.
-- City hover or selection outlines worked tiles green (red if disrupted).
+  Escape/Tab returns to units. Clicking one of your units in the city view
+  selects it and leaves the view; so does clicking the city again or off the map.
+  The panel shows income and the clicked tile's yield and delivery share.
+- City hover or selection outlines worked tiles green (red if disrupted), with
+  `mesh::polygon_outline` rings so the corners join cleanly.
   Tile badges show raw food as green grain and production as amber hammers,
   with numeric counts. Badges and delivery percentages appear only while hovering
   a city; badges cover its reachable/worked tiles. Selection alone keeps outlines.
@@ -107,7 +110,7 @@ All geometry is rebuilt from game state every frame.
   selected player's city, while the AI settles at its first resolution.
 - Logistics uses weighted shortest paths, not radius or line distance. Enemy and
   contested hexes block every route; a longer off-road detour delivers less.
-  Clicking a city tile previews that route. The city tray shows growth percent
+  The city tray shows growth percent
   and turns remaining. On growth or route disruption, citizen reconciliation
   keeps valid manual assignments and fills/replaces the affected slot.
 - UI (`ui.rs`): each frame is laid out once into a `Layout` (panels, text,

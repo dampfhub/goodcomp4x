@@ -80,7 +80,6 @@ pub(super) struct Site {
 
 pub(super) struct Routes {
     pub costs: HashMap<Hex, i32>,
-    pub parents: HashMap<Hex, Hex>,
 }
 
 pub(super) fn delivered_share(cost: i32) -> i32 {
@@ -300,7 +299,6 @@ impl GameState {
         let city = &self.cities[city];
         let mut result = Routes {
             costs: HashMap::new(),
-            parents: HashMap::new(),
         };
         if self.enemy_of_team_at(city.pos, city.team).is_some() {
             return result;
@@ -336,7 +334,6 @@ impl GameState {
                 let total = cost + step;
                 if total <= 8 && result.costs.get(&n).is_none_or(|old| total < *old) {
                     result.costs.insert(n, total);
-                    result.parents.insert(n, hex);
                 }
             }
         }
@@ -476,13 +473,19 @@ impl GameState {
         }
     }
 
+    /// Escape (or clicking the open city again): back to the units, selecting
+    /// the next one that needs orders.
     pub fn close_city(&mut self) {
         if self.is_resolving() {
             return;
         }
+        self.leave_city_view();
+        self.select_next_unit();
+    }
+
+    pub(super) fn leave_city_view(&mut self) {
         self.selected_city = None;
         self.inspected_tile = None;
-        self.select_next_unit();
     }
 
     pub(super) fn city_click(&mut self, hex: Hex) -> bool {
@@ -498,6 +501,17 @@ impl GameState {
             return false;
         }
         let i = self.selected_city.unwrap();
+        // Selecting one of your units, or clicking the city itself again,
+        // leaves the city view.
+        if let Some(unit) = self.controlled_unit_at(hex) {
+            self.leave_city_view();
+            self.selected = Some(unit);
+            return true;
+        }
+        if hex == self.cities[i].pos {
+            self.close_city();
+            return true;
+        }
         self.inspected_tile = Some(hex);
         if let Some(at) = self.cities[i].worked.iter().position(|h| *h == hex) {
             self.cities[i].worked.remove(at);
