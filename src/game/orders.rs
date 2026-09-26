@@ -72,6 +72,30 @@ impl GameState {
             return;
         };
 
+        // The preview badge is smaller than the hex. On a worked tile its
+        // center picks up the planned building; the rest remains available
+        // for manager and citizen clicks.
+        if mode == ClickMode::Normal
+            && let Some(city) = self.selected_city
+            && self.placing_building.is_none()
+            && self.moving_manager.is_none()
+            && self
+                .camera
+                .screen_to_world(cursor, screen_size)
+                .distance(hex.to_world())
+                <= 0.34
+            && let Some(building) = [
+                super::city::Building::Barracks,
+                super::city::Building::Mill,
+                super::city::Building::Workshop,
+            ]
+            .into_iter()
+            .find(|building| self.cities[city].planned_sites.get(building) == Some(&hex))
+        {
+            self.change_selected_building_site(building);
+            return;
+        }
+
         if self.city_click(hex) {
             return;
         }

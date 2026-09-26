@@ -63,9 +63,9 @@ Controls:
   Enter or End Turn holds unfinished units and ends the turn. Cities still need a build queued.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
-  1-4 queue city units; 5/6 queue Granary/Barracks. Click queue controls to reorder or remove items;
+  1-4 queue city units; 5-8 queue buildings. Drag queue rows to reorder or click X to remove;
   Backspace removes the active city build and PageDown promotes the next item. F founds with a settler.
-  F1 combat, F2 cities, F3 settler frontier, F4 random world (again to restart; F4 makes a new map). F6 saves a snapshot, F7 loads it, F8 plays turns all at once, F9 toggles fog of war.
+  F1 combat, F2 cities, F3 settler frontier, F4 random world (again to restart; F4 makes a new map). F6 saves a snapshot, F7 loads it, F8 changes playback, F9 completes production, F10 toggles fog of war.
   The faded DEBUG panel at the top-left has buttons for these.
   Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
   F5 toggles fullscreen.
@@ -91,7 +91,7 @@ Terrain:
   rivers: land beside a river or lake has fresh water, +1 food.
 Fog of war:
   Hexes you have never seen are blank. Hexes seen before but out of sight now are greyed and
-  show what was there when you last saw them: enemy units, cities, improvements and roads. Units see 2 hexes (scouts and cavalry 3, +1 on hills), cities 3. F9 toggles it.";
+  show what was there when you last saw them: enemy units, cities, improvements and roads. Units see 2 hexes (scouts and cavalry 3, +1 on hills), cities 3. F10 toggles it.";
 
 #[derive(Clone)]
 pub struct GameState {
@@ -103,9 +103,8 @@ pub struct GameState {
     selected_barracks: Option<usize>,
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option<usize>,
-    /// City whose Barracks site is being chosen. This is deliberately
-    /// separate from city selection so a placement click returns to normal UI.
-    placing_barracks: Option<usize>,
+    /// City and building whose site is being chosen.
+    placing_building: Option<(usize, city::Building)>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
@@ -115,6 +114,9 @@ pub struct GameState {
     hover_seconds: f32,
     ui_click_mode: Option<orders::ClickMode>,
     inspected_tile: Option<Hex>,
+    city_queue_scroll: usize,
+    barracks_queue_scroll: usize,
+    queue_drag: Option<ui::QueueDrag>,
     notice: String,
     grid: HexGrid,
     /// Living units only: a unit is removed the moment it dies.
@@ -135,7 +137,7 @@ pub struct GameState {
     /// Debug setting (F8): play a turn's steps all at once instead of one
     /// every `STEP_INTERVAL`. Kept across scenario switches and loads.
     instant_playback: bool,
-    /// Debug setting (F9): hide what the player's side can't see (`fog.rs`).
+    /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
     /// Kept across scenario switches and loads.
     fog_of_war: bool,
     /// Every hex the player's side has seen, as it last saw it.
@@ -196,13 +198,16 @@ impl GameState {
             selected_city: None,
             selected_barracks: None,
             moving_manager: None,
-            placing_barracks: None,
+            placing_building: None,
             hovered_city: None,
             show_yields: true,
             hovered_tile: None,
             hover_seconds: 0.0,
             ui_click_mode: None,
             inspected_tile: None,
+            city_queue_scroll: 0,
+            barracks_queue_scroll: 0,
+            queue_drag: None,
             notice: String::new(),
             grid: HexGrid::new(GRID_RADIUS, terrain),
             units,

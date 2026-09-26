@@ -5,9 +5,9 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, FRAC_PI_8, TAU};
 
 use glam::Vec2;
 
+use super::fog::{Fog, SeenBuilding};
 use super::hex::{HEX_SIZE, Hex, HexGrid, edge_corners};
 use super::orders::ClickMode;
-use super::fog::{Fog, SeenBuilding};
 use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, Unit, UnitStats, UnitType};
@@ -250,13 +250,19 @@ impl GameState {
                     mesh::segment(a, b, FOG_EDGE_WIDTH, FOG_EDGE_COLOR, out);
                     // Round the joints where edges meet at a corner.
                     for p in [a, b] {
-                        mesh::regular_polygon(p, FOG_EDGE_WIDTH / 2.0, 10, 0.0, FOG_EDGE_COLOR, out);
+                        mesh::regular_polygon(
+                            p,
+                            FOG_EDGE_WIDTH / 2.0,
+                            10,
+                            0.0,
+                            FOG_EDGE_COLOR,
+                            out,
+                        );
                     }
                 }
             }
         }
     }
-
 }
 
 /// A few faint, soft puffs over a remembered hex, so the grey veil reads as
@@ -264,7 +270,8 @@ impl GameState {
 /// they stay put frame to frame and differ between neighbors. They stay
 /// inside the hex, clear of the fog's edge.
 fn push_cloud_puffs(hex: Hex, out: &mut Vec<Vertex>) {
-    let mut bits = (hex.q as u32).wrapping_mul(0x9E37_79B1) ^ (hex.r as u32).wrapping_mul(0x85EB_CA77);
+    let mut bits =
+        (hex.q as u32).wrapping_mul(0x9E37_79B1) ^ (hex.r as u32).wrapping_mul(0x85EB_CA77);
     let mut next = || {
         bits ^= bits << 13;
         bits ^= bits >> 17;
@@ -404,7 +411,13 @@ impl GameState {
             for n in h.neighbors() {
                 let city = !view.roads.contains(&n);
                 if joins(n) && (city || (h.q, h.r) < (n.q, n.r)) {
-                    mesh::segment(h.to_world(), n.to_world(), 0.09, [0.65, 0.45, 0.24, 1.0], out);
+                    mesh::segment(
+                        h.to_world(),
+                        n.to_world(),
+                        0.09,
+                        [0.65, 0.45, 0.24, 1.0],
+                        out,
+                    );
                 }
             }
         }
@@ -418,10 +431,17 @@ impl GameState {
                 if self.yields_city() != Some(i) {
                     continue;
                 }
+                let food_share = self.mill_food_share(i, *h, *cost);
+                let production_share = super::city::delivered_share(*cost);
+                let label = if food_share == production_share {
+                    format!("{}%", food_share * 25)
+                } else {
+                    format!("F{} P{}", food_share * 25, production_share * 25)
+                };
                 font::push_text(
                     h.to_world() + Vec2::new(-0.3, 0.52),
                     0.18,
-                    &format!("{}%", super::city::delivered_share(*cost) * 25),
+                    &label,
                     [0.65, 0.85, 0.65, 1.0],
                     out,
                 );
@@ -506,32 +526,47 @@ impl GameState {
             push_barracks_marker(hex.to_world(), barracks.team.color(), out);
             push_health_bar(hex.to_world(), barracks.health, 0.7, out);
         }
-        // A Barracks under construction follows the map hover, with a bright
-        // placement ring. The selected site remains as a faint preview until
-        // the player confirms the finished building.
+        for city in &self.cities {
+            for (building, hex) in [
+                (super::city::Building::Mill, city.mill),
+                (super::city::Building::Workshop, city.workshop),
+            ] {
+                let Some(hex) = hex else {
+                    continue;
+                };
+                if city.team != PLAYER_TEAM && !fog.sees(hex) {
+                    continue;
+                }
+                let (badge, color) = building_badge(building);
+                mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, color, out);
+                font::push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
+            }
+        }
+        // Planned sites stay visible until confirmation. An active placement
+        // also follows the map hover before a site has been selected.
         for (i, city) in self.cities.iter().enumerate() {
-            if city.planned_barracks.is_none() {
+            if city.team != PLAYER_TEAM {
                 continue;
             }
-            let valid = |hex: Hex| {
-                self.grid.is_passable(hex)
-                    && self.is_explored(hex)
-                    && !self.cities.iter().any(|c| c.pos == hex)
-            };
-            let preview = if self.placing_barracks == Some(i) {
-                self.hovered_tile
-                    .filter(|h| valid(*h))
-                    .or(city.planned_barracks)
-            } else {
-                city.planned_barracks
-            };
-            if let Some(hex) = preview {
-                let is_hovered = self.hovered_tile == Some(hex);
-                let color = if is_hovered {
-                    [1.0, 0.72, 0.20, 0.95]
+            for building in [
+                super::city::Building::Barracks,
+                super::city::Building::Mill,
+                super::city::Building::Workshop,
+            ] {
+                let planned = city.planned_sites.get(&building).copied();
+                let preview = if self.placing_building == Some((i, building)) {
+                    self.hovered_tile
+                        .filter(|&h| self.site_available(i, building, h))
+                        .or(planned)
                 } else {
-                    [0.85, 0.42, 0.18, 0.55]
+                    planned
                 };
+                let Some(hex) = preview else {
+                    continue;
+                };
+                let (badge, mut color) = building_badge(building);
+                let is_hovered = self.hovered_tile == Some(hex);
+                color[3] = if is_hovered { 0.95 } else { 0.55 };
                 mesh::polygon_outline(
                     hex.to_world(),
                     WORKED_OUTLINE_RADIUS,
@@ -541,7 +576,15 @@ impl GameState {
                     color,
                     out,
                 );
-                push_barracks_marker(hex.to_world(), with_alpha(city.team.color(), 0.5), out);
+                mesh::regular_polygon(
+                    hex.to_world(),
+                    0.31,
+                    4,
+                    FRAC_PI_4,
+                    [color[0], color[1], color[2], 0.48],
+                    out,
+                );
+                font::push_glyph(hex.to_world(), 0.30, badge, [0.08, 0.05, 0.03, 0.65], out);
             }
         }
         for (hex, city) in &view.cities {
@@ -554,7 +597,8 @@ impl GameState {
     /// elsewhere. The player's own cities and barracks always show.
     fn map_view(&self, fog: &Fog) -> MapView {
         let mut view = MapView::default();
-        view.roads.extend(self.roads.iter().filter(|h| fog.sees(**h)));
+        view.roads
+            .extend(self.roads.iter().filter(|h| fog.sees(**h)));
         for (&h, site) in self.sites.iter().filter(|(h, _)| fog.sees(**h)) {
             view.sites.push((h, site.label, site.team));
         }
@@ -568,7 +612,8 @@ impl GameState {
                 granary: city.built.contains(&super::city::Building::Granary),
             };
             if own || fog.sees(city.pos) {
-                view.cities.push((city.pos, seen(city.hp / super::city::CITY_MAX_HP)));
+                view.cities
+                    .push((city.pos, seen(city.hp / super::city::CITY_MAX_HP)));
             }
             if let Some(hex) = city.barracks.filter(|h| own || fog.sees(*h)) {
                 let health = city.barracks_hp / super::city::BARRACKS_MAX_HP;
@@ -629,6 +674,15 @@ struct MapView {
     sites: Vec<(Hex, &'static str, Team)>,
     cities: Vec<(Hex, SeenBuilding)>,
     barracks: Vec<(Hex, SeenBuilding)>,
+}
+
+fn building_badge(building: super::city::Building) -> (char, Color) {
+    match building {
+        super::city::Building::Barracks => ('B', [0.72, 0.35, 0.18, 1.0]),
+        super::city::Building::Mill => ('M', [0.35, 0.65, 0.28, 1.0]),
+        super::city::Building::Workshop => ('W', [0.38, 0.52, 0.82, 1.0]),
+        super::city::Building::Granary => unreachable!(),
+    }
 }
 
 /// Short dashes communicate a labor relationship without looking like a road.
@@ -777,7 +831,13 @@ fn push_tile_symbols(center: Vec2, tile: Tile, out: &mut Vec<Vertex>) {
             for (x, y) in [(-0.34, -0.52), (0.0, -0.62), (0.34, -0.52)] {
                 let base = center + Vec2::new(x, y);
                 for dx in [-0.06, 0.0, 0.06] {
-                    mesh::segment(base + Vec2::new(dx, 0.0), base + Vec2::new(dx, 0.13), 0.02, REED_COLOR, out);
+                    mesh::segment(
+                        base + Vec2::new(dx, 0.0),
+                        base + Vec2::new(dx, 0.13),
+                        0.02,
+                        REED_COLOR,
+                        out,
+                    );
                 }
             }
         }
@@ -965,9 +1025,23 @@ fn push_unit_icon(
         mesh::regular_polygon(center, radius * 0.68, sides, rotation, pale, out);
     }
     let outline = with_alpha(ICON_OUTLINE_COLOR, alpha);
-    mesh::polygon_outline(center, radius, ICON_OUTLINE_WIDTH * scale, sides, rotation, outline, out);
+    mesh::polygon_outline(
+        center,
+        radius,
+        ICON_OUTLINE_WIDTH * scale,
+        sides,
+        rotation,
+        outline,
+        out,
+    );
     let label_color = with_alpha(LABEL_COLOR, alpha);
-    font::push_glyph(center, LABEL_HEIGHT * scale * size, look.letter, label_color, out);
+    font::push_glyph(
+        center,
+        LABEL_HEIGHT * scale * size,
+        look.letter,
+        label_color,
+        out,
+    );
 }
 
 /// Axis-aligned rectangles in `color` with a dark border, the border drawn
@@ -987,7 +1061,8 @@ fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec<Verte
 /// A city: a crenellated tower in its team's color with its population on
 /// it, and a small gold granary beside it once it has one.
 fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
-    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| (pos + Vec2::new(x0, y0), pos + Vec2::new(x1, y1));
+    let rect =
+        |x0: f32, y0: f32, x1: f32, y1: f32| (pos + Vec2::new(x0, y0), pos + Vec2::new(x1, y1));
     push_outlined_rects(
         &[
             rect(-0.42, -0.4, 0.42, 0.24),
@@ -1000,10 +1075,23 @@ fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
         out,
     );
     let digits = city.population.to_string();
-    font::push_text(pos + Vec2::new(-0.11 * digits.len() as f32, -0.08), 0.3, &digits, LABEL_COLOR, out);
+    font::push_text(
+        pos + Vec2::new(-0.11 * digits.len() as f32, -0.08),
+        0.3,
+        &digits,
+        LABEL_COLOR,
+        out,
+    );
     if city.granary {
         let at = pos + Vec2::new(0.46, -0.42);
-        mesh::regular_polygon(at, 0.15 + ICON_OUTLINE_WIDTH, 16, 0.0, ICON_OUTLINE_COLOR, out);
+        mesh::regular_polygon(
+            at,
+            0.15 + ICON_OUTLINE_WIDTH,
+            16,
+            0.0,
+            ICON_OUTLINE_COLOR,
+            out,
+        );
         mesh::regular_polygon(at, 0.15, 16, 0.0, GRANARY_COLOR, out);
         font::push_glyph(at, 0.16, 'G', LABEL_COLOR, out);
     }
@@ -1028,7 +1116,13 @@ fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
     push_outlined_rects(&[walls], color, out);
     let (a, b, c) = roof(0.0);
     mesh::triangle(a, b, c, color, out);
-    font::push_glyph(pos + Vec2::new(0.0, -0.09), 0.26, 'B', with_alpha(LABEL_COLOR, alpha), out);
+    font::push_glyph(
+        pos + Vec2::new(0.0, -0.09),
+        0.26,
+        'B',
+        with_alpha(LABEL_COLOR, alpha),
+        out,
+    );
 }
 
 /// An improvement's badge in the hex's top-left corner: a dark square
@@ -1036,7 +1130,12 @@ fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
 fn push_site_badge(center: Vec2, label: &str, team: Team, out: &mut Vec<Vertex>) {
     let half = Vec2::splat(SITE_BADGE_HALF);
     let edge = Vec2::splat(ICON_OUTLINE_WIDTH);
-    mesh::quad(center - half - edge, center + half + edge, team.color(), out);
+    mesh::quad(
+        center - half - edge,
+        center + half + edge,
+        team.color(),
+        out,
+    );
     mesh::quad(center - half, center + half, SITE_BADGE_COLOR, out);
     let at = |x: f32, y: f32| center + Vec2::new(x, y);
     match label {
@@ -1047,7 +1146,13 @@ fn push_site_badge(center: Vec2, label: &str, team: Team, out: &mut Vec<Vertex>)
             }
         }
         // A heap of ore.
-        "MINE" => mesh::triangle(at(-0.12, -0.09), at(0.12, -0.09), at(0.0, 0.1), MINE_COLOR, out),
+        "MINE" => mesh::triangle(
+            at(-0.12, -0.09),
+            at(0.12, -0.09),
+            at(0.0, 0.1),
+            MINE_COLOR,
+            out,
+        ),
         // A fence: two posts and two rails.
         "PASTURE" => {
             for x in [-0.08, 0.08] {
@@ -1063,13 +1168,26 @@ fn push_site_badge(center: Vec2, label: &str, team: Team, out: &mut Vec<Vertex>)
                 mesh::regular_polygon(at(x, y), 0.055, 12, 0.0, WOOD_COLOR, out);
             }
         }
-        other => font::push_glyph(center, 0.2, other.chars().next().unwrap_or('?'), team.color(), out),
+        other => font::push_glyph(
+            center,
+            0.2,
+            other.chars().next().unwrap_or('?'),
+            team.color(),
+            out,
+        ),
     }
 }
 
 /// A strategic resource: a dark disc edged in gold with the resource's letter.
 fn push_resource_badge(center: Vec2, glyph: char, out: &mut Vec<Vertex>) {
-    mesh::regular_polygon(center, SITE_BADGE_HALF + ICON_OUTLINE_WIDTH, 16, 0.0, RESOURCE_COLOR, out);
+    mesh::regular_polygon(
+        center,
+        SITE_BADGE_HALF + ICON_OUTLINE_WIDTH,
+        16,
+        0.0,
+        RESOURCE_COLOR,
+        out,
+    );
     mesh::regular_polygon(center, SITE_BADGE_HALF, 16, 0.0, SITE_BADGE_COLOR, out);
     font::push_glyph(center, 0.2, glyph, RESOURCE_COLOR, out);
 }

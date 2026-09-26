@@ -69,6 +69,7 @@ src/
     effects.rs     attack animations during playback: shots, hits, misses, damage
     city.rs        cities, logistics routes, citizens, growth, builds, settlers/workers
     ui.rs          screen-space UI: top bar, command tray, tooltips, hover info box
+    ui/dock.rs     shared panel docking by screen zone and measured size
     mesh.rs        shape helpers: regular_polygon, quad, segment
     font.rs        TrueType text (Hack via fontdue): glyph atlas, UI and world text
 shaders/
@@ -142,7 +143,9 @@ All geometry is rebuilt from game state every frame.
   keeps valid manual assignments and fills/replaces the affected slot.
 - UI (`ui.rs`): each frame is laid out once into a `Layout` (panels, text,
   buttons) that's then drawn or hit-tested, so clicks match what's shown.
-  Panels size themselves to their text (`PanelBuilder`), so nothing overlaps.
+  `PanelBuilder` measures panel content; `Layout::dock_panel` places panels in
+  one of four corner zones without overlap, wrapping to another column when
+  needed. See `docs/ui-system.md` before adding screen-space panels.
   - Top bar: turn, the latest `notice`, and the End Turn button, whose label
     (`end_turn_label`) names what's still waiting ("3 UNITS NEED ORDERS",
     "CHOOSE PRODUCTION") until it turns gold and reads END TURN.
@@ -161,7 +164,7 @@ All geometry is rebuilt from game state every frame.
     than their values suggest; dark panels need values around 0.01-0.05.
 
 ### Map
-- Fog of war (`fog.rs`, debug toggle F9, on by default and kept across
+- Fog of war (`fog.rs`, debug toggle F10, on by default and kept across
   scenario switches and loads): the player's units (by `GameState::sight`),
   cities (3) and barracks (1) see hexes, unless a mountain stands on the
   line between (`in_line_of_sight` via `Hex::line_between`, tried nudged to
@@ -474,7 +477,7 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
     on F4.
 27. Hills and forest/jungle became modifiers on a base ground, with marsh
     and jungle added; the Scout unit (Lookout ability); fog of war with an
-    F9 toggle; the vertex buffer grows as needed.
+    F10 toggle; the vertex buffer grows as needed.
 28. The world became a Pangea on a 61x36 rectangular map (`Shape`), sized
     for four players, starting each side with a settler, worker and scout.
 

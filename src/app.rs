@@ -44,6 +44,8 @@ pub struct App {
     panning: bool,
     left_press: Option<(Vec2, ClickMode, bool)>,
     left_dragging: bool,
+    queue_scroll_dragging: bool,
+    queue_item_dragging: bool,
     modifiers: Modifiers,
     /// When Escape was pressed, while it's held; the game quits once it's
     /// been held for `QUIT_HOLD`.
@@ -64,6 +66,8 @@ impl Default for App {
             panning: false,
             left_press: None,
             left_dragging: false,
+            queue_scroll_dragging: false,
+            queue_item_dragging: false,
             modifiers: Modifiers::default(),
             quit_held_since: None,
             box_start: None,
@@ -152,6 +156,20 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Vec2::new(position.x as f32, position.y as f32);
+                if self.queue_scroll_dragging {
+                    if let Some(size) = self.screen_size() {
+                        self.game.drag_queue_scrollbar_at(pos, size, true);
+                    }
+                    self.cursor_pos = Some(pos);
+                    return;
+                }
+                if self.queue_item_dragging {
+                    if let Some(size) = self.screen_size() {
+                        self.game.update_queue_drag_at(pos, size);
+                    }
+                    self.cursor_pos = Some(pos);
+                    return;
+                }
                 let mut pan_from = self.cursor_pos;
                 if let Some((origin, _, _)) = self.left_press
                     && !self.left_dragging
@@ -173,6 +191,9 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
                 self.left_press = None;
                 self.left_dragging = false;
+                self.queue_scroll_dragging = false;
+                self.queue_item_dragging = false;
+                self.game.cancel_queue_drag();
                 self.panning = false;
                 self.cursor_pos = None;
                 // The release may never arrive once focus is gone.
@@ -183,10 +204,24 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) => {
                     if let Some(cursor) = self.cursor_pos {
+                        if let Some(size) = self.screen_size()
+                            && self.game.drag_queue_scrollbar_at(cursor, size, false)
+                        {
+                            self.queue_scroll_dragging = true;
+                            return;
+                        }
                         let keys = self.modifiers.state();
                         // Alt starts a selection box instead of a click or pan.
                         if keys.alt_key() {
                             self.box_start = Some(cursor);
+                            return;
+                        }
+                        if !keys.shift_key()
+                            && !keys.control_key()
+                            && let Some(size) = self.screen_size()
+                            && self.game.start_queue_drag_at(cursor, size)
+                        {
+                            self.queue_item_dragging = true;
                             return;
                         }
                         let mode = if keys.shift_key() {
@@ -201,6 +236,19 @@ impl ApplicationHandler for App {
                     }
                 }
                 (ElementState::Released, MouseButton::Left) => {
+                    if self.queue_scroll_dragging {
+                        self.queue_scroll_dragging = false;
+                        return;
+                    }
+                    if self.queue_item_dragging {
+                        self.queue_item_dragging = false;
+                        if let (Some(cursor), Some(size)) = (self.cursor_pos, self.screen_size()) {
+                            self.game.finish_queue_drag_at(cursor, size);
+                        } else {
+                            self.game.cancel_queue_drag();
+                        }
+                        return;
+                    }
                     if let (Some(start), Some(end), Some(size)) =
                         (self.box_start.take(), self.cursor_pos, self.screen_size())
                     {
@@ -244,7 +292,10 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 100.0) as f32,
                 };
-                self.game.camera.zoom(steps);
+                if !(matches!((self.cursor_pos, self.screen_size()), (Some(cursor), Some(size)) if self.game.scroll_queue_at(cursor, size, steps)))
+                {
+                    self.game.camera.zoom(steps);
+                }
             }
             // Escape closes management first; otherwise holding it quits.
             WindowEvent::KeyboardInput {
@@ -305,6 +356,12 @@ impl ApplicationHandler for App {
                 KeyCode::Digit6 => self
                     .game
                     .queue_selected_city_building(crate::game::Building::Barracks),
+                KeyCode::Digit7 => self
+                    .game
+                    .queue_selected_city_building(crate::game::Building::Mill),
+                KeyCode::Digit8 => self
+                    .game
+                    .queue_selected_city_building(crate::game::Building::Workshop),
                 // Queue management stays compact as the build catalogue grows:
                 // Backspace removes the active item; PageDown promotes the
                 // second item into production.
@@ -320,7 +377,8 @@ impl ApplicationHandler for App {
                 KeyCode::F6 => self.game.save_state(),
                 KeyCode::F7 => self.game.load_state(),
                 KeyCode::F8 => self.game.toggle_instant_playback(),
-                KeyCode::F9 => self.game.toggle_fog(),
+                KeyCode::F9 => self.game.debug_complete_current_production(),
+                KeyCode::F10 => self.game.toggle_fog(),
                 _ => {}
             },
             WindowEvent::RedrawRequested => {
