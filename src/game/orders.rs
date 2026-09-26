@@ -2,14 +2,16 @@
 
 use glam::Vec2;
 
+use super::GameState;
 use super::hex::Hex;
-use super::{GameState, PLAYER_TEAM};
 
 /// What a left-click on a hex should do, based on the modifier keys held.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClickMode {
     /// Select a unit, or queue a move or attack for the selected one.
     Normal,
+    /// Move only, chosen from the unit command tray.
+    Move,
     /// Attack the clicked hex, occupied or not.
     Attack,
     /// Swap places with the clicked adjacent ally.
@@ -17,10 +19,40 @@ pub enum ClickMode {
 }
 
 impl GameState {
+    /// M or the Move button: the next map click only moves.
+    pub fn choose_move_action(&mut self) {
+        self.toggle_ui_click_mode(ClickMode::Move, "MOVE: CLICK A GREEN HEX");
+    }
+
+    /// X or the Attack button: the next map click attacks that hex.
+    pub fn choose_attack_action(&mut self) {
+        self.toggle_ui_click_mode(ClickMode::Attack, "ATTACK: CLICK A TARGET HEX");
+    }
+
+    /// The Swap button: the next map click swaps with that adjacent ally.
+    pub fn choose_swap_action(&mut self) {
+        self.toggle_ui_click_mode(ClickMode::Swap, "SWAP: CLICK AN ADJACENT ALLY");
+    }
+
+    /// Arms `mode` for the next map click, or disarms it if it's already armed.
+    fn toggle_ui_click_mode(&mut self, mode: ClickMode, notice: &str) {
+        if self.is_resolving() || self.selection().is_empty() {
+            return;
+        }
+        if self.ui_click_mode == Some(mode) {
+            self.ui_click_mode = None;
+        } else {
+            self.ui_click_mode = Some(mode);
+            self.notice = notice.into();
+        }
+    }
+
     /// Left-click: selects one of the player's units, or queues an order for
     /// the selected one. Clicking an already-queued order again cancels it.
-    /// Once the selected unit has nothing left to plan, selection moves on to
-    /// the next unit that does. Ignored while a turn is playing out.
+    /// An action armed from the command tray applies to this map click only,
+    /// unless a modifier key picked `mode` itself. Once the selected unit has
+    /// nothing left to plan, selection moves on to the next unit that does.
+    /// Ignored while a turn is playing out.
     pub fn handle_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) {
         if self.is_resolving() {
             return;
@@ -28,12 +60,32 @@ impl GameState {
         if self.click_ui(cursor, screen_size) {
             return;
         }
+        let armed = self.ui_click_mode.take();
+        let mode = match (mode, armed) {
+            (ClickMode::Normal, Some(armed)) => armed,
+            _ => mode,
+        };
+        // Clicking off the map deselects, and leaves the city view.
         let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
-            self.selected = None;
+            self.set_selection(Vec::new());
+            self.leave_city_view();
             return;
         };
 
-        let ally = self.unit_of_team_at(hex, PLAYER_TEAM);
+        if self.city_click(hex) {
+            return;
+        }
+
+        let ally = self.controlled_unit_at(hex);
+        // With a group selected, clicking one of your units picks just it;
+        // anything else is an order for the whole group.
+        if !self.group.is_empty() {
+            match ally {
+                Some(ally) if mode == ClickMode::Normal => self.set_selection(vec![ally]),
+                _ => self.group_order(hex, mode),
+            }
+            return;
+        }
         let Some(selected) = self.selected else {
             self.selected = ally;
             return;
@@ -52,6 +104,11 @@ impl GameState {
                 self.try_queue_swap(selected, ally);
                 self.advance_selection_if_done();
             }
+            (ClickMode::Move, None) => {
+                self.try_queue_move(selected, hex);
+                self.advance_selection_if_done();
+            }
+            (ClickMode::Move, _) => {}
             (ClickMode::Normal, None) => {
                 if self.is_occupied(hex) {
                     self.try_queue_attack(selected, hex);
@@ -63,11 +120,32 @@ impl GameState {
         }
     }
 
-    /// Space: the selected unit holds, leaving any move or attack it hasn't
-    /// queued unused this turn, and selection moves on (ending the turn if it
-    /// was the last unit). With nothing selected, just selects the next unit.
+    /// Space: holds the selected unit (or group) if it still needs orders,
+    /// moving on to whatever else does. Once nothing does, ends the turn.
+    pub fn hold_or_end_turn(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        if !self.group.is_empty() {
+            self.hold_group();
+            return;
+        }
+        let selected_needs_orders = self.selected.is_some_and(|idx| self.needs_orders(idx));
+        if selected_needs_orders || self.pending() != (0, 0) {
+            self.hold_selected_unit();
+        } else {
+            self.end_planning();
+        }
+    }
+
+    /// The Hold button: the selected unit holds, leaving any move or attack
+    /// it hasn't queued unused this turn, and selection moves on.
     pub fn hold_selected_unit(&mut self) {
         if self.is_resolving() {
+            return;
+        }
+        if !self.group.is_empty() {
+            self.hold_group();
             return;
         }
         if let Some(idx) = self.selected {
@@ -76,12 +154,44 @@ impl GameState {
         self.select_next_or_end_turn(self.selected);
     }
 
+    /// G or the Guard button: the selected unit stays put and is skipped in
+    /// the turn order every turn until it's given an order, or G unguards it.
+    pub fn toggle_guard(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        if !self.group.is_empty() {
+            self.toggle_group_guard();
+            return;
+        }
+        let Some(idx) = self.selected else { return };
+        let unit = &mut self.units[idx];
+        unit.guarding = !unit.guarding;
+        if unit.guarding {
+            self.select_next_or_end_turn(Some(idx));
+        }
+    }
+
+    /// How many of the player's units still need orders, and how many of
+    /// their cities still need something to build. The turn can't end until
+    /// both are zero; assigning citizens never holds it up.
+    pub(super) fn pending(&self) -> (usize, usize) {
+        let units = (0..self.units.len())
+            .filter(|&i| self.is_player_controlled(i) && self.needs_orders(i))
+            .count();
+        let cities = (0..self.cities.len())
+            .filter(|&i| self.city_needs_build(i))
+            .count();
+        (units, cities)
+    }
+
     /// Tab: selects the next unit that still needs orders, or just the next
     /// unit if they all have them, without holding the current one.
     pub fn select_next_unit(&mut self) {
         if self.is_resolving() {
             return;
         }
+        self.selected_city = None;
         let next = self
             .next_unit_needing_orders(self.selected)
             .or_else(|| self.next_player_unit(self.selected));
@@ -89,7 +199,7 @@ impl GameState {
     }
 
     /// Once the selected unit has nothing left to plan, moves selection on to
-    /// the next unit that does, ending the turn if there are none.
+    /// the next unit that does, leaving city planning open if there are none.
     pub(super) fn advance_selection_if_done(&mut self) {
         if let Some(idx) = self.selected
             && !self.needs_orders(idx)
@@ -99,13 +209,15 @@ impl GameState {
     }
 
     /// Selects the next unit after `after` that still needs orders. If none
-    /// do, every unit has acted, so the turn resolves.
+    /// do, opens a city that needs something to build; failing that, clears
+    /// the selection and waits for the player to end the turn.
     pub(super) fn select_next_or_end_turn(&mut self, after: Option<usize>) {
-        match self.next_unit_needing_orders(after) {
-            Some(next) => self.select_and_focus(Some(next)),
-            None if self.units.iter().any(|u| u.team == PLAYER_TEAM) => self.resolve_turn(),
-            // With no units left there's nothing to wait for or resolve.
-            None => self.selected = None,
+        if let Some(next) = self.next_unit_needing_orders(after) {
+            self.select_and_focus(Some(next));
+        } else if let Some(city) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
+            self.open_city(city);
+        } else {
+            self.selected = None;
         }
     }
 
@@ -113,7 +225,10 @@ impl GameState {
     /// unit, not when the player clicks one they can already see.
     fn select_and_focus(&mut self, idx: Option<usize>) {
         self.selected = idx;
+        self.group.clear();
+        self.ui_click_mode = None;
         if let Some(idx) = idx {
+            self.selected_city = None;
             self.camera.focus_on(self.units[idx].pos.to_world());
         }
     }
@@ -137,35 +252,79 @@ impl GameState {
         let start = after.map_or(0, |i| i + 1);
         (0..count)
             .map(move |step| (start + step) % count)
-            .filter(move |&i| Some(i) != after && self.units[i].team == PLAYER_TEAM)
+            .filter(move |&i| Some(i) != after && self.is_player_controlled(i))
     }
 
     /// Whether the unit still has something to plan: a move or an attack it
     /// could queue but hasn't. Any hex in range can be attacked, so a unit
-    /// that can attack needs orders until it does (or holds). A unit locked
-    /// in a contested hex already has its fight, so it's done.
-    fn needs_orders(&self, idx: usize) -> bool {
+    /// that can attack needs orders until it does (or holds, or guards). A
+    /// unit locked in a contested hex already has its fight, so it's done.
+    pub(super) fn needs_orders(&self, idx: usize) -> bool {
         let unit = &self.units[idx];
-        if unit.holding || self.rival_of(idx).is_some() {
+        if unit.holding || unit.guarding || self.rival_of(idx).is_some() {
             return false;
         }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
-        let may_attack = unit.planned_attack.is_none() && unit.can_attack();
+        let may_attack =
+            unit.planned_attack.is_none() && unit.can_attack() && !self.workers.contains(&unit.id);
         may_move || may_attack
     }
 
-    /// Right-click: clears all of the selected unit's orders, including a hold.
+    /// Ctrl-right-click: clears all of the selected unit's (or group's)
+    /// orders, including a hold or guard.
     pub fn handle_right_click(&mut self) {
         if self.is_resolving() {
+            return;
+        }
+        if !self.group.is_empty() {
+            self.clear_group_orders();
             return;
         }
         if let Some(selected) = self.selected {
             self.cancel_swap(selected);
             self.units[selected].clear_orders();
+            self.units[selected].guarding = false;
         }
     }
 
-    fn hex_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option<Hex> {
+    /// Context order: right-click moves to an open hex or attacks an enemy.
+    /// Ctrl-right-click retains the explicit clear-order behavior. With an
+    /// action armed, right-click just disarms it.
+    pub fn handle_context_click(&mut self, cursor: Vec2, screen_size: Vec2, clear: bool) {
+        if self.is_resolving() {
+            return;
+        }
+        if self.ui_click_mode.take().is_some() {
+            return;
+        }
+        if clear {
+            self.handle_right_click();
+            return;
+        }
+        if !self.group.is_empty() {
+            if let Some(hex) = self.hex_at_screen(cursor, screen_size) {
+                self.group_order(hex, ClickMode::Normal);
+            }
+            return;
+        }
+        let Some(selected) = self.selected else {
+            return;
+        };
+        let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
+            return;
+        };
+        if self
+            .enemy_of_team_at(hex, self.units[selected].team)
+            .is_some()
+        {
+            self.try_queue_attack(selected, hex);
+        } else {
+            self.try_queue_move(selected, hex);
+        }
+        self.advance_selection_if_done();
+    }
+
+    pub(super) fn hex_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option<Hex> {
         if screen_size.min_element() <= 0.0 {
             return None;
         }
@@ -194,6 +353,8 @@ impl GameState {
             Some(dest)
         };
         unit.drop_unreachable_attack();
+        // Any order wakes a guarding unit.
+        unit.guarding = false;
     }
 
     /// Toggles an attack on `target`, measured from the unit's planned
@@ -201,7 +362,9 @@ impl GameState {
     /// no one can stand there, and a unit locked in a contested hex can only
     /// fight its rival there.
     pub(super) fn try_queue_attack(&mut self, idx: usize, target: Hex) {
-        let unable = !self.units[idx].can_attack() || self.rival_of(idx).is_some();
+        let unable = !self.units[idx].can_attack()
+            || self.workers.contains(&self.units[idx].id)
+            || self.rival_of(idx).is_some();
         if unable || !self.grid.is_passable(target) {
             return;
         }
@@ -212,6 +375,7 @@ impl GameState {
             } else {
                 Some(target)
             };
+            unit.guarding = false;
         }
     }
 
@@ -241,6 +405,7 @@ impl GameState {
         }
         for i in [idx, ally] {
             self.units[i].drop_unreachable_attack();
+            self.units[i].guarding = false;
         }
     }
 
@@ -277,7 +442,7 @@ impl GameState {
     }
 
     /// If `idx` is swapping with an ally, cancels both halves of the swap.
-    fn cancel_swap(&mut self, idx: usize) {
+    pub(super) fn cancel_swap(&mut self, idx: usize) {
         if let Some(partner) = self.swap_partner(idx) {
             for i in [idx, partner] {
                 self.units[i].planned_move = None;

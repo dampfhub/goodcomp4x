@@ -77,6 +77,7 @@ impl UnitType {
     }
 }
 
+#[derive(Clone)]
 pub struct Unit {
     pub id: u32,
     pub pos: Hex,
@@ -96,6 +97,9 @@ pub struct Unit {
     /// The player chose to hold this unit, leaving any move or attack it
     /// hasn't queued unused this turn.
     pub holding: bool,
+    /// Like `holding`, but lasting across turns: the unit stays put and is
+    /// skipped in the turn order until it's given an order or unguarded.
+    pub guarding: bool,
 }
 
 impl Unit {
@@ -112,6 +116,7 @@ impl Unit {
             ability_cooldown: 0,
             deployed: false,
             holding: false,
+            guarding: false,
         }
     }
 

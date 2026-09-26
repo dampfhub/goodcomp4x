@@ -1,6 +1,6 @@
 use glam::Vec2;
 
-use crate::renderer::Vertex;
+use crate::renderer::{SOLID_UV, Vertex};
 
 /// Appends a filled regular polygon, as a triangle fan around its center.
 pub fn regular_polygon(
@@ -20,6 +20,33 @@ pub fn regular_polygon(
     }
 }
 
+/// Appends the outline of a regular polygon: a band `width` thick centered on
+/// the polygon of `radius`, with mitered corners so the edges join cleanly.
+pub fn polygon_outline(
+    center: Vec2,
+    radius: f32,
+    width: f32,
+    sides: u32,
+    rotation: f32,
+    color: [f32; 4],
+    out: &mut Vec<Vertex>,
+) {
+    // Moving an edge `width / 2` along its normal moves the corners further,
+    // since they're farther from the center than the edge's midpoint.
+    let corner_offset = width / 2.0 / (std::f32::consts::PI / sides as f32).cos();
+    let corner = |i: u32, radius: f32| {
+        let angle = rotation + std::f32::consts::TAU * i as f32 / sides as f32;
+        center + Vec2::from_angle(angle) * radius
+    };
+    let (outer, inner) = (radius + corner_offset, radius - corner_offset);
+    for i in 0..sides {
+        let (a, b) = (corner(i, outer), corner(i + 1, outer));
+        let (c, d) = (corner(i, inner), corner(i + 1, inner));
+        push_triangle(out, a, b, d, color);
+        push_triangle(out, a, d, c, color);
+    }
+}
+
 /// Appends an axis-aligned filled rectangle spanning `min`..`max`.
 pub fn quad(min: Vec2, max: Vec2, color: [f32; 4], out: &mut Vec<Vertex>) {
     let bottom_right = Vec2::new(max.x, min.y);
@@ -35,9 +62,50 @@ pub fn segment(a: Vec2, b: Vec2, width: f32, color: [f32; 4], out: &mut Vec<Vert
     push_triangle(out, a - side, b + side, a + side, color);
 }
 
+/// Appends a line through `points`, `width` world units thick, as one ribbon
+/// whose pieces meet exactly at each bend: no gaps, and no overlaps to darken
+/// when the color is see-through.
+pub fn polyline(points: &[Vec2], width: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
+    if points.len() < 2 {
+        return;
+    }
+    let direction = |i: usize| (points[i + 1] - points[i]).normalize_or_zero();
+    let sides: Vec<Vec2> = (0..points.len())
+        .map(|i| {
+            // At a bend, offset along the average of the two edges' normals,
+            // stretched so the ribbon keeps its width through the corner.
+            let before = if i > 0 {
+                direction(i - 1)
+            } else {
+                direction(i)
+            };
+            let after = if i + 1 < points.len() {
+                direction(i)
+            } else {
+                before
+            };
+            let normal = (before + after).normalize_or(after).perp();
+            let stretch = normal.dot(after.perp()).max(0.5);
+            normal * (width / 2.0 / stretch)
+        })
+        .collect();
+    for i in 0..points.len().saturating_sub(1) {
+        let (a, b) = (points[i], points[i + 1]);
+        let (side_a, side_b) = (sides[i], sides[i + 1]);
+        push_triangle(out, a - side_a, b - side_b, b + side_b, color);
+        push_triangle(out, a - side_a, b + side_b, a + side_a, color);
+    }
+}
+
+/// Appends a filled triangle.
+pub fn triangle(a: Vec2, b: Vec2, c: Vec2, color: [f32; 4], out: &mut Vec<Vertex>) {
+    push_triangle(out, a, b, c, color);
+}
+
 fn push_triangle(out: &mut Vec<Vertex>, a: Vec2, b: Vec2, c: Vec2, color: [f32; 4]) {
     out.extend([a, b, c].map(|p| Vertex {
         pos: [p.x, p.y, 0.0],
         color,
+        uv: SOLID_UV,
     }));
 }

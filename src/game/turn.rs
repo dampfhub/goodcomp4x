@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use super::ability::{Ability, VOLLEY_DAMAGE};
+use super::effects::{Effect, Outcome};
 use super::hex::Hex;
 use super::unit::{Unit, UnitType};
 use super::{AI_TEAM, GameState, combat};
@@ -51,14 +52,16 @@ impl GameState {
     }
 
     /// Plans the AI's turn, then queues every step for `update` to play out.
-    /// Runs on its own once every one of the player's units has acted.
+    /// Called after the player explicitly ends planning.
     pub(super) fn resolve_turn(&mut self) {
         if self.is_resolving() {
             return;
         }
         self.turn += 1;
         log::info!("=== resolving turn {} ===", self.turn);
+        // Indices shift as units die, so nothing stays selected.
         self.selected = None;
+        self.group.clear();
 
         self.plan_ai_turn(AI_TEAM);
         self.pending_steps.extend(RESOLUTION_ORDER);
@@ -71,6 +74,7 @@ impl GameState {
     /// `STEP_INTERVAL` has passed. Steps where nobody acts are skipped.
     pub fn update(&mut self, dt: f32) {
         self.camera.update(dt);
+        self.age_effects(dt);
         self.highlight_timer -= dt;
         if self.highlight_timer <= 0.0 {
             self.recent_actors.clear();
@@ -80,21 +84,31 @@ impl GameState {
             return;
         }
         self.step_timer -= dt;
-        if self.step_timer > 0.0 {
+        // With instant playback (a debug setting) every step resolves at
+        // once, still in order, so the outcome is the same.
+        if self.step_timer > 0.0 && !self.instant_playback {
             return;
         }
 
+        if self.instant_playback {
+            self.recent_actors.clear();
+        }
         while let Some((unit_type, phase)) = self.pending_steps.pop_front() {
             let actors = self.resolve_step(unit_type, phase);
             if !actors.is_empty() {
-                self.recent_actors = actors;
                 self.highlight_timer = HIGHLIGHT_DURATION;
+                if self.instant_playback {
+                    self.recent_actors.extend(actors);
+                    continue;
+                }
+                self.recent_actors = actors;
                 self.step_timer = STEP_INTERVAL;
                 break;
             }
         }
 
         if !self.is_resolving() {
+            self.resolve_economy();
             for unit in &mut self.units {
                 if unit.ability_queued && unit.ability() == Ability::Deploy {
                     let state = if unit.deployed { "packed up" } else { "set up" };
@@ -130,6 +144,7 @@ impl GameState {
             // Units in a contested hex fight whether or not they have orders.
             Phase::Attack => (0..self.units.len())
                 .filter(of_type)
+                .filter(|&i| !self.workers.contains(&self.units[i].id))
                 .filter(|&i| self.units[i].planned_attack.is_some() || self.rival_of(i).is_some())
                 .collect(),
         };
@@ -281,8 +296,11 @@ impl GameState {
     /// planning time. A unit in a contested hex fights its rival instead.
     fn resolve_attacks(&mut self, attackers: &[usize]) {
         let mut engagements: Vec<Engagement> = Vec::new();
+        // Each attack's animation, played once the step's damage is known.
+        let mut shots: Vec<Effect> = Vec::new();
         for &a in attackers {
             let attacker = &self.units[a];
+            let from = self.unit_layout(a).0;
             if let Some(rival) = self.rival_of(a) {
                 if attacker.planned_attack.is_some() {
                     log::info!(
@@ -290,12 +308,24 @@ impl GameState {
                     );
                 }
                 engagements.push(Engagement::new(a, rival, 1.0));
+                let to = self.unit_layout(rival).0;
+                shots.push(Effect::Shot {
+                    from,
+                    to,
+                    outcome: Outcome::Hit,
+                });
                 continue;
             }
 
             let target = attacker.planned_attack.unwrap();
+            let to = target.to_world();
             if attacker.pos.distance(target) > attacker.stats().attack_range {
                 log::info!("{attacker}'s attack canceled: target out of range after moves");
+                shots.push(Effect::Shot {
+                    from,
+                    to,
+                    outcome: Outcome::OutOfRange,
+                });
                 continue;
             }
 
@@ -318,6 +348,12 @@ impl GameState {
                     target.r
                 );
             }
+            let outcome = if defenders.is_empty() {
+                Outcome::Miss
+            } else {
+                Outcome::Hit
+            };
+            shots.push(Effect::Shot { from, to, outcome });
             engagements.extend(defenders.into_iter().map(|d| Engagement::new(a, d, scale)));
         }
 
@@ -368,11 +404,30 @@ impl GameState {
             }
         }
 
+        for shot in shots {
+            self.play(shot);
+        }
+        for (i, &taken) in damage.iter().enumerate() {
+            if taken > 0.0 {
+                let at = self.unit_layout(i).0;
+                let fatal = self.units[i].hp <= taken;
+                self.play(Effect::Damage {
+                    at,
+                    amount: taken,
+                    fatal,
+                });
+            }
+        }
         for (unit, &taken) in self.units.iter_mut().zip(&damage) {
             if taken > 0.0 {
                 unit.hp = (unit.hp - taken).max(0.0);
                 log::info!("  {unit}: {}", combat::hp_status(unit));
             }
+        }
+        // The attacks have happened, so their planned arrows give way to the
+        // animations.
+        for &a in attackers {
+            self.units[a].planned_attack = None;
         }
         self.units.retain(Unit::is_alive);
     }

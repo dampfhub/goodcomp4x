@@ -5,12 +5,16 @@
 mod ability;
 mod ai;
 mod camera;
+mod city;
 mod combat;
 mod draw;
+mod effects;
 mod font;
+mod group;
 mod hex;
 mod mesh;
 mod orders;
+mod scenario;
 mod terrain;
 mod turn;
 mod ui;
@@ -22,11 +26,14 @@ use glam::Vec2;
 use rand::rngs::ThreadRng;
 
 pub use camera::Camera;
+pub use city::BuildUnit;
+pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
+pub use scenario::Scenario;
 use terrain::Terrain;
 use turn::Phase;
-pub use ui::ui_projection;
+pub use ui::{quit_prompt, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
 
 const GRID_RADIUS: i32 = 3;
@@ -41,14 +48,25 @@ Controls:
   Shift-click any hex in range to attack that square instead: whoever stands there when the attack resolves gets hit.
   A unit can queue a move and an attack; it attacks from its new hex.
   Ctrl-click an adjacent ally to swap places with it.
+  Alt-drag a box (or Alt-click units) to select a group: clicking a hex sends each member as
+  close to it as it can get, and clicking an enemy has every member in range attack it.
+  Queued attacks are drawn as arrows from the attacker (or its ghost) to the target.
   Units can't move through occupied hexes, and two allies can't head for the same hex.
   Space holds the selected unit: it keeps any orders already queued and skips the rest.
-  Right-click clears the selected unit's orders (and a hold).
+  G guards it instead: it stays put and is skipped every turn until given an order.
+  Ctrl-right-click clears the selected unit's orders (and a hold or guard).
   Once a unit has queued a move and an attack (or can't do one of them), the next unit is
   selected automatically and the camera glides to it. Tab looks at the next unit without
   holding this one.
-  The turn resolves by itself once every unit has acted or held.
-  Scroll to zoom, middle-drag to pan.
+  Once every unit has acted, held or is guarding and every city has a build queued, Space
+  ends the turn. Assigning citizens never holds the turn up.
+  C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
+  Rest the cursor on any hex for a moment to see what it is and yields.
+  1-4 queue city units: melee, ranged, cavalry, siege. F founds with a settler.
+  F1 combat, F2 cities, F3 settler frontier (again to restart). F6 saves a snapshot, F7 loads it, F8 plays turns all at once.
+  The faded DEBUG panel at the top-left has buttons for these.
+  Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
+  F5 toggles fullscreen.
 Turn order:
   Each unit's blue number is when it moves and its red number when it attacks (1 = first).
   Units of the same type act simultaneously; simultaneous attacks all land before anyone is removed.
@@ -66,12 +84,39 @@ Terrain:
   Hills (small peaks): +25% defense for the unit standing there.
   Mountains (large snowy peak): impassable.";
 
+#[derive(Clone)]
 pub struct GameState {
+    cities: Vec<city::City>,
+    sites: std::collections::HashMap<Hex, city::Site>,
+    roads: HashSet<Hex>,
+    selected_city: Option<usize>,
+    hovered_city: Option<usize>,
+    /// Whether the open city shows each tile's yields (Y toggles it).
+    show_yields: bool,
+    /// The map hex under the cursor (not over the UI), and how long the
+    /// cursor has rested on it, for the tile tooltip.
+    hovered_tile: Option<Hex>,
+    hover_seconds: f32,
+    ui_click_mode: Option<orders::ClickMode>,
+    inspected_tile: Option<Hex>,
+    notice: String,
     grid: HexGrid,
     /// Living units only: a unit is removed the moment it dies.
     units: Vec<Unit>,
     /// Index into `units` of the player's selected unit.
     selected: Option<usize>,
+    /// Several units selected together (see `group.rs`), in place of
+    /// `selected`; empty unless at least two are.
+    group: Vec<usize>,
+    /// Which test scenario this is, for restarting it.
+    scenario: Scenario,
+    /// A snapshot of the game saved for testing (F6), restored by F7.
+    savestate: Option<Box<GameState>>,
+    /// Attack animations playing out, with how many seconds each has run.
+    effects: Vec<(effects::Effect, f32)>,
+    /// Debug setting (F8): play a turn's steps all at once instead of one
+    /// every `STEP_INTERVAL`. Kept across scenario switches and loads.
+    instant_playback: bool,
     turn: u32,
     pub camera: Camera,
     rng: ThreadRng,
@@ -81,6 +126,12 @@ pub struct GameState {
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec<u32>,
     highlight_timer: f32,
+    /// Unit ids that may found a city. They use the melee placeholder body for now.
+    settlers: HashSet<u32>,
+    workers: HashSet<u32>,
+    /// Frontier sandbox units that the player may command despite being Red.
+    player_controlled_units: HashSet<u32>,
+    next_unit_id: u32,
 }
 
 impl GameState {
@@ -116,9 +167,25 @@ impl GameState {
         log::info!("You control {PLAYER_TEAM:?}; {AI_TEAM:?} is AI-controlled.\n{CONTROLS_HELP}");
 
         let mut game = Self {
+            cities: Vec::new(),
+            sites: std::collections::HashMap::new(),
+            roads: HashSet::new(),
+            selected_city: None,
+            hovered_city: None,
+            show_yields: true,
+            hovered_tile: None,
+            hover_seconds: 0.0,
+            ui_click_mode: None,
+            inspected_tile: None,
+            notice: String::new(),
             grid: HexGrid::new(GRID_RADIUS, terrain),
             units,
             selected: None,
+            group: Vec::new(),
+            scenario: Scenario::Combat,
+            savestate: None,
+            effects: Vec::new(),
+            instant_playback: false,
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
             rng: rand::rng(),
@@ -126,13 +193,74 @@ impl GameState {
             step_timer: 0.0,
             recent_actors: Vec::new(),
             highlight_timer: 0.0,
+            settlers: HashSet::new(),
+            workers: HashSet::new(),
+            player_controlled_units: HashSet::new(),
+            next_unit_id: 8,
         };
         game.select_next_or_end_turn(None);
         game
     }
 
+    pub fn city_scenario() -> Self {
+        let mut game = Self::new();
+        game.scenario = Scenario::Cities;
+        game.setup_cities();
+        game.start_on_whole_map();
+        game
+    }
+
+    /// Fresh economy match: each side begins with one settler and no city.
+    pub fn frontier_scenario() -> Self {
+        let mut game = Self::new();
+        game.scenario = Scenario::Frontier;
+        game.units.clear();
+        game.setup_frontier();
+        game.start_on_whole_map();
+        game
+    }
+
+    /// After a scenario replaces the combat setup: centers the camera on the
+    /// map (dropping any glide toward a unit that's gone) and selects the
+    /// first unit without moving the camera to it.
+    fn start_on_whole_map(&mut self) {
+        self.camera = Camera::new(Vec2::ZERO, self.camera.half_height);
+        self.selected = self.next_unit_needing_orders(None);
+    }
+
     fn units_at(&self, hex: Hex) -> impl Iterator<Item = usize> + '_ {
         (0..self.units.len()).filter(move |&i| self.units[i].pos == hex)
+    }
+
+    fn is_player_controlled(&self, idx: usize) -> bool {
+        self.units[idx].team == PLAYER_TEAM
+            || self.player_controlled_units.contains(&self.units[idx].id)
+    }
+
+    fn controlled_unit_at(&self, hex: Hex) -> Option<usize> {
+        self.units_at(hex).find(|&i| self.is_player_controlled(i))
+    }
+
+    /// What the unit is, for display: settlers and workers are marked on
+    /// top of an ordinary unit type.
+    fn unit_role(&self, unit: &Unit) -> (&'static str, char) {
+        if self.settlers.contains(&unit.id) {
+            ("SETTLER", 'T')
+        } else if self.workers.contains(&unit.id) {
+            ("WORKER", 'W')
+        } else {
+            let name = match unit.unit_type {
+                UnitType::Melee => "MELEE",
+                UnitType::Ranged => "RANGED",
+                UnitType::Cavalry => "CAVALRY",
+                UnitType::Siege => "SIEGE",
+            };
+            (name, unit.unit_type.letter())
+        }
+    }
+
+    fn unit_letter(&self, unit: &Unit) -> char {
+        self.unit_role(unit).1
     }
 
     fn is_occupied(&self, hex: Hex) -> bool {
@@ -621,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_resolves_once_every_unit_has_acted() {
+    fn turn_waits_for_explicit_end_after_every_unit_has_acted() {
         let mut game = GameState::new();
         let blue_count = game.units.iter().filter(|u| u.team == Team::Blue).count();
 
@@ -640,6 +768,8 @@ mod tests {
         game.try_queue_move(last, dest.expect("room to move"));
         game.try_queue_attack(last, from);
         game.advance_selection_if_done();
+        assert!(!game.is_resolving());
+        game.end_planning();
         assert!(game.is_resolving());
 
         // Playing the turn out starts the next one with the first unit selected.
@@ -648,5 +778,106 @@ mod tests {
         }
         assert!(game.units.iter().all(|u| !u.holding));
         assert!(game.selected.is_some());
+    }
+
+    #[test]
+    fn space_holds_each_unit_then_ends_the_turn() {
+        let mut game = GameState::new();
+        let blue_count = game.units.iter().filter(|u| u.team == Team::Blue).count();
+        for _ in 0..blue_count {
+            game.hold_or_end_turn();
+        }
+        assert!(
+            !game.is_resolving(),
+            "holding the last unit doesn't end the turn"
+        );
+        assert_eq!(game.pending(), (0, 0));
+        game.hold_or_end_turn();
+        assert!(game.is_resolving());
+    }
+
+    #[test]
+    fn guarding_lasts_across_turns_until_an_order() {
+        let mut game = GameState::new();
+        let melee = find(&game, Team::Blue, UnitType::Melee);
+        assert_eq!(game.selected, Some(melee));
+        game.toggle_guard();
+        assert_ne!(game.selected, Some(melee), "guarding moves on");
+
+        while game.pending() != (0, 0) {
+            game.hold_or_end_turn();
+        }
+        game.hold_or_end_turn();
+        while game.is_resolving() {
+            game.update(1.0);
+        }
+        let melee = find(&game, Team::Blue, UnitType::Melee);
+        assert!(game.units[melee].guarding, "still guarding next turn");
+        assert!(!game.needs_orders(melee));
+
+        // Giving it an order wakes it.
+        game.selected = Some(melee);
+        let open = game.units[melee]
+            .pos
+            .neighbors()
+            .into_iter()
+            .find(|&h| game.grid.is_passable(h) && !game.is_occupied(h))
+            .unwrap();
+        game.try_queue_move(melee, open);
+        assert!(!game.units[melee].guarding);
+    }
+
+    #[test]
+    fn a_queued_attack_draws_an_arc() {
+        let mut game = GameState::new();
+        let ranged = find(&game, Team::Blue, UnitType::Ranged);
+        let before = game.build_vertices().len();
+        game.try_queue_attack(ranged, Hex::new(0, 1));
+        assert!(game.units[ranged].planned_attack.is_some());
+        assert!(game.build_vertices().len() > before);
+
+        // The AI's attacks aren't drawn.
+        let with_ours = game.build_vertices().len();
+        let enemy = find(&game, Team::Red, UnitType::Ranged);
+        game.units[enemy].planned_attack = Some(Hex::new(0, 1));
+        assert_eq!(game.build_vertices().len(), with_ours);
+    }
+
+    #[test]
+    fn a_resolved_attack_animates_and_clears_its_arrow() {
+        let mut game = GameState::new();
+        let ranged = find(&game, Team::Blue, UnitType::Ranged);
+        // An empty hex: the shot plays out as a miss.
+        game.try_queue_attack(ranged, Hex::new(0, 1));
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert_eq!(game.units[ranged].planned_attack, None);
+        assert!(matches!(
+            game.effects[..],
+            [(
+                effects::Effect::Shot {
+                    outcome: effects::Outcome::Miss,
+                    ..
+                },
+                _
+            )]
+        ));
+    }
+
+    #[test]
+    fn turn_waits_for_city_builds_but_not_citizens() {
+        let mut game = GameState::city_scenario();
+        game.units.retain(|u| u.team != Team::Blue);
+        game.selected = None;
+        assert_eq!(game.pending(), (0, 1));
+
+        // Space opens the city that needs a build instead of ending the turn.
+        game.hold_or_end_turn();
+        assert!(!game.is_resolving());
+        assert_eq!(game.selected_city, Some(0));
+
+        game.queue_selected_city_unit(city::BuildUnit::Melee);
+        assert_eq!(game.pending(), (0, 0));
+        game.hold_or_end_turn();
+        assert!(game.is_resolving());
     }
 }

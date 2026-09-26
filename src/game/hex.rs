@@ -63,6 +63,7 @@ impl Hex {
 
 /// A hexagon-shaped grid of hexes within `radius` of the origin. Hexes not
 /// listed in `terrain` are plains.
+#[derive(Clone)]
 pub struct HexGrid {
     radius: i32,
     terrain: HashMap<Hex, Terrain>,

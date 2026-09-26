@@ -1,5 +1,6 @@
 mod app;
 mod game;
+mod icon;
 mod renderer;
 
 use winit::event_loop::EventLoop;
