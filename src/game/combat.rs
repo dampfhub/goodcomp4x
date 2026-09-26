@@ -12,7 +12,13 @@ use super::unit::Unit;
 /// Damage `attacker` deals to `target` in one blow.
 pub fn roll_damage(attacker: &Unit, target: &Unit, grid: &HexGrid, rng: &mut impl RngExt) -> f32 {
     let defense = target.stats().defense * grid.terrain(target.pos).defense_multiplier();
-    let base = 30.0 * ((attacker.stats().attack - defense) * 0.04).exp();
+    roll_damage_against(attacker.stats().attack, defense, rng)
+}
+
+/// Damage for attacks involving a static structure. Its listed defense already
+/// includes its fortification, so terrain does not modify it again.
+pub fn roll_damage_against(attack: f32, defense: f32, rng: &mut impl RngExt) -> f32 {
+    let base = 30.0 * ((attack - defense) * 0.04).exp();
     (base * rng.random_range(0.8..1.2)).clamp(1.0, 100.0)
 }
 

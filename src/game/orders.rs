@@ -110,7 +110,7 @@ impl GameState {
             }
             (ClickMode::Move, _) => {}
             (ClickMode::Normal, None) => {
-                if self.is_occupied(hex) {
+                if self.has_enemy_target_at(hex, self.units[selected].team) {
                     self.try_queue_attack(selected, hex);
                 } else {
                     self.try_queue_move(selected, hex);
@@ -313,10 +313,7 @@ impl GameState {
         let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
             return;
         };
-        if self
-            .enemy_of_team_at(hex, self.units[selected].team)
-            .is_some()
-        {
+        if self.has_enemy_target_at(hex, self.units[selected].team) {
             self.try_queue_attack(selected, hex);
         } else {
             self.try_queue_move(selected, hex);

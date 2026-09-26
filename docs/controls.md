@@ -21,6 +21,7 @@ red queues its orders when you end planning. There is no save system yet.
 | G / Guard button | Guard: the unit stays put and is skipped every turn until given an order (G again unguards) |
 | Space with nothing left to do / End Turn button | End the turn, once every unit has orders, holds or guards and every city has a build |
 | Tab | Browse units without holding; leave city view |
+| Enter / End Turn button | Holds unfinished units, then ends the turn when every city has a build |
 | Wheel | Zoom |
 | Left drag / middle drag | Pan the map |
 | C / click your city center | Open city view |
@@ -42,6 +43,7 @@ survives switching scenarios; loading it returns to its scenario.
 | F5 | Toggle borderless fullscreen |
 | F, with a selected settler | Found a city |
 | 1 / 2 / 3 / 4 in city view | Queue melee / ranged / cavalry / siege |
+| 5 / 6 in city view | Queue Granary / Barracks |
 | M / X | Arm Move / Attack for the next map click (press again to disarm) |
 
 A unit can queue a move and attack together. Attacks target tiles, and the
@@ -98,6 +100,12 @@ city automatically adds its best reachable unclaimed tile. If conflict cuts off
 a worked tile, that citizen is reassigned at the end of the turn; your other
 manual assignments remain intact.
 
+The gold `M` tile is the city manager; green-outlined tiles are its workers and
+the dotted links show their relationship. Click a non-adjacent reachable tile
+to move the manager. Each worker tries to keep its same axial offset from the
+manager; unavailable worker positions are replaced by the best nearby eligible
+tiles automatically.
+
 This is the economic experiment, not yet the full design: city defense/capture,
 site capture, road construction, build queues, science, strategic resources, and
 luxuries are not implemented. City centers currently remain economic markers;
@@ -130,5 +138,15 @@ Tile. Roads lower logistics cost; plains become farms and hills become mines.
 These worker actions complete immediately in this first version.
 
 Select a city to see its population, food and production, what it's building,
-its growth meter, and four build cards. Hover a card to see what the unit does
-and costs; click it or press its number to queue it. The queued build is gold.
+its growth meter, unit cards, and unique building cards. The Granary adds 2 food
+per turn. Choose a Barracks site on any open land tile as soon as you start it,
+or after it completes; click Confirm Barracks to finalize it. Move the gold
+manager onto that tile to activate its own troop queue: it receives the
+production of the manager's linked work group, while the city center's production
+stays with the normal city queue. Hover a card to see its effect and cost; the
+queued build is gold.
+
+The city tray also has Food, Production, and Balanced labor focus buttons. They
+set the default used by auto-assignment. A manually assigned tile cut off by an
+enemy unit is kept reserved; its worker returns automatically when the route is
+open again, unless you changed that assignment.

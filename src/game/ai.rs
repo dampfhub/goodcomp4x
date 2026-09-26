@@ -29,8 +29,18 @@ impl GameState {
                 population: 1,
                 food: 0,
                 production: 0,
+                hp: super::city::CITY_MAX_HP,
+                barracks_hp: super::city::BARRACKS_MAX_HP,
                 worked: Vec::new(),
-                queue: Some(super::city::BuildUnit::Melee),
+                remembered_worked: Vec::new(),
+                focus: super::city::LaborFocus::Balanced,
+                queue: vec![super::city::Build::Unit(super::city::BuildUnit::Melee)],
+                built: Vec::new(),
+                barracks: None,
+                pending_building: None,
+                planned_barracks: None,
+                barracks_queue: Vec::new(),
+                barracks_production: 0,
             });
             self.auto_assign_city(self.cities.len() - 1);
         }
