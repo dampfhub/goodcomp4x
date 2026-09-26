@@ -247,9 +247,9 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Sur
     let mut ring_live = true;
     let rc = handle {
         let size = client_size(&*win);
-        let sc = create_swapchain_with(pd, surface, size[0], size[1], 0, chain_options());
-        defer { destroy_swapchain(sc); }
         let mut pq = present_queue(pd, surface, *q);
+        let sc = create_swapchain_with(pd, surface, &pq, size[0], size[1], 0, chain_options());
+        defer { destroy_swapchain(sc); }
         let fbs = create_framebuffers(&sc, pass);
         defer { destroy_framebuffers(fbs); }
         ring_live = false;
@@ -284,9 +284,10 @@ fn run_on_device(family: u32, title: &str, width: i32, height: i32, frames: i32)
         defer { destroy_command_pool(pool); }
         let mut t = create_timeline();
         defer { destroy_timeline(t); }
-        // The colour format is the surface's first; the pass's is a type, so the two are
+        // The swapchain's format is the surface's; the pass's is a type, so the two are
         // checked here.
-        let probe = create_swapchain_with(pd, &surface, width as u32, height as u32, 0, chain_options());
+        let probe_pq = present_queue(pd, &surface, q);
+        let probe = create_swapchain_with(pd, &surface, &probe_pq, width as u32, height as u32, 0, chain_options());
         let format = swapchain_format(&probe);
         destroy_swapchain(probe);
         if !format_is(bgra8_srgb(), format) { VkError.fail(HL_ERROR_NOT_FOUND) }
