@@ -26,6 +26,19 @@ changes.
 - On Windows, close a running instance before rebuilding; the exe is locked
   while it runs.
 
+## The work board
+
+https://github.com/users/dampfhub/projects/1, driven through
+`node .claude/skills/board/board.mjs` (no arguments prints usage; the `board`
+skill, `.claude/skills/board/SKILL.md`, has the workflow and schema). The repo,
+project and field schema live in `.claude/board.config.json`. Claim an item
+before you start, keep its `Files` current, and run `fences` before working in
+parallel. **Fix small bugs you meet in your footprint now**, with a test; file
+an item only for what you can't fix in this change, after checking `list --open`
+for one that already covers it. Put `Closes #N` on one line in the PR or merge
+commit; `node tools/commit-msg-lint.mjs` catches a closing keyword and an issue
+number split across two lines, which GitHub still treats as a close.
+
 ## Layout
 
 ```
@@ -75,6 +88,11 @@ src/
 shaders/
   mesh.vert        applies the batch's view-projection push constant
   mesh.frag        vertex color, times atlas coverage unless the UV is SOLID_UV
+tools/
+  commit-msg-lint.mjs  refuses a commit message that closes an issue across a line break
+.claude/
+  board.config.json    the GitHub Project, repo and field schema the board tool uses
+  skills/board/        the work-board skill: SKILL.md (workflow) and board.mjs (the wrapper)
 ```
 
 Text: `font.rs` rasterizes printable ASCII from the Hack font (bundled by the
@@ -480,6 +498,8 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
     F10 toggle; the vertex buffer grows as needed.
 28. The world became a Pangea on a 61x36 rectangular map (`Shape`), sized
     for four players, starting each side with a settler, worker and scout.
+29. Work board: a GitHub Projects wrapper (`board.mjs`) and skill, and a commit
+    message lint for accidental issue closes.
 
 ## Open questions and ideas
 
