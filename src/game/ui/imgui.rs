@@ -22,6 +22,18 @@ const QUEUE: usize = 1;
 const DEBUG: usize = 2;
 const INSPECT: usize = 3;
 
+fn panel_chrome(arranging: bool) -> WindowFlags {
+    if arranging {
+        WindowFlags::NO_SAVED_SETTINGS
+    } else {
+        WindowFlags::NO_SAVED_SETTINGS
+            | WindowFlags::NO_TITLE_BAR
+            | WindowFlags::NO_RESIZE
+            | WindowFlags::NO_MOVE
+            | WindowFlags::NO_COLLAPSE
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct WindowGeometry {
     pos: Vec2,
@@ -37,8 +49,8 @@ pub struct ImGuiLayoutState {
 }
 
 impl ImGuiLayoutState {
-    fn begin_frame(&mut self, ui: &Ui) {
-        if !ui.is_mouse_clicked(ImMouseButton::Left) {
+    fn begin_frame(&mut self, ui: &Ui, arranging: bool) {
+        if !arranging || !ui.is_mouse_clicked(ImMouseButton::Left) {
             return;
         }
         let mouse = Vec2::from_array(ui.io().mouse_pos);
@@ -154,9 +166,15 @@ impl ImGuiLayoutState {
     }
 }
 
-fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32) -> f32 {
+fn measure_panel(
+    ui: &Ui,
+    panel: &PanelBuilder,
+    fonts: &[FontId; 3],
+    width: f32,
+    arranging: bool,
+) -> f32 {
     let inner = (width - 45.0).max(100.0);
-    let mut height = 56.0; // title, border and padding
+    let mut height = if arranging { 56.0 } else { 26.0 }; // title, border and padding
     for row in &panel.rows {
         height += match row {
             Row::Text(px, line) => {
@@ -216,6 +234,7 @@ impl GameState {
         viewport: Vec2,
         panel: &PanelBuilder,
         fonts: &[FontId; 3],
+        arranging: bool,
         actions: &mut Vec<Action>,
     ) {
         let condition = layout.condition(slot, viewport);
@@ -228,6 +247,7 @@ impl GameState {
             Condition::Always
         };
         ui.window(title)
+            .flags(panel_chrome(arranging))
             .position(position.to_array(), condition)
             .size(size.to_array(), size_condition)
             .size_constraints(
@@ -401,7 +421,8 @@ impl GameState {
         layout: &mut ImGuiLayoutState,
     ) {
         let viewport = Vec2::from_array(ui.io().display_size);
-        layout.begin_frame(ui);
+        let arranging = ui.io().key_ctrl;
+        layout.begin_frame(ui, arranging);
         let mut actions = Vec::new();
         let pending = self.pending();
         let turn = if self.is_resolving() {
@@ -502,8 +523,8 @@ impl GameState {
         } else {
             (560.0_f32.min(max_width), 330.0_f32.min(max_width))
         };
-        let queue_height = measure_panel(ui, &queue, fonts, left_width).min(225.0);
-        let mut tray_height = measure_panel(ui, &tray, fonts, left_width).min(available);
+        let queue_height = measure_panel(ui, &queue, fonts, left_width, arranging).min(225.0);
+        let mut tray_height = measure_panel(ui, &tray, fonts, left_width, arranging).min(available);
         // On a narrow screen the queue cannot wrap into a second column, so
         // reserve its space above the selection before docking either window.
         if !tray.rows.is_empty()
@@ -517,11 +538,12 @@ impl GameState {
             (!queue.rows.is_empty()).then_some(Vec2::new(left_width, queue_height)),
             Some(Vec2::new(
                 debug_width,
-                measure_panel(ui, &debug, fonts, debug_width).min(available),
+                measure_panel(ui, &debug, fonts, debug_width, arranging).min(available),
             )),
             (!hover.rows.is_empty()).then_some(Vec2::new(
                 345.0_f32.min(max_width),
-                measure_panel(ui, &hover, fonts, 345.0_f32.min(max_width)).min(available),
+                measure_panel(ui, &hover, fonts, 345.0_f32.min(max_width), arranging)
+                    .min(available),
             )),
         ];
         let mut sizes = std::array::from_fn(|slot| {
@@ -552,6 +574,7 @@ impl GameState {
                 viewport,
                 &tray,
                 fonts,
+                arranging,
                 &mut actions,
             );
         }
@@ -566,6 +589,7 @@ impl GameState {
                 viewport,
                 &queue,
                 fonts,
+                arranging,
                 &mut actions,
             );
         }
@@ -580,6 +604,7 @@ impl GameState {
                 viewport,
                 &debug,
                 fonts,
+                arranging,
                 &mut actions,
             );
         }
@@ -594,6 +619,7 @@ impl GameState {
                 viewport,
                 &hover,
                 fonts,
+                arranging,
                 &mut actions,
             );
         }
@@ -609,6 +635,22 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_handles_only_appear_while_arranging() {
+        let normal = panel_chrome(false);
+        assert!(normal.contains(WindowFlags::NO_TITLE_BAR));
+        assert!(normal.contains(WindowFlags::NO_RESIZE));
+        assert!(normal.contains(WindowFlags::NO_MOVE));
+        assert!(normal.contains(WindowFlags::NO_COLLAPSE));
+        let arranging = panel_chrome(true);
+        assert!(!arranging.intersects(
+            WindowFlags::NO_TITLE_BAR
+                | WindowFlags::NO_RESIZE
+                | WindowFlags::NO_MOVE
+                | WindowFlags::NO_COLLAPSE
+        ));
+    }
 
     fn assert_fits_without_overlap(
         viewport: Vec2,

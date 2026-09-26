@@ -13,6 +13,8 @@ windows without overlap. A window follows the dock as its content changes
 until the player drags its title bar or resize grip; moved windows reserve
 their space so other panels avoid them. Only the production queue has a
 deliberately bounded height and scrolls when it grows beyond that bound.
+Hold Ctrl to show the title bars, collapse buttons, and resize grips for
+arranging panels. They stay hidden during normal play.
 The world, tile overlays, selection rectangle, and quit hold prompt remain in
 the game's renderer. Native window positions can be moved and resized while
 the game is running. Queue panels show the full queue inside a scrollable
