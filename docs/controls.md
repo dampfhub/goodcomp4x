@@ -36,14 +36,15 @@ red queues its orders when you end planning. There is no save system yet.
 | F6 | Save a snapshot of the whole game (testing savestate) |
 | F7 | Load the snapshot; it's kept, so it can be loaded again |
 | F8 | Toggle turn playback: step by step, or every step at once (same outcome) |
+| F9 / debug Complete Production | Finish the active city build or Barracks training immediately |
 
-The faded DEBUG panel at the top-left has buttons for F1-F3 and F6-F8; the
+The faded DEBUG panel at the top-left has buttons for F1-F3 and F6-F9; the
 current scenario is gold. The savestate lives only until the game closes and
 survives switching scenarios; loading it returns to its scenario.
 | F5 | Toggle borderless fullscreen |
 | F, with a selected settler | Found a city |
 | 1 / 2 / 3 / 4 in city view | Queue melee / ranged / cavalry / siege |
-| 5 / 6 in city view | Queue Granary / Barracks |
+| 5 / 6 / 7 / 8 in city view | Queue Granary / Barracks / Mill / Workshop |
 | M / X | Arm Move / Attack for the next map click (press again to disarm) |
 
 A unit can queue a move and attack together. Attacks target tiles, and the
@@ -139,12 +140,20 @@ These worker actions complete immediately in this first version.
 
 Select a city to see its population, food and production, what it's building,
 its growth meter, unit cards, and unique building cards. The Granary adds 2 food
-per turn. Choose a Barracks site on any open land tile as soon as you start it,
-or after it completes; click Confirm Barracks to finalize it. Move the gold
-manager onto that tile to activate its own troop queue: it receives the
-production of the manager's linked work group, while the city center's production
-stays with the normal city queue. Hover a card to see its effect and cost; the
-queued build is gold.
+per turn. Barracks, Mill, and Workshop each need a site on open land; select
+one when queuing it, click its map badge to move the site if needed, and confirm it once production
+is ready. A Mill makes adjacent reachable tiles deliver 100% of their food,
+but cannot extend the city's hard logistics cutoff. A Workshop lets an adjacent
+building be confirmed at half its normal production cost. Moving it away before
+confirmation removes the discount and resumes construction at normal cost. Move the gold manager
+onto a Barracks to activate its own troop queue: it receives the production of
+the manager's linked work group, while the city center's production stays with
+the normal city queue. Hover a card to see its effect and cost; the queued build
+is gold.
+Long city and Barracks queues show as many items as fit above the tray, up to
+the space below the top bar (four at 1600×900).
+Scroll over the box or drag its scrollbar to reach later items. Drag a queue
+row onto another row to reorder it, or click its small X to remove it.
 
 The city tray also has Food, Production, and Balanced labor focus buttons. They
 set the default used by auto-assignment. A manually assigned tile cut off by an

@@ -317,10 +317,17 @@ impl GameState {
                 if self.yields_city() != Some(i) {
                     continue;
                 }
+                let food_share = self.mill_food_share(i, *h, *cost);
+                let production_share = super::city::delivered_share(*cost);
+                let label = if food_share == production_share {
+                    format!("{}%", food_share * 25)
+                } else {
+                    format!("F{} P{}", food_share * 25, production_share * 25)
+                };
                 font::push_text(
                     h.to_world() + Vec2::new(-0.3, 0.52),
                     0.18,
-                    &format!("{}%", super::city::delivered_share(*cost) * 25),
+                    &label,
                     [0.65, 0.85, 0.65, 1.0],
                     out,
                 );
@@ -408,47 +415,49 @@ impl GameState {
             );
         }
         for city in &self.cities {
-            if let Some(hex) = city.barracks {
-                mesh::regular_polygon(
-                    hex.to_world(),
-                    0.31,
-                    4,
-                    FRAC_PI_4,
-                    [0.72, 0.35, 0.18, 1.0],
-                    out,
-                );
-                font::push_glyph(hex.to_world(), 0.30, 'B', LABEL_COLOR, out);
-                push_health_bar(
-                    hex.to_world(),
-                    city.barracks_hp / super::city::BARRACKS_MAX_HP,
-                    0.7,
-                    out,
-                );
+            for (building, hex) in [
+                (super::city::Building::Barracks, city.barracks),
+                (super::city::Building::Mill, city.mill),
+                (super::city::Building::Workshop, city.workshop),
+            ] {
+                let Some(hex) = hex else {
+                    continue;
+                };
+                let (badge, color) = building_badge(building);
+                mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, color, out);
+                font::push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
+                if building == super::city::Building::Barracks {
+                    push_health_bar(
+                        hex.to_world(),
+                        city.barracks_hp / super::city::BARRACKS_MAX_HP,
+                        0.7,
+                        out,
+                    );
+                }
             }
         }
-        // A Barracks under construction follows the map hover, with a bright
-        // placement ring. The selected site remains as a faint preview until
-        // the player confirms the finished building.
+        // Planned sites stay visible until confirmation. An active placement
+        // also follows the map hover before a site has been selected.
         for (i, city) in self.cities.iter().enumerate() {
-            if city.planned_barracks.is_none() {
-                continue;
-            }
-            let valid =
-                |hex: Hex| self.grid.is_passable(hex) && !self.cities.iter().any(|c| c.pos == hex);
-            let preview = if self.placing_barracks == Some(i) {
-                self.hovered_tile
-                    .filter(|h| valid(*h))
-                    .or(city.planned_barracks)
-            } else {
-                city.planned_barracks
-            };
-            if let Some(hex) = preview {
-                let is_hovered = self.hovered_tile == Some(hex);
-                let color = if is_hovered {
-                    [1.0, 0.72, 0.20, 0.95]
+            for building in [
+                super::city::Building::Barracks,
+                super::city::Building::Mill,
+                super::city::Building::Workshop,
+            ] {
+                let planned = city.planned_sites.get(&building).copied();
+                let preview = if self.placing_building == Some((i, building)) {
+                    self.hovered_tile
+                        .filter(|&h| self.site_available(i, building, h))
+                        .or(planned)
                 } else {
-                    [0.85, 0.42, 0.18, 0.55]
+                    planned
                 };
+                let Some(hex) = preview else {
+                    continue;
+                };
+                let (badge, mut color) = building_badge(building);
+                let is_hovered = self.hovered_tile == Some(hex);
+                color[3] = if is_hovered { 0.95 } else { 0.55 };
                 mesh::polygon_outline(
                     hex.to_world(),
                     WORKED_OUTLINE_RADIUS,
@@ -463,10 +472,10 @@ impl GameState {
                     0.31,
                     4,
                     FRAC_PI_4,
-                    [0.72, 0.35, 0.18, 0.48],
+                    [color[0], color[1], color[2], 0.48],
                     out,
                 );
-                font::push_glyph(hex.to_world(), 0.30, 'B', [0.08, 0.05, 0.03, 0.65], out);
+                font::push_glyph(hex.to_world(), 0.30, badge, [0.08, 0.05, 0.03, 0.65], out);
             }
         }
         for c in &self.cities {
@@ -480,6 +489,15 @@ impl GameState {
             font::push_glyph(pos, 0.5, 'H', LABEL_COLOR, out);
             push_health_bar(pos, c.hp / super::city::CITY_MAX_HP, 1.0, out);
         }
+    }
+}
+
+fn building_badge(building: super::city::Building) -> (char, Color) {
+    match building {
+        super::city::Building::Barracks => ('B', [0.72, 0.35, 0.18, 1.0]),
+        super::city::Building::Mill => ('M', [0.35, 0.65, 0.28, 1.0]),
+        super::city::Building::Workshop => ('W', [0.38, 0.52, 0.82, 1.0]),
+        super::city::Building::Granary => unreachable!(),
     }
 }
 

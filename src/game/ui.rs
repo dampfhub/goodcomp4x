@@ -4,9 +4,14 @@
 //!
 //! Each frame the UI is laid out once into panels, text and buttons (a
 //! `Layout`), which is then either drawn or hit-tested against a click, so
-//! what's clickable always matches what's shown. UI geometry is in pixels
+//! what's clickable always matches what's shown. New persistent or hover
+//! panels should use `PanelBuilder` and `Layout::dock_panel` with a `Zone`;
+//! the reusable geometry is in `ui/dock.rs` and explained in
+//! `docs/ui-system.md`. UI geometry is in pixels
 //! with the origin at the window's bottom-left and Y pointing up, the same
 //! orientation as the world.
+
+mod dock;
 
 use glam::{Mat4, Vec2, Vec3};
 
@@ -19,6 +24,7 @@ use super::scenario::Scenario;
 use super::unit::Unit;
 use super::{GameState, mesh};
 use crate::renderer::Vertex;
+use dock::{Dock, Rect, Zone};
 
 type Color = [f32; 4];
 /// A line of text made of differently colored spans, drawn left to right.
@@ -46,6 +52,11 @@ const BUTTON_HEIGHT: f32 = 60.0;
 const BUTTON_MIN_WIDTH: f32 = 120.0;
 const BUTTON_PADDING: f32 = 16.0;
 const GROWTH_BAR_HEIGHT: f32 = 10.0;
+const QUEUE_TOP_GAP: f32 = 4.0;
+const SCROLLBAR_WIDTH: f32 = 12.0;
+const QUEUE_ITEM_HEIGHT: f32 = 48.0;
+const QUEUE_ITEM_GAP: f32 = 4.0;
+const QUEUE_REMOVE_WIDTH: f32 = 34.0;
 /// Tooltip descriptions wrap at this many characters.
 const TOOLTIP_WRAP: usize = 50;
 const TOOLTIP_GAP: f32 = 8.0;
@@ -81,6 +92,17 @@ const SELECTION_BOX_EDGE: Color = [0.55, 0.75, 1.00, 0.9];
 const SELECTION_BOX_BORDER: f32 = 2.0;
 /// Opacity the debug panel is drawn at, so it doesn't read as game UI.
 const DEBUG_ALPHA: f32 = 0.55;
+
+fn queue_items_that_fit(available_height: f32) -> usize {
+    let text_row = font::ui(SMALL).line_height + LINE_GAP;
+    let fixed = 2.0 * PADDING + text_row;
+    let item = QUEUE_ITEM_HEIGHT;
+    let mut visible = 1;
+    while (fixed + (visible + 1) as f32 * item).round() <= available_height.round() {
+        visible += 1;
+    }
+    visible
+}
 
 /// Maps UI pixels (origin bottom-left, Y up) to clip space.
 pub fn ui_projection(screen_size: Vec2) -> Mat4 {
@@ -135,23 +157,19 @@ enum Target {
     Build(BuildUnit),
     ToggleYields,
     Building(Building),
-    ChangeBarracksSite,
     BarracksBuild(BuildUnit),
     OpenBarracks,
     OpenCity,
-    CityQueueUp(usize),
-    CityQueueDown(usize),
     CityQueueRemove(usize),
-    BarracksQueueUp(usize),
-    BarracksQueueDown(usize),
     BarracksQueueRemove(usize),
     Focus(LaborFocus),
-    ConfirmBarracks,
+    ConfirmBuilding(Building),
     EndTurn,
     /// Debug panel: scenario pages, the savestate and playback pacing.
     Scenario(Scenario),
     SaveState,
     LoadState,
+    CompleteProduction,
     TogglePlayback,
 }
 
@@ -212,9 +230,78 @@ impl Button {
 }
 
 enum Shape {
-    Panel { min: Vec2, max: Vec2, faded: bool },
-    Text { origin: Vec2, px: u32, line: Line },
-    Bar { min: Vec2, max: Vec2, fraction: f32 },
+    Panel {
+        min: Vec2,
+        max: Vec2,
+        faded: bool,
+    },
+    Text {
+        origin: Vec2,
+        px: u32,
+        line: Line,
+    },
+    Bar {
+        min: Vec2,
+        max: Vec2,
+        fraction: f32,
+    },
+    Scrollbar {
+        track_min: Vec2,
+        track_max: Vec2,
+        thumb_min: Vec2,
+        thumb_max: Vec2,
+    },
+    QueueItem {
+        min: Vec2,
+        max: Vec2,
+        label: String,
+        active: bool,
+        dragging: bool,
+        drop_target: bool,
+        locked: bool,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum QueueKind {
+    City,
+    Barracks,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct QueueDrag {
+    kind: QueueKind,
+    source: usize,
+    target: Option<usize>,
+}
+
+struct QueueItemSpec {
+    kind: QueueKind,
+    index: usize,
+    label: String,
+    active: bool,
+    dragging: bool,
+    drop_target: bool,
+    locked: bool,
+}
+
+struct QueueItemRegion {
+    kind: QueueKind,
+    index: usize,
+    min: Vec2,
+    max: Vec2,
+    body_max_x: f32,
+    locked: bool,
+}
+
+struct QueueScrollRegion {
+    kind: QueueKind,
+    panel_min: Vec2,
+    panel_max: Vec2,
+    track_min: Vec2,
+    track_max: Vec2,
+    thumb_height: f32,
+    max_offset: usize,
 }
 
 /// The UI for one frame. Panels also swallow clicks, so a click on the UI
@@ -224,9 +311,37 @@ struct Layout {
     shapes: Vec<Shape>,
     buttons: Vec<Button>,
     panels: Vec<(Vec2, Vec2)>,
+    queue_scrollbars: Vec<QueueScrollRegion>,
+    queue_items: Vec<QueueItemRegion>,
+    dock: Option<Dock>,
 }
 
 impl Layout {
+    fn for_screen(screen: Vec2) -> Self {
+        Self {
+            dock: Some(Dock::new(
+                screen,
+                MARGIN,
+                GAP,
+                TOP_BAR_HEIGHT + QUEUE_TOP_GAP,
+            )),
+            ..Self::default()
+        }
+    }
+
+    /// Place a measured panel in a screen zone. All docked panels compose with
+    /// one another and keep their rendering and hit boxes at the same rect.
+    fn dock_panel(&mut self, panel: PanelBuilder, zone: Zone) -> Option<Rect> {
+        let rect = self.dock.as_mut()?.place(panel.size(), zone)?;
+        panel.place_bottom_left(rect.min, self);
+        Some(rect)
+    }
+
+    fn remaining_height(&self, zone: Zone, width: f32) -> f32 {
+        self.dock
+            .as_ref()
+            .map_or(0.0, |dock| dock.remaining_height(zone, width))
+    }
     fn button_at(&self, point: Vec2) -> Option<&Button> {
         self.buttons.iter().find(|b| b.contains(point))
     }
@@ -243,70 +358,13 @@ impl Layout {
     }
 }
 
-/// Stack a map-hover card with the bottom-left trays without colliding with
-/// the debug panel at the top of the window.
-fn hover_panel_bottom(layout: &Layout, screen_size: Vec2) -> f32 {
-    layout
-        .panels
-        .iter()
-        .filter(|&&(min, max)| min.x <= MARGIN + 1.0 && max.y < screen_size.y * 0.6)
-        .map(|&(_, max)| max.y + GAP)
-        .fold(MARGIN, f32::max)
-}
-
 impl GameState {
     /// The UI as a triangle list in UI pixels. `cursor` is in window pixels
     /// with the origin at the top-left.
     pub fn build_ui(&self, screen_size: Vec2, cursor: Option<Vec2>) -> Vec<Vertex> {
-        let mut layout = self.layout(screen_size);
+        let (layout, over_ui) = self.layout_with_hover(screen_size, cursor);
         let point = cursor.map(|c| to_ui(c, screen_size));
         let hovered = point.and_then(|p| layout.button_at(p)).map(|b| b.target);
-
-        // Describe a unit under the cursor, unless it's the selected one
-        // (already in the tray) or the cursor is over the UI.
-        let over_ui = point.is_some_and(|p| layout.covers(p));
-        if let Some(idx) = cursor
-            .filter(|_| !over_ui)
-            .and_then(|c| self.unit_at_screen(c, screen_size))
-            .filter(|&idx| Some(idx) != self.selected || self.selected_city.is_some())
-            .filter(|_| {
-                !self.hovered_tile.is_some_and(|hex| {
-                    self.cities
-                        .iter()
-                        .any(|city| city.pos == hex || city.barracks == Some(hex))
-                })
-            })
-        {
-            // Top-right, clear of the debug panel at the top-left.
-            let mut panel = PanelBuilder::default();
-            self.unit_info(idx, &mut panel);
-            let top_left = Vec2::new(
-                screen_size.x - MARGIN - panel.size().x,
-                screen_size.y - TOP_BAR_HEIGHT - MARGIN,
-            );
-            panel.place_top_left(top_left, &mut layout);
-        }
-        if !over_ui && let Some(hex) = self.hovered_tile {
-            if let Some(city) = self.cities.iter().position(|city| city.pos == hex) {
-                let mut panel = PanelBuilder::default();
-                self.structure_hover_panel(city, false, &mut panel);
-                panel.place_bottom_left(
-                    Vec2::new(MARGIN, hover_panel_bottom(&layout, screen_size)),
-                    &mut layout,
-                );
-            } else if let Some(city) = self
-                .cities
-                .iter()
-                .position(|city| city.barracks == Some(hex))
-            {
-                let mut panel = PanelBuilder::default();
-                self.structure_hover_panel(city, true, &mut panel);
-                panel.place_bottom_left(
-                    Vec2::new(MARGIN, hover_panel_bottom(&layout, screen_size)),
-                    &mut layout,
-                );
-            }
-        }
 
         let mut out = Vec::new();
         for shape in &layout.shapes {
@@ -327,12 +385,59 @@ impl GameState {
         out
     }
 
+    /// Build persistent and hover panels through the same dock, so visible
+    /// hover cards also participate in hit testing and collision placement.
+    fn layout_with_hover(&self, screen_size: Vec2, cursor: Option<Vec2>) -> (Layout, bool) {
+        let mut layout = self.layout(screen_size);
+        let point = cursor.map(|c| to_ui(c, screen_size));
+
+        // Describe a unit under the cursor, unless it's the selected one
+        // (already in the tray) or the cursor is over the UI.
+        let over_ui = point.is_some_and(|p| layout.covers(p));
+        if let Some(idx) = cursor
+            .filter(|_| !over_ui)
+            .and_then(|c| self.unit_at_screen(c, screen_size))
+            .filter(|&idx| Some(idx) != self.selected || self.selected_city.is_some())
+            .filter(|_| {
+                !self.hovered_tile.is_some_and(|hex| {
+                    self.cities
+                        .iter()
+                        .any(|city| city.pos == hex || city.barracks == Some(hex))
+                })
+            })
+        {
+            let mut panel = PanelBuilder::default();
+            self.unit_info(idx, &mut panel);
+            layout.dock_panel(panel, Zone::TopRight);
+        }
+        if !over_ui && let Some(hex) = self.hovered_tile {
+            if let Some(city) = self.cities.iter().position(|city| city.pos == hex) {
+                let mut panel = PanelBuilder::default();
+                self.structure_hover_panel(city, false, &mut panel);
+                layout.dock_panel(panel, Zone::BottomLeft);
+            } else if let Some(city) = self
+                .cities
+                .iter()
+                .position(|city| city.barracks == Some(hex))
+            {
+                let mut panel = PanelBuilder::default();
+                self.structure_hover_panel(city, true, &mut panel);
+                layout.dock_panel(panel, Zone::BottomLeft);
+            }
+        }
+
+        (layout, over_ui)
+    }
+
     /// Handles a click on the UI, returning whether it hit anything (in which
     /// case it shouldn't also count as a click on the map). `cursor` is in
     /// window pixels with the origin at the top-left.
     pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2) -> bool {
         let point = to_ui(cursor, screen_size);
-        let layout = self.layout(screen_size);
+        let layout = self.layout_with_hover(screen_size, Some(cursor)).0;
+        if self.drag_queue_scrollbar_at(cursor, screen_size, false) {
+            return true;
+        }
         let Some(button) = layout.button_at(point) else {
             return layout.covers(point);
         };
@@ -354,7 +459,6 @@ impl GameState {
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
             Target::Building(building) => self.queue_selected_city_building(building),
-            Target::ChangeBarracksSite => self.change_selected_barracks_site(),
             Target::BarracksBuild(build) => self.queue_selected_barracks_unit(build),
             Target::OpenBarracks => {
                 if let Some(city) = self.selected_city {
@@ -362,23 +466,157 @@ impl GameState {
                 }
             }
             Target::OpenCity => self.open_selected_city_from_barracks(),
-            Target::CityQueueUp(index) => self.move_selected_city_queue_item(index, true),
-            Target::CityQueueDown(index) => self.move_selected_city_queue_item(index, false),
             Target::CityQueueRemove(index) => self.remove_selected_city_queue_item(index),
-            Target::BarracksQueueUp(index) => self.move_selected_barracks_queue_item(index, true),
-            Target::BarracksQueueDown(index) => {
-                self.move_selected_barracks_queue_item(index, false)
-            }
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
             Target::Focus(focus) => self.set_selected_city_focus(focus),
-            Target::ConfirmBarracks => self.confirm_barracks(),
+            Target::ConfirmBuilding(building) => self.confirm_building(building),
             Target::EndTurn => self.end_planning(),
             Target::Scenario(scenario) => self.switch_scenario(scenario),
             Target::SaveState => self.save_state(),
             Target::LoadState => self.load_state(),
+            Target::CompleteProduction => self.debug_complete_current_production(),
             Target::TogglePlayback => self.toggle_instant_playback(),
         }
         true
+    }
+
+    fn set_queue_scroll(&mut self, kind: QueueKind, offset: usize) {
+        match kind {
+            QueueKind::City => self.city_queue_scroll = offset,
+            QueueKind::Barracks => self.barracks_queue_scroll = offset,
+        }
+    }
+
+    /// Moves a queue scrollbar under the pointer; also used while dragging it.
+    pub fn drag_queue_scrollbar_at(
+        &mut self,
+        cursor: Vec2,
+        screen_size: Vec2,
+        captured: bool,
+    ) -> bool {
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        let Some(scroll) = layout
+            .queue_scrollbars
+            .iter()
+            .find(|s| captured || contains(s.track_min, s.track_max, point))
+        else {
+            return false;
+        };
+        let travel = scroll.track_max.y - scroll.track_min.y - scroll.thumb_height;
+        let fraction = if travel > 0.0 {
+            ((scroll.track_max.y - scroll.thumb_height / 2.0 - point.y) / travel).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.set_queue_scroll(
+            scroll.kind,
+            (fraction * scroll.max_offset as f32).round() as usize,
+        );
+        true
+    }
+
+    /// Returns true when the wheel belongs to an overflowing queue panel.
+    pub fn scroll_queue_at(&mut self, cursor: Vec2, screen_size: Vec2, steps: f32) -> bool {
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        let Some(scroll) = layout
+            .queue_scrollbars
+            .iter()
+            .find(|s| contains(s.panel_min, s.panel_max, point))
+        else {
+            return false;
+        };
+        let current = match scroll.kind {
+            QueueKind::City => self.city_queue_scroll,
+            QueueKind::Barracks => self.barracks_queue_scroll,
+        };
+        let delta = steps.abs().ceil() as usize;
+        let next = if steps > 0.0 {
+            current.saturating_sub(delta)
+        } else {
+            current.saturating_add(delta).min(scroll.max_offset)
+        };
+        self.set_queue_scroll(scroll.kind, next);
+        true
+    }
+
+    /// Capture a queue row body. Its separate X button remains an ordinary click.
+    pub fn start_queue_drag_at(&mut self, cursor: Vec2, screen_size: Vec2) -> bool {
+        if self.is_resolving() {
+            return false;
+        }
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        let Some(item) = layout.queue_items.iter().find(|item| {
+            !item.locked && point.x < item.body_max_x && contains(item.min, item.max, point)
+        }) else {
+            return false;
+        };
+        self.queue_drag = Some(QueueDrag {
+            kind: item.kind,
+            source: item.index,
+            target: Some(item.index),
+        });
+        true
+    }
+
+    pub fn update_queue_drag_at(&mut self, cursor: Vec2, screen_size: Vec2) {
+        let Some(drag) = self.queue_drag else { return };
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        let target = layout
+            .queue_items
+            .iter()
+            .find(|item| item.kind == drag.kind && contains(item.min, item.max, point))
+            .map(|item| item.index);
+        if let Some(current) = &mut self.queue_drag {
+            current.target = target;
+        }
+    }
+
+    pub fn finish_queue_drag_at(&mut self, cursor: Vec2, screen_size: Vec2) {
+        self.update_queue_drag_at(cursor, screen_size);
+        let Some(QueueDrag {
+            kind,
+            source,
+            target: Some(target),
+        }) = self.queue_drag.take()
+        else {
+            return;
+        };
+        if source == target {
+            return;
+        }
+        let Some(city) = self.selected_city.or(self.selected_barracks) else {
+            return;
+        };
+        match kind {
+            QueueKind::City => {
+                if self.cities[city].pending_building.is_some() && (source == 0 || target == 0) {
+                    self.notice = "CONFIRM OR REMOVE THE READY BUILDING FIRST".into();
+                    return;
+                }
+                let queue = &mut self.cities[city].queue;
+                if source < queue.len() && target < queue.len() {
+                    let item = queue.remove(source);
+                    queue.insert(target, item);
+                    self.notice = "CITY QUEUE REORDERED".into();
+                }
+            }
+            QueueKind::Barracks => {
+                let queue = &mut self.cities[city].barracks_queue;
+                if source < queue.len() && target < queue.len() {
+                    let item = queue.remove(source);
+                    queue.insert(target, item);
+                    self.notice = "BARRACKS QUEUE REORDERED".into();
+                }
+            }
+        }
+    }
+
+    pub fn cancel_queue_drag(&mut self) {
+        self.queue_drag = None;
     }
 
     /// Tracks which map hex the cursor is over (ignoring the UI) and how long
@@ -399,9 +637,8 @@ impl GameState {
     }
 
     fn layout(&self, screen_size: Vec2) -> Layout {
-        let mut layout = Layout::default();
+        let mut layout = Layout::for_screen(screen_size);
         self.top_bar(screen_size, &mut layout);
-        self.debug_panel(screen_size, &mut layout);
 
         let mut tray = PanelBuilder::default();
         if let Some(city) = self.selected_city {
@@ -415,30 +652,34 @@ impl GameState {
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         } else {
+            self.debug_panel(&mut layout);
             return layout;
         }
         let tray_size = tray.size();
-        tray.place_bottom_left(Vec2::splat(MARGIN), &mut layout);
+        layout.dock_panel(tray, Zone::BottomLeft);
+        let queue_visible =
+            queue_items_that_fit(layout.remaining_height(Zone::BottomLeft, tray_size.x));
         if let Some(city) = self.selected_city {
             let mut queue = PanelBuilder::default();
-            self.city_queue_panel(city, &mut queue);
+            self.city_queue_panel(city, queue_visible, &mut queue);
             if !queue.rows.is_empty() {
-                queue.place_bottom_left(Vec2::new(MARGIN, MARGIN + tray_size.y + GAP), &mut layout);
+                layout.dock_panel(queue, Zone::BottomLeft);
             }
         } else if let Some(city) = self.selected_barracks {
             let mut queue = PanelBuilder::default();
-            self.barracks_queue_panel(city, &mut queue);
+            self.barracks_queue_panel(city, queue_visible, &mut queue);
             if !queue.rows.is_empty() {
-                queue.place_bottom_left(Vec2::new(MARGIN, MARGIN + tray_size.y + GAP), &mut layout);
+                layout.dock_panel(queue, Zone::BottomLeft);
             }
         }
+        self.debug_panel(&mut layout);
         layout
     }
 
     /// Testing tools, top-left under the top bar and see-through so they
     /// don't read as game UI: the scenario pages (the current one gold;
     /// pressing it again restarts it) and the savestate.
-    fn debug_panel(&self, size: Vec2, layout: &mut Layout) {
+    fn debug_panel(&self, layout: &mut Layout) {
         let mut panel = PanelBuilder {
             faded: true,
             ..PanelBuilder::default()
@@ -480,6 +721,19 @@ impl GameState {
                 ButtonState::new(false, self.savestate.is_none()),
             ),
         ]);
+        let can_complete = if let Some(city) = self.selected_barracks {
+            !self.cities[city].barracks_queue.is_empty()
+        } else if let Some(city) = self.selected_city {
+            !self.cities[city].queue.is_empty() && self.cities[city].pending_building.is_none()
+        } else {
+            false
+        };
+        panel.compact_buttons(vec![debug_button(
+            Target::CompleteProduction,
+            "COMPLETE PRODUCTION",
+            "F9",
+            ButtonState::new(false, self.is_resolving() || !can_complete),
+        )]);
         if let Some(saved) = self.saved_summary() {
             panel.text(
                 SMALL,
@@ -498,8 +752,7 @@ impl GameState {
             "F8",
             ButtonState::Ready,
         )]);
-        let top_left = Vec2::new(MARGIN, size.y - TOP_BAR_HEIGHT - MARGIN);
-        panel.place_top_left(top_left, layout);
+        layout.dock_panel(panel, Zone::TopLeft);
     }
 
     /// Turn number on the left, the latest notice in the middle, and on the
@@ -847,7 +1100,10 @@ impl GameState {
                     format!(
                         "{} · {} LEFT",
                         build.name(),
-                        turns_at_rate(build.cost() - city.production, production)
+                        turns_at_rate(
+                            self.city_build_cost(i, *build) - city.production,
+                            production
+                        )
                     )
                 },
             );
@@ -869,7 +1125,10 @@ impl GameState {
             panel.bar(growth as f32 / 100.0);
             panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
             if let Some(build) = city.queue.first() {
-                panel.bar((city.production as f32 / build.cost() as f32).clamp(0.0, 1.0));
+                panel.bar(
+                    (city.production as f32 / self.city_build_cost(i, *build) as f32)
+                        .clamp(0.0, 1.0),
+                );
             }
         }
     }
@@ -924,27 +1183,28 @@ impl GameState {
         ));
         panel.text(BODY, production_line);
         if let Some(build) = city.queue.first().copied() {
+            let cost = self.city_build_cost(i, build);
             panel.text(
                 SMALL,
                 vec![(
                     format!(
                         "{}: {} / {} PRODUCTION",
                         build.name(),
-                        quantity(city.production.min(build.cost())),
-                        quantity(build.cost())
+                        quantity(city.production.min(cost)),
+                        quantity(cost)
                     ),
                     GOLD_TEXT,
                 )],
             );
-            panel.bar((city.production as f32 / build.cost() as f32).clamp(0.0, 1.0));
+            panel.bar((city.production as f32 / cost as f32).clamp(0.0, 1.0));
         }
         let building = match city.queue.first().copied() {
             Some(build) => (
                 format!(
                     "{} ({} OF {})",
                     build.name(),
-                    quantity(city.production.min(build.cost())),
-                    quantity(build.cost())
+                    quantity(city.production.min(self.city_build_cost(i, build))),
+                    quantity(self.city_build_cost(i, build))
                 ),
                 GOLD_TEXT,
             ),
@@ -975,18 +1235,16 @@ impl GameState {
 
         if let Some(hex) = self.inspected_tile {
             let (tile_food, tile_production) = self.tile_yield(hex);
-            let share = self
-                .routes(i)
-                .costs
-                .get(&hex)
-                .map_or(0, |cost| delivered_share(*cost));
+            let shares = self.routes(i).costs.get(&hex).map_or((0, 0), |cost| {
+                (self.mill_food_share(i, hex, *cost), delivered_share(*cost))
+            });
             panel.gap(GAP);
             panel.text(
                 SMALL,
                 vec![(
                     format!(
-                        "SELECTED TILE: {tile_food} FOOD, {tile_production} PRODUCTION, {}% DELIVERED",
-                        share * 25
+                        "SELECTED TILE: {tile_food} FOOD, {tile_production} PRODUCTION · FOOD {}% / PROD {}%",
+                        shares.0 * 25, shares.1 * 25
                     ),
                     DIM_TEXT,
                 )],
@@ -1028,13 +1286,16 @@ impl GameState {
                 LABEL_TEXT,
             )],
         );
-        let buildings = [Building::Granary, Building::Barracks];
+        let buildings = [
+            Building::Granary,
+            Building::Barracks,
+            Building::Mill,
+            Building::Workshop,
+        ];
         panel.buttons(
             buildings
                 .into_iter()
-                .filter(|&building| {
-                    !(building == Building::Barracks && city.built.contains(&building))
-                })
+                .filter(|&building| !city.built.contains(&building))
                 .map(|building| ButtonSpec {
                     target: Target::Building(building),
                     label: building.name().into(),
@@ -1045,7 +1306,7 @@ impl GameState {
                     ),
                     state: ButtonState::new(
                         city.queue.first() == Some(&Build::Building(building))
-                            || (building == Building::Barracks && self.placing_barracks == Some(i)),
+                            || self.placing_building == Some((i, building)),
                         city.pending_building == Some(building)
                             || city.queue.contains(&Build::Building(building)),
                     ),
@@ -1075,30 +1336,36 @@ impl GameState {
                 state: ButtonState::new(false, false),
                 armed: false,
             }]);
-        } else if city.planned_barracks.is_some() {
-            let site = city
-                .planned_barracks
-                .map(|h| format!("({}, {})", h.q, h.r))
-                .unwrap_or_else(|| "NONE".into());
-            let label = if city.pending_building == Some(Building::Barracks) {
-                "BARRACKS READY"
-            } else {
-                "BARRACKS PLANNED"
+        }
+        for building in [Building::Barracks, Building::Mill, Building::Workshop] {
+            let Some(site) = city.planned_sites.get(&building) else {
+                continue;
             };
-            panel.text(SMALL, vec![(format!("{label}: SITE {site}"), GOLD_TEXT)]);
-            panel.buttons(vec![ButtonSpec {
-                target: Target::ChangeBarracksSite,
-                label: "CHANGE BARRACKS SITE".into(),
-                hint: "CLICK".into(),
-                state: ButtonState::new(self.placing_barracks == Some(i), false),
-                armed: false,
-            }]);
-            if city.pending_building == Some(Building::Barracks) {
+            let ready = city.queue.first() == Some(&Build::Building(building))
+                && city.production >= self.city_build_cost(i, Build::Building(building));
+            let status = if ready { "READY" } else { "PLANNED" };
+            panel.text(
+                SMALL,
+                vec![(
+                    format!(
+                        "{} {status}: SITE ({}, {})",
+                        building.name(),
+                        site.q,
+                        site.r
+                    ),
+                    GOLD_TEXT,
+                )],
+            );
+            panel.text(
+                SMALL,
+                vec![("CLICK ITS MAP BADGE TO MOVE THE SITE".into(), DIM_TEXT)],
+            );
+            if ready {
                 panel.buttons(vec![ButtonSpec {
-                    target: Target::ConfirmBarracks,
-                    label: "CONFIRM BARRACKS".into(),
+                    target: Target::ConfirmBuilding(building),
+                    label: format!("CONFIRM {}", building.name()),
                     hint: "CLICK".into(),
-                    state: ButtonState::new(false, false),
+                    state: ButtonState::Ready,
                     armed: false,
                 }]);
             }
@@ -1193,113 +1460,109 @@ impl GameState {
         }]);
     }
 
-    fn barracks_queue_panel(&self, i: usize, panel: &mut PanelBuilder) {
+    fn barracks_queue_panel(&self, i: usize, visible: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if city.barracks_queue.is_empty() {
             return;
         }
         let production = self.barracks_income(i);
-        panel.text(SMALL, vec![("BARRACKS QUEUE".into(), LABEL_TEXT)]);
-        for (index, build) in city.barracks_queue.iter().copied().enumerate() {
-            let prefix = if index == 0 { "▶ " } else { "  " };
+        let offset = self
+            .barracks_queue_scroll
+            .min(city.barracks_queue.len().saturating_sub(visible));
+        if city.barracks_queue.len() > visible {
+            panel.scrollbar = Some((
+                QueueKind::Barracks,
+                offset,
+                city.barracks_queue.len(),
+                visible,
+            ));
+        }
+        panel.text(
+            SMALL,
+            vec![("BARRACKS QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
+        );
+        for (index, build) in city
+            .barracks_queue
+            .iter()
+            .copied()
+            .enumerate()
+            .skip(offset)
+            .take(visible)
+        {
+            let prefix = if index == 0 { "> " } else { "  " };
             let remaining = build.cost()
                 - if index == 0 {
                     city.barracks_production
                 } else {
                     0
                 };
-            panel.text(
-                SMALL,
-                vec![(
-                    format!(
-                        "{prefix}{} · {} PROD · {} LEFT",
-                        build.name(),
-                        quantity(build.cost()),
-                        turns_at_rate(remaining, production)
-                    ),
-                    if index == 0 { GOLD_TEXT } else { TEXT },
-                )],
-            );
-            panel.compact_buttons(vec![
-                ButtonSpec {
-                    target: Target::BarracksQueueUp(index),
-                    label: "UP".into(),
-                    hint: "↑".into(),
-                    state: ButtonState::new(false, index == 0),
-                    armed: false,
-                },
-                ButtonSpec {
-                    target: Target::BarracksQueueDown(index),
-                    label: "DOWN".into(),
-                    hint: "↓".into(),
-                    state: ButtonState::new(false, index + 1 == city.barracks_queue.len()),
-                    armed: false,
-                },
-                ButtonSpec {
-                    target: Target::BarracksQueueRemove(index),
-                    label: "REMOVE".into(),
-                    hint: "X".into(),
-                    state: ButtonState::new(false, false),
-                    armed: false,
-                },
-            ]);
+            let drag = self
+                .queue_drag
+                .filter(|drag| drag.kind == QueueKind::Barracks);
+            panel.queue_item(QueueItemSpec {
+                kind: QueueKind::Barracks,
+                index,
+                label: format!(
+                    "{prefix}{} | {} PROD | {} LEFT",
+                    build.name(),
+                    quantity(build.cost()),
+                    turns_at_rate(remaining, production)
+                ),
+                active: index == 0,
+                dragging: drag.is_some_and(|drag| drag.source == index),
+                drop_target: drag
+                    .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
+                locked: false,
+            });
         }
     }
 
     /// The production queues sit above the city tray so they remain usable
     /// when a city has many queued items.
-    fn city_queue_panel(&self, i: usize, panel: &mut PanelBuilder) {
+    fn city_queue_panel(&self, i: usize, visible: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if city.queue.is_empty() {
             return;
         }
         let (_, production) = self.income(i);
+        let offset = self
+            .city_queue_scroll
+            .min(city.queue.len().saturating_sub(visible));
+        if city.queue.len() > visible {
+            panel.scrollbar = Some((QueueKind::City, offset, city.queue.len(), visible));
+        }
         if !city.queue.is_empty() {
             panel.text(
                 SMALL,
-                vec![(
-                    "CITY QUEUE · BACKSPACE CANCEL · PGDN PROMOTE".into(),
-                    LABEL_TEXT,
-                )],
+                vec![("CITY QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
             );
-            for (index, build) in city.queue.iter().copied().enumerate() {
-                let prefix = if index == 0 { "▶ " } else { "  " };
-                let remaining = build.cost() - if index == 0 { city.production } else { 0 };
-                panel.text(
-                    SMALL,
-                    vec![(
-                        format!(
-                            "{prefix}{} · {} PROD · {} LEFT",
-                            build.name(),
-                            quantity(build.cost()),
-                            turns_at_rate(remaining, production)
-                        ),
-                        if index == 0 { GOLD_TEXT } else { TEXT },
-                    )],
-                );
-                panel.compact_buttons(vec![
-                    ButtonSpec {
-                        target: Target::CityQueueUp(index),
-                        label: "UP".into(),
-                        hint: "↑".into(),
-                        state: ButtonState::new(false, index == 0),
-                        armed: false,
-                    },
-                    ButtonSpec {
-                        target: Target::CityQueueDown(index),
-                        label: "DOWN".into(),
-                        hint: "↓".into(),
-                        state: ButtonState::new(false, index + 1 == city.queue.len()),
-                        armed: false,
-                    },
-                    ButtonSpec {
-                        target: Target::CityQueueRemove(index),
-                        label: "REMOVE".into(),
-                        hint: "X".into(),
-                        state: ButtonState::new(false, false),
-                        armed: false,
-                    },
-                ]);
+            for (index, build) in city
+                .queue
+                .iter()
+                .copied()
+                .enumerate()
+                .skip(offset)
+                .take(visible)
+            {
+                let prefix = if index == 0 { "> " } else { "  " };
+                let cost = self.city_build_cost(i, build);
+                let remaining = cost - if index == 0 { city.production } else { 0 };
+                let drag = self.queue_drag.filter(|drag| drag.kind == QueueKind::City);
+                panel.queue_item(QueueItemSpec {
+                    kind: QueueKind::City,
+                    index,
+                    label: format!(
+                        "{prefix}{} | {} PROD | {} LEFT",
+                        build.name(),
+                        quantity(cost),
+                        turns_at_rate(remaining, production)
+                    ),
+                    active: index == 0,
+                    dragging: drag.is_some_and(|drag| drag.source == index),
+                    drop_target: drag
+                        .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
+                    locked: index == 0 && city.pending_building.is_some(),
+                });
             }
         }
     }
@@ -1309,6 +1572,8 @@ impl GameState {
         let terrain = self.grid.terrain(hex);
         let city = self.cities.iter().find(|c| c.pos == hex);
         let barracks = self.cities.iter().find(|c| c.barracks == Some(hex));
+        let mill = self.cities.iter().find(|c| c.mill == Some(hex));
+        let workshop = self.cities.iter().find(|c| c.workshop == Some(hex));
         let title = match (city, barracks) {
             (Some(city), _) => (
                 format!("{:?} CITY {}", city.team, city.id + 1).to_uppercase(),
@@ -1318,6 +1583,10 @@ impl GameState {
                 format!("{:?} BARRACKS", city.team).to_uppercase(),
                 city.team.color(),
             ),
+            (None, None) if mill.is_some() => ("MILL".into(), mill.unwrap().team.color()),
+            (None, None) if workshop.is_some() => {
+                ("WORKSHOP".into(), workshop.unwrap().team.color())
+            }
             (None, None) => (format!("{terrain:?}").to_uppercase(), TEXT),
         };
         let mut lines = vec![(BODY, vec![title])];
@@ -1359,9 +1628,11 @@ impl GameState {
                 .position(|c| c.barracks == Some(hex))
                 .unwrap();
             let active = city.worked.first() == Some(&hex);
-            let production_per_turn = active
-                .then(|| (self.income(city_index).1 - 4).max(0))
-                .unwrap_or(0);
+            let production_per_turn = if active {
+                self.barracks_income(city_index)
+            } else {
+                0
+            };
             let queue = city
                 .barracks_queue
                 .first()
@@ -1383,6 +1654,22 @@ impl GameState {
         let mut notes = Vec::new();
         if city.is_some() {
             notes.push(format!("{terrain:?} city center").to_uppercase());
+        }
+        if mill.is_some() {
+            notes.push("ADJACENT REACHABLE TILES DELIVER 100% FOOD".into());
+        }
+        if workshop.is_some() {
+            notes.push("ADJACENT BUILDINGS CONFIRM AT 50% PRODUCTION".into());
+        }
+        if let Some(open) = self.selected_city
+            && let Some(building) = [Building::Barracks, Building::Mill, Building::Workshop]
+                .into_iter()
+                .find(|building| self.cities[open].planned_sites.get(building) == Some(&hex))
+        {
+            notes.push(format!(
+                "{} PLANNED: CLICK CENTER BADGE TO MOVE",
+                building.name()
+            ));
         }
         if terrain.defense_multiplier() != 1.0 {
             let bonus = (terrain.defense_multiplier() - 1.0) * 100.0;
@@ -1406,7 +1693,8 @@ impl GameState {
             let city = &self.cities[open];
             match self.routes(open).costs.get(&hex) {
                 Some(&cost) => notes.push(format!(
-                    "{}% REACHES CITY {}",
+                    "FOOD {}% / PRODUCTION {}% REACHES CITY {}",
+                    self.mill_food_share(open, hex, cost) * 25,
                     delivered_share(cost) * 25,
                     city.id + 1
                 )),
@@ -1529,12 +1817,6 @@ impl GameState {
                     ),
                     None,
                 ),
-                Target::ChangeBarracksSite => (
-                    "CHANGE BARRACKS SITE".into(),
-                    "CLICK".into(),
-                    "CHOOSE A DIFFERENT SITE BEFORE FINALIZING THE COMPLETED BARRACKS.".into(),
-                    None,
-                ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
                     "BARRACKS".into(),
@@ -1557,18 +1839,6 @@ impl GameState {
                     "RETURNS TO THIS CITY'S LABOR AND MAIN PRODUCTION PANEL.".into(),
                     None,
                 ),
-                Target::CityQueueUp(_) | Target::BarracksQueueUp(_) => (
-                    "MOVE QUEUE ITEM UP".into(),
-                    "CLICK".into(),
-                    "MOVES THIS ITEM ONE POSITION EARLIER IN ITS QUEUE.".into(),
-                    None,
-                ),
-                Target::CityQueueDown(_) | Target::BarracksQueueDown(_) => (
-                    "MOVE QUEUE ITEM DOWN".into(),
-                    "CLICK".into(),
-                    "MOVES THIS ITEM ONE POSITION LATER IN ITS QUEUE.".into(),
-                    None,
-                ),
                 Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => (
                     "REMOVE QUEUE ITEM".into(),
                     "CLICK".into(),
@@ -1582,10 +1852,10 @@ impl GameState {
                     "REASSIGNS CITY LABOR WITH THIS AS ITS DEFAULT PRIORITY.".into(),
                     None,
                 ),
-                Target::ConfirmBarracks => (
-                    "CONFIRM BARRACKS".into(),
+                Target::ConfirmBuilding(building) => (
+                    format!("CONFIRM {}", building.name()),
                     "CLICK".into(),
-                    "FINALIZES THE SELECTED BARRACKS SITE.".into(),
+                    "FINALIZES THE SELECTED BUILDING SITE.".into(),
                     None,
                 ),
                 Target::Scenario(scenario) => (
@@ -1632,6 +1902,13 @@ impl GameState {
                     self.savestate
                         .is_none()
                         .then(|| "NOTHING SAVED YET".to_string()),
+                ),
+                Target::CompleteProduction => (
+                    "COMPLETE PRODUCTION".into(),
+                    "F9".into(),
+                    "INSTANTLY FINISHES THE CURRENT CITY BUILD OR BARRACKS UNIT FOR TESTING."
+                        .into(),
+                    None,
                 ),
                 Target::TogglePlayback => (
                     "PLAYBACK".into(),
@@ -1809,16 +2086,19 @@ enum Row {
     Text(u32, Line),
     Gap(f32),
     Bar(f32),
+    QueueItem(QueueItemSpec),
     /// Buttons of equal width; compact ones are one line, label then hint.
     Buttons(Vec<ButtonSpec>, bool),
 }
 
-/// Stacks rows top to bottom in a panel sized to fit them.
+/// Reusable panel content primitive. Stacks rows top to bottom and measures
+/// its own size; place persistent panels through `Layout::dock_panel`.
 #[derive(Default)]
 struct PanelBuilder {
     rows: Vec<Row>,
     /// See-through, for the debug panel.
     faded: bool,
+    scrollbar: Option<(QueueKind, usize, usize, usize)>,
 }
 
 impl PanelBuilder {
@@ -1833,6 +2113,10 @@ impl PanelBuilder {
     /// A progress bar across the panel, `fraction` full.
     fn bar(&mut self, fraction: f32) {
         self.rows.push(Row::Bar(fraction));
+    }
+
+    fn queue_item(&mut self, item: QueueItemSpec) {
+        self.rows.push(Row::QueueItem(item));
     }
 
     /// A row of equally wide buttons.
@@ -1850,6 +2134,7 @@ impl PanelBuilder {
             Row::Text(px, _) => font::ui(*px).line_height + LINE_GAP,
             Row::Gap(height) => *height,
             Row::Bar(_) => GROWTH_BAR_HEIGHT,
+            Row::QueueItem(_) => QUEUE_ITEM_HEIGHT,
             Row::Buttons(_, false) => BUTTON_HEIGHT,
             Row::Buttons(_, true) => END_TURN_HEIGHT,
         }
@@ -1859,6 +2144,9 @@ impl PanelBuilder {
         match row {
             Row::Text(px, line) => line_width(font::ui(*px), line),
             Row::Gap(_) | Row::Bar(_) => 0.0,
+            Row::QueueItem(item) => {
+                font::ui(SMALL).width(&item.label) + 2.0 * BUTTON_PADDING + QUEUE_REMOVE_WIDTH
+            }
             Row::Buttons(buttons, compact) => {
                 let width = button_width(buttons, *compact);
                 buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
@@ -1870,7 +2158,12 @@ impl PanelBuilder {
     fn size(&self) -> Vec2 {
         let width = self.rows.iter().map(Self::row_width).fold(0.0, f32::max);
         let height: f32 = self.rows.iter().map(Self::row_height).sum();
-        (Vec2::new(width, height) + 2.0 * PADDING).round()
+        let scroll_extra = if self.scrollbar.is_some() {
+            GAP + SCROLLBAR_WIDTH
+        } else {
+            0.0
+        };
+        (Vec2::new(width + scroll_extra, height) + 2.0 * PADDING).round()
     }
 
     fn place_bottom_left(self, min: Vec2, layout: &mut Layout) {
@@ -1885,7 +2178,41 @@ impl PanelBuilder {
         layout.panel(min, max, self.faded);
 
         let left = min.x + PADDING;
-        let inner_width = size.x - 2.0 * PADDING;
+        let scroll_extra = if self.scrollbar.is_some() {
+            GAP + SCROLLBAR_WIDTH
+        } else {
+            0.0
+        };
+        let inner_width = size.x - 2.0 * PADDING - scroll_extra;
+        if let Some((kind, offset, total, visible)) = self.scrollbar {
+            let track_min = Vec2::new(max.x - PADDING - SCROLLBAR_WIDTH, min.y + PADDING);
+            let track_max = Vec2::new(max.x - PADDING, max.y - PADDING);
+            let height = track_max.y - track_min.y;
+            let thumb_height = (height * visible as f32 / total as f32)
+                .max(24.0)
+                .min(height);
+            let max_offset = total - visible;
+            let travel = height - thumb_height;
+            let thumb_top =
+                track_max.y - travel * offset.min(max_offset) as f32 / max_offset as f32;
+            let thumb_max = Vec2::new(track_max.x, thumb_top);
+            let thumb_min = Vec2::new(track_min.x, thumb_top - thumb_height);
+            layout.shapes.push(Shape::Scrollbar {
+                track_min,
+                track_max,
+                thumb_min,
+                thumb_max,
+            });
+            layout.queue_scrollbars.push(QueueScrollRegion {
+                kind,
+                panel_min: min,
+                panel_max: max,
+                track_min,
+                track_max,
+                thumb_height,
+                max_offset,
+            });
+        }
         let mut top = max.y - PADDING;
         for row in self.rows {
             let height = Self::row_height(&row);
@@ -1901,6 +2228,41 @@ impl PanelBuilder {
                     max: Vec2::new(left + inner_width, top),
                     fraction,
                 }),
+                Row::QueueItem(item) => {
+                    let min = Vec2::new(left, top - height + QUEUE_ITEM_GAP).round();
+                    let max = Vec2::new(left + inner_width, top).round();
+                    let body_max_x = max.x - QUEUE_REMOVE_WIDTH;
+                    layout.shapes.push(Shape::QueueItem {
+                        min,
+                        max: Vec2::new(body_max_x, max.y),
+                        label: item.label,
+                        active: item.active,
+                        dragging: item.dragging,
+                        drop_target: item.drop_target,
+                        locked: item.locked,
+                    });
+                    layout.buttons.push(Button {
+                        target: match item.kind {
+                            QueueKind::City => Target::CityQueueRemove(item.index),
+                            QueueKind::Barracks => Target::BarracksQueueRemove(item.index),
+                        },
+                        label: "X".into(),
+                        hint: String::new(),
+                        state: ButtonState::Ready,
+                        armed: false,
+                        faded: self.faded,
+                        min: Vec2::new(body_max_x, min.y),
+                        max,
+                    });
+                    layout.queue_items.push(QueueItemRegion {
+                        kind: item.kind,
+                        index: item.index,
+                        min,
+                        max,
+                        body_max_x,
+                        locked: item.locked,
+                    });
+                }
                 Row::Buttons(buttons, compact) => {
                     let width = button_width(&buttons, compact);
                     for (i, spec) in buttons.into_iter().enumerate() {
@@ -1983,6 +2345,55 @@ fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             let filled = Vec2::new(min.x + (max.x - min.x) * fraction.clamp(0.0, 1.0), max.y);
             mesh::quad(*min, filled, GROWTH_COLOR, out);
         }
+        Shape::Scrollbar {
+            track_min,
+            track_max,
+            thumb_min,
+            thumb_max,
+        } => {
+            mesh::quad(*track_min, *track_max, BAR_BG, out);
+            mesh::quad(*thumb_min, *thumb_max, GOLD_TEXT, out);
+        }
+        Shape::QueueItem {
+            min,
+            max,
+            label,
+            active,
+            dragging,
+            drop_target,
+            locked,
+        } => {
+            let bg = if *dragging {
+                BUTTON_HOVER_BG
+            } else {
+                BUTTON_BG
+            };
+            let edge = if *drop_target {
+                ARMED_BORDER_COLOR
+            } else if *active {
+                GOLD_TEXT
+            } else {
+                BORDER_COLOR
+            };
+            draw_box(*min, *max, bg, BORDER, edge, out);
+            let face = font::ui(SMALL);
+            let origin = Vec2::new(
+                min.x + BUTTON_PADDING,
+                (min.y + max.y - face.cap_height) / 2.0,
+            );
+            face.push(
+                origin,
+                label,
+                if *locked {
+                    DIM_TEXT
+                } else if *active {
+                    GOLD_TEXT
+                } else {
+                    TEXT
+                },
+                out,
+            );
+        }
     }
 }
 
@@ -2008,11 +2419,12 @@ fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>) {
     let height = button.max.y - button.min.y;
     if height < BUTTON_HEIGHT {
         // One line: the label, then the hint beside it.
-        let width = label_face.width(&button.label) + GAP + hint_face.width(&button.hint);
+        let gap = if button.hint.is_empty() { 0.0 } else { GAP };
+        let width = label_face.width(&button.label) + gap + hint_face.width(&button.hint);
         let left = center.x - width / 2.0;
         let baseline = center.y - label_face.cap_height / 2.0;
         label_face.push(Vec2::new(left, baseline), &button.label, text_color, out);
-        let hint_left = left + label_face.width(&button.label) + GAP;
+        let hint_left = left + label_face.width(&button.label) + gap;
         hint_face.push(
             Vec2::new(hint_left, baseline),
             &button.hint,
@@ -2350,7 +2762,7 @@ mod tests {
         let city = game.selected_city.unwrap();
         let button = button_cursor(&game, Target::Building(Building::Barracks));
         game.handle_click(button, SCREEN, ClickMode::Normal);
-        assert_eq!(game.placing_barracks, Some(city));
+        assert_eq!(game.placing_building, Some((city, Building::Barracks)));
 
         // Use visible map tiles so this exercises UI hit testing as well as
         // city placement, rather than calling city_click directly.
@@ -2368,12 +2780,383 @@ mod tests {
             .collect();
         assert_eq!(sites.len(), 2);
         game.handle_click(hex_cursor(&game, sites[0]), SCREEN, ClickMode::Normal);
-        assert_eq!(game.placing_barracks, None);
-        assert_eq!(game.cities[city].planned_barracks, Some(sites[0]));
+        assert_eq!(game.placing_building, None);
+        assert_eq!(
+            game.cities[city]
+                .planned_sites
+                .get(&Building::Barracks)
+                .copied(),
+            Some(sites[0])
+        );
         game.update_hover(Some(hex_cursor(&game, sites[1])), SCREEN, 0.1);
         game.handle_click(hex_cursor(&game, sites[1]), SCREEN, ClickMode::Normal);
-        assert_eq!(game.cities[city].planned_barracks, Some(sites[0]));
-        assert_eq!(game.placing_barracks, None);
+        assert_eq!(
+            game.cities[city]
+                .planned_sites
+                .get(&Building::Barracks)
+                .copied(),
+            Some(sites[0])
+        );
+        assert_eq!(game.placing_building, None);
+    }
+
+    #[test]
+    fn mill_and_workshop_cards_use_shared_placement_controls() {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap();
+        for (building, site) in [
+            (Building::Mill, Hex::new(-2, 0)),
+            (Building::Workshop, Hex::new(-1, 0)),
+        ] {
+            game.handle_click(
+                button_cursor(&game, Target::Building(building)),
+                SCREEN,
+                ClickMode::Normal,
+            );
+            assert_eq!(game.placing_building, Some((city, building)));
+            game.city_click(site);
+            assert_eq!(game.cities[city].planned_sites.get(&building), Some(&site));
+            let layout = game.layout(SCREEN);
+            assert!(
+                !layout
+                    .buttons
+                    .iter()
+                    .any(|b| b.target == Target::ConfirmBuilding(building))
+            );
+        }
+    }
+
+    #[test]
+    fn planned_building_badge_can_move_without_stealing_citizen_clicks() {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap();
+        let worked = game.cities[city].worked[0];
+        game.queue_selected_city_building(Building::Mill);
+        game.city_click(worked);
+        let edge = game
+            .camera
+            .world_to_screen(worked.to_world() + Vec2::new(0.5, 0.0), SCREEN);
+        game.handle_click(edge, SCREEN, ClickMode::Normal);
+        assert_eq!(game.moving_manager, Some(city));
+        game.moving_manager = None;
+        game.handle_click(hex_cursor(&game, worked), SCREEN, ClickMode::Normal);
+        assert_eq!(game.placing_building, Some((city, Building::Mill)));
+        let revised = Hex::new(-2, 0);
+        game.handle_click(hex_cursor(&game, revised), SCREEN, ClickMode::Normal);
+        assert_eq!(
+            game.cities[city].planned_sites.get(&Building::Mill),
+            Some(&revised)
+        );
+    }
+
+    #[test]
+    fn debug_completion_reveals_confirm_only_when_ready() {
+        let mut game = city_view();
+        let city = game.selected_city.unwrap();
+        game.queue_selected_city_building(Building::Workshop);
+        game.city_click(Hex::new(-2, 0));
+        assert!(
+            !game
+                .layout(SCREEN)
+                .buttons
+                .iter()
+                .any(|b| b.target == Target::ConfirmBuilding(Building::Workshop))
+        );
+        game.handle_click(
+            button_cursor(&game, Target::CompleteProduction),
+            SCREEN,
+            ClickMode::Normal,
+        );
+        assert_eq!(game.cities[city].pending_building, Some(Building::Workshop));
+        let confirm = Target::ConfirmBuilding(Building::Workshop);
+        assert!(
+            game.layout(SCREEN)
+                .buttons
+                .iter()
+                .any(|b| b.target == confirm && b.state == ButtonState::Ready)
+        );
+        game.handle_click(button_cursor(&game, confirm), SCREEN, ClickMode::Normal);
+        assert_eq!(game.cities[city].workshop, Some(Hex::new(-2, 0)));
+    }
+
+    #[test]
+    fn city_queue_scroll_keeps_the_box_bounded_and_targets_the_visible_items() {
+        let mut game = city_view();
+        for _ in 0..8 {
+            game.queue_selected_city_unit(BuildUnit::Melee);
+        }
+        let layout = game.layout(SCREEN);
+        let scroll = layout.queue_scrollbars.first().expect("queue scrollbar");
+        assert_eq!(scroll.kind, QueueKind::City);
+        assert!(scroll.panel_max.y - scroll.panel_min.y < 330.0);
+        assert!(scroll.panel_max.y < SCREEN.y - TOP_BAR_HEIGHT);
+        assert!(
+            layout
+                .buttons
+                .iter()
+                .any(|b| b.target == Target::CityQueueRemove(0))
+        );
+        assert!(
+            layout
+                .buttons
+                .iter()
+                .any(|b| b.target == Target::CityQueueRemove(1))
+        );
+        assert!(
+            !layout
+                .buttons
+                .iter()
+                .any(|b| b.target == Target::CityQueueRemove(4))
+        );
+
+        let cursor = to_ui((scroll.panel_min + scroll.panel_max) / 2.0, SCREEN);
+        assert!(game.scroll_queue_at(cursor, SCREEN, -1.0));
+        let layout = game.layout(SCREEN);
+        assert!(
+            layout
+                .buttons
+                .iter()
+                .any(|b| b.target == Target::CityQueueRemove(1))
+        );
+        assert!(
+            layout
+                .buttons
+                .iter()
+                .any(|b| b.target == Target::CityQueueRemove(4))
+        );
+        assert!(
+            !layout
+                .buttons
+                .iter()
+                .any(|b| b.target == Target::CityQueueRemove(0))
+        );
+
+        let scroll = layout.queue_scrollbars.first().unwrap();
+        let bottom = to_ui(
+            Vec2::new(
+                (scroll.track_min.x + scroll.track_max.x) / 2.0,
+                scroll.track_min.y,
+            ),
+            SCREEN,
+        );
+        assert!(game.drag_queue_scrollbar_at(bottom, SCREEN, false));
+        assert_eq!(game.city_queue_scroll, 4);
+        let remove = button_cursor(&game, Target::CityQueueRemove(7));
+        game.handle_click(remove, SCREEN, ClickMode::Normal);
+        assert_eq!(game.cities[game.selected_city.unwrap()].queue.len(), 7);
+    }
+
+    #[test]
+    fn barracks_queue_uses_the_same_scroll_window() {
+        let mut game = city_view();
+        let city = game.selected_city.unwrap();
+        game.cities[city].barracks = Some(Hex::new(-2, 0));
+        game.open_barracks(city);
+        game.cities[city].barracks_queue = vec![BuildUnit::Melee; 12];
+        let layout = game.layout(SCREEN);
+        let scroll = layout.queue_scrollbars.first().expect("barracks scrollbar");
+        assert_eq!(scroll.kind, QueueKind::Barracks);
+        let cursor = to_ui((scroll.panel_min + scroll.panel_max) / 2.0, SCREEN);
+        game.scroll_queue_at(cursor, SCREEN, -2.0);
+        assert!(
+            game.layout(SCREEN)
+                .buttons
+                .iter()
+                .any(|b| b.target == Target::BarracksQueueRemove(3))
+        );
+        assert!(
+            !game
+                .layout(SCREEN)
+                .buttons
+                .iter()
+                .any(|b| b.target == Target::BarracksQueueRemove(0))
+        );
+    }
+
+    #[test]
+    fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
+        let mut game = city_view();
+        let city = game.selected_city.unwrap();
+        game.cities[city].queue = vec![
+            Build::Unit(BuildUnit::Melee),
+            Build::Unit(BuildUnit::Ranged),
+            Build::Unit(BuildUnit::Cavalry),
+        ];
+        let layout = game.layout(SCREEN);
+        let row_cursor = |index| {
+            let row = layout
+                .queue_items
+                .iter()
+                .find(|row| row.index == index)
+                .unwrap();
+            to_ui(
+                Vec2::new(
+                    (row.min.x + row.body_max_x) / 2.0,
+                    (row.min.y + row.max.y) / 2.0,
+                ),
+                SCREEN,
+            )
+        };
+        let from = row_cursor(2);
+        let to = row_cursor(0);
+        assert!(game.start_queue_drag_at(from, SCREEN));
+        game.update_queue_drag_at(to, SCREEN);
+        assert_eq!(game.queue_drag.unwrap().target, Some(0));
+        game.finish_queue_drag_at(to, SCREEN);
+        assert_eq!(game.cities[city].queue[0], Build::Unit(BuildUnit::Cavalry));
+        assert!(game.queue_drag.is_none());
+
+        let x = button_cursor(&game, Target::CityQueueRemove(1));
+        assert!(!game.start_queue_drag_at(x, SCREEN));
+        game.handle_click(x, SCREEN, ClickMode::Normal);
+        assert_eq!(game.cities[city].queue.len(), 2);
+    }
+
+    #[test]
+    fn ready_city_building_cannot_be_dragged_out_of_first_place() {
+        let mut game = city_view();
+        let city = game.selected_city.unwrap();
+        game.cities[city].queue = vec![
+            Build::Building(Building::Workshop),
+            Build::Unit(BuildUnit::Melee),
+        ];
+        game.cities[city].pending_building = Some(Building::Workshop);
+        let layout = game.layout(SCREEN);
+        let cursor = |index| {
+            let row = layout
+                .queue_items
+                .iter()
+                .find(|row| row.index == index)
+                .unwrap();
+            to_ui(
+                Vec2::new(
+                    (row.min.x + row.body_max_x) / 2.0,
+                    (row.min.y + row.max.y) / 2.0,
+                ),
+                SCREEN,
+            )
+        };
+        assert!(!game.start_queue_drag_at(cursor(0), SCREEN));
+        assert!(game.start_queue_drag_at(cursor(1), SCREEN));
+        game.finish_queue_drag_at(cursor(0), SCREEN);
+        assert_eq!(
+            game.cities[city].queue[0],
+            Build::Building(Building::Workshop)
+        );
+    }
+
+    #[test]
+    fn barracks_queue_rows_use_the_same_drag_and_remove_targets() {
+        let mut game = city_view();
+        let city = game.selected_city.unwrap();
+        game.cities[city].barracks = Some(Hex::new(-2, 0));
+        game.open_barracks(city);
+        game.cities[city].barracks_queue = vec![BuildUnit::Melee, BuildUnit::Ranged];
+        let layout = game.layout(SCREEN);
+        let cursor = |index| {
+            let row = layout
+                .queue_items
+                .iter()
+                .find(|row| row.index == index)
+                .unwrap();
+            to_ui(
+                Vec2::new(
+                    (row.min.x + row.body_max_x) / 2.0,
+                    (row.min.y + row.max.y) / 2.0,
+                ),
+                SCREEN,
+            )
+        };
+        assert!(game.start_queue_drag_at(cursor(1), SCREEN));
+        game.finish_queue_drag_at(cursor(0), SCREEN);
+        assert_eq!(game.cities[city].barracks_queue[0], BuildUnit::Ranged);
+        let x = button_cursor(&game, Target::BarracksQueueRemove(1));
+        assert!(!game.start_queue_drag_at(x, SCREEN));
+        game.handle_click(x, SCREEN, ClickMode::Normal);
+        assert_eq!(game.cities[city].barracks_queue, vec![BuildUnit::Ranged]);
+    }
+
+    #[test]
+    fn queue_row_count_tracks_available_screen_height() {
+        let mut game = city_view();
+        for _ in 0..12 {
+            game.queue_selected_city_unit(BuildUnit::Melee);
+        }
+        let mut counts = Vec::new();
+        for height in [820.0, 900.0, 1200.0] {
+            let screen = Vec2::new(1600.0, height);
+            let layout = game.layout(screen);
+            let count = layout
+                .buttons
+                .iter()
+                .filter(|b| matches!(b.target, Target::CityQueueRemove(_)))
+                .count();
+            let queue = layout.queue_scrollbars.first().unwrap();
+            assert!(queue.panel_max.y <= height - TOP_BAR_HEIGHT - QUEUE_TOP_GAP);
+            let debug_button = layout
+                .buttons
+                .iter()
+                .find(|b| b.target == Target::Scenario(Scenario::Cities))
+                .unwrap();
+            let center = (debug_button.min + debug_button.max) / 2.0;
+            let debug = layout
+                .panels
+                .iter()
+                .find(|&&(min, max)| contains(min, max, center))
+                .unwrap();
+            assert!(
+                !Rect {
+                    min: queue.panel_min,
+                    max: queue.panel_max
+                }
+                .overlaps(
+                    Rect {
+                        min: debug.0,
+                        max: debug.1
+                    },
+                    0.0
+                )
+            );
+            counts.push(count);
+        }
+        assert_eq!(counts[1], 4);
+        assert!(counts[0] < counts[1]);
+        assert!(counts[2] > counts[1]);
+    }
+
+    #[test]
+    fn docked_panel_buttons_share_the_rendered_hit_box() {
+        let mut layout = Layout::for_screen(SCREEN);
+        let mut panel = PanelBuilder::default();
+        panel.text(TITLE, vec![("ADDED PANEL".into(), TEXT)]);
+        panel.gap(37.0);
+        panel.buttons(vec![ButtonSpec {
+            target: Target::ToggleYields,
+            label: "ACTION".into(),
+            hint: "Y".into(),
+            state: ButtonState::Ready,
+            armed: false,
+        }]);
+        let rect = layout.dock_panel(panel, Zone::BottomLeft).unwrap();
+        let button = layout
+            .buttons
+            .iter()
+            .find(|b| b.target == Target::ToggleYields)
+            .unwrap();
+        let center = (button.min + button.max) / 2.0;
+        assert!(contains(rect.min, rect.max, center));
+        assert_eq!(
+            layout.button_at(center).unwrap().target,
+            Target::ToggleYields
+        );
+        assert!(layout.covers(center));
+
+        let mut next = PanelBuilder::default();
+        next.text(BODY, vec![("ANOTHER PANEL".into(), TEXT)]);
+        let next_rect = layout.dock_panel(next, Zone::BottomLeft).unwrap();
+        assert!(next_rect.min.y >= rect.max.y + GAP);
     }
 
     #[test]

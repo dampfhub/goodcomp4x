@@ -37,8 +37,10 @@ impl GameState {
                 queue: vec![super::city::Build::Unit(super::city::BuildUnit::Melee)],
                 built: Vec::new(),
                 barracks: None,
+                mill: None,
+                workshop: None,
                 pending_building: None,
-                planned_barracks: None,
+                planned_sites: std::collections::HashMap::new(),
                 barracks_queue: Vec::new(),
                 barracks_production: 0,
             });

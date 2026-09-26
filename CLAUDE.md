@@ -66,6 +66,7 @@ src/
     effects.rs     attack animations during playback: shots, hits, misses, damage
     city.rs        cities, logistics routes, citizens, growth, builds, settlers/workers
     ui.rs          screen-space UI: top bar, command tray, tooltips, hover info box
+    ui/dock.rs     shared panel docking by screen zone and measured size
     mesh.rs        shape helpers: regular_polygon, quad, segment
     font.rs        TrueType text (Hack via fontdue): glyph atlas, UI and world text
 shaders/
@@ -139,7 +140,9 @@ All geometry is rebuilt from game state every frame.
   keeps valid manual assignments and fills/replaces the affected slot.
 - UI (`ui.rs`): each frame is laid out once into a `Layout` (panels, text,
   buttons) that's then drawn or hit-tested, so clicks match what's shown.
-  Panels size themselves to their text (`PanelBuilder`), so nothing overlaps.
+  `PanelBuilder` measures panel content; `Layout::dock_panel` places panels in
+  one of four corner zones without overlap, wrapping to another column when
+  needed. See `docs/ui-system.md` before adding screen-space panels.
   - Top bar: turn, the latest `notice`, and the End Turn button, whose label
     (`end_turn_label`) names what's still waiting ("3 UNITS NEED ORDERS",
     "CHOOSE PRODUCTION") until it turns gold and reads END TURN.

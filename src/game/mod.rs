@@ -94,9 +94,8 @@ pub struct GameState {
     selected_barracks: Option<usize>,
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option<usize>,
-    /// City whose Barracks site is being chosen. This is deliberately
-    /// separate from city selection so a placement click returns to normal UI.
-    placing_barracks: Option<usize>,
+    /// City and building whose site is being chosen.
+    placing_building: Option<(usize, city::Building)>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
@@ -106,6 +105,9 @@ pub struct GameState {
     hover_seconds: f32,
     ui_click_mode: Option<orders::ClickMode>,
     inspected_tile: Option<Hex>,
+    city_queue_scroll: usize,
+    barracks_queue_scroll: usize,
+    queue_drag: Option<ui::QueueDrag>,
     notice: String,
     grid: HexGrid,
     /// Living units only: a unit is removed the moment it dies.
@@ -180,13 +182,16 @@ impl GameState {
             selected_city: None,
             selected_barracks: None,
             moving_manager: None,
-            placing_barracks: None,
+            placing_building: None,
             hovered_city: None,
             show_yields: true,
             hovered_tile: None,
             hover_seconds: 0.0,
             ui_click_mode: None,
             inspected_tile: None,
+            city_queue_scroll: 0,
+            barracks_queue_scroll: 0,
+            queue_drag: None,
             notice: String::new(),
             grid: HexGrid::new(GRID_RADIUS, terrain),
             units,
