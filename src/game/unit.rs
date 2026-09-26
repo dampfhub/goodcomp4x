@@ -57,16 +57,6 @@ impl UnitType {
         }
     }
 
-    /// Side count of the placeholder icon polygon.
-    pub fn icon_sides(self) -> u32 {
-        match self {
-            UnitType::Melee => 3,
-            UnitType::Ranged => 4,
-            UnitType::Cavalry => 5,
-            UnitType::Siege => 8,
-        }
-    }
-
     pub fn letter(self) -> char {
         match self {
             UnitType::Melee => 'M',

@@ -39,5 +39,41 @@ fn push_triangle(out: &mut Vec<Vertex>, a: Vec2, b: Vec2, c: Vec2, color: [f32; 
     out.extend([a, b, c].map(|p| Vertex {
         pos: [p.x, p.y, 0.0],
         color,
+        surface: [0.0; 4],
     }));
+}
+
+/// Assigns a procedural material to newly appended geometry. Coordinates stay
+/// attached to the surface when the camera pans or zooms.
+pub fn material(vertices: &mut [Vertex], center: Vec2, radius: f32, kind: f32, variant: f32) {
+    for vertex in vertices {
+        vertex.surface = [
+            (vertex.pos[0] - center.x) / radius,
+            (vertex.pos[1] - center.y) / radius,
+            kind,
+            variant,
+        ];
+    }
+}
+
+/// An outline without filling the terrain or miniature beneath it.
+pub fn ring(
+    center: Vec2,
+    radius: f32,
+    sides: u32,
+    width: f32,
+    color: [f32; 4],
+    out: &mut Vec<Vertex>,
+) {
+    for i in 0..sides {
+        let a = std::f32::consts::TAU * i as f32 / sides as f32;
+        let b = std::f32::consts::TAU * (i + 1) as f32 / sides as f32;
+        segment(
+            center + Vec2::from_angle(a) * radius,
+            center + Vec2::from_angle(b) * radius,
+            width,
+            color,
+            out,
+        );
+    }
 }

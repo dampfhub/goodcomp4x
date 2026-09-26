@@ -38,7 +38,7 @@ src/
     pipeline.rs    render pass + the single alpha-blended vertex-color pipeline
     buffer.rs      buffer + memory allocation
     sync.rs        per-frame semaphores and fences (2 frames in flight)
-    vertex.rs      Vertex { pos: [f32; 3], color: [f32; 4] }
+    vertex.rs      Vertex { pos, color, surface } with procedural material coordinates
   game/            everything game-specific
     mod.rs         GameState, map/unit setup, shared queries (units_at, rival_of,
                    swap_partner, reachable_hexes), controls help text, tests
@@ -51,13 +51,13 @@ src/
     hex.rs         axial hex math and HexGrid (with terrain)
     terrain.rs     Plains / Hills / Mountains
     camera.rs      top-down orthographic camera: pan, zoom, screen<->world
-    draw.rs        world geometry: hexes, terrain symbols, order markers, units, badges
+    draw.rs        textured terrain, groves, miniature surfaces, order markers, badges
     ui.rs          screen-space UI: the ability button
     mesh.rs        shape helpers: regular_polygon, quad, segment
     font.rs        5x7 bitmap font (A-Z, 0-9, + - %) drawn as quads
 shaders/
   mesh.vert        applies the batch's view-projection push constant
-  mesh.frag        passes vertex color through
+  mesh.frag        terrain relief and ray-marched miniature materials; unlit UI
 ```
 
 The frame loop: `App` calls `GameState::update(dt)`, then builds two batches:
@@ -255,3 +255,29 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
 - Swaps only work between adjacent units.
 - No victory condition or restart; the game just runs until one side is gone.
 - The project has no git commits yet.
+
+## Realistic rendering pass
+
+Terrain now uses world-anchored procedural grass, soil, rock and snow, with
+height-field normals, directional sunlight and local terrain shadows. Mountain
+hexes contain irregular intersecting ridges; small conifer groves mark plains.
+The view remains orthographic and terrain relief is shaded, not a navigable 3D
+mesh. No downloaded assets, textures, or additional runtime dependencies are required.
+
+Units are ray-marched volumetric miniatures: shield-and-sword infantry, bowmen,
+mounted cavalry and timber siege engines. Steel, brass, wood and team cloth
+have distinct reflectance, contact occlusion and soft self-shadowing. Class
+letters, order badges, health bars, transparent move ghosts, and ability rings
+remain visible. Tactical ranges use thin outlines and light tints instead of
+replacing terrain with solid colors. The initial camera frames the whole map;
+subsequent automatic selections still glide to their unit.
+
+Vertex.surface stores local XY coordinates, a material kind (0 unlit, 1 terrain,
+2 miniature), and a variant. Both GLSL stages and Vulkan vertex attributes must
+stay in sync with this layout. UI bypasses material lighting. Fine material
+grain fades with screen-space derivatives to reduce zoom shimmer.
+
+The dark command HUD shows the turn, planning/resolution phase, controls and
+ability status. Presentation-finished semaphores are allocated per swapchain
+image and recreated with the swapchain; acquisition semaphores and fences
+remain per frame slot. Suboptimal acquisition is consumed before recreation.

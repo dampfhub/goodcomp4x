@@ -128,6 +128,8 @@ impl GameState {
             highlight_timer: 0.0,
         };
         game.select_next_or_end_turn(None);
+        // Establish the whole battlefield before later selections glide to units.
+        game.camera = Camera::new(Vec2::new(0.0, -0.45), 9.0 * HEX_SIZE);
         game
     }
 

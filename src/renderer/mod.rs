@@ -143,7 +143,8 @@ impl Renderer {
         let command_buffers =
             unsafe { create_command_buffers(&logical_device, command_pool, framebuffers.len()) }?;
 
-        let sync = unsafe { sync::create_sync_objects(&logical_device) }?;
+        let sync =
+            unsafe { sync::create_sync_objects(&logical_device, swapchain_data.images.len()) }?;
         let images_in_flight = vec![vk::Fence::null(); swapchain_data.images.len()];
 
         Ok(Self {
@@ -208,9 +209,9 @@ impl Renderer {
                 vk::Fence::null(),
             )
         };
-        let image_index = match acquired {
-            Ok((index, false)) => index as usize,
-            Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+        let (image_index, acquire_suboptimal) = match acquired {
+            Ok((index, suboptimal)) => (index as usize, suboptimal),
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 return unsafe { self.recreate_swapchain() };
             }
             Err(err) => return Err(err.into()),
@@ -232,7 +233,7 @@ impl Renderer {
 
         let wait_semaphores = [image_available];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [self.sync.render_finished[self.current_frame]];
+        let signal_semaphores = [self.sync.render_finished[image_index]];
         let command_buffers = [command_buffer];
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
@@ -260,7 +261,7 @@ impl Renderer {
             Err(err) => return Err(err.into()),
         };
 
-        if suboptimal || self.framebuffer_resized {
+        if suboptimal || acquire_suboptimal || self.framebuffer_resized {
             self.framebuffer_resized = false;
             unsafe { self.recreate_swapchain() }?;
         }
@@ -402,6 +403,11 @@ impl Renderer {
                 create_command_buffers(&self.device, self.command_pool, self.framebuffers.len())?;
         }
         self.images_in_flight = vec![vk::Fence::null(); self.swapchain.images.len()];
+        // Idle above guarantees both rendering and presentation have finished.
+        let new_sync =
+            unsafe { sync::create_sync_objects(&self.device, self.swapchain.images.len()) }?;
+        unsafe { self.sync.destroy(&self.device) };
+        self.sync = new_sync;
         Ok(())
     }
 

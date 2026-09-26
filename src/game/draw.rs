@@ -1,39 +1,38 @@
 //! Builds each frame's geometry from the game state.
 
 use std::collections::HashSet;
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
+use std::f32::consts::{FRAC_PI_4, TAU};
 
 use glam::Vec2;
 
 use super::hex::{HEX_SIZE, Hex};
 use super::terrain::Terrain;
 use super::turn::{Phase, step_rank};
-use super::unit::{Team, Unit, UnitStats};
+use super::unit::{Team, Unit, UnitStats, UnitType};
 use super::{GameState, font, mesh};
 use crate::renderer::Vertex;
 
 type Color = [f32; 4];
 
-const BORDER_COLOR: Color = [0.10, 0.10, 0.13, 1.0];
+const BORDER_COLOR: Color = [0.52, 0.48, 0.34, 0.28];
 const PLAINS_COLOR: Color = [0.22, 0.22, 0.27, 1.0];
 const HILLS_COLOR: Color = [0.28, 0.27, 0.23, 1.0];
-const HILL_PEAK_COLOR: Color = [0.50, 0.46, 0.32, 1.0];
+
 const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
-const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
-const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
+
 const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
 const CONTESTED_COLOR: Color = [0.55, 0.32, 0.10, 1.0];
 const MOVE_RANGE_COLOR: Color = [0.24, 0.42, 0.26, 1.0];
 const ATTACK_RANGE_COLOR: Color = [0.45, 0.22, 0.22, 1.0];
 const ATTACK_RANGE_EMPTY_COLOR: Color = [0.36, 0.24, 0.20, 1.0];
-const LABEL_COLOR: Color = [0.05, 0.05, 0.05, 1.0];
+const LABEL_COLOR: Color = [0.90, 0.87, 0.73, 1.0];
 const HEALTH_BAR_BG_COLOR: Color = [0.08, 0.08, 0.08, 1.0];
 
 /// Sizes below are for a unit drawn at full scale, alone in its hex.
 const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.42;
-const LABEL_HEIGHT: f32 = UNIT_ICON_RADIUS * 0.9;
+const LABEL_HEIGHT: f32 = UNIT_ICON_RADIUS * 0.38;
 /// Icon growth while a unit is highlighted for having just acted.
-const ACTED_SCALE: f32 = 1.35;
+const ACTED_SCALE: f32 = 1.12;
 
 /// Rings drawn behind a unit's icon: gold while its ability is queued, steel
 /// while a siege engine is deployed.
@@ -56,8 +55,8 @@ const MOVE_ORDER_COLOR: Color = [0.45, 0.70, 1.00, 1.0];
 const ATTACK_ORDER_COLOR: Color = [1.00, 0.40, 0.35, 1.0];
 
 const HEALTH_BAR_WIDTH: f32 = 0.9;
-const HEALTH_BAR_HEIGHT: f32 = 0.14;
-const HEALTH_BAR_OFFSET_Y: f32 = 0.78;
+const HEALTH_BAR_HEIGHT: f32 = 0.055;
+const HEALTH_BAR_OFFSET_Y: f32 = -0.69;
 
 /// A queued move is drawn as a faded copy of the unit at its destination.
 const GHOST_ALPHA: f32 = 0.4;
@@ -86,7 +85,10 @@ impl GameState {
     /// The whole scene as a triangle list, back to front: hex grid, queued
     /// order markers, then units.
     pub fn build_vertices(&self) -> Vec<Vertex> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(12_000);
+        // A continuous, darker landscape extends beyond the playable hexes.
+        mesh::quad(Vec2::splat(-100.0), Vec2::splat(100.0), [1.0; 4], &mut out);
+        mesh::material(&mut out, Vec2::ZERO, 1.0, 1.0, 3.0);
 
         let selection = self.selected.map(|idx| {
             let unit = &self.units[idx];
@@ -104,9 +106,52 @@ impl GameState {
         for hex in self.grid.all_hexes() {
             let center = hex.to_world();
             let fill = self.hex_fill(hex, selection.as_ref());
-            mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
-            mesh::regular_polygon(center, HEX_SIZE * 0.92, 6, 0.0, fill, &mut out);
-            push_terrain_symbol(center, self.grid.terrain(hex), &mut out);
+            let terrain = self.grid.terrain(hex);
+            let start = out.len();
+            mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, [1.0; 4], &mut out);
+            let variant = match terrain {
+                Terrain::Plains => 0.0,
+                Terrain::Hills => 1.0,
+                Terrain::Mountains => 2.0,
+            };
+            mesh::material(&mut out[start..], center, HEX_SIZE, 1.0, variant);
+            mesh::ring(center, HEX_SIZE * 0.99, 6, 0.014, BORDER_COLOR, &mut out);
+            if fill != terrain_color(terrain) {
+                mesh::ring(center, HEX_SIZE * 0.93, 6, 0.032, fill, &mut out);
+                mesh::regular_polygon(
+                    center,
+                    HEX_SIZE * 0.92,
+                    6,
+                    0.0,
+                    with_alpha(fill, 0.08),
+                    &mut out,
+                );
+            }
+        }
+
+        // Deterministic small groves sit at tile margins, leaving movement and
+        // unit centers unobstructed. No random state is consumed by rendering.
+        for hex in self.grid.all_hexes() {
+            if self.grid.terrain(hex) != Terrain::Plains {
+                continue;
+            }
+            let center = hex.to_world();
+            let seed = (center.x * 17.31 + center.y * 41.73).sin().abs();
+            if seed < 0.48 {
+                continue;
+            }
+            for i in 0..3 {
+                let pos = center + Vec2::new(-0.43 + i as f32 * 0.22, 0.47 + (i % 2) as f32 * 0.09);
+                let radius = 0.23 + seed * 0.045;
+                let start = out.len();
+                mesh::quad(
+                    pos - Vec2::splat(radius),
+                    pos + Vec2::splat(radius),
+                    [1.0; 4],
+                    &mut out,
+                );
+                mesh::material(&mut out[start..], pos, radius, 2.0, 4.0);
+            }
         }
 
         self.push_order_markers(&mut out);
@@ -226,33 +271,6 @@ fn terrain_color(terrain: Terrain) -> Color {
     }
 }
 
-/// Peak symbols drawn over the hex fill, so terrain stays recognizable under
-/// selection highlights. Hills get two small peaks tucked below where a unit
-/// icon sits; mountains get one large snow-capped peak.
-fn push_terrain_symbol(center: Vec2, terrain: Terrain, out: &mut Vec<Vertex>) {
-    // A triangle rotated a quarter turn points straight up.
-    let mut peak = |offset: Vec2, radius: f32, color: Color| {
-        mesh::regular_polygon(center + offset, radius, 3, FRAC_PI_2, color, out);
-    };
-    match terrain {
-        Terrain::Plains => {}
-        Terrain::Hills => {
-            peak(Vec2::new(-0.3, -0.5), 0.2, HILL_PEAK_COLOR);
-            peak(Vec2::new(0.25, -0.47), 0.17, HILL_PEAK_COLOR);
-        }
-        Terrain::Mountains => {
-            let (base, radius, cap_radius) = (Vec2::new(0.0, -0.05), 0.55, 0.2);
-            peak(base, radius, MOUNTAIN_PEAK_COLOR);
-            // Same shape scaled down so it shares the big peak's apex.
-            peak(
-                base + Vec2::new(0.0, radius - cap_radius),
-                cap_radius,
-                SNOW_COLOR,
-            );
-        }
-    }
-}
-
 /// Groups units by the hex `target` picks out, in first-seen order so marker
 /// layout stays stable from frame to frame.
 fn group_by_target(
@@ -279,47 +297,59 @@ fn fan_position(base: Vec2, index: usize, total: usize, radius: f32) -> Vec2 {
     base + Vec2::from_angle(TAU * index as f32 / total as f32) * radius
 }
 
-/// A polygon whose side count encodes the unit type, with its letter on top.
+/// Lit, volumetric miniatures with small class labels for tactical readability.
 fn push_unit_icon(center: Vec2, unit: &Unit, scale: f32, color: Color, out: &mut Vec<Vertex>) {
-    let sides = unit.unit_type.icon_sides();
-    // A quarter turn so odd-sided shapes (the melee triangle) point up.
-    mesh::regular_polygon(
-        center,
-        UNIT_ICON_RADIUS * scale,
-        sides,
-        FRAC_PI_2,
+    let radius = HEX_SIZE * 0.77 * scale;
+    let variant = match unit.unit_type {
+        UnitType::Melee => 0.0,
+        UnitType::Ranged => 1.0,
+        UnitType::Cavalry => 2.0,
+        UnitType::Siege => 3.0,
+    };
+    let start = out.len();
+    mesh::quad(
+        center - Vec2::splat(radius),
+        center + Vec2::splat(radius),
         color,
         out,
     );
-    let label_color = with_alpha(LABEL_COLOR, color[3]);
+    mesh::material(&mut out[start..], center, radius, 2.0, variant);
+    let label = center + Vec2::new(0.0, -0.49 * scale);
+    mesh::regular_polygon(
+        label,
+        0.13 * scale,
+        16,
+        0.0,
+        with_alpha(BADGE_BG_COLOR, color[3]),
+        out,
+    );
     font::push_glyph(
-        center,
+        label,
         LABEL_HEIGHT * scale,
         unit.unit_type.letter(),
-        label_color,
+        with_alpha(LABEL_COLOR, color[3]),
         out,
     );
 }
-
-/// Status rings behind the icon. They're filled discs, so only the rim shows
-/// once the icon is drawn on top; the larger one goes first so both stay visible.
+/// Status rings behind the miniature. Thin outlines keep the ground visible.
+/// The larger one goes first so both stay visible.
 fn push_status_rings(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec<Vertex>) {
     if unit.ability_queued {
-        mesh::regular_polygon(
+        mesh::ring(
             center,
             ABILITY_RING_RADIUS * scale,
-            24,
-            0.0,
+            48,
+            0.025,
             ABILITY_RING_COLOR,
             out,
         );
     }
     if unit.deployed {
-        mesh::regular_polygon(
+        mesh::ring(
             center,
             DEPLOYED_RING_RADIUS * scale,
-            24,
-            0.0,
+            48,
+            0.02,
             DEPLOYED_RING_COLOR,
             out,
         );

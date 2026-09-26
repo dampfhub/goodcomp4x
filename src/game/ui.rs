@@ -21,9 +21,9 @@ const LABEL_HEIGHT: f32 = 21.0;
 const DESCRIPTION_HEIGHT: f32 = 14.0;
 const DESCRIPTION_GAP: f32 = 12.0;
 
-const BORDER_COLOR: Color = [0.55, 0.58, 0.66, 1.0];
-const READY_BG: Color = [0.16, 0.18, 0.24, 0.95];
-const QUEUED_BG: Color = [0.78, 0.64, 0.20, 0.95];
+const BORDER_COLOR: Color = [0.35, 0.28, 0.14, 1.0];
+const READY_BG: Color = [0.025, 0.032, 0.028, 0.98];
+const QUEUED_BG: Color = [0.38, 0.29, 0.09, 0.98];
 const COOLDOWN_BG: Color = [0.10, 0.10, 0.12, 0.95];
 const READY_TEXT: Color = [0.95, 0.95, 0.95, 1.0];
 const QUEUED_TEXT: Color = [0.08, 0.07, 0.04, 1.0];
@@ -41,6 +41,45 @@ impl GameState {
     /// selected unit, if any.
     pub fn build_ui(&self, screen_size: Vec2) -> Vec<Vertex> {
         let mut out = Vec::new();
+        mesh::quad(
+            Vec2::new(0.0, screen_size.y - 78.0),
+            screen_size,
+            [0.012, 0.019, 0.018, 0.94],
+            &mut out,
+        );
+        font::push_text(
+            Vec2::new(28.0, screen_size.y - 35.0),
+            21.0,
+            "THE NARROW PASS",
+            [0.82, 0.72, 0.47, 1.0],
+            &mut out,
+        );
+        let phase = if self.pending_steps.is_empty() {
+            "PLAN ORDERS"
+        } else {
+            "RESOLVING"
+        };
+        font::push_text(
+            Vec2::new(28.0, screen_size.y - 60.0),
+            14.0,
+            &format!("BLUE COMMAND - TURN {} - {phase}", self.turn + 1),
+            DESCRIPTION_TEXT,
+            &mut out,
+        );
+        mesh::quad(
+            Vec2::ZERO,
+            Vec2::new(screen_size.x, 122.0),
+            [0.012, 0.019, 0.018, 0.94],
+            &mut out,
+        );
+        push_centered_text(
+            screen_size.x,
+            8.0,
+            7.0,
+            "SCROLL ZOOM   MIDDLE DRAG PAN   TAB NEXT UNIT   SPACE HOLD",
+            DESCRIPTION_TEXT,
+            &mut out,
+        );
         let Some(idx) = self.selected else { return out };
         let unit = &self.units[idx];
         let (name, description) = ability_text(unit);
