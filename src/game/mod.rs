@@ -23,7 +23,7 @@ use glam::Vec2;
 use rand::rngs::ThreadRng;
 
 pub use camera::Camera;
-pub use city::BuildUnit;
+pub use city::{BuildUnit, Building};
 pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
@@ -52,7 +52,7 @@ Controls:
   holding this one.
   Enter ends planning after every unit has acted or held.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns.
-  1-4 queue city units: melee, ranged, cavalry, siege. F founds with a settler.
+  1-4 queue city units; 5/6 queue Granary/Barracks. F founds with a settler.
   F1 resets to combat; F2 resets to cities; F3 starts the settler frontier.
   Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
   F5 toggles fullscreen.
@@ -78,6 +78,8 @@ pub struct GameState {
     sites: std::collections::HashMap<Hex, city::Site>,
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
+    /// City whose manager has been picked up and awaits a destination click.
+    moving_manager: Option<usize>,
     hovered_city: Option<usize>,
     ui_click_mode: Option<orders::ClickMode>,
     inspected_tile: Option<Hex>,
@@ -141,6 +143,7 @@ impl GameState {
             sites: std::collections::HashMap::new(),
             roads: HashSet::new(),
             selected_city: None,
+            moving_manager: None,
             hovered_city: None,
             ui_click_mode: None,
             inspected_tile: None,

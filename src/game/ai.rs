@@ -30,7 +30,15 @@ impl GameState {
                 food: 0,
                 production: 0,
                 worked: Vec::new(),
-                queue: Some(super::city::BuildUnit::Melee),
+                remembered_worked: Vec::new(),
+                focus: super::city::LaborFocus::Balanced,
+                queue: Some(super::city::Build::Unit(super::city::BuildUnit::Melee)),
+                built: Vec::new(),
+                barracks: None,
+                pending_building: None,
+                planned_barracks: None,
+                barracks_queue: None,
+                barracks_production: 0,
             });
             self.auto_assign_city(self.cities.len() - 1);
         }

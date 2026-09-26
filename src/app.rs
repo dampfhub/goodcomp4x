@@ -249,6 +249,8 @@ impl ApplicationHandler for App {
                 KeyCode::Digit4 => self
                     .game
                     .queue_selected_city_unit(crate::game::BuildUnit::Siege),
+                KeyCode::Digit5 => self.game.queue_selected_city_building(crate::game::Building::Granary),
+                KeyCode::Digit6 => self.game.queue_selected_city_building(crate::game::Building::Barracks),
                 KeyCode::F1 => self.game = GameState::new(),
                 KeyCode::F2 => self.game = GameState::city_scenario(),
                 KeyCode::F3 => self.game = GameState::frontier_scenario(),
