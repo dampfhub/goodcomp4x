@@ -325,7 +325,9 @@ impl ApplicationHandler for App {
                 ..
             } => match key {
                 KeyCode::Space => {
-                    if !self.game.exit_structure_menu() {
+                    // With a city or barracks open, Space only closes it.
+                    let closed_menu = self.game.exit_structure_menu();
+                    if !closed_menu {
                         self.game.hold_or_end_turn();
                     }
                 }

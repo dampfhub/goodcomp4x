@@ -1,0 +1,49 @@
+# The checks AGENTS.md calls "done", enforced for every contributor and every agent.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # build.rs compiles shaders/ with glslc from PATH.
+      - name: Install glslc
+        run: sudo apt-get update && sudo apt-get install -y glslc
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install glslc
+        run: sudo apt-get update && sudo apt-get install -y glslc
+      # Keep in step with rust-version in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.92
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets
+
+  tools:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node tools/board/board.mjs selftest
+      - run: node tools/commit-msg-lint.mjs --self-test
+      - name: Lint this PR's commit messages
+        if: github.event_name == 'pull_request'
+        run: node tools/commit-msg-lint.mjs --range "origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}"

@@ -17,6 +17,8 @@ mod mapgen;
 mod mesh;
 mod orders;
 mod scenario;
+#[cfg(test)]
+mod simulation;
 mod terrain;
 mod turn;
 mod ui;
@@ -62,7 +64,7 @@ Controls:
   Once a unit has queued a move and an attack (or can't do one of them), the next unit is
   selected automatically and the camera glides to it. Tab looks at the next unit without
   holding this one.
-  Enter or End Turn holds unfinished units and ends the turn. Cities still need a build queued.
+  The End Turn button holds unfinished units and ends the turn. Cities still need a build queued.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
   1-3 queue city units; 4-7 queue buildings. Cavalry and armored train at a barracks on Horses or Iron. Drag queue rows to reorder or click X to remove;

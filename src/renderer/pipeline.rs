@@ -163,8 +163,10 @@ unsafe fn create_shader_module(device: &ash::Device, spirv: &[u8]) -> Result<vk:
         "SPIR-V length must be a multiple of 4 bytes"
     );
     let code: Vec<u32> = spirv
-        .chunks_exact(4)
-        .map(|word| u32::from_ne_bytes(word.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&word| u32::from_ne_bytes(word))
         .collect();
 
     let create_info = vk::ShaderModuleCreateInfo::default().code(&code);
