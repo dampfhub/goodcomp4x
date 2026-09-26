@@ -199,7 +199,7 @@ impl GameState {
 
         // Where each moving unit's ghost is drawn, for its attack arc. Groups by target hex in
         // first-seen order, so the layout is stable across frames.
-        let mut ghosts: Map[u32, Vec2] = Map.new();
+        let mut ghosts: Map[i64, Vec2] = Map.new();
         let mut move_targets: Vec[Hex] = Vec.new();
         for i in 0..n {
             if let Option.Some(hex) = self.units[i].planned_move {
@@ -215,7 +215,7 @@ impl GameState {
                 if !swapping[i] && unit.planned_move == Option.Some(hex) {
                     let pos = fan_position(hex.to_world(), k, total, GHOST_FAN_RADIUS);
                     push_unit_icon(pos, &unit, self.unit_letter(&unit), 1.0, with_alpha(unit.team.color(), GHOST_ALPHA), out);
-                    let _old = ghosts.insert(unit.id, pos);
+                    let _old = ghosts.insert(unit.id as i64, pos);
                     k = k + 1;
                 }
             }
@@ -236,7 +236,7 @@ impl GameState {
             let Option.Some(target) = unit.planned_attack else { continue; };
             if !self.is_player_controlled(idx) { continue; }
             // Swapping units attack from their partner's hex.
-            let from = match ghosts.get(unit.id) {
+            let from = match ghosts.get(unit.id as i64) {
                 Option.Some(ghost) => ghost,
                 Option.None => if unit.planned_move.is_some() { unit.planned_pos().to_world() } else { self.unit_layout(idx).0 },
             };

@@ -26,6 +26,7 @@ use game.hex.HexGrid;
 use game.terrain.Terrain;
 use game.orders.ClickMode;
 use game.turn.Phase;
+use game.unit.IdSet;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
@@ -116,10 +117,10 @@ pub struct GameState {
     recent_actors: Vec[u32],
     highlight_timer: f32,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
-    settlers: Set[u32],
-    workers: Set[u32],
+    settlers: IdSet,
+    workers: IdSet,
     /// Frontier sandbox units that the player may command despite being Red.
-    player_controlled_units: Set[u32],
+    player_controlled_units: IdSet,
     next_unit_id: u32,
     /// Attack animations playing out.
     effects: Vec[Playing],
@@ -189,9 +190,9 @@ impl GameState {
             step_timer: 0.0,
             recent_actors: Vec.new(),
             highlight_timer: 0.0,
-            settlers: Set.new(),
-            workers: Set.new(),
-            player_controlled_units: Set.new(),
+            settlers: IdSet.new(),
+            workers: IdSet.new(),
+            player_controlled_units: IdSet.new(),
             next_unit_id: 8,
             effects: Vec.new(),
         };

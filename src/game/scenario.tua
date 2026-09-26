@@ -163,9 +163,9 @@ impl GameState {
             step_timer: self.step_timer,
             recent_actors: copy_vec(&self.recent_actors),
             highlight_timer: self.highlight_timer,
-            settlers: copy_set(&self.settlers),
-            workers: copy_set(&self.workers),
-            player_controlled_units: copy_set(&self.player_controlled_units),
+            settlers: self.settlers.snapshot(),
+            workers: self.workers.snapshot(),
+            player_controlled_units: self.player_controlled_units.snapshot(),
             next_unit_id: self.next_unit_id,
         }
     }
