@@ -113,6 +113,11 @@ or later work already did it: `git log --grep`, grep the tree) → `drop --reaso
 - `gh` may be missing from Git Bash's PATH on Windows; the wrapper finds it in the usual install
   locations. A 403 or "resource not accessible" means the token needs the `project` scope
   (`gh auth refresh -s project`, interactive: ask the user to run it).
+- Board access is separate from repo access. A public project is readable by anyone, and write
+  access to the linked repo grants nothing on it: "does not have the correct permissions to execute
+  `CreateProjectV2Field`" (or any other project mutation) means the project owner must add you
+  under the project's Settings > Manage access (Write for items and field values, Admin for
+  fields). `setup` prints which you have.
 - Project numbers are per owner. The wrapper matches both owner and number, and ignores items from
   other repos on a shared board.
 

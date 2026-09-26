@@ -207,7 +207,7 @@ function schema() {
   if (_schema) return _schema;
   const d = graphql(
     `query($o:String!,$n:Int!){${OWNER_KIND}(login:$o){projectV2(number:$n){
-       id title url
+       id title url viewerCanUpdate
        repositories(first:20){nodes{nameWithOwner}}
        fields(first:50){nodes{
          ... on ProjectV2Field{id name dataType}
@@ -228,6 +228,7 @@ function schema() {
     projectId: p.id,
     title: p.title,
     url: p.url,
+    canUpdate: !!p.viewerCanUpdate,
     repos: (p.repositories?.nodes ?? []).map(r => r.nameWithOwner),
     fields,
   };
@@ -851,25 +852,42 @@ function cmdFields() {
   }
 }
 
+// Runs one gh command for `setup`, returning the failure text instead of exiting, so one
+// refused change does not stop the independent ones after it.
+function ghTry(args, label) {
+  return trace(label, () => {
+    try {
+      execFileSync(ghPath(), args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return null;
+    } catch (e) {
+      return (e.stderr || e.stdout || e.message || '').toString().trim().split('\n')[0];
+    }
+  });
+}
+
 // Compares the live project and repo with the config. Without --apply it only reports.
 // With --apply it links the project to the repo, creates missing fields and labels; it
 // never deletes or renames anything, and it cannot add options to an existing
 // single-select (gh has no command for that), which it reports for a hand fix.
+//
+// Project changes need access granted on the project itself: a public project is
+// readable by anyone, and write access to a linked repo grants nothing on the board.
 function cmdSetup(flags) {
   const apply = !!flags.apply;
   const s = schema();
-  const todo = [];
+  const changes = [];   // { what, project: bool, args }
   console.log(`project  ${s.title}  ${s.url}`);
+  console.log(`access   ${s.canUpdate ? 'you can edit this project' : 'READ ONLY: the project owner must add you under Settings > Manage access (Write for items, Admin for fields)'}`);
   if (!s.repos.includes(REPO)) {
-    todo.push(`link the project to ${REPO}`);
-    if (apply) gh(['project', 'link', String(projectNumber()), '--owner', OWNER, '--repo', REPO], { json: false, label: 'project link' });
+    changes.push({ what: `link the project to ${REPO}`, project: true,
+                   args: ['project', 'link', String(projectNumber()), '--owner', OWNER, '--repo', REPO] });
   }
   for (const [name, options] of Object.entries(CFG.selectFields)) {
     const f = s.fields[name];
     if (!f) {
-      todo.push(`create single-select field ${name}: ${options.join(', ')}`);
-      if (apply) gh(['project', 'field-create', String(projectNumber()), '--owner', OWNER, '--name', name,
-                     '--data-type', 'SINGLE_SELECT', '--single-select-options', options.join(',')], { json: false, label: 'field-create' });
+      changes.push({ what: `create single-select field ${name}: ${options.join(', ')}`, project: true,
+                     args: ['project', 'field-create', String(projectNumber()), '--owner', OWNER, '--name', name,
+                            '--data-type', 'SINGLE_SELECT', '--single-select-options', options.join(',')] });
     } else if (!f.options) {
       console.log(`  MANUAL  field ${name} exists but is not a single-select`);
     } else {
@@ -880,8 +898,8 @@ function cmdSetup(flags) {
   for (const name of TEXT_FIELDS) {
     const f = s.fields[name];
     if (!f) {
-      todo.push(`create text field ${name}`);
-      if (apply) gh(['project', 'field-create', String(projectNumber()), '--owner', OWNER, '--name', name, '--data-type', 'TEXT'], { json: false, label: 'field-create' });
+      changes.push({ what: `create text field ${name}`, project: true,
+                     args: ['project', 'field-create', String(projectNumber()), '--owner', OWNER, '--name', name, '--data-type', 'TEXT'] });
     } else if (f.options) {
       console.log(`  MANUAL  field ${name} exists but is a single-select, not text`);
     }
@@ -889,12 +907,23 @@ function cmdSetup(flags) {
   const have = gh(['label', 'list', '--repo', REPO, '--json', 'name', '--limit', '500'], { label: 'label list' }).map(l => l.name);
   for (const [name, description] of Object.entries(CFG.labels)) {
     if (have.includes(name)) continue;
-    todo.push(`create label ${name}`);
-    if (apply) gh(['label', 'create', name, '--repo', REPO, '--description', description], { json: false, label: 'label create' });
+    changes.push({ what: `create label ${name}`, project: false,
+                   args: ['label', 'create', name, '--repo', REPO, '--description', description] });
   }
-  for (const t of todo) console.log(`  ${apply ? 'DONE   ' : 'MISSING'} ${t}`);
-  if (!todo.length) console.log('  project, fields and labels match the config');
-  else if (!apply) console.log(`\n${todo.length} change(s); rerun with --apply to make them`);
+  if (!changes.length) { console.log('  project, fields and labels match the config'); return; }
+  if (!apply) {
+    for (const c of changes) console.log(`  MISSING ${c.what}`);
+    console.log(`\n${changes.length} change(s); rerun with --apply to make them`);
+    return;
+  }
+  let failed = 0;
+  for (const c of changes) {
+    if (c.project && !s.canUpdate) { failed++; console.log(`  BLOCKED ${c.what} (no project access)`); continue; }
+    const err = ghTry(c.args, c.args.slice(0, 2).join(' '));
+    if (err) { failed++; console.log(`  FAILED  ${c.what}: ${err}`); }
+    else console.log(`  DONE    ${c.what}`);
+  }
+  if (failed) { console.log(`\n${failed} of ${changes.length} change(s) not made`); process.exitCode = 1; }
 }
 
 function cmdCacheInfo() {
