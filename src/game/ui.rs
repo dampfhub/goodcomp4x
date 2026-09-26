@@ -12,6 +12,7 @@
 //! orientation as the world.
 
 mod dock;
+mod imgui;
 
 use glam::{Mat4, Vec2, Vec3};
 
@@ -445,7 +446,12 @@ impl GameState {
         if button.state == ButtonState::Disabled {
             return true;
         }
-        match button.target {
+        self.activate_target(button.target);
+        true
+    }
+
+    fn activate_target(&mut self, target: Target) {
+        match target {
             Target::Unit(action) => match action {
                 UnitAction::Move => self.choose_move_action(),
                 UnitAction::Attack => self.choose_attack_action(),
@@ -479,7 +485,6 @@ impl GameState {
             Target::TogglePlayback => self.toggle_instant_playback(),
             Target::ToggleFog => self.toggle_fog(),
         }
-        true
     }
 
     fn set_queue_scroll(&mut self, kind: QueueKind, offset: usize) {
@@ -587,6 +592,10 @@ impl GameState {
         else {
             return;
         };
+        self.reorder_queue(kind, source, target);
+    }
+
+    fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {
         if source == target {
             return;
         }
@@ -638,6 +647,21 @@ impl GameState {
         self.hovered_city = hex.and_then(|h| self.cities.iter().position(|c| c.pos == h));
     }
 
+    pub fn update_hover_imgui(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
+        let hex = cursor.and_then(|c| self.hex_at_screen(c, screen_size));
+        if hex == self.hovered_tile {
+            self.hover_seconds += dt;
+        } else {
+            self.hovered_tile = hex;
+            self.hover_seconds = 0.0;
+        }
+        self.hovered_city = hex.and_then(|h| self.cities.iter().position(|c| c.pos == h));
+    }
+
+    pub fn set_ui_notice(&mut self, notice: &str) {
+        self.notice = notice.into();
+    }
+
     fn layout(&self, screen_size: Vec2) -> Layout {
         let mut layout = Layout::for_screen(screen_size);
         self.top_bar(screen_size, &mut layout);
@@ -682,6 +706,10 @@ impl GameState {
     /// don't read as game UI: the scenario pages (the current one gold;
     /// pressing it again restarts it) and the savestate.
     fn debug_panel(&self, layout: &mut Layout) {
+        layout.dock_panel(self.debug_panel_content(), Zone::TopLeft);
+    }
+
+    fn debug_panel_content(&self) -> PanelBuilder {
         let mut panel = PanelBuilder {
             faded: true,
             ..PanelBuilder::default()
@@ -771,7 +799,7 @@ impl GameState {
             "F10",
             ButtonState::Ready,
         )]);
-        layout.dock_panel(panel, Zone::TopLeft);
+        panel
     }
 
     /// Turn number on the left, the latest notice in the middle, and on the

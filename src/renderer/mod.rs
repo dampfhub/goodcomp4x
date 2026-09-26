@@ -18,6 +18,8 @@ mod vertex;
 use anyhow::Result;
 use ash::vk;
 use glam::Mat4;
+use imgui::{Context as ImGuiContext, DrawData};
+use imgui_rs_vulkan_renderer::{Options as ImGuiOptions, Renderer as ImGuiRenderer};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window;
 
@@ -75,6 +77,7 @@ pub struct Renderer {
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    imgui_renderer: Option<ImGuiRenderer>,
     framebuffers: Vec<vk::Framebuffer>,
     texture: Texture,
 
@@ -97,7 +100,7 @@ pub struct Renderer {
 impl Renderer {
     /// # Safety
     /// `window` must outlive the returned renderer.
-    pub unsafe fn new(window: &Window, atlas: &Atlas) -> Result<Self> {
+    pub unsafe fn new(window: &Window, atlas: &Atlas, imgui: &mut ImGuiContext) -> Result<Self> {
         let display_handle = window.display_handle()?.as_raw();
         let window_handle = window.window_handle()?.as_raw();
         let window_size = window.inner_size().into();
@@ -161,6 +164,20 @@ impl Renderer {
         let render_pass = unsafe {
             pipeline::create_render_pass(&logical_device, swapchain_data.format, samples)
         }?;
+        let imgui_renderer = ImGuiRenderer::with_default_allocator(
+            &vk_instance,
+            physical_device,
+            logical_device.clone(),
+            graphics_queue,
+            command_pool,
+            render_pass,
+            imgui,
+            Some(ImGuiOptions {
+                in_flight_frames: MAX_FRAMES_IN_FLIGHT,
+                sample_count: samples,
+                ..ImGuiOptions::default()
+            }),
+        )?;
         let (pipeline_layout, gfx_pipeline) = unsafe {
             pipeline::create_graphics_pipeline(
                 &logical_device,
@@ -208,6 +225,7 @@ impl Renderer {
             render_pass,
             pipeline_layout,
             pipeline: gfx_pipeline,
+            imgui_renderer: Some(imgui_renderer),
             framebuffers,
             texture,
             vertex_buffers,
@@ -235,7 +253,11 @@ impl Renderer {
     }
 
     /// Draws `batches` in order, each through its own view-projection matrix.
-    pub fn draw_frame(&mut self, batches: &[DrawBatch]) -> Result<()> {
+    pub fn draw_frame(
+        &mut self,
+        batches: &[DrawBatch],
+        imgui_data: Option<&DrawData>,
+    ) -> Result<()> {
         if self.window_size.0 == 0 || self.window_size.1 == 0 {
             return Ok(());
         }
@@ -274,7 +296,7 @@ impl Renderer {
         unsafe {
             self.device
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
-            self.record_command_buffer(command_buffer, image_index, &ranges)?;
+            self.record_command_buffer(command_buffer, image_index, &ranges, imgui_data)?;
         }
 
         let wait_semaphores = [image_available];
@@ -369,10 +391,11 @@ impl Renderer {
     }
 
     unsafe fn record_command_buffer(
-        &self,
+        &mut self,
         command_buffer: vk::CommandBuffer,
         image_index: usize,
         ranges: &[DrawRange],
+        imgui_data: Option<&DrawData>,
     ) -> Result<()> {
         let extent = self.swapchain.extent;
         let full_area = vk::Rect2D {
@@ -437,6 +460,9 @@ impl Renderer {
                 );
                 device.cmd_draw(command_buffer, range.count, 1, range.first, 0);
             }
+            if let (Some(renderer), Some(data)) = (&mut self.imgui_renderer, imgui_data) {
+                renderer.cmd_draw(command_buffer, data)?;
+            }
             device.cmd_end_render_pass(command_buffer);
             device.end_command_buffer(command_buffer)?;
         }
@@ -449,6 +475,7 @@ impl Renderer {
         }
 
         self.wait_idle();
+        let old_render_pass = self.render_pass;
         unsafe {
             self.cleanup_swapchain();
             self.swapchain = swapchain::create_swapchain(
@@ -470,6 +497,10 @@ impl Renderer {
             )?;
             self.render_pass =
                 pipeline::create_render_pass(&self.device, self.swapchain.format, self.samples)?;
+            if let Some(renderer) = &mut self.imgui_renderer {
+                renderer.set_render_pass(self.render_pass)?;
+            }
+            self.device.destroy_render_pass(old_render_pass, None);
             (self.pipeline_layout, self.pipeline) = pipeline::create_graphics_pipeline(
                 &self.device,
                 self.render_pass,
@@ -500,7 +531,6 @@ impl Renderer {
             self.device.destroy_pipeline(self.pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
-            self.device.destroy_render_pass(self.render_pass, None);
             self.color_target.destroy(&self.device);
             self.swapchain.destroy(&self.device, &self.swapchain_loader);
         }
@@ -510,8 +540,10 @@ impl Renderer {
 impl Drop for Renderer {
     fn drop(&mut self) {
         self.wait_idle();
+        self.imgui_renderer.take();
         unsafe {
             self.cleanup_swapchain();
+            self.device.destroy_render_pass(self.render_pass, None);
             self.texture.destroy(&self.device);
             self.sync.destroy(&self.device);
             for &(buffer, memory, _) in &self.vertex_buffers {

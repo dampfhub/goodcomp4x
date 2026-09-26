@@ -1,9 +1,13 @@
 use std::time::{Duration, Instant};
 
 use glam::Vec2;
+use imgui::{Context as ImGuiContext, FontConfig, FontSource};
+use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    ElementState, Event, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
@@ -38,6 +42,9 @@ pub struct App {
     renderer: Option<Renderer>,
     window: Option<Window>,
     game: GameState,
+    imgui: Option<ImGuiContext>,
+    imgui_platform: Option<WinitPlatform>,
+    use_imgui: bool,
     last_frame: Option<Instant>,
     minimized: bool,
     cursor_pos: Option<Vec2>,
@@ -60,6 +67,9 @@ impl Default for App {
             renderer: None,
             window: None,
             game: GameState::city_scenario(),
+            imgui: None,
+            imgui_platform: None,
+            use_imgui: true,
             last_frame: None,
             minimized: false,
             cursor_pos: None,
@@ -127,8 +137,19 @@ impl ApplicationHandler for App {
             .create_window(attributes)
             .expect("failed to create window");
 
+        let mut imgui = ImGuiContext::create();
+        imgui.set_ini_filename(None);
+        imgui.fonts().add_font(&[FontSource::DefaultFontData {
+            config: Some(FontConfig {
+                size_pixels: 17.0,
+                ..FontConfig::default()
+            }),
+        }]);
+        let mut imgui_platform = WinitPlatform::new(&mut imgui);
+        imgui_platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
+
         // Safety: `App` drops the renderer before the window (see field order).
-        match unsafe { Renderer::new(&window, font_atlas()) } {
+        match unsafe { Renderer::new(&window, font_atlas(), &mut imgui) } {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(err) => {
                 log::error!("failed to initialize renderer: {err:?}");
@@ -137,10 +158,24 @@ impl ApplicationHandler for App {
             }
         }
         self.window = Some(window);
+        self.imgui = Some(imgui);
+        self.imgui_platform = Some(imgui_platform);
         self.last_frame = Some(Instant::now());
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let (Some(imgui), Some(platform), Some(window)) =
+            (&mut self.imgui, &mut self.imgui_platform, &self.window)
+        {
+            platform.handle_event(
+                imgui.io_mut(),
+                window,
+                &Event::<()>::WindowEvent {
+                    window_id: id,
+                    event: event.clone(),
+                },
+            );
+        }
         match event {
             WindowEvent::CloseRequested => {
                 if let Some(renderer) = &self.renderer {
@@ -156,14 +191,14 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Vec2::new(position.x as f32, position.y as f32);
-                if self.queue_scroll_dragging {
+                if !self.use_imgui && self.queue_scroll_dragging {
                     if let Some(size) = self.screen_size() {
                         self.game.drag_queue_scrollbar_at(pos, size, true);
                     }
                     self.cursor_pos = Some(pos);
                     return;
                 }
-                if self.queue_item_dragging {
+                if !self.use_imgui && self.queue_item_dragging {
                     if let Some(size) = self.screen_size() {
                         self.game.update_queue_drag_at(pos, size);
                     }
@@ -171,6 +206,15 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let mut pan_from = self.cursor_pos;
+                if self.use_imgui
+                    && self
+                        .imgui
+                        .as_ref()
+                        .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                {
+                    self.cursor_pos = Some(pos);
+                    return;
+                }
                 if let Some((origin, _, _)) = self.left_press
                     && !self.left_dragging
                     && pos.distance(origin) >= DRAG_THRESHOLD
@@ -203,8 +247,17 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) => {
+                    if self.use_imgui
+                        && self
+                            .imgui
+                            .as_ref()
+                            .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                    {
+                        return;
+                    }
                     if let Some(cursor) = self.cursor_pos {
-                        if let Some(size) = self.screen_size()
+                        if !self.use_imgui
+                            && let Some(size) = self.screen_size()
                             && self.game.drag_queue_scrollbar_at(cursor, size, false)
                         {
                             self.queue_scroll_dragging = true;
@@ -216,7 +269,8 @@ impl ApplicationHandler for App {
                             self.box_start = Some(cursor);
                             return;
                         }
-                        if !keys.shift_key()
+                        if !self.use_imgui
+                            && !keys.shift_key()
                             && !keys.control_key()
                             && let Some(size) = self.screen_size()
                             && self.game.start_queue_drag_at(cursor, size)
@@ -265,11 +319,23 @@ impl ApplicationHandler for App {
                         && may_click
                         && let Some(size) = self.screen_size()
                     {
-                        self.game.handle_click(origin, size, mode);
+                        if self.use_imgui {
+                            self.game.handle_map_click(origin, size, mode);
+                        } else {
+                            self.game.handle_click(origin, size, mode);
+                        }
                     }
                     self.left_dragging = false;
                 }
                 (ElementState::Pressed, MouseButton::Right) => {
+                    if self.use_imgui
+                        && self
+                            .imgui
+                            .as_ref()
+                            .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                    {
+                        return;
+                    }
                     if let (Some(cursor), Some(size)) = (self.cursor_pos, self.screen_size()) {
                         self.game.handle_context_click(
                             cursor,
@@ -288,6 +354,14 @@ impl ApplicationHandler for App {
                 _ => {}
             },
             WindowEvent::MouseWheel { delta, .. } => {
+                if self.use_imgui
+                    && self
+                        .imgui
+                        .as_ref()
+                        .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                {
+                    return;
+                }
                 let steps = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 100.0) as f32,
@@ -379,6 +453,16 @@ impl ApplicationHandler for App {
                 KeyCode::F8 => self.game.toggle_instant_playback(),
                 KeyCode::F9 => self.game.debug_complete_current_production(),
                 KeyCode::F10 => self.game.toggle_fog(),
+                KeyCode::F11 => {
+                    self.use_imgui = !self.use_imgui;
+                    self.left_press = None;
+                    self.game.cancel_queue_drag();
+                    self.game.set_ui_notice(if self.use_imgui {
+                        "IMGUI UI (F11 TO COMPARE)"
+                    } else {
+                        "CLASSIC UI (F11 TO COMPARE)"
+                    });
+                }
                 _ => {}
             },
             WindowEvent::RedrawRequested => {
@@ -394,10 +478,27 @@ impl ApplicationHandler for App {
                 let Some(size) = self.screen_size() else {
                     return;
                 };
-                self.game
-                    .update_hover(self.cursor_pos, size, dt.as_secs_f32());
+                if self.use_imgui {
+                    self.game.update_hover_imgui(
+                        self.cursor_pos.filter(|_| {
+                            !self
+                                .imgui
+                                .as_ref()
+                                .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                        }),
+                        size,
+                        dt.as_secs_f32(),
+                    );
+                } else {
+                    self.game
+                        .update_hover(self.cursor_pos, size, dt.as_secs_f32());
+                }
                 let world = self.game.build_vertices();
-                let mut ui = self.game.build_ui(size, self.cursor_pos);
+                let mut ui = if self.use_imgui {
+                    Vec::new()
+                } else {
+                    self.game.build_ui(size, self.cursor_pos)
+                };
                 if let Some(since) = self.quit_held_since {
                     let progress = since.elapsed().as_secs_f32() / QUIT_HOLD.as_secs_f32();
                     if progress >= 1.0 {
@@ -424,8 +525,22 @@ impl ApplicationHandler for App {
                         vertices: &ui,
                     },
                 ];
+                let imgui_data = if let (Some(imgui), Some(platform), Some(window)) =
+                    (&mut self.imgui, &mut self.imgui_platform, &self.window)
+                {
+                    imgui.io_mut().update_delta_time(dt);
+                    let _ = platform.prepare_frame(imgui.io_mut(), window);
+                    let frame = imgui.frame();
+                    if self.use_imgui {
+                        self.game.draw_imgui(frame, size, self.cursor_pos);
+                    }
+                    platform.prepare_render(frame, window);
+                    Some(imgui.render())
+                } else {
+                    None
+                };
                 if let Some(renderer) = &mut self.renderer
-                    && let Err(err) = renderer.draw_frame(&batches)
+                    && let Err(err) = renderer.draw_frame(&batches, imgui_data)
                 {
                     log::error!("draw_frame failed: {err:?}");
                     event_loop.exit();

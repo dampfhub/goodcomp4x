@@ -1,7 +1,19 @@
 # Screen-space UI panels
 
-The UI lives in `src/game/ui.rs`. Its reusable placement code is in
-`src/game/ui/dock.rs`. The root `AGENTS.md` points contributors here.
+The shared UI content lives in `src/game/ui.rs`. The game starts with the
+experimental ImGui presentation (`src/game/ui/imgui.rs`), and F11 switches
+between it and the classic layout. The root `AGENTS.md` points contributors
+here. Add new controls to the shared `PanelBuilder` content and route their
+`Target` actions through `GameState::activate_target`, so both views work.
+
+ImGui uses native windows, buttons, scrolling, drag/drop, hover tooltips, and
+input capture. It is drawn at the end of the existing Vulkan render pass.
+The world, tile overlays, selection rectangle, and quit hold prompt remain in
+the game's renderer. Native window positions can be moved and resized while
+the game is running. Queue panels show the full queue inside a scrollable
+window; their rows share the same reorder and remove game actions as classic.
+
+The classic layout uses reusable placement code in `src/game/ui/dock.rs`.
 
 `PanelBuilder` is the content primitive. Add rows with `text`, `bar`, `gap`,
 `buttons`, `compact_buttons`, or `queue_item`; `size()` measures the finished panel. A
