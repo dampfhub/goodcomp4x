@@ -20,13 +20,18 @@ use win32.events.Event;
 use win32.events.Button;
 use win32.events.Key;
 use win32.events.Modifiers;
+use win32.primary_monitor;
 use win32.cmdline.command_line;
 use win32.cmdline.has_flag;
 use win32.cmdline.trailing_number;
 use renderer.DrawBatch;
+use renderer.Icons;
+use renderer.WindowRequest;
+use renderer.WindowSpec;
 use renderer.Scene;
 use renderer.run;
 use renderer.pipelines.MeshVertex;
+use icon.icon;
 use game.GameState;
 use game.city.BUILDS;
 use game.orders.ClickMode;
@@ -34,8 +39,14 @@ use game.scenario.Scenario;
 use game.ui.ui_projection;
 
 const TITLE: str = "Hex Combat Sandbox";
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 720;
+/// The window opens at this fraction of the primary monitor's size, centered on it.
+const WINDOW_SCREEN_FRACTION: f32 = 0.8;
+/// Window size when the monitor's size can't be found.
+const DEFAULT_WIDTH: i32 = 1600;
+const DEFAULT_HEIGHT: i32 = 900;
+/// Window icon sizes, in pixels; Windows scales them to fit.
+const WINDOW_ICON_SIZE: i32 = 64;
+const TASKBAR_ICON_SIZE: i32 = 256;
 
 /// Dragging the left button at least this many pixels pans the map instead of clicking.
 const DRAG_THRESHOLD: f32 = 6.0;
@@ -57,8 +68,17 @@ struct Input {
     closed: bool,
 }
 
-/// Applies one window event to the game.
-fn on_event(game: &mut GameState, input: &mut Input, e: Event) can {Log} {
+/// Losing focus or the cursor: a release may never arrive, so every gesture in progress ends.
+fn forget_gestures(input: &mut Input) {
+    input.left_press = Option.None;
+    input.left_dragging = false;
+    input.panning = false;
+    input.cursor = Option.None;
+    input.box_start = Option.None;
+}
+
+/// Applies one window event to the game, answering what the window should do about it.
+fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest can {Log} {
     match e {
         Event.CloseRequested => { input.closed = true; }
         Event.Resized(w, h) => { input.size = vec2(w as f32, h as f32); }
@@ -77,16 +97,8 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) can {Log} {
             }
             input.cursor = Option.Some(pos);
         }
-        Event.Focused(focused) => {
-            if !focused {
-                // The release may never arrive once focus is gone.
-                input.left_press = Option.None;
-                input.left_dragging = false;
-                input.panning = false;
-                input.cursor = Option.None;
-                input.box_start = Option.None;
-            }
-        }
+        Event.Focused(focused) => { if !focused { forget_gestures(input); } }
+        Event.CursorLeft => forget_gestures(input),
         Event.ModifiersChanged(m) => { input.mods = m; }
         Event.MouseDown(b) => match b {
             Button.Left => {
@@ -94,7 +106,7 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) can {Log} {
                     // Alt starts a selection box instead of a click or pan.
                     if input.mods.alt {
                         input.box_start = Option.Some(cursor);
-                        return;
+                        return WindowRequest.Nothing;
                     }
                     let mode = if input.mods.shift { ClickMode.Attack } else if input.mods.control { ClickMode.Swap } else { ClickMode.Normal };
                     input.left_press = Option.Some(Press { origin: cursor, mode, may_click: !game.is_resolving() });
@@ -120,7 +132,7 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) can {Log} {
                         } else {
                             game.select_in_box(start, end, input.size);
                         }
-                        return;
+                        return WindowRequest.Nothing;
                     }
                 }
                 if let Option.Some(press) = input.left_press {
@@ -133,9 +145,18 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) can {Log} {
             Button.Right => {}
         },
         Event.Wheel(steps) => game.camera.zoom(steps),
-        Event.KeyDown(key, repeat) => { if !repeat { on_key(game, key); } }
+        Event.KeyDown(key, repeat) => {
+            if !repeat {
+                match key {
+                    // F5: borderless fullscreen on the window's monitor, or back.
+                    Key.Function(5) => { return WindowRequest.ToggleFullscreen; }
+                    _ => on_key(game, key),
+                }
+            }
+        }
         _ => {}
     }
+    WindowRequest.Nothing
 }
 
 /// A key going down, not repeating.
@@ -188,13 +209,26 @@ fn on_frame(game: &mut GameState, input: &Input, w: u32, h: u32, dt: f32, vertic
 }
 
 /// The game in a window for `frames` frames (0 for until it is closed).
+/// Most of the primary monitor, centered, so there's room for the map and the UI.
+fn window_spec() -> WindowSpec {
+    let screen = primary_monitor();
+    if screen.width <= 0 || screen.height <= 0 {
+        return WindowSpec { x: 100, y: 100, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
+    }
+    let width = (screen.width as f32 * WINDOW_SCREEN_FRACTION) as i32;
+    let height = (screen.height as f32 * WINDOW_SCREEN_FRACTION) as i32;
+    WindowSpec { x: screen.x + (screen.width - width) / 2, y: screen.y + (screen.height - height) / 2, width, height }
+}
+
 fn play(frames: i32, validate: bool) -> i32 can {Log, Clock} {
     let mut rng = seed(Clock.now_nanos() as u64);
+    let spec = window_spec();
+    let icons = Icons { small: icon(WINDOW_ICON_SIZE), small_size: WINDOW_ICON_SIZE, big: icon(TASKBAR_ICON_SIZE), big_size: TASKBAR_ICON_SIZE };
     handle {
-        let mut game = GameState.new();
+        let mut game = GameState.city_scenario();
         let mut input = Input {
             cursor: Option.None,
-            size: vec2(WIDTH as f32, HEIGHT as f32),
+            size: vec2(spec.width as f32, spec.height as f32),
             panning: false,
             left_press: Option.None,
             left_dragging: false,
@@ -202,8 +236,8 @@ fn play(frames: i32, validate: bool) -> i32 can {Log, Clock} {
             mods: Modifiers { shift: false, control: false, alt: false },
             closed: false,
         };
-        handle { run(TITLE, WIDTH, HEIGHT, frames, validate) } with Scene {
-            input(e) => { on_event(&mut game, &mut input, e); resume }
+        handle { run(TITLE, spec, &icons, frames, validate) } with Scene {
+            input(e) => { resume on_event(&mut game, &mut input, e) }
             frame(w, h, dt, vertices, batches) => { resume on_frame(&mut game, &input, w, h, dt, vertices, batches) }
         }
     } with Rand { rand() => { resume rng.next() } }

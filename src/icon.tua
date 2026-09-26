@@ -1,0 +1,83 @@
+//! The window and taskbar icon, drawn in code rather than loaded from a file: a blue hex tile
+//! with a white triangle, like a melee unit on the map.
+
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.math.Float;
+
+/// Blue's team colour as it appears on screen (after the sRGB swapchain's encoding), with a
+/// dark rim like the map's hex borders.
+const FILL: [u8; 4] = [149, 196, 250, 255];
+const RIM: [u8; 4] = [30, 30, 38, 255];
+const MARK: [u8; 4] = [255, 255, 255, 255];
+
+/// Radii, in the icon's [-1, 1] square, of the whole hex and its blue fill.
+const HEX_RADIUS: f32 = 0.98;
+const FILL_RADIUS: f32 = 0.80;
+/// The triangle's corners, pointing up.
+const TRIANGLE: [(f32, f32); 3] = [(0.0, 0.46), (-0.42, -0.30), (0.42, -0.30)];
+/// Samples per pixel along each axis, for smooth edges.
+const SUPERSAMPLE: i32 = 4;
+
+/// The icon rendered at `size` by `size` pixels, RGBA, rows from the top.
+pub fn icon(size: i32) -> Vec[u8] {
+    let mut rgba: Vec[u8] = Vec.with_capacity(size * size * 4);
+    for y in 0..size {
+        for x in 0..size {
+            let p = pixel(x, y, size);
+            for c in 0..4 { rgba.push(p[c]); }
+        }
+    }
+    rgba
+}
+
+/// Averages the shape over a grid of points inside pixel (`x`, `y`): colour from the points
+/// that hit something, alpha from how many did.
+pub fn pixel(x: i32, y: i32, size: i32) -> [u8; 4] {
+    let mut color: [f32; 3] = [0.0, 0.0, 0.0];
+    let mut hits = 0;
+    for sy in 0..SUPERSAMPLE {
+        for sx in 0..SUPERSAMPLE {
+            let u = (x as f32 + offset(sx)) / size as f32;
+            let v = (y as f32 + offset(sy)) / size as f32;
+            // Rows run top to bottom; the shapes are defined with Y up.
+            if let Option.Some(sample) = shape_at(vec2(u * 2.0 - 1.0, 1.0 - v * 2.0)) {
+                for c in 0..3 { color[c] = color[c] + sample[c] as f32; }
+                hits = hits + 1;
+            }
+        }
+    }
+    if hits == 0 { return [0, 0, 0, 0]; }
+    let coverage = hits as f32 / (SUPERSAMPLE * SUPERSAMPLE) as f32;
+    let channel = fn(sum: f32) -> u8 { (sum / hits as f32).round() as u8 };
+    [channel(color[0]), channel(color[1]), channel(color[2]), (coverage * 255.0).round() as u8]
+}
+
+fn offset(i: i32) -> f32 { (i as f32 + 0.5) / SUPERSAMPLE as f32 }
+
+fn shape_at(p: Vec2) -> Option[[u8; 4]] {
+    if in_triangle(p) {
+        Option.Some(MARK)
+    } else if in_hex(p, FILL_RADIUS) {
+        Option.Some(FILL)
+    } else if in_hex(p, HEX_RADIUS) {
+        Option.Some(RIM)
+    } else {
+        Option.None
+    }
+}
+
+/// Inside a flat-topped hexagon centered on the origin.
+fn in_hex(p: Vec2, radius: f32) -> bool {
+    let (x, y) = (p.x.abs(), p.y.abs());
+    let sqrt3 = (3.0 as f32).sqrt();
+    y <= radius * sqrt3 / 2.0 && sqrt3 * x + y <= sqrt3 * radius
+}
+
+fn in_triangle(p: Vec2) -> bool {
+    let corner = fn(i: i32) -> Vec2 { let (x, y) = TRIANGLE[i]; vec2(x, y) };
+    let (a, b, c) = (corner(0), corner(1), corner(2));
+    let side = fn(from: Vec2, to: Vec2) -> f32 { to.sub(from).cross(p.sub(from)) };
+    let (ab, bc, ca) = (side(a, b), side(b, c), side(c, a));
+    (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0)
+}

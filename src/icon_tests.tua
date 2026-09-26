@@ -1,0 +1,12 @@
+//! The icon drawn in code.
+
+use std.test.assert;
+use icon.pixel;
+
+@test
+fn corners_are_transparent_and_the_center_is_the_mark() {
+    let corner = pixel(0, 0, 32);
+    assert(corner[0] == 0 && corner[1] == 0 && corner[2] == 0 && corner[3] == 0);
+    let center = pixel(16, 16, 32);
+    assert(center[0] == 255 && center[1] == 255 && center[2] == 255 && center[3] == 255);
+}

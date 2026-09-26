@@ -106,7 +106,9 @@ use log.Log;
 use log.warn;
 use win32.Win32Error;
 use win32.Window;
-use win32.open_window;
+use win32.open_window_at;
+use win32.set_icons;
+use win32.toggle_fullscreen;
 use win32.client_size;
 use win32.destroy_window;
 use win32.events.Event;
@@ -139,19 +141,42 @@ const STOP_DONE: i32 = 1;
 /// A range of the frame's vertices drawn under one view-projection matrix.
 pub struct DrawBatch { view_proj: [[f32; 4]; 4], first: u32, count: u32 }
 
+/// Where the window opens: its outer top-left corner on the desktop and its client size, in
+/// pixels.
+pub struct WindowSpec { x: i32, y: i32, width: i32, height: i32 }
+
+/// The window's icons: a small one for its title bar and a big one for the taskbar, each a
+/// square of RGBA pixels `size` a side.
+pub struct Icons { small: Vec[u8], small_size: i32, big: Vec[u8], big_size: i32 }
+
+/// What the program asks of the window in answer to an event.
+pub enum WindowRequest {
+    Nothing,
+    /// Switch between the framed window and a borderless one over its monitor.
+    ToggleFullscreen,
+}
+
 /// What the program draws, and what it hears. `input` is one of the window's events, in the
-/// order they arrived. `frame` fills `vertices` and `batches` for a frame whose target is
-/// `width` by `height` pixels, `dt` seconds after the previous one; both arrive empty. It
-/// answers whether to keep running.
+/// order they arrived, and answers what the window should do about it. `frame` fills
+/// `vertices` and `batches` for a frame whose target is `width` by `height` pixels, `dt`
+/// seconds after the previous one; both arrive empty. It answers whether to keep running.
 pub effect Scene {
-    fn input(e: Event);
+    fn input(e: Event) -> WindowRequest;
     fn frame(width: u32, height: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool;
 }
 
 /// Waits for the next frame's turn, handing the window's input to the program as it arrives;
 /// the seconds since the previous frame.
 fn pace(run: &mut Run, win: &mut Window) -> f32 can {Scene, Clock} {
-    handle { next_frame(&mut run.pace, win) } with Events { event(e) => { Scene.input(e); resume } }
+    let mut toggles = 0;
+    let dt = handle { next_frame(&mut run.pace, win) } with Events {
+        event(e) => {
+            match Scene.input(e) { WindowRequest.ToggleFullscreen => { toggles = toggles + 1; } WindowRequest.Nothing => {} }
+            resume
+        }
+    };
+    for _ in 0..toggles { toggle_fullscreen(win); }
+    dt
 }
 
 /// Releases a ring whose frame cannot go on and reports `rc`.
@@ -269,13 +294,15 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Sur
     }
 }
 
-fn run_on_device(family: u32, title: &str, width: i32, height: i32, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock} {
+fn run_on_device(family: u32, title: &str, spec: WindowSpec, icons: &Icons, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock} {
+    let (width, height) = (spec.width, spec.height);
     let mut run = Run { budget: frames, drawn: 0, stop: 0, pace: pacer(TARGET_FPS), vertices: Vec.new(), batches: Vec.new() };
     let rc = handle { handle {
         let mut q = get_queue(family, 0);
         let pd = first_physical_device();
-        let mut win = open_window(title, width, height);
+        let mut win = open_window_at(title, spec.x, spec.y, width, height);
         defer { destroy_window(win); }
+        set_icons(&mut win, &icons.small, icons.small_size, &icons.big, icons.big_size);
         let surface = create_surface(&win);
         defer { destroy_surface(surface); }
         let mut alloc = create_allocator(pd);
@@ -324,12 +351,13 @@ fn report_validation(ring: &mut MessageRing) can {Log} {
     }
 }
 
-/// Opens a `width` by `height` window titled `title` and draws the program's `Scene` into it
+/// Opens a window titled `title` where `spec` places it, with `icons`, and draws the program's
+/// `Scene` into it
 /// until the program stops, or for `frames` frames when that is positive; `validate` runs
 /// under the Khronos validation layer, logs what it reported at `warn`, and fails when it
 /// reported anything. The exit code:
 /// 0, or `100 - code` for a negative `VkResult` or library code.
-pub fn run(title: &str, width: i32, height: i32, frames: i32, validate: bool) -> i32 can {Scene, Clock, Log} {
+pub fn run(title: &str, spec: WindowSpec, icons: &Icons, frames: i32, validate: bool) -> i32 can {Scene, Clock, Log} {
     handle {
         with_instance(true, validate, fn() -> i32 can {VkError, Vk, Scene, Clock, Log} {
             if validate && !validation_layer_present() { VkError.fail(HL_ERROR_NO_LAYER) }
@@ -342,7 +370,7 @@ pub fn run(title: &str, width: i32, height: i32, frames: i32, validate: bool) ->
                 let family = graphics_queue_family(pd);
                 if !win32_presentation_supported(pd, family) { VkError.fail(HL_ERROR_NOT_FOUND) }
                 out = with_device(pd, family, NO_QUEUE_FAMILY, true,
-                    fn(dev: &Device, f: u32) -> i32 can {VkError, Gpu, Vk, Scene, Clock} { run_on_device(f, title, width, height, frames) });
+                    fn(dev: &Device, f: u32) -> i32 can {VkError, Gpu, Vk, Scene, Clock} { run_on_device(f, title, spec, icons, frames) });
                 0
             } with VkError { fail(c) => { abort c } };
             if rc != 0 { VkError.fail(rc) }
