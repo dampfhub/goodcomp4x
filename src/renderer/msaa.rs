@@ -7,9 +7,46 @@ use ash::vk;
 
 use super::buffer;
 
-/// Samples per pixel. Vulkan requires every device to support 4 for color
-/// attachments, so there's no need to query or fall back.
-pub const SAMPLES: vk::SampleCountFlags = vk::SampleCountFlags::TYPE_4;
+/// Sample counts to try, most first. Vulkan requires every device to support
+/// 4 for color attachments, so the search always succeeds by then.
+const PREFERRED_SAMPLES: [vk::SampleCountFlags; 3] = [
+    vk::SampleCountFlags::TYPE_16,
+    vk::SampleCountFlags::TYPE_8,
+    vk::SampleCountFlags::TYPE_4,
+];
+
+/// The most samples per pixel the device supports for a color target of
+/// `format`: more samples mean smoother edges.
+pub unsafe fn pick_samples(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    format: vk::Format,
+) -> vk::SampleCountFlags {
+    let limits = unsafe { instance.get_physical_device_properties(physical_device) }.limits;
+    let image = unsafe {
+        instance.get_physical_device_image_format_properties(
+            physical_device,
+            format,
+            vk::ImageType::TYPE_2D,
+            vk::ImageTiling::OPTIMAL,
+            USAGE,
+            vk::ImageCreateFlags::empty(),
+        )
+    };
+    let supported = limits.framebuffer_color_sample_counts
+        & image.map_or(vk::SampleCountFlags::TYPE_4, |p| p.sample_counts);
+    PREFERRED_SAMPLES
+        .into_iter()
+        .find(|&count| supported.contains(count))
+        .unwrap_or(vk::SampleCountFlags::TYPE_4)
+}
+
+/// Only ever resolved, never read back, so the target can live in lazily
+/// allocated (tile) memory where the GPU offers it.
+const USAGE: vk::ImageUsageFlags = vk::ImageUsageFlags::from_raw(
+    vk::ImageUsageFlags::COLOR_ATTACHMENT.as_raw()
+        | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT.as_raw(),
+);
 
 /// The multisampled image the scene is drawn into, sized to the swapchain.
 pub struct ColorTarget {
@@ -25,6 +62,7 @@ impl ColorTarget {
         physical_device: vk::PhysicalDevice,
         format: vk::Format,
         extent: vk::Extent2D,
+        samples: vk::SampleCountFlags,
     ) -> Result<Self> {
         let image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
@@ -36,13 +74,9 @@ impl ColorTarget {
             })
             .mip_levels(1)
             .array_layers(1)
-            .samples(SAMPLES)
+            .samples(samples)
             .tiling(vk::ImageTiling::OPTIMAL)
-            // Only ever resolved, never read back, so it can live in
-            // lazily allocated (tile) memory where the GPU offers it.
-            .usage(
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT,
-            )
+            .usage(USAGE)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED);
         let image = unsafe { device.create_image(&image_info, None) }?;

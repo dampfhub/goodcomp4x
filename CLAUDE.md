@@ -39,9 +39,10 @@ src/
     instance.rs    instance + validation layer + debug messenger
     device.rs      GPU selection, logical device, queues
     swapchain.rs   swapchain + image views
-    pipeline.rs    render pass (4x MSAA target resolved into the swapchain image)
+    pipeline.rs    render pass (MSAA target resolved into the swapchain image)
                    + the single alpha-blended vertex-color pipeline
-    msaa.rs        the multisampled color target, rebuilt with the swapchain
+    msaa.rs        the multisampled color target, rebuilt with the swapchain;
+                   pick_samples chooses the most the GPU supports (16/8, min 4)
     texture.rs     the coverage atlas (R8 + mips), uploaded once, bound as set 0
     buffer.rs      buffer + memory allocation
     sync.rs        per-frame semaphores and fences (2 frames in flight)
@@ -345,7 +346,8 @@ never uses abilities. Ties break by hex coordinates, so it's deterministic.
     yields only in the city view with a Y toggle; tile tooltip on hover.
 21. Space ends the turn once nothing's waiting (Enter removed); the turn also
     waits for city builds, not citizens; Guard (G) skips a unit every turn.
-    The End Turn button names what's waiting. Hold Escape to quit. 4x MSAA.
+    The End Turn button names what's waiting. Hold Escape to quit. MSAA, at
+    the highest sample count the GPU supports.
 
 ## Open questions and ideas
 

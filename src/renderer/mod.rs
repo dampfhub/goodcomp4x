@@ -3,7 +3,7 @@
 //! (e.g. the world through a camera, then UI in screen space on top).
 //! Triangles are vertex-colored, and can be masked by a single-channel
 //! coverage atlas (e.g. font glyphs) supplied once at startup. Edges are
-//! smoothed with 4x multisampling.
+//! smoothed with multisampling, at the most samples the GPU supports.
 
 mod buffer;
 mod device;
@@ -65,6 +65,8 @@ pub struct Renderer {
 
     swapchain_loader: ash::khr::swapchain::Device,
     swapchain: SwapchainData,
+    /// Antialiasing samples per pixel: the most the GPU supports, up to 16.
+    samples: vk::SampleCountFlags,
     /// Multisampled image each frame is drawn into, then resolved into the
     /// swapchain image. Sized to match, so it's rebuilt with the swapchain.
     color_target: ColorTarget,
@@ -142,6 +144,9 @@ impl Renderer {
             )
         }?;
 
+        let samples =
+            unsafe { msaa::pick_samples(&vk_instance, physical_device, swapchain_data.format) };
+        log::info!("antialiasing with {} samples per pixel", samples.as_raw());
         let color_target = unsafe {
             ColorTarget::new(
                 &vk_instance,
@@ -149,12 +154,19 @@ impl Renderer {
                 physical_device,
                 swapchain_data.format,
                 swapchain_data.extent,
+                samples,
             )
         }?;
-        let render_pass =
-            unsafe { pipeline::create_render_pass(&logical_device, swapchain_data.format) }?;
+        let render_pass = unsafe {
+            pipeline::create_render_pass(&logical_device, swapchain_data.format, samples)
+        }?;
         let (pipeline_layout, gfx_pipeline) = unsafe {
-            pipeline::create_graphics_pipeline(&logical_device, render_pass, texture.set_layout)
+            pipeline::create_graphics_pipeline(
+                &logical_device,
+                render_pass,
+                texture.set_layout,
+                samples,
+            )
         }?;
         let framebuffers = unsafe {
             create_framebuffers(&logical_device, render_pass, &swapchain_data, &color_target)
@@ -193,6 +205,7 @@ impl Renderer {
             present_queue,
             swapchain_loader,
             swapchain: swapchain_data,
+            samples,
             color_target,
             render_pass,
             pipeline_layout,
@@ -443,12 +456,15 @@ impl Renderer {
                 self.physical_device,
                 self.swapchain.format,
                 self.swapchain.extent,
+                self.samples,
             )?;
-            self.render_pass = pipeline::create_render_pass(&self.device, self.swapchain.format)?;
+            self.render_pass =
+                pipeline::create_render_pass(&self.device, self.swapchain.format, self.samples)?;
             (self.pipeline_layout, self.pipeline) = pipeline::create_graphics_pipeline(
                 &self.device,
                 self.render_pass,
                 self.texture.set_layout,
+                self.samples,
             )?;
             self.framebuffers = create_framebuffers(
                 &self.device,

@@ -1,24 +1,24 @@
 use anyhow::Result;
 use ash::vk;
 
-use super::msaa;
 use super::vertex::Vertex;
 
 const VERT_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mesh.vert.spv"));
 const FRAG_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mesh.frag.spv"));
 
-/// Draws into a multisampled color attachment (0), resolved at the end of the
-/// pass into the swapchain image (1). No depth buffer: the scene is flat, so
-/// layering is just draw order.
+/// Draws into a color attachment with `samples` per pixel (0), resolved at
+/// the end of the pass into the swapchain image (1). No depth buffer: the
+/// scene is flat, so layering is just draw order.
 pub unsafe fn create_render_pass(
     device: &ash::Device,
     color_format: vk::Format,
+    samples: vk::SampleCountFlags,
 ) -> Result<vk::RenderPass> {
     let attachments = [
         // The samples themselves are only needed until they're resolved.
         vk::AttachmentDescription::default()
             .format(color_format)
-            .samples(msaa::SAMPLES)
+            .samples(samples)
             .load_op(vk::AttachmentLoadOp::CLEAR)
             .store_op(vk::AttachmentStoreOp::DONT_CARE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
@@ -65,11 +65,13 @@ pub unsafe fn create_render_pass(
 
 /// Alpha-blended, vertex-colored triangles with the camera's view-projection
 /// matrix as a push constant, optionally masked by the coverage atlas bound
-/// through `set_layout`. Viewport and scissor are dynamic state.
+/// through `set_layout`, rasterized with `samples` per pixel to match the
+/// render pass. Viewport and scissor are dynamic state.
 pub unsafe fn create_graphics_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     set_layout: vk::DescriptorSetLayout,
+    samples: vk::SampleCountFlags,
 ) -> Result<(vk::PipelineLayout, vk::Pipeline)> {
     let vert_module = unsafe { create_shader_module(device, VERT_SPIRV) }?;
     let frag_module = unsafe { create_shader_module(device, FRAG_SPIRV) }?;
@@ -106,7 +108,7 @@ pub unsafe fn create_graphics_pipeline(
         .line_width(1.0);
 
     let multisampling =
-        vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(msaa::SAMPLES);
+        vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(samples);
 
     let blend_attachments = [vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA)
