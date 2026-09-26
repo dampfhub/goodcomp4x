@@ -1073,6 +1073,10 @@ mod tests {
         assert!(g.grid.is_passable(site));
         g.city_click(site);
         assert_eq!(g.cities[0].planned_barracks, Some(site));
+        assert_eq!(g.placing_barracks, None, "choosing a site exits Barracks placement mode");
+        let normal_city_click = Hex::new(-1, 0);
+        g.city_click(normal_city_click);
+        assert_ne!(g.cities[0].planned_barracks, Some(normal_city_click), "a later city click must not move the planned Barracks");
         g.cities[0].production = Building::Barracks.cost();
         g.complete_builds();
         assert_eq!(g.cities[0].pending_building, Some(Building::Barracks));
