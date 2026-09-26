@@ -13,6 +13,7 @@
 
 mod dock;
 mod imgui;
+pub use imgui::ImGuiLayoutState;
 
 use glam::{Mat4, Vec2, Vec3};
 

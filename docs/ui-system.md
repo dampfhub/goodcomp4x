@@ -8,6 +8,11 @@ here. Add new controls to the shared `PanelBuilder` content and route their
 
 ImGui uses native windows, buttons, scrolling, drag/drop, hover tooltips, and
 input capture. It is drawn at the end of the existing Vulkan render pass.
+`ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible
+windows without overlap. A window follows the dock as its content changes
+until the player drags its title bar or resize grip; moved windows reserve
+their space so other panels avoid them. Only the production queue has a
+deliberately bounded height and scrolls when it grows beyond that bound.
 The world, tile overlays, selection rectangle, and quit hold prompt remain in
 the game's renderer. Native window positions can be moved and resized while
 the game is running. Queue panels show the full queue inside a scrollable

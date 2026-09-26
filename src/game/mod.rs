@@ -35,7 +35,7 @@ pub use orders::ClickMode;
 pub use scenario::Scenario;
 use terrain::Tile;
 use turn::Phase;
-pub use ui::{quit_prompt, selection_box, ui_projection};
+pub use ui::{ImGuiLayoutState, quit_prompt, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
 
 const GRID_RADIUS: i32 = 3;

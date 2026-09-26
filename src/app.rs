@@ -13,7 +13,8 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::game::{
-    ClickMode, GameState, Scenario, font_atlas, quit_prompt, selection_box, ui_projection,
+    ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, quit_prompt, selection_box,
+    ui_projection,
 };
 use crate::icon;
 use crate::renderer::{DrawBatch, Renderer};
@@ -45,6 +46,7 @@ pub struct App {
     imgui: Option<ImGuiContext>,
     imgui_platform: Option<WinitPlatform>,
     imgui_fonts: Option<[FontId; 3]>,
+    imgui_layout: ImGuiLayoutState,
     use_imgui: bool,
     last_frame: Option<Instant>,
     minimized: bool,
@@ -71,6 +73,7 @@ impl Default for App {
             imgui: None,
             imgui_platform: None,
             imgui_fonts: None,
+            imgui_layout: ImGuiLayoutState::default(),
             use_imgui: true,
             last_frame: None,
             minimized: false,
@@ -584,7 +587,13 @@ impl ApplicationHandler for App {
                     if self.use_imgui
                         && let Some(fonts) = self.imgui_fonts
                     {
-                        self.game.draw_imgui(frame, size, self.cursor_pos, &fonts);
+                        self.game.draw_imgui(
+                            frame,
+                            size,
+                            self.cursor_pos,
+                            &fonts,
+                            &mut self.imgui_layout,
+                        );
                     }
                     platform.prepare_render(frame, window);
                     Some(imgui.render())

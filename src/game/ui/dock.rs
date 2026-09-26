@@ -63,6 +63,11 @@ impl Dock {
         }
     }
 
+    /// Reserve a window the user moved, so automatically placed windows avoid it.
+    pub(super) fn reserve(&mut self, rect: Rect) {
+        self.panels.push(rect);
+    }
+
     fn top(&self) -> f32 {
         self.screen.y - self.top_reserved
     }
