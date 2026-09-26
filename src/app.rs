@@ -370,6 +370,7 @@ impl ApplicationHandler for App {
                 KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
                 KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),
                 KeyCode::F3 => self.game.switch_scenario(Scenario::Frontier),
+                KeyCode::F4 => self.game.switch_scenario(Scenario::World),
                 KeyCode::KeyY => self.game.toggle_yields(),
                 KeyCode::KeyG => self.game.toggle_guard(),
                 KeyCode::F5 => self.toggle_fullscreen(),
@@ -377,6 +378,7 @@ impl ApplicationHandler for App {
                 KeyCode::F7 => self.game.load_state(),
                 KeyCode::F8 => self.game.toggle_instant_playback(),
                 KeyCode::F9 => self.game.debug_complete_current_production(),
+                KeyCode::F10 => self.game.toggle_fog(),
                 _ => {}
             },
             WindowEvent::RedrawRequested => {

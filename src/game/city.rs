@@ -2,7 +2,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::hex::{Hex, HexGrid};
-use super::terrain::{Resource, Terrain};
+use super::mapgen::{generate, start_units};
+use super::terrain::{Resource, Terrain, Tile};
 use super::unit::{Team, Unit, UnitType};
 use super::{GameState, PLAYER_TEAM};
 
@@ -97,9 +98,9 @@ impl Building {
     }
     pub fn description(self) -> &'static str {
         match self {
-            Self::Granary => "+2 FOOD PER TURN FOR THIS CITY.",
+            Self::Granary => "+2 FOOD PER TURN.",
             Self::Barracks => {
-                "PLACE ON A WORKED TILE. A MANAGER THERE DIRECTS ITS WORK GROUP'S PRODUCTION INTO TROOPS."
+                "PLACED ON A WORKED TILE. WITH THE MANAGER THERE, ITS WORK GROUP TRAINS TROOPS."
             }
             Self::Mill => "ADJACENT WORKED TILES DELIVER ALL FOOD IF THEY CAN REACH THE CITY.",
             Self::Workshop => "ADJACENT PLACED BUILDINGS CAN BE CONFIRMED AT HALF PRODUCTION.",
@@ -278,8 +279,8 @@ impl GameState {
 
     pub(super) fn setup_cities(&mut self) {
         let hills = [Hex::new(-2, 2), Hex::new(2, -2), Hex::new(0, 0)];
-        let mut terrain: Vec<_> = hills.into_iter().map(|h| (h, Terrain::Hills)).collect();
-        terrain.extend([-4, -3, -2, 2, 3, 4].map(|r| (Hex::new(0, r), Terrain::Mountains)));
+        let mut terrain: Vec<_> = hills.into_iter().map(|h| (h, Tile::HILLS)).collect();
+        terrain.extend([-4, -3, -2, 2, 3, 4].map(|r| (Hex::new(0, r), Tile::MOUNTAINS)));
         self.grid = HexGrid::with_resources(
             6,
             terrain,
@@ -354,10 +355,10 @@ impl GameState {
         self.grid = HexGrid::new(
             6,
             [
-                (Hex::new(-1, 2), Terrain::Hills),
-                (Hex::new(1, -2), Terrain::Hills),
-                (Hex::new(0, 3), Terrain::Mountains),
-                (Hex::new(0, -3), Terrain::Mountains),
+                (Hex::new(-1, 2), Tile::HILLS),
+                (Hex::new(1, -2), Tile::HILLS),
+                (Hex::new(0, 3), Tile::MOUNTAINS),
+                (Hex::new(0, -3), Tile::MOUNTAINS),
             ],
         );
         self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
@@ -376,13 +377,46 @@ impl GameState {
         for (team, pos) in [(Team::Blue, Hex::new(-3, -1)), (Team::Red, Hex::new(3, 1))] {
             let id = self.next_unit_id;
             self.next_unit_id += 1;
-            self.units.push(Unit::new(id, pos, team, UnitType::Melee));
+            self.units.push(Unit::new(id, pos, team, UnitType::Scout));
             if team == Team::Red {
                 self.player_controlled_units.insert(id);
             }
         }
-        self.notice = "F FOUND CITY - BOTH STARTING WARRIORS ARE YOURS TO TEST".into();
+        self.notice = "F FOUND CITY - BOTH STARTING SCOUTS ARE YOURS TO TEST".into();
         self.selected = self.unit_of_team_at(Hex::new(-4, 0), PLAYER_TEAM);
+    }
+
+    pub(super) fn setup_world(&mut self, seed: u32) {
+        let map = generate(seed);
+        self.grid = map.grid;
+        self.map_seed = Some(seed);
+        self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
+        for (team, start) in [Team::Blue, Team::Red].into_iter().zip(map.starts) {
+            // Starts come with a flat hex for the worker and hills for the
+            // scout, so neither side begins seeing more than the other. Only
+            // the blank fallback map lacks them.
+            let open: Vec<Hex> = start
+                .neighbors()
+                .into_iter()
+                .filter(|h| self.grid.is_passable(*h))
+                .collect();
+            let (worker, scout) = start_units(&self.grid, start).unwrap_or((open[0], open[1]));
+            for (pos, role, unit_type) in [
+                (start, "settler", UnitType::Melee),
+                (worker, "worker", UnitType::Melee),
+                (scout, "scout", UnitType::Scout),
+            ] {
+                let id = self.next_unit_id;
+                self.next_unit_id += 1;
+                self.units.push(Unit::new(id, pos, team, unit_type));
+                match role {
+                    "settler" => self.settlers.insert(id),
+                    "worker" => self.workers.insert(id),
+                    _ => false,
+                };
+            }
+        }
+        self.notice = format!("WORLD SEED {seed} - F FOUNDS A CITY - F4 FOR A NEW MAP");
     }
 
     pub fn found_city_selected(&mut self) {
@@ -453,10 +487,20 @@ impl GameState {
             self.notice = "ONLY A WORKER IMPROVES TILES".into();
             return;
         }
-        let (food, production, label) = if self.grid.terrain(unit.pos) == Terrain::Hills {
-            (1, 4, "MINE")
+        // Improvements add to what the tile already gives: a mine two
+        // production on hills, a lumber mill one in forest or jungle, a farm
+        // two food elsewhere.
+        let tile = self.grid.tile(unit.pos);
+        let (food, production) = tile.yields();
+        let (food, production, label) = if tile.hills {
+            (food, production + 2, "MINE")
+        } else if tile.feature.is_some() {
+            (food, production + 1, "LUMBER MILL")
+        } else if tile.terrain == Terrain::Snow {
+            self.notice = "NOTHING GROWS ON SNOW - NO IMPROVEMENT POSSIBLE".into();
+            return;
         } else {
-            (4, 0, "FARM")
+            (food + 2, production, "FARM")
         };
         self.sites.insert(
             unit.pos,
@@ -543,6 +587,7 @@ impl GameState {
 
     pub(super) fn site_available(&self, city: usize, building: Building, hex: Hex) -> bool {
         self.grid.is_passable(hex)
+            && (self.is_explored(hex) || self.fog().sees(hex))
             && !self.cities.iter().enumerate().any(|(i, c)| {
                 c.pos == hex
                     || [Building::Barracks, Building::Mill, Building::Workshop]
@@ -816,8 +861,13 @@ impl GameState {
                 .map(|(h, c)| (*h, *c));
             let Some((hex, cost)) = next else { break };
             visited.insert(hex);
+            // Goods come in from water tiles but never travel across them.
+            if self.grid.terrain(hex).is_water() {
+                continue;
+            }
             for n in hex.neighbors() {
-                if !self.grid.is_passable(n)
+                if !self.grid.contains(n)
+                    || !self.grid.terrain(n).is_workable()
                     || self.enemy_of_team_at(n, team).is_some()
                     || self.cities.iter().any(|c| c.pos == n && c.team != team)
                 {
@@ -825,10 +875,8 @@ impl GameState {
                 }
                 let step = if self.is_road_hex(n) {
                     1
-                } else if self.grid.terrain(n) == Terrain::Hills {
-                    3
                 } else {
-                    2
+                    self.grid.tile(n).route_cost()
                 };
                 let total = cost + step;
                 if total <= 8 && result.costs.get(&n).is_none_or(|old| total < *old) {
@@ -858,15 +906,14 @@ impl GameState {
             .sum()
     }
 
+    /// What a worked tile produces: its site's yield or its terrain's, plus
+    /// one food for fresh water (a river or lake beside it).
     pub(super) fn tile_yield(&self, hex: Hex) -> (i32, i32) {
-        self.sites.get(&hex).map_or_else(
-            || match self.grid.terrain(hex) {
-                Terrain::Plains => (2, 1),
-                Terrain::Hills => (1, 2),
-                Terrain::Mountains => (0, 0),
-            },
-            |s| (s.food, s.production),
-        )
+        let (food, production) = self
+            .sites
+            .get(&hex)
+            .map_or_else(|| self.grid.tile(hex).yields(), |s| (s.food, s.production));
+        (food + i32::from(self.grid.has_fresh_water(hex)), production)
     }
 
     fn may_assign(&self, city: usize, hex: Hex) -> bool {
@@ -895,7 +942,14 @@ impl GameState {
                 .sites
                 .get(&hex)
                 .is_none_or(|site| site.team == self.cities[city].team)
+            && !self.grid.terrain(hex).is_water()
             && self.routes(city).costs.contains_key(&hex)
+    }
+
+    /// Whether `hex` can take the city's next citizen as far as the manager
+    /// goes: the first citizen, the manager, has to be on land.
+    fn may_manage_or_work(&self, city: usize, hex: Hex) -> bool {
+        !self.cities[city].worked.is_empty() || !self.grid.terrain(hex).is_water()
     }
 
     /// Relocates the manager and carries each worker's axial offset with it.
@@ -996,7 +1050,14 @@ impl GameState {
                 };
                 (-score, h.q, h.r)
             });
-            let (hex, f, _) = tiles.remove(0);
+            // The first citizen is the manager, who must stand on land.
+            let Some(pick) = tiles
+                .iter()
+                .position(|(h, _, _)| self.may_manage_or_work(city, *h))
+            else {
+                break;
+            };
+            let (hex, f, _) = tiles.remove(pick);
             self.cities[city].worked.push(hex);
             food += f;
         }
@@ -1091,7 +1152,13 @@ impl GameState {
                 candidates.retain(|(hex, _, _)| manager.distance(*hex) == 1);
             }
             candidates.sort_by_key(|(h, f, p)| (-(f * 3 + p), h.q, h.r));
-            self.cities[city].worked.push(candidates.remove(0).0);
+            let Some(pick) = candidates
+                .iter()
+                .position(|(h, _, _)| self.may_manage_or_work(city, *h))
+            else {
+                break;
+            };
+            self.cities[city].worked.push(candidates.remove(pick).0);
         }
     }
 
@@ -1291,6 +1358,8 @@ impl GameState {
             self.notice = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN ADJACENT TILE TO ASSIGN".into();
         } else if !self.routes(i).costs.contains_key(&hex) {
             self.notice = "NO OPEN ROUTE WITHIN LOGISTICS BUDGET".into();
+        } else if !self.may_manage_or_work(i, hex) {
+            self.notice = "THE FIRST CITIZEN MANAGES THE OTHERS AND MUST WORK LAND".into();
         } else if self.cities[i].worked.len() >= self.cities[i].population.min(MAX_CITY_POPULATION)
         {
             self.notice = "ALL CITIZENS BUSY - RELEASE A WORKED TILE FIRST".into();

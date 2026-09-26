@@ -33,13 +33,15 @@ red queues its orders when you end planning. There is no save system yet.
 | F1 | Start the original combat scenario (again to restart it) |
 | F2 | Start the city scenario (again to restart it) |
 | F3 | Start the frontier scenario, a settler each (again to restart it) |
+| F4 | Start a randomly generated world; every press makes a new map |
 | F6 | Save a snapshot of the whole game (testing savestate) |
 | F7 | Load the snapshot; it's kept, so it can be loaded again |
 | F8 | Toggle turn playback: step by step, or every step at once (same outcome) |
 | F9 / debug Complete Production | Finish the active city build or Barracks training immediately |
+| F10 | Toggle fog of war (debug) |
 
-The faded DEBUG panel at the top-left has buttons for F1-F3 and F6-F9; the
-current scenario is gold. The savestate lives only until the game closes and
+The faded DEBUG panel at the top-left has buttons for F1-F4 and F6-F10; the
+current scenario is gold, and a generated map shows its seed. The savestate lives only until the game closes and
 survives switching scenarios; loading it returns to its scenario.
 | F5 | Toggle borderless fullscreen |
 | F, with a selected settler | Found a city |
@@ -67,8 +69,12 @@ to its target: a burst means it hit, a grey MISS that the hex was empty, and
 OUT OF RANGE that the target moved away first. Damage numbers rise from every
 unit hurt, attackers taking retaliation included.
 
-Cities appear as team-colored H squares. F/M/P label preplaced farms, mines,
-and pastures; brown lines are dirt roads. Hover over a city or select it to see
+Cities appear as team-colored crenellated towers showing their population, with
+a gold G disc once they have a granary; a barracks is a small house marked B.
+Improvements (farms, mines, pastures, lumber mills) show as small badges in a
+hex's top-left corner, edged in their owner's color: crop rows, an ore heap, a
+fence, or logs. Brown lines are dirt roads. Settlers (T) and workers (W) are
+drawn hollow, so civilians stand apart from fighters. Hover over a city or select it to see
 green outlines around its worked tiles; red outlines mark disrupted assignments.
 With a city open and yields shown (Y or the Yields button toggles them; on by
 default), small green grain and amber hammer icons show raw food and production
@@ -116,8 +122,8 @@ In the frontier scenario, settlers use a `T` marker. Found your city with F,
 open it with C, then choose a unit with 1–4. Production accumulates at the end
 of each turn and a finished unit appears on an open adjacent hex. If every
 adjacent hex is occupied, the city keeps the completed build until one opens.
-Both sides also begin with a warrior. The red starting warrior is player
-controlled in this scenario, so you can move either warrior to test route cuts,
+Both sides also begin with a scout. The red starting scout is player
+controlled in this scenario, so you can move either scout to test route cuts,
 contests, and city labor without fighting the AI for input.
 
 The top bar shows the turn, the latest notice, and on the right a button naming
@@ -159,3 +165,62 @@ The city tray also has Food, Production, and Balanced labor focus buttons. They
 set the default used by auto-assignment. A manually assigned tile cut off by an
 enemy unit is kept reserved; its worker returns automatically when the route is
 open again, unless you changed that assignment.
+
+## Map tiles
+
+The F4 world is generated from a seed (`src/game/mapgen.rs`) on a rectangular
+map about 61 hexes wide by 36 tall, sized for four players (there are still
+only two sides). It's a Pangea: one continent, with at most a few small
+islands, ringed by sea, with mountain ranges, hills, rivers running downhill along hex edges
+to the sea or into lakes, and climate bands that are colder toward the top and
+bottom of the map. Both sides start on the continent, far apart, on sites of
+similar quality, with a settler, a worker and a scout each. The settler and
+worker always start on flat ground and the scout on hills, so both sides begin
+seeing the same. The
+camera starts on your settler.
+
+A tile is a base ground, optionally raised into hills and covered by forest
+or jungle:
+
+| Ground | Food | Production | Marks |
+| --- | --- | --- | --- |
+| Grassland | 3 | 0 | |
+| Plains | 2 | 1 | |
+| Desert | 0 | 1 | dunes |
+| Tundra | 1 | 1 | grass tufts |
+| Snow | 0 | 0 | can't be improved |
+| Marsh | 1 | 0 | reeds; goods cost more to carry through |
+| Mountains | - | - | impassable, can't be worked |
+| Coast / Lake | 2 | 0 | water: units can't enter, cities can work it |
+| Ocean | 1 | 0 | water, away from the shore |
+
+| Modifier | Effect | Found on |
+| --- | --- | --- |
+| Hills (two small peaks) | +1 production, +25% defense, +1 route cost, +1 sight | any land but marsh |
+| Forest (pines) | -1 food, +1 production, +15% defense, +1 route cost | grassland, plains, tundra, hills included |
+| Jungle (round canopies) | +1 food, +1 production, +15% defense, +1 route cost | marsh only |
+
+On hills, forest or jungle is drawn along the top of the hex. Rivers are the
+blue lines between hexes. Land beside a river or a lake has fresh water and
+gets +1 food. Goods can be brought in from a water tile but never carried
+across water. A city's first citizen, the manager, has to work land. Workers
+build a mine (+2 production) on hills, a lumber mill (+1 production) in forest
+or jungle, or a farm (+2 food) elsewhere. Hills, forest and rivers don't slow
+units yet.
+
+## Scouts and fog of war
+
+The scout (small circle, `X`) moves 3 but barely fights: 60 HP, attack 8, defense
+10. Scouts move first in a turn and attack right after ranged units. Its
+ability, Lookout (Q), keeps it in place for the turn; through the next turn it
+sees 2 hexes farther.
+
+Fog of war is on by default. Units see 2 hexes (scouts and cavalry 3, +1 on
+hills), cities 3, barracks 1. Mountains block sight: you can see a mountain, but
+not the hexes behind it. It has two layers. Never-seen hexes are solid
+black: you know nothing about them. Hexes you have seen before but can't see
+now sit under a grey veil, outlined in darker grey where they meet what you can see, with faint cloud puffs,
+and show them as they were when you last saw them:
+enemy units where they stood, cities and barracks with the health they had,
+improvements and roads, and their tooltips describe them that way. F10 or the debug panel's FOG button turns it off. The AI ignores
+the fog.

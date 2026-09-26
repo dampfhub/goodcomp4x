@@ -9,9 +9,11 @@ mod city;
 mod combat;
 mod draw;
 mod effects;
+mod fog;
 mod font;
 mod group;
 mod hex;
+mod mapgen;
 mod mesh;
 mod orders;
 mod scenario;
@@ -31,7 +33,7 @@ pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
-use terrain::Terrain;
+use terrain::Tile;
 use turn::Phase;
 pub use ui::{quit_prompt, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
@@ -61,9 +63,9 @@ Controls:
   Enter or End Turn holds unfinished units and ends the turn. Cities still need a build queued.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
-  1-4 queue city units; 5/6 queue Granary/Barracks. Click queue controls to reorder or remove items;
+  1-4 queue city units; 5-8 queue buildings. Drag queue rows to reorder or click X to remove;
   Backspace removes the active city build and PageDown promotes the next item. F founds with a settler.
-  F1 combat, F2 cities, F3 settler frontier (again to restart). F6 saves a snapshot, F7 loads it, F8 plays turns all at once.
+  F1 combat, F2 cities, F3 settler frontier, F4 random world (again to restart; F4 makes a new map). F6 saves a snapshot, F7 loads it, F8 changes playback, F9 completes production, F10 toggles fog of war.
   The faded DEBUG panel at the top-left has buttons for these.
   Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
   F5 toggles fullscreen.
@@ -76,13 +78,20 @@ Abilities (button at the bottom of the screen, or Q, for the selected unit):
   Ranged - Volley: the attack also hits enemies next to the target, all at 60% damage.
   Cavalry - Charge: +1 move and +50% attack this turn.
   Siege - Deploy: spend a turn setting up, then +1 range but no moving until packed up.
+  Scout - Lookout: stay put this turn, then see 2 hexes farther through the next.
   A gold ring marks a queued ability; a steel ring marks deployed siege.
 Contested hexes:
   Two enemies moving onto the same hex both take it, turning it orange. Every turn they
   fight there instead of attacking anything else, until one dies or moves out.
 Terrain:
-  Hills (small peaks): +25% defense for the unit standing there.
-  Mountains (large snowy peak): impassable.";
+  Tiles are a ground (grassland, plains, desert, tundra, snow, marsh), optionally with hills
+  (small peaks: +25% defense) and forest or jungle (pines or round canopies: +15%).
+  Mountains (large snowy peak): impassable. Water (waves): units can't enter, cities can work it.
+  Each yields differently; rest the cursor on a hex to see. Blue lines between hexes are
+  rivers: land beside a river or lake has fresh water, +1 food.
+Fog of war:
+  Hexes you have never seen are blank. Hexes seen before but out of sight now are greyed and
+  show what was there when you last saw them: enemy units, cities, improvements and roads. Units see 2 hexes (scouts and cavalry 3, +1 on hills), cities 3. F10 toggles it.";
 
 #[derive(Clone)]
 pub struct GameState {
@@ -117,6 +126,8 @@ pub struct GameState {
     /// Several units selected together (see `group.rs`), in place of
     /// `selected`; empty unless at least two are.
     group: Vec<usize>,
+    /// The seed of a generated map (the F4 world), shown in the debug panel.
+    map_seed: Option<u32>,
     /// Which test scenario this is, for restarting it.
     scenario: Scenario,
     /// A snapshot of the game saved for testing (F6), restored by F7.
@@ -126,6 +137,11 @@ pub struct GameState {
     /// Debug setting (F8): play a turn's steps all at once instead of one
     /// every `STEP_INTERVAL`. Kept across scenario switches and loads.
     instant_playback: bool,
+    /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
+    /// Kept across scenario switches and loads.
+    fog_of_war: bool,
+    /// Every hex the player's side has seen, as it last saw it.
+    memory: fog::Memory,
     turn: u32,
     pub camera: Camera,
     rng: ThreadRng,
@@ -164,13 +180,13 @@ impl GameState {
         // Mountain ridges along the center column leave a three-hex pass
         // (with a hill in the middle) as the only way between the two sides.
         let terrain = [
-            (Hex::new(0, -3), Terrain::Mountains),
-            (Hex::new(0, -2), Terrain::Mountains),
-            (Hex::new(0, 2), Terrain::Mountains),
-            (Hex::new(0, 3), Terrain::Mountains),
-            (Hex::new(0, 0), Terrain::Hills),
-            (Hex::new(-2, 2), Terrain::Hills),
-            (Hex::new(2, -2), Terrain::Hills),
+            (Hex::new(0, -3), Tile::MOUNTAINS),
+            (Hex::new(0, -2), Tile::MOUNTAINS),
+            (Hex::new(0, 2), Tile::MOUNTAINS),
+            (Hex::new(0, 3), Tile::MOUNTAINS),
+            (Hex::new(0, 0), Tile::HILLS),
+            (Hex::new(-2, 2), Tile::HILLS),
+            (Hex::new(2, -2), Tile::HILLS),
         ];
 
         log::info!("You control {PLAYER_TEAM:?}; {AI_TEAM:?} is AI-controlled.\n{CONTROLS_HELP}");
@@ -197,10 +213,13 @@ impl GameState {
             units,
             selected: None,
             group: Vec::new(),
+            map_seed: None,
             scenario: Scenario::Combat,
             savestate: None,
             effects: Vec::new(),
-            instant_playback: false,
+            instant_playback: true,
+            fog_of_war: true,
+            memory: fog::Memory::new(),
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
             rng: rand::rng(),
@@ -232,6 +251,20 @@ impl GameState {
         game.units.clear();
         game.setup_frontier();
         game.start_on_whole_map();
+        game
+    }
+
+    /// A generated map (`mapgen.rs`) from `seed`, with a settler, a worker
+    /// and a scout per side.
+    pub fn world_scenario(seed: u32) -> Self {
+        let mut game = Self::new();
+        game.scenario = Scenario::World;
+        game.units.clear();
+        game.setup_world(seed);
+        game.start_on_whole_map();
+        game.selected = game.unit_of_team_at(game.units[0].pos, PLAYER_TEAM);
+        // The map is too big to take in at once: start on the settler.
+        game.camera = Camera::new(game.units[0].pos.to_world(), game.camera.half_height);
         game
     }
 
@@ -269,6 +302,7 @@ impl GameState {
                 UnitType::Ranged => "RANGED",
                 UnitType::Cavalry => "CAVALRY",
                 UnitType::Siege => "SIEGE",
+                UnitType::Scout => "SCOUT",
                 UnitType::Horse => "HORSE",
                 UnitType::Armored => "ARMORED",
             };
@@ -276,8 +310,12 @@ impl GameState {
         }
     }
 
-    fn unit_letter(&self, unit: &Unit) -> char {
-        self.unit_role(unit).1
+    /// How to draw `unit`: its letter, and hollow if it's a civilian.
+    fn unit_look(&self, unit: &Unit) -> draw::UnitLook {
+        draw::UnitLook {
+            letter: self.unit_role(unit).1,
+            civilian: self.settlers.contains(&unit.id) || self.workers.contains(&unit.id),
+        }
     }
 
     fn is_occupied(&self, hex: Hex) -> bool {
@@ -360,6 +398,7 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use terrain::Terrain;
 
     /// The starting layout has exactly one unit of each type per team.
     fn find(game: &GameState, team: Team, unit_type: UnitType) -> usize {
@@ -483,7 +522,7 @@ mod tests {
 
         let hill = Hex::new(1, 0);
         let plain = Hex::new(-1, 0);
-        let grid = HexGrid::new(GRID_RADIUS, [(hill, Terrain::Hills)]);
+        let grid = HexGrid::new(GRID_RADIUS, [(hill, Tile::HILLS)]);
 
         // Same seed on both sides so both attacks roll the same variance.
         let damage_taken_at = |pos: Hex| {
@@ -636,10 +675,12 @@ mod tests {
     #[test]
     fn order_badges_follow_the_resolution_order() {
         use turn::step_rank;
-        assert_eq!(step_rank(UnitType::Cavalry, Phase::Move), 1);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 4);
+        assert_eq!(step_rank(UnitType::Scout, Phase::Move), 1);
+        assert_eq!(step_rank(UnitType::Cavalry, Phase::Move), 2);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 5);
         assert_eq!(step_rank(UnitType::Ranged, Phase::Attack), 1);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 4);
+        assert_eq!(step_rank(UnitType::Scout, Phase::Attack), 2);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 5);
     }
 
     /// Selects `idx` and toggles its ability, as the button would.

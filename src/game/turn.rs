@@ -22,14 +22,18 @@ pub(super) enum Phase {
 }
 
 /// When each unit type moves and attacks within a turn:
+/// - Scouts move first, slipping away before anyone else acts, and poke in
+///   alongside the ranged volley.
 /// - Cavalry moves before anyone attacks, so it can't be caught mid-charge.
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-const RESOLUTION_ORDER: [(UnitType, Phase); 12] = [
+const RESOLUTION_ORDER: [(UnitType, Phase); 14] = [
+    (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
     (UnitType::Melee, Phase::Move),
     (UnitType::Ranged, Phase::Attack),
+    (UnitType::Scout, Phase::Attack),
     (UnitType::Cavalry, Phase::Attack),
     (UnitType::Melee, Phase::Attack),
     (UnitType::Ranged, Phase::Move),
@@ -78,6 +82,7 @@ impl GameState {
     /// Advances turn playback by `dt` seconds, playing the next step once
     /// `STEP_INTERVAL` has passed. Steps where nobody acts are skipped.
     pub fn update(&mut self, dt: f32) {
+        self.explore();
         self.camera.update(dt);
         self.age_effects(dt);
         self.highlight_timer -= dt;
@@ -435,7 +440,7 @@ impl GameState {
                 let unit = &self.units[attacker];
                 if self.cities[city].pos.distance(unit.pos) <= CITY_ATTACK_RANGE {
                     let defense =
-                        unit.stats().defense * self.grid.terrain(unit.pos).defense_multiplier();
+                        unit.stats().defense * self.grid.tile(unit.pos).defense_multiplier();
                     damage[attacker] +=
                         combat::roll_damage_against(CITY_ATTACK, defense, &mut self.rng);
                 }
