@@ -3282,6 +3282,27 @@ mod tests {
     }
 
     #[test]
+    fn barracks_tooltip_shows_the_same_production_as_its_panels() {
+        let mut game = GameState::city_scenario();
+        // Nothing is left to see the barracks tile once the units are gone.
+        game.fog_of_war = false;
+        game.units.clear();
+        let manager = Hex::new(-1, 0);
+        game.cities[0].worked = vec![manager, Hex::new(-1, 1)];
+        game.cities[0].barracks = Some(manager);
+        let expected = format!("+{} PROD/T", game.barracks_income(0));
+        let text: Vec<String> = game
+            .tile_tooltip_lines(manager)
+            .into_iter()
+            .flat_map(|(_, line)| line.into_iter().map(|(s, _)| s))
+            .collect();
+        assert!(
+            text.iter().any(|s| s.contains(&expected)),
+            "{expected} not in {text:?}"
+        );
+    }
+
+    #[test]
     fn clicks_on_a_panel_do_not_reach_the_map() {
         let mut game = GameState::new();
         let selected = game.selected;

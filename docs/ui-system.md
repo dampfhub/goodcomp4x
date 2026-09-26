@@ -1,7 +1,7 @@
 # Screen-space UI panels
 
 The UI lives in `src/game/ui.rs`. Its reusable placement code is in
-`src/game/ui/dock.rs`. The root `AGENTS.md` points contributors here.
+`src/game/ui/dock.rs`. `src/game/AGENTS.md` points contributors here.
 
 `PanelBuilder` is the content primitive. Add rows with `text`, `bar`, `gap`,
 `buttons`, `compact_buttons`, or `queue_item`; `size()` measures the finished panel. A

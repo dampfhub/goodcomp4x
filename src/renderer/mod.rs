@@ -577,8 +577,13 @@ unsafe fn create_command_buffers(
 
 fn mat4_to_bytes(m: &Mat4) -> [u8; 64] {
     let mut bytes = [0u8; 64];
-    for (chunk, value) in bytes.chunks_exact_mut(4).zip(m.to_cols_array()) {
-        chunk.copy_from_slice(&value.to_ne_bytes());
+    for (chunk, value) in bytes
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(m.to_cols_array())
+    {
+        *chunk = value.to_ne_bytes();
     }
     bytes
 }
@@ -602,4 +607,19 @@ unsafe fn create_vertex_buffer(
         )
     }?;
     Ok((buffer, memory, capacity))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mat4_bytes_are_the_columns_in_order() {
+        let m = Mat4::from_cols_array(&std::array::from_fn(|i| i as f32));
+        let bytes = mat4_to_bytes(&m);
+        for i in 0..16 {
+            let word: [u8; 4] = bytes[4 * i..4 * i + 4].try_into().unwrap();
+            assert_eq!(f32::from_ne_bytes(word), i as f32);
+        }
+    }
 }
