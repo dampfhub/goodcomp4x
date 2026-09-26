@@ -11,8 +11,10 @@ if (-not (Test-Path (Join-Path $src 'vulkan\build.tua'))) {
     throw "no libs\vulkan\build.tua under '$TuataraRepo'"
 }
 $dst = Join-Path $PSScriptRoot '..\deps'
-if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
+# The directory's contents are replaced rather than the directory itself, which another
+# process (a shell, an editor) may hold open.
 New-Item -ItemType Directory -Force $dst | Out-Null
+Get-ChildItem -Force $dst | Remove-Item -Recurse -Force
 Copy-Item -Recurse (Join-Path $src '*') $dst
 
 # Each library's build cache stays behind.
