@@ -38,7 +38,8 @@ tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
 
 `App::window_event` on `RedrawRequested`:
 
-1. `game.update(dt)`: camera glide, effect ages, and, while a turn is resolving, the next step.
+1. `game.update(dt)`: camera glide, effect ages, fog-of-war memory (`explore`), and, while a
+   turn is resolving, the next step (or every step, with instant playback).
 2. `game.update_hover(cursor, ..)`: which map hex the cursor rests on (for the tile tooltip).
 3. `game.build_vertices()`: world geometry, drawn with `game.camera.view_proj(size)`.
 4. `game.build_ui(size, cursor)`: screen-space UI, drawn with `ui_projection(size)`.
@@ -52,22 +53,26 @@ Nothing is retained between frames except the font atlas: every vertex is rebuil
 1. **Planning.** Input calls `GameState` methods in `orders.rs`, `group.rs`, `city.rs` and
    `ui.rs`, which queue orders on units and builds on cities. `pending()` counts what still needs
    attention; the End Turn button names it.
-2. **End of planning** (`resolve_turn`, `turn.rs`): selection is cleared, the AI plans
-   (`plan_ai_turn`, `ai.rs`), and every step of `RESOLUTION_ORDER` is queued.
+2. **End of planning.** Space with nothing waiting and the End Turn button both call
+   `end_planning` (`city.rs`), which holds unfinished units, may open a city still needing a build
+   and stop there, auto-assigns Red's citizens, then calls `resolve_turn` (`turn.rs`): selection
+   is cleared, the AI plans (`plan_ai_turn`, `ai.rs`), and every step of `RESOLUTION_ORDER` is
+   queued.
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each step resolves one unit type's moves or attacks
    simultaneously; `effects.rs` animates attacks; dead units are removed at the end of an attack
    step.
 4. **End of turn:** `resolve_economy` (`city.rs`) applies city income, growth and builds; each
-   unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up and
-   clears its orders; then selection moves to the first unit needing orders, or else the first
+   unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,
+   sets or clears Lookout, and clears its orders; then selection moves to the first unit needing orders, or else the first
    city needing a build (`select_next_or_end_turn`).
 
 The rules each step applies are in `game-rules.md`.
 
 ## Testing aids
 
-Scenarios (F1 combat, F2 cities, F3 frontier) are constructors on `GameState`; the savestate (F6
+Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world) are constructors on
+`GameState`; the savestate (F6
 save, F7 load) clones the whole `GameState`. Both live in `scenario.rs` and in memory only. Unit
 tests build a scenario and drive the same methods input does, so no window or GPU is needed;
 `simulation.rs` plays whole AI-vs-AI games that way and checks invariants every turn.

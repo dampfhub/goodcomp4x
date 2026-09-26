@@ -49,8 +49,16 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     miss / out of range, damage numbers).
 25. Debug toggle (F8) for instant turn playback.
 26. City buildings and labor (`codex/city-buildings-labor`): Granary and Barracks, the city
-    manager and its work group, labor focus, worker roads and improvements, build queue controls.
-27. Agent-focused repo: AGENTS.md (root and nested) replaces CLAUDE.md, readable by Claude Code
+    manager and its work group, labor focus, worker roads and improvements, build queue controls,
+    Horses and Iron with the Horse and Armored units they unlock, and city and barracks combat.
+27. Map generation, tile modifiers, scouts and fog of war (`claude/mapgen-fog-scouts`): ten ground
+    types with their own yields, with hills and forest/jungle as modifiers; rivers along hex edges
+    (fresh water +1 food); workable water; a seeded Pangea world on a 61x36 rectangular map (F4),
+    each side starting with a settler, worker and scout; the Scout unit (Lookout ability); fog of
+    war; a vertex buffer that grows as needed.
+28. Mill and Workshop buildings, building sites chosen on the map, and reusable queue panels
+    (scroll, drag to reorder, X to remove) docked by screen zone (`ui/dock.rs`).
+29. Agent-focused repo: AGENTS.md (root and nested) replaces CLAUDE.md, readable by Claude Code
     and Codex; rules, controls, architecture and history in `docs/`, checked against the code;
     the GitHub Projects work board (`tools/board/`, skill in `.agents/skills/`), a commit-message
     lint, CI (fmt, clippy, tests, MSRV 1.92, tool self-tests), a PR template, and an AI-vs-AI

@@ -11,22 +11,24 @@ behavior.
 
 | Module | Concern |
 |---|---|
-| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP`, the main tests |
+| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP`, the main tests |
 | `orders.rs` | player input and order planning: click, right-click, swap, ability toggle, hold, guard |
 | `group.rs` | multi-unit selection (Alt-drag, Alt-click) and group orders |
 | `turn.rs` | `RESOLUTION_ORDER`, `update(dt)`, simultaneous step resolution (moves, attacks) |
 | `combat.rs` | damage formula, retaliation, combat log helpers |
-| `ability.rs` | the four abilities and their tuning constants |
+| `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `ai.rs` | the Red AI |
 | `city.rs` | cities, sites, roads, logistics routes, citizens, growth, build queues, buildings, settlers and workers |
-| `hex.rs`, `terrain.rs` | axial hex math, `HexGrid`, terrain |
-| `scenario.rs` | test scenarios (F1-F3), savestate (F6/F7), instant playback (F8) |
+| `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
+| `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
+| `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
+| `scenario.rs` | scenarios (F1-F4), savestate (F6/F7), instant playback (F8) |
 | `simulation.rs` | tests only: AI-vs-AI games in every scenario, board invariants checked each turn |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
 | `effects.rs` | attack animations during playback |
-| `ui.rs` | screen-space UI (`build_ui`): top bar, command tray, tooltips, info box, debug panel |
+| `ui.rs`, `ui/dock.rs` | screen-space UI (`build_ui`): top bar, trays, queue panels, tooltips, hover panels, debug panel; `dock.rs` places panels by screen zone |
 | `mesh.rs`, `font.rs` | shape helpers; TrueType text and the glyph atlas |
 
 ## Invariants
@@ -39,11 +41,16 @@ behavior.
   directly.
 - Attack steps read the board as it stood at the step's start and apply summed damage at its
   end; moves in a step are simultaneous. Keep new resolution logic in that shape (`turn.rs`).
-- `layout()` builds a `Layout` (panels, text, buttons) from state. Drawing (`build_ui`), click
-  hit-testing (`click_ui`) and hover detection (`update_hover`) each call it, so anything
-  clickable must come from `layout()` to be clickable where it is drawn. Hover boxes, structure
-  panels and tooltips are added only in `build_ui`: they are display-only and not hit-tested.
-  Panels size themselves to their text (`PanelBuilder`).
+- **Screen-space UI: read `docs/ui-system.md` first.** Build a panel with `PanelBuilder` and
+  place it with `Layout::dock_panel(panel, Zone::..)` (zones in `ui/dock.rs`); never position a
+  persistent panel by hand or compute offsets from another panel's size. `layout()` docks the
+  persistent panels and `layout_with_hover()` adds the hover panels; drawing (`build_ui`) and
+  button clicks (`click_ui`) both use `layout_with_hover()`, so a drawn button is clickable.
+  Queue dragging, wheel scrolling, scrollbars and `update_hover` use `layout()`, so scrollable
+  or draggable content belongs in a persistent panel, not a hover panel.
+  Cursor-following tooltips, the quit prompt and the selection box are overlays with their own
+  anchors. Add a layout test for a new panel (no overlap, buttons inside their panel), and run
+  `cargo build --release` after UI changes.
 - Text: `font.rs` rasterizes printable ASCII from the Hack font once into one R8 atlas with 4 mip
   levels, padding glyphs by 8 px so the smallest mip doesn't bleed neighbors together. UI text
   uses `font::ui(px)` with `px` one of `UI_SIZES` and snaps to whole pixels; world text

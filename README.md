@@ -17,8 +17,8 @@ cargo run               # debug build with the Vulkan validation layer (from the
 cargo test              # unit tests; no GPU needed
 ```
 
-The city scenario opens by default; F1, F2 and F3 switch between the combat, city and frontier
-scenarios. See [docs/controls.md](docs/controls.md) for every control.
+The city scenario opens by default; F1-F4 switch between the combat, city, frontier and
+generated-world scenarios. See [docs/controls.md](docs/controls.md) for every control.
 
 ## Documentation
 

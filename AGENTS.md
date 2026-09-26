@@ -61,8 +61,9 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
   invariants each turn; extend its invariants when you add a rule.
 - Anything visual: run `cargo run` (validation on) and watch for validation errors in the log;
   UI layout and click targets are testable without a window (see `ui.rs` tests).
-- In-game testing aids: F1-F3 restart a scenario, F6/F7 save and load a snapshot, F8 plays a turn
-  instantly (`docs/controls.md`).
+- In-game testing aids: F1-F4 restart a scenario (F4 generates a new map), F6/F7 save and load a
+  snapshot, F8 toggles instant turn playback, F9 finishes the current build, F10 toggles fog of
+  war (`docs/controls.md`).
 
 ## Work board
 
