@@ -1103,7 +1103,7 @@ impl ImGuiLayoutState {
             }
             let zone = match slot {
                 SELECTION | QUEUE | INSPECT => Zone::BottomLeft,
-                UNITS => Zone::TopLeft,
+                UNITS => Zone::BottomCenter,
                 _ => Zone::TopRight,
             };
             for height_scale in [1.0, 0.85, 0.65, 0.45, 0.25] {
@@ -1264,7 +1264,7 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
     draw.add_rect(min, max, edge).thickness(thickness).build();
     let mut vertices = Vec::new();
     let radius = (max[0] - min[0]) * ROSTER_TOKEN_SHARE / 2.0;
-    super::super::draw::push_unit_token(Vec2::ZERO, chip.look, radius, chip.color, &mut vertices);
+    super::paint::push_chip_icon(Vec2::ZERO, chip.icon, radius, chip.color, &mut vertices);
     // The token is built Y-up around the origin; ImGui's Y points down.
     let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
@@ -1277,6 +1277,20 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
         )
         .filled(true)
         .build();
+    }
+    if chip.count > 1 {
+        let text = chip.count.to_string();
+        let size = ui.calc_text_size(&text);
+        let inset = super::paint::CHIP_COUNT_INSET;
+        let origin = [max[0] - size[0] - inset, max[1] - size[1] - inset];
+        draw.add_rect(
+            [origin[0] - 2.0, origin[1] - 1.0],
+            [max[0] - inset + 2.0, max[1] - inset + 1.0],
+            PANEL_BG,
+        )
+        .filled(true)
+        .build();
+        draw.add_text(origin, TEXT, &text);
     }
 }
 
@@ -1843,19 +1857,16 @@ impl GameState {
                             ui.same_line_with_spacing(0.0, ROSTER_CHIP_GAP);
                         }
                         let clicked = ui.invisible_button(
-                            format!("##roster-{}", chip.id),
+                            format!("##roster-{:?}", chip.key),
                             [ROSTER_CHIP, ROSTER_CHIP],
                         );
                         let hovered = ui.is_item_hovered();
                         draw_roster_chip(ui, ui.item_rect_min(), ui.item_rect_max(), chip, hovered);
                         if clicked {
-                            actions.push(Action::Button(scope, roster_target(chip.id, mode)));
+                            actions.push(Action::Button(scope, roster_target(chip.key, mode)));
                         }
-                        if hovered && let Some(unit) = self.units.iter().find(|u| u.id == chip.id) {
-                            ui.tooltip_text(format!(
-                                "{} - CLICK: SELECT · SHIFT: ADD · CTRL: REMOVE",
-                                self.unit_role(unit)
-                            ));
+                        if hovered {
+                            ui.tooltip_text(self.roster_hint(chip.key));
                         }
                     }
                 }

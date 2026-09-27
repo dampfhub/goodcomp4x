@@ -40,10 +40,15 @@ it keeps the most recent hover summary visible.
 the slot constants in `imgui.rs`, a zone in `plan`, a measured size and a
 `render_imgui_window` call), so it can be dragged, resized, docked and put in
 a box like Selection or Debug. Only static chrome, such as the status bar, is
-a fixed window. The unit strip (`roster.rs`, a `Row::Roster` of unit tokens,
-slot `UNITS`, starting top-left) is an example; its tokens are drawn with the
-map's own token geometry through the window draw list. In the classic layout
-it docks at `Zone::TopLeft` before the debug panel.
+a fixed window. The turn strip (`roster.rs`, `Row::Roster` rows of chips,
+slot `UNITS`, starting at the bottom center) is an example; its chips are
+drawn with the map's own token and city tower geometry through the window draw
+list (`paint::push_chip_icon`). `Zone::BottomCenter` (`dock.rs`) places it:
+centered on the bottom edge if that's free, else beside whatever is in the
+way, else above it. In the classic layout it docks there after the debug
+panel. Its chips are keyed by `RosterKey` (a city's production or idle
+workers, a group of units of one kind, or one unit), which the `Roster*`
+targets carry.
 The settings menu (`settings_menu.rs`, slot `SETTINGS`) is another: Escape
 opens it (`GameState::press_escape`, `game/settings.rs`) and it shows only
 while open. It is a full panel rather than a fixed modal, so the player can

@@ -142,3 +142,8 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     (about 93 by 57 hexes for six), so neighboring starts sit about a fifth farther apart. The fog
     draws only what the camera can show, and its fill only on unexplored hexes, so a big map costs
     no more per frame than a small one.
+46. The turn strip (`claude/turn-tasks`): the unit strip now lists everything needing the
+    player this turn, civilian tasks first (cities with nothing to build, cities with idle
+    workers, settlers), then military units grouped by kind with a count. Selecting a group lists
+    its units one by one below it. It starts at the bottom center, in a new
+    `Zone::BottomCenter` that slides aside for other panels.

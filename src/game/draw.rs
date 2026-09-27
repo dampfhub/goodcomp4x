@@ -1976,19 +1976,7 @@ fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec<Verte
 /// A city: a crenellated tower in its team's color with its population on
 /// it, and a small gold granary beside it once it has one.
 fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
-    let rect =
-        |x0: f32, y0: f32, x1: f32, y1: f32| (pos + Vec2::new(x0, y0), pos + Vec2::new(x1, y1));
-    push_outlined_rects(
-        &[
-            rect(-0.42, -0.4, 0.42, 0.24),
-            // Three merlons along the top.
-            rect(-0.42, 0.24, -0.24, 0.4),
-            rect(-0.09, 0.24, 0.09, 0.4),
-            rect(0.24, 0.24, 0.42, 0.4),
-        ],
-        city.team.color(),
-        out,
-    );
+    push_city_tower(pos, 1.0, city.team.color(), out);
     // Centered in the tower's body, below the merlons.
     font::push_text_centered(
         pos + Vec2::new(0.0, -0.08),
@@ -2009,6 +1997,33 @@ fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
         );
         mesh::regular_polygon(at, 0.15, 16, 0.0, GRANARY_COLOR, out);
         font::push_glyph(at, 0.16, 'G', LABEL_COLOR, out);
+    }
+}
+
+/// A city's crenellated tower in `color`, `scale` times its size on the map
+/// (0.84 wide, 0.8 tall), in whatever space `pos` is in: the turn strip
+/// draws it too.
+pub(super) fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec<Vertex>) {
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        (
+            pos + Vec2::new(x0, y0) * scale,
+            pos + Vec2::new(x1, y1) * scale,
+        )
+    };
+    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
+    let grow = Vec2::splat(ICON_OUTLINE_WIDTH * scale);
+    let rects = [
+        rect(-0.42, -0.4, 0.42, 0.24),
+        // Three merlons along the top.
+        rect(-0.42, 0.24, -0.24, 0.4),
+        rect(-0.09, 0.24, 0.09, 0.4),
+        rect(0.24, 0.24, 0.42, 0.4),
+    ];
+    for &(min, max) in &rects {
+        mesh::quad(min - grow, max + grow, outline, out);
+    }
+    for &(min, max) in &rects {
+        mesh::quad(min, max, color, out);
     }
 }
 

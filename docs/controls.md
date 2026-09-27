@@ -33,8 +33,8 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Right-click a hex with a group | Every member in range attacks it (again to call it off) |
 | Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
-| Click a unit in the unit strip | Select just it and move the camera to it |
-| Shift-click / Ctrl-click a unit in the unit strip | Add it to / take it out of the selection |
+| Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
+| Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
 | F / Found City button | Found a city with the selected settler |
 | Escape | Let go of the selected unit or group (and close the tile panel) |
 
@@ -43,11 +43,15 @@ through occupied hexes, and two allies can't head for the same hex. Once the sel
 move and an attack queued (or can't do one of them), the next unit needing orders is selected
 and the camera glides to it; a unit you select by clicking stays selected.
 
-The unit strip (a panel that starts at the top-left) shows a token for each of your units,
-settlers included, that still needs orders this turn, in the order the game selects them: the
-next one after the selected unit is the next to its right, wrapping around. Selected units are
-framed; a unit leaves the strip once it has its orders (or holds, guards or follows a queue).
-Like the other panels, hold Ctrl to drag, resize or dock it.
+The turn strip ("need orders"; a panel that starts at the bottom of the screen, centered or as
+near the middle as the other panels allow) shows a chip for everything you still have to see to
+this turn, civilian tasks first: each city with nothing to build (its tower), each city with
+workers idle at home (a shovel, with how many), your settlers, and then your military units
+needing orders. Units are grouped by kind, one chip per kind with a count; a group of several
+that you select lists its units one by one on a second row, to pick from or take out. Selected
+units, and the open city, are framed; a unit leaves the strip once it has its orders (or holds,
+guards or follows a queue), a city once it has a build, and workers once they have jobs. Like
+the other panels, hold Ctrl to drag, resize or dock it.
 
 Shift-clicks on a hex build an order queue over several turns (rules: `game-rules.md`, Order
 queues); a Shift-click on one of your own units adds it to the selection instead.

@@ -10,6 +10,9 @@ pub(super) enum Zone {
     BottomRight,
     TopLeft,
     TopRight,
+    /// The middle of the bottom edge, sliding sideways to the nearest free
+    /// spot before stacking upward (`Dock::place`).
+    BottomCenter,
 }
 
 impl Zone {
@@ -18,7 +21,10 @@ impl Zone {
     }
 
     fn bottom(self) -> bool {
-        matches!(self, Self::BottomLeft | Self::BottomRight)
+        matches!(
+            self,
+            Self::BottomLeft | Self::BottomRight | Self::BottomCenter
+        )
     }
 }
 
@@ -75,7 +81,9 @@ impl Dock {
     /// Vertical room remaining in the anchor column for a panel of `width`.
     /// Useful for panels that choose how many rows to render before docking.
     pub fn remaining_height(&self, zone: Zone, width: f32) -> f32 {
-        let x = if zone.left() {
+        let x = if zone == Zone::BottomCenter {
+            (self.screen.x - width) / 2.0
+        } else if zone.left() {
             self.margin
         } else {
             self.screen.x - self.margin - width
@@ -109,6 +117,9 @@ impl Dock {
         let size = size.round();
         if size.x > self.screen.x - 2.0 * self.margin || size.y > self.top() - self.margin {
             return None;
+        }
+        if zone == Zone::BottomCenter {
+            return self.place_bottom_center(size);
         }
         let mut x = if zone.left() {
             self.margin
@@ -168,11 +179,83 @@ impl Dock {
         }
         None
     }
+
+    /// `Zone::BottomCenter`: the free spot in the lowest row that has one,
+    /// as near the middle of the screen as it can be: centered if nothing's
+    /// there, or else just beside whatever is in the way.
+    fn place_bottom_center(&mut self, size: Vec2) -> Option<Rect> {
+        let middle = ((self.screen.x - size.x) / 2.0).round();
+        let (lowest, highest) = (self.margin, self.screen.x - self.margin - size.x);
+        let mut y = self.margin;
+        while y + size.y <= self.top() {
+            let mut xs = vec![middle];
+            for r in &self.panels {
+                xs.push(r.max.x + self.gap);
+                xs.push(r.min.x - self.gap - size.x);
+            }
+            xs.retain(|x| (lowest..=highest).contains(x));
+            xs.sort_by(|a, b| (a - middle).abs().total_cmp(&(b - middle).abs()));
+            let row = |x: f32| Rect {
+                min: Vec2::new(x, y),
+                max: Vec2::new(x + size.x, y + size.y),
+            };
+            if let Some(spot) = xs
+                .into_iter()
+                .map(row)
+                .find(|c| !self.panels.iter().any(|r| c.overlaps(*r, self.gap)))
+            {
+                self.panels.push(spot);
+                return Some(spot);
+            }
+            // Nothing free in this row: try just above the lowest panel in it.
+            let band = Rect {
+                min: Vec2::new(self.margin, y),
+                max: Vec2::new(self.screen.x - self.margin, y + size.y),
+            };
+            y = self
+                .panels
+                .iter()
+                .filter(|r| r.overlaps(band, 0.0))
+                .map(|r| r.max.y + self.gap)
+                .fold(f32::INFINITY, f32::min);
+        }
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bottom_center_panel_centers_then_steps_aside_then_up() {
+        let screen = Vec2::new(1600.0, 900.0);
+        // Alone, it sits in the middle of the bottom edge.
+        let mut dock = Dock::new(screen, 16.0, 8.0, 60.0);
+        let strip = dock
+            .place(Vec2::new(300.0, 90.0), Zone::BottomCenter)
+            .unwrap();
+        assert_eq!(strip.min, Vec2::new(650.0, 16.0));
+        // Beside a wide tray at the bottom-left, it moves over just enough.
+        let mut dock = Dock::new(screen, 16.0, 8.0, 60.0);
+        let tray = dock
+            .place(Vec2::new(800.0, 200.0), Zone::BottomLeft)
+            .unwrap();
+        let strip = dock
+            .place(Vec2::new(300.0, 90.0), Zone::BottomCenter)
+            .unwrap();
+        assert_eq!(strip.min, Vec2::new(tray.max.x + 8.0, 16.0));
+        // With no room beside it, it goes above.
+        let mut dock = Dock::new(screen, 16.0, 8.0, 60.0);
+        let tray = dock
+            .place(Vec2::new(1400.0, 200.0), Zone::BottomLeft)
+            .unwrap();
+        let strip = dock
+            .place(Vec2::new(300.0, 90.0), Zone::BottomCenter)
+            .unwrap();
+        assert_eq!(strip.min.y, tray.max.y + 8.0);
+        assert!(!strip.overlaps(tray, 0.0));
+    }
 
     #[test]
     fn panels_stack_and_wrap_without_intersecting() {

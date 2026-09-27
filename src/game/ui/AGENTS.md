@@ -15,7 +15,7 @@ file holds.
 - **Every new ImGui panel is draggable and dockable.** Give it a slot: a constant and an entry in
   `SLOT_TITLES` (`imgui.rs`), a zone in `ImGuiLayoutState::plan`, a measured size in
   `draw_imgui`, and a `render_imgui_window` call. That makes it movable, resizable, dockable
-  and boxable (Ctrl) like Selection, Debug or the unit strip (`UNITS`). Only static chrome,
+  and boxable (Ctrl) like Selection, Debug or the turn strip (`UNITS`). Only static chrome,
   such as the status bar, may be a fixed `ui.window` with its own flags.
 - **Classic placement.** Place persistent panels with `Layout::dock_panel(panel, Zone::..)`
   (zones in `dock.rs`); never position one by hand or compute offsets from another panel's
@@ -23,13 +23,18 @@ file holds.
   drawing (`build_ui`) and button clicks (`click_ui`) both use `layout_with_hover()`, so a drawn
   button is clickable. Queue dragging, wheel scrolling, scrollbars and `update_hover` use
   `layout()`, so scrollable or draggable content belongs in a persistent panel, not a hover
-  panel. Placement order is priority: command panels first, then the unit strip, then debug.
+  panel. Placement order is priority: command panels first, then debug, then the turn strip.
+  A button takes a click before a turn strip chip under it (the centered settings menu).
 - Cursor-following tooltips and the selection box are overlays with their own anchors. The
   settings menu is the one panel placed outside the dock: centered, in both presentations.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05. ImGui
   style colors (`app.rs`) and draw-list colors are linear too.
-- Map geometry drawn in a panel (the unit strip's tokens) comes from the world drawing code
-  (`draw::push_unit_token`), built Y-up; ImGui's draw list is Y-down, so flip it.
+- Map geometry drawn in a panel (the turn strip's chips) comes from the world drawing code
+  (`draw::push_unit_token`, `draw::push_city_tower`, via `paint::push_chip_icon`), built Y-up;
+  ImGui's draw list is Y-down, so flip it.
+- **New kind of turn task** (research, say): a `RosterKey` variant, its place in
+  `roster_tasks` (civilian tasks before the unit groups), its chip in `roster_chip`, what a
+  click does in `roster_select`, and its hint in `roster_hint` (`roster.rs`).
 
 ## Recipes
 

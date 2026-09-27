@@ -314,10 +314,15 @@ Everyone in a step acts simultaneously:
   become the group; one is an ordinary selection. The group's hexes are highlighted and the tray
   summarizes it, with a Clear Orders button that drops every member's orders and queues (as
   Ctrl-right-click does).
-- The unit strip (a panel starting at the top-left) lists the player's units, settlers
-  included, that still need orders, in unit order, which is the order the game selects them in.
-  Clicking one selects it and moves the camera there; Shift-click adds it to the selection and
-  Ctrl-click takes it out. Selected units are framed.
+- The turn strip (`ui/roster.rs`, a panel starting at the bottom center) lists what the
+  player still has to see to this turn, civilian tasks first: cities with an empty queue,
+  cities with workers at home and no jobs, settlers, then military units needing orders.
+  Units are grouped by kind (settlers apart), each group in the order its first unit comes in
+  unit order, with a count. Clicking a city's chip opens it; clicking a group selects all its
+  units and moves the camera to the first, and while any of them is selected, a second row
+  lists them one by one. Clicking a unit's chip selects just it; Shift-click adds a chip's units
+  to the selection and Ctrl-click takes them out (leaving at least one). Selected units and the
+  open city are framed. Research will join it when there is any.
 - Left-clicking a hex (or Move) converges: members' old moves are dropped, then, nearest to the
   target first, each takes the reachable hex closest to the target that no ally is heading for,
   staying put if it can't get closer. Members keep their own speeds, so the group doesn't hold

@@ -150,6 +150,9 @@ pub struct GameState {
     cloud_time: f32,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: HashSet<u32>,
+    /// The turn strip's group whose units it lists one by one, while one of
+    /// them is selected (`ui/roster.rs`).
+    roster_open: Option<ui::RosterKey>,
     /// Ruins not yet claimed (`ruins.rs`), in the order the map made them.
     ruins: Vec<ruins::Ruin>,
     /// Workers out on the map; the ones at home are counted by their city
@@ -248,6 +251,7 @@ impl GameState {
             cloud_time: 0.0,
             settlers: HashSet::new(),
             ruins: Vec::new(),
+            roster_open: None,
             field_workers: Vec::new(),
             structures: HashMap::new(),
             barriers: HashMap::new(),
