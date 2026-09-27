@@ -31,8 +31,10 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 3. When behavior changes, update the doc that describes it in the same change: rules in
    `docs/game-rules.md`, keys in `docs/controls.md`, structure in `docs/architecture.md`, and
    the nearest `AGENTS.md` if an instruction there became wrong.
-4. Files check out with CRLF line endings on Windows, so multi-line `sed`/`perl` substitutions
-   silently match nothing. Make multi-line edits with an editor (the Edit tool), not a regex.
+4. Text files are LF everywhere, Windows checkouts included: `.gitattributes` sets
+   `eol=lf`, so `sed`/`perl` substitutions behave as on Linux. Save new files with LF endings
+   (Git converts CRLF on commit anyway). A checkout made before the rule came in may still
+   have CRLF files; `git rm -r --cached . -q` then `git reset --hard` rewrites them as LF.
 5. On Windows, close a running game before rebuilding: the exe is locked while it runs.
 6. Fix small bugs you find in code you are already changing, with a test. File anything bigger
    on the work board (below) instead of leaving it in a comment.
