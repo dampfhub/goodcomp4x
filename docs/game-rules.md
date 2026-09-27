@@ -163,7 +163,7 @@ acts are skipped.
 6. Cavalry attack  7. Melee attack  8. Ranged move  9. Siege move  10. Siege attack
 11. Armored move  12. Armored attack
 
-The badges on each unit show its rank: blue number = its move among move steps, red = its attack
+Holding Alt shows each unit's rank: blue number = its move among move steps, red = its attack
 among attack steps.
 
 Everyone in a step acts simultaneously:

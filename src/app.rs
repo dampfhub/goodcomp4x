@@ -200,7 +200,10 @@ impl ApplicationHandler for App {
                 self.quit_held_since = None;
                 self.box_start = None;
             }
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers;
+                self.game.set_details(modifiers.state().alt_key());
+            }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) => {
                     if let Some(cursor) = self.cursor_pos {
