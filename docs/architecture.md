@@ -63,8 +63,9 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    after this one). `pending()` counts what still needs attention; the End Turn button names it.
 2. **End of planning.** Space with nothing waiting and the End Turn button both call
    `end_planning` (`city/view.rs`), which holds unfinished units, may open a city still needing a build
-   and stop there, auto-assigns Red's citizens, then calls `resolve_turn` (`turn.rs`): selection
-   is cleared, the AI plans (`plan_ai_turn`, `ai.rs`), and every step of `RESOLUTION_ORDER` is
+   and stop there, auto-assigns the AI sides' citizens, then calls `resolve_turn` (`turn.rs`): selection
+   is cleared, every AI side plans (`plan_ai_turn` for each of `ai_teams`, `ai.rs`), and every
+   step of `RESOLUTION_ORDER` is
    queued as a `Step::Units`, followed by `Step::Workers`.
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each unit step resolves one unit type's moves or attacks
@@ -91,6 +92,26 @@ settings menu Escape opens (`press_escape`) lists every `Setting` from `Setting:
 integer stepped through its `range`, so a new setting is a field and its `Setting` entry in that
 one file; both UI presentations pick it up (`docs/ui-system.md`). `switch_scenario` and
 `load_state` carry the settings, and whether the menu is open, over into the new game.
+
+## Between sessions (`src/persist.rs`)
+
+The session is kept in text files in the config folder (`%APPDATA%\riskofcivlike`, or
+`$XDG_CONFIG_HOME` / `~/.config` `/riskofcivlike`), each written whole through a temporary file:
+
+- `settings.txt`: `Settings::to_text`, a `key value` line per setting (`Setting::key`). `App`
+  saves it whenever the text changes, and builds the first game with it (`Scenario::new_game`),
+  so a world started from the command line uses the saved world settings.
+- `layout.txt`: saved on quitting (the window's close button or the settings menu's Quit): the
+  presentation, the window's normal size and whether it's maximized (`SavedWindow` in
+  `app.rs`), then `ImGuiLayoutState::to_text`: every panel slot's geometry, the boxes, and the
+  Debug and Selection panels' placements the player chose.
+- `imgui.ini`: ImGui's own settings (`save_ini_settings`), which hold the dock nodes and which
+  panel is docked in which; panels no longer set `NO_SAVED_SETTINGS`. Loaded into the context
+  before the first frame. A box's dockspace id comes from its window title, so panels saved in
+  a box land back in it.
+
+Every reader skips what it doesn't understand, so an old or damaged file loads with defaults
+for the rest. Screenshot mode neither reads nor writes any of it, so shots stay repeatable.
 
 ## Testing aids
 

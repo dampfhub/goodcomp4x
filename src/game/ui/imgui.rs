@@ -260,12 +260,14 @@ fn opposite_dock_direction(direction: ::imgui::sys::ImGuiDir) -> ::imgui::sys::I
     }
 }
 
+/// A panel's window flags: movable and resizable only while arranging (Ctrl
+/// held), and titled then or when collapsed. Panels keep ImGui's saved
+/// settings, so their docking comes back next session (`app.rs`).
 fn panel_chrome(arranging: bool, collapsed: bool) -> WindowFlags {
     if arranging {
-        WindowFlags::NO_SAVED_SETTINGS
+        WindowFlags::empty()
     } else {
-        let mut flags =
-            WindowFlags::NO_SAVED_SETTINGS | WindowFlags::NO_RESIZE | WindowFlags::NO_MOVE;
+        let mut flags = WindowFlags::NO_RESIZE | WindowFlags::NO_MOVE;
         if !collapsed {
             flags |= WindowFlags::NO_TITLE_BAR;
         }
@@ -1103,7 +1105,7 @@ impl ImGuiLayoutState {
             }
             let zone = match slot {
                 SELECTION | QUEUE | INSPECT => Zone::BottomLeft,
-                UNITS => Zone::TopLeft,
+                UNITS => Zone::BottomCenter,
                 _ => Zone::TopRight,
             };
             for height_scale in [1.0, 0.85, 0.65, 0.45, 0.25] {
@@ -1143,7 +1145,9 @@ impl ImGuiLayoutState {
         }
     }
 
-    fn record(&mut self, slot: usize, ui: &Ui, arranging: bool) {
+    /// `resized` says whether this frame's geometry was ours to set (see
+    /// `title_bar_after`).
+    fn record(&mut self, slot: usize, ui: &Ui, arranging: bool, resized: bool) {
         let docked = unsafe { ::imgui::sys::igIsWindowDocked() };
         if self.windows[slot].docked && !docked {
             self.windows[slot].manual = true;
@@ -1156,7 +1160,229 @@ impl ImGuiLayoutState {
             self.windows[slot].floating_pos = self.windows[slot].pos;
         }
         self.windows[slot].content_height = ui.cursor_pos()[1] + ui.clone_style().window_padding[1];
-        self.windows[slot].title_visible = arranging;
+        self.windows[slot].title_visible = title_bar_after(self.windows[slot], arranging, resized);
+    }
+}
+
+/// Saving the layout between sessions (`persist.rs`): where the player put
+/// each panel and box, as lines of text. ImGui keeps its own half, which
+/// panels are docked where, in `imgui.ini`; the two are saved together.
+impl ImGuiLayoutState {
+    /// The layout as text: a line per panel, per box, and per saved
+    /// placement of the Debug panel and the Selection panel.
+    pub fn to_text(&self) -> String {
+        let mut lines = Vec::new();
+        for (slot, window) in self.windows.iter().enumerate() {
+            lines.push(format!("window {slot} {}", geometry_text(window)));
+        }
+        for outer in &self.outer_boxes {
+            lines.push(format!(
+                "box {} {} {}",
+                outer.id,
+                scope_text(outer.scope),
+                geometry_text(&outer.geometry)
+            ));
+        }
+        lines.push(format!("next_box {}", self.next_outer_box_id));
+        for (key, id) in [
+            ("selection_box", self.last_selection_outer_box),
+            ("queue_box", self.last_queue_outer_box),
+        ] {
+            if let Some(id) = id {
+                lines.push(format!("{key} {id}"));
+            }
+        }
+        if self.debug_outer_geometry.manual || self.debug_outer_geometry.docked {
+            lines.push(format!(
+                "debug_outer {}",
+                geometry_text(&self.debug_outer_geometry)
+            ));
+        }
+        for view in [ViewScope::Default, ViewScope::City, ViewScope::Troop] {
+            let name = view_text(view);
+            // Only a placement the player chose: one the layout made is made
+            // again, and restoring it would pin the panel (`switch_layout_scope`).
+            if let Some(geometry) = self.debug_view_geometry.get(&view)
+                && (geometry.manual || geometry.docked)
+            {
+                lines.push(format!("debug_view {name} {}", geometry_text(geometry)));
+            }
+            if self.debug_view_overrides.contains(&view) {
+                lines.push(format!("debug_override {name}"));
+            }
+            if let Some(id) = self.debug_view_boxes.get(&view) {
+                lines.push(format!("debug_box {name} {id}"));
+            }
+        }
+        let mut contexts: Vec<_> = self.selection_geometries.iter().collect();
+        contexts.sort_by(|a, b| a.0.cmp(b.0));
+        for (context, geometry) in contexts {
+            if !context.is_empty() && !context.contains(char::is_whitespace) {
+                lines.push(format!("selection {context} {}", geometry_text(geometry)));
+            }
+        }
+        lines.iter().map(|line| format!("{line}\n")).collect()
+    }
+
+    /// A layout read back from `to_text`'s text. Lines it doesn't understand
+    /// are skipped, so an old or damaged file still gives a usable layout.
+    pub fn from_text(text: &str) -> Self {
+        let mut layout = Self::default();
+        for (key, values) in text.lines().filter_map(crate::persist::key_and_values) {
+            let number = |i: usize| values.get(i).and_then(|v| v.parse::<u32>().ok());
+            let geometry_from = |i: usize| values.get(i..).and_then(geometry_from_text);
+            match key {
+                "window" => {
+                    if let (Some(slot), Some(geometry)) = (number(0), geometry_from(1))
+                        && (slot as usize) < SLOT_COUNT
+                    {
+                        layout.windows[slot as usize] = geometry;
+                    }
+                }
+                "box" => {
+                    if let (Some(id), Some(scope), Some(geometry)) = (
+                        number(0),
+                        values.get(1).and_then(|v| scope_from_text(v)),
+                        geometry_from(2),
+                    ) {
+                        layout.outer_boxes.push(OuterBox {
+                            id,
+                            dock_id: 0,
+                            scope,
+                            geometry,
+                        });
+                    }
+                }
+                "next_box" => layout.next_outer_box_id = number(0).unwrap_or(0),
+                "selection_box" => layout.last_selection_outer_box = number(0),
+                "queue_box" => layout.last_queue_outer_box = number(0),
+                "debug_outer" => {
+                    if let Some(geometry) = geometry_from(0) {
+                        layout.debug_outer_geometry = geometry;
+                    }
+                }
+                "debug_view" | "debug_override" | "debug_box" => {
+                    let Some(view) = values.first().and_then(|v| view_from_text(v)) else {
+                        continue;
+                    };
+                    match key {
+                        "debug_view" => {
+                            if let Some(geometry) = geometry_from(1) {
+                                layout.debug_view_geometry.insert(view, geometry);
+                            }
+                        }
+                        "debug_override" => {
+                            layout.debug_view_overrides.insert(view);
+                        }
+                        _ => {
+                            if let Some(id) = number(1) {
+                                layout.debug_view_boxes.insert(view, id);
+                            }
+                        }
+                    }
+                }
+                "selection" => {
+                    if let (Some(context), Some(geometry)) = (values.first(), geometry_from(1)) {
+                        layout
+                            .selection_geometries
+                            .insert((*context).to_string(), geometry);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Box ids come from the counter: never hand out one already used.
+        let highest = layout
+            .outer_boxes
+            .iter()
+            .map(|b| b.id + 1)
+            .max()
+            .unwrap_or(0);
+        layout.next_outer_box_id = layout.next_outer_box_id.max(highest);
+        layout
+    }
+}
+
+/// A panel's saved geometry: position, size, floating position and size,
+/// and whether it's placed by the player, docked and collapsed.
+fn geometry_text(geometry: &WindowGeometry) -> String {
+    let g = geometry;
+    format!(
+        "{} {} {} {} {} {} {} {} {} {} {}",
+        g.pos.x,
+        g.pos.y,
+        g.size.x,
+        g.size.y,
+        g.floating_pos.x,
+        g.floating_pos.y,
+        g.floating_size.x,
+        g.floating_size.y,
+        u8::from(g.manual),
+        u8::from(g.docked),
+        u8::from(g.collapsed)
+    )
+}
+
+fn geometry_from_text(values: &[&str]) -> Option<WindowGeometry> {
+    let numbers: Vec<f32> = values
+        .iter()
+        .take(11)
+        .map(|v| v.parse::<f32>().ok().filter(|n| n.is_finite()))
+        .collect::<Option<_>>()?;
+    let [
+        px,
+        py,
+        sx,
+        sy,
+        fpx,
+        fpy,
+        fsx,
+        fsy,
+        manual,
+        docked,
+        collapsed,
+    ] = numbers[..]
+    else {
+        return None;
+    };
+    Some(WindowGeometry {
+        pos: Vec2::new(px, py),
+        size: Vec2::new(sx, sy),
+        floating_pos: Vec2::new(fpx, fpy),
+        floating_size: Vec2::new(fsx, fsy),
+        manual: manual != 0.0,
+        docked: docked != 0.0,
+        collapsed: collapsed != 0.0,
+        ..WindowGeometry::default()
+    })
+}
+
+fn view_text(view: ViewScope) -> &'static str {
+    match view {
+        ViewScope::Default => "default",
+        ViewScope::City => "city",
+        ViewScope::Troop => "troop",
+    }
+}
+
+fn view_from_text(text: &str) -> Option<ViewScope> {
+    [ViewScope::Default, ViewScope::City, ViewScope::Troop]
+        .into_iter()
+        .find(|&view| view_text(view) == text)
+}
+
+fn scope_text(scope: BoxScope) -> &'static str {
+    match scope {
+        BoxScope::Outer => "outer",
+        BoxScope::View(view) => view_text(view),
+    }
+}
+
+fn scope_from_text(text: &str) -> Option<BoxScope> {
+    if text == "outer" {
+        Some(BoxScope::Outer)
+    } else {
+        view_from_text(text).map(BoxScope::View)
     }
 }
 
@@ -1216,6 +1442,22 @@ fn title_bar_change(window: WindowGeometry, arranging: bool, title_height: f32) 
         })
 }
 
+/// Whether `window` counts its title bar as shown after this frame. It
+/// follows Ctrl (`arranging`), except when the title bar just changed on a
+/// panel `title_bar_change` resizes and this frame's geometry wasn't ours to
+/// set (`resized` false: ImGui is dragging it, or it's docked). The resize
+/// that goes with the change was skipped then, so the change stays pending for
+/// the next frame; recording it anyway would leave the panel a title bar too
+/// tall (Ctrl let go mid-drag) or too short, and every Ctrl after that would
+/// add to it.
+fn title_bar_after(window: WindowGeometry, arranging: bool, resized: bool) -> bool {
+    if !resized && title_bar_change(window, arranging, 0.0).is_some() {
+        window.title_visible
+    } else {
+        arranging
+    }
+}
+
 /// How wide the unit strip's window wants to be: its widest row of tokens,
 /// plus the same allowance for padding and border `measure_panel` takes off.
 fn roster_width(panel: &PanelBuilder) -> f32 {
@@ -1246,7 +1488,7 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
     draw.add_rect(min, max, edge).thickness(thickness).build();
     let mut vertices = Vec::new();
     let radius = (max[0] - min[0]) * ROSTER_TOKEN_SHARE / 2.0;
-    super::super::draw::push_unit_token(Vec2::ZERO, chip.look, radius, chip.color, &mut vertices);
+    super::paint::push_chip_icon(Vec2::ZERO, chip.icon, radius, chip.color, &mut vertices);
     // The token is built Y-up around the origin; ImGui's Y points down.
     let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
@@ -1259,6 +1501,20 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
         )
         .filled(true)
         .build();
+    }
+    if chip.count > 1 {
+        let text = chip.count.to_string();
+        let size = ui.calc_text_size(&text);
+        let inset = super::paint::CHIP_COUNT_INSET;
+        let origin = [max[0] - size[0] - inset, max[1] - size[1] - inset];
+        draw.add_rect(
+            [origin[0] - 2.0, origin[1] - 1.0],
+            [max[0] - inset + 2.0, max[1] - inset + 1.0],
+            PANEL_BG,
+        )
+        .filled(true)
+        .build();
+        draw.add_text(origin, TEXT, &text);
     }
 }
 
@@ -1754,7 +2010,9 @@ impl GameState {
         // While ImGui is moving a panel or showing docking targets it owns the
         // geometry. Applying our automatic position here makes edge previews
         // oscillate between the two layout systems.
-        if !layout.windows[slot].docked && !layout.defer_geometry && dock_debug_now.is_none() {
+        let resized =
+            !layout.windows[slot].docked && !layout.defer_geometry && dock_debug_now.is_none();
+        if resized {
             window = window
                 .position(position.to_array(), condition)
                 .size(size.to_array(), size_condition)
@@ -1775,7 +2033,7 @@ impl GameState {
                 ui.set_scroll_y(0.0);
             }
             self.render_imgui_panel(ui, panel, fonts, None, actions);
-            layout.record(slot, ui, arranging);
+            layout.record(slot, ui, arranging, resized);
         });
         // A collapsed window skips the build closure; native state is still
         // available after Begin/End for the next layout pass.
@@ -1823,19 +2081,16 @@ impl GameState {
                             ui.same_line_with_spacing(0.0, ROSTER_CHIP_GAP);
                         }
                         let clicked = ui.invisible_button(
-                            format!("##roster-{}", chip.id),
+                            format!("##roster-{:?}", chip.key),
                             [ROSTER_CHIP, ROSTER_CHIP],
                         );
                         let hovered = ui.is_item_hovered();
                         draw_roster_chip(ui, ui.item_rect_min(), ui.item_rect_max(), chip, hovered);
                         if clicked {
-                            actions.push(Action::Button(scope, roster_target(chip.id, mode)));
+                            actions.push(Action::Button(scope, roster_target(chip.key, mode)));
                         }
-                        if hovered && let Some(unit) = self.units.iter().find(|u| u.id == chip.id) {
-                            ui.tooltip_text(format!(
-                                "{} - CLICK: SELECT · SHIFT: ADD · CTRL: REMOVE",
-                                self.unit_role(unit)
-                            ));
+                        if hovered {
+                            ui.tooltip_text(self.roster_hint(chip.key));
                         }
                     }
                 }
@@ -2658,6 +2913,117 @@ mod tests {
         ] {
             assert_eq!(title_bar_change(other, true, 26.0), None);
         }
+    }
+
+    #[test]
+    fn letting_go_of_ctrl_mid_drag_still_shrinks_the_panel_once() {
+        // A panel the player placed, dragged with Ctrl held: title bar shown.
+        let mut window = WindowGeometry {
+            pos: Vec2::new(40.0, 80.0),
+            size: Vec2::new(300.0, 226.0),
+            manual: true,
+            title_visible: true,
+            ..WindowGeometry::default()
+        };
+        // Ctrl let go while the mouse still drags: ImGui owns the geometry,
+        // so the shrink can't happen yet, and the title bar still counts.
+        assert_eq!(title_bar_change(window, false, 26.0), Some(-26.0));
+        window.title_visible = title_bar_after(window, false, false);
+        assert!(window.title_visible, "the change waits");
+        // The next frame is ours: it shrinks, once, and the change is done.
+        assert_eq!(title_bar_change(window, false, 26.0), Some(-26.0));
+        window.size.y -= 26.0;
+        window.title_visible = title_bar_after(window, false, true);
+        assert!(!window.title_visible);
+        assert_eq!(title_bar_change(window, false, 26.0), None);
+        assert_eq!(window.size.y, 200.0);
+        // Pressing Ctrl again grows it back by the same, no more.
+        assert_eq!(title_bar_change(window, true, 26.0), Some(26.0));
+        // An automatic panel just follows Ctrl, resized or not.
+        let auto = WindowGeometry {
+            manual: false,
+            ..window
+        };
+        assert!(title_bar_after(auto, true, false));
+    }
+
+    #[test]
+    fn the_layout_saves_as_text_and_reads_back() {
+        let placed = WindowGeometry {
+            pos: Vec2::new(120.5, 64.0),
+            size: Vec2::new(410.0, 233.0),
+            floating_pos: Vec2::new(90.0, 70.0),
+            floating_size: Vec2::new(400.0, 220.0),
+            manual: true,
+            docked: false,
+            collapsed: true,
+            // Recomputed every frame, so not saved.
+            content_height: 180.0,
+            title_visible: true,
+        };
+        let mut layout = ImGuiLayoutState::default();
+        layout.windows[UNITS] = placed;
+        layout.windows[DEBUG] = WindowGeometry {
+            docked: true,
+            ..placed
+        };
+        layout.outer_boxes.push(OuterBox {
+            id: 3,
+            dock_id: 77,
+            scope: BoxScope::View(ViewScope::City),
+            geometry: placed,
+        });
+        layout.next_outer_box_id = 4;
+        layout.last_selection_outer_box = Some(3);
+        layout.debug_view_geometry.insert(ViewScope::Troop, placed);
+        layout.debug_view_overrides.insert(ViewScope::Troop);
+        layout.debug_view_boxes.insert(ViewScope::City, 3);
+        layout.selection_geometries.insert("unit".into(), placed);
+
+        let read = ImGuiLayoutState::from_text(&layout.to_text());
+        let same = |a: &WindowGeometry, b: &WindowGeometry| {
+            a.pos == b.pos
+                && a.size == b.size
+                && a.floating_pos == b.floating_pos
+                && a.floating_size == b.floating_size
+                && (a.manual, a.docked, a.collapsed) == (b.manual, b.docked, b.collapsed)
+        };
+        for slot in 0..SLOT_COUNT {
+            assert!(
+                same(&read.windows[slot], &layout.windows[slot]),
+                "slot {slot}"
+            );
+        }
+        assert_eq!(read.windows[UNITS].content_height, 0.0);
+        assert_eq!(read.outer_boxes.len(), 1);
+        let outer = read.outer_boxes[0];
+        assert_eq!(
+            (outer.id, outer.scope),
+            (3, BoxScope::View(ViewScope::City))
+        );
+        assert_eq!(outer.dock_id, 0, "ImGui hands out the dock id again");
+        assert!(same(&outer.geometry, &placed));
+        assert_eq!(read.next_outer_box_id, 4);
+        assert_eq!(read.last_selection_outer_box, Some(3));
+        assert_eq!(read.last_queue_outer_box, None);
+        assert!(same(&read.debug_view_geometry[&ViewScope::Troop], &placed));
+        assert!(!read.debug_view_geometry.contains_key(&ViewScope::City));
+        assert!(read.debug_view_overrides.contains(&ViewScope::Troop));
+        assert_eq!(read.debug_view_boxes.get(&ViewScope::City), Some(&3));
+        assert!(same(&read.selection_geometries["unit"], &placed));
+    }
+
+    #[test]
+    fn a_damaged_layout_file_still_loads() {
+        let text = "window 9 1 2 3 4 5 6 7 8 1 0 0\nwindow 1 nope\nbox 2 sideways 0 0 0 0 0 0 0 0 0 0 0\nbox 5 outer 0 0 10 10 0 0 10 10 1 0 0\nnext_box 1\njunk\n";
+        let layout = ImGuiLayoutState::from_text(text);
+        assert!(
+            layout.windows.iter().all(|w| !w.manual),
+            "bad windows skipped"
+        );
+        assert_eq!(layout.outer_boxes.len(), 1);
+        assert_eq!(layout.next_outer_box_id, 6, "past every box already there");
+        assert_eq!(ImGuiLayoutState::from_text("").outer_boxes.len(), 0);
     }
 
     #[test]

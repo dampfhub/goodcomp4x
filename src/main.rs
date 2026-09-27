@@ -3,6 +3,7 @@ mod cli;
 mod game;
 mod icon;
 mod icon_art;
+mod persist;
 mod renderer;
 mod screenshot;
 

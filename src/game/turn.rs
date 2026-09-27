@@ -8,7 +8,7 @@ use super::city::{BARRACKS_DEFENSE, Building};
 use super::effects::{Effect, Outcome};
 use super::hex::Hex;
 use super::unit::{Unit, UnitType};
-use super::{AI_TEAM, GameState, combat};
+use super::{GameState, combat};
 
 /// Seconds between steps while a turn plays out, and how long the units that
 /// just acted stay highlighted. Staggering steps makes the order legible.
@@ -67,7 +67,8 @@ impl GameState {
         !self.pending_steps.is_empty()
     }
 
-    /// Plans the AI's turn, then queues every step for `update` to play out.
+    /// Plans every AI team's turn, then queues every step for `update` to
+    /// play out.
     /// Called after the player explicitly ends planning.
     pub(super) fn resolve_turn(&mut self) {
         if self.is_resolving() {
@@ -79,7 +80,9 @@ impl GameState {
         self.selected = None;
         self.group.clear();
 
-        self.plan_ai_turn(AI_TEAM);
+        for team in self.ai_teams() {
+            self.plan_ai_turn(team);
+        }
         self.pending_steps.extend(
             RESOLUTION_ORDER
                 .into_iter()
@@ -134,6 +137,9 @@ impl GameState {
 
         if !self.is_resolving() {
             self.resolve_city_interiors();
+            // Before the economy, so a city reward is spent (or capped) like
+            // the turn's own income.
+            self.resolve_ruins();
             self.resolve_economy();
             for unit in &mut self.units {
                 if unit.ability_queued && unit.ability() == Ability::Deploy {

@@ -131,3 +131,28 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     quarter of the vertices the old sampled mesh took. Each bank grows its own irregular clump
     of 4 to 9 puffs. The clouds drift on a slow wind and billow, fading out past the map's edge.
     A third setting, Fog, swaps them for solid grey.
+44. More sides and contested ground (`claude/world-players`): `Team` grew to seven sides, each
+    at war with every other, and the AI plays all but Blue. The F4 world now seats Blue and 4-6 AI
+    sides (the World AI setting) on starts scattered and evened out for spacing and land, each
+    with horses and iron a few hexes away, and starting with a city or a settler (the World Start
+    setting). Between the starts it places special tiles (Orchard, Quarry) that yield more, and
+    ruins a side claims by holding them for three turns. The AI heads for ruins as well as
+    enemies, and its searches stop early, so turns with many sides stay quick.
+45. Room for more sides (`claude/world-players`): the world grows in proportion to its sides
+    (about 93 by 57 hexes for six), so neighboring starts sit about a fifth farther apart. The fog
+    draws only what the camera can show, and its fill only on unexplored hexes, so a big map costs
+    no more per frame than a small one.
+46. The turn strip (`claude/turn-tasks`): the unit strip now lists everything needing the
+    player this turn, civilian tasks first (cities with nothing to build, cities with idle
+    workers, settlers), then military units grouped by kind with a count. Selecting a group lists
+    its units one by one below it. It starts at the bottom center, in a new
+    `Zone::BottomCenter` that slides aside for other panels.
+47. Sessions remembered (`claude/turn-tasks`): settings are saved as they change, and on quitting
+    the window size, the presentation and the ImGui panel layout (with ImGui's docking data) are
+    saved too, in the config folder, so the next session starts the same way.
+48. Production first (`claude/turn-tasks`): the game moves through a turn in the turn strip's
+    order, cities needing a build before units and settlers before the military, and a new
+    world opens on the city.
+49. Workers apart (`claude/turn-tasks`): idle workers left the turn strip (they never held up
+    the turn). A tile takes one worker job at a time, so a road and an improvement can't be
+    queued on it together, and the tile the tile panel shows has a white ring.

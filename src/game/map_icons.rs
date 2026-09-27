@@ -1,6 +1,7 @@
 //! Map icons: small pictures of strategic resources and tile improvements,
-//! drawn straight on the tile in the hex's top corners, and of food and
-//! production in the yield rows. Each shape is edged in dark so it reads on
+//! drawn straight on the tile in the hex's top corners, of special tiles and
+//! ruins in its bottom-left corner, and of food and production in the yield
+//! rows. Each shape is edged in dark so it reads on
 //! any terrain. Shapes are laid out in the coordinates of
 //! the mockups they were designed in: a hex of radius 100 with Y pointing
 //! down, centered on the icon's spot.
@@ -9,7 +10,7 @@ use glam::Vec2;
 
 use super::hex::HEX_SIZE;
 use super::mesh;
-use super::terrain::Resource;
+use super::terrain::{Resource, Special};
 use crate::renderer::Vertex;
 
 type Color = [f32; 4];
@@ -23,6 +24,10 @@ const ROUND_SIDES: usize = 16;
 /// corner, an improvement in the top-left.
 pub(super) const RESOURCE_SPOT: Vec2 = Vec2::new(0.5 * HEX_SIZE, 0.40 * HEX_SIZE);
 pub(super) const IMPROVEMENT_SPOT: Vec2 = Vec2::new(-0.5 * HEX_SIZE, 0.42 * HEX_SIZE);
+/// Where a special tile's or ruins' icon sits: the bottom-left corner, drawn
+/// `LANDMARK_SCALE` times the usual size so it can be spotted from afar.
+pub(super) const LANDMARK_SPOT: Vec2 = Vec2::new(-0.36 * HEX_SIZE, -0.5 * HEX_SIZE);
+pub(super) const LANDMARK_SCALE: f32 = 1.3;
 
 /// The edge around every shape, the same near-black as unit outlines.
 const OUTLINE: Color = [0.03, 0.03, 0.04, 1.0];
@@ -40,6 +45,11 @@ const FRESH_WOOD: Color = [0.58, 0.28, 0.098, 1.0];
 const WEATHERED_WOOD: Color = [0.43, 0.195, 0.055, 1.0];
 const BARK: Color = [0.254, 0.102, 0.032, 1.0];
 const GROWTH_RING: Color = [0.195, 0.08, 0.021, 1.0];
+const STONE: Color = [0.42, 0.40, 0.36, 1.0];
+const STONE_LIT: Color = [0.68, 0.65, 0.58, 1.0];
+const STONE_SHADE: Color = [0.20, 0.19, 0.17, 1.0];
+const LEAVES: Color = [0.06, 0.30, 0.05, 1.0];
+const FRUIT: Color = [0.80, 0.08, 0.04, 1.0];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum MapIcon {
@@ -59,6 +69,12 @@ pub(super) enum MapIcon {
     Food,
     /// Production, on a yield chip: a hammer.
     Production,
+    /// Ruins: two broken columns on a slab.
+    Ruins,
+    /// Orchard: a fruit tree.
+    FruitTree,
+    /// Quarry: three cut stone blocks.
+    StoneBlocks,
 }
 
 impl MapIcon {
@@ -66,6 +82,13 @@ impl MapIcon {
         match resource {
             Resource::Horses => Self::HorseHead,
             Resource::Iron => Self::Ingot,
+        }
+    }
+
+    pub(super) fn special(special: Special) -> Self {
+        match special {
+            Special::Orchard => Self::FruitTree,
+            Special::Quarry => Self::StoneBlocks,
         }
     }
 
@@ -202,6 +225,61 @@ pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out:
             let head = [(-5.5, -8.0), (5.5, -8.0), (5.5, -3.0), (-5.5, -3.0)];
             pen.shape(&turned(&head, -40.0), STEEL_LIT, 1.6);
         }
+        MapIcon::Ruins => {
+            pen.shape(
+                &[(-16.0, 8.0), (16.0, 8.0), (16.0, 13.0), (-16.0, 13.0)],
+                STONE_SHADE,
+                2.5,
+            );
+            // A whole column with its capital, and a broken one.
+            pen.shape(
+                &[(-12.0, -9.0), (-5.0, -9.0), (-5.0, 8.0), (-12.0, 8.0)],
+                STONE,
+                2.5,
+            );
+            pen.shape(
+                &[(-14.0, -13.0), (-3.0, -13.0), (-3.0, -9.0), (-14.0, -9.0)],
+                STONE_LIT,
+                2.5,
+            );
+            pen.shape(
+                &[
+                    (4.0, -2.0),
+                    (7.0, 1.0),
+                    (9.0, -4.0),
+                    (11.0, -1.0),
+                    (11.0, 8.0),
+                    (4.0, 8.0),
+                ],
+                STONE,
+                2.5,
+            );
+        }
+        MapIcon::FruitTree => {
+            pen.shape(
+                &[(-2.0, 2.0), (2.0, 2.0), (3.0, 13.0), (-3.0, 13.0)],
+                BARK,
+                2.5,
+            );
+            pen.shape(&ellipse((0.0, -5.0), 13.0, 10.0, 0.0), LEAVES, 2.5);
+            for (x, y) in [(-6.0, -6.0), (5.0, -8.0), (1.0, -1.0), (7.0, -1.0)] {
+                pen.shape(&ellipse((x, y), 2.4, 2.4, 0.0), FRUIT, 1.2);
+            }
+        }
+        MapIcon::StoneBlocks => {
+            for (x, y) in [(-14.0, 2.0), (1.0, 2.0), (-6.5, -9.0)] {
+                pen.shape(
+                    &[(x, y), (x + 13.0, y), (x + 13.0, y + 10.0), (x, y + 10.0)],
+                    STONE,
+                    2.5,
+                );
+                pen.shape(
+                    &[(x, y), (x + 13.0, y), (x + 13.0, y + 3.0), (x, y + 3.0)],
+                    STONE_LIT,
+                    0.0,
+                );
+            }
+        }
     }
 }
 
@@ -274,13 +352,16 @@ impl Pen<'_> {
 mod tests {
     use super::*;
 
-    const ICONS: [MapIcon; 6] = [
+    const ICONS: [MapIcon; 9] = [
         MapIcon::HorseHead,
         MapIcon::Ingot,
         MapIcon::Wheat,
         MapIcon::OreCart,
         MapIcon::Fence,
         MapIcon::Logs,
+        MapIcon::Ruins,
+        MapIcon::FruitTree,
+        MapIcon::StoneBlocks,
     ];
 
     /// Whether `p` is inside the flat-top hexagon of `radius` around the origin.
@@ -294,12 +375,15 @@ mod tests {
         // The unit token's reach: radius 0.36 plus half its outline.
         let token = 0.39 * HEX_SIZE;
         for icon in ICONS {
-            let spot = match icon {
-                MapIcon::HorseHead | MapIcon::Ingot => RESOURCE_SPOT,
-                _ => IMPROVEMENT_SPOT,
+            let (spot, scale) = match icon {
+                MapIcon::HorseHead | MapIcon::Ingot => (RESOURCE_SPOT, 1.0),
+                MapIcon::Ruins | MapIcon::FruitTree | MapIcon::StoneBlocks => {
+                    (LANDMARK_SPOT, LANDMARK_SCALE)
+                }
+                _ => (IMPROVEMENT_SPOT, 1.0),
             };
             let mut out = Vec::new();
-            push_map_icon(spot, icon, &mut out);
+            push_map_icon_scaled(spot, icon, scale, &mut out);
             assert!(!out.is_empty(), "{icon:?} drew nothing");
             for vertex in out {
                 let pos = Vec2::new(vertex.pos[0], vertex.pos[1]);
@@ -308,7 +392,10 @@ mod tests {
                     "{icon:?} leaves its hex at {pos}"
                 );
                 assert!(pos.length() > token, "{icon:?} reaches the unit at {pos}");
-                assert!(pos.distance(spot) < 0.25, "{icon:?} sprawls to {pos}");
+                assert!(
+                    pos.distance(spot) < 0.25 * scale,
+                    "{icon:?} sprawls to {pos}"
+                );
             }
         }
     }

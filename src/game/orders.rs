@@ -391,8 +391,8 @@ impl GameState {
         self.select_and_focus(next);
     }
 
-    /// Once the selected unit has nothing left to plan, moves selection on to
-    /// the next unit that does, leaving city planning open if there are none.
+    /// Once the selected unit has nothing left to plan, moves on to whatever
+    /// needs seeing to next (`select_next_or_end_turn`).
     pub(super) fn advance_selection_if_done(&mut self) {
         if let Some(idx) = self.selected
             && !self.needs_orders(idx)
@@ -401,14 +401,16 @@ impl GameState {
         }
     }
 
-    /// Selects the next unit after `after` that still needs orders. If none
-    /// do, opens a city that needs something to build; failing that, clears
-    /// the selection and waits for the player to end the turn.
+    /// Moves on to what needs seeing to next, in the turn strip's order: a
+    /// city with nothing to build, opened; or else the next unit after
+    /// `after` that still needs orders (`next_unit_needing_orders`). With
+    /// neither, clears the selection and waits for the player to end the turn.
     pub(super) fn select_next_or_end_turn(&mut self, after: Option<usize>) {
-        if let Some(next) = self.next_unit_needing_orders(after) {
-            self.select_and_focus(Some(next));
-        } else if let Some(city) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
+        // In the turn strip's order: production first, then the units.
+        if let Some(city) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
             self.open_city(city);
+        } else if let Some(next) = self.next_unit_needing_orders(after) {
+            self.select_and_focus(Some(next));
         } else {
             self.selected = None;
         }
@@ -427,11 +429,19 @@ impl GameState {
     }
 
     /// The first of the player's units after `after` (in unit order, wrapping
-    /// around) that still needs orders. Starts from the first unit if `after`
-    /// is `None`.
+    /// around) that still needs orders, a settler if any still does. Starts
+    /// from the first unit if `after` is `None`.
     pub(super) fn next_unit_needing_orders(&self, after: Option<usize>) -> Option<usize> {
-        self.player_units_after(after)
-            .find(|&i| self.needs_orders(i))
+        let waiting: Vec<usize> = self
+            .player_units_after(after)
+            .filter(|&i| self.needs_orders(i))
+            .collect();
+        // Civilians (settlers) come first, as in the turn strip.
+        waiting
+            .iter()
+            .copied()
+            .find(|&i| self.settlers.contains(&self.units[i].id))
+            .or(waiting.first().copied())
     }
 
     fn next_player_unit(&self, after: Option<usize>) -> Option<usize> {

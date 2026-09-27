@@ -7,8 +7,11 @@ use glam::Vec2;
 
 use super::fog::{Fog, SeenBuilding};
 use super::hex::{HEX_SIZE, Hex, HexGrid, edge, edge_corners};
-use super::map_icons::{self, IMPROVEMENT_SPOT, MapIcon, RESOURCE_SPOT};
+use super::map_icons::{
+    self, IMPROVEMENT_SPOT, LANDMARK_SCALE, LANDMARK_SPOT, MapIcon, RESOURCE_SPOT,
+};
 use super::orders::ClickMode;
+use super::ruins::RUIN_HOLD_TURNS;
 use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, Unit, UnitStats};
@@ -37,8 +40,20 @@ const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 /// than the gap; otherwise a sliver of it would show on the side in sight.
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
 const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
+/// The row of pips beside ruins counting the turns they've been held: where
+/// the first sits from the hex's center, and the step to the next.
+const RUIN_PIPS: Vec2 = Vec2::new(-0.06, -0.7);
+const RUIN_PIP_RADIUS: f32 = 0.05;
+const RUIN_PIP_GAP: f32 = 0.13;
+/// Thin rims inside hexes worth scouting for: special tiles and ruins.
+const SPECIAL_RIM_COLOR: Color = [0.95, 0.66, 0.12, 1.0];
+const RUIN_RIM_COLOR: Color = [0.62, 0.58, 0.50, 1.0];
+const LANDMARK_RIM_WIDTH: f32 = 0.05;
 /// Distance between cloud banks, in world units (a hex is 1 from center to corner).
 const CLOUD_SPACING: f32 = 2.8;
+/// The widest window, width over height, the fog is built for (a 21:9
+/// ultrawide); a narrower one just draws a little fog off its sides.
+const MAX_VIEW_ASPECT: f32 = 2.4;
 /// Under the clouds, filling the gaps between puffs: the shade of their
 /// undersides, so the fog reads as cloud all the way through.
 const CLOUD_BASE_COLOR: Color = [0.10, 0.103, 0.123, 1.0];
@@ -69,6 +84,9 @@ const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
 const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
 const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
 const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
+/// The ring just inside the tile the tile panel shows.
+const INSPECTED_TILE_COLOR: Color = [0.92, 0.92, 0.96, 1.0];
+const INSPECTED_TILE_WIDTH: f32 = 0.08;
 const CONTESTED_COLOR: Color = [0.55, 0.32, 0.10, 1.0];
 const MOVE_RANGE_COLOR: Color = [0.24, 0.42, 0.26, 1.0];
 const ATTACK_RANGE_COLOR: Color = [0.45, 0.22, 0.22, 1.0];
@@ -266,11 +284,25 @@ impl GameState {
             } else {
                 SOLID_FOG_COLOR
             };
+            // Only what the camera may show: explored hexes cover the fill
+            // anyway, and a big map has far more hexes than a view.
+            let view = self.cloud_view();
+            let in_view =
+                |p: Vec2| p.cmpge(view.0 - Vec2::ONE).all() && p.cmple(view.1 + Vec2::ONE).all();
             for hex in self.grid.all_hexes() {
-                mesh::regular_polygon(hex.to_world(), OUTER_BORDER_RADIUS, 6, 0.0, base, &mut out);
+                if !self.is_explored(hex) && in_view(hex.to_world()) {
+                    mesh::regular_polygon(
+                        hex.to_world(),
+                        OUTER_BORDER_RADIUS,
+                        6,
+                        0.0,
+                        base,
+                        &mut out,
+                    );
+                }
             }
             if cloud {
-                push_cloud_banks(&self.grid, self.cloud_time, &mut out);
+                push_cloud_banks(&self.grid, self.cloud_time, view, &mut out);
             }
         }
 
@@ -302,11 +334,30 @@ impl GameState {
                 let icon = MapIcon::resource(resource);
                 map_icons::push_map_icon(center + RESOURCE_SPOT, icon, &mut out);
             }
+            if let Some(special) = self.grid.special(hex) {
+                push_landmark_rim(center, SPECIAL_RIM_COLOR, &mut out);
+                let icon = MapIcon::special(special);
+                let spot = center + LANDMARK_SPOT;
+                map_icons::push_map_icon_scaled(spot, icon, LANDMARK_SCALE, &mut out);
+            }
+            self.push_known_ruin(hex, &fog, &mut out);
         }
         push_rivers(&self.grid, |h| self.is_explored(h), &mut out);
 
         self.push_city_map(&fog, &mut out);
         self.push_fog(&fog, &mut out);
+        // The tile the tile panel shows.
+        if let Some(hex) = self.inspected_tile.filter(|&h| self.grid.contains(h)) {
+            mesh::polygon_outline(
+                hex.to_world(),
+                HEX_SIZE * HEX_FILL_SCALE - INSPECTED_TILE_WIDTH / 2.0,
+                INSPECTED_TILE_WIDTH,
+                6,
+                0.0,
+                INSPECTED_TILE_COLOR,
+                &mut out,
+            );
+        }
         self.push_order_markers(&fog, &mut out);
 
         for (idx, unit) in self.units.iter().enumerate() {
@@ -507,6 +558,42 @@ impl GameState {
         out
     }
 
+    /// The world rectangle (min, max) the camera may show: its full height,
+    /// and as wide as the widest window it's drawn in (`MAX_VIEW_ASPECT`),
+    /// since the vertices are built without knowing the window's shape.
+    fn cloud_view(&self) -> (Vec2, Vec2) {
+        let half = self.camera.half_height;
+        let reach = Vec2::new(half * MAX_VIEW_ASPECT, half);
+        (self.camera.center - reach, self.camera.center + reach)
+    }
+
+    /// Ruins on `hex` as the player knows them: in sight, with a pip for
+    /// each turn their holder has held them, in its color; out of sight, as
+    /// last seen, without.
+    fn push_known_ruin(&self, hex: Hex, fog: &Fog, out: &mut Vec<Vertex>) {
+        let ruin = if fog.sees(hex) {
+            match self.ruin_at(hex) {
+                Some(ruin) => Some(ruin),
+                None => return,
+            }
+        } else if self.memory.get(&hex).is_some_and(|seen| seen.ruin) {
+            None
+        } else {
+            return;
+        };
+        push_landmark_rim(hex.to_world(), RUIN_RIM_COLOR, out);
+        let spot = hex.to_world() + LANDMARK_SPOT;
+        map_icons::push_map_icon_scaled(spot, MapIcon::Ruins, LANDMARK_SCALE, out);
+        let Some(ruin) = ruin else { return };
+        let color = ruin.holder.map_or(BORDER_COLOR, Team::color);
+        for i in 0..RUIN_HOLD_TURNS {
+            let pip = hex.to_world() + RUIN_PIPS + Vec2::new(i as f32 * RUIN_PIP_GAP, 0.0);
+            let fill = if i < ruin.held { color } else { BORDER_COLOR };
+            mesh::regular_polygon(pip, RUIN_PIP_RADIUS + 0.012, 6, 0.0, BORDER_COLOR, out);
+            mesh::regular_polygon(pip, RUIN_PIP_RADIUS, 6, 0.0, fill, out);
+        }
+    }
+
     /// Darkens remembered terrain and covers unexplored areas with clouds.
     /// Drawn over the map and cities but under units and orders.
     fn push_fog(&self, fog: &Fog, out: &mut Vec<Vertex>) {
@@ -549,6 +636,16 @@ impl GameState {
             }
         }
     }
+}
+
+/// A thin rim just inside the fill of the hex at `center`, marking a
+/// landmark (a special tile or ruins).
+fn push_landmark_rim(center: Vec2, color: Color, out: &mut Vec<Vertex>) {
+    let radius = HEX_SIZE * HEX_FILL_SCALE - LANDMARK_RIM_WIDTH / 2.0;
+    let corners: Vec<Vec2> = (0..6)
+        .map(|i| center + Vec2::from_angle(i as f32 * TAU / 6.0) * radius)
+        .collect();
+    mesh::outline(&corners, LANDMARK_RIM_WIDTH, color, out);
 }
 
 /// Stable pseudo-random number for one cell of the cloud lattice.
@@ -638,7 +735,8 @@ fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
     1.0 - ((nearest - 1.0) / 1.2).clamp(0.0, 1.0)
 }
 
-/// Draws the unexplored map as banks of cumulus: one bank per point of a
+/// Draws the unexplored map as banks of cumulus, those that reach into
+/// `view` (a world rectangle, min and max): one bank per point of a
 /// world-space lattice that drifts with `CLOUD_WIND` as `time` (seconds)
 /// passes, each bank a soft shadow under an irregular clump of puffs
 /// (`bank_shape`) that slowly billow. Every puff fades out at its edge and is lit from above
@@ -646,7 +744,7 @@ fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
 /// lower billow overlaps the shaded underside of the one behind it. A bank
 /// keeps its lattice point's hash as it drifts, so the pattern moves whole.
 /// The work per puff is constant and cheap: no noise sampling per vertex.
-fn push_cloud_banks(grid: &HexGrid, time: f32, out: &mut Vec<Vertex>) {
+fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec<Vertex>) {
     let Some((min, max)) =
         grid.all_hexes()
             .map(Hex::to_world)
@@ -659,6 +757,12 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, out: &mut Vec<Vertex>) {
     else {
         return;
     };
+    // A bank reaches about two spacings from its lattice point.
+    let reach = Vec2::splat(2.0 * CLOUD_SPACING);
+    let (min, max) = (min.max(view.0 - reach), max.min(view.1 + reach));
+    if min.cmpgt(max).any() {
+        return;
+    }
     let drift = CLOUD_WIND * time;
     let (min, max) = (min - drift, max - drift);
     let min_x = (min.x / CLOUD_SPACING).floor() as i32 - 1;
@@ -852,7 +956,10 @@ impl GameState {
         if self.rival_of(idx).is_none() {
             return (center, 1.0);
         }
-        let offset_y = if unit.team == Team::Blue {
+        // The team earlier in `Team::ALL` (the player, if either is) draws
+        // on top.
+        let rival = self.rival_of(idx).map(|r| self.units[r].team);
+        let offset_y = if rival.is_none_or(|rival| unit.team < rival) {
             CONTESTED_OFFSET_Y
         } else {
             -CONTESTED_OFFSET_Y
@@ -1884,19 +1991,7 @@ fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec<Verte
 /// A city: a crenellated tower in its team's color with its population on
 /// it, and a small gold granary beside it once it has one.
 fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
-    let rect =
-        |x0: f32, y0: f32, x1: f32, y1: f32| (pos + Vec2::new(x0, y0), pos + Vec2::new(x1, y1));
-    push_outlined_rects(
-        &[
-            rect(-0.42, -0.4, 0.42, 0.24),
-            // Three merlons along the top.
-            rect(-0.42, 0.24, -0.24, 0.4),
-            rect(-0.09, 0.24, 0.09, 0.4),
-            rect(0.24, 0.24, 0.42, 0.4),
-        ],
-        city.team.color(),
-        out,
-    );
+    push_city_tower(pos, 1.0, city.team.color(), out);
     // Centered in the tower's body, below the merlons.
     font::push_text_centered(
         pos + Vec2::new(0.0, -0.08),
@@ -1917,6 +2012,33 @@ fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
         );
         mesh::regular_polygon(at, 0.15, 16, 0.0, GRANARY_COLOR, out);
         font::push_glyph(at, 0.16, 'G', LABEL_COLOR, out);
+    }
+}
+
+/// A city's crenellated tower in `color`, `scale` times its size on the map
+/// (0.84 wide, 0.8 tall), in whatever space `pos` is in: the turn strip
+/// draws it too.
+pub(super) fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec<Vertex>) {
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        (
+            pos + Vec2::new(x0, y0) * scale,
+            pos + Vec2::new(x1, y1) * scale,
+        )
+    };
+    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
+    let grow = Vec2::splat(ICON_OUTLINE_WIDTH * scale);
+    let rects = [
+        rect(-0.42, -0.4, 0.42, 0.24),
+        // Three merlons along the top.
+        rect(-0.42, 0.24, -0.24, 0.4),
+        rect(-0.09, 0.24, 0.09, 0.4),
+        rect(0.24, 0.24, 0.42, 0.4),
+    ];
+    for &(min, max) in &rects {
+        mesh::quad(min - grow, max + grow, outline, out);
+    }
+    for &(min, max) in &rects {
+        mesh::quad(min, max, color, out);
     }
 }
 
@@ -2199,16 +2321,29 @@ mod tests {
         assert!(vertices.is_empty());
     }
 
+    /// A view taking in any map.
+    const WHOLE_WORLD: (Vec2, Vec2) = (Vec2::splat(-1.0e4), Vec2::splat(1.0e4));
+
     #[test]
     fn unexplored_cloud_geometry_stays_small() {
         let game = GameState::world_scenario(3);
-        let mut vertices = Vec::new();
-        push_cloud_banks(&game.grid, 0.0, &mut vertices);
-        // The former recursively sampled mesh emitted well over 150,000 fog
-        // vertices here. Keep enough headroom for map-size tuning without
-        // allowing that per-frame cost back in.
-        assert!(vertices.len() < 45_000, "{} cloud vertices", vertices.len());
-        assert!(vertices.iter().any(|v| v.color[3] < 1.0));
+        let clouds = |view| {
+            let mut vertices = Vec::new();
+            push_cloud_banks(&game.grid, 0.0, view, &mut vertices);
+            vertices
+        };
+        // The view the game starts in: only the banks it takes in.
+        let view = clouds(game.cloud_view());
+        assert!(view.len() < 25_000, "{} cloud vertices in view", view.len());
+        assert!(view.iter().any(|v| v.color[3] < 1.0));
+        // Zoomed all the way out, the whole map. The former recursively
+        // sampled mesh emitted well over 150,000 fog vertices on a smaller
+        // map than this one.
+        let whole = clouds(WHOLE_WORLD);
+        assert!(whole.len() > view.len());
+        assert!(whole.len() < 120_000, "{} cloud vertices", whole.len());
+        // Nothing when the view is off the map.
+        assert!(clouds((Vec2::splat(500.0), Vec2::splat(600.0))).is_empty());
     }
 
     #[test]
@@ -2238,7 +2373,7 @@ mod tests {
         let game = GameState::world_scenario(3);
         let clouds = |time: f32| {
             let mut vertices = Vec::new();
-            push_cloud_banks(&game.grid, time, &mut vertices);
+            push_cloud_banks(&game.grid, time, WHOLE_WORLD, &mut vertices);
             vertices
         };
         let centers: Vec<Vec2> = game.grid.all_hexes().map(Hex::to_world).collect();
@@ -2254,7 +2389,7 @@ mod tests {
         for time in [0.5, 60.0, 600.0, 5000.0] {
             let later = clouds(time);
             assert!(
-                later.len() < 45_000,
+                later.len() < 120_000,
                 "{} cloud vertices at {time} s",
                 later.len()
             );
@@ -2281,6 +2416,15 @@ mod tests {
         assert_eq!(edge_fade(&game.grid, inside), 1.0);
         let far = Vec2::new(1.0e4, 0.0);
         assert_eq!(edge_fade(&game.grid, far), 0.0);
+    }
+
+    #[test]
+    fn the_inspected_tile_is_ringed() {
+        let mut game = GameState::city_scenario();
+        game.clear_selection();
+        assert_eq!(count_color(&game.build_vertices(), INSPECTED_TILE_COLOR), 0);
+        game.inspected_tile = Some(Hex::new(0, 1));
+        assert!(count_color(&game.build_vertices(), INSPECTED_TILE_COLOR) > 0);
     }
 
     /// The color of the last opaque triangle drawn over `point`.

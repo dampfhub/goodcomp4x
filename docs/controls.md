@@ -33,21 +33,26 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Right-click a hex with a group | Every member in range attacks it (again to call it off) |
 | Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
-| Click a unit in the unit strip | Select just it and move the camera to it |
-| Shift-click / Ctrl-click a unit in the unit strip | Add it to / take it out of the selection |
+| Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
+| Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
 | F / Found City button | Found a city with the selected settler |
 | Escape | Let go of the selected unit or group (and close the tile panel) |
 
 A unit can queue a move and an attack; it attacks from the hex it moves to. Units can't move
 through occupied hexes, and two allies can't head for the same hex. Once the selected unit has a
-move and an attack queued (or can't do one of them), the next unit needing orders is selected
-and the camera glides to it; a unit you select by clicking stays selected.
+move and an attack queued (or can't do one of them), the game moves on to what needs you next,
+in the turn strip's order: a city with nothing to build opens first, then the next unit
+needing orders (settlers before the military) is selected and the camera glides to it. A turn,
+and a new world, start the same way. A unit you select by clicking stays selected.
 
-The unit strip (a panel that starts at the top-left) shows a token for each of your units,
-settlers included, that still needs orders this turn, in the order the game selects them: the
-next one after the selected unit is the next to its right, wrapping around. Selected units are
-framed; a unit leaves the strip once it has its orders (or holds, guards or follows a queue).
-Like the other panels, hold Ctrl to drag, resize or dock it.
+The turn strip ("need orders"; a panel that starts at the bottom of the screen, centered or as
+near the middle as the other panels allow) shows a chip for everything you still have to see to
+this turn, civilian tasks first: each city with nothing to build (its tower), your settlers,
+and then your military units needing orders. Workers aren't listed and never hold up the turn. Units are grouped by kind, one chip per kind with a count; a group of several
+that you select lists its units one by one on a second row, to pick from or take out. Selected
+units, and the open city, are framed; a unit leaves the strip once it has its orders (or holds,
+guards or follows a queue), and a city once it has a build. Like
+the other panels, hold Ctrl to drag, resize or dock it.
 
 Shift-clicks on a hex build an order queue over several turns (rules: `game-rules.md`, Order
 queues); a Shift-click on one of your own units adds it to the selection instead.
@@ -71,7 +76,7 @@ Workers).
 
 | Control | Action |
 | --- | --- |
-| Click a tile with nothing selected | Open its tile panel: terrain, whose workers would go, and a button per job |
+| Click a tile with nothing selected | Open its tile panel: terrain, whose workers would go, and a button per job. A white ring marks the tile |
 | Road / Improve / Outpost / Fort buttons | Queue that job on the tile, for the open city or else your nearest one |
 | R / I | Queue a road / an improvement on the tile in the tile panel |
 | Wall / Gate buttons | Arm wall or gate placement on hex edges |
@@ -144,7 +149,7 @@ city center enters the interior map; its clicks control only the interior copies
 | F5 | Toggle borderless fullscreen |
 | Escape with nothing open | Open the settings menu (below), which has the Quit button; Escape again, or its Close button, closes it |
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
-| F4 | Start a newly generated world; every press makes a new map |
+| F4 | Start a newly generated world, for you and the AI sides the World AI setting asks for; every press makes a new map |
 | F12 | Start a siege at Red's city with its interior open |
 | F6 | Save a snapshot of the whole game (in memory only) |
 | F7 | Load the snapshot; it is kept, so it can be loaded again |
@@ -178,9 +183,18 @@ resize or dock it like the other panels. The game carries on while it's open.
 | Turn playback | All at once (the default) or step by step, the same switch as F8 |
 | Queue limit | 1 to 20 turns (6 by default): the most turns a unit can have queued, this turn included. A Shift-click toward a hex farther away queues the move as far as the limit goes, and once a queue is full, Shift-clicks add nothing to it until turns are played |
 | Fog | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
+| World AI | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |
+| World start | City (the default) or settler: what every side in the next world (F4) starts with, beside its scout |
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).
+
+Settings are also kept between sessions, saved as soon as one changes. On quitting, the game
+also saves the window's size (and whether it's maximized), the UI presentation (F11), and the
+ImGui panels as you arranged them: where each is, its size, which are docked or collapsed, and
+the boxes. The next session opens the same way. They're kept in `%APPDATA%\riskofcivlike`
+(`~/.config/riskofcivlike` elsewhere); delete that folder to start over from the defaults.
+Screenshot mode (`--screenshot`) ignores it.
 
 ## Command line
 

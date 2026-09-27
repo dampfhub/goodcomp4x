@@ -5,17 +5,41 @@ use super::ability::{
 };
 use super::hex::Hex;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// A side. Blue is the player (`PLAYER_TEAM`); every other team is played
+/// by the AI, and every team is at war with every other.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub enum Team {
     Blue,
     Red,
+    Green,
+    Gold,
+    Purple,
+    Teal,
+    Orange,
 }
 
 impl Team {
+    /// Every team, the player's first: the order AI teams plan their turns in
+    /// and take the world's starts in.
+    pub const ALL: [Team; 7] = [
+        Team::Blue,
+        Team::Red,
+        Team::Green,
+        Team::Gold,
+        Team::Purple,
+        Team::Teal,
+        Team::Orange,
+    ];
+
     pub fn color(self) -> [f32; 4] {
         match self {
             Team::Blue => [0.30, 0.55, 0.95, 1.0],
             Team::Red => [0.92, 0.32, 0.28, 1.0],
+            Team::Green => [0.30, 0.78, 0.30, 1.0],
+            Team::Gold => [0.95, 0.76, 0.20, 1.0],
+            Team::Purple => [0.66, 0.40, 0.92, 1.0],
+            Team::Teal => [0.22, 0.80, 0.78, 1.0],
+            Team::Orange => [0.97, 0.52, 0.16, 1.0],
         }
     }
 }

@@ -27,6 +27,7 @@ mod paint;
 mod panels;
 mod queue;
 mod roster;
+pub(in crate::game) use roster::RosterKey;
 mod settings_menu;
 mod text;
 mod tooltips;
@@ -174,9 +175,9 @@ enum Target {
     /// The unit strip, by unit id: click selects that unit and moves the
     /// camera to it, Shift-click adds it to the selection, and Ctrl-click
     /// takes it out.
-    RosterSelect(u32),
-    RosterAdd(u32),
-    RosterRemove(u32),
+    RosterSelect(RosterKey),
+    RosterAdd(RosterKey),
+    RosterRemove(RosterKey),
     Focus(LaborFocus),
     ConfirmBuilding(Building),
     EndTurn,
@@ -290,14 +291,25 @@ enum Shape {
     },
 }
 
-/// A unit in the unit strip: which one, how its token looks, and whether it's
-/// selected.
+/// A chip in the turn strip: what it stands for, its picture, whether it's
+/// selected (its units, or its city open), and how many units or workers it
+/// counts (shown when more than one).
 #[derive(Clone, Copy)]
 pub(super) struct RosterChip {
-    pub(super) id: u32,
-    pub(super) look: UnitLook,
+    pub(super) key: RosterKey,
+    pub(super) icon: ChipIcon,
     pub(super) color: Color,
     pub(super) selected: bool,
+    pub(super) count: usize,
+}
+
+/// A turn strip chip's picture.
+#[derive(Clone, Copy)]
+pub(super) enum ChipIcon {
+    /// A unit's (or worker's) token, as on the map.
+    Unit(UnitLook),
+    /// A city's tower.
+    City,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -366,7 +378,7 @@ struct Layout {
     queue_scrollbars: Vec<QueueScrollRegion>,
     queue_items: Vec<QueueItemRegion>,
     /// The unit strip's tokens and the unit id each one stands for.
-    roster_chips: Vec<(Vec2, Vec2, u32)>,
+    roster_chips: Vec<(Vec2, Vec2, RosterKey)>,
     dock: Option<Dock>,
 }
 
@@ -414,7 +426,7 @@ impl Layout {
     }
 
     /// The unit whose token in the unit strip is under `point`, if any.
-    fn roster_chip_at(&self, point: Vec2) -> Option<u32> {
+    fn roster_chip_at(&self, point: Vec2) -> Option<RosterKey> {
         self.roster_chips
             .iter()
             .find(|&&(min, max, _)| contains(min, max, point))
@@ -423,11 +435,11 @@ impl Layout {
 }
 
 /// What a click on unit `id` in the unit strip does, by its modifiers.
-fn roster_target(id: u32, mode: ClickMode) -> Target {
+fn roster_target(key: RosterKey, mode: ClickMode) -> Target {
     match mode {
-        ClickMode::QueueMove => Target::RosterAdd(id),
-        ClickMode::Swap => Target::RosterRemove(id),
-        _ => Target::RosterSelect(id),
+        ClickMode::QueueMove => Target::RosterAdd(key),
+        ClickMode::Swap => Target::RosterRemove(key),
+        _ => Target::RosterSelect(key),
     }
 }
 
@@ -530,8 +542,12 @@ impl GameState {
         if self.drag_queue_scrollbar_at(cursor, screen_size, false) {
             return true;
         }
-        if let Some(id) = layout.roster_chip_at(point) {
-            self.activate_target(roster_target(id, mode));
+        // A button (the centered settings menu's, drawn over the strip) takes
+        // the click before a chip under it.
+        if layout.button_at(point).is_none()
+            && let Some(key) = layout.roster_chip_at(point)
+        {
+            self.activate_target(roster_target(key, mode));
             return true;
         }
         let Some(button) = layout.button_at(point) else {
@@ -685,8 +701,8 @@ impl GameState {
         } else if let Some(hex) = self.inspected_tile {
             self.tile_tray(hex, &mut tray);
         } else {
-            self.dock_roster(&mut layout);
             self.debug_panel(&mut layout);
+            self.dock_roster(&mut layout);
             self.place_settings(screen_size, &mut layout);
             return layout;
         }
@@ -707,8 +723,8 @@ impl GameState {
                 layout.dock_panel(queue, Zone::BottomLeft);
             }
         }
-        self.dock_roster(&mut layout);
         self.debug_panel(&mut layout);
+        self.dock_roster(&mut layout);
         self.place_settings(screen_size, &mut layout);
         layout
     }

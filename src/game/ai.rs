@@ -1,17 +1,32 @@
-//! A deliberately minimal AI opponent.
+//! A deliberately minimal AI, playing every team but the player's.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::GameState;
 use super::city::{Build, BuildUnit, City};
 use super::hex::Hex;
 use super::unit::Team;
+use super::{GameState, PLAYER_TEAM};
 
 impl GameState {
-    /// Each unit closes on its nearest enemy: it attacks if already in range,
-    /// otherwise moves as close as it can and attacks if that brings it into
-    /// range. Units in a contested hex stay and fight. No coordination beyond
-    /// not sending two units to the same hex, and no retreating.
+    /// The teams the AI plays: every team but the player's that still has a
+    /// unit or a city, in `Team::ALL` order.
+    pub(super) fn ai_teams(&self) -> Vec<Team> {
+        Team::ALL
+            .into_iter()
+            .filter(|&team| team != PLAYER_TEAM)
+            .filter(|&team| {
+                self.units.iter().any(|u| u.team == team)
+                    || self.cities.iter().any(|c| c.team == team)
+            })
+            .collect()
+    }
+
+    /// Each unit closes on its nearest enemy, or on ruins nobody on its side
+    /// holds (`ruins.rs`) if those are nearer: it attacks if already in
+    /// range, otherwise moves as close as it can and attacks if that brings it
+    /// into range; ruins it steps onto, and then holds until they're claimed.
+    /// Units in a contested hex stay and fight. No coordination beyond not
+    /// sending two units to the same hex, and no retreating.
     pub(super) fn plan_ai_turn(&mut self, team: Team) {
         // The computer founds its first city immediately, before combat orders.
         if self.cities.iter().all(|c| c.team != team)
@@ -71,22 +86,35 @@ impl GameState {
                 self.units[idx].planned_attack = attack;
                 continue;
             }
-            let Some(target) = self.nearest_enemy_pos(idx) else {
+            // Holding ruins until they're claimed: stay, and fight from there.
+            if self.ruin_at(self.units[idx].pos).is_some() {
+                let unit = &self.units[idx];
+                let attack = self
+                    .units
+                    .iter()
+                    .filter(|enemy| enemy.team != team)
+                    .filter(|enemy| unit.pos.distance(enemy.pos) <= unit.stats().attack_range)
+                    .min_by_key(|enemy| (unit.pos.distance(enemy.pos), enemy.id))
+                    .map(|enemy| enemy.pos);
+                self.units[idx].planned_attack = attack;
+                continue;
+            }
+            let Some(target) = self.nearest_ai_target(idx) else {
                 continue;
             };
 
             let unit = &self.units[idx];
             let stats = unit.stats();
-            // An enemy worker is caught by stepping onto it, when that's in
-            // reach this turn.
-            let worker = self.enemy_of_team_at(target, team).is_none();
+            // An enemy worker is caught, and ruins taken, by stepping onto
+            // them, when that's in reach this turn.
+            let capture = self.enemy_of_team_at(target, team).is_none();
             let reachable = self.reachable_hexes(unit.pos, stats.move_range, team);
-            let dest = if worker && reachable.contains(&target) {
+            let dest = if capture && reachable.contains(&target) {
                 target
-            } else if unit.pos.distance(target) <= stats.attack_range {
+            } else if !capture && unit.pos.distance(target) <= stats.attack_range {
                 unit.pos
             } else {
-                let to_target = self.walking_distances(target, team);
+                let to_target = self.steps_to(target, team, &reachable);
                 let steps_left = |hex: &Hex| to_target.get(hex).copied().unwrap_or(i32::MAX);
                 let claimed_by_ally = |hex: &Hex| {
                     self.units
@@ -100,52 +128,95 @@ impl GameState {
                     .unwrap_or(unit.pos)
             };
 
-            let unit = &mut self.units[idx];
-            if dest != unit.pos {
-                unit.planned_move = Some(dest);
+            if dest != self.units[idx].pos {
+                self.units[idx].planned_move = Some(dest);
             }
-            if dest != target && dest.distance(target) <= stats.attack_range {
+            let ruins = self.ruin_at(target).is_some() && !self.is_occupied(target);
+            let unit = &mut self.units[idx];
+            if !ruins && dest != target && dest.distance(target) <= stats.attack_range {
                 unit.planned_attack = Some(target);
             }
         }
     }
 
-    /// Position of the enemy unit or worker closest on foot, routing around
-    /// terrain and walls.
-    fn nearest_enemy_pos(&self, idx: usize) -> Option<Hex> {
+    /// Where unit `idx` heads: the enemy unit or worker, or the ruins no ally
+    /// holds or is already heading for, closest on foot (routing around
+    /// terrain and walls; ties go to the lowest coordinates). With none
+    /// reachable, the enemy nearest as the crow flies.
+    fn nearest_ai_target(&self, idx: usize) -> Option<Hex> {
         let unit = &self.units[idx];
-        let from_unit = self.walking_distances(unit.pos, unit.team);
-        self.units
+        let team = unit.team;
+        let enemies: Vec<Hex> = self
+            .units
             .iter()
-            .filter(|other| other.team != unit.team)
+            .filter(|other| other.team != team)
             .map(|other| other.pos)
             .chain(
                 self.field_workers
                     .iter()
-                    .filter(|worker| worker.team != unit.team)
+                    .filter(|worker| worker.team != team)
                     .map(|worker| worker.pos),
             )
-            .min_by_key(|pos| {
-                (
-                    from_unit.get(pos).copied().unwrap_or(i32::MAX),
-                    pos.q,
-                    pos.r,
-                )
+            .collect();
+        let open_ruins: Vec<Hex> = self
+            .ruins
+            .iter()
+            .map(|ruin| ruin.pos)
+            .filter(|&pos| {
+                !self
+                    .units
+                    .iter()
+                    .any(|u| u.team == team && (u.pos == pos || u.planned_move == Some(pos)))
             })
+            .collect();
+        let is_target = |hex: &Hex| enemies.contains(hex) || open_ruins.contains(hex);
+        // Search outward ring by ring, stopping at the first ring with a target.
+        let mut seen = HashSet::from([unit.pos]);
+        let mut ring = vec![unit.pos];
+        while !ring.is_empty() {
+            if let Some(&hex) = ring
+                .iter()
+                .filter(|hex| is_target(hex))
+                .min_by_key(|hex| (hex.q, hex.r))
+            {
+                return Some(hex);
+            }
+            let mut next = Vec::new();
+            for &hex in &ring {
+                for neighbor in hex.neighbors() {
+                    if self.can_step(hex, neighbor, team) && seen.insert(neighbor) {
+                        next.push(neighbor);
+                    }
+                }
+            }
+            ring = next;
+        }
+        enemies
+            .into_iter()
+            .min_by_key(|pos| (unit.pos.distance(*pos), pos.q, pos.r))
     }
 
-    /// Steps from `origin` to every hex a unit of `team` can walk to, around
-    /// impassable terrain, walls and others' gates but ignoring units, since
-    /// those will have moved by the time anyone gets there.
-    fn walking_distances(&self, origin: Hex, team: Team) -> HashMap<Hex, i32> {
-        let mut distances = HashMap::from([(origin, 0)]);
-        let mut queue = VecDeque::from([origin]);
+    /// Steps on foot from each of `wanted` to `target` for a unit of
+    /// `team`, around impassable terrain, walls and others' gates but
+    /// ignoring units, since those will have moved by the time anyone gets
+    /// there. Searches outward from `target` only until every one of
+    /// `wanted` is found; any it can't reach are left out.
+    fn steps_to(&self, target: Hex, team: Team, wanted: &HashSet<Hex>) -> HashMap<Hex, i32> {
+        let mut distances = HashMap::from([(target, 0)]);
+        let mut queue = VecDeque::from([target]);
+        let mut left = wanted.iter().filter(|hex| **hex != target).count();
         while let Some(hex) = queue.pop_front() {
+            if left == 0 {
+                break;
+            }
             let next_distance = distances[&hex] + 1;
             for neighbor in hex.neighbors() {
                 if self.can_step(hex, neighbor, team) && !distances.contains_key(&neighbor) {
                     distances.insert(neighbor, next_distance);
                     queue.push_back(neighbor);
+                    if wanted.contains(&neighbor) {
+                        left -= 1;
+                    }
                 }
             }
         }

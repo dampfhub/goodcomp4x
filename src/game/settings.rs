@@ -4,14 +4,16 @@
 //!
 //! 1. a field in `Settings`, and its value in `Settings::default`;
 //! 2. a `Setting` variant, listed in `Setting::ALL`;
-//! 3. its arms in `Setting::name`, `description`, `range` and `value_text`,
+//! 3. its arms in `Setting::key` (its name in the saved file), `name`,
+//!    `description`, `range` and `value_text`,
 //!    and in `Settings::get` and `Settings::set`.
 //!
 //! Every setting is an integer in its `range` (a switch is `0..=1`), which
 //! the menu's < and > buttons step through, so both UI presentations show and
 //! change it without further code. Game code reads the field directly
 //! (`self.settings.instant_playback`). Settings, and whether the menu is
-//! open, are kept across scenario switches and loads (`scenario.rs`): they
+//! open, are kept across scenario switches and loads (`scenario.rs`), and the
+//! settings between sessions (`to_text`, saved by `app.rs`): they
 //! belong to the player, not to the game being played. The tests below and
 //! in `ui/tests.rs` walk every entry of `Setting::ALL`, so a new setting is
 //! covered by them too.
@@ -33,7 +35,16 @@ pub struct Settings {
     /// Draw unexplored hexes under clouds (`push_cloud_banks`, `draw.rs`)
     /// rather than a flat grey.
     pub cloud_fog: bool,
+    /// AI players in the next world (F4, `setup_world`): 1 to 6, or 0 for
+    /// 4 to 6 picked by the map's seed.
+    pub world_ai: usize,
+    /// Each side in the next world starts with its city already founded,
+    /// rather than a settler to found it with.
+    pub world_start_city: bool,
 }
+
+/// `Settings::world_ai` for 4 to 6 AI players, picked by the map's seed.
+pub const WORLD_AI_BY_SEED: usize = 0;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -41,6 +52,19 @@ impl Default for Settings {
             instant_playback: true,
             max_queued_turns: 6,
             cloud_fog: true,
+            world_ai: WORLD_AI_BY_SEED,
+            world_start_city: true,
+        }
+    }
+}
+
+impl Settings {
+    /// How many AI players a world from `seed` gets.
+    pub fn world_ai_for(&self, seed: u32) -> usize {
+        if self.world_ai == WORLD_AI_BY_SEED {
+            4 + (seed % 3) as usize
+        } else {
+            self.world_ai
         }
     }
 }
@@ -51,15 +75,31 @@ pub enum Setting {
     TurnPlayback,
     MaxQueuedTurns,
     FogStyle,
+    WorldAi,
+    WorldStart,
 }
 
 impl Setting {
     /// Every setting, in the order the menu lists them.
-    pub const ALL: [Setting; 3] = [
+    pub const ALL: [Setting; 5] = [
         Setting::TurnPlayback,
         Setting::MaxQueuedTurns,
         Setting::FogStyle,
+        Setting::WorldAi,
+        Setting::WorldStart,
     ];
+
+    /// Its name in the saved settings file (`to_text`). Old files use
+    /// these, so a setting keeps its key once it has one.
+    pub fn key(self) -> &'static str {
+        match self {
+            Setting::TurnPlayback => "turn_playback",
+            Setting::MaxQueuedTurns => "queue_limit",
+            Setting::FogStyle => "fog",
+            Setting::WorldAi => "world_ai",
+            Setting::WorldStart => "world_start",
+        }
+    }
 
     /// Its label in the menu.
     pub fn name(self) -> &'static str {
@@ -67,6 +107,8 @@ impl Setting {
             Setting::TurnPlayback => "TURN PLAYBACK",
             Setting::MaxQueuedTurns => "QUEUE LIMIT",
             Setting::FogStyle => "FOG",
+            Setting::WorldAi => "WORLD AI",
+            Setting::WorldStart => "WORLD START",
         }
     }
 
@@ -82,6 +124,10 @@ impl Setting {
                  FARTHER AWAY QUEUES THE MOVE AS FAR AS THE LIMIT GOES."
             }
             Setting::FogStyle => "HOW UNEXPLORED LAND IS HIDDEN: UNDER CLOUDS, OR A FLAT GREY.",
+            Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4). THE MAP GROWS WITH THEM.",
+            Setting::WorldStart => {
+                "WHETHER EVERY SIDE IN THE NEXT WORLD (F4) STARTS WITH ITS CITY, OR A SETTLER."
+            }
         }
     }
 
@@ -91,6 +137,8 @@ impl Setting {
             Setting::TurnPlayback => 0..=1,
             Setting::MaxQueuedTurns => 1..=20,
             Setting::FogStyle => 0..=1,
+            Setting::WorldAi => 0..=6,
+            Setting::WorldStart => 0..=1,
         }
     }
 
@@ -106,6 +154,9 @@ impl Setting {
             Setting::MaxQueuedTurns if value == 1 => "1 TURN".into(),
             Setting::MaxQueuedTurns => format!("{value} TURNS"),
             Setting::FogStyle => if value == 1 { "CLOUDS" } else { "SOLID GREY" }.into(),
+            Setting::WorldAi if value == WORLD_AI_BY_SEED as i32 => "4-6 BY MAP".into(),
+            Setting::WorldAi => value.to_string(),
+            Setting::WorldStart => if value == 1 { "CITY" } else { "SETTLER" }.into(),
         }
     }
 }
@@ -117,6 +168,8 @@ impl Settings {
             Setting::TurnPlayback => self.instant_playback as i32,
             Setting::MaxQueuedTurns => self.max_queued_turns as i32,
             Setting::FogStyle => self.cloud_fog as i32,
+            Setting::WorldAi => self.world_ai as i32,
+            Setting::WorldStart => self.world_start_city as i32,
         }
     }
 
@@ -126,7 +179,36 @@ impl Settings {
             Setting::TurnPlayback => self.instant_playback = value == 1,
             Setting::MaxQueuedTurns => self.max_queued_turns = value as usize,
             Setting::FogStyle => self.cloud_fog = value == 1,
+            Setting::WorldAi => self.world_ai = value as usize,
+            Setting::WorldStart => self.world_start_city = value == 1,
         }
+    }
+
+    /// The settings as text to save between sessions (`persist.rs`): a line
+    /// per setting, its `key` and value.
+    pub fn to_text(&self) -> String {
+        Setting::ALL
+            .iter()
+            .map(|&setting| format!("{} {}\n", setting.key(), self.get(setting)))
+            .collect()
+    }
+
+    /// Settings read back from `to_text`'s text. Anything missing, unknown or
+    /// out of its setting's range keeps its default, so an old file (or a
+    /// damaged one) still loads.
+    pub fn from_text(text: &str) -> Self {
+        let mut settings = Settings::default();
+        for (key, values) in text.lines().filter_map(crate::persist::key_and_values) {
+            let Some(setting) = Setting::ALL.into_iter().find(|s| s.key() == key) else {
+                continue;
+            };
+            if let Some(value) = values.first().and_then(|v| v.parse::<i32>().ok())
+                && setting.range().contains(&value)
+            {
+                settings.set(setting, value);
+            }
+        }
+        settings
     }
 
     /// Moves `setting` by `delta` steps, stopping at the ends of its range.
@@ -143,6 +225,16 @@ impl Settings {
 }
 
 impl GameState {
+    /// The player's settings as text to save (`Settings::to_text`).
+    pub fn settings_text(&self) -> String {
+        self.settings.to_text()
+    }
+
+    /// Takes on the player's settings, e.g. saved in an earlier session.
+    pub fn set_settings(&mut self, settings: Settings) {
+        self.settings = settings;
+    }
+
     pub(super) fn close_settings(&mut self) {
         self.settings_open = false;
     }
@@ -197,6 +289,40 @@ mod tests {
             for value in range {
                 assert!(!setting.value_text(value).is_empty());
             }
+        }
+    }
+
+    #[test]
+    fn settings_save_as_text_and_read_back() {
+        let mut settings = Settings::default();
+        for setting in Setting::ALL {
+            // Every setting away from its default, one step.
+            if !settings.step(setting, 1) {
+                settings.step(setting, -1);
+            }
+        }
+        assert_ne!(settings, Settings::default());
+        let text = settings.to_text();
+        assert_eq!(text.lines().count(), Setting::ALL.len());
+        assert_eq!(Settings::from_text(&text), settings);
+
+        // Unknown keys, bad values, comments and out-of-range values are
+        // skipped; what's missing keeps its default.
+        let damaged = "# saved\nqueue_limit 9\nfog maybe\nworld_ai 99\nsomething 3\n";
+        let loaded = Settings::from_text(damaged);
+        assert_eq!(loaded.max_queued_turns, 9);
+        assert_eq!(loaded.cloud_fog, Settings::default().cloud_fog);
+        assert_eq!(loaded.world_ai, Settings::default().world_ai);
+        assert_eq!(Settings::from_text(""), Settings::default());
+    }
+
+    #[test]
+    fn every_setting_has_its_own_key() {
+        for (i, a) in Setting::ALL.iter().enumerate() {
+            for b in &Setting::ALL[i + 1..] {
+                assert_ne!(a.key(), b.key());
+            }
+            assert!(!a.key().contains(char::is_whitespace));
         }
     }
 

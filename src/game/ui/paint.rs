@@ -1,12 +1,13 @@
 //! Turning laid-out shapes and buttons into vertices.
 
+use super::ChipIcon;
 use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
     BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,
     DISABLED_BG, DISABLED_TEXT, GAP, GOLD_TEXT, GROWTH_COLOR, LINE_GAP, PANEL_BG, QUEUED_BG,
     QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, ROSTER_TOKEN_SHARE, SMALL, Shape, TEXT,
 };
-use crate::game::draw::push_unit_token;
+use crate::game::draw::{push_city_tower, push_unit_token};
 use crate::game::font;
 use crate::game::mesh;
 use crate::renderer::Vertex;
@@ -90,12 +91,44 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             draw_box(*min, *max, bg, border, border_color, out);
             let center = (*min + *max) / 2.0;
             let radius = (max.x - min.x) * ROSTER_TOKEN_SHARE / 2.0;
-            push_unit_token(center, chip.look, radius, chip.color, out);
+            push_chip_icon(center, chip.icon, radius, chip.color, out);
+            if chip.count > 1 {
+                let face = font::ui(SMALL);
+                let text = chip.count.to_string();
+                let origin = Vec2::new(
+                    max.x - face.width(&text) - CHIP_COUNT_INSET,
+                    min.y + CHIP_COUNT_INSET,
+                );
+                let pad = Vec2::splat(2.0);
+                let tag_max =
+                    Vec2::new(max.x - CHIP_COUNT_INSET + 2.0, origin.y + face.cap_height) + pad;
+                mesh::quad(origin - pad, tag_max, PANEL_BG, out);
+                face.push(origin, &text, TEXT, out);
+            }
         }
     }
 }
 
-/// The frame around the unit strip token under the cursor.
+/// How far a chip's count sits in from its bottom-right corner.
+pub(super) const CHIP_COUNT_INSET: f32 = 3.0;
+
+/// A turn strip chip's picture, centered on `center`, sized so a unit's
+/// disc has `radius` (a city's tower is as wide).
+pub(super) fn push_chip_icon(
+    center: Vec2,
+    icon: ChipIcon,
+    radius: f32,
+    color: Color,
+    out: &mut Vec<Vertex>,
+) {
+    match icon {
+        ChipIcon::Unit(look) => push_unit_token(center, look, radius, color, out),
+        // The tower is 0.84 wide at scale 1.
+        ChipIcon::City => push_city_tower(center, 2.0 * radius / 0.84, color, out),
+    }
+}
+
+/// The frame around the turn strip chip under the cursor.
 pub(super) fn draw_chip_hover(min: Vec2, max: Vec2, out: &mut Vec<Vertex>) {
     let width = BORDER;
     let (a, b) = (min - width, max + width);
