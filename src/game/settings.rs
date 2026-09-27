@@ -26,12 +26,17 @@ pub struct Settings {
     /// Play a turn's steps all at once instead of one every
     /// `STEP_INTERVAL` (`turn.rs`). The outcome is the same. F8 toggles it.
     pub instant_playback: bool,
+    /// The most turns one Shift-click queues for each unit's move
+    /// (`queue_move`, `order_queue.rs`). A hex farther away is queued that
+    /// many turns along the way.
+    pub queued_move_turns: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             instant_playback: true,
+            queued_move_turns: 6,
         }
     }
 }
@@ -40,16 +45,18 @@ impl Default for Settings {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Setting {
     TurnPlayback,
+    QueuedMoveTurns,
 }
 
 impl Setting {
     /// Every setting, in the order the menu lists them.
-    pub const ALL: [Setting; 1] = [Setting::TurnPlayback];
+    pub const ALL: [Setting; 2] = [Setting::TurnPlayback, Setting::QueuedMoveTurns];
 
     /// Its label in the menu.
     pub fn name(self) -> &'static str {
         match self {
             Setting::TurnPlayback => "TURN PLAYBACK",
+            Setting::QueuedMoveTurns => "MOVE QUEUE LIMIT",
         }
     }
 
@@ -60,6 +67,10 @@ impl Setting {
                 "WHETHER A TURN PLAYS OUT ALL AT ONCE OR ONE STEP AT A TIME. THE OUTCOME IS \
                  THE SAME. F8 SWITCHES IT TOO."
             }
+            Setting::QueuedMoveTurns => {
+                "THE MOST TURNS OF MOVES ONE SHIFT-CLICK QUEUES FOR A UNIT. A HEX FARTHER AWAY \
+                 IS QUEUED THAT MANY TURNS ALONG THE WAY: SHIFT-CLICK IT AGAIN TO GO ON."
+            }
         }
     }
 
@@ -67,6 +78,7 @@ impl Setting {
     pub fn range(self) -> RangeInclusive<i32> {
         match self {
             Setting::TurnPlayback => 0..=1,
+            Setting::QueuedMoveTurns => 1..=20,
         }
     }
 
@@ -79,6 +91,8 @@ impl Setting {
                 "STEP BY STEP"
             }
             .into(),
+            Setting::QueuedMoveTurns if value == 1 => "1 TURN".into(),
+            Setting::QueuedMoveTurns => format!("{value} TURNS"),
         }
     }
 }
@@ -88,6 +102,7 @@ impl Settings {
     pub fn get(&self, setting: Setting) -> i32 {
         match setting {
             Setting::TurnPlayback => self.instant_playback as i32,
+            Setting::QueuedMoveTurns => self.queued_move_turns as i32,
         }
     }
 
@@ -95,6 +110,7 @@ impl Settings {
     fn set(&mut self, setting: Setting, value: i32) {
         match setting {
             Setting::TurnPlayback => self.instant_playback = value == 1,
+            Setting::QueuedMoveTurns => self.queued_move_turns = value as usize,
         }
     }
 

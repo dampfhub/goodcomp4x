@@ -12,7 +12,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Left-click your unit | Select it |
 | Left-click a green hex | Move there this turn; click again to cancel |
 | Right-click a hex in range | Attack it this turn: an enemy unit or barracks, or an empty hex someone may step into; empty city centers cannot be targeted |
-| Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued |
+| Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued, up to the move queue limit (settings menu); Shift-click again to go on past it |
 | Shift-right-click a hex | Queue an attack on it: in the queue's last turn if that turn has none yet and it's in range, else in one more turn |
 | Ctrl-click an adjacent ally | Queue a swap |
 | M / X (or Move / Attack buttons) | Arm Move / Attack for the next map click (again to disarm) |
@@ -176,6 +176,7 @@ it. The game carries on while it's open.
 | Setting | Values |
 | --- | --- |
 | Turn playback | All at once (the default) or step by step, the same switch as F8 |
+| Move queue limit | 1 to 20 turns (6 by default): the most turns of moves one Shift-click queues for each unit. A hex farther away is queued that many turns along the way; Shift-click it again to go on |
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).

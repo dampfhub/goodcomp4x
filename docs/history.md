@@ -115,3 +115,8 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     there still quits. Player options live in one `Settings` struct (`settings.rs`) kept across
     scenario switches and loads, each an integer the menu steps with < and > buttons, so a new
     option is a field and an entry in `Setting::ALL`. Turn playback (F8) is the first.
+41. Move queue limit (`claude/queue-length-setting`): the second setting caps how many turns of
+    moves one Shift-click queues for each unit (6 by default, 1 to 20), replacing the fixed
+    64-turn safety net. A hex farther away is queued as far as the limit goes, with a notice
+    saying so, and the same Shift-click again carries on; in a group the limit counts from the
+    end of each member's own plan.
