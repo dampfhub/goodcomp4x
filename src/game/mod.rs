@@ -13,6 +13,7 @@ mod fog;
 mod font;
 mod group;
 mod hex;
+mod map_icons;
 mod mapgen;
 mod mesh;
 mod orders;
@@ -67,6 +68,7 @@ Controls:
   The End Turn button holds unfinished units and ends the turn. Cities still need a build queued.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
+  Hold Alt to see each unit's turn order and every explored tile's yields.
   1-3 queue city units; 4-7 queue buildings. Cavalry and armored train at a barracks on Horses or Iron. Drag queue rows to reorder or click X to remove;
   Backspace removes the active city build and PageDown promotes the next item. F founds with a settler.
   F1 combat, F2 cities, F3 settler frontier, F4 random world (again to restart; F4 makes a new map). F6 saves a snapshot, F7 loads it, F8 changes playback, F9 completes production, F10 toggles fog of war.
@@ -112,6 +114,9 @@ pub struct GameState {
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
+    /// Whether Alt is held, showing extra map info: units' turn order and
+    /// every tile's yields.
+    show_details: bool,
     /// The map hex under the cursor (not over the UI), and how long the
     /// cursor has rested on it, for the tile tooltip.
     hovered_tile: Option<Hex>,
@@ -205,6 +210,7 @@ impl GameState {
             placing_building: None,
             hovered_city: None,
             show_yields: true,
+            show_details: false,
             hovered_tile: None,
             hover_seconds: 0.0,
             ui_click_mode: None,

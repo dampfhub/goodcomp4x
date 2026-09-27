@@ -22,6 +22,7 @@ rules behind each action are in `game-rules.md`.
 | Tab | Look at the next unit without holding this one; leave the city or barracks view |
 | Alt-drag a box | Select every one of your units inside it as a group |
 | Alt-click a unit | Add it to, or remove it from, the group |
+| Hold Alt | Show extra map info: each unit's turn order, and every explored tile's yields |
 | Click a hex with a group | Each member moves as close to it as it can get |
 | Click an enemy with a group | Every member in range attacks it (again to call it off) |
 | F / Found City button | Found a city with the selected settler |
@@ -92,7 +93,12 @@ order.
 
 ## Reading the map
 
-- Blue and red numbers on a unit are its move and attack ranks in the turn order.
+- Holding Alt shows blue and red numbers on each unit: its move and attack ranks in the turn
+  order.
+- Tile yields sit below the unit spot: wheat stalks for food, then hammers for production, one
+  per point laid out like a die's pips (3 a triangle, 4 a square, 5 a square with one in the
+  middle, 6 two rows of three); past 6, one icon and the number. The open city shows them on the tiles it reaches (Y hides them);
+  holding Alt shows them on every explored tile that can be worked.
 - Your queued attacks are orange arrows from the attacker (or its ghost) to the target; the AI's
   are hidden. During playback each arrow shoots to its target: a burst is a hit, grey MISS a hex
   with no enemy unit (a hit on an empty city or barracks still does damage), OUT OF RANGE a
@@ -105,10 +111,10 @@ order.
 - Cities are crenellated towers showing their population, with a gold G disc once they have a
   granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
   a Workshop a blue diamond marked W. While you choose or move a site, a translucent diamond with
-  the building's letter previews it. Improvements are small badges in a
-  hex's top-left corner, edged in their owner's color: crop rows (farm), an ore heap (mine), a
-  fence (pasture), logs (lumber mill). Brown lines are dirt roads, blue lines between hexes are
-  rivers, and a gold-edged disc with H or I marks Horses or Iron.
+  the building's letter previews it. Improvements are small icons in a hex's top-left corner: a
+  wheat stalk (farm), an ore cart (mine), a fence (pasture), stacked logs (lumber mill).
+  Resources are icons in the top-right corner: a horse's head (Horses), an ingot (Iron). Brown
+  lines are dirt roads, and blue lines between hexes are rivers.
 - Terrain: two small peaks are hills, pines forest, round canopies jungle; dunes, grass tufts and
   reeds mark desert, tundra and marsh.
 - Fog of war: never-seen hexes are blank; hexes you've seen but can't see now are under a grey

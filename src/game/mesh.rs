@@ -97,6 +97,21 @@ pub fn polyline(points: &[Vec2], width: f32, color: [f32; 4], out: &mut Vec<Vert
     }
 }
 
+/// Appends a band `width` thick centered on the closed outline through
+/// `points`: a polygon's edge, drawn before its fill so only the outer half
+/// shows, like an SVG stroke painted under the fill.
+pub fn outline(points: &[Vec2], width: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
+    let Some(&last) = points.last() else {
+        return;
+    };
+    // The closing edge goes both first and last, so every corner is a bend
+    // the ribbon miters; the open ends it leaves lie inside those corners.
+    let mut around = vec![last];
+    around.extend_from_slice(points);
+    around.push(points[0]);
+    polyline(&around, width, color, out);
+}
+
 /// Appends a filled triangle.
 pub fn triangle(a: Vec2, b: Vec2, c: Vec2, color: [f32; 4], out: &mut Vec<Vertex>) {
     push_triangle(out, a, b, c, color);
@@ -189,5 +204,30 @@ mod tests {
             assert_eq!(out.len(), 3 * (points.len() - 2));
             assert!((area(&out) - 3.0).abs() < 1e-5);
         }
+    }
+
+    #[test]
+    fn an_outline_wraps_every_edge_and_leaves_the_middle_open() {
+        let square = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)].map(|(x, y)| Vec2::new(x, y));
+        let mut out = Vec::new();
+        outline(&square, 0.2, [1.0; 4], &mut out);
+        let covered = |p: Vec2| {
+            out.as_chunks::<3>().0.iter().any(|t| {
+                let [a, b, c] = [0, 1, 2].map(|i| Vec2::new(t[i].pos[0], t[i].pos[1]));
+                inside_triangle(p, a, b, c)
+            })
+        };
+        // Just outside each edge's middle, and each corner's mitered tip.
+        for p in [
+            (1.0, -0.09),
+            (2.09, 1.0),
+            (1.0, 2.09),
+            (-0.09, 1.0),
+            (-0.09, -0.09),
+            (2.09, 2.09),
+        ] {
+            assert!(covered(Vec2::new(p.0, p.1)), "{p:?} left bare");
+        }
+        assert!(!covered(Vec2::new(1.0, 1.0)));
     }
 }

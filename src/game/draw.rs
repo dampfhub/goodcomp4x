@@ -7,6 +7,7 @@ use glam::Vec2;
 
 use super::fog::{Fog, SeenBuilding};
 use super::hex::{HEX_SIZE, Hex, HexGrid, edge_corners};
+use super::map_icons::{self, IMPROVEMENT_SPOT, MapIcon, RESOURCE_SPOT};
 use super::orders::ClickMode;
 use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
@@ -70,8 +71,9 @@ const ATTACK_RANGE_EMPTY_COLOR: Color = [0.36, 0.24, 0.20, 1.0];
 const LABEL_COLOR: Color = [0.05, 0.05, 0.05, 1.0];
 const HEALTH_BAR_BG_COLOR: Color = [0.08, 0.08, 0.08, 1.0];
 
-/// Sizes below are for a unit drawn at full scale, alone in its hex.
-const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.42;
+/// Sizes below are for a unit drawn at full scale, alone in its hex. Small
+/// enough to leave the hex's top corners to resource and improvement icons.
+const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.36;
 /// Sides of the disc military units stand on.
 const TOKEN_SIDES: u32 = 32;
 /// Civilian hexagons, relative to the military disc.
@@ -80,17 +82,25 @@ const CIVILIAN_TOKEN_SIZE: f32 = 0.95;
 /// terrain.
 const ICON_OUTLINE_COLOR: Color = [0.03, 0.03, 0.04, 1.0];
 const ICON_OUTLINE_WIDTH: f32 = 0.06;
-/// Map markers: the granary beside a city, and improvement badges.
+/// Tile yields: below the unit spot, food then production as die-face pips
+/// on a dark see-through pill.
+const YIELD_ROW_OFFSET: Vec2 = Vec2::new(0.0, -0.56);
+/// Distance between neighboring pips, across and up.
+const YIELD_PIP_PITCH: Vec2 = Vec2::new(0.11, 0.15);
+const YIELD_ICON_SCALE: f32 = 0.8;
+/// How far a pip icon, at that scale, reaches from its center.
+const YIELD_ICON_HALF: Vec2 = Vec2::new(0.05, 0.076);
+/// Space between the food group and the production group.
+const YIELD_GROUP_GAP: f32 = 0.08;
+const YIELD_ROW_PADDING: Vec2 = Vec2::new(0.06, 0.035);
+const YIELD_PIP_CORNER: f32 = 0.1;
+const YIELD_ROW_COLOR: Color = [0.005, 0.006, 0.007, 0.85];
+/// Past six, a yield is one icon and its amount.
+const YIELD_DIGIT_HEIGHT: f32 = 0.12;
+const YIELD_DIGIT_COLOR: Color = [0.95, 0.95, 0.95, 1.0];
+const YIELD_NUMBER_GAP: f32 = 0.03;
+/// The granary marker beside a city.
 const GRANARY_COLOR: Color = [0.95, 0.72, 0.22, 1.0];
-const SITE_BADGE_OFFSET: Vec2 = Vec2::new(-0.5, 0.36);
-/// Strategic resources: a gold-edged disc in the hex's top-right corner.
-const RESOURCE_BADGE_OFFSET: Vec2 = Vec2::new(0.5, 0.36);
-const RESOURCE_COLOR: Color = [0.95, 0.80, 0.35, 1.0];
-const SITE_BADGE_HALF: f32 = 0.16;
-const SITE_BADGE_COLOR: Color = [0.04, 0.04, 0.05, 0.92];
-const FARM_COLOR: Color = [0.95, 0.80, 0.30, 1.0];
-const MINE_COLOR: Color = [0.62, 0.62, 0.66, 1.0];
-const WOOD_COLOR: Color = [0.62, 0.40, 0.20, 1.0];
 /// Icon growth while a unit is highlighted for having just acted.
 const ACTED_SCALE: f32 = 1.35;
 
@@ -218,7 +228,8 @@ impl GameState {
             mesh::regular_polygon(center, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
             push_tile_symbols(center, self.grid.tile(hex), &mut out);
             if let Some(resource) = self.grid.resource(hex) {
-                push_resource_badge(center + RESOURCE_BADGE_OFFSET, resource.glyph(), &mut out);
+                let icon = MapIcon::resource(resource);
+                map_icons::push_map_icon(center + RESOURCE_SPOT, icon, &mut out);
             }
         }
         push_rivers(&self.grid, |h| self.is_explored(h), &mut out);
@@ -240,7 +251,9 @@ impl GameState {
             push_status_rings(center, unit, scale, &mut out);
             let look = self.unit_look(unit);
             push_unit_icon(center, look, icon_scale, color, &mut out);
-            push_order_badges(center, unit, look, scale, &mut out);
+            if self.show_details {
+                push_order_badges(center, unit, look, scale, &mut out);
+            }
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
         }
 
@@ -554,8 +567,15 @@ impl GameState {
                 );
             }
         }
-        for &(h, label, team) in &view.sites {
-            push_site_badge(h.to_world() + SITE_BADGE_OFFSET, label, team, out);
+        for &(h, label) in &view.sites {
+            let center = h.to_world() + IMPROVEMENT_SPOT;
+            match MapIcon::improvement(label) {
+                Some(icon) => map_icons::push_map_icon(center, icon, out),
+                None => {
+                    let letter = label.chars().next().unwrap_or('?');
+                    font::push_glyph(center, 0.2, letter, ICON_OUTLINE_COLOR, out);
+                }
+            }
         }
         for (hex, barracks) in &view.barracks {
             push_barracks_marker(hex.to_world(), barracks.team.color(), out);
@@ -635,7 +655,7 @@ impl GameState {
         view.roads
             .extend(self.roads.iter().filter(|h| fog.sees(**h)));
         for (&h, site) in self.sites.iter().filter(|(h, _)| fog.sees(**h)) {
-            view.sites.push((h, site.label, site.team));
+            view.sites.push((h, site.label));
         }
         for city in &self.cities {
             let own = city.team == PLAYER_TEAM;
@@ -662,8 +682,8 @@ impl GameState {
             if seen.road {
                 view.roads.push(h);
             }
-            if let Some((label, team)) = seen.site {
-                view.sites.push((h, label, team));
+            if let Some((label, _)) = seen.site {
+                view.sites.push((h, label));
             }
             if let Some(city) = seen.city.filter(|c| c.team != PLAYER_TEAM) {
                 view.cities.push((h, city));
@@ -680,7 +700,8 @@ impl GameState {
 #[derive(Default)]
 struct MapView {
     roads: Vec<Hex>,
-    sites: Vec<(Hex, &'static str, Team)>,
+    /// Improvements, by label.
+    sites: Vec<(Hex, &'static str)>,
     cities: Vec<(Hex, SeenBuilding)>,
     barracks: Vec<(Hex, SeenBuilding)>,
 }
@@ -705,73 +726,175 @@ fn push_dotted_segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec
 }
 
 impl GameState {
-    /// Yield badges around the open city while yields are shown, limited to
-    /// its economic reach.
+    /// Alt: holding it shows extra map info (units' turn order, every tile's
+    /// yields); releasing it hides it again.
+    pub fn set_details(&mut self, held: bool) {
+        self.show_details = held;
+    }
+
+    /// Yield chips below the unit spot: while Alt is held, on every explored
+    /// tile that can be worked; otherwise, while the open city shows its
+    /// yields, on the tiles within its economic reach.
     fn push_tile_yields(&self, fog: &Fog, out: &mut Vec<Vertex>) {
-        let Some(city) = self.yields_city() else {
+        let city = self.yields_city();
+        if city.is_none() && !self.show_details {
             return;
-        };
-        let routes = self.known_routes(city, fog);
+        }
+        let reach = city.map(|city| (city, self.known_routes(city, fog)));
         for hex in self
             .grid
             .all_hexes()
             .filter(|h| self.grid.terrain(*h).is_workable() && self.is_explored(*h))
         {
-            if !routes.costs.contains_key(&hex) && !self.cities[city].worked.contains(&hex) {
+            let in_reach = reach.as_ref().is_some_and(|(city, routes)| {
+                routes.costs.contains_key(&hex) || self.cities[*city].worked.contains(&hex)
+            });
+            if !in_reach && !self.show_details {
                 continue;
             }
             let (food, production) = self.known_yield(hex, fog);
-            let center = hex.to_world() + Vec2::new(0.0, -0.49);
-            mesh::quad(
-                center - Vec2::new(0.52, 0.18),
-                center + Vec2::new(0.52, 0.18),
-                [0.035, 0.045, 0.045, 0.94],
-                out,
-            );
-            for (is_food, count, offset, color) in [
-                (true, food, -0.37, [0.42, 0.96, 0.32, 1.0]),
-                (false, production, 0.14, [1.0, 0.69, 0.22, 1.0]),
-            ] {
-                let p = center + Vec2::new(offset, 0.0);
-                if is_food {
-                    // Grain stalk with paired kernels.
-                    mesh::segment(
-                        p + Vec2::new(0.0, -0.12),
-                        p + Vec2::new(0.0, 0.12),
-                        0.025,
-                        color,
-                        out,
-                    );
-                    for y in [-0.04, 0.04] {
-                        for x in [-0.05, 0.05] {
-                            mesh::regular_polygon(p + Vec2::new(x, y), 0.045, 4, 0.0, color, out);
-                        }
-                    }
-                } else {
-                    // Hammer: broad head and narrow handle.
-                    mesh::quad(
-                        p + Vec2::new(-0.02, -0.12),
-                        p + Vec2::new(0.025, 0.06),
-                        color,
-                        out,
-                    );
-                    mesh::quad(
-                        p + Vec2::new(-0.09, 0.04),
-                        p + Vec2::new(0.09, 0.12),
-                        color,
-                        out,
-                    );
-                }
-                font::push_text(
-                    p + Vec2::new(0.11, -0.105),
-                    0.21,
-                    &count.to_string(),
-                    color,
-                    out,
-                );
-            }
+            push_yield_row(hex.to_world() + YIELD_ROW_OFFSET, food, production, out);
         }
     }
+}
+
+/// A tile's yields on a dark pill: food then production, each laid out like
+/// the pips on a die, or as one icon and a number past six. Nothing for a
+/// tile yielding nothing.
+fn push_yield_row(center: Vec2, food: i32, production: i32, out: &mut Vec<Vertex>) {
+    let row = yield_row(food, production);
+    if row.icons.is_empty() {
+        return;
+    }
+    let pill = rounded_rect(center, row.half, YIELD_PIP_CORNER);
+    mesh::polygon(&pill, YIELD_ROW_COLOR, out);
+    for (icon, at) in row.icons {
+        map_icons::push_map_icon_scaled(center + at, icon, YIELD_ICON_SCALE, out);
+    }
+    for (text, at) in row.labels {
+        font::push_text_centered(
+            center + at,
+            YIELD_DIGIT_HEIGHT,
+            &text,
+            YIELD_DIGIT_COLOR,
+            out,
+        );
+    }
+}
+
+/// A yield row's contents, as offsets from its center.
+struct YieldRow {
+    /// Icons in drawing order: within a group, higher ones first so lower
+    /// ones overlap them.
+    icons: Vec<(MapIcon, Vec2)>,
+    /// Amounts past six, beside their single icon.
+    labels: Vec<(String, Vec2)>,
+    /// How far the pill reaches each way.
+    half: Vec2,
+}
+
+/// Where the pips for 1 to 6 go, in pip pitches, top row first: a die's
+/// faces, but 2 side by side, 3 a triangle and 6 two rows of three.
+fn pip_spots(amount: i32) -> &'static [(f32, f32)] {
+    match amount {
+        1 => &[(0.0, 0.0)],
+        2 => &[(-0.5, 0.0), (0.5, 0.0)],
+        3 => &[(0.0, 0.5), (-0.5, -0.5), (0.5, -0.5)],
+        4 => &[(-0.5, 0.5), (0.5, 0.5), (-0.5, -0.5), (0.5, -0.5)],
+        5 => &[
+            (-1.0, 0.7),
+            (1.0, 0.7),
+            (0.0, 0.0),
+            (-1.0, -0.7),
+            (1.0, -0.7),
+        ],
+        6 => &[
+            (-1.0, 0.5),
+            (0.0, 0.5),
+            (1.0, 0.5),
+            (-1.0, -0.5),
+            (0.0, -0.5),
+            (1.0, -0.5),
+        ],
+        _ => &[],
+    }
+}
+
+/// Lays out a tile's food and production groups side by side, centered.
+fn yield_row(food: i32, production: i32) -> YieldRow {
+    let mut row = YieldRow {
+        icons: Vec::new(),
+        labels: Vec::new(),
+        half: Vec2::ZERO,
+    };
+    // Each group's contents around its own center, and its half extent.
+    let groups: Vec<YieldRow> = [(MapIcon::Food, food), (MapIcon::Production, production)]
+        .into_iter()
+        .filter(|&(_, amount)| amount > 0)
+        .map(|(icon, amount)| {
+            let spots = pip_spots(amount);
+            if spots.is_empty() {
+                // Past six: one icon, then the number.
+                let text = amount.to_string();
+                let width = font::world_text_width(&text, YIELD_DIGIT_HEIGHT);
+                let half_x = YIELD_ICON_HALF.x + (YIELD_NUMBER_GAP + width) / 2.0;
+                return YieldRow {
+                    icons: vec![(icon, Vec2::new(YIELD_ICON_HALF.x - half_x, 0.0))],
+                    labels: vec![(text, Vec2::new(half_x - width / 2.0, 0.0))],
+                    half: Vec2::new(half_x, YIELD_ICON_HALF.y),
+                };
+            }
+            let spots: Vec<Vec2> = spots
+                .iter()
+                .map(|&(x, y)| Vec2::new(x, y) * YIELD_PIP_PITCH)
+                .collect();
+            let reach = spots.iter().fold(Vec2::ZERO, |m, s| m.max(s.abs()));
+            YieldRow {
+                icons: spots.into_iter().map(|at| (icon, at)).collect(),
+                labels: Vec::new(),
+                half: reach + YIELD_ICON_HALF,
+            }
+        })
+        .collect();
+    if groups.is_empty() {
+        return row;
+    }
+    let width: f32 = groups.iter().map(|g| 2.0 * g.half.x).sum::<f32>()
+        + YIELD_GROUP_GAP * (groups.len() - 1) as f32;
+    let mut left = -width / 2.0;
+    for group in groups {
+        let shift = Vec2::new(left + group.half.x, 0.0);
+        row.icons
+            .extend(group.icons.into_iter().map(|(icon, at)| (icon, at + shift)));
+        row.labels.extend(
+            group
+                .labels
+                .into_iter()
+                .map(|(text, at)| (text, at + shift)),
+        );
+        row.half.y = row.half.y.max(group.half.y);
+        left += 2.0 * group.half.x + YIELD_GROUP_GAP;
+    }
+    row.half = Vec2::new(width / 2.0, row.half.y) + YIELD_ROW_PADDING;
+    row
+}
+
+/// The corners of a rectangle with rounded corners of `radius`, centered on
+/// `center` and reaching `half` out each way.
+fn rounded_rect(center: Vec2, half: Vec2, radius: f32) -> Vec<Vec2> {
+    const STEPS: usize = 4;
+    let inner = half - Vec2::splat(radius);
+    [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(quarter, (sx, sy))| {
+            let corner = center + inner * Vec2::new(sx, sy);
+            (0..=STEPS).map(move |step| {
+                let angle = (quarter * STEPS + step) as f32 / (4 * STEPS) as f32 * TAU;
+                corner + Vec2::from_angle(angle) * radius
+            })
+        })
+        .collect()
 }
 
 /// The ground's color, tinted green under forest or jungle.
@@ -1108,73 +1231,6 @@ fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
     );
 }
 
-/// An improvement's badge in the hex's top-left corner: a dark square
-/// edged in its owner's color, with a symbol for what it is.
-fn push_site_badge(center: Vec2, label: &str, team: Team, out: &mut Vec<Vertex>) {
-    let half = Vec2::splat(SITE_BADGE_HALF);
-    let edge = Vec2::splat(ICON_OUTLINE_WIDTH);
-    mesh::quad(
-        center - half - edge,
-        center + half + edge,
-        team.color(),
-        out,
-    );
-    mesh::quad(center - half, center + half, SITE_BADGE_COLOR, out);
-    let at = |x: f32, y: f32| center + Vec2::new(x, y);
-    match label {
-        // Rows of crops.
-        "FARM" => {
-            for y in [-0.08, 0.0, 0.08] {
-                mesh::segment(at(-0.11, y), at(0.11, y), 0.035, FARM_COLOR, out);
-            }
-        }
-        // A heap of ore.
-        "MINE" => mesh::triangle(
-            at(-0.12, -0.09),
-            at(0.12, -0.09),
-            at(0.0, 0.1),
-            MINE_COLOR,
-            out,
-        ),
-        // A fence: two posts and two rails.
-        "PASTURE" => {
-            for x in [-0.08, 0.08] {
-                mesh::segment(at(x, -0.1), at(x, 0.1), 0.035, WOOD_COLOR, out);
-            }
-            for y in [-0.03, 0.05] {
-                mesh::segment(at(-0.12, y), at(0.12, y), 0.03, WOOD_COLOR, out);
-            }
-        }
-        // Stacked log ends.
-        "LUMBER MILL" => {
-            for (x, y) in [(-0.06, -0.05), (0.06, -0.05), (0.0, 0.06)] {
-                mesh::regular_polygon(at(x, y), 0.055, 12, 0.0, WOOD_COLOR, out);
-            }
-        }
-        other => font::push_glyph(
-            center,
-            0.2,
-            other.chars().next().unwrap_or('?'),
-            team.color(),
-            out,
-        ),
-    }
-}
-
-/// A strategic resource: a dark disc edged in gold with the resource's letter.
-fn push_resource_badge(center: Vec2, glyph: char, out: &mut Vec<Vertex>) {
-    mesh::regular_polygon(
-        center,
-        SITE_BADGE_HALF + ICON_OUTLINE_WIDTH,
-        16,
-        0.0,
-        RESOURCE_COLOR,
-        out,
-    );
-    mesh::regular_polygon(center, SITE_BADGE_HALF, 16, 0.0, SITE_BADGE_COLOR, out);
-    font::push_glyph(center, 0.2, glyph, RESOURCE_COLOR, out);
-}
-
 /// Status rings behind the icon. They're filled discs, so only the rim shows
 /// once the icon is drawn on top; the larger one goes first so both stay visible.
 /// A guarding unit also gets a hex outline around everything.
@@ -1342,6 +1398,119 @@ mod tests {
 
     fn count_color(vertices: &[Vertex], color: Color) -> usize {
         vertices.iter().filter(|v| v.color == color).count()
+    }
+
+    #[test]
+    fn turn_order_numbers_show_only_while_alt_is_held() {
+        let mut game = GameState::world_scenario(3);
+        game.explore();
+        assert_eq!(count_color(&game.build_vertices(), MOVE_ORDER_COLOR), 0);
+        game.set_details(true);
+        assert!(count_color(&game.build_vertices(), MOVE_ORDER_COLOR) > 0);
+        game.set_details(false);
+        assert_eq!(count_color(&game.build_vertices(), MOVE_ORDER_COLOR), 0);
+    }
+
+    #[test]
+    fn alt_shows_yields_on_every_explored_tile_outside_the_city_view() {
+        let mut game = GameState::city_scenario();
+        game.explore();
+        let city = game
+            .cities
+            .iter()
+            .position(|c| c.team == PLAYER_TEAM)
+            .unwrap();
+        // Every pill is the same outline, whatever its width.
+        let pill_vertices = count_color(
+            &{
+                let mut out = Vec::new();
+                push_yield_row(Vec2::ZERO, 2, 1, &mut out);
+                out
+            },
+            YIELD_ROW_COLOR,
+        );
+        let rows =
+            |game: &GameState| count_color(&game.build_vertices(), YIELD_ROW_COLOR) / pill_vertices;
+        game.selected_city = None;
+        assert_eq!(rows(&game), 0, "no yields without the city view or Alt");
+        game.selected_city = Some(city);
+        let in_reach = rows(&game);
+        assert!(in_reach > 0, "the open city shows its tiles' yields");
+        game.selected_city = None;
+        game.set_details(true);
+        let fog = game.fog();
+        let yielding = game
+            .grid
+            .all_hexes()
+            .filter(|&h| game.grid.terrain(h).is_workable() && game.is_explored(h))
+            .filter(|&h| game.known_yield(h, &fog) != (0, 0))
+            .count();
+        assert!(yielding > in_reach);
+        assert_eq!(rows(&game), yielding, "a row on every tile that yields");
+    }
+
+    #[test]
+    fn yields_up_to_six_are_die_pips_and_more_are_a_number() {
+        let pips = |amount: i32| -> Vec<Vec2> {
+            let row = yield_row(amount, 0);
+            assert!(row.labels.is_empty(), "{amount} needs no number");
+            row.icons.into_iter().map(|(_, at)| at).collect()
+        };
+        let rows = |spots: &[Vec2]| {
+            let mut ys: Vec<i32> = spots
+                .iter()
+                .map(|s| (s.y * 1000.0).round() as i32)
+                .collect();
+            ys.dedup();
+            ys.len()
+        };
+        for amount in 1..=6 {
+            assert_eq!(pips(amount).len(), amount as usize);
+        }
+        assert_eq!(rows(&pips(2)), 1, "2 side by side");
+        // 3: one on top, centered over two.
+        let three = pips(3);
+        assert_eq!(rows(&three), 2);
+        assert!(three[0].x.abs() < 1e-5 && three[0].y > three[1].y);
+        // 4: a square.
+        let four = pips(4);
+        assert_eq!(rows(&four), 2);
+        assert!((four[0].x + four[1].x).abs() < 1e-5);
+        // 5: a square with one in the middle.
+        let five = pips(5);
+        assert!(five.iter().any(|s| s.length() < 1e-5));
+        // 6: two rows of three.
+        let six = pips(6);
+        assert_eq!(rows(&six), 2);
+        assert_eq!(six.iter().filter(|s| s.y > 0.0).count(), 3);
+
+        let seven = yield_row(7, 0);
+        assert_eq!(seven.icons.len(), 1);
+        assert_eq!(seven.labels[0].0, "7");
+        assert!(
+            seven.labels[0].1.x > seven.icons[0].1.x,
+            "the number follows the icon"
+        );
+        assert!(yield_row(0, 0).icons.is_empty());
+    }
+
+    #[test]
+    fn a_yield_row_puts_food_left_of_production_and_stays_inside_the_hex() {
+        for (food, production) in [(2, 1), (6, 6), (12, 5), (3, 0), (0, 4)] {
+            let row = yield_row(food, production);
+            let food_x = row.icons.iter().filter(|(i, _)| *i == MapIcon::Food);
+            let production_x = row.icons.iter().filter(|(i, _)| *i == MapIcon::Production);
+            let rightmost_food = food_x.map(|(_, at)| at.x).fold(f32::MIN, f32::max);
+            let leftmost_production = production_x.map(|(_, at)| at.x).fold(f32::MAX, f32::min);
+            assert!(rightmost_food < leftmost_production, "{food}/{production}");
+            // The pill's corners stay inside the hex's fill.
+            let corner = (YIELD_ROW_OFFSET - row.half).abs();
+            let fill = HEX_SIZE * HEX_FILL_SCALE * 3f32.sqrt();
+            assert!(
+                3f32.sqrt() * corner.x + corner.y <= fill,
+                "{food}/{production}"
+            );
+        }
     }
 
     #[test]

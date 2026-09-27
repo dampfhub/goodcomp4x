@@ -67,3 +67,10 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     simple shapes (sword, bow, horse head, catapult, spyglass, shield; flag and shovel for
     civilians) instead of a letter; text is IBM Plex Mono, with world text as signed distance
     fields; the Horse unit merged into Cavalry, which now needs a barracks on Horses.
+31. Map icons (`claude/resource-site-icons`): resources and improvements are small dark-edged
+    icons straight on the tile instead of badges: a horse's head and an ingot for Horses and
+    Iron in the top-right corner; a wheat stalk, ore cart, fence and stacked logs for farm, mine,
+    pasture and lumber mill in the top-left. Unit tokens shrank (radius 0.42 to 0.36) to make
+    room. Holding Alt shows extra map info: units' turn-order numbers (no longer always shown)
+    and every explored tile's yields. Yields are die-face pips of wheat and hammers (one icon
+    and a number past six) instead of a strip with numbers.
