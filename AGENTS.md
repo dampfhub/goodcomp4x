@@ -75,8 +75,8 @@ parallel with another agent. Check `list --open` before filing something new.
 ## Commits and PRs
 
 - One PR per change, using the PR template: what changed, how it was verified, what it closes.
-- A PR merges itself: CI's `merge` job merges it once `rust`, `msrv` and `tools` pass, then runs
-  CI on `main`. To keep a PR open (for review, or while still working), open it as a draft
+- A PR merges itself: CI's `merge` job merges it once `rust`, `msrv` and `tools` pass, deletes
+  its branch, then runs CI on `main`. To keep a PR open (for review, or while still working), open it as a draft
   (`gh pr create --draft`, or `gh pr ready --undo <#>`); marking it ready runs CI and merges it.
 - Put `Closes #N` on one line. A line ending in `fix`/`close`/`resolve` (any tense) followed by a
   line starting `#N` also closes #N; `node tools/commit-msg-lint.mjs` catches that in commit
