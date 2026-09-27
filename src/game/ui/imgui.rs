@@ -7,7 +7,7 @@ use ::imgui::{
 };
 
 use super::action_icons::{self, ICON_BUTTON_SIZE};
-use super::builder::{Row, icon_row, visible_button_hint};
+use super::builder::{CatalogEntry, Row, icon_row, visible_button_hint};
 use super::text::end_turn_label;
 use super::*;
 use crate::game::PLAYER_TEAM;
@@ -1440,7 +1440,7 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
                 }
             }
             Row::QueueItem(_) => 37.0,
-            Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 4) as f32 * 34.0) + 18.0,
+            Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 5) as f32 * 34.0) + 18.0,
             Row::Roster(_) => ROSTER_CHIP + 6.0,
         };
     }
@@ -1543,6 +1543,29 @@ fn draw_action_icon(
         .filled(true)
         .build();
         draw.add_text(pos, color, turns);
+    }
+}
+
+fn draw_production_icon(
+    ui: &Ui,
+    min: [f32; 2],
+    max: [f32; 2],
+    icon: crate::game::unit_icons::UnitIcon,
+) {
+    let center = [min[0] + 19.0, (min[1] + max[1]) / 2.0];
+    let mut vertices = Vec::new();
+    crate::game::unit_icons::push_pictogram(Vec2::ZERO, 10.0, icon, TEXT, &mut vertices);
+    let draw = ui.get_window_draw_list();
+    for triangle in vertices.as_chunks::<3>().0 {
+        let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+        draw.add_triangle(
+            at(&triangle[0]),
+            at(&triangle[1]),
+            at(&triangle[2]),
+            triangle[0].color,
+        )
+        .filled(true)
+        .build();
     }
 }
 
@@ -2159,7 +2182,7 @@ impl GameState {
                         } else {
                             format!("{}\n{hint}", spec.label)
                         };
-                        let label = format!("{label}##{:?}", spec.target);
+                        let label = format!("{label}###{:?}", spec.target);
                         if ui.button_with_size(label, [width, height]) {
                             actions.push(Action::Button(scope, spec.target));
                         }
@@ -2202,13 +2225,20 @@ impl GameState {
                     }
                 }
                 Row::BuildingCatalog(city, buttons, _) => {
-                    let height = buttons.len().clamp(1, 4) as f32 * 34.0 + 18.0;
+                    let height = buttons.len().clamp(1, 5) as f32 * 34.0 + 18.0;
                     ui.child_window(format!("##building-catalog-{city}-{scope:?}"))
                         .size([0.0, height])
                         .border(true)
                         .build(|| {
                             let _align = ui.push_style_var(StyleVar::ButtonTextAlign([0.03, 0.5]));
-                            for spec in buttons {
+                            for entry in buttons {
+                                let CatalogEntry::Card(spec) = entry else {
+                                    if let CatalogEntry::Heading(label) = entry {
+                                        ui.text_colored(LABEL_TEXT, *label);
+                                        ui.dummy([1.0, 4.0]);
+                                    }
+                                    continue;
+                                };
                                 let _accent = match spec.state {
                                     ButtonState::Queued => Some(ui.push_style_color(
                                         StyleColor::Button,
@@ -2223,13 +2253,25 @@ impl GameState {
                                     &spec.hint,
                                     next_button_hovered(ui, [width, 28.0]),
                                 );
+                                let has_icon =
+                                    action_icons::production_unit_icon(spec.target).is_some();
+                                let prefix = if has_icon { "     " } else { "" };
                                 let label = if hint.is_empty() {
-                                    format!("{}##{:?}", spec.label, spec.target)
+                                    format!("{prefix}{}###{:?}", spec.label, spec.target)
                                 } else {
-                                    format!("{}  {hint}##{:?}", spec.label, spec.target)
+                                    format!("{prefix}{}  {hint}###{:?}", spec.label, spec.target)
                                 };
                                 if ui.button_with_size(label, [width, 28.0]) {
                                     actions.push(Action::Button(scope, spec.target));
+                                }
+                                if let Some(icon) = action_icons::production_unit_icon(spec.target)
+                                {
+                                    draw_production_icon(
+                                        ui,
+                                        ui.item_rect_min(),
+                                        ui.item_rect_max(),
+                                        icon,
+                                    );
                                 }
                                 if ui.is_item_hovered_with_flags(
                                     ItemHoveredFlags::ALLOW_WHEN_DISABLED,
@@ -2382,6 +2424,10 @@ impl GameState {
                     }
                     ui.text_colored(NOTICE_TEXT, shortened);
                 }
+                ui.set_cursor_pos([15.0, 27.0]);
+                if ui.small_button("MENU") {
+                    actions.push(Action::Button(None, Target::OpenSettings));
+                }
                 ui.set_cursor_pos([(viewport.x - end_width - 365.0).max(8.0), 7.0]);
                 ui.text(format!("VIEW: {}", layout.active_view.label()));
                 ui.set_cursor_pos([(viewport.x - end_width - 365.0).max(8.0), 27.0]);
@@ -2421,7 +2467,7 @@ impl GameState {
                 } else {
                     label
                 };
-                if ui.button_with_size(end_label, end_size) {
+                if ui.button_with_size(format!("{end_label}###EndTurn"), end_size) {
                     actions.push(Action::Button(None, Target::EndTurn));
                 }
                 if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
@@ -2759,6 +2805,24 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hover_text_keeps_the_same_imgui_button_id() {
+        let mut context = ::imgui::Context::create();
+        context.io_mut().display_size = [640.0, 480.0];
+        context.fonts().build_rgba32_texture();
+        let ui = context.frame();
+        ui.window("ID test").build(|| {
+            assert_eq!(
+                ui.new_id_str("MOVE###Unit(Move)"),
+                ui.new_id_str("MOVE\nM###Unit(Move)"),
+            );
+            assert_ne!(
+                ui.new_id_str("MOVE##Unit(Move)"),
+                ui.new_id_str("MOVE\nM##Unit(Move)"),
+            );
+        });
+    }
 
     #[test]
     fn default_debug_placement_flows_into_views_until_customized() {

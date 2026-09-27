@@ -50,7 +50,7 @@ use dock::{Dock, Rect, Zone};
 pub use imgui::ImGuiLayoutState;
 use paint::{draw_button, draw_chip_hover, draw_shape};
 
-const BUILDING_LIST_VISIBLE: usize = 2;
+const BUILDING_LIST_VISIBLE: usize = 5;
 use queue::queue_items_that_fit;
 
 type Color = [f32; 4];
@@ -159,6 +159,7 @@ enum Target {
     Unit(UnitAction),
     Build(BuildUnit),
     ToggleYields,
+    OpenSettings,
     Building(Building),
     BarracksBuild(BuildUnit),
     OpenBarracks,
@@ -598,6 +599,7 @@ impl GameState {
             Target::RecallWorker(id) => self.recall_worker(id),
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
+            Target::OpenSettings => self.settings_open = true,
             Target::Building(building) => self.queue_selected_city_building(building),
             Target::BarracksBuild(build) => self.queue_selected_barracks_unit(build),
             Target::OpenBarracks => {

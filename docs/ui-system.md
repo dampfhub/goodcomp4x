@@ -21,7 +21,7 @@ icon gives its action name, shortcut and explanation.
 `ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible
 windows without overlap. A window follows the dock as its content changes
 until the player drags its title bar or resize grip; moved windows reserve
-their space so other panels avoid them. The production queue and the city tray's building catalogue have bounded heights and scroll internally when their content grows.
+their space so other panels avoid them. The production queue and the city tray's production catalogue have bounded heights and scroll internally when their content grows.
 Hold Ctrl to show the title bars, collapse buttons, and resize grips for
 arranging panels. During normal play, expanded panels hide their title bars;
 collapsed panels keep a short title bar so they can be expanded again. While
@@ -162,4 +162,4 @@ Add a layout test when adding a new panel or zone behavior. Useful assertions
 are that panel rectangles do not overlap, buttons remain inside their panel,
 and the same target is clickable after the screen size or content changes.
 
-The city tray uses a shared `Row::BuildingCatalog`: ImGui renders it as a four-row child window with native scrolling, while classic renders a compact two-row inset with wheel and draggable scrollbar. All building cards remain in one list; no page buttons are needed.
+The city tray uses a shared `Row::BuildingCatalog` for unit and building production cards, separated by headings. ImGui renders it as a five-row child window with native scrolling; classic renders a five-row inset with wheel and draggable scrollbar. City unit cards use the same pictograms in both presentations. The top-bar Menu button opens Settings without leaving a city view; the City Yields overlay toggle lives there.

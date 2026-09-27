@@ -55,6 +55,20 @@ impl GameState {
             ]);
         }
         panel.gap(GAP);
+        panel.text(BODY, vec![("CITY OVERLAYS".into(), LABEL_TEXT)]);
+        panel.compact_buttons(vec![ButtonSpec {
+            target: Target::ToggleYields,
+            label: if self.show_yields {
+                "CITY YIELDS: ON"
+            } else {
+                "CITY YIELDS: OFF"
+            }
+            .into(),
+            hint: "Y".into(),
+            state: ButtonState::new(self.show_yields, false),
+            armed: false,
+        }]);
+        panel.gap(GAP);
         panel.compact_buttons(vec![
             ButtonSpec {
                 target: Target::CloseSettings,

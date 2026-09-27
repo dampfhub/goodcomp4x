@@ -93,7 +93,7 @@ fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
         first
             .buttons
             .iter()
-            .any(|button| button.target == Target::Building(Building::Granary))
+            .any(|button| button.target == Target::Build(BuildUnit::Melee))
     );
     assert!(
         !first
@@ -169,6 +169,23 @@ fn button_cursor(game: &GameState, target: Target) -> Vec2 {
         .find(|b| b.target == target)
         .expect("button shown");
     to_ui((button.min + button.max) / 2.0, SCREEN)
+}
+
+/// Scroll the shared city production catalogue until a requested card is visible.
+fn catalog_cursor(game: &mut GameState, target: Target) -> Vec2 {
+    let city = game.selected_city.expect("city view open");
+    for offset in 0..64 {
+        game.cities[city].building_scroll = offset;
+        if game
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == target)
+        {
+            return button_cursor(game, target);
+        }
+    }
+    panic!("production card not shown: {target:?}");
 }
 
 /// Where `hex` is drawn, in window pixels.
@@ -278,14 +295,11 @@ fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
         BuildUnit::LandingCraft,
         BuildUnit::BombardShip,
     ] {
-        let card = button_cursor(&game, Target::Build(build));
+        let card = catalog_cursor(&mut game, Target::Build(build));
         assert!(game.layout(SCREEN).button_at(to_ui(card, SCREEN)).is_some());
     }
-    game.handle_click(
-        button_cursor(&game, Target::Build(BuildUnit::LandingCraft)),
-        SCREEN,
-        ClickMode::Normal,
-    );
+    let landing_craft = catalog_cursor(&mut game, Target::Build(BuildUnit::LandingCraft));
+    game.handle_click(landing_craft, SCREEN, ClickMode::Normal);
     let city = game.selected_city.unwrap();
     assert!(
         game.cities[city]
@@ -387,7 +401,7 @@ fn barracks_map_click_locks_site_and_exits_placement() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
-    let button = button_cursor(&game, Target::Building(Building::Barracks));
+    let button = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(button, SCREEN, ClickMode::Normal);
     assert_eq!(game.placing_building, Some((city, Building::Barracks)));
 
@@ -427,7 +441,8 @@ fn barracks_map_click_locks_site_and_exits_placement() {
 }
 
 /// The state of `building`'s card in the open city's tray.
-fn building_card(game: &GameState, building: Building) -> ButtonState {
+fn building_card(game: &mut GameState, building: Building) -> ButtonState {
+    catalog_cursor(game, Target::Building(building));
     game.layout(SCREEN)
         .buttons
         .iter()
@@ -454,7 +469,7 @@ fn ending_the_turn_while_choosing_a_site_leaves_no_preview_on_the_map() {
     let city = game.selected_city.unwrap();
     // Something else to build, so the city isn't left empty-handed.
     game.queue_selected_city_worker();
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
     play_turn(&mut game);
@@ -496,7 +511,7 @@ fn a_building_finished_with_its_city_closed_picks_its_site_when_reopened() {
     game.update(10.0);
     assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
     assert_ne!(
-        building_card(&game, Building::Barracks),
+        building_card(&mut game, Building::Barracks),
         ButtonState::Disabled
     );
     let site = Hex::new(-2, 0);
@@ -518,8 +533,11 @@ fn escape_while_choosing_a_site_cancels_the_building() {
             .queue
             .contains(&Build::Building(Building::Barracks))
     };
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     assert!(barracks_queued(&game));
 
@@ -528,11 +546,14 @@ fn escape_while_choosing_a_site_cancels_the_building() {
     assert_eq!(game.selected_city, Some(city), "the city stays open");
     assert_eq!(game.site_placement(), None);
     assert!(!barracks_queued(&game));
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
 
     // End Turn mid-placement cancels it, and the city, left with nothing to
     // build, asks for something instead of ending the turn.
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     game.end_planning();
     assert!(!game.is_resolving());
@@ -540,17 +561,20 @@ fn escape_while_choosing_a_site_cancels_the_building() {
     assert!(!barracks_queued(&game));
 
     // Closing the city mid-placement cancels it too.
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     game.leave_city_view();
     game.open_city(city);
     game.update(10.0);
     assert!(!barracks_queued(&game));
     assert_eq!(game.site_placement(), None);
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
 
     // With its site chosen, the card is spent until the Barracks is removed.
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     game.city_click(Hex::new(-2, 0));
     assert!(game.exit_structure_menu());
@@ -561,7 +585,7 @@ fn escape_while_choosing_a_site_cancels_the_building() {
     );
     game.open_city(city);
     assert_eq!(
-        building_card(&game, Building::Barracks),
+        building_card(&mut game, Building::Barracks),
         ButtonState::Disabled
     );
     let at = game.cities[city]
@@ -570,7 +594,10 @@ fn escape_while_choosing_a_site_cancels_the_building() {
         .position(|&b| b == Build::Building(Building::Barracks))
         .unwrap();
     game.remove_selected_city_queue_item(at);
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
 }
 
 #[test]
@@ -600,12 +627,8 @@ fn mill_and_workshop_cards_use_shared_placement_controls() {
         (Building::Mill, Hex::new(-2, 0)),
         (Building::Workshop, Hex::new(-1, 0)),
     ] {
-        game.cities[city].building_scroll = if building == Building::Mill { 1 } else { 2 };
-        game.handle_click(
-            button_cursor(&game, Target::Building(building)),
-            SCREEN,
-            ClickMode::Normal,
-        );
+        let card = catalog_cursor(&mut game, Target::Building(building));
+        game.handle_click(card, SCREEN, ClickMode::Normal);
         assert_eq!(game.placing_building, Some((city, building)));
         game.city_click(site);
         assert_eq!(game.cities[city].planned_sites.get(&building), Some(&site));
@@ -974,6 +997,12 @@ fn yields_show_only_for_the_open_city_and_toggle() {
     let mut game = city_view();
     let shown = game.build_vertices().len();
     game.handle_click(
+        button_cursor(&game, Target::OpenSettings),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(game.settings_open);
+    game.handle_click(
         button_cursor(&game, Target::ToggleYields),
         SCREEN,
         ClickMode::Normal,
@@ -982,6 +1011,7 @@ fn yields_show_only_for_the_open_city_and_toggle() {
     assert!(game.build_vertices().len() < shown, "badges hidden");
     game.toggle_yields();
     assert_eq!(game.build_vertices().len(), shown);
+    game.close_settings();
 
     // Hovering a city without opening it no longer shows its yields.
     let city = game.cities[game.selected_city.unwrap()].pos;

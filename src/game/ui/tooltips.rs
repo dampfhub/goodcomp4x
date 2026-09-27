@@ -501,6 +501,7 @@ impl GameState {
                             .then(|| format!("ALREADY {}", setting.value_text(value))),
                     )
                 }
+                Target::OpenSettings => ("SETTINGS".into(), String::new(), "GAME OPTIONS AND CITY OVERLAYS.".into(), None),
                 Target::CloseSettings => (
                     "CLOSE SETTINGS".into(),
                     "ESC".into(),

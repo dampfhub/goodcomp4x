@@ -95,9 +95,15 @@ pub(super) enum Row {
     /// Buttons of equal width; compact ones are one line, label then hint.
     Buttons(Vec<ButtonSpec>, bool),
     /// A bounded, independently scrollable list within the city tray.
-    BuildingCatalog(usize, Vec<ButtonSpec>, usize),
+    BuildingCatalog(usize, Vec<CatalogEntry>, usize),
     /// A row of unit tokens in the unit strip.
     Roster(Vec<RosterChip>),
+}
+
+#[derive(Clone)]
+pub(super) enum CatalogEntry {
+    Heading(&'static str),
+    Card(ButtonSpec),
 }
 
 /// Reusable panel content primitive. Stacks rows top to bottom and measures
@@ -132,10 +138,10 @@ impl PanelBuilder {
     pub(super) fn building_catalog(
         &mut self,
         city: usize,
-        buttons: Vec<ButtonSpec>,
+        entries: Vec<CatalogEntry>,
         offset: usize,
     ) {
-        self.rows.push(Row::BuildingCatalog(city, buttons, offset));
+        self.rows.push(Row::BuildingCatalog(city, entries, offset));
     }
 
     /// A row of unit tokens, each clickable.
@@ -207,9 +213,14 @@ impl PanelBuilder {
                     buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
                 }
             }
-            Row::BuildingCatalog(_, buttons, _) => buttons
+            Row::BuildingCatalog(_, entries, _) => entries
                 .iter()
-                .map(|button| single_line_button_width(&button.label, &button.hint))
+                .filter_map(|entry| match entry {
+                    CatalogEntry::Card(button) => {
+                        Some(single_line_button_width(&button.label, &button.hint))
+                    }
+                    CatalogEntry::Heading(_) => None,
+                })
                 .fold(320.0, f32::max),
             Row::Roster(chips) => {
                 chips.len() as f32 * ROSTER_CHIP
@@ -374,21 +385,29 @@ impl PanelBuilder {
                     let list_width =
                         inner_width - 8.0 - if overflow { SCROLLBAR_WIDTH + 4.0 } else { 0.0 };
                     let offset = offset.min(buttons.len().saturating_sub(visible));
-                    for (index, spec) in buttons.into_iter().enumerate().skip(offset).take(visible)
+                    for (index, entry) in buttons.into_iter().enumerate().skip(offset).take(visible)
                     {
                         let y = region_max.y - 4.0 - (index - offset) as f32 * 34.0;
                         let max = Vec2::new(left + 4.0 + list_width, y).round();
                         let min = Vec2::new(left + 4.0, y - 30.0).round();
-                        layout.buttons.push(Button {
-                            target: spec.target,
-                            label: spec.label,
-                            hint: spec.hint,
-                            state: spec.state,
-                            armed: spec.armed,
-                            faded: self.faded,
-                            min,
-                            max,
-                        });
+                        match entry {
+                            CatalogEntry::Card(spec) => layout.buttons.push(Button {
+                                target: spec.target,
+                                label: spec.label,
+                                hint: spec.hint,
+                                state: spec.state,
+                                armed: spec.armed,
+                                faded: self.faded,
+                                min,
+                                max,
+                            }),
+                            CatalogEntry::Heading(label) => push_text_row(
+                                layout,
+                                Vec2::new(min.x + 4.0, (min.y + max.y) / 2.0),
+                                SMALL,
+                                vec![(label.into(), LABEL_TEXT)],
+                            ),
+                        }
                     }
                     if overflow {
                         let track_min =

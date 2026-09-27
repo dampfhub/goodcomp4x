@@ -1,6 +1,6 @@
 //! The bottom-left command tray: a unit, a group, a city or a Barracks.
 
-use super::builder::{ButtonSpec, PanelBuilder};
+use super::builder::{ButtonSpec, CatalogEntry, PanelBuilder};
 use super::text::{ability_text, compare, quantity, signed_quantity, stat_spans, turns_text};
 use super::{
     BODY, BOOSTED_TEXT, ButtonState, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, QueueItemSpec,
@@ -561,42 +561,30 @@ impl GameState {
             } else {
                 vec![BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
             };
-        panel.buttons(
-            builds
-                .into_iter()
-                .map(|build| ButtonSpec {
-                    target: Target::Build(build),
-                    label: build.name().into(),
-                    hint: format!("{} · {} PROD", build.shortcut(), quantity(build.cost())),
-                    state: ButtonState::new(city.queue.first() == Some(&Build::Unit(build)), false),
-                    armed: false,
-                })
-                .chain([ButtonSpec {
-                    target: Target::BuildWorker,
-                    label: "WORKER".into(),
-                    hint: format!("{WORKER_SHORTCUT} · {} PROD", quantity(WORKER_COST)),
-                    state: ButtonState::new(city.queue.first() == Some(&Build::Worker), false),
-                    armed: false,
-                }])
-                .collect(),
-        );
-        panel.gap(GAP);
-        panel.buttons(vec![
-            ButtonSpec {
-                target: Target::ToggleYields,
-                label: "YIELDS".into(),
-                hint: "Y".into(),
-                state: ButtonState::new(self.show_yields, false),
+        let unit_buttons: Vec<_> = builds
+            .into_iter()
+            .map(|build| ButtonSpec {
+                target: Target::Build(build),
+                label: build.name().into(),
+                hint: format!("{} | {} PROD", build.shortcut(), quantity(build.cost())),
+                state: ButtonState::new(city.queue.first() == Some(&Build::Unit(build)), false),
                 armed: false,
-            },
-            ButtonSpec {
-                target: Target::OpenInterior,
-                label: "CITY INTERIOR".into(),
-                hint: "V".into(),
-                state: ButtonState::Ready,
+            })
+            .chain([ButtonSpec {
+                target: Target::BuildWorker,
+                label: "WORKER".into(),
+                hint: format!("{WORKER_SHORTCUT} | {} PROD", quantity(WORKER_COST)),
+                state: ButtonState::new(city.queue.first() == Some(&Build::Worker), false),
                 armed: false,
-            },
-        ]);
+            }])
+            .collect();
+        panel.buttons(vec![ButtonSpec {
+            target: Target::OpenInterior,
+            label: "CITY INTERIOR".into(),
+            hint: "V".into(),
+            state: ButtonState::Ready,
+            armed: false,
+        }]);
         panel.gap(GAP);
         panel.text(
             SMALL,
@@ -636,8 +624,13 @@ impl GameState {
                 armed: false,
             })
             .collect();
-        panel.text(SMALL, vec![("BUILDINGS".into(), LABEL_TEXT)]);
-        panel.building_catalog(i, building_buttons, city.building_scroll);
+        let mut production_entries =
+            Vec::with_capacity(unit_buttons.len() + building_buttons.len() + 2);
+        production_entries.push(CatalogEntry::Heading("UNITS"));
+        production_entries.extend(unit_buttons.into_iter().map(CatalogEntry::Card));
+        production_entries.push(CatalogEntry::Heading("BUILDINGS"));
+        production_entries.extend(building_buttons.into_iter().map(CatalogEntry::Card));
+        panel.building_catalog(i, production_entries, city.building_scroll);
         if let Some(tile) = city.barracks {
             let active = city.worked.first() == Some(&tile);
             let status = if active {
