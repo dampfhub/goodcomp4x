@@ -1143,7 +1143,9 @@ impl ImGuiLayoutState {
         }
     }
 
-    fn record(&mut self, slot: usize, ui: &Ui, arranging: bool) {
+    /// `resized` says whether this frame's geometry was ours to set (see
+    /// `title_bar_after`).
+    fn record(&mut self, slot: usize, ui: &Ui, arranging: bool, resized: bool) {
         let docked = unsafe { ::imgui::sys::igIsWindowDocked() };
         if self.windows[slot].docked && !docked {
             self.windows[slot].manual = true;
@@ -1156,7 +1158,7 @@ impl ImGuiLayoutState {
             self.windows[slot].floating_pos = self.windows[slot].pos;
         }
         self.windows[slot].content_height = ui.cursor_pos()[1] + ui.clone_style().window_padding[1];
-        self.windows[slot].title_visible = arranging;
+        self.windows[slot].title_visible = title_bar_after(self.windows[slot], arranging, resized);
     }
 }
 
@@ -1214,6 +1216,22 @@ fn title_bar_change(window: WindowGeometry, arranging: bool, title_height: f32) 
         } else {
             -title_height
         })
+}
+
+/// Whether `window` counts its title bar as shown after this frame. It
+/// follows Ctrl (`arranging`), except when the title bar just changed on a
+/// panel `title_bar_change` resizes and this frame's geometry wasn't ours to
+/// set (`resized` false: ImGui is dragging it, or it's docked). The resize
+/// that goes with the change was skipped then, so the change stays pending for
+/// the next frame; recording it anyway would leave the panel a title bar too
+/// tall (Ctrl let go mid-drag) or too short, and every Ctrl after that would
+/// add to it.
+fn title_bar_after(window: WindowGeometry, arranging: bool, resized: bool) -> bool {
+    if !resized && title_bar_change(window, arranging, 0.0).is_some() {
+        window.title_visible
+    } else {
+        arranging
+    }
 }
 
 /// How wide the unit strip's window wants to be: its widest row of tokens,
@@ -1754,7 +1772,9 @@ impl GameState {
         // While ImGui is moving a panel or showing docking targets it owns the
         // geometry. Applying our automatic position here makes edge previews
         // oscillate between the two layout systems.
-        if !layout.windows[slot].docked && !layout.defer_geometry && dock_debug_now.is_none() {
+        let resized =
+            !layout.windows[slot].docked && !layout.defer_geometry && dock_debug_now.is_none();
+        if resized {
             window = window
                 .position(position.to_array(), condition)
                 .size(size.to_array(), size_condition)
@@ -1775,7 +1795,7 @@ impl GameState {
                 ui.set_scroll_y(0.0);
             }
             self.render_imgui_panel(ui, panel, fonts, None, actions);
-            layout.record(slot, ui, arranging);
+            layout.record(slot, ui, arranging, resized);
         });
         // A collapsed window skips the build closure; native state is still
         // available after Begin/End for the next layout pass.
@@ -2658,6 +2678,38 @@ mod tests {
         ] {
             assert_eq!(title_bar_change(other, true, 26.0), None);
         }
+    }
+
+    #[test]
+    fn letting_go_of_ctrl_mid_drag_still_shrinks_the_panel_once() {
+        // A panel the player placed, dragged with Ctrl held: title bar shown.
+        let mut window = WindowGeometry {
+            pos: Vec2::new(40.0, 80.0),
+            size: Vec2::new(300.0, 226.0),
+            manual: true,
+            title_visible: true,
+            ..WindowGeometry::default()
+        };
+        // Ctrl let go while the mouse still drags: ImGui owns the geometry,
+        // so the shrink can't happen yet, and the title bar still counts.
+        assert_eq!(title_bar_change(window, false, 26.0), Some(-26.0));
+        window.title_visible = title_bar_after(window, false, false);
+        assert!(window.title_visible, "the change waits");
+        // The next frame is ours: it shrinks, once, and the change is done.
+        assert_eq!(title_bar_change(window, false, 26.0), Some(-26.0));
+        window.size.y -= 26.0;
+        window.title_visible = title_bar_after(window, false, true);
+        assert!(!window.title_visible);
+        assert_eq!(title_bar_change(window, false, 26.0), None);
+        assert_eq!(window.size.y, 200.0);
+        // Pressing Ctrl again grows it back by the same, no more.
+        assert_eq!(title_bar_change(window, true, 26.0), Some(26.0));
+        // An automatic panel just follows Ctrl, resized or not.
+        let auto = WindowGeometry {
+            manual: false,
+            ..window
+        };
+        assert!(title_bar_after(auto, true, false));
     }
 
     #[test]
