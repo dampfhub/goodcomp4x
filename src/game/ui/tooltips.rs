@@ -457,6 +457,23 @@ impl GameState {
                     None,
                 ),
                 Target::ToggleFog => ("FOG OF WAR".into(), "F10".into(), String::new(), None),
+                Target::StepSetting(setting, delta) => {
+                    let value = self.settings.get(setting);
+                    let next = value + delta;
+                    (
+                        setting.name().into(),
+                        if delta < 0 { "<" } else { ">" }.into(),
+                        setting.description().into(),
+                        (!setting.range().contains(&next))
+                            .then(|| format!("ALREADY {}", setting.value_text(value))),
+                    )
+                }
+                Target::CloseSettings => (
+                    "CLOSE SETTINGS".into(),
+                    "ESC".into(),
+                    String::new(),
+                    None,
+                ),
                 Target::ToggleYields => (
                     "YIELDS".into(),
                     "Y".into(),

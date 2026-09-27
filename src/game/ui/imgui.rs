@@ -118,17 +118,28 @@ const STATUS_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
 /// Height of a progress bar row (`Row::Bar`).
 const BAR_HEIGHT: f32 = 12.0;
 const COLLAPSED_HEIGHT: f32 = 30.0;
-const SLOT_COUNT: usize = 5;
+const SLOT_COUNT: usize = 6;
 const SELECTION: usize = 0;
 const QUEUE: usize = 1;
 const DEBUG: usize = 2;
 const INSPECT: usize = 3;
 const UNITS: usize = 4;
+const SETTINGS: usize = 5;
 /// Each slot's native window title, by slot. A new panel that isn't static
 /// chrome (like the status bar) gets a slot here, so it can be dragged,
 /// docked, resized and put in a box like the rest.
-const SLOT_TITLES: [&str; SLOT_COUNT] =
-    ["Selection", "Production Queue", "Debug", "Inspect", "Units"];
+const SLOT_TITLES: [&str; SLOT_COUNT] = [
+    "Selection",
+    "Production Queue",
+    "Debug",
+    "Inspect",
+    "Units",
+    "Settings",
+];
+/// The order `plan` places automatic panels in: earlier ones get the space
+/// nearest their zone's corner. The settings menu, which Escape just
+/// opened, goes above Debug.
+const PLAN_ORDER: [usize; SLOT_COUNT] = [SELECTION, QUEUE, SETTINGS, DEBUG, INSPECT, UNITS];
 
 #[derive(Clone, Copy)]
 struct QueueDockRelation {
@@ -1075,7 +1086,7 @@ impl ImGuiLayoutState {
                 });
             }
         }
-        for slot in 0..SLOT_COUNT {
+        for slot in PLAN_ORDER {
             if positions[slot].is_some() {
                 continue;
             }
@@ -1083,6 +1094,7 @@ impl ImGuiLayoutState {
             let zone = match slot {
                 SELECTION | QUEUE | INSPECT => Zone::BottomLeft,
                 UNITS => Zone::TopLeft,
+                // Debug and Settings.
                 _ => Zone::TopRight,
             };
             for height_scale in [1.0, 0.85, 0.65, 0.45, 0.25] {
@@ -2150,6 +2162,7 @@ impl GameState {
             (560.0_f32.min(max_width), 330.0_f32.min(max_width))
         };
         let units = self.roster_panel();
+        let settings = self.settings_open.then(|| self.settings_panel_content());
         let queue_height = measure_panel(ui, &queue, fonts, left_width, arranging).min(225.0);
         let mut tray_height = measure_panel(ui, &tray, fonts, left_width, arranging).min(available);
         // On a narrow screen the queue cannot wrap into a second column, so
@@ -2177,6 +2190,12 @@ impl GameState {
                 Vec2::new(
                     width,
                     measure_panel(ui, units, fonts, width, arranging).min(available),
+                )
+            }),
+            settings.as_ref().map(|settings| {
+                Vec2::new(
+                    debug_width,
+                    measure_panel(ui, settings, fonts, debug_width, arranging).min(available),
                 )
             }),
         ];
@@ -2278,6 +2297,24 @@ impl GameState {
                 size,
                 viewport,
                 units,
+                fonts,
+                arranging,
+                false,
+                &mut actions,
+            );
+        }
+        if let (Some(position), Some(size), Some(settings)) =
+            (positions[SETTINGS], sizes[SETTINGS], settings.as_ref())
+        {
+            self.render_imgui_window(
+                ui,
+                layout,
+                SETTINGS,
+                SLOT_TITLES[SETTINGS],
+                position,
+                size,
+                viewport,
+                settings,
                 fonts,
                 arranging,
                 false,
@@ -2549,6 +2586,7 @@ mod tests {
             Some(Vec2::new(330.0, 300.0)),
             None,
             None,
+            None,
         ];
         let positions = layout.plan(viewport, &mut sizes);
         let selection = positions[SELECTION].unwrap();
@@ -2725,7 +2763,7 @@ mod tests {
             layout.condition(SELECTION, Vec2::new(1200.0, 800.0)),
             Condition::Always
         );
-        let mut sizes = [Some(Vec2::new(300.0, 200.0)), None, None, None, None];
+        let mut sizes = [Some(Vec2::new(300.0, 200.0)), None, None, None, None, None];
         let positions = layout.plan(Vec2::new(1200.0, 800.0), &mut sizes);
         assert_eq!(
             positions[SELECTION].unwrap().y,
@@ -2764,9 +2802,34 @@ mod tests {
             Some(Vec2::new(330.0, 340.0)),
             Some(Vec2::new(345.0, 190.0)),
             Some(Vec2::new(260.0, 90.0)),
+            Some(Vec2::new(330.0, 180.0)),
         ];
         let positions = ImGuiLayoutState::default().plan(viewport, &mut sizes);
         assert!(positions.iter().all(Option::is_some));
+        assert_fits_without_overlap(viewport, sizes, positions);
+    }
+
+    #[test]
+    fn the_settings_menu_opens_top_right_above_debug() {
+        let viewport = Vec2::new(1600.0, 900.0);
+        let mut sizes = [
+            Some(Vec2::new(560.0, 300.0)),
+            None,
+            Some(Vec2::new(330.0, 340.0)),
+            None,
+            Some(Vec2::new(260.0, 90.0)),
+            Some(Vec2::new(330.0, 200.0)),
+        ];
+        let positions = ImGuiLayoutState::default().plan(viewport, &mut sizes);
+        let settings = positions[SETTINGS].expect("settings placed");
+        let debug = positions[DEBUG].expect("debug placed");
+        assert_eq!(settings.y, STATUS_HEIGHT + PANEL_MARGIN, "at the top");
+        assert_eq!(
+            settings.x + sizes[SETTINGS].unwrap().x,
+            viewport.x - PANEL_MARGIN,
+            "at the right"
+        );
+        assert!(debug.y >= settings.y + sizes[SETTINGS].unwrap().y, "below");
         assert_fits_without_overlap(viewport, sizes, positions);
     }
 
@@ -2777,6 +2840,7 @@ mod tests {
             Some(Vec2::new(500.0, 370.0)),
             Some(Vec2::new(500.0, 180.0)),
             Some(Vec2::new(280.0, 280.0)),
+            None,
             None,
             None,
         ];
@@ -2811,6 +2875,7 @@ mod tests {
         let mut sizes = [
             Some(layout.size(SELECTION, Vec2::new(560.0, 200.0), viewport, false)),
             Some(Vec2::new(560.0, 180.0)),
+            None,
             None,
             None,
             None,
@@ -2864,6 +2929,7 @@ mod tests {
             Some(Vec2::new(330.0, 330.0)),
             Some(Vec2::new(345.0, 190.0)),
             None,
+            None,
         ];
         let positions = ImGuiLayoutState::default().plan(viewport, &mut sizes);
         assert!(positions[..3].iter().all(Option::is_some));
@@ -2877,6 +2943,7 @@ mod tests {
             Some(Vec2::new(315.0, 167.0)),
             Some(Vec2::new(315.0, 225.0)),
             Some(Vec2::new(275.0, 400.0)),
+            None,
             None,
             None,
         ];

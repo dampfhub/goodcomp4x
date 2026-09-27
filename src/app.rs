@@ -652,7 +652,9 @@ impl ApplicationHandler for App {
                     self.game.camera.zoom(steps);
                 }
             }
-            // Escape closes management first; otherwise holding it quits.
+            // Escape closes the settings menu, a view or the selection first;
+            // with nothing to close it opens the settings menu, and holding
+            // it from there quits.
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -663,13 +665,8 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
-                if state == ElementState::Pressed
-                    && (self.game.exit_structure_menu() || self.game.clear_selection())
-                {
-                    self.quit_held_since = None;
-                } else {
-                    self.quit_held_since = (state == ElementState::Pressed).then(Instant::now);
-                }
+                self.quit_held_since =
+                    (state == ElementState::Pressed && self.game.press_escape()).then(Instant::now);
             }
             WindowEvent::KeyboardInput {
                 event:

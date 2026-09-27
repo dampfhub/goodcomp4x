@@ -142,13 +142,14 @@ city center enters the interior map; its clicks control only the interior copies
 | Hover a unit | Its stats, in a box at the top-right |
 | Hover a city or barracks | Its production and current build (plus city growth or barracks HP), at the bottom-left |
 | F5 | Toggle borderless fullscreen |
-| Hold Escape for 1 s | Quit (a prompt shows while it's held), once no view, selection or tile panel is open for it to close |
+| Escape with nothing open | Open the settings menu (below); Escape again, or its Close button, closes it |
+| Hold Escape for 1 s | Quit (a prompt shows while it's held), once no settings menu, view, selection or tile panel is open for it to close: the press opens the settings menu, and holding on quits |
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
 | F4 | Start a newly generated world; every press makes a new map |
 | F12 | Start a siege at Red's city with its interior open |
 | F6 | Save a snapshot of the whole game (in memory only) |
 | F7 | Load the snapshot; it is kept, so it can be loaded again |
-| F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome) |
+| F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome); also in the settings menu |
 | F9 | Pay for the open city's or barracks' current build at once (debug; a building still needs its site and Confirm) |
 | F10 | Toggle fog of war (on by default) |
 | F11 | Switch between the ImGui and classic UI presentations |
@@ -158,6 +159,26 @@ city center enters the interior map; its clicks control only the interior copies
 The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10; the current scenario is
 gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
 order.
+
+## Settings menu
+
+Escape opens the settings menu once there's nothing else for it to close. Each press closes one
+thing, in this order: the settings menu itself, a city interior, a site being chosen, a city or
+barracks view, wall or gate placement, then the selection and the tile panel. The menu is a
+panel at the top-right, above DEBUG; like the other panels, hold Ctrl to drag, resize or dock
+it. The game carries on while it's open.
+
+| Control | Action |
+| --- | --- |
+| < / > beside a setting | Step it down / up (a button is faded at that end of the setting's range) |
+| Close button, or Escape | Close the menu |
+
+| Setting | Values |
+| --- | --- |
+| Turn playback | All at once (the default) or step by step, the same switch as F8 |
+
+Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
+and loads (F7).
 
 ## Command line
 

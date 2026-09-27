@@ -106,13 +106,13 @@ impl GameState {
             return;
         }
         self.step_timer -= dt;
-        // With instant playback (a debug setting) every step resolves at
+        // With instant playback (a player setting, `settings.rs`) every step resolves at
         // once, still in order, so the outcome is the same.
-        if self.step_timer > 0.0 && !self.instant_playback {
+        if self.step_timer > 0.0 && !self.settings.instant_playback {
             return;
         }
 
-        if self.instant_playback {
+        if self.settings.instant_playback {
             self.recent_actors.clear();
         }
         while let Some(step) = self.pending_steps.pop_front() {
@@ -122,7 +122,7 @@ impl GameState {
             };
             if !actors.is_empty() {
                 self.highlight_timer = HIGHLIGHT_DURATION;
-                if self.instant_playback {
+                if self.settings.instant_playback {
                     self.recent_actors.extend(actors);
                     continue;
                 }

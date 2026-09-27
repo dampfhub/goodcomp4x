@@ -96,7 +96,7 @@ impl GameState {
             );
         }
         panel.gap(GAP);
-        let playback = if self.instant_playback {
+        let playback = if self.settings.instant_playback {
             "PLAYBACK: ALL AT ONCE"
         } else {
             "PLAYBACK: STEP BY STEP"

@@ -20,9 +20,9 @@ load) holds a copy of the whole game in memory; it survives scenario switches, l
 snapshot (and the camera, within the same scenario), and saving is refused mid-turn. Loading
 doesn't restore the dice: combat rolls carry on from the current game, so a retry can go
 differently. Instant
-playback (F8, on by default) resolves every step of a turn at once, in the same order, so
-outcomes don't change. Fog of war (F10) is on by default. Both settings survive switches and
-loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
+playback (F8, or Turn Playback in the settings menu; on by default) resolves every step of a
+turn at once, in the same order, so outcomes don't change. Fog of war (F10) is on by default.
+Both settings, and every other player setting (`settings.rs`), survive switches and loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
 seed, and has COMPLETE PRODUCTION (F9), which pays for the open city's or barracks' current
 build at once: a unit appears if a neighboring hex is open, and a Barracks, Mill or Workshop
 still needs its site and Confirm.
@@ -504,9 +504,9 @@ every turn end.
   Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
   food (green grain) and production (amber hammers) with delivery percentages.
-- Escape closes an open city or barracks view, or else lets go of the selected unit or group and
-  closes the tile panel; with none of those open, holding it for a second quits, with a
-  "HOLD ESC TO QUIT" bar. F5 toggles borderless fullscreen.
+- Escape closes the settings menu, or else an open city or barracks view, or else lets go of the
+  selected unit or group and closes the tile panel; with none of those open, it opens the
+  settings menu, and holding it for a second quits, with a "HOLD ESC TO QUIT" bar. F5 toggles borderless fullscreen.
 
 ## AI (`ai.rs`)
 

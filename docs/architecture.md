@@ -83,6 +83,15 @@ copies in place of the exterior world; the exterior camera is restored on exit.
 
 The rules each step applies are in `game-rules.md`.
 
+## Player settings
+
+`Settings` (`src/game/settings.rs`) holds the player's options, owned by `GameState` as
+`settings`, with defaults in `Settings::default`. Game code reads its fields directly. The
+settings menu Escape opens (`press_escape`) lists every `Setting` from `Setting::ALL`, each an
+integer stepped through its `range`, so a new setting is a field and its `Setting` entry in that
+one file; both UI presentations pick it up (`docs/ui-system.md`). `switch_scenario` and
+`load_state` carry the settings, and whether the menu is open, over into the new game.
+
 ## Testing aids
 
 Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world, F12 siege) are constructors on

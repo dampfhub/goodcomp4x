@@ -2,7 +2,7 @@
 
 The shared UI content lives in `src/game/ui/`. The module is split into
 `mod.rs` (shared types and entry points), `builder.rs` (panel content),
-`trays.rs`, `panels.rs`, `queue.rs`, `roster.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
+`trays.rs`, `panels.rs`, `queue.rs`, `roster.rs`, `settings_menu.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
 experimental ImGui presentation (`src/game/ui/imgui.rs`), and F11 switches
 between it and the classic layout. `src/game/AGENTS.md` points contributors
 here. Add new controls to the shared `PanelBuilder` content and route their
@@ -44,6 +44,17 @@ a fixed window. The unit strip (`roster.rs`, a `Row::Roster` of unit tokens,
 slot `UNITS`, starting top-left) is an example; its tokens are drawn with the
 map's own token geometry through the window draw list. In the classic layout
 it docks at `Zone::TopLeft` before the debug panel.
+The settings menu (`settings_menu.rs`, slot `SETTINGS`) is another: Escape
+opens it (`GameState::press_escape`, `game/settings.rs`) and it shows only
+while open. It is a full panel rather than a fixed modal, so the player can
+move or dock it and keep playing. ImGui places it top-right above Debug
+(`PLAN_ORDER` in `imgui.rs` puts it first in that zone); classic docks it at
+`Zone::TopRight`, after the unit strip and before debug. Its content,
+`settings_panel_content`, has a name-and-value line and a row of < and >
+buttons (`Target::StepSetting`) for every entry of `Setting::ALL`, then Close
+(`Target::CloseSettings`). A new setting therefore needs no UI code: add it
+in `game/settings.rs` as its module comment describes, and both
+presentations show it and step it through its range.
 At the start of each frame, synchronize native ImGui dock state before planning
 floating positions: ImGui commits a highlighted drop in `NewFrame`, and using
 the previous frame's floating state can immediately undo that split.
