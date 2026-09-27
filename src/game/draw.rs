@@ -28,7 +28,6 @@ const OUTER_BORDER_RADIUS: f32 = HEX_SIZE * (2.0 - HEX_FILL_SCALE);
 /// The grey veil over remembered hexes out of sight, and the line where they
 /// meet hexes in sight: a light, cool grey like the cloud, so it can't be
 /// mistaken for the dark gaps between ordinary hexes.
-const OUT_OF_SIGHT_COLOR: Color = [0.20, 0.20, 0.22, 0.38];
 const FOG_EDGE_COLOR: Color = [0.24, 0.25, 0.28, 1.0];
 /// The fog edge fills the whole gap between two hexes' fills: each fill stops
 /// short of its hex's edge by (1 - HEX_FILL_SCALE) of the apothem, sqrt(3) / 2.
@@ -36,9 +35,8 @@ const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 /// Along a river the fog edge widens to cover it whole, since a river is wider
 /// than the gap; otherwise a sliver of it would show on the side in sight.
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
-/// Faint light puffs over the grey veil, for a look of cloud cover.
-const CLOUD_COLOR: Color = [0.85, 0.87, 0.9, 0.07];
-const CLOUD_PUFFS: usize = 3;
+const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
+const CLOUD_SPACING: f32 = 3.4;
 const PLAINS_COLOR: Color = [0.26, 0.24, 0.12, 1.0];
 const GRASSLAND_COLOR: Color = [0.12, 0.20, 0.08, 1.0];
 const DESERT_COLOR: Color = [0.45, 0.36, 0.17, 1.0];
@@ -262,10 +260,8 @@ impl GameState {
         out
     }
 
-    /// Veils remembered hexes out of sight in grey, and outlines each stretch
-    /// of them in darker grey where it meets hexes in sight. Never-seen hexes need
-    /// nothing: nothing is drawn on them, so the background shows. Drawn over
-    /// the map and cities but under units and orders.
+    /// Darkens remembered terrain and covers unexplored areas with clouds.
+    /// Drawn over the map and cities but under units and orders.
     fn push_fog(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         if !self.fog_of_war {
             return;
@@ -278,18 +274,15 @@ impl GameState {
         let blank = |h: Hex| !self.grid.contains(h) || !self.is_explored(h);
         for &hex in &remembered {
             let center = hex.to_world();
-            mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, OUT_OF_SIGHT_COLOR, out);
+            mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, REMEMBERED_TINT, out);
             // Facing blank, the border reaches past the hex (see
             // OUTER_BORDER_RADIUS); veil that outer half too, so the band
             // is one shade.
             for n in hex.neighbors().into_iter().filter(|&n| blank(n)) {
                 let (a, b) = edge_corners(hex, n);
                 let grow = |p: Vec2| center + (p - center) * (OUTER_BORDER_RADIUS / HEX_SIZE);
-                mesh::polygon(&[a, b, grow(b), grow(a)], OUT_OF_SIGHT_COLOR, out);
+                mesh::polygon(&[a, b, grow(b), grow(a)], REMEMBERED_TINT, out);
             }
-        }
-        for &hex in &remembered {
-            push_cloud_puffs(hex, out);
         }
         for &hex in &remembered {
             for n in hex.neighbors() {
@@ -308,27 +301,91 @@ impl GameState {
                 }
             }
         }
+        let unexplored: HashSet<Hex> = self
+            .grid
+            .all_hexes()
+            .filter(|h| !self.is_explored(*h) && !fog.sees(*h))
+            .collect();
+        // Unknown terrain was never drawn, so the renderer's dark background
+        // is already the cloud base. Reserve once for the sparse puff mesh.
+        out.reserve(unexplored.len() * 120);
+        push_cloud_banks(&self.grid, &unexplored, out);
     }
 }
 
-/// A few faint, soft puffs over a remembered hex, so the grey veil reads as
-/// patchy cloud cover. Their size and place come from hashing the hex, so
-/// they stay put frame to frame and differ between neighbors. They stay
-/// inside the hex, clear of the fog's edge.
-fn push_cloud_puffs(hex: Hex, out: &mut Vec<Vertex>) {
+/// Stable pseudo-random number for one cell of the cloud lattice.
+fn cloud_hash(x: i32, y: i32, salt: u32) -> f32 {
     let mut bits =
-        (hex.q as u32).wrapping_mul(0x9E37_79B1) ^ (hex.r as u32).wrapping_mul(0x85EB_CA77);
-    let mut next = || {
-        bits ^= bits << 13;
-        bits ^= bits >> 17;
-        bits ^= bits << 5;
-        (bits % 1000) as f32 / 1000.0
+        (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77) ^ salt;
+    bits ^= bits >> 16;
+    bits = bits.wrapping_mul(0x7FEB_352D);
+    bits ^= bits >> 15;
+    bits as f32 / u32::MAX as f32
+}
+
+/// Draws one shaded octagon per world-space lattice point. This keeps
+/// the cloud pattern continuous across hexes while doing constant, cheap work
+/// per puff: no recursive subdivision and no noise sampling per vertex.
+fn push_cloud_banks(grid: &HexGrid, unexplored: &HashSet<Hex>, out: &mut Vec<Vertex>) {
+    let Some((min, max)) =
+        grid.all_hexes()
+            .map(Hex::to_world)
+            .fold(None, |bounds: Option<(Vec2, Vec2)>, p| {
+                Some(match bounds {
+                    None => (p, p),
+                    Some((min, max)) => (min.min(p), max.max(p)),
+                })
+            })
+    else {
+        return;
     };
-    for _ in 0..CLOUD_PUFFS {
-        let angle = next() * TAU;
-        let offset = Vec2::from_angle(angle) * (0.1 + 0.25 * next());
-        let radius = 0.25 + 0.15 * next();
-        mesh::regular_polygon(hex.to_world() + offset, radius, 14, 0.0, CLOUD_COLOR, out);
+    let min_x = (min.x / CLOUD_SPACING).floor() as i32 - 1;
+    let max_x = (max.x / CLOUD_SPACING).ceil() as i32 + 1;
+    let min_y = (min.y / CLOUD_SPACING).floor() as i32 - 1;
+    let max_y = (max.y / CLOUD_SPACING).ceil() as i32 + 1;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let bank = Vec2::new(x as f32, y as f32) * CLOUD_SPACING;
+            for puff in 0..3_u32 {
+                let salt = puff.wrapping_mul(0x9E37_79B9);
+                let angle = cloud_hash(x, y, 0xA341_316C ^ salt) * TAU;
+                let offset = 0.35 + cloud_hash(x, y, 0xC801_3EA4 ^ salt) * 1.25;
+                let center = bank + Vec2::from_angle(angle) * offset;
+                let hex = Hex::from_world(center);
+                if !unexplored.contains(&hex) {
+                    continue;
+                }
+                let boundary = hex
+                    .neighbors()
+                    .into_iter()
+                    .any(|n| !unexplored.contains(&n));
+                let mut radius = 0.88 + cloud_hash(x, y, 0xAD90_777D ^ salt) * 0.42;
+                if boundary {
+                    radius = radius.min(0.62);
+                }
+                let rotation = cloud_hash(x, y, 0x7E95_761E ^ salt) * TAU;
+                push_cloud_puff(center, radius, rotation, out);
+            }
+        }
+    }
+}
+
+fn push_cloud_puff(center: Vec2, radius: f32, rotation: f32, out: &mut Vec<Vertex>) {
+    const SIDES: u32 = 8;
+    let vertex = |p: Vec2, color: Color| Vertex {
+        pos: [p.x, p.y, 0.0],
+        color,
+        uv: crate::renderer::SOLID_UV,
+    };
+    let middle = vertex(center, [0.19, 0.20, 0.23, 0.64]);
+    for i in 0..SIDES {
+        let corner =
+            |i| center + Vec2::from_angle(rotation + TAU * i as f32 / SIDES as f32) * radius;
+        out.extend([
+            middle,
+            vertex(corner(i), [0.10, 0.11, 0.14, 0.38]),
+            vertex(corner(i + 1), [0.10, 0.11, 0.14, 0.38]),
+        ]);
     }
 }
 
@@ -1318,6 +1375,39 @@ mod tests {
     use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
     use crate::game::unit::{Unit, UnitType};
 
+    #[test]
+    fn explored_map_has_no_cloud_bank_geometry() {
+        let mut game = GameState::world_scenario(3);
+        for h in game.grid.all_hexes() {
+            game.memory
+                .insert(h, super::super::fog::Sighting::default());
+        }
+        let fog = game.fog();
+        let mut vertices = Vec::new();
+        game.push_fog(&fog, &mut vertices);
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.color == REMEMBERED_TINT || v.color == FOG_EDGE_COLOR)
+        );
+        game.fog_of_war = false;
+        vertices.clear();
+        game.push_fog(&game.fog(), &mut vertices);
+        assert!(vertices.is_empty());
+    }
+
+    #[test]
+    fn unexplored_cloud_geometry_stays_small() {
+        let game = GameState::world_scenario(3);
+        let mut vertices = Vec::new();
+        game.push_fog(&game.fog(), &mut vertices);
+        // The former recursively sampled mesh emitted well over 150,000 fog
+        // vertices here. Keep enough headroom for map-size tuning without
+        // allowing that per-frame cost back in.
+        assert!(vertices.len() < 70_000, "{} fog vertices", vertices.len());
+        assert!(vertices.iter().any(|v| v.color[3] < 1.0));
+    }
+
     /// The color of the last opaque triangle drawn over `point`.
     fn top_color(vertices: &[Vertex], point: Vec2) -> Option<Color> {
         vertices
@@ -1325,7 +1415,7 @@ mod tests {
             .0
             .iter()
             .rev()
-            .filter(|t| t[0].color[3] == 1.0)
+            .filter(|t| t.iter().all(|v| v.color[3] == 1.0))
             .find(|t| {
                 let [a, b, c] = [0, 1, 2].map(|i| Vec2::new(t[i].pos[0], t[i].pos[1]));
                 let sides = [
@@ -1368,13 +1458,14 @@ mod tests {
                 .expect("such an edge on the map")
         };
 
-        // Both halves of the gap are border: the explored hex's own and the
-        // never-seen hex's, which draws nothing itself.
+        // Both halves of the gap retain the explored tile's border; cloud
+        // puffs are translucent and do not replace that opaque geometry.
         let (hex, unexplored) = edge_to(&|h: Hex| game.grid.contains(h) && !game.is_explored(h));
         for point in [in_gap(hex, unexplored), in_gap(unexplored, hex)] {
             assert_eq!(top_color(&vertices, point), Some(BORDER_COLOR));
         }
-        // Beyond that, the background shows.
+        // The unknown tile has no terrain geometry; cloud puffs blend over
+        // the renderer's dark background.
         let beyond = unexplored.to_world();
         assert_eq!(top_color(&vertices, beyond), None);
     }
