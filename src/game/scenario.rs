@@ -4,7 +4,9 @@
 //! savestate survives switching pages, and loading it can be repeated to
 //! retry the same situation.
 
-use super::GameState;
+use rand::RngExt;
+
+use super::{GameRng, GameState};
 
 /// The test scenarios F1-F4 switch between.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -54,25 +56,40 @@ impl Scenario {
             .find(|scenario| scenario.name().eq_ignore_ascii_case(name))
     }
 
-    /// A fresh game in this scenario (a new random map for the world).
-    pub fn start(self) -> GameState {
+    /// A fresh game of this scenario, on a random map for the world.
+    pub fn new_game(self) -> GameState {
+        self.start(&mut rand::SeedableRng::seed_from_u64(rand::random()))
+    }
+
+    /// A fresh game of this scenario, drawing the world's map seed from `rng`.
+    fn start(self, rng: &mut GameRng) -> GameState {
         match self {
             Scenario::Combat => GameState::new(),
             Scenario::Cities => GameState::city_scenario(),
             Scenario::Frontier => GameState::frontier_scenario(),
-            Scenario::World => GameState::world_scenario(rand::random()),
+            Scenario::World => GameState::world_scenario(rng.random()),
         }
     }
 }
 
 impl GameState {
+    /// Seeds the game's RNG, which rolls damage and picks the map of every
+    /// F4 world started from this game, so the same seed and orders replay
+    /// the same game.
+    #[cfg(test)]
+    pub(super) fn seed_rng(&mut self, seed: u64) {
+        self.rng = rand::SeedableRng::seed_from_u64(seed);
+    }
+
     /// F1-F4: starts `scenario` afresh (restarting it, if it's the current
-    /// one; the world gets a new random map), keeping the savestate and
-    /// debug settings.
+    /// one; the world gets a new random map), keeping the savestate, debug
+    /// settings and the RNG (so a seeded game stays reproducible).
     pub fn switch_scenario(&mut self, scenario: Scenario) {
         let savestate = self.savestate.take();
         let (instant_playback, fog_of_war) = (self.instant_playback, self.fog_of_war);
-        *self = scenario.start();
+        let mut rng = self.rng.clone();
+        *self = scenario.start(&mut rng);
+        self.rng = rng;
         self.savestate = savestate;
         self.instant_playback = instant_playback;
         self.fog_of_war = fog_of_war;
@@ -117,6 +134,9 @@ impl GameState {
         }
         restored.instant_playback = self.instant_playback;
         restored.fog_of_war = self.fog_of_war;
+        // Rolls carry on from the current game rather than replaying the
+        // saved ones, so retrying a save can go differently.
+        restored.rng = self.rng.clone();
         restored.savestate = Some(saved);
         restored.notice = format!("LOADED {}", restored.saved_summary().unwrap_or_default());
         *self = restored;
@@ -169,6 +189,27 @@ mod tests {
         }
         assert_eq!(Scenario::from_name("city"), None);
         assert_eq!(Scenario::from_name(""), None);
+    }
+
+    #[test]
+    fn the_seed_carries_across_scenario_switches_but_not_into_loads() {
+        // (`simulation.rs` checks that the seed also picks the F4 world.)
+        let next_roll_after_switch = |seed| {
+            let mut game = GameState::new();
+            game.seed_rng(seed);
+            game.switch_scenario(Scenario::Cities);
+            game.rng.random::<u64>()
+        };
+        assert_eq!(next_roll_after_switch(3), next_roll_after_switch(3));
+        assert_ne!(next_roll_after_switch(3), next_roll_after_switch(4));
+
+        // Loading a save keeps the current RNG, so a retry rolls afresh.
+        let mut game = GameState::new();
+        game.seed_rng(3);
+        game.save_state();
+        let first: u64 = game.rng.random();
+        game.load_state();
+        assert_ne!(game.rng.random::<u64>(), first);
     }
 
     #[test]

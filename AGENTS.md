@@ -24,7 +24,7 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 
 1. Done means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`
    all pass: CI (`.github/workflows/ci.yml`) runs exactly these on every PR. A visible change also
-   needs evidence it looks right: a layout or hit-test unit test (`src/game/ui.rs` has examples),
+   needs evidence it looks right: a layout or hit-test unit test (`src/game/ui/tests.rs` has examples),
    a screenshot you have looked at (see Verifying), or running the game.
 2. Before editing in a directory that has its own `AGENTS.md` (see the table below), read it.
    Some agents load those files automatically and some don't.
@@ -60,7 +60,10 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 
 - Game logic: a unit test in the module's `#[cfg(test)] mod tests`. Whole-game behavior:
   `src/game/simulation.rs` plays AI against AI in every scenario and checks the board's
-  invariants each turn; extend its invariants when you add a rule.
+  invariants each turn; extend its invariants when you add a rule. Its games are seeded (a few
+  fixed seeds by default), and a failure prints the seed: `SIM_SEED=<seed> cargo test simulation`
+  replays exactly that game (`$env:SIM_SEED=<seed>` first in PowerShell), and `SIM_SEEDS=<n>`
+  plays seeds `0..n` to hunt for failures.
 - Anything visual: take a screenshot and look at it (an agent can open the PNG with its
   image-reading tool): `cargo run -- --screenshot out.png --scenario <combat|cities|frontier|world>`
   renders the scenario in a hidden window (no input, no focus), waits about a second for it to
@@ -69,7 +72,8 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
   1600x900); the same arguments give the same image, so before/after shots compare directly.
   Write screenshots outside the repo (or delete them). It's a debug build, so check its log for
   validation errors too. It shows the scenario's opening position only; for anything past that,
-  run the game. UI layout and click targets are testable without a window (see `ui.rs` tests).
+  run the game. UI layout and click targets are testable without a window (see
+  `src/game/ui/tests.rs`).
 - In-game testing aids: F1-F4 restart a scenario (F4 generates a new map), F6/F7 save and load a
   snapshot, F8 toggles instant turn playback, F9 finishes the current build, F10 toggles fog of
   war (`docs/controls.md`).

@@ -21,12 +21,12 @@ constants out of this directory. Its whole interface:
 | `mod.rs` | `Renderer`: setup, `draw_frame`, swapchain recreation, teardown |
 | `instance.rs` | instance, validation layer (debug builds only), debug messenger into `log` |
 | `device.rs` | GPU selection, logical device, queues |
-| `swapchain.rs` | swapchain and image views |
+| `swapchain.rs` | swapchain, image views, and per-image render-finished semaphores |
 | `pipeline.rs` | render pass (MSAA target resolved into the swapchain image), the pipeline, shader modules |
 | `msaa.rs` | multisampled color target, rebuilt with the swapchain; `pick_samples` |
 | `texture.rs` | the coverage atlas (R8 with mips), uploaded once |
 | `buffer.rs` | buffer and memory allocation |
-| `sync.rs` | per-frame semaphores and fences (`MAX_FRAMES_IN_FLIGHT` = 2) |
+| `sync.rs` | per-frame acquire semaphores and fences (`MAX_FRAMES_IN_FLIGHT` = 2) |
 | `readback.rs` | copying a frame's swapchain image to a host buffer, `Frame` |
 | `vertex.rs` | `Vertex`, `SOLID_UV` |
 
@@ -46,6 +46,11 @@ needs no build change; using it needs a pipeline change here.
   the same command buffer: swapchain images get `TRANSFER_SRC` usage where the surface allows
   it, and the render pass's outgoing dependency (`pipeline.rs`) makes the resolve visible to
   that copy. Reading it back swaps BGRA to RGBA; only 8-bit RGBA/BGRA formats are handled.
+- The semaphore a present waits on is per swapchain image (`SwapchainData::render_finished`),
+  not per frame in flight: no fence covers a present's wait, so a semaphore is only safe to
+  signal again once its image is acquired again. Acquire semaphores and fences stay per frame.
+  An acquire that returns suboptimal still signals its semaphore, so that frame is drawn and
+  presented before the swapchain is rebuilt; only `ERROR_OUT_OF_DATE_KHR` skips the frame.
 - MSAA uses the highest supported count from `PREFERRED_SAMPLES` (16, then 8), falling back to 4.
 - Validation runs only in debug builds (`cfg!(debug_assertions)`). Check `cargo run` output for
   validation errors after any change here.

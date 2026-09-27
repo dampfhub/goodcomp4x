@@ -77,7 +77,7 @@ impl App {
             window: None,
             game: match options.seed {
                 Some(seed) => GameState::world_scenario(seed),
-                None => options.scenario.start(),
+                None => options.scenario.new_game(),
             },
             last_frame: None,
             minimized: false,

@@ -16,7 +16,9 @@ keys are in `controls.md`; screen-space panels in `ui-system.md`. Amounts below 
 
 Pressing F1-F3 restarts that scenario; F4 always makes a new map. The savestate (F6 save, F7
 load) holds a copy of the whole game in memory; it survives scenario switches, loading keeps the
-snapshot (and the camera, within the same scenario), and saving is refused mid-turn. Instant
+snapshot (and the camera, within the same scenario), and saving is refused mid-turn. Loading
+doesn't restore the dice: combat rolls carry on from the current game, so a retry can go
+differently. Instant
 playback (F8, on by default) resolves every step of a turn at once, in the same order, so
 outcomes don't change. Fog of war (F10) is on by default. Both settings survive switches and
 loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
@@ -97,6 +99,10 @@ queue them. Nothing heals.
 - On by default; F10 or the debug panel toggles it.
 - The player's units see 2 hexes (Scout and Cavalry 3), +1 on hills, +2 through the turn
   after a Lookout. The player's cities see 3 and barracks 1.
+- Every tile a player's city works is always in sight, however far and whatever mountains stand
+  in the way, so an enemy standing on one is seen. That includes a tile whose citizen a cut route
+  moved elsewhere until it reopens (see Cities), so an enemy that ends a turn on a worked tile
+  stays in sight. Only the tile itself is seen, not the hexes around it.
 - A mountain strictly between two hexes blocks sight; the mountain itself is visible.
 - Every frame, each hex in sight is recorded as last seen: cities and barracks (with their
   health), improvements and roads. Units aren't remembered, since they move: out of sight, the
@@ -111,8 +117,11 @@ queue them. Nothing heals.
 - What the map and panels show follows the same rule: yields, and which hexes a city's or
   barracks' goods reach (badges, delivery percentages, tooltip, SELECTED TILE), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
-  is the player's own or in sight. The economy itself runs on the real board, so income and the
-  red disrupted-tile rings can still reflect an unseen enemy on a route.
+  is the player's own or in sight. The economy itself runs on the real board: an enemy out of
+  sight on a route hex that isn't a worked tile still cuts the goods behind it, and that shows as
+  lost income, a red disrupted-tile ring, and the city view's "NO OPEN ROUTE WITHIN LOGISTICS
+  BUDGET" notice, while the enemy itself stays hidden. That much is accepted as fair, like
+  finding a tile pillaged.
 - The AI ignores the fog.
 
 ## Orders (planning)
@@ -245,7 +254,7 @@ every turn end.
   at all (for a Volley, none on the target or its neighbors); Volley's 60% applies to structures
   too. Cities cannot be captured.
 
-## Cities (`city.rs`)
+## Cities (`city/`)
 
 - **Founding:** F with a selected settler, at least 3 hexes from any other city; the new city
   starts at population 1, auto-assigns and opens. The AI founds a city in place, at the start of
@@ -300,7 +309,7 @@ every turn end.
   another team's site is there. Neither works while a turn plays out.
 - Economy runs once per turn, after the last combat step.
 
-## Interface (`ui.rs`, `ui/dock.rs`)
+## Interface (`src/game/ui/`)
 
 - Panels dock in four corner zones and never overlap (`docs/ui-system.md`).
 - **Top bar:** turn number, the latest notice, and the End Turn button, whose label names what is
@@ -356,8 +365,6 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - Hills and forest cost the same to enter as plains, and rivers don't slow or penalize crossing
   units.
 - Generated maps have no resources yet, and there are only two sides on the four-player map.
-- Income, disrupted-tile rings and the city view's route notice react to enemies the player
-  can't see (#37).
 - Swaps only work between adjacent units.
 - Worker roads and improvements are instant.
 - No victory condition; F1-F4 restart a scenario.

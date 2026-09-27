@@ -53,11 +53,11 @@ Nothing is retained between frames except the font atlas: every vertex is rebuil
 
 ## A turn
 
-1. **Planning.** Input calls `GameState` methods in `orders.rs`, `group.rs`, `city.rs` and
-   `ui.rs`, which queue orders on units and builds on cities. `pending()` counts what still needs
+1. **Planning.** Input calls `GameState` methods in `orders.rs`, `group.rs`, `city/` and
+   `ui/`, which queue orders on units and builds on cities. `pending()` counts what still needs
    attention; the End Turn button names it.
 2. **End of planning.** Space with nothing waiting and the End Turn button both call
-   `end_planning` (`city.rs`), which holds unfinished units, may open a city still needing a build
+   `end_planning` (`city/view.rs`), which holds unfinished units, may open a city still needing a build
    and stop there, auto-assigns Red's citizens, then calls `resolve_turn` (`turn.rs`): selection
    is cleared, the AI plans (`plan_ai_turn`, `ai.rs`), and every step of `RESOLUTION_ORDER` is
    queued.
@@ -65,7 +65,7 @@ Nothing is retained between frames except the font atlas: every vertex is rebuil
    with instant playback (F8). Each step resolves one unit type's moves or attacks
    simultaneously; `effects.rs` animates attacks; dead units are removed at the end of an attack
    step.
-4. **End of turn:** `resolve_economy` (`city.rs`) applies city income, growth and builds; each
+4. **End of turn:** `resolve_economy` (`city/citizens.rs`) applies city income, growth and builds; each
    unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,
    sets or clears Lookout, and clears its orders; then selection moves to the first unit needing orders, or else the first
    city needing a build (`select_next_or_end_turn`).
@@ -79,6 +79,12 @@ Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world) are construc
 save, F7 load) clones the whole `GameState`. Both live in `scenario.rs` and in memory only. Unit
 tests build a scenario and drive the same methods input does, so no window or GPU is needed;
 `simulation.rs` plays whole AI-vs-AI games that way and checks invariants every turn.
+
+`GameState.rng` (a `Xoshiro256PlusPlus`, `Clone` for the savestate) rolls damage and picks each
+F4 world's map seed. The game seeds it from entropy; tests seed it (`seed_rng`), and it carries
+across scenario switches, so a seed replays the same game, map included. Loading a savestate
+keeps the current RNG, so retrying a save rolls afresh. `mapgen.rs` has its own RNG, seeded by
+the map seed.
 
 Screenshot mode (`--screenshot out.png`, `src/screenshot.rs`) is the visual counterpart: it
 draws a scenario's opening frame in a hidden window and saves it as a PNG. The renderer only
