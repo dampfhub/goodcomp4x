@@ -349,6 +349,4 @@ Known bugs link to their board item; the rest are design questions nobody has de
   and the structure hover panel shows for cities in fog (#21).
 - Swaps only work between adjacent units.
 - Worker roads and improvements are instant.
-- The Barracks card says it is placed on a worked tile, but any explored land site is accepted
-  (#9).
 - No victory condition; F1-F4 restart a scenario.

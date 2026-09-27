@@ -100,7 +100,7 @@ impl Building {
         match self {
             Self::Granary => "+2 FOOD PER TURN.",
             Self::Barracks => {
-                "PLACED ON A WORKED TILE. WITH THE MANAGER THERE, ITS WORK GROUP TRAINS TROOPS."
+                "PLACED ON ANY OPEN LAND TILE. WITH THE MANAGER THERE, ITS WORK GROUP TRAINS TROOPS."
             }
             Self::Mill => "ADJACENT WORKED TILES DELIVER ALL FOOD IF THEY CAN REACH THE CITY.",
             Self::Workshop => "ADJACENT PLACED BUILDINGS CAN BE CONFIRMED AT HALF PRODUCTION.",
@@ -1818,6 +1818,30 @@ mod tests {
         assert!(g.cities[0].barracks.is_none());
         g.confirm_building(Building::Barracks);
         assert_eq!(g.cities[0].barracks, Some(site));
+    }
+
+    #[test]
+    fn a_barracks_may_stand_on_an_unworked_tile_as_its_card_says() {
+        let mut g = GameState::city_scenario();
+        g.units.clear();
+        g.selected_city = Some(0);
+        let unworked = g
+            .grid
+            .all_hexes()
+            .find(|&h| {
+                !g.cities.iter().any(|c| c.worked.contains(&h))
+                    && g.site_available(0, Building::Barracks, h)
+            })
+            .expect("an open, unworked land tile");
+        g.queue_selected_city_building(Building::Barracks);
+        g.city_click(unworked);
+        assert_eq!(
+            g.cities[0].planned_sites.get(&Building::Barracks),
+            Some(&unworked)
+        );
+        let card = Building::Barracks.description();
+        assert!(!card.contains("WORKED TILE"), "{card}");
+        assert!(card.contains("OPEN LAND"), "{card}");
     }
 
     #[test]
