@@ -51,6 +51,9 @@ const RUIN_RIM_COLOR: Color = [0.62, 0.58, 0.50, 1.0];
 const LANDMARK_RIM_WIDTH: f32 = 0.05;
 /// Distance between cloud banks, in world units (a hex is 1 from center to corner).
 const CLOUD_SPACING: f32 = 2.8;
+/// The widest window, width over height, the fog is built for (a 21:9
+/// ultrawide); a narrower one just draws a little fog off its sides.
+const MAX_VIEW_ASPECT: f32 = 2.4;
 /// Under the clouds, filling the gaps between puffs: the shade of their
 /// undersides, so the fog reads as cloud all the way through.
 const CLOUD_BASE_COLOR: Color = [0.10, 0.103, 0.123, 1.0];
@@ -278,11 +281,25 @@ impl GameState {
             } else {
                 SOLID_FOG_COLOR
             };
+            // Only what the camera may show: explored hexes cover the fill
+            // anyway, and a big map has far more hexes than a view.
+            let view = self.cloud_view();
+            let in_view =
+                |p: Vec2| p.cmpge(view.0 - Vec2::ONE).all() && p.cmple(view.1 + Vec2::ONE).all();
             for hex in self.grid.all_hexes() {
-                mesh::regular_polygon(hex.to_world(), OUTER_BORDER_RADIUS, 6, 0.0, base, &mut out);
+                if !self.is_explored(hex) && in_view(hex.to_world()) {
+                    mesh::regular_polygon(
+                        hex.to_world(),
+                        OUTER_BORDER_RADIUS,
+                        6,
+                        0.0,
+                        base,
+                        &mut out,
+                    );
+                }
             }
             if cloud {
-                push_cloud_banks(&self.grid, self.cloud_time, &mut out);
+                push_cloud_banks(&self.grid, self.cloud_time, view, &mut out);
             }
         }
 
@@ -526,6 +543,15 @@ impl GameState {
         out
     }
 
+    /// The world rectangle (min, max) the camera may show: its full height,
+    /// and as wide as the widest window it's drawn in (`MAX_VIEW_ASPECT`),
+    /// since the vertices are built without knowing the window's shape.
+    fn cloud_view(&self) -> (Vec2, Vec2) {
+        let half = self.camera.half_height;
+        let reach = Vec2::new(half * MAX_VIEW_ASPECT, half);
+        (self.camera.center - reach, self.camera.center + reach)
+    }
+
     /// Ruins on `hex` as the player knows them: in sight, with a pip for
     /// each turn their holder has held them, in its color; out of sight, as
     /// last seen, without.
@@ -694,7 +720,8 @@ fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
     1.0 - ((nearest - 1.0) / 1.2).clamp(0.0, 1.0)
 }
 
-/// Draws the unexplored map as banks of cumulus: one bank per point of a
+/// Draws the unexplored map as banks of cumulus, those that reach into
+/// `view` (a world rectangle, min and max): one bank per point of a
 /// world-space lattice that drifts with `CLOUD_WIND` as `time` (seconds)
 /// passes, each bank a soft shadow under an irregular clump of puffs
 /// (`bank_shape`) that slowly billow. Every puff fades out at its edge and is lit from above
@@ -702,7 +729,7 @@ fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
 /// lower billow overlaps the shaded underside of the one behind it. A bank
 /// keeps its lattice point's hash as it drifts, so the pattern moves whole.
 /// The work per puff is constant and cheap: no noise sampling per vertex.
-fn push_cloud_banks(grid: &HexGrid, time: f32, out: &mut Vec<Vertex>) {
+fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec<Vertex>) {
     let Some((min, max)) =
         grid.all_hexes()
             .map(Hex::to_world)
@@ -715,6 +742,12 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, out: &mut Vec<Vertex>) {
     else {
         return;
     };
+    // A bank reaches about two spacings from its lattice point.
+    let reach = Vec2::splat(2.0 * CLOUD_SPACING);
+    let (min, max) = (min.max(view.0 - reach), max.min(view.1 + reach));
+    if min.cmpgt(max).any() {
+        return;
+    }
     let drift = CLOUD_WIND * time;
     let (min, max) = (min - drift, max - drift);
     let min_x = (min.x / CLOUD_SPACING).floor() as i32 - 1;
@@ -2258,16 +2291,29 @@ mod tests {
         assert!(vertices.is_empty());
     }
 
+    /// A view taking in any map.
+    const WHOLE_WORLD: (Vec2, Vec2) = (Vec2::splat(-1.0e4), Vec2::splat(1.0e4));
+
     #[test]
     fn unexplored_cloud_geometry_stays_small() {
         let game = GameState::world_scenario(3);
-        let mut vertices = Vec::new();
-        push_cloud_banks(&game.grid, 0.0, &mut vertices);
-        // The former recursively sampled mesh emitted well over 150,000 fog
-        // vertices here. Keep enough headroom for map-size tuning without
-        // allowing that per-frame cost back in.
-        assert!(vertices.len() < 45_000, "{} cloud vertices", vertices.len());
-        assert!(vertices.iter().any(|v| v.color[3] < 1.0));
+        let clouds = |view| {
+            let mut vertices = Vec::new();
+            push_cloud_banks(&game.grid, 0.0, view, &mut vertices);
+            vertices
+        };
+        // The view the game starts in: only the banks it takes in.
+        let view = clouds(game.cloud_view());
+        assert!(view.len() < 25_000, "{} cloud vertices in view", view.len());
+        assert!(view.iter().any(|v| v.color[3] < 1.0));
+        // Zoomed all the way out, the whole map. The former recursively
+        // sampled mesh emitted well over 150,000 fog vertices on a smaller
+        // map than this one.
+        let whole = clouds(WHOLE_WORLD);
+        assert!(whole.len() > view.len());
+        assert!(whole.len() < 120_000, "{} cloud vertices", whole.len());
+        // Nothing when the view is off the map.
+        assert!(clouds((Vec2::splat(500.0), Vec2::splat(600.0))).is_empty());
     }
 
     #[test]
@@ -2297,7 +2343,7 @@ mod tests {
         let game = GameState::world_scenario(3);
         let clouds = |time: f32| {
             let mut vertices = Vec::new();
-            push_cloud_banks(&game.grid, time, &mut vertices);
+            push_cloud_banks(&game.grid, time, WHOLE_WORLD, &mut vertices);
             vertices
         };
         let centers: Vec<Vec2> = game.grid.all_hexes().map(Hex::to_world).collect();
@@ -2313,7 +2359,7 @@ mod tests {
         for time in [0.5, 60.0, 600.0, 5000.0] {
             let later = clouds(time);
             assert!(
-                later.len() < 45_000,
+                later.len() < 120_000,
                 "{} cloud vertices at {time} s",
                 later.len()
             );

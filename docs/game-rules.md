@@ -79,8 +79,9 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **Cities:** the same three hills; mountains at (0,±2), (0,±3), (0,±4); Horses at (-2,0) and
   (2,0); Iron at (-2,1) and (2,-1).
 - **Frontier:** hills at (-1,2) and (1,-2); mountains at (0,±3).
-- **World generation** (`mapgen.rs`): a rectangle about 61 hexes wide by 36 tall for up to four
-  sides, larger for more (its area grows with the number of sides), generated from a `u32` seed
+- **World generation** (`mapgen.rs`): a rectangle whose area grows in proportion
+  to the number of sides (about 61 hexes wide by 36 tall per two and a half sides, so about 93 by
+  57 for six; never smaller than for three), generated from a `u32` seed
   with its own RNG, so a seed and side count always rebuild the same map (the seed shows in the
   debug panel; there is no way to type one in). A Pangea: 42-52% sea, one continent plus islets of
   at most 12 hexes, mountain ranges and hills by noise, lakes, rivers running downhill to water,

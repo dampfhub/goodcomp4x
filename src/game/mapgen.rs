@@ -40,10 +40,18 @@ use glam::Vec2;
 use super::hex::{Hex, HexGrid, Shape, edge};
 use super::terrain::{Feature, Resource, Special, Terrain, Tile};
 
-/// The world's size for `sides` players: 61 columns by about 36 rows for four
-/// or fewer, growing with more players so each has about as much land.
+/// Sides the smallest world is sized for: fewer still get this much room.
+const MIN_WORLD_SIDES: usize = 3;
+/// How many sides share the area of the base world (61 by about 36 hexes):
+/// each side gets `1 / SIDES_PER_BASE_WORLD` of it, so the map grows in
+/// proportion to the number of sides.
+const SIDES_PER_BASE_WORLD: f32 = 2.5;
+
+/// The world's size for `sides` players: the base 61 columns by about 36
+/// rows for two and a half of them, growing in area with every side so each
+/// has about as much land (six get about 93 by 57).
 pub fn world_shape(sides: usize) -> Shape {
-    let scale = (sides.max(4) as f32 / 4.0).sqrt();
+    let scale = (sides.max(MIN_WORLD_SIDES) as f32 / SIDES_PER_BASE_WORLD).sqrt();
     Shape::Rectangle {
         cols: (30.0 * scale).round() as i32,
         rows: (18.0 * scale).round() as i32,
@@ -1055,8 +1063,13 @@ mod tests {
             Shape::Rectangle { cols, rows } => cols * rows,
             Shape::Hexagon { radius } => radius * radius,
         };
-        assert_eq!(area(2), area(4), "four players' worth at least");
-        assert!(area(7) > area(5) && area(5) > area(4));
+        assert_eq!(area(1), area(3), "three players' worth at least");
+        assert!(area(7) > area(5) && area(5) > area(4) && area(4) > area(3));
+        // Each side gets about as much room however many there are.
+        let per_side = |sides: usize| area(sides) as f32 / sides as f32;
+        assert!((per_side(6) / per_side(4) - 1.0).abs() < 0.1);
+        // Six sides get well over the base world.
+        assert!(area(6) as f32 > 2.2 * (30 * 18) as f32);
     }
 
     #[test]

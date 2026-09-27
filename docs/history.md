@@ -138,3 +138,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     setting). Between the starts it places special tiles (Orchard, Quarry) that yield more, and
     ruins a side claims by holding them for three turns. The AI heads for ruins as well as
     enemies, and its searches stop early, so turns with many sides stay quick.
+45. Room for more sides (`claude/world-players`): the world grows in proportion to its sides
+    (about 93 by 57 hexes for six), so neighboring starts sit about a fifth farther apart. The fog
+    draws only what the camera can show, and its fill only on unexplored hexes, so a big map costs
+    no more per frame than a small one.
