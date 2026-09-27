@@ -15,7 +15,8 @@ the window is created (it did once the window was minimized and restored).
 
 ## Frame and input flow
 
-- Each redraw, `App` calls `game.update(dt)` and updates hover, then builds world vertices.
+- Each redraw, `App` calls `game.update(dt)` and `game.animate_clouds(dt)` (skipped in
+  screenshot mode, so shots stay reproducible) and updates hover, then builds world vertices.
   The classic presentation adds a `game.build_ui(..)` batch; the default ImGui presentation
   builds native windows from the same panel content. `Renderer::draw_frame` draws the world,
   optional classic UI, and ImGui data in order. F11 switches presentations.

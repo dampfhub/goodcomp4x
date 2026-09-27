@@ -146,6 +146,8 @@ pub struct GameState {
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec<u32>,
     highlight_timer: f32,
+    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.rs`).
+    cloud_time: f32,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: HashSet<u32>,
     /// Workers out on the map; the ones at home are counted by their city
@@ -239,6 +241,7 @@ impl GameState {
             step_timer: 0.0,
             recent_actors: Vec::new(),
             highlight_timer: 0.0,
+            cloud_time: 0.0,
             settlers: HashSet::new(),
             field_workers: Vec::new(),
             structures: HashMap::new(),

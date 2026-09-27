@@ -270,7 +270,7 @@ impl GameState {
                 mesh::regular_polygon(hex.to_world(), OUTER_BORDER_RADIUS, 6, 0.0, base, &mut out);
             }
             if cloud {
-                push_cloud_banks(&self.grid, &mut out);
+                push_cloud_banks(&self.grid, self.cloud_time, &mut out);
             }
         }
 
@@ -565,6 +565,8 @@ fn cloud_hash(x: i32, y: i32, salt: u32) -> f32 {
 struct Puff {
     center: Vec2,
     radius: f32,
+    /// Its opacity: less past the map's edge (`edge_fade`).
+    alpha: f32,
 }
 
 /// The puffs of one cloud bank, relative to its center and scaled by
@@ -580,13 +582,52 @@ const BANK_PUFFS: [(f32, f32, f32); 7] = [
     (0.30, 0.10, 0.24),
 ];
 
-/// Draws the unexplored map as banks of cumulus: one bank per world-space
-/// lattice point, each a soft shadow under a cluster of puffs. Every puff
-/// fades out at its edge and is lit from above (`push_cloud_puff`); higher
-/// puffs are drawn first, so the lit top of a lower billow overlaps the
-/// shaded underside of the one behind it. The work per puff is constant and
-/// cheap: no noise sampling per vertex.
-fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
+/// How fast the whole cloud field drifts, in world units a second (a hex is
+/// 1 from center to corner): slow enough to read as weather, not motion.
+const CLOUD_WIND: Vec2 = Vec2::new(0.09, 0.025);
+/// Each puff swells and shrinks by this share of its radius...
+const CLOUD_BILLOW: f32 = 0.06;
+/// ...and wanders by this much (world units) around its place in the bank...
+const CLOUD_WANDER: f32 = 0.12;
+/// ...over about this many seconds, each puff at its own pace.
+const CLOUD_BILLOW_PERIOD: f32 = 14.0;
+
+impl GameState {
+    /// Moves the fog's clouds on by `dt` seconds (`push_cloud_banks`). The
+    /// app calls it every frame, except in screenshot mode.
+    pub fn animate_clouds(&mut self, dt: f32) {
+        // Wrapped long before f32 loses the precision a frame needs.
+        self.cloud_time = (self.cloud_time + dt) % 100_000.0;
+    }
+}
+
+/// How much of a cloud puff centered at `point` shows: all of it over the
+/// map, fading out over the hexes beyond its edge, so puffs drifting past
+/// the edge come and go smoothly.
+fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
+    let hex = Hex::from_world(point);
+    if grid.contains(hex) {
+        return 1.0;
+    }
+    let nearest = hex
+        .neighbors()
+        .into_iter()
+        .flat_map(|n| std::iter::once(n).chain(n.neighbors()))
+        .filter(|&n| grid.contains(n))
+        .map(|n| n.to_world().distance(point))
+        .fold(f32::INFINITY, f32::min);
+    1.0 - ((nearest - 1.0) / 1.2).clamp(0.0, 1.0)
+}
+
+/// Draws the unexplored map as banks of cumulus: one bank per point of a
+/// world-space lattice that drifts with `CLOUD_WIND` as `time` (seconds)
+/// passes, each bank a soft shadow under a cluster of puffs that slowly
+/// billow. Every puff fades out at its edge and is lit from above
+/// (`push_cloud_puff`); higher puffs are drawn first, so the lit top of a
+/// lower billow overlaps the shaded underside of the one behind it. A bank
+/// keeps its lattice point's hash as it drifts, so the pattern moves whole.
+/// The work per puff is constant and cheap: no noise sampling per vertex.
+fn push_cloud_banks(grid: &HexGrid, time: f32, out: &mut Vec<Vertex>) {
     let Some((min, max)) =
         grid.all_hexes()
             .map(Hex::to_world)
@@ -599,6 +640,8 @@ fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
     else {
         return;
     };
+    let drift = CLOUD_WIND * time;
+    let (min, max) = (min - drift, max - drift);
     let min_x = (min.x / CLOUD_SPACING).floor() as i32 - 1;
     let max_x = (max.x / CLOUD_SPACING).ceil() as i32 + 1;
     let min_y = (min.y / CLOUD_SPACING).floor() as i32 - 1;
@@ -614,36 +657,50 @@ fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
                 cloud_hash(x, y, 0xC801_3EA4) - 0.5,
             ) * 0.45;
             let row_shift = if y.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
-            let bank = (Vec2::new(x as f32 + row_shift, y as f32) + jitter) * CLOUD_SPACING;
+            let bank = (Vec2::new(x as f32 + row_shift, y as f32) + jitter) * CLOUD_SPACING + drift;
             let scale = CLOUD_SPACING * (0.9 + cloud_hash(x, y, 0xAD90_777D) * 0.3);
-            let mut any = false;
             for (i, &(px, py, pr)) in BANK_PUFFS.iter().enumerate() {
                 let salt = (i as u32 + 1).wrapping_mul(0x9E37_79B9);
                 let nudge = Vec2::new(
                     cloud_hash(x, y, 0x7E95_761E ^ salt) - 0.5,
                     cloud_hash(x, y, 0x1B87_3593 ^ salt) - 0.5,
                 ) * 0.12;
-                let center = bank + (Vec2::new(px, py) + nudge) * scale;
-                if !grid.contains(Hex::from_world(center)) {
+                // Each puff billows at its own phase and pace.
+                let pace = 0.75 + cloud_hash(x, y, 0x2545_F491 ^ salt) * 0.5;
+                let phase = cloud_hash(x, y, 0x5851_F42D ^ salt) * TAU
+                    + time * pace * TAU / CLOUD_BILLOW_PERIOD;
+                let wander = Vec2::new(phase.cos(), (phase * 0.8).sin()) * CLOUD_WANDER;
+                let center = bank + (Vec2::new(px, py) + nudge) * scale + wander;
+                let alpha = edge_fade(grid, center);
+                if alpha <= 0.0 {
                     continue;
                 }
-                let radius = pr * scale * (1.35 + cloud_hash(x, y, 0x68E3_1DA4 ^ salt) * 0.3);
-                puffs.push(Puff { center, radius });
-                any = true;
+                let radius = pr
+                    * scale
+                    * (1.35 + cloud_hash(x, y, 0x68E3_1DA4 ^ salt) * 0.3)
+                    * (1.0 + CLOUD_BILLOW * (phase * 1.3).sin());
+                puffs.push(Puff {
+                    center,
+                    radius,
+                    alpha,
+                });
             }
-            if any {
-                shadows.push(bank + Vec2::new(0.04, -0.12) * scale);
+            let shadow = bank + Vec2::new(0.04, -0.12) * scale;
+            let alpha = edge_fade(grid, shadow);
+            if alpha > 0.0 {
+                shadows.push((shadow, alpha));
             }
         }
     }
     puffs.sort_by(|a, b| b.center.y.total_cmp(&a.center.y));
     out.reserve((shadows.len() + puffs.len()) * CLOUD_PUFF_VERTICES);
-    for center in shadows {
+    for (center, alpha) in shadows {
+        let color = with_alpha(CLOUD_SHADOW_COLOR, CLOUD_SHADOW_COLOR[3] * alpha);
         push_soft_disc(
             center,
             Vec2::new(0.78, 0.45) * CLOUD_SPACING,
-            CLOUD_SHADOW_COLOR,
-            CLOUD_SHADOW_COLOR,
+            color,
+            color,
             out,
         );
     }
@@ -666,8 +723,8 @@ fn push_cloud_puff(puff: &Puff, out: &mut Vec<Vertex>) {
     push_soft_disc(
         puff.center,
         Vec2::splat(puff.radius),
-        CLOUD_LIGHT,
-        CLOUD_DARK,
+        with_alpha(CLOUD_LIGHT, CLOUD_LIGHT[3] * puff.alpha),
+        with_alpha(CLOUD_DARK, CLOUD_DARK[3] * puff.alpha),
         out,
     );
 }
@@ -2139,7 +2196,7 @@ mod tests {
     fn unexplored_cloud_geometry_stays_small() {
         let game = GameState::world_scenario(3);
         let mut vertices = Vec::new();
-        push_cloud_banks(&game.grid, &mut vertices);
+        push_cloud_banks(&game.grid, 0.0, &mut vertices);
         // The former recursively sampled mesh emitted well over 150,000 fog
         // vertices here. Keep enough headroom for map-size tuning without
         // allowing that per-frame cost back in.
@@ -2167,6 +2224,56 @@ mod tests {
         let clear = game.build_vertices();
         assert!(!flat(&clear));
         assert_eq!(soft(&clear), 0);
+    }
+
+    #[test]
+    fn the_clouds_drift_and_billow_but_stay_over_the_map() {
+        let game = GameState::world_scenario(3);
+        let clouds = |time: f32| {
+            let mut vertices = Vec::new();
+            push_cloud_banks(&game.grid, time, &mut vertices);
+            vertices
+        };
+        let centers: Vec<Vec2> = game.grid.all_hexes().map(Hex::to_world).collect();
+        let min = centers.iter().copied().reduce(Vec2::min).unwrap();
+        let max = centers.iter().copied().reduce(Vec2::max).unwrap();
+        let reach = Vec2::splat(2.5 * CLOUD_SPACING);
+        let still = clouds(0.0);
+        assert_eq!(
+            still.len(),
+            clouds(0.0).len(),
+            "the same time, the same clouds"
+        );
+        for time in [0.5, 60.0, 600.0, 5000.0] {
+            let later = clouds(time);
+            assert!(
+                later.len() < 45_000,
+                "{} cloud vertices at {time} s",
+                later.len()
+            );
+            let moved = still.iter().zip(&later).any(|(a, b)| a.pos != b.pos);
+            assert!(moved, "the clouds move by {time} s");
+            // Whatever has drifted past the map's edge fades out: nothing is
+            // drawn more than a bank's width beyond it.
+            for v in &later {
+                let at = Vec2::new(v.pos[0], v.pos[1]);
+                let inside = at.cmpge(min - reach).all() && at.cmple(max + reach).all();
+                assert!(inside, "a cloud vertex at {at} is far off the map");
+            }
+        }
+        let mut game = game;
+        game.animate_clouds(2.0);
+        game.animate_clouds(3.0);
+        assert_eq!(game.cloud_time, 5.0);
+    }
+
+    #[test]
+    fn a_puff_fades_out_past_the_map_edge() {
+        let game = GameState::world_scenario(3);
+        let inside = game.grid.all_hexes().next().unwrap().to_world();
+        assert_eq!(edge_fade(&game.grid, inside), 1.0);
+        let far = Vec2::new(1.0e4, 0.0);
+        assert_eq!(edge_fade(&game.grid, far), 0.0);
     }
 
     /// The color of the last opaque triangle drawn over `point`.

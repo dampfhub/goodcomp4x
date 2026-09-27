@@ -161,6 +161,11 @@ impl App {
         let dt = now - self.last_frame.unwrap_or(now);
         self.last_frame = Some(now);
         self.game.update(dt.as_secs_f32());
+        // A screenshot shows the clouds still, so the same arguments give the
+        // same image.
+        if self.screenshot.is_none() {
+            self.game.animate_clouds(dt.as_secs_f32());
+        }
         if self.icon_refresh_at.is_some_and(|at| now >= at) {
             self.icon_refresh_at = None;
             self.refresh_icons();
