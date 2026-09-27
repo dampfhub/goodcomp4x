@@ -90,3 +90,14 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     show as turn numbers along a line, only while the unit is selected or hovered.
 34. Far Shift-clicks (`claude/queue-far-moves`): one Shift-left-click queues every turn it takes
     to walk to the hex, around terrain and known walls, instead of one turn per click.
+35. City interior battle prototype (`codex/city-interior-battle`): each city has a 19-hex tactical
+    grid. Adjacent combat troops project independently controlled copies into its gates; breaching
+    and occupying the command post captures the city. F12 opens a ready-made siege setup.
+36. City interior map interaction: clicking the city center from management enters a separate
+    rendered hex map. Troops and command post are drawn in-world; map clicks issue interior orders,
+    and exiting restores the exterior camera and city view.
+37. Shared unit deaths across the exterior and interior maps: units retain separate HP bars,
+    interior wounds persist across gate exits, and fatal damage in either layer removes the unit
+    from both. The command post retaliates at range two.
+38. City centers no longer accept exterior attacks or have an exterior HP bar. Units standing
+    there and barracks remain attackable; the tactical command post is the capture target.

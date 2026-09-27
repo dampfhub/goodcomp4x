@@ -20,18 +20,19 @@ behavior.
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `ai.rs` | the Red AI |
-| `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (HP, defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
+| `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (barracks HP and defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
 | `city/logistics.rs` | roads, logistics routes (`routes_from_by`), `delivered_share`, tile yields, mill food share, city and Barracks income |
 | `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy` |
 | `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, building sites, Workshop discount, confirmation, `complete_builds` |
 | `city/founding.rs` | settlers founding cities |
 | `workers.rs` | workers: each city's pool and job list, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
 | `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
+| `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture |
 | `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
-| `scenario.rs` | scenarios (F1-F4), savestate (F6/F7), instant playback (F8) |
+| `scenario.rs` | scenarios (F1-F4, F12), savestate (F6/F7), instant playback (F8) |
 | `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues) in every scenario, board invariants checked each turn, same seed replays the same game |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
@@ -51,6 +52,8 @@ behavior.
 - `units` holds living units only. Dead units are removed with `retain` at the end of an attack
   step, which shifts indices, so code that spans a removal uses unit `id`s, not indices.
   `selected` and `group` are cleared before a turn resolves for the same reason.
+  A unit has exterior `hp` and persistent `interior_hp`; death in either layer removes its
+  exterior body and every interior copy with that source id.
 - Everything that asks what a unit can do goes through `Unit::stats()`, which applies abilities
   and siege deployment on top of the base table in `UnitType::stats()`. Don't read base stats
   directly.

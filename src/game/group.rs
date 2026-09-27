@@ -17,7 +17,7 @@ impl GameState {
     /// Alt-drag: selects the player's units drawn inside the rectangle
     /// between `a` and `b` (window pixels, origin top-left).
     pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2) {
-        if self.is_resolving() {
+        if self.is_resolving() || self.interior_view.is_some() {
             return;
         }
         let (min, max) = (a.min(b), a.max(b));
@@ -36,7 +36,7 @@ impl GameState {
     /// Alt-click: adds the player's unit under the cursor to the selection,
     /// or takes it out if it's already in.
     pub fn toggle_in_selection(&mut self, cursor: Vec2, screen_size: Vec2) {
-        if self.is_resolving() {
+        if self.is_resolving() || self.interior_view.is_some() {
             return;
         }
         let Some(unit) = self
@@ -102,6 +102,12 @@ impl GameState {
     /// a new order, it replaces every member's queue.
     fn group_attack(&mut self, target: Hex) {
         if !self.grid.is_passable(target) {
+            return;
+        }
+        if let Some(&first) = self.group.first()
+            && self.empty_city_target(target, self.units[first].team)
+        {
+            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return;
         }
         for &i in &self.group {

@@ -99,9 +99,7 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · GROWTH {growth}% · {} PRODUCTION",
-                        city.hp,
-                        crate::game::city::CITY_MAX_HP,
+                        "GROWTH {growth}% · {} PRODUCTION",
                         signed_quantity(production_per_turn)
                     ),
                     GOLD_TEXT,
@@ -345,6 +343,18 @@ impl GameState {
                     "RETURNS TO THIS CITY'S LABOR AND MAIN PRODUCTION PANEL.".into(),
                     None,
                 ),
+                Target::OpenInterior => (
+                    "CITY INTERIOR".into(),
+                    "V".into(),
+                    "ENTER THE CITY'S TACTICAL MAP. YOU CAN ALSO CLICK ITS CENTER HEX FROM CITY VIEW.".into(),
+                    None,
+                ),
+                Target::InteriorClear => (
+                    "CLEAR INTERIOR ORDERS".into(),
+                    "BACKSPACE".into(),
+                    "REMOVES THE SELECTED COPY'S MOVE AND ATTACK FOR THIS TURN.".into(),
+                    None,
+                ),
                 Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => (
                     "REMOVE".into(),
                     "CLICK".into(),
@@ -409,6 +419,7 @@ impl GameState {
                         Scenario::Cities => "TWO ESTABLISHED CITIES WITH ARMIES.",
                         Scenario::Frontier => "A SETTLER AND A SCOUT EACH. BOTH SCOUTS ARE YOURS.",
                         Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS, YOURS ALONE: NO AI OPPONENT.",
+                        Scenario::Siege => "OPPOSING FIELD TROOPS ALREADY FIGHT INSIDE A CITY.",
                     }
                     .into(),
                     None,

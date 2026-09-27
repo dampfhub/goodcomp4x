@@ -163,6 +163,59 @@ fn build_card_queues_its_unit() {
     assert_eq!(game.cities[city].queue, vec![Build::Unit(BuildUnit::Siege)]);
 }
 
+#[test]
+fn city_interior_map_fits_and_its_tiles_issue_orders() {
+    let mut game = GameState::siege_scenario();
+    let layout = game.layout(SCREEN);
+    for tile in [
+        Hex::new(-2, 0),
+        Hex::new(-1, 0),
+        Hex::new(0, 0),
+        Hex::new(2, 0),
+    ] {
+        let cursor = hex_cursor(&game, tile);
+        assert!(cursor.x > 0.0 && cursor.x < SCREEN.x);
+        assert!(cursor.y > 0.0 && cursor.y < SCREEN.y);
+        assert!(
+            !layout.covers(to_ui(cursor, SCREEN)),
+            "interior tile hidden by a panel"
+        );
+    }
+    game.handle_click(
+        hex_cursor(&game, Hex::new(-2, 0)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    game.handle_click(
+        hex_cursor(&game, Hex::new(-1, 0)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(
+        game.cities[1]
+            .interior
+            .fighters
+            .iter()
+            .find(|f| f.source_id == 0)
+            .unwrap()
+            .planned_move,
+        Some(Hex::new(-1, 0))
+    );
+}
+
+#[test]
+fn breached_post_panel_explicitly_prompts_occupation() {
+    let mut game = GameState::siege_scenario();
+    game.cities[1].interior.core_hp = 0.0;
+    let text = panel_strings(|panel| game.interior_tray(1, panel));
+    assert_shows(&text, "POST BREACHED  0/80 HP");
+    assert_shows(&text, "MOVE A BLUE TROOP ONTO THE POST TO CAPTURE");
+
+    game.cities[0].interior.core_hp = 0.0;
+    let home = panel_strings(|panel| game.interior_tray(0, panel));
+    assert_shows(&home, "KEEP RED OFF THE CENTER TO PREVENT CAPTURE");
+}
+
 /// The city scenario with the player's city open and the camera settled on it.
 fn city_view() -> GameState {
     let mut game = GameState::city_scenario();
@@ -744,11 +797,18 @@ fn city_clicks_do_not_select_units_without_exiting_city_view() {
 }
 
 #[test]
-fn clicking_the_open_city_keeps_city_management_open() {
+fn clicking_the_open_city_enters_interior_and_escape_returns() {
     let mut game = city_view();
+    let exterior_camera = game.camera.clone();
     let city = game.cities[game.selected_city.unwrap()].pos;
     game.handle_click(hex_cursor(&game, city), SCREEN, ClickMode::Normal);
+    assert_eq!(game.interior_view, Some(0));
+    assert_eq!(game.selected_city, None);
+    assert!(game.exit_structure_menu());
+    assert_eq!(game.interior_view, None);
     assert_eq!(game.selected_city, Some(0));
+    assert_eq!(game.camera.center, exterior_camera.center);
+    assert_eq!(game.camera.half_height, exterior_camera.half_height);
 }
 
 #[test]

@@ -200,9 +200,15 @@ impl GameState {
     }
 
     /// Whether a unit or worker of `team` can step from `from` onto the
-    /// adjacent `to`.
+    /// adjacent `to`. Enemy city centers are entered through the interior
+    /// battle, not by walking onto the exterior marker.
     pub(super) fn can_step(&self, from: Hex, to: Hex, team: Team) -> bool {
-        self.can_enter(to) && self.can_cross(from, to, team)
+        self.can_enter(to)
+            && self
+                .cities
+                .iter()
+                .all(|city| city.pos != to || city.team == team)
+            && self.can_cross(from, to, team)
     }
 
     /// Whether `unit` stands in a fort of its own side.

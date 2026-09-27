@@ -13,6 +13,7 @@ keys are in `controls.md`; screen-space panels in `ui-system.md`. Amounts below 
 | F2 | Cities (default) | radius-6 map; the Combat units plus a city (with one worker at home), owned farms/mines/pastures and dirt roads per side; Horses and Iron deposits |
 | F3 | Frontier | radius-6 map; a settler and a scout per side, no cities. Red's scout is player-controlled, to test route cuts and contests without the AI |
 | F4 | World | a generated map (see World generation) with your settler and scout and no AI opponent; a new random seed every press |
+| F12 | Siege | the Cities map with four Blue attackers against two Red gate defenders; the Red city's interior opens for testing |
 
 Pressing F1-F3 restarts that scenario; F4 always makes a new map. The savestate (F6 save, F7
 load) holds a copy of the whole game in memory; it survives scenario switches, loading keeps the
@@ -54,7 +55,7 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   +1 food, on top of any improvement. Rivers affect nothing else yet.
 - **Route cost** of entering a hex: 2 (3 on snow or marsh), +1 for hills, +1 for a feature; a road
   or city hex costs 1.
-- **Defense** bonuses apply to units only: city and barracks defense are fixed.
+- **Defense** bonuses apply to units only; barracks defense is fixed.
 - **Resources:** Horses and Iron give no yield; they let a Barracks standing on them train Cavalry
   or Armored. Only the Cities scenario places them.
 
@@ -106,7 +107,7 @@ queue them. Nothing heals.
   moved elsewhere until it reopens (see Cities), so an enemy that ends a turn on a worked tile
   stays in sight. Only the tile itself is seen, not the hexes around it.
 - A mountain strictly between two hexes blocks sight; the mountain itself is visible.
-- Every frame, each hex in sight is recorded as last seen: cities and barracks (with their
+- Every frame, each hex in sight is recorded as last seen: cities, barracks (with their
   health), improvements, roads and structures. Units and workers aren't remembered, since they
   move: out of sight, the player knows of none anywhere. Planning goes around the walls and gates
   the player knows of. Remembered hexes out of sight draw that memory under a dark tint, keeping
@@ -118,8 +119,8 @@ queue them. Nothing heals.
   remembered hexes from memory.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
   A unit out of sight, even one seen there before, doesn't shrink the move range, and clicking
-  its hex plans a move, which then meets it at resolution. A remembered enemy city or barracks
-  can still be attacked.
+  its hex plans a move, which then meets it at resolution. A remembered enemy barracks can
+  still be attacked; an empty city center cannot.
 - What the map and panels show follows the same rule: yields, and which hexes a city's or
   barracks' goods reach (badges, delivery percentages, tooltip, SELECTED TILE), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
@@ -139,7 +140,8 @@ queue them. Nothing heals.
   player can see only says "RIGHT-CLICK TO ATTACK". Left-clicking your own city or barracks hex
   opens its view instead, even with a unit selected, so a left click can't move a unit onto that
   hex or select a unit standing there.
-- Right-click any hex in range to queue an attack on it, occupied or not (again to cancel).
+- Right-click any hex in range to queue an attack on it, occupied or not (again to cancel),
+  except an empty city center. Units or workers standing on a city center remain attackable.
   **Attacks target hexes:** whoever stands there when the attack resolves gets hit.
 - A unit can queue a move and an attack; the attack range is measured from the planned
   destination. Changing or cancelling the move drops an attack that is no longer in range.
@@ -282,7 +284,7 @@ Everyone in a step acts simultaneously:
   turn's number, attacks as arrows numbered by turn) shows only while it is selected or
   hovered, and otherwise a `>N` tag counts its turns of orders left.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
-  "MISS" on a hex with no enemy unit, city or barracks, or "OUT OF RANGE" if the target moved
+  "MISS" on a hex with no enemy unit, worker or barracks, or "OUT OF RANGE" if the target moved
   away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
   "KILLED". Enemy attacks animate too.
 
@@ -304,11 +306,46 @@ every turn end.
 - Damage = `30 * e^((attack - defense) * 0.04) * random(0.8..1.2)`, clamped to 1..100. Defense
   includes terrain and Shield Wall; attack includes Charge.
 - Melee attacks (base range 1) draw retaliation from a defender that survives the hit.
-- **Cities** have 320 HP and 30 defense and fire back at every attacker within range 2 with attack
-  26. **Barracks** have 220 HP and 25 defense and are removed (with their queue) at 0 HP; the city
+- **Cities** cannot be attacked on the exterior map; capture happens by breaching and occupying
+  the command post inside. **Barracks** have 220 HP and 25 defense and are removed (with their queue) at 0 HP; the city
   can then build a new one, at full HP. A structure is hit only when the attack hits no enemy unit
   at all (for a Volley, none on the target or its neighbors); Volley's 60% applies to structures
-  too. Cities cannot be captured.
+  too.
+
+## City interiors (`city/interior.rs`)
+
+- While in a city view, click that city's center hex to enter its separate tactical map. V also
+  opens the selected or hovered city's interior. Each city has a 19-hex grid (radius 2) with a
+  fixed command post at the center. Escape or V returns to the city view.
+- Each combat unit on one of the six exterior hexes neighboring that city projects a separate
+  fighter through the corresponding outer gate. Settlers and workers do not project. The copy
+  has its own position and orders. Exterior and interior HP are separate: nonfatal damage in
+  either layer leaves the other HP bar unchanged, and interior HP persists if the unit leaves and
+  re-enters a gate. If either HP bar reaches zero, the unit dies in both layers. Moving away
+  removes its interior presence until it returns.
+- Units cannot move onto an enemy city center on the exterior map; they fight for the six
+  surrounding gates and capture the command post inside. A unit already standing on a city center
+  can still be attacked there.
+- Click a Blue copy on the interior map, then click an open hex to queue its move or an enemy
+  to queue an attack. The map outlines valid moves in green and attacks in red. Range uses that
+  unit type's move and attack stats. Click the command post to attack it when within range.
+  Backspace clears the selected copy's orders.
+  Field orders and interior orders resolve independently in the same global turn: field combat
+  first, then one simultaneous interior move/attack step for every city, then city economy.
+- The post starts with 80 HP, 18 defense and a range-2 retaliation against one attacker
+  per turn at attack 12. Damage follows the normal combat formula. Once its HP reaches zero, move
+  a hostile interior fighter onto the center hex to capture the city. Capture changes ownership,
+  restores the post and clears its production queue, building
+  plans and worker jobs. Workers at home pass to the new owner. Field workers from that city
+  return to another friendly city if one exists; otherwise they pass to the new owner. The
+  exterior city remains non-attackable.
+  A breached post changes its map marker and city panel to show that it is open for occupation.
+- Red's interior fighters defend their own city's post by engaging intruders. When attacking an
+  enemy city they head toward its post. Exterior Red defenders hold contested city gates and can
+  attack nearby enemies, so their projected copies stay in the siege.
+- F12 starts a siege practice position with four Blue troops at the Red city's gates (including
+  a siege unit) against two Red defenders and the post. Order Blue attacks on the exterior as well
+  as inside; without field orders, the defenders can kill gate troops before the post is breached.
 
 ## Cities (`city/`)
 
@@ -437,7 +474,7 @@ every turn end.
   pressing the button again or right-clicking disarms. The armed button has a bright border, a
   queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows
-  a structure panel at the bottom-left instead (HP, growth progress for a city, production,
+  a structure panel at the bottom-left instead (barracks HP, growth progress for a city, production,
   current build). Hovering a city also outlines its worked tiles, without yield badges. After the
   cursor rests on a hex for 0.75 s, a tooltip shows terrain or city, yields, defense, site, road,
   which city works it, its delivery share to the open city, and units on it.
@@ -463,7 +500,8 @@ cities, never builds buildings, ignores the fog, and ignores its civilians and a
 player-controlled Red unit; its scouts fight like any other unit. Red cities auto-assign citizens
 at every end of planning, queue Melee whenever their queue is empty, and train a worker first
 when they have none. A Red city with a worker at home and an empty list gives it one job: an
-improvement on a tile it works, or else a road there. Ties break by hex coordinates, so it is
+improvement on a tile it works, or else a road there. At a contested friendly city gate, Red
+units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
 
 ## Open questions
@@ -475,7 +513,7 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - Forts' +50% defense is a placeholder; what forts should really give is undecided.
 - Structures can't be destroyed or captured, and a wall or gate can go on any edge next to explored
   ground.
-- Cities and barracks can be damaged but not captured, and nothing heals.
+- Barracks can be damaged but not captured, and nothing heals.
 - Cooldowns tick every turn whether or not the unit acted.
 - Contests only form when two enemies arrive in the same step. A later arrival is just blocked; it
   could be allowed to charge in and contest instead.

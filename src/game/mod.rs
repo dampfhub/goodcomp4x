@@ -68,6 +68,11 @@ pub struct GameState {
     selected_city: Option<usize>,
     /// Barracks have their own production screen, separate from city labor.
     selected_barracks: Option<usize>,
+    /// City interior currently being inspected and ordered.
+    interior_view: Option<usize>,
+    interior_selected: Option<u32>,
+    /// Preserve the exterior camera while the tactical city map is open.
+    exterior_camera: Option<Camera>,
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option<usize>,
     /// City and building whose site is being chosen. Only live while that
@@ -185,6 +190,9 @@ impl GameState {
             roads: HashSet::new(),
             selected_city: None,
             selected_barracks: None,
+            interior_view: None,
+            interior_selected: None,
+            exterior_camera: None,
             moving_manager: None,
             placing_building: None,
             hovered_city: None,
@@ -235,6 +243,43 @@ impl GameState {
         game.scenario = Scenario::Cities;
         game.setup_cities();
         game.start_on_whole_map();
+        game
+    }
+
+    /// A playable siege: Blue surrounds four gates with enough force to
+    /// breach the defended command post.
+    pub fn siege_scenario() -> Self {
+        let mut game = Self::city_scenario();
+        game.scenario = Scenario::Siege;
+        for (id, pos) in [
+            (0, Hex::new(3, 0)),
+            (1, Hex::new(3, 1)),
+            (4, Hex::new(5, 0)),
+            (5, Hex::new(4, -1)),
+        ] {
+            game.units
+                .iter_mut()
+                .find(|unit| unit.id == id)
+                .unwrap()
+                .pos = pos;
+        }
+        // Keep the practice battle at the gates. The Cities scenario's other
+        // troops would require unrelated orders and Red's roamers would
+        // arrive mid-siege, changing the intended four-on-two test.
+        game.units.retain(|unit| ![2, 3, 6, 7].contains(&unit.id));
+        for (pos, kind) in [
+            (Hex::new(5, -1), UnitType::Siege),
+            (Hex::new(4, 1), UnitType::Melee),
+        ] {
+            let id = game.next_unit_id;
+            game.next_unit_id += 1;
+            game.units.push(Unit::new(id, pos, Team::Blue, kind));
+        }
+        for city in &mut game.cities {
+            city.queue.push(city::Build::Unit(city::BuildUnit::Melee));
+        }
+        game.open_city_interior(1);
+        game.notice = "SIEGE: FIGHT ON BOTH MAPS (V) - BREACH POST, THEN OCCUPY IT".into();
         game
     }
 
@@ -322,12 +367,6 @@ impl GameState {
         self.units_at(hex).find(|&i| self.units[i].team != team)
     }
 
-    fn enemy_city_at(&self, hex: Hex, team: Team) -> Option<usize> {
-        self.cities
-            .iter()
-            .position(|city| city.team != team && city.pos == hex && city.hp > 0.0)
-    }
-
     fn enemy_barracks_at(&self, hex: Hex, team: Team) -> Option<usize> {
         self.cities.iter().position(|city| {
             city.team != team && city.barracks == Some(hex) && city.barracks_hp > 0.0
@@ -335,9 +374,15 @@ impl GameState {
     }
 
     fn has_enemy_target_at(&self, hex: Hex, team: Team) -> bool {
-        self.enemy_of_team_at(hex, team).is_some()
-            || self.enemy_city_at(hex, team).is_some()
-            || self.enemy_barracks_at(hex, team).is_some()
+        self.enemy_of_team_at(hex, team).is_some() || self.enemy_barracks_at(hex, team).is_some()
+    }
+
+    /// An empty city center is not an exterior attack target. Units and
+    /// workers standing there can still be attacked normally.
+    fn empty_city_target(&self, hex: Hex, team: Team) -> bool {
+        self.cities.iter().any(|city| city.pos == hex)
+            && self.enemy_of_team_at(hex, team).is_none()
+            && self.enemy_workers_at(hex, team).is_empty()
     }
 
     /// Whether two enemies are fighting over this hex.
@@ -980,7 +1025,7 @@ mod tests {
     }
 
     #[test]
-    fn city_is_a_tanky_ranged_target_that_returns_fire() {
+    fn empty_city_center_rejects_exterior_attacks() {
         let mut game = GameState::city_scenario();
         game.units.clear();
         let target = game
@@ -995,19 +1040,53 @@ mod tests {
             Team::Blue,
             UnitType::Ranged,
         ));
-        let city_hp = game.cities[target].hp;
-        let unit_hp = game.units[0].hp;
         game.try_queue_attack(0, pos);
+        assert_eq!(game.units[0].planned_attack, None);
+        assert!(!game.queue_attack(pos));
+        game.group.push(0);
+        game.group_order(pos, ClickMode::Attack);
+        assert_eq!(game.units[0].planned_attack, None);
+        game.group.clear();
+
+        // An old or externally supplied order cannot damage the city either.
+        game.units[0].planned_attack = Some(pos);
         game.resolve_step(UnitType::Ranged, Phase::Attack);
-        assert!(game.cities[target].hp < city_hp);
-        assert!(
-            game.units[0].hp < unit_hp,
-            "the city should return ranged fire"
-        );
+        assert!(game.effects.iter().any(|(effect, _)| matches!(
+            effect,
+            effects::Effect::Shot {
+                outcome: effects::Outcome::Miss,
+                ..
+            }
+        )));
+        assert_eq!(game.units[0].hp, game.units[0].max_hp());
     }
 
     #[test]
-    fn hitting_an_empty_enemy_city_or_barracks_is_a_hit_not_a_miss() {
+    fn unit_on_city_center_remains_attackable() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let city = game
+            .cities
+            .iter()
+            .find(|city| city.team == Team::Red)
+            .unwrap()
+            .pos;
+        game.units
+            .push(Unit::new(901, city, Team::Red, UnitType::Melee));
+        game.units.push(Unit::new(
+            902,
+            city.neighbors()[0],
+            Team::Blue,
+            UnitType::Ranged,
+        ));
+        game.try_queue_attack(1, city);
+        assert_eq!(game.units[1].planned_attack, Some(city));
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert!(game.units[0].hp < game.units[0].max_hp());
+    }
+
+    #[test]
+    fn hitting_an_empty_enemy_barracks_is_a_hit_not_a_miss() {
         let mut game = GameState::city_scenario();
         game.units.clear();
         let target = game
@@ -1018,28 +1097,23 @@ mod tests {
         let city = game.cities[target].pos;
         let barracks = city.neighbors()[0];
         game.cities[target].barracks = Some(barracks);
-        for (id, hex) in [(901, city), (902, barracks)] {
-            game.units.clear();
-            game.effects.clear();
-            game.units.push(Unit::new(
-                id,
-                Hex::new(hex.q, hex.r + 2),
-                Team::Blue,
-                UnitType::Ranged,
-            ));
-            game.units[0].planned_attack = Some(hex);
-            game.resolve_step(UnitType::Ranged, Phase::Attack);
-            let shots: Vec<_> = game
-                .effects
-                .iter()
-                .filter_map(|(effect, _)| match effect {
-                    effects::Effect::Shot { outcome, .. } => Some(*outcome),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(shots, [effects::Outcome::Hit], "attack on {hex:?}");
-        }
-        assert!(game.cities[target].hp < city::CITY_MAX_HP);
+        game.units.push(Unit::new(
+            902,
+            Hex::new(barracks.q, barracks.r + 2),
+            Team::Blue,
+            UnitType::Ranged,
+        ));
+        game.units[0].planned_attack = Some(barracks);
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        let shots: Vec<_> = game
+            .effects
+            .iter()
+            .filter_map(|(effect, _)| match effect {
+                effects::Effect::Shot { outcome, .. } => Some(*outcome),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shots, [effects::Outcome::Hit]);
         assert!(game.cities[target].barracks_hp < city::BARRACKS_MAX_HP);
     }
 

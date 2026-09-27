@@ -31,6 +31,7 @@ impl GameState {
 
     /// Opens city `i`'s view and glides the camera to it.
     pub(in crate::game) fn open_city(&mut self, i: usize) {
+        self.close_city_interior();
         if self.selected_city != Some(i) {
             self.city_queue_scroll = 0;
             // Site placement belongs to the open city. A building that
@@ -63,9 +64,12 @@ impl GameState {
     }
 
     pub(in crate::game) fn leave_city_view(&mut self) {
+        self.close_city_interior();
         self.queue_drag = None;
         self.selected_city = None;
         self.selected_barracks = None;
+        self.interior_view = None;
+        self.interior_selected = None;
         self.moving_manager = None;
         self.abandon_site_placement();
         self.inspected_tile = None;
@@ -76,7 +80,14 @@ impl GameState {
     /// chosen, the first press only cancels that (and the unsited building)
     /// and keeps the city open.
     pub fn exit_structure_menu(&mut self) -> bool {
-        if self.selected_city.is_none() && self.selected_barracks.is_none() {
+        if self.interior_view.is_some() {
+            self.close_city_interior();
+            return true;
+        }
+        if self.selected_city.is_none()
+            && self.selected_barracks.is_none()
+            && self.interior_view.is_none()
+        {
             return false;
         }
         if self.site_placement().is_some() {
@@ -89,6 +100,7 @@ impl GameState {
     }
 
     pub(in crate::game) fn open_barracks(&mut self, city: usize) {
+        self.close_city_interior();
         if self.cities[city].barracks.is_none() {
             return;
         }
@@ -113,6 +125,10 @@ impl GameState {
     }
 
     pub(in crate::game) fn city_click(&mut self, hex: Hex) -> bool {
+        if self.interior_view.is_some() {
+            self.interior_click(hex);
+            return true;
+        }
         // A structure menu owns all map clicks until its explicit exit action.
         // This keeps city assignment, Barracks management, and unit selection
         // on one consistent interaction model.
@@ -166,6 +182,10 @@ impl GameState {
                     format!("{} SITE SELECTED - CONSTRUCTION CONTINUES", building.name())
                 };
             }
+            return true;
+        }
+        if hex == self.cities[i].pos {
+            self.open_city_interior(i);
             return true;
         }
         // City management owns map clicks. Dismiss it with Escape or Space

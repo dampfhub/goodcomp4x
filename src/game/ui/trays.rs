@@ -7,7 +7,7 @@ use super::{
     QueueKind, REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
 };
 use crate::game::city::{
-    Build, BuildUnit, Building, LaborFocus, WORKER_COST, WORKER_SHORTCUT, delivered_share,
+    Build, BuildUnit, Building, CORE_HP, LaborFocus, WORKER_COST, WORKER_SHORTCUT, delivered_share,
 };
 use crate::game::hex::Hex;
 use crate::game::orders::ClickMode;
@@ -15,6 +15,114 @@ use crate::game::workers::{JobKind, WorkerJob};
 use crate::game::{GameState, PLAYER_TEAM};
 
 impl GameState {
+    /// The tactical hex board inside a city. These fighters are independent
+    /// copies of field troops on the six tiles neighboring the city.
+    pub(super) fn interior_tray(&self, i: usize, panel: &mut PanelBuilder) {
+        let city = &self.cities[i];
+        let interior = &city.interior;
+        panel.text(
+            TITLE,
+            vec![(format!("CITY {} INTERIOR", city.id + 1), city.team.color())],
+        );
+        panel.text(
+            BODY,
+            vec![(
+                if interior.core_hp <= 0.0 {
+                    format!("POST BREACHED  0/{CORE_HP:.0} HP")
+                } else {
+                    format!("COMMAND POST  {:.0}/{:.0} HP", interior.core_hp, CORE_HP)
+                },
+                if interior.core_hp <= 0.0 {
+                    REDUCED_TEXT
+                } else {
+                    GOLD_TEXT
+                },
+            )],
+        );
+        panel.bar(interior.core_hp / CORE_HP);
+        if interior.core_hp <= 0.0 {
+            panel.text(
+                SMALL,
+                vec![(
+                    if city.team == PLAYER_TEAM {
+                        "KEEP RED OFF THE CENTER TO PREVENT CAPTURE"
+                    } else {
+                        "MOVE A BLUE TROOP ONTO THE POST TO CAPTURE"
+                    }
+                    .into(),
+                    BOOSTED_TEXT,
+                )],
+            );
+        }
+        let blue = interior
+            .fighters
+            .iter()
+            .filter(|f| f.team == crate::game::PLAYER_TEAM)
+            .count();
+        let red = interior.fighters.len() - blue;
+        panel.text(
+            SMALL,
+            vec![(format!("BLUE {blue} / RED {red} TROOPS"), DIM_TEXT)],
+        );
+        if let Some(fighter) = self
+            .interior_selected
+            .and_then(|source| interior.fighters.iter().find(|f| f.source_id == source))
+        {
+            panel.gap(GAP);
+            panel.text(
+                BODY,
+                vec![(
+                    format!("{:?}  {:.0} HP", fighter.unit_type, fighter.hp).to_uppercase(),
+                    BOOSTED_TEXT,
+                )],
+            );
+            panel.text(SMALL, vec![("GREEN: MOVE  RED: ATTACK".into(), LABEL_TEXT)]);
+        } else {
+            panel.text(
+                SMALL,
+                vec![("CLICK A BLUE TROOP ON THE MAP".into(), LABEL_TEXT)],
+            );
+        }
+        panel.gap(GAP);
+        panel.text(
+            SMALL,
+            vec![(
+                if interior.core_hp <= 0.0 {
+                    if city.team == PLAYER_TEAM {
+                        "POST OPEN: DEFEND THE CENTER"
+                    } else {
+                        "POST OPEN: CLICK A BLUE TROOP, THEN THE CENTER"
+                    }
+                } else {
+                    "BREACH POST, THEN OCCUPY CENTER"
+                }
+                .into(),
+                GOLD_TEXT,
+            )],
+        );
+        panel.compact_buttons(vec![
+            ButtonSpec {
+                target: Target::InteriorClear,
+                label: "CLEAR ORDERS".into(),
+                hint: "BACKSPACE".into(),
+                state: ButtonState::new(false, self.interior_selected.is_none()),
+                armed: false,
+            },
+            ButtonSpec {
+                target: Target::OpenInterior,
+                label: if city.team == crate::game::PLAYER_TEAM {
+                    "RETURN TO CITY"
+                } else {
+                    "LEAVE INTERIOR"
+                }
+                .into(),
+                hint: "V / ESC".into(),
+                state: ButtonState::Ready,
+                armed: false,
+            },
+        ]);
+    }
+
     /// A unit's name, stats as they stand this turn, and anything notable
     /// about it. Stats boosted above their base value are green, reduced red.
     pub(super) fn unit_info(&self, idx: usize, panel: &mut PanelBuilder) {
@@ -57,6 +165,19 @@ impl GameState {
                 ),
             ]),
         );
+        if unit.interior_hp < unit.max_hp() {
+            panel.text(
+                SMALL,
+                vec![(
+                    format!(
+                        "INTERIOR HP {:.0}/{:.0}",
+                        unit.interior_hp.ceil(),
+                        unit.max_hp()
+                    ),
+                    REDUCED_TEXT,
+                )],
+            );
+        }
         let (ability_name, _) = ability_text(unit);
         let (ability_status, ability_color) = if unit.ability_queued {
             ("QUEUED".to_string(), GOLD_TEXT)
@@ -418,13 +539,22 @@ impl GameState {
                 .collect(),
         );
         panel.gap(GAP);
-        panel.buttons(vec![ButtonSpec {
-            target: Target::ToggleYields,
-            label: "YIELDS".into(),
-            hint: "Y".into(),
-            state: ButtonState::new(self.show_yields, false),
-            armed: false,
-        }]);
+        panel.buttons(vec![
+            ButtonSpec {
+                target: Target::ToggleYields,
+                label: "YIELDS".into(),
+                hint: "Y".into(),
+                state: ButtonState::new(self.show_yields, false),
+                armed: false,
+            },
+            ButtonSpec {
+                target: Target::OpenInterior,
+                label: "CITY INTERIOR".into(),
+                hint: "V".into(),
+                state: ButtonState::Ready,
+                armed: false,
+            },
+        ]);
         panel.gap(GAP);
         panel.text(
             SMALL,

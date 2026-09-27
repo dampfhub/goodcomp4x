@@ -51,6 +51,8 @@ tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
 
 World and classic UI vertices are rebuilt from `GameState` each frame. ImGui retains window
 layout state so the player's panel positions survive view changes.
+While a city interior is open, `build_vertices` draws its tactical grid and
+copies in place of the exterior world; the exterior camera is restored on exit.
 
 ## A turn
 
@@ -69,7 +71,9 @@ layout state so the player's panel positions survive view changes.
    step, and enemy workers caught by a move are captured. The last step, `resolve_workers`
    (`workers.rs`), sends cities' idle workers out to their queued jobs and walks, works or brings
    home every worker on the map.
-4. **End of turn:** `resolve_economy` (`city/citizens.rs`) applies city income, growth and builds; each
+4. **End of turn:** `resolve_city_interiors` (`city/interior.rs`) projects adjacent field troops,
+   resolves their separate tactical orders and any command-post capture. Then `resolve_economy`
+   (`city/citizens.rs`) applies city income, growth and builds; each
    unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,
    sets or clears Lookout, and clears its orders; `advance_queues` (`order_queue.rs`) gives each
    unit with a queue its next turn's orders, dropping queues that no longer fit; then selection
@@ -80,7 +84,7 @@ The rules each step applies are in `game-rules.md`.
 
 ## Testing aids
 
-Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world) are constructors on
+Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world, F12 siege) are constructors on
 `GameState`; the savestate (F6
 save, F7 load) clones the whole `GameState`. Both live in `scenario.rs` and in memory only. Unit
 tests build a scenario and drive the same methods input does, so no window or GPU is needed;

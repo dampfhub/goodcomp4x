@@ -11,7 +11,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | --- | --- |
 | Left-click your unit | Select it |
 | Left-click a green hex | Move there this turn; click again to cancel |
-| Right-click a hex in range | Attack it this turn: an enemy unit, city or barracks, or an empty hex someone may step into |
+| Right-click a hex in range | Attack it this turn: an enemy unit or barracks, or an empty hex someone may step into; empty city centers cannot be targeted |
 | Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued |
 | Shift-right-click a hex | Queue an attack on it: in the queue's last turn if that turn has none yet and it's in range, else in one more turn |
 | Ctrl-click an adjacent ally | Queue a swap |
@@ -100,11 +100,17 @@ plays out.
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |
 | See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types) |
+| Click the city center while in city view | Enter that city's tactical interior map |
+| V / City Interior button | Open the selected or hovered city's interior; press again to return |
+| Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |
+| Backspace in the interior | Clear the selected copy's orders |
+| Escape / V / Return to City in the interior | Return to the city view |
 | Open City (in the barracks view) | Go back to the city view |
 | Space / Escape / click off the map | Close the city or barracks view |
 | Tab | Close the city or barracks view |
 
-While a city view is open, map clicks manage tiles and never select units.
+While a city view is open, map clicks manage tiles and never select field units. Clicking the
+city center enters the interior map; its clicks control only the interior copies.
 
 ## Camera, game and testing
 
@@ -114,11 +120,12 @@ While a city view is open, map clicks manage tiles and never select units.
 | Left-drag (6 px or more) / middle-drag | Pan |
 | Rest the cursor on a hex | After 0.75 s, a tooltip: terrain, yields, site, road, who works it, units |
 | Hover a unit | Its stats, in a box at the top-right |
-| Hover a city or barracks | Its HP, production and current build (and a city's growth), at the bottom-left |
+| Hover a city or barracks | Its production and current build (plus city growth or barracks HP), at the bottom-left |
 | F5 | Toggle borderless fullscreen |
 | Hold Escape for 1 s | Quit (a prompt shows while it's held), once no view, selection or tile panel is open for it to close |
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
 | F4 | Start a newly generated world; every press makes a new map |
+| F12 | Start a siege at Red's city with its interior open |
 | F6 | Save a snapshot of the whole game (in memory only) |
 | F7 | Load the snapshot; it is kept, so it can be loaded again |
 | F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome) |
@@ -128,7 +135,7 @@ While a city view is open, map clicks manage tiles and never select units.
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
 | Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
-The faded DEBUG panel at the top-left has buttons for F1-F4 and F6-F10; the current scenario is
+The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10; the current scenario is
 gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
 order.
 
@@ -139,7 +146,7 @@ them.
 
 | Flag | Effect |
 | --- | --- |
-| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier` or `world` (F1-F4) |
+| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier`, `world` or `siege` (F12) |
 | `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
 | `--size <W>x<H>` | Open the window at this size in pixels |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
@@ -154,7 +161,7 @@ them.
   holding Alt shows them on every explored tile that can be worked.
 - Your queued attacks are orange arrows from the attacker (or its ghost) to the target; the AI's
   are hidden. During playback each arrow shoots to its target: a burst is a hit, grey MISS a hex
-  with no enemy unit (a hit on an empty city or barracks still does damage), OUT OF RANGE a
+  with no enemy unit, worker or barracks (an empty city center cannot be targeted), OUT OF RANGE a
   target that moved away. Damage numbers rise from every unit hurt.
 - A unit following an order queue shows no ghost. While it is selected (alone or in a group) or
   under the cursor, a line in team color runs along its moves, with each turn's number (1 is

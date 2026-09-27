@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::thread;
 
-use super::city::{Build, CITY_MAX_HP, MAX_CITY_POPULATION};
+use super::city::{Build, CORE_HP, MAX_CITY_POPULATION};
 use super::hex::Hex;
 use super::scenario::Scenario;
 use super::unit::Team;
@@ -163,6 +163,11 @@ fn check_invariants(game: &GameState, context: &str) {
             unit.max_hp()
         );
         assert!(
+            unit.interior_hp > 0.0 && unit.interior_hp <= unit.max_hp(),
+            "{context}: {unit} has {} interior HP",
+            unit.interior_hp
+        );
+        assert!(
             game.can_enter(unit.pos),
             "{context}: {unit} stands on an impassable or off-map hex"
         );
@@ -222,12 +227,6 @@ fn check_invariants(game: &GameState, context: &str) {
     }
     for city in &game.cities {
         assert!(
-            (0.0..=CITY_MAX_HP).contains(&city.hp),
-            "{context}: city {} has {} HP",
-            city.id,
-            city.hp
-        );
-        assert!(
             (1..=MAX_CITY_POPULATION).contains(&city.population),
             "{context}: city {} has population {}",
             city.id,
@@ -240,6 +239,44 @@ fn check_invariants(game: &GameState, context: &str) {
             city.worked.len(),
             city.population
         );
+        assert!(
+            (0.0..=CORE_HP).contains(&city.interior.core_hp),
+            "{context}: city {} command post has {} HP",
+            city.id,
+            city.interior.core_hp
+        );
+        let mut sources = HashSet::new();
+        let mut tiles = HashSet::new();
+        for fighter in &city.interior.fighters {
+            assert!(
+                sources.insert(fighter.source_id),
+                "{context}: repeated interior source"
+            );
+            assert!(
+                tiles.insert(fighter.pos),
+                "{context}: two fighters on one interior tile"
+            );
+            assert!(
+                fighter.pos.distance(Hex::new(0, 0)) <= 2,
+                "{context}: fighter outside interior"
+            );
+            assert!(
+                fighter.hp > 0.0 && fighter.hp <= fighter.unit_type.stats().max_hp,
+                "{context}: interior fighter has invalid HP"
+            );
+            assert!(
+                game.units
+                    .iter()
+                    .any(|unit| unit.id == fighter.source_id && unit.interior_hp == fighter.hp),
+                "{context}: interior copy and source health differ"
+            );
+            assert!(
+                game.units.iter().any(|unit| unit.id == fighter.source_id
+                    && unit.team == fighter.team
+                    && unit.pos.distance(city.pos) == 1),
+                "{context}: interior fighter lacks adjacent source"
+            );
+        }
     }
     for (i, city) in game.cities.iter().enumerate() {
         // A paid-for unit at the head of the queue is one waiting for an open hex, and the
@@ -338,8 +375,8 @@ fn ai_against_ai_combat_ends_with_fewer_units() {
 struct Fingerprint {
     turn: u32,
     map_seed: Option<u32>,
-    units: Vec<(u32, Hex, f32)>,
-    cities: Vec<(u32, f32, usize)>,
+    units: Vec<(u32, Hex, f32, f32)>,
+    cities: Vec<(u32, usize)>,
 }
 
 fn fingerprint(scenario: Scenario, seed: u64, turns: u32) -> Fingerprint {
@@ -350,12 +387,12 @@ fn fingerprint(scenario: Scenario, seed: u64, turns: u32) -> Fingerprint {
     Fingerprint {
         turn: game.turn,
         map_seed: game.map_seed,
-        units: game.units.iter().map(|u| (u.id, u.pos, u.hp)).collect(),
-        cities: game
-            .cities
+        units: game
+            .units
             .iter()
-            .map(|c| (c.id, c.hp, c.population))
+            .map(|u| (u.id, u.pos, u.hp, u.interior_hp))
             .collect(),
+        cities: game.cities.iter().map(|c| (c.id, c.population)).collect(),
     }
 }
 

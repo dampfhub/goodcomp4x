@@ -165,6 +165,8 @@ enum Target {
     BarracksBuild(BuildUnit),
     OpenBarracks,
     OpenCity,
+    OpenInterior,
+    InteriorClear,
     CityQueueRemove(usize),
     BarracksQueueRemove(usize),
     /// A worker for the open city's pool.
@@ -510,6 +512,8 @@ impl GameState {
                 }
             }
             Target::OpenCity => self.open_selected_city_from_barracks(),
+            Target::OpenInterior => self.toggle_city_interior(),
+            Target::InteriorClear => self.clear_selected_interior_orders(),
             Target::CityQueueRemove(index) => self.remove_selected_city_queue_item(index),
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
             Target::Focus(focus) => self.set_selected_city_focus(focus),
@@ -528,6 +532,12 @@ impl GameState {
     /// it has rested there, for city hover outlines and the tile tooltip.
     /// `cursor` is in window pixels with the origin at the top-left.
     pub fn update_hover(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
+        if self.interior_view.is_some() {
+            self.hovered_tile = None;
+            self.hovered_city = None;
+            self.hover_seconds = 0.0;
+            return;
+        }
         let layout = self.layout(screen_size);
         let hex = cursor
             .filter(|&c| !layout.covers(to_ui(c, screen_size)))
@@ -543,6 +553,12 @@ impl GameState {
     }
 
     pub fn update_hover_imgui(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
+        if self.interior_view.is_some() {
+            self.hovered_tile = None;
+            self.hovered_city = None;
+            self.hover_seconds = 0.0;
+            return;
+        }
         let hex = cursor.and_then(|c| self.hex_at_screen(c, screen_size));
         if hex == self.hovered_tile {
             self.hover_seconds += dt;
@@ -589,7 +605,9 @@ impl GameState {
         self.top_bar(screen_size, &mut layout);
 
         let mut tray = PanelBuilder::default();
-        if let Some(city) = self.selected_city {
+        if let Some(city) = self.interior_view {
+            self.interior_tray(city, &mut tray);
+        } else if let Some(city) = self.selected_city {
             self.city_tray(city, &mut tray);
         } else if let Some(city) = self.selected_barracks {
             self.barracks_tray(city, &mut tray);

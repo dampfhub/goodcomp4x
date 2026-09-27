@@ -1301,7 +1301,10 @@ fn draw_outer_boxes(
 
 impl GameState {
     fn layout_view(&self) -> ViewScope {
-        if self.selected_city.is_some() || self.selected_barracks.is_some() {
+        if self.selected_city.is_some()
+            || self.selected_barracks.is_some()
+            || self.interior_view.is_some()
+        {
             ViewScope::City
         } else if self.selected.is_some() || !self.group.is_empty() {
             ViewScope::Troop
@@ -1942,6 +1945,8 @@ impl GameState {
         let mut tray = PanelBuilder::default();
         if selection_is_pinned {
             // Its persistent window owns these controls while the structure is selected.
+        } else if let Some(city) = self.interior_view {
+            self.interior_tray(city, &mut tray);
         } else if let Some(city) = self.selected_city {
             self.city_tray(city, &mut tray);
         } else if let Some(city) = self.selected_barracks {
@@ -1957,6 +1962,8 @@ impl GameState {
         }
         let selection_context = if selection_is_pinned {
             String::new()
+        } else if let Some(city) = self.interior_view {
+            format!("interior-{city}")
         } else if let Some(city) = self.selected_city {
             format!("city-{city}")
         } else if let Some(city) = self.selected_barracks {

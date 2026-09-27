@@ -5,6 +5,7 @@
 mod builds;
 mod citizens;
 mod founding;
+mod interior;
 mod logistics;
 #[cfg(test)]
 mod tests;
@@ -21,18 +22,16 @@ use super::{GameState, PLAYER_TEAM};
 
 pub use builds::{Build, BuildUnit, Building};
 pub(in crate::game) use builds::{WORKER_COST, WORKER_SHORTCUT};
+pub(super) use interior::CORE_HP;
+pub(super) use interior::Interior;
 pub(super) use logistics::{Routes, delivered_share};
 
 /// Camera zoom the city scenarios start at: most of the radius-six map in view.
 const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
 /// One manager and up to six nearby workers.
 pub(super) const MAX_CITY_POPULATION: usize = 7;
-pub(super) const CITY_MAX_HP: f32 = 320.0;
 pub(super) const BARRACKS_MAX_HP: f32 = 220.0;
-pub(super) const CITY_DEFENSE: f32 = 30.0;
 pub(super) const BARRACKS_DEFENSE: f32 = 25.0;
-pub(super) const CITY_ATTACK: f32 = 26.0;
-pub(super) const CITY_ATTACK_RANGE: i32 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LaborFocus {
@@ -58,7 +57,6 @@ pub(super) struct City {
     pub population: usize,
     pub food: i32,
     pub production: i32,
-    pub hp: f32,
     pub barracks_hp: f32,
     pub worked: Vec<Hex>,
     /// Manual tiles displaced by a blocked logistics route. They return when
@@ -77,6 +75,8 @@ pub(super) struct City {
     /// Barracks production is independent of the city's main queue.
     pub barracks_queue: Vec<BuildUnit>,
     pub barracks_production: i32,
+    /// A separate tactical board. Adjacent field troops project copies here.
+    pub interior: Interior,
     /// Workers at home, safe and off the map (`workers.rs`).
     pub workers: u32,
     /// Jobs waiting for a worker, first to go first.
@@ -93,7 +93,6 @@ impl City {
             population: 1,
             food: 0,
             production: 0,
-            hp: CITY_MAX_HP,
             barracks_hp: BARRACKS_MAX_HP,
             worked: Vec::new(),
             remembered_worked: Vec::new(),
@@ -107,6 +106,7 @@ impl City {
             planned_sites: HashMap::new(),
             barracks_queue: Vec::new(),
             barracks_production: 0,
+            interior: Interior::default(),
             workers: 1,
             worker_jobs: Vec::new(),
         }
