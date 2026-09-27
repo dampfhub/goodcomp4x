@@ -2,6 +2,7 @@ mod app;
 mod cli;
 mod game;
 mod icon;
+mod icon_art;
 mod renderer;
 mod screenshot;
 
@@ -16,6 +17,7 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    icon::claim_taskbar_identity();
     let event_loop = EventLoop::new()?;
     let mut app = app::App::new(options);
     event_loop.run_app(&mut app)?;

@@ -118,11 +118,17 @@ const STATUS_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
 /// Height of a progress bar row (`Row::Bar`).
 const BAR_HEIGHT: f32 = 12.0;
 const COLLAPSED_HEIGHT: f32 = 30.0;
-const SLOT_COUNT: usize = 4;
+const SLOT_COUNT: usize = 5;
 const SELECTION: usize = 0;
 const QUEUE: usize = 1;
 const DEBUG: usize = 2;
 const INSPECT: usize = 3;
+const UNITS: usize = 4;
+/// Each slot's native window title, by slot. A new panel that isn't static
+/// chrome (like the status bar) gets a slot here, so it can be dragged,
+/// docked, resized and put in a box like the rest.
+const SLOT_TITLES: [&str; SLOT_COUNT] =
+    ["Selection", "Production Queue", "Debug", "Inspect", "Units"];
 
 #[derive(Clone, Copy)]
 struct QueueDockRelation {
@@ -439,7 +445,7 @@ impl ImGuiLayoutState {
     }
 
     fn remove_outer_box(&mut self, box_id: u32) {
-        for title in ["Selection", "Production Queue", "Debug", "Inspect"] {
+        for title in SLOT_TITLES {
             if self.outer_box_for_window(title) == Some(box_id) {
                 let window = native_window(title);
                 if !window.is_null() {
@@ -1076,6 +1082,7 @@ impl ImGuiLayoutState {
             let Some(size) = sizes[slot] else { continue };
             let zone = match slot {
                 SELECTION | QUEUE | INSPECT => Zone::BottomLeft,
+                UNITS => Zone::TopLeft,
                 _ => Zone::TopRight,
             };
             for height_scale in [1.0, 0.85, 0.65, 0.45, 0.25] {
@@ -1167,9 +1174,71 @@ fn measure_panel(
                 rows as f32 * (if *compact { 34.0 } else { 54.0 })
             }
             Row::QueueItem(_) => 37.0,
+            Row::Roster(_) => ROSTER_CHIP + 6.0,
         };
     }
     height + 12.0
+}
+
+/// For a floating panel the player placed (which keeps its own size), how much
+/// taller it must get this frame because Ctrl just showed its title bar
+/// (`title_height`), or shorter because it just hid it. `None` when the title
+/// bar didn't just change, or the panel is laid out automatically, docked or
+/// collapsed (those already account for it).
+fn title_bar_change(window: WindowGeometry, arranging: bool, title_height: f32) -> Option<f32> {
+    let changed = arranging != window.title_visible;
+    (changed && window.manual && !window.docked && !window.collapsed && window.size != Vec2::ZERO)
+        .then_some(if arranging {
+            title_height
+        } else {
+            -title_height
+        })
+}
+
+/// How wide the unit strip's window wants to be: its widest row of tokens,
+/// plus the same allowance for padding and border `measure_panel` takes off.
+fn roster_width(panel: &PanelBuilder) -> f32 {
+    let widest = panel
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Roster(chips) => Some(chips.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0) as f32;
+    (widest * ROSTER_CHIP + (widest - 1.0).max(0.0) * ROSTER_CHIP_GAP + 45.0).max(210.0)
+}
+
+/// A unit strip token drawn with ImGui's draw list: the same token as on the
+/// map, in a framed square (bright while selected, white while hovered).
+fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, hovered: bool) {
+    let draw = ui.get_window_draw_list();
+    let (bg, border) = if chip.selected {
+        (BUTTON_HOVER_BG, ARMED_BORDER_COLOR)
+    } else {
+        (BUTTON_BG, BORDER_COLOR)
+    };
+    let edge = if hovered { TEXT } else { border };
+    let thickness = if chip.selected { ARMED_BORDER } else { BORDER };
+    draw.add_rect(min, max, bg).filled(true).build();
+    draw.add_rect(min, max, edge).thickness(thickness).build();
+    let mut vertices = Vec::new();
+    let radius = (max[0] - min[0]) * ROSTER_TOKEN_SHARE / 2.0;
+    super::super::draw::push_unit_token(Vec2::ZERO, chip.look, radius, chip.color, &mut vertices);
+    // The token is built Y-up around the origin; ImGui's Y points down.
+    let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
+    let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+    for triangle in vertices.as_chunks::<3>().0 {
+        draw.add_triangle(
+            at(&triangle[0]),
+            at(&triangle[1]),
+            at(&triangle[2]),
+            triangle[0].color,
+        )
+        .filled(true)
+        .build();
+    }
 }
 
 fn text_line(ui: &Ui, line: &Line) {
@@ -1638,6 +1707,27 @@ impl GameState {
         } else {
             Condition::Always
         };
+        // A panel the player moved or resized keeps its own size, so when Ctrl
+        // shows or hides its title bar it would push the content down and clip
+        // it. Grow (or shrink) it by the title bar instead, that one frame.
+        let geometry = layout.windows[slot];
+        let (condition, size_condition, size) =
+            match title_bar_change(geometry, arranging, ui.frame_height()) {
+                Some(delta) => (
+                    Condition::Always,
+                    Condition::Always,
+                    (geometry.size + Vec2::new(0.0, delta)).min(Vec2::new(
+                        viewport.x - 2.0 * PANEL_MARGIN,
+                        viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN,
+                    )),
+                ),
+                None => (condition, size_condition, size),
+            };
+        let position = if title_bar_change(geometry, arranging, 0.0).is_some() {
+            geometry.pos
+        } else {
+            position
+        };
         let flags = panel_chrome(arranging, layout.windows[slot].collapsed);
         let mut window = ui.window(title).flags(flags);
         // While ImGui is moving a panel or showing docking targets it owns the
@@ -1698,6 +1788,36 @@ impl GameState {
                     text_line(ui, line);
                 }
                 Row::Gap(height) => ui.dummy([0.0, height.max(0.0)]),
+                Row::Roster(chips) => {
+                    let io = ui.io();
+                    let mode = if io.key_shift {
+                        ClickMode::QueueMove
+                    } else if io.key_ctrl {
+                        ClickMode::Swap
+                    } else {
+                        ClickMode::Normal
+                    };
+                    for (index, chip) in chips.iter().enumerate() {
+                        if index != 0 {
+                            ui.same_line_with_spacing(0.0, ROSTER_CHIP_GAP);
+                        }
+                        let clicked = ui.invisible_button(
+                            format!("##roster-{}", chip.id),
+                            [ROSTER_CHIP, ROSTER_CHIP],
+                        );
+                        let hovered = ui.is_item_hovered();
+                        draw_roster_chip(ui, ui.item_rect_min(), ui.item_rect_max(), chip, hovered);
+                        if clicked {
+                            actions.push(Action::Button(scope, roster_target(chip.id, mode)));
+                        }
+                        if hovered && let Some(unit) = self.units.iter().find(|u| u.id == chip.id) {
+                            ui.tooltip_text(format!(
+                                "{} - CLICK: SELECT · SHIFT: ADD · CTRL: REMOVE",
+                                self.unit_role(unit)
+                            ));
+                        }
+                    }
+                }
                 Row::Bar(fraction) => {
                     // No "0%" overlay: it doesn't fit a 12 px bar, and the row
                     // above already says what the bar counts toward.
@@ -1846,10 +1966,7 @@ impl GameState {
         // Dear ImGui applies a dock drop in NewFrame, before these windows are
         // submitted. Observe that new dock state now; otherwise our cached
         // floating geometry can undo a valid split on its first frame.
-        for (slot, title) in ["Selection", "Production Queue", "Debug", "Inspect"]
-            .into_iter()
-            .enumerate()
-        {
+        for (slot, title) in SLOT_TITLES.into_iter().enumerate() {
             layout.sync_native_window(slot, title);
         }
         layout.switch_layout_scope(self.layout_view());
@@ -1891,10 +2008,10 @@ impl GameState {
                 ui.text(format!("TURN {turn}"));
                 ui.same_line();
                 let max_notice = (viewport.x - end_width - 520.0).max(0.0);
-                if ui.calc_text_size(&self.notice)[0] <= max_notice {
-                    ui.text_colored(NOTICE_TEXT, &self.notice);
+                if ui.calc_text_size(self.shown_notice())[0] <= max_notice {
+                    ui.text_colored(NOTICE_TEXT, self.shown_notice());
                 } else {
-                    let mut shortened = self.notice.clone();
+                    let mut shortened = self.shown_notice().to_string();
                     while !shortened.is_empty() && ui.calc_text_size(&shortened)[0] > max_notice {
                         shortened.pop();
                     }
@@ -2032,6 +2149,7 @@ impl GameState {
         } else {
             (560.0_f32.min(max_width), 330.0_f32.min(max_width))
         };
+        let units = self.roster_panel();
         let queue_height = measure_panel(ui, &queue, fonts, left_width, arranging).min(225.0);
         let mut tray_height = measure_panel(ui, &tray, fonts, left_width, arranging).min(available);
         // On a narrow screen the queue cannot wrap into a second column, so
@@ -2054,6 +2172,13 @@ impl GameState {
                 measure_panel(ui, &hover, fonts, 345.0_f32.min(max_width), arranging)
                     .min(available),
             )),
+            units.as_ref().map(|units| {
+                let width = roster_width(units).min(max_width);
+                Vec2::new(
+                    width,
+                    measure_panel(ui, units, fonts, width, arranging).min(available),
+                )
+            }),
         ];
         let mut sizes = std::array::from_fn(|slot| {
             measured[slot].map(|size| layout.size(slot, size, viewport, arranging))
@@ -2135,6 +2260,24 @@ impl GameState {
                 size,
                 viewport,
                 &hover,
+                fonts,
+                arranging,
+                false,
+                &mut actions,
+            );
+        }
+        if let (Some(position), Some(size), Some(units)) =
+            (positions[UNITS], sizes[UNITS], units.as_ref())
+        {
+            self.render_imgui_window(
+                ui,
+                layout,
+                UNITS,
+                SLOT_TITLES[UNITS],
+                position,
+                size,
+                viewport,
+                units,
                 fonts,
                 arranging,
                 false,
@@ -2405,6 +2548,7 @@ mod tests {
             None,
             Some(Vec2::new(330.0, 300.0)),
             None,
+            None,
         ];
         let positions = layout.plan(viewport, &mut sizes);
         let selection = positions[SELECTION].unwrap();
@@ -2431,6 +2575,42 @@ mod tests {
             STATUS_FLAGS.contains(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
         );
         assert!(STATUS_FLAGS.contains(WindowFlags::NO_TITLE_BAR | WindowFlags::NO_MOVE));
+    }
+
+    #[test]
+    fn a_placed_panel_grows_by_its_title_bar_while_ctrl_shows_it() {
+        let placed = WindowGeometry {
+            size: Vec2::new(300.0, 120.0),
+            manual: true,
+            ..WindowGeometry::default()
+        };
+        // Ctrl pressed: the title bar appears, so the panel grows by it.
+        assert_eq!(title_bar_change(placed, true, 26.0), Some(26.0));
+        // Held: no further change once the title bar is showing.
+        let showing = WindowGeometry {
+            title_visible: true,
+            ..placed
+        };
+        assert_eq!(title_bar_change(showing, true, 26.0), None);
+        // Released: it shrinks back.
+        assert_eq!(title_bar_change(showing, false, 26.0), Some(-26.0));
+        // Automatically placed, docked or collapsed panels are sized elsewhere.
+        for other in [
+            WindowGeometry {
+                manual: false,
+                ..placed
+            },
+            WindowGeometry {
+                docked: true,
+                ..placed
+            },
+            WindowGeometry {
+                collapsed: true,
+                ..placed
+            },
+        ] {
+            assert_eq!(title_bar_change(other, true, 26.0), None);
+        }
     }
 
     #[test]
@@ -2545,7 +2725,7 @@ mod tests {
             layout.condition(SELECTION, Vec2::new(1200.0, 800.0)),
             Condition::Always
         );
-        let mut sizes = [Some(Vec2::new(300.0, 200.0)), None, None, None];
+        let mut sizes = [Some(Vec2::new(300.0, 200.0)), None, None, None, None];
         let positions = layout.plan(Vec2::new(1200.0, 800.0), &mut sizes);
         assert_eq!(
             positions[SELECTION].unwrap().y,
@@ -2583,6 +2763,7 @@ mod tests {
             Some(Vec2::new(560.0, 220.0)),
             Some(Vec2::new(330.0, 340.0)),
             Some(Vec2::new(345.0, 190.0)),
+            Some(Vec2::new(260.0, 90.0)),
         ];
         let positions = ImGuiLayoutState::default().plan(viewport, &mut sizes);
         assert!(positions.iter().all(Option::is_some));
@@ -2596,6 +2777,7 @@ mod tests {
             Some(Vec2::new(500.0, 370.0)),
             Some(Vec2::new(500.0, 180.0)),
             Some(Vec2::new(280.0, 280.0)),
+            None,
             None,
         ];
         let mut layout = ImGuiLayoutState::default();
@@ -2629,6 +2811,7 @@ mod tests {
         let mut sizes = [
             Some(layout.size(SELECTION, Vec2::new(560.0, 200.0), viewport, false)),
             Some(Vec2::new(560.0, 180.0)),
+            None,
             None,
             None,
         ];
@@ -2680,6 +2863,7 @@ mod tests {
             Some(Vec2::new(420.0, 225.0)),
             Some(Vec2::new(330.0, 330.0)),
             Some(Vec2::new(345.0, 190.0)),
+            None,
         ];
         let positions = ImGuiLayoutState::default().plan(viewport, &mut sizes);
         assert!(positions[..3].iter().all(Option::is_some));
@@ -2693,6 +2877,7 @@ mod tests {
             Some(Vec2::new(315.0, 167.0)),
             Some(Vec2::new(315.0, 225.0)),
             Some(Vec2::new(275.0, 400.0)),
+            None,
             None,
         ];
         let positions = ImGuiLayoutState::default().plan(viewport, &mut sizes);

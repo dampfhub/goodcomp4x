@@ -25,7 +25,8 @@ src/main.rs          logger, command line, event loop
 src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size)
 src/app.rs           App: window, input -> GameState calls, frame pacing (165 FPS), F5 fullscreen
 src/screenshot.rs    screenshot mode: settle, read a frame back, write a PNG, quit
-src/icon.rs          window/taskbar icon drawn in code
+src/icon.rs          window/taskbar icon (pixels from src/icon_art.rs)
+src/icon_art.rs      the icon drawn in code; build.rs also embeds it in the Windows exe
 src/renderer/        Vulkan setup, swapchain, MSAA, the single pipeline, coverage atlas
 src/game/            GameState and everything game-specific
 shaders/             mesh.vert (view-projection), mesh.frag (color x atlas coverage or distance field)

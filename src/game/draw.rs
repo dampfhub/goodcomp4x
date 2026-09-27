@@ -177,6 +177,12 @@ const QUEUE_BADGE_PADDING: f32 = 0.09;
 const QUEUE_BADGE_RIM: f32 = 0.04;
 const QUEUE_TEXT_COLOR: Color = [0.95, 0.95, 0.95, 1.0];
 const QUEUE_TAG_OFFSET: Vec2 = Vec2::new(-0.44, -0.4);
+/// Where a plan's last number sits from its ghost: below it, clear of the
+/// pictogram.
+const QUEUE_END_BADGE_OFFSET: Vec2 = Vec2::new(0.0, -0.36);
+/// The orange hex outline on a click waiting to be repeated to replace a queue.
+const QUEUE_REPLACE_OUTLINE_RADIUS: f32 = 0.9;
+const QUEUE_REPLACE_OUTLINE_WIDTH: f32 = 0.08;
 const QUEUE_TAG_SCALE: f32 = 0.7;
 
 /// A queued swap is drawn as a link between the two allies.
@@ -302,7 +308,7 @@ impl GameState {
             }
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
             if unit.plans_later_turns() && self.is_player_controlled(idx) {
-                let text = format!(">{}", unit.plan_len());
+                let text = format!("{}T", unit.plan_len());
                 let at = center + QUEUE_TAG_OFFSET * scale;
                 push_turn_badge(
                     at,
@@ -652,12 +658,25 @@ impl GameState {
         let hovered = self
             .hovered_tile
             .and_then(|hex| self.controlled_unit_at(hex));
-        let plans: Vec<&Unit> = (0..self.units.len())
+        let plans: Vec<(&Unit, UnitLook)> = (0..self.units.len())
             .filter(|&i| selection.contains(&i) || hovered == Some(i))
             .filter(|&i| self.units[i].plans_later_turns() && self.is_player_controlled(i))
-            .map(|i| &self.units[i])
+            .map(|i| (&self.units[i], self.unit_look(&self.units[i])))
             .collect();
         push_queue_plans(&plans, out);
+        // A click waiting to be repeated to replace the selection's queue.
+        if let Some(hex) = self.queue_replace_hex() {
+            let rim = HEX_SIZE * QUEUE_REPLACE_OUTLINE_RADIUS;
+            mesh::polygon_outline(
+                hex.to_world(),
+                rim,
+                QUEUE_REPLACE_OUTLINE_WIDTH,
+                6,
+                0.0,
+                ATTACK_ARC_COLOR,
+                out,
+            );
+        }
     }
 
     /// Where to draw a unit and at what scale: full size in the middle of its
@@ -1427,50 +1446,127 @@ fn push_attack_arc(from: Vec2, to: Vec2, out: &mut Vec<Vertex>) {
     push_arrow(&points, ATTACK_ARC_COLOR, ATTACK_ARC_OUTLINE_COLOR, out);
 }
 
-/// The plans of units following a queue: a line along each one's moves with each
-/// turn's number (1 is this turn) on the hex it moves to, and each attack's
-/// arrow from where the unit stands that turn, numbered at its middle. A hex
-/// or arrow used on several turns lists them all ("2,4").
-fn push_queue_plans(units: &[&Unit], out: &mut Vec<Vertex>) {
-    // Several units' plans (a group's) share labels, so two of them passing
-    // one hex on different turns read "2,3" instead of hiding each other.
-    let mut stops: Vec<(Hex, Vec<usize>)> = Vec::new();
-    let mut strikes: Vec<((Hex, Hex), Vec<usize>)> = Vec::new();
-    for unit in units {
-        let line = with_alpha(unit.team.color(), QUEUE_LINE_ALPHA);
+/// What `push_queue_plans` draws, worked out first: the plan lines, the ghosts
+/// where plans end, the attack arrows, and the numbered badges (their text is
+/// the turn numbers, "2,4" for one unit using a hex on two turns).
+struct QueuePlans {
+    lines: Vec<(Vec2, Vec2, Color)>,
+    ghosts: Vec<(Vec2, UnitLook, Color)>,
+    arrows: Vec<Vec<Vec2>>,
+    badges: Vec<(Vec2, String, Color)>,
+}
+
+fn queue_plans(units: &[(&Unit, UnitLook)]) -> QueuePlans {
+    // Which units stop on each hex, in order, to fan them apart.
+    let mut visitors: Vec<(Hex, Vec<usize>)> = Vec::new();
+    for (u, (unit, _)) in units.iter().enumerate() {
+        for turn in 0..unit.plan_len() {
+            let to = unit.pos_after(turn + 1);
+            if unit.pos_after(turn) != to {
+                match visitors.iter_mut().find(|(hex, _)| *hex == to) {
+                    Some((_, list)) if list.contains(&u) => {}
+                    Some((_, list)) => list.push(u),
+                    None => visitors.push((to, vec![u])),
+                }
+            }
+        }
+    }
+    let spot = |hex: Hex, u: usize| match visitors.iter().find(|(h, _)| *h == hex) {
+        Some((_, list)) => {
+            let slot = list.iter().position(|&v| v == u).unwrap_or(0);
+            fan_position(hex.to_world(), slot, list.len(), GHOST_FAN_RADIUS)
+        }
+        None => hex.to_world(),
+    };
+
+    let mut plans = QueuePlans {
+        lines: Vec::new(),
+        ghosts: Vec::new(),
+        arrows: Vec::new(),
+        badges: Vec::new(),
+    };
+    let label = |turns: Vec<usize>| {
+        let mut turns = turns;
+        turns.sort_unstable();
+        turns.dedup();
+        let text: Vec<String> = turns.iter().map(usize::to_string).collect();
+        text.join(",")
+    };
+    for (u, &(unit, look)) in units.iter().enumerate() {
+        let color = unit.team.color();
+        let line = with_alpha(color, QUEUE_LINE_ALPHA);
+        let stand = |hex: Hex| {
+            if hex == unit.pos {
+                unit.pos.to_world()
+            } else {
+                spot(hex, u)
+            }
+        };
+        let mut at = unit.pos.to_world();
+        let mut stops: Vec<(Hex, Vec<usize>)> = Vec::new();
+        let mut strikes: Vec<((Hex, Hex), Vec<usize>)> = Vec::new();
         for turn in 0..unit.plan_len() {
             let (from, to) = (unit.pos_after(turn), unit.pos_after(turn + 1));
             if from != to {
-                mesh::segment(from.to_world(), to.to_world(), QUEUE_LINE_WIDTH, line, out);
+                let next = stand(to);
+                plans.lines.push((at, next, line));
+                at = next;
                 add_label(&mut stops, to, turn + 1);
             }
             if let Some(target) = unit.attack_on_turn(turn) {
                 add_label(&mut strikes, (to, target), turn + 1);
             }
         }
+        let end = unit.plan_end();
+        if end != unit.pos {
+            plans
+                .ghosts
+                .push((stand(end), look, with_alpha(color, GHOST_ALPHA)));
+        }
+        for ((from, target), turns) in strikes {
+            let points = attack_arc_points(stand(from), target.to_world(), 1.0);
+            let middle = points
+                .get(points.len() / 2)
+                .copied()
+                .unwrap_or(target.to_world());
+            plans.badges.push((middle, label(turns), ATTACK_ARC_COLOR));
+            plans.arrows.push(points);
+        }
+        for (hex, turns) in stops {
+            // The number at the end sits under the ghost, not on it.
+            let offset = if hex == end {
+                QUEUE_END_BADGE_OFFSET
+            } else {
+                Vec2::ZERO
+            };
+            plans
+                .badges
+                .push((stand(hex) + offset, label(turns), color));
+        }
     }
-    let mut badges = Vec::new();
-    for ((from, target), turns) in strikes {
-        let points = attack_arc_points(from.to_world(), target.to_world(), 1.0);
+    plans
+}
+
+/// The plans of units following a queue, each unit's on its own: a line from
+/// the unit through each hex it moves to, numbered by turn (1 is this turn),
+/// ending in a faded ghost of the unit where its plan leaves it; its attacks
+/// are arrows from where it stands that turn, numbered at their middle. Where
+/// several units' plans stop on one hex, each unit's stop is fanned out
+/// around it (as ghosts are), so a number never belongs to two units. A hex
+/// or arrow one unit uses on several turns lists them ("2,4").
+fn push_queue_plans(units: &[(&Unit, UnitLook)], out: &mut Vec<Vertex>) {
+    let plans = queue_plans(units);
+    for (from, to, color) in plans.lines {
+        mesh::segment(from, to, QUEUE_LINE_WIDTH, color, out);
+    }
+    for (at, look, color) in plans.ghosts {
+        push_unit_icon(at, look, 1.0, color, out);
+    }
+    for points in plans.arrows {
         push_arrow(&points, ATTACK_ARC_COLOR, ATTACK_ARC_OUTLINE_COLOR, out);
-        let middle = points
-            .get(points.len() / 2)
-            .copied()
-            .unwrap_or(target.to_world());
-        badges.push((middle, turns, ATTACK_ARC_COLOR));
     }
-    // Every queue shown is the player's, so one team color rims the moves.
-    let rim = units.first().map_or(PLAYER_TEAM, |u| u.team).color();
-    badges.extend(
-        stops
-            .into_iter()
-            .map(|(hex, turns)| (hex.to_world(), turns, rim)),
-    );
-    for (at, mut turns, rim) in badges {
-        turns.sort_unstable();
-        turns.dedup();
-        let text: Vec<String> = turns.iter().map(usize::to_string).collect();
-        push_turn_badge(at, &text.join(","), 1.0, rim, out);
+    for (at, text, rim) in plans.badges {
+        push_turn_badge(at, &text, 1.0, rim, out);
     }
 }
 
@@ -1555,6 +1651,19 @@ pub(super) fn push_arrow(points: &[Vec2], color: Color, outline: Color, out: &mu
 pub(super) struct UnitLook {
     pub icon: UnitIcon,
     pub civilian: bool,
+}
+
+/// A unit's token (as on the map) sized so a military unit's disc has
+/// `radius`, in whatever space `center` is in: the UI draws the unit strip
+/// with it.
+pub(super) fn push_unit_token(
+    center: Vec2,
+    look: UnitLook,
+    radius: f32,
+    color: Color,
+    out: &mut Vec<Vertex>,
+) {
+    push_unit_icon(center, look, radius / UNIT_ICON_RADIUS, color, out);
 }
 
 /// The unit's token in its team color with a dark outline, so it reads on
@@ -2070,7 +2179,10 @@ mod tests {
 
         let selected = game.build_vertices();
         assert!(count_color(&selected, line) > 0, "the path shows");
-        assert_eq!(count_color(&selected, ghost), 0, "numbers, not a ghost");
+        assert!(
+            count_color(&selected, ghost) > 0,
+            "a ghost where the plan ends"
+        );
 
         game.selected = None;
         let deselected = game.build_vertices();
@@ -2080,6 +2192,48 @@ mod tests {
         game.hovered_tile = Some(start);
         let hovered = game.build_vertices();
         assert_eq!(count_color(&hovered, line), count_color(&selected, line));
+    }
+
+    #[test]
+    fn two_units_passing_one_hex_get_their_own_numbers() {
+        use crate::game::unit::TurnOrder;
+        let (shared, a_first, b_last) = (Hex::new(0, 0), Hex::new(-1, 0), Hex::new(1, 0));
+        // A reaches the shared hex on turn 2, B on turn 1 and moves on.
+        let mut a = Unit::new(1, Hex::new(-2, 0), Team::Blue, UnitType::Melee);
+        a.planned_move = Some(a_first);
+        a.following_queue = true;
+        a.queued.push(TurnOrder {
+            from: a_first,
+            move_to: Some(shared),
+            attack: None,
+        });
+        let mut b = Unit::new(2, Hex::new(0, 2), Team::Blue, UnitType::Cavalry);
+        b.planned_move = Some(shared);
+        b.following_queue = true;
+        b.queued.push(TurnOrder {
+            from: shared,
+            move_to: Some(b_last),
+            attack: None,
+        });
+        let look = |unit: &Unit| UnitLook {
+            icon: UnitIcon::of(unit.unit_type),
+            civilian: false,
+        };
+        let plans = queue_plans(&[(&a, look(&a)), (&b, look(&b))]);
+
+        let texts: Vec<&str> = plans.badges.iter().map(|b| b.1.as_str()).collect();
+        assert!(!texts.contains(&"1,2"), "no number shared by two units");
+        let near_shared: Vec<(Vec2, &str)> = plans
+            .badges
+            .iter()
+            .filter(|b| b.0.distance(shared.to_world()) < HEX_SIZE * 0.8)
+            .map(|b| (b.0, b.1.as_str()))
+            .collect();
+        assert_eq!(near_shared.len(), 2, "{near_shared:?}");
+        assert_ne!(near_shared[0].0, near_shared[1].0, "fanned apart");
+        // Each plan ends in its own ghost.
+        assert_eq!(plans.ghosts.len(), 2);
+        assert_ne!(plans.ghosts[0].0, plans.ghosts[1].0);
     }
 
     #[test]
@@ -2123,7 +2277,10 @@ mod tests {
         assert!(game.queue_move(next));
         let vertices = game.build_vertices();
         assert!(count_color(&vertices, line) > 0);
-        assert_eq!(count_color(&vertices, ghost), 0);
+        assert!(
+            count_color(&vertices, ghost) > 0,
+            "the ghost moves to the plan's end"
+        );
     }
 
     #[test]

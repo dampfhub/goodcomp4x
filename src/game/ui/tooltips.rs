@@ -367,6 +367,10 @@ impl GameState {
                     "TAKES THIS JOB OFF THE CITY'S WORKER LIST.".into(),
                     None,
                 ),
+                // Unit strip tokens aren't buttons: their help is in the strip.
+                Target::RosterSelect(_) | Target::RosterAdd(_) | Target::RosterRemove(_) => {
+                    return Vec::new();
+                }
                 Target::RecallWorker(_) => (
                     "RECALL".into(),
                     "CLICK".into(),
@@ -542,7 +546,7 @@ impl GameState {
             UnitAction::Hold => (
                 "HOLD".into(),
                 "SPACE",
-                "SKIPS THIS UNIT FOR THE TURN, KEEPING ANY QUEUED ORDERS.".into(),
+                "SKIPS THIS UNIT FOR THE TURN, KEEPING ANY QUEUED ORDERS. PRESS AGAIN ON A HOLDING UNIT TO PUT IT BACK IN THE TURN ORDER; ANY NEW ORDER ENDS THE HOLD TOO.".into(),
                 None,
             ),
             UnitAction::Guard => (
@@ -561,6 +565,14 @@ impl GameState {
                 "FOUND CITY".into(),
                 "F",
                 "AT LEAST 3 HEXES FROM ANY OTHER CITY.".into(),
+                None,
+            ),
+            UnitAction::ClearOrders => (
+                "CLEAR ORDERS".into(),
+                "CTRL-RIGHT-CLICK",
+                "DROPS EVERY SELECTED UNIT'S ORDERS: MOVES, ATTACKS, QUEUED TURNS, HOLD AND \
+                 GUARD."
+                    .into(),
                 None,
             ),
         }
