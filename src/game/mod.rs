@@ -379,8 +379,19 @@ impl GameState {
 
     /// Hexes reachable from `start` in at most `move_range` steps without
     /// passing through mountains or an occupied hex, so a line of units
-    /// blocks the way. Includes `start` itself.
+    /// blocks the way. Includes `start` itself. This is the real board, as the
+    /// AI sees it; the player plans with `known_reachable_hexes` (`fog.rs`).
     fn reachable_hexes(&self, start: Hex, move_range: i32) -> HashSet<Hex> {
+        self.reachable_hexes_by(start, move_range, |hex| self.is_occupied(hex))
+    }
+
+    /// Like `reachable_hexes`, with `occupied` deciding which hexes block.
+    fn reachable_hexes_by(
+        &self,
+        start: Hex,
+        move_range: i32,
+        occupied: impl Fn(Hex) -> bool,
+    ) -> HashSet<Hex> {
         let mut visited = HashSet::from([start]);
         let mut frontier = vec![start];
 
@@ -388,7 +399,7 @@ impl GameState {
             let mut next = Vec::new();
             for hex in frontier {
                 for neighbor in hex.neighbors() {
-                    let open = self.grid.is_passable(neighbor) && !self.is_occupied(neighbor);
+                    let open = self.grid.is_passable(neighbor) && !occupied(neighbor);
                     if open && visited.insert(neighbor) {
                         next.push(neighbor);
                     }

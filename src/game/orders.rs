@@ -134,11 +134,7 @@ impl GameState {
             }
             (ClickMode::Move, _) => {}
             (ClickMode::Normal, None) => {
-                if self.has_enemy_target_at(hex, self.units[selected].team) {
-                    self.try_queue_attack(selected, hex);
-                } else {
-                    self.try_queue_move(selected, hex);
-                }
+                self.queue_order_at(selected, hex);
                 self.advance_selection_if_done();
             }
         }
@@ -337,12 +333,19 @@ impl GameState {
         let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
             return;
         };
-        if self.has_enemy_target_at(hex, self.units[selected].team) {
-            self.try_queue_attack(selected, hex);
-        } else {
-            self.try_queue_move(selected, hex);
-        }
+        self.queue_order_at(selected, hex);
         self.advance_selection_if_done();
+    }
+
+    /// A plain click or right-click on `hex`: attacks an enemy the player
+    /// knows is there, and otherwise moves there. An enemy out of sight isn't
+    /// known, so clicking its hex plans a move.
+    pub(super) fn queue_order_at(&mut self, idx: usize, hex: Hex) {
+        if self.known_enemy_target_at(hex, self.units[idx].team, &self.fog()) {
+            self.try_queue_attack(idx, hex);
+        } else {
+            self.try_queue_move(idx, hex);
+        }
     }
 
     pub(super) fn hex_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option<Hex> {
@@ -357,7 +360,7 @@ impl GameState {
     /// other friendly unit is already heading there.
     pub(super) fn try_queue_move(&mut self, idx: usize, dest: Hex) {
         let unit = &self.units[idx];
-        let reachable = self.reachable_hexes(unit.pos, unit.stats().move_range);
+        let reachable = self.known_reachable_hexes(unit.pos, unit.stats().move_range, &self.fog());
         let claimed_by_ally = self
             .units
             .iter()
@@ -453,7 +456,9 @@ impl GameState {
         let move_still_possible = match (unit.planned_move, self.swap_partner(idx)) {
             (None, _) => true,
             (Some(_), Some(_)) => move_range > 0,
-            (Some(dest), None) => self.reachable_hexes(unit.pos, move_range).contains(&dest),
+            (Some(dest), None) => self
+                .known_reachable_hexes(unit.pos, move_range, &self.fog())
+                .contains(&dest),
         };
         if !move_still_possible {
             self.cancel_swap(idx);

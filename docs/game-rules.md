@@ -103,6 +103,11 @@ queue them. Nothing heals.
   memory under a grey veil; never-seen hexes draw nothing.
 - Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
   remembered hexes from memory.
+- The player plans from what they know: in sight, the board as it is; out of sight, the memory.
+  An unseen unit doesn't shrink the move range and clicking its hex plans a move, which then
+  meets it at resolution; a remembered one blocks and can be attacked as if still there. Yield
+  badges and tooltip yields out of sight are as last seen, and a city or barracks shows its live
+  hover panel only if it is the player's own or in sight.
 - The AI ignores the fog.
 
 ## Orders (planning)
@@ -341,12 +346,11 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - Contests only form when two enemies arrive in the same step. A later arrival is just blocked; it
   could be allowed to charge in and contest instead.
 - A unit locked in a contest still retaliates against third-party melee attackers.
-- A move only checks its destination at resolution, not whether its planned path is still open.
+- A move only checks its destination at resolution, not whether its planned path is still open,
+  so a move planned through an unseen enemy passes it.
 - Hills and forest cost the same to enter as plains, and rivers don't slow or penalize crossing
   units.
 - Generated maps have no resources yet, and there are only two sides on the four-player map.
-- The fog leaks: unseen enemies still block paths, clicking a hidden enemy's hex queues an attack,
-  and the structure hover panel shows for cities in fog (#21).
 - Swaps only work between adjacent units.
 - Worker roads and improvements are instant.
 - No victory condition; F1-F4 restart a scenario.

@@ -180,7 +180,7 @@ impl GameState {
                 team: unit.team,
                 stats,
                 reachable: if shows_moves {
-                    self.reachable_hexes(unit.pos, stats.move_range)
+                    self.known_reachable_hexes(unit.pos, stats.move_range, &fog)
                 } else {
                     HashSet::new()
                 },
@@ -227,7 +227,7 @@ impl GameState {
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
         }
 
-        self.push_tile_yields(&mut out);
+        self.push_tile_yields(&fog, &mut out);
         self.push_effects(&mut out);
         out
     }
@@ -383,8 +383,8 @@ impl GameState {
 
         let in_attack_range =
             !sel.locked && sel.planned_pos.distance(hex) <= sel.stats.attack_range;
-        let has_enemy = fog.sees(hex) && self.has_enemy_target_at(hex, sel.team);
-        if self.is_occupied(hex) || has_enemy {
+        let has_enemy = self.known_enemy_target_at(hex, sel.team, fog);
+        if self.known_occupied(hex, fog) || has_enemy {
             return if has_enemy && in_attack_range {
                 ATTACK_RANGE_COLOR
             } else {
@@ -704,7 +704,7 @@ fn push_dotted_segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec
 impl GameState {
     /// Yield badges around the open city while yields are shown, limited to
     /// its economic reach.
-    fn push_tile_yields(&self, out: &mut Vec<Vertex>) {
+    fn push_tile_yields(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         let Some(city) = self.yields_city() else {
             return;
         };
@@ -717,7 +717,7 @@ impl GameState {
             if !routes.costs.contains_key(&hex) && !self.cities[city].worked.contains(&hex) {
                 continue;
             }
-            let (food, production) = self.raw_yield(hex);
+            let (food, production) = self.known_yield(hex, fog);
             let center = hex.to_world() + Vec2::new(0.0, -0.49);
             mesh::quad(
                 center - Vec2::new(0.52, 0.18),
