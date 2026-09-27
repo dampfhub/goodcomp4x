@@ -107,7 +107,6 @@ impl GameState {
             .filter(|&i| {
                 let unit = &self.units[i];
                 unit.can_attack()
-                    && !self.workers.contains(&unit.id)
                     && self.rival_of(i).is_none()
                     && unit.planned_pos().distance(target) <= unit.stats().attack_range
             })
@@ -147,7 +146,12 @@ impl GameState {
             let start = self.units[i].pos;
             // Staying put wins ties, so nobody shuffles sideways for nothing.
             let best = self
-                .known_reachable_hexes(start, self.units[i].stats().move_range, &fog)
+                .known_reachable_hexes(
+                    start,
+                    self.units[i].stats().move_range,
+                    self.units[i].team,
+                    &fog,
+                )
                 .into_iter()
                 .filter(|hex| *hex == start || !claimed.contains(hex))
                 .min_by_key(|hex| (hex.distance(target), hex.distance(start), hex.q, hex.r));

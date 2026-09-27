@@ -203,9 +203,7 @@ impl GameState {
                 .units
                 .iter()
                 .filter(|unit| {
-                    unit.pos.distance(city.pos) == 1
-                        && !self.workers.contains(&unit.id)
-                        && !self.settlers.contains(&unit.id)
+                    unit.pos.distance(city.pos) == 1 && !self.settlers.contains(&unit.id)
                 })
                 .collect();
             let ids: HashSet<_> = adjacent.iter().map(|unit| unit.id).collect();
@@ -413,8 +411,28 @@ impl GameState {
             city_ref.planned_sites.clear();
             city_ref.barracks_queue.clear();
             city_ref.barracks_production = 0;
+            city_ref.worker_jobs.clear();
             self.notice = format!("CITY {} CAPTURED IN THE INTERIOR", city_ref.id + 1);
             log::info!("{}: {team:?} captures its command post", city_ref.id + 1);
+            for index in 0..self.field_workers.len() {
+                if self.field_workers[index].home != city {
+                    continue;
+                }
+                let worker_team = self.field_workers[index].team;
+                let worker_pos = self.field_workers[index].pos;
+                if let Some(new_home) = self.nearest_city(worker_team, worker_pos) {
+                    self.field_workers[index].home = new_home;
+                } else {
+                    // Without a friendly city to return to, an outlying worker
+                    // follows the captured city's new owner.
+                    let worker = &mut self.field_workers[index];
+                    worker.team = team;
+                    worker.job = None;
+                    worker.work_left = None;
+                    worker.home = city;
+                    worker.recalled = true;
+                }
+            }
             self.auto_assign_city(city);
         }
         for (source, hp) in health_after_battle {
@@ -511,6 +529,22 @@ mod tests {
     }
 
     #[test]
+    fn disbanding_an_exterior_unit_removes_its_interior_copy() {
+        let mut game = GameState::siege_scenario();
+        game.selected = game.units.iter().position(|unit| unit.id == 0);
+        game.disband_selected();
+        game.disband_selected();
+        assert!(game.units.iter().all(|unit| unit.id != 0));
+        assert!(
+            game.cities[1]
+                .interior
+                .fighters
+                .iter()
+                .all(|f| f.source_id != 0)
+        );
+    }
+
+    #[test]
     fn exterior_death_removes_its_interior_copy_in_the_attack_step() {
         let mut game = GameState::siege_scenario();
         game.units.iter_mut().find(|unit| unit.id == 0).unwrap().hp = 1.0;
@@ -576,6 +610,15 @@ mod tests {
     #[test]
     fn capture_requires_occupying_the_breached_command_post() {
         let mut game = GameState::siege_scenario();
+        game.field_workers.push(crate::game::workers::FieldWorker {
+            id: 10_000,
+            team: Team::Red,
+            home: 1,
+            pos: game.cities[1].pos,
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
         game.cities[1].interior.core_hp = 0.0;
         game.resolve_one_interior(1);
         assert_eq!(game.cities[1].team, Team::Red);
@@ -591,5 +634,7 @@ mod tests {
         assert_eq!(game.cities[1].team, Team::Blue);
         assert_eq!(game.cities[1].interior.core_hp, CORE_HP);
         assert!(game.cities[1].queue.is_empty());
+        assert_eq!(game.field_workers[0].team, Team::Blue);
+        assert_eq!(game.field_workers[0].home, 1);
     }
 }

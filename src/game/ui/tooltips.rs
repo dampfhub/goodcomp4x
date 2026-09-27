@@ -11,10 +11,11 @@ use super::{
     contains,
 };
 use crate::game::GameState;
-use crate::game::city::{Building, delivered_share};
+use crate::game::city::{Building, WORKER_COST, WORKER_SHORTCUT, delivered_share};
 use crate::game::hex::Hex;
 use crate::game::scenario::Scenario;
 use crate::game::unit::Unit;
+use crate::game::workers::JobKind;
 use crate::renderer::Vertex;
 use glam::Vec2;
 
@@ -362,6 +363,44 @@ impl GameState {
                     "REMOVING THE ACTIVE ITEM LOSES ITS PRODUCTION.".into(),
                     None,
                 ),
+                Target::WorkerJobRemove(_) => (
+                    "REMOVE".into(),
+                    "CLICK".into(),
+                    "TAKES THIS JOB OFF THE CITY'S WORKER LIST.".into(),
+                    None,
+                ),
+                Target::RecallWorker(_) => (
+                    "RECALL".into(),
+                    "CLICK".into(),
+                    "THE WORKER HEADS STRAIGHT HOME, 1 TILE A TURN, WHERE IT'S SAFE. ITS JOB GOES BACK ON TOP OF THE CITY'S LIST."
+                        .into(),
+                    None,
+                ),
+                Target::BuildWorker => (
+                    "WORKER".into(),
+                    WORKER_SHORTCUT.to_string(),
+                    format!(
+                        "JOINS THE CITY'S WORKERS, WHO GO OUT TO BUILD WHAT YOU ORDER FROM A TILE. {} PRODUCTION.",
+                        quantity(WORKER_COST)
+                    ),
+                    None,
+                ),
+                Target::WorkerJob(kind) => (
+                    kind.name().into(),
+                    match kind {
+                        JobKind::Road => "R".into(),
+                        JobKind::Improve => "I".into(),
+                        _ => "CLICK".into(),
+                    },
+                    format!(
+                        "{} {} TURN{} OF WORK ONCE A WORKER GETS THERE.",
+                        kind.description(),
+                        kind.turns(),
+                        if kind.turns() == 1 { "" } else { "S" }
+                    ),
+                    self.inspected_tile
+                        .and_then(|hex| self.job_unavailable(hex, kind)),
+                ),
                 Target::Focus(focus) => (
                     format!("{} FOCUS", focus.name()),
                     "AUTO".into(),
@@ -380,10 +419,8 @@ impl GameState {
                     match scenario {
                         Scenario::Combat => "FOUR UNITS A SIDE ACROSS A MOUNTAIN PASS.",
                         Scenario::Cities => "TWO ESTABLISHED CITIES WITH ARMIES.",
-                        Scenario::Frontier => {
-                            "A SETTLER, WORKER AND SCOUT EACH. BOTH SCOUTS ARE YOURS."
-                        }
-                        Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS.",
+                        Scenario::Frontier => "A SETTLER AND A SCOUT EACH. BOTH SCOUTS ARE YOURS.",
+                        Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS, YOURS ALONE: NO AI OPPONENT.",
                         Scenario::Siege => "OPPOSING FIELD TROOPS ALREADY FIGHT INSIDE A CITY.",
                     }
                     .into(),
@@ -513,24 +550,16 @@ impl GameState {
                 "SKIPS THIS UNIT EVERY TURN UNTIL IT'S GIVEN AN ORDER.".into(),
                 None,
             ),
+            UnitAction::Disband => (
+                "DISBAND".into(),
+                "DEL",
+                "REMOVES THIS UNIT FOR GOOD. PRESS TWICE: THE FIRST PRESS ASKS TO CONFIRM.".into(),
+                None,
+            ),
             UnitAction::Settle => (
                 "FOUND CITY".into(),
                 "F",
                 "AT LEAST 3 HEXES FROM ANY OTHER CITY.".into(),
-                None,
-            ),
-            UnitAction::Road => (
-                "BUILD ROAD".into(),
-                "R",
-                "GOODS TRAVEL MORE CHEAPLY ALONG ROADS.".into(),
-                None,
-            ),
-            UnitAction::Improve => (
-                "IMPROVE".into(),
-                "I",
-                "MINE ON HILLS (+2 PRODUCTION), LUMBER MILL IN FOREST OR JUNGLE (+1), \
-                 FARM ELSEWHERE (+2 FOOD)."
-                    .into(),
                 None,
             ),
         }

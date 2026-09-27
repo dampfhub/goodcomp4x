@@ -63,11 +63,13 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    `end_planning` (`city/view.rs`), which holds unfinished units, may open a city still needing a build
    and stop there, auto-assigns Red's citizens, then calls `resolve_turn` (`turn.rs`): selection
    is cleared, the AI plans (`plan_ai_turn`, `ai.rs`), and every step of `RESOLUTION_ORDER` is
-   queued.
+   queued as a `Step::Units`, followed by `Step::Workers`.
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
-   with instant playback (F8). Each step resolves one unit type's moves or attacks
+   with instant playback (F8). Each unit step resolves one unit type's moves or attacks
    simultaneously; `effects.rs` animates attacks; dead units are removed at the end of an attack
-   step.
+   step, and enemy workers caught by a move are captured. The last step, `resolve_workers`
+   (`workers.rs`), sends cities' idle workers out to their queued jobs and walks, works or brings
+   home every worker on the map.
 4. **End of turn:** `resolve_city_interiors` (`city/interior.rs`) projects adjacent field troops,
    resolves their separate tactical orders and any command-post capture. Then `resolve_economy`
    (`city/citizens.rs`) applies city income, growth and builds; each

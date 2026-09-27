@@ -59,19 +59,27 @@ impl Building {
 pub enum Build {
     Unit(BuildUnit),
     Building(Building),
+    /// A worker for the city's pool (`workers.rs`).
+    Worker,
 }
+
+/// What a worker costs, and its key.
+pub(in crate::game) const WORKER_COST: i32 = 32;
+pub(in crate::game) const WORKER_SHORTCUT: char = '8';
 
 impl Build {
     pub fn name(self) -> &'static str {
         match self {
             Self::Unit(u) => u.name(),
             Self::Building(b) => b.name(),
+            Self::Worker => "WORKER",
         }
     }
     pub fn cost(self) -> i32 {
         match self {
             Self::Unit(u) => u.cost(),
             Self::Building(b) => b.cost(),
+            Self::Worker => WORKER_COST,
         }
     }
 }
@@ -169,6 +177,28 @@ impl GameState {
             "BUILDING {} - COST {} PRODUCTION",
             build.name(),
             amount(build.cost())
+        );
+    }
+
+    /// 8 or the Worker button: a worker for the open city's pool.
+    pub fn queue_selected_city_worker(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(city) = self.selected_city else {
+            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            return;
+        };
+        if self.cities[city].team != PLAYER_TEAM {
+            return;
+        }
+        if self.cities[city].queue.is_empty() {
+            self.cities[city].production = 0;
+        }
+        self.cities[city].queue.push(Build::Worker);
+        self.notice = format!(
+            "BUILDING A WORKER - COST {} PRODUCTION",
+            amount(WORKER_COST)
         );
     }
 
@@ -496,6 +526,16 @@ impl GameState {
                         self.notice =
                             format!("{} COMPLETE - CHOOSE A SITE, THEN CONFIRM", building.name());
                     }
+                }
+                continue;
+            }
+            if build == Build::Worker {
+                self.cities[i].production -= build.cost();
+                self.cities[i].queue.remove(0);
+                self.cities[i].workers += 1;
+                log::info!("{:?} city completed a worker", self.cities[i].team);
+                if self.cities[i].team == PLAYER_TEAM {
+                    self.notice = "WORKER READY - CLICK A TILE TO GIVE IT A JOB".into();
                 }
                 continue;
             }

@@ -6,13 +6,14 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 use glam::Vec2;
 
 use super::fog::{Fog, SeenBuilding};
-use super::hex::{HEX_SIZE, Hex, HexGrid, edge_corners};
+use super::hex::{HEX_SIZE, Hex, HexGrid, edge, edge_corners};
 use super::map_icons::{self, IMPROVEMENT_SPOT, MapIcon, RESOURCE_SPOT};
 use super::orders::ClickMode;
 use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, Unit, UnitStats};
 use super::unit_icons::{self, UnitIcon};
+use super::workers::{Structure, StructureKind};
 use super::{GameState, PLAYER_TEAM, font, mesh};
 use crate::renderer::Vertex;
 
@@ -28,7 +29,6 @@ const OUTER_BORDER_RADIUS: f32 = HEX_SIZE * (2.0 - HEX_FILL_SCALE);
 /// The grey veil over remembered hexes out of sight, and the line where they
 /// meet hexes in sight: a light, cool grey like the cloud, so it can't be
 /// mistaken for the dark gaps between ordinary hexes.
-const OUT_OF_SIGHT_COLOR: Color = [0.20, 0.20, 0.22, 0.38];
 const FOG_EDGE_COLOR: Color = [0.24, 0.25, 0.28, 1.0];
 /// The fog edge fills the whole gap between two hexes' fills: each fill stops
 /// short of its hex's edge by (1 - HEX_FILL_SCALE) of the apothem, sqrt(3) / 2.
@@ -36,9 +36,8 @@ const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 /// Along a river the fog edge widens to cover it whole, since a river is wider
 /// than the gap; otherwise a sliver of it would show on the side in sight.
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
-/// Faint light puffs over the grey veil, for a look of cloud cover.
-const CLOUD_COLOR: Color = [0.85, 0.87, 0.9, 0.07];
-const CLOUD_PUFFS: usize = 3;
+const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
+const CLOUD_SPACING: f32 = 4.6;
 const PLAINS_COLOR: Color = [0.26, 0.24, 0.12, 1.0];
 const GRASSLAND_COLOR: Color = [0.12, 0.20, 0.08, 1.0];
 const DESERT_COLOR: Color = [0.45, 0.36, 0.17, 1.0];
@@ -99,6 +98,25 @@ const YIELD_ROW_COLOR: Color = [0.005, 0.006, 0.007, 0.85];
 const YIELD_DIGIT_HEIGHT: f32 = 0.12;
 const YIELD_DIGIT_COLOR: Color = [0.95, 0.95, 0.95, 1.0];
 const YIELD_NUMBER_GAP: f32 = 0.03;
+/// Workers: tokens out on the map (smaller in a corner when a unit shares
+/// their hex), the player's queued jobs as faded named rings, and the tag on
+/// each of the player's cities counting the workers at home.
+const WORKER_SCALE: f32 = 0.7;
+const WORKER_BESIDE_SCALE: f32 = 0.45;
+const WORKER_BESIDE_UNIT: Vec2 = Vec2::new(0.45, -0.32);
+const PLANNED_JOB_COLOR: Color = [0.95, 0.78, 0.42, 0.75];
+const PLANNED_JOB_COLOR_SOLID: Color = [0.95, 0.78, 0.42, 1.0];
+const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2::new(0.0, 0.6);
+const PLANNED_JOB_LABEL_HEIGHT: f32 = 0.12;
+const WORKER_TAG_MIN: Vec2 = Vec2::new(-0.78, -0.58);
+const WORKER_TAG_MAX: Vec2 = Vec2::new(-0.3, -0.32);
+const WORKER_TAG_COLOR: Color = [0.03, 0.03, 0.04, 0.92];
+/// Structures workers build.
+const STONE_COLOR: Color = [0.24, 0.23, 0.21, 1.0];
+/// How thick a wall or gate is along its hex edge.
+const BARRIER_WIDTH: f32 = 0.16;
+const MORTAR_COLOR: Color = [0.09, 0.085, 0.08, 1.0];
+const WOOD_COLOR: Color = [0.40, 0.20, 0.07, 1.0];
 /// The granary marker beside a city.
 const GRANARY_COLOR: Color = [0.95, 0.72, 0.22, 1.0];
 /// Icon growth while a unit is highlighted for having just acted.
@@ -197,7 +215,7 @@ impl GameState {
                 team: unit.team,
                 stats,
                 reachable: if shows_moves {
-                    self.known_reachable_hexes(unit.pos, stats.move_range, &fog)
+                    self.known_reachable_hexes(unit.pos, stats.move_range, unit.team, &fog)
                 } else {
                     HashSet::new()
                 },
@@ -205,6 +223,12 @@ impl GameState {
                 swapping: self.ui_click_mode == Some(ClickMode::Swap),
             }
         });
+
+        // The fixed cloud field sits behind the map. Known terrain painted
+        // afterward hides it without clipping or rebuilding around sight.
+        if self.fog_of_war {
+            push_cloud_banks(&self.grid, &mut out);
+        }
 
         // Never-seen hexes aren't drawn at all: the background shows there.
         let explored: Vec<Hex> = self
@@ -259,6 +283,7 @@ impl GameState {
             }
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
         }
+        self.push_field_workers(&fog, &mut out);
 
         self.push_tile_yields(&fog, &mut out);
         self.push_effects(&mut out);
@@ -391,10 +416,8 @@ impl GameState {
         out
     }
 
-    /// Veils remembered hexes out of sight in grey, and outlines each stretch
-    /// of them in darker grey where it meets hexes in sight. Never-seen hexes need
-    /// nothing: nothing is drawn on them, so the background shows. Drawn over
-    /// the map and cities but under units and orders.
+    /// Darkens remembered terrain and covers unexplored areas with clouds.
+    /// Drawn over the map and cities but under units and orders.
     fn push_fog(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         if !self.fog_of_war {
             return;
@@ -407,18 +430,15 @@ impl GameState {
         let blank = |h: Hex| !self.grid.contains(h) || !self.is_explored(h);
         for &hex in &remembered {
             let center = hex.to_world();
-            mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, OUT_OF_SIGHT_COLOR, out);
+            mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, REMEMBERED_TINT, out);
             // Facing blank, the border reaches past the hex (see
             // OUTER_BORDER_RADIUS); veil that outer half too, so the band
             // is one shade.
             for n in hex.neighbors().into_iter().filter(|&n| blank(n)) {
                 let (a, b) = edge_corners(hex, n);
                 let grow = |p: Vec2| center + (p - center) * (OUTER_BORDER_RADIUS / HEX_SIZE);
-                mesh::polygon(&[a, b, grow(b), grow(a)], OUT_OF_SIGHT_COLOR, out);
+                mesh::polygon(&[a, b, grow(b), grow(a)], REMEMBERED_TINT, out);
             }
-        }
-        for &hex in &remembered {
-            push_cloud_puffs(hex, out);
         }
         for &hex in &remembered {
             for n in hex.neighbors() {
@@ -440,24 +460,73 @@ impl GameState {
     }
 }
 
-/// A few faint, soft puffs over a remembered hex, so the grey veil reads as
-/// patchy cloud cover. Their size and place come from hashing the hex, so
-/// they stay put frame to frame and differ between neighbors. They stay
-/// inside the hex, clear of the fog's edge.
-fn push_cloud_puffs(hex: Hex, out: &mut Vec<Vertex>) {
+/// Stable pseudo-random number for one cell of the cloud lattice.
+fn cloud_hash(x: i32, y: i32, salt: u32) -> f32 {
     let mut bits =
-        (hex.q as u32).wrapping_mul(0x9E37_79B1) ^ (hex.r as u32).wrapping_mul(0x85EB_CA77);
-    let mut next = || {
-        bits ^= bits << 13;
-        bits ^= bits >> 17;
-        bits ^= bits << 5;
-        (bits % 1000) as f32 / 1000.0
+        (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77) ^ salt;
+    bits ^= bits >> 16;
+    bits = bits.wrapping_mul(0x7FEB_352D);
+    bits ^= bits >> 15;
+    bits as f32 / u32::MAX as f32
+}
+
+/// Draws one shaded octagon per world-space lattice point. This keeps
+/// the cloud pattern continuous across hexes while doing constant, cheap work
+/// per puff: no recursive subdivision and no noise sampling per vertex.
+fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
+    let Some((min, max)) =
+        grid.all_hexes()
+            .map(Hex::to_world)
+            .fold(None, |bounds: Option<(Vec2, Vec2)>, p| {
+                Some(match bounds {
+                    None => (p, p),
+                    Some((min, max)) => (min.min(p), max.max(p)),
+                })
+            })
+    else {
+        return;
     };
-    for _ in 0..CLOUD_PUFFS {
-        let angle = next() * TAU;
-        let offset = Vec2::from_angle(angle) * (0.1 + 0.25 * next());
-        let radius = 0.25 + 0.15 * next();
-        mesh::regular_polygon(hex.to_world() + offset, radius, 14, 0.0, CLOUD_COLOR, out);
+    let min_x = (min.x / CLOUD_SPACING).floor() as i32 - 1;
+    let max_x = (max.x / CLOUD_SPACING).ceil() as i32 + 1;
+    let min_y = (min.y / CLOUD_SPACING).floor() as i32 - 1;
+    let max_y = (max.y / CLOUD_SPACING).ceil() as i32 + 1;
+    let cells = ((max_x - min_x + 1) * (max_y - min_y + 1)) as usize;
+    out.reserve(cells * 3 * 8 * 3);
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let bank = Vec2::new(x as f32, y as f32) * CLOUD_SPACING;
+            for puff in 0..3_u32 {
+                let salt = puff.wrapping_mul(0x9E37_79B9);
+                let angle = cloud_hash(x, y, 0xA341_316C ^ salt) * TAU;
+                let offset = 0.45 + cloud_hash(x, y, 0xC801_3EA4 ^ salt) * 1.45;
+                let center = bank + Vec2::from_angle(angle) * offset;
+                if !grid.contains(Hex::from_world(center)) {
+                    continue;
+                }
+                let radius = 1.9 + cloud_hash(x, y, 0xAD90_777D ^ salt) * 0.9;
+                let rotation = cloud_hash(x, y, 0x7E95_761E ^ salt) * TAU;
+                push_cloud_puff(center, radius, rotation, out);
+            }
+        }
+    }
+}
+
+fn push_cloud_puff(center: Vec2, radius: f32, rotation: f32, out: &mut Vec<Vertex>) {
+    const SIDES: u32 = 8;
+    let vertex = |p: Vec2, color: Color| Vertex {
+        pos: [p.x, p.y, 0.0],
+        color,
+        uv: crate::renderer::SOLID_UV,
+    };
+    let middle = vertex(center, [0.19, 0.20, 0.23, 0.64]);
+    for i in 0..SIDES {
+        let corner =
+            |i| center + Vec2::from_angle(rotation + TAU * i as f32 / SIDES as f32) * radius;
+        out.extend([
+            middle,
+            vertex(corner(i), [0.10, 0.11, 0.14, 0.38]),
+            vertex(corner(i + 1), [0.10, 0.11, 0.14, 0.38]),
+        ]);
     }
 }
 
@@ -696,6 +765,17 @@ impl GameState {
                 );
             }
         }
+        for &(h, structure) in &view.structures {
+            push_structure(h.to_world(), structure.kind, structure.team.color(), out);
+        }
+        self.push_planned_jobs(out);
+        for (&(a, b), barrier) in &view.barriers {
+            push_barrier(a, b, barrier.kind, barrier.team.color(), out);
+        }
+        if let Some((a, b)) = self.hovered_edge {
+            let (start, end) = edge_corners(a, b);
+            mesh::segment(start, end, BARRIER_WIDTH, PLANNED_JOB_COLOR_SOLID, out);
+        }
         for &(h, label) in &view.sites {
             let center = h.to_world() + IMPROVEMENT_SPOT;
             match MapIcon::improvement(label) {
@@ -775,6 +855,74 @@ impl GameState {
             push_city_marker(hex.to_world(), city, out);
             push_health_bar(hex.to_world(), city.health, 1.0, out);
         }
+        for city in self.cities.iter().filter(|c| c.team == PLAYER_TEAM) {
+            push_worker_count(city.pos.to_world(), city.workers, out);
+        }
+    }
+
+    /// The player's queued worker jobs: a faded ring on each tile, named.
+    fn push_planned_jobs(&self, out: &mut Vec<Vertex>) {
+        let queued = self
+            .cities
+            .iter()
+            .filter(|c| c.team == PLAYER_TEAM)
+            .flat_map(|c| &c.worker_jobs);
+        for job in queued {
+            if let Some(across) = job.across {
+                let (start, end) = edge_corners(job.hex, across);
+                mesh::segment(start, end, BARRIER_WIDTH * 0.6, PLANNED_JOB_COLOR, out);
+                continue;
+            }
+            let center = job.hex.to_world();
+            mesh::polygon_outline(
+                center,
+                WORKED_OUTLINE_RADIUS,
+                0.05,
+                6,
+                0.0,
+                PLANNED_JOB_COLOR,
+                out,
+            );
+            font::push_text_centered(
+                center + PLANNED_JOB_LABEL_OFFSET,
+                PLANNED_JOB_LABEL_HEIGHT,
+                job.kind.name(),
+                PLANNED_JOB_COLOR,
+                out,
+            );
+        }
+    }
+
+    /// Workers out on the map that the player can see: small hollow tokens
+    /// with a shovel, tucked into a corner when a unit shares their hex, and
+    /// for the player's own, a dotted line to the job they're walking to.
+    fn push_field_workers(&self, fog: &Fog, out: &mut Vec<Vertex>) {
+        let look = UnitLook {
+            icon: UnitIcon::Shovel,
+            civilian: true,
+        };
+        for worker in self.field_workers.iter().filter(|w| fog.shows_worker(w)) {
+            let shared = self.units_at(worker.pos).any(|i| fog.shows(&self.units[i]));
+            let (center, scale) = if shared {
+                (
+                    worker.pos.to_world() + WORKER_BESIDE_UNIT,
+                    WORKER_BESIDE_SCALE,
+                )
+            } else {
+                (worker.pos.to_world(), WORKER_SCALE)
+            };
+            if worker.team == PLAYER_TEAM
+                && let Some(job) = worker.job.filter(|job| job.hex != worker.pos)
+            {
+                push_dotted_segment(center, job.hex.to_world(), 0.05, PLANNED_JOB_COLOR, out);
+            }
+            let color = if self.recent_actors.contains(&worker.id) {
+                brighten(worker.team.color())
+            } else {
+                worker.team.color()
+            };
+            push_unit_icon(center, look, scale, color, out);
+        }
     }
 
     /// What `push_city_map` shows: the live map in sight, the memory of it
@@ -786,6 +934,17 @@ impl GameState {
         for (&h, site) in self.sites.iter().filter(|(h, _)| fog.sees(**h)) {
             view.sites.push((h, site.label));
         }
+        view.structures.extend(
+            self.structures
+                .iter()
+                .filter(|(h, _)| fog.sees(**h))
+                .map(|(&h, &s)| (h, s)),
+        );
+        view.barriers.extend(
+            self.barriers
+                .iter()
+                .filter(|((a, b), _)| fog.sees(*a) || fog.sees(*b)),
+        );
         for city in &self.cities {
             let own = city.team == PLAYER_TEAM;
             let seen = |health| SeenBuilding {
@@ -814,6 +973,12 @@ impl GameState {
             if let Some((label, _)) = seen.site {
                 view.sites.push((h, label));
             }
+            if let Some(structure) = seen.structure {
+                view.structures.push((h, structure));
+            }
+            for &(across, barrier) in seen.barriers.iter().filter(|(n, _)| !fog.sees(*n)) {
+                view.barriers.insert(edge(h, across), barrier);
+            }
             if let Some(city) = seen.city.filter(|c| c.team != PLAYER_TEAM) {
                 view.cities.push((h, city));
             }
@@ -825,12 +990,15 @@ impl GameState {
     }
 }
 
-/// Roads, improvements, cities and barracks to draw.
+/// Roads, improvements, structures, cities and barracks to draw.
 #[derive(Default)]
 struct MapView {
     roads: Vec<Hex>,
     /// Improvements, by label.
     sites: Vec<(Hex, &'static str)>,
+    structures: Vec<(Hex, Structure)>,
+    /// Walls and gates, by edge.
+    barriers: HashMap<(Hex, Hex), Structure>,
     cities: Vec<(Hex, SeenBuilding)>,
     barracks: Vec<(Hex, SeenBuilding)>,
 }
@@ -1332,6 +1500,140 @@ fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
     }
 }
 
+/// How many workers a city has at home: a dark tag at the tower's lower
+/// left with a shovel and the count.
+fn push_worker_count(city: Vec2, count: u32, out: &mut Vec<Vertex>) {
+    let (min, max) = (city + WORKER_TAG_MIN, city + WORKER_TAG_MAX);
+    let edge = Vec2::splat(ICON_OUTLINE_WIDTH / 2.0);
+    mesh::quad(min - edge, max + edge, ICON_OUTLINE_COLOR, out);
+    mesh::quad(min, max, WORKER_TAG_COLOR, out);
+    let middle = (min.y + max.y) / 2.0;
+    let height = max.y - min.y;
+    unit_icons::push_pictogram(
+        Vec2::new(min.x + height / 2.0, middle),
+        height * 0.55,
+        UnitIcon::Shovel,
+        PLANNED_JOB_COLOR_SOLID,
+        out,
+    );
+    font::push_text_centered(
+        Vec2::new(max.x - height / 2.0, middle),
+        height * 0.55,
+        &count.to_string(),
+        PLANNED_JOB_COLOR_SOLID,
+        out,
+    );
+}
+
+/// A wall or gate along the edge between `a` and `b`: a band of stone with
+/// mortar joints and posts in its team's color at both ends; a gate's middle
+/// is a door in the team's color.
+fn push_barrier(a: Hex, b: Hex, kind: StructureKind, team: Color, out: &mut Vec<Vertex>) {
+    let (start, end) = edge_corners(a, b);
+    let along = |t: f32| start.lerp(end, t);
+    mesh::segment(
+        start,
+        end,
+        BARRIER_WIDTH + ICON_OUTLINE_WIDTH,
+        ICON_OUTLINE_COLOR,
+        out,
+    );
+    mesh::segment(start, end, BARRIER_WIDTH, STONE_COLOR, out);
+    let across = (end - start).perp().normalize_or_zero() * (BARRIER_WIDTH / 2.0);
+    if kind == StructureKind::Gate {
+        let door = [along(0.3), along(0.7)];
+        mesh::segment(
+            door[0],
+            door[1],
+            BARRIER_WIDTH + ICON_OUTLINE_WIDTH,
+            ICON_OUTLINE_COLOR,
+            out,
+        );
+        mesh::segment(door[0], door[1], BARRIER_WIDTH, team, out);
+        mesh::segment(
+            along(0.5) - across,
+            along(0.5) + across,
+            0.02,
+            ICON_OUTLINE_COLOR,
+            out,
+        );
+        for t in [0.15, 0.85] {
+            mesh::segment(
+                along(t) - across,
+                along(t) + across,
+                0.02,
+                MORTAR_COLOR,
+                out,
+            );
+        }
+    } else {
+        for t in [0.25, 0.5, 0.75] {
+            mesh::segment(
+                along(t) - across,
+                along(t) + across,
+                0.02,
+                MORTAR_COLOR,
+                out,
+            );
+        }
+    }
+    for p in [start, end] {
+        let half = Vec2::splat(BARRIER_WIDTH * 0.62);
+        let edge = Vec2::splat(ICON_OUTLINE_WIDTH / 2.0);
+        mesh::quad(p - half - edge, p + half + edge, ICON_OUTLINE_COLOR, out);
+        mesh::quad(p - half, p + half, team, out);
+    }
+}
+
+/// A structure on a tile, in its team's color: an outpost (a watchtower) or
+/// a fort (a palisade of stakes).
+fn push_structure(center: Vec2, kind: StructureKind, team: Color, out: &mut Vec<Vertex>) {
+    let at = |x: f32, y: f32| center + Vec2::new(x, y);
+    match kind {
+        // Walls and gates stand on hex edges (`push_barrier`).
+        StructureKind::Wall | StructureKind::Gate => {}
+        StructureKind::Outpost => {
+            for (foot, top) in [
+                ((-0.16, -0.36), (-0.09, 0.05)),
+                ((0.16, -0.36), (0.09, 0.05)),
+            ] {
+                let (foot, top) = (at(foot.0, foot.1), at(top.0, top.1));
+                mesh::segment(foot, top, 0.09, ICON_OUTLINE_COLOR, out);
+                mesh::segment(foot, top, 0.05, WOOD_COLOR, out);
+            }
+            push_outlined_rects(&[(at(-0.15, 0.03), at(0.15, 0.24))], WOOD_COLOR, out);
+            let roof = [at(-0.22, 0.24), at(0.22, 0.24), at(0.0, 0.44)];
+            mesh::polygon(
+                &[at(-0.27, 0.21), at(0.27, 0.21), at(0.0, 0.48)],
+                ICON_OUTLINE_COLOR,
+                out,
+            );
+            mesh::polygon(&roof, team, out);
+        }
+        StructureKind::Fort => {
+            // Stakes around the hex, points outward, over a ring in the
+            // team's color.
+            mesh::polygon_outline(center, 0.56, 0.05, 6, 0.0, team, out);
+            for i in 0..12 {
+                let out_dir = Vec2::from_angle(i as f32 * std::f32::consts::TAU / 12.0);
+                let side = out_dir.perp() * 0.06;
+                let base = center + out_dir * 0.56;
+                let tip = center + out_dir * 0.74;
+                mesh::polygon(
+                    &[
+                        base - side * 1.6 - out_dir * 0.03,
+                        base + side * 1.6 - out_dir * 0.03,
+                        tip + out_dir * 0.03,
+                    ],
+                    ICON_OUTLINE_COLOR,
+                    out,
+                );
+                mesh::polygon(&[base - side, base + side, tip], WOOD_COLOR, out);
+            }
+        }
+    }
+}
+
 /// A barracks: a small house (walls and a pitched roof) in `color`, its
 /// team's, marked B.
 fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
@@ -1447,6 +1749,39 @@ mod tests {
     use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
     use crate::game::unit::{Unit, UnitType};
 
+    #[test]
+    fn explored_map_has_no_cloud_bank_geometry() {
+        let mut game = GameState::world_scenario(3);
+        for h in game.grid.all_hexes() {
+            game.memory
+                .insert(h, super::super::fog::Sighting::default());
+        }
+        let fog = game.fog();
+        let mut vertices = Vec::new();
+        game.push_fog(&fog, &mut vertices);
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.color == REMEMBERED_TINT || v.color == FOG_EDGE_COLOR)
+        );
+        game.fog_of_war = false;
+        vertices.clear();
+        game.push_fog(&game.fog(), &mut vertices);
+        assert!(vertices.is_empty());
+    }
+
+    #[test]
+    fn unexplored_cloud_geometry_stays_small() {
+        let game = GameState::world_scenario(3);
+        let mut vertices = Vec::new();
+        push_cloud_banks(&game.grid, &mut vertices);
+        // The former recursively sampled mesh emitted well over 150,000 fog
+        // vertices here. Keep enough headroom for map-size tuning without
+        // allowing that per-frame cost back in.
+        assert!(vertices.len() < 25_000, "{} cloud vertices", vertices.len());
+        assert!(vertices.iter().any(|v| v.color[3] < 1.0));
+    }
+
     /// The color of the last opaque triangle drawn over `point`.
     fn top_color(vertices: &[Vertex], point: Vec2) -> Option<Color> {
         vertices
@@ -1454,7 +1789,7 @@ mod tests {
             .0
             .iter()
             .rev()
-            .filter(|t| t[0].color[3] == 1.0)
+            .filter(|t| t.iter().all(|v| v.color[3] == 1.0))
             .find(|t| {
                 let [a, b, c] = [0, 1, 2].map(|i| Vec2::new(t[i].pos[0], t[i].pos[1]));
                 let sides = [
@@ -1497,13 +1832,14 @@ mod tests {
                 .expect("such an edge on the map")
         };
 
-        // Both halves of the gap are border: the explored hex's own and the
-        // never-seen hex's, which draws nothing itself.
+        // Both halves of the gap retain the explored tile's border; cloud
+        // puffs are translucent and do not replace that opaque geometry.
         let (hex, unexplored) = edge_to(&|h: Hex| game.grid.contains(h) && !game.is_explored(h));
         for point in [in_gap(hex, unexplored), in_gap(unexplored, hex)] {
             assert_eq!(top_color(&vertices, point), Some(BORDER_COLOR));
         }
-        // Beyond that, the background shows.
+        // The unknown tile has no terrain geometry; cloud puffs blend over
+        // the renderer's dark background.
         let beyond = unexplored.to_world();
         assert_eq!(top_color(&vertices, beyond), None);
     }

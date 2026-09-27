@@ -348,40 +348,22 @@ fn city_queue_scroll_keeps_the_box_bounded_and_targets_the_visible_items() {
     assert_eq!(scroll.kind, QueueKind::City);
     assert!(scroll.panel_max.y - scroll.panel_min.y < 330.0);
     assert!(scroll.panel_max.y < SCREEN.y - TOP_BAR_HEIGHT);
-    assert!(
+    let shown = |layout: &Layout, index| {
         layout
             .buttons
             .iter()
-            .any(|b| b.target == Target::CityQueueRemove(0))
-    );
-    assert!(
-        layout
-            .buttons
-            .iter()
-            .any(|b| b.target == Target::CityQueueRemove(1))
-    );
-    assert!(
-        !layout
-            .buttons
-            .iter()
-            .any(|b| b.target == Target::CityQueueRemove(4))
-    );
+            .any(|b| b.target == Target::CityQueueRemove(index))
+    };
+    // The first rows that fit, then nothing past them.
+    let visible = (0..8).take_while(|&i| shown(&layout, i)).count();
+    assert!((2..8).contains(&visible), "{visible} rows visible");
+    assert!(!shown(&layout, visible));
 
     let cursor = to_ui((scroll.panel_min + scroll.panel_max) / 2.0, SCREEN);
     assert!(game.scroll_queue_at(cursor, SCREEN, -1.0));
     let layout = game.layout(SCREEN);
-    assert!(
-        layout
-            .buttons
-            .iter()
-            .any(|b| b.target == Target::CityQueueRemove(1))
-    );
-    assert!(
-        layout
-            .buttons
-            .iter()
-            .any(|b| b.target == Target::CityQueueRemove(4))
-    );
+    assert!(shown(&layout, 1));
+    assert!(shown(&layout, visible));
     assert!(
         !layout
             .buttons
@@ -398,7 +380,7 @@ fn city_queue_scroll_keeps_the_box_bounded_and_targets_the_visible_items() {
         SCREEN,
     );
     assert!(game.drag_queue_scrollbar_at(bottom, SCREEN, false));
-    assert_eq!(game.city_queue_scroll, 4);
+    assert_eq!(game.city_queue_scroll, 8 - visible, "scrolled to the end");
     let remove = button_cursor(&game, Target::CityQueueRemove(7));
     game.handle_click(remove, SCREEN, ClickMode::Normal);
     assert_eq!(game.cities[game.selected_city.unwrap()].queue.len(), 7);
@@ -577,7 +559,7 @@ fn queue_row_count_tracks_available_screen_height() {
         );
         counts.push(count);
     }
-    assert_eq!(counts[1], 4);
+    assert_eq!(counts[1], 3);
     assert!(counts[0] < counts[1]);
     assert!(counts[2] > counts[1]);
 }
@@ -867,4 +849,221 @@ fn end_turn_button_names_what_is_waiting() {
 fn wrap_breaks_between_words() {
     assert_eq!(wrap("AB CD EF", 5), vec!["AB CD", "EF"]);
     assert_eq!(wrap("ABCDEFG HI", 5), vec!["ABCDEFG", "HI"]);
+}
+
+/// An empty tile near Blue's city in the Cities scenario, with nothing
+/// selected, so a click on it opens its tile panel.
+fn empty_tile_near_blue_city() -> (GameState, Hex) {
+    let mut game = GameState::city_scenario();
+    game.explore();
+    game.clear_selection();
+    let city = game.cities[0].pos;
+    let hex = game
+        .grid
+        .all_hexes()
+        .filter(|&h| h.distance(city) == 2 && game.grid.is_passable(h))
+        .filter(|&h| !game.roads.contains(&h) && !game.is_occupied(h))
+        .filter(|&h| game.is_explored(h) && game.cities.iter().all(|c| c.pos != h))
+        .min_by_key(|h| (h.q, h.r))
+        .unwrap();
+    (game, hex)
+}
+
+#[test]
+fn clicking_a_tile_with_nothing_selected_offers_worker_jobs() {
+    let (mut game, hex) = empty_tile_near_blue_city();
+    game.handle_click(hex_cursor(&game, hex), SCREEN, ClickMode::Normal);
+    assert_eq!(game.inspected_tile, Some(hex));
+    let layout = game.layout(SCREEN);
+    for kind in JobKind::ALL {
+        let button = layout
+            .buttons
+            .iter()
+            .find(|b| b.target == Target::WorkerJob(kind))
+            .expect("every job has a button");
+        assert!(
+            layout
+                .panels
+                .iter()
+                .any(|&(min, max)| contains(min, max, button.min) && contains(min, max, button.max)),
+            "{kind:?} sits inside its panel"
+        );
+    }
+    game.handle_click(
+        button_cursor(&game, Target::WorkerJob(JobKind::Road)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(game.cities[0].worker_jobs.len(), 1);
+    assert_eq!(game.cities[0].worker_jobs[0].hex, hex);
+    // Now queued, the button says so.
+    let layout = game.layout(SCREEN);
+    let road = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::WorkerJob(JobKind::Road))
+        .unwrap();
+    assert_eq!(road.state, ButtonState::Queued);
+}
+
+#[test]
+fn a_wall_is_placed_by_dragging_along_hex_edges() {
+    let (mut game, hex) = empty_tile_near_blue_city();
+    game.handle_click(hex_cursor(&game, hex), SCREEN, ClickMode::Normal);
+    let wall = Target::WorkerJob(JobKind::Wall);
+    game.handle_click(button_cursor(&game, wall), SCREEN, ClickMode::Normal);
+    assert_eq!(game.placing_barrier, Some(JobKind::Wall));
+    let armed = game
+        .layout(SCREEN)
+        .buttons
+        .into_iter()
+        .find(|b| b.target == wall);
+    assert!(
+        armed.is_some_and(|b| b.armed),
+        "the button shows it's armed"
+    );
+
+    // Drag across the midpoints of three of the hex's edges, as the mouse
+    // would pass over them.
+    let edge_cursor = |game: &GameState, n: Hex| {
+        let world = (hex.to_world() + n.to_world()) / 2.0;
+        game.camera.world_to_screen(world, SCREEN)
+    };
+    let sides: Vec<Hex> = hex
+        .neighbors()
+        .into_iter()
+        .filter(|&n| game.grid.contains(n))
+        .take(3)
+        .collect();
+    for &n in &sides {
+        assert!(game.paint_barrier_at(edge_cursor(&game, n), SCREEN, false));
+        // Passing the same edge again adds nothing.
+        game.paint_barrier_at(edge_cursor(&game, n), SCREEN, false);
+    }
+    let jobs = &game.cities[0].worker_jobs;
+    assert_eq!(jobs.len(), 3);
+    for (job, n) in jobs.iter().zip(&sides) {
+        assert_eq!(job.kind, JobKind::Wall);
+        let placed = crate::game::hex::edge(job.hex, job.across.unwrap());
+        assert_eq!(placed, crate::game::hex::edge(hex, *n));
+    }
+
+    // A press on the panel itself doesn't place anything through it.
+    assert!(!game.paint_barrier_at(button_cursor(&game, wall), SCREEN, true));
+
+    // Escape stops placing but leaves the tile panel, then closes it.
+    assert!(game.clear_selection());
+    assert_eq!(game.placing_barrier, None);
+    assert_eq!(game.inspected_tile, Some(hex));
+    let n = sides[0];
+    assert!(!game.paint_barrier_at(edge_cursor(&game, n), SCREEN, false));
+}
+
+#[test]
+fn a_worker_out_can_be_recalled_from_its_tile_or_its_city() {
+    let (mut game, hex) = empty_tile_near_blue_city();
+    game.inspected_tile = Some(hex);
+    game.queue_worker_job(JobKind::Fort);
+    // Two hexes out, one a turn.
+    game.resolve_workers();
+    game.resolve_workers();
+    let id = game.field_workers[0].id;
+    assert_eq!(game.field_workers[0].pos, hex);
+
+    // From the city panel.
+    game.select_city();
+    let recall = Target::RecallWorker(id);
+    assert!(
+        game.layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == recall)
+    );
+    game.leave_city_view();
+
+    // And from the tile it stands on.
+    game.handle_click(hex_cursor(&game, hex), SCREEN, ClickMode::Normal);
+    assert_eq!(game.inspected_tile, Some(hex));
+    game.handle_click(button_cursor(&game, recall), SCREEN, ClickMode::Normal);
+    assert!(game.field_workers[0].recalled);
+    assert!(
+        !game
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == recall),
+        "once recalled, there's nothing left to press"
+    );
+}
+
+#[test]
+fn the_disband_button_asks_then_removes_the_unit() {
+    let mut game = GameState::city_scenario();
+    let idx = game.selected.expect("a unit starts selected");
+    let id = game.units[idx].id;
+    let disband = Target::Unit(UnitAction::Disband);
+    let layout = game.layout(SCREEN);
+    let button = layout.buttons.iter().find(|b| b.target == disband).unwrap();
+    assert!(
+        layout
+            .panels
+            .iter()
+            .any(|&(min, max)| contains(min, max, button.min) && contains(min, max, button.max))
+    );
+    game.handle_click(button_cursor(&game, disband), SCREEN, ClickMode::Normal);
+    let asking = game.layout(SCREEN);
+    let button = asking.buttons.iter().find(|b| b.target == disband).unwrap();
+    assert!(button.armed && button.label == "CONFIRM?");
+    game.handle_click(button_cursor(&game, disband), SCREEN, ClickMode::Normal);
+    assert!(game.units.iter().all(|u| u.id != id));
+}
+
+#[test]
+fn escape_closes_the_tile_panel() {
+    let (mut game, hex) = empty_tile_near_blue_city();
+    game.handle_click(hex_cursor(&game, hex), SCREEN, ClickMode::Normal);
+    assert!(game.clear_selection());
+    assert_eq!(game.inspected_tile, None);
+    assert!(!game.clear_selection(), "nothing left to close");
+}
+
+#[test]
+fn the_city_lists_its_worker_jobs_and_removes_them() {
+    let (mut game, hex) = empty_tile_near_blue_city();
+    game.inspected_tile = Some(hex);
+    game.queue_worker_job(JobKind::Road);
+    game.queue_worker_job(JobKind::Fort);
+    game.select_city();
+    let remove = Target::WorkerJobRemove(0);
+    assert!(
+        game.layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == remove)
+    );
+    game.handle_click(button_cursor(&game, remove), SCREEN, ClickMode::Normal);
+    let jobs = &game.cities[0].worker_jobs;
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].kind, JobKind::Fort);
+
+    game.queue_selected_city_worker();
+    assert_eq!(game.cities[0].queue.last(), Some(&Build::Worker));
+    assert!(
+        game.layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::BuildWorker)
+    );
+}
+
+#[test]
+fn worker_jobs_reorder_by_dragging() {
+    let (mut game, hex) = empty_tile_near_blue_city();
+    game.inspected_tile = Some(hex);
+    game.queue_worker_job(JobKind::Road);
+    game.queue_worker_job(JobKind::Fort);
+    game.select_city();
+    game.reorder_queue(QueueKind::Workers, 1, 0);
+    let kinds: Vec<_> = game.cities[0].worker_jobs.iter().map(|j| j.kind).collect();
+    assert_eq!(kinds, [JobKind::Fort, JobKind::Road]);
 }

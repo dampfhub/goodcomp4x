@@ -1,20 +1,22 @@
 //! Fog of war for the player's side, in three layers:
-//! - in sight: hexes the player's units, cities and barracks see now, and
-//!   the tiles the player's cities work, shown as they are;
-//! - remembered: hexes seen before but out of sight now, shown under a grey
-//!   veil as they were when last seen (`Sighting`): cities, barracks,
-//!   improvements and roads. Units move, so they aren't remembered: out of
-//!   sight, no unit is known to be anywhere;
-//! - unexplored: never seen, blank.
+//! - in sight: hexes the player's units, cities, barracks, outposts and
+//!   workers out on the map see now, and the tiles the player's cities work,
+//!   shown as they are;
+//! - remembered: hexes seen before but out of sight now, shown under a dark
+//!   tint as they were when last seen (`Sighting`): cities, barracks,
+//!   improvements, roads and structures. Units and workers move, so they
+//!   aren't remembered: out of sight, none is known to be anywhere;
+//! - unexplored: never seen, covered by dark clouds.
 //!
 //! A debug setting (F10) turns the fog off. The AI ignores it.
 
 use std::collections::{HashMap, HashSet};
 
 use super::city::{BARRACKS_MAX_HP, Building, CITY_MAX_HP, Routes};
-use super::hex::Hex;
+use super::hex::{Hex, edge};
 use super::terrain::Terrain;
 use super::unit::{Team, Unit};
+use super::workers::{FieldWorker, OUTPOST_SIGHT, Structure, StructureKind, WORKER_SIGHT};
 use super::{GameState, PLAYER_TEAM};
 
 /// How far a city sees, and a barracks.
@@ -44,6 +46,11 @@ impl Fog {
     pub fn shows(&self, unit: &Unit) -> bool {
         unit.team == PLAYER_TEAM || self.sees(unit.pos)
     }
+
+    /// Whether to show a worker out on the map, by the same rule.
+    pub fn shows_worker(&self, worker: &FieldWorker) -> bool {
+        worker.team == PLAYER_TEAM || self.sees(worker.pos)
+    }
 }
 
 /// A hex as the player last saw it. Only what can change is kept; the
@@ -56,6 +63,10 @@ pub(super) struct Sighting {
     /// An improvement's label and owner.
     pub site: Option<(&'static str, Team)>,
     pub road: bool,
+    /// An outpost or fort.
+    pub structure: Option<Structure>,
+    /// Walls and gates on the hex's edges, by the neighbor across each.
+    pub barriers: Vec<(Hex, Structure)>,
     /// The tile's food and production, with any improvement or city.
     pub yields: (i32, i32),
 }
@@ -140,6 +151,14 @@ impl GameState {
                 look(barracks, BARRACKS_SIGHT);
             }
         }
+        for (&hex, structure) in &self.structures {
+            if structure.team == PLAYER_TEAM && structure.kind == StructureKind::Outpost {
+                look(hex, OUTPOST_SIGHT);
+            }
+        }
+        for worker in self.field_workers.iter().filter(|w| w.team == PLAYER_TEAM) {
+            look(worker.pos, WORKER_SIGHT);
+        }
         for city in self.cities.iter().filter(|c| c.team == PLAYER_TEAM) {
             seen.extend(city.worked.iter().chain(&city.remembered_worked).copied());
         }
@@ -175,6 +194,12 @@ impl GameState {
             barracks,
             site: self.sites.get(&hex).map(|s| (s.label, s.team)),
             road: self.roads.contains(&hex),
+            structure: self.structures.get(&hex).copied(),
+            barriers: hex
+                .neighbors()
+                .into_iter()
+                .filter_map(|n| Some((n, *self.barriers.get(&edge(hex, n))?)))
+                .collect(),
             yields: self.raw_yield(hex),
         }
     }
@@ -210,15 +235,45 @@ impl GameState {
         }
     }
 
-    /// The hexes a player-controlled unit at `start` can plan to reach, going
-    /// around the units the player knows of.
+    /// The hexes a player-controlled unit of `team` at `start` can plan to
+    /// reach, going around the units, walls and gates the player knows of.
     pub(super) fn known_reachable_hexes(
         &self,
         start: Hex,
         move_range: i32,
+        team: Team,
         fog: &Fog,
     ) -> HashSet<Hex> {
-        self.reachable_hexes_by(start, move_range, |hex| self.known_occupied(hex, fog))
+        self.reachable_hexes_by(start, move_range, |from, to| {
+            self.can_enter(to)
+                && self.known_can_cross(from, to, team, fog)
+                && !self.known_occupied(to, fog)
+        })
+    }
+
+    /// The wall or gate the player knows of on the edge between adjacent
+    /// `a` and `b`: the real one when either side is in sight, else as
+    /// last seen.
+    pub(super) fn known_barrier(&self, a: Hex, b: Hex, fog: &Fog) -> Option<Structure> {
+        if fog.sees(a) || fog.sees(b) {
+            return self.barriers.get(&edge(a, b)).copied();
+        }
+        let remembered = |from: Hex, across: Hex| {
+            self.remembered(from).and_then(|seen| {
+                seen.barriers
+                    .iter()
+                    .find(|&&(n, _)| n == across)
+                    .map(|&(_, barrier)| barrier)
+            })
+        };
+        remembered(a, b).or_else(|| remembered(b, a))
+    }
+
+    /// Whether the player knows of nothing stopping `team` crossing from
+    /// `from` to the adjacent `to`.
+    pub(super) fn known_can_cross(&self, from: Hex, to: Hex, team: Team, fog: &Fog) -> bool {
+        self.known_barrier(from, to, fog)
+            .is_none_or(|barrier| barrier.admits(team))
     }
 
     /// City `city`'s delivery routes as the player knows the board: what
@@ -241,6 +296,7 @@ impl GameState {
                         || self.cities.iter().any(|c| c.pos == hex && c.team != team)
                 }
             },
+            |from, to| self.known_can_cross(from, to, team, fog),
             |hex| match memory(hex) {
                 Some(seen) => seen.is_some_and(|seen| seen.road || seen.city.is_some()),
                 None => self.is_road_hex(hex),
@@ -519,15 +575,21 @@ pub(super) mod tests {
         let start = game.units[cavalry].pos;
         game.units
             .push(Unit::new(2, hidden, Team::Red, UnitType::Melee));
-        assert!(!game.reachable_hexes(start, 3).contains(&hidden));
+        assert!(!game.reachable_hexes(start, 3, Team::Blue).contains(&hidden));
         let fog = game.fog();
-        assert!(game.known_reachable_hexes(start, 3, &fog).contains(&hidden));
+        assert!(
+            game.known_reachable_hexes(start, 3, Team::Blue, &fog)
+                .contains(&hidden)
+        );
         assert!(!game.known_occupied(hidden, &fog));
 
         // Having seen it there doesn't change that once it's out of sight.
         glance_at(&mut game, cavalry, hidden);
         let fog = game.fog();
-        assert!(game.known_reachable_hexes(start, 3, &fog).contains(&hidden));
+        assert!(
+            game.known_reachable_hexes(start, 3, Team::Blue, &fog)
+                .contains(&hidden)
+        );
     }
 
     #[test]
@@ -601,42 +663,48 @@ pub(super) mod tests {
         assert!(game.notice.contains("F10"), "{}", game.notice);
     }
 
+    /// World 3, which has no Red side, with a Red scout added far from
+    /// Blue's units.
+    fn world_with_a_distant_red_scout() -> (GameState, usize) {
+        let mut game = GameState::world_scenario(3);
+        let far = game
+            .grid
+            .all_hexes()
+            .filter(|&h| game.grid.is_passable(h))
+            .find(|&h| game.units.iter().all(|u| u.pos.distance(h) > 10))
+            .expect("land far from Blue");
+        game.units
+            .push(Unit::new(100, far, Team::Red, UnitType::Scout));
+        let red = game.units.len() - 1;
+        (game, red)
+    }
+
     #[test]
     fn enemies_out_of_sight_are_hidden() {
-        let game = GameState::world_scenario(3);
+        let (game, red) = world_with_a_distant_red_scout();
         let fog = game.fog();
-        let red = game.units.iter().find(|u| u.team == Team::Red).unwrap();
-        assert!(!fog.shows(red), "Red starts far out of sight");
+        assert!(!fog.shows(&game.units[red]), "Red is far out of sight");
         let blue = game.units.iter().find(|u| u.team == Team::Blue).unwrap();
         assert!(fog.shows(blue));
     }
 
     #[test]
     fn units_are_forgotten_once_out_of_sight() {
-        let mut game = GameState::world_scenario(3);
+        let (mut game, red) = world_with_a_distant_red_scout();
         let settler = game.units[0].pos;
         let near = settler
             .neighbors()
             .into_iter()
             .find(|h| game.grid.is_passable(*h) && !game.is_occupied(*h))
             .unwrap();
-        // A Red scout wanders into sight next to Blue's settler.
-        let red = game
-            .units
-            .iter()
-            .position(|u| u.team == Team::Red && u.unit_type == UnitType::Scout)
-            .unwrap();
+        // The Red scout wanders into sight next to Blue's settler.
+        let red_start = game.units[red].pos;
         game.units[red].pos = near;
         game.explore();
         assert!(game.known_occupied(near, &game.fog()));
 
         // Every Blue unit leaves, with the scout still standing there.
-        let far = game
-            .units
-            .iter()
-            .find(|u| u.team == Team::Red && u.pos != near)
-            .unwrap()
-            .pos;
+        let far = red_start;
         for unit in game.units.iter_mut().filter(|u| u.team == Team::Blue) {
             unit.pos = far;
         }

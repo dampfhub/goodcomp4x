@@ -74,12 +74,20 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     room. Holding Alt shows extra map info: units' turn-order numbers (no longer always shown)
     and every explored tile's yields. Yields are die-face pips of wheat and hammers (one icon
     and a number past six) instead of a strip with numbers.
-32. City interior battle prototype (`codex/city-interior-battle`): each city has a 19-hex tactical
+32. City workers (`claude/city-workers`): workers are no longer units. Each city keeps a pool
+    at home (built with 8, one with every new city) and a list of jobs queued from a tile panel:
+    roads, improvements, outposts (sight 2) and forts (placeholder +50% defense), plus walls and
+    gates placed on hex edges by clicking or dragging along them. Workers walk out (1 hex a
+    turn) and work in a new last step of the turn, after every unit; an enemy stepping onto one
+    captures it and an attack kills it. A Recall button sends a worker home. The AI queues
+    improvements and roads and hunts enemy workers. The World scenario has no AI opponent. Units
+    can be disbanded (Delete or Disband, twice).
+33. City interior battle prototype (`codex/city-interior-battle`): each city has a 19-hex tactical
     grid. Adjacent combat troops project independently controlled copies into its gates; breaching
     and occupying the command post captures the city. F12 opens a ready-made siege setup.
-33. City interior map interaction: clicking the city center from management enters a separate
+34. City interior map interaction: clicking the city center from management enters a separate
     rendered hex map. Troops and command post are drawn in-world; map clicks issue interior orders,
     and exiting restores the exterior camera and city view.
-34. Shared unit deaths across the exterior and interior maps: units retain separate HP bars,
+35. Shared unit deaths across the exterior and interior maps: units retain separate HP bars,
     interior wounds persist across gate exits, and fatal damage in either layer removes the unit
     from both. The command post retaliates at range two.

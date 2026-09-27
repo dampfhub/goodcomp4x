@@ -878,7 +878,7 @@ impl ImGuiLayoutState {
                     self.windows[slot].size = self.windows[slot].floating_size;
                     self.windows[slot].manual = true;
                 }
-            } else if !docked && !(slot == DEBUG && self.defer_geometry) {
+            } else if !(docked || (slot == DEBUG && self.defer_geometry)) {
                 self.windows[slot].floating_size = self.windows[slot].size;
                 self.windows[slot].floating_pos = self.windows[slot].pos;
             }
@@ -1779,6 +1779,7 @@ impl GameState {
                         let name = match item.kind {
                             QueueKind::City => "city-queue",
                             QueueKind::Barracks => "barracks-queue",
+                            QueueKind::Workers => "worker-jobs",
                         };
                         let name = format!("{name}-{:?}", scope);
                         if let Some(source) =
@@ -1806,13 +1807,7 @@ impl GameState {
                     let _remove_color =
                         ui.push_style_color(StyleColor::Button, [0.23, 0.13, 0.13, 1.0]);
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
-                        actions.push(Action::Button(
-                            scope,
-                            match item.kind {
-                                QueueKind::City => Target::CityQueueRemove(item.index),
-                                QueueKind::Barracks => Target::BarracksQueueRemove(item.index),
-                            },
-                        ));
+                        actions.push(Action::Button(scope, item.kind.remove_target(item.index)));
                     }
                 }
             }
@@ -1953,6 +1948,8 @@ impl GameState {
             tray.buttons(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
+        } else if let Some(hex) = self.inspected_tile {
+            self.tile_tray(hex, &mut tray);
         }
         let selection_context = if selection_is_pinned {
             String::new()
@@ -1966,6 +1963,8 @@ impl GameState {
             format!("unit-{}", self.units[unit].id)
         } else if !self.group.is_empty() {
             "group".into()
+        } else if let Some(hex) = self.inspected_tile {
+            format!("tile-{}-{}", hex.q, hex.r)
         } else {
             String::new()
         };

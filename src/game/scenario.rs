@@ -229,13 +229,19 @@ mod tests {
     }
 
     #[test]
-    fn the_world_starts_each_side_with_a_settler_worker_and_warrior() {
+    fn the_world_starts_you_alone_with_a_settler_and_a_scout() {
         let game = GameState::world_scenario(5);
         assert_eq!(game.scenario, Scenario::World);
         assert_eq!(game.map_seed, Some(5));
-        assert_eq!(game.units.len(), 6);
-        assert_eq!(game.settlers.len(), 2);
-        assert_eq!(game.workers.len(), 2);
+        assert_eq!(game.units.len(), 2);
+        assert!(
+            game.units
+                .iter()
+                .all(|u| u.team == crate::game::PLAYER_TEAM),
+            "no AI opponent"
+        );
+        assert_eq!(game.settlers.len(), 1);
+        assert!(game.field_workers.is_empty(), "workers come with cities");
         assert!(game.units.iter().all(|u| game.grid.is_passable(u.pos)));
         let selected = &game.units[game.selected.unwrap()];
         assert!(game.settlers.contains(&selected.id), "the player's settler");

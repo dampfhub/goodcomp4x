@@ -4,12 +4,12 @@
 //! setup; each submodule adds an `impl GameState` block for one concern.
 mod builds;
 mod citizens;
+mod founding;
 mod interior;
 mod logistics;
 #[cfg(test)]
 mod tests;
 mod view;
-mod workers;
 
 use std::collections::HashMap;
 
@@ -17,9 +17,11 @@ use super::hex::{Hex, HexGrid};
 use super::mapgen::{generate, start_units};
 use super::terrain::{Resource, Tile};
 use super::unit::{Team, Unit, UnitType};
+use super::workers::WorkerJob;
 use super::{GameState, PLAYER_TEAM};
 
 pub use builds::{Build, BuildUnit, Building};
+pub(in crate::game) use builds::{WORKER_COST, WORKER_SHORTCUT};
 pub(super) use interior::CORE_HP;
 pub(super) use interior::Interior;
 pub(super) use logistics::{Routes, delivered_share};
@@ -80,9 +82,42 @@ pub(super) struct City {
     pub barracks_production: i32,
     /// A separate tactical board. Adjacent field troops project copies here.
     pub interior: Interior,
+    /// Workers at home, safe and off the map (`workers.rs`).
+    pub workers: u32,
+    /// Jobs waiting for a worker, first to go first.
+    pub worker_jobs: Vec<WorkerJob>,
 }
 
 impl City {
+    /// A newly founded city: one citizen and one worker.
+    pub fn new(id: u32, team: Team, pos: Hex) -> Self {
+        Self {
+            id,
+            team,
+            pos,
+            population: 1,
+            food: 0,
+            production: 0,
+            hp: CITY_MAX_HP,
+            barracks_hp: BARRACKS_MAX_HP,
+            worked: Vec::new(),
+            remembered_worked: Vec::new(),
+            focus: LaborFocus::Balanced,
+            queue: Vec::new(),
+            built: Vec::new(),
+            barracks: None,
+            mill: None,
+            workshop: None,
+            pending_building: None,
+            planned_sites: HashMap::new(),
+            barracks_queue: Vec::new(),
+            barracks_production: 0,
+            interior: Interior::default(),
+            workers: 1,
+            worker_jobs: Vec::new(),
+        }
+    }
+
     pub fn placed_site(&self, building: Building) -> Option<Hex> {
         match building {
             Building::Granary => None,
@@ -140,27 +175,9 @@ impl GameState {
         for (id, team, sign) in [(0, Team::Blue, -1), (1, Team::Red, 1)] {
             let pos = Hex::new(sign * 4, 0);
             self.cities.push(City {
-                id,
-                team,
-                pos,
                 population: 2,
                 food: 32,
-                production: 0,
-                hp: CITY_MAX_HP,
-                barracks_hp: BARRACKS_MAX_HP,
-                worked: Vec::new(),
-                remembered_worked: Vec::new(),
-                focus: LaborFocus::Balanced,
-                queue: Vec::new(),
-                built: Vec::new(),
-                barracks: None,
-                mill: None,
-                workshop: None,
-                pending_building: None,
-                planned_sites: HashMap::new(),
-                barracks_queue: Vec::new(),
-                barracks_production: 0,
-                interior: Interior::default(),
+                ..City::new(id, team, pos)
             });
             for (q, r, food, production, label) in [
                 (4, -1, 4, 0, "FARM"),
@@ -181,15 +198,6 @@ impl GameState {
             for (q, r) in [(4, 0), (3, 0), (3, -1), (3, -2), (2, -2)] {
                 self.roads.insert(Hex::new(sign * q, sign * r));
             }
-            let worker_id = self.next_unit_id;
-            self.next_unit_id += 1;
-            self.units.push(Unit::new(
-                worker_id,
-                Hex::new(sign * 4, sign * 2),
-                team,
-                UnitType::Melee,
-            ));
-            self.workers.insert(worker_id);
         }
         for i in 0..self.cities.len() {
             self.auto_assign_city(i);
@@ -213,12 +221,6 @@ impl GameState {
             self.next_unit_id += 1;
             self.units.push(Unit::new(id, pos, team, UnitType::Melee));
             self.settlers.insert(id);
-            let worker_id = self.next_unit_id;
-            self.next_unit_id += 1;
-            let worker_pos = Hex::new(pos.q, pos.r + if team == Team::Blue { 1 } else { -1 });
-            self.units
-                .push(Unit::new(worker_id, worker_pos, team, UnitType::Melee));
-            self.workers.insert(worker_id);
         }
         for (team, pos) in [(Team::Blue, Hex::new(-3, -1)), (Team::Red, Hex::new(3, 1))] {
             let id = self.next_unit_id;
@@ -237,29 +239,28 @@ impl GameState {
         self.grid = map.grid;
         self.map_seed = Some(seed);
         self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
-        for (team, start) in [Team::Blue, Team::Red].into_iter().zip(map.starts) {
-            // Starts come with a flat hex for the worker and hills for the
-            // scout, so neither side begins seeing more than the other. Only
-            // the blank fallback map lacks them.
+        // Only the player plays here, on the first start: no AI opponent.
+        // The map still has a second start, unused.
+        for (team, start) in [Team::Blue].into_iter().zip(map.starts) {
+            // The start comes with hills for the scout. Only the blank
+            // fallback map lacks them. The settler's city starts with a
+            // worker at home.
             let open: Vec<Hex> = start
                 .neighbors()
                 .into_iter()
                 .filter(|h| self.grid.is_passable(*h))
                 .collect();
-            let (worker, scout) = start_units(&self.grid, start).unwrap_or((open[0], open[1]));
-            for (pos, role, unit_type) in [
-                (start, "settler", UnitType::Melee),
-                (worker, "worker", UnitType::Melee),
-                (scout, "scout", UnitType::Scout),
+            let (_, scout) = start_units(&self.grid, start).unwrap_or((open[0], open[1]));
+            for (pos, settler, unit_type) in [
+                (start, true, UnitType::Melee),
+                (scout, false, UnitType::Scout),
             ] {
                 let id = self.next_unit_id;
                 self.next_unit_id += 1;
                 self.units.push(Unit::new(id, pos, team, unit_type));
-                match role {
-                    "settler" => self.settlers.insert(id),
-                    "worker" => self.workers.insert(id),
-                    _ => false,
-                };
+                if settler {
+                    self.settlers.insert(id);
+                }
             }
         }
         self.notice = format!("WORLD SEED {seed} - F FOUNDS A CITY - F4 FOR A NEW MAP");
