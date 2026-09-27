@@ -161,7 +161,9 @@ mod tests {
     use super::*;
 
     fn area(out: &[Vertex]) -> f32 {
-        out.chunks_exact(3)
+        out.as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| {
                 let [a, b, c] = [0, 1, 2].map(|i| Vec2::new(t[i].pos[0], t[i].pos[1]));
                 (b - a).perp_dot(c - a).abs() / 2.0
