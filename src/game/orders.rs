@@ -68,6 +68,9 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
+        if self.paint_barrier_at(cursor, screen_size, false) {
+            return;
+        }
         let armed = self.ui_click_mode.take();
         let mode = match (mode, armed) {
             (ClickMode::Normal, Some(armed)) => armed,
@@ -119,7 +122,10 @@ impl GameState {
             return;
         }
         let Some(selected) = self.selected else {
+            // With nothing selected, a tile with none of your units on it
+            // opens its panel, for worker jobs.
             self.selected = ally;
+            self.inspected_tile = ally.is_none().then_some(hex);
             return;
         };
 
@@ -146,6 +152,25 @@ impl GameState {
                 self.advance_selection_if_done();
             }
         }
+    }
+
+    /// Escape, once no structure menu is open: lets go of the selected unit
+    /// or group and closes the tile panel. Returns whether there was
+    /// anything to let go of.
+    pub fn clear_selection(&mut self) -> bool {
+        // A wall or gate being placed stops first, leaving the tile panel.
+        if self.placing_barrier.take().is_some() {
+            self.hovered_edge = None;
+            self.notice = "STOPPED PLACING - CLICK A TILE FOR MORE WORKER JOBS".into();
+            return true;
+        }
+        let had =
+            self.selected.is_some() || !self.group.is_empty() || self.inspected_tile.is_some();
+        self.selected = None;
+        self.group.clear();
+        self.inspected_tile = None;
+        self.ui_click_mode = None;
+        had
     }
 
     /// Space: holds the selected unit (or group) if it still needs orders,
@@ -198,6 +223,35 @@ impl GameState {
         if unit.guarding {
             self.select_next_or_end_turn(Some(idx));
         }
+    }
+
+    /// Delete or the Disband button: removes the selected unit for good. The
+    /// first press only arms it (the button asks to confirm); a second press
+    /// on the same unit disbands it, and selection moves on.
+    pub fn disband_selected(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(idx) = self.selected.filter(|&i| self.is_player_controlled(i)) else {
+            return;
+        };
+        let id = self.units[idx].id;
+        if self.disband_armed != Some(id) {
+            self.disband_armed = Some(id);
+            self.notice = "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS UNIT".into();
+            return;
+        }
+        self.disband_armed = None;
+        let unit = self.units.remove(idx);
+        self.settlers.remove(&unit.id);
+        self.player_controlled_units.remove(&unit.id);
+        log::info!("{unit} disbanded");
+        self.notice = format!("{} DISBANDED", self.unit_role(&unit));
+        // Indices after it shifted down, so nothing else stays selected.
+        self.selected = None;
+        self.group.clear();
+        self.ui_click_mode = None;
+        self.select_next_or_end_turn(idx.checked_sub(1));
     }
 
     /// How many of the player's units still need orders, and how many of
@@ -293,8 +347,7 @@ impl GameState {
             return false;
         }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
-        let may_attack =
-            unit.planned_attack.is_none() && unit.can_attack() && !self.workers.contains(&unit.id);
+        let may_attack = unit.planned_attack.is_none() && unit.can_attack();
         may_move || may_attack
     }
 
@@ -323,6 +376,10 @@ impl GameState {
             return;
         }
         if self.ui_click_mode.take().is_some() {
+            return;
+        }
+        if self.placing_barrier.take().is_some() {
+            self.hovered_edge = None;
             return;
         }
         if clear {
@@ -368,7 +425,8 @@ impl GameState {
     /// other friendly unit is already heading there.
     pub(super) fn try_queue_move(&mut self, idx: usize, dest: Hex) {
         let unit = &self.units[idx];
-        let reachable = self.known_reachable_hexes(unit.pos, unit.stats().move_range, &self.fog());
+        let reachable =
+            self.known_reachable_hexes(unit.pos, unit.stats().move_range, unit.team, &self.fog());
         let claimed_by_ally = self
             .units
             .iter()
@@ -394,9 +452,7 @@ impl GameState {
     /// no one can stand there, and a unit locked in a contested hex can only
     /// fight its rival there.
     pub(super) fn try_queue_attack(&mut self, idx: usize, target: Hex) {
-        let unable = !self.units[idx].can_attack()
-            || self.workers.contains(&self.units[idx].id)
-            || self.rival_of(idx).is_some();
+        let unable = !self.units[idx].can_attack() || self.rival_of(idx).is_some();
         if unable || !self.grid.is_passable(target) {
             return;
         }
@@ -465,7 +521,7 @@ impl GameState {
             (None, _) => true,
             (Some(_), Some(_)) => move_range > 0,
             (Some(dest), None) => self
-                .known_reachable_hexes(unit.pos, move_range, &self.fog())
+                .known_reachable_hexes(unit.pos, move_range, unit.team, &self.fog())
                 .contains(&dest),
         };
         if !move_still_possible {
@@ -490,6 +546,51 @@ impl GameState {
 mod tests {
     use super::*;
     use crate::game::city::Building;
+
+    #[test]
+    fn disbanding_takes_two_presses_and_moves_selection_on() {
+        let mut g = GameState::new();
+        let first = g
+            .selected
+            .expect("the combat map starts with a unit selected");
+        let id = g.units[first].id;
+        let count = g.units.len();
+
+        g.disband_selected();
+        assert_eq!(g.units.len(), count, "the first press only asks");
+        assert_eq!(g.disband_armed, Some(id));
+
+        // Arming one unit doesn't carry over to another.
+        let other = (0..g.units.len())
+            .find(|&i| i != first && g.is_player_controlled(i))
+            .unwrap();
+        g.selected = Some(other);
+        g.disband_selected();
+        assert_eq!(g.units.len(), count);
+        assert_eq!(g.disband_armed, Some(g.units[other].id));
+
+        g.selected = Some(first);
+        g.disband_selected();
+        g.disband_selected();
+        assert_eq!(g.units.len(), count - 1);
+        assert!(g.units.iter().all(|u| u.id != id));
+        assert_eq!(g.disband_armed, None);
+        let next = g.selected.expect("selection moves to the next unit");
+        assert!(g.is_player_controlled(next));
+    }
+
+    #[test]
+    fn an_enemy_cannot_be_disbanded() {
+        let mut g = GameState::new();
+        let enemy = (0..g.units.len())
+            .find(|&i| !g.is_player_controlled(i))
+            .unwrap();
+        let count = g.units.len();
+        g.selected = Some(enemy);
+        g.disband_selected();
+        g.disband_selected();
+        assert_eq!(g.units.len(), count);
+    }
 
     #[test]
     fn tab_closes_the_barracks_view_and_its_placement_modes() {

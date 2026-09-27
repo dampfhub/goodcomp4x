@@ -25,8 +25,9 @@ mod turn;
 mod ui;
 mod unit;
 mod unit_icons;
+mod workers;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use glam::Vec2;
 use rand::SeedableRng;
@@ -38,10 +39,11 @@ use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
 use terrain::Tile;
-use turn::Phase;
+use turn::Step;
 pub use ui::{ImGuiLayoutState, quit_prompt, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
 use unit_icons::UnitIcon;
+pub use workers::JobKind;
 
 /// The game's RNG: seedable, the same on every platform, and `Clone` so a
 /// savestate can hold it (rand 0.10's `StdRng` isn't).
@@ -81,6 +83,13 @@ pub struct GameState {
     hover_seconds: f32,
     ui_click_mode: Option<orders::ClickMode>,
     inspected_tile: Option<Hex>,
+    /// A wall or gate armed from the tile panel: map clicks and drags queue
+    /// it on the hex edges they touch, until Escape.
+    placing_barrier: Option<workers::JobKind>,
+    /// The unit whose Disband was pressed once, waiting for a second press.
+    disband_armed: Option<u32>,
+    /// The edge under the cursor while placing one, highlighted.
+    hovered_edge: Option<(Hex, Hex)>,
     city_queue_scroll: usize,
     barracks_queue_scroll: usize,
     queue_drag: Option<ui::QueueDrag>,
@@ -116,14 +125,21 @@ pub struct GameState {
     /// switches (`scenario.rs`).
     rng: GameRng,
     /// Steps of the turn currently playing out, drained one at a time by `update`.
-    pending_steps: VecDeque<(UnitType, Phase)>,
+    pending_steps: VecDeque<Step>,
     step_timer: f32,
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec<u32>,
     highlight_timer: f32,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: HashSet<u32>,
-    workers: HashSet<u32>,
+    /// Workers out on the map; the ones at home are counted by their city
+    /// (`workers.rs`).
+    field_workers: Vec<workers::FieldWorker>,
+    /// Outposts and forts built by workers, by tile.
+    structures: HashMap<Hex, workers::Structure>,
+    /// Walls and gates built by workers, by the edge they stand on
+    /// (`hex::edge`).
+    barriers: HashMap<(Hex, Hex), workers::Structure>,
     /// Frontier sandbox units that the player may command despite being Red.
     player_controlled_units: HashSet<u32>,
     next_unit_id: u32,
@@ -176,6 +192,9 @@ impl GameState {
             hover_seconds: 0.0,
             ui_click_mode: None,
             inspected_tile: None,
+            placing_barrier: None,
+            disband_armed: None,
+            hovered_edge: None,
             city_queue_scroll: 0,
             barracks_queue_scroll: 0,
             queue_drag: None,
@@ -199,7 +218,9 @@ impl GameState {
             recent_actors: Vec::new(),
             highlight_timer: 0.0,
             settlers: HashSet::new(),
-            workers: HashSet::new(),
+            field_workers: Vec::new(),
+            structures: HashMap::new(),
+            barriers: HashMap::new(),
             player_controlled_units: HashSet::new(),
             next_unit_id: 8,
         };
@@ -260,13 +281,11 @@ impl GameState {
         self.units_at(hex).find(|&i| self.is_player_controlled(i))
     }
 
-    /// What the unit is, for display: settlers and workers are marked on
-    /// top of an ordinary unit type.
+    /// What the unit is, for display: settlers are marked on top of an
+    /// ordinary unit type.
     fn unit_role(&self, unit: &Unit) -> &'static str {
         if self.settlers.contains(&unit.id) {
             "SETTLER"
-        } else if self.workers.contains(&unit.id) {
-            "WORKER"
         } else {
             match unit.unit_type {
                 UnitType::Melee => "MELEE",
@@ -283,8 +302,6 @@ impl GameState {
     fn unit_look(&self, unit: &Unit) -> draw::UnitLook {
         let (icon, civilian) = if self.settlers.contains(&unit.id) {
             (UnitIcon::Flag, true)
-        } else if self.workers.contains(&unit.id) {
-            (UnitIcon::Shovel, true)
         } else {
             (UnitIcon::of(unit.unit_type), false)
         };
@@ -344,20 +361,24 @@ impl GameState {
         })
     }
 
-    /// Hexes reachable from `start` in at most `move_range` steps without
-    /// passing through mountains or an occupied hex, so a line of units
-    /// blocks the way. Includes `start` itself. This is the real board, as the
-    /// AI sees it; the player plans with `known_reachable_hexes` (`fog.rs`).
-    fn reachable_hexes(&self, start: Hex, move_range: i32) -> HashSet<Hex> {
-        self.reachable_hexes_by(start, move_range, |hex| self.is_occupied(hex))
+    /// Hexes a unit of `team` can reach from `start` in at most `move_range`
+    /// steps without passing through mountains, walls, others' gates or an
+    /// occupied hex, so a line of units blocks the way. Includes `start`
+    /// itself. Workers don't block. This is the real board, as the AI sees
+    /// it; the player plans with `known_reachable_hexes` (`fog.rs`).
+    fn reachable_hexes(&self, start: Hex, move_range: i32, team: Team) -> HashSet<Hex> {
+        self.reachable_hexes_by(start, move_range, |from, to| {
+            self.can_step(from, to, team) && !self.is_occupied(to)
+        })
     }
 
-    /// Like `reachable_hexes`, with `occupied` deciding which hexes block.
+    /// Like `reachable_hexes`, with `open` deciding whether a step from one
+    /// hex onto an adjacent one is possible.
     fn reachable_hexes_by(
         &self,
         start: Hex,
         move_range: i32,
-        occupied: impl Fn(Hex) -> bool,
+        open: impl Fn(Hex, Hex) -> bool,
     ) -> HashSet<Hex> {
         let mut visited = HashSet::from([start]);
         let mut frontier = vec![start];
@@ -366,8 +387,7 @@ impl GameState {
             let mut next = Vec::new();
             for hex in frontier {
                 for neighbor in hex.neighbors() {
-                    let open = self.grid.is_passable(neighbor) && !occupied(neighbor);
-                    if open && visited.insert(neighbor) {
+                    if open(hex, neighbor) && visited.insert(neighbor) {
                         next.push(neighbor);
                     }
                 }
@@ -383,6 +403,7 @@ impl GameState {
 mod tests {
     use super::*;
     use terrain::Terrain;
+    use turn::Phase;
 
     /// The starting layout has exactly one unit of each type per team.
     fn find(game: &GameState, team: Team, unit_type: UnitType) -> usize {
@@ -526,7 +547,8 @@ mod tests {
         let damage_taken_at = |pos: Hex| {
             let siege = Unit::new(0, Hex::new(0, 0), Team::Blue, UnitType::Siege);
             let defender = Unit::new(1, pos, Team::Red, UnitType::Melee);
-            combat::roll_damage(&siege, &defender, &grid, &mut StdRng::seed_from_u64(7))
+            let multiplier = grid.tile(pos).defense_multiplier();
+            combat::roll_damage(&siege, &defender, multiplier, &mut StdRng::seed_from_u64(7))
         };
 
         assert!(damage_taken_at(hill) < damage_taken_at(plain));

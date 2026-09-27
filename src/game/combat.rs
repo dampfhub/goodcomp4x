@@ -8,9 +8,15 @@ use super::ability::Ability;
 use super::hex::HexGrid;
 use super::unit::Unit;
 
-/// Damage `attacker` deals to `target` in one blow.
-pub fn roll_damage(attacker: &Unit, target: &Unit, grid: &HexGrid, rng: &mut impl RngExt) -> f32 {
-    let defense = target.stats().defense * grid.tile(target.pos).defense_multiplier();
+/// Damage `attacker` deals to `target` in one blow, with `defense_multiplier`
+/// the terrain and fort bonus on the target (`GameState::defense_multiplier`).
+pub fn roll_damage(
+    attacker: &Unit,
+    target: &Unit,
+    defense_multiplier: f32,
+    rng: &mut impl RngExt,
+) -> f32 {
+    let defense = target.stats().defense * defense_multiplier;
     roll_damage_against(attacker.stats().attack, defense, rng)
 }
 
@@ -28,8 +34,11 @@ pub fn draws_retaliation(attacker: &Unit) -> bool {
 
 /// Combat-relevant conditions on `unit`, like " (on hills, shield wall)", for
 /// combat log lines. Empty when there are none.
-pub fn unit_note(unit: &Unit, grid: &HexGrid) -> String {
+pub fn unit_note(unit: &Unit, grid: &HexGrid, in_fort: bool) -> String {
     let mut notes = Vec::new();
+    if in_fort {
+        notes.push("in a fort");
+    }
     if grid.tile(unit.pos).feature.is_some() {
         notes.push("under cover");
     }

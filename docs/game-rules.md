@@ -10,9 +10,9 @@ keys are in `controls.md`; screen-space panels in `ui-system.md`. Amounts below 
 | Key | Scenario | Setup |
 |---|---|---|
 | F1 | Combat | radius-3 map with a mountain pass; one Melee, Ranged, Cavalry and Siege per side; no cities |
-| F2 | Cities (default) | radius-6 map; the Combat units plus a city, a worker, owned farms/mines/pastures and dirt roads per side; Horses and Iron deposits |
-| F3 | Frontier | radius-6 map; a settler, a worker and a scout per side, no cities. Red's scout is player-controlled, to test route cuts and contests without the AI |
-| F4 | World | a generated map (see World generation) with a settler, a worker and a scout per side; a new random seed every press |
+| F2 | Cities (default) | radius-6 map; the Combat units plus a city (with one worker at home), owned farms/mines/pastures and dirt roads per side; Horses and Iron deposits |
+| F3 | Frontier | radius-6 map; a settler and a scout per side, no cities. Red's scout is player-controlled, to test route cuts and contests without the AI |
+| F4 | World | a generated map (see World generation) with your settler and scout and no AI opponent; a new random seed every press |
 
 Pressing F1-F3 restarts that scenario; F4 always makes a new map. The savestate (F6 save, F7
 load) holds a copy of the whole game in memory; it survives scenario switches, loading keeps the
@@ -72,8 +72,9 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   climate by latitude and moisture, forest on wetter grassland, plains and tundra, jungle on about
   three quarters of marsh. The two starts are on the largest continent, far apart, on flat land
   that is not snow, desert or marsh, scored on nearby yields and fresh water; the left one is
-  Blue's. Each side gets a settler on its start, a worker on flat ground next to it and a scout on
-  neighboring hills, so starting sight is equal. The camera starts on Blue's settler.
+  Blue's. There is no AI opponent: only Blue plays, with a settler on its start and a scout on
+  neighboring hills, and the other start stays empty. The city the settler founds comes with a
+  worker. The camera starts on Blue's settler.
 
 ## Units (`unit.rs`)
 
@@ -87,10 +88,10 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 | Armored | 140 | 30 | 28 | 1 | 1 | 2 | Shield Wall | heater shield |
 
 `Unit::stats()` applies abilities and siege deployment on top of these; everything that asks
-what a unit can do goes through it. Settlers (a planted flag) and workers (a shovel) are
-civilians with the Melee body, drawn as hollow hexagons with only a move badge; every other unit
-is a team-colored disc with its pictogram. Workers never attack (their attack step is skipped)
-but still retaliate; settlers can be ordered to attack, though no badge shows it. Cavalry and
+what a unit can do goes through it. Settlers (a planted flag) are civilians with the Melee body,
+drawn as hollow hexagons with only a move badge; every other unit is a team-colored disc with its
+pictogram. Settlers can be ordered to attack, though no badge shows it. Workers aren't units:
+see Workers below. Cavalry and
 Armored are built only at a Barracks standing on Horses or Iron respectively; cities can't
 queue them. Nothing heals.
 
@@ -98,19 +99,21 @@ queue them. Nothing heals.
 
 - On by default; F10 or the debug panel toggles it.
 - The player's units see 2 hexes (Scout and Cavalry 3), +1 on hills, +2 through the turn
-  after a Lookout. The player's cities see 3 and barracks 1.
+  after a Lookout. The player's cities see 3, barracks 1, outposts 2, and workers out on the map
+  1.
 - Every tile a player's city works is always in sight, however far and whatever mountains stand
   in the way, so an enemy standing on one is seen. That includes a tile whose citizen a cut route
   moved elsewhere until it reopens (see Cities), so an enemy that ends a turn on a worked tile
   stays in sight. Only the tile itself is seen, not the hexes around it.
 - A mountain strictly between two hexes blocks sight; the mountain itself is visible.
 - Every frame, each hex in sight is recorded as last seen: cities and barracks (with their
-  health), improvements and roads. Units aren't remembered, since they move: out of sight, the
-  player knows of no unit anywhere. Remembered hexes out of sight draw that memory under a dark
-  tint, keeping the terrain readable. Rounded, overlapping dark cloud puffs cover unexplored tiles
-  without tile seams, with dense small lobes and soft edges spilling slightly beyond the
-  region's border; their pattern stays anchored to the map as sight changes.
-  Never-seen terrain and objects are not drawn beneath the clouds.
+  health), improvements, roads and structures. Units and workers aren't remembered, since they
+  move: out of sight, the player knows of none anywhere. Planning goes around the walls and gates
+  the player knows of. Remembered hexes out of sight draw that memory under a dark tint, keeping
+  the terrain readable. Rounded, overlapping dark cloud puffs cover unexplored tiles without tile
+  seams, with dense small lobes and soft edges spilling slightly beyond the region's border;
+  their pattern stays anchored to the map as sight changes. Never-seen terrain and objects are
+  not drawn beneath the clouds.
 - Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
   remembered hexes from memory.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
@@ -167,13 +170,15 @@ queue them. Nothing heals.
 
 ## Turn resolution (`turn.rs`)
 
-After a 0.6 s pause (so the last order is visible), the turn plays out in 12 steps, one every
+After a 0.6 s pause (so the last order is visible), the turn plays out in 13 steps, one every
 0.6 s, with the acting units flashing (or all at once with instant playback). Steps where nobody
 acts are skipped.
 
 1. Scout move  2. Cavalry move  3. Melee move  4. Ranged attack  5. Scout attack
 6. Cavalry attack  7. Melee attack  8. Ranged move  9. Siege move  10. Siege attack
-11. Armored move  12. Armored attack
+11. Armored move  12. Armored attack  13. Workers
+
+Workers go last, after every unit has acted, so they're exposed (see Workers).
 
 Holding Alt shows each unit's rank: blue number = its move among move steps, red = its attack
 among attack steps.
@@ -263,7 +268,7 @@ every turn end.
   starts at population 1, auto-assigns and opens. The AI founds a city in place, at the start of
   any resolution where it has a settler and no city, without the 3-hex rule.
 - **Yields:** the city center gives 2 food and 1 production; each worked tile gives its tile
-  yield (above) times its delivery share. Improvements (worker, instant, no turn cost): a mine on
+  yield (above) times its delivery share. Improvements (built by workers, see Workers): a mine on
   hills (+2 production), a lumber mill under forest or jungle (+1 production), otherwise a farm (+2
   food); snow can't be improved. The Cities scenario's preplaced farms (4/0), mines (0/4) and
   pastures (3/1) have fixed yields.
@@ -308,9 +313,55 @@ every turn end.
     pool resets after each.
   - **Mill:** worked tiles adjacent to it deliver all their food, if they can reach the city.
   - **Workshop:** a planned Barracks, Mill or Workshop site adjacent to a workshop costs half.
-- **Workers** (`W`): R builds a dirt road on the worker's hex; I improves it (see Yields), unless
-  another team's site is there. Neither works while a turn plays out.
-- Economy runs once per turn, after the last combat step.
+- **Worker** (8, 8 production): adds a worker to the city's pool (see Workers).
+- Economy runs once per turn, after the workers' step.
+
+## Workers (`workers.rs`)
+
+- **Pool:** each city keeps its workers at home, off the map, where nothing can touch them. A new
+  city starts with one; the city queue builds more (8). A tag on each of your cities counts the
+  workers at home.
+- **Jobs:** with nothing selected, click a tile to open its tile panel and pick a job, or press
+  R (road) or I (improve). The job goes to the open city, or else your nearest city, and waits in
+  its worker list, which the city panel shows: drag to reorder, X to remove. Queued jobs show on
+  the map as faded gold rings (walls and gates as faded gold edges). A job needs explored open
+  ground, no city there, and nothing already doing the same thing; improvements and outposts or
+  forts also can't go on a barracks, mill or workshop, an improvement not on another side's site,
+  an outpost or fort not on another one.
+- **Walls and gates** stand on the edge between two hexes, not on a tile. Wall or Gate in the
+  tile panel arms placement: each click on the map queues one on the hex edge nearest the cursor
+  (highlighted), and dragging queues every edge the cursor passes, until Escape or a right-click.
+  The worker builds it standing on whichever side is nearer its city (open, explored ground).
+  One wall or gate per edge; an edge beside a city is fine.
+
+  | Job | Work | Effect |
+  |---|---|---|
+  | Road | 1 turn | a dirt road |
+  | Improve | 2 turns | a mine, lumber mill or farm (see Yields) |
+  | Wall | 2 turns | on an edge: no unit, worker or goods cross it, yours included |
+  | Gate | 3 turns | on an edge: only your units, workers and goods cross it |
+  | Outpost | 3 turns | you see 2 hexes around it |
+  | Fort | 4 turns | your units in it get +50% defense (a placeholder) |
+
+- **Going out:** in the Workers step, each city sends an idle worker out for each job at the top
+  of its list. A worker walks 1 hex a turn by the shortest way around impassable terrain,
+  walls, others' gates, enemy units and enemy cities. Once on the tile it works the listed turns
+  (starting the next turn), then takes the city's next job, or walks home when there is none. A
+  job that became impossible is dropped (with a notice); a worker that can't reach its job gives
+  up and heads home.
+- **Danger:** out on the map a worker can be seen (your own see 1 hex around them). An enemy unit
+  that moves onto its hex captures it: it joins the captor's nearest city (or is lost if the
+  captor has none). An attack on its hex kills it when nothing else is there to hit. A unit
+  standing on the same hex shields it from both, since it blocks the move and takes the hit.
+  A captured or killed worker's job goes back to the top of its city's list.
+- **Recall:** workers otherwise follow their jobs on their own, so each of your workers out on
+  the map has a Recall button: in its city's panel, and in the tile panel of the tile it stands
+  on. A recalled worker drops its job (back to the top of the city's list) and walks straight
+  home at its usual 1 hex a turn in the Workers step, taking no new job on the way.
+- **Structures** are never destroyed or captured yet. Units plan moves around the walls and gates
+  they know of; a move whose way is blocked by one (say, one not seen when it was planned), with
+  no way around within the unit's move, is turned back at resolution. The fog remembers them like
+  improvements.
 
 ## Interface (`src/game/ui/`)
 
@@ -320,11 +371,14 @@ every turn end.
   TURN.
 - **Command tray** (bottom-left): with a city open, it shows population, stores and rates, the
   current build, labor focus buttons, the growth meter, the selected tile, unit cards (1-3), the
-  Yields button, cards for buildings not yet built (4-7), barracks status with See Barracks, and
-  planned sites with Confirm once they are paid for; the queue docks above it. With a barracks open, its five train buttons and Open City, queue above. With a unit
-  selected: stats (boosted values green, reduced red), notes, and buttons Move, Attack, Swap, then
-  its ability (or Found City, or Build Road and Improve for workers, who get no Attack), then Hold
-  and Guard. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
+  Yields button, cards for buildings not yet built (4-7), barracks status with See Barracks,
+  planned sites with Confirm once they are paid for, and its workers (home, out and what each is
+  doing) with the worker list; the queue docks above it. With a barracks open, its five train
+  buttons and Open City, queue above. With a unit selected: stats (boosted values green, reduced
+  red), notes, and buttons Move, Attack, Swap, then its ability (or Found City), then Hold,
+  Guard and Disband (press twice: the first press asks to confirm). With nothing selected, a
+  clicked tile shows its tile panel: its terrain, whose workers would go, and a button per worker
+  job. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
   pressing the button again or right-clicking disarms. The armed button has a bright border, a
   queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows
@@ -339,25 +393,33 @@ every turn end.
   in gold; red if disrupted), with dotted links from the manager to its workers. With yields
   shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
   food (green grain) and production (amber hammers) with delivery percentages.
-- Escape closes an open city or barracks view; otherwise holding it for a second quits, with a
+- Escape closes an open city or barracks view, or else lets go of the selected unit or group and
+  closes the tile panel; with none of those open, holding it for a second quits, with a
   "HOLD ESC TO QUIT" bar. F5 toggles borderless fullscreen.
 
 ## AI (`ai.rs`)
 
-Each Red unit picks the enemy unit nearest on foot (walking distance around terrain), attacks it
-if already in range, and otherwise moves to the reachable hex with the shortest remaining walk,
-attacking if that brings it into range. It skips hexes a teammate already claimed, and units in a
-contested hex stay and fight. It never uses abilities, never attacks cities, never builds
-buildings, ignores the fog, and ignores its civilians and any player-controlled Red unit; its
-scouts fight like any other unit. Red cities auto-assign citizens at every end of planning and
-queue Melee whenever their queue is empty. Ties break by hex coordinates, so it is deterministic.
+Each Red unit picks the enemy unit or worker nearest on foot (walking distance around terrain,
+walls and others' gates). It steps onto a worker it can reach this turn, capturing it; otherwise
+it attacks its target if already in range, or moves to the reachable hex with the shortest
+remaining walk, attacking if that brings it into range. It skips hexes a teammate already
+claimed, and units in a contested hex stay and fight. It never uses abilities, never attacks
+cities, never builds buildings, ignores the fog, and ignores its civilians and any
+player-controlled Red unit; its scouts fight like any other unit. Red cities auto-assign citizens
+at every end of planning, queue Melee whenever their queue is empty, and train a worker first
+when they have none. A Red city with a worker at home and an empty list gives it one job: an
+improvement on a tile it works, or else a road there. Ties break by hex coordinates, so it is
+deterministic.
 
 ## Open questions
 
 Known bugs link to their board item; the rest are design questions nobody has decided yet.
 
-- The AI never uses abilities, attacks cities, builds, or uses workers; it ignores the fog, and
-  its scouts just fight.
+- The AI never uses abilities, attacks cities or builds buildings or structures; it ignores the
+  fog, and its scouts just fight.
+- Forts' +50% defense is a placeholder; what forts should really give is undecided.
+- Structures can't be destroyed or captured, and a wall or gate can go on any edge next to explored
+  ground.
 - Cities and barracks can be damaged but not captured, and nothing heals.
 - Cooldowns tick every turn whether or not the unit acted.
 - Contests only form when two enemies arrive in the same step. A later arrival is just blocked; it
@@ -369,5 +431,4 @@ Known bugs link to their board item; the rest are design questions nobody has de
   units.
 - Generated maps have no resources yet, and there are only two sides on the four-player map.
 - Swaps only work between adjacent units.
-- Worker roads and improvements are instant.
 - No victory condition; F1-F4 restart a scenario.

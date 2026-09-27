@@ -26,6 +26,8 @@ impl GameState {
         match kind {
             QueueKind::City => self.city_queue_scroll = offset,
             QueueKind::Barracks => self.barracks_queue_scroll = offset,
+            // Worker jobs are listed in full; they don't scroll.
+            QueueKind::Workers => {}
         }
     }
 
@@ -72,6 +74,7 @@ impl GameState {
         let current = match scroll.kind {
             QueueKind::City => self.city_queue_scroll,
             QueueKind::Barracks => self.barracks_queue_scroll,
+            QueueKind::Workers => 0,
         };
         let delta = steps.abs().ceil() as usize;
         let next = if steps > 0.0 {
@@ -156,6 +159,14 @@ impl GameState {
                     let item = queue.remove(source);
                     queue.insert(target, item);
                     self.notice = "BARRACKS QUEUE REORDERED".into();
+                }
+            }
+            QueueKind::Workers => {
+                let jobs = &mut self.cities[city].worker_jobs;
+                if source < jobs.len() && target < jobs.len() {
+                    let job = jobs.remove(source);
+                    jobs.insert(target, job);
+                    self.notice = "WORKER JOBS REORDERED".into();
                 }
             }
         }

@@ -14,7 +14,7 @@ behavior.
 | `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
 | `orders.rs` | player input and order planning: click, right-click, swap, ability toggle, hold, guard |
 | `group.rs` | multi-unit selection (Alt-drag, Alt-click) and group orders |
-| `turn.rs` | `RESOLUTION_ORDER`, `update(dt)`, simultaneous step resolution (moves, attacks) |
+| `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks) |
 | `combat.rs` | damage formula, retaliation, combat log helpers |
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
@@ -23,7 +23,8 @@ behavior.
 | `city/logistics.rs` | roads, logistics routes (`routes_from_by`), `delivered_share`, tile yields, mill food share, city and Barracks income |
 | `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy` |
 | `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, building sites, Workshop discount, confirmation, `complete_builds` |
-| `city/workers.rs` | settlers and workers: founding cities, roads, tile improvements |
+| `city/founding.rs` | settlers founding cities |
+| `workers.rs` | workers: each city's pool and job list, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
 | `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
 | `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
@@ -54,6 +55,11 @@ behavior.
   directly.
 - Attack steps read the board as it stood at the step's start and apply summed damage at its
   end; moves in a step are simultaneous. Keep new resolution logic in that shape (`turn.rs`).
+- Workers aren't units: those at home are a count on their city, those out are
+  `field_workers`, with their own ids. They never block a unit's move. Walls and gates sit on hex
+  edges (`barriers`, keyed by `hex::edge`), so passability is per step: anything that walks
+  (units, workers, the AI's distances) or routes goods checks `can_step` / `can_cross`, and the
+  player's planning checks what they know (`known_can_cross`, `fog.rs`).
 - **Screen-space UI: read `docs/ui-system.md` first.** Build shared content with `PanelBuilder`.
   The ImGui presentation uses that content for native windows; preserve the classic path by
   placing it with `Layout::dock_panel(panel, Zone::..)` (zones in `ui/dock.rs`); never position a

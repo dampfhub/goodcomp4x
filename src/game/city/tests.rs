@@ -1,5 +1,4 @@
 use super::*;
-use crate::game::terrain::Terrain;
 
 #[test]
 fn roads_improve_delivery_and_enemy_occupation_blocks_the_site() {
@@ -57,71 +56,6 @@ fn active_build_accumulates_production_and_population_is_capped_at_seven() {
 }
 
 /// A land tile with no road, city or unit that a worker can improve.
-fn open_tile(g: &GameState) -> Hex {
-    g.grid
-        .all_hexes()
-        .find(|&h| {
-            g.grid.is_passable(h)
-                && g.grid.tile(h).terrain != Terrain::Snow
-                && !g.roads.contains(&h)
-                && g.cities.iter().all(|c| c.pos != h)
-                && g.units.iter().all(|u| u.pos != h)
-        })
-        .unwrap()
-}
-
-/// Selects the player's worker, moved to `at`.
-fn select_worker_at(g: &mut GameState, at: Hex) -> usize {
-    let i = g
-        .units
-        .iter()
-        .position(|u| u.team == PLAYER_TEAM && g.workers.contains(&u.id))
-        .unwrap();
-    g.units[i].pos = at;
-    g.selected = Some(i);
-    i
-}
-
-#[test]
-fn worker_actions_wait_for_the_turn_to_finish_playing() {
-    use super::super::turn::Phase;
-    let mut g = GameState::city_scenario();
-    let at = open_tile(&g);
-    g.sites.remove(&at);
-    select_worker_at(&mut g, at);
-    g.pending_steps.push_back((UnitType::Melee, Phase::Move));
-    assert!(g.is_resolving());
-    g.build_worker_road_selected();
-    g.improve_worker_tile_selected();
-    assert!(!g.roads.contains(&at));
-    assert!(!g.sites.contains_key(&at));
-
-    g.pending_steps.clear();
-    g.build_worker_road_selected();
-    g.improve_worker_tile_selected();
-    assert!(g.roads.contains(&at));
-    assert_eq!(g.sites[&at].team, PLAYER_TEAM);
-}
-
-#[test]
-fn a_worker_cannot_improve_over_an_enemy_site() {
-    let mut g = GameState::city_scenario();
-    let at = open_tile(&g);
-    select_worker_at(&mut g, at);
-    g.sites.insert(
-        at,
-        Site {
-            team: Team::Red,
-            food: 3,
-            production: 0,
-            label: "FARM",
-        },
-    );
-    g.improve_worker_tile_selected();
-    assert_eq!(g.sites[&at].team, Team::Red);
-    assert_eq!(g.sites[&at].food, 3);
-}
-
 #[test]
 fn workers_after_the_manager_must_be_adjacent_to_it() {
     let mut g = GameState::city_scenario();
@@ -181,7 +115,8 @@ fn frontier_settler_founds_city_and_city_spends_production_on_unit() {
     g.cities[0].production = BuildUnit::Melee.cost();
     g.complete_builds();
     assert!(g.cities[0].queue.is_empty());
-    let finished = g.units.iter().find(|u| u.team == Team::Blue).unwrap();
+    let finished = g.units.last().unwrap();
+    assert_eq!(finished.team, Team::Blue);
     assert_eq!(finished.unit_type, UnitType::Melee);
     assert_eq!(finished.pos.distance(g.cities[0].pos), 1);
 }

@@ -74,3 +74,11 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     room. Holding Alt shows extra map info: units' turn-order numbers (no longer always shown)
     and every explored tile's yields. Yields are die-face pips of wheat and hammers (one icon
     and a number past six) instead of a strip with numbers.
+32. City workers (`claude/city-workers`): workers are no longer units. Each city keeps a pool
+    at home (built with 8, one with every new city) and a list of jobs queued from a tile panel:
+    roads, improvements, outposts (sight 2) and forts (placeholder +50% defense), plus walls and
+    gates placed on hex edges by clicking or dragging along them. Workers walk out (1 hex a
+    turn) and work in a new last step of the turn, after every unit; an enemy stepping onto one
+    captures it and an attack kills it. A Recall button sends a worker home. The AI queues
+    improvements and roads and hunts enemy workers. The World scenario has no AI opponent. Units
+    can be disbanded (Delete or Disband, twice).

@@ -33,6 +33,7 @@ use glam::{Mat4, Vec2, Vec3};
 use super::city::{BuildUnit, Building, LaborFocus};
 use super::hex::Hex;
 use super::scenario::Scenario;
+use super::workers::JobKind;
 use super::{GameState, mesh};
 use crate::renderer::Vertex;
 use builder::PanelBuilder;
@@ -166,6 +167,14 @@ enum Target {
     OpenCity,
     CityQueueRemove(usize),
     BarracksQueueRemove(usize),
+    /// A worker for the open city's pool.
+    BuildWorker,
+    /// A job on the inspected tile, for the city whose workers would do it.
+    WorkerJob(JobKind),
+    /// The X on one of the open city's worker jobs.
+    WorkerJobRemove(usize),
+    /// Sends the worker with this id straight home.
+    RecallWorker(u32),
     Focus(LaborFocus),
     ConfirmBuilding(Building),
     EndTurn,
@@ -188,8 +197,7 @@ enum UnitAction {
     Hold,
     Guard,
     Settle,
-    Road,
-    Improve,
+    Disband,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -271,6 +279,19 @@ enum Shape {
 pub(super) enum QueueKind {
     City,
     Barracks,
+    /// The open city's worker jobs, listed in its tray.
+    Workers,
+}
+
+impl QueueKind {
+    /// What a row's X button does.
+    fn remove_target(self, index: usize) -> Target {
+        match self {
+            QueueKind::City => Target::CityQueueRemove(index),
+            QueueKind::Barracks => Target::BarracksQueueRemove(index),
+            QueueKind::Workers => Target::WorkerJobRemove(index),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -473,9 +494,12 @@ impl GameState {
                 UnitAction::Hold => self.hold_selected_unit(),
                 UnitAction::Guard => self.toggle_guard(),
                 UnitAction::Settle => self.found_city_selected(),
-                UnitAction::Road => self.build_worker_road_selected(),
-                UnitAction::Improve => self.improve_worker_tile_selected(),
+                UnitAction::Disband => self.disband_selected(),
             },
+            Target::BuildWorker => self.queue_selected_city_worker(),
+            Target::WorkerJob(kind) => self.queue_worker_job(kind),
+            Target::WorkerJobRemove(index) => self.remove_worker_job(index),
+            Target::RecallWorker(id) => self.recall_worker(id),
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
             Target::Building(building) => self.queue_selected_city_building(building),
@@ -515,6 +539,7 @@ impl GameState {
             self.hover_seconds = 0.0;
         }
         self.hovered_city = hex.and_then(|h| self.cities.iter().position(|c| c.pos == h));
+        self.hover_edge(hex.and(cursor), screen_size);
     }
 
     pub fn update_hover_imgui(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
@@ -526,6 +551,33 @@ impl GameState {
             self.hover_seconds = 0.0;
         }
         self.hovered_city = hex.and_then(|h| self.cities.iter().position(|c| c.pos == h));
+        self.hover_edge(hex.and(cursor), screen_size);
+    }
+
+    /// With a wall or gate armed, the hex edge under `cursor` (over the map,
+    /// not the UI), for its highlight.
+    fn hover_edge(&mut self, cursor: Option<Vec2>, screen_size: Vec2) {
+        self.hovered_edge =
+            cursor.and_then(|c| self.barrier_edge_at(self.camera.screen_to_world(c, screen_size)));
+    }
+
+    /// With a wall or gate armed, queues it on the hex edge under `cursor`
+    /// (window pixels). Called on the press and for every cursor move while
+    /// the button is held, so a drag queues each edge it passes. Returns
+    /// whether the press belongs to edge placement: false over the classic
+    /// UI (`check_ui`) or with nothing armed.
+    pub fn paint_barrier_at(&mut self, cursor: Vec2, screen_size: Vec2, check_ui: bool) -> bool {
+        if self.placing_barrier.is_none() || self.is_resolving() {
+            return false;
+        }
+        if check_ui && self.layout(screen_size).covers(to_ui(cursor, screen_size)) {
+            return false;
+        }
+        let point = self.camera.screen_to_world(cursor, screen_size);
+        if let Some((a, b)) = self.barrier_edge_at(point) {
+            self.queue_barrier_at(a, b);
+        }
+        true
     }
 
     pub fn set_ui_notice(&mut self, notice: &str) {
@@ -547,6 +599,8 @@ impl GameState {
             tray.buttons(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
+        } else if let Some(hex) = self.inspected_tile {
+            self.tile_tray(hex, &mut tray);
         } else {
             self.debug_panel(&mut layout);
             return layout;

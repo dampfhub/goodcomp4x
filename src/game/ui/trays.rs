@@ -3,12 +3,16 @@
 use super::builder::{ButtonSpec, PanelBuilder};
 use super::text::{ability_text, compare, quantity, signed_quantity, stat_spans, turns_text};
 use super::{
-    BODY, BOOSTED_TEXT, ButtonState, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, REDUCED_TEXT, SMALL,
-    TEXT, TITLE, Target, UnitAction,
+    BODY, BOOSTED_TEXT, ButtonState, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, QueueItemSpec,
+    QueueKind, REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
 };
-use crate::game::GameState;
-use crate::game::city::{Build, BuildUnit, Building, LaborFocus, delivered_share};
+use crate::game::city::{
+    Build, BuildUnit, Building, LaborFocus, WORKER_COST, WORKER_SHORTCUT, delivered_share,
+};
+use crate::game::hex::Hex;
 use crate::game::orders::ClickMode;
+use crate::game::workers::{JobKind, WorkerJob};
+use crate::game::{GameState, PLAYER_TEAM};
 
 impl GameState {
     /// A unit's name, stats as they stand this turn, and anything notable
@@ -76,7 +80,7 @@ impl GameState {
                 compare(stats.move_range as f32, base.move_range as f32),
             ),
         ]);
-        if !self.settlers.contains(&unit.id) && !self.workers.contains(&unit.id) {
+        if !self.settlers.contains(&unit.id) {
             second.push((format!("   {ability_name} "), LABEL_TEXT));
             second.push((ability_status, ability_color));
         }
@@ -129,7 +133,6 @@ impl GameState {
         let can_move = unit.stats().move_range > 0;
         let locked = self.rival_of(idx).is_some();
         let swapping = self.swap_partner(idx).is_some();
-        let worker = self.workers.contains(&unit.id);
         let settler = self.settlers.contains(&unit.id);
         let armed = |mode| self.selected == Some(idx) && self.ui_click_mode == Some(mode);
 
@@ -140,18 +143,13 @@ impl GameState {
             state: ButtonState::new(unit.planned_move.is_some() && !swapping, !can_move),
             armed: armed(ClickMode::Move),
         }];
-        if !worker {
-            buttons.push(ButtonSpec {
-                target: Target::Unit(UnitAction::Attack),
-                label: "ATTACK".into(),
-                hint: "X · SHIFT".into(),
-                state: ButtonState::new(
-                    unit.planned_attack.is_some(),
-                    !unit.can_attack() || locked,
-                ),
-                armed: armed(ClickMode::Attack),
-            });
-        }
+        buttons.push(ButtonSpec {
+            target: Target::Unit(UnitAction::Attack),
+            label: "ATTACK".into(),
+            hint: "X · SHIFT".into(),
+            state: ButtonState::new(unit.planned_attack.is_some(), !unit.can_attack() || locked),
+            armed: armed(ClickMode::Attack),
+        });
         buttons.push(ButtonSpec {
             target: Target::Unit(UnitAction::Swap),
             label: "SWAP".into(),
@@ -161,9 +159,6 @@ impl GameState {
         });
         if settler {
             buttons.push(ButtonSpec::plain(UnitAction::Settle, "FOUND CITY", "F"));
-        } else if worker {
-            buttons.push(ButtonSpec::plain(UnitAction::Road, "BUILD ROAD", "R"));
-            buttons.push(ButtonSpec::plain(UnitAction::Improve, "IMPROVE", "I"));
         } else {
             let (name, _) = ability_text(unit);
             let label = match unit.ability_cooldown {
@@ -191,6 +186,14 @@ impl GameState {
             hint: "G".into(),
             state: ButtonState::new(unit.guarding, false),
             armed: false,
+        });
+        let confirming = self.disband_armed == Some(unit.id);
+        buttons.push(ButtonSpec {
+            target: Target::Unit(UnitAction::Disband),
+            label: if confirming { "CONFIRM?" } else { "DISBAND" }.into(),
+            hint: "DEL".into(),
+            state: ButtonState::Ready,
+            armed: confirming,
         });
         buttons
     }
@@ -398,6 +401,13 @@ impl GameState {
                     state: ButtonState::new(city.queue.first() == Some(&Build::Unit(build)), false),
                     armed: false,
                 })
+                .chain([ButtonSpec {
+                    target: Target::BuildWorker,
+                    label: "WORKER".into(),
+                    hint: format!("{WORKER_SHORTCUT} · {} PROD", quantity(WORKER_COST)),
+                    state: ButtonState::new(city.queue.first() == Some(&Build::Worker), false),
+                    armed: false,
+                }])
                 .collect(),
         );
         panel.gap(GAP);
@@ -499,6 +509,164 @@ impl GameState {
                     armed: false,
                 }]);
             }
+        }
+        self.city_workers(i, panel);
+    }
+
+    /// The city's workers: how many are home and out, what those out are
+    /// doing, and the jobs waiting for them, which can be dragged into a new
+    /// order or removed.
+    fn city_workers(&self, i: usize, panel: &mut PanelBuilder) {
+        let city = &self.cities[i];
+        let out: Vec<_> = self.field_workers.iter().filter(|w| w.home == i).collect();
+        let mut line = vec![(
+            format!("WORKERS: {} HOME, {} OUT", city.workers, out.len()),
+            LABEL_TEXT,
+        )];
+        if city.worker_jobs.is_empty() {
+            line.push((" · CLOSE THE CITY, CLICK A TILE FOR JOBS".into(), DIM_TEXT));
+        }
+        panel.text(SMALL, line);
+        for worker in out {
+            let doing = match (worker.job, worker.work_left) {
+                (Some(job), Some(left)) => format!(
+                    "{} AT ({}, {}): {} LEFT",
+                    job.kind.name(),
+                    job.hex.q,
+                    job.hex.r,
+                    turns_text(left)
+                ),
+                (Some(job), None) => format!(
+                    "WALKING TO A {} AT ({}, {})",
+                    job.kind.name(),
+                    job.hex.q,
+                    job.hex.r
+                ),
+                (None, _) if worker.recalled => "RECALLED, WALKING HOME".into(),
+                (None, _) => "WALKING HOME".into(),
+            };
+            if worker.recalled {
+                panel.text(SMALL, vec![(format!("  {doing}"), DIM_TEXT)]);
+                continue;
+            }
+            panel.compact_buttons(vec![ButtonSpec {
+                target: Target::RecallWorker(worker.id),
+                label: doing,
+                hint: "RECALL".into(),
+                state: ButtonState::Ready,
+                armed: false,
+            }]);
+        }
+        if city.worker_jobs.is_empty() {
+            return;
+        }
+        panel.text(
+            SMALL,
+            vec![("WORKER JOBS - DRAG TO REORDER".into(), LABEL_TEXT)],
+        );
+        let drag = self
+            .queue_drag
+            .filter(|drag| drag.kind == QueueKind::Workers);
+        for (index, job) in city.worker_jobs.iter().enumerate() {
+            panel.queue_item(QueueItemSpec {
+                kind: QueueKind::Workers,
+                index,
+                label: format!(
+                    "{} AT ({}, {}) | {} OF WORK",
+                    job.kind.name(),
+                    job.hex.q,
+                    job.hex.r,
+                    turns_text(job.kind.turns())
+                ),
+                active: false,
+                dragging: drag.is_some_and(|drag| drag.source == index),
+                drop_target: drag
+                    .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
+                locked: false,
+            });
+        }
+    }
+
+    /// A tile clicked with nothing selected: what it is, and the jobs the
+    /// nearest city's workers can do there.
+    pub(super) fn tile_tray(&self, hex: Hex, panel: &mut PanelBuilder) {
+        let tile = self.grid.tile(hex);
+        let mut name = tile.terrain.name().to_string();
+        if tile.hills {
+            name.push_str(" HILLS");
+        }
+        if let Some(feature) = tile.feature {
+            name = format!("{} {name}", feature.name());
+        }
+        panel.text(
+            TITLE,
+            vec![
+                ("TILE ".into(), LABEL_TEXT),
+                (format!("({}, {})  ", hex.q, hex.r), TEXT),
+                (name, DIM_TEXT),
+            ],
+        );
+        let from = match self.job_city(hex) {
+            Some(city) => {
+                let c = &self.cities[city];
+                format!(
+                    "WORKERS FROM CITY {}: {} AT HOME, {} OUT, {} JOBS WAITING",
+                    c.id + 1,
+                    c.workers,
+                    self.workers_out(city),
+                    c.worker_jobs.len()
+                )
+            }
+            None => "FOUND A CITY TO GET WORKERS".into(),
+        };
+        panel.text(SMALL, vec![(from, DIM_TEXT)]);
+        // Your workers standing here can be sent home from the tile.
+        let here: Vec<_> = self
+            .field_workers
+            .iter()
+            .filter(|w| w.pos == hex && w.team == PLAYER_TEAM && !w.recalled)
+            .collect();
+        if !here.is_empty() {
+            panel.buttons(
+                here.iter()
+                    .map(|worker| ButtonSpec {
+                        target: Target::RecallWorker(worker.id),
+                        label: "RECALL WORKER".into(),
+                        hint: "SEND IT HOME".into(),
+                        state: ButtonState::Ready,
+                        armed: false,
+                    })
+                    .collect(),
+            );
+        }
+        panel.text(
+            SMALL,
+            vec![("WORKER JOBS · ESC TO CLOSE".into(), LABEL_TEXT)],
+        );
+        for row in JobKind::ALL.chunks(3) {
+            panel.buttons(
+                row.iter()
+                    .map(|&kind| {
+                        let taken = self.job_taken(PLAYER_TEAM, WorkerJob::on_tile(hex, kind));
+                        let key = match kind {
+                            JobKind::Road => "R · ",
+                            JobKind::Improve => "I · ",
+                            JobKind::Wall | JobKind::Gate => "EDGES · ",
+                            _ => "",
+                        };
+                        ButtonSpec {
+                            target: Target::WorkerJob(kind),
+                            label: kind.name().into(),
+                            hint: format!("{key}{}", turns_text(kind.turns())),
+                            state: ButtonState::new(
+                                taken,
+                                !taken && self.job_unavailable(hex, kind).is_some(),
+                            ),
+                            armed: self.placing_barrier == Some(kind),
+                        }
+                    })
+                    .collect(),
+            );
         }
     }
 
