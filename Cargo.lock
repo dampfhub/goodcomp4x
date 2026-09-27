@@ -490,12 +490,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "epaint_default_fonts"
-version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13ee4e1f553a3584c301f3a56ff1a775f1384781396cea301c8d952e9b93f560"
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1824,7 +1818,6 @@ dependencies = [
  "ash",
  "ash-window",
  "env_logger",
- "epaint_default_fonts",
  "fontdue",
  "glam",
  "imgui",

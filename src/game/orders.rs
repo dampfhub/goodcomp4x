@@ -142,11 +142,7 @@ impl GameState {
             }
             (ClickMode::Move, _) => {}
             (ClickMode::Normal, None) => {
-                if self.has_enemy_target_at(hex, self.units[selected].team) {
-                    self.try_queue_attack(selected, hex);
-                } else {
-                    self.try_queue_move(selected, hex);
-                }
+                self.queue_order_at(selected, hex);
                 self.advance_selection_if_done();
             }
         }
@@ -223,7 +219,7 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
-        self.selected_city = None;
+        self.leave_city_view();
         let next = self
             .next_unit_needing_orders(self.selected)
             .or_else(|| self.next_player_unit(self.selected));
@@ -345,12 +341,19 @@ impl GameState {
         let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
             return;
         };
-        if self.has_enemy_target_at(hex, self.units[selected].team) {
-            self.try_queue_attack(selected, hex);
-        } else {
-            self.try_queue_move(selected, hex);
-        }
+        self.queue_order_at(selected, hex);
         self.advance_selection_if_done();
+    }
+
+    /// A plain click or right-click on `hex`: attacks an enemy the player
+    /// knows is there, and otherwise moves there. An enemy out of sight isn't
+    /// known, so clicking its hex plans a move.
+    pub(super) fn queue_order_at(&mut self, idx: usize, hex: Hex) {
+        if self.known_enemy_target_at(hex, self.units[idx].team, &self.fog()) {
+            self.try_queue_attack(idx, hex);
+        } else {
+            self.try_queue_move(idx, hex);
+        }
     }
 
     pub(super) fn hex_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option<Hex> {
@@ -365,7 +368,7 @@ impl GameState {
     /// other friendly unit is already heading there.
     pub(super) fn try_queue_move(&mut self, idx: usize, dest: Hex) {
         let unit = &self.units[idx];
-        let reachable = self.reachable_hexes(unit.pos, unit.stats().move_range);
+        let reachable = self.known_reachable_hexes(unit.pos, unit.stats().move_range, &self.fog());
         let claimed_by_ally = self
             .units
             .iter()
@@ -455,13 +458,15 @@ impl GameState {
 
     /// After a unit's abilities change what it can do, drops any queued move
     /// or attack it can no longer carry out.
-    fn drop_orders_now_impossible(&mut self, idx: usize) {
+    pub(super) fn drop_orders_now_impossible(&mut self, idx: usize) {
         let unit = &self.units[idx];
         let move_range = unit.stats().move_range;
         let move_still_possible = match (unit.planned_move, self.swap_partner(idx)) {
             (None, _) => true,
             (Some(_), Some(_)) => move_range > 0,
-            (Some(dest), None) => self.reachable_hexes(unit.pos, move_range).contains(&dest),
+            (Some(dest), None) => self
+                .known_reachable_hexes(unit.pos, move_range, &self.fog())
+                .contains(&dest),
         };
         if !move_still_possible {
             self.cancel_swap(idx);
@@ -478,5 +483,37 @@ impl GameState {
                 self.units[i].drop_unreachable_attack();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::city::Building;
+
+    #[test]
+    fn tab_closes_the_barracks_view_and_its_placement_modes() {
+        let mut g = GameState::city_scenario();
+        g.cities[0].barracks = Some(Hex::new(-1, 0));
+        g.open_barracks(0);
+        g.moving_manager = Some(0);
+        g.placing_building = Some((0, Building::Barracks));
+        g.select_next_unit();
+        assert_eq!(g.selected_barracks, None);
+        assert_eq!(g.selected_city, None);
+        assert_eq!(g.moving_manager, None);
+        assert_eq!(g.placing_building, None);
+        assert!(g.selected.is_some(), "Tab still moves on to a unit");
+    }
+
+    #[test]
+    fn tab_from_the_city_view_drops_a_building_site_preview() {
+        let mut g = GameState::city_scenario();
+        g.open_city(0);
+        g.queue_selected_city_building(Building::Barracks);
+        assert!(g.placing_building.is_some());
+        g.select_next_unit();
+        assert_eq!(g.selected_city, None);
+        assert_eq!(g.placing_building, None);
     }
 }

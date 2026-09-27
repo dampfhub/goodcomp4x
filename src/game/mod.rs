@@ -13,14 +13,18 @@ mod fog;
 mod font;
 mod group;
 mod hex;
+mod map_icons;
 mod mapgen;
 mod mesh;
 mod orders;
 mod scenario;
+#[cfg(test)]
+mod simulation;
 mod terrain;
 mod turn;
 mod ui;
 mod unit;
+mod unit_icons;
 
 use std::collections::{HashSet, VecDeque};
 
@@ -37,6 +41,7 @@ use terrain::Tile;
 use turn::Phase;
 pub use ui::{ImGuiLayoutState, quit_prompt, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
+use unit_icons::UnitIcon;
 
 const GRID_RADIUS: i32 = 3;
 const PLAYER_TEAM: Team = Team::Blue;
@@ -60,10 +65,11 @@ Controls:
   Once a unit has queued a move and an attack (or can't do one of them), the next unit is
   selected automatically and the camera glides to it. Tab looks at the next unit without
   holding this one.
-  Enter or End Turn holds unfinished units and ends the turn. Cities still need a build queued.
+  The End Turn button holds unfinished units and ends the turn. Cities still need a build queued.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
-  1-4 queue city units; 5-8 queue buildings. Drag queue rows to reorder or click X to remove;
+  Hold Alt to see each unit's turn order and every explored tile's yields.
+  1-3 queue city units; 4-7 queue buildings. Cavalry and armored train at a barracks on Horses or Iron. Drag queue rows to reorder or click X to remove;
   Backspace removes the active city build and PageDown promotes the next item. F founds with a settler.
   Ctrl+Shift+R in a City/Building or Troop ImGui view resets its Debug placement to Default.
   F1 combat, F2 cities, F3 settler frontier, F4 random world (again to restart; F4 makes a new map). F6 saves a snapshot, F7 loads it, F8 changes playback, F9 completes production, F10 toggles fog of war.
@@ -109,6 +115,9 @@ pub struct GameState {
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
+    /// Whether Alt is held, showing extra map info: units' turn order and
+    /// every tile's yields.
+    show_details: bool,
     /// The map hex under the cursor (not over the UI), and how long the
     /// cursor has rested on it, for the tile tooltip.
     hovered_tile: Option<Hex>,
@@ -202,6 +211,7 @@ impl GameState {
             placing_building: None,
             hovered_city: None,
             show_yields: true,
+            show_details: false,
             hovered_tile: None,
             hover_seconds: 0.0,
             ui_click_mode: None,
@@ -292,31 +302,33 @@ impl GameState {
 
     /// What the unit is, for display: settlers and workers are marked on
     /// top of an ordinary unit type.
-    fn unit_role(&self, unit: &Unit) -> (&'static str, char) {
+    fn unit_role(&self, unit: &Unit) -> &'static str {
         if self.settlers.contains(&unit.id) {
-            ("SETTLER", 'T')
+            "SETTLER"
         } else if self.workers.contains(&unit.id) {
-            ("WORKER", 'W')
+            "WORKER"
         } else {
-            let name = match unit.unit_type {
+            match unit.unit_type {
                 UnitType::Melee => "MELEE",
                 UnitType::Ranged => "RANGED",
                 UnitType::Cavalry => "CAVALRY",
                 UnitType::Siege => "SIEGE",
                 UnitType::Scout => "SCOUT",
-                UnitType::Horse => "HORSE",
                 UnitType::Armored => "ARMORED",
-            };
-            (name, unit.unit_type.letter())
+            }
         }
     }
 
-    /// How to draw `unit`: its letter, and hollow if it's a civilian.
+    /// How to draw `unit`: its pictogram, and hollow if it's a civilian.
     fn unit_look(&self, unit: &Unit) -> draw::UnitLook {
-        draw::UnitLook {
-            letter: self.unit_role(unit).1,
-            civilian: self.settlers.contains(&unit.id) || self.workers.contains(&unit.id),
-        }
+        let (icon, civilian) = if self.settlers.contains(&unit.id) {
+            (UnitIcon::Flag, true)
+        } else if self.workers.contains(&unit.id) {
+            (UnitIcon::Shovel, true)
+        } else {
+            (UnitIcon::of(unit.unit_type), false)
+        };
+        draw::UnitLook { icon, civilian }
     }
 
     fn is_occupied(&self, hex: Hex) -> bool {
@@ -374,8 +386,19 @@ impl GameState {
 
     /// Hexes reachable from `start` in at most `move_range` steps without
     /// passing through mountains or an occupied hex, so a line of units
-    /// blocks the way. Includes `start` itself.
+    /// blocks the way. Includes `start` itself. This is the real board, as the
+    /// AI sees it; the player plans with `known_reachable_hexes` (`fog.rs`).
     fn reachable_hexes(&self, start: Hex, move_range: i32) -> HashSet<Hex> {
+        self.reachable_hexes_by(start, move_range, |hex| self.is_occupied(hex))
+    }
+
+    /// Like `reachable_hexes`, with `occupied` deciding which hexes block.
+    fn reachable_hexes_by(
+        &self,
+        start: Hex,
+        move_range: i32,
+        occupied: impl Fn(Hex) -> bool,
+    ) -> HashSet<Hex> {
         let mut visited = HashSet::from([start]);
         let mut frontier = vec![start];
 
@@ -383,7 +406,7 @@ impl GameState {
             let mut next = Vec::new();
             for hex in frontier {
                 for neighbor in hex.neighbors() {
-                    let open = self.grid.is_passable(neighbor) && !self.is_occupied(neighbor);
+                    let open = self.grid.is_passable(neighbor) && !occupied(neighbor);
                     if open && visited.insert(neighbor) {
                         next.push(neighbor);
                     }
@@ -983,6 +1006,43 @@ mod tests {
             game.units[0].hp < unit_hp,
             "the city should return ranged fire"
         );
+    }
+
+    #[test]
+    fn hitting_an_empty_enemy_city_or_barracks_is_a_hit_not_a_miss() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let target = game
+            .cities
+            .iter()
+            .position(|city| city.team == Team::Red)
+            .unwrap();
+        let city = game.cities[target].pos;
+        let barracks = city.neighbors()[0];
+        game.cities[target].barracks = Some(barracks);
+        for (id, hex) in [(901, city), (902, barracks)] {
+            game.units.clear();
+            game.effects.clear();
+            game.units.push(Unit::new(
+                id,
+                Hex::new(hex.q, hex.r + 2),
+                Team::Blue,
+                UnitType::Ranged,
+            ));
+            game.units[0].planned_attack = Some(hex);
+            game.resolve_step(UnitType::Ranged, Phase::Attack);
+            let shots: Vec<_> = game
+                .effects
+                .iter()
+                .filter_map(|(effect, _)| match effect {
+                    effects::Effect::Shot { outcome, .. } => Some(*outcome),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(shots, [effects::Outcome::Hit], "attack on {hex:?}");
+        }
+        assert!(game.cities[target].hp < city::CITY_MAX_HP);
+        assert!(game.cities[target].barracks_hp < city::BARRACKS_MAX_HP);
     }
 
     #[test]

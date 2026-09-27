@@ -9,7 +9,8 @@ pub const SOLID_UV: [f32; 2] = [-1.0, -1.0];
 pub struct Vertex {
     pub pos: [f32; 3],
     pub color: [f32; 4],
-    /// Where to sample the coverage atlas, or `SOLID_UV`.
+    /// Where to sample the atlas, or `SOLID_UV`. A `u` of 1 or more marks a
+    /// distance-field glyph, sampled at `u - 1`.
     pub uv: [f32; 2],
 }
 

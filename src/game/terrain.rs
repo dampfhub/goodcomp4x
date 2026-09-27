@@ -45,12 +45,6 @@ impl Resource {
             Self::Iron => "IRON",
         }
     }
-    pub fn glyph(self) -> char {
-        match self {
-            Self::Horses => 'H',
-            Self::Iron => 'I',
-        }
-    }
 }
 
 impl Terrain {

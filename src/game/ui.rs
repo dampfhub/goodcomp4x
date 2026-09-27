@@ -414,15 +414,24 @@ impl GameState {
             self.unit_info(idx, &mut panel);
             layout.dock_panel(panel, Zone::TopRight);
         }
+        // A structure's live panel is only for one the player can see now:
+        // their own, or one in sight.
+        let fog = self.fog();
+        let known =
+            |city: &super::city::City, hex: Hex| city.team == super::PLAYER_TEAM || fog.sees(hex);
         if !over_ui && let Some(hex) = self.hovered_tile {
-            if let Some(city) = self.cities.iter().position(|city| city.pos == hex) {
+            if let Some(city) = self
+                .cities
+                .iter()
+                .position(|city| city.pos == hex && known(city, hex))
+            {
                 let mut panel = PanelBuilder::default();
                 self.structure_hover_panel(city, false, &mut panel);
                 layout.dock_panel(panel, Zone::BottomLeft);
             } else if let Some(city) = self
                 .cities
                 .iter()
-                .position(|city| city.barracks == Some(hex))
+                .position(|city| city.barracks == Some(hex) && known(city, hex))
             {
                 let mut panel = PanelBuilder::default();
                 self.structure_hover_panel(city, true, &mut panel);
@@ -871,7 +880,7 @@ impl GameState {
         let stats = unit.stats();
         let terrain = self.grid.tile(unit.pos);
         let defense = stats.defense * terrain.defense_multiplier();
-        let (role, _) = self.unit_role(unit);
+        let role = self.unit_role(unit);
 
         panel.text(
             TITLE,
@@ -1053,7 +1062,7 @@ impl GameState {
     fn group_tray_for(&self, group: &[usize], panel: &mut PanelBuilder) {
         let members: Vec<&str> = group
             .iter()
-            .map(|&i| self.unit_role(&self.units[i]).0)
+            .map(|&i| self.unit_role(&self.units[i]))
             .collect();
         let mut kinds: Vec<(&str, usize)> = Vec::new();
         for role in members {
@@ -1135,9 +1144,10 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · +{production} PROD/T",
+                        "HP {:.0}/{:.0} · {} PROD/T",
                         city.barracks_hp,
-                        super::city::BARRACKS_MAX_HP
+                        super::city::BARRACKS_MAX_HP,
+                        signed_quantity(production)
                     ),
                     GOLD_TEXT,
                 )],
@@ -1170,9 +1180,10 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · POP {growth}% · +{production} PROD/T",
+                        "HP {:.0}/{:.0} · POP {growth}% · {} PROD/T",
                         city.hp,
-                        super::city::CITY_MAX_HP
+                        super::city::CITY_MAX_HP,
+                        signed_quantity(production)
                     ),
                     GOLD_TEXT,
                 )],
@@ -1292,10 +1303,15 @@ impl GameState {
             .inspected_tile
             .filter(|_| self.selected_city == Some(i))
         {
-            let (tile_food, tile_production) = self.tile_yield(hex);
-            let shares = self.routes(i).costs.get(&hex).map_or((0, 0), |cost| {
-                (self.mill_food_share(i, hex, *cost), delivered_share(*cost))
-            });
+            let fog = self.fog();
+            let (tile_food, tile_production) = self.known_yield(hex, &fog);
+            let shares = self
+                .known_routes(i, &fog)
+                .costs
+                .get(&hex)
+                .map_or((0, 0), |cost| {
+                    (self.mill_food_share(i, hex, *cost), delivered_share(*cost))
+                });
             panel.gap(GAP);
             panel.text(
                 SMALL,
@@ -1310,12 +1326,7 @@ impl GameState {
         }
 
         panel.gap(GAP);
-        let builds = [
-            BuildUnit::Melee,
-            BuildUnit::Ranged,
-            BuildUnit::Cavalry,
-            BuildUnit::Siege,
-        ];
+        let builds = [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege];
         panel.buttons(
             builds
                 .into_iter()
@@ -1457,12 +1468,13 @@ impl GameState {
             SMALL,
             vec![(
                 format!(
-                    "{} · +{barracks_production} PROD/T",
+                    "{} · {} PROD/T",
                     if active {
                         "MANAGER ACTIVE"
                     } else {
                         "NEEDS MANAGER"
-                    }
+                    },
+                    signed_quantity(barracks_production)
                 ),
                 if active { BOOSTED_TEXT } else { REDUCED_TEXT },
             )],
@@ -1487,7 +1499,6 @@ impl GameState {
             BuildUnit::Ranged,
             BuildUnit::Cavalry,
             BuildUnit::Siege,
-            BuildUnit::Horse,
             BuildUnit::Armored,
         ];
         panel.gap(GAP);
@@ -1686,7 +1697,7 @@ impl GameState {
             lines.push((SMALL, vec![("IMPASSABLE".into(), DIM_TEXT)]));
             return lines;
         }
-        let (food, production) = self.raw_yield(hex);
+        let (food, production) = self.known_yield(hex, &fog);
         lines.push((
             SMALL,
             stat_spans(&[
@@ -1703,9 +1714,10 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · GROWTH {growth}% · +{production_per_turn} PRODUCTION",
+                        "HP {:.0}/{:.0} · GROWTH {growth}% · {} PRODUCTION",
                         city.hp,
-                        super::city::CITY_MAX_HP
+                        super::city::CITY_MAX_HP,
+                        signed_quantity(production_per_turn)
                     ),
                     GOLD_TEXT,
                 )],
@@ -1732,9 +1744,10 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · +{production_per_turn} PROD/T",
+                        "HP {:.0}/{:.0} · {} PROD/T",
                         city.barracks_hp,
-                        super::city::BARRACKS_MAX_HP
+                        super::city::BARRACKS_MAX_HP,
+                        signed_quantity(production_per_turn)
                     ),
                     GOLD_TEXT,
                 )],
@@ -1782,14 +1795,19 @@ impl GameState {
         if let Some(resource) = self.grid.resource(hex) {
             notes.push(format!("{} RESOURCE", resource.name()));
         }
-        if let Some(worker) = self.cities.iter().find(|c| c.worked.contains(&hex)) {
+        if let Some(worker) = self
+            .cities
+            .iter()
+            .filter(visible)
+            .find(|c| c.worked.contains(&hex))
+        {
             notes.push(format!("WORKED BY CITY {}", worker.id + 1));
         }
         if let Some(open) = self.selected_city
             && self.cities[open].pos != hex
         {
             let city = &self.cities[open];
-            match self.routes(open).costs.get(&hex) {
+            match self.known_routes(open, &fog).costs.get(&hex) {
                 Some(&cost) => notes.push(format!(
                     "FOOD {}% / PRODUCTION {}% REACHES CITY {}",
                     self.mill_food_share(open, hex, cost) * 25,
@@ -1800,15 +1818,12 @@ impl GameState {
             }
         }
         let describe =
-            |unit: &Unit| format!("{:?} {}", unit.team, self.unit_role(unit).0).to_uppercase();
-        let mut units: Vec<String> = self
+            |unit: &Unit| format!("{:?} {}", unit.team, self.unit_role(unit)).to_uppercase();
+        let units: Vec<String> = self
             .units_at(hex)
             .filter(|&i| fog.shows(&self.units[i]))
             .map(|i| describe(&self.units[i]))
             .collect();
-        if let Some(seen) = memory {
-            units.extend(seen.units.iter().map(|(unit, _)| describe(unit)));
-        }
         if !units.is_empty() {
             notes.push(units.join(", "));
         }
@@ -2830,13 +2845,10 @@ mod tests {
     fn build_card_queues_its_unit() {
         let mut game = GameState::city_scenario();
         game.select_city();
-        let cavalry = Target::Build(BuildUnit::Cavalry);
-        game.handle_click(button_cursor(&game, cavalry), SCREEN, ClickMode::Normal);
+        let siege = Target::Build(BuildUnit::Siege);
+        game.handle_click(button_cursor(&game, siege), SCREEN, ClickMode::Normal);
         let city = game.selected_city.unwrap();
-        assert_eq!(
-            game.cities[city].queue,
-            vec![Build::Unit(BuildUnit::Cavalry)]
-        );
+        assert_eq!(game.cities[city].queue, vec![Build::Unit(BuildUnit::Siege)]);
     }
 
     /// The city scenario with the player's city open and the camera settled on it.
@@ -3074,7 +3086,7 @@ mod tests {
         game.cities[city].queue = vec![
             Build::Unit(BuildUnit::Melee),
             Build::Unit(BuildUnit::Ranged),
-            Build::Unit(BuildUnit::Cavalry),
+            Build::Unit(BuildUnit::Siege),
         ];
         let layout = game.layout(SCREEN);
         let row_cursor = |index| {
@@ -3097,7 +3109,7 @@ mod tests {
         game.update_queue_drag_at(to, SCREEN);
         assert_eq!(game.queue_drag.unwrap().target, Some(0));
         game.finish_queue_drag_at(to, SCREEN);
-        assert_eq!(game.cities[city].queue[0], Build::Unit(BuildUnit::Cavalry));
+        assert_eq!(game.cities[city].queue[0], Build::Unit(BuildUnit::Siege));
         assert!(game.queue_drag.is_none());
 
         let x = button_cursor(&game, Target::CityQueueRemove(1));
@@ -3317,6 +3329,156 @@ mod tests {
         let elsewhere = hex_cursor(&game, Hex::new(1, 1));
         game.update_hover(Some(elsewhere), SCREEN, 0.1);
         assert_eq!(game.hover_seconds, 0.0);
+    }
+
+    #[test]
+    fn hovering_an_enemy_city_or_barracks_out_of_sight_shows_no_live_panel() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.selected = None;
+        let red = game
+            .cities
+            .iter()
+            .position(|city| city.team == Team::Red)
+            .unwrap();
+        let barracks = game.cities[red].pos.neighbors()[0];
+        game.cities[red].barracks = Some(barracks);
+        let blue = game
+            .cities
+            .iter()
+            .position(|c| c.team == Team::Blue)
+            .unwrap();
+        for hex in [game.cities[red].pos, barracks] {
+            assert!(
+                !game.fog().sees(hex),
+                "only Blue's city sees, and not this far"
+            );
+            game.hovered_tile = Some(hex);
+            let fogged = game.layout_with_hover(SCREEN, None).0.panels.len();
+            game.fog_of_war = false;
+            let clear = game.layout_with_hover(SCREEN, None).0.panels.len();
+            game.fog_of_war = true;
+            assert_eq!(clear, fogged + 1, "{hex:?}");
+        }
+        // Seen once and remembered, it's still out of sight: no live panel.
+        let red_pos = game.cities[red].pos;
+        game.units.push(Unit::new(
+            50,
+            red_pos.neighbors()[3],
+            Team::Blue,
+            UnitType::Scout,
+        ));
+        game.explore();
+        game.units.clear();
+        assert!(game.is_explored(red_pos) && !game.fog().sees(red_pos));
+        game.hovered_tile = Some(red_pos);
+        let fogged = game.layout_with_hover(SCREEN, None).0.panels.len();
+        game.hovered_tile = None;
+        assert_eq!(fogged, game.layout_with_hover(SCREEN, None).0.panels.len());
+
+        // The player's own city always has its panel.
+        game.hovered_tile = Some(game.cities[blue].pos);
+        let own = game.layout_with_hover(SCREEN, None).0.panels.len();
+        game.hovered_tile = None;
+        assert_eq!(own, game.layout_with_hover(SCREEN, None).0.panels.len() + 1);
+    }
+
+    #[test]
+    fn tooltip_and_city_panel_show_an_unseen_hex_as_last_seen() {
+        let (mut game, city, far) = crate::game::fog::tests::remembered_route_hex();
+        game.inspected_tile = Some(far);
+        let read = |game: &GameState| {
+            let tooltip = line_strings(game.tile_tooltip_lines(far).into_iter().map(|(_, l)| l));
+            let tray = panel_strings(|panel| game.city_tray(city, panel));
+            (tooltip, tray)
+        };
+        let before = read(&game);
+        assert!(
+            before.0.iter().any(|s| s.contains("REACHES CITY")),
+            "{:?}",
+            before.0
+        );
+        assert!(
+            before.1.iter().any(|s| s.starts_with("SELECTED TILE")),
+            "{:?}",
+            before.1
+        );
+
+        // Red moves in and farms the hex, all out of sight.
+        game.units
+            .push(Unit::new(51, far, Team::Red, UnitType::Melee));
+        game.sites.insert(
+            far,
+            super::super::city::Site {
+                team: Team::Red,
+                food: 9,
+                production: 9,
+                label: "FARM",
+            },
+        );
+        assert_eq!(read(&game), before);
+    }
+
+    fn line_strings(lines: impl IntoIterator<Item = Line>) -> Vec<String> {
+        lines
+            .into_iter()
+            .map(|line| line.into_iter().map(|(s, _)| s).collect())
+            .collect()
+    }
+
+    fn panel_strings(fill: impl FnOnce(&mut PanelBuilder)) -> Vec<String> {
+        let mut panel = PanelBuilder::default();
+        fill(&mut panel);
+        line_strings(panel.rows.into_iter().filter_map(|row| match row {
+            Row::Text(_, line) => Some(line),
+            _ => None,
+        }))
+    }
+
+    fn assert_shows(text: &[String], expected: &str) {
+        assert!(
+            text.iter().any(|s| s.contains(expected)),
+            "{expected} not in {text:?}"
+        );
+    }
+
+    #[test]
+    fn every_panel_shows_production_per_turn_in_displayed_units() {
+        let mut game = GameState::city_scenario();
+        // Nothing is left to see the barracks tile once the units are gone.
+        game.fog_of_war = false;
+        game.units.clear();
+        let manager = Hex::new(-1, 0);
+        game.cities[0].worked = vec![manager, Hex::new(-1, 1)];
+        game.cities[0].barracks = Some(manager);
+        let (_, city_income) = game.income(0);
+        let barracks_income = game.barracks_income(0);
+        // Stored in quarters: a raw value would read four times too high.
+        assert!(city_income > 4 && barracks_income > 4);
+        let city_rate = signed_quantity(city_income);
+        let barracks_rate = signed_quantity(barracks_income);
+
+        let tray = panel_strings(|panel| game.city_tray(0, panel));
+        assert_shows(&tray, &format!("{city_rate} PER TURN"));
+        let hover = panel_strings(|panel| game.structure_hover_panel(0, false, panel));
+        assert_shows(&hover, &format!("{city_rate} PROD/T"));
+        let city_tooltip = line_strings(
+            game.tile_tooltip_lines(game.cities[0].pos)
+                .into_iter()
+                .map(|(_, line)| line),
+        );
+        assert_shows(&city_tooltip, &format!("{city_rate} PRODUCTION"));
+
+        let barracks_tray = panel_strings(|panel| game.barracks_tray(0, panel));
+        assert_shows(&barracks_tray, &format!("{barracks_rate} PROD/T"));
+        let barracks_hover = panel_strings(|panel| game.structure_hover_panel(0, true, panel));
+        assert_shows(&barracks_hover, &format!("{barracks_rate} PROD/T"));
+        let barracks_tooltip = line_strings(
+            game.tile_tooltip_lines(manager)
+                .into_iter()
+                .map(|(_, line)| line),
+        );
+        assert_shows(&barracks_tooltip, &format!("{barracks_rate} PROD/T"));
     }
 
     #[test]

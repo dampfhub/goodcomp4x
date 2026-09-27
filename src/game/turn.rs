@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::ability::{Ability, VOLLEY_DAMAGE};
-use super::city::{BARRACKS_DEFENSE, CITY_ATTACK, CITY_ATTACK_RANGE, CITY_DEFENSE};
+use super::city::{BARRACKS_DEFENSE, Building, CITY_ATTACK, CITY_ATTACK_RANGE, CITY_DEFENSE};
 use super::effects::{Effect, Outcome};
 use super::hex::Hex;
 use super::unit::{Unit, UnitType};
@@ -28,7 +28,7 @@ pub(super) enum Phase {
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-const RESOLUTION_ORDER: [(UnitType, Phase); 14] = [
+const RESOLUTION_ORDER: [(UnitType, Phase); 12] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
     (UnitType::Melee, Phase::Move),
@@ -39,8 +39,6 @@ const RESOLUTION_ORDER: [(UnitType, Phase); 14] = [
     (UnitType::Ranged, Phase::Move),
     (UnitType::Siege, Phase::Move),
     (UnitType::Siege, Phase::Attack),
-    (UnitType::Horse, Phase::Move),
-    (UnitType::Horse, Phase::Attack),
     (UnitType::Armored, Phase::Move),
     (UnitType::Armored, Phase::Attack),
 ];
@@ -352,24 +350,29 @@ impl GameState {
                 .into_iter()
                 .filter_map(|hex| self.enemy_of_team_at(hex, attacker.team))
                 .collect();
-            if defenders.is_empty() {
-                if let Some(city) = self.enemy_city_at(target, attacker.team) {
-                    structure_hits.push((a, city, false, scale));
-                } else if let Some(city) = self.enemy_barracks_at(target, attacker.team) {
-                    structure_hits.push((a, city, true, scale));
-                }
+            // A structure is hit only when no enemy unit is.
+            let structure = if defenders.is_empty() {
+                self.enemy_city_at(target, attacker.team)
+                    .map(|city| (city, false))
+                    .or_else(|| {
+                        self.enemy_barracks_at(target, attacker.team)
+                            .map(|city| (city, true))
+                    })
+            } else {
+                None
+            };
+            if let Some((city, barracks)) = structure {
+                structure_hits.push((a, city, barracks, scale));
             }
-            if defenders.is_empty() && structure_hits.last().is_none_or(|hit| hit.0 != a) {
+            let outcome = if !defenders.is_empty() || structure.is_some() {
+                Outcome::Hit
+            } else {
                 log::info!(
                     "{attacker} attacks ({}, {}) but hits nothing",
                     target.q,
                     target.r
                 );
-            }
-            let outcome = if defenders.is_empty() {
                 Outcome::Miss
-            } else {
-                Outcome::Hit
             };
             shots.push(Effect::Shot { from, to, outcome });
             engagements.extend(defenders.into_iter().map(|d| Engagement::new(a, d, scale)));
@@ -491,6 +494,12 @@ impl GameState {
                 if city.barracks_hp == 0.0 {
                     city.barracks = None;
                     city.barracks_queue.clear();
+                    city.barracks_production = 0;
+                    // Gone from the map, so the city may build another.
+                    city.built.retain(|&b| b != Building::Barracks);
+                    if self.selected_barracks == Some(i) {
+                        self.selected_barracks = None;
+                    }
                 }
             }
         }

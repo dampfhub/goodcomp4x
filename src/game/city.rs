@@ -90,17 +90,17 @@ impl Building {
     }
     pub fn shortcut(self) -> char {
         match self {
-            Self::Granary => '5',
-            Self::Barracks => '6',
-            Self::Mill => '7',
-            Self::Workshop => '8',
+            Self::Granary => '4',
+            Self::Barracks => '5',
+            Self::Mill => '6',
+            Self::Workshop => '7',
         }
     }
     pub fn description(self) -> &'static str {
         match self {
             Self::Granary => "+2 FOOD PER TURN.",
             Self::Barracks => {
-                "PLACED ON A WORKED TILE. WITH THE MANAGER THERE, ITS WORK GROUP TRAINS TROOPS."
+                "PLACED ON ANY OPEN LAND TILE. WITH THE MANAGER THERE, ITS WORK GROUP TRAINS TROOPS."
             }
             Self::Mill => "ADJACENT WORKED TILES DELIVER ALL FOOD IF THEY CAN REACH THE CITY.",
             Self::Workshop => "ADJACENT PLACED BUILDINGS CAN BE CONFIRMED AT HALF PRODUCTION.",
@@ -125,7 +125,10 @@ impl City {
     fn set_placed_site(&mut self, building: Building, site: Hex) {
         match building {
             Building::Granary => unreachable!(),
-            Building::Barracks => self.barracks = Some(site),
+            Building::Barracks => {
+                self.barracks = Some(site);
+                self.barracks_hp = BARRACKS_MAX_HP;
+            }
             Building::Mill => self.mill = Some(site),
             Building::Workshop => self.workshop = Some(site),
         }
@@ -159,7 +162,6 @@ pub enum BuildUnit {
     Ranged,
     Cavalry,
     Siege,
-    Horse,
     Armored,
 }
 
@@ -170,7 +172,6 @@ impl BuildUnit {
             Self::Ranged => UnitType::Ranged,
             Self::Cavalry => UnitType::Cavalry,
             Self::Siege => UnitType::Siege,
-            Self::Horse => UnitType::Horse,
             Self::Armored => UnitType::Armored,
         }
     }
@@ -180,7 +181,6 @@ impl BuildUnit {
             Self::Ranged => "RANGED",
             Self::Cavalry => "CAVALRY",
             Self::Siege => "SIEGE",
-            Self::Horse => "HORSE",
             Self::Armored => "ARMORED",
         }
     }
@@ -190,7 +190,6 @@ impl BuildUnit {
             Self::Ranged => 56,
             Self::Cavalry => 64,
             Self::Siege => 72,
-            Self::Horse => 68,
             Self::Armored => 80,
         }
     }
@@ -198,9 +197,8 @@ impl BuildUnit {
         match self {
             Self::Melee => "TOUGH CLOSE FIGHTER",
             Self::Ranged => "FIRES FROM 2 TILES",
-            Self::Cavalry => "FAST FLANKER",
+            Self::Cavalry => "FAST FLANKER, NEEDS HORSES",
             Self::Siege => "LONG RANGE, SLOW",
-            Self::Horse => "FAST RESOURCE CAVALRY",
             Self::Armored => "HEAVY IRON INFANTRY",
         }
     }
@@ -208,15 +206,14 @@ impl BuildUnit {
         match self {
             Self::Melee => '1',
             Self::Ranged => '2',
-            Self::Cavalry => '3',
-            Self::Siege => '4',
-            Self::Horse | Self::Armored => '-',
+            Self::Siege => '3',
+            Self::Cavalry | Self::Armored => '-',
         }
     }
 
     pub fn required_resource(self) -> Option<Resource> {
         match self {
-            Self::Horse => Some(Resource::Horses),
+            Self::Cavalry => Some(Resource::Horses),
             Self::Armored => Some(Resource::Iron),
             _ => None,
         }
@@ -470,6 +467,9 @@ impl GameState {
     }
 
     pub fn build_worker_road_selected(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
         let Some(i) = self.selected else { return };
         let unit = &self.units[i];
         if !self.workers.contains(&unit.id) {
@@ -481,10 +481,21 @@ impl GameState {
     }
 
     pub fn improve_worker_tile_selected(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
         let Some(i) = self.selected else { return };
         let unit = &self.units[i];
         if !self.workers.contains(&unit.id) {
             self.notice = "ONLY A WORKER IMPROVES TILES".into();
+            return;
+        }
+        if self
+            .sites
+            .get(&unit.pos)
+            .is_some_and(|site| site.team != unit.team)
+        {
+            self.notice = "THIS TILE BELONGS TO THE ENEMY - NO IMPROVEMENT POSSIBLE".into();
             return;
         }
         // Improvements add to what the tile already gives: a mine two
@@ -523,6 +534,14 @@ impl GameState {
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
+            return;
+        }
+        if let Some(resource) = build.required_resource() {
+            self.notice = format!(
+                "{} TRAINS AT A BARRACKS ON {}",
+                build.name(),
+                resource.name()
+            );
             return;
         }
         // A city only retains production while it has an active build.
@@ -844,10 +863,30 @@ impl GameState {
     /// Delivery network to a city center or a placed building. Each endpoint
     /// has its own falloff, so a worker can deliver differently to each.
     pub(super) fn routes_from(&self, team: Team, origin: Hex) -> Routes {
+        self.routes_from_by(
+            origin,
+            |hex| {
+                self.enemy_of_team_at(hex, team).is_some()
+                    || self.cities.iter().any(|c| c.pos == hex && c.team != team)
+            },
+            |hex| self.is_road_hex(hex),
+        )
+    }
+
+    /// Like `routes_from`, with `blocked` deciding which hexes goods can't
+    /// cross and `road` which carry them cheaply: the real board for the
+    /// economy, or what the player knows of it for what's shown to them
+    /// (`known_routes`).
+    pub(super) fn routes_from_by(
+        &self,
+        origin: Hex,
+        blocked: impl Fn(Hex) -> bool,
+        road: impl Fn(Hex) -> bool,
+    ) -> Routes {
         let mut result = Routes {
             costs: HashMap::new(),
         };
-        if self.enemy_of_team_at(origin, team).is_some() {
+        if blocked(origin) {
             return result;
         }
         result.costs.insert(origin, 0);
@@ -866,14 +905,10 @@ impl GameState {
                 continue;
             }
             for n in hex.neighbors() {
-                if !self.grid.contains(n)
-                    || !self.grid.terrain(n).is_workable()
-                    || self.enemy_of_team_at(n, team).is_some()
-                    || self.cities.iter().any(|c| c.pos == n && c.team != team)
-                {
+                if !self.grid.contains(n) || !self.grid.terrain(n).is_workable() || blocked(n) {
                     continue;
                 }
-                let step = if self.is_road_hex(n) {
+                let step = if road(n) {
                     1
                 } else {
                     self.grid.tile(n).route_cost()
@@ -1584,6 +1619,72 @@ mod tests {
         assert_eq!(g.cities[0].population, MAX_CITY_POPULATION);
     }
 
+    /// A land tile with no road, city or unit that a worker can improve.
+    fn open_tile(g: &GameState) -> Hex {
+        g.grid
+            .all_hexes()
+            .find(|&h| {
+                g.grid.is_passable(h)
+                    && g.grid.tile(h).terrain != Terrain::Snow
+                    && !g.roads.contains(&h)
+                    && g.cities.iter().all(|c| c.pos != h)
+                    && g.units.iter().all(|u| u.pos != h)
+            })
+            .unwrap()
+    }
+
+    /// Selects the player's worker, moved to `at`.
+    fn select_worker_at(g: &mut GameState, at: Hex) -> usize {
+        let i = g
+            .units
+            .iter()
+            .position(|u| u.team == PLAYER_TEAM && g.workers.contains(&u.id))
+            .unwrap();
+        g.units[i].pos = at;
+        g.selected = Some(i);
+        i
+    }
+
+    #[test]
+    fn worker_actions_wait_for_the_turn_to_finish_playing() {
+        use super::super::turn::Phase;
+        let mut g = GameState::city_scenario();
+        let at = open_tile(&g);
+        g.sites.remove(&at);
+        select_worker_at(&mut g, at);
+        g.pending_steps.push_back((UnitType::Melee, Phase::Move));
+        assert!(g.is_resolving());
+        g.build_worker_road_selected();
+        g.improve_worker_tile_selected();
+        assert!(!g.roads.contains(&at));
+        assert!(!g.sites.contains_key(&at));
+
+        g.pending_steps.clear();
+        g.build_worker_road_selected();
+        g.improve_worker_tile_selected();
+        assert!(g.roads.contains(&at));
+        assert_eq!(g.sites[&at].team, PLAYER_TEAM);
+    }
+
+    #[test]
+    fn a_worker_cannot_improve_over_an_enemy_site() {
+        let mut g = GameState::city_scenario();
+        let at = open_tile(&g);
+        select_worker_at(&mut g, at);
+        g.sites.insert(
+            at,
+            Site {
+                team: Team::Red,
+                food: 3,
+                production: 0,
+                label: "FARM",
+            },
+        );
+        g.improve_worker_tile_selected();
+        assert_eq!(g.sites[&at].team, Team::Red);
+        assert_eq!(g.sites[&at].food, 3);
+    }
+
     #[test]
     fn workers_after_the_manager_must_be_adjacent_to_it() {
         let mut g = GameState::city_scenario();
@@ -1733,6 +1834,73 @@ mod tests {
         assert!(g.cities[0].barracks.is_none());
         g.confirm_building(Building::Barracks);
         assert_eq!(g.cities[0].barracks, Some(site));
+    }
+
+    #[test]
+    fn a_barracks_may_stand_on_an_unworked_tile_as_its_card_says() {
+        let mut g = GameState::city_scenario();
+        g.units.clear();
+        g.selected_city = Some(0);
+        let unworked = g
+            .grid
+            .all_hexes()
+            .find(|&h| {
+                !g.cities.iter().any(|c| c.worked.contains(&h))
+                    && g.site_available(0, Building::Barracks, h)
+            })
+            .expect("an open, unworked land tile");
+        g.queue_selected_city_building(Building::Barracks);
+        g.city_click(unworked);
+        assert_eq!(
+            g.cities[0].planned_sites.get(&Building::Barracks),
+            Some(&unworked)
+        );
+        let card = Building::Barracks.description();
+        assert!(!card.contains("WORKED TILE"), "{card}");
+        assert!(card.contains("OPEN LAND"), "{card}");
+    }
+
+    #[test]
+    fn a_destroyed_barracks_can_be_rebuilt() {
+        use super::super::turn::Phase;
+        let mut g = GameState::city_scenario();
+        g.units.clear();
+        let old_site = Hex::new(-2, 0);
+        g.cities[0].barracks = Some(old_site);
+        g.cities[0].built.push(Building::Barracks);
+        g.cities[0].barracks_hp = 1.0;
+        g.cities[0].barracks_queue = vec![BuildUnit::Melee];
+        g.open_barracks(0);
+        g.units.push(Unit::new(
+            901,
+            old_site.neighbors()[0],
+            Team::Red,
+            UnitType::Ranged,
+        ));
+        g.units[0].planned_attack = Some(old_site);
+        g.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert_eq!(g.cities[0].barracks, None);
+        assert!(!g.cities[0].built.contains(&Building::Barracks));
+        assert!(g.cities[0].barracks_queue.is_empty());
+        assert_eq!(g.selected_barracks, None, "its view closes with it");
+
+        g.units.clear();
+        g.selected_city = Some(0);
+        g.queue_selected_city_building(Building::Barracks);
+        assert_eq!(
+            g.cities[0].queue.last(),
+            Some(&Build::Building(Building::Barracks))
+        );
+        let site = Hex::new(-1, 0);
+        g.city_click(site);
+        g.cities[0]
+            .queue
+            .retain(|&b| b == Build::Building(Building::Barracks));
+        g.cities[0].production = Building::Barracks.cost();
+        g.complete_builds();
+        g.confirm_building(Building::Barracks);
+        assert_eq!(g.cities[0].barracks, Some(site));
+        assert_eq!(g.cities[0].barracks_hp, BARRACKS_MAX_HP);
     }
 
     #[test]
@@ -1992,13 +2160,13 @@ mod tests {
         let mut g = GameState::city_scenario();
         g.selected_city = Some(0);
         g.cities[0].barracks = Some(Hex::new(-2, 0));
-        assert!(g.barracks_can_train(0, BuildUnit::Horse));
+        assert!(g.barracks_can_train(0, BuildUnit::Cavalry));
         assert!(!g.barracks_can_train(0, BuildUnit::Armored));
-        g.queue_selected_barracks_unit(BuildUnit::Horse);
-        assert_eq!(g.cities[0].barracks_queue, vec![BuildUnit::Horse]);
+        g.queue_selected_barracks_unit(BuildUnit::Cavalry);
+        assert_eq!(g.cities[0].barracks_queue, vec![BuildUnit::Cavalry]);
         g.cities[0].barracks = Some(Hex::new(-2, 1));
         assert!(g.barracks_can_train(0, BuildUnit::Armored));
-        assert!(!g.barracks_can_train(0, BuildUnit::Horse));
+        assert!(!g.barracks_can_train(0, BuildUnit::Cavalry));
     }
 
     #[test]

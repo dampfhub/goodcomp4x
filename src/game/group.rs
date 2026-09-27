@@ -86,7 +86,9 @@ impl GameState {
         match mode {
             ClickMode::Attack => self.group_attack(hex),
             ClickMode::Move => self.group_move(hex),
-            ClickMode::Normal if self.has_enemy_target_at(hex, team) => self.group_attack(hex),
+            ClickMode::Normal if self.known_enemy_target_at(hex, team, &self.fog()) => {
+                self.group_attack(hex)
+            }
             ClickMode::Normal => self.group_move(hex),
             ClickMode::Swap => {}
         }
@@ -140,11 +142,12 @@ impl GameState {
             .collect();
 
         members.sort_by_key(|&i| (self.units[i].pos.distance(target), i));
+        let fog = self.fog();
         for i in members {
             let start = self.units[i].pos;
             // Staying put wins ties, so nobody shuffles sideways for nothing.
             let best = self
-                .reachable_hexes(start, self.units[i].stats().move_range)
+                .known_reachable_hexes(start, self.units[i].stats().move_range, &fog)
                 .into_iter()
                 .filter(|hex| *hex == start || !claimed.contains(hex))
                 .min_by_key(|hex| (hex.distance(target), hex.distance(start), hex.q, hex.r));

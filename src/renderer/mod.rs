@@ -615,7 +615,7 @@ fn mat4_to_bytes(m: &Mat4) -> [u8; 64] {
         .iter_mut()
         .zip(m.to_cols_array())
     {
-        chunk.copy_from_slice(&value.to_ne_bytes());
+        *chunk = value.to_ne_bytes();
     }
     bytes
 }
@@ -639,4 +639,19 @@ unsafe fn create_vertex_buffer(
         )
     }?;
     Ok((buffer, memory, capacity))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mat4_bytes_are_the_columns_in_order() {
+        let m = Mat4::from_cols_array(&std::array::from_fn(|i| i as f32));
+        let bytes = mat4_to_bytes(&m);
+        for i in 0..16 {
+            let word: [u8; 4] = bytes[4 * i..4 * i + 4].try_into().unwrap();
+            assert_eq!(f32::from_ne_bytes(word), i as f32);
+        }
+    }
 }

@@ -309,7 +309,10 @@ impl ApplicationHandler for App {
                 self.quit_held_since = None;
                 self.box_start = None;
             }
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers;
+                self.game.set_details(modifiers.state().alt_key());
+            }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) => {
                     if self.use_imgui
@@ -477,7 +480,8 @@ impl ApplicationHandler for App {
                 }
                 match key {
                     KeyCode::Space => {
-                        if !self.game.exit_structure_menu() {
+                        let closed_menu = self.game.exit_structure_menu();
+                        if !closed_menu {
                             self.game.hold_or_end_turn();
                         }
                     }
@@ -498,25 +502,19 @@ impl ApplicationHandler for App {
                         .queue_selected_city_unit(crate::game::BuildUnit::Ranged),
                     KeyCode::Digit3 => self
                         .game
-                        .queue_selected_city_unit(crate::game::BuildUnit::Cavalry),
+                        .queue_selected_city_unit(crate::game::BuildUnit::Siege),
                     KeyCode::Digit4 => self
                         .game
-                        .queue_selected_city_unit(crate::game::BuildUnit::Siege),
+                        .queue_selected_city_building(crate::game::Building::Granary),
                     KeyCode::Digit5 => self
                         .game
-                        .queue_selected_city_building(crate::game::Building::Granary),
+                        .queue_selected_city_building(crate::game::Building::Barracks),
                     KeyCode::Digit6 => self
                         .game
-                        .queue_selected_city_building(crate::game::Building::Barracks),
+                        .queue_selected_city_building(crate::game::Building::Mill),
                     KeyCode::Digit7 => self
                         .game
-                        .queue_selected_city_building(crate::game::Building::Mill),
-                    KeyCode::Digit8 => self
-                        .game
                         .queue_selected_city_building(crate::game::Building::Workshop),
-                    // Queue management stays compact as the build catalogue grows:
-                    // Backspace removes the active item; PageDown promotes the
-                    // second item into production.
                     KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
                     KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
                     KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
