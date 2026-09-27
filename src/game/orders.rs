@@ -180,7 +180,7 @@ impl GameState {
             // With nothing selected, a tile with none of your units on it
             // opens its panel, for worker jobs.
             self.selected = ally;
-            self.inspected_tile = ally.is_none().then_some(hex);
+            self.inspected_tile = (ally.is_none() && self.is_explored(hex)).then_some(hex);
             return;
         };
 

@@ -1081,7 +1081,8 @@ impl GameState {
             let routes = self.routes(i);
             let known_routes = self.known_routes(i, fog);
             for (h, cost) in &known_routes.costs {
-                if self.yields_city() != Some(i) {
+                // Nothing is known of a tile never seen, delivery included.
+                if self.yields_city() != Some(i) || !self.is_explored(*h) {
                     continue;
                 }
                 let food_share = self.mill_food_share(i, *h, *cost);
@@ -1140,7 +1141,7 @@ impl GameState {
             && let Some(barracks) = self.cities[i].barracks
         {
             let routes = self.known_routes_from(self.cities[i].team, barracks, fog);
-            for (hex, cost) in &routes.costs {
+            for (hex, cost) in routes.costs.iter().filter(|(h, _)| self.is_explored(**h)) {
                 font::push_text(
                     hex.to_world() + Vec2::new(-0.3, 0.52),
                     0.18,
@@ -2503,6 +2504,30 @@ mod tests {
         let vertices = game.build_vertices();
         // A segment is two triangles; each round end is twelve more.
         assert_eq!(count_color(&vertices, PLANNED_EDGE_COLOR), 6 + 2 * 12 * 3);
+    }
+
+    #[test]
+    fn delivery_labels_show_only_on_explored_tiles() {
+        let mut game = GameState::city_scenario();
+        game.explore();
+        game.select_city();
+        let city = game.selected_city.unwrap();
+        let label = [0.65, 0.85, 0.65, 1.0];
+        let seen = count_color(&game.build_vertices(), label);
+        assert!(seen > 0, "labels on the explored tiles");
+        // Forget an explored tile the known routes reach: its label goes.
+        let fog = game.fog();
+        let forgotten = game
+            .known_routes(city, &fog)
+            .costs
+            .keys()
+            .copied()
+            .find(|&h| h != game.cities[city].pos && game.is_explored(h))
+            .expect("an explored routed tile");
+        game.memory.remove(&forgotten);
+        assert!(!game.is_explored(forgotten));
+        let fewer = count_color(&game.build_vertices(), label);
+        assert!(fewer < seen, "{fewer} vs {seen}");
     }
 
     /// The color of the last opaque triangle drawn over `point`.

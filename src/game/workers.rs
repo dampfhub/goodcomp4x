@@ -357,12 +357,15 @@ impl GameState {
 
     /// A map click in worker mode: opens the clicked tile's panel.
     pub(super) fn worker_mode_click(&mut self, hex: Option<Hex>) {
-        self.inspected_tile = hex.filter(|&h| self.grid.contains(h));
+        self.inspected_tile = hex.filter(|&h| self.grid.contains(h) && self.is_explored(h));
         self.notice = match self.inspected_tile {
             Some(h) if !self.in_worker_reach(PLAYER_TEAM, h) => {
                 "OUT OF REACH - WORKERS GO 3 TILES FROM A CITY, OR NEXT TO A ROAD".into()
             }
             Some(_) => "PICK A JOB FOR THIS TILE - OR CLICK ANOTHER, W WHEN DONE".into(),
+            None if hex.is_some_and(|h| self.grid.contains(h)) => {
+                "UNEXPLORED - SCOUT IT FIRST".into()
+            }
             None => "WORKER JOBS: CLICK A HIGHLIGHTED TILE, THEN PICK A JOB - W WHEN DONE".into(),
         };
     }
@@ -933,6 +936,7 @@ mod tests {
     #[test]
     fn worker_mode_opens_any_tile_and_ends_with_escape_or_a_selection() {
         let mut game = GameState::city_scenario();
+        game.explore();
         game.select_city();
         assert!(game.selected_city.is_some());
         game.toggle_worker_mode();
@@ -970,6 +974,23 @@ mod tests {
         game.toggle_worker_mode();
         assert!(!game.worker_mode);
         assert!(game.notice.contains("FOUND A CITY"), "{}", game.notice);
+    }
+
+    #[test]
+    fn an_unexplored_tile_can_not_be_picked() {
+        let mut game = GameState::solo_world(3);
+        game.explore();
+        let unseen = game
+            .grid
+            .all_hexes()
+            .find(|&h| !game.is_explored(h))
+            .expect("fog left on the map");
+        game.worker_mode_click(Some(unseen));
+        assert_eq!(game.inspected_tile, None);
+        assert_eq!(game.notice, "UNEXPLORED - SCOUT IT FIRST");
+        let seen = game.units[0].pos;
+        game.worker_mode_click(Some(seen));
+        assert_eq!(game.inspected_tile, Some(seen));
     }
 
     #[test]
