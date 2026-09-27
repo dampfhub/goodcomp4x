@@ -136,6 +136,21 @@ pub fn push_text(origin: Vec2, cap_height: f32, text: &str, color: Color, out: &
     }
 }
 
+/// Draws a line of world-space text with capital letters `cap_height` tall,
+/// centered on `center`: horizontally by its advance width, vertically by its
+/// capital-letter box (digits are capital height too).
+pub fn push_text_centered(
+    center: Vec2,
+    cap_height: f32,
+    text: &str,
+    color: Color,
+    out: &mut Vec<Vertex>,
+) {
+    let width = world_text_width(text, cap_height);
+    let origin = center - Vec2::new(width, cap_height) / 2.0;
+    push_text(origin, cap_height, text, color, out);
+}
+
 fn push_glyph_quad(min: Vec2, max: Vec2, glyph: &Glyph, color: Color, out: &mut Vec<Vertex>) {
     if glyph.size.x == 0.0 {
         return;
@@ -517,6 +532,28 @@ mod tests {
         let center = |r: &Raster| r.offset + Vec2::new(r.width as f32, r.height as f32) / 2.0;
         assert!((center(&field) - center(&plain)).length() < 1.0);
         assert!((field.advance - plain.advance).abs() < 0.5);
+    }
+
+    #[test]
+    fn centered_text_centers_on_its_point() {
+        let center = Vec2::new(2.0, -1.0);
+        let cap = 0.3;
+        for text in ["1", "7", "12", "100"] {
+            let mut out = Vec::new();
+            push_text_centered(center, cap, text, [1.0; 4], &mut out);
+            let (min, max) = out.iter().fold(
+                (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN)),
+                |(min, max), v| {
+                    let p = Vec2::new(v.pos[0], v.pos[1]);
+                    (min.min(p), max.max(p))
+                },
+            );
+            // The quads include the distance field's padding, the same on
+            // every side give or take a fraction of a pixel.
+            let off = (min + max) / 2.0 - center;
+            assert!(off.x.abs() < 0.08 * cap, "{text} is off by {off}");
+            assert!(off.y.abs() < 0.08 * cap, "{text} is off by {off}");
+        }
     }
 
     #[test]
