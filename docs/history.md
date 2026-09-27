@@ -120,3 +120,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     64-turn safety net. A hex farther away is queued as far as the limit goes, with a notice
     saying so, and the same Shift-click again carries on; in a group the limit counts from the
     end of each member's own plan.
+42. Settings menu follow-ups (`claude/settings-quit-and-queue-cap`): the menu opens centered and
+    has a Quit button, which replaces holding Escape to quit. The queue limit now caps a unit's
+    whole plan (this turn included) rather than each Shift-click, so repeated clicks can't queue
+    past it; a full queue refuses more turns until turns are played.

@@ -42,7 +42,7 @@ pub use orders::ClickMode;
 pub use scenario::Scenario;
 use terrain::Tile;
 use turn::Step;
-pub use ui::{ImGuiLayoutState, quit_prompt, selection_box, ui_projection};
+pub use ui::{ImGuiLayoutState, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
 use unit_icons::UnitIcon;
 pub use workers::JobKind;
@@ -127,6 +127,8 @@ pub struct GameState {
     /// Whether the settings menu (Escape) is open. Kept across scenario
     /// switches and loads, like the rest of the UI.
     settings_open: bool,
+    /// The settings menu's Quit button was clicked; the app closes the window.
+    quit_requested: bool,
     /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
     /// Kept across scenario switches and loads.
     fog_of_war: bool,
@@ -227,6 +229,7 @@ impl GameState {
             effects: Vec::new(),
             settings: settings::Settings::default(),
             settings_open: false,
+            quit_requested: false,
             fog_of_war: true,
             memory: fog::Memory::new(),
             turn: 0,

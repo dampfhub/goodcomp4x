@@ -1391,18 +1391,8 @@ fn clear_orders_drops_a_groups_queues() {
     assert_eq!(clear.state, ButtonState::Disabled, "nothing left to clear");
 }
 
-/// The panel (min, max) around `point`, in UI pixels.
-fn panel_around(layout: &Layout, point: Vec2) -> (Vec2, Vec2) {
-    layout
-        .panels
-        .iter()
-        .copied()
-        .find(|&(min, max)| contains(min, max, point))
-        .expect("inside a panel")
-}
-
 #[test]
-fn the_settings_menu_docks_without_overlap_and_its_buttons_work() {
+fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
     let playback = Setting::TurnPlayback;
     let down = Target::StepSetting(playback, -1);
     let up = Target::StepSetting(playback, 1);
@@ -1418,8 +1408,16 @@ fn the_settings_menu_docks_without_overlap_and_its_buttons_work() {
         game.settings_open = true;
         for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
             let layout = game.layout(screen);
-            for (i, &(a_min, a_max)) in layout.panels.iter().enumerate() {
-                for &(b_min, b_max) in &layout.panels[i + 1..] {
+            // The menu is placed last, centered; the docked panels still
+            // keep clear of each other underneath it.
+            let (&menu_rect, docked) = layout.panels.split_last().unwrap();
+            let center = (menu_rect.0 + menu_rect.1) / 2.0;
+            assert!(
+                (center - screen / 2.0).abs().max_element() <= 1.0,
+                "{center}"
+            );
+            for (i, &(a_min, a_max)) in docked.iter().enumerate() {
+                for &(b_min, b_max) in &docked[i + 1..] {
                     let apart = a_max.x <= b_min.x
                         || b_max.x <= a_min.x
                         || a_max.y <= b_min.y
@@ -1432,13 +1430,15 @@ fn the_settings_menu_docks_without_overlap_and_its_buttons_work() {
                 .iter()
                 .find(|b| b.target == Target::CloseSettings)
                 .expect("Close shown");
-            let menu = panel_around(&layout, (close.min + close.max) / 2.0);
-            for target in [down, up] {
+            assert!(contains(menu_rect.0, menu_rect.1, close.min));
+            for target in [down, up, Target::Quit] {
                 let button = layout.buttons.iter().find(|b| b.target == target).unwrap();
-                assert!(contains(menu.0, menu.1, button.min));
-                assert!(contains(menu.0, menu.1, button.max));
+                assert!(contains(menu_rect.0, menu_rect.1, button.min));
+                assert!(contains(menu_rect.0, menu_rect.1, button.max));
+                // A panel underneath never takes the menu's clicks.
+                let middle = (button.min + button.max) / 2.0;
+                assert_eq!(layout.button_at(middle).unwrap().target, target);
             }
-            assert!(menu.1.x >= screen.x - MARGIN - 1.0, "docked at the right");
         }
 
         // All at once by default: > is spent, < steps down, and then < is.
@@ -1466,7 +1466,19 @@ fn the_settings_menu_docks_without_overlap_and_its_buttons_work() {
         let close = button_cursor(&game, Target::CloseSettings);
         game.handle_click(close, SCREEN, ClickMode::Normal);
         assert!(!game.settings_open);
+        assert!(!game.quit_requested());
     }
+}
+
+#[test]
+fn the_settings_menu_quit_button_asks_the_app_to_quit() {
+    let mut game = GameState::new();
+    game.clear_selection();
+    game.press_escape();
+    assert!(!game.quit_requested());
+    let quit = button_cursor(&game, Target::Quit);
+    game.handle_click(quit, SCREEN, ClickMode::Normal);
+    assert!(game.quit_requested());
 }
 
 #[test]

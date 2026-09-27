@@ -12,7 +12,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Left-click your unit | Select it |
 | Left-click a green hex | Move there this turn; click again to cancel |
 | Right-click a hex in range | Attack it this turn: an enemy unit or barracks, or an empty hex someone may step into; empty city centers cannot be targeted |
-| Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued, up to the move queue limit (settings menu); Shift-click again to go on past it |
+| Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued, until the unit's queue holds as many turns as the queue limit (settings menu) allows |
 | Shift-right-click a hex | Queue an attack on it: in the queue's last turn if that turn has none yet and it's in range, else in one more turn |
 | Ctrl-click an adjacent ally | Queue a swap |
 | M / X (or Move / Attack buttons) | Arm Move / Attack for the next map click (again to disarm) |
@@ -142,8 +142,7 @@ city center enters the interior map; its clicks control only the interior copies
 | Hover a unit | Its stats, in a box at the top-right |
 | Hover a city or barracks | Its production and current build (plus city growth or barracks HP), at the bottom-left |
 | F5 | Toggle borderless fullscreen |
-| Escape with nothing open | Open the settings menu (below); Escape again, or its Close button, closes it |
-| Hold Escape for 1 s | Quit (a prompt shows while it's held), once no settings menu, view, selection or tile panel is open for it to close: the press opens the settings menu, and holding on quits |
+| Escape with nothing open | Open the settings menu (below), which has the Quit button; Escape again, or its Close button, closes it |
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
 | F4 | Start a newly generated world; every press makes a new map |
 | F12 | Start a siege at Red's city with its interior open |
@@ -164,19 +163,20 @@ order.
 
 Escape opens the settings menu once there's nothing else for it to close. Each press closes one
 thing, in this order: the settings menu itself, a city interior, a site being chosen, a city or
-barracks view, wall or gate placement, then the selection and the tile panel. The menu is a
-panel at the top-right, above DEBUG; like the other panels, hold Ctrl to drag, resize or dock
-it. The game carries on while it's open.
+barracks view, wall or gate placement, then the selection and the tile panel. The menu opens
+in the middle of the screen, over the map; in the ImGui presentation, hold Ctrl to drag,
+resize or dock it like the other panels. The game carries on while it's open.
 
 | Control | Action |
 | --- | --- |
 | < / > beside a setting | Step it down / up (a button is faded at that end of the setting's range) |
 | Close button, or Escape | Close the menu |
+| Quit button | Close the game |
 
 | Setting | Values |
 | --- | --- |
 | Turn playback | All at once (the default) or step by step, the same switch as F8 |
-| Move queue limit | 1 to 20 turns (6 by default): the most turns of moves one Shift-click queues for each unit. A hex farther away is queued that many turns along the way; Shift-click it again to go on |
+| Queue limit | 1 to 20 turns (6 by default): the most turns a unit can have queued, this turn included. A Shift-click toward a hex farther away queues the move as far as the limit goes, and once a queue is full, Shift-clicks add nothing to it until turns are played |
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).

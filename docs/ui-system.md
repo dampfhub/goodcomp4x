@@ -47,9 +47,11 @@ it docks at `Zone::TopLeft` before the debug panel.
 The settings menu (`settings_menu.rs`, slot `SETTINGS`) is another: Escape
 opens it (`GameState::press_escape`, `game/settings.rs`) and it shows only
 while open. It is a full panel rather than a fixed modal, so the player can
-move or dock it and keep playing. ImGui places it top-right above Debug
-(`PLAN_ORDER` in `imgui.rs` puts it first in that zone); classic docks it at
-`Zone::TopRight`, after the unit strip and before debug. Its content,
+move or dock it and keep playing. Both presentations open it centered on the
+screen, over the map, without taking room from the docked panels: ImGui's
+`plan` centers the `SETTINGS` slot until the player moves it, and classic
+places it last (`place_settings`), so it draws on top and `Layout::button_at`,
+which prefers the last-placed button, gives it the clicks. Its content,
 `settings_panel_content`, has a name-and-value line and a row of < and >
 buttons (`Target::StepSetting`) for every entry of `Setting::ALL`, then Close
 (`Target::CloseSettings`). A new setting therefore needs no UI code: add it
@@ -103,7 +105,7 @@ unit, or group), so resizing the city controls does not stretch unit controls.
 Edge resizing is disabled; hold Ctrl and use the lower corner grip to resize.
 Docked windows use ImGui's geometry, while undocked panels use the measured
 layout. Floating panel height is corrected from the previous rendered frame.
-The world, tile overlays, selection rectangle, and quit hold prompt remain in
+The world, tile overlays, and selection rectangle remain in
 the game's renderer. Native window positions can be moved and resized while
 the game is running. Queue panels show the full queue inside a scrollable
 window; their rows share the same reorder and remove game actions as classic.
@@ -144,8 +146,8 @@ button for removal. Route row dragging through `GameState::start_queue_drag_at`,
 `update_queue_drag_at`, and `finish_queue_drag_at`, so the city and Barracks
 queues share the same hit-testing behavior.
 
-Cursor-following tooltips, button tooltips, the quit prompt, and the selection
-box are overlays, so they use their own anchors. Ordinary status, control,
+Cursor-following tooltips, button tooltips, and the selection box are
+overlays, so they use their own anchors (so is the centered settings menu). Ordinary status, control,
 hover, and debug panels belong in a `Zone`.
 
 Add a layout test when adding a new panel or zone behavior. Useful assertions
