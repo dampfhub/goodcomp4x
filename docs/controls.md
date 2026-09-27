@@ -2,7 +2,8 @@
 
 Run `cargo run --release`. The city scenario opens by default. You control Blue; Red plans its
 orders when you end the turn. The key map in code is `App::window_event` in `src/app.rs`; the
-rules behind each action are in `game-rules.md`.
+rules behind each action are in `game-rules.md`. This file is the only description of the
+controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just points here.
 
 ## Units
 
@@ -16,7 +17,7 @@ rules behind each action are in `game-rules.md`.
 | M / X (or Move / Attack buttons) | Arm Move / Attack for the next map click (again to disarm) |
 | Right-click | Queue a move to an open hex or an attack on an enemy; with an action armed, disarm it |
 | Ctrl-right-click | Clear the selected unit's orders, hold and guard |
-| Q / ability button | Toggle the unit's ability |
+| Q / ability button | Toggle the unit's ability (what each does: `game-rules.md`, Abilities) |
 | Space / Hold button | Hold the unit this turn, keeping queued orders, and move on to what's next |
 | G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
 | Tab | Look at the next unit without holding this one; leave the city or barracks view |
@@ -28,6 +29,11 @@ rules behind each action are in `game-rules.md`.
 | F / Found City button | Found a city with the selected settler |
 | R / Build Road button | Build a dirt road under the selected worker |
 | I / Improve button | Improve the worker's tile: a mine on hills, a lumber mill in forest or jungle, otherwise a farm (not on snow) |
+
+A unit can queue a move and an attack; it attacks from the hex it moves to. Units can't move
+through occupied hexes, and two allies can't head for the same hex. Once the selected unit has a
+move and an attack queued (or can't do one of them), the next unit needing orders is selected
+and the camera glides to it; a unit you select by clicking stays selected.
 
 ## Turn
 
@@ -116,9 +122,12 @@ order.
   Resources are icons in the top-right corner: a horse's head (Horses), an ingot (Iron). Brown
   lines are dirt roads, and blue lines between hexes are rivers.
 - Terrain: two small peaks are hills, pines forest, round canopies jungle; dunes, grass tufts and
-  reeds mark desert, tundra and marsh.
+  reeds mark desert, tundra and marsh. A large snowy peak is a mountain (impassable) and waves
+  are water (units can't enter it; cities can work it). Terrain defense and yields are in
+  `game-rules.md`.
 - Fog of war: never-seen hexes are blank; hexes you've seen but can't see now are under a grey
-  veil with cloud puffs and show what was there when you last looked.
+  veil with cloud puffs and show the cities, improvements and roads that were there when you last
+  looked, but no units.
 - In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
   the manager,
   and dotted lines link it to its workers. Green grain and amber hammers show food and production,
