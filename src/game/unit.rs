@@ -14,8 +14,8 @@ pub enum Team {
 impl Team {
     pub fn color(self) -> [f32; 4] {
         match self {
-            Team::Blue => [0.30, 0.55, 0.95, 1.0],
-            Team::Red => [0.92, 0.32, 0.28, 1.0],
+            Team::Blue => [0.08, 0.60, 0.95, 1.0],
+            Team::Red => [0.98, 0.26, 0.12, 1.0],
         }
     }
 }
