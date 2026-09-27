@@ -73,6 +73,9 @@ impl GameState {
 
     /// Selects `units`: nothing, one unit as usual, or several as a group.
     pub(super) fn set_selection(&mut self, units: Vec<usize>) {
+        if !units.is_empty() {
+            self.worker_mode = false;
+        }
         self.ui_click_mode = None;
         if !units.is_empty() {
             self.leave_city_view();
@@ -108,9 +111,9 @@ impl GameState {
     /// it. Clicking a target all of them already attack calls it off. Being
     /// a new order, it replaces every member's queue.
     fn group_attack(&mut self, target: Hex) {
-        if !self.grid.is_passable(target)
-            && !(self.grid.contains(target) && self.grid.terrain(target).is_water())
-        {
+        // Land, or water (for ships): anything on the map but mountains.
+        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
+        if !(self.grid.is_passable(target) || water) {
             return;
         }
         if let Some(&first) = self.group.first()

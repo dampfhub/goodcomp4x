@@ -36,7 +36,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
 | F / Found City button | Found a city with the selected settler |
-| Escape | Let go of the selected unit or group (and close the tile panel) |
+| Escape | Let go of the selected unit or group |
 
 A unit can queue a move and an attack; it attacks from the hex it moves to. Units can't move
 through occupied hexes, and two allies can't head for the same hex. Once the selected unit has a
@@ -47,8 +47,9 @@ and a new world, start the same way. A unit you select by clicking stays selecte
 
 The turn strip ("need orders"; a panel that starts at the bottom of the screen, centered or as
 near the middle as the other panels allow) shows a chip for everything you still have to see to
-this turn, civilian tasks first: each city with nothing to build (its tower), your settlers,
-and then your military units needing orders. Workers aren't listed and never hold up the turn. Units are grouped by kind, one chip per kind with a count; a group of several
+this turn, civilian tasks first: each city with nothing to build (its tower), each city with
+workers idle at home (a shovel, with how many; it opens the worker menu), your settlers, and
+then your military units needing orders. Units are grouped by kind, one chip per kind with a count; a group of several
 that you select lists its units one by one on a second row, to pick from or take out. Selected
 units, and the open city, are framed; a unit leaves the strip once it has its orders (or holds,
 guards or follows a queue), and a city once it has a build. Like
@@ -76,18 +77,23 @@ Workers).
 
 | Control | Action |
 | --- | --- |
-| Click a tile with nothing selected | Open its tile panel: terrain, whose workers would go, and a button per job. A white ring marks the tile |
-| Road / Improve / Outpost / Fort buttons | Queue that job on the tile, for the open city or else your nearest one |
-| R / I | Queue a road / an improvement on the tile in the tile panel |
-| Wall / Gate buttons | Arm wall or gate placement on hex edges |
-| Click near a hex edge (armed) | Queue a wall or gate on that edge (highlighted under the cursor) |
-| Drag across hex edges (armed) | Queue one on every edge the cursor passes |
-| Escape or right-click (armed) | Stop placing walls or gates |
-| Escape | Close the tile panel |
+The worker menu is the only way to give workers orders.
+
+| Control | Action |
+| --- | --- |
+| W, the Workers chip in the turn strip, or Worker Jobs (city view) | Open the worker menu: tiles your workers can reach are lit and the rest dimmed. W, Escape, Done, or selecting a unit or city closes it |
+| Road / Improve / Wall / Gate / Outpost / Fort (worker menu), or R / I | Pick that job to place (again to put it down); R and I open the menu with roads or improvements picked |
+| Click or drag over tiles (a tile job picked) | Place the job on each tile (a ring under the cursor shows where, red where it can't go), for the nearest city |
+| Click or drag along hex edges (a wall or gate picked) | Place one on each edge the cursor touches (highlighted under the cursor) |
+| Escape or right-click (a job picked) | Put the job down, leaving the menu open |
+| City buttons (worker menu, with several cities) | List that city's workers and jobs |
+| Click a worker job (worker menu) | Show it on the map |
+| Drag a worker job onto another (worker menu) | Reorder the city's worker jobs |
+| Click a worker job's X (worker menu) | Remove the job |
+| Click a worker's row (worker menu) | Show the worker on the map |
+| Recall beside a worker's row (worker menu) | Send that worker straight home; its job goes back on top of the list |
+| Sleep / Space (worker menu) | That city's idle workers rest this turn, and the turn moves on |
 | 8 / Worker button (city view) | Build a worker for the city |
-| Drag a worker job onto another (city view) | Reorder the city's worker jobs |
-| Click a worker job's X (city view) | Remove the job |
-| Recall on a worker's row (city view), or Recall Worker in the tile panel of its tile | Send that worker straight home; its job goes back on top of the list |
 
 ## Turn
 
@@ -174,7 +180,7 @@ order.
 
 Escape opens the settings menu once there's nothing else for it to close. Each press closes one
 thing, in this order: the settings menu itself, a city interior, a site being chosen, a city or
-barracks view, wall or gate placement, then the selection and the tile panel. The menu opens
+barracks view, a worker job being placed, the worker menu, then the selection. The menu opens
 in the middle of the screen, over the map; in the ImGui presentation, hold Ctrl to drag,
 resize or dock it like the other panels. The game carries on while it's open.
 
@@ -246,7 +252,8 @@ them.
   with the job's name.
 - Structures: walls are stone bands along hex edges with posts in their owner's color; a gate is
   a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,
-  a fort a ring of stakes around it. Queued walls and gates are faded gold edges.
+  a fort a ring of stakes around it. Queued walls and gates are muted gold edges with rounded ends,
+  so a run of them reads as one line.
 - Cities are crenellated towers showing their population, with a gold G disc once they have a
   granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
   a Workshop a blue diamond marked W. Other buildings have colored letter badges. While you choose or move a site, a translucent diamond with

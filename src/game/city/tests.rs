@@ -748,6 +748,7 @@ fn structure_menu_can_be_dismissed_without_selecting_a_unit() {
 fn city_menu_keeps_barracks_clicks_in_manager_assignment_context() {
     let mut g = GameState::city_scenario();
     g.units.clear();
+    g.explore();
     let manager = Hex::new(-2, 0);
     let barracks = Hex::new(-1, 0);
     g.cities[0].worked = vec![manager];

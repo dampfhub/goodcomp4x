@@ -170,10 +170,22 @@ enum Target {
     BuildWorker,
     /// A job on the inspected tile, for the city whose workers would do it.
     WorkerJob(JobKind),
+    /// Worker mode on or off (W): the city panel's Worker Jobs, and Done in
+    /// worker mode's panel.
+    WorkerMode,
+    /// The worker menu: list city `usize`'s workers and jobs.
+    WorkerCity(usize),
+    /// The worker menu's Sleep: its city's idle workers rest this turn.
+    SleepWorkers,
     /// The X on one of the open city's worker jobs.
     WorkerJobRemove(usize),
     /// Sends the worker with this id straight home.
     RecallWorker(u32),
+    /// A worker's row in the worker menu: the camera goes to it.
+    ShowWorker(u32),
+    /// A click on a queue row (not a drag): for a worker job, the camera
+    /// goes to it.
+    QueueItem(QueueKind, usize),
     /// The unit strip, by unit id: click selects that unit and moves the
     /// camera to it, Shift-click adds it to the selection, and Ctrl-click
     /// takes it out.
@@ -592,9 +604,14 @@ impl GameState {
             Target::RosterAdd(id) => self.roster_add(id),
             Target::RosterRemove(id) => self.roster_remove(id),
             Target::BuildWorker => self.queue_selected_city_worker(),
-            Target::WorkerJob(kind) => self.queue_worker_job(kind),
+            Target::WorkerJob(kind) => self.arm_worker_job(kind),
+            Target::WorkerMode => self.toggle_worker_mode(),
+            Target::WorkerCity(city) => self.worker_menu_city = Some(city),
+            Target::SleepWorkers => self.sleep_workers(),
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
             Target::RecallWorker(id) => self.recall_worker(id),
+            Target::ShowWorker(id) => self.show_worker(id),
+            Target::QueueItem(kind, index) => self.queue_item_clicked(kind, index),
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
             Target::Building(building) => self.queue_selected_city_building(building),
@@ -669,27 +686,8 @@ impl GameState {
     /// With a wall or gate armed, the hex edge under `cursor` (over the map,
     /// not the UI), for its highlight.
     fn hover_edge(&mut self, cursor: Option<Vec2>, screen_size: Vec2) {
-        self.hovered_edge =
-            cursor.and_then(|c| self.barrier_edge_at(self.camera.screen_to_world(c, screen_size)));
-    }
-
-    /// With a wall or gate armed, queues it on the hex edge under `cursor`
-    /// (window pixels). Called on the press and for every cursor move while
-    /// the button is held, so a drag queues each edge it passes. Returns
-    /// whether the press belongs to edge placement: false over the classic
-    /// UI (`check_ui`) or with nothing armed.
-    pub fn paint_barrier_at(&mut self, cursor: Vec2, screen_size: Vec2, check_ui: bool) -> bool {
-        if self.placing_barrier.is_none() || self.is_resolving() {
-            return false;
-        }
-        if check_ui && self.layout(screen_size).covers(to_ui(cursor, screen_size)) {
-            return false;
-        }
-        let point = self.camera.screen_to_world(cursor, screen_size);
-        if let Some((a, b)) = self.barrier_edge_at(point) {
-            self.queue_barrier_at(a, b);
-        }
-        true
+        self.hovered_job =
+            cursor.and_then(|c| self.job_target_at(self.camera.screen_to_world(c, screen_size)));
     }
 
     pub fn set_ui_notice(&mut self, notice: &str) {
@@ -713,8 +711,8 @@ impl GameState {
             tray.buttons(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
-        } else if let Some(hex) = self.inspected_tile {
-            self.tile_tray(hex, &mut tray);
+        } else if self.worker_mode {
+            self.worker_menu(&mut tray);
         } else {
             self.debug_panel(&mut layout);
             self.dock_roster(&mut layout);

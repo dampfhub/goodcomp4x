@@ -31,6 +31,7 @@ impl GameState {
 
     /// Opens city `i`'s view and glides the camera to it.
     pub(in crate::game) fn open_city(&mut self, i: usize) {
+        self.worker_mode = false;
         self.close_city_interior();
         if self.selected_city != Some(i) {
             self.city_queue_scroll = 0;
@@ -72,7 +73,6 @@ impl GameState {
         self.interior_selected = None;
         self.moving_manager = None;
         self.abandon_site_placement();
-        self.inspected_tile = None;
     }
 
     /// Escape and Space dismiss city or building management without issuing a
@@ -133,7 +133,6 @@ impl GameState {
         // This keeps city assignment, Barracks management, and unit selection
         // on one consistent interaction model.
         if self.selected_barracks.is_some() {
-            self.inspected_tile = Some(hex);
             self.notice = "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT".into();
             return true;
         }
@@ -190,8 +189,12 @@ impl GameState {
         }
         // City management owns map clicks. Dismiss it with Escape or Space
         // before selecting units, so workers may be assigned onto a unit's
-        // tile without the unit stealing the click.
-        self.inspected_tile = Some(hex);
+        // tile without the unit stealing the click. A tile never seen can't
+        // be worked.
+        if !self.is_explored(hex) {
+            self.notice = "UNEXPLORED - SCOUT IT FIRST".into();
+            return true;
+        }
         if self.moving_manager == Some(i) {
             if self.cities[i].worked.first() == Some(&hex) {
                 self.moving_manager = None;
@@ -245,6 +248,14 @@ impl GameState {
                 self.units[i].holding = true;
             }
         }
+        // Idle workers rest, as unfinished units hold.
+        for city in &mut self.cities {
+            if city.team == PLAYER_TEAM && city.worker_jobs.is_empty() {
+                city.workers_resting = true;
+            }
+        }
+        self.worker_mode = false;
+        self.placing_job = None;
         if let Some(i) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
             self.open_city(i);
             return;

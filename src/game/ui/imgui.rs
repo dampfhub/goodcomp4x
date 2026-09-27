@@ -2169,7 +2169,7 @@ impl GameState {
                             [0.11, 0.14, 0.16, 1.0]
                         },
                     );
-                    ui.button_with_size(
+                    if ui.button_with_size(
                         format!(
                             "::  {}##queue-{:?}-{}",
                             item.label.trim_start_matches("> ").trim(),
@@ -2177,7 +2177,12 @@ impl GameState {
                             item.index
                         ),
                         [width, 30.0],
-                    );
+                    ) {
+                        actions.push(Action::Button(
+                            scope,
+                            Target::QueueItem(item.kind, item.index),
+                        ));
+                    }
                     drop(_background);
                     drop(_align);
                     if !item.locked && !self.is_resolving() {
@@ -2344,8 +2349,8 @@ impl GameState {
             tray.buttons(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
-        } else if let Some(hex) = self.inspected_tile {
-            self.tile_tray(hex, &mut tray);
+        } else if self.worker_mode {
+            self.worker_menu(&mut tray);
         }
         let selection_context = if selection_is_pinned {
             String::new()
@@ -2359,8 +2364,8 @@ impl GameState {
             format!("unit-{}", self.units[unit].id)
         } else if !self.group.is_empty() {
             "group".into()
-        } else if let Some(hex) = self.inspected_tile {
-            format!("tile-{}-{}", hex.q, hex.r)
+        } else if self.worker_mode {
+            "workers".into()
         } else {
             String::new()
         };

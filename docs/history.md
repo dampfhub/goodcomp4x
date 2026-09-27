@@ -156,3 +156,21 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 49. Workers apart (`claude/turn-tasks`): idle workers left the turn strip (they never held up
     the turn). A tile takes one worker job at a time, so a road and an improvement can't be
     queued on it together, and the tile the tile panel shows has a white ring.
+50. Worker reach and worker mode (`claude/worker-reach`): workers only work within 3 tiles of a
+    city, or next to a road, so roads extend their reach. W (or Worker Jobs in the city panel)
+    turns on worker mode, which lights the reachable tiles, dims the rest, explains itself in a
+    panel, and opens the tile panel for any clicked tile. Queued walls and gates have rounded
+    ends, so a run of them joins into one line.
+51. The worker menu (`claude/worker-reach`): the only way to give workers orders. Pick a job,
+    then place it on the map by clicking or dragging over tiles or edges, with a preview ring
+    under the cursor; the menu also lists each city's workers and jobs (moved from the city
+    panel). The tile panel is gone. Idle workers are back in the turn strip and the turn order,
+    after production, and can sleep for a turn.
+52. No tile selection (`claude/worker-reach`): with the worker menu doing workers' jobs, clicking
+    a tile no longer selects it (the ring and the city panel's selected-tile line are gone). Roads
+    take 2 turns of work and improvements 3.
+53. Following workers' work (`claude/worker-reach`): clicking a waiting job or a worker in the
+    worker menu shows it on the map (Recall is its own button now), and a job under way is ringed
+    in bright gold with its name and turns of work left.
+54. Plainer job names (`claude/worker-reach`): worker jobs read as what they build, their tile and
+    a turn count, like FARM · GRASSLAND · 3T, instead of coordinates and "turns of work".
