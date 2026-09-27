@@ -128,6 +128,6 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     muted cumulus, each puff one quad the shader rounds and feathers (`soft_disc_uv`, a new
     renderer primitive) and shades from a lit top to a dark underside, over a soft shadow per
     bank and a dark fill, so unexplored land is cloud nearly all the way through, in about a
-    quarter of the vertices the old sampled mesh took. Each bank grows its own irregular clump of 4 to 9 puffs. The clouds drift on a slow wind
-    and billow, fading out past the map's edge. A third
-    setting, Fog, swaps them for solid grey.
+    quarter of the vertices the old sampled mesh took. Each bank grows its own irregular clump
+    of 4 to 9 puffs. The clouds drift on a slow wind and billow, fading out past the map's edge.
+    A third setting, Fog, swaps them for solid grey.
