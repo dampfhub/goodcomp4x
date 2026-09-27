@@ -99,11 +99,14 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   - **Horses and Iron:** one of each within two to four hexes of every start (farther only if
     there's no room), nearer it than any other start: horses on open flat ground, iron on hills
     or under mountains where there are some.
-  - **Ruins and special tiles** go on contested ground: a hex about equally far on foot from the
-    two starts nearest it (ruins within a step or so, special tiles within three), well away
-    from every start, off the map's edge and reachable from every start. That keeps them out of
-    pockets only one side can reach. There are about as many of each as sides, spread apart, and
-    special tiles keep clear of ruins.
+  - **Ruins:** one or two, in the middle of the continent: the hexes whose walks from every start
+    differ least (the shortest walk overall breaking near-ties), well away from every start, off
+    the map's edge, and apart. Every side has about as far to go, as nearly as the land allows:
+    on a long continent the far sides still walk farther.
+  - **Special tiles** go on contested ground: a hex about equally far on foot from the two starts
+    nearest it (within three steps), well away from every start, off the map's edge and
+    reachable from every start. That keeps them out of pockets only one side can reach. There
+    are about as many as sides, spread apart, and they keep clear of ruins.
 
 ## Units (`unit.rs`)
 

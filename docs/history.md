@@ -138,3 +138,6 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     setting). Between the starts it places special tiles (Orchard, Quarry) that yield more, and
     ruins a side claims by holding them for three turns. The AI heads for ruins as well as
     enemies, and its searches stop early, so turns with many sides stay quick.
+45. Central ruins (`claude/world-players-central-ruins`, a variant of 44): one or two ruins in
+    the middle of the continent, as nearly the same walk from every start as the land allows,
+    instead of about one between each pair of neighbors.

@@ -29,9 +29,10 @@
 //!    about as good food and production nearby as the others.
 //! 9. Horses and iron: one of each within a few hexes of every start, nearer
 //!    it than any other start.
-//! 10. Contested ground: ruins, and special tiles that yield more, go where
-//!     two starts are about as far on foot, well away from both, so no side
-//!     has them to itself.
+//! 10. Contested ground: special tiles that yield more go where two starts
+//!     are about as far on foot, well away from both, so no side has them to
+//!     itself; one or two ruins go in the middle, as nearly the same walk
+//!     from every start as the land allows.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -687,8 +688,13 @@ fn pick_spread(
     picked
 }
 
-/// Ruins: about one per side, each nearly equidistant on foot from the two
-/// starts nearest it, well away from every start and from each other.
+/// Ruins every map gets, in the middle, for everyone; some get one more.
+const CENTRAL_RUINS: usize = 1;
+
+/// Ruins: `CENTRAL_RUINS` (one more on some maps), each as nearly the same
+/// walk from every start as the land allows, so every side has about as
+/// far to go for them: the middle of the continent, on foot. They keep off
+/// the map's edge and a bank's width apart.
 fn place_ruins(
     grid: &HexGrid,
     starts: &[Hex],
@@ -696,11 +702,25 @@ fn place_ruins(
     spacing: f32,
     rng: &mut Rng,
 ) -> Vec<Hex> {
-    let near = ((spacing * 0.35) as i32).max(5);
-    let far = ((spacing * 0.9) as i32).max(near + 2);
-    let options = contested_hexes(grid, starts, distances, near, far, 1);
-    let wanted = starts.len() + rng.below(2);
-    let gap = ((spacing * 0.6) as i32).max(4);
+    if starts.len() < 2 {
+        return Vec::new();
+    }
+    let options: Vec<(Hex, i32)> = grid
+        .all_hexes()
+        .filter(|&h| {
+            grid.is_passable(h) && grid.edge_distance(h) >= 2 && grid.resource(h).is_none()
+        })
+        .filter_map(|h| {
+            let steps = distances_to_starts(distances, h)?;
+            let (nearest, farthest) = (steps[0], steps[steps.len() - 1]);
+            // The gap between the nearest and farthest start, and a little
+            // for a long walk, so the middle wins over a far-off corner.
+            (nearest >= ((spacing * 0.4) as i32).max(5))
+                .then_some((h, 4 * (farthest - nearest) + farthest))
+        })
+        .collect();
+    let wanted = CENTRAL_RUINS + rng.below(2);
+    let gap = ((spacing * 0.5) as i32).max(4);
     pick_spread(options, wanted, gap, starts, rng)
 }
 
@@ -1024,8 +1044,28 @@ mod tests {
                     "seed {seed}: {what} {steps:?} steps from the starts: one side's alone"
                 );
             };
-            for &ruin in &map.ruins {
-                check(ruin, ((spacing * 0.35) as i32).max(5), 1, "ruins");
+            // The most even walk from every start that the land allows.
+            let spread = |steps: &[i32]| steps[steps.len() - 1] - steps[0];
+            let best = map
+                .grid
+                .all_hexes()
+                .filter(|&h| map.grid.is_passable(h))
+                .filter_map(|h| distances_to_starts(&distances, h))
+                .map(|steps| spread(&steps))
+                .min()
+                .unwrap();
+            for (i, &ruin) in map.ruins.iter().enumerate() {
+                let steps = distances_to_starts(&distances, ruin).expect("every start reaches it");
+                assert!(
+                    steps[0] >= ((spacing * 0.4) as i32).max(5),
+                    "seed {seed}: {steps:?}"
+                );
+                let slack = if i == 0 { 2 } else { 8 };
+                assert!(
+                    spread(&steps) <= best + slack,
+                    "seed {seed}: ruins {steps:?} steps from the starts; the best spread is {best}"
+                );
+                assert!(map.grid.edge_distance(ruin) >= 2);
             }
             let special_hexes: Vec<Hex> = map
                 .grid
@@ -1040,8 +1080,8 @@ mod tests {
             specials += special_hexes.len();
         }
         assert!(
-            ruins >= 16,
-            "about one ruin per side: {ruins} in 8 maps of 5"
+            (8..=16).contains(&ruins),
+            "one or two central ruins a map: {ruins} in 8 maps"
         );
         assert!(
             specials >= 16,
