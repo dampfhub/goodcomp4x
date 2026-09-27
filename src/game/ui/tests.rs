@@ -1211,6 +1211,13 @@ fn the_city_lists_its_worker_jobs_and_removes_them() {
     let (mut game, hex) = empty_tile_near_blue_city();
     game.inspected_tile = Some(hex);
     game.queue_worker_job(JobKind::Road);
+    // A tile takes one job at a time: the fort goes next door.
+    let next_door = hex
+        .neighbors()
+        .into_iter()
+        .find(|&h| game.job_unavailable(h, JobKind::Fort).is_none())
+        .expect("a tile for a fort");
+    game.inspected_tile = Some(next_door);
     game.queue_worker_job(JobKind::Fort);
     game.select_city();
     let remove = Target::WorkerJobRemove(0);
@@ -1240,6 +1247,13 @@ fn worker_jobs_reorder_by_dragging() {
     let (mut game, hex) = empty_tile_near_blue_city();
     game.inspected_tile = Some(hex);
     game.queue_worker_job(JobKind::Road);
+    // A tile takes one job at a time: the fort goes next door.
+    let next_door = hex
+        .neighbors()
+        .into_iter()
+        .find(|&h| game.job_unavailable(h, JobKind::Fort).is_none())
+        .expect("a tile for a fort");
+    game.inspected_tile = Some(next_door);
     game.queue_worker_job(JobKind::Fort);
     game.select_city();
     game.reorder_queue(QueueKind::Workers, 1, 0);
@@ -1277,8 +1291,9 @@ fn roster_keys(game: &GameState) -> Vec<RosterKey> {
 
 #[test]
 fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
-    // The Cities scenario: Blue's city has nothing queued and a worker at
-    // home, and one unit of each military kind.
+    // The Cities scenario: Blue's city has nothing queued, and one unit of
+    // each military kind. Its idle worker isn't listed: workers never hold
+    // up the turn.
     let mut game = GameState::city_scenario();
     let city = game
         .cities
@@ -1288,8 +1303,8 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
         .id;
     let keys = roster_keys(&game);
     assert_eq!(keys[0], RosterKey::Production(city), "{keys:?}");
-    assert_eq!(keys[1], RosterKey::Workers(city), "{keys:?}");
-    let groups: Vec<UnitType> = keys[2..]
+    assert!(game.cities.iter().any(|c| c.id == city && c.workers > 0));
+    let groups: Vec<UnitType> = keys[1..]
         .iter()
         .map(|key| match key {
             RosterKey::Group(unit_type, false) => *unit_type,
@@ -1313,7 +1328,7 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
     let settler = game.units[last].id;
     game.settlers.insert(settler);
     let unit_type = game.units[last].unit_type;
-    assert_eq!(roster_keys(&game)[2], RosterKey::Group(unit_type, true));
+    assert_eq!(roster_keys(&game)[1], RosterKey::Group(unit_type, true));
 
     // The production chip opens the city, and is framed while it's open.
     game.handle_click(
@@ -1325,33 +1340,11 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
     assert_eq!(game.cities[open].id, city);
     assert!(roster(&game)[0].1 && !roster(&game)[1].1);
 
-    // The workers' chip shows a tile they could work, with its job buttons,
-    // and the next click the next one; the city closes.
-    let workers = RosterKey::Workers(city);
-    game.handle_click(roster_cursor(&game, workers), SCREEN, ClickMode::Normal);
-    assert_eq!(game.selected_city, None);
-    let tiles = game.worker_job_tiles(open);
-    assert!(tiles.len() >= 2, "{tiles:?}");
-    assert_eq!(game.inspected_tile, Some(tiles[0]));
-    assert!(roster(&game)[1].1, "the workers' chip framed");
-    let job = |game: &GameState| {
-        game.layout(SCREEN)
-            .buttons
-            .iter()
-            .any(|b| matches!(b.target, Target::WorkerJob(_)))
-    };
-    assert!(job(&game), "the tile panel's job buttons");
-    game.handle_click(roster_cursor(&game, workers), SCREEN, ClickMode::Normal);
-    assert_eq!(game.inspected_tile, Some(tiles[1]));
-
-    // Once it has a build and a job for its worker, it leaves the strip.
+    // Once it has a build, it leaves the strip.
     game.cities[open].queue.push(Build::Unit(BuildUnit::Melee));
-    game.cities[open].workers = 0;
     let keys = roster_keys(&game);
     assert!(
-        !keys
-            .iter()
-            .any(|k| matches!(k, RosterKey::Production(_) | RosterKey::Workers(_))),
+        !keys.iter().any(|k| matches!(k, RosterKey::Production(_))),
         "{keys:?}"
     );
 }

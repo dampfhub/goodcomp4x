@@ -1,10 +1,9 @@
 //! The turn strip ("need orders"): a row of chips for everything the player
 //! still has to see to this turn, civilian tasks first, then military ones:
-//! cities with nothing to build, cities with workers idle at home, settlers,
-//! and then the military units. Units needing orders are grouped by kind,
-//! one chip per kind with a count. Clicking a chip opens its city (for
-//! production), shows a tile its idle workers could work on (for workers),
-//! or selects its units, and moves the camera there; Shift-click adds a
+//! cities with nothing to build, settlers, and then the military units.
+//! Units needing orders are grouped by kind, one chip per kind with a count.
+//! Clicking a chip opens its city, or selects its units, and moves the
+//! camera there; Shift-click adds a
 //! group's units to the selection, Ctrl-click takes them out. A group of
 //! several that's selected opens a second row with each of its units, to
 //! pick from or take out one at a time. Selected units and the open city are
@@ -15,11 +14,7 @@
 use super::builder::PanelBuilder;
 use super::dock::Zone;
 use super::{ChipIcon, LABEL_TEXT, Layout, ROSTER_CHIP_GAP, ROSTER_PER_ROW, RosterChip, SMALL};
-use crate::game::draw::UnitLook;
-use crate::game::hex::Hex;
 use crate::game::unit::UnitType;
-use crate::game::unit_icons::UnitIcon;
-use crate::game::workers::{JobKind, WorkerJob};
 use crate::game::{GameState, PLAYER_TEAM};
 
 /// What a chip in the turn strip stands for.
@@ -27,8 +22,6 @@ use crate::game::{GameState, PLAYER_TEAM};
 pub(in crate::game) enum RosterKey {
     /// A city with nothing to build, by its id.
     Production(u32),
-    /// A city with workers at home and no jobs for them, by its id.
-    Workers(u32),
     /// The units of one kind that need orders: a unit type, and whether
     /// they're settlers (which use the melee body).
     Group(UnitType, bool),
@@ -61,7 +54,7 @@ impl GameState {
     }
 
     /// Everything the turn strip lists, in its order: cities with nothing to
-    /// build, cities with idle workers, then the unit groups, settlers first,
+    /// build, then the unit groups, settlers first,
     /// each group where its first unit comes in unit order. Nothing while a
     /// turn plays out or a city interior is open.
     pub(super) fn roster_tasks(&self) -> Vec<RosterTask> {
@@ -73,14 +66,6 @@ impl GameState {
             if self.city_needs_build(i) {
                 tasks.push(RosterTask {
                     key: RosterKey::Production(city.id),
-                    units: Vec::new(),
-                });
-            }
-        }
-        for city in &self.cities {
-            if city.team == PLAYER_TEAM && city.workers > 0 && city.worker_jobs.is_empty() {
-                tasks.push(RosterTask {
-                    key: RosterKey::Workers(city.id),
                     units: Vec::new(),
                 });
             }
@@ -127,21 +112,6 @@ impl GameState {
                 color: PLAYER_TEAM.color(),
                 selected: open_city(id),
                 count: 1,
-            },
-            RosterKey::Workers(id) => RosterChip {
-                key: task.key,
-                icon: ChipIcon::Unit(UnitLook {
-                    icon: UnitIcon::Shovel,
-                    civilian: true,
-                }),
-                color: PLAYER_TEAM.color(),
-                selected: self.inspected_tile.is_some_and(|tile| {
-                    self.city_index(id)
-                        .is_some_and(|city| self.worker_job_tiles(city).contains(&tile))
-                }),
-                count: self
-                    .city_index(id)
-                    .map_or(1, |i| self.cities[i].workers as usize),
             },
             RosterKey::Group(..) | RosterKey::Unit(_) => RosterChip {
                 key: task.key,
@@ -215,56 +185,11 @@ impl GameState {
                 .into_iter()
                 .find(|t| t.key == key)
                 .map_or_else(Vec::new, |t| t.units),
-            RosterKey::Production(_) | RosterKey::Workers(_) => Vec::new(),
+            RosterKey::Production(_) => Vec::new(),
         }
     }
 
-    /// The tiles city `city`'s idle workers could start on: tiles it works
-    /// that could take an improvement, then those that could take a road
-    /// (`plan_ai_workers` picks jobs the same way), each once.
-    pub(super) fn worker_job_tiles(&self, city: usize) -> Vec<Hex> {
-        let mut tiles: Vec<Hex> = Vec::new();
-        for kind in [JobKind::Improve, JobKind::Road] {
-            for &hex in &self.cities[city].worked {
-                let job = WorkerJob::on_tile(hex, kind);
-                if !tiles.contains(&hex)
-                    && self.job_problem(PLAYER_TEAM, job).is_none()
-                    && !self.job_taken(PLAYER_TEAM, job)
-                {
-                    tiles.push(hex);
-                }
-            }
-        }
-        tiles
-    }
-
-    /// A click on a city's idle workers: shows the next tile they could
-    /// start on (`worker_job_tiles`, after the one shown, if any) in the tile
-    /// panel, whose buttons give the job, and moves the camera there. With
-    /// none, just moves the camera to the city.
-    fn show_worker_tile(&mut self, city: usize) {
-        let shown = self.inspected_tile;
-        self.leave_city_view();
-        self.clear_selection();
-        let tiles = self.worker_job_tiles(city);
-        let city_name = format!("CITY {}", self.cities[city].id + 1);
-        let next = shown
-            .and_then(|shown| tiles.iter().position(|&t| t == shown))
-            .map_or(0, |i| i + 1);
-        let Some(&tile) = tiles.get(next % tiles.len().max(1)) else {
-            self.camera.focus_on(self.cities[city].pos.to_world());
-            self.notice =
-                format!("{city_name}'S WORKERS ARE IDLE - CLICK A TILE, THEN CHOOSE A JOB");
-            return;
-        };
-        self.inspected_tile = Some(tile);
-        self.camera.focus_on(tile.to_world());
-        self.notice =
-            format!("{city_name}'S WORKERS ARE IDLE - CHOOSE A JOB HERE, OR CLICK ANOTHER TILE");
-    }
-
-    /// A click on a chip: opens its city (production), shows a tile for its
-    /// idle workers (`show_worker_tile`), or selects its units (a group's all
+    /// A click on a chip: opens its city, or selects its units (a group's all
     /// at once, opening its row) and moves the camera to the first.
     pub(super) fn roster_select(&mut self, key: RosterKey) {
         if self.is_resolving() {
@@ -274,12 +199,6 @@ impl GameState {
             RosterKey::Production(id) => {
                 if let Some(city) = self.city_index(id) {
                     self.open_city(city);
-                }
-                return;
-            }
-            RosterKey::Workers(id) => {
-                if let Some(city) = self.city_index(id) {
-                    self.show_worker_tile(city);
                 }
                 return;
             }
@@ -325,10 +244,6 @@ impl GameState {
             RosterKey::Production(id) => {
                 format!("{} HAS NOTHING TO BUILD - CLICK: OPEN IT", city_name(id))
             }
-            RosterKey::Workers(id) => format!(
-                "WORKERS IDLE IN {} - CLICK: A TILE TO GIVE THEM A JOB (AGAIN: THE NEXT ONE)",
-                city_name(id)
-            ),
             RosterKey::Group(..) => {
                 let units = self.roster_key_units(key);
                 let role = units

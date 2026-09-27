@@ -152,5 +152,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     saved too, in the config folder, so the next session starts the same way.
 48. Production first (`claude/turn-tasks`): the game moves through a turn in the turn strip's
     order, cities needing a build before units and settlers before the military, and a new
-    world opens on the city. The idle workers' chip shows a tile they could work in the tile
-    panel instead of opening the city.
+    world opens on the city.
+49. Workers apart (`claude/turn-tasks`): idle workers left the turn strip (they never held up
+    the turn). A tile takes one worker job at a time, so a road and an improvement can't be
+    queued on it together, and the tile the tile panel shows has a white ring.

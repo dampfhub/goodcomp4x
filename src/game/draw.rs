@@ -84,6 +84,9 @@ const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
 const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
 const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
 const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
+/// The ring just inside the tile the tile panel shows.
+const INSPECTED_TILE_COLOR: Color = [0.92, 0.92, 0.96, 1.0];
+const INSPECTED_TILE_WIDTH: f32 = 0.08;
 const CONTESTED_COLOR: Color = [0.55, 0.32, 0.10, 1.0];
 const MOVE_RANGE_COLOR: Color = [0.24, 0.42, 0.26, 1.0];
 const ATTACK_RANGE_COLOR: Color = [0.45, 0.22, 0.22, 1.0];
@@ -343,6 +346,18 @@ impl GameState {
 
         self.push_city_map(&fog, &mut out);
         self.push_fog(&fog, &mut out);
+        // The tile the tile panel shows.
+        if let Some(hex) = self.inspected_tile.filter(|&h| self.grid.contains(h)) {
+            mesh::polygon_outline(
+                hex.to_world(),
+                HEX_SIZE * HEX_FILL_SCALE - INSPECTED_TILE_WIDTH / 2.0,
+                INSPECTED_TILE_WIDTH,
+                6,
+                0.0,
+                INSPECTED_TILE_COLOR,
+                &mut out,
+            );
+        }
         self.push_order_markers(&fog, &mut out);
 
         for (idx, unit) in self.units.iter().enumerate() {
@@ -2401,6 +2416,15 @@ mod tests {
         assert_eq!(edge_fade(&game.grid, inside), 1.0);
         let far = Vec2::new(1.0e4, 0.0);
         assert_eq!(edge_fade(&game.grid, far), 0.0);
+    }
+
+    #[test]
+    fn the_inspected_tile_is_ringed() {
+        let mut game = GameState::city_scenario();
+        game.clear_selection();
+        assert_eq!(count_color(&game.build_vertices(), INSPECTED_TILE_COLOR), 0);
+        game.inspected_tile = Some(Hex::new(0, 1));
+        assert!(count_color(&game.build_vertices(), INSPECTED_TILE_COLOR) > 0);
     }
 
     /// The color of the last opaque triangle drawn over `point`.

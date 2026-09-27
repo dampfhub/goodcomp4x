@@ -318,17 +318,14 @@ Everyone in a step acts simultaneously:
   Ctrl-right-click does).
 - The turn strip (`ui/roster.rs`, a panel starting at the bottom center) lists what the
   player still has to see to this turn, civilian tasks first: cities with an empty queue,
-  cities with workers at home and no jobs, settlers, then military units needing orders.
+  settlers, then military units needing orders. Workers aren't listed; they never hold up the
+  turn.
   Units are grouped by kind (settlers apart), each group in the order its first unit comes in
-  unit order, with a count. Clicking a city's production chip opens it. Clicking its idle
-  workers' chip shows, in the tile panel, a tile the city works that could take an improvement
-  (or else a road) and that no job covers yet; its buttons give the job, and clicking the chip
-  again shows the next such tile. Clicking a group selects all its
+  unit order, with a count. Clicking a city's chip opens it. Clicking a group selects all its
   units and moves the camera to the first, and while any of them is selected, a second row
   lists them one by one. Clicking a unit's chip selects just it; Shift-click adds a chip's units
-  to the selection and Ctrl-click takes them out (leaving at least one). Selected units, the
-  open city, and a tile shown for idle workers are framed. Research will join it when there is
-  any.
+  to the selection and Ctrl-click takes them out (leaving at least one). Selected units and the
+  open city are framed. Research will join it when there is any.
 - Left-clicking a hex (or Move) converges: members' old moves are dropped, then, nearest to the
   target first, each takes the reachable hex closest to the target that no ally is heading for,
   staying put if it can't get closer. Members keep their own speeds, so the group doesn't hold
@@ -481,11 +478,12 @@ every turn end.
 - **Pool:** each city keeps its workers at home, off the map, where nothing can touch them. A new
   city starts with one; the city queue builds more (8). A tag on each of your cities counts the
   workers at home.
-- **Jobs:** with nothing selected, click a tile to open its tile panel and pick a job, or press
-  R (road) or I (improve). The job goes to the open city, or else your nearest city, and waits in
+- **Jobs:** with nothing selected, click a tile to open its tile panel (a white ring marks the
+  tile) and pick a job, or press R (road) or I (improve). The job goes to the open city, or else your nearest city, and waits in
   its worker list, which the city panel shows: drag to reorder, X to remove. Queued jobs show on
   the map as faded gold rings (walls and gates as faded gold edges). A job needs explored open
-  ground, no city there, and nothing already doing the same thing; improvements and outposts or
+  ground, no city there, and no other job on the tile, queued or under way: a tile takes one job
+  at a time (walls and gates, on its edges, aside). Improvements and outposts or
   forts also can't go on a barracks, mill or workshop, an improvement not on another side's site,
   an outpost or fort not on another one.
 - **Walls and gates** stand on the edge between two hexes, not on a tile. Wall or Gate in the

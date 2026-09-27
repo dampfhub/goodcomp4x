@@ -33,7 +33,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Right-click a hex with a group | Every member in range attacks it (again to call it off) |
 | Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
-| Click a chip in the turn strip | A city's production: open the city. A city's idle workers: show a tile they could work on in the tile panel, whose buttons give the job (again: the next such tile). A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
+| Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
 | F / Found City button | Found a city with the selected settler |
 | Escape | Let go of the selected unit or group (and close the tile panel) |
@@ -47,12 +47,11 @@ and a new world, start the same way. A unit you select by clicking stays selecte
 
 The turn strip ("need orders"; a panel that starts at the bottom of the screen, centered or as
 near the middle as the other panels allow) shows a chip for everything you still have to see to
-this turn, civilian tasks first: each city with nothing to build (its tower), each city with
-workers idle at home (a shovel, with how many), your settlers, and then your military units
-needing orders. Units are grouped by kind, one chip per kind with a count; a group of several
+this turn, civilian tasks first: each city with nothing to build (its tower), your settlers,
+and then your military units needing orders. Workers aren't listed and never hold up the turn. Units are grouped by kind, one chip per kind with a count; a group of several
 that you select lists its units one by one on a second row, to pick from or take out. Selected
 units, and the open city, are framed; a unit leaves the strip once it has its orders (or holds,
-guards or follows a queue), a city once it has a build, and workers once they have jobs. Like
+guards or follows a queue), and a city once it has a build. Like
 the other panels, hold Ctrl to drag, resize or dock it.
 
 Shift-clicks on a hex build an order queue over several turns (rules: `game-rules.md`, Order
@@ -77,7 +76,7 @@ Workers).
 
 | Control | Action |
 | --- | --- |
-| Click a tile with nothing selected | Open its tile panel: terrain, whose workers would go, and a button per job |
+| Click a tile with nothing selected | Open its tile panel: terrain, whose workers would go, and a button per job. A white ring marks the tile |
 | Road / Improve / Outpost / Fort buttons | Queue that job on the tile, for the open city or else your nearest one |
 | R / I | Queue a road / an improvement on the tile in the tile panel |
 | Wall / Gate buttons | Arm wall or gate placement on hex edges |
