@@ -255,9 +255,13 @@ impl Renderer {
                 vk::Fence::null(),
             )
         };
-        let image_index = match acquired {
-            Ok((index, false)) => index as usize,
-            Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+        // A suboptimal image is still acquired, and `image_available` will be
+        // signaled, so it must be drawn and presented (which consumes that
+        // signal) before the swapchain is rebuilt. Out of date acquires
+        // nothing and signals nothing.
+        let (image_index, acquire_suboptimal) = match acquired {
+            Ok((index, suboptimal)) => (index as usize, suboptimal),
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 return unsafe { self.recreate_swapchain() };
             }
             Err(err) => return Err(err.into()),
@@ -279,7 +283,8 @@ impl Renderer {
 
         let wait_semaphores = [image_available];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [self.sync.render_finished[self.current_frame]];
+        // Indexed by image, not frame: see `SwapchainData::render_finished`.
+        let signal_semaphores = [self.swapchain.render_finished[image_index]];
         let command_buffers = [command_buffer];
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
@@ -307,7 +312,7 @@ impl Renderer {
             Err(err) => return Err(err.into()),
         };
 
-        if suboptimal || self.framebuffer_resized {
+        if acquire_suboptimal || suboptimal || self.framebuffer_resized {
             self.framebuffer_resized = false;
             unsafe { self.recreate_swapchain() }?;
         }
