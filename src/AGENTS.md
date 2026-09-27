@@ -3,8 +3,15 @@
 `main.rs` starts the logger, parses the command line (`cli.rs`: `--scenario`, `--seed`,
 `--screenshot`, `--size`) and runs the `winit` event loop; its exit code is `App::into_result`.
 `app.rs` owns the window, the renderer and the `GameState`, turns input into `GameState` method
-calls, and builds each frame. `screenshot.rs` is screenshot mode. `icon.rs` draws the
-window/taskbar icon in code.
+calls, and builds each frame. `screenshot.rs` is screenshot mode. `icon_art.rs` draws the
+game's icon in code (std only); `icon.rs` hands it to the window (title bar and taskbar), and
+`build.rs` includes `icon_art.rs` to embed it in the Windows executable as a `.res` the MSVC
+linker takes. On Windows the taskbar button needs two more things (`icon.rs`, `app.rs`): the
+process claims its own application id before any window exists
+(`claim_taskbar_identity`), so the button shows the window's icon rather than one derived
+from the executable, and the icons are set again as new handles a second after the window
+shows (`refresh_icons`), because Windows doesn't always redraw the button with icons set as
+the window is created (it did once the window was minimized and restored).
 
 ## Frame and input flow
 
@@ -13,12 +20,15 @@ window/taskbar icon in code.
   builds native windows from the same panel content. `Renderer::draw_frame` draws the world,
   optional classic UI, and ImGui data in order. F11 switches presentations.
 - The key map is the `KeyCode` match in `App::window_event`; most arms call one `GameState`
-  method. Escape has its own `KeyboardInput` arm because it acts on press and release (close a
-  view, or hold to quit); F5 is handled by `App` itself.
-- Left clicks act on release, and only if the cursor moved less than the 6-pixel drag threshold
-  (otherwise it was a pan): `handle_click` (the modifiers pick its `ClickMode`: Shift queues,
-  Ctrl swaps), or with Alt held, `toggle_in_selection` / `select_in_box`. Right clicks act on
-  press: `handle_context_click` (attack; Shift queues, Ctrl clears).
+  method. Escape has its own `KeyboardInput` arm because it acts on press and release: a press
+  calls `GameState::press_escape` (close the settings menu, a view or the selection, or else
+  open the settings menu), and only a press that opened the menu starts the hold to quit; F5 is
+  handled by `App` itself.
+- Left clicks act on release, and only if the cursor moved less than the 6-pixel drag threshold:
+  `handle_click` (the modifiers pick its `ClickMode`: Shift queues, or adds a clicked unit to
+  the selection; Ctrl swaps, or takes a clicked group member out). A longer drag that started
+  on the map is a selection box: `select_in_box` (Shift adds). Only the middle button pans.
+  Right clicks act on press: `handle_context_click` (attack; Shift queues, Ctrl clears).
 - Frame pacing: `about_to_wait` schedules redraws at 165 FPS with `ControlFlow::WaitUntil`.
 - The window opens at 80% of the primary monitor (or `--size`), centered; the city scenarios
   start with the camera on the whole map (`start_on_whole_map`). F5 toggles borderless

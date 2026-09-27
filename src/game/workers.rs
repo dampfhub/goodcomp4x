@@ -970,7 +970,7 @@ mod tests {
     #[test]
     fn workers_act_after_every_unit() {
         let mut game = cities();
-        game.instant_playback = false;
+        game.settings.instant_playback = false;
         game.resolve_turn();
         assert_eq!(game.pending_steps.back(), Some(&Step::Workers));
         let unit_steps = game.pending_steps.len() - 1;

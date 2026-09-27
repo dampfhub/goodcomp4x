@@ -20,9 +20,9 @@ load) holds a copy of the whole game in memory; it survives scenario switches, l
 snapshot (and the camera, within the same scenario), and saving is refused mid-turn. Loading
 doesn't restore the dice: combat rolls carry on from the current game, so a retry can go
 differently. Instant
-playback (F8, on by default) resolves every step of a turn at once, in the same order, so
-outcomes don't change. Fog of war (F10) is on by default. Both settings survive switches and
-loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
+playback (F8, or Turn Playback in the settings menu; on by default) resolves every step of a
+turn at once, in the same order, so outcomes don't change. Fog of war (F10) is on by default.
+Both settings, and every other player setting (`settings.rs`), survive switches and loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
 seed, and has COMPLETE PRODUCTION (F9), which pays for the open city's or barracks' current
 build at once: a unit appears if a neighboring hex is open, and a placed building
 still needs its site and Confirm.
@@ -137,8 +137,9 @@ Hospital heals nearby troops (see Buildings).
 
 ## Orders (planning)
 
-- Left-click acts on release. Dragging at least 6 pixels pans the map instead and suppresses the
-  click; middle-drag also pans. Losing focus or leaving the window cancels the gesture.
+- Left-click acts on release. Dragging at least 6 pixels from the map draws a selection box
+  instead and suppresses the click (see Groups); middle-drag pans. Losing focus or leaving the
+  window cancels the gesture.
 - **Left click moves, right click attacks.** Click one of your units to select it. Left-click a
   green hex to queue a move; click it again to cancel. Left-clicking a hex with an enemy the
   player can see only says "RIGHT-CLICK TO ATTACK". Left-clicking your own city or barracks hex
@@ -156,8 +157,11 @@ Hospital heals nearby troops (see Buildings).
 - Shift-left-click and Shift-right-click queue orders for later turns (see Order queues).
 - Q (or the ability button) toggles the selected unit's ability.
 - **Hold:** Space holds the selected unit if it still needs orders: it keeps what it has queued
-  and gives up the rest of its turn. With nothing left waiting, Space ends the turn. With a city
-  or barracks view open, Space only closes it.
+  and gives up the rest of its turn. Space (or Hold) on a unit already holding stops the hold,
+  keeping it selected and back in the turn order, and any new order to it (a move, attack,
+  swap, queued turn) ends the hold too. A group holds all together, or stops holding if every
+  member already is. With nothing left waiting, Space ends the turn. With a city or barracks
+  view open, Space only closes it.
 - **Guard:** G toggles `Unit::guarding`, like holding but lasting across turns, so the unit never
   comes back up in the turn order. Queuing any move, attack or swap wakes it, as do G and
   Ctrl-right-click. Guarding units get a white hex outline.
@@ -197,17 +201,23 @@ Hospital heals nearby troops (see Buildings).
   Range counts from where the plan has the unit that turn, with its later-turn stats (no ability;
   a siege that sets up this turn is deployed). With nothing planned and no attack possible this
   turn (a siege setting up), it goes in the next turn. Out of range, nothing is queued.
-- **Groups:** Shift-clicks with a group selected add the same turns to every member, so their
-  plans always have the same number of turns. Members with shorter plans wait until they line
-  up, members that arrive first, can't get closer or can't reach the target wait that turn, and
-  the members nearest the target choose their hexes first. A move keeps adding turns until no
-  member can get any closer.
+- **Groups:** a Shift-click with a group selected queues for every member, and afterwards
+  their plans all have the same number of turns. For a move, each member continues from the end
+  of its own plan: one with a shorter plan (say, just added to the selection) starts moving at
+  once, and turns already queued stay as they were. Members that arrive first or can't get
+  closer wait at the end, the members nearest the target choose their hexes first, and no
+  member ends a turn where another member's plan has it. A move keeps adding turns until no
+  member can get any closer. An attack goes in at the end of the group's plans, which members
+  with shorter plans reach by waiting.
 - Queuing never moves selection on, so a unit (or group) can be given several turns in a row.
 - **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
   turn and every turn it has queued orders for.
 - **Cancelling:** any other order to the unit (a plain move or attack, a group move or attack, a
   swap, its ability, Guard, Ctrl-right-click) drops its queue. Hold keeps it. This turn's orders
-  stay, so the unit needs orders again unless the new order completes them.
+  stay, so the unit needs orders again unless the new order completes them. A map click that
+  would replace a queue reaching past this turn (a plain move, attack or swap, for a unit or a
+  group) needs the same click twice: the first only warns and outlines the hex, and any other
+  click, a new selection or the turn ending forgets it (`confirm_queue_replace`).
 - **Carrying over:** at the end of the turn, after each unit's `end_turn`, every unit with a
   queue takes its next turn's orders (`advance_queues`). The whole queue is dropped, with a
   notice ("MELEE STOPPED: ..."), and the unit needs orders, if the turn no longer fits: the unit
@@ -267,9 +277,15 @@ Everyone in a step acts simultaneously:
 
 ## Groups (`group.rs`)
 
-- Alt-drag a box to select your units drawn inside it; Alt-click adds or removes one unit. Two or
-  more become the group; one is an ordinary selection. The group's hexes are highlighted and the
-  tray summarizes it.
+- Left-drag a box to select your units drawn inside it (Shift-drag adds them to the
+  selection); Shift-click adds one unit, and Ctrl-click takes a member back out. Two or more
+  become the group; one is an ordinary selection. The group's hexes are highlighted and the tray
+  summarizes it, with a Clear Orders button that drops every member's orders and queues (as
+  Ctrl-right-click does).
+- The unit strip (a panel starting at the top-left) lists the player's units, settlers
+  included, that still need orders, in unit order, which is the order the game selects them in.
+  Clicking one selects it and moves the camera there; Shift-click adds it to the selection and
+  Ctrl-click takes it out. Selected units are framed.
 - Left-clicking a hex (or Move) converges: members' old moves are dropped, then, nearest to the
   target first, each takes the reachable hex closest to the target that no ally is heading for,
   staying put if it can't get closer. Members keep their own speeds, so the group doesn't hold
@@ -286,10 +302,12 @@ Everyone in a step acts simultaneously:
 
 - Queued attacks are curved arrows from the attacker (or its ghost, if it moves first) to just
   short of the target. Only the player's own attacks get arrows; the AI's plans stay hidden.
-- A unit whose order queue reaches past this turn gets no ghost: its whole plan (moves as a
-  line with each turn's number, attacks as arrows numbered by turn) shows only while it is
-  selected or hovered, and otherwise a `>N` tag counts its turns of orders left. A queue of this
-  turn alone draws like plain orders: a ghost and an attack arrow, no numbers.
+- A unit whose order queue reaches past this turn shows its whole plan only while it is
+  selected or hovered: moves as a line with each turn's number, ending in the unit's ghost where
+  the plan leaves it, and attacks as arrows numbered by turn. Each unit's plan is drawn on its
+  own; where several stop on one hex their numbers fan out rather than merge. Otherwise an `NT`
+  tag (`3T`) counts its turns of orders left. A queue of this turn alone draws like plain
+  orders: a ghost and an attack arrow, no numbers.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
   "MISS" on a hex with no enemy unit, worker or barracks, or "OUT OF RANGE" if the target moved
   away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
@@ -526,9 +544,9 @@ every turn end.
   Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
   food (green grain) and production (amber hammers) with delivery percentages.
-- Escape closes an open city or barracks view, or else lets go of the selected unit or group and
-  closes the tile panel; with none of those open, holding it for a second quits, with a
-  "HOLD ESC TO QUIT" bar. F5 toggles borderless fullscreen.
+- Escape closes the settings menu, or else an open city or barracks view, or else lets go of the
+  selected unit or group and closes the tile panel; with none of those open, it opens the
+  settings menu, and holding it for a second quits, with a "HOLD ESC TO QUIT" bar. F5 toggles borderless fullscreen.
 
 ## AI (`ai.rs`)
 

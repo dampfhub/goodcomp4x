@@ -234,6 +234,16 @@ impl Unit {
         self.following_queue || !self.queued.is_empty()
     }
 
+    /// Whether the unit has anything Clear Orders would drop: a move, an
+    /// attack, a queue, a hold or a guard.
+    pub fn has_orders(&self) -> bool {
+        self.has_queue()
+            || self.planned_move.is_some()
+            || self.planned_attack.is_some()
+            || self.holding
+            || self.guarding
+    }
+
     /// Whether the unit's plan reaches past this turn, so the map shows it as
     /// numbered turns. A plan of this turn alone draws like ordinary orders:
     /// a ghost and an attack arrow.

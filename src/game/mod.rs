@@ -19,6 +19,7 @@ mod mesh;
 mod order_queue;
 mod orders;
 mod scenario;
+mod settings;
 #[cfg(test)]
 mod simulation;
 mod terrain;
@@ -95,6 +96,9 @@ pub struct GameState {
     placing_barrier: Option<workers::JobKind>,
     /// The unit whose Disband was pressed once, waiting for a second press.
     disband_armed: Option<u32>,
+    /// A plain click that would replace a selected unit's multi-turn queue,
+    /// waiting for the same click again (`orders::confirm_queue_replace`).
+    queue_replace_armed: Option<orders::QueueReplace>,
     /// The edge under the cursor while placing one, highlighted.
     hovered_edge: Option<(Hex, Hex)>,
     city_queue_scroll: usize,
@@ -117,9 +121,12 @@ pub struct GameState {
     savestate: Option<Box<GameState>>,
     /// Attack animations playing out, with how many seconds each has run.
     effects: Vec<(effects::Effect, f32)>,
-    /// Debug setting (F8): play a turn's steps all at once instead of one
-    /// every `STEP_INTERVAL`. Kept across scenario switches and loads.
-    instant_playback: bool,
+    /// The player's options (`settings.rs`). Kept across scenario switches
+    /// and loads.
+    settings: settings::Settings,
+    /// Whether the settings menu (Escape) is open. Kept across scenario
+    /// switches and loads, like the rest of the UI.
+    settings_open: bool,
     /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
     /// Kept across scenario switches and loads.
     fog_of_war: bool,
@@ -204,6 +211,7 @@ impl GameState {
             inspected_tile: None,
             placing_barrier: None,
             disband_armed: None,
+            queue_replace_armed: None,
             hovered_edge: None,
             city_queue_scroll: 0,
             barracks_queue_scroll: 0,
@@ -217,7 +225,8 @@ impl GameState {
             scenario: Scenario::Combat,
             savestate: None,
             effects: Vec::new(),
-            instant_playback: true,
+            settings: settings::Settings::default(),
+            settings_open: false,
             fog_of_war: true,
             memory: fog::Memory::new(),
             turn: 0,

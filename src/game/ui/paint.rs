@@ -4,8 +4,9 @@ use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
     BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,
     DISABLED_BG, DISABLED_TEXT, GAP, GOLD_TEXT, GROWTH_COLOR, LINE_GAP, PANEL_BG, QUEUED_BG,
-    QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, SMALL, Shape, TEXT,
+    QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, ROSTER_TOKEN_SHARE, SMALL, Shape, TEXT,
 };
+use crate::game::draw::push_unit_token;
 use crate::game::font;
 use crate::game::mesh;
 use crate::renderer::Vertex;
@@ -79,6 +80,32 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
                 out,
             );
         }
+        Shape::UnitChip { min, max, chip } => {
+            // Selected units get the bright armed border, like an armed button.
+            let (bg, border, border_color) = if chip.selected {
+                (BUTTON_HOVER_BG, ARMED_BORDER, ARMED_BORDER_COLOR)
+            } else {
+                (BUTTON_BG, BORDER, BORDER_COLOR)
+            };
+            draw_box(*min, *max, bg, border, border_color, out);
+            let center = (*min + *max) / 2.0;
+            let radius = (max.x - min.x) * ROSTER_TOKEN_SHARE / 2.0;
+            push_unit_token(center, chip.look, radius, chip.color, out);
+        }
+    }
+}
+
+/// The frame around the unit strip token under the cursor.
+pub(super) fn draw_chip_hover(min: Vec2, max: Vec2, out: &mut Vec<Vertex>) {
+    let width = BORDER;
+    let (a, b) = (min - width, max + width);
+    for (from, to) in [
+        (a, Vec2::new(b.x, min.y)),
+        (Vec2::new(a.x, max.y), b),
+        (a, Vec2::new(min.x, b.y)),
+        (Vec2::new(max.x, a.y), b),
+    ] {
+        mesh::quad(from, to, TEXT, out);
     }
 }
 

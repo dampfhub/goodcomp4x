@@ -96,7 +96,7 @@ impl GameState {
             );
         }
         panel.gap(GAP);
-        let playback = if self.instant_playback {
+        let playback = if self.settings.instant_playback {
             "PLAYBACK: ALL AT ONCE"
         } else {
             "PLAYBACK: STEP BY STEP"
@@ -168,12 +168,13 @@ impl GameState {
         };
 
         // The notice sits centered in the space left between the two.
-        if !self.notice.is_empty() {
-            let width = font::ui(BODY).width(&self.notice);
+        let notice = self.shown_notice();
+        if !notice.is_empty() {
+            let width = font::ui(BODY).width(notice);
             let space = (left_end + 2.0 * GAP, end_turn.min.x - 2.0 * GAP);
             let left = ((space.0 + space.1 - width) / 2.0).max(space.0);
             if left + width <= space.1 {
-                let line = vec![(self.notice.clone(), NOTICE_TEXT)];
+                let line = vec![(notice.to_string(), NOTICE_TEXT)];
                 push_text_row(layout, Vec2::new(left, middle), BODY, line);
             }
         }

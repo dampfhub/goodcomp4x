@@ -3,8 +3,8 @@
 use super::{
     BODY, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING, Button, ButtonState, END_TURN_HEIGHT,
     GAP, GROWTH_BAR_HEIGHT, LINE_GAP, Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT,
-    QUEUE_REMOVE_WIDTH, QueueItemRegion, QueueItemSpec, QueueKind, QueueScrollRegion,
-    SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
+    QUEUE_REMOVE_WIDTH, QueueItemRegion, QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP,
+    ROSTER_CHIP_GAP, RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
 };
 use crate::game::font::{self, Face};
 use glam::Vec2;
@@ -39,6 +39,8 @@ pub(super) enum Row {
     QueueItem(QueueItemSpec),
     /// Buttons of equal width; compact ones are one line, label then hint.
     Buttons(Vec<ButtonSpec>, bool),
+    /// A row of unit tokens in the unit strip.
+    Roster(Vec<RosterChip>),
 }
 
 /// Reusable panel content primitive. Stacks rows top to bottom and measures
@@ -69,6 +71,11 @@ impl PanelBuilder {
         self.rows.push(Row::QueueItem(item));
     }
 
+    /// A row of unit tokens, each clickable.
+    pub(super) fn roster(&mut self, chips: Vec<RosterChip>) {
+        self.rows.push(Row::Roster(chips));
+    }
+
     /// A row of equally wide buttons.
     pub(super) fn buttons(&mut self, buttons: Vec<ButtonSpec>) {
         self.space_button_rows();
@@ -97,6 +104,7 @@ impl PanelBuilder {
             Row::QueueItem(_) => QUEUE_ITEM_HEIGHT,
             Row::Buttons(_, false) => BUTTON_HEIGHT,
             Row::Buttons(_, true) => END_TURN_HEIGHT,
+            Row::Roster(_) => ROSTER_CHIP,
         }
     }
 
@@ -110,6 +118,10 @@ impl PanelBuilder {
             Row::Buttons(buttons, compact) => {
                 let width = button_width(buttons, *compact);
                 buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
+            }
+            Row::Roster(chips) => {
+                chips.len() as f32 * ROSTER_CHIP
+                    + chips.len().saturating_sub(1) as f32 * ROSTER_CHIP_GAP
             }
         }
     }
@@ -234,6 +246,18 @@ impl PanelBuilder {
                             min: min.round(),
                             max: (min + Vec2::new(width, height)).round(),
                         });
+                    }
+                }
+                Row::Roster(chips) => {
+                    for (i, chip) in chips.into_iter().enumerate() {
+                        let min = Vec2::new(
+                            left + i as f32 * (ROSTER_CHIP + ROSTER_CHIP_GAP),
+                            top - height,
+                        )
+                        .round();
+                        let max = min + Vec2::splat(ROSTER_CHIP);
+                        layout.shapes.push(Shape::UnitChip { min, max, chip });
+                        layout.roster_chips.push((min, max, chip.id));
                     }
                 }
             }

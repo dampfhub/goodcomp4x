@@ -25,7 +25,8 @@ src/main.rs          logger, command line, event loop
 src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size)
 src/app.rs           App: window, input -> GameState calls, frame pacing (165 FPS), F5 fullscreen
 src/screenshot.rs    screenshot mode: settle, read a frame back, write a PNG, quit
-src/icon.rs          window/taskbar icon drawn in code
+src/icon.rs          window/taskbar icon (pixels from src/icon_art.rs)
+src/icon_art.rs      the icon drawn in code; build.rs also embeds it in the Windows exe
 src/renderer/        Vulkan setup, swapchain, MSAA, the single pipeline, coverage atlas
 src/game/            GameState and everything game-specific
 shaders/             mesh.vert (view-projection), mesh.frag (color x atlas coverage or distance field)
@@ -84,6 +85,15 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    (`select_next_or_end_turn`).
 
 The rules each step applies are in `game-rules.md`.
+
+## Player settings
+
+`Settings` (`src/game/settings.rs`) holds the player's options, owned by `GameState` as
+`settings`, with defaults in `Settings::default`. Game code reads its fields directly. The
+settings menu Escape opens (`press_escape`) lists every `Setting` from `Setting::ALL`, each an
+integer stepped through its `range`, so a new setting is a field and its `Setting` entry in that
+one file; both UI presentations pick it up (`docs/ui-system.md`). `switch_scenario` and
+`load_state` carry the settings, and whether the menu is open, over into the new game.
 
 ## Testing aids
 

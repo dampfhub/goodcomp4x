@@ -39,6 +39,8 @@ const QUIT_HOLD: Duration = Duration::from_secs(1);
 const WINDOW_ICON_SIZE: u32 = 64;
 #[cfg(windows)]
 const TASKBAR_ICON_SIZE: u32 = 256;
+/// How long after the window first shows its icons are set again.
+const ICON_REFRESH_DELAY: Duration = Duration::from_secs(1);
 
 pub struct App {
     // Declared before `window` so it's dropped first: the Vulkan surface
@@ -53,6 +55,9 @@ pub struct App {
     use_imgui: bool,
     last_frame: Option<Instant>,
     minimized: bool,
+    /// When to set the window's icons again (`ICON_REFRESH_DELAY` after it
+    /// first shows), so the taskbar button picks them up.
+    icon_refresh_at: Option<Instant>,
     cursor_pos: Option<Vec2>,
     panning: bool,
     left_press: Option<(Vec2, ClickMode, bool)>,
@@ -65,7 +70,9 @@ pub struct App {
     /// When Escape was pressed, while it's held; the game quits once it's
     /// been held for `QUIT_HOLD`.
     quit_held_since: Option<Instant>,
-    /// Where an Alt-drag selection box started, while the button is down.
+    /// Where a left press on the map started, while the button is down: once
+    /// the cursor moves `DRAG_THRESHOLD` away it's a selection box, not a
+    /// click.
     box_start: Option<Vec2>,
     /// The window's inner size, if set on the command line (or by screenshot
     /// mode); otherwise it's a fraction of the monitor.
@@ -99,6 +106,7 @@ impl App {
 
             last_frame: None,
             minimized: false,
+            icon_refresh_at: None,
             cursor_pos: None,
             panning: false,
             left_press: None,
@@ -137,6 +145,21 @@ impl App {
     }
 
     /// Advances the game by the time since the last frame and draws it.
+    /// Sets the window's icons again, as new icon handles, so Windows sees
+    /// them change and redraws the taskbar button with them (it doesn't
+    /// always pick up the icons set as the window is created).
+    fn refresh_icons(&self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        window.set_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)));
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::WindowExtWindows;
+            window.set_taskbar_icon(Some(icon::icon(TASKBAR_ICON_SIZE)));
+        }
+    }
+
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         if self.minimized {
             return;
@@ -146,6 +169,10 @@ impl App {
         let dt = now - self.last_frame.unwrap_or(now);
         self.last_frame = Some(now);
         self.game.update(dt.as_secs_f32());
+        if self.icon_refresh_at.is_some_and(|at| now >= at) {
+            self.icon_refresh_at = None;
+            self.refresh_icons();
+        }
 
         let Some(size) = self.screen_size() else {
             return;
@@ -264,8 +291,10 @@ impl ApplicationHandler for App {
             .with_title("Hex Combat Sandbox")
             .with_inner_size(self.requested_size.unwrap_or(DEFAULT_WINDOW_SIZE))
             .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)))
-            // A screenshot needs no window on screen, or taking focus.
-            .with_visible(self.screenshot.is_none());
+            // Created hidden and shown once it exists (below), so its icons are
+            // set before the taskbar button is made. A screenshot needs no
+            // window on screen, or taking focus, so it stays hidden.
+            .with_visible(false);
         // Windows shows a separate, larger icon on the taskbar.
         #[cfg(windows)]
         {
@@ -287,6 +316,14 @@ impl ApplicationHandler for App {
         let window = event_loop
             .create_window(attributes)
             .expect("failed to create window");
+        // Shown once winit has attached the icons. Windows can still make the
+        // taskbar button with the blank default icon and not update it until
+        // the window is minimized and restored, so the icons are set again
+        // shortly after (`refresh_icons`).
+        if self.screenshot.is_none() {
+            window.set_visible(true);
+            self.icon_refresh_at = Some(Instant::now() + ICON_REFRESH_DELAY);
+        }
 
         let mut imgui = ImGuiContext::create();
         imgui.set_ini_filename(None);
@@ -426,7 +463,6 @@ impl ApplicationHandler for App {
                     self.cursor_pos = Some(pos);
                     return;
                 }
-                let mut pan_from = self.cursor_pos;
                 if self.use_imgui
                     && self
                         .imgui
@@ -436,18 +472,16 @@ impl ApplicationHandler for App {
                     self.cursor_pos = Some(pos);
                     return;
                 }
+                // A left press that moves far enough is a selection box (drawn
+                // from `box_start`), not a click; only the middle button pans.
                 if let Some((origin, _, _)) = self.left_press
                     && !self.left_dragging
                     && pos.distance(origin) >= DRAG_THRESHOLD
                 {
                     self.left_dragging = true;
-                    // Include motion below the threshold when the drag begins.
-                    if !self.panning {
-                        pan_from = Some(origin);
-                    }
                 }
-                if (self.panning || self.left_dragging)
-                    && let (Some(last), Some(size)) = (pan_from, self.screen_size())
+                if self.panning
+                    && let (Some(last), Some(size)) = (self.cursor_pos, self.screen_size())
                 {
                     self.game.camera.pan(pos - last, size);
                 }
@@ -489,11 +523,6 @@ impl ApplicationHandler for App {
                             return;
                         }
                         let keys = self.modifiers.state();
-                        // Alt starts a selection box instead of a click or pan.
-                        if keys.alt_key() {
-                            self.box_start = Some(cursor);
-                            return;
-                        }
                         if !self.use_imgui
                             && !keys.shift_key()
                             && !keys.control_key()
@@ -521,6 +550,13 @@ impl ApplicationHandler for App {
                         };
                         self.left_press = Some((cursor, mode, !self.game.is_resolving()));
                         self.left_dragging = self.panning;
+                        // A drag from the map (not from a classic panel) selects
+                        // the units inside its box.
+                        let on_panel = !self.use_imgui
+                            && self
+                                .screen_size()
+                                .is_some_and(|size| self.game.ui_covers(cursor, size));
+                        self.box_start = (!on_panel && !self.panning).then_some(cursor);
                     }
                 }
                 (ElementState::Released, MouseButton::Left) => {
@@ -543,13 +579,14 @@ impl ApplicationHandler for App {
                     }
                     if let (Some(start), Some(end), Some(size)) =
                         (self.box_start.take(), self.cursor_pos, self.screen_size())
+                        && self.left_dragging
+                        && start.distance(end) >= DRAG_THRESHOLD
                     {
-                        // Barely moving makes it an Alt-click on one unit.
-                        if start.distance(end) < DRAG_THRESHOLD {
-                            self.game.toggle_in_selection(end, size);
-                        } else {
-                            self.game.select_in_box(start, end, size);
-                        }
+                        // Shift adds the boxed units to the selection.
+                        let add = self.modifiers.state().shift_key();
+                        self.game.select_in_box(start, end, size, add);
+                        self.left_press = None;
+                        self.left_dragging = false;
                         return;
                     }
                     if let Some((origin, mode, may_click)) = self.left_press.take()
@@ -588,6 +625,8 @@ impl ApplicationHandler for App {
                 }
                 (ElementState::Pressed, MouseButton::Middle) => {
                     self.panning = true;
+                    // Panning mid-press cancels both the click and the box.
+                    self.box_start = None;
                     if self.left_press.is_some() {
                         self.left_dragging = true;
                     }
@@ -613,7 +652,9 @@ impl ApplicationHandler for App {
                     self.game.camera.zoom(steps);
                 }
             }
-            // Escape closes management first; otherwise holding it quits.
+            // Escape closes the settings menu, a view or the selection first;
+            // with nothing to close it opens the settings menu, and holding
+            // it from there quits.
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -624,13 +665,8 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
-                if state == ElementState::Pressed
-                    && (self.game.exit_structure_menu() || self.game.clear_selection())
-                {
-                    self.quit_held_since = None;
-                } else {
-                    self.quit_held_since = (state == ElementState::Pressed).then(Instant::now);
-                }
+                self.quit_held_since =
+                    (state == ElementState::Pressed && self.game.press_escape()).then(Instant::now);
             }
             WindowEvent::KeyboardInput {
                 event:

@@ -40,7 +40,7 @@ fn env_number(name: &str) -> Option<u64> {
 /// A fresh game of `scenario` with its RNG seeded, playing every step at once.
 fn start(scenario: Scenario, seed: u64) -> GameState {
     let mut game = GameState::new();
-    game.instant_playback = true;
+    game.settings.instant_playback = true;
     game.seed_rng(seed);
     game.switch_scenario(scenario);
     game

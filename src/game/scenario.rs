@@ -88,23 +88,26 @@ impl GameState {
     }
 
     /// F1-F4: starts `scenario` afresh (restarting it, if it's the current
-    /// one; the world gets a new random map), keeping the savestate, debug
-    /// settings and the RNG (so a seeded game stays reproducible).
+    /// one; the world gets a new random map), keeping the savestate, the
+    /// player's settings (and whether their menu is open), the debug settings
+    /// and the RNG (so a seeded game stays reproducible).
     pub fn switch_scenario(&mut self, scenario: Scenario) {
         let savestate = self.savestate.take();
-        let (instant_playback, fog_of_war) = (self.instant_playback, self.fog_of_war);
+        let settings = std::mem::take(&mut self.settings);
+        let (settings_open, fog_of_war) = (self.settings_open, self.fog_of_war);
         let mut rng = self.rng.clone();
         *self = scenario.start(&mut rng);
         self.rng = rng;
         self.savestate = savestate;
-        self.instant_playback = instant_playback;
+        self.settings = settings;
+        self.settings_open = settings_open;
         self.fog_of_war = fog_of_war;
     }
 
     /// F8: switches turn playback between one step at a time and all at once.
     pub fn toggle_instant_playback(&mut self) {
-        self.instant_playback = !self.instant_playback;
-        self.notice = if self.instant_playback {
+        self.settings.instant_playback = !self.settings.instant_playback;
+        self.notice = if self.settings.instant_playback {
             "TURNS NOW PLAY OUT ALL AT ONCE - F8 FOR STEP BY STEP".into()
         } else {
             "TURNS NOW PLAY OUT STEP BY STEP - F8 FOR ALL AT ONCE".into()
@@ -138,7 +141,8 @@ impl GameState {
         if restored.scenario == self.scenario {
             restored.camera = self.camera.clone();
         }
-        restored.instant_playback = self.instant_playback;
+        restored.settings = self.settings.clone();
+        restored.settings_open = self.settings_open;
         restored.fog_of_war = self.fog_of_war;
         // Rolls carry on from the current game rather than replaying the
         // saved ones, so retrying a save can go differently.
@@ -280,10 +284,13 @@ mod tests {
     #[test]
     fn instant_playback_resolves_the_whole_turn_at_once() {
         let mut game = GameState::new();
-        assert!(game.instant_playback, "on by default");
+        assert!(game.settings.instant_playback, "on by default");
         game.toggle_instant_playback();
         game.switch_scenario(Scenario::Combat);
-        assert!(!game.instant_playback, "kept across a scenario switch");
+        assert!(
+            !game.settings.instant_playback,
+            "kept across a scenario switch"
+        );
         game.toggle_instant_playback();
 
         while game.pending() != (0, 0) {

@@ -2,7 +2,7 @@
 
 The shared UI content lives in `src/game/ui/`. The module is split into
 `mod.rs` (shared types and entry points), `builder.rs` (panel content),
-`trays.rs`, `panels.rs`, `queue.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
+`trays.rs`, `panels.rs`, `queue.rs`, `roster.rs`, `settings_menu.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
 experimental ImGui presentation (`src/game/ui/imgui.rs`), and F11 switches
 between it and the classic layout. `src/game/AGENTS.md` points contributors
 here. Add new controls to the shared `PanelBuilder` content and route their
@@ -23,7 +23,10 @@ Hold Ctrl to show the title bars, collapse buttons, and resize grips for
 arranging panels. During normal play, expanded panels hide their title bars;
 collapsed panels keep a short title bar so they can be expanded again. While
 Ctrl is held and a panel is being dragged, ImGui owns its position and size
-until the drag ends, so dock previews remain stable.
+until the drag ends, so dock previews remain stable. A floating panel the
+player has placed keeps its own size, so the frame Ctrl shows or hides its
+title bar it grows or shrinks by the title bar's height (`title_bar_change`);
+otherwise the title bar would push its content down and clip it.
 The `imgui` dependency enables its `docking` feature. Selection, Production
 Queue, and Debug can dock to one another. The transparent dockspace starts
 below the ImGui status bar but does not accept drops onto the empty map;
@@ -33,6 +36,25 @@ are clamped below the status bar. Docking uses a transparent drag payload so
 the chosen split target stays visible, and floating sizes are preserved across
 dock and undock. Inspect stays transient unless docked into an outer box, where
 it keeps the most recent hover summary visible.
+**Every new panel is a full ImGui panel:** it gets a slot (`SLOT_TITLES` and
+the slot constants in `imgui.rs`, a zone in `plan`, a measured size and a
+`render_imgui_window` call), so it can be dragged, resized, docked and put in
+a box like Selection or Debug. Only static chrome, such as the status bar, is
+a fixed window. The unit strip (`roster.rs`, a `Row::Roster` of unit tokens,
+slot `UNITS`, starting top-left) is an example; its tokens are drawn with the
+map's own token geometry through the window draw list. In the classic layout
+it docks at `Zone::TopLeft` before the debug panel.
+The settings menu (`settings_menu.rs`, slot `SETTINGS`) is another: Escape
+opens it (`GameState::press_escape`, `game/settings.rs`) and it shows only
+while open. It is a full panel rather than a fixed modal, so the player can
+move or dock it and keep playing. ImGui places it top-right above Debug
+(`PLAN_ORDER` in `imgui.rs` puts it first in that zone); classic docks it at
+`Zone::TopRight`, after the unit strip and before debug. Its content,
+`settings_panel_content`, has a name-and-value line and a row of < and >
+buttons (`Target::StepSetting`) for every entry of `Setting::ALL`, then Close
+(`Target::CloseSettings`). A new setting therefore needs no UI code: add it
+in `game/settings.rs` as its module comment describes, and both
+presentations show it and step it through its range.
 At the start of each frame, synchronize native ImGui dock state before planning
 floating positions: ImGui commits a highlighted drop in `NewFrame`, and using
 the previous frame's floating state can immediately undo that split.
