@@ -76,7 +76,7 @@ impl GameState {
     }
 
     /// Escape and Space dismiss city or building management without issuing a
-    /// unit order or starting the quit hold. While a building site is being
+    /// unit order or opening the settings menu. While a building site is being
     /// chosen, the first press only cancels that (and the unsited building)
     /// and keeps the city open.
     pub fn exit_structure_menu(&mut self) -> bool {

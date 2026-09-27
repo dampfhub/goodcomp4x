@@ -20,10 +20,10 @@ the window is created (it did once the window was minimized and restored).
   builds native windows from the same panel content. `Renderer::draw_frame` draws the world,
   optional classic UI, and ImGui data in order. F11 switches presentations.
 - The key map is the `KeyCode` match in `App::window_event`; most arms call one `GameState`
-  method. Escape has its own `KeyboardInput` arm because it acts on press and release: a press
-  calls `GameState::press_escape` (close the settings menu, a view or the selection, or else
-  open the settings menu), and only a press that opened the menu starts the hold to quit; F5 is
-  handled by `App` itself.
+  method. Escape has its own `KeyboardInput` arm: a press calls `GameState::press_escape`
+  (close the settings menu, a view or the selection, or else open the settings menu); F5 is
+  handled by `App` itself. The settings menu's Quit button sets a flag
+  (`GameState::quit_requested`) that the next frame checks before closing the window.
 - Left clicks act on release, and only if the cursor moved less than the 6-pixel drag threshold:
   `handle_click` (the modifiers pick its `ClickMode`: Shift queues, or adds a clicked unit to
   the selection; Ctrl swaps, or takes a clicked group member out). A longer drag that started

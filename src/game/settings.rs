@@ -26,17 +26,17 @@ pub struct Settings {
     /// Play a turn's steps all at once instead of one every
     /// `STEP_INTERVAL` (`turn.rs`). The outcome is the same. F8 toggles it.
     pub instant_playback: bool,
-    /// The most turns one Shift-click queues for each unit's move
-    /// (`queue_move`, `order_queue.rs`). A hex farther away is queued that
-    /// many turns along the way.
-    pub queued_move_turns: usize,
+    /// The most turns a unit's plan holds, this one included: Shift-clicks
+    /// (`order_queue.rs`) queue no turns past it. A hex farther away is
+    /// queued as far along the way as the limit allows.
+    pub max_queued_turns: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             instant_playback: true,
-            queued_move_turns: 6,
+            max_queued_turns: 6,
         }
     }
 }
@@ -45,18 +45,18 @@ impl Default for Settings {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Setting {
     TurnPlayback,
-    QueuedMoveTurns,
+    MaxQueuedTurns,
 }
 
 impl Setting {
     /// Every setting, in the order the menu lists them.
-    pub const ALL: [Setting; 2] = [Setting::TurnPlayback, Setting::QueuedMoveTurns];
+    pub const ALL: [Setting; 2] = [Setting::TurnPlayback, Setting::MaxQueuedTurns];
 
     /// Its label in the menu.
     pub fn name(self) -> &'static str {
         match self {
             Setting::TurnPlayback => "TURN PLAYBACK",
-            Setting::QueuedMoveTurns => "MOVE QUEUE LIMIT",
+            Setting::MaxQueuedTurns => "QUEUE LIMIT",
         }
     }
 
@@ -67,9 +67,9 @@ impl Setting {
                 "WHETHER A TURN PLAYS OUT ALL AT ONCE OR ONE STEP AT A TIME. THE OUTCOME IS \
                  THE SAME. F8 SWITCHES IT TOO."
             }
-            Setting::QueuedMoveTurns => {
-                "THE MOST TURNS OF MOVES ONE SHIFT-CLICK QUEUES FOR A UNIT. A HEX FARTHER AWAY \
-                 IS QUEUED THAT MANY TURNS ALONG THE WAY: SHIFT-CLICK IT AGAIN TO GO ON."
+            Setting::MaxQueuedTurns => {
+                "THE MOST TURNS A UNIT CAN HAVE QUEUED, THIS ONE INCLUDED. SHIFT-CLICKING A HEX \
+                 FARTHER AWAY QUEUES THE MOVE AS FAR AS THE LIMIT GOES."
             }
         }
     }
@@ -78,7 +78,7 @@ impl Setting {
     pub fn range(self) -> RangeInclusive<i32> {
         match self {
             Setting::TurnPlayback => 0..=1,
-            Setting::QueuedMoveTurns => 1..=20,
+            Setting::MaxQueuedTurns => 1..=20,
         }
     }
 
@@ -91,8 +91,8 @@ impl Setting {
                 "STEP BY STEP"
             }
             .into(),
-            Setting::QueuedMoveTurns if value == 1 => "1 TURN".into(),
-            Setting::QueuedMoveTurns => format!("{value} TURNS"),
+            Setting::MaxQueuedTurns if value == 1 => "1 TURN".into(),
+            Setting::MaxQueuedTurns => format!("{value} TURNS"),
         }
     }
 }
@@ -102,7 +102,7 @@ impl Settings {
     pub fn get(&self, setting: Setting) -> i32 {
         match setting {
             Setting::TurnPlayback => self.instant_playback as i32,
-            Setting::QueuedMoveTurns => self.queued_move_turns as i32,
+            Setting::MaxQueuedTurns => self.max_queued_turns as i32,
         }
     }
 
@@ -110,7 +110,7 @@ impl Settings {
     fn set(&mut self, setting: Setting, value: i32) {
         match setting {
             Setting::TurnPlayback => self.instant_playback = value == 1,
-            Setting::QueuedMoveTurns => self.queued_move_turns = value as usize,
+            Setting::MaxQueuedTurns => self.max_queued_turns = value as usize,
         }
     }
 
@@ -132,21 +132,23 @@ impl GameState {
         self.settings_open = false;
     }
 
+    /// Whether the settings menu's Quit button was clicked: the app then
+    /// closes the window.
+    pub fn quit_requested(&self) -> bool {
+        self.quit_requested
+    }
+
     /// A press of Escape. It closes one thing, in this order: the settings
     /// menu, then a city view, interior or site being chosen
     /// (`exit_structure_menu`), then wall or gate placement, the selection or
     /// the tile panel (`clear_selection`). With nothing to close it opens the
-    /// settings menu and returns true: then holding Escape on quits (`app.rs`).
-    pub fn press_escape(&mut self) -> bool {
+    /// settings menu, which has the Quit button.
+    pub fn press_escape(&mut self) {
         if self.settings_open {
             self.settings_open = false;
-            return false;
+        } else if !self.exit_structure_menu() && !self.clear_selection() {
+            self.settings_open = true;
         }
-        if self.exit_structure_menu() || self.clear_selection() {
-            return false;
-        }
-        self.settings_open = true;
-        true
     }
 
     /// The menu's < (`delta` -1) and > (+1) buttons for `setting`.
@@ -221,19 +223,19 @@ mod tests {
         assert!(game.selected_city.is_some());
 
         // The city view closes first, then the tile panel.
-        assert!(!game.press_escape());
+        game.press_escape();
         assert_eq!(game.selected_city, None);
         assert!(!game.settings_open);
         game.inspected_tile = Some(Hex::new(0, 0));
-        assert!(!game.press_escape());
+        game.press_escape();
         assert_eq!(game.inspected_tile, None);
         assert!(!game.settings_open);
 
-        // With nothing left, Escape opens the menu (and may quit if held),
-        // and the next press closes it again.
-        assert!(game.press_escape(), "opening the menu starts the quit hold");
+        // With nothing left, Escape opens the menu, and the next press
+        // closes it again.
+        game.press_escape();
         assert!(game.settings_open);
-        assert!(!game.press_escape());
+        game.press_escape();
         assert!(!game.settings_open);
     }
 
@@ -241,13 +243,14 @@ mod tests {
     fn escape_closes_the_open_menu_before_anything_else() {
         let mut game = GameState::new();
         game.clear_selection();
-        assert!(game.press_escape());
+        game.press_escape();
+        assert!(game.settings_open);
         let unit = game.units.iter().position(|u| u.team == PLAYER_TEAM);
         game.selected = unit;
-        assert!(!game.press_escape());
+        game.press_escape();
         assert!(!game.settings_open, "the menu closed first");
         assert_eq!(game.selected, unit, "the selection stays");
-        assert!(!game.press_escape());
+        game.press_escape();
         assert_eq!(game.selected, None);
     }
 
@@ -259,7 +262,7 @@ mod tests {
         game.switch_scenario(Scenario::Cities);
         assert!(!game.settings_open);
         game.clear_selection();
-        assert!(game.press_escape());
+        game.press_escape();
         game.switch_scenario(Scenario::Combat);
         assert!(game.settings_open, "still open after a switch");
         game.load_state();

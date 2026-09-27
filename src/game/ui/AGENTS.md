@@ -24,8 +24,8 @@ file holds.
   button is clickable. Queue dragging, wheel scrolling, scrollbars and `update_hover` use
   `layout()`, so scrollable or draggable content belongs in a persistent panel, not a hover
   panel. Placement order is priority: command panels first, then the unit strip, then debug.
-- Cursor-following tooltips, the quit prompt and the selection box are overlays with their own
-  anchors.
+- Cursor-following tooltips and the selection box are overlays with their own anchors. The
+  settings menu is the one panel placed outside the dock: centered, in both presentations.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05. ImGui
   style colors (`app.rs`) and draw-list colors are linear too.
 - Map geometry drawn in a panel (the unit strip's tokens) comes from the world drawing code

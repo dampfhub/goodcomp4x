@@ -15,8 +15,7 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::cli::Options;
 use crate::game::{
-    ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, quit_prompt, selection_box,
-    ui_projection,
+    ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, selection_box, ui_projection,
 };
 use crate::icon;
 use crate::renderer::{DrawBatch, Renderer};
@@ -31,9 +30,6 @@ const DRAG_THRESHOLD: f32 = 6.0;
 const WINDOW_SCREEN_FRACTION: f32 = 0.8;
 /// Window size when the monitor's size can't be found.
 const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1600, 900);
-
-/// How long Escape must be held to quit.
-const QUIT_HOLD: Duration = Duration::from_secs(1);
 
 /// Window icon sizes, in pixels; Windows scales them to fit.
 const WINDOW_ICON_SIZE: u32 = 64;
@@ -67,9 +63,6 @@ pub struct App {
     queue_scroll_dragging: bool,
     queue_item_dragging: bool,
     modifiers: Modifiers,
-    /// When Escape was pressed, while it's held; the game quits once it's
-    /// been held for `QUIT_HOLD`.
-    quit_held_since: Option<Instant>,
     /// Where a left press on the map started, while the button is down: once
     /// the cursor moves `DRAG_THRESHOLD` away it's a selection box, not a
     /// click.
@@ -115,7 +108,6 @@ impl App {
             queue_scroll_dragging: false,
             queue_item_dragging: false,
             modifiers: Modifiers::default(),
-            quit_held_since: None,
             box_start: None,
             requested_size,
             screenshot,
@@ -198,16 +190,13 @@ impl App {
         } else {
             self.game.build_ui(size, self.cursor_pos)
         };
-        if let Some(since) = self.quit_held_since {
-            let progress = since.elapsed().as_secs_f32() / QUIT_HOLD.as_secs_f32();
-            if progress >= 1.0 {
-                if let Some(renderer) = &self.renderer {
-                    renderer.wait_idle();
-                }
-                event_loop.exit();
-                return;
+        // The settings menu's Quit button.
+        if self.game.quit_requested() {
+            if let Some(renderer) = &self.renderer {
+                renderer.wait_idle();
             }
-            ui.extend(quit_prompt(progress, size));
+            event_loop.exit();
+            return;
         }
         if let (Some(start), Some(end)) = (self.box_start, self.cursor_pos)
             && start.distance(end) >= DRAG_THRESHOLD
@@ -496,8 +485,6 @@ impl ApplicationHandler for App {
                 self.game.cancel_queue_drag();
                 self.panning = false;
                 self.cursor_pos = None;
-                // The release may never arrive once focus is gone.
-                self.quit_held_since = None;
                 self.box_start = None;
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -653,21 +640,17 @@ impl ApplicationHandler for App {
                 }
             }
             // Escape closes the settings menu, a view or the selection first;
-            // with nothing to close it opens the settings menu, and holding
-            // it from there quits.
+            // with nothing to close it opens the settings menu.
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         physical_key: PhysicalKey::Code(KeyCode::Escape),
-                        state,
+                        state: ElementState::Pressed,
                         repeat: false,
                         ..
                     },
                 ..
-            } => {
-                self.quit_held_since =
-                    (state == ElementState::Pressed && self.game.press_escape()).then(Instant::now);
-            }
+            } => self.game.press_escape(),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {

@@ -129,26 +129,6 @@ pub fn ui_projection(screen_size: Vec2) -> Mat4 {
         * Mat4::from_scale(Vec3::new(2.0 / screen_size.x, -2.0 / screen_size.y, 1.0))
 }
 
-/// While Escape is held: a "hold to quit" prompt under the top bar with a
-/// bar filling toward `progress` = 1, when the game closes.
-pub fn quit_prompt(progress: f32, screen_size: Vec2) -> Vec<Vertex> {
-    let mut panel = PanelBuilder::default();
-    panel.text(BODY, vec![("HOLD ESC TO QUIT".into(), TEXT)]);
-    panel.bar(progress);
-    let size = panel.size();
-    let top_left = Vec2::new(
-        (screen_size.x - size.x) / 2.0,
-        screen_size.y - TOP_BAR_HEIGHT - MARGIN,
-    );
-    let mut layout = Layout::default();
-    panel.place_top_left(top_left, &mut layout);
-    let mut out = Vec::new();
-    for shape in &layout.shapes {
-        draw_shape(shape, &mut out);
-    }
-    out
-}
-
 /// While Alt-dragging: the selection rectangle between `a` and `b` (window
 /// pixels, origin top-left), a translucent fill with a thin border.
 pub fn selection_box(a: Vec2, b: Vec2, screen_size: Vec2) -> Vec<Vertex> {
@@ -210,6 +190,8 @@ enum Target {
     /// Settings menu: step a setting down (-1) or up (+1) through its range.
     StepSetting(Setting, i32),
     CloseSettings,
+    /// Settings menu: close the game.
+    Quit,
 }
 
 /// An order for the selected unit.
@@ -414,8 +396,10 @@ impl Layout {
             .as_ref()
             .map_or(0.0, |dock| dock.remaining_height(zone, width))
     }
+    /// The button under `point`: the last placed, which draws on top, if
+    /// panels overlap (only the centered settings menu does).
     fn button_at(&self, point: Vec2) -> Option<&Button> {
-        self.buttons.iter().find(|b| b.contains(point))
+        self.buttons.iter().rev().find(|b| b.contains(point))
     }
 
     fn covers(&self, point: Vec2) -> bool {
@@ -605,6 +589,7 @@ impl GameState {
             Target::ToggleFog => self.toggle_fog(),
             Target::StepSetting(setting, delta) => self.step_setting(setting, delta),
             Target::CloseSettings => self.close_settings(),
+            Target::Quit => self.quit_requested = true,
         }
     }
 
@@ -701,8 +686,8 @@ impl GameState {
             self.tile_tray(hex, &mut tray);
         } else {
             self.dock_roster(&mut layout);
-            self.dock_settings(&mut layout);
             self.debug_panel(&mut layout);
+            self.place_settings(screen_size, &mut layout);
             return layout;
         }
         let tray_size = tray.size();
@@ -723,8 +708,8 @@ impl GameState {
             }
         }
         self.dock_roster(&mut layout);
-        self.dock_settings(&mut layout);
         self.debug_panel(&mut layout);
+        self.place_settings(screen_size, &mut layout);
         layout
     }
 
