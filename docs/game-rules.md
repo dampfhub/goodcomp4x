@@ -207,9 +207,9 @@ Everyone in a step acts simultaneously:
 - Queued attacks are curved arrows from the attacker (or its ghost, if it moves first) to just
   short of the target. Only the player's own attacks get arrows; the AI's plans stay hidden.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
-  "MISS" on a hex with no enemy unit, city or barracks, or "OUT OF RANGE" if the target moved away. Every unit
-  or structure hurt (retaliation included) shows a rising damage number, or "KILLED". Enemy
-  attacks animate too.
+  "MISS" on a hex with no enemy unit, city or barracks, or "OUT OF RANGE" if the target moved
+  away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
+  "KILLED". Enemy attacks animate too.
 
 ## Abilities (`ability.rs`)
 
