@@ -285,7 +285,8 @@ every turn end.
     pool resets after each.
   - **Mill:** worked tiles adjacent to it deliver all their food, if they can reach the city.
   - **Workshop:** a planned Barracks, Mill or Workshop site adjacent to a workshop costs half.
-- **Workers** (`W`): R builds a dirt road on the worker's hex; I improves it (see Yields).
+- **Workers** (`W`): R builds a dirt road on the worker's hex; I improves it (see Yields), unless
+  another team's site is there. Neither works while a turn plays out.
 - Economy runs once per turn, after the last combat step.
 
 ## Interface (`ui.rs`, `ui/dock.rs`)
@@ -346,8 +347,7 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - The fog leaks: unseen enemies still block paths, clicking a hidden enemy's hex queues an attack,
   and the structure hover panel shows for cities in fog (#21).
 - Swaps only work between adjacent units.
-- Worker roads and improvements are instant, can overwrite an enemy site, and are not blocked
-  while a turn plays out (#11).
+- Worker roads and improvements are instant.
 - A destroyed Barracks stays in the city's built list, so it can never be rebuilt (#8).
 - The Barracks card says it is placed on a worked tile, but any explored land site is accepted
   (#9).
