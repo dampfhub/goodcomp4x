@@ -57,6 +57,8 @@ pub struct App {
     panning: bool,
     left_press: Option<(Vec2, ClickMode, bool)>,
     left_dragging: bool,
+    /// The left button is down placing walls or gates on hex edges.
+    painting_barriers: bool,
     queue_scroll_dragging: bool,
     queue_item_dragging: bool,
     modifiers: Modifiers,
@@ -101,6 +103,7 @@ impl App {
             panning: false,
             left_press: None,
             left_dragging: false,
+            painting_barriers: false,
             queue_scroll_dragging: false,
             queue_item_dragging: false,
             modifiers: Modifiers::default(),
@@ -416,6 +419,13 @@ impl ApplicationHandler for App {
                     self.cursor_pos = Some(pos);
                     return;
                 }
+                if self.painting_barriers {
+                    if let Some(size) = self.screen_size() {
+                        self.game.paint_barrier_at(pos, size, false);
+                    }
+                    self.cursor_pos = Some(pos);
+                    return;
+                }
                 let mut pan_from = self.cursor_pos;
                 if self.use_imgui
                     && self
@@ -444,6 +454,7 @@ impl ApplicationHandler for App {
                 self.cursor_pos = Some(pos);
             }
             WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
+                self.painting_barriers = false;
                 self.left_press = None;
                 self.left_dragging = false;
                 self.queue_scroll_dragging = false;
@@ -492,6 +503,14 @@ impl ApplicationHandler for App {
                             self.queue_item_dragging = true;
                             return;
                         }
+                        // With a wall or gate armed, the press (and any drag)
+                        // places it on hex edges instead of clicking or panning.
+                        if let Some(size) = self.screen_size()
+                            && self.game.paint_barrier_at(cursor, size, !self.use_imgui)
+                        {
+                            self.painting_barriers = true;
+                            return;
+                        }
                         let mode = if keys.shift_key() {
                             ClickMode::Attack
                         } else if keys.control_key() {
@@ -504,6 +523,10 @@ impl ApplicationHandler for App {
                     }
                 }
                 (ElementState::Released, MouseButton::Left) => {
+                    if self.painting_barriers {
+                        self.painting_barriers = false;
+                        return;
+                    }
                     if self.queue_scroll_dragging {
                         self.queue_scroll_dragging = false;
                         return;
@@ -596,7 +619,9 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
-                if state == ElementState::Pressed && self.game.exit_structure_menu() {
+                if state == ElementState::Pressed
+                    && (self.game.exit_structure_menu() || self.game.clear_selection())
+                {
                     self.quit_held_since = None;
                 } else {
                     self.quit_held_since = (state == ElementState::Pressed).then(Instant::now);
@@ -637,8 +662,8 @@ impl ApplicationHandler for App {
                     KeyCode::KeyA => self.game.auto_assign_selected_city(),
                     KeyCode::KeyM => self.game.choose_move_action(),
                     KeyCode::KeyX => self.game.choose_attack_action(),
-                    KeyCode::KeyR => self.game.build_worker_road_selected(),
-                    KeyCode::KeyI => self.game.improve_worker_tile_selected(),
+                    KeyCode::KeyR => self.game.queue_worker_job(crate::game::JobKind::Road),
+                    KeyCode::KeyI => self.game.queue_worker_job(crate::game::JobKind::Improve),
                     KeyCode::KeyF => self.game.found_city_selected(),
                     KeyCode::Digit1 => self
                         .game
@@ -661,7 +686,9 @@ impl ApplicationHandler for App {
                     KeyCode::Digit7 => self
                         .game
                         .queue_selected_city_building(crate::game::Building::Workshop),
+                    KeyCode::Digit8 => self.game.queue_selected_city_worker(),
                     KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
+                    KeyCode::Delete => self.game.disband_selected(),
                     KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
                     KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
                     KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),

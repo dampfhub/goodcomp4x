@@ -116,10 +116,39 @@ fn check_invariants(game: &GameState, context: &str) {
             unit.max_hp()
         );
         assert!(
-            game.grid.is_passable(unit.pos),
+            game.can_enter(unit.pos),
             "{context}: {unit} stands on an impassable or off-map hex"
         );
         occupants.entry(unit.pos).or_default().push(unit.team);
+    }
+    for worker in &game.field_workers {
+        assert!(
+            ids.insert(worker.id),
+            "{context}: worker id {} is also another's",
+            worker.id
+        );
+        assert!(
+            game.can_enter(worker.pos),
+            "{context}: a {:?} worker stands where it can't at {:?}",
+            worker.team,
+            worker.pos
+        );
+        assert!(
+            game.enemy_of_team_at(worker.pos, worker.team).is_none(),
+            "{context}: a {:?} worker shares {:?} with an enemy and wasn't captured",
+            worker.team,
+            worker.pos
+        );
+        assert_eq!(
+            game.cities[worker.home].team, worker.team,
+            "{context}: a worker's home city is another side's"
+        );
+    }
+    for hex in game.structures.keys() {
+        assert!(
+            game.cities.iter().all(|c| c.pos != *hex),
+            "{context}: a structure stands on the city at {hex:?}"
+        );
     }
     for (hex, teams) in occupants {
         // One unit per hex, except a contest: exactly two enemies.

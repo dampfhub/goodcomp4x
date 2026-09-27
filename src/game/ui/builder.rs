@@ -202,10 +202,7 @@ impl PanelBuilder {
                         locked: item.locked,
                     });
                     layout.buttons.push(Button {
-                        target: match item.kind {
-                            QueueKind::City => Target::CityQueueRemove(item.index),
-                            QueueKind::Barracks => Target::BarracksQueueRemove(item.index),
-                        },
+                        target: item.kind.remove_target(item.index),
                         label: "X".into(),
                         hint: String::new(),
                         state: ButtonState::Ready,

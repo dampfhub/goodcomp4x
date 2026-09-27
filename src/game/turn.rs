@@ -43,6 +43,15 @@ const RESOLUTION_ORDER: [(UnitType, Phase); 12] = [
     (UnitType::Armored, Phase::Attack),
 ];
 
+/// One step of a turn: a unit type's moves or attacks, or, after all of
+/// those, the workers' (`workers.rs`). Workers go last so they're exposed:
+/// they walk and work only once every unit has acted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Step {
+    Units(UnitType, Phase),
+    Workers,
+}
+
 /// Where `unit_type` falls (1 = first) among all the steps of `phase`.
 pub(super) fn step_rank(unit_type: UnitType, phase: Phase) -> u32 {
     let rank = RESOLUTION_ORDER
@@ -71,7 +80,12 @@ impl GameState {
         self.group.clear();
 
         self.plan_ai_turn(AI_TEAM);
-        self.pending_steps.extend(RESOLUTION_ORDER);
+        self.pending_steps.extend(
+            RESOLUTION_ORDER
+                .into_iter()
+                .map(|(unit_type, phase)| Step::Units(unit_type, phase)),
+        );
+        self.pending_steps.push_back(Step::Workers);
 
         // Pause before the first step so the last order placed can be seen.
         self.step_timer = STEP_INTERVAL;
@@ -101,8 +115,11 @@ impl GameState {
         if self.instant_playback {
             self.recent_actors.clear();
         }
-        while let Some((unit_type, phase)) = self.pending_steps.pop_front() {
-            let actors = self.resolve_step(unit_type, phase);
+        while let Some(step) = self.pending_steps.pop_front() {
+            let actors = match step {
+                Step::Units(unit_type, phase) => self.resolve_step(unit_type, phase),
+                Step::Workers => self.resolve_workers(),
+            };
             if !actors.is_empty() {
                 self.highlight_timer = HIGHLIGHT_DURATION;
                 if self.instant_playback {
@@ -152,7 +169,6 @@ impl GameState {
             // Units in a contested hex fight whether or not they have orders.
             Phase::Attack => (0..self.units.len())
                 .filter(of_type)
-                .filter(|&i| !self.workers.contains(&self.units[i].id))
                 .filter(|&i| self.units[i].planned_attack.is_some() || self.rival_of(i).is_some())
                 .collect(),
         };
@@ -180,10 +196,33 @@ impl GameState {
             .iter()
             .map(|&i| self.units[i].planned_move.unwrap())
             .collect();
-        let mut moving = vec![true; movers.len()];
+        // A wall, or someone else's gate, turns a move back if no way around
+        // it is left within the unit's move, e.g. one planned before the
+        // player saw the wall.
+        let moving: Vec<bool> = movers
+            .iter()
+            .zip(&dests)
+            .map(|(&i, &dest)| {
+                let unit = &self.units[i];
+                let open = self
+                    .reachable_hexes_by(unit.pos, unit.stats().move_range.max(1), |a, b| {
+                        self.can_step(a, b, unit.team)
+                    })
+                    .contains(&dest);
+                if !open {
+                    log::info!(
+                        "{unit} move blocked: a wall stands in the way to ({}, {})",
+                        dest.q,
+                        dest.r
+                    );
+                }
+                open
+            })
+            .collect();
+        let mut moving = moving;
 
         let mut claims: HashMap<Hex, Vec<usize>> = HashMap::new();
-        for (m, &dest) in dests.iter().enumerate() {
+        for (m, &dest) in dests.iter().enumerate().filter(|&(m, _)| moving[m]) {
             claims.entry(dest).or_default().push(m);
         }
         let mut contests = Vec::new();
@@ -295,6 +334,8 @@ impl GameState {
             }
             unit.planned_move = None;
         }
+        // Stepping onto an enemy worker captures it.
+        self.capture_workers();
     }
 
     /// Resolves `attackers` simultaneously: every attack sees the board as it
@@ -305,6 +346,7 @@ impl GameState {
     fn resolve_attacks(&mut self, attackers: &[usize]) {
         let mut engagements: Vec<Engagement> = Vec::new();
         let mut structure_hits: Vec<(usize, usize, bool, f32)> = Vec::new();
+        let mut killed_workers: Vec<u32> = Vec::new();
         // Each attack's animation, played once the step's damage is known.
         let mut shots: Vec<Effect> = Vec::new();
         for &a in attackers {
@@ -347,8 +389,8 @@ impl GameState {
                 (vec![target], 1.0)
             };
             let defenders: Vec<usize> = hexes
-                .into_iter()
-                .filter_map(|hex| self.enemy_of_team_at(hex, attacker.team))
+                .iter()
+                .filter_map(|&hex| self.enemy_of_team_at(hex, attacker.team))
                 .collect();
             // A structure is hit only when no enemy unit is.
             let structure = if defenders.is_empty() {
@@ -364,7 +406,19 @@ impl GameState {
             if let Some((city, barracks)) = structure {
                 structure_hits.push((a, city, barracks, scale));
             }
-            let outcome = if !defenders.is_empty() || structure.is_some() {
+            // With nothing else to hit, the attack kills any enemy workers
+            // out on its hexes. A unit on a worker's hex shields it.
+            let workers_hit: Vec<u32> = if defenders.is_empty() && structure.is_none() {
+                hexes
+                    .iter()
+                    .flat_map(|&hex| self.enemy_workers_at(hex, attacker.team))
+                    .map(|w| self.field_workers[w].id)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let outcome = if !defenders.is_empty() || structure.is_some() || !workers_hit.is_empty()
+            {
                 Outcome::Hit
             } else {
                 log::info!(
@@ -376,6 +430,7 @@ impl GameState {
             };
             shots.push(Effect::Shot { from, to, outcome });
             engagements.extend(defenders.into_iter().map(|d| Engagement::new(a, d, scale)));
+            killed_workers.extend(workers_hit);
         }
 
         let mut damage = vec![0.0; self.units.len()];
@@ -392,11 +447,15 @@ impl GameState {
                 continue;
             }
             let (attacker, defender) = (&self.units[a], &self.units[d]);
+            let (attacker_cover, defender_cover) = (
+                self.defense_multiplier(attacker),
+                self.defense_multiplier(defender),
+            );
             let hit = engagement.damage_scale
-                * combat::roll_damage(attacker, defender, &self.grid, &mut self.rng);
+                * combat::roll_damage(attacker, defender, defender_cover, &mut self.rng);
             damage[d] += hit;
-            let attacker_note = combat::unit_note(attacker, &self.grid);
-            let defender_note = combat::unit_note(defender, &self.grid);
+            let attacker_note = combat::unit_note(attacker, &self.grid, self.in_fort(attacker));
+            let defender_note = combat::unit_note(defender, &self.grid, self.in_fort(defender));
             let verb = if engagement.damage_scale < 1.0 {
                 "volleys"
             } else {
@@ -409,8 +468,8 @@ impl GameState {
                 None => None,
             };
             if let Some(back_scale) = retaliation_scale {
-                let back =
-                    back_scale * combat::roll_damage(defender, attacker, &self.grid, &mut self.rng);
+                let back = back_scale
+                    * combat::roll_damage(defender, attacker, attacker_cover, &mut self.rng);
                 damage[a] += back;
                 let verb = if reverse.is_some() {
                     "trades blows with"
@@ -442,8 +501,7 @@ impl GameState {
                 // A city returns fire at every unit attacking from its range.
                 let unit = &self.units[attacker];
                 if self.cities[city].pos.distance(unit.pos) <= CITY_ATTACK_RANGE {
-                    let defense =
-                        unit.stats().defense * self.grid.tile(unit.pos).defense_multiplier();
+                    let defense = unit.stats().defense * self.defense_multiplier(unit);
                     damage[attacker] +=
                         combat::roll_damage_against(CITY_ATTACK, defense, &mut self.rng);
                 }
@@ -453,6 +511,17 @@ impl GameState {
         for shot in shots {
             self.play(shot);
         }
+        for w in 0..self.field_workers.len() {
+            if killed_workers.contains(&self.field_workers[w].id) {
+                let at = self.field_workers[w].pos.to_world();
+                self.play(Effect::Damage {
+                    at,
+                    amount: 1.0,
+                    fatal: true,
+                });
+            }
+        }
+        self.kill_workers(&killed_workers);
         for (i, &taken) in damage.iter().enumerate() {
             if taken > 0.0 {
                 let at = self.unit_layout(i).0;

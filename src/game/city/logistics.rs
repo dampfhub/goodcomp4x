@@ -49,18 +49,21 @@ impl GameState {
                 self.enemy_of_team_at(hex, team).is_some()
                     || self.cities.iter().any(|c| c.pos == hex && c.team != team)
             },
+            |from, to| self.can_cross(from, to, team),
             |hex| self.is_road_hex(hex),
         )
     }
 
     /// Like `routes_from`, with `blocked` deciding which hexes goods can't
-    /// cross and `road` which carry them cheaply: the real board for the
+    /// cross, `crossable` which hex edges they can (walls and others' gates
+    /// stop them) and `road` which carry them cheaply: the real board for the
     /// economy, or what the player knows of it for what's shown to them
     /// (`known_routes`).
     pub(in crate::game) fn routes_from_by(
         &self,
         origin: Hex,
         blocked: impl Fn(Hex) -> bool,
+        crossable: impl Fn(Hex, Hex) -> bool,
         road: impl Fn(Hex) -> bool,
     ) -> Routes {
         let mut result = Routes {
@@ -85,7 +88,11 @@ impl GameState {
                 continue;
             }
             for n in hex.neighbors() {
-                if !self.grid.contains(n) || !self.grid.terrain(n).is_workable() || blocked(n) {
+                if !self.grid.contains(n)
+                    || !self.grid.terrain(n).is_workable()
+                    || blocked(n)
+                    || !crossable(hex, n)
+                {
                     continue;
                 }
                 let step = if road(n) {
