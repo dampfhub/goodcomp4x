@@ -24,7 +24,7 @@ playback (F8, on by default) resolves every step of a turn at once, in the same 
 outcomes don't change. Fog of war (F10) is on by default. Both settings survive switches and
 loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
 seed, and has COMPLETE PRODUCTION (F9), which pays for the open city's or barracks' current
-build at once: a unit appears if a neighboring hex is open, and a Barracks, Mill or Workshop
+build at once: a unit appears if a neighboring hex is open, and a placed building
 still needs its site and Confirm.
 
 ## Tiles (`terrain.rs`, `hex.rs`)
@@ -52,12 +52,14 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **Water:** units can't enter it or target it. Cities can work it: a route may end on a water
   tile but never continues across one.
 - **Rivers** run along hex edges (World maps only). Land beside a river or a lake has fresh water:
-  +1 food, on top of any improvement. Rivers affect nothing else yet.
+  +1 food, on top of any improvement. A Canoe House makes the connected riverbank a transport
+  corridor (see Buildings).
 - **Route cost** of entering a hex: 2 (3 on snow or marsh), +1 for hills, +1 for a feature; a road
   or city hex costs 1.
 - **Defense** bonuses apply to units only; barracks defense is fixed.
-- **Resources:** Horses and Iron give no yield; they let a Barracks standing on them train Cavalry
-  or Armored. Only the Cities scenario places them.
+- **Resources:** Horses and Iron give no yield. A Barracks on them trains Cavalry or Armored;
+  an adjacent Stable or Forge on or beside the matching deposit also unlocks and upgrades that
+  troop type.
 
 ## Maps
 
@@ -93,15 +95,17 @@ what a unit can do goes through it. Settlers (a planted flag) are civilians with
 drawn as hollow hexagons with only a move badge; every other unit is a team-colored disc with its
 pictogram. Settlers can be ordered to attack, though no badge shows it. Workers aren't units:
 see Workers below. Cavalry and
-Armored are built only at a Barracks standing on Horses or Iron respectively; cities can't
-queue them. Nothing heals.
+Armored are built at a Barracks on Horses or Iron, or supported by an adjacent Stable or Forge;
+cities can't queue them. Stable-trained Cavalry get +1 move; Forge-trained Armored get +20% HP
+and +15% defense. These upgrades stay with the unit, including in city interiors. A Field
+Hospital heals nearby troops (see Buildings).
 
 ## Fog of war (`fog.rs`)
 
 - On by default; F10 or the debug panel toggles it.
 - The player's units see 2 hexes (Scout and Cavalry 3), +1 on hills, +2 through the turn
-  after a Lookout. The player's cities see 3, barracks 1, outposts 2, and workers out on the map
-  1.
+  after a Lookout. The player's cities see 3, barracks 1, outposts 2, Watchposts 4 (5 from hills),
+  and workers out on the map 1.
 - Every tile a player's city works is always in sight, however far and whatever mountains stand
   in the way, so an enemy standing on one is seen. That includes a tile whose citizen a cut route
   moved elsewhere until it reopens (see Cities), so an enemy that ends a turn on a worked tile
@@ -166,6 +170,8 @@ queue them. Nothing heals.
   one. Whenever the game picks the unit, the camera glides to it; middle-drag cancels the glide.
 - Movement is a BFS through passable, unoccupied hexes: units can't pass through each other,
   mountains or water. Two allies can't head for the same hex.
+- A connected Railhead adds its tile as a distant, one-turn move for troops at their city center
+  or in its adjacent ring. The move still resolves with normal occupancy and collision rules.
 - **Ending the turn:** `pending()` counts player units that still need orders and player cities
   with nothing queued; citizen assignments never count. Space selects what is still waiting (a
   unit, then a city needing a build) and ends the turn once nothing is. The End Turn button
@@ -386,12 +392,14 @@ every turn end.
   production earned while it waits is lost, not banked for the rest of the queue. A player city
   with an empty queue holds up the turn.
 - **Costs:** Melee 12, Ranged 14, Cavalry 16, Siege 18, Armored 20; Granary 12, Barracks 16,
-  Mill 15, Workshop 20. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue Cavalry or
-  Armored), 4-7 Granary, Barracks, Mill, Workshop.
+  Mill 15, Workshop 20, Canoe House 16, Forge 20, Stable 20, Watchpost 16, Field Hospital 24,
+  Cannery 24, Work Camp 18, Smelter 24, Railhead 30. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue Cavalry or
+  Armored), 4-7 Granary, Barracks, Mill, Workshop. The other buildings use the city's paged
+  build cards.
   One of each building per city.
 - **Buildings:**
   - **Granary:** +2 food per turn. Completes when paid for.
-  - **Barracks, Mill, Workshop** stand on a site: queuing one starts site selection (passable land
+  - **All buildings except Granary** stand on a site: queuing one starts site selection (passable land
     you have explored, not a city, building or other planned site). Site selection belongs to the
     open city. Stopping it before a site is chosen (Escape, leaving the view, opening another
     view, ending the turn) takes the building back out of the queue; End Turn then asks for
@@ -402,10 +410,41 @@ every turn end.
   - **Barracks:** its own view and queue (all five unit types) with its own production pool, earned
     only while the city's manager stands on the barracks: each worked tile's production times its
     delivery share from the barracks. The city's own income still counts those tiles too. Cavalry
-    needs the barracks on Horses, Armored on Iron. A unit appears next to the barracks, and the
+    needs the barracks on Horses or a supporting Stable, Armored on Iron or a supporting Forge.
+    A unit appears next to the barracks, and the
     pool resets after each.
   - **Mill:** worked tiles adjacent to it deliver all their food, if they can reach the city.
-  - **Workshop:** a planned Barracks, Mill or Workshop site adjacent to a workshop costs half.
+  - **Workshop:** any planned placed-building site adjacent to a workshop costs half. Moving it
+    away before confirmation restores the full cost.
+  - **Canoe House:** must stand on a riverbank. Connected riverbank hexes act like roads for
+    friendly delivery routes (cost 1 between banks); walls, enemy occupation and the 8-cost
+    delivery limit still apply. This can bring several remote tiles into a city's reach at once.
+  - **Forge and Stable:** must stand on or adjacent to Iron or Horses respectively. If also
+    adjacent to a Barracks, they let it train the matching unit even when the Barracks is off
+    the resource. Forge-trained Armored have +20% HP and +15% defense; Stable-trained Cavalry
+    have +1 move. Units trained before the building was placed retain their original stats.
+  - **Watchpost:** sees 4 hexes, or 5 from hills, through ordinary sight lines. It does not
+    need a worker, unlike an outpost.
+  - **Field Hospital:** after each turn's economy, heals the two most injured friendly units
+    within 2 hexes by 20 HP in both their field and city-interior health bars. Each unit can
+    receive this healing only once per turn even if two hospitals overlap.
+  - **Cannery:** collects food from up to three owned, unworked improved sites within 3 hexes,
+    even outside city delivery range. Those sites need a local open route to the Cannery, but
+    no onward route to the city. The food share is 100% at distance 1, 75% at 2, and 50% at 3;
+    only the three highest-yield eligible sites contribute. Enemy occupation cuts delivery.
+  - **Work Camp:** workers assigned jobs within 3 hexes start from and return to this building
+    while it has a delivery route to its city. They still walk, work and face capture normally;
+    Recall sends a worker to the city center. If the route is cut, new assignments start at the
+    city and returning workers head there instead. It uses the city's existing worker job list.
+  - **Smelter:** must stand on or beside hills or Iron. It collects production from up to three
+    owned, unworked mines within 3 hexes using the same local-route and 100/75/50% distance
+    rules as the Cannery, even beyond city delivery range. It feeds the city queue, not Barracks.
+  - **Railhead:** the city center acts as its origin terminal, so no second building is needed
+    beside the city. An unbroken chain of roads from city center to Railhead lets a friendly
+    land unit on the center or an adjacent hex move directly to the Railhead in one turn. The
+    Railhead is the only destination; it must be unoccupied. Walls, gates and enemy occupation
+    can cut the link, including after an order was planned. The prototype uses existing roads
+    as the rail corridor rather than adding separate track jobs.
 - **Worker** (8, 8 production): adds a worker to the city's pool (see Workers).
 - Economy runs once per turn, after the workers' step.
 
@@ -413,13 +452,14 @@ every turn end.
 
 - **Pool:** each city keeps its workers at home, off the map, where nothing can touch them. A new
   city starts with one; the city queue builds more (8). A tag on each of your cities counts the
-  workers at home.
+  workers at home. A connected Work Camp can be the departure and return point for nearby jobs;
+  the worker returns to the same city pool.
 - **Jobs:** with nothing selected, click a tile to open its tile panel and pick a job, or press
   R (road) or I (improve). The job goes to the open city, or else your nearest city, and waits in
   its worker list, which the city panel shows: drag to reorder, X to remove. Queued jobs show on
   the map as faded gold rings (walls and gates as faded gold edges). A job needs explored open
   ground, no city there, and nothing already doing the same thing; improvements and outposts or
-  forts also can't go on a barracks, mill or workshop, an improvement not on another side's site,
+  forts also can't go on a placed building, an improvement not on another side's site,
   an outpost or fort not on another one.
 - **Walls and gates** stand on the edge between two hexes, not on a tile. Wall or Gate in the
   tile panel arms placement: each click on the map queues one on the hex edge nearest the cursor
@@ -464,7 +504,7 @@ every turn end.
   TURN.
 - **Command tray** (bottom-left): with a city open, it shows population, stores and rates, the
   current build, labor focus buttons, the growth meter, the selected tile, unit cards (1-3), the
-  Yields button, cards for buildings not yet built (4-7), barracks status with See Barracks,
+  Yields button, paged cards for buildings not yet built (4-7 for the first four), barracks status with See Barracks,
   planned sites with Confirm once they are paid for, and its workers (home, out and what each is
   doing) with the worker list; the queue docks above it. With a barracks open, its five train
   buttons and Open City, queue above. With a unit selected: stats (boosted values green, reduced

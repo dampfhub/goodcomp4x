@@ -210,7 +210,8 @@ impl GameState {
                     .reachable_hexes_by(unit.pos, unit.stats().move_range.max(1), |a, b| {
                         self.can_step(a, b, unit.team)
                     })
-                    .contains(&dest);
+                    .contains(&dest)
+                    || self.rail_transfer_available(unit.pos, dest, unit.team, None);
                 if !open {
                     log::info!(
                         "{unit} move blocked: a wall stands in the way to ({}, {})",

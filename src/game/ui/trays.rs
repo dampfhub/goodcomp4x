@@ -221,6 +221,15 @@ impl GameState {
                 crate::game::fog::LOOKOUT_SIGHT
             ));
         }
+        match unit.training_upgrade {
+            Some(crate::game::terrain::Resource::Iron) => {
+                notes.push("FORGED ARMOR: +20% HP, +15% DEFENSE".to_string());
+            }
+            Some(crate::game::terrain::Resource::Horses) => {
+                notes.push("STABLE TRAINING: +1 MOVE".to_string());
+            }
+            None => {}
+        }
         if self.rival_of(idx).is_some() {
             notes.push("CONTESTED".to_string());
         }
@@ -563,38 +572,57 @@ impl GameState {
                 LABEL_TEXT,
             )],
         );
-        let buildings = [
-            Building::Granary,
-            Building::Barracks,
-            Building::Mill,
-            Building::Workshop,
-        ];
-        panel.buttons(
-            buildings
-                .into_iter()
-                .filter(|&building| !city.built.contains(&building))
-                .map(|building| ButtonSpec {
-                    target: Target::Building(building),
-                    label: building.name().into(),
-                    hint: format!(
+        let last_page = (Building::ALL.len() - 1) / super::BUILDING_PAGE_SIZE;
+        let start = city.building_page.min(last_page) * super::BUILDING_PAGE_SIZE;
+        let end = (start + super::BUILDING_PAGE_SIZE).min(Building::ALL.len());
+        let mut building_buttons: Vec<_> = Building::ALL[start..end]
+            .iter()
+            .copied()
+            .filter(|&building| !city.built.contains(&building))
+            .map(|building| ButtonSpec {
+                target: Target::Building(building),
+                label: building.name().into(),
+                hint: if building.shortcut() == ' ' {
+                    format!("{} PROD", quantity(building.cost()))
+                } else {
+                    format!(
                         "{} · {} PROD",
                         building.shortcut(),
                         quantity(building.cost())
-                    ),
-                    // Queued or finished, the card is spent, unless the
-                    // building still has no site: then it picks one.
-                    state: ButtonState::new(
-                        city.queue.first() == Some(&Build::Building(building))
-                            || self.needs_site(i, building)
-                            || self.site_placement() == Some((i, building)),
-                        (city.pending_building == Some(building)
-                            || city.queue.contains(&Build::Building(building)))
-                            && !self.needs_site(i, building),
-                    ),
-                    armed: false,
-                })
-                .collect(),
-        );
+                    )
+                },
+                // Queued or finished, the card is spent, unless the
+                // building still has no site: then it picks one.
+                state: ButtonState::new(
+                    city.queue.first() == Some(&Build::Building(building))
+                        || self.needs_site(i, building)
+                        || self.site_placement() == Some((i, building)),
+                    (city.pending_building == Some(building)
+                        || city.queue.contains(&Build::Building(building)))
+                        && !self.needs_site(i, building),
+                ),
+                armed: false,
+            })
+            .collect();
+        if city.building_page > 0 {
+            building_buttons.push(ButtonSpec {
+                target: Target::BuildingPagePrev,
+                label: "< BUILDS".into(),
+                hint: String::new(),
+                state: ButtonState::Ready,
+                armed: false,
+            });
+        }
+        if city.building_page < last_page {
+            building_buttons.push(ButtonSpec {
+                target: Target::BuildingPageNext,
+                label: "BUILDS >".into(),
+                hint: String::new(),
+                state: ButtonState::Ready,
+                armed: false,
+            });
+        }
+        panel.buttons(building_buttons);
         if let Some(tile) = city.barracks {
             let active = city.worked.first() == Some(&tile);
             let status = if active {
@@ -618,7 +646,7 @@ impl GameState {
                 armed: false,
             }]);
         }
-        for building in [Building::Barracks, Building::Mill, Building::Workshop] {
+        for building in Building::PLACEABLE {
             let Some(site) = city.planned_sites.get(&building) else {
                 if self.needs_site(i, building) {
                     let how = if self.site_placement() == Some((i, building)) {

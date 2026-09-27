@@ -89,12 +89,14 @@ plays out.
 | Y / Yields button | Show or hide tile yields around the open city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron) |
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
+| BUILDS > / < BUILDS in the city tray | Page through the building cards, including Canoe House, Forge, Stable, Watchpost, Field Hospital, Cannery, Work Camp, Smelter and Railhead |
+| Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
-| Click a tile after queuing a Barracks, Mill or Workshop | Choose its site |
+| Click a tile after queuing a placed building | Choose its site |
 | Escape while choosing a site | Cancel it: the building comes back out of the queue (the city stays open) |
 | Its card (or key) while a finished building has no site | Resume choosing the site |
 | Click a planned site's map badge | Move that site |
-| Confirm button | Place a finished Barracks, Mill or Workshop on its site |
+| Confirm button | Place a finished building on its site |
 | Drag a queue row onto another | Reorder the queue |
 | Click a row's X | Remove it (removing the item in progress loses its production) |
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
@@ -184,7 +186,7 @@ them.
   a fort a ring of stakes around it. Queued walls and gates are faded gold edges.
 - Cities are crenellated towers showing their population, with a gold G disc once they have a
   granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
-  a Workshop a blue diamond marked W. While you choose or move a site, a translucent diamond with
+  a Workshop a blue diamond marked W. Other buildings have colored letter badges. While you choose or move a site, a translucent diamond with
   the building's letter previews it. Improvements are small icons in a hex's top-left corner: a
   wheat stalk (farm), an ore cart (mine), a fence (pasture), stacked logs (lumber mill).
   Resources are icons in the top-right corner: a horse's head (Horses), an ingot (Iron). Brown

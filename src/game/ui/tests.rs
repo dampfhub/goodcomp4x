@@ -18,6 +18,38 @@ fn hovering_a_button_shows_its_tooltip() {
 }
 
 #[test]
+fn building_catalog_pages_keep_new_cards_clickable_inside_the_tray() {
+    let mut game = GameState::city_scenario();
+    game.select_city();
+    for (page, expected) in [
+        (0, Building::Workshop),
+        (1, Building::CanoeHouse),
+        (2, Building::FieldHospital),
+        (3, Building::Railhead),
+    ] {
+        assert_eq!(game.cities[0].building_page, page);
+        let layout = game.layout(SCREEN);
+        let card = layout
+            .buttons
+            .iter()
+            .find(|b| b.target == Target::Building(expected))
+            .expect("building card shown");
+        let middle = (card.min + card.max) / 2.0;
+        assert!(layout.button_at(middle).is_some());
+        assert!(
+            layout
+                .panels
+                .iter()
+                .any(|&(min, max)| contains(min, max, middle))
+        );
+        if page < 3 {
+            let next = button_cursor(&game, Target::BuildingPageNext);
+            game.handle_click(next, SCREEN, ClickMode::Normal);
+        }
+    }
+}
+
+#[test]
 fn hovering_an_enemy_describes_it() {
     let mut game = GameState::new();
     game.fog_of_war = false;
@@ -239,8 +271,7 @@ fn barracks_map_click_locks_site_and_exits_placement() {
         .flat_map(|q| (-8..=8).map(move |r| Hex::new(q, r)))
         .filter(|&hex| {
             let cursor = hex_cursor(&game, hex);
-            game.grid.is_passable(hex)
-                && !game.cities.iter().any(|c| c.pos == hex)
+            game.site_available(city, Building::Barracks, hex)
                 && (0.0..SCREEN.x).contains(&cursor.x)
                 && (0.0..SCREEN.y).contains(&cursor.y)
                 && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))

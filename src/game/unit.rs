@@ -4,6 +4,7 @@ use super::ability::{
     Ability, CHARGE_ATTACK, CHARGE_EXTRA_MOVE, DEPLOYED_EXTRA_RANGE, SHIELD_WALL_DEFENSE,
 };
 use super::hex::Hex;
+use super::terrain::Resource;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Team {
@@ -38,6 +39,17 @@ pub struct UnitStats {
     pub defense: f32,
     pub move_range: i32,
     pub attack_range: i32,
+}
+
+pub(crate) fn apply_training_upgrade(stats: &mut UnitStats, upgrade: Option<Resource>) {
+    match upgrade {
+        Some(Resource::Iron) => {
+            stats.max_hp *= 1.2;
+            stats.defense *= 1.15;
+        }
+        Some(Resource::Horses) => stats.move_range += 1,
+        None => {}
+    }
 }
 
 impl UnitType {
@@ -98,6 +110,8 @@ pub struct Unit {
     /// Independent tactical health inside cities. Either health bar reaching
     /// zero kills the same logical unit in both layers.
     pub interior_hp: f32,
+    /// A Forge or Stable upgrade earned when this troop was trained.
+    pub training_upgrade: Option<Resource>,
     /// Orders queued for this turn. The attack targets a hex rather than a
     /// unit: whichever enemy stands there when it resolves gets hit.
     pub planned_move: Option<Hex>,
@@ -134,6 +148,7 @@ impl Unit {
             unit_type,
             hp: unit_type.stats().max_hp,
             interior_hp: unit_type.stats().max_hp,
+            training_upgrade: None,
             planned_move: None,
             planned_attack: None,
             ability_queued: false,
@@ -154,6 +169,7 @@ impl Unit {
     /// The unit's stats with its queued ability and siege deployment applied.
     pub fn stats(&self) -> UnitStats {
         let mut stats = self.unit_type.stats();
+        apply_training_upgrade(&mut stats, self.training_upgrade);
         if self.ability_queued {
             match self.ability() {
                 Ability::ShieldWall => {
@@ -204,6 +220,7 @@ impl Unit {
     /// if it packs up).
     pub fn later_stats(&self) -> UnitStats {
         let mut stats = self.unit_type.stats();
+        apply_training_upgrade(&mut stats, self.training_upgrade);
         let deploying = self.ability_queued && self.ability() == Ability::Deploy;
         if self.deployed != deploying {
             stats.move_range = 0;
@@ -298,7 +315,7 @@ impl Unit {
     }
 
     pub fn max_hp(&self) -> f32 {
-        self.unit_type.stats().max_hp
+        self.stats().max_hp
     }
 
     pub fn is_alive(&self) -> bool {

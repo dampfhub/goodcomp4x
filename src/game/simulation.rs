@@ -201,6 +201,12 @@ fn check_invariants(game: &GameState, context: &str) {
             worker.pos
         );
         assert!(
+            game.can_enter(worker.base),
+            "{context}: worker {} has an impassable work base at {:?}",
+            worker.id,
+            worker.base
+        );
+        assert!(
             game.enemy_of_team_at(worker.pos, worker.team).is_none(),
             "{context}: a {:?} worker shares {:?} with an enemy and wasn't captured",
             worker.team,

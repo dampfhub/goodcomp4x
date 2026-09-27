@@ -19,6 +19,200 @@ fn roads_improve_delivery_and_enemy_occupation_blocks_the_site() {
     ));
     assert!(!g.routes(0).costs.contains_key(&tile));
 }
+
+#[test]
+fn canoe_house_turns_its_connected_river_into_a_transport_corridor() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.roads.clear();
+    let bank = Hex::new(-3, 0);
+    let middle = Hex::new(-2, 0);
+    let destination = Hex::new(-1, 0);
+    g.grid = g.grid.clone().with_rivers(std::collections::HashSet::from([
+        crate::game::hex::edge(bank, middle),
+        crate::game::hex::edge(middle, destination),
+    ]));
+    let before = g.routes(0).costs[&destination];
+    assert!(g.site_available(0, Building::CanoeHouse, bank));
+    assert!(!g.site_available(0, Building::CanoeHouse, Hex::new(-4, 1)));
+    g.cities[0]
+        .extra_buildings
+        .insert(Building::CanoeHouse, bank);
+    assert!(g.routes(0).costs[&destination] < before);
+    assert_eq!(g.routes(0).costs[&destination], 4);
+}
+
+#[test]
+fn forge_and_stable_unlock_and_upgrade_troops_at_an_off_resource_barracks() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    let barracks = Hex::new(-3, 1);
+    let horses = Hex::new(-2, 0);
+    let iron = Hex::new(-2, 1);
+    assert_eq!(g.grid.resource(barracks), None);
+    assert!(g.site_available(0, Building::Stable, horses));
+    assert!(g.site_available(0, Building::Forge, iron));
+    g.cities[0].barracks = Some(barracks);
+    assert!(!g.barracks_can_train(0, BuildUnit::Cavalry));
+    assert!(!g.barracks_can_train(0, BuildUnit::Armored));
+    g.cities[0].extra_buildings.insert(Building::Stable, horses);
+    g.cities[0].extra_buildings.insert(Building::Forge, iron);
+    assert!(g.barracks_can_train(0, BuildUnit::Cavalry));
+    assert!(g.barracks_can_train(0, BuildUnit::Armored));
+    g.cities[0].barracks_queue = vec![BuildUnit::Cavalry];
+    g.cities[0].barracks_production = BuildUnit::Cavalry.cost();
+    g.complete_builds();
+    let cavalry = g
+        .units
+        .iter()
+        .find(|u| u.unit_type == UnitType::Cavalry)
+        .unwrap();
+    assert_eq!(cavalry.training_upgrade, Some(Resource::Horses));
+    assert_eq!(cavalry.stats().move_range, 3);
+    g.units.clear();
+    g.cities[0].barracks_queue = vec![BuildUnit::Armored];
+    g.cities[0].barracks_production = BuildUnit::Armored.cost();
+    g.complete_builds();
+    let armored = g
+        .units
+        .iter()
+        .find(|u| u.unit_type == UnitType::Armored)
+        .unwrap();
+    assert_eq!(armored.training_upgrade, Some(Resource::Iron));
+    assert!(armored.max_hp() > UnitType::Armored.stats().max_hp);
+}
+
+#[test]
+fn remote_cannery_collects_food_beyond_city_reach_but_not_through_an_enemy() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.sites.clear();
+    g.cities[0].worked.clear();
+    let cannery = Hex::new(0, 0);
+    let farm = Hex::new(1, 0);
+    assert!(!g.routes(0).costs.contains_key(&farm));
+    g.sites.insert(
+        farm,
+        Site {
+            team: Team::Blue,
+            food: 16,
+            production: 0,
+            label: "FARM",
+        },
+    );
+    let before = g.income(0).0;
+    g.cities[0]
+        .extra_buildings
+        .insert(Building::Cannery, cannery);
+    assert_eq!(g.income(0).0 - before, g.tile_yield(farm).0 * 4);
+    g.units
+        .push(Unit::new(900, farm, Team::Red, UnitType::Melee));
+    assert_eq!(g.income(0).0, before);
+}
+
+#[test]
+fn remote_smelter_collects_unworked_mines_beyond_city_reach() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.fog_of_war = false;
+    g.sites.clear();
+    g.cities[0].worked.clear();
+    let smelter = Hex::new(0, 0);
+    let mine = Hex::new(1, 0);
+    assert!(g.site_available(0, Building::Smelter, smelter));
+    assert!(!g.routes(0).costs.contains_key(&mine));
+    g.sites.insert(
+        mine,
+        Site {
+            team: Team::Blue,
+            food: 0,
+            production: 16,
+            label: "MINE",
+        },
+    );
+    let before = g.income(0).1;
+    g.cities[0]
+        .extra_buildings
+        .insert(Building::Smelter, smelter);
+    assert_eq!(g.income(0).1 - before, 64);
+    g.units
+        .push(Unit::new(900, mine, Team::Red, UnitType::Melee));
+    assert_eq!(g.income(0).1, before);
+}
+
+#[test]
+fn a_road_connected_railhead_moves_a_city_troop_across_the_map_in_one_turn() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.fog_of_war = false;
+    g.roads.clear();
+    let terminal = Hex::new(0, 0);
+    for q in -3..=0 {
+        g.roads.insert(Hex::new(q, 0));
+    }
+    g.cities[0]
+        .extra_buildings
+        .insert(Building::Railhead, terminal);
+    g.units
+        .push(Unit::new(900, Hex::new(-4, 1), Team::Blue, UnitType::Melee));
+    assert!(g.rail_connected(0, None));
+    g.try_queue_move(0, terminal);
+    assert_eq!(g.units[0].planned_move, Some(terminal));
+    g.resolve_step(UnitType::Melee, crate::game::turn::Phase::Move);
+    assert_eq!(g.units[0].pos, terminal);
+    g.units[0].pos = Hex::new(-4, 1);
+    g.try_queue_move(0, terminal);
+    g.units
+        .push(Unit::new(901, Hex::new(-2, 0), Team::Red, UnitType::Melee));
+    g.resolve_step(UnitType::Melee, crate::game::turn::Phase::Move);
+    assert_eq!(g.units[0].pos, Hex::new(-4, 1));
+    g.units.pop();
+    g.roads.remove(&Hex::new(-2, 0));
+    assert!(!g.rail_connected(0, None));
+    g.try_queue_move(0, terminal);
+    assert_eq!(g.units[0].planned_move, None);
+}
+
+#[test]
+fn field_hospital_heals_two_nearby_survivors_in_both_layers() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    let site = Hex::new(-3, 0);
+    g.cities[0]
+        .extra_buildings
+        .insert(Building::FieldHospital, site);
+    for (id, pos, hp) in [
+        (10, Hex::new(-2, 0), 30.0),
+        (11, Hex::new(-3, 1), 40.0),
+        (12, Hex::new(-4, 1), 50.0),
+    ] {
+        let mut unit = Unit::new(id, pos, Team::Blue, UnitType::Melee);
+        unit.hp = hp;
+        unit.interior_hp = hp;
+        g.units.push(unit);
+    }
+    g.resolve_economy();
+    assert_eq!(g.units.iter().find(|u| u.id == 10).unwrap().hp, 50.0);
+    assert_eq!(
+        g.units.iter().find(|u| u.id == 11).unwrap().interior_hp,
+        60.0
+    );
+    assert_eq!(g.units.iter().find(|u| u.id == 12).unwrap().hp, 50.0);
+}
+
+#[test]
+fn hill_watchpost_reveals_distant_hexes() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    let post = Hex::new(0, 0);
+    let distant = Hex::new(5, 0);
+    assert!(g.grid.tile(post).hills);
+    assert!(!g.fog().sees(distant));
+    g.cities[0]
+        .extra_buildings
+        .insert(Building::Watchpost, post);
+    assert!(g.fog().sees(distant));
+}
 #[test]
 fn economy_ticks_once_with_no_units_and_preserves_quarters() {
     let mut g = GameState::city_scenario();

@@ -40,6 +40,8 @@ use builder::PanelBuilder;
 use dock::{Dock, Rect, Zone};
 pub use imgui::ImGuiLayoutState;
 use paint::{draw_button, draw_shape};
+
+const BUILDING_PAGE_SIZE: usize = 4;
 use queue::queue_items_that_fit;
 
 type Color = [f32; 4];
@@ -162,6 +164,8 @@ enum Target {
     Build(BuildUnit),
     ToggleYields,
     Building(Building),
+    BuildingPageNext,
+    BuildingPagePrev,
     BarracksBuild(BuildUnit),
     OpenBarracks,
     OpenCity,
@@ -505,6 +509,19 @@ impl GameState {
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
             Target::Building(building) => self.queue_selected_city_building(building),
+            Target::BuildingPageNext => {
+                if let Some(city) = self.selected_city {
+                    let last = (Building::ALL.len() - 1) / BUILDING_PAGE_SIZE;
+                    self.cities[city].building_page =
+                        (self.cities[city].building_page + 1).min(last);
+                }
+            }
+            Target::BuildingPagePrev => {
+                if let Some(city) = self.selected_city {
+                    self.cities[city].building_page =
+                        self.cities[city].building_page.saturating_sub(1);
+                }
+            }
             Target::BarracksBuild(build) => self.queue_selected_barracks_unit(build),
             Target::OpenBarracks => {
                 if let Some(city) = self.selected_city {

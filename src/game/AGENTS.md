@@ -21,11 +21,12 @@ behavior.
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `ai.rs` | the Red AI |
 | `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (barracks HP and defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
-| `city/logistics.rs` | roads, logistics routes (`routes_from_by`), `delivered_share`, tile yields, mill food share, city and Barracks income |
-| `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy` |
-| `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, building sites, Workshop discount, confirmation, `complete_builds` |
+| `city/logistics.rs` | roads and Canoe House river corridors, logistics routes (`routes_from_by`), `delivered_share`, tile yields, Mill food share, Cannery/Smelter collection, city and Barracks income |
+| `city/rail.rs` | Railhead road connectivity and long-range transfer eligibility; city center is the origin terminal |
+| `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy`, Field Hospital healing |
+| `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, building sites, resource support from Forge/Stable, Workshop discount, confirmation, `complete_builds` |
 | `city/founding.rs` | settlers founding cities |
-| `workers.rs` | workers: each city's pool and job list, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
+| `workers.rs` | workers: each city's pool and job list, Work Camp bases, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
 | `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
 | `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture |
 | `city/tests.rs` | the city tests |

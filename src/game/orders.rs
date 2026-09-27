@@ -109,13 +109,9 @@ impl GameState {
                 .screen_to_world(cursor, screen_size)
                 .distance(hex.to_world())
                 <= 0.34
-            && let Some(building) = [
-                super::city::Building::Barracks,
-                super::city::Building::Mill,
-                super::city::Building::Workshop,
-            ]
-            .into_iter()
-            .find(|building| self.cities[city].planned_sites.get(building) == Some(&hex))
+            && let Some(building) = super::city::Building::PLACEABLE
+                .into_iter()
+                .find(|building| self.cities[city].planned_sites.get(building) == Some(&hex))
         {
             self.change_selected_building_site(building);
             return;

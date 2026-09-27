@@ -12,15 +12,62 @@ pub enum Building {
     Barracks,
     Mill,
     Workshop,
+    CanoeHouse,
+    Forge,
+    Stable,
+    Watchpost,
+    FieldHospital,
+    Cannery,
+    WorkCamp,
+    Smelter,
+    Railhead,
 }
 
 impl Building {
+    pub const ALL: [Self; 13] = [
+        Self::Granary,
+        Self::Barracks,
+        Self::Mill,
+        Self::Workshop,
+        Self::CanoeHouse,
+        Self::Forge,
+        Self::Stable,
+        Self::Watchpost,
+        Self::FieldHospital,
+        Self::Cannery,
+        Self::WorkCamp,
+        Self::Smelter,
+        Self::Railhead,
+    ];
+    pub const PLACEABLE: [Self; 12] = [
+        Self::Barracks,
+        Self::Mill,
+        Self::Workshop,
+        Self::CanoeHouse,
+        Self::Forge,
+        Self::Stable,
+        Self::Watchpost,
+        Self::FieldHospital,
+        Self::Cannery,
+        Self::WorkCamp,
+        Self::Smelter,
+        Self::Railhead,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Self::Granary => "GRANARY",
             Self::Barracks => "BARRACKS",
             Self::Mill => "MILL",
             Self::Workshop => "WORKSHOP",
+            Self::CanoeHouse => "CANOE HOUSE",
+            Self::Forge => "FORGE",
+            Self::Stable => "STABLE",
+            Self::Watchpost => "WATCHPOST",
+            Self::FieldHospital => "FIELD HOSPITAL",
+            Self::Cannery => "CANNERY",
+            Self::WorkCamp => "WORK CAMP",
+            Self::Smelter => "SMELTER",
+            Self::Railhead => "RAILHEAD",
         }
     }
     pub fn cost(self) -> i32 {
@@ -29,6 +76,13 @@ impl Building {
             Self::Barracks => 64,
             Self::Mill => 60,
             Self::Workshop => 80,
+            Self::CanoeHouse => 64,
+            Self::Forge | Self::Stable => 80,
+            Self::Watchpost => 64,
+            Self::FieldHospital | Self::Cannery => 96,
+            Self::WorkCamp => 72,
+            Self::Smelter => 96,
+            Self::Railhead => 120,
         }
     }
     pub fn shortcut(self) -> char {
@@ -37,6 +91,15 @@ impl Building {
             Self::Barracks => '5',
             Self::Mill => '6',
             Self::Workshop => '7',
+            Self::CanoeHouse
+            | Self::Forge
+            | Self::Stable
+            | Self::Watchpost
+            | Self::FieldHospital
+            | Self::Cannery
+            | Self::WorkCamp
+            | Self::Smelter
+            | Self::Railhead => ' ',
         }
     }
     pub fn description(self) -> &'static str {
@@ -47,6 +110,15 @@ impl Building {
             }
             Self::Mill => "ADJACENT WORKED TILES DELIVER ALL FOOD IF THEY CAN REACH THE CITY.",
             Self::Workshop => "ADJACENT PLACED BUILDINGS CAN BE CONFIRMED AT HALF PRODUCTION.",
+            Self::CanoeHouse => "ON A RIVERBANK: ITS CONNECTED RIVER CARRIES GOODS LIKE A ROAD.",
+            Self::Forge => "ON OR NEXT TO IRON, BESIDE BARRACKS: TRAINS TOUGHER ARMORED TROOPS.",
+            Self::Stable => "ON OR NEXT TO HORSES, BESIDE BARRACKS: TRAINS FASTER CAVALRY.",
+            Self::Watchpost => "SEES 4 HEXES, OR 5 FROM HILLS, THROUGH ORDINARY SIGHT LINES.",
+            Self::FieldHospital => "HEALS TWO NEARBY FRIENDLY TROOPS EACH TURN, INSIDE AND OUT.",
+            Self::Cannery => "COLLECTS FOOD FROM THREE REMOTE IMPROVEMENTS WITHIN 3 HEXES.",
+            Self::WorkCamp => "CONNECTED WORKERS START AND END NEARBY JOBS HERE, NOT AT THE CITY.",
+            Self::Smelter => "COLLECTS PRODUCTION FROM THREE REMOTE MINES WITHIN 3 HEXES.",
+            Self::Railhead => "A CITY-ROAD LINK LETS TROOPS BY THE CITY MOVE HERE IN ONE TURN.",
         }
     }
 
@@ -300,15 +372,52 @@ impl GameState {
     ) -> bool {
         self.grid.is_passable(hex)
             && (self.is_explored(hex) || self.fog().sees(hex))
+            && match building {
+                Building::CanoeHouse => hex
+                    .neighbors()
+                    .into_iter()
+                    .any(|n| self.grid.has_river(hex, n)),
+                Building::Forge => self.resource_near(hex, Resource::Iron),
+                Building::Stable => self.resource_near(hex, Resource::Horses),
+                Building::Smelter => {
+                    self.grid.tile(hex).hills
+                        || hex.neighbors().into_iter().any(|n| {
+                            self.grid.contains(n)
+                                && (self.grid.tile(n).hills
+                                    || self.grid.resource(n) == Some(Resource::Iron))
+                        })
+                }
+                _ => true,
+            }
             && !self.cities.iter().enumerate().any(|(i, c)| {
                 c.pos == hex
-                    || [Building::Barracks, Building::Mill, Building::Workshop]
+                    || Building::PLACEABLE
                         .into_iter()
                         .any(|kind| c.placed_site(kind) == Some(hex))
                     || c.planned_sites
                         .iter()
                         .any(|(&kind, &site)| site == hex && (i != city || kind != building))
             })
+    }
+
+    pub(in crate::game) fn resource_near(&self, hex: Hex, resource: Resource) -> bool {
+        self.grid.resource(hex) == Some(resource)
+            || hex
+                .neighbors()
+                .into_iter()
+                .any(|n| self.grid.resource(n) == Some(resource))
+    }
+
+    fn barracks_support(&self, city: usize, resource: Resource) -> bool {
+        let c = &self.cities[city];
+        let (kind, barracks) = match resource {
+            Resource::Iron => (Building::Forge, c.barracks),
+            Resource::Horses => (Building::Stable, c.barracks),
+        };
+        barracks.is_some_and(|b| {
+            c.placed_site(kind)
+                .is_some_and(|site| b.distance(site) == 1 && self.resource_near(site, resource))
+        })
     }
 
     fn workshop_discount(&self, team: Team, site: Hex) -> bool {
@@ -370,16 +479,20 @@ impl GameState {
         let Some(city) = self.selected_barracks.or(self.selected_city) else {
             return;
         };
-        let c = &mut self.cities[city];
-        if c.team != PLAYER_TEAM || c.barracks.is_none() {
+        if self.cities[city].team != PLAYER_TEAM || self.cities[city].barracks.is_none() {
             return;
         }
         if let Some(resource) = build.required_resource()
-            && self.grid.resource(c.barracks.unwrap()) != Some(resource)
+            && !self.barracks_can_train(city, build)
         {
-            self.notice = format!("{} REQUIRES BARRACKS ON {}", build.name(), resource.name());
+            self.notice = format!(
+                "{} NEEDS {} AT BARRACKS OR AN ADJACENT SUPPORT BUILDING",
+                build.name(),
+                resource.name()
+            );
             return;
         }
+        let c = &mut self.cities[city];
         if c.barracks_queue.is_empty() {
             c.barracks_production = 0;
         }
@@ -394,9 +507,9 @@ impl GameState {
         let Some(tile) = self.cities[city].barracks else {
             return false;
         };
-        build
-            .required_resource()
-            .is_none_or(|resource| self.grid.resource(tile) == Some(resource))
+        build.required_resource().is_none_or(|resource| {
+            self.grid.resource(tile) == Some(resource) || self.barracks_support(city, resource)
+        })
     }
 
     /// Reopens placement for a queued or completed building before confirmation.
@@ -568,7 +681,7 @@ impl GameState {
                         self.cities[i].built.push(building);
                         self.notice = "GRANARY COMPLETE - +2 FOOD PER TURN".into();
                     }
-                    Building::Barracks | Building::Mill | Building::Workshop => {
+                    _ => {
                         self.cities[i].pending_building = Some(building);
                         // Placement starts here only in the open city (F9);
                         // a turn's completion leaves it for when the city is
@@ -609,7 +722,7 @@ impl GameState {
             let Build::Unit(unit) = build else {
                 unreachable!()
             };
-            spawn.push((self.cities[i].team, pos, unit.unit_type()));
+            spawn.push((self.cities[i].team, pos, unit.unit_type(), None));
         }
         for i in 0..self.cities.len() {
             if only.is_some_and(|lane| lane != (i, true)) {
@@ -633,12 +746,19 @@ impl GameState {
             };
             self.cities[i].barracks_production = 0;
             self.cities[i].barracks_queue.remove(0);
-            spawn.push((self.cities[i].team, pos, build.unit_type()));
+            let upgrade = build
+                .required_resource()
+                .filter(|&resource| self.barracks_support(i, resource));
+            spawn.push((self.cities[i].team, pos, build.unit_type(), upgrade));
         }
-        for (team, pos, kind) in spawn {
+        for (team, pos, kind, upgrade) in spawn {
             let id = self.next_unit_id;
             self.next_unit_id += 1;
-            self.units.push(Unit::new(id, pos, team, kind));
+            let mut unit = Unit::new(id, pos, team, kind);
+            unit.training_upgrade = upgrade;
+            unit.hp = unit.max_hp();
+            unit.interior_hp = unit.max_hp();
+            self.units.push(unit);
             log::info!("{team:?} city completed {kind:?}");
         }
     }
@@ -646,9 +766,9 @@ impl GameState {
     /// Whether a finished unit can appear on `hex`: passable, with no unit on
     /// it and none already finishing there this turn (a barracks beside its
     /// city shares hexes with it).
-    fn is_open_spawn(&self, hex: Hex, spawn: &[(Team, Hex, UnitType)]) -> bool {
+    fn is_open_spawn(&self, hex: Hex, spawn: &[(Team, Hex, UnitType, Option<Resource>)]) -> bool {
         self.grid.is_passable(hex)
             && !self.is_occupied(hex)
-            && spawn.iter().all(|&(_, pos, _)| pos != hex)
+            && spawn.iter().all(|&(_, pos, _, _)| pos != hex)
     }
 }

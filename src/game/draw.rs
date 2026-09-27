@@ -858,11 +858,11 @@ impl GameState {
             push_health_bar(hex.to_world(), barracks.health, 0.7, out);
         }
         for city in &self.cities {
-            for (building, hex) in [
-                (super::city::Building::Mill, city.mill),
-                (super::city::Building::Workshop, city.workshop),
-            ] {
-                let Some(hex) = hex else {
+            for building in super::city::Building::PLACEABLE {
+                if building == super::city::Building::Barracks {
+                    continue;
+                }
+                let Some(hex) = city.placed_site(building) else {
                     continue;
                 };
                 if city.team != PLAYER_TEAM && !fog.sees(hex) {
@@ -879,11 +879,7 @@ impl GameState {
             if city.team != PLAYER_TEAM {
                 continue;
             }
-            for building in [
-                super::city::Building::Barracks,
-                super::city::Building::Mill,
-                super::city::Building::Workshop,
-            ] {
+            for building in super::city::Building::PLACEABLE {
                 let planned = city.planned_sites.get(&building).copied();
                 let preview = if self.site_placement() == Some((i, building)) {
                     self.hovered_tile
@@ -1073,6 +1069,15 @@ fn building_badge(building: super::city::Building) -> (char, Color) {
         super::city::Building::Barracks => ('B', [0.72, 0.35, 0.18, 1.0]),
         super::city::Building::Mill => ('M', [0.35, 0.65, 0.28, 1.0]),
         super::city::Building::Workshop => ('W', [0.38, 0.52, 0.82, 1.0]),
+        super::city::Building::CanoeHouse => ('C', [0.30, 0.65, 0.82, 1.0]),
+        super::city::Building::Forge => ('F', [0.82, 0.43, 0.22, 1.0]),
+        super::city::Building::Stable => ('S', [0.67, 0.49, 0.27, 1.0]),
+        super::city::Building::Watchpost => ('V', [0.78, 0.76, 0.35, 1.0]),
+        super::city::Building::FieldHospital => ('H', [0.80, 0.33, 0.36, 1.0]),
+        super::city::Building::Cannery => ('N', [0.44, 0.72, 0.47, 1.0]),
+        super::city::Building::WorkCamp => ('K', [0.67, 0.55, 0.36, 1.0]),
+        super::city::Building::Smelter => ('T', [0.82, 0.43, 0.29, 1.0]),
+        super::city::Building::Railhead => ('R', [0.47, 0.68, 0.79, 1.0]),
         super::city::Building::Granary => unreachable!(),
     }
 }

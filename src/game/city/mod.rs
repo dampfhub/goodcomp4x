@@ -7,6 +7,7 @@ mod citizens;
 mod founding;
 mod interior;
 mod logistics;
+mod rail;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -70,6 +71,10 @@ pub(super) struct City {
     pub barracks: Option<Hex>,
     pub mill: Option<Hex>,
     pub workshop: Option<Hex>,
+    /// New placed buildings share one site map instead of adding a city field each.
+    pub extra_buildings: HashMap<Building, Hex>,
+    /// Which short construction catalogue page the city tray displays.
+    pub building_page: usize,
     pub pending_building: Option<Building>,
     pub planned_sites: HashMap<Building, Hex>,
     /// Barracks production is independent of the city's main queue.
@@ -102,6 +107,8 @@ impl City {
             barracks: None,
             mill: None,
             workshop: None,
+            extra_buildings: HashMap::new(),
+            building_page: 0,
             pending_building: None,
             planned_sites: HashMap::new(),
             barracks_queue: Vec::new(),
@@ -118,6 +125,7 @@ impl City {
             Building::Barracks => self.barracks,
             Building::Mill => self.mill,
             Building::Workshop => self.workshop,
+            _ => self.extra_buildings.get(&building).copied(),
         }
     }
 
@@ -130,6 +138,9 @@ impl City {
             }
             Building::Mill => self.mill = Some(site),
             Building::Workshop => self.workshop = Some(site),
+            _ => {
+                self.extra_buildings.insert(building, site);
+            }
         }
     }
 }
