@@ -43,8 +43,8 @@ pub enum LaborFocus {
 impl LaborFocus {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Food => "FOOD",
-            Self::Production => "PRODUCTION",
+            Self::Food => "FISH",
+            Self::Production => "SHELLS",
             Self::Balanced => "BALANCED",
         }
     }
@@ -174,10 +174,10 @@ impl GameState {
                 ..City::new(id, team, pos)
             });
             for (q, r, food, production, label) in [
-                (4, -1, 4, 0, "FARM"),
-                (3, 0, 4, 0, "FARM"),
-                (2, -2, 0, 4, "MINE"),
-                (4, 1, 3, 1, "PASTURE"),
+                (4, -1, 4, 0, "KELP FARM"),
+                (3, 0, 4, 0, "KELP FARM"),
+                (2, -2, 0, 4, "CORAL QUARRY"),
+                (4, 1, 3, 1, "SEAHORSE PEN"),
             ] {
                 self.sites.insert(
                     Hex::new(sign * q, sign * r),
@@ -196,7 +196,7 @@ impl GameState {
         for i in 0..self.cities.len() {
             self.auto_assign_city(i);
         }
-        self.notice = "C CITY - SPACE HOLD OR END TURN - F1 COMBAT - F2 CITIES".into();
+        self.notice = "C REEF - SPACE HOLD OR END TURN - F1 COMBAT - F2 CITIES".into();
     }
 
     pub(super) fn setup_frontier(&mut self) {
@@ -224,7 +224,7 @@ impl GameState {
                 self.player_controlled_units.insert(id);
             }
         }
-        self.notice = "F FOUND CITY - BOTH STARTING SCOUTS ARE YOURS TO TEST".into();
+        self.notice = "F FOUND REEF - BOTH STARTING DOLPHINS ARE YOURS TO TEST".into();
         self.selected = self.unit_of_team_at(Hex::new(-4, 0), PLAYER_TEAM);
     }
 
@@ -257,6 +257,6 @@ impl GameState {
                 }
             }
         }
-        self.notice = format!("WORLD SEED {seed} - F FOUNDS A CITY - F4 FOR A NEW MAP");
+        self.notice = format!("WORLD SEED {seed} - F FOUNDS A REEF - F4 FOR A NEW MAP");
     }
 }

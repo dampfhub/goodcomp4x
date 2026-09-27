@@ -17,10 +17,10 @@ pub enum Building {
 impl Building {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Granary => "GRANARY",
-            Self::Barracks => "BARRACKS",
-            Self::Mill => "MILL",
-            Self::Workshop => "WORKSHOP",
+            Self::Granary => "CLAM LARDER",
+            Self::Barracks => "SHIPWRECK",
+            Self::Mill => "WHIRLPOOL MILL",
+            Self::Workshop => "SUNKEN FORGE",
         }
     }
     pub fn cost(self) -> i32 {
@@ -41,12 +41,12 @@ impl Building {
     }
     pub fn description(self) -> &'static str {
         match self {
-            Self::Granary => "+2 FOOD PER TURN.",
+            Self::Granary => "+2 FISH PER TURN.",
             Self::Barracks => {
-                "PLACED ON ANY OPEN LAND TILE. WITH THE MANAGER THERE, ITS WORK GROUP TRAINS TROOPS."
+                "PLACED ON ANY OPEN SEAFLOOR TILE. WITH THE MANAGER THERE, ITS WORK GROUP TRAINS TROOPS."
             }
-            Self::Mill => "ADJACENT WORKED TILES DELIVER ALL FOOD IF THEY CAN REACH THE CITY.",
-            Self::Workshop => "ADJACENT PLACED BUILDINGS CAN BE CONFIRMED AT HALF PRODUCTION.",
+            Self::Mill => "ADJACENT WORKED TILES DELIVER ALL FISH IF THEY CAN REACH THE REEF.",
+            Self::Workshop => "ADJACENT PLACED BUILDINGS CAN BE CONFIRMED FOR HALF THE SHELLS.",
         }
     }
 
@@ -72,7 +72,7 @@ impl Build {
         match self {
             Self::Unit(u) => u.name(),
             Self::Building(b) => b.name(),
-            Self::Worker => "WORKER",
+            Self::Worker => "SHRIMP",
         }
     }
     pub fn cost(self) -> i32 {
@@ -105,11 +105,11 @@ impl BuildUnit {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Self::Melee => "MELEE",
-            Self::Ranged => "RANGED",
-            Self::Cavalry => "CAVALRY",
-            Self::Siege => "SIEGE",
-            Self::Armored => "ARMORED",
+            Self::Melee => "SWORDFISH",
+            Self::Ranged => "PUFFERFISH",
+            Self::Cavalry => "SEAHORSE",
+            Self::Siege => "OCTOPUS",
+            Self::Armored => "CRAB",
         }
     }
     pub fn cost(self) -> i32 {
@@ -123,11 +123,11 @@ impl BuildUnit {
     }
     pub fn description(self) -> &'static str {
         match self {
-            Self::Melee => "TOUGH CLOSE FIGHTER",
-            Self::Ranged => "FIRES FROM 2 TILES",
-            Self::Cavalry => "FAST FLANKER, NEEDS HORSES",
-            Self::Siege => "LONG RANGE, SLOW",
-            Self::Armored => "HEAVY IRON INFANTRY",
+            Self::Melee => "TOUGH CLOSE FIGHTER, SHARP BILL",
+            Self::Ranged => "SHOOTS SPINES FROM 2 TILES",
+            Self::Cavalry => "FAST FLANKER, NEEDS SEAHORSES",
+            Self::Siege => "LONG-RANGE INK, SLOW",
+            Self::Armored => "HEAVY PEARL-SHELLED CLAWS",
         }
     }
     pub fn shortcut(self) -> char {
@@ -154,7 +154,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN A REEF WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
@@ -162,7 +162,7 @@ impl GameState {
         }
         if let Some(resource) = build.required_resource() {
             self.notice = format!(
-                "{} TRAINS AT A BARRACKS ON {}",
+                "{} TRAINS AT A SHIPWRECK ON {}",
                 build.name(),
                 resource.name()
             );
@@ -174,7 +174,7 @@ impl GameState {
         }
         self.cities[city].queue.push(Build::Unit(build));
         self.notice = format!(
-            "BUILDING {} - COST {} PRODUCTION",
+            "BUILDING {} - COST {} SHELLS",
             build.name(),
             amount(build.cost())
         );
@@ -186,7 +186,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN A REEF WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
@@ -196,10 +196,7 @@ impl GameState {
             self.cities[city].production = 0;
         }
         self.cities[city].queue.push(Build::Worker);
-        self.notice = format!(
-            "BUILDING A WORKER - COST {} PRODUCTION",
-            amount(WORKER_COST)
-        );
+        self.notice = format!("BUILDING A SHRIMP - COST {} SHELLS", amount(WORKER_COST));
     }
 
     pub fn queue_selected_city_building(&mut self, building: Building) {
@@ -207,7 +204,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILDING".into();
+            self.notice = "OPEN A REEF WITH C BEFORE CHOOSING A BUILDING".into();
             return;
         };
         let c = &mut self.cities[city];
@@ -215,7 +212,7 @@ impl GameState {
             return;
         }
         if c.built.contains(&building) {
-            self.notice = format!("{} ALREADY EXISTS IN THIS CITY", building.name());
+            self.notice = format!("{} ALREADY EXISTS IN THIS REEF", building.name());
             return;
         }
         if c.pending_building == Some(building) || c.queue.contains(&Build::Building(building)) {
@@ -225,7 +222,7 @@ impl GameState {
                 self.placing_building = Some((city, building));
                 self.notice = format!("CHOOSE A {} SITE - CLICK AN OPEN TILE", building.name());
             } else {
-                self.notice = format!("{} IS ALREADY QUEUED IN THIS CITY", building.name());
+                self.notice = format!("{} IS ALREADY QUEUED IN THIS REEF", building.name());
             }
             return;
         }
@@ -244,7 +241,7 @@ impl GameState {
             return;
         }
         self.notice = format!(
-            "BUILDING {} - COST {} PRODUCTION",
+            "BUILDING {} - COST {} SHELLS",
             building.name(),
             amount(building.cost())
         );
@@ -377,7 +374,11 @@ impl GameState {
         if let Some(resource) = build.required_resource()
             && self.grid.resource(c.barracks.unwrap()) != Some(resource)
         {
-            self.notice = format!("{} REQUIRES BARRACKS ON {}", build.name(), resource.name());
+            self.notice = format!(
+                "{} REQUIRES A SHIPWRECK ON {}",
+                build.name(),
+                resource.name()
+            );
             return;
         }
         if c.barracks_queue.is_empty() {
@@ -385,7 +386,7 @@ impl GameState {
         }
         c.barracks_queue.push(build);
         self.notice = format!(
-            "BARRACKS TRAINING {} - NEEDS MANAGER ON BARRACKS",
+            "SHIPWRECK TRAINING {} - NEEDS MANAGER ON SHIPWRECK",
             build.name()
         );
     }
@@ -413,7 +414,7 @@ impl GameState {
         }
         self.placing_building = Some((city, building));
         self.notice = format!(
-            "CHANGE {} SITE - CLICK A NEW OPEN LAND TILE",
+            "CHANGE {} SITE - CLICK A NEW OPEN SEAFLOOR TILE",
             building.name()
         );
     }
@@ -472,7 +473,7 @@ impl GameState {
                 return;
             }
             queue.swap(index, other);
-            self.notice = "CITY QUEUE REORDERED".into();
+            self.notice = "REEF QUEUE REORDERED".into();
         }
     }
 
@@ -496,7 +497,7 @@ impl GameState {
             }
             self.cities[city].planned_sites.remove(&building);
         }
-        self.notice = format!("REMOVED {} FROM CITY QUEUE", removed.name());
+        self.notice = format!("REMOVED {} FROM REEF QUEUE", removed.name());
     }
 
     #[cfg(test)]
@@ -512,7 +513,7 @@ impl GameState {
         };
         if let Some(other) = other.filter(|&other| other < queue.len()) {
             queue.swap(index, other);
-            self.notice = "BARRACKS QUEUE REORDERED".into();
+            self.notice = "SHIPWRECK QUEUE REORDERED".into();
         }
     }
 
@@ -527,7 +528,7 @@ impl GameState {
         if index == 0 {
             self.cities[city].barracks_production = 0;
         }
-        self.notice = format!("REMOVED {} FROM BARRACKS QUEUE", removed.name());
+        self.notice = format!("REMOVED {} FROM SHIPWRECK QUEUE", removed.name());
     }
 
     /// Queue hotkeys operate on the city line currently being produced.
@@ -566,7 +567,7 @@ impl GameState {
                         self.cities[i].production = 0;
                         self.cities[i].queue.remove(0);
                         self.cities[i].built.push(building);
-                        self.notice = "GRANARY COMPLETE - +2 FOOD PER TURN".into();
+                        self.notice = "CLAM LARDER COMPLETE - +2 FISH PER TURN".into();
                     }
                     Building::Barracks | Building::Mill | Building::Workshop => {
                         self.cities[i].pending_building = Some(building);
@@ -588,7 +589,7 @@ impl GameState {
                 self.cities[i].workers += 1;
                 log::info!("{:?} city completed a worker", self.cities[i].team);
                 if self.cities[i].team == PLAYER_TEAM {
-                    self.notice = "WORKER READY - CLICK A TILE TO GIVE IT A JOB".into();
+                    self.notice = "SHRIMP READY - CLICK A TILE TO GIVE IT A JOB".into();
                 }
                 continue;
             }

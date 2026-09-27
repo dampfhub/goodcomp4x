@@ -150,7 +150,7 @@ impl GameState {
                 if source < queue.len() && target < queue.len() {
                     let item = queue.remove(source);
                     queue.insert(target, item);
-                    self.notice = "CITY QUEUE REORDERED".into();
+                    self.notice = "REEF QUEUE REORDERED".into();
                 }
             }
             QueueKind::Barracks => {
@@ -158,7 +158,7 @@ impl GameState {
                 if source < queue.len() && target < queue.len() {
                     let item = queue.remove(source);
                     queue.insert(target, item);
-                    self.notice = "BARRACKS QUEUE REORDERED".into();
+                    self.notice = "SHIPWRECK QUEUE REORDERED".into();
                 }
             }
             QueueKind::Workers => {
@@ -166,7 +166,7 @@ impl GameState {
                 if source < jobs.len() && target < jobs.len() {
                     let job = jobs.remove(source);
                     jobs.insert(target, job);
-                    self.notice = "WORKER JOBS REORDERED".into();
+                    self.notice = "SHRIMP JOBS REORDERED".into();
                 }
             }
         }
@@ -195,7 +195,7 @@ impl GameState {
         }
         panel.text(
             SMALL,
-            vec![("BARRACKS QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
+            vec![("SHIPWRECK QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
         );
         for (index, build) in city
             .barracks_queue
@@ -219,7 +219,7 @@ impl GameState {
                 kind: QueueKind::Barracks,
                 index,
                 label: format!(
-                    "{prefix}{} | {} PROD | {} LEFT",
+                    "{prefix}{} | {} SHELLS | {} LEFT",
                     build.name(),
                     quantity(build.cost()),
                     turns_at_rate(remaining, production)
@@ -250,7 +250,7 @@ impl GameState {
         if !city.queue.is_empty() {
             panel.text(
                 SMALL,
-                vec![("CITY QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
+                vec![("REEF QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
             );
             for (index, build) in city
                 .queue
@@ -268,7 +268,7 @@ impl GameState {
                     kind: QueueKind::City,
                     index,
                     label: format!(
-                        "{prefix}{} | {} PROD | {} LEFT",
+                        "{prefix}{} | {} SHELLS | {} LEFT",
                         build.name(),
                         quantity(cost),
                         turns_at_rate(remaining, production)

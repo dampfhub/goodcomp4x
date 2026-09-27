@@ -261,7 +261,7 @@ impl ApplicationHandler for App {
         // Most of the screen (unless a size was asked for), centered, so
         // there's room for the map and the UI.
         let mut attributes = Window::default_attributes()
-            .with_title("Hex Combat Sandbox")
+            .with_title("Reef Wars")
             .with_inner_size(self.requested_size.unwrap_or(DEFAULT_WINDOW_SIZE))
             .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)))
             // A screenshot needs no window on screen, or taking focus.
@@ -334,27 +334,48 @@ impl ApplicationHandler for App {
         style.frame_border_size = 1.0;
         style.window_title_align = [0.0, 0.5];
         style.button_text_align = [0.5, 0.5];
-        style.colors[StyleColor::Text as usize] = [0.91, 0.92, 0.91, 1.0];
-        style.colors[StyleColor::TextDisabled as usize] = [0.46, 0.48, 0.50, 1.0];
-        style.colors[StyleColor::WindowBg as usize] = [0.018, 0.022, 0.030, 0.96];
-        style.colors[StyleColor::PopupBg as usize] = [0.025, 0.030, 0.041, 0.98];
-        style.colors[StyleColor::Border as usize] = [0.29, 0.32, 0.38, 0.95];
-        style.colors[StyleColor::TitleBg as usize] = [0.030, 0.036, 0.050, 1.0];
-        style.colors[StyleColor::TitleBgActive as usize] = [0.055, 0.065, 0.086, 1.0];
-        style.colors[StyleColor::TitleBgCollapsed as usize] = [0.030, 0.036, 0.050, 0.96];
-        style.colors[StyleColor::FrameBg as usize] = [0.032, 0.039, 0.052, 1.0];
-        style.colors[StyleColor::FrameBgHovered as usize] = [0.073, 0.084, 0.108, 1.0];
-        style.colors[StyleColor::FrameBgActive as usize] = [0.12, 0.14, 0.18, 1.0];
-        style.colors[StyleColor::Button as usize] = [0.045, 0.053, 0.070, 1.0];
-        style.colors[StyleColor::ButtonHovered as usize] = [0.085, 0.10, 0.13, 1.0];
-        style.colors[StyleColor::ButtonActive as usize] = [0.13, 0.15, 0.19, 1.0];
-        style.colors[StyleColor::Header as usize] = [0.075, 0.090, 0.12, 1.0];
-        style.colors[StyleColor::HeaderHovered as usize] = [0.12, 0.15, 0.19, 1.0];
-        style.colors[StyleColor::ScrollbarBg as usize] = [0.024, 0.029, 0.039, 1.0];
-        style.colors[StyleColor::ScrollbarGrab as usize] = [0.21, 0.24, 0.28, 1.0];
-        style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.31, 0.35, 0.39, 1.0];
-        style.colors[StyleColor::PlotHistogram as usize] = [0.80, 0.69, 0.35, 1.0];
-        style.colors[StyleColor::DragDropTarget as usize] = [0.91, 0.77, 0.38, 1.0];
+        style.colors[StyleColor::Text as usize] = [0.90, 0.95, 0.94, 1.0];
+        style.colors[StyleColor::TextDisabled as usize] = [0.36, 0.50, 0.52, 1.0];
+        style.colors[StyleColor::WindowBg as usize] = [0.005, 0.022, 0.028, 0.96];
+        style.colors[StyleColor::PopupBg as usize] = [0.008, 0.030, 0.037, 0.98];
+        style.colors[StyleColor::Border as usize] = [0.14, 0.32, 0.34, 0.95];
+        style.colors[StyleColor::TitleBg as usize] = [0.010, 0.040, 0.048, 1.0];
+        style.colors[StyleColor::TitleBgActive as usize] = [0.020, 0.075, 0.085, 1.0];
+        style.colors[StyleColor::TitleBgCollapsed as usize] = [0.010, 0.040, 0.048, 0.96];
+        style.colors[StyleColor::FrameBg as usize] = [0.010, 0.044, 0.052, 1.0];
+        style.colors[StyleColor::FrameBgHovered as usize] = [0.028, 0.095, 0.105, 1.0];
+        style.colors[StyleColor::FrameBgActive as usize] = [0.05, 0.16, 0.17, 1.0];
+        style.colors[StyleColor::Button as usize] = [0.014, 0.055, 0.065, 1.0];
+        style.colors[StyleColor::ButtonHovered as usize] = [0.034, 0.115, 0.125, 1.0];
+        style.colors[StyleColor::ButtonActive as usize] = [0.06, 0.18, 0.19, 1.0];
+        style.colors[StyleColor::Header as usize] = [0.028, 0.100, 0.110, 1.0];
+        style.colors[StyleColor::HeaderHovered as usize] = [0.05, 0.16, 0.17, 1.0];
+        style.colors[StyleColor::ScrollbarBg as usize] = [0.006, 0.028, 0.034, 1.0];
+        style.colors[StyleColor::ScrollbarGrab as usize] = [0.09, 0.25, 0.26, 1.0];
+        style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.15, 0.36, 0.37, 1.0];
+        style.colors[StyleColor::PlotHistogram as usize] = [0.30, 0.78, 0.72, 1.0];
+        style.colors[StyleColor::DragDropTarget as usize] = [0.62, 0.98, 0.92, 1.0];
+        // Sea glass for the rest of the chrome, which otherwise keeps
+        // ImGui's default blue.
+        style.colors[StyleColor::HeaderActive as usize] = [0.08, 0.22, 0.23, 1.0];
+        style.colors[StyleColor::ScrollbarGrabActive as usize] = [0.22, 0.48, 0.48, 1.0];
+        style.colors[StyleColor::CheckMark as usize] = [0.55, 0.95, 0.90, 1.0];
+        style.colors[StyleColor::SliderGrab as usize] = [0.20, 0.55, 0.54, 1.0];
+        style.colors[StyleColor::SliderGrabActive as usize] = [0.35, 0.75, 0.72, 1.0];
+        style.colors[StyleColor::Separator as usize] = [0.14, 0.32, 0.34, 0.95];
+        style.colors[StyleColor::SeparatorHovered as usize] = [0.25, 0.55, 0.55, 1.0];
+        style.colors[StyleColor::SeparatorActive as usize] = [0.40, 0.80, 0.76, 1.0];
+        style.colors[StyleColor::ResizeGrip as usize] = [0.14, 0.40, 0.40, 0.30];
+        style.colors[StyleColor::ResizeGripHovered as usize] = [0.25, 0.62, 0.60, 0.70];
+        style.colors[StyleColor::ResizeGripActive as usize] = [0.40, 0.82, 0.78, 0.95];
+        style.colors[StyleColor::Tab as usize] = [0.014, 0.060, 0.070, 1.0];
+        style.colors[StyleColor::TabHovered as usize] = [0.06, 0.20, 0.21, 1.0];
+        style.colors[StyleColor::TabActive as usize] = [0.035, 0.13, 0.14, 1.0];
+        style.colors[StyleColor::TabUnfocused as usize] = [0.010, 0.040, 0.048, 1.0];
+        style.colors[StyleColor::TabUnfocusedActive as usize] = [0.025, 0.090, 0.10, 1.0];
+        style.colors[StyleColor::DockingPreview as usize] = [0.40, 0.88, 0.84, 0.55];
+        style.colors[StyleColor::TextSelectedBg as usize] = [0.12, 0.40, 0.40, 0.60];
+        style.colors[StyleColor::NavHighlight as usize] = [0.55, 0.95, 0.90, 1.0];
         let mut imgui_platform = WinitPlatform::new(&mut imgui);
         imgui_platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
 

@@ -11,7 +11,7 @@ use super::{
     contains,
 };
 use crate::game::GameState;
-use crate::game::city::{Building, WORKER_COST, WORKER_SHORTCUT, delivered_share};
+use crate::game::city::{Build, Building, WORKER_COST, WORKER_SHORTCUT, delivered_share};
 use crate::game::hex::Hex;
 use crate::game::scenario::Scenario;
 use crate::game::unit::Unit;
@@ -53,27 +53,28 @@ impl GameState {
             memory.and_then(|m| m.barracks.filter(|b| b.team != crate::game::PLAYER_TEAM));
         let title = match (city, barracks, seen_city, seen_barracks) {
             (Some(city), ..) => (
-                format!("{:?} CITY {}", city.team, city.id + 1).to_uppercase(),
+                format!("{:?} REEF {}", city.team, city.id + 1).to_uppercase(),
                 city.team.color(),
             ),
             (None, Some(city), ..) => (
-                format!("{:?} BARRACKS", city.team).to_uppercase(),
+                format!("{:?} {}", city.team, Building::Barracks.name()).to_uppercase(),
                 city.team.color(),
             ),
             (None, None, Some(seen), _) => (
-                format!("{:?} CITY {}", seen.team, seen.id + 1).to_uppercase(),
+                format!("{:?} REEF {}", seen.team, seen.id + 1).to_uppercase(),
                 seen.team.color(),
             ),
             (None, None, None, Some(seen)) => (
-                format!("{:?} BARRACKS", seen.team).to_uppercase(),
+                format!("{:?} {}", seen.team, Building::Barracks.name()).to_uppercase(),
                 seen.team.color(),
             ),
             (None, None, None, None) if mill.is_some() => {
-                ("MILL".into(), mill.unwrap().team.color())
+                (Building::Mill.name().into(), mill.unwrap().team.color())
             }
-            (None, None, None, None) if workshop.is_some() => {
-                ("WORKSHOP".into(), workshop.unwrap().team.color())
-            }
+            (None, None, None, None) if workshop.is_some() => (
+                Building::Workshop.name().into(),
+                workshop.unwrap().team.color(),
+            ),
             (None, None, None, None) => (tile.name(), TEXT),
         };
         let mut lines = vec![(BODY, vec![title])];
@@ -86,8 +87,8 @@ impl GameState {
         lines.push((
             SMALL,
             stat_spans(&[
-                ("FOOD", food.to_string(), BOOSTED_TEXT),
-                ("PRODUCTION", production.to_string(), GOLD_TEXT),
+                ("FISH", food.to_string(), BOOSTED_TEXT),
+                ("SHELLS", production.to_string(), GOLD_TEXT),
             ]),
         ));
         if let Some(city) = city {
@@ -99,7 +100,7 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · GROWTH {growth}% · {} PRODUCTION",
+                        "HP {:.0}/{:.0} · GROWTH {growth}% · {} SHELLS",
                         city.hp,
                         crate::game::city::CITY_MAX_HP,
                         signed_quantity(production_per_turn)
@@ -129,7 +130,7 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · {} PROD/T",
+                        "HP {:.0}/{:.0} · {} SHELLS/T",
                         city.barracks_hp,
                         crate::game::city::BARRACKS_MAX_HP,
                         signed_quantity(production_per_turn)
@@ -142,13 +143,13 @@ impl GameState {
 
         let mut notes = Vec::new();
         if self.grid.has_fresh_water(hex) {
-            notes.push("FRESH WATER: +1 FOOD".into());
+            notes.push("UPWELLING: +1 FISH".into());
         }
         if mill.is_some() {
-            notes.push("ADJACENT REACHABLE TILES DELIVER 100% FOOD".into());
+            notes.push("ADJACENT REACHABLE TILES DELIVER 100% FISH".into());
         }
         if workshop.is_some() {
-            notes.push("ADJACENT BUILDINGS CONFIRM AT 50% PRODUCTION".into());
+            notes.push("ADJACENT BUILDINGS CONFIRM FOR 50% OF THE SHELLS".into());
         }
         if let Some(open) = self.selected_city
             && let Some(building) = [Building::Barracks, Building::Mill, Building::Workshop]
@@ -175,7 +176,7 @@ impl GameState {
             notes.push(format!("{team:?} {label}").to_uppercase());
         }
         if road {
-            notes.push("ROAD: GOODS TRAVEL CHEAPER".into());
+            notes.push("SEA LANE: GOODS TRAVEL CHEAPER".into());
         }
         if let Some(resource) = self.grid.resource(hex) {
             notes.push(format!("{} RESOURCE", resource.name()));
@@ -186,7 +187,7 @@ impl GameState {
             .filter(visible)
             .find(|c| c.worked.contains(&hex))
         {
-            notes.push(format!("WORKED BY CITY {}", worker.id + 1));
+            notes.push(format!("WORKED BY REEF {}", worker.id + 1));
         }
         if let Some(open) = self.selected_city
             && self.cities[open].pos != hex
@@ -194,12 +195,12 @@ impl GameState {
             let city = &self.cities[open];
             match self.known_routes(open, &fog).costs.get(&hex) {
                 Some(&cost) => notes.push(format!(
-                    "FOOD {}% / PRODUCTION {}% REACHES CITY {}",
+                    "FISH {}% / SHELLS {}% REACHES REEF {}",
                     self.mill_food_share(open, hex, cost) * 25,
                     delivered_share(cost) * 25,
                     city.id + 1
                 )),
-                None => notes.push(format!("OUT OF CITY {}'S REACH", city.id + 1)),
+                None => notes.push(format!("OUT OF REEF {}'S REACH", city.id + 1)),
             }
         }
         let describe =
@@ -307,7 +308,7 @@ impl GameState {
                     build.name().into(),
                     build.shortcut().to_string(),
                     format!(
-                        "{}. {} PRODUCTION.",
+                        "{}. {} SHELLS.",
                         build.description(),
                         quantity(build.cost())
                     ),
@@ -317,7 +318,7 @@ impl GameState {
                     building.name().into(),
                     building.shortcut().to_string(),
                     format!(
-                        "{} COSTS {} PRODUCTION. ONE PER CITY.",
+                        "{} COSTS {} SHELLS. ONE PER REEF.",
                         building.description(),
                         quantity(building.cost())
                     ),
@@ -325,50 +326,50 @@ impl GameState {
                 ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
-                    "BARRACKS".into(),
+                    Building::Barracks.name().into(),
                     format!(
-                        "{} COSTS {} PRODUCTION FROM THE ACTIVE MANAGER'S WORK GROUP.",
+                        "{} COSTS {} SHELLS FROM THE ACTIVE MANAGER'S WORK GROUP.",
                         build.description(),
                         quantity(build.cost())
                     ),
                     None,
                 ),
                 Target::OpenBarracks => (
-                    "SEE BARRACKS".into(),
+                    "SEE SHIPWRECK".into(),
                     "CLICK".into(),
-                    "OPENS THE BARRACKS' OWN TRAINING AND QUEUE PANEL.".into(),
+                    "OPENS THE SHIPWRECK'S OWN TRAINING AND QUEUE PANEL.".into(),
                     None,
                 ),
                 Target::OpenCity => (
-                    "OPEN CITY".into(),
+                    "OPEN REEF".into(),
                     "CLICK".into(),
-                    "RETURNS TO THIS CITY'S LABOR AND MAIN PRODUCTION PANEL.".into(),
+                    "RETURNS TO THIS REEF'S LABOR AND MAIN PRODUCTION PANEL.".into(),
                     None,
                 ),
                 Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => (
                     "REMOVE".into(),
                     "CLICK".into(),
-                    "REMOVING THE ACTIVE ITEM LOSES ITS PRODUCTION.".into(),
+                    "REMOVING THE ACTIVE ITEM LOSES THE SHELLS PUT INTO IT.".into(),
                     None,
                 ),
                 Target::WorkerJobRemove(_) => (
                     "REMOVE".into(),
                     "CLICK".into(),
-                    "TAKES THIS JOB OFF THE CITY'S WORKER LIST.".into(),
+                    "TAKES THIS JOB OFF THE REEF'S SHRIMP LIST.".into(),
                     None,
                 ),
                 Target::RecallWorker(_) => (
                     "RECALL".into(),
                     "CLICK".into(),
-                    "THE WORKER HEADS STRAIGHT HOME, 1 TILE A TURN, WHERE IT'S SAFE. ITS JOB GOES BACK ON TOP OF THE CITY'S LIST."
+                    "THE SHRIMP HEADS STRAIGHT HOME, 1 TILE A TURN, WHERE IT'S SAFE. ITS JOB GOES BACK ON TOP OF THE REEF'S LIST."
                         .into(),
                     None,
                 ),
                 Target::BuildWorker => (
-                    "WORKER".into(),
+                    Build::Worker.name().into(),
                     WORKER_SHORTCUT.to_string(),
                     format!(
-                        "JOINS THE CITY'S WORKERS, WHO GO OUT TO BUILD WHAT YOU ORDER FROM A TILE. {} PRODUCTION.",
+                        "JOINS THE REEF'S SHRIMP, WHO SWIM OUT TO BUILD WHAT YOU ORDER FROM A TILE. {} SHELLS.",
                         quantity(WORKER_COST)
                     ),
                     None,
@@ -381,7 +382,7 @@ impl GameState {
                         _ => "CLICK".into(),
                     },
                     format!(
-                        "{} {} TURN{} OF WORK ONCE A WORKER GETS THERE.",
+                        "{} {} TURN{} OF WORK ONCE A SHRIMP GETS THERE.",
                         kind.description(),
                         kind.turns(),
                         if kind.turns() == 1 { "" } else { "S" }
@@ -392,7 +393,7 @@ impl GameState {
                 Target::Focus(focus) => (
                     format!("{} FOCUS", focus.name()),
                     "AUTO".into(),
-                    "REASSIGNS CITY LABOR WITH THIS AS ITS DEFAULT PRIORITY.".into(),
+                    "REASSIGNS REEF LABOR WITH THIS AS ITS DEFAULT PRIORITY.".into(),
                     None,
                 ),
                 Target::ConfirmBuilding(building) => (
@@ -405,10 +406,10 @@ impl GameState {
                     scenario.name().into(),
                     scenario.key().into(),
                     match scenario {
-                        Scenario::Combat => "FOUR UNITS A SIDE ACROSS A MOUNTAIN PASS.",
-                        Scenario::Cities => "TWO ESTABLISHED CITIES WITH ARMIES.",
-                        Scenario::Frontier => "A SETTLER AND A SCOUT EACH. BOTH SCOUTS ARE YOURS.",
-                        Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS, YOURS ALONE: NO AI OPPONENT.",
+                        Scenario::Combat => "FOUR CREATURES A SIDE ACROSS A SEAMOUNT PASS.",
+                        Scenario::Cities => "TWO ESTABLISHED REEFS WITH SCHOOLS OF TROOPS.",
+                        Scenario::Frontier => "A SEA TURTLE AND A DOLPHIN EACH. BOTH DOLPHINS ARE YOURS.",
+                        Scenario::World => "A NEW RANDOM SEA FLOOR EVERY PRESS, YOURS ALONE: NO AI OPPONENT.",
                     }
                     .into(),
                     None,
@@ -431,7 +432,7 @@ impl GameState {
                 Target::CompleteProduction => (
                     "COMPLETE PRODUCTION".into(),
                     "F9".into(),
-                    "INSTANTLY FINISHES THE CURRENT CITY BUILD OR BARRACKS UNIT FOR TESTING."
+                    "INSTANTLY FINISHES THE CURRENT REEF BUILD OR SHIPWRECK UNIT FOR TESTING."
                         .into(),
                     None,
                 ),
@@ -441,11 +442,11 @@ impl GameState {
                     "STEP BY STEP OR ALL AT ONCE. THE OUTCOME IS THE SAME.".into(),
                     None,
                 ),
-                Target::ToggleFog => ("FOG OF WAR".into(), "F10".into(), String::new(), None),
+                Target::ToggleFog => ("MURK".into(), "F10".into(), String::new(), None),
                 Target::ToggleYields => (
                     "YIELDS".into(),
                     "Y".into(),
-                    "TILE YIELDS AROUND THIS CITY, AND THE SHARE THAT REACHES IT.".into(),
+                    "TILE YIELDS AROUND THIS REEF, AND THE SHARE THAT REACHES IT.".into(),
                     None,
                 ),
                 Target::EndTurn => (
@@ -547,9 +548,9 @@ impl GameState {
                 None,
             ),
             UnitAction::Settle => (
-                "FOUND CITY".into(),
+                "FOUND REEF".into(),
                 "F",
-                "AT LEAST 3 HEXES FROM ANY OTHER CITY.".into(),
+                "AT LEAST 3 HEXES FROM ANY OTHER REEF.".into(),
                 None,
             ),
         }

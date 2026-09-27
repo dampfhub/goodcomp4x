@@ -11,7 +11,7 @@ impl GameState {
         if let Some(city) = self.selected_city {
             self.cities[city].focus = focus;
             self.auto_assign_city(city);
-            self.notice = format!("CITY FOCUS: {}", focus.name());
+            self.notice = format!("REEF FOCUS: {}", focus.name());
         }
     }
 
@@ -84,7 +84,7 @@ impl GameState {
         self.cities[city].worked = relocated;
         self.cities[city].remembered_worked = self.cities[city].worked.clone();
         self.reconcile_citizens(city);
-        self.notice = "MANAGER MOVED - WORKERS FOLLOWED WHERE POSSIBLE".into();
+        self.notice = "MANAGER MOVED - CITIZENS FOLLOWED WHERE POSSIBLE".into();
     }
 
     pub(in crate::game) fn auto_assign_city(&mut self, city: usize) {
@@ -250,7 +250,7 @@ impl GameState {
         let label = if net > 0 {
             format!("GROWTH IN {turns} TURNS")
         } else {
-            "NO GROWTH: NEED FOOD".into()
+            "NO GROWTH: NEED FISH".into()
         };
         ((c.food * 100 / threshold).clamp(0, 100), threshold, label)
     }
@@ -302,6 +302,6 @@ impl GameState {
         for i in 0..self.cities.len() {
             self.reconcile_citizens(i);
         }
-        self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+        self.notice = "PLANNING - C REEF - SPACE HOLD OR END TURN".into();
     }
 }

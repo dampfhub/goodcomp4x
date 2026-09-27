@@ -229,7 +229,7 @@ fn a_barracks_may_stand_on_an_unworked_tile_as_its_card_says() {
     );
     let card = Building::Barracks.description();
     assert!(!card.contains("WORKED TILE"), "{card}");
-    assert!(card.contains("OPEN LAND"), "{card}");
+    assert!(card.contains("OPEN SEAFLOOR"), "{card}");
 }
 
 #[test]

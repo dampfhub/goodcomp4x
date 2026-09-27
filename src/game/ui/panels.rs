@@ -95,9 +95,9 @@ impl GameState {
             "PLAYBACK: STEP BY STEP"
         };
         let fog = if self.fog_of_war {
-            "FOG OF WAR: ON"
+            "MURK: ON"
         } else {
-            "FOG OF WAR: OFF"
+            "MURK: OFF"
         };
         panel.compact_buttons(vec![debug_button(
             Target::TogglePlayback,
@@ -193,13 +193,13 @@ impl GameState {
             );
             panel.text(
                 TITLE,
-                vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
+                vec![(format!("REEF {} SHIPWRECK", city.id + 1), city.team.color())],
             );
             panel.text(
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · {} PROD/T",
+                        "HP {:.0}/{:.0} · {} SHELLS/T",
                         city.barracks_hp,
                         crate::game::city::BARRACKS_MAX_HP,
                         signed_quantity(production)
@@ -229,13 +229,13 @@ impl GameState {
             );
             panel.text(
                 TITLE,
-                vec![(format!("CITY {}", city.id + 1), city.team.color())],
+                vec![(format!("REEF {}", city.id + 1), city.team.color())],
             );
             panel.text(
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · POP {growth}% · {} PROD/T",
+                        "HP {:.0}/{:.0} · POP {growth}% · {} SHELLS/T",
                         city.hp,
                         crate::game::city::CITY_MAX_HP,
                         signed_quantity(production)

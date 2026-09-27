@@ -49,7 +49,7 @@ impl GameState {
         self.ui_click_mode = None;
         self.camera.focus_on(self.cities[i].pos.to_world());
         self.notice = if self.city_needs_build(i) {
-            format!("CHOOSE WHAT CITY {} BUILDS - 1-4", self.cities[i].id + 1)
+            format!("CHOOSE WHAT REEF {} BUILDS - 1-4", self.cities[i].id + 1)
         } else {
             "CLICK TILES TO ASSIGN - A AUTO ASSIGN - ESC OR SPACE TO EXIT".into()
         };
@@ -84,7 +84,7 @@ impl GameState {
             return true;
         }
         self.leave_city_view();
-        self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+        self.notice = "PLANNING - C REEF - SPACE HOLD OR END TURN".into();
         true
     }
 
@@ -103,7 +103,7 @@ impl GameState {
         self.ui_click_mode = None;
         self.camera
             .focus_on(self.cities[city].barracks.unwrap().to_world());
-        self.notice = "BARRACKS - QUEUE TROOPS OR CLICK CITY TO RETURN".into();
+        self.notice = "SHIPWRECK - QUEUE TROOPS OR CLICK REEF TO RETURN".into();
     }
 
     pub fn open_selected_city_from_barracks(&mut self) {
@@ -118,7 +118,7 @@ impl GameState {
         // on one consistent interaction model.
         if self.selected_barracks.is_some() {
             self.inspected_tile = Some(hex);
-            self.notice = "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT".into();
+            self.notice = "SHIPWRECK MENU - PRESS ESC OR SPACE TO EXIT".into();
             return true;
         }
         if self.selected_city.is_none() {
@@ -143,7 +143,7 @@ impl GameState {
         let i = self.selected_city.unwrap();
         if let Some((_, building)) = self.site_placement() {
             if !self.site_available(i, building, hex) {
-                self.notice = format!("{} NEEDS AN OPEN LAND TILE", building.name());
+                self.notice = format!("{} NEEDS AN OPEN SEAFLOOR TILE", building.name());
             } else {
                 self.cities[i].planned_sites.insert(building, hex);
                 self.placing_building = None;
@@ -159,7 +159,7 @@ impl GameState {
                             >= self.city_build_cost(i, Build::Building(building)))
                 {
                     format!(
-                        "{} SITE SELECTED - CLICK CONFIRM IN THE CITY TRAY",
+                        "{} SITE SELECTED - CLICK CONFIRM IN THE REEF TRAY",
                         building.name()
                     )
                 } else {
@@ -198,7 +198,7 @@ impl GameState {
         } else if !self.routes(i).costs.contains_key(&hex) {
             self.notice = "NO OPEN ROUTE WITHIN LOGISTICS BUDGET".into();
         } else if !self.may_manage_or_work(i, hex) {
-            self.notice = "THE FIRST CITIZEN MANAGES THE OTHERS AND MUST WORK LAND".into();
+            self.notice = "THE FIRST CITIZEN MANAGES THE OTHERS AND MUST WORK THE SEAFLOOR".into();
         } else if self.cities[i].worked.len() >= self.cities[i].population.min(MAX_CITY_POPULATION)
         {
             self.notice = "ALL CITIZENS BUSY - RELEASE A WORKED TILE FIRST".into();

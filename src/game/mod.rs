@@ -287,15 +287,15 @@ impl GameState {
     /// ordinary unit type.
     fn unit_role(&self, unit: &Unit) -> &'static str {
         if self.settlers.contains(&unit.id) {
-            "SETTLER"
+            "SEA TURTLE"
         } else {
             match unit.unit_type {
-                UnitType::Melee => "MELEE",
-                UnitType::Ranged => "RANGED",
-                UnitType::Cavalry => "CAVALRY",
-                UnitType::Siege => "SIEGE",
-                UnitType::Scout => "SCOUT",
-                UnitType::Armored => "ARMORED",
+                UnitType::Melee => "SWORDFISH",
+                UnitType::Ranged => "PUFFERFISH",
+                UnitType::Cavalry => "SEAHORSE",
+                UnitType::Siege => "OCTOPUS",
+                UnitType::Scout => "DOLPHIN",
+                UnitType::Armored => "CRAB",
             }
         }
     }

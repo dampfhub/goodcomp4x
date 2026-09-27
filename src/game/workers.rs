@@ -53,12 +53,12 @@ impl JobKind {
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::Road => "ROAD",
+            Self::Road => "SEA LANE",
             Self::Improve => "IMPROVE",
-            Self::Wall => "WALL",
-            Self::Gate => "GATE",
-            Self::Outpost => "OUTPOST",
-            Self::Fort => "FORT",
+            Self::Wall => "CORAL WALL",
+            Self::Gate => "SPONGE GATE",
+            Self::Outpost => "LANTERN POST",
+            Self::Fort => "CLAM FORT",
         }
     }
 
@@ -76,7 +76,7 @@ impl JobKind {
         match self {
             Self::Road => "LOWERS THE COST OF CARRYING GOODS THROUGH THIS TILE.",
             Self::Improve => {
-                "A MINE ON HILLS (+2 PRODUCTION), LUMBER MILL IN FOREST OR JUNGLE (+1), FARM ELSEWHERE (+2 FOOD)."
+                "A CORAL QUARRY ON A REEF (+2 SHELLS), DRIFTWOOD IN KELP OR CORAL THICKET (+1), KELP FARM ELSEWHERE (+2 FISH)."
             }
             Self::Wall => "ON A HEX EDGE: NO UNIT OR GOODS CROSS IT, YOURS INCLUDED.",
             Self::Gate => "ON A HEX EDGE: YOUR UNITS AND GOODS CROSS IT; ENEMIES' DON'T.",
@@ -249,13 +249,13 @@ impl GameState {
         let tile = self.grid.tile(hex);
         let (food, production) = tile.yields();
         if tile.hills {
-            Some((food, production + 2, "MINE"))
+            Some((food, production + 2, "CORAL QUARRY"))
         } else if tile.feature.is_some() {
-            Some((food, production + 1, "LUMBER MILL"))
+            Some((food, production + 1, "DRIFTWOOD"))
         } else if tile.terrain == Terrain::Snow {
             None
         } else {
-            Some((food + 2, production, "FARM"))
+            Some((food + 2, production, "KELP FARM"))
         }
     }
 
@@ -263,32 +263,32 @@ impl GameState {
     pub(super) fn job_problem(&self, team: Team, job: WorkerJob) -> Option<&'static str> {
         let hex = job.hex;
         if !self.grid.contains(hex) || !self.grid.is_passable(hex) {
-            return Some("WORKERS CAN'T WORK THIS TERRAIN");
+            return Some("SHRIMP CAN'T WORK THIS TERRAIN");
         }
         if let Some(across) = job.across {
             return if hex.distance(across) != 1 || !self.grid.contains(across) {
-                Some("WALLS AND GATES GO BETWEEN TWO TILES ON THE MAP")
+                Some("CORAL WALLS AND SPONGE GATES GO BETWEEN TWO TILES ON THE MAP")
             } else if self.barriers.contains_key(&edge(hex, across)) {
-                Some("A WALL OR GATE STANDS HERE")
+                Some("A CORAL WALL OR SPONGE GATE STANDS HERE")
             } else {
                 None
             };
         }
         if self.cities.iter().any(|c| c.pos == hex) {
-            return Some("A CITY STANDS HERE");
+            return Some("A REEF STANDS HERE");
         }
         let building = self
             .cities
             .iter()
             .any(|c| [c.barracks, c.mill, c.workshop].contains(&Some(hex)));
         match job.kind {
-            JobKind::Road if self.is_road_hex(hex) => Some("THERE IS A ROAD HERE ALREADY"),
+            JobKind::Road if self.is_road_hex(hex) => Some("A SEA LANE RUNS HERE ALREADY"),
             JobKind::Road => None,
             JobKind::Improve if building => Some("A BUILDING STANDS HERE"),
             JobKind::Improve => match self.sites.get(&hex) {
                 Some(site) if site.team != team => Some("THIS TILE BELONGS TO THE ENEMY"),
                 Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
-                None if self.improvement(hex).is_none() => Some("NOTHING GROWS ON SNOW"),
+                None if self.improvement(hex).is_none() => Some("NOTHING GROWS ON ICE SHELF"),
                 None => None,
             },
             _ if building => Some("A BUILDING STANDS HERE"),
@@ -321,7 +321,7 @@ impl GameState {
         }
         if kind.on_edge() {
             if self.nearest_city(PLAYER_TEAM, Hex::new(0, 0)).is_none() {
-                self.notice = "FOUND A CITY FIRST - ITS WORKERS DO THE WORK".into();
+                self.notice = "FOUND A REEF FIRST - ITS SHRIMP DO THE WORK".into();
                 return;
             }
             self.placing_barrier = Some(kind);
@@ -332,7 +332,7 @@ impl GameState {
             return;
         }
         let Some(hex) = self.inspected_tile else {
-            self.notice = "CLICK A TILE FIRST, THEN CHOOSE A WORKER JOB".into();
+            self.notice = "CLICK A TILE FIRST, THEN CHOOSE A SHRIMP JOB".into();
             return;
         };
         self.queue_worker_job_at(hex, kind);
@@ -382,7 +382,7 @@ impl GameState {
         }
         self.cities[city].worker_jobs.push(job);
         self.notice = format!(
-            "{} QUEUED FOR CITY {} - {} JOBS WAITING - ESC TO STOP",
+            "{} QUEUED FOR REEF {} - {} JOBS WAITING - ESC TO STOP",
             kind.name(),
             self.cities[city].id + 1,
             self.cities[city].worker_jobs.len()
@@ -395,11 +395,11 @@ impl GameState {
     pub(super) fn job_unavailable(&self, hex: Hex, kind: JobKind) -> Option<String> {
         let job = WorkerJob::on_tile(hex, kind);
         if self.job_city(hex).is_none() {
-            Some("FOUND A CITY FIRST - ITS WORKERS DO THE WORK".into())
+            Some("FOUND A REEF FIRST - ITS SHRIMP DO THE WORK".into())
         } else if kind.on_edge() {
             None
         } else if !self.is_explored(hex) {
-            Some("WORKERS CAN'T WORK AN UNEXPLORED TILE".into())
+            Some("SHRIMP CAN'T WORK AN UNEXPLORED TILE".into())
         } else if let Some(problem) = self.job_problem(PLAYER_TEAM, job) {
             Some(problem.into())
         } else if self.job_taken(PLAYER_TEAM, job) {
@@ -422,10 +422,9 @@ impl GameState {
             .push(WorkerJob::on_tile(hex, kind));
         let home = self.cities[city].workers;
         self.notice = format!(
-            "{} QUEUED FOR CITY {} - {home} WORKER{} AT HOME",
+            "{} QUEUED FOR REEF {} - {home} SHRIMP AT HOME",
             kind.name(),
             self.cities[city].id + 1,
-            if home == 1 { "" } else { "S" }
         );
     }
 
@@ -439,7 +438,7 @@ impl GameState {
         };
         if index < self.cities[city].worker_jobs.len() {
             let job = self.cities[city].worker_jobs.remove(index);
-            self.notice = format!("REMOVED {} FROM THE WORKER JOBS", job.kind.name());
+            self.notice = format!("REMOVED {} FROM THE SHRIMP JOBS", job.kind.name());
         }
     }
 
@@ -463,7 +462,7 @@ impl GameState {
         worker.job = None;
         worker.work_left = None;
         worker.recalled = true;
-        self.notice = "WORKER RECALLED - IT HEADS HOME; ITS JOB WAITS ON THE LIST".into();
+        self.notice = "SHRIMP RECALLED - IT HEADS HOME; ITS JOB WAITS ON THE LIST".into();
     }
 
     /// Takes the first job in `city`'s queue its workers can still do,
@@ -567,7 +566,7 @@ impl GameState {
             if let Some(job) = worker.job {
                 if worker.team == PLAYER_TEAM {
                     self.notice = format!(
-                        "A WORKER CAN'T REACH ITS {} AT ({}, {}) - IT'S COMING HOME",
+                        "A SHRIMP CAN'T REACH ITS {} AT ({}, {}) - IT'S COMING HOME",
                         job.kind.name(),
                         job.hex.q,
                         job.hex.r
@@ -676,7 +675,7 @@ impl GameState {
         );
         if team == PLAYER_TEAM {
             self.notice = format!(
-                "WORKERS FINISHED A {} AT ({}, {})",
+                "SHRIMP FINISHED A {} AT ({}, {})",
                 job.kind.name(),
                 hex.q,
                 hex.r
@@ -719,9 +718,9 @@ impl GameState {
                 self.cities[city].workers += 1;
             }
             if worker.team == PLAYER_TEAM {
-                self.notice = "AN ENEMY CAPTURED ONE OF YOUR WORKERS".into();
+                self.notice = "AN ENEMY CAPTURED ONE OF YOUR SHRIMP".into();
             } else if captor_team == PLAYER_TEAM {
-                self.notice = "WORKER CAPTURED - IT JOINS YOUR NEAREST CITY".into();
+                self.notice = "SHRIMP CAPTURED - IT JOINS YOUR NEAREST REEF".into();
             }
         }
     }
@@ -750,7 +749,7 @@ impl GameState {
                 worker.pos.r
             );
             if worker.team == PLAYER_TEAM {
-                self.notice = "ONE OF YOUR WORKERS WAS KILLED".into();
+                self.notice = "ONE OF YOUR SHRIMP WAS EATEN".into();
             }
         }
     }
@@ -827,7 +826,7 @@ mod tests {
         let city = game.cities[0].pos;
         queue(&mut game, city, JobKind::Fort);
         assert_eq!(game.cities[0].worker_jobs.len(), 1, "not on a city");
-        assert!(game.notice.contains("CITY"), "{}", game.notice);
+        assert!(game.notice.contains("REEF"), "{}", game.notice);
     }
 
     #[test]
@@ -1134,7 +1133,7 @@ mod tests {
                 team: Team::Red,
                 food: 3,
                 production: 0,
-                label: "FARM",
+                label: "KELP FARM",
             },
         );
         game.resolve_workers();
