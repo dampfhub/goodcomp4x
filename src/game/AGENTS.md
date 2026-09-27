@@ -11,7 +11,7 @@ behavior.
 
 | Module | Concern |
 |---|---|
-| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP`, the main tests |
+| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
 | `orders.rs` | player input and order planning: click, right-click, swap, ability toggle, hold, guard |
 | `group.rs` | multi-unit selection (Alt-drag, Alt-click) and group orders |
 | `turn.rs` | `RESOLUTION_ORDER`, `update(dt)`, simultaneous step resolution (moves, attacks) |
@@ -68,14 +68,15 @@ behavior.
 ## Recipes
 
 - **New key:** a `KeyCode` arm in `App::window_event` (`src/app.rs`) calling a `GameState`
-  method (a key that acts on release or while held needs its own arm, like Escape), a row in
-  `docs/controls.md`, and a line in `CONTROLS_HELP` (printed at startup).
+  method (a key that acts on release or while held needs its own arm, like Escape), and a row in
+  `docs/controls.md`, the one description of the controls. `CONTROLS_HELP` (printed at startup)
+  only points to that file; don't list keys in it.
 - **New unit button:** in `ui.rs`, a `UnitAction` variant, a `ButtonSpec` in the tray's button
   list, its tooltip text (the `UnitAction` match under `tooltip_lines`), and an arm in
   `click_ui`'s dispatch. Add a hit-test unit test.
 - **Stat or tuning change:** `unit.rs` or `ability.rs`, then every place that states the number
-  to players: `ability_text` in `ui.rs` (tooltips), `CONTROLS_HELP` in `mod.rs`, and the tables
-  in `docs/game-rules.md`. Grep for the old value.
+  to players: `ability_text` in `ui.rs` (tooltips) and the tables in `docs/game-rules.md`. Grep
+  for the old value.
 - **New scenario:** a `Scenario` variant (`scenario.rs`: `ALL`, `name`, `key`, `start`), its
   constructor in `mod.rs`, a key in `app.rs`; the debug panel lists `Scenario::ALL` itself.
 
