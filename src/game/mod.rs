@@ -95,6 +95,9 @@ pub struct GameState {
     placing_barrier: Option<workers::JobKind>,
     /// The unit whose Disband was pressed once, waiting for a second press.
     disband_armed: Option<u32>,
+    /// A plain click that would replace a selected unit's multi-turn queue,
+    /// waiting for the same click again (`orders::confirm_queue_replace`).
+    queue_replace_armed: Option<orders::QueueReplace>,
     /// The edge under the cursor while placing one, highlighted.
     hovered_edge: Option<(Hex, Hex)>,
     city_queue_scroll: usize,
@@ -204,6 +207,7 @@ impl GameState {
             inspected_tile: None,
             placing_barrier: None,
             disband_armed: None,
+            queue_replace_armed: None,
             hovered_edge: None,
             city_queue_scroll: 0,
             barracks_queue_scroll: 0,

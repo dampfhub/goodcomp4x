@@ -108,4 +108,5 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     with the selection framed: click to jump to one, Shift- or Ctrl-click to add or remove it.
     The unit and group panels gained a Clear Orders button; Hold toggles, and any order ends a
     hold. Queued plans are drawn per unit (fanned numbers, a ghost at each plan's end) and the
-    turns-left tag reads `3T`.
+    turns-left tag reads `3T`. A plain click that would replace a multi-turn queue must be
+    repeated on the same hex, so viewing a plan and clicking away can't wipe it.

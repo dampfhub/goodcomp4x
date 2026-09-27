@@ -53,7 +53,11 @@ Shift-clicks on a hex build an order queue over several turns (rules: `game-rule
 queues); a Shift-click on one of your own units adds it to the selection instead.
 Selection stays on the unit while you queue; let go of it (Escape, Tab, or click another unit)
 when done. A queued unit doesn't hold up the turn, and any other order (a plain click or
-right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. A plan
+right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. While a
+unit or group with a queue past this turn is selected, a plain click or right-click on the map
+only warns ("CLICK AGAIN TO REPLACE ITS QUEUE") and outlines the hex in orange; the same click
+again replaces the queue, so selecting a unit to look at its plan and clicking away can't wipe
+it. Buttons and keys (Clear Orders, Guard, the ability) act at once. A plan
 reaching past this turn shows as turn numbers only while it is selected or the cursor is on it;
 otherwise a small `NT` tag beside it (`3T`: 3 turns) counts the turns of orders left. A plan of
 this turn alone shows like plain orders (ghost and arrow). To cancel a unit's queued orders,

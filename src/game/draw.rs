@@ -180,6 +180,9 @@ const QUEUE_TAG_OFFSET: Vec2 = Vec2::new(-0.44, -0.4);
 /// Where a plan's last number sits from its ghost: below it, clear of the
 /// pictogram.
 const QUEUE_END_BADGE_OFFSET: Vec2 = Vec2::new(0.0, -0.36);
+/// The orange hex outline on a click waiting to be repeated to replace a queue.
+const QUEUE_REPLACE_OUTLINE_RADIUS: f32 = 0.9;
+const QUEUE_REPLACE_OUTLINE_WIDTH: f32 = 0.08;
 const QUEUE_TAG_SCALE: f32 = 0.7;
 
 /// A queued swap is drawn as a link between the two allies.
@@ -661,6 +664,19 @@ impl GameState {
             .map(|i| (&self.units[i], self.unit_look(&self.units[i])))
             .collect();
         push_queue_plans(&plans, out);
+        // A click waiting to be repeated to replace the selection's queue.
+        if let Some(hex) = self.queue_replace_hex() {
+            let rim = HEX_SIZE * QUEUE_REPLACE_OUTLINE_RADIUS;
+            mesh::polygon_outline(
+                hex.to_world(),
+                rim,
+                QUEUE_REPLACE_OUTLINE_WIDTH,
+                6,
+                0.0,
+                ATTACK_ARC_COLOR,
+                out,
+            );
+        }
     }
 
     /// Where to draw a unit and at what scale: full size in the middle of its

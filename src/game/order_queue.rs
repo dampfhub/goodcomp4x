@@ -627,27 +627,74 @@ mod tests {
     }
 
     #[test]
+    fn a_stray_click_never_replaces_a_queue() {
+        let mut g = open_field(&[UnitType::Melee, UnitType::Melee]);
+        g.set_selection(vec![0, 1]);
+        assert!(g.queue_move(Hex::new(0, 0)));
+        let plans: Vec<usize> = (0..2).map(|i| g.units[i].plan_len()).collect();
+        assert!(plans[0] > 1);
+
+        // A click on one hex, then another: both only warn, and the marked
+        // hex follows the latest.
+        let (a, b) = (Hex::new(-5, 1), Hex::new(-5, 0));
+        g.handle_map_click(cursor(&g, a), SCREEN, ClickMode::Normal);
+        assert_eq!(g.queue_replace_hex(), Some(a));
+        assert!(g.notice.contains("CLICK AGAIN"), "{}", g.notice);
+        g.handle_map_click(cursor(&g, b), SCREEN, ClickMode::Normal);
+        assert_eq!(g.queue_replace_hex(), Some(b));
+        // A right-click on the marked hex is a different order: still a warning.
+        g.handle_context_click(cursor(&g, b), SCREEN, false, false);
+        let unchanged: Vec<usize> = (0..2).map(|i| g.units[i].plan_len()).collect();
+        assert_eq!(unchanged, plans, "nothing replaced yet");
+        assert!(g.units.iter().all(|u| u.planned_attack.is_none()));
+
+        // Letting go of the group forgets the pending click.
+        g.set_selection(vec![0]);
+        assert_eq!(g.queue_replace_hex(), None);
+
+        // The same click twice replaces the queue.
+        g.handle_map_click(cursor(&g, b), SCREEN, ClickMode::Normal);
+        assert!(g.units[0].has_queue());
+        g.handle_map_click(cursor(&g, b), SCREEN, ClickMode::Normal);
+        assert!(!g.units[0].has_queue());
+        assert_eq!(g.units[0].planned_move, Some(b));
+        assert_eq!(g.queue_replace_hex(), None);
+    }
+
+    #[test]
     fn any_other_order_cancels_the_queue() {
         type Order = fn(&mut GameState);
-        let orders: [(&str, Order); 6] = [
-            ("click a move", |g| {
-                g.handle_map_click(cursor(g, Hex::new(-5, 0)), SCREEN, ClickMode::Normal)
-            }),
-            ("right-click an attack", |g| {
-                g.handle_context_click(cursor(g, Hex::new(-3, 1)), SCREEN, false, false)
-            }),
-            ("guard", |g| g.toggle_guard()),
-            ("ability", |g| g.toggle_selected_ability()),
-            ("ctrl-right-click", |g| g.handle_right_click()),
-            ("swap", |g| {
-                g.handle_map_click(cursor(g, Hex::new(-4, 1)), SCREEN, ClickMode::Swap)
-            }),
+        // Map clicks need the same click twice (the first only warns); the
+        // buttons and keys act at once.
+        let orders: [(&str, Order, bool); 6] = [
+            (
+                "click a move",
+                |g| g.handle_map_click(cursor(g, Hex::new(-5, 0)), SCREEN, ClickMode::Normal),
+                true,
+            ),
+            (
+                "right-click an attack",
+                |g| g.handle_context_click(cursor(g, Hex::new(-3, 1)), SCREEN, false, false),
+                true,
+            ),
+            ("guard", |g| g.toggle_guard(), false),
+            ("ability", |g| g.toggle_selected_ability(), false),
+            ("ctrl-right-click", |g| g.handle_right_click(), false),
+            (
+                "swap",
+                |g| g.handle_map_click(cursor(g, Hex::new(-4, 1)), SCREEN, ClickMode::Swap),
+                true,
+            ),
         ];
-        for (name, order) in orders {
+        for (name, order, twice) in orders {
             let mut g = open_field(&[UnitType::Melee, UnitType::Melee]);
             g.selected = Some(0);
             assert!(g.queue_move(Hex::new(-3, 0)));
             assert!(g.queue_move(Hex::new(-2, 0)));
+            if twice {
+                order(&mut g);
+                assert!(g.units[0].has_queue(), "one {name} only warns");
+            }
             order(&mut g);
             assert!(!g.units[0].has_queue(), "{name} keeps the queue");
         }

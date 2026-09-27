@@ -5,6 +5,17 @@ use glam::Vec2;
 use super::GameState;
 use super::hex::Hex;
 
+/// A click that would replace the selection's multi-turn queue, remembered
+/// until it's repeated: which hex, whether it was an attack, for which
+/// units, on which turn.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(super) struct QueueReplace {
+    hex: Hex,
+    attack: bool,
+    units: Vec<u32>,
+    turn: u32,
+}
+
 /// What a click on a hex should do, based on the button and the modifier
 /// keys held: left-click moves, right-click attacks, Shift adds to the
 /// order queue (`order_queue.rs`) instead.
@@ -141,6 +152,16 @@ impl GameState {
                 return;
             }
         }
+        // A plain order that would replace a multi-turn queue needs the same
+        // click twice, so looking at a plan and clicking away can't ruin it.
+        let replaces_queue = match (mode, ally) {
+            (ClickMode::Normal, None) | (ClickMode::Move, None) | (ClickMode::Attack, _) => true,
+            (ClickMode::Swap, Some(_)) => self.group.is_empty(),
+            _ => false,
+        };
+        if replaces_queue && !self.confirm_queue_replace(hex, mode == ClickMode::Attack) {
+            return;
+        }
         // With a group selected, a plain click on one of your units picks
         // just it; anything else is an order for the whole group.
         if !self.group.is_empty() {
@@ -189,6 +210,41 @@ impl GameState {
                 self.queue_attack(hex);
             }
         }
+    }
+
+    /// Whether a plain order on `hex` (an attack if `attack`) may go ahead
+    /// for the selection. If a selected unit follows a queue reaching past
+    /// this turn, which the order would replace, the first such click only
+    /// warns and marks the hex; the same click again goes through. Any other
+    /// click leaves the queue alone.
+    pub(super) fn confirm_queue_replace(&mut self, hex: Hex, attack: bool) -> bool {
+        let members = self.selection();
+        let queued = members.iter().any(|&i| self.units[i].plans_later_turns());
+        let pending = QueueReplace {
+            hex,
+            attack,
+            units: members.iter().map(|&i| self.units[i].id).collect(),
+            turn: self.turn,
+        };
+        if !queued || self.queue_replace_armed.as_ref() == Some(&pending) {
+            self.queue_replace_armed = None;
+            return true;
+        }
+        self.queue_replace_armed = Some(pending);
+        self.notice = if members.len() > 1 {
+            "CLICK AGAIN TO REPLACE THEIR QUEUES".into()
+        } else {
+            "CLICK AGAIN TO REPLACE ITS QUEUE".into()
+        };
+        false
+    }
+
+    /// The hex a click is waiting to be repeated on to replace the selection's
+    /// queue, while it still applies (same selection, same turn).
+    pub(super) fn queue_replace_hex(&self) -> Option<Hex> {
+        let pending = self.queue_replace_armed.as_ref()?;
+        let units: Vec<u32> = self.selection().iter().map(|&i| self.units[i].id).collect();
+        (pending.units == units && pending.turn == self.turn).then_some(pending.hex)
     }
 
     /// Escape, once no structure menu is open: lets go of the selected unit
@@ -459,6 +515,9 @@ impl GameState {
         } else {
             ClickMode::Attack
         };
+        if !queue && !self.confirm_queue_replace(hex, true) {
+            return;
+        }
         if !self.group.is_empty() {
             self.group_order(hex, mode);
         } else if let Some(selected) = self.selected {

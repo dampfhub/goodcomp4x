@@ -208,7 +208,10 @@ queue them. Nothing heals.
   turn and every turn it has queued orders for.
 - **Cancelling:** any other order to the unit (a plain move or attack, a group move or attack, a
   swap, its ability, Guard, Ctrl-right-click) drops its queue. Hold keeps it. This turn's orders
-  stay, so the unit needs orders again unless the new order completes them.
+  stay, so the unit needs orders again unless the new order completes them. A map click that
+  would replace a queue reaching past this turn (a plain move, attack or swap, for a unit or a
+  group) needs the same click twice: the first only warns and outlines the hex, and any other
+  click, a new selection or the turn ending forgets it (`confirm_queue_replace`).
 - **Carrying over:** at the end of the turn, after each unit's `end_turn`, every unit with a
   queue takes its next turn's orders (`advance_queues`). The whole queue is dropped, with a
   notice ("MELEE STOPPED: ..."), and the unit needs orders, if the turn no longer fits: the unit
