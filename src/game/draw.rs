@@ -20,13 +20,17 @@ type Color = [f32; 4];
 const BORDER_COLOR: Color = [0.10, 0.10, 0.13, 1.0];
 /// Each hex's fill as a share of its size; the rest is the border between hexes.
 const HEX_FILL_SCALE: f32 = 0.92;
-/// The grey veil over remembered hexes out of sight, and the line (a grey a
-/// little darker than the veil) where they meet hexes in sight.
+/// The grey veil over remembered hexes out of sight, and the line where they
+/// meet hexes in sight: a light, cool grey like the cloud, so it can't be
+/// mistaken for the dark gaps between ordinary hexes.
 const OUT_OF_SIGHT_COLOR: Color = [0.20, 0.20, 0.22, 0.38];
-const FOG_EDGE_COLOR: Color = [0.12, 0.12, 0.13, 1.0];
+const FOG_EDGE_COLOR: Color = [0.24, 0.25, 0.28, 1.0];
 /// The fog edge fills the whole gap between two hexes' fills: each fill stops
 /// short of its hex's edge by (1 - HEX_FILL_SCALE) of the apothem, sqrt(3) / 2.
 const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
+/// Along a river the fog edge widens to cover it whole, since a river is wider
+/// than the gap; otherwise a sliver of it would show on the side in sight.
+const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
 /// Faint light puffs over the grey veil, for a look of cloud cover.
 const CLOUD_COLOR: Color = [0.85, 0.87, 0.9, 0.07];
 const CLOUD_PUFFS: usize = 3;
@@ -251,17 +255,15 @@ impl GameState {
             for n in hex.neighbors() {
                 if self.grid.contains(n) && fog.sees(n) {
                     let (a, b) = edge_corners(hex, n);
-                    mesh::segment(a, b, FOG_EDGE_WIDTH, FOG_EDGE_COLOR, out);
+                    let width = if self.grid.has_river(hex, n) {
+                        FOG_RIVER_EDGE_WIDTH
+                    } else {
+                        FOG_EDGE_WIDTH
+                    };
+                    mesh::segment(a, b, width, FOG_EDGE_COLOR, out);
                     // Round the joints where edges meet at a corner.
                     for p in [a, b] {
-                        mesh::regular_polygon(
-                            p,
-                            FOG_EDGE_WIDTH / 2.0,
-                            10,
-                            0.0,
-                            FOG_EDGE_COLOR,
-                            out,
-                        );
+                        mesh::regular_polygon(p, width / 2.0, 12, 0.0, FOG_EDGE_COLOR, out);
                     }
                 }
             }
