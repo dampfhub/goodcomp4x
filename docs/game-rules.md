@@ -557,8 +557,8 @@ every turn end.
   other job on the tile, queued or under way: a tile takes one job at a time (walls and gates,
   on its edges, aside). Improvements and outposts or forts also can't go on a placed building or
   on another improvement, and an outpost or fort can't go on another one.
-- **Reach:** workers go up to 3 tiles from one of their side's cities, or anywhere on or next
-  to a road (any road: roads belong to no one), so a line of roads carries the reach out as far
+- **Reach:** workers go up to 3 tiles from one of their side's cities or Work Camps (a camp
+  counts once connected to its city), or anywhere on or next to a road (any road: roads belong to no one), so a line of roads carries the reach out as far
   as it goes. A wall or gate counts from the tile the worker stands on to build it. The AI's
   workers keep to the same reach. A job out of reach can't be queued, and one under way that
   falls out of reach is abandoned.

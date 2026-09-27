@@ -174,3 +174,5 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     in bright gold with its name and turns of work left.
 54. Plainer job names (`claude/worker-reach`): worker jobs read as what they build, their tile and
     a turn count, like FARM · GRASSLAND · 3T, instead of coordinates and "turns of work".
+55. Work Camps extend reach (`claude/work-camp-reach`): a Work Camp connected to its city is a
+    base like the city itself: workers reach 3 tiles from it.

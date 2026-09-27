@@ -81,7 +81,7 @@ The worker menu is the only way to give workers orders.
 
 | Control | Action |
 | --- | --- |
-| W, the Workers chip in the turn strip, or Worker Jobs (city view) | Open the worker menu: tiles your workers can reach are lit and the rest dimmed. W, Escape, Done, or selecting a unit or city closes it |
+| W, the Workers chip in the turn strip, or Worker Jobs (city view) | Open the worker menu: tiles your workers can reach (3 from a city or connected Work Camp, or next to a road) are lit and the rest dimmed. W, Escape, Done, or selecting a unit or city closes it |
 | Road / Improve / Wall / Gate / Outpost / Fort (worker menu), or R / I | Pick that job to place (again to put it down); R and I open the menu with roads or improvements picked |
 | Click or drag over tiles (a tile job picked) | Place the job on each tile (a ring under the cursor shows where, red where it can't go), for the nearest city |
 | Click or drag along hex edges (a wall or gate picked) | Place one on each edge the cursor touches (highlighted under the cursor) |

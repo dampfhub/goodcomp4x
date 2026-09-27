@@ -298,7 +298,9 @@ impl GameState {
             return Some("WORKERS CAN'T WORK THIS TERRAIN");
         }
         if !self.in_worker_reach(team, hex) {
-            return Some("OUT OF REACH: WORKERS GO 3 TILES FROM A CITY, OR NEXT TO A ROAD");
+            return Some(
+                "OUT OF REACH: WORKERS GO 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD",
+            );
         }
         if let Some(across) = job.across {
             return if hex.distance(across) != 1 || !self.grid.contains(across) {
@@ -333,13 +335,36 @@ impl GameState {
         }
     }
 
+    /// Where `team`'s workers go out from: its cities, and each Work Camp
+    /// connected to its city (workers start nearby jobs from one,
+    /// `work_base_for`).
+    pub(super) fn worker_bases(&self, team: Team) -> Vec<Hex> {
+        let mut bases = Vec::new();
+        for (i, city) in self.cities.iter().enumerate() {
+            if city.team != team {
+                continue;
+            }
+            bases.push(city.pos);
+            if let Some(camp) = city.placed_site(crate::game::city::Building::WorkCamp)
+                && self.routes(i).costs.contains_key(&camp)
+            {
+                bases.push(camp);
+            }
+        }
+        bases
+    }
+
     /// Whether `team`'s workers will work at `hex`: within `WORKER_REACH` of
-    /// one of its cities, or on or next to a road, so roads carry the reach
-    /// out as far as they go.
+    /// one of its cities or connected Work Camps (`worker_bases`), or on or
+    /// next to a road, so roads carry the reach out as far as they go.
     pub(super) fn in_worker_reach(&self, team: Team, hex: Hex) -> bool {
-        self.cities
-            .iter()
-            .any(|c| c.team == team && c.pos.distance(hex) <= WORKER_REACH)
+        self.in_reach_of(&self.worker_bases(team), hex)
+    }
+
+    /// `in_worker_reach` with the bases worked out once, for checking many
+    /// hexes (worker mode's lit tiles).
+    pub(super) fn in_reach_of(&self, bases: &[Hex], hex: Hex) -> bool {
+        bases.iter().any(|base| base.distance(hex) <= WORKER_REACH)
             || std::iter::once(hex)
                 .chain(hex.neighbors())
                 .any(|h| self.roads.contains(&h))
@@ -1249,6 +1274,26 @@ mod tests {
         game.resolve_workers();
         assert!(game.field_workers.is_empty());
         assert_eq!(game.cities[0].workers, 1);
+    }
+
+    #[test]
+    fn a_connected_work_camp_extends_the_reach() {
+        let mut game = cities();
+        // Five from Blue's city at (-4, 0), with no road by it.
+        let far = Hex::new(1, 0);
+        assert!(!game.in_worker_reach(PLAYER_TEAM, far));
+        let camp = Hex::new(-1, 0);
+        game.cities[0]
+            .extra_buildings
+            .insert(crate::game::city::Building::WorkCamp, camp);
+        assert!(game.routes(0).costs.contains_key(&camp), "connected");
+        assert_eq!(game.worker_bases(PLAYER_TEAM), [game.cities[0].pos, camp]);
+        assert!(game.in_worker_reach(PLAYER_TEAM, far), "two from the camp");
+        assert!(game.job_unavailable(far, JobKind::Road).is_none());
+        assert!(
+            !game.in_worker_reach(PLAYER_TEAM, Hex::new(2, -4)),
+            "four from it"
+        );
     }
 
     #[test]
