@@ -155,6 +155,10 @@ const WORKED_OUTLINE_RADIUS: f32 = HEX_SIZE * 0.84;
 const WORKED_OUTLINE_WIDTH: f32 = 0.06;
 const WORKED_OUTLINE_RIM_WIDTH: f32 = 0.10;
 const WORKED_OUTLINE_RIM_COLOR: Color = [0.02, 0.05, 0.03, 1.0];
+/// The dotted line along the open city's manager's delivery route, shown
+/// while the cursor is on the manager.
+const MANAGER_ROUTE_WIDTH: f32 = 0.06;
+const MANAGER_ROUTE_COLOR: Color = [0.35, 0.82, 1.0, 0.9];
 
 /// A queued move is drawn as a faded copy of the unit at its destination.
 const GHOST_ALPHA: f32 = 0.4;
@@ -544,7 +548,8 @@ impl GameState {
             // Delivery labels show routes as the player knows them; the
             // worked-tile rings below show whether goods really arrive.
             let routes = self.routes(i);
-            for (h, cost) in &self.known_routes(i, fog).costs {
+            let known_routes = self.known_routes(i, fog);
+            for (h, cost) in &known_routes.costs {
                 if self.yields_city() != Some(i) {
                     continue;
                 }
@@ -588,28 +593,15 @@ impl GameState {
                     font::push_glyph(center, 0.34, 'M', LABEL_COLOR, out);
                 }
             }
-            if !manager_is_moving && let Some(manager) = self.cities[i].worked.first() {
-                for worker in self.cities[i].worked.iter().skip(1) {
-                    push_dotted_segment(
-                        manager.to_world(),
-                        worker.to_world(),
-                        0.045,
-                        [0.78, 0.88, 0.62, 0.9],
-                        out,
-                    );
-                }
-                if self.hovered_tile == Some(*manager) {
-                    // Hovering the manager exposes each delivery link back to
-                    // the city center, alongside the percentage labels.
-                    for source in &self.cities[i].worked {
-                        push_dotted_segment(
-                            source.to_world(),
-                            self.cities[i].pos.to_world(),
-                            0.06,
-                            [0.35, 0.82, 1.0, 0.9],
-                            out,
-                        );
-                    }
+            if let Some(&manager) = self.cities[i].worked.first()
+                && !manager_is_moving
+                && self.hovered_tile == Some(manager)
+            {
+                // Hovering the manager traces the way its goods travel to the
+                // city center, as the player knows the board.
+                for leg in known_routes.path_from(manager).windows(2) {
+                    let (from, to) = (leg[0].to_world(), leg[1].to_world());
+                    push_dotted_segment(from, to, MANAGER_ROUTE_WIDTH, MANAGER_ROUTE_COLOR, out);
                 }
             }
         }
@@ -883,7 +875,7 @@ fn building_badge(building: super::city::Building) -> (char, Color) {
     }
 }
 
-/// Short dashes communicate a labor relationship without looking like a road.
+/// Short dashes show where goods go without looking like a road.
 fn push_dotted_segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec<Vertex>) {
     const DASHES: usize = 7;
     for index in 0..DASHES {
@@ -1899,6 +1891,100 @@ mod tests {
             },
         );
         assert_eq!(scene(&game), before);
+    }
+
+    #[test]
+    fn only_hovering_the_manager_draws_a_line_and_it_follows_the_route_home() {
+        let mut game = GameState::city_scenario();
+        let city = game
+            .cities
+            .iter()
+            .position(|c| c.team == PLAYER_TEAM)
+            .unwrap();
+        game.selected_city = Some(city);
+        let fog = game.fog();
+        let routes = game.known_routes(city, &fog);
+        // A manager at least two legs from the city, so the route bends
+        // through other hexes rather than being one straight hop.
+        let manager = routes
+            .costs
+            .keys()
+            .copied()
+            .filter(|&h| {
+                !game.grid.terrain(h).is_water()
+                    && !game.cities[city].worked.contains(&h)
+                    && routes.path_from(h).len() >= 3
+            })
+            .min_by_key(|h| (h.q, h.r))
+            .expect("a land tile two legs from the city");
+        game.cities[city].worked[0] = manager;
+        assert!(
+            game.cities[city].worked.len() > 1,
+            "the manager has workers"
+        );
+        let path = routes.path_from(manager);
+        assert_eq!(path.first(), Some(&manager));
+        assert_eq!(path.last(), Some(&game.cities[city].pos));
+        assert!(path.windows(2).all(|leg| {
+            leg[0].distance(leg[1]) == 1 && routes.costs[&leg[1]] < routes.costs[&leg[0]]
+        }));
+
+        let city_map = |game: &GameState| {
+            let mut out = Vec::new();
+            game.push_city_map(&fog, &mut out);
+            out
+        };
+        let route_vertices = |out: &[Vertex]| {
+            out.iter()
+                .filter(|v| v.color == MANAGER_ROUTE_COLOR)
+                .map(|v| Vec2::new(v.pos[0], v.pos[1]))
+                .collect::<Vec<_>>()
+        };
+
+        // Not hovering: no route line, and workers add only their rings,
+        // no links to the manager.
+        game.hovered_tile = None;
+        let with_workers = city_map(&game);
+        assert!(route_vertices(&with_workers).is_empty());
+        let workers = game.cities[city].worked.len() - 1;
+        let alone = {
+            let mut alone = game.clone();
+            alone.cities[city].worked.truncate(1);
+            city_map(&alone)
+        };
+        let mut ring = Vec::new();
+        mesh::polygon_outline(Vec2::ZERO, 1.0, 0.1, 6, 0.0, LABEL_COLOR, &mut ring);
+        mesh::polygon_outline(Vec2::ZERO, 1.0, 0.1, 6, 0.0, LABEL_COLOR, &mut ring);
+        assert_eq!(with_workers.len() - alone.len(), workers * ring.len());
+
+        // Hovering another worked tile draws nothing either.
+        game.hovered_tile = Some(game.cities[city].worked[1]);
+        assert!(route_vertices(&city_map(&game)).is_empty());
+
+        // Hovering the manager: dashes along each leg of its route and
+        // nowhere else.
+        game.hovered_tile = Some(manager);
+        let dashes = route_vertices(&city_map(&game));
+        let mut one_leg = Vec::new();
+        push_dotted_segment(Vec2::ZERO, Vec2::X, 0.06, LABEL_COLOR, &mut one_leg);
+        assert_eq!(dashes.len(), (path.len() - 1) * one_leg.len());
+        let near_leg = |p: Vec2, a: Hex, b: Hex| {
+            let (a, b) = (a.to_world(), b.to_world());
+            let t = ((p - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0);
+            p.distance(a.lerp(b, t)) <= MANAGER_ROUTE_WIDTH
+        };
+        assert!(
+            dashes
+                .iter()
+                .all(|&p| path.windows(2).any(|leg| near_leg(p, leg[0], leg[1])))
+        );
+        for leg in path.windows(2) {
+            assert!(dashes.iter().any(|&p| near_leg(p, leg[0], leg[1])));
+        }
+
+        // Carrying the manager to a new tile hides the line.
+        game.moving_manager = Some(city);
+        assert!(route_vertices(&city_map(&game)).is_empty());
     }
 
     #[test]
