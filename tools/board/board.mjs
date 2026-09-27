@@ -263,16 +263,21 @@ function cachePath() { return join(ROOT, 'tools', 'board', 'cache.json'); }
 function readCache() {
   try {
     const parsed = JSON.parse(readFileSync(cachePath(), 'utf8'));
-    if (!parsed || typeof parsed.fetchedAt !== 'number' || !Array.isArray(parsed.items)) return null;
-    // A cache written for another project would answer confidently about the wrong board.
-    if (parsed.project !== cacheKey()) return null;
-    return parsed;
+    return cacheUsable(parsed, cacheKey()) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-function cacheKey() { return `${OWNER_KIND}:${OWNER}/${CFG.projectNumber}`; }
+// The items are cached already filtered by repo, so the key names the repo as well as the
+// project: after `repo` changes (a rename), a cache filtered by the old name must not answer.
+function cacheKey() { return `${OWNER_KIND}:${OWNER}/${CFG.projectNumber} ${REPO.toLowerCase()}`; }
+
+// Pure. A cache written for another project or repo would answer confidently about the
+// wrong board.
+function cacheUsable(parsed, key) {
+  return !!parsed && typeof parsed.fetchedAt === 'number' && Array.isArray(parsed.items) && parsed.project === key;
+}
 
 function writeCacheFile(cache) {
   try { writeFileSync(cachePath(), JSON.stringify({ ...cache, project: cacheKey() })); } catch { /* an optimization, not a correctness requirement */ }
@@ -289,12 +294,12 @@ function applyCachePatch(cache, item) {
   const idx = items.findIndex(x => x.number === item.number);
   if (idx === -1) { items.push(item); items.sort((a, b) => a.number - b.number); }
   else items[idx] = item;
-  return { fetchedAt: cache ? cache.fetchedAt : Date.now(), items };
+  return { ...cache, fetchedAt: cache ? cache.fetchedAt : Date.now(), items };
 }
 
 function applyCacheRemoval(cache, number) {
   if (!cache) return cache;
-  return { fetchedAt: cache.fetchedAt, items: cache.items.filter(x => x.number !== Number(number)) };
+  return { ...cache, items: cache.items.filter(x => x.number !== Number(number)) };
 }
 
 // A cache miss is a no-op: never create a one-item cache file, which a later whole-board
@@ -337,6 +342,7 @@ function items({ fresh = false } = {}) {
     const cache = readCache();
     if (cacheFresh(cache)) {
       if (TRACE) console.error(`[board-trace] items(): cache hit, age=${Date.now() - cache.fetchedAt}ms, ${cache.items.length} item(s)`);
+      warnIfNoneOurs(cache.items, cache.foreignRepos ?? []);
       return cache.items;
     }
   }
@@ -363,10 +369,9 @@ function items({ fresh = false } = {}) {
     if (!page.pageInfo?.hasNextPage) break;
     after = page.pageInfo.endCursor;
   }
-  const result = nodes
-    // Drafts and pull requests carry no issue number; issues from other repos on a shared
-    // board are not this repo's work and would collide by number.
-    .filter(i => i.content?.number && i.content.repository?.nameWithOwner === REPO)
+  const { ours, foreignRepos } = splitByRepo(nodes, REPO);
+  warnIfNoneOurs(ours, foreignRepos);
+  const result = ours
     .map(i => ({
       itemId: i.id,
       number: i.content.number,
@@ -377,9 +382,33 @@ function items({ fresh = false } = {}) {
       fields: fieldMap(i.fieldValues),
     }))
     .sort((a, b) => a.number - b.number);
-  writeCacheFile({ fetchedAt: Date.now(), items: result });
+  writeCacheFile({ fetchedAt: Date.now(), items: result, foreignRepos });
   if (TRACE) console.error(`[board-trace] items(): ${pages} page(s), ${result.length} item(s), cache written`);
   return result;
+}
+
+// Every issue belonging to another repo usually means `repo` in the config is stale (the
+// repo was renamed or transferred), not that the board is empty: say so rather than let
+// `list` print "(no items)".
+function warnIfNoneOurs(ours, foreignRepos) {
+  if (ours.length || !foreignRepos.length) return;
+  console.error(`board: none of the project's issues belong to ${REPO}; it holds issues from ${foreignRepos.join(', ')}. ` +
+    'If the repo was renamed, update "repo" in tools/board/config.json (`board.mjs setup` checks it).');
+}
+
+// Pure: the project items that are this repo's issues, and the other repos seen. Drafts and
+// pull requests carry no issue number; issues from other repos on a shared board are not
+// this repo's work and would collide by number. GitHub names are case-insensitive.
+function splitByRepo(nodes, repo) {
+  const ours = [];
+  const foreign = new Set();
+  for (const i of nodes) {
+    const name = i.content?.number ? i.content.repository?.nameWithOwner : null;
+    if (!name) continue;
+    if (name.toLowerCase() === repo.toLowerCase()) ours.push(i);
+    else foreign.add(name);
+  }
+  return { ours, foreignRepos: [...foreign].sort() };
 }
 
 // Project numbers are per owner, so an issue on two owners' project #1 is told apart by
@@ -879,9 +908,21 @@ function cmdSetup(flags) {
   const changes = [];   // { what, project: bool, args }
   console.log(`project  ${s.title}  ${s.url}`);
   console.log(`access   ${s.canUpdate ? 'you can edit this project' : 'READ ONLY: the project owner must add you under Settings > Manage access (Write for items, Admin for fields)'}`);
-  if (!s.repos.includes(REPO)) {
-    changes.push({ what: `link the project to ${REPO}`, project: true,
-                   args: ['project', 'link', String(projectNumber()), '--owner', OWNER, '--repo', REPO] });
+  // GitHub resolves a renamed or transferred repo's old name to its current one, so this
+  // query answers under the canonical name; `list` filters by the configured name exactly.
+  const canonical = graphql(
+    'query($o:String!,$r:String!){repository(owner:$o,name:$r){nameWithOwner}}',
+    { o: REPO_OWNER, r: REPO_NAME }, 'repo name',
+  ).repository?.nameWithOwner;
+  if (!canonical) die(`repo ${REPO} not found`);
+  const renamed = canonical !== REPO;
+  if (renamed) {
+    console.log(`  MANUAL  ${REPO} is now ${canonical}: set "repo" in tools/board/config.json (list and fences see no items until then)`);
+    process.exitCode = 1;
+  }
+  if (!s.repos.some(r => r.toLowerCase() === canonical.toLowerCase())) {
+    changes.push({ what: `link the project to ${canonical}`, project: true,
+                   args: ['project', 'link', String(projectNumber()), '--owner', OWNER, '--repo', canonical] });
   }
   for (const [name, options] of Object.entries(CFG.selectFields)) {
     const f = s.fields[name];
@@ -911,7 +952,7 @@ function cmdSetup(flags) {
     changes.push({ what: `create label ${name}`, project: false,
                    args: ['label', 'create', name, '--repo', REPO, '--description', description] });
   }
-  if (!changes.length) { console.log('  project, fields and labels match the config'); return; }
+  if (!changes.length) { if (!renamed) console.log('  project, fields and labels match the config'); return; }
   if (!apply) {
     for (const c of changes) console.log(`  MISSING ${c.what}`);
     console.log(`\n${changes.length} change(s); rerun with --apply to make them`);
@@ -938,7 +979,7 @@ function cmdCacheInfo() {
 }
 
 // Offline fixtures over the pure functions: the config validator, flag mapping, the text
-// cap, the Files parser, the replace report and the cache. No disk, no network.
+// cap, the repo filter, the Files parser, the replace report and the cache. No disk, no network.
 function cmdSelftest() {
   let bad = 0, n = 0;
   const check = (name, got, want) => {
@@ -1001,8 +1042,23 @@ function cmdSelftest() {
     replacedReport({ fields: { Files: 'a.rs; b.rs' } }, [['Files', 'a.rs']]).at(-1), '    *** 1 NO LONGER PRESENT: b.rs');
   check('an unchanged value reports nothing', replacedReport({ fields: { Files: 'a.rs' } }, [['Files', 'a.rs']]), []);
 
+  const node = (number, repo) => ({ id: `n${number}`, content: number ? { number, repository: { nameWithOwner: repo } } : {} });
+  check('splitByRepo keeps this repo\'s issues, ignoring case',
+    splitByRepo([node(1, 'o/r'), node(2, 'O/R')], 'o/r').ours.map(i => i.id), ['n1', 'n2']);
+  check('splitByRepo names the other repos, sorted and once each',
+    splitByRepo([node(1, 'o/z'), node(2, 'o/a'), node(3, 'o/z'), node(4, 'o/r')], 'o/r').foreignRepos, ['o/a', 'o/z']);
+  check('splitByRepo skips drafts and pull requests', splitByRepo([node(0, 'o/x')], 'o/r'), { ours: [], foreignRepos: [] });
+  check('a stale config repo sees none of a renamed repo\'s issues',
+    splitByRepo([node(1, 'o/new')], 'o/old'), { ours: [], foreignRepos: ['o/new'] });
+
   const now = 1_000_000_000_000;
   check('a missing cache is never fresh', cacheFresh(null, now), false);
+  check('a cache for this project and repo is usable',
+    cacheUsable({ fetchedAt: now, items: [], project: cacheKey() }, cacheKey()), true);
+  check('a cache written under the repo\'s old name is not',
+    cacheUsable({ fetchedAt: now, items: [], project: 'user:o/1 o/old' }, 'user:o/1 o/new'), false);
+  check('a cache from before the key named the repo is not',
+    cacheUsable({ fetchedAt: now, items: [], project: 'user:o/1' }, 'user:o/1 o/r'), false);
   check('a cache fetched right now is fresh', cacheFresh({ fetchedAt: now }, now), true);
   check('a cache exactly at the TTL boundary is stale', cacheFresh({ fetchedAt: now - CACHE_TTL_MS }, now), false);
   check('a cache one millisecond inside the TTL is fresh', cacheFresh({ fetchedAt: now - (CACHE_TTL_MS - 1) }, now), true);
@@ -1015,6 +1071,8 @@ function cmdSelftest() {
     applyCachePatch({ fetchedAt: now, items: [b] }, a), { fetchedAt: now, items: [a, b] });
   check('removing a number drops only that entry', applyCacheRemoval({ fetchedAt: now, items: [a, b] }, 1), { fetchedAt: now, items: [b] });
   check('removing from no cache is a no-op', applyCacheRemoval(null, 1), null);
+  check('a patch keeps the other repos a stale config saw',
+    applyCachePatch({ fetchedAt: now, items: [], foreignRepos: ['o/new'] }, a).foreignRepos, ['o/new']);
 
   // A planted control: a check that must fail, so a reporter that stopped counting
   // failures is itself caught.
