@@ -1102,9 +1102,10 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · +{production} PROD/T",
+                        "HP {:.0}/{:.0} · {} PROD/T",
                         city.barracks_hp,
-                        super::city::BARRACKS_MAX_HP
+                        super::city::BARRACKS_MAX_HP,
+                        signed_quantity(production)
                     ),
                     GOLD_TEXT,
                 )],
@@ -1137,9 +1138,10 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · POP {growth}% · +{production} PROD/T",
+                        "HP {:.0}/{:.0} · POP {growth}% · {} PROD/T",
                         city.hp,
-                        super::city::CITY_MAX_HP
+                        super::city::CITY_MAX_HP,
+                        signed_quantity(production)
                     ),
                     GOLD_TEXT,
                 )],
@@ -1416,12 +1418,13 @@ impl GameState {
             SMALL,
             vec![(
                 format!(
-                    "{} · +{barracks_production} PROD/T",
+                    "{} · {} PROD/T",
                     if active {
                         "MANAGER ACTIVE"
                     } else {
                         "NEEDS MANAGER"
-                    }
+                    },
+                    signed_quantity(barracks_production)
                 ),
                 if active { BOOSTED_TEXT } else { REDUCED_TEXT },
             )],
@@ -1661,9 +1664,10 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · GROWTH {growth}% · +{production_per_turn} PRODUCTION",
+                        "HP {:.0}/{:.0} · GROWTH {growth}% · {} PRODUCTION",
                         city.hp,
-                        super::city::CITY_MAX_HP
+                        super::city::CITY_MAX_HP,
+                        signed_quantity(production_per_turn)
                     ),
                     GOLD_TEXT,
                 )],
@@ -1690,9 +1694,10 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · +{production_per_turn} PROD/T",
+                        "HP {:.0}/{:.0} · {} PROD/T",
                         city.barracks_hp,
-                        super::city::BARRACKS_MAX_HP
+                        super::city::BARRACKS_MAX_HP,
+                        signed_quantity(production_per_turn)
                     ),
                     GOLD_TEXT,
                 )],
@@ -3272,8 +3277,31 @@ mod tests {
         assert_eq!(game.hover_seconds, 0.0);
     }
 
+    fn line_strings(lines: impl IntoIterator<Item = Line>) -> Vec<String> {
+        lines
+            .into_iter()
+            .map(|line| line.into_iter().map(|(s, _)| s).collect())
+            .collect()
+    }
+
+    fn panel_strings(fill: impl FnOnce(&mut PanelBuilder)) -> Vec<String> {
+        let mut panel = PanelBuilder::default();
+        fill(&mut panel);
+        line_strings(panel.rows.into_iter().filter_map(|row| match row {
+            Row::Text(_, line) => Some(line),
+            _ => None,
+        }))
+    }
+
+    fn assert_shows(text: &[String], expected: &str) {
+        assert!(
+            text.iter().any(|s| s.contains(expected)),
+            "{expected} not in {text:?}"
+        );
+    }
+
     #[test]
-    fn barracks_tooltip_shows_the_same_production_as_its_panels() {
+    fn every_panel_shows_production_per_turn_in_displayed_units() {
         let mut game = GameState::city_scenario();
         // Nothing is left to see the barracks tile once the units are gone.
         game.fog_of_war = false;
@@ -3281,16 +3309,34 @@ mod tests {
         let manager = Hex::new(-1, 0);
         game.cities[0].worked = vec![manager, Hex::new(-1, 1)];
         game.cities[0].barracks = Some(manager);
-        let expected = format!("+{} PROD/T", game.barracks_income(0));
-        let text: Vec<String> = game
-            .tile_tooltip_lines(manager)
-            .into_iter()
-            .flat_map(|(_, line)| line.into_iter().map(|(s, _)| s))
-            .collect();
-        assert!(
-            text.iter().any(|s| s.contains(&expected)),
-            "{expected} not in {text:?}"
+        let (_, city_income) = game.income(0);
+        let barracks_income = game.barracks_income(0);
+        // Stored in quarters: a raw value would read four times too high.
+        assert!(city_income > 4 && barracks_income > 4);
+        let city_rate = signed_quantity(city_income);
+        let barracks_rate = signed_quantity(barracks_income);
+
+        let tray = panel_strings(|panel| game.city_tray(0, panel));
+        assert_shows(&tray, &format!("{city_rate} PER TURN"));
+        let hover = panel_strings(|panel| game.structure_hover_panel(0, false, panel));
+        assert_shows(&hover, &format!("{city_rate} PROD/T"));
+        let city_tooltip = line_strings(
+            game.tile_tooltip_lines(game.cities[0].pos)
+                .into_iter()
+                .map(|(_, line)| line),
         );
+        assert_shows(&city_tooltip, &format!("{city_rate} PRODUCTION"));
+
+        let barracks_tray = panel_strings(|panel| game.barracks_tray(0, panel));
+        assert_shows(&barracks_tray, &format!("{barracks_rate} PROD/T"));
+        let barracks_hover = panel_strings(|panel| game.structure_hover_panel(0, true, panel));
+        assert_shows(&barracks_hover, &format!("{barracks_rate} PROD/T"));
+        let barracks_tooltip = line_strings(
+            game.tile_tooltip_lines(manager)
+                .into_iter()
+                .map(|(_, line)| line),
+        );
+        assert_shows(&barracks_tooltip, &format!("{barracks_rate} PROD/T"));
     }
 
     #[test]
