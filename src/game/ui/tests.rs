@@ -203,6 +203,19 @@ fn city_interior_map_fits_and_its_tiles_issue_orders() {
     );
 }
 
+#[test]
+fn breached_post_panel_explicitly_prompts_occupation() {
+    let mut game = GameState::siege_scenario();
+    game.cities[1].interior.core_hp = 0.0;
+    let text = panel_strings(|panel| game.interior_tray(1, panel));
+    assert_shows(&text, "POST BREACHED  0/80 HP");
+    assert_shows(&text, "MOVE A BLUE TROOP ONTO THE POST TO CAPTURE");
+
+    game.cities[0].interior.core_hp = 0.0;
+    let home = panel_strings(|panel| game.interior_tray(0, panel));
+    assert_shows(&home, "KEEP RED OFF THE CENTER TO PREVENT CAPTURE");
+}
+
 /// The city scenario with the player's city open and the camera settled on it.
 fn city_view() -> GameState {
     let mut game = GameState::city_scenario();

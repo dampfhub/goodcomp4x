@@ -383,15 +383,51 @@ impl GameState {
         }
 
         let post = center_hex.to_world();
+        let breached = city.interior.core_hp <= 0.0;
         mesh::regular_polygon(post, 0.56, 6, 0.0, ICON_OUTLINE_COLOR, &mut out);
-        mesh::regular_polygon(post, 0.48, 6, 0.0, city.team.color(), &mut out);
-        font::push_text_centered(
-            post + Vec2::new(0.0, -0.07),
-            0.23,
-            "POST",
-            LABEL_COLOR,
+        mesh::regular_polygon(
+            post,
+            0.48,
+            6,
+            0.0,
+            if breached {
+                [0.22, 0.16, 0.14, 1.0]
+            } else {
+                city.team.color()
+            },
             &mut out,
         );
+        if breached {
+            mesh::polygon_outline(post, 0.59, 0.07, 6, 0.0, SELECTED_COLOR, &mut out);
+        }
+        if breached {
+            font::push_text_centered(
+                post + Vec2::new(0.0, 0.13),
+                0.16,
+                "0 HP",
+                SELECTED_COLOR,
+                &mut out,
+            );
+            font::push_text_centered(
+                post + Vec2::new(0.0, -0.14),
+                if city.team == PLAYER_TEAM { 0.17 } else { 0.23 },
+                if city.team == PLAYER_TEAM {
+                    "DEFEND"
+                } else {
+                    "TAKE"
+                },
+                SELECTED_COLOR,
+                &mut out,
+            );
+        } else {
+            font::push_text_centered(
+                post + Vec2::new(0.0, -0.07),
+                0.23,
+                "POST",
+                LABEL_COLOR,
+                &mut out,
+            );
+        }
         push_health_bar(
             post,
             city.interior.core_hp / super::city::CORE_HP,
@@ -1858,6 +1894,15 @@ mod tests {
     use super::*;
     use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
     use crate::game::unit::{Unit, UnitType};
+
+    #[test]
+    fn breached_post_gains_a_distinct_world_marker() {
+        let mut game = GameState::siege_scenario();
+        let intact = count_color(&game.build_vertices(), SELECTED_COLOR);
+        game.cities[1].interior.core_hp = 0.0;
+        let breached = count_color(&game.build_vertices(), SELECTED_COLOR);
+        assert!(breached > intact, "breached post needs a visible gold ring");
+    }
 
     #[test]
     fn explored_map_has_no_cloud_bank_geometry() {

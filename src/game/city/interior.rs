@@ -190,7 +190,12 @@ impl GameState {
                 .unwrap();
             fighter.planned_move = (fighter.planned_move != Some(tile)).then_some(tile);
             fighter.planned_attack = None;
-            self.notice = "INTERIOR MOVE QUEUED".into();
+            self.notice = if tile == CENTER && self.cities[city].interior.core_hp <= 0.0 {
+                "CAPTURE MOVE QUEUED - END TURN TO TAKE THE CITY"
+            } else {
+                "INTERIOR MOVE QUEUED"
+            }
+            .into();
         } else {
             self.notice = "CHOOSE AN OPEN TILE IN MOVE RANGE, OR AN ENEMY IN ATTACK RANGE".into();
         }
@@ -373,6 +378,14 @@ impl GameState {
             );
         }
         interior.core_hp = (interior.core_hp - core_damage).max(0.0);
+        if core_damage > 0.0 && interior.core_hp <= 0.0 {
+            self.notice = if owner == PLAYER_TEAM {
+                "YOUR POST BREACHED - KEEP RED OFF THE CENTER"
+            } else {
+                "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE"
+            }
+            .into();
+        }
         for (fighter, amount) in interior.fighters.iter_mut().zip(damage) {
             fighter.hp = (fighter.hp - amount).max(0.0);
             fighter.planned_move = None;
@@ -676,6 +689,61 @@ mod tests {
         assert!(game.cities[1].queue.is_empty());
         assert_eq!(game.field_workers[0].team, Team::Blue);
         assert_eq!(game.field_workers[0].home, 1);
+    }
+
+    #[test]
+    fn post_click_changes_from_attack_to_capture_move_after_breach() {
+        let mut game = GameState::siege_scenario();
+        game.interior_click(Hex::new(-2, 2));
+        game.interior_click(CENTER);
+        assert_eq!(
+            game.cities[1]
+                .interior
+                .fighters
+                .iter()
+                .find(|fighter| fighter.source_id == 1)
+                .unwrap()
+                .planned_attack,
+            Some(CENTER)
+        );
+
+        game.cities[1].interior.core_hp = 0.0;
+        let melee = game.cities[1]
+            .interior
+            .fighters
+            .iter_mut()
+            .find(|fighter| fighter.source_id == 0)
+            .unwrap();
+        melee.pos = Hex::new(-1, 0);
+        game.interior_click(Hex::new(-1, 0));
+        game.interior_click(CENTER);
+        assert_eq!(
+            game.cities[1]
+                .interior
+                .fighters
+                .iter()
+                .find(|fighter| fighter.source_id == 0)
+                .unwrap()
+                .planned_move,
+            Some(CENTER)
+        );
+        assert!(game.notice.contains("CAPTURE MOVE QUEUED"));
+    }
+
+    #[test]
+    fn breaching_post_announces_the_capture_step() {
+        let mut game = GameState::siege_scenario();
+        game.cities[1].interior.core_hp = 1.0;
+        game.cities[1]
+            .interior
+            .fighters
+            .iter_mut()
+            .find(|fighter| fighter.source_id == 1)
+            .unwrap()
+            .planned_attack = Some(CENTER);
+        game.resolve_one_interior(1);
+        assert_eq!(game.cities[1].interior.core_hp, 0.0);
+        assert!(game.notice.contains("POST BREACHED"));
     }
 
     #[test]

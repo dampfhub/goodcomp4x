@@ -339,6 +339,7 @@ every turn end.
   plans and worker jobs. Workers at home pass to the new owner. Field workers from that city
   return to another friendly city if one exists; otherwise they pass to the new owner. The
   exterior city remains non-attackable.
+  A breached post changes its map marker and city panel to show that it is open for occupation.
 - Red's interior fighters defend their own city's post by engaging intruders. When attacking an
   enemy city they head toward its post. Exterior Red defenders hold contested city gates and can
   attack nearby enemies, so their projected copies stay in the siege.

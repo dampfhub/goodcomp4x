@@ -27,11 +27,33 @@ impl GameState {
         panel.text(
             BODY,
             vec![(
-                format!("COMMAND POST  {:.0}/{:.0} HP", interior.core_hp, CORE_HP),
-                GOLD_TEXT,
+                if interior.core_hp <= 0.0 {
+                    format!("POST BREACHED  0/{CORE_HP:.0} HP")
+                } else {
+                    format!("COMMAND POST  {:.0}/{:.0} HP", interior.core_hp, CORE_HP)
+                },
+                if interior.core_hp <= 0.0 {
+                    REDUCED_TEXT
+                } else {
+                    GOLD_TEXT
+                },
             )],
         );
         panel.bar(interior.core_hp / CORE_HP);
+        if interior.core_hp <= 0.0 {
+            panel.text(
+                SMALL,
+                vec![(
+                    if city.team == PLAYER_TEAM {
+                        "KEEP RED OFF THE CENTER TO PREVENT CAPTURE"
+                    } else {
+                        "MOVE A BLUE TROOP ONTO THE POST TO CAPTURE"
+                    }
+                    .into(),
+                    BOOSTED_TEXT,
+                )],
+            );
+        }
         let blue = interior
             .fighters
             .iter()
@@ -64,7 +86,19 @@ impl GameState {
         panel.gap(GAP);
         panel.text(
             SMALL,
-            vec![("BREACH POST, THEN OCCUPY CENTER".into(), GOLD_TEXT)],
+            vec![(
+                if interior.core_hp <= 0.0 {
+                    if city.team == PLAYER_TEAM {
+                        "POST OPEN: DEFEND THE CENTER"
+                    } else {
+                        "POST OPEN: CLICK A BLUE TROOP, THEN THE CENTER"
+                    }
+                } else {
+                    "BREACH POST, THEN OCCUPY CENTER"
+                }
+                .into(),
+                GOLD_TEXT,
+            )],
         );
         panel.compact_buttons(vec![
             ButtonSpec {
