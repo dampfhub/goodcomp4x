@@ -221,7 +221,8 @@ impl GameState {
             return;
         }
         let selected_needs_orders = self.selected.is_some_and(|idx| self.needs_orders(idx));
-        if selected_needs_orders || self.pending() != (0, 0) {
+        let selected_holding = self.selected.is_some_and(|idx| self.units[idx].holding);
+        if selected_needs_orders || selected_holding || self.pending() != (0, 0) {
             self.hold_selected_unit();
         } else {
             self.end_planning();
@@ -229,13 +230,22 @@ impl GameState {
     }
 
     /// The Hold button: the selected unit holds, leaving any move or attack
-    /// it hasn't queued unused this turn, and selection moves on.
+    /// it hasn't queued unused this turn, and selection moves on. On a unit
+    /// already holding, it stops holding instead and stays selected, back in
+    /// the turn order.
     pub fn hold_selected_unit(&mut self) {
         if self.is_resolving() {
             return;
         }
         if !self.group.is_empty() {
             self.hold_group();
+            return;
+        }
+        if let Some(idx) = self.selected
+            && self.units[idx].holding
+        {
+            self.units[idx].holding = false;
+            self.notice = "NO LONGER HOLDING - GIVE IT ORDERS".into();
             return;
         }
         if let Some(idx) = self.selected {
@@ -509,6 +519,7 @@ impl GameState {
         unit.drop_unreachable_attack();
         // Any order wakes a guarding unit, and replaces a queue.
         unit.guarding = false;
+        unit.holding = false;
         unit.cancel_queue();
     }
 
@@ -533,6 +544,7 @@ impl GameState {
                 Some(target)
             };
             unit.guarding = false;
+            unit.holding = false;
             unit.cancel_queue();
         }
     }
@@ -564,6 +576,7 @@ impl GameState {
         for i in [idx, ally] {
             self.units[i].drop_unreachable_attack();
             self.units[i].guarding = false;
+            self.units[i].holding = false;
             self.units[i].cancel_queue();
         }
     }
@@ -619,6 +632,56 @@ impl GameState {
 mod tests {
     use super::*;
     use crate::game::city::Building;
+    use crate::game::unit::Team;
+
+    #[test]
+    fn a_held_unit_can_be_unheld_or_given_orders_again() {
+        let mut g = GameState::new();
+        g.fog_of_war = false;
+        let first = g.selected.expect("a unit selected");
+        g.hold_selected_unit();
+        assert!(g.units[first].holding);
+        assert_ne!(g.selected, Some(first), "holding moves on");
+
+        // Hold again on the held unit puts it back in the turn order.
+        g.selected = Some(first);
+        g.hold_selected_unit();
+        assert!(!g.units[first].holding);
+        assert_eq!(g.selected, Some(first), "it stays selected");
+        assert!(g.needs_orders(first));
+
+        // Space does the same.
+        g.hold_selected_unit();
+        g.selected = Some(first);
+        g.hold_or_end_turn();
+        assert!(!g.units[first].holding);
+        assert_eq!(g.selected, Some(first));
+
+        // A held unit given a move stops holding, so it stays selected for
+        // its attack instead of selection jumping to the next unit.
+        g.hold_selected_unit();
+        g.selected = Some(first);
+        let pos = g.units[first].pos;
+        let reachable =
+            g.known_reachable_hexes(pos, g.units[first].stats().move_range, Team::Blue, &g.fog());
+        let dest = reachable
+            .into_iter()
+            .filter(|&h| h != pos && !g.is_occupied(h))
+            .min_by_key(|h| (h.q, h.r))
+            .expect("somewhere to move");
+        g.queue_order_at(first, dest);
+        g.advance_selection_if_done();
+        assert!(!g.units[first].holding);
+        assert_eq!(g.units[first].planned_move, Some(dest));
+        assert_eq!(g.selected, Some(first), "still needs its attack");
+        let target = dest
+            .neighbors()
+            .into_iter()
+            .find(|&h| h != pos && g.grid.is_passable(h))
+            .unwrap();
+        g.try_queue_attack(first, target);
+        assert_eq!(g.units[first].planned_attack, Some(target));
+    }
 
     #[test]
     fn disbanding_takes_two_presses_and_moves_selection_on() {

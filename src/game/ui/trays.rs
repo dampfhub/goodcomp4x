@@ -314,6 +314,13 @@ impl GameState {
             state: ButtonState::new(unit.guarding, false),
             armed: false,
         });
+        buttons.push(ButtonSpec {
+            target: Target::Unit(UnitAction::ClearOrders),
+            label: "CLEAR ORDERS".into(),
+            hint: "CTRL-RMB".into(),
+            state: ButtonState::new(false, !unit.has_orders()),
+            armed: false,
+        });
         let confirming = self.disband_armed == Some(unit.id);
         buttons.push(ButtonSpec {
             target: Target::Unit(UnitAction::Disband),
@@ -365,14 +372,7 @@ impl GameState {
 
         let armed = |mode| self.group == group && self.ui_click_mode == Some(mode);
         let all_guarding = group.iter().all(|&i| self.units[i].guarding);
-        let any_orders = group.iter().any(|&i| {
-            let unit = &self.units[i];
-            unit.has_queue()
-                || unit.planned_move.is_some()
-                || unit.planned_attack.is_some()
-                || unit.holding
-                || unit.guarding
-        });
+        let any_orders = group.iter().any(|&i| self.units[i].has_orders());
         panel.buttons(vec![
             ButtonSpec {
                 target: Target::Unit(UnitAction::Move),

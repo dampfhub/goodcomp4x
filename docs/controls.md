@@ -19,7 +19,8 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Right-click (armed) | Disarm the armed action |
 | Ctrl-right-click | Clear the selected unit's orders, queue, hold and guard |
 | Q / ability button | Toggle the unit's ability (what each does: `game-rules.md`, Abilities) |
-| Space / Hold button | Hold the unit this turn, keeping queued orders, and move on to what's next |
+| Space / Hold button | Hold the unit this turn, keeping queued orders, and move on to what's next; on a unit already holding, stop holding (it's back in the turn order). Any new order also ends a hold |
+| Clear Orders button | Clear the selected unit's (or group's) orders, queue, hold and guard, like Ctrl-right-click |
 | G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
 | Delete / Disband button, twice | Remove the selected unit for good (the first press asks to confirm) |
 | Tab | Look at the next unit without holding this one; leave the city or barracks view |
@@ -42,10 +43,11 @@ through occupied hexes, and two allies can't head for the same hex. Once the sel
 move and an attack queued (or can't do one of them), the next unit needing orders is selected
 and the camera glides to it; a unit you select by clicking stays selected.
 
-The unit strip at the top-left shows a token for each of your military units (not settlers)
-that still needs orders this turn, in the order the game selects them: the next one after the
-selected unit is the next to its right, wrapping around. Selected units are framed; a unit
-leaves the strip once it has its orders (or holds, guards or follows a queue).
+The unit strip (a panel that starts at the top-left) shows a token for each of your units,
+settlers included, that still needs orders this turn, in the order the game selects them: the
+next one after the selected unit is the next to its right, wrapping around. Selected units are
+framed; a unit leaves the strip once it has its orders (or holds, guards or follows a queue).
+Like the other panels, hold Ctrl to drag, resize or dock it.
 
 Shift-clicks on a hex build an order queue over several turns (rules: `game-rules.md`, Order
 queues); a Shift-click on one of your own units adds it to the selection instead.
@@ -53,8 +55,10 @@ Selection stays on the unit while you queue; let go of it (Escape, Tab, or click
 when done. A queued unit doesn't hold up the turn, and any other order (a plain click or
 right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. A plan
 reaching past this turn shows as turn numbers only while it is selected or the cursor is on it;
-otherwise a small `>N` tag beside it counts the turns left. A plan of this turn alone shows like
-plain orders (ghost and arrow).
+otherwise a small `NT` tag beside it (`3T`: 3 turns) counts the turns of orders left. A plan of
+this turn alone shows like plain orders (ghost and arrow). To cancel a unit's queued orders,
+use Clear Orders (in the unit or group panel) or Ctrl-right-click, or just give it another
+order.
 
 ## Workers
 
@@ -175,12 +179,15 @@ them.
   are hidden. During playback each arrow shoots to its target: a burst is a hit, grey MISS a hex
   with no enemy unit, worker or barracks (an empty city center cannot be targeted), OUT OF RANGE a
   target that moved away. Damage numbers rise from every unit hurt.
-- A unit whose order queue reaches past this turn shows no ghost (one queued for this turn only
-  shows the usual ghost and arrow). While it is selected (alone or in a group) or
-  under the cursor, a line in team color runs along its moves, with each turn's number (1 is
-  this turn) in a dark disc on the hex it moves to, and an orange-rimmed number on each queued
-  attack's arrow; a hex or arrow used on several turns lists them ("2,3"). Otherwise only a
-  `>N` tag at the unit's lower left shows, N being the turns of orders it has left.
+- A unit whose order queue reaches past this turn (one queued for this turn only shows the
+  usual ghost and arrow): while it is selected (alone or in a group) or under the cursor, a
+  line in team color runs from it along its moves, with each turn's number (1 is this turn) in
+  a dark disc on the hex it moves to, ending in its faded ghost where the plan leaves it (the
+  last number just under the ghost), and an orange-rimmed number on each queued attack's arrow.
+  Each unit's plan is its own: where several units stop on one hex, their numbers fan out
+  around it instead of merging, and a hex or arrow one unit uses on several turns lists them
+  ("2,3"). Otherwise only an `NT` tag at the unit's lower left shows (`3T`: 3 turns of orders
+  left).
 - Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Orange hex:
   contested.
 - Units are tokens in team color with a pictogram of what they are: sword (melee), bow

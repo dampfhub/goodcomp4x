@@ -104,6 +104,8 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 39. Selection and the unit strip (`claude/selection-roster`): a left-drag on the map draws a
     selection box (Shift-drag adds) instead of panning, which is now middle-drag only; Shift-click
     adds a unit to the selection and Ctrl-click takes a group member out; Alt no longer selects.
-    A unit strip at the top-left shows the military units still needing orders, in turn order,
+    A unit strip panel (top-left, dockable) shows every unit still needing orders, settlers too,
     with the selection framed: click to jump to one, Shift- or Ctrl-click to add or remove it.
-    The group panel gained a Clear Orders button.
+    The unit and group panels gained a Clear Orders button; Hold toggles, and any order ends a
+    hold. Queued plans are drawn per unit (fanned numbers, a ghost at each plan's end) and the
+    turns-left tag reads `3T`.

@@ -139,6 +139,7 @@ impl GameState {
             let unit = &mut self.units[i];
             unit.planned_attack = (!already).then_some(target);
             unit.guarding = false;
+            unit.holding = false;
         }
     }
 
@@ -182,12 +183,21 @@ impl GameState {
                 unit.planned_move = Some(dest);
                 unit.drop_unreachable_attack();
                 unit.guarding = false;
+                unit.holding = false;
             }
         }
     }
 
-    /// Space or Hold with a group: every member holds, and selection moves on.
+    /// Space or Hold with a group: every member holds, and selection moves on;
+    /// if they all already hold, they all stop.
     pub(super) fn hold_group(&mut self) {
+        // Every member already holding: they all stop, and stay selected.
+        if self.group.iter().all(|&i| self.units[i].holding) {
+            for &i in &self.group {
+                self.units[i].holding = false;
+            }
+            return;
+        }
         for &i in &self.group {
             self.units[i].holding = true;
         }
@@ -215,6 +225,7 @@ impl GameState {
             self.cancel_swap(i);
             self.units[i].clear_orders();
             self.units[i].guarding = false;
+            self.units[i].holding = false;
         }
     }
 }

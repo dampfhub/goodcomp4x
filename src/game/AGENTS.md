@@ -64,17 +64,9 @@ behavior.
   edges (`barriers`, keyed by `hex::edge`), so passability is per step: anything that walks
   (units, workers, the AI's distances) or routes goods checks `can_step` / `can_cross`, and the
   player's planning checks what they know (`known_can_cross`, `fog.rs`).
-- **Screen-space UI: read `docs/ui-system.md` first.** Build shared content with `PanelBuilder`.
-  The ImGui presentation uses that content for native windows; preserve the classic path by
-  placing it with `Layout::dock_panel(panel, Zone::..)` (zones in `ui/dock.rs`); never position a
-  persistent panel by hand or compute offsets from another panel's size. `layout()` docks the
-  persistent panels and `layout_with_hover()` adds the hover panels; drawing (`build_ui`) and
-  button clicks (`click_ui`) both use `layout_with_hover()`, so a drawn button is clickable.
-  Queue dragging, wheel scrolling, scrollbars and `update_hover` use `layout()`, so scrollable
-  or draggable content belongs in a persistent panel, not a hover panel.
-  Cursor-following tooltips, the quit prompt and the selection box are overlays with their own
-  anchors. Add a layout test for a new panel (no overlap, buttons inside their panel), and run
-  `cargo build --release` after UI changes.
+- **Screen-space UI: read `ui/AGENTS.md` and `docs/ui-system.md` first.** Its rules (shared
+  `PanelBuilder` content for both presentations, every new ImGui panel draggable and dockable,
+  classic docking by zone) live there.
 - Text: `font.rs` rasterizes printable ASCII from IBM Plex Mono SemiBold (`assets/fonts/`, SIL
   Open Font License) once into one R8 atlas with 4 mip levels, padding glyphs by 8 px so the
   smallest mip doesn't bleed neighbors together. UI text uses coverage glyphs from
@@ -95,10 +87,7 @@ behavior.
   method (a key that acts on release or while held needs its own arm, like Escape), and a row in
   `docs/controls.md`, the one description of the controls. `CONTROLS_HELP` (printed at startup)
   only points to that file; don't list keys in it.
-- **New unit button:** a `UnitAction` variant (`ui/mod.rs`), a `ButtonSpec` in the tray's
-  button list (`unit_buttons` in `ui/trays.rs`), its tooltip text (the `UnitAction` match in
-  `unit_action_text`, `ui/tooltips.rs`), and an arm in `click_ui`'s dispatch (`ui/mod.rs`). Add
-  a hit-test unit test in `ui/tests.rs`.
+- **New unit button or panel:** see the recipes in `ui/AGENTS.md`.
 - **Stat or tuning change:** `unit.rs` or `ability.rs`, then every place that states the number
   to players: `ability_text` in `ui/text.rs` (tooltips) and the tables in
   `docs/game-rules.md`. Grep for the old value.

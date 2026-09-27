@@ -546,7 +546,7 @@ impl GameState {
             UnitAction::Hold => (
                 "HOLD".into(),
                 "SPACE",
-                "SKIPS THIS UNIT FOR THE TURN, KEEPING ANY QUEUED ORDERS.".into(),
+                "SKIPS THIS UNIT FOR THE TURN, KEEPING ANY QUEUED ORDERS. PRESS AGAIN ON A HOLDING UNIT TO PUT IT BACK IN THE TURN ORDER; ANY NEW ORDER ENDS THE HOLD TOO.".into(),
                 None,
             ),
             UnitAction::Guard => (

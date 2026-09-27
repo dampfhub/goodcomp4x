@@ -1,5 +1,5 @@
-//! The unit strip: a row of tokens at the top-left for the player's military
-//! units that still need orders, in the order the game selects them as a
+//! The unit strip: a row of tokens at the top-left for the player's
+//! units (settlers too) that still need orders, in the order the game selects them as a
 //! turn starts (unit order: after the selected one comes the next to its
 //! right, wrapping around). Selected units are framed. Click a token to select
 //! that unit and move the camera to it, Shift-click to add it to the
@@ -12,18 +12,14 @@ use super::{LABEL_TEXT, Layout, ROSTER_CHIP_GAP, ROSTER_PER_ROW, RosterChip, SMA
 use crate::game::GameState;
 
 impl GameState {
-    /// The player's military units (not settlers) that still need orders, in
-    /// unit order. None while a turn plays out or a city interior is open.
+    /// The player's units (settlers too) that still need orders, in unit
+    /// order. None while a turn plays out or a city interior is open.
     pub(super) fn roster_units(&self) -> Vec<usize> {
         if self.is_resolving() || self.interior_view.is_some() {
             return Vec::new();
         }
         (0..self.units.len())
-            .filter(|&i| {
-                self.is_player_controlled(i)
-                    && !self.settlers.contains(&self.units[i].id)
-                    && self.needs_orders(i)
-            })
+            .filter(|&i| self.is_player_controlled(i) && self.needs_orders(i))
             .collect()
     }
 

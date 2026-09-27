@@ -1318,14 +1318,14 @@ fn the_unit_strip_lists_units_needing_orders_and_selects_from_them() {
 }
 
 #[test]
-fn the_unit_strip_leaves_out_settlers_and_clears_every_panel() {
+fn the_unit_strip_includes_settlers_and_clears_every_panel() {
     let game = GameState::frontier_scenario();
     let listed: Vec<u32> = roster(&game).iter().map(|c| c.0).collect();
-    assert!(!listed.is_empty());
     assert!(
-        listed.iter().all(|&id| !game.settlers.contains(&id)),
-        "only military units"
+        listed.iter().any(|&id| game.settlers.contains(&id)),
+        "settlers need orders too"
     );
+    assert!(listed.iter().any(|&id| !game.settlers.contains(&id)));
 
     // The strip never overlaps another panel, with or without a city open.
     let mut game = GameState::city_scenario();

@@ -153,8 +153,11 @@ queue them. Nothing heals.
 - Shift-left-click and Shift-right-click queue orders for later turns (see Order queues).
 - Q (or the ability button) toggles the selected unit's ability.
 - **Hold:** Space holds the selected unit if it still needs orders: it keeps what it has queued
-  and gives up the rest of its turn. With nothing left waiting, Space ends the turn. With a city
-  or barracks view open, Space only closes it.
+  and gives up the rest of its turn. Space (or Hold) on a unit already holding stops the hold,
+  keeping it selected and back in the turn order, and any new order to it (a move, attack,
+  swap, queued turn) ends the hold too. A group holds all together, or stops holding if every
+  member already is. With nothing left waiting, Space ends the turn. With a city or barracks
+  view open, Space only closes it.
 - **Guard:** G toggles `Unit::guarding`, like holding but lasting across turns, so the unit never
   comes back up in the turn order. Queuing any move, attack or swap wakes it, as do G and
   Ctrl-right-click. Guarding units get a white hex outline.
@@ -267,10 +270,10 @@ Everyone in a step acts simultaneously:
   become the group; one is an ordinary selection. The group's hexes are highlighted and the tray
   summarizes it, with a Clear Orders button that drops every member's orders and queues (as
   Ctrl-right-click does).
-- The unit strip at the top-left lists the player's military units (not settlers) that still
-  need orders, in unit order, which is the order the game selects them in. Clicking one selects
-  it and moves the camera there; Shift-click adds it to the selection and Ctrl-click takes it
-  out. Selected units are framed.
+- The unit strip (a panel starting at the top-left) lists the player's units, settlers
+  included, that still need orders, in unit order, which is the order the game selects them in.
+  Clicking one selects it and moves the camera there; Shift-click adds it to the selection and
+  Ctrl-click takes it out. Selected units are framed.
 - Left-clicking a hex (or Move) converges: members' old moves are dropped, then, nearest to the
   target first, each takes the reachable hex closest to the target that no ally is heading for,
   staying put if it can't get closer. Members keep their own speeds, so the group doesn't hold
@@ -287,10 +290,12 @@ Everyone in a step acts simultaneously:
 
 - Queued attacks are curved arrows from the attacker (or its ghost, if it moves first) to just
   short of the target. Only the player's own attacks get arrows; the AI's plans stay hidden.
-- A unit whose order queue reaches past this turn gets no ghost: its whole plan (moves as a
-  line with each turn's number, attacks as arrows numbered by turn) shows only while it is
-  selected or hovered, and otherwise a `>N` tag counts its turns of orders left. A queue of this
-  turn alone draws like plain orders: a ghost and an attack arrow, no numbers.
+- A unit whose order queue reaches past this turn shows its whole plan only while it is
+  selected or hovered: moves as a line with each turn's number, ending in the unit's ghost where
+  the plan leaves it, and attacks as arrows numbered by turn. Each unit's plan is drawn on its
+  own; where several stop on one hex their numbers fan out rather than merge. Otherwise an `NT`
+  tag (`3T`) counts its turns of orders left. A queue of this turn alone draws like plain
+  orders: a ghost and an attack arrow, no numbers.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
   "MISS" on a hex with no enemy unit, worker or barracks, or "OUT OF RANGE" if the target moved
   away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
