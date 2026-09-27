@@ -30,6 +30,9 @@ pub struct Settings {
     /// (`order_queue.rs`) queue no turns past it. A hex farther away is
     /// queued as far along the way as the limit allows.
     pub max_queued_turns: usize,
+    /// Draw unexplored hexes under clouds (`push_cloud_banks`, `draw.rs`)
+    /// rather than a flat grey.
+    pub cloud_fog: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +40,7 @@ impl Default for Settings {
         Self {
             instant_playback: true,
             max_queued_turns: 6,
+            cloud_fog: true,
         }
     }
 }
@@ -46,17 +50,23 @@ impl Default for Settings {
 pub enum Setting {
     TurnPlayback,
     MaxQueuedTurns,
+    FogStyle,
 }
 
 impl Setting {
     /// Every setting, in the order the menu lists them.
-    pub const ALL: [Setting; 2] = [Setting::TurnPlayback, Setting::MaxQueuedTurns];
+    pub const ALL: [Setting; 3] = [
+        Setting::TurnPlayback,
+        Setting::MaxQueuedTurns,
+        Setting::FogStyle,
+    ];
 
     /// Its label in the menu.
     pub fn name(self) -> &'static str {
         match self {
             Setting::TurnPlayback => "TURN PLAYBACK",
             Setting::MaxQueuedTurns => "QUEUE LIMIT",
+            Setting::FogStyle => "FOG",
         }
     }
 
@@ -71,6 +81,7 @@ impl Setting {
                 "THE MOST TURNS A UNIT CAN HAVE QUEUED, THIS ONE INCLUDED. SHIFT-CLICKING A HEX \
                  FARTHER AWAY QUEUES THE MOVE AS FAR AS THE LIMIT GOES."
             }
+            Setting::FogStyle => "HOW UNEXPLORED LAND IS HIDDEN: UNDER CLOUDS, OR A FLAT GREY.",
         }
     }
 
@@ -79,6 +90,7 @@ impl Setting {
         match self {
             Setting::TurnPlayback => 0..=1,
             Setting::MaxQueuedTurns => 1..=20,
+            Setting::FogStyle => 0..=1,
         }
     }
 
@@ -93,6 +105,7 @@ impl Setting {
             .into(),
             Setting::MaxQueuedTurns if value == 1 => "1 TURN".into(),
             Setting::MaxQueuedTurns => format!("{value} TURNS"),
+            Setting::FogStyle => if value == 1 { "CLOUDS" } else { "SOLID GREY" }.into(),
         }
     }
 }
@@ -103,6 +116,7 @@ impl Settings {
         match setting {
             Setting::TurnPlayback => self.instant_playback as i32,
             Setting::MaxQueuedTurns => self.max_queued_turns as i32,
+            Setting::FogStyle => self.cloud_fog as i32,
         }
     }
 
@@ -111,6 +125,7 @@ impl Settings {
         match setting {
             Setting::TurnPlayback => self.instant_playback = value == 1,
             Setting::MaxQueuedTurns => self.max_queued_turns = value as usize,
+            Setting::FogStyle => self.cloud_fog = value == 1,
         }
     }
 

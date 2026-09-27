@@ -127,4 +127,5 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 43. Fog clouds (`claude/fog-clouds`): the grey octagons over unexplored hexes became banks of
     muted cumulus, each puff one quad the shader rounds and feathers (`soft_disc_uv`, a new
     renderer primitive) and shades from a lit top to a dark underside, over a soft shadow per
-    bank. The whole field stays under the old vertex budget.
+    bank and a dark fill, so unexplored land is cloud nearly all the way through. The whole
+    field stays under the old vertex budget. A third setting, Fog, swaps it for solid grey.

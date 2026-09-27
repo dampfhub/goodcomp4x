@@ -177,6 +177,7 @@ resize or dock it like the other panels. The game carries on while it's open.
 | --- | --- |
 | Turn playback | All at once (the default) or step by step, the same switch as F8 |
 | Queue limit | 1 to 20 turns (6 by default): the most turns a unit can have queued, this turn included. A Shift-click toward a hex farther away queues the move as far as the limit goes, and once a queue is full, Shift-clicks add nothing to it until turns are played |
+| Fog | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).

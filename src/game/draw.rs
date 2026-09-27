@@ -37,7 +37,13 @@ const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 /// than the gap; otherwise a sliver of it would show on the side in sight.
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
 const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
-const CLOUD_SPACING: f32 = 4.6;
+/// Distance between cloud banks, in world units (a hex is 1 from center to corner).
+const CLOUD_SPACING: f32 = 3.6;
+/// Under the clouds, filling the gaps between puffs: the shade of their
+/// undersides, so the fog reads as cloud all the way through.
+const CLOUD_BASE_COLOR: Color = [0.07, 0.072, 0.088, 1.0];
+/// The fog without clouds (the Fog setting's SOLID GREY).
+const SOLID_FOG_COLOR: Color = [0.13, 0.135, 0.155, 1.0];
 const PLAINS_COLOR: Color = [0.26, 0.24, 0.12, 1.0];
 const GRASSLAND_COLOR: Color = [0.12, 0.20, 0.08, 1.0];
 const DESERT_COLOR: Color = [0.45, 0.36, 0.17, 1.0];
@@ -249,10 +255,23 @@ impl GameState {
             }
         });
 
-        // The fixed cloud field sits behind the map. Known terrain painted
-        // afterward hides it without clipping or rebuilding around sight.
+        // The fog sits behind the map: a flat fill over every hex, and the
+        // fixed cloud field on top of it unless the player chose solid fog.
+        // Known terrain painted afterward hides it without clipping or
+        // rebuilding around sight.
         if self.fog_of_war {
-            push_cloud_banks(&self.grid, &mut out);
+            let cloud = self.settings.cloud_fog;
+            let base = if cloud {
+                CLOUD_BASE_COLOR
+            } else {
+                SOLID_FOG_COLOR
+            };
+            for hex in self.grid.all_hexes() {
+                mesh::regular_polygon(hex.to_world(), OUTER_BORDER_RADIUS, 6, 0.0, base, &mut out);
+            }
+            if cloud {
+                push_cloud_banks(&self.grid, &mut out);
+            }
         }
 
         // Never-seen hexes aren't drawn at all: the background shows there.
@@ -2128,6 +2147,28 @@ mod tests {
         assert!(vertices.iter().any(|v| v.color[3] < 1.0));
     }
 
+    #[test]
+    fn the_fog_setting_picks_clouds_or_solid_grey() {
+        let mut game = GameState::world_scenario(3);
+        let soft = |vertices: &[Vertex]| vertices.iter().filter(|v| v.uv[0] <= -2.0).count();
+        let flat = |vertices: &[Vertex]| vertices.iter().any(|v| v.color == SOLID_FOG_COLOR);
+        assert!(game.settings.cloud_fog, "clouds by default");
+        let clouds = game.build_vertices();
+        assert!(soft(&clouds) > 0);
+        assert!(!flat(&clouds));
+        game.step_setting(crate::game::settings::Setting::FogStyle, -1);
+        assert!(!game.settings.cloud_fog);
+        assert_eq!(game.notice, "FOG: SOLID GREY");
+        let solid = game.build_vertices();
+        assert_eq!(soft(&solid), 0, "no cloud puffs");
+        assert!(flat(&solid));
+        // Without fog of war there is neither.
+        game.fog_of_war = false;
+        let clear = game.build_vertices();
+        assert!(!flat(&clear));
+        assert_eq!(soft(&clear), 0);
+    }
+
     /// The color of the last opaque triangle drawn over `point`.
     fn top_color(vertices: &[Vertex], point: Vec2) -> Option<Color> {
         vertices
@@ -2184,10 +2225,10 @@ mod tests {
         for point in [in_gap(hex, unexplored), in_gap(unexplored, hex)] {
             assert_eq!(top_color(&vertices, point), Some(BORDER_COLOR));
         }
-        // The unknown tile has no terrain geometry; cloud puffs blend over
-        // the renderer's dark background.
+        // The unknown tile has no terrain geometry: only the fog's flat fill,
+        // which translucent cloud puffs blend over.
         let beyond = unexplored.to_world();
-        assert_eq!(top_color(&vertices, beyond), None);
+        assert_eq!(top_color(&vertices, beyond), Some(CLOUD_BASE_COLOR));
     }
 
     #[test]
