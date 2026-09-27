@@ -7,6 +7,7 @@
 use std.collections.Set;
 use std.core.Ordering;
 use std.linalg.Vec2;
+use std.mem.elements_mut;
 use std.sort.Compare;
 use std.sort.sort;
 use game.GameState;
@@ -129,8 +130,8 @@ impl GameState {
             let i = self.group[m];
             members.push(Member { index: i, distance: self.units[i].pos.distance(target) });
         }
-        // `&mut members.buf`: no `&mut Vec[T]` to `&mut [T]` coercion yet.
-        handle { sort(&mut members.buf); } with Compare[Member] {
+        // `members.buf`: a `Vec` installs `ElementsMut` through its buffer until it has an installer of its own.
+        handle { with elements_mut(&mut members.buf) { sort() }; } with Compare[Member] {
             cmp(a, b) => {
                 resume if a.distance != b.distance { order(a.distance, b.distance) } else { order(a.index, b.index) }
             }
