@@ -339,12 +339,6 @@ impl GameState {
                     ),
                     None,
                 ),
-                Target::BuildingPageNext | Target::BuildingPagePrev => (
-                    "BUILDING CATALOGUE".into(),
-                    "CLICK".into(),
-                    "SHOW ANOTHER GROUP OF BUILDINGS.".into(),
-                    None,
-                ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
                     "BARRACKS".into(),

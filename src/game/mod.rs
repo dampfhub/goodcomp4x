@@ -306,21 +306,27 @@ impl GameState {
         game.grid = HexGrid::new(6, water);
         game.roads.retain(|h| game.grid.is_passable(*h));
         game.sites.retain(|h, _| game.grid.is_passable(*h));
+        // Place both city centers on the shoreline, not two tiles inland.
+        for (city, sign) in [(0, -1), (1, 1)] {
+            game.cities[city].pos = Hex::new(sign * 2, 0);
+            game.cities[city].worked.clear();
+            game.cities[city].remembered_worked.clear();
+        }
         game.units.clear();
         game.next_unit_id = 0;
         for (team, sign) in [(Team::Blue, -1), (Team::Red, 1)] {
             let city = if team == Team::Blue { 0 } else { 1 };
             game.cities[city]
                 .extra_buildings
-                .insert(city::Building::Harbor, Hex::new(sign * 2, 0));
+                .insert(city::Building::Harbor, Hex::new(sign * 2, 1));
             game.cities[city]
                 .extra_buildings
-                .insert(city::Building::CoastalBattery, Hex::new(sign * 2, sign));
+                .insert(city::Building::CoastalBattery, Hex::new(sign * 2, -1));
             game.cities[city]
                 .built
                 .extend([city::Building::Harbor, city::Building::CoastalBattery]);
             for (pos, kind) in [
-                (Hex::new(sign * 2, -sign), UnitType::Melee),
+                (Hex::new(sign * 3, 0), UnitType::Melee),
                 (Hex::new(sign, -sign), UnitType::LandingCraft),
                 (Hex::new(sign, sign), UnitType::PatrolGalley),
                 (Hex::new(0, sign * 2), UnitType::BombardShip),
@@ -329,6 +335,9 @@ impl GameState {
                 game.next_unit_id += 1;
                 game.units.push(Unit::new(id, pos, team, kind));
             }
+        }
+        for city in 0..game.cities.len() {
+            game.auto_assign_city(city);
         }
         game.cities[0]
             .queue

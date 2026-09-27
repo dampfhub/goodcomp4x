@@ -22,6 +22,52 @@ pub(super) fn queue_items_that_fit(available_height: f32) -> usize {
 }
 
 impl GameState {
+    /// Wheel input over the nested city building catalogue stays in that list.
+    pub fn scroll_buildings_at(&mut self, cursor: Vec2, screen_size: Vec2, steps: f32) -> bool {
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        let Some(region) = layout
+            .building_scrollbars
+            .iter()
+            .find(|region| contains(region.min, region.max, point))
+        else {
+            return false;
+        };
+        let current = self.cities[region.city].building_scroll;
+        let delta = steps.abs().ceil() as usize;
+        self.cities[region.city].building_scroll = if steps > 0.0 {
+            current.saturating_sub(delta)
+        } else {
+            current.saturating_add(delta).min(region.max_offset)
+        };
+        true
+    }
+
+    pub fn drag_building_scrollbar_at(
+        &mut self,
+        cursor: Vec2,
+        screen_size: Vec2,
+        captured: bool,
+    ) -> bool {
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        let Some(region) = layout.building_scrollbars.iter().find(|region| {
+            region.max_offset > 0
+                && (captured || contains(region.track_min, region.track_max, point))
+        }) else {
+            return false;
+        };
+        let travel = region.track_max.y - region.track_min.y - region.thumb_height;
+        let fraction = if travel > 0.0 {
+            ((region.track_max.y - region.thumb_height / 2.0 - point.y) / travel).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.cities[region.city].building_scroll =
+            (fraction * region.max_offset as f32).round() as usize;
+        true
+    }
+
     fn set_queue_scroll(&mut self, kind: QueueKind, offset: usize) {
         match kind {
             QueueKind::City => self.city_queue_scroll = offset,

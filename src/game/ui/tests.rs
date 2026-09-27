@@ -18,35 +18,48 @@ fn hovering_a_button_shows_its_tooltip() {
 }
 
 #[test]
-fn building_catalog_pages_keep_new_cards_clickable_inside_the_tray() {
+fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
     let mut game = GameState::city_scenario();
     game.select_city();
-    for (page, expected) in [
-        (0, Building::Workshop),
-        (1, Building::CanoeHouse),
-        (2, Building::FieldHospital),
-        (3, Building::Railhead),
-    ] {
-        assert_eq!(game.cities[0].building_page, page);
-        let layout = game.layout(SCREEN);
-        let card = layout
+    let first = game.layout(SCREEN);
+    let region = first
+        .building_scrollbars
+        .first()
+        .expect("nested building list");
+    assert!(region.max_offset > 0);
+    let cursor = to_ui((region.min + region.max) / 2.0, SCREEN);
+    assert!(
+        first
             .buttons
             .iter()
-            .find(|b| b.target == Target::Building(expected))
-            .expect("building card shown");
-        let middle = (card.min + card.max) / 2.0;
-        assert!(layout.button_at(middle).is_some());
-        assert!(
-            layout
-                .panels
-                .iter()
-                .any(|&(min, max)| contains(min, max, middle))
-        );
-        if page < 3 {
-            let next = button_cursor(&game, Target::BuildingPageNext);
-            game.handle_click(next, SCREEN, ClickMode::Normal);
-        }
-    }
+            .any(|button| button.target == Target::Building(Building::Granary))
+    );
+    assert!(
+        !first
+            .buttons
+            .iter()
+            .any(|button| button.target == Target::Building(Building::Railhead))
+    );
+    assert!(game.scroll_buildings_at(cursor, SCREEN, -20.0));
+    let scrolled = game.layout(SCREEN);
+    let card = scrolled
+        .buttons
+        .iter()
+        .find(|button| button.target == Target::Building(Building::Railhead))
+        .expect("railhead card shown after scrolling");
+    let middle = (card.min + card.max) / 2.0;
+    assert_eq!(
+        scrolled.button_at(middle).map(|button| button.target),
+        Some(Target::Building(Building::Railhead))
+    );
+    let scrolled_region = scrolled.building_scrollbars.first().unwrap();
+    assert!(contains(scrolled_region.min, scrolled_region.max, middle));
+    assert!(
+        !scrolled
+            .buttons
+            .iter()
+            .any(|button| button.target == Target::Building(Building::Harbor))
+    );
 }
 
 #[test]
@@ -499,6 +512,7 @@ fn mill_and_workshop_cards_use_shared_placement_controls() {
         (Building::Mill, Hex::new(-2, 0)),
         (Building::Workshop, Hex::new(-1, 0)),
     ] {
+        game.cities[city].building_scroll = if building == Building::Mill { 1 } else { 2 };
         game.handle_click(
             button_cursor(&game, Target::Building(building)),
             SCREEN,

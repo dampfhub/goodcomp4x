@@ -2,7 +2,7 @@
 //! confirmation, the Barracks queue, and completing builds.
 use super::amount;
 use crate::game::hex::Hex;
-use crate::game::terrain::Resource;
+use crate::game::terrain::{Resource, Terrain};
 use crate::game::unit::{Team, Unit, UnitType};
 use crate::game::{GameState, PLAYER_TEAM};
 
@@ -254,6 +254,14 @@ impl BuildUnit {
 }
 
 impl GameState {
+    /// A city's center must touch sea water to support naval construction.
+    pub(in crate::game) fn city_is_coastal(&self, city: usize) -> bool {
+        self.cities[city].pos.neighbors().into_iter().any(|hex| {
+            self.grid.contains(hex)
+                && matches!(self.grid.terrain(hex), Terrain::Coast | Terrain::Ocean)
+        })
+    }
+
     pub fn queue_selected_city_unit(&mut self, build: BuildUnit) {
         if self.is_resolving() {
             return;
@@ -263,6 +271,10 @@ impl GameState {
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
+            return;
+        }
+        if build.unit_type().is_naval() && !self.city_is_coastal(city) {
+            self.notice = "ONLY COASTAL CITIES CAN BUILD SHIPS".into();
             return;
         }
         if build.unit_type().is_naval() && self.cities[city].placed_site(Building::Harbor).is_none()
@@ -320,6 +332,12 @@ impl GameState {
             self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILDING".into();
             return;
         };
+        if matches!(building, Building::Harbor | Building::CoastalBattery)
+            && !self.city_is_coastal(city)
+        {
+            self.notice = "ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS".into();
+            return;
+        }
         let c = &mut self.cities[city];
         if c.team != PLAYER_TEAM {
             return;
@@ -409,6 +427,8 @@ impl GameState {
         hex: Hex,
     ) -> bool {
         self.grid.is_passable(hex)
+            && (!matches!(building, Building::Harbor | Building::CoastalBattery)
+                || self.city_is_coastal(city))
             && (self.is_explored(hex) || self.fog().sees(hex))
             && match building {
                 Building::CanoeHouse => hex
@@ -417,10 +437,12 @@ impl GameState {
                     .any(|n| self.grid.has_river(hex, n)),
                 Building::Forge => self.resource_near(hex, Resource::Iron),
                 Building::Stable => self.resource_near(hex, Resource::Horses),
-                Building::Harbor | Building::CoastalBattery => hex
-                    .neighbors()
-                    .into_iter()
-                    .any(|n| self.grid.contains(n) && self.grid.terrain(n).is_water()),
+                Building::Harbor | Building::CoastalBattery => {
+                    hex.neighbors().into_iter().any(|n| {
+                        self.grid.contains(n)
+                            && matches!(self.grid.terrain(n), Terrain::Coast | Terrain::Ocean)
+                    })
+                }
                 Building::Smelter => {
                     self.grid.tile(hex).hills
                         || hex.neighbors().into_iter().any(|n| {
@@ -753,6 +775,10 @@ impl GameState {
             let city = self.cities[i].pos;
             let naval = matches!(build, Build::Unit(unit) if unit.unit_type().is_naval());
             let origin = if naval {
+                if !self.city_is_coastal(i) {
+                    self.cities[i].production = build.cost();
+                    continue;
+                }
                 let Some(harbor) = self.cities[i].placed_site(Building::Harbor) else {
                     self.cities[i].production = build.cost();
                     continue;
@@ -829,7 +855,7 @@ impl GameState {
         spawn: &[(Team, Hex, UnitType, Option<Resource>)],
     ) -> bool {
         self.grid.contains(hex)
-            && self.grid.terrain(hex).is_water()
+            && matches!(self.grid.terrain(hex), Terrain::Coast | Terrain::Ocean)
             && !self.is_occupied(hex)
             && spawn.iter().all(|&(_, pos, _, _)| pos != hex)
     }

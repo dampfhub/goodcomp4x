@@ -1,10 +1,11 @@
 //! `PanelBuilder`, the panel content primitive, and its text and button measuring.
 
 use super::{
-    BODY, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING, Button, ButtonState, END_TURN_HEIGHT,
-    GAP, GROWTH_BAR_HEIGHT, LINE_GAP, Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT,
-    QUEUE_REMOVE_WIDTH, QueueItemRegion, QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP,
-    ROSTER_CHIP_GAP, RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
+    BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
+    BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GROWTH_BAR_HEIGHT, LINE_GAP,
+    Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT, QUEUE_REMOVE_WIDTH, QueueItemRegion,
+    QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP, ROSTER_CHIP_GAP, RosterChip,
+    SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
 };
 use crate::game::font::{self, Face};
 use glam::Vec2;
@@ -39,6 +40,8 @@ pub(super) enum Row {
     QueueItem(QueueItemSpec),
     /// Buttons of equal width; compact ones are one line, label then hint.
     Buttons(Vec<ButtonSpec>, bool),
+    /// A bounded, independently scrollable list within the city tray.
+    BuildingCatalog(usize, Vec<ButtonSpec>, usize),
     /// A row of unit tokens in the unit strip.
     Roster(Vec<RosterChip>),
 }
@@ -69,6 +72,16 @@ impl PanelBuilder {
 
     pub(super) fn queue_item(&mut self, item: QueueItemSpec) {
         self.rows.push(Row::QueueItem(item));
+    }
+
+    /// A compact, scrollable list of building cards in the city tray.
+    pub(super) fn building_catalog(
+        &mut self,
+        city: usize,
+        buttons: Vec<ButtonSpec>,
+        offset: usize,
+    ) {
+        self.rows.push(Row::BuildingCatalog(city, buttons, offset));
     }
 
     /// A row of unit tokens, each clickable.
@@ -105,6 +118,10 @@ impl PanelBuilder {
             Row::Buttons(_, false) => BUTTON_HEIGHT,
             Row::Buttons(_, true) => END_TURN_HEIGHT,
             Row::Roster(_) => ROSTER_CHIP,
+            Row::BuildingCatalog(_, buttons, _) => {
+                let visible = buttons.len().clamp(1, BUILDING_LIST_VISIBLE);
+                visible as f32 * 30.0 + (visible + 1) as f32 * 4.0
+            }
         }
     }
 
@@ -119,6 +136,10 @@ impl PanelBuilder {
                 let width = button_width(buttons, *compact);
                 buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
             }
+            Row::BuildingCatalog(_, buttons, _) => buttons
+                .iter()
+                .map(|button| single_line_button_width(&button.label, &button.hint))
+                .fold(320.0, f32::max),
             Row::Roster(chips) => {
                 chips.len() as f32 * ROSTER_CHIP
                     + chips.len().saturating_sub(1) as f32 * ROSTER_CHIP_GAP
@@ -245,6 +266,74 @@ impl PanelBuilder {
                             faded: self.faded,
                             min: min.round(),
                             max: (min + Vec2::new(width, height)).round(),
+                        });
+                    }
+                }
+                Row::BuildingCatalog(city, buttons, offset) => {
+                    let total = buttons.len();
+                    let visible = total.min(BUILDING_LIST_VISIBLE);
+                    let overflow = buttons.len() > visible;
+                    let region_min = Vec2::new(left, top - height).round();
+                    let region_max = Vec2::new(left + inner_width, top).round();
+                    layout.shapes.push(Shape::Panel {
+                        min: region_min,
+                        max: region_max,
+                        faded: self.faded,
+                    });
+                    let list_width =
+                        inner_width - 8.0 - if overflow { SCROLLBAR_WIDTH + 4.0 } else { 0.0 };
+                    let offset = offset.min(buttons.len().saturating_sub(visible));
+                    for (index, spec) in buttons.into_iter().enumerate().skip(offset).take(visible)
+                    {
+                        let y = region_max.y - 4.0 - (index - offset) as f32 * 34.0;
+                        let max = Vec2::new(left + 4.0 + list_width, y).round();
+                        let min = Vec2::new(left + 4.0, y - 30.0).round();
+                        layout.buttons.push(Button {
+                            target: spec.target,
+                            label: spec.label,
+                            hint: spec.hint,
+                            state: spec.state,
+                            armed: spec.armed,
+                            faded: self.faded,
+                            min,
+                            max,
+                        });
+                    }
+                    if overflow {
+                        let track_min =
+                            Vec2::new(region_max.x - 4.0 - SCROLLBAR_WIDTH, region_min.y + 4.0);
+                        let track_max = Vec2::new(region_max.x - 4.0, region_max.y - 4.0);
+                        let track_height = track_max.y - track_min.y;
+                        let thumb_height = (track_height * visible as f32 / total as f32)
+                            .max(24.0)
+                            .min(track_height);
+                        let max_offset = total - visible;
+                        let travel = track_height - thumb_height;
+                        let thumb_top = track_max.y - travel * offset as f32 / max_offset as f32;
+                        layout.shapes.push(Shape::Scrollbar {
+                            track_min,
+                            track_max,
+                            thumb_min: Vec2::new(track_min.x, thumb_top - thumb_height),
+                            thumb_max: Vec2::new(track_max.x, thumb_top),
+                        });
+                        layout.building_scrollbars.push(BuildingScrollRegion {
+                            city,
+                            min: region_min,
+                            max: region_max,
+                            track_min,
+                            track_max,
+                            thumb_height,
+                            max_offset,
+                        });
+                    } else {
+                        layout.building_scrollbars.push(BuildingScrollRegion {
+                            city,
+                            min: region_min,
+                            max: region_max,
+                            track_min: region_min,
+                            track_max: region_min,
+                            thumb_height: 0.0,
+                            max_offset: 0,
                         });
                     }
                 }

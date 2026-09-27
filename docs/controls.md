@@ -108,8 +108,8 @@ plays out.
 | Y / Yields button | Show or hide tile yields around the open city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron) |
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
-| BUILDS > / < BUILDS in the city tray | Page through the building cards, including Canoe House, Forge, Stable, Watchpost, Field Hospital, Cannery, Work Camp, Smelter, Railhead, Harbor and Coastal Battery |
-| Build a Harbor, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for water deployment |
+| Scroll inside BUILDINGS in the city tray | Browse building cards without paging; Harbor and Coastal Battery appear only in cities whose center touches the sea |
+| Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
 | Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers) |
 | Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |

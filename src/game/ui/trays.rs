@@ -550,18 +550,19 @@ impl GameState {
         }
 
         panel.gap(GAP);
-        let builds: Vec<BuildUnit> = if city.placed_site(Building::Harbor).is_some() {
-            vec![
-                BuildUnit::Melee,
-                BuildUnit::Ranged,
-                BuildUnit::Siege,
-                BuildUnit::PatrolGalley,
-                BuildUnit::LandingCraft,
-                BuildUnit::BombardShip,
-            ]
-        } else {
-            vec![BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
-        };
+        let builds: Vec<BuildUnit> =
+            if self.city_is_coastal(i) && city.placed_site(Building::Harbor).is_some() {
+                vec![
+                    BuildUnit::Melee,
+                    BuildUnit::Ranged,
+                    BuildUnit::Siege,
+                    BuildUnit::PatrolGalley,
+                    BuildUnit::LandingCraft,
+                    BuildUnit::BombardShip,
+                ]
+            } else {
+                vec![BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
+            };
         panel.buttons(
             builds
                 .into_iter()
@@ -606,13 +607,14 @@ impl GameState {
                 LABEL_TEXT,
             )],
         );
-        let last_page = (Building::ALL.len() - 1) / super::BUILDING_PAGE_SIZE;
-        let start = city.building_page.min(last_page) * super::BUILDING_PAGE_SIZE;
-        let end = (start + super::BUILDING_PAGE_SIZE).min(Building::ALL.len());
-        let mut building_buttons: Vec<_> = Building::ALL[start..end]
+        let building_buttons: Vec<_> = Building::ALL
             .iter()
             .copied()
             .filter(|&building| !city.built.contains(&building))
+            .filter(|&building| {
+                !matches!(building, Building::Harbor | Building::CoastalBattery)
+                    || self.city_is_coastal(i)
+            })
             .map(|building| ButtonSpec {
                 target: Target::Building(building),
                 label: building.name().into(),
@@ -620,13 +622,11 @@ impl GameState {
                     format!("{} PROD", quantity(building.cost()))
                 } else {
                     format!(
-                        "{} · {} PROD",
+                        "{} | {} PROD",
                         building.shortcut(),
                         quantity(building.cost())
                     )
                 },
-                // Queued or finished, the card is spent, unless the
-                // building still has no site: then it picks one.
                 state: ButtonState::new(
                     city.queue.first() == Some(&Build::Building(building))
                         || self.needs_site(i, building)
@@ -638,25 +638,8 @@ impl GameState {
                 armed: false,
             })
             .collect();
-        if city.building_page > 0 {
-            building_buttons.push(ButtonSpec {
-                target: Target::BuildingPagePrev,
-                label: "< BUILDS".into(),
-                hint: String::new(),
-                state: ButtonState::Ready,
-                armed: false,
-            });
-        }
-        if city.building_page < last_page {
-            building_buttons.push(ButtonSpec {
-                target: Target::BuildingPageNext,
-                label: "BUILDS >".into(),
-                hint: String::new(),
-                state: ButtonState::Ready,
-                armed: false,
-            });
-        }
-        panel.buttons(building_buttons);
+        panel.text(SMALL, vec![("BUILDINGS".into(), LABEL_TEXT)]);
+        panel.building_catalog(i, building_buttons, city.building_scroll);
         if let Some(tile) = city.barracks {
             let active = city.worked.first() == Some(&tile);
             let status = if active {

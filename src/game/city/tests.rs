@@ -896,3 +896,35 @@ fn a_city_and_its_barracks_never_finish_units_onto_one_hex() {
         "the barracks waits for a hex"
     );
 }
+
+#[test]
+fn coastal_construction_requires_the_city_center_to_touch_the_sea() {
+    let mut inland = GameState::city_scenario();
+    inland.selected_city = Some(0);
+    assert!(!inland.city_is_coastal(0));
+    for building in [Building::Harbor, Building::CoastalBattery] {
+        inland.queue_selected_city_building(building);
+        assert!(!inland.cities[0].queue.contains(&Build::Building(building)));
+        assert!(!inland.site_available(0, building, Hex::new(-2, 1)));
+    }
+    inland.cities[0]
+        .extra_buildings
+        .insert(Building::Harbor, Hex::new(-2, 1));
+    inland.queue_selected_city_unit(BuildUnit::PatrolGalley);
+    assert!(
+        !inland.cities[0]
+            .queue
+            .contains(&Build::Unit(BuildUnit::PatrolGalley))
+    );
+
+    let mut coastal = GameState::naval_scenario();
+    coastal.selected_city = Some(0);
+    assert!(coastal.city_is_coastal(0));
+    assert!(coastal.cities[0].placed_site(Building::Harbor).is_some());
+    coastal.queue_selected_city_unit(BuildUnit::LandingCraft);
+    assert!(
+        coastal.cities[0]
+            .queue
+            .contains(&Build::Unit(BuildUnit::LandingCraft))
+    );
+}

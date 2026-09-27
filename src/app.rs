@@ -65,6 +65,7 @@ pub struct App {
     /// The left button is down placing walls or gates on hex edges.
     painting_barriers: bool,
     queue_scroll_dragging: bool,
+    building_scroll_dragging: bool,
     queue_item_dragging: bool,
     modifiers: Modifiers,
     /// When Escape was pressed, while it's held; the game quits once it's
@@ -113,6 +114,7 @@ impl App {
             left_dragging: false,
             painting_barriers: false,
             queue_scroll_dragging: false,
+            building_scroll_dragging: false,
             queue_item_dragging: false,
             modifiers: Modifiers::default(),
             quit_held_since: None,
@@ -449,6 +451,13 @@ impl ApplicationHandler for App {
                     self.cursor_pos = Some(pos);
                     return;
                 }
+                if !self.use_imgui && self.building_scroll_dragging {
+                    if let Some(size) = self.screen_size() {
+                        self.game.drag_building_scrollbar_at(pos, size, true);
+                    }
+                    self.cursor_pos = Some(pos);
+                    return;
+                }
                 if !self.use_imgui && self.queue_item_dragging {
                     if let Some(size) = self.screen_size() {
                         self.game.update_queue_drag_at(pos, size);
@@ -492,6 +501,7 @@ impl ApplicationHandler for App {
                 self.left_press = None;
                 self.left_dragging = false;
                 self.queue_scroll_dragging = false;
+                self.building_scroll_dragging = false;
                 self.queue_item_dragging = false;
                 self.game.cancel_queue_drag();
                 self.panning = false;
@@ -520,6 +530,13 @@ impl ApplicationHandler for App {
                             && self.game.drag_queue_scrollbar_at(cursor, size, false)
                         {
                             self.queue_scroll_dragging = true;
+                            return;
+                        }
+                        if !self.use_imgui
+                            && let Some(size) = self.screen_size()
+                            && self.game.drag_building_scrollbar_at(cursor, size, false)
+                        {
+                            self.building_scroll_dragging = true;
                             return;
                         }
                         let keys = self.modifiers.state();
@@ -564,8 +581,9 @@ impl ApplicationHandler for App {
                         self.painting_barriers = false;
                         return;
                     }
-                    if self.queue_scroll_dragging {
+                    if self.queue_scroll_dragging || self.building_scroll_dragging {
                         self.queue_scroll_dragging = false;
+                        self.building_scroll_dragging = false;
                         return;
                     }
                     if self.queue_item_dragging {
@@ -647,7 +665,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 100.0) as f32,
                 };
-                if !(matches!((self.cursor_pos, self.screen_size()), (Some(cursor), Some(size)) if self.game.scroll_queue_at(cursor, size, steps)))
+                if !(matches!((self.cursor_pos, self.screen_size()), (Some(cursor), Some(size)) if self.game.scroll_queue_at(cursor, size, steps) || self.game.scroll_buildings_at(cursor, size, steps)))
                 {
                     self.game.camera.zoom(steps);
                 }

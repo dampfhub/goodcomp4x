@@ -17,8 +17,7 @@ input capture. It is drawn at the end of the existing Vulkan render pass.
 `ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible
 windows without overlap. A window follows the dock as its content changes
 until the player drags its title bar or resize grip; moved windows reserve
-their space so other panels avoid them. Only the production queue has a
-deliberately bounded height and scrolls when it grows beyond that bound.
+their space so other panels avoid them. The production queue and the city tray's building catalogue have bounded heights and scroll internally when their content grows.
 Hold Ctrl to show the title bars, collapse buttons, and resize grips for
 arranging panels. During normal play, expanded panels hide their title bars;
 collapsed panels keep a short title bar so they can be expanded again. While
@@ -151,3 +150,5 @@ hover, and debug panels belong in a `Zone`.
 Add a layout test when adding a new panel or zone behavior. Useful assertions
 are that panel rectangles do not overlap, buttons remain inside their panel,
 and the same target is clickable after the screen size or content changes.
+
+The city tray uses a shared `Row::BuildingCatalog`: ImGui renders it as a four-row child window with native scrolling, while classic renders a compact two-row inset with wheel and draggable scrollbar. All building cards remain in one list; no page buttons are needed.

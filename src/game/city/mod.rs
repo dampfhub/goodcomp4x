@@ -74,8 +74,8 @@ pub(super) struct City {
     pub workshop: Option<Hex>,
     /// New placed buildings share one site map instead of adding a city field each.
     pub extra_buildings: HashMap<Building, Hex>,
-    /// Which short construction catalogue page the city tray displays.
-    pub building_page: usize,
+    /// Scroll position in the city tray's building list.
+    pub building_scroll: usize,
     pub pending_building: Option<Building>,
     pub planned_sites: HashMap<Building, Hex>,
     /// Barracks production is independent of the city's main queue.
@@ -110,7 +110,7 @@ impl City {
             mill: None,
             workshop: None,
             extra_buildings: HashMap::new(),
-            building_page: 0,
+            building_scroll: 0,
             pending_building: None,
             planned_sites: HashMap::new(),
             barracks_queue: Vec::new(),

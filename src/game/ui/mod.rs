@@ -48,7 +48,7 @@ use dock::{Dock, Rect, Zone};
 pub use imgui::ImGuiLayoutState;
 use paint::{draw_button, draw_chip_hover, draw_shape};
 
-const BUILDING_PAGE_SIZE: usize = 4;
+const BUILDING_LIST_VISIBLE: usize = 2;
 use queue::queue_items_that_fit;
 
 type Color = [f32; 4];
@@ -178,8 +178,6 @@ enum Target {
     Build(BuildUnit),
     ToggleYields,
     Building(Building),
-    BuildingPageNext,
-    BuildingPagePrev,
     BarracksBuild(BuildUnit),
     OpenBarracks,
     OpenCity,
@@ -368,6 +366,16 @@ struct QueueItemRegion {
     locked: bool,
 }
 
+struct BuildingScrollRegion {
+    city: usize,
+    min: Vec2,
+    max: Vec2,
+    track_min: Vec2,
+    track_max: Vec2,
+    thumb_height: f32,
+    max_offset: usize,
+}
+
 struct QueueScrollRegion {
     kind: QueueKind,
     panel_min: Vec2,
@@ -386,6 +394,7 @@ struct Layout {
     buttons: Vec<Button>,
     panels: Vec<(Vec2, Vec2)>,
     queue_scrollbars: Vec<QueueScrollRegion>,
+    building_scrollbars: Vec<BuildingScrollRegion>,
     queue_items: Vec<QueueItemRegion>,
     /// The unit strip's tokens and the unit id each one stands for.
     roster_chips: Vec<(Vec2, Vec2, u32)>,
@@ -547,7 +556,9 @@ impl GameState {
     pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) -> bool {
         let point = to_ui(cursor, screen_size);
         let layout = self.layout_with_hover(screen_size, Some(cursor)).0;
-        if self.drag_queue_scrollbar_at(cursor, screen_size, false) {
+        if self.drag_queue_scrollbar_at(cursor, screen_size, false)
+            || self.drag_building_scrollbar_at(cursor, screen_size, false)
+        {
             return true;
         }
         if let Some(id) = layout.roster_chip_at(point) {
@@ -587,19 +598,6 @@ impl GameState {
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
             Target::Building(building) => self.queue_selected_city_building(building),
-            Target::BuildingPageNext => {
-                if let Some(city) = self.selected_city {
-                    let last = (Building::ALL.len() - 1) / BUILDING_PAGE_SIZE;
-                    self.cities[city].building_page =
-                        (self.cities[city].building_page + 1).min(last);
-                }
-            }
-            Target::BuildingPagePrev => {
-                if let Some(city) = self.selected_city {
-                    self.cities[city].building_page =
-                        self.cities[city].building_page.saturating_sub(1);
-                }
-            }
             Target::BarracksBuild(build) => self.queue_selected_barracks_unit(build),
             Target::OpenBarracks => {
                 if let Some(city) = self.selected_city {

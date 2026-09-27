@@ -101,7 +101,7 @@ see Workers below. Cavalry and
 Armored are built at a Barracks on Horses or Iron, or supported by an adjacent Stable or Forge;
 cities can't queue them. Stable-trained Cavalry get +1 move; Forge-trained Armored get +20% HP
 and +15% defense. These upgrades stay with the unit, including in city interiors. A Field
-Hospital heals nearby troops (see Buildings). A Harbor lets its city build naval units; a
+Hospital heals nearby troops (see Buildings). A Harbor in a city whose center touches Coast or Ocean lets it build naval units; a
 Landing Craft can carry four land units. Select a land troop and click an adjacent friendly craft
 to plan boarding. Select the craft and click adjacent empty land to plan landing its first
 passenger. Both happen after combat, so cargo sinks with its ship. A craft cannot attack.
@@ -469,10 +469,10 @@ every turn end.
   - **Smelter:** must stand on or beside hills or Iron. It collects production from up to three
     owned, unworked mines within 3 hexes using the same local-route and 100/75/50% distance
     rules as the Cannery, even beyond city delivery range. It feeds the city queue, not Barracks.
-  - **Harbor:** placed on land next to water. It unlocks all three ships in the city queue and
+  - **Harbor:** only in a city whose center touches Coast or Ocean; placed on land next to sea water. It unlocks all three ships in the city queue and
     spawns them onto an open neighboring water tile. Ship construction uses the city production
     pool; it waits at full cost when every adjacent water tile is occupied.
-  - **Coastal Battery:** placed on land next to water. It automatically attacks the nearest
+  - **Coastal Battery:** only in a city whose center touches Coast or Ocean; placed on land next to sea water. It automatically attacks the nearest
     hostile ship within 2 hexes after unit combat, dealing a 28-attack strike. It has 150 HP,
     can be bombarded and rebuilt if destroyed. Its health bar appears over its badge.
   - **Railhead:** the city center acts as its origin terminal, so no second building is needed
