@@ -295,6 +295,33 @@ fn city_view() -> GameState {
 }
 
 #[test]
+fn invalid_stable_site_click_reports_horses_instead_of_open_land() {
+    let mut game = city_view();
+    game.units.clear();
+    game.fog_of_war = false;
+    let city = game.selected_city.unwrap();
+    let site = game
+        .grid
+        .all_hexes()
+        .find(|&hex| {
+            let cursor = hex_cursor(&game, hex);
+            cursor.x > 0.0
+                && cursor.x < SCREEN.x
+                && cursor.y > 0.0
+                && cursor.y < SCREEN.y
+                && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
+                && game.site_available(city, Building::Barracks, hex)
+                && game.site_issue(city, Building::Stable, hex)
+                    == Some("NEEDS HORSES ON OR NEXT TO THE TILE")
+        })
+        .expect("visible open tile away from horses");
+    game.queue_selected_city_building(Building::Stable);
+    game.handle_click(hex_cursor(&game, site), SCREEN, ClickMode::Normal);
+    assert_eq!(game.notice, "STABLE NEEDS HORSES ON OR NEXT TO THE TILE");
+    assert_eq!(game.site_placement(), Some((city, Building::Stable)));
+}
+
+#[test]
 fn barracks_map_click_locks_site_and_exits_placement() {
     let mut game = city_view();
     game.units.clear();

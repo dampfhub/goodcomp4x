@@ -351,7 +351,7 @@ impl GameState {
             // one was chosen): the card resumes choosing it.
             if self.needs_site(city, building) {
                 self.placing_building = Some((city, building));
-                self.notice = format!("CHOOSE A {} SITE - CLICK AN OPEN TILE", building.name());
+                self.notice = format!("CHOOSE A {} SITE - CLICK A VALID TILE", building.name());
             } else {
                 self.notice = format!("{} IS ALREADY QUEUED IN THIS CITY", building.name());
             }
@@ -366,7 +366,7 @@ impl GameState {
         if building.is_placeable() {
             self.placing_building = Some((city, building));
             self.notice = format!(
-                "{} STARTED - CLICK AN OPEN TILE TO CHOOSE ITS SITE",
+                "{} STARTED - CLICK A VALID TILE TO CHOOSE ITS SITE",
                 building.name()
             );
             return;
@@ -420,48 +420,80 @@ impl GameState {
                 || c.queue.contains(&Build::Building(building)))
     }
 
+    /// The first reason a building cannot use this site. Keep this as the
+    /// source of truth for previews, placement clicks, and final confirmation.
+    pub(in crate::game) fn site_issue(
+        &self,
+        city: usize,
+        building: Building,
+        hex: Hex,
+    ) -> Option<&'static str> {
+        if !self.grid.is_passable(hex) {
+            return Some("NEEDS AN OPEN LAND TILE");
+        }
+        if !self.is_explored(hex) && !self.fog().sees(hex) {
+            return Some("NEEDS AN EXPLORED TILE");
+        }
+        if self.cities.iter().enumerate().any(|(i, c)| {
+            c.pos == hex
+                || Building::PLACEABLE
+                    .into_iter()
+                    .any(|kind| c.placed_site(kind) == Some(hex))
+                || c.planned_sites
+                    .iter()
+                    .any(|(&kind, &site)| site == hex && (i != city || kind != building))
+        }) {
+            return Some("SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+        }
+        if matches!(building, Building::Harbor | Building::CoastalBattery)
+            && !self.city_is_coastal(city)
+        {
+            return Some("NEEDS A CITY CENTER ON THE COAST");
+        }
+        match building {
+            Building::CanoeHouse
+                if !hex
+                    .neighbors()
+                    .into_iter()
+                    .any(|n| self.grid.has_river(hex, n)) =>
+            {
+                Some("NEEDS A RIVERBANK TILE")
+            }
+            Building::Forge if !self.resource_near(hex, Resource::Iron) => {
+                Some("NEEDS IRON ON OR NEXT TO THE TILE")
+            }
+            Building::Stable if !self.resource_near(hex, Resource::Horses) => {
+                Some("NEEDS HORSES ON OR NEXT TO THE TILE")
+            }
+            Building::Harbor | Building::CoastalBattery
+                if !hex.neighbors().into_iter().any(|n| {
+                    self.grid.contains(n)
+                        && matches!(self.grid.terrain(n), Terrain::Coast | Terrain::Ocean)
+                }) =>
+            {
+                Some("NEEDS A TILE NEXT TO COAST OR OCEAN")
+            }
+            Building::Smelter
+                if !self.grid.tile(hex).hills
+                    && !hex.neighbors().into_iter().any(|n| {
+                        self.grid.contains(n)
+                            && (self.grid.tile(n).hills
+                                || self.grid.resource(n) == Some(Resource::Iron))
+                    }) =>
+            {
+                Some("NEEDS HILLS OR IRON ON OR NEXT TO THE TILE")
+            }
+            _ => None,
+        }
+    }
+
     pub(in crate::game) fn site_available(
         &self,
         city: usize,
         building: Building,
         hex: Hex,
     ) -> bool {
-        self.grid.is_passable(hex)
-            && (!matches!(building, Building::Harbor | Building::CoastalBattery)
-                || self.city_is_coastal(city))
-            && (self.is_explored(hex) || self.fog().sees(hex))
-            && match building {
-                Building::CanoeHouse => hex
-                    .neighbors()
-                    .into_iter()
-                    .any(|n| self.grid.has_river(hex, n)),
-                Building::Forge => self.resource_near(hex, Resource::Iron),
-                Building::Stable => self.resource_near(hex, Resource::Horses),
-                Building::Harbor | Building::CoastalBattery => {
-                    hex.neighbors().into_iter().any(|n| {
-                        self.grid.contains(n)
-                            && matches!(self.grid.terrain(n), Terrain::Coast | Terrain::Ocean)
-                    })
-                }
-                Building::Smelter => {
-                    self.grid.tile(hex).hills
-                        || hex.neighbors().into_iter().any(|n| {
-                            self.grid.contains(n)
-                                && (self.grid.tile(n).hills
-                                    || self.grid.resource(n) == Some(Resource::Iron))
-                        })
-                }
-                _ => true,
-            }
-            && !self.cities.iter().enumerate().any(|(i, c)| {
-                c.pos == hex
-                    || Building::PLACEABLE
-                        .into_iter()
-                        .any(|kind| c.placed_site(kind) == Some(hex))
-                    || c.planned_sites
-                        .iter()
-                        .any(|(&kind, &site)| site == hex && (i != city || kind != building))
-            })
+        self.site_issue(city, building, hex).is_none()
     }
 
     pub(in crate::game) fn resource_near(&self, hex: Hex, resource: Resource) -> bool {
@@ -520,8 +552,8 @@ impl GameState {
             self.notice = format!("CHOOSE A {} SITE ON THE MAP FIRST", building.name());
             return;
         };
-        if !self.site_available(city, building, site) {
-            self.notice = format!("{} SITE IS NO LONGER AVAILABLE", building.name());
+        if let Some(reason) = self.site_issue(city, building, site) {
+            self.notice = format!("{} SITE INVALID: {reason}", building.name());
             return;
         }
         if self.cities[city].queue.first() != Some(&Build::Building(building))
@@ -592,10 +624,7 @@ impl GameState {
             return;
         }
         self.placing_building = Some((city, building));
-        self.notice = format!(
-            "CHANGE {} SITE - CLICK A NEW OPEN LAND TILE",
-            building.name()
-        );
+        self.notice = format!("CHANGE {} SITE - CLICK A NEW VALID TILE", building.name());
     }
 
     /// Completes only the active queue in the currently open structure.

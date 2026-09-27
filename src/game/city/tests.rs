@@ -928,3 +928,55 @@ fn coastal_construction_requires_the_city_center_to_touch_the_sea() {
             .contains(&Build::Unit(BuildUnit::LandingCraft))
     );
 }
+
+#[test]
+fn rejected_building_sites_name_the_requirement_and_keep_placement_active() {
+    for (building, reason) in [
+        (Building::Stable, "NEEDS HORSES ON OR NEXT TO THE TILE"),
+        (Building::Forge, "NEEDS IRON ON OR NEXT TO THE TILE"),
+        (Building::CanoeHouse, "NEEDS A RIVERBANK TILE"),
+        (
+            Building::Smelter,
+            "NEEDS HILLS OR IRON ON OR NEXT TO THE TILE",
+        ),
+    ] {
+        let mut game = GameState::city_scenario();
+        game.fog_of_war = false;
+        game.selected_city = Some(0);
+        let site = game
+            .grid
+            .all_hexes()
+            .find(|&hex| {
+                game.site_available(0, Building::Barracks, hex)
+                    && game.site_issue(0, building, hex) == Some(reason)
+            })
+            .expect("open land lacking this building's required feature");
+        game.queue_selected_city_building(building);
+        game.city_click(site);
+        assert_eq!(game.notice, format!("{} {reason}", building.name()));
+        assert_eq!(game.site_placement(), Some((0, building)));
+        assert!(!game.cities[0].planned_sites.contains_key(&building));
+    }
+}
+
+#[test]
+fn final_confirmation_explains_a_site_that_lost_its_required_feature() {
+    let mut game = GameState::city_scenario();
+    game.fog_of_war = false;
+    game.selected_city = Some(0);
+    let site = game
+        .grid
+        .all_hexes()
+        .find(|&hex| {
+            game.site_available(0, Building::Barracks, hex)
+                && game.site_issue(0, Building::Stable, hex)
+                    == Some("NEEDS HORSES ON OR NEXT TO THE TILE")
+        })
+        .unwrap();
+    game.cities[0].planned_sites.insert(Building::Stable, site);
+    game.confirm_building(Building::Stable);
+    assert_eq!(
+        game.notice,
+        "STABLE SITE INVALID: NEEDS HORSES ON OR NEXT TO THE TILE"
+    );
+}

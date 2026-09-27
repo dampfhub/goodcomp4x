@@ -424,8 +424,8 @@ every turn end.
   Mill 15, Workshop 20, Canoe House 16, Forge 20, Stable 20, Watchpost 16, Field Hospital 24,
   Cannery 24, Work Camp 18, Smelter 24, Railhead 30, Harbor 20, Coastal Battery 24;
   Patrol Galley 18, Landing Craft 22, Bombard Ship 26. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue Cavalry or
-  Armored), 4-7 Granary, Barracks, Mill, Workshop. The other buildings use the city's paged
-  build cards.
+  Armored), 4-7 Granary, Barracks, Mill, Workshop. The other buildings use the city's scrollable
+  building list.
   One of each building per city.
 - **Buildings:**
   - **Granary:** +2 food per turn. Completes when paid for.
@@ -433,7 +433,9 @@ every turn end.
     you have explored, not a city, building or other planned site). Site selection belongs to the
     open city. Stopping it before a site is chosen (Escape, leaving the view, opening another
     view, ending the turn) takes the building back out of the queue; End Turn then asks for
-    something to build if that left the city with nothing. One that finished without a site (an
+    something to build if that left the city with nothing. An invalid site click explains
+    the first unmet requirement (such as Horses for a Stable, Iron for a Forge, or a riverbank
+    for a Canoe House) and keeps site selection active. One that finished without a site (an
     old save's queue, say) keeps its card live and starts selection when its city is next
     opened. Click the site's map badge to move it. When paid for, the building waits (blocking the queue) until you click Confirm in the
     tray. Completing any building resets production to 0.
