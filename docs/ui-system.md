@@ -14,10 +14,65 @@ until the player drags its title bar or resize grip; moved windows reserve
 their space so other panels avoid them. Only the production queue has a
 deliberately bounded height and scrolls when it grows beyond that bound.
 Hold Ctrl to show the title bars, collapse buttons, and resize grips for
-arranging panels. They stay hidden during normal play.
-The `imgui` dependency enables its `docking` feature. A transparent dockspace
-allows the Selection, Production Queue, and Debug windows to dock together
-while leaving the map visible; Inspect remains a transient floating panel.
+arranging panels. During normal play, expanded panels hide their title bars;
+collapsed panels keep a short title bar so they can be expanded again. While
+Ctrl is held and a panel is being dragged, ImGui owns its position and size
+until the drag ends, so dock previews remain stable.
+The `imgui` dependency enables its `docking` feature. Selection, Production
+Queue, and Debug can dock to one another. The transparent dockspace starts
+below the ImGui status bar but does not accept drops onto the empty map;
+this keeps a drop on a panel's bottom target from becoming a screen-wide split.
+Docked rectangles are reserved in the automatic layout, and floating windows
+are clamped below the status bar. Docking uses a transparent drag payload so
+the chosen split target stays visible, and floating sizes are preserved across
+dock and undock. Inspect stays transient unless docked into an outer box, where
+it keeps the most recent hover summary visible.
+At the start of each frame, synchronize native ImGui dock state before planning
+floating positions: ImGui commits a highlighted drop in `NewFrame`, and using
+the previous frame's floating state can immediately undo that split.
+Selection and Production Queue may disappear together when city management
+closes. Remember their adjacent dock relation while visible, then restore that
+relation if ImGui removes an inactive split before they reappear. A lost dock
+position is never reused as a floating position over another panel.
+Debug can also be docked beside a contextual Selection group. City, barracks,
+unit, and group menus each remember their own Debug docking relation. When a
+menu closes or changes kind, Debug returns to its previous standalone position
+or persistent panel group; reopening that kind of menu restores its split.
+The last standalone position is frozen while dragging and is not overwritten
+during an undock transition.
+Dock relation detection walks the native dock tree, so it works beside a
+nested Selection+Queue group as well as beside Selection alone.
+The status bar names the active **Default**, **City / Building**, or **Troop**
+view. **EDIT VIEW** means panel placement and **+ BOX** belong to that view;
+switching to **EDIT OUTER** creates boxes shared by all views and makes a moved
+floating Debug panel use the same placement everywhere. A view box is hidden
+outside its view, while its docked panels and layout remain available when
+returning. The floating Debug panel inherits Default's position in City /
+Building and Troop until dragged or resized in that view. Moving it in Default
+updates views that still inherit; moving it while editing Outer applies the
+position to all views and clears local overrides. Outer boxes keep one
+position across all views.
+In City / Building or Troop, **Ctrl+Shift+R** (or the status-bar Reset button)
+clears that view's Debug position and contextual dock relation so it inherits
+Default again. It leaves the view's boxes and other panels in place.
+
+Hold Ctrl and drag Selection, Production Queue, Debug, or Inspect into a box.
+Each box has an X to remove the whole container. A dropped city, barracks,
+unit, group, or queue panel becomes a persistent window in that box; its
+controls stay live after selection changes. Its actions carry the structure
+or unit's stable ID and focus that entity before invoking the shared `Target`
+action. Debug is already persistent and docks directly. Moving a captured
+panel out of every box returns it to contextual behavior. Deleting a box
+releases its contents, and loading or changing scenarios clears captured
+panels while keeping the boxes. Every new always-visible ImGui window can dock
+in a box without special layout offsets. A new contextual panel needs a stable
+identity and a renderer for captured content, as the city, barracks, unit,
+group, and queue examples show.
+Give draggable content a payload type scoped to its panel identity, so rows
+from two city queues cannot reorder one another.
+Floating Selection panels remember dimensions by context kind (city, barracks,
+unit, or group), so resizing the city controls does not stretch unit controls.
+Edge resizing is disabled; hold Ctrl and use the lower corner grip to resize.
 Docked windows use ImGui's geometry, while undocked panels use the measured
 layout. Floating panel height is corrected from the previous rendered frame.
 The world, tile overlays, selection rectangle, and quit hold prompt remain in

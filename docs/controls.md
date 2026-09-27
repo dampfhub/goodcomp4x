@@ -39,6 +39,7 @@ red queues its orders when you end planning. There is no save system yet.
 | F8 | Toggle turn playback: step by step, or every step at once (same outcome) |
 | F9 / debug Complete Production | Finish the active city build or Barracks training immediately |
 | F10 | Toggle fog of war (debug) |
+| Ctrl+Shift+R in City / Building or Troop view | Reset that view's Debug placement to Default |
 
 The faded DEBUG panel at the top-left has buttons for F1-F4 and F6-F10; the
 current scenario is gold, and a generated map shows its seed. The savestate lives only until the game closes and

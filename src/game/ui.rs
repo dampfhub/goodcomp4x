@@ -278,6 +278,7 @@ pub(super) struct QueueDrag {
     target: Option<usize>,
 }
 
+#[derive(Clone)]
 struct QueueItemSpec {
     kind: QueueKind,
     index: usize,
@@ -979,7 +980,7 @@ impl GameState {
         let swapping = self.swap_partner(idx).is_some();
         let worker = self.workers.contains(&unit.id);
         let settler = self.settlers.contains(&unit.id);
-        let armed = |mode| self.ui_click_mode == Some(mode);
+        let armed = |mode| self.selected == Some(idx) && self.ui_click_mode == Some(mode);
 
         let mut buttons = vec![ButtonSpec {
             target: Target::Unit(UnitAction::Move),
@@ -1046,8 +1047,11 @@ impl GameState {
     /// A group of selected units: how many of each, how to order them, and
     /// buttons for what every member can do at once.
     fn group_tray(&self, panel: &mut PanelBuilder) {
-        let members: Vec<&str> = self
-            .group
+        self.group_tray_for(&self.group, panel);
+    }
+
+    fn group_tray_for(&self, group: &[usize], panel: &mut PanelBuilder) {
+        let members: Vec<&str> = group
             .iter()
             .map(|&i| self.unit_role(&self.units[i]).0)
             .collect();
@@ -1065,7 +1069,7 @@ impl GameState {
 
         panel.text(
             TITLE,
-            vec![(format!("{} UNITS SELECTED", self.group.len()), TEXT)],
+            vec![(format!("{} UNITS SELECTED", group.len()), TEXT)],
         );
         panel.text(BODY, vec![(summary.join(", "), DIM_TEXT)]);
         for help in [
@@ -1077,8 +1081,8 @@ impl GameState {
         }
         panel.gap(GAP);
 
-        let armed = |mode| self.ui_click_mode == Some(mode);
-        let all_guarding = self.group.iter().all(|&i| self.units[i].guarding);
+        let armed = |mode| self.group == group && self.ui_click_mode == Some(mode);
+        let all_guarding = group.iter().all(|&i| self.units[i].guarding);
         panel.buttons(vec![
             ButtonSpec {
                 target: Target::Unit(UnitAction::Move),
@@ -1284,7 +1288,10 @@ impl GameState {
         panel.text(SMALL, vec![(growth_label, DIM_TEXT)]);
         panel.bar(growth_percent as f32 / 100.0);
 
-        if let Some(hex) = self.inspected_tile {
+        if let Some(hex) = self
+            .inspected_tile
+            .filter(|_| self.selected_city == Some(i))
+        {
             let (tile_food, tile_production) = self.tile_yield(hex);
             let shares = self.routes(i).costs.get(&hex).map_or((0, 0), |cost| {
                 (self.mill_food_share(i, hex, *cost), delivered_share(*cost))
@@ -2125,6 +2132,7 @@ impl GameState {
 }
 
 /// A button before it's placed.
+#[derive(Clone)]
 struct ButtonSpec {
     target: Target,
     label: String,
@@ -2145,6 +2153,7 @@ impl ButtonSpec {
     }
 }
 
+#[derive(Clone)]
 enum Row {
     Text(u32, Line),
     Gap(f32),
@@ -2156,7 +2165,7 @@ enum Row {
 
 /// Reusable panel content primitive. Stacks rows top to bottom and measures
 /// its own size; place persistent panels through `Layout::dock_panel`.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PanelBuilder {
     rows: Vec<Row>,
     /// See-through, for the debug panel.

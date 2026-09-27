@@ -65,6 +65,7 @@ Controls:
   Rest the cursor on any hex for a moment to see what it is and yields.
   1-4 queue city units; 5-8 queue buildings. Drag queue rows to reorder or click X to remove;
   Backspace removes the active city build and PageDown promotes the next item. F founds with a settler.
+  Ctrl+Shift+R in a City/Building or Troop ImGui view resets its Debug placement to Default.
   F1 combat, F2 cities, F3 settler frontier, F4 random world (again to restart; F4 makes a new map). F6 saves a snapshot, F7 loads it, F8 changes playback, F9 completes production, F10 toggles fog of war.
   The faded DEBUG panel at the top-left has buttons for these.
   Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.

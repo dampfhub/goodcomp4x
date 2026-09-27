@@ -609,7 +609,12 @@ unsafe fn create_command_buffers(
 
 fn mat4_to_bytes(m: &Mat4) -> [u8; 64] {
     let mut bytes = [0u8; 64];
-    for (chunk, value) in bytes.chunks_exact_mut(4).zip(m.to_cols_array()) {
+    for (chunk, value) in bytes
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(m.to_cols_array())
+    {
         chunk.copy_from_slice(&value.to_ne_bytes());
     }
     bytes

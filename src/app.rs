@@ -148,6 +148,10 @@ impl ApplicationHandler for App {
             .io_mut()
             .config_flags
             .insert(ConfigFlags::DOCKING_ENABLE);
+        imgui.io_mut().config_docking_transparent_payload = true;
+        // The corner grip is reliable here; edge resizing conflicts with the
+        // game's panel placement and offers no useful cursor feedback.
+        imgui.io_mut().config_windows_resize_from_edges = false;
         // Use the host UI font when available. ImGui copies the bytes into its atlas.
         let system_font = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf").ok();
         let mut add_font = |size| {
@@ -173,32 +177,36 @@ impl ApplicationHandler for App {
         style.window_padding = [12.0, 10.0];
         style.frame_padding = [10.0, 6.0];
         style.item_spacing = [7.0, 6.0];
-        style.window_rounding = 4.0;
-        style.frame_rounding = 3.0;
-        style.scrollbar_rounding = 3.0;
+        style.window_rounding = 0.0;
+        style.frame_rounding = 0.0;
+        style.scrollbar_rounding = 0.0;
+        style.popup_rounding = 0.0;
+        style.child_rounding = 0.0;
+        style.grab_rounding = 0.0;
+        style.tab_rounding = 0.0;
         style.window_border_size = 1.0;
         style.frame_border_size = 1.0;
         style.window_title_align = [0.0, 0.5];
         style.button_text_align = [0.5, 0.5];
         style.colors[StyleColor::Text as usize] = [0.91, 0.92, 0.91, 1.0];
         style.colors[StyleColor::TextDisabled as usize] = [0.46, 0.48, 0.50, 1.0];
-        style.colors[StyleColor::WindowBg as usize] = [0.055, 0.066, 0.082, 0.96];
-        style.colors[StyleColor::PopupBg as usize] = [0.075, 0.085, 0.10, 0.97];
-        style.colors[StyleColor::Border as usize] = [0.26, 0.30, 0.34, 0.9];
-        style.colors[StyleColor::TitleBg as usize] = [0.10, 0.12, 0.15, 1.0];
-        style.colors[StyleColor::TitleBgActive as usize] = [0.15, 0.18, 0.21, 1.0];
-        style.colors[StyleColor::TitleBgCollapsed as usize] = [0.10, 0.12, 0.15, 0.9];
-        style.colors[StyleColor::FrameBg as usize] = [0.08, 0.10, 0.12, 1.0];
-        style.colors[StyleColor::FrameBgHovered as usize] = [0.15, 0.18, 0.21, 1.0];
-        style.colors[StyleColor::FrameBgActive as usize] = [0.19, 0.22, 0.25, 1.0];
-        style.colors[StyleColor::Button as usize] = [0.14, 0.17, 0.20, 1.0];
-        style.colors[StyleColor::ButtonHovered as usize] = [0.23, 0.28, 0.31, 1.0];
-        style.colors[StyleColor::ButtonActive as usize] = [0.29, 0.34, 0.34, 1.0];
-        style.colors[StyleColor::Header as usize] = [0.20, 0.25, 0.28, 1.0];
-        style.colors[StyleColor::HeaderHovered as usize] = [0.28, 0.34, 0.36, 1.0];
-        style.colors[StyleColor::ScrollbarBg as usize] = [0.07, 0.08, 0.10, 1.0];
-        style.colors[StyleColor::ScrollbarGrab as usize] = [0.32, 0.37, 0.39, 1.0];
-        style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.44, 0.50, 0.49, 1.0];
+        style.colors[StyleColor::WindowBg as usize] = [0.018, 0.022, 0.030, 0.96];
+        style.colors[StyleColor::PopupBg as usize] = [0.025, 0.030, 0.041, 0.98];
+        style.colors[StyleColor::Border as usize] = [0.29, 0.32, 0.38, 0.95];
+        style.colors[StyleColor::TitleBg as usize] = [0.030, 0.036, 0.050, 1.0];
+        style.colors[StyleColor::TitleBgActive as usize] = [0.055, 0.065, 0.086, 1.0];
+        style.colors[StyleColor::TitleBgCollapsed as usize] = [0.030, 0.036, 0.050, 0.96];
+        style.colors[StyleColor::FrameBg as usize] = [0.032, 0.039, 0.052, 1.0];
+        style.colors[StyleColor::FrameBgHovered as usize] = [0.073, 0.084, 0.108, 1.0];
+        style.colors[StyleColor::FrameBgActive as usize] = [0.12, 0.14, 0.18, 1.0];
+        style.colors[StyleColor::Button as usize] = [0.045, 0.053, 0.070, 1.0];
+        style.colors[StyleColor::ButtonHovered as usize] = [0.085, 0.10, 0.13, 1.0];
+        style.colors[StyleColor::ButtonActive as usize] = [0.13, 0.15, 0.19, 1.0];
+        style.colors[StyleColor::Header as usize] = [0.075, 0.090, 0.12, 1.0];
+        style.colors[StyleColor::HeaderHovered as usize] = [0.12, 0.15, 0.19, 1.0];
+        style.colors[StyleColor::ScrollbarBg as usize] = [0.024, 0.029, 0.039, 1.0];
+        style.colors[StyleColor::ScrollbarGrab as usize] = [0.21, 0.24, 0.28, 1.0];
+        style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.31, 0.35, 0.39, 1.0];
         style.colors[StyleColor::PlotHistogram as usize] = [0.80, 0.69, 0.35, 1.0];
         style.colors[StyleColor::DragDropTarget as usize] = [0.91, 0.77, 0.38, 1.0];
         let mut imgui_platform = WinitPlatform::new(&mut imgui);
@@ -454,74 +462,88 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
-            } => match key {
-                KeyCode::Space => {
-                    if !self.game.exit_structure_menu() {
-                        self.game.hold_or_end_turn();
+            } => {
+                let modifiers = self.modifiers.state();
+                if self.use_imgui
+                    && key == KeyCode::KeyR
+                    && modifiers.control_key()
+                    && modifiers.shift_key()
+                {
+                    if self.imgui_layout.request_reset_active_view() {
+                        self.game
+                            .set_ui_notice("VIEW DEBUG LAYOUT RESET TO DEFAULT");
                     }
+                    return;
                 }
-                KeyCode::Tab => self.game.select_next_unit(),
-                KeyCode::KeyQ => self.game.toggle_selected_ability(),
-                KeyCode::KeyC => self.game.select_city(),
-                KeyCode::KeyA => self.game.auto_assign_selected_city(),
-                KeyCode::KeyM => self.game.choose_move_action(),
-                KeyCode::KeyX => self.game.choose_attack_action(),
-                KeyCode::KeyR => self.game.build_worker_road_selected(),
-                KeyCode::KeyI => self.game.improve_worker_tile_selected(),
-                KeyCode::KeyF => self.game.found_city_selected(),
-                KeyCode::Digit1 => self
-                    .game
-                    .queue_selected_city_unit(crate::game::BuildUnit::Melee),
-                KeyCode::Digit2 => self
-                    .game
-                    .queue_selected_city_unit(crate::game::BuildUnit::Ranged),
-                KeyCode::Digit3 => self
-                    .game
-                    .queue_selected_city_unit(crate::game::BuildUnit::Cavalry),
-                KeyCode::Digit4 => self
-                    .game
-                    .queue_selected_city_unit(crate::game::BuildUnit::Siege),
-                KeyCode::Digit5 => self
-                    .game
-                    .queue_selected_city_building(crate::game::Building::Granary),
-                KeyCode::Digit6 => self
-                    .game
-                    .queue_selected_city_building(crate::game::Building::Barracks),
-                KeyCode::Digit7 => self
-                    .game
-                    .queue_selected_city_building(crate::game::Building::Mill),
-                KeyCode::Digit8 => self
-                    .game
-                    .queue_selected_city_building(crate::game::Building::Workshop),
-                // Queue management stays compact as the build catalogue grows:
-                // Backspace removes the active item; PageDown promotes the
-                // second item into production.
-                KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
-                KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
-                KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
-                KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),
-                KeyCode::F3 => self.game.switch_scenario(Scenario::Frontier),
-                KeyCode::F4 => self.game.switch_scenario(Scenario::World),
-                KeyCode::KeyY => self.game.toggle_yields(),
-                KeyCode::KeyG => self.game.toggle_guard(),
-                KeyCode::F5 => self.toggle_fullscreen(),
-                KeyCode::F6 => self.game.save_state(),
-                KeyCode::F7 => self.game.load_state(),
-                KeyCode::F8 => self.game.toggle_instant_playback(),
-                KeyCode::F9 => self.game.debug_complete_current_production(),
-                KeyCode::F10 => self.game.toggle_fog(),
-                KeyCode::F11 => {
-                    self.use_imgui = !self.use_imgui;
-                    self.left_press = None;
-                    self.game.cancel_queue_drag();
-                    self.game.set_ui_notice(if self.use_imgui {
-                        "IMGUI UI (F11 TO COMPARE)"
-                    } else {
-                        "CLASSIC UI (F11 TO COMPARE)"
-                    });
+                match key {
+                    KeyCode::Space => {
+                        if !self.game.exit_structure_menu() {
+                            self.game.hold_or_end_turn();
+                        }
+                    }
+                    KeyCode::Tab => self.game.select_next_unit(),
+                    KeyCode::KeyQ => self.game.toggle_selected_ability(),
+                    KeyCode::KeyC => self.game.select_city(),
+                    KeyCode::KeyA => self.game.auto_assign_selected_city(),
+                    KeyCode::KeyM => self.game.choose_move_action(),
+                    KeyCode::KeyX => self.game.choose_attack_action(),
+                    KeyCode::KeyR => self.game.build_worker_road_selected(),
+                    KeyCode::KeyI => self.game.improve_worker_tile_selected(),
+                    KeyCode::KeyF => self.game.found_city_selected(),
+                    KeyCode::Digit1 => self
+                        .game
+                        .queue_selected_city_unit(crate::game::BuildUnit::Melee),
+                    KeyCode::Digit2 => self
+                        .game
+                        .queue_selected_city_unit(crate::game::BuildUnit::Ranged),
+                    KeyCode::Digit3 => self
+                        .game
+                        .queue_selected_city_unit(crate::game::BuildUnit::Cavalry),
+                    KeyCode::Digit4 => self
+                        .game
+                        .queue_selected_city_unit(crate::game::BuildUnit::Siege),
+                    KeyCode::Digit5 => self
+                        .game
+                        .queue_selected_city_building(crate::game::Building::Granary),
+                    KeyCode::Digit6 => self
+                        .game
+                        .queue_selected_city_building(crate::game::Building::Barracks),
+                    KeyCode::Digit7 => self
+                        .game
+                        .queue_selected_city_building(crate::game::Building::Mill),
+                    KeyCode::Digit8 => self
+                        .game
+                        .queue_selected_city_building(crate::game::Building::Workshop),
+                    // Queue management stays compact as the build catalogue grows:
+                    // Backspace removes the active item; PageDown promotes the
+                    // second item into production.
+                    KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
+                    KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
+                    KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
+                    KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),
+                    KeyCode::F3 => self.game.switch_scenario(Scenario::Frontier),
+                    KeyCode::F4 => self.game.switch_scenario(Scenario::World),
+                    KeyCode::KeyY => self.game.toggle_yields(),
+                    KeyCode::KeyG => self.game.toggle_guard(),
+                    KeyCode::F5 => self.toggle_fullscreen(),
+                    KeyCode::F6 => self.game.save_state(),
+                    KeyCode::F7 => self.game.load_state(),
+                    KeyCode::F8 => self.game.toggle_instant_playback(),
+                    KeyCode::F9 => self.game.debug_complete_current_production(),
+                    KeyCode::F10 => self.game.toggle_fog(),
+                    KeyCode::F11 => {
+                        self.use_imgui = !self.use_imgui;
+                        self.left_press = None;
+                        self.game.cancel_queue_drag();
+                        self.game.set_ui_notice(if self.use_imgui {
+                            "IMGUI UI (F11 TO COMPARE)"
+                        } else {
+                            "CLASSIC UI (F11 TO COMPARE)"
+                        });
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             WindowEvent::RedrawRequested => {
                 if self.minimized {
                     return;
