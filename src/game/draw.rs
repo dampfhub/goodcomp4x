@@ -2468,7 +2468,7 @@ mod tests {
         let clouds = game.build_vertices();
         assert!(soft(&clouds) > 0);
         assert!(!flat(&clouds));
-        game.step_setting(crate::game::settings::Setting::FogStyle, -1);
+        game.set_setting(crate::game::settings::Setting::FogStyle, 0);
         assert!(!game.settings.cloud_fog);
         assert_eq!(game.notice, "FOG: SOLID GREY");
         let solid = game.build_vertices();

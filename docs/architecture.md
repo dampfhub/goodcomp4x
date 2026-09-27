@@ -94,9 +94,10 @@ The rules each step applies are in `game-rules.md`.
 
 `Settings` (`src/game/settings.rs`) holds the player's options, owned by `GameState` as
 `settings`, with defaults in `Settings::default`. Game code reads its fields directly. The
-settings menu Escape opens (`press_escape`) lists every `Setting` from `Setting::ALL`, each an
-integer stepped through its `range`, so a new setting is a field and its `Setting` entry in that
-one file; both UI presentations pick it up (`docs/ui-system.md`). `switch_scenario` and
+settings menu Escape opens (`press_escape`) lists every `Setting` from `Setting::ALL` under its
+`group`'s heading, each an integer in its `range` changed with the `control` it names (a
+checkbox, a slider or a choice of named values), so a new setting is a field and its `Setting`
+entry in that one file; both UI presentations pick it up (`docs/ui-system.md`). `switch_scenario` and
 `load_state` carry the settings, and whether the menu is open, over into the new game.
 
 ## Between sessions (`src/persist.rs`)

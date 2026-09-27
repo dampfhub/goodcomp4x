@@ -501,15 +501,19 @@ impl GameState {
                     None,
                 ),
                 Target::ToggleFog => ("FOG OF WAR".into(), "F10".into(), String::new(), None),
-                Target::StepSetting(setting, delta) => {
-                    let value = self.settings.get(setting);
-                    let next = value + delta;
+                Target::SetSetting(setting, value) => {
+                    let current = self.settings.get(setting);
+                    let valid = setting.range().contains(&value);
                     (
                         setting.name().into(),
-                        if delta < 0 { "<" } else { ">" }.into(),
+                        if valid {
+                            setting.value_text(value)
+                        } else {
+                            String::new()
+                        },
                         setting.description().into(),
-                        (!setting.range().contains(&next))
-                            .then(|| format!("ALREADY {}", setting.value_text(value))),
+                        (!valid || value == current)
+                            .then(|| format!("ALREADY {}", setting.value_text(current))),
                     )
                 }
                 Target::WorkerMode => (
