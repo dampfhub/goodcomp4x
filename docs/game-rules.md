@@ -488,7 +488,8 @@ every turn end.
   and Done.
 - **Jobs:** a job goes to the nearest city, and waits in its worker list. A job a worker is out
   on shows as a bright gold ring (or edge) named with the job, and once the worker is at work
-  with the turns left, like IMPROVE 2T. Queued jobs show on
+  with the turns left, like FARM 2T (an improvement is named for what it becomes: farm, mine
+  or lumber mill). The worker menu names jobs the same way, with the tile: FARM · GRASSLAND · 3T. Queued jobs show on
   the map as faded gold rings (walls and gates as muted gold edges with rounded ends). A job
   needs explored open ground within workers' reach, no city there, and no other job on the
   tile, queued or under way: a tile takes one job

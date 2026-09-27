@@ -1344,6 +1344,32 @@ fn clicking_a_worker_job_or_a_worker_shows_it_on_the_map() {
     assert!(!game.field_workers[0].recalled, "showing isn't recalling");
 }
 
+#[test]
+fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
+    let (mut game, hex) = empty_tile_near_blue_city();
+    game.placing_job = Some(JobKind::Improve);
+    assert!(game.place_job_at(hex, None));
+    game.placing_job = None;
+    game.toggle_worker_mode();
+    let mut panel = PanelBuilder::default();
+    game.worker_menu(&mut panel);
+    let labels: Vec<String> = panel
+        .rows
+        .into_iter()
+        .filter_map(|row| match row {
+            Row::QueueItem(item) => Some(item.label),
+            _ => None,
+        })
+        .collect();
+    let tile = game.grid.tile(hex).name();
+    let build = if game.grid.tile(hex).hills {
+        "MINE"
+    } else {
+        "FARM"
+    };
+    assert_eq!(labels, [format!("{build} · {tile} · 3T")]);
+}
+
 /// Where to click, in window pixels, on `key`'s chip in the turn strip.
 fn roster_cursor(game: &GameState, key: RosterKey) -> Vec2 {
     let layout = game.layout(SCREEN);

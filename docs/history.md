@@ -172,3 +172,5 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 53. Following workers' work (`claude/worker-reach`): clicking a waiting job or a worker in the
     worker menu shows it on the map (Recall is its own button now), and a job under way is ringed
     in bright gold with its name and turns of work left.
+54. Plainer job names (`claude/worker-reach`): worker jobs read as what they build, their tile and
+    a turn count, like FARM · GRASSLAND · 3T, instead of coordinates and "turns of work".

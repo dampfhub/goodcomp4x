@@ -153,12 +153,7 @@ impl GameState {
             (job.hex.to_world() + across.to_world()) / 2.0
         });
         self.camera.focus_on(spot);
-        self.notice = format!(
-            "{} AT ({}, {}) - WAITING FOR A WORKER",
-            job.kind.name(),
-            job.hex.q,
-            job.hex.r
-        );
+        self.notice = format!("{} - WAITING FOR A WORKER", self.job_title(job));
     }
 
     pub(super) fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {

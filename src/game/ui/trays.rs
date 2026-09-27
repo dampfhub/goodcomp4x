@@ -667,19 +667,8 @@ impl GameState {
         panel.text(SMALL, line);
         for worker in out {
             let doing = match (worker.job, worker.work_left) {
-                (Some(job), Some(left)) => format!(
-                    "{} AT ({}, {}): {} LEFT",
-                    job.kind.name(),
-                    job.hex.q,
-                    job.hex.r,
-                    turns_text(left)
-                ),
-                (Some(job), None) => format!(
-                    "WALKING TO A {} AT ({}, {})",
-                    job.kind.name(),
-                    job.hex.q,
-                    job.hex.r
-                ),
+                (Some(job), Some(left)) => format!("{} · {left}T", self.job_title(job)),
+                (Some(job), None) => format!("TO {}", self.job_title(job)),
                 (None, _) if worker.recalled => "RECALLED, WALKING HOME".into(),
                 (None, _) => "WALKING HOME".into(),
             };
@@ -724,13 +713,7 @@ impl GameState {
             panel.queue_item(QueueItemSpec {
                 kind: QueueKind::Workers,
                 index,
-                label: format!(
-                    "{} AT ({}, {}) | {} OF WORK",
-                    job.kind.name(),
-                    job.hex.q,
-                    job.hex.r,
-                    turns_text(job.kind.turns())
-                ),
+                label: format!("{} · {}T", self.job_title(*job), job.kind.turns()),
                 active: false,
                 dragging: drag.is_some_and(|drag| drag.source == index),
                 drop_target: drag
@@ -778,7 +761,7 @@ impl GameState {
                         ButtonSpec {
                             target: Target::WorkerJob(kind),
                             label: kind.name().into(),
-                            hint: format!("{key}{}", turns_text(kind.turns())),
+                            hint: format!("{key}{}T", kind.turns()),
                             state: ButtonState::Ready,
                             armed: self.placing_job == Some(kind),
                         }

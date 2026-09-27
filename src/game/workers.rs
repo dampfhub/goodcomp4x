@@ -251,6 +251,27 @@ impl GameState {
             .or_else(|| self.nearest_city(PLAYER_TEAM, hex))
     }
 
+    /// What `job` builds, as the player reads it: an improvement by its kind
+    /// (FARM, MINE or LUMBER MILL), anything else by the job's name.
+    pub(super) fn job_name(&self, job: WorkerJob) -> &'static str {
+        match job.kind {
+            JobKind::Improve => self
+                .improvement(job.hex)
+                .map_or(job.kind.name(), |(_, _, label)| label),
+            kind => kind.name(),
+        }
+    }
+
+    /// A job as the worker menu names it: what it builds, and the tile it's
+    /// on, like "FARM · GRASSLAND" or "MINE · PLAINS HILLS".
+    pub(super) fn job_title(&self, job: WorkerJob) -> String {
+        format!(
+            "{} · {}",
+            self.job_name(job),
+            self.grid.tile(job.hex).name()
+        )
+    }
+
     /// The improvement a worker would build at `hex`, as the yields it gives
     /// and its label: a mine on hills, a lumber mill in forest or jungle, a
     /// farm elsewhere; nothing on snow.
@@ -874,12 +895,7 @@ impl GameState {
             hex.r
         );
         if team == PLAYER_TEAM {
-            self.notice = format!(
-                "WORKERS FINISHED A {} AT ({}, {})",
-                job.kind.name(),
-                hex.q,
-                hex.r
-            );
+            self.notice = format!("WORKERS FINISHED: {}", self.job_title(job));
         }
     }
 

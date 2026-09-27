@@ -1295,7 +1295,7 @@ impl GameState {
             font::push_text_centered(
                 center + PLANNED_JOB_LABEL_OFFSET,
                 PLANNED_JOB_LABEL_HEIGHT,
-                job.kind.name(),
+                self.job_name(*job),
                 PLANNED_JOB_COLOR,
                 out,
             );
@@ -1313,8 +1313,8 @@ impl GameState {
         for worker in working {
             let Some(job) = worker.job else { continue };
             let label = match worker.work_left.filter(|_| worker.pos == job.hex) {
-                Some(left) => format!("{} {left}T", job.kind.name()),
-                None => job.kind.name().into(),
+                Some(left) => format!("{} {left}T", self.job_name(job)),
+                None => self.job_name(job).into(),
             };
             let at = match job.across {
                 Some(across) => {
