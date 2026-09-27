@@ -17,6 +17,8 @@ pub struct SwapchainData {
     pub render_finished: Vec<vk::Semaphore>,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
+    /// Whether the images can be copied from (`TRANSFER_SRC`), for readback.
+    pub readable: bool,
 }
 
 pub unsafe fn create_swapchain(
@@ -41,6 +43,16 @@ pub unsafe fn create_swapchain(
         image_count = image_count.min(caps.max_image_count);
     }
 
+    // Copyable too, where the surface allows it, so a frame can be read back
+    // (`readback.rs`).
+    let readable = caps
+        .supported_usage_flags
+        .contains(vk::ImageUsageFlags::TRANSFER_SRC);
+    let mut usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
+    if readable {
+        usage |= vk::ImageUsageFlags::TRANSFER_SRC;
+    }
+
     let queue_families = indices.unique_families();
     let sharing_mode = if queue_families.len() > 1 {
         vk::SharingMode::CONCURRENT
@@ -55,7 +67,7 @@ pub unsafe fn create_swapchain(
         .image_color_space(surface_format.color_space)
         .image_extent(extent)
         .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_usage(usage)
         .image_sharing_mode(sharing_mode)
         .queue_family_indices(&queue_families)
         .pre_transform(caps.current_transform)
@@ -75,6 +87,7 @@ pub unsafe fn create_swapchain(
         render_finished,
         format: surface_format.format,
         extent,
+        readable,
     })
 }
 

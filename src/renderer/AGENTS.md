@@ -8,6 +8,11 @@ constants out of this directory. Its whole interface:
 - `draw_frame(&[DrawBatch], Option<&DrawData>)`: each batch is a triangle list
   (`Vertex { pos, color, uv }`) with its own view-projection matrix. Optional ImGui data is
   drawn after those batches in the same render pass.
+- `capture_next_frame()` then, after the next `draw_frame`, `take_captured_frame()`: that frame
+  as a `Frame` (top-down RGBA8, the swapchain's sRGB-encoded bytes, opaque). Screenshots use it.
+- `draw_frame(&[DrawBatch], Option<&DrawData>)`: each batch is a triangle list (`Vertex { pos, color, uv }`) with its
+  own view-projection matrix, drawn in order, so later batches layer on top.
+
 - One pipeline: alpha-blended vertex color, multiplied by the R8 atlas (bound once at set 0)
   unless the vertex's UV is `SOLID_UV` (negative `u`). The atlas holds coverage, except where
   `u` is 1 or more: those texels are a signed distance field, sampled at `u - 1` and
@@ -26,6 +31,7 @@ constants out of this directory. Its whole interface:
 | `texture.rs` | the coverage atlas (R8 with mips), uploaded once |
 | `buffer.rs` | buffer and memory allocation |
 | `sync.rs` | per-frame acquire semaphores and fences (`MAX_FRAMES_IN_FLIGHT` = 2) |
+| `readback.rs` | copying a frame's swapchain image to a host buffer, `Frame` |
 | `vertex.rs` | `Vertex`, `SOLID_UV` |
 
 Shaders are GLSL in `/shaders`. `build.rs` compiles every `.vert`/`.frag`/... there to
@@ -40,6 +46,10 @@ needs no build change; using it needs a pipeline change here.
   always have valid derivatives. Keep the sample unconditional.
 - The swapchain format is sRGB and vertex colors are linear, so colors display much lighter than
   their values suggest (dark UI panels need values around 0.01-0.05).
+- Readback copies the swapchain image itself, after the render pass and before presenting, in
+  the same command buffer: swapchain images get `TRANSFER_SRC` usage where the surface allows
+  it, and the render pass's outgoing dependency (`pipeline.rs`) makes the resolve visible to
+  that copy. Reading it back swaps BGRA to RGBA; only 8-bit RGBA/BGRA formats are handled.
 - The semaphore a present waits on is per swapchain image (`SwapchainData::render_finished`),
   not per frame in flight: no fence covers a present's wait, so a semaphore is only safe to
   signal again once its image is acquired again. Acquire semaphores and fences stay per frame.

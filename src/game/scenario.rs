@@ -48,6 +48,19 @@ impl Scenario {
         }
     }
 
+    /// The scenario called `name` (its `name()` in any case, e.g. `cities`),
+    /// as the `--scenario` command-line flag spells it.
+    pub fn from_name(name: &str) -> Option<Scenario> {
+        Self::ALL
+            .into_iter()
+            .find(|scenario| scenario.name().eq_ignore_ascii_case(name))
+    }
+
+    /// A fresh game of this scenario, on a random map for the world.
+    pub fn new_game(self) -> GameState {
+        self.start(&mut rand::SeedableRng::seed_from_u64(rand::random()))
+    }
+
     /// A fresh game of this scenario, drawing the world's map seed from `rng`.
     fn start(self, rng: &mut GameRng) -> GameState {
         match self {
@@ -162,6 +175,20 @@ mod tests {
         game.load_state();
         assert_eq!(game.scenario, Scenario::Combat);
         assert_eq!(game.units[unit].hp, game.units[unit].max_hp());
+    }
+
+    #[test]
+    fn every_scenario_is_found_by_its_name_in_any_case() {
+        for scenario in Scenario::ALL {
+            let name = scenario.name();
+            assert_eq!(Scenario::from_name(name), Some(scenario));
+            assert_eq!(
+                Scenario::from_name(&name.to_ascii_lowercase()),
+                Some(scenario)
+            );
+        }
+        assert_eq!(Scenario::from_name("city"), None);
+        assert_eq!(Scenario::from_name(""), None);
     }
 
     #[test]

@@ -16,6 +16,7 @@ imgui = { version = "0.12", features = ["docking"] }
 imgui-winit-support = "0.13"
 imgui-rs-vulkan-renderer = "1.16"
 log = "0.4.34"
+png = "0.18.1"
 rand = "0.10.3"
 raw-window-handle = "0.6"
 winit = "0.30"

@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, bail};
 use glam::Vec2;
 use imgui::{ConfigFlags, Context as ImGuiContext, FontConfig, FontId, FontSource, StyleColor};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
@@ -12,12 +13,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
+use crate::cli::Options;
 use crate::game::{
     ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, quit_prompt, selection_box,
     ui_projection,
 };
 use crate::icon;
 use crate::renderer::{DrawBatch, Renderer};
+use crate::screenshot::{self, Screenshot};
 
 /// Cap on the render loop's frame rate, so it doesn't load the GPU with
 /// frames the display can't show.
@@ -62,19 +65,36 @@ pub struct App {
     quit_held_since: Option<Instant>,
     /// Where an Alt-drag selection box started, while the button is down.
     box_start: Option<Vec2>,
+    /// The window's inner size, if set on the command line (or by screenshot
+    /// mode); otherwise it's a fraction of the monitor.
+    requested_size: Option<PhysicalSize<u32>>,
+    /// Screenshot mode (`--screenshot`): the window stays hidden, ignores
+    /// input, and the app quits once a frame is written.
+    screenshot: Option<Screenshot>,
+    /// Why the app quit, if something failed; `main` returns it.
+    failure: Option<anyhow::Error>,
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    pub fn new(options: Options) -> Self {
+        let screenshot = options.screenshot.map(Screenshot::new);
+        let requested_size = options
+            .size
+            .or(screenshot.as_ref().map(|_| screenshot::DEFAULT_SIZE))
+            .map(|(width, height)| PhysicalSize::new(width, height));
         Self {
             renderer: None,
             window: None,
-            game: GameState::city_scenario(),
+            game: match options.seed {
+                Some(seed) => GameState::world_scenario(seed),
+                None => options.scenario.new_game(),
+            },
             imgui: None,
             imgui_platform: None,
             imgui_fonts: None,
             imgui_layout: ImGuiLayoutState::default(),
             use_imgui: true,
+
             last_frame: None,
             minimized: false,
             cursor_pos: None,
@@ -86,11 +106,131 @@ impl Default for App {
             modifiers: Modifiers::default(),
             quit_held_since: None,
             box_start: None,
+            requested_size,
+            screenshot,
+            failure: None,
         }
     }
-}
 
-impl App {
+    /// How the run ended, once the event loop has returned: an error if
+    /// something failed, or if screenshot mode quit without writing one.
+    pub fn into_result(self) -> anyhow::Result<()> {
+        if let Some(err) = self.failure {
+            return Err(err);
+        }
+        if self.screenshot.is_some_and(|shot| !shot.is_written()) {
+            bail!("the window closed before the screenshot was written");
+        }
+        Ok(())
+    }
+
+    /// Quits, with `err` as the reason `main` reports.
+    fn fail(&mut self, event_loop: &ActiveEventLoop, err: anyhow::Error) {
+        if let Some(renderer) = &self.renderer {
+            renderer.wait_idle();
+        }
+        self.failure.get_or_insert(err);
+        event_loop.exit();
+    }
+
+    /// Advances the game by the time since the last frame and draws it.
+    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        if self.minimized {
+            return;
+        }
+
+        let now = Instant::now();
+        let dt = now - self.last_frame.unwrap_or(now);
+        self.last_frame = Some(now);
+        self.game.update(dt.as_secs_f32());
+
+        let Some(size) = self.screen_size() else {
+            return;
+        };
+        if self.use_imgui {
+            self.game.update_hover_imgui(
+                self.cursor_pos.filter(|_| {
+                    !self
+                        .imgui
+                        .as_ref()
+                        .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                }),
+                size,
+                dt.as_secs_f32(),
+            );
+        } else {
+            self.game
+                .update_hover(self.cursor_pos, size, dt.as_secs_f32());
+        }
+        let world = self.game.build_vertices();
+        let mut ui = if self.use_imgui {
+            Vec::new()
+        } else {
+            self.game.build_ui(size, self.cursor_pos)
+        };
+        if let Some(since) = self.quit_held_since {
+            let progress = since.elapsed().as_secs_f32() / QUIT_HOLD.as_secs_f32();
+            if progress >= 1.0 {
+                if let Some(renderer) = &self.renderer {
+                    renderer.wait_idle();
+                }
+                event_loop.exit();
+                return;
+            }
+            ui.extend(quit_prompt(progress, size));
+        }
+        if let (Some(start), Some(end)) = (self.box_start, self.cursor_pos)
+            && start.distance(end) >= DRAG_THRESHOLD
+        {
+            ui.extend(selection_box(start, end, size));
+        }
+        let batches = [
+            DrawBatch {
+                view_proj: self.game.camera.view_proj(size),
+                vertices: &world,
+            },
+            DrawBatch {
+                view_proj: ui_projection(size),
+                vertices: &ui,
+            },
+        ];
+        let imgui_data = if let (Some(imgui), Some(platform), Some(window)) =
+            (&mut self.imgui, &mut self.imgui_platform, &self.window)
+        {
+            imgui.io_mut().update_delta_time(dt);
+            let _ = platform.prepare_frame(imgui.io_mut(), window);
+            let frame = imgui.frame();
+            if self.use_imgui
+                && let Some(fonts) = self.imgui_fonts
+            {
+                self.game
+                    .draw_imgui(frame, size, self.cursor_pos, &fonts, &mut self.imgui_layout);
+            }
+            platform.prepare_render(frame, window);
+            Some(imgui.render())
+        } else {
+            None
+        };
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
+        let finished = renderer
+            .draw_frame(&batches, imgui_data)
+            .context("draw_frame failed")
+            .and_then(|()| match &mut self.screenshot {
+                Some(shot) => shot.after_frame(renderer),
+                None => Ok(false),
+            });
+        match finished {
+            Ok(false) => {}
+            Ok(true) => {
+                renderer.wait_idle();
+                event_loop.exit();
+            }
+            Err(err) => self.fail(event_loop, err),
+        }
+    }
+
     /// F5: switches between a borderless fullscreen window on the current
     /// monitor and a normal window. The renderer picks up the new size from
     /// the resize event.
@@ -115,11 +255,14 @@ impl ApplicationHandler for App {
             return;
         }
 
-        // Most of the screen, centered, so there's room for the map and the UI.
+        // Most of the screen (unless a size was asked for), centered, so
+        // there's room for the map and the UI.
         let mut attributes = Window::default_attributes()
             .with_title("Hex Combat Sandbox")
-            .with_inner_size(DEFAULT_WINDOW_SIZE)
-            .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)));
+            .with_inner_size(self.requested_size.unwrap_or(DEFAULT_WINDOW_SIZE))
+            .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)))
+            // A screenshot needs no window on screen, or taking focus.
+            .with_visible(self.screenshot.is_none());
         // Windows shows a separate, larger icon on the taskbar.
         #[cfg(windows)]
         {
@@ -128,13 +271,13 @@ impl ApplicationHandler for App {
         }
         if let Some(monitor) = event_loop.primary_monitor() {
             let (screen, origin) = (monitor.size(), monitor.position());
-            let size = PhysicalSize::new(
+            let size = self.requested_size.unwrap_or(PhysicalSize::new(
                 (screen.width as f32 * WINDOW_SCREEN_FRACTION) as u32,
                 (screen.height as f32 * WINDOW_SCREEN_FRACTION) as u32,
-            );
+            ));
             let position = PhysicalPosition::new(
-                origin.x + (screen.width - size.width) as i32 / 2,
-                origin.y + (screen.height - size.height) as i32 / 2,
+                origin.x + (screen.width as i32 - size.width as i32) / 2,
+                origin.y + (screen.height as i32 - size.height as i32) / 2,
             );
             attributes = attributes.with_inner_size(size).with_position(position);
         }
@@ -216,8 +359,7 @@ impl ApplicationHandler for App {
         match unsafe { Renderer::new(&window, font_atlas(), &mut imgui) } {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(err) => {
-                log::error!("failed to initialize renderer: {err:?}");
-                event_loop.exit();
+                self.fail(event_loop, err.context("failed to initialize the renderer"));
                 return;
             }
         }
@@ -240,6 +382,10 @@ impl ApplicationHandler for App {
                     event: event.clone(),
                 },
             );
+        }
+        // A screenshot shows the scenario as it starts, whatever the mouse and keyboard do.
+        if self.screenshot.is_some() && is_input(&event) {
+            return;
         }
         match event {
             WindowEvent::CloseRequested => {
@@ -542,100 +688,16 @@ impl ApplicationHandler for App {
                     _ => {}
                 }
             }
-            WindowEvent::RedrawRequested => {
-                if self.minimized {
-                    return;
-                }
-
-                let now = Instant::now();
-                let dt = now - self.last_frame.unwrap_or(now);
-                self.last_frame = Some(now);
-                self.game.update(dt.as_secs_f32());
-
-                let Some(size) = self.screen_size() else {
-                    return;
-                };
-                if self.use_imgui {
-                    self.game.update_hover_imgui(
-                        self.cursor_pos.filter(|_| {
-                            !self
-                                .imgui
-                                .as_ref()
-                                .is_some_and(|ctx| ctx.io().want_capture_mouse)
-                        }),
-                        size,
-                        dt.as_secs_f32(),
-                    );
-                } else {
-                    self.game
-                        .update_hover(self.cursor_pos, size, dt.as_secs_f32());
-                }
-                let world = self.game.build_vertices();
-                let mut ui = if self.use_imgui {
-                    Vec::new()
-                } else {
-                    self.game.build_ui(size, self.cursor_pos)
-                };
-                if let Some(since) = self.quit_held_since {
-                    let progress = since.elapsed().as_secs_f32() / QUIT_HOLD.as_secs_f32();
-                    if progress >= 1.0 {
-                        if let Some(renderer) = &self.renderer {
-                            renderer.wait_idle();
-                        }
-                        event_loop.exit();
-                        return;
-                    }
-                    ui.extend(quit_prompt(progress, size));
-                }
-                if let (Some(start), Some(end)) = (self.box_start, self.cursor_pos)
-                    && start.distance(end) >= DRAG_THRESHOLD
-                {
-                    ui.extend(selection_box(start, end, size));
-                }
-                let batches = [
-                    DrawBatch {
-                        view_proj: self.game.camera.view_proj(size),
-                        vertices: &world,
-                    },
-                    DrawBatch {
-                        view_proj: ui_projection(size),
-                        vertices: &ui,
-                    },
-                ];
-                let imgui_data = if let (Some(imgui), Some(platform), Some(window)) =
-                    (&mut self.imgui, &mut self.imgui_platform, &self.window)
-                {
-                    imgui.io_mut().update_delta_time(dt);
-                    let _ = platform.prepare_frame(imgui.io_mut(), window);
-                    let frame = imgui.frame();
-                    if self.use_imgui
-                        && let Some(fonts) = self.imgui_fonts
-                    {
-                        self.game.draw_imgui(
-                            frame,
-                            size,
-                            self.cursor_pos,
-                            &fonts,
-                            &mut self.imgui_layout,
-                        );
-                    }
-                    platform.prepare_render(frame, window);
-                    Some(imgui.render())
-                } else {
-                    None
-                };
-                if let Some(renderer) = &mut self.renderer
-                    && let Err(err) = renderer.draw_frame(&batches, imgui_data)
-                {
-                    log::error!("draw_frame failed: {err:?}");
-                    event_loop.exit();
-                }
-            }
+            WindowEvent::RedrawRequested => self.redraw(event_loop),
             _ => {}
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(Err(err)) = self.screenshot.as_ref().map(Screenshot::check_timeout) {
+            self.fail(event_loop, err);
+            return;
+        }
         let Some(window) = &self.window else { return };
         if self.minimized {
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -646,9 +708,28 @@ impl ApplicationHandler for App {
             .last_frame
             .map_or_else(Instant::now, |t| t + FRAME_DURATION);
         if Instant::now() >= next_frame_at {
-            window.request_redraw();
+            if self.screenshot.is_some() {
+                // A hidden window gets no redraw events, so draw right away.
+                self.redraw(event_loop);
+            } else {
+                window.request_redraw();
+            }
         } else {
             event_loop.set_control_flow(ControlFlow::WaitUntil(next_frame_at));
         }
     }
+}
+
+/// Whether `event` comes from the mouse or keyboard.
+fn is_input(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::CursorMoved { .. }
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::CursorLeft { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::KeyboardInput { .. }
+            | WindowEvent::ModifiersChanged(_)
+    )
 }

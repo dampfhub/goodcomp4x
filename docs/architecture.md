@@ -21,8 +21,10 @@ vertex lists. File-level maps and the rules for editing each layer are in `src/A
 AGENTS.md            agent instructions for the whole repo (nested ones under src/)
 README.md            what this is and how to run it
 Cargo.toml, build.rs crate manifest (rust-version 1.92); build.rs compiles shaders/ with glslc
-src/main.rs          logger + event loop
+src/main.rs          logger, command line, event loop
+src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size)
 src/app.rs           App: window, input -> GameState calls, frame pacing (165 FPS), F5 fullscreen
+src/screenshot.rs    screenshot mode: settle, read a frame back, write a PNG, quit
 src/icon.rs          window/taskbar icon drawn in code
 src/renderer/        Vulkan setup, swapchain, MSAA, the single pipeline, coverage atlas
 src/game/            GameState and everything game-specific
@@ -84,3 +86,8 @@ F4 world's map seed. The game seeds it from entropy; tests seed it (`seed_rng`),
 across scenario switches, so a seed replays the same game, map included. Loading a savestate
 keeps the current RNG, so retrying a save rolls afresh. `mapgen.rs` has its own RNG, seeded by
 the map seed.
+
+Screenshot mode (`--screenshot out.png`, `src/screenshot.rs`) is the visual counterpart: it
+draws a scenario's opening frame in a hidden window and saves it as a PNG. The renderer only
+offers "copy the next frame back" (`capture_next_frame`, `take_captured_frame`); the app decides
+when, and writes the file.
