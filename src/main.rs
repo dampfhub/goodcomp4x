@@ -2,6 +2,7 @@ mod app;
 mod cli;
 mod game;
 mod icon;
+mod icon_art;
 mod renderer;
 mod screenshot;
 

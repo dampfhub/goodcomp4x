@@ -3,8 +3,10 @@
 `main.rs` starts the logger, parses the command line (`cli.rs`: `--scenario`, `--seed`,
 `--screenshot`, `--size`) and runs the `winit` event loop; its exit code is `App::into_result`.
 `app.rs` owns the window, the renderer and the `GameState`, turns input into `GameState` method
-calls, and builds each frame. `screenshot.rs` is screenshot mode. `icon.rs` draws the
-window/taskbar icon in code.
+calls, and builds each frame. `screenshot.rs` is screenshot mode. `icon_art.rs` draws the
+game's icon in code (std only); `icon.rs` hands it to the window (title bar and taskbar), and
+`build.rs` includes `icon_art.rs` to embed it in the Windows executable as a `.res` the MSVC
+linker takes (Windows sometimes takes the taskbar icon from the exe).
 
 ## Frame and input flow
 
