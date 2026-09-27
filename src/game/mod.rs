@@ -29,7 +29,7 @@ mod unit_icons;
 use std::collections::{HashSet, VecDeque};
 
 use glam::Vec2;
-use rand::rngs::ThreadRng;
+use rand::SeedableRng;
 
 pub use camera::Camera;
 pub use city::{BuildUnit, Building};
@@ -42,6 +42,10 @@ use turn::Phase;
 pub use ui::{quit_prompt, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
 use unit_icons::UnitIcon;
+
+/// The game's RNG: seedable, the same on every platform, and `Clone` so a
+/// savestate can hold it (rand 0.10's `StdRng` isn't).
+type GameRng = rand::rngs::Xoshiro256PlusPlus;
 
 const GRID_RADIUS: i32 = 3;
 const PLAYER_TEAM: Team = Team::Blue;
@@ -153,7 +157,10 @@ pub struct GameState {
     memory: fog::Memory,
     turn: u32,
     pub camera: Camera,
-    rng: ThreadRng,
+    /// Damage rolls, and the F4 world's map seed. Seeded from entropy; tests
+    /// seed it (`seed_rng`) so a game replays exactly. Kept across scenario
+    /// switches (`scenario.rs`).
+    rng: GameRng,
     /// Steps of the turn currently playing out, drained one at a time by `update`.
     pending_steps: VecDeque<(UnitType, Phase)>,
     step_timer: f32,
@@ -232,7 +239,7 @@ impl GameState {
             memory: fog::Memory::new(),
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
-            rng: rand::rng(),
+            rng: GameRng::seed_from_u64(rand::random()),
             pending_steps: VecDeque::new(),
             step_timer: 0.0,
             recent_actors: Vec::new(),

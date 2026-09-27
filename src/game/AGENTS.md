@@ -24,7 +24,7 @@ behavior.
 | `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
 | `scenario.rs` | scenarios (F1-F4), savestate (F6/F7), instant playback (F8) |
-| `simulation.rs` | tests only: AI-vs-AI games in every scenario, board invariants checked each turn |
+| `simulation.rs` | tests only: seeded AI-vs-AI games in every scenario, board invariants checked each turn, same seed replays the same game |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
 | `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |
@@ -63,7 +63,9 @@ behavior.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05.
 - `Camera::view_proj` builds an OpenGL orthographic projection and flips Y itself, because
   glam 0.33's `vulkan::orthographic` flips the Y scale but not the translation.
-- The AI must stay deterministic: ties break by hex coordinates.
+- The AI must stay deterministic: ties break by hex coordinates. All randomness goes through
+  `GameState.rng` (never `rand::random` or the thread RNG) and never depends on hash-map
+  iteration order, so a seed replays the same game (`simulation.rs` checks this).
 
 ## Recipes
 

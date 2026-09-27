@@ -58,7 +58,10 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 
 - Game logic: a unit test in the module's `#[cfg(test)] mod tests`. Whole-game behavior:
   `src/game/simulation.rs` plays AI against AI in every scenario and checks the board's
-  invariants each turn; extend its invariants when you add a rule.
+  invariants each turn; extend its invariants when you add a rule. Its games are seeded (a few
+  fixed seeds by default), and a failure prints the seed: `SIM_SEED=<seed> cargo test simulation`
+  replays exactly that game (`$env:SIM_SEED=<seed>` first in PowerShell), and `SIM_SEEDS=<n>`
+  plays seeds `0..n` to hunt for failures.
 - Anything visual: run `cargo run` (validation on) and watch for validation errors in the log;
   UI layout and click targets are testable without a window (see `ui.rs` tests).
 - In-game testing aids: F1-F4 restart a scenario (F4 generates a new map), F6/F7 save and load a
