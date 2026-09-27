@@ -542,9 +542,31 @@ fn cloud_hash(x: i32, y: i32, salt: u32) -> f32 {
     bits as f32 / u32::MAX as f32
 }
 
-/// Draws one shaded octagon per world-space lattice point. This keeps
-/// the cloud pattern continuous across hexes while doing constant, cheap work
-/// per puff: no recursive subdivision and no noise sampling per vertex.
+/// One cloud puff: a soft disc lit from above.
+struct Puff {
+    center: Vec2,
+    radius: f32,
+}
+
+/// The puffs of one cloud bank, relative to its center and scaled by
+/// `CLOUD_SPACING`: a wide base of four and three billows on top,
+/// as (x, y, radius), each nudged by the bank's hash.
+const BANK_PUFFS: [(f32, f32, f32); 7] = [
+    (-0.42, -0.14, 0.28),
+    (-0.14, -0.18, 0.33),
+    (0.16, -0.16, 0.33),
+    (0.44, -0.10, 0.27),
+    (-0.26, 0.10, 0.27),
+    (0.04, 0.16, 0.28),
+    (0.30, 0.10, 0.24),
+];
+
+/// Draws the unexplored map as banks of cumulus: one bank per world-space
+/// lattice point, each a soft shadow under a cluster of puffs. Every puff
+/// fades out at its edge and is lit from above (`push_cloud_puff`); higher
+/// puffs are drawn first, so the lit top of a lower billow overlaps the
+/// shaded underside of the one behind it. The work per puff is constant and
+/// cheap: no noise sampling per vertex.
 fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
     let Some((min, max)) =
         grid.all_hexes()
@@ -562,44 +584,104 @@ fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
     let max_x = (max.x / CLOUD_SPACING).ceil() as i32 + 1;
     let min_y = (min.y / CLOUD_SPACING).floor() as i32 - 1;
     let max_y = (max.y / CLOUD_SPACING).ceil() as i32 + 1;
-    let cells = ((max_x - min_x + 1) * (max_y - min_y + 1)) as usize;
-    out.reserve(cells * 3 * 8 * 3);
+    let mut shadows = Vec::new();
+    let mut puffs = Vec::new();
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            let bank = Vec2::new(x as f32, y as f32) * CLOUD_SPACING;
-            for puff in 0..3_u32 {
-                let salt = puff.wrapping_mul(0x9E37_79B9);
-                let angle = cloud_hash(x, y, 0xA341_316C ^ salt) * TAU;
-                let offset = 0.45 + cloud_hash(x, y, 0xC801_3EA4 ^ salt) * 1.45;
-                let center = bank + Vec2::from_angle(angle) * offset;
+            // Rows are offset by half a bank, and each bank wanders a little,
+            // so the lattice doesn't show.
+            let jitter = Vec2::new(
+                cloud_hash(x, y, 0xA341_316C) - 0.5,
+                cloud_hash(x, y, 0xC801_3EA4) - 0.5,
+            ) * 0.45;
+            let row_shift = if y.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
+            let bank = (Vec2::new(x as f32 + row_shift, y as f32) + jitter) * CLOUD_SPACING;
+            let scale = CLOUD_SPACING * (0.9 + cloud_hash(x, y, 0xAD90_777D) * 0.3);
+            let mut any = false;
+            for (i, &(px, py, pr)) in BANK_PUFFS.iter().enumerate() {
+                let salt = (i as u32 + 1).wrapping_mul(0x9E37_79B9);
+                let nudge = Vec2::new(
+                    cloud_hash(x, y, 0x7E95_761E ^ salt) - 0.5,
+                    cloud_hash(x, y, 0x1B87_3593 ^ salt) - 0.5,
+                ) * 0.12;
+                let center = bank + (Vec2::new(px, py) + nudge) * scale;
                 if !grid.contains(Hex::from_world(center)) {
                     continue;
                 }
-                let radius = 1.9 + cloud_hash(x, y, 0xAD90_777D ^ salt) * 0.9;
-                let rotation = cloud_hash(x, y, 0x7E95_761E ^ salt) * TAU;
-                push_cloud_puff(center, radius, rotation, out);
+                let radius = pr * scale * (0.85 + cloud_hash(x, y, 0x68E3_1DA4 ^ salt) * 0.3);
+                puffs.push(Puff { center, radius });
+                any = true;
+            }
+            if any {
+                shadows.push(bank + Vec2::new(0.04, -0.12) * scale);
             }
         }
     }
+    puffs.sort_by(|a, b| b.center.y.total_cmp(&a.center.y));
+    out.reserve((shadows.len() + puffs.len()) * CLOUD_PUFF_VERTICES);
+    for center in shadows {
+        push_soft_disc(
+            center,
+            Vec2::new(0.78, 0.45) * CLOUD_SPACING,
+            CLOUD_SHADOW_COLOR,
+            CLOUD_SHADOW_COLOR,
+            out,
+        );
+    }
+    for puff in &puffs {
+        push_cloud_puff(puff, out);
+    }
 }
 
-fn push_cloud_puff(center: Vec2, radius: f32, rotation: f32, out: &mut Vec<Vertex>) {
-    const SIDES: u32 = 8;
-    let vertex = |p: Vec2, color: Color| Vertex {
-        pos: [p.x, p.y, 0.0],
-        color,
-        uv: crate::renderer::SOLID_UV,
+/// Vertices in one cloud disc: a quad the shader rounds and feathers
+/// (`soft_disc_uv`).
+const CLOUD_PUFF_VERTICES: usize = 6;
+/// The dark band under each cloud bank, fading out at its edge.
+const CLOUD_SHADOW_COLOR: Color = [0.03, 0.03, 0.04, 0.55];
+/// A puff's lit top and shaded underside (linear colors): muted, so the
+/// clouds stay behind the map rather than competing with it.
+const CLOUD_LIGHT: Color = [0.25, 0.26, 0.29, 0.96];
+const CLOUD_DARK: Color = [0.10, 0.105, 0.125, 0.96];
+
+fn push_cloud_puff(puff: &Puff, out: &mut Vec<Vertex>) {
+    push_soft_disc(
+        puff.center,
+        Vec2::splat(puff.radius),
+        CLOUD_LIGHT,
+        CLOUD_DARK,
+        out,
+    );
+}
+
+/// An ellipse with half-axes `radii`, solid in the middle and fading to
+/// transparent at its rim (`soft_disc_uv`), shaded from `light` at the
+/// top to `dark` at the bottom.
+fn push_soft_disc(center: Vec2, radii: Vec2, light: Color, dark: Color, out: &mut Vec<Vertex>) {
+    // The light comes from above and a little to the left.
+    let shade = |local: Vec2| {
+        let t = (0.5 + 0.5 * local.dot(Vec2::new(-0.35, 0.94))).clamp(0.0, 1.0);
+        let mut color = [0.0; 4];
+        for (c, (l, d)) in color.iter_mut().zip(light.iter().zip(dark)) {
+            *c = d + (l - d) * t;
+        }
+        color
     };
-    let middle = vertex(center, [0.19, 0.20, 0.23, 0.64]);
-    for i in 0..SIDES {
-        let corner =
-            |i| center + Vec2::from_angle(rotation + TAU * i as f32 / SIDES as f32) * radius;
-        out.extend([
-            middle,
-            vertex(corner(i), [0.10, 0.11, 0.14, 0.38]),
-            vertex(corner(i + 1), [0.10, 0.11, 0.14, 0.38]),
-        ]);
-    }
+    let vertex = |x: f32, y: f32| {
+        let local = Vec2::new(x, y);
+        let p = center + local * radii;
+        Vertex {
+            pos: [p.x, p.y, 0.0],
+            color: shade(local),
+            uv: crate::renderer::soft_disc_uv([x, y]),
+        }
+    };
+    let (bl, br, tr, tl) = (
+        vertex(-1.0, -1.0),
+        vertex(1.0, -1.0),
+        vertex(1.0, 1.0),
+        vertex(-1.0, 1.0),
+    );
+    out.extend([bl, br, tr, bl, tr, tl]);
 }
 
 impl GameState {

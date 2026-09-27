@@ -16,7 +16,9 @@ constants out of this directory. Its whole interface:
 - One pipeline: alpha-blended vertex color, multiplied by the R8 atlas (bound once at set 0)
   unless the vertex's UV is `SOLID_UV` (negative `u`). The atlas holds coverage, except where
   `u` is 1 or more: those texels are a signed distance field, sampled at `u - 1` and
-  thresholded at 0.5 with a one-pixel `fwidth` ramp. Text is the only atlas user today.
+  thresholded at 0.5 with a one-pixel `fwidth` ramp. Text is the only atlas user today. A `u` of
+  -2 or less (`soft_disc_uv`) marks a soft disc instead: `(u + 3, v)` is the place on a disc of
+  radius 1, drawn solid to 0.45 and fading out at the rim (the fog's clouds use it).
 
 ## Files
 
@@ -32,7 +34,7 @@ constants out of this directory. Its whole interface:
 | `buffer.rs` | buffer and memory allocation |
 | `sync.rs` | per-frame acquire semaphores and fences (`MAX_FRAMES_IN_FLIGHT` = 2) |
 | `readback.rs` | copying a frame's swapchain image to a host buffer, `Frame` |
-| `vertex.rs` | `Vertex`, `SOLID_UV` |
+| `vertex.rs` | `Vertex`, `SOLID_UV`, `soft_disc_uv` |
 
 Shaders are GLSL in `/shaders`. `build.rs` compiles every `.vert`/`.frag`/... there to
 `OUT_DIR/<name>.spv`, and `pipeline.rs` embeds them with `include_bytes!`. Adding a shader stage

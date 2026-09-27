@@ -6,7 +6,7 @@
 //!   tint as they were when last seen (`Sighting`): cities, barracks,
 //!   improvements, roads and structures. Units and workers move, so they
 //!   aren't remembered: out of sight, none is known to be anywhere;
-//! - unexplored: never seen, covered by dark clouds.
+//! - unexplored: never seen, covered by clouds (`push_cloud_banks`, `draw.rs`).
 //!
 //! A debug setting (F10) turns the fog off. The AI ignores it.
 

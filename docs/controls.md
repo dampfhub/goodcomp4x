@@ -237,9 +237,9 @@ them.
   reeds mark desert, tundra and marsh. A large snowy peak is a mountain (impassable) and waves
   are water (units can't enter it; cities can work it). Terrain defense and yields are in
   `game-rules.md`.
-- Fog of war: never-seen hexes are blank; hexes you've seen but can't see now are under a grey
-  veil with cloud puffs and show the cities, improvements, roads and structures that were there
-  when you last looked, but no units or workers.
+- Fog of war: never-seen hexes are under clouds; hexes you've seen but can't see now are under a
+  grey veil and show the cities, improvements, roads and structures that were there when you
+  last looked, but no units or workers.
 - In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
   the manager; hovering the manager draws a dotted line along the way its goods travel to the
   city. Green grain and amber hammers show food and production, with the share that reaches the

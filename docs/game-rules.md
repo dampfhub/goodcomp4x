@@ -111,10 +111,11 @@ queue them. Nothing heals.
   health), improvements, roads and structures. Units and workers aren't remembered, since they
   move: out of sight, the player knows of none anywhere. Planning goes around the walls and gates
   the player knows of. Remembered hexes out of sight draw that memory under a dark tint, keeping
-  the terrain readable. Rounded, overlapping dark cloud puffs cover unexplored tiles without tile
-  seams, with dense small lobes and soft edges spilling slightly beyond the region's border;
-  their pattern stays anchored to the map as sight changes. Never-seen terrain and objects are
-  not drawn beneath the clouds.
+  the terrain readable. Unexplored tiles lie under banks of muted cumulus: soft-edged puffs lit
+  from above, lower billows overlapping the shaded undersides of those behind them, each bank
+  over a faint shadow. The cloud field is fixed to the map and drawn behind it, so explored
+  terrain simply covers it as sight grows. Never-seen terrain and objects are not drawn beneath
+  the clouds.
 - Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
   remembered hexes from memory.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
