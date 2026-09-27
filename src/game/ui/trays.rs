@@ -775,7 +775,8 @@ impl GameState {
         panel.text(
             SMALL,
             vec![(
-                "LIT: WHERE WORKERS REACH, 3 TILES FROM A CITY OR NEXT TO A ROAD".into(),
+                "LIT: WHERE WORKERS REACH, 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD"
+                    .into(),
                 DIM_TEXT,
             )],
         );
