@@ -16,6 +16,7 @@ mod hex;
 mod map_icons;
 mod mapgen;
 mod mesh;
+mod order_queue;
 mod orders;
 mod scenario;
 #[cfg(test)]

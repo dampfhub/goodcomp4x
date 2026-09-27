@@ -120,6 +120,12 @@ impl GameState {
             if !orders.is_empty() {
                 notes.push(format!("ORDERS: {}", orders.join(", ")));
             }
+            if unit.has_queue() {
+                notes.push(format!(
+                    "QUEUED FOR {} - ANY OTHER ORDER CANCELS",
+                    turns_text(unit.plan_len() as u32)
+                ));
+            }
         }
         for note in notes {
             panel.text(SMALL, vec![(note, DIM_TEXT)]);
@@ -146,7 +152,7 @@ impl GameState {
         buttons.push(ButtonSpec {
             target: Target::Unit(UnitAction::Attack),
             label: "ATTACK".into(),
-            hint: "X · SHIFT".into(),
+            hint: "X · RMB".into(),
             state: ButtonState::new(unit.planned_attack.is_some(), !unit.can_attack() || locked),
             armed: armed(ClickMode::Attack),
         });
@@ -228,7 +234,8 @@ impl GameState {
         panel.text(BODY, vec![(summary.join(", "), DIM_TEXT)]);
         for help in [
             "CLICK A HEX: EACH MOVES AS CLOSE TO IT AS IT CAN",
-            "CLICK AN ENEMY: EVERY UNIT IN RANGE ATTACKS IT",
+            "RIGHT-CLICK A HEX: EVERY UNIT IN RANGE ATTACKS IT",
+            "SHIFT: ADD THE MOVE OR ATTACK AS ONE MORE TURN FOR ALL",
             "CLICK ONE UNIT TO SELECT JUST IT · ALT-CLICK ADDS OR REMOVES",
         ] {
             panel.text(SMALL, vec![(help.into(), LABEL_TEXT)]);
@@ -248,7 +255,7 @@ impl GameState {
             ButtonSpec {
                 target: Target::Unit(UnitAction::Attack),
                 label: "ATTACK".into(),
-                hint: "X · SHIFT".into(),
+                hint: "X · RMB".into(),
                 state: ButtonState::Ready,
                 armed: armed(ClickMode::Attack),
             },

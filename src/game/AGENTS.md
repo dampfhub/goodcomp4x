@@ -12,7 +12,8 @@ behavior.
 | Module | Concern |
 |---|---|
 | `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
-| `orders.rs` | player input and order planning: click, right-click, swap, ability toggle, hold, guard |
+| `orders.rs` | player input and order planning: `ClickMode`, click (move), right-click (attack), swap, ability toggle, hold, guard |
+| `order_queue.rs` | multi-turn order queues: Shift-click adds turns (`queue_move`, `queue_attack`, equal lengths for a group), `advance_queues` at each turn's end |
 | `group.rs` | multi-unit selection (Alt-drag, Alt-click) and group orders |
 | `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks) |
 | `combat.rs` | damage formula, retaliation, combat log helpers |
@@ -31,7 +32,7 @@ behavior.
 | `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
 | `scenario.rs` | scenarios (F1-F4), savestate (F6/F7), instant playback (F8) |
-| `simulation.rs` | tests only: seeded AI-vs-AI games in every scenario, board invariants checked each turn, same seed replays the same game |
+| `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues) in every scenario, board invariants checked each turn, same seed replays the same game |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
 | `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |
