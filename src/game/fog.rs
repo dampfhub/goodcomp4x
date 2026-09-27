@@ -247,6 +247,15 @@ mod tests {
     }
 
     #[test]
+    fn the_fog_notice_names_its_key() {
+        let mut game = GameState::world_scenario(3);
+        game.toggle_fog();
+        assert!(game.notice.contains("F10"), "{}", game.notice);
+        game.toggle_fog();
+        assert!(game.notice.contains("F10"), "{}", game.notice);
+    }
+
+    #[test]
     fn enemies_out_of_sight_are_hidden() {
         let game = GameState::world_scenario(3);
         let fog = game.fog();
