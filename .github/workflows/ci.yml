@@ -56,6 +56,8 @@ jobs:
   # left alone, which is the way to keep a PR open. The merge uses
   # GITHUB_TOKEN, and pushes made with it start no workflows, so this then
   # starts CI on main itself (workflow_dispatch is the exception to that rule).
+  # A merge made with GITHUB_TOKEN also leaves the issues the PR links open
+  # (its `Closes #N` lines), so this closes them itself.
   merge:
     needs: [rust, msrv, tools]
     if: >-
@@ -66,6 +68,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
       actions: write
     env:
       GH_TOKEN: ${{ github.token }}
@@ -78,4 +81,10 @@ jobs:
           gh pr merge "${{ github.event.pull_request.number }}" --merge
           --match-head-commit "${{ github.event.pull_request.head.sha }}"
           --delete-branch
+      - name: Close the issues this PR closes
+        run: |
+          pr="${{ github.event.pull_request.number }}"
+          for issue in $(gh pr view "$pr" --json closingIssuesReferences --jq '.closingIssuesReferences[].number'); do
+            gh issue close "$issue" --reason completed --comment "Closed by #$pr." || true
+          done
       - run: gh workflow run ci.yml --ref main
