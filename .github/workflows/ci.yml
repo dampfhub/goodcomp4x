@@ -73,7 +73,9 @@ jobs:
     steps:
       # --match-head-commit refuses to merge if a commit landed after the
       # one these checks ran on; that push runs the checks again.
+      # --delete-branch removes the merged head branch.
       - run: >-
           gh pr merge "${{ github.event.pull_request.number }}" --merge
           --match-head-commit "${{ github.event.pull_request.head.sha }}"
+          --delete-branch
       - run: gh workflow run ci.yml --ref main
