@@ -125,7 +125,10 @@ impl City {
     fn set_placed_site(&mut self, building: Building, site: Hex) {
         match building {
             Building::Granary => unreachable!(),
-            Building::Barracks => self.barracks = Some(site),
+            Building::Barracks => {
+                self.barracks = Some(site);
+                self.barracks_hp = BARRACKS_MAX_HP;
+            }
             Building::Mill => self.mill = Some(site),
             Building::Workshop => self.workshop = Some(site),
         }
@@ -1815,6 +1818,49 @@ mod tests {
         assert!(g.cities[0].barracks.is_none());
         g.confirm_building(Building::Barracks);
         assert_eq!(g.cities[0].barracks, Some(site));
+    }
+
+    #[test]
+    fn a_destroyed_barracks_can_be_rebuilt() {
+        use super::super::turn::Phase;
+        let mut g = GameState::city_scenario();
+        g.units.clear();
+        let old_site = Hex::new(-2, 0);
+        g.cities[0].barracks = Some(old_site);
+        g.cities[0].built.push(Building::Barracks);
+        g.cities[0].barracks_hp = 1.0;
+        g.cities[0].barracks_queue = vec![BuildUnit::Melee];
+        g.open_barracks(0);
+        g.units.push(Unit::new(
+            901,
+            old_site.neighbors()[0],
+            Team::Red,
+            UnitType::Ranged,
+        ));
+        g.units[0].planned_attack = Some(old_site);
+        g.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert_eq!(g.cities[0].barracks, None);
+        assert!(!g.cities[0].built.contains(&Building::Barracks));
+        assert!(g.cities[0].barracks_queue.is_empty());
+        assert_eq!(g.selected_barracks, None, "its view closes with it");
+
+        g.units.clear();
+        g.selected_city = Some(0);
+        g.queue_selected_city_building(Building::Barracks);
+        assert_eq!(
+            g.cities[0].queue.last(),
+            Some(&Build::Building(Building::Barracks))
+        );
+        let site = Hex::new(-1, 0);
+        g.city_click(site);
+        g.cities[0]
+            .queue
+            .retain(|&b| b == Build::Building(Building::Barracks));
+        g.cities[0].production = Building::Barracks.cost();
+        g.complete_builds();
+        g.confirm_building(Building::Barracks);
+        assert_eq!(g.cities[0].barracks, Some(site));
+        assert_eq!(g.cities[0].barracks_hp, BARRACKS_MAX_HP);
     }
 
     #[test]
