@@ -37,6 +37,7 @@ impl GameState {
             // Site placement belongs to the open city. A building that
             // finished while the view was closed, with no site chosen yet,
             // picks its site now.
+            self.abandon_site_placement();
             self.placing_building = self.cities[i]
                 .pending_building
                 .filter(|&building| self.needs_site(i, building))
@@ -70,12 +71,14 @@ impl GameState {
         self.interior_view = None;
         self.interior_selected = None;
         self.moving_manager = None;
-        self.placing_building = None;
+        self.abandon_site_placement();
         self.inspected_tile = None;
     }
 
     /// Escape and Space dismiss city or building management without issuing a
-    /// unit order or starting the quit hold.
+    /// unit order or starting the quit hold. While a building site is being
+    /// chosen, the first press only cancels that (and the unsited building)
+    /// and keeps the city open.
     pub fn exit_structure_menu(&mut self) -> bool {
         if self.interior_view.is_some() {
             self.close_city_interior();
@@ -86,6 +89,10 @@ impl GameState {
             && self.interior_view.is_none()
         {
             return false;
+        }
+        if self.site_placement().is_some() {
+            self.abandon_site_placement();
+            return true;
         }
         self.leave_city_view();
         self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
@@ -101,7 +108,7 @@ impl GameState {
             self.barracks_queue_scroll = 0;
         }
         self.selected_city = None;
-        self.placing_building = None;
+        self.abandon_site_placement();
         self.selected_barracks = Some(city);
         self.selected = None;
         self.group.clear();
@@ -230,6 +237,9 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
+        // A building left without a site comes out of its queue first, so a
+        // city it leaves with nothing to build is asked for something.
+        self.abandon_site_placement();
         for i in 0..self.units.len() {
             if self.is_player_controlled(i) && self.needs_orders(i) {
                 self.units[i].holding = true;
@@ -245,7 +255,6 @@ impl GameState {
             }
         }
         self.selected_city = None;
-        self.placing_building = None;
         self.notice = "RESOLVING ORDERS".into();
         self.resolve_turn();
     }

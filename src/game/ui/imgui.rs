@@ -105,6 +105,18 @@ impl OuterBox {
 const PANEL_MARGIN: f32 = 14.0;
 const PANEL_GAP: f32 = 8.0;
 const STATUS_HEIGHT: f32 = 52.0;
+/// The top status bar is a fixed strip: its second row of small buttons
+/// reaches a few pixels past `STATUS_HEIGHT` with the window padding, which
+/// must not turn into a scrollbar.
+const STATUS_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
+    .union(WindowFlags::NO_RESIZE)
+    .union(WindowFlags::NO_MOVE)
+    .union(WindowFlags::NO_DOCKING)
+    .union(WindowFlags::NO_SAVED_SETTINGS)
+    .union(WindowFlags::NO_SCROLLBAR)
+    .union(WindowFlags::NO_SCROLL_WITH_MOUSE);
+/// Height of a progress bar row (`Row::Bar`).
+const BAR_HEIGHT: f32 = 12.0;
 const COLLAPSED_HEIGHT: f32 = 30.0;
 const SLOT_COUNT: usize = 4;
 const SELECTION: usize = 0;
@@ -1687,8 +1699,11 @@ impl GameState {
                 }
                 Row::Gap(height) => ui.dummy([0.0, height.max(0.0)]),
                 Row::Bar(fraction) => {
+                    // No "0%" overlay: it doesn't fit a 12 px bar, and the row
+                    // above already says what the bar counts toward.
                     ProgressBar::new(fraction.clamp(0.0, 1.0))
-                        .size([ui.content_region_avail()[0], 12.0])
+                        .size([ui.content_region_avail()[0], BAR_HEIGHT])
+                        .overlay_text("")
                         .build(ui);
                 }
                 Row::Buttons(buttons, compact) => {
@@ -1868,13 +1883,7 @@ impl GameState {
             self.turn + 1
         };
         ui.window("Status")
-            .flags(
-                WindowFlags::NO_TITLE_BAR
-                    | WindowFlags::NO_RESIZE
-                    | WindowFlags::NO_MOVE
-                    | WindowFlags::NO_DOCKING
-                    | WindowFlags::NO_SAVED_SETTINGS,
-            )
+            .flags(STATUS_FLAGS)
             .position([0.0, 0.0], Condition::Always)
             .size([viewport.x, STATUS_HEIGHT], Condition::Always)
             .build(|| {
@@ -2414,6 +2423,14 @@ mod tests {
             max: Vec2::new(384.0, 800.0 - 66.0),
         };
         assert!(!selected.overlaps(pinned, 0.0));
+    }
+
+    #[test]
+    fn the_status_bar_never_scrolls() {
+        assert!(
+            STATUS_FLAGS.contains(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
+        );
+        assert!(STATUS_FLAGS.contains(WindowFlags::NO_TITLE_BAR | WindowFlags::NO_MOVE));
     }
 
     #[test]
