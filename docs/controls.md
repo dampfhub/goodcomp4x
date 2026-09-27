@@ -72,7 +72,7 @@ Workers).
 | End Turn button | Hold every unfinished unit, then end the turn (or open a city that still needs a build) |
 
 The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE
-PRODUCTION") and turns gold, reading END TURN, once nothing is. Clicks are ignored while a turn
+PRODUCTION") and turns aqua, reading END TURN, once nothing is. Clicks are ignored while a turn
 plays out.
 
 ## Cities
@@ -129,7 +129,7 @@ While a city view is open, map clicks manage tiles and never select units.
 | Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
 The faded DEBUG panel at the top-left has buttons for F1-F4 and F6-F10; the current scenario is
-gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
+aqua, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
 order.
 
 ## Command line
@@ -184,8 +184,8 @@ them.
   reeds mark desert, tundra and marsh. A large snowy peak is a mountain (impassable) and waves
   are water (units can't enter it; cities can work it). Terrain defense and yields are in
   `game-rules.md`.
-- Fog of war: never-seen hexes are blank; hexes you've seen but can't see now are under a grey
-  veil with cloud puffs and show the cities, improvements, roads and structures that were there
+- Fog of war: never-seen hexes are blank; hexes you've seen but can't see now are under a dark
+  blue veil with cloud puffs and show the cities, improvements, roads and structures that were there
   when you last looked, but no units or workers.
 - In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
   the manager; hovering the manager draws a dotted line along the way its goods travel to the

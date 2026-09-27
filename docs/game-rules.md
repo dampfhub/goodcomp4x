@@ -110,7 +110,7 @@ queue them. Nothing heals.
   health), improvements, roads and structures. Units and workers aren't remembered, since they
   move: out of sight, the player knows of none anywhere. Planning goes around the walls and gates
   the player knows of. Remembered hexes out of sight draw that memory under a dark tint, keeping
-  the terrain readable. Rounded, overlapping dark cloud puffs cover unexplored tiles without tile
+  the terrain readable. Rounded, overlapping deep-blue cloud puffs cover unexplored tiles without tile
   seams, with dense small lobes and soft edges spilling slightly beyond the region's border;
   their pattern stays anchored to the map as sight changes. Never-seen terrain and objects are
   not drawn beneath the clouds.
@@ -422,7 +422,7 @@ every turn end.
 
 - Panels dock in four corner zones and never overlap (`docs/ui-system.md`).
 - **Top bar:** turn number, the latest notice, and the End Turn button, whose label names what is
-  still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
+  still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns aqua and reads END
   TURN.
 - **Command tray** (bottom-left): with a city open, it shows population, stores and rates, the
   current build, labor focus buttons, the growth meter, the selected tile, unit cards (1-3), the
@@ -435,7 +435,7 @@ every turn end.
   clicked tile shows its tile panel: its terrain, whose workers would go, and a button per worker
   job. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
   pressing the button again or right-clicking disarms. The armed button has a bright border, a
-  queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
+  queued order turns its button aqua, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows
   a structure panel at the bottom-left instead (HP, growth progress for a city, production,
   current build). Hovering a city also outlines its worked tiles, without yield badges. After the

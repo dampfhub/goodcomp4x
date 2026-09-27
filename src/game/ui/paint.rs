@@ -1,9 +1,9 @@
 //! Turning laid-out shapes and buttons into vertices.
 
 use super::{
-    ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
-    BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,
-    DISABLED_BG, DISABLED_TEXT, GAP, GOLD_TEXT, GROWTH_COLOR, LINE_GAP, PANEL_BG, QUEUED_BG,
+    ACCENT_TEXT, ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG,
+    BUTTON_HEIGHT, BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA,
+    DIM_TEXT, DISABLED_BG, DISABLED_TEXT, GAP, GROWTH_COLOR, LINE_GAP, PANEL_BG, QUEUED_BG,
     QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, SMALL, Shape, TEXT,
 };
 use crate::game::font;
@@ -37,7 +37,7 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             thumb_max,
         } => {
             mesh::quad(*track_min, *track_max, BAR_BG, out);
-            mesh::quad(*thumb_min, *thumb_max, GOLD_TEXT, out);
+            mesh::quad(*thumb_min, *thumb_max, ACCENT_TEXT, out);
         }
         Shape::QueueItem {
             min,
@@ -56,7 +56,7 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             let edge = if *drop_target {
                 ARMED_BORDER_COLOR
             } else if *active {
-                GOLD_TEXT
+                ACCENT_TEXT
             } else {
                 BORDER_COLOR
             };
@@ -72,7 +72,7 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
                 if *locked {
                     DIM_TEXT
                 } else if *active {
-                    GOLD_TEXT
+                    ACCENT_TEXT
                 } else {
                     TEXT
                 },

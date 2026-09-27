@@ -3,7 +3,7 @@
 use super::builder::{ButtonSpec, PanelBuilder};
 use super::text::{ability_text, compare, quantity, signed_quantity, stat_spans, turns_text};
 use super::{
-    BODY, BOOSTED_TEXT, ButtonState, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, QueueItemSpec,
+    ACCENT_TEXT, BODY, BOOSTED_TEXT, ButtonState, DIM_TEXT, GAP, LABEL_TEXT, QueueItemSpec,
     QueueKind, REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
 };
 use crate::game::city::{
@@ -59,7 +59,7 @@ impl GameState {
         );
         let (ability_name, _) = ability_text(unit);
         let (ability_status, ability_color) = if unit.ability_queued {
-            ("QUEUED".to_string(), GOLD_TEXT)
+            ("QUEUED".to_string(), ACCENT_TEXT)
         } else if unit.ability_cooldown > 0 {
             (
                 format!("IN {}", turns_text(unit.ability_cooldown)),
@@ -330,7 +330,7 @@ impl GameState {
                         quantity(city.production.min(cost)),
                         quantity(cost)
                     ),
-                    GOLD_TEXT,
+                    ACCENT_TEXT,
                 )],
             );
             panel.bar((city.production as f32 / cost as f32).clamp(0.0, 1.0));
@@ -343,7 +343,7 @@ impl GameState {
                     quantity(city.production.min(self.city_build_cost(i, build))),
                     quantity(self.city_build_cost(i, build))
                 ),
-                GOLD_TEXT,
+                ACCENT_TEXT,
             ),
             None => ("NOTHING - CHOOSE BELOW".to_string(), DIM_TEXT),
         };
@@ -498,7 +498,7 @@ impl GameState {
                     };
                     panel.text(
                         SMALL,
-                        vec![(format!("{} NEEDS A SITE", building.name()), GOLD_TEXT)],
+                        vec![(format!("{} NEEDS A SITE", building.name()), ACCENT_TEXT)],
                     );
                     panel.text(SMALL, vec![(how.into(), DIM_TEXT)]);
                 }
@@ -516,7 +516,7 @@ impl GameState {
                         site.q,
                         site.r
                     ),
-                    GOLD_TEXT,
+                    ACCENT_TEXT,
                 )],
             );
             panel.text(
@@ -713,7 +713,7 @@ impl GameState {
                     city.barracks_hp,
                     crate::game::city::BARRACKS_MAX_HP
                 ),
-                GOLD_TEXT,
+                ACCENT_TEXT,
             )]),
         );
         panel.text(
@@ -741,7 +741,7 @@ impl GameState {
                         quantity(city.barracks_production.min(build.cost())),
                         quantity(build.cost())
                     ),
-                    GOLD_TEXT,
+                    ACCENT_TEXT,
                 )],
             );
             panel.bar((city.barracks_production as f32 / build.cost() as f32).clamp(0.0, 1.0));

@@ -19,25 +19,31 @@ use crate::renderer::Vertex;
 
 type Color = [f32; 4];
 
-const BORDER_COLOR: Color = [0.10, 0.10, 0.13, 1.0];
+/// The gaps between hexes: dark navy channels, a shade above the deep navy
+/// behind the map.
+const BORDER_COLOR: Color = [0.012, 0.03, 0.055, 1.0];
 /// Each hex's fill as a share of its size; the rest is the border between hexes.
 const HEX_FILL_SCALE: f32 = 0.92;
 /// How far an explored hex's border reaches: past its own edge by as much as
 /// a neighbor's border reaches in, so facing a never-seen hex or the map's
 /// edge it is as wide as the whole gap between two hexes.
 const OUTER_BORDER_RADIUS: f32 = HEX_SIZE * (2.0 - HEX_FILL_SCALE);
-/// The grey veil over remembered hexes out of sight, and the line where they
-/// meet hexes in sight: a light, cool grey like the cloud, so it can't be
-/// mistaken for the dark gaps between ordinary hexes.
-const FOG_EDGE_COLOR: Color = [0.24, 0.25, 0.28, 1.0];
+/// The dark veil over remembered hexes out of sight, and the line where they
+/// meet hexes in sight: a murky blue lighter than the gaps between hexes, so
+/// it can't be mistaken for them.
+const FOG_EDGE_COLOR: Color = [0.07, 0.15, 0.22, 1.0];
 /// The fog edge fills the whole gap between two hexes' fills: each fill stops
 /// short of its hex's edge by (1 - HEX_FILL_SCALE) of the apothem, sqrt(3) / 2.
 const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 /// Along a river the fog edge widens to cover it whole, since a river is wider
 /// than the gap; otherwise a sliver of it would show on the side in sight.
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
-const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
+const REMEMBERED_TINT: Color = [0.0, 0.004, 0.015, 0.6];
 const CLOUD_SPACING: f32 = 4.6;
+/// The clouds over never-seen hexes: each puff is a lighter deep-water blue in
+/// the middle, fading out to its rim over the navy background.
+const CLOUD_MIDDLE_COLOR: Color = [0.02, 0.062, 0.10, 0.66];
+const CLOUD_RIM_COLOR: Color = [0.006, 0.02, 0.045, 0.38];
 const PLAINS_COLOR: Color = [0.26, 0.24, 0.12, 1.0];
 const GRASSLAND_COLOR: Color = [0.12, 0.20, 0.08, 1.0];
 const DESERT_COLOR: Color = [0.45, 0.36, 0.17, 1.0];
@@ -419,14 +425,14 @@ fn push_cloud_puff(center: Vec2, radius: f32, rotation: f32, out: &mut Vec<Verte
         color,
         uv: crate::renderer::SOLID_UV,
     };
-    let middle = vertex(center, [0.19, 0.20, 0.23, 0.64]);
+    let middle = vertex(center, CLOUD_MIDDLE_COLOR);
     for i in 0..SIDES {
         let corner =
             |i| center + Vec2::from_angle(rotation + TAU * i as f32 / SIDES as f32) * radius;
         out.extend([
             middle,
-            vertex(corner(i), [0.10, 0.11, 0.14, 0.38]),
-            vertex(corner(i + 1), [0.10, 0.11, 0.14, 0.38]),
+            vertex(corner(i), CLOUD_RIM_COLOR),
+            vertex(corner(i + 1), CLOUD_RIM_COLOR),
         ]);
     }
 }

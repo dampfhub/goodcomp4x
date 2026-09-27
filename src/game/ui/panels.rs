@@ -5,7 +5,7 @@ use super::dock::Zone;
 use super::paint::fade;
 use super::text::{end_turn_label, signed_quantity, turns_at_rate};
 use super::{
-    BODY, Button, ButtonState, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout,
+    ACCENT_TEXT, BODY, Button, ButtonState, DIM_TEXT, END_TURN_HEIGHT, GAP, LABEL_TEXT, Layout,
     MARGIN, NOTICE_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
 };
 use crate::game::GameState;
@@ -204,7 +204,7 @@ impl GameState {
                         crate::game::city::BARRACKS_MAX_HP,
                         signed_quantity(production)
                     ),
-                    GOLD_TEXT,
+                    ACCENT_TEXT,
                 )],
             );
             panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
@@ -240,7 +240,7 @@ impl GameState {
                         crate::game::city::CITY_MAX_HP,
                         signed_quantity(production)
                     ),
-                    GOLD_TEXT,
+                    ACCENT_TEXT,
                 )],
             );
             panel.bar(growth as f32 / 100.0);

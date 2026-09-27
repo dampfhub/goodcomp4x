@@ -6,7 +6,7 @@ use super::text::{
     ability_text, pending_text, quantity, signed_quantity, stat_spans, turns_text, wrap,
 };
 use super::{
-    BODY, BOOSTED_TEXT, BORDER, Button, DIM_TEXT, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN,
+    ACCENT_TEXT, BODY, BOOSTED_TEXT, BORDER, Button, DIM_TEXT, LABEL_TEXT, Layout, Line, MARGIN,
     REDUCED_TEXT, SMALL, TEXT, TILE_TOOLTIP_OFFSET, TOOLTIP_GAP, TOOLTIP_WRAP, Target, UnitAction,
     contains,
 };
@@ -87,7 +87,7 @@ impl GameState {
             SMALL,
             stat_spans(&[
                 ("FOOD", food.to_string(), BOOSTED_TEXT),
-                ("PRODUCTION", production.to_string(), GOLD_TEXT),
+                ("PRODUCTION", production.to_string(), ACCENT_TEXT),
             ]),
         ));
         if let Some(city) = city {
@@ -104,7 +104,7 @@ impl GameState {
                         crate::game::city::CITY_MAX_HP,
                         signed_quantity(production_per_turn)
                     ),
-                    GOLD_TEXT,
+                    ACCENT_TEXT,
                 )],
             ));
             lines.push((SMALL, vec![(format!("BUILDING {queue}"), DIM_TEXT)]));
@@ -134,7 +134,7 @@ impl GameState {
                         crate::game::city::BARRACKS_MAX_HP,
                         signed_quantity(production_per_turn)
                     ),
-                    GOLD_TEXT,
+                    ACCENT_TEXT,
                 )],
             ));
             lines.push((SMALL, vec![(format!("TRAINING: {queue}"), DIM_TEXT)]));

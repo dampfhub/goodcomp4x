@@ -1178,9 +1178,9 @@ fn text_line(ui: &Ui, line: &Line) {
             ui.same_line_with_spacing(0.0, 0.0);
         }
         let readable = if *color == LABEL_TEXT {
-            [0.66, 0.70, 0.72, 1.0]
+            [0.56, 0.72, 0.72, 1.0]
         } else if *color == DIM_TEXT {
-            [0.72, 0.75, 0.76, 1.0]
+            [0.68, 0.80, 0.80, 1.0]
         } else {
             *color
         };
@@ -1721,10 +1721,10 @@ impl GameState {
                         }
                         let _accent = match spec.state {
                             ButtonState::Queued => Some(
-                                ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]),
+                                ui.push_style_color(StyleColor::Button, [0.10, 0.34, 0.33, 1.0]),
                             ),
                             _ if spec.armed => Some(
-                                ui.push_style_color(StyleColor::Button, [0.24, 0.32, 0.24, 1.0]),
+                                ui.push_style_color(StyleColor::Button, [0.06, 0.26, 0.19, 1.0]),
                             ),
                             _ => None,
                         };
@@ -1771,9 +1771,9 @@ impl GameState {
                     let _background = ui.push_style_color(
                         StyleColor::Button,
                         if item.active {
-                            [0.26, 0.24, 0.15, 1.0]
+                            [0.08, 0.26, 0.26, 1.0]
                         } else {
-                            [0.11, 0.14, 0.16, 1.0]
+                            [0.030, 0.090, 0.105, 1.0]
                         },
                     );
                     ui.button_with_size(
@@ -1817,7 +1817,7 @@ impl GameState {
                     }
                     ui.same_line();
                     let _remove_color =
-                        ui.push_style_color(StyleColor::Button, [0.23, 0.13, 0.13, 1.0]);
+                        ui.push_style_color(StyleColor::Button, [0.26, 0.07, 0.06, 1.0]);
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
                         actions.push(Action::Button(scope, item.kind.remove_target(item.index)));
                     }

@@ -39,7 +39,8 @@ pub use vertex::{SOLID_UV, Vertex};
 /// more grows its buffer (see `write_vertices`).
 const VERTEX_BUFFER_CAPACITY: usize = 65_536;
 
-const CLEAR_COLOR: [f32; 4] = [0.06, 0.06, 0.08, 1.0];
+/// Behind everything: deep navy (linear; the sRGB swapchain shows it lighter).
+const CLEAR_COLOR: [f32; 4] = [0.004, 0.011, 0.032, 1.0];
 
 /// A triangle list and the view-projection matrix to draw it with. Batches
 /// are drawn in order, so later ones layer on top.

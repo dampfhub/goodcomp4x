@@ -82,29 +82,30 @@ const TILE_TOOLTIP_DELAY: f32 = 0.75;
 const TILE_TOOLTIP_OFFSET: Vec2 = Vec2::new(20.0, -20.0);
 
 // The swapchain is sRGB, so these linear colors display much lighter than
-// their values suggest.
-const BORDER_COLOR: Color = [0.30, 0.32, 0.38, 1.0];
-const ARMED_BORDER_COLOR: Color = [1.00, 0.92, 0.55, 1.0];
-const PANEL_BG: Color = [0.012, 0.014, 0.02, 0.94];
-const BUTTON_BG: Color = [0.03, 0.035, 0.05, 0.95];
-const BUTTON_HOVER_BG: Color = [0.08, 0.09, 0.13, 0.95];
-const QUEUED_BG: Color = [0.78, 0.64, 0.20, 0.95];
-const QUEUED_HOVER_BG: Color = [0.90, 0.76, 0.30, 0.95];
-const DISABLED_BG: Color = [0.02, 0.02, 0.025, 0.95];
-const BAR_BG: Color = [0.01, 0.02, 0.02, 1.0];
-const GROWTH_COLOR: Color = [0.30, 0.88, 0.35, 1.0];
-const TEXT: Color = [0.95, 0.95, 0.95, 1.0];
-const QUEUED_TEXT: Color = [0.08, 0.07, 0.04, 1.0];
-const QUEUED_HINT_TEXT: Color = [0.25, 0.20, 0.08, 1.0];
-const DISABLED_TEXT: Color = [0.18, 0.18, 0.20, 1.0];
-const DIM_TEXT: Color = [0.55, 0.55, 0.60, 1.0];
-const LABEL_TEXT: Color = [0.30, 0.32, 0.38, 1.0];
-const NOTICE_TEXT: Color = [0.95, 0.85, 0.55, 1.0];
-const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
-const BOOSTED_TEXT: Color = [0.55, 0.92, 0.50, 1.0];
-const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
-const SELECTION_BOX_FILL: Color = [0.30, 0.55, 0.95, 0.12];
-const SELECTION_BOX_EDGE: Color = [0.55, 0.75, 1.00, 0.9];
+// their values suggest. Sea glass: dark blue-green panels with pale aqua and
+// pearl accents.
+const BORDER_COLOR: Color = [0.14, 0.30, 0.32, 1.0];
+const ARMED_BORDER_COLOR: Color = [0.62, 0.98, 0.92, 1.0];
+const PANEL_BG: Color = [0.004, 0.018, 0.024, 0.94];
+const BUTTON_BG: Color = [0.010, 0.042, 0.050, 0.95];
+const BUTTON_HOVER_BG: Color = [0.030, 0.100, 0.110, 0.95];
+const QUEUED_BG: Color = [0.40, 0.76, 0.72, 0.95];
+const QUEUED_HOVER_BG: Color = [0.52, 0.88, 0.84, 0.95];
+const DISABLED_BG: Color = [0.006, 0.015, 0.018, 0.95];
+const BAR_BG: Color = [0.004, 0.016, 0.020, 1.0];
+const GROWTH_COLOR: Color = [0.18, 0.82, 0.58, 1.0];
+const TEXT: Color = [0.92, 0.96, 0.95, 1.0];
+const QUEUED_TEXT: Color = [0.006, 0.030, 0.036, 1.0];
+const QUEUED_HINT_TEXT: Color = [0.03, 0.14, 0.15, 1.0];
+const DISABLED_TEXT: Color = [0.11, 0.18, 0.19, 1.0];
+const DIM_TEXT: Color = [0.46, 0.60, 0.61, 1.0];
+const LABEL_TEXT: Color = [0.20, 0.36, 0.38, 1.0];
+const NOTICE_TEXT: Color = [0.72, 0.96, 0.92, 1.0];
+const ACCENT_TEXT: Color = [0.42, 0.88, 0.86, 1.0];
+const BOOSTED_TEXT: Color = [0.62, 0.95, 0.45, 1.0];
+const REDUCED_TEXT: Color = [0.98, 0.45, 0.36, 1.0];
+const SELECTION_BOX_FILL: Color = [0.20, 0.70, 0.75, 0.12];
+const SELECTION_BOX_EDGE: Color = [0.55, 0.95, 0.95, 0.9];
 const SELECTION_BOX_BORDER: f32 = 2.0;
 /// Opacity the debug panel is drawn at, so it doesn't read as game UI.
 const DEBUG_ALPHA: f32 = 0.55;
