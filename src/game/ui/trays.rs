@@ -207,6 +207,12 @@ impl GameState {
             if !orders.is_empty() {
                 notes.push(format!("ORDERS: {}", orders.join(", ")));
             }
+            if unit.has_queue() {
+                notes.push(format!(
+                    "QUEUED FOR {} - ANY OTHER ORDER CANCELS",
+                    turns_text(unit.plan_len() as u32)
+                ));
+            }
         }
         for note in notes {
             panel.text(SMALL, vec![(note, DIM_TEXT)]);
@@ -233,7 +239,7 @@ impl GameState {
         buttons.push(ButtonSpec {
             target: Target::Unit(UnitAction::Attack),
             label: "ATTACK".into(),
-            hint: "X · SHIFT".into(),
+            hint: "X · RMB".into(),
             state: ButtonState::new(unit.planned_attack.is_some(), !unit.can_attack() || locked),
             armed: armed(ClickMode::Attack),
         });
@@ -315,7 +321,8 @@ impl GameState {
         panel.text(BODY, vec![(summary.join(", "), DIM_TEXT)]);
         for help in [
             "CLICK A HEX: EACH MOVES AS CLOSE TO IT AS IT CAN",
-            "CLICK AN ENEMY: EVERY UNIT IN RANGE ATTACKS IT",
+            "RIGHT-CLICK A HEX: EVERY UNIT IN RANGE ATTACKS IT",
+            "SHIFT: ADD THE MOVE OR ATTACK AS ONE MORE TURN FOR ALL",
             "CLICK ONE UNIT TO SELECT JUST IT · ALT-CLICK ADDS OR REMOVES",
         ] {
             panel.text(SMALL, vec![(help.into(), LABEL_TEXT)]);
@@ -335,7 +342,7 @@ impl GameState {
             ButtonSpec {
                 target: Target::Unit(UnitAction::Attack),
                 label: "ATTACK".into(),
-                hint: "X · SHIFT".into(),
+                hint: "X · RMB".into(),
                 state: ButtonState::Ready,
                 armed: armed(ClickMode::Attack),
             },
@@ -540,11 +547,15 @@ impl GameState {
                         building.shortcut(),
                         quantity(building.cost())
                     ),
+                    // Queued or finished, the card is spent, unless the
+                    // building still has no site: then it picks one.
                     state: ButtonState::new(
                         city.queue.first() == Some(&Build::Building(building))
-                            || self.placing_building == Some((i, building)),
-                        city.pending_building == Some(building)
-                            || city.queue.contains(&Build::Building(building)),
+                            || self.needs_site(i, building)
+                            || self.site_placement() == Some((i, building)),
+                        (city.pending_building == Some(building)
+                            || city.queue.contains(&Build::Building(building)))
+                            && !self.needs_site(i, building),
                     ),
                     armed: false,
                 })
@@ -575,6 +586,18 @@ impl GameState {
         }
         for building in [Building::Barracks, Building::Mill, Building::Workshop] {
             let Some(site) = city.planned_sites.get(&building) else {
+                if self.needs_site(i, building) {
+                    let how = if self.site_placement() == Some((i, building)) {
+                        "CLICK AN OPEN TILE ON THE MAP"
+                    } else {
+                        "CLICK ITS CARD TO CHOOSE ONE"
+                    };
+                    panel.text(
+                        SMALL,
+                        vec![(format!("{} NEEDS A SITE", building.name()), GOLD_TEXT)],
+                    );
+                    panel.text(SMALL, vec![(how.into(), DIM_TEXT)]);
+                }
                 continue;
             };
             let ready = city.queue.first() == Some(&Build::Building(building))

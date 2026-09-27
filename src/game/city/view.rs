@@ -34,6 +34,13 @@ impl GameState {
         self.close_city_interior();
         if self.selected_city != Some(i) {
             self.city_queue_scroll = 0;
+            // Site placement belongs to the open city. A building that
+            // finished while the view was closed, with no site chosen yet,
+            // picks its site now.
+            self.placing_building = self.cities[i]
+                .pending_building
+                .filter(|&building| self.needs_site(i, building))
+                .map(|building| (i, building));
         }
         self.selected_city = Some(i);
         self.selected_barracks = None;
@@ -94,6 +101,7 @@ impl GameState {
             self.barracks_queue_scroll = 0;
         }
         self.selected_city = None;
+        self.placing_building = None;
         self.selected_barracks = Some(city);
         self.selected = None;
         self.group.clear();
@@ -142,13 +150,7 @@ impl GameState {
             return false;
         }
         let i = self.selected_city.unwrap();
-        if hex == self.cities[i].pos {
-            self.open_city_interior(i);
-            return true;
-        }
-        if let Some((city, building)) = self.placing_building
-            && city == i
-        {
+        if let Some((_, building)) = self.site_placement() {
             if !self.site_available(i, building, hex) {
                 self.notice = format!("{} NEEDS AN OPEN LAND TILE", building.name());
             } else {
@@ -173,6 +175,10 @@ impl GameState {
                     format!("{} SITE SELECTED - CONSTRUCTION CONTINUES", building.name())
                 };
             }
+            return true;
+        }
+        if hex == self.cities[i].pos {
+            self.open_city_interior(i);
             return true;
         }
         // City management owns map clicks. Dismiss it with Escape or Space
@@ -239,6 +245,7 @@ impl GameState {
             }
         }
         self.selected_city = None;
+        self.placing_building = None;
         self.notice = "RESOLVING ORDERS".into();
         self.resolve_turn();
     }

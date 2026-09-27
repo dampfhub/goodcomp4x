@@ -56,9 +56,10 @@ copies in place of the exterior world; the exterior camera is restored on exit.
 
 ## A turn
 
-1. **Planning.** Input calls `GameState` methods in `orders.rs`, `group.rs`, `city/` and
-   `ui/`, which queue orders on units and builds on cities. `pending()` counts what still needs
-   attention; the End Turn button names it.
+1. **Planning.** Input calls `GameState` methods in `orders.rs`, `group.rs`, `order_queue.rs`,
+   `city/` and `ui/`, which queue orders on units and builds on cities. Left clicks move, right
+   clicks attack, and Shift-clicks add turns to a unit's order queue (`Unit::queued`, the turns
+   after this one). `pending()` counts what still needs attention; the End Turn button names it.
 2. **End of planning.** Space with nothing waiting and the End Turn button both call
    `end_planning` (`city/view.rs`), which holds unfinished units, may open a city still needing a build
    and stop there, auto-assigns Red's citizens, then calls `resolve_turn` (`turn.rs`): selection
@@ -74,8 +75,10 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    resolves their separate tactical orders and any command-post capture. Then `resolve_economy`
    (`city/citizens.rs`) applies city income, growth and builds; each
    unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,
-   sets or clears Lookout, and clears its orders; then selection moves to the first unit needing orders, or else the first
-   city needing a build (`select_next_or_end_turn`).
+   sets or clears Lookout, and clears its orders; `advance_queues` (`order_queue.rs`) gives each
+   unit with a queue its next turn's orders, dropping queues that no longer fit; then selection
+   moves to the first unit needing orders, or else the first city needing a build
+   (`select_next_or_end_turn`).
 
 The rules each step applies are in `game-rules.md`.
 

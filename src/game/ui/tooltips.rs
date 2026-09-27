@@ -500,15 +500,18 @@ impl GameState {
         match action {
             UnitAction::Move => (
                 "MOVE".into(),
-                "M",
-                "NEXT CLICK ON A GREEN HEX MOVES THERE. CLICK IT AGAIN TO CANCEL.".into(),
+                "M OR CLICK",
+                "NEXT CLICK ON A GREEN HEX MOVES THERE. CLICK IT AGAIN TO CANCEL. \
+                 SHIFT-CLICK QUEUES A MOVE FOR ONE MORE TURN."
+                    .into(),
                 cannot_move,
             ),
             UnitAction::Attack => (
                 "ATTACK".into(),
-                "X OR SHIFT-CLICK",
+                "X OR RIGHT-CLICK",
                 "NEXT CLICK ATTACKS A HEX IN RANGE, HITTING WHOEVER IS THERE WHEN IT LANDS. \
-                 RANGE COUNTS FROM WHERE THE UNIT ENDS ITS MOVE."
+                 RANGE COUNTS FROM WHERE THE UNIT ENDS ITS MOVE. SHIFT-RIGHT-CLICK QUEUES \
+                 AN ATTACK FOR A LATER TURN."
                     .into(),
                 if locked {
                     Some("LOCKED IN A CONTESTED HEX".into())

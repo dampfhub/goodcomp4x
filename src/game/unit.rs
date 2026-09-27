@@ -71,6 +71,23 @@ impl UnitType {
     }
 }
 
+/// One later turn in a unit's order queue (Shift-click, `order_queue.rs`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TurnOrder {
+    /// Where the unit should stand when this turn starts. If it isn't there
+    /// (its earlier move was blocked, say), the rest of the queue is dropped.
+    pub from: Hex,
+    pub move_to: Option<Hex>,
+    pub attack: Option<Hex>,
+}
+
+impl TurnOrder {
+    /// Where the unit stands once this turn's move is done.
+    pub fn end_pos(&self) -> Hex {
+        self.move_to.unwrap_or(self.from)
+    }
+}
+
 #[derive(Clone)]
 pub struct Unit {
     pub id: u32,
@@ -100,6 +117,12 @@ pub struct Unit {
     /// Scout only: spent last turn on lookout, so it sees farther until the
     /// end of this one.
     pub lookout: bool,
+    /// Orders for the turns after this one, in turn order: each turn's end
+    /// moves the first of them into `planned_move` and `planned_attack`.
+    pub queued: Vec<TurnOrder>,
+    /// This turn's orders came from a queue the player built with Shift, so
+    /// the unit doesn't hold up ending the turn.
+    pub following_queue: bool,
 }
 
 impl Unit {
@@ -119,6 +142,8 @@ impl Unit {
             holding: false,
             guarding: false,
             lookout: false,
+            queued: Vec::new(),
+            following_queue: false,
         }
     }
 
@@ -174,16 +199,82 @@ impl Unit {
         }
     }
 
+    /// The unit's stats in the turns after this one, for planning its queue:
+    /// no ability queued, and deployed if it sets up this turn (or packed up
+    /// if it packs up).
+    pub fn later_stats(&self) -> UnitStats {
+        let mut stats = self.unit_type.stats();
+        let deploying = self.ability_queued && self.ability() == Ability::Deploy;
+        if self.deployed != deploying {
+            stats.move_range = 0;
+            stats.attack_range += DEPLOYED_EXTRA_RANGE;
+        }
+        stats
+    }
+
+    /// Whether the unit is following a queue of orders built with Shift.
+    pub fn has_queue(&self) -> bool {
+        self.following_queue || !self.queued.is_empty()
+    }
+
+    /// How many turns the unit has orders for: none, this turn, or this turn
+    /// and its queue. A queued turn may be spent waiting.
+    pub fn plan_len(&self) -> usize {
+        if self.has_queue() {
+            1 + self.queued.len()
+        } else {
+            usize::from(self.planned_move.is_some() || self.planned_attack.is_some())
+        }
+    }
+
+    /// Where the unit will stand after the first `turns` turns of its plan
+    /// (where it stands now for 0; where its plan ends past its last turn).
+    pub fn pos_after(&self, turns: usize) -> Hex {
+        match turns {
+            0 => self.pos,
+            1 => self.planned_pos(),
+            n => self
+                .queued
+                .get(n - 2)
+                .or(self.queued.last())
+                .map_or(self.planned_pos(), TurnOrder::end_pos),
+        }
+    }
+
+    /// The attack planned for turn `turn` of the unit's plan (0 is this turn).
+    pub fn attack_on_turn(&self, turn: usize) -> Option<Hex> {
+        match turn {
+            0 => self.planned_attack,
+            n => self.queued.get(n - 1).and_then(|order| order.attack),
+        }
+    }
+
+    /// Where the unit's plan leaves it.
+    pub fn plan_end(&self) -> Hex {
+        self.queued
+            .last()
+            .map_or(self.planned_pos(), TurnOrder::end_pos)
+    }
+
+    /// Drops the turns queued after this one; this turn's orders stay.
+    pub fn cancel_queue(&mut self) {
+        self.queued.clear();
+        self.following_queue = false;
+    }
+
+    /// Clears every order: this turn's, the queue, and a hold.
     pub fn clear_orders(&mut self) {
         self.planned_move = None;
         self.planned_attack = None;
         self.ability_queued = false;
         self.holding = false;
+        self.cancel_queue();
     }
 
     /// End-of-turn bookkeeping: puts a used ability on cooldown (or ticks the
     /// cooldown down), completes a siege setup or pack-up, starts or ends a
-    /// scout's lookout, and clears orders.
+    /// scout's lookout, and clears this turn's orders. The queue stays, for
+    /// `advance_queues` to take the next turn from.
     pub fn end_turn(&mut self) {
         self.lookout = self.ability_queued && self.ability() == Ability::Lookout;
         if self.ability_queued {
@@ -194,7 +285,9 @@ impl Unit {
         } else {
             self.ability_cooldown = self.ability_cooldown.saturating_sub(1);
         }
+        let queued = std::mem::take(&mut self.queued);
         self.clear_orders();
+        self.queued = queued;
     }
 
     pub fn max_hp(&self) -> f32 {

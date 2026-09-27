@@ -511,8 +511,9 @@ impl ApplicationHandler for App {
                             self.painting_barriers = true;
                             return;
                         }
+                        // Left-click moves; Shift adds the move to the queue.
                         let mode = if keys.shift_key() {
-                            ClickMode::Attack
+                            ClickMode::QueueMove
                         } else if keys.control_key() {
                             ClickMode::Swap
                         } else {
@@ -573,11 +574,15 @@ impl ApplicationHandler for App {
                     {
                         return;
                     }
+                    // Right-click attacks; Shift adds the attack to the
+                    // queue, Ctrl clears orders.
                     if let (Some(cursor), Some(size)) = (self.cursor_pos, self.screen_size()) {
+                        let keys = self.modifiers.state();
                         self.game.handle_context_click(
                             cursor,
                             size,
-                            self.modifiers.state().control_key(),
+                            keys.control_key(),
+                            keys.shift_key(),
                         );
                     }
                 }

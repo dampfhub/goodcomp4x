@@ -214,11 +214,19 @@ impl GameState {
         if c.team != PLAYER_TEAM {
             return;
         }
-        if c.built.contains(&building)
-            || c.pending_building == Some(building)
-            || c.queue.contains(&Build::Building(building))
-        {
+        if c.built.contains(&building) {
             self.notice = format!("{} ALREADY EXISTS IN THIS CITY", building.name());
+            return;
+        }
+        if c.pending_building == Some(building) || c.queue.contains(&Build::Building(building)) {
+            // Queued or finished without a site (the view was left before
+            // one was chosen): the card resumes choosing it.
+            if self.needs_site(city, building) {
+                self.placing_building = Some((city, building));
+                self.notice = format!("CHOOSE A {} SITE - CLICK AN OPEN TILE", building.name());
+            } else {
+                self.notice = format!("{} IS ALREADY QUEUED IN THIS CITY", building.name());
+            }
             return;
         }
         if c.queue.is_empty() {
@@ -240,6 +248,25 @@ impl GameState {
             building.name(),
             amount(building.cost())
         );
+    }
+
+    /// The building whose site the player is choosing, while its city's view
+    /// is open. Placement belongs to that view: with no city open, or another
+    /// one, nothing follows the cursor and map clicks don't place it.
+    pub(in crate::game) fn site_placement(&self) -> Option<(usize, Building)> {
+        self.placing_building
+            .filter(|&(city, _)| self.selected_city == Some(city))
+    }
+
+    /// A placeable building queued in (or finished by) `city` that has no
+    /// site yet, so it can't be confirmed until one is chosen.
+    pub(in crate::game) fn needs_site(&self, city: usize, building: Building) -> bool {
+        let c = &self.cities[city];
+        building.is_placeable()
+            && c.placed_site(building).is_none()
+            && !c.planned_sites.contains_key(&building)
+            && (c.pending_building == Some(building)
+                || c.queue.contains(&Build::Building(building)))
     }
 
     pub(in crate::game) fn site_available(
@@ -520,7 +547,10 @@ impl GameState {
                     }
                     Building::Barracks | Building::Mill | Building::Workshop => {
                         self.cities[i].pending_building = Some(building);
-                        if !self.cities[i].planned_sites.contains_key(&building) {
+                        // Placement starts here only in the open city (F9);
+                        // a turn's completion leaves it for when the city is
+                        // next opened (`open_city`).
+                        if self.selected_city == Some(i) && self.needs_site(i, building) {
                             self.placing_building = Some((i, building));
                         }
                         self.notice =
@@ -543,8 +573,12 @@ impl GameState {
             let Some(pos) = city
                 .neighbors()
                 .into_iter()
-                .find(|h| self.grid.is_passable(*h) && !self.is_occupied(*h))
+                .find(|&h| self.is_open_spawn(h, &spawn))
             else {
+                // The city holds the finished unit until a hex opens, and
+                // banks nothing more meanwhile: a bank would let the rest of
+                // the queue come out one unit a turn once one did (#54).
+                self.cities[i].production = build.cost();
                 continue;
             };
             self.cities[i].production -= build.cost();
@@ -570,7 +604,7 @@ impl GameState {
             let Some(pos) = barracks
                 .neighbors()
                 .into_iter()
-                .find(|h| self.grid.is_passable(*h) && !self.is_occupied(*h))
+                .find(|&h| self.is_open_spawn(h, &spawn))
             else {
                 continue;
             };
@@ -584,5 +618,14 @@ impl GameState {
             self.units.push(Unit::new(id, pos, team, kind));
             log::info!("{team:?} city completed {kind:?}");
         }
+    }
+
+    /// Whether a finished unit can appear on `hex`: passable, with no unit on
+    /// it and none already finishing there this turn (a barracks beside its
+    /// city shares hexes with it).
+    fn is_open_spawn(&self, hex: Hex, spawn: &[(Team, Hex, UnitType)]) -> bool {
+        self.grid.is_passable(hex)
+            && !self.is_occupied(hex)
+            && spawn.iter().all(|&(_, pos, _)| pos != hex)
     }
 }

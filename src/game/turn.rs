@@ -142,6 +142,7 @@ impl GameState {
                 }
                 unit.end_turn();
             }
+            self.advance_queues();
             log::info!("=== turn {} resolved ===", self.turn);
             self.select_next_or_end_turn(None);
         }

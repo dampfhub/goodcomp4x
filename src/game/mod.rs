@@ -16,6 +16,7 @@ mod hex;
 mod map_icons;
 mod mapgen;
 mod mesh;
+mod order_queue;
 mod orders;
 mod scenario;
 #[cfg(test)]
@@ -74,7 +75,8 @@ pub struct GameState {
     exterior_camera: Option<Camera>,
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option<usize>,
-    /// City and building whose site is being chosen.
+    /// City and building whose site is being chosen. Only live while that
+    /// city's view is open: read it through `site_placement`.
     placing_building: Option<(usize, city::Building)>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
