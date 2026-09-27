@@ -63,8 +63,9 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    after this one). `pending()` counts what still needs attention; the End Turn button names it.
 2. **End of planning.** Space with nothing waiting and the End Turn button both call
    `end_planning` (`city/view.rs`), which holds unfinished units, may open a city still needing a build
-   and stop there, auto-assigns Red's citizens, then calls `resolve_turn` (`turn.rs`): selection
-   is cleared, the AI plans (`plan_ai_turn`, `ai.rs`), and every step of `RESOLUTION_ORDER` is
+   and stop there, auto-assigns the AI sides' citizens, then calls `resolve_turn` (`turn.rs`): selection
+   is cleared, every AI side plans (`plan_ai_turn` for each of `ai_teams`, `ai.rs`), and every
+   step of `RESOLUTION_ORDER` is
    queued as a `Step::Units`, followed by `Step::Workers`.
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each unit step resolves one unit type's moves or attacks

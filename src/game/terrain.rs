@@ -47,6 +47,37 @@ impl Resource {
     }
 }
 
+/// Rich land worth scouting for and fighting over: a tile that yields well
+/// beyond its terrain when a city works it. Placed by the world's map
+/// generator between the starts (`mapgen.rs`). The kinds and numbers are a
+/// first pass.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Special {
+    /// Fruit trees: much more food.
+    Orchard,
+    /// Good stone near the surface: much more production.
+    Quarry,
+}
+
+impl Special {
+    pub const ALL: [Special; 2] = [Special::Orchard, Special::Quarry];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Orchard => "ORCHARD",
+            Self::Quarry => "QUARRY",
+        }
+    }
+
+    /// Food and production it adds to the tile's own when worked.
+    pub fn bonus(self) -> (i32, i32) {
+        match self {
+            Self::Orchard => (3, 0),
+            Self::Quarry => (0, 3),
+        }
+    }
+}
+
 impl Terrain {
     pub fn name(self) -> &'static str {
         match self {

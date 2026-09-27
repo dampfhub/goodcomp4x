@@ -131,3 +131,10 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     quarter of the vertices the old sampled mesh took. Each bank grows its own irregular clump
     of 4 to 9 puffs. The clouds drift on a slow wind and billow, fading out past the map's edge.
     A third setting, Fog, swaps them for solid grey.
+44. More sides and contested ground (`claude/world-players`): `Team` grew to seven sides, each
+    at war with every other, and the AI plays all but Blue. The F4 world now seats Blue and 4-6 AI
+    sides (the World AI setting) on starts scattered and evened out for spacing and land, each
+    with horses and iron a few hexes away, and starting with a city or a settler (the World Start
+    setting). Between the starts it places special tiles (Orchard, Quarry) that yield more, and
+    ruins a side claims by holding them for three turns. The AI heads for ruins as well as
+    enemies, and its searches stop early, so turns with many sides stay quick.

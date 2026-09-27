@@ -7,8 +7,11 @@ use glam::Vec2;
 
 use super::fog::{Fog, SeenBuilding};
 use super::hex::{HEX_SIZE, Hex, HexGrid, edge, edge_corners};
-use super::map_icons::{self, IMPROVEMENT_SPOT, MapIcon, RESOURCE_SPOT};
+use super::map_icons::{
+    self, IMPROVEMENT_SPOT, LANDMARK_SCALE, LANDMARK_SPOT, MapIcon, RESOURCE_SPOT,
+};
 use super::orders::ClickMode;
+use super::ruins::RUIN_HOLD_TURNS;
 use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, Unit, UnitStats};
@@ -37,6 +40,15 @@ const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 /// than the gap; otherwise a sliver of it would show on the side in sight.
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
 const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
+/// The row of pips beside ruins counting the turns they've been held: where
+/// the first sits from the hex's center, and the step to the next.
+const RUIN_PIPS: Vec2 = Vec2::new(-0.06, -0.7);
+const RUIN_PIP_RADIUS: f32 = 0.05;
+const RUIN_PIP_GAP: f32 = 0.13;
+/// Thin rims inside hexes worth scouting for: special tiles and ruins.
+const SPECIAL_RIM_COLOR: Color = [0.95, 0.66, 0.12, 1.0];
+const RUIN_RIM_COLOR: Color = [0.62, 0.58, 0.50, 1.0];
+const LANDMARK_RIM_WIDTH: f32 = 0.05;
 /// Distance between cloud banks, in world units (a hex is 1 from center to corner).
 const CLOUD_SPACING: f32 = 2.8;
 /// Under the clouds, filling the gaps between puffs: the shade of their
@@ -302,6 +314,13 @@ impl GameState {
                 let icon = MapIcon::resource(resource);
                 map_icons::push_map_icon(center + RESOURCE_SPOT, icon, &mut out);
             }
+            if let Some(special) = self.grid.special(hex) {
+                push_landmark_rim(center, SPECIAL_RIM_COLOR, &mut out);
+                let icon = MapIcon::special(special);
+                let spot = center + LANDMARK_SPOT;
+                map_icons::push_map_icon_scaled(spot, icon, LANDMARK_SCALE, &mut out);
+            }
+            self.push_known_ruin(hex, &fog, &mut out);
         }
         push_rivers(&self.grid, |h| self.is_explored(h), &mut out);
 
@@ -507,6 +526,33 @@ impl GameState {
         out
     }
 
+    /// Ruins on `hex` as the player knows them: in sight, with a pip for
+    /// each turn their holder has held them, in its color; out of sight, as
+    /// last seen, without.
+    fn push_known_ruin(&self, hex: Hex, fog: &Fog, out: &mut Vec<Vertex>) {
+        let ruin = if fog.sees(hex) {
+            match self.ruin_at(hex) {
+                Some(ruin) => Some(ruin),
+                None => return,
+            }
+        } else if self.memory.get(&hex).is_some_and(|seen| seen.ruin) {
+            None
+        } else {
+            return;
+        };
+        push_landmark_rim(hex.to_world(), RUIN_RIM_COLOR, out);
+        let spot = hex.to_world() + LANDMARK_SPOT;
+        map_icons::push_map_icon_scaled(spot, MapIcon::Ruins, LANDMARK_SCALE, out);
+        let Some(ruin) = ruin else { return };
+        let color = ruin.holder.map_or(BORDER_COLOR, Team::color);
+        for i in 0..RUIN_HOLD_TURNS {
+            let pip = hex.to_world() + RUIN_PIPS + Vec2::new(i as f32 * RUIN_PIP_GAP, 0.0);
+            let fill = if i < ruin.held { color } else { BORDER_COLOR };
+            mesh::regular_polygon(pip, RUIN_PIP_RADIUS + 0.012, 6, 0.0, BORDER_COLOR, out);
+            mesh::regular_polygon(pip, RUIN_PIP_RADIUS, 6, 0.0, fill, out);
+        }
+    }
+
     /// Darkens remembered terrain and covers unexplored areas with clouds.
     /// Drawn over the map and cities but under units and orders.
     fn push_fog(&self, fog: &Fog, out: &mut Vec<Vertex>) {
@@ -549,6 +595,16 @@ impl GameState {
             }
         }
     }
+}
+
+/// A thin rim just inside the fill of the hex at `center`, marking a
+/// landmark (a special tile or ruins).
+fn push_landmark_rim(center: Vec2, color: Color, out: &mut Vec<Vertex>) {
+    let radius = HEX_SIZE * HEX_FILL_SCALE - LANDMARK_RIM_WIDTH / 2.0;
+    let corners: Vec<Vec2> = (0..6)
+        .map(|i| center + Vec2::from_angle(i as f32 * TAU / 6.0) * radius)
+        .collect();
+    mesh::outline(&corners, LANDMARK_RIM_WIDTH, color, out);
 }
 
 /// Stable pseudo-random number for one cell of the cloud lattice.
@@ -852,7 +908,10 @@ impl GameState {
         if self.rival_of(idx).is_none() {
             return (center, 1.0);
         }
-        let offset_y = if unit.team == Team::Blue {
+        // The team earlier in `Team::ALL` (the player, if either is) draws
+        // on top.
+        let rival = self.rival_of(idx).map(|r| self.units[r].team);
+        let offset_y = if rival.is_none_or(|rival| unit.team < rival) {
             CONTESTED_OFFSET_Y
         } else {
             -CONTESTED_OFFSET_Y

@@ -15,6 +15,8 @@ use std::collections::HashMap;
 
 use super::hex::{Hex, HexGrid};
 use super::mapgen::{generate, start_units};
+use super::ruins::{Ruin, RuinReward};
+use super::settings::Settings;
 use super::terrain::{Resource, Tile};
 use super::unit::{Team, Unit, UnitType};
 use super::workers::WorkerJob;
@@ -228,35 +230,63 @@ impl GameState {
         self.selected = self.unit_of_team_at(Hex::new(-4, 0), PLAYER_TEAM);
     }
 
-    pub(super) fn setup_world(&mut self, seed: u32) {
-        let map = generate(seed);
+    /// The world (F4): a map for the player and `Settings::world_ai` AI
+    /// sides, each on its own start (the player on the first) with a scout
+    /// and either its city or a settler to found it (`world_start_city`).
+    /// The map's ruins each get a reward, in turn by the seed.
+    pub(super) fn setup_world(&mut self, seed: u32, settings: &Settings) {
+        let ai = settings.world_ai_for(seed).min(Team::ALL.len() - 1);
+        let map = generate(seed, 1 + ai);
         self.grid = map.grid;
         self.map_seed = Some(seed);
         self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
-        // Only the player plays here, on the first start: no AI opponent.
-        // The map still has a second start, unused.
-        for (team, start) in [Team::Blue].into_iter().zip(map.starts) {
+        self.ruins = map
+            .ruins
+            .iter()
+            .enumerate()
+            .map(|(i, &pos)| {
+                let rewards = RuinReward::ALL;
+                Ruin::new(pos, rewards[(seed as usize + i) % rewards.len()])
+            })
+            .collect();
+        for (&team, &start) in Team::ALL.iter().zip(&map.starts) {
             // The start comes with hills for the scout. Only the blank
-            // fallback map lacks them. The settler's city starts with a
-            // worker at home.
+            // fallback map lacks them. A city starts with a worker at home.
             let open: Vec<Hex> = start
                 .neighbors()
                 .into_iter()
                 .filter(|h| self.grid.is_passable(*h))
                 .collect();
             let (_, scout) = start_units(&self.grid, start).unwrap_or((open[0], open[1]));
-            for (pos, settler, unit_type) in [
-                (start, true, UnitType::Melee),
-                (scout, false, UnitType::Scout),
-            ] {
+            if settings.world_start_city {
+                let id = self.cities.len() as u32;
+                // The AI keeps training melee (`complete_builds`); the
+                // player's queue starts empty.
+                let queue = if team == PLAYER_TEAM {
+                    Vec::new()
+                } else {
+                    vec![Build::Unit(BuildUnit::Melee)]
+                };
+                self.cities.push(City {
+                    queue,
+                    ..City::new(id, team, start)
+                });
+                self.auto_assign_city(self.cities.len() - 1);
+            } else {
                 let id = self.next_unit_id;
                 self.next_unit_id += 1;
-                self.units.push(Unit::new(id, pos, team, unit_type));
-                if settler {
-                    self.settlers.insert(id);
-                }
+                self.units.push(Unit::new(id, start, team, UnitType::Melee));
+                self.settlers.insert(id);
             }
+            let id = self.next_unit_id;
+            self.next_unit_id += 1;
+            self.units.push(Unit::new(id, scout, team, UnitType::Scout));
         }
-        self.notice = format!("WORLD SEED {seed} - F FOUNDS A CITY - F4 FOR A NEW MAP");
+        let founding = if settings.world_start_city {
+            "C OPENS YOUR CITY"
+        } else {
+            "F FOUNDS A CITY"
+        };
+        self.notice = format!("WORLD SEED {seed} - {ai} AI - {founding} - F4 FOR A NEW MAP");
     }
 }

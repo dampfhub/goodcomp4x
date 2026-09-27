@@ -12,7 +12,7 @@ keys are in `controls.md`; screen-space panels in `ui-system.md`. Amounts below 
 | F1 | Combat | radius-3 map with a mountain pass; one Melee, Ranged, Cavalry and Siege per side; no cities |
 | F2 | Cities (default) | radius-6 map; the Combat units plus a city (with one worker at home), owned farms/mines/pastures and dirt roads per side; Horses and Iron deposits |
 | F3 | Frontier | radius-6 map; a settler and a scout per side, no cities. Red's scout is player-controlled, to test route cuts and contests without the AI |
-| F4 | World | a generated map (see World generation) with your settler and scout and no AI opponent; a new random seed every press |
+| F4 | World | a generated map (see World generation) for you and 4-6 AI sides, each with a city (or a settler) and a scout; a new random seed every press |
 | F12 | Siege | the Cities map with four Blue attackers against two Red gate defenders; the Red city's interior opens for testing |
 
 Pressing F1-F3 restarts that scenario; F4 always makes a new map. The savestate (F6 save, F7
@@ -57,7 +57,20 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   or city hex costs 1.
 - **Defense** bonuses apply to units only; barracks defense is fixed.
 - **Resources:** Horses and Iron give no yield; they let a Barracks standing on them train Cavalry
-  or Armored. Only the Cities scenario places them.
+  or Armored. The Cities scenario places them, and every World start has one of each nearby.
+- **Special tiles** (World maps only; `Special`, `terrain.rs`): land worth scouting for and
+  fighting over, marked with a gold rim and an icon in the hex's bottom-left corner. An Orchard
+  yields +3 food and a Quarry +3 production when worked, on top of the tile's own yield and any
+  improvement. The kinds and numbers are a first pass.
+- **Ruins** (World maps only; `ruins.rs`): a one-use tile, marked with a stone rim and broken
+  columns. A side claims ruins by holding their hex with military units (anything but a settler;
+  scouts count) at the end of 3 turns; the ruins then give their reward at once and are gone.
+  While the hex is contested, or empty, the count pauses; when another side takes it, the count
+  starts over for that side. Pips beside the ruins show the count in the holder's color. Each
+  ruin has one reward, shown in its tooltip: a Cavalry unit beside the ruins (Recruits), +6
+  production (Supplies) or +8 food (Harvest) in the claimant's nearest city; a side without a
+  city gets the Cavalry. Rewards are claimed before the turn's economy, so a city reward is spent
+  like the turn's own income. Out of sight, ruins show as last seen.
 
 ## Maps
 
@@ -66,16 +79,31 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **Cities:** the same three hills; mountains at (0,±2), (0,±3), (0,±4); Horses at (-2,0) and
   (2,0); Iron at (-2,1) and (2,-1).
 - **Frontier:** hills at (-1,2) and (1,-2); mountains at (0,±3).
-- **World generation** (`mapgen.rs`): a rectangle about 61 hexes wide by 36 tall, generated from a
-  `u32` seed with its own RNG, so a seed always rebuilds the same map (the seed shows in the debug
-  panel; there is no way to type one in). A Pangea: 42-52% sea, one continent plus islets of at
-  most 12 hexes, mountain ranges and hills by noise, lakes, rivers running downhill to water,
+- **World generation** (`mapgen.rs`): a rectangle about 61 hexes wide by 36 tall for up to four
+  sides, larger for more (its area grows with the number of sides), generated from a `u32` seed
+  with its own RNG, so a seed and side count always rebuild the same map (the seed shows in the
+  debug panel; there is no way to type one in). A Pangea: 42-52% sea, one continent plus islets of
+  at most 12 hexes, mountain ranges and hills by noise, lakes, rivers running downhill to water,
   climate by latitude and moisture, forest on wetter grassland, plains and tundra, jungle on about
-  three quarters of marsh. The two starts are on the largest continent, far apart, on flat land
-  that is not snow, desert or marsh, scored on nearby yields and fresh water; the left one is
-  Blue's. There is no AI opponent: only Blue plays, with a settler on its start and a scout on
-  neighboring hills, and the other start stays empty. The city the settler founds comes with a
-  worker. The camera starts on Blue's settler.
+  three quarters of marsh.
+  - **Sides:** the player (Blue) and 4-6 AI sides, picked by the seed, or as many as the World AI
+    setting says (1-6). Each takes a start in `Team::ALL` order (Red, Green, Gold, Purple, Teal,
+    Orange), Blue on any of them.
+  - **Starts** are on the largest continent, on flat land that is not snow, desert or marsh, with
+    open ground and hills next door, scored on nearby yields and fresh water. The set is
+    scattered and then evened out: each start about as far from its nearest neighbor as the land
+    allows when shared out evenly (some closer, some farther), with about equally good land.
+  - **Units:** each side starts with its city already founded (with a worker at home) or with a
+    settler, as the World Start setting says, and a scout on the neighboring hills. The camera
+    starts on Blue's city or settler.
+  - **Horses and Iron:** one of each within two to four hexes of every start (farther only if
+    there's no room), nearer it than any other start: horses on open flat ground, iron on hills
+    or under mountains where there are some.
+  - **Ruins and special tiles** go on contested ground: a hex about equally far on foot from the
+    two starts nearest it (ruins within a step or so, special tiles within three), well away
+    from every start, off the map's edge and reachable from every start. That keeps them out of
+    pockets only one side can reach. There are about as many of each as sides, spread apart, and
+    special tiles keep clear of ruins.
 
 ## Units (`unit.rs`)
 
@@ -519,16 +547,19 @@ every turn end.
 
 ## AI (`ai.rs`)
 
-Each Red unit picks the enemy unit or worker nearest on foot (walking distance around terrain,
-walls and others' gates). It steps onto a worker it can reach this turn, capturing it; otherwise
+Every side but Blue is played by the AI, in `Team::ALL` order, and every side is at war with
+every other. Each AI unit picks the enemy unit or worker, or the unclaimed ruins no unit of its
+side holds or is heading for, nearest on foot (walking distance around terrain, walls and others'
+gates). It steps onto ruins it can reach, and then holds them until they're claimed, attacking
+enemies in range from there. It steps onto a worker it can reach this turn, capturing it; otherwise
 it attacks its target if already in range, or moves to the reachable hex with the shortest
 remaining walk, attacking if that brings it into range. It skips hexes a teammate already
 claimed, and units in a contested hex stay and fight. It never uses abilities, never attacks
 cities, never builds buildings, ignores the fog, and ignores its civilians and any
-player-controlled Red unit; its scouts fight like any other unit. Red cities auto-assign citizens
+player-controlled AI unit; its scouts fight like any other unit. AI cities auto-assign citizens
 at every end of planning, queue Melee whenever their queue is empty, and train a worker first
-when they have none. A Red city with a worker at home and an empty list gives it one job: an
-improvement on a tile it works, or else a road there. At a contested friendly city gate, Red
+when they have none. An AI city with a worker at home and an empty list gives it one job: an
+improvement on a tile it works, or else a road there. At a contested friendly city gate, AI
 units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
 
@@ -550,7 +581,8 @@ Known bugs link to their board item; the rest are design questions nobody has de
   so a move planned through an unseen enemy passes it.
 - Hills and forest cost the same to enter as plains, and rivers don't slow or penalize crossing
   units.
-- Generated maps have no resources yet, and there are only two sides on the four-player map.
+- Ruin rewards, special tile kinds and their numbers are placeholders. Every side is at war with
+  every other; there's no diplomacy, and the AI sides fight each other as readily as Blue.
 - Swaps only work between adjacent units.
 - An order queue only stops for an enemy standing on its next destination (or blocking the
   move); it doesn't stop when an enemy merely comes into sight, and it can't queue abilities,

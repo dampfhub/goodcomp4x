@@ -1,5 +1,5 @@
 //! Random maps for the world scenario (F4): a Pangea on a rectangular map
-//! wider than tall, sized for a four-player game. Everything comes from one
+//! wider than tall, sized for the number of players. Everything comes from one
 //! seed, so a seed always rebuilds the same map.
 //!
 //! The recipe:
@@ -23,43 +23,81 @@
 //! 7. Vegetation: forest grows on the wetter grassland, plains and tundra
 //!    (hills included), in patches from its own noise; jungle covers most
 //!    marsh.
-//! 8. Starts: two hexes on the continent (the largest stretch of passable
-//!    land), far apart, each with the best food and production nearby that
-//!    the other can match.
+//! 8. Starts: one hex per side on the continent (the largest stretch of
+//!    passable land), scattered and then evened out so each is about as far
+//!    from its nearest neighbor as the land allows if shared out evenly, with
+//!    about as good food and production nearby as the others.
+//! 9. Horses and iron: one of each within a few hexes of every start, nearer
+//!    it than any other start.
+//! 10. Contested ground: ruins, and special tiles that yield more, go where
+//!     two starts are about as far on foot, well away from both, so no side
+//!     has them to itself.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use glam::Vec2;
 
 use super::hex::{Hex, HexGrid, Shape, edge};
-use super::terrain::{Feature, Terrain, Tile};
+use super::terrain::{Feature, Resource, Special, Terrain, Tile};
 
-/// A generated world: 61 columns by about 36 rows, room for four players.
-pub const WORLD_SHAPE: Shape = Shape::Rectangle { cols: 30, rows: 18 };
+/// The world's size for `sides` players: 61 columns by about 36 rows for four
+/// or fewer, growing with more players so each has about as much land.
+pub fn world_shape(sides: usize) -> Shape {
+    let scale = (sides.max(4) as f32 / 4.0).sqrt();
+    Shape::Rectangle {
+        cols: (30.0 * scale).round() as i32,
+        rows: (18.0 * scale).round() as i32,
+    }
+}
 
 /// Land apart from the continent survives only as islands this small.
 const MAX_ISLAND: usize = 12;
 
+/// Tries at scattering the starts; the most even spread wins.
+const START_TRIALS: usize = 24;
+/// Swaps tried to even out each scattered set of starts.
+const START_SWAPS: usize = 160;
+
 pub struct GeneratedMap {
     pub grid: HexGrid,
-    /// Where each side starts: the left-hand one is Blue's.
-    pub starts: [Hex; 2],
+    /// One start per side, the player's first: about as far from its nearest
+    /// neighbor as every other start is from its own, and about as good.
+    /// Each has horses and iron a few hexes away.
+    pub starts: Vec<Hex>,
+    /// Ruins to fight over, each about as far on foot from the two starts
+    /// nearest it and close to none.
+    pub ruins: Vec<Hex>,
 }
 
-/// Builds a world map from `seed`.
-pub fn generate(seed: u32) -> GeneratedMap {
-    // A rare map has no two good starts; try the next variant.
+/// Builds a world map for `sides` players from `seed`.
+pub fn generate(seed: u32, sides: usize) -> GeneratedMap {
+    let sides = sides.max(1);
+    let shape = world_shape(sides);
+    // A rare map has no good set of starts; try the next variant.
     for attempt in 0..16u64 {
         let mut rng = Rng(u64::from(seed) << 8 | attempt);
-        let (tiles, rivers) = shape_world(WORLD_SHAPE, &mut rng);
-        let grid = HexGrid::shaped(WORLD_SHAPE, tiles).with_rivers(rivers);
-        if let Some(starts) = pick_starts(&grid) {
-            return GeneratedMap { grid, starts };
-        }
+        let (tiles, rivers) = shape_world(shape, &mut rng);
+        let mut grid = HexGrid::shaped(shape, tiles).with_rivers(rivers);
+        let Some((starts, spacing)) = pick_starts(&grid, sides, &mut rng) else {
+            continue;
+        };
+        place_start_resources(&mut grid, &starts, &mut rng);
+        let distances: Vec<HashMap<Hex, i32>> = starts
+            .iter()
+            .map(|&start| walking_distances(&grid, start))
+            .collect();
+        let ruins = place_ruins(&grid, &starts, &distances, spacing, &mut rng);
+        place_specials(&mut grid, &starts, &distances, &ruins, spacing, &mut rng);
+        return GeneratedMap {
+            grid,
+            starts,
+            ruins,
+        };
     }
     GeneratedMap {
-        grid: HexGrid::shaped(WORLD_SHAPE, [(Hex::new(0, 0), Terrain::Plains)]),
-        starts: [Hex::new(-8, 4), Hex::new(8, -4)],
+        grid: HexGrid::shaped(shape, [(Hex::new(0, 0), Terrain::Plains)]),
+        starts: (0..sides as i32).map(|i| Hex::new(4 * i - 8, 0)).collect(),
+        ruins: Vec::new(),
     }
 }
 
@@ -351,20 +389,19 @@ fn carve_rivers(
     rivers
 }
 
-/// Two start hexes on the continent (the largest stretch of passable land):
-/// as evenly good as possible, and far apart: a third of the map's width if
-/// the land allows, closer if it doesn't.
-/// Each is also a `fair_start`.
-fn pick_starts(grid: &HexGrid) -> Option<[Hex; 2]> {
-    let far = match grid.shape() {
-        Shape::Hexagon { radius } => radius,
-        Shape::Rectangle { cols, .. } => 2 * cols / 3,
-    };
+/// One start per side on the continent (the largest stretch of passable
+/// land), with the spacing they aim for: the distance between neighbors if
+/// the land were shared out evenly. Each start is a `fair_start` on good
+/// ground. The set is scattered at random and then evened out
+/// (`start_cost`): every start about `spacing` from its nearest neighbor, some
+/// closer and some farther, and about as good as the others. The player's
+/// start, first, is any of them.
+fn pick_starts(grid: &HexGrid, sides: usize, rng: &mut Rng) -> Option<(Vec<Hex>, f32)> {
     let all: Vec<Hex> = grid.all_hexes().collect();
     let landmass = components(&all, |h| grid.is_passable(h))
         .into_iter()
         .max_by_key(Vec::len)?;
-    let scored: Vec<(Hex, i32)> = landmass
+    let candidates: Vec<(Hex, i32)> = landmass
         .iter()
         .copied()
         .filter(|h| {
@@ -377,25 +414,322 @@ fn pick_starts(grid: &HexGrid) -> Option<[Hex; 2]> {
         })
         .map(|h| (h, start_score(grid, h)))
         .collect();
-    for min_distance in [far, far * 3 / 4, far / 2, 4] {
-        let mut best: Option<(i32, [Hex; 2])> = None;
-        for (i, &(a, score_a)) in scored.iter().enumerate() {
-            for &(b, score_b) in &scored[i + 1..] {
-                if a.distance(b) < min_distance {
+    if candidates.len() < sides {
+        return None;
+    }
+    // Hexes pack at about 0.87 d^2 of area per point d apart.
+    let spacing = 1.075 * (landmass.len() as f32 / sides as f32).sqrt();
+    for tolerance in [0.75, 0.6, 0.45] {
+        let min_gap = ((spacing * tolerance) as i32).max(4);
+        let mut best: Option<(f32, Vec<usize>)> = None;
+        for _ in 0..START_TRIALS {
+            let Some(mut set) = scatter_starts(&candidates, sides, min_gap, rng) else {
+                continue;
+            };
+            let mut cost = start_cost(&candidates, &set, spacing);
+            for _ in 0..START_SWAPS {
+                let slot = rng.below(set.len());
+                let pick = rng.below(candidates.len());
+                if set.contains(&pick)
+                    || set.iter().enumerate().any(|(i, &other)| {
+                        i != slot && candidates[pick].0.distance(candidates[other].0) < min_gap
+                    })
+                {
                     continue;
                 }
-                let value = 2 * score_a.min(score_b) - (score_a - score_b).abs();
-                if best.is_none_or(|(v, _)| value > v) {
-                    best = Some((value, [a, b]));
+                let old = std::mem::replace(&mut set[slot], pick);
+                let new_cost = start_cost(&candidates, &set, spacing);
+                if new_cost < cost {
+                    cost = new_cost;
+                } else {
+                    set[slot] = old;
                 }
             }
+            if best.as_ref().is_none_or(|(c, _)| cost < *c) {
+                best = Some((cost, set));
+            }
         }
-        if let Some((_, mut pair)) = best {
-            pair.sort_by(|a, b| a.to_world().x.total_cmp(&b.to_world().x));
-            return Some(pair);
+        if let Some((_, set)) = best {
+            let mut starts: Vec<Hex> = set.iter().map(|&i| candidates[i].0).collect();
+            starts.sort_by_key(|h| (h.q, h.r));
+            let player = rng.below(starts.len());
+            starts.swap(0, player);
+            return Some((starts, spacing));
         }
     }
     None
+}
+
+/// `sides` candidates taken in random order, each at least `min_gap` from
+/// those already taken, or `None` if they run out first.
+fn scatter_starts(
+    candidates: &[(Hex, i32)],
+    sides: usize,
+    min_gap: i32,
+    rng: &mut Rng,
+) -> Option<Vec<usize>> {
+    let mut order: Vec<usize> = (0..candidates.len()).collect();
+    for i in (1..order.len()).rev() {
+        order.swap(i, rng.below(i + 1));
+    }
+    let mut set: Vec<usize> = Vec::with_capacity(sides);
+    for i in order {
+        if set
+            .iter()
+            .all(|&j| candidates[i].0.distance(candidates[j].0) >= min_gap)
+        {
+            set.push(i);
+            if set.len() == sides {
+                return Some(set);
+            }
+        }
+    }
+    None
+}
+
+/// How far a set of starts is from the ideal (lower is better): each start's
+/// distance to its nearest neighbor should be `spacing`, their scores equal,
+/// and higher.
+fn start_cost(candidates: &[(Hex, i32)], set: &[usize], spacing: f32) -> f32 {
+    let hexes: Vec<Hex> = set.iter().map(|&i| candidates[i].0).collect();
+    let scores: Vec<f32> = set.iter().map(|&i| candidates[i].1 as f32).collect();
+    let spread = if hexes.len() < 2 {
+        0.0
+    } else {
+        hexes
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let nearest = hexes
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != i)
+                    .map(|(_, b)| a.distance(*b))
+                    .min()
+                    .unwrap_or(0) as f32;
+                ((nearest - spacing) / spacing).powi(2)
+            })
+            .sum::<f32>()
+            / hexes.len() as f32
+    };
+    let mean = (scores.iter().sum::<f32>() / scores.len() as f32).max(1.0);
+    let (low, high) = scores
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &s| (lo.min(s), hi.max(s)));
+    spread + 0.5 * (high - low) / mean - 0.1 * mean / 100.0
+}
+
+/// Horses and iron for every start, each within a few hexes of it and
+/// nearer it than any other start: horses on open flat ground, iron on hills
+/// or under mountains where there are some, anywhere open otherwise.
+fn place_start_resources(grid: &mut HexGrid, starts: &[Hex], rng: &mut Rng) {
+    for (i, &start) in starts.iter().enumerate() {
+        let taken: Vec<Hex> = std::iter::once(start)
+            .chain(
+                start_units(grid, start)
+                    .map(|(worker, scout)| [worker, scout])
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect();
+        let own = |h: Hex| {
+            starts
+                .iter()
+                .enumerate()
+                .all(|(j, &other)| j == i || h.distance(other) > h.distance(start))
+        };
+        let kinds: [(Resource, Ground); 2] = [
+            (Resource::Horses, horse_ground),
+            (Resource::Iron, iron_ground),
+        ];
+        for (resource, fits) in kinds {
+            let options = |reach: i32, strict: bool| -> Vec<Hex> {
+                within(start, reach)
+                    .filter(|&h| {
+                        h.distance(start) >= 2
+                            && grid.is_passable(h)
+                            && !taken.contains(&h)
+                            && grid.resource(h).is_none()
+                            && own(h)
+                            && (!strict || fits(grid, h))
+                    })
+                    .collect()
+            };
+            let spot = [(3, true), (4, true), (3, false), (5, false)]
+                .into_iter()
+                .map(|(reach, strict)| options(reach, strict))
+                .find(|options| !options.is_empty())
+                .map(|options| options[rng.below(options.len())]);
+            if let Some(spot) = spot {
+                grid.set_resource(spot, resource);
+            }
+        }
+    }
+}
+
+/// Whether a hex suits a resource.
+type Ground = fn(&HexGrid, Hex) -> bool;
+
+/// Open flat ground, for horses.
+fn horse_ground(grid: &HexGrid, hex: Hex) -> bool {
+    let tile = grid.tile(hex);
+    !tile.hills
+        && tile.feature.is_none()
+        && matches!(
+            tile.terrain,
+            Terrain::Grassland | Terrain::Plains | Terrain::Tundra
+        )
+}
+
+/// Hills, or ground under mountains, for iron.
+fn iron_ground(grid: &HexGrid, hex: Hex) -> bool {
+    grid.tile(hex).hills
+        || hex
+            .neighbors()
+            .into_iter()
+            .any(|n| grid.contains(n) && grid.terrain(n) == Terrain::Mountains)
+}
+
+/// Every hex within `radius` of `center`, on the map or not.
+fn within(center: Hex, radius: i32) -> impl Iterator<Item = Hex> {
+    (-radius..=radius).flat_map(move |dq| {
+        ((-radius).max(-dq - radius)..=radius.min(-dq + radius))
+            .map(move |dr| Hex::new(center.q + dq, center.r + dr))
+    })
+}
+
+/// Steps on foot from `origin` to every passable hex it connects to.
+fn walking_distances(grid: &HexGrid, origin: Hex) -> HashMap<Hex, i32> {
+    let mut distances = HashMap::from([(origin, 0)]);
+    let mut queue = VecDeque::from([origin]);
+    while let Some(hex) = queue.pop_front() {
+        let next = distances[&hex] + 1;
+        for n in hex.neighbors() {
+            if grid.is_passable(n) && !distances.contains_key(&n) {
+                distances.insert(n, next);
+                queue.push_back(n);
+            }
+        }
+    }
+    distances
+}
+
+/// A hex's walking distances to every start, nearest first, or `None` if
+/// some start can't walk there.
+fn distances_to_starts(distances: &[HashMap<Hex, i32>], hex: Hex) -> Option<Vec<i32>> {
+    let mut steps: Vec<i32> = distances
+        .iter()
+        .map(|map| map.get(&hex).copied())
+        .collect::<Option<_>>()?;
+    steps.sort_unstable();
+    Some(steps)
+}
+
+/// Contested ground: hexes about as far on foot from the two starts nearest
+/// them (within `slack` steps, a little more farther out), at least `near`
+/// from any start and no farther than `far`, off the map's edge and free of
+/// anything else. Being as close to a second start is what keeps a hex out
+/// of a pocket only one side can reach. Each comes with how uneven it is,
+/// for sorting: less uneven is better, and a hex nearly as close to a third
+/// start is better still.
+fn contested_hexes(
+    grid: &HexGrid,
+    starts: &[Hex],
+    distances: &[HashMap<Hex, i32>],
+    near: i32,
+    far: i32,
+    slack: i32,
+) -> Vec<(Hex, i32)> {
+    if starts.len() < 2 {
+        return Vec::new();
+    }
+    grid.all_hexes()
+        .filter(|&h| {
+            grid.is_passable(h) && grid.edge_distance(h) >= 2 && grid.resource(h).is_none()
+        })
+        .filter_map(|h| {
+            let steps = distances_to_starts(distances, h)?;
+            let (nearest, second) = (steps[0], steps[1]);
+            let uneven = second - nearest;
+            let third = steps.get(2).map_or(0, |&third| (third - nearest) / 3);
+            (nearest >= near && nearest <= far && uneven <= slack + nearest / 8)
+                .then_some((h, 2 * uneven + third))
+        })
+        .collect()
+}
+
+/// Picks up to `wanted` of `options` (hex, unevenness), the most even first,
+/// in random order among equals, at least `gap` apart and from `avoid`.
+fn pick_spread(
+    mut options: Vec<(Hex, i32)>,
+    wanted: usize,
+    gap: i32,
+    avoid: &[Hex],
+    rng: &mut Rng,
+) -> Vec<Hex> {
+    for i in (1..options.len()).rev() {
+        options.swap(i, rng.below(i + 1));
+    }
+    options.sort_by_key(|&(_, uneven)| uneven);
+    let mut picked: Vec<Hex> = Vec::new();
+    for (hex, _) in options {
+        if picked.len() == wanted {
+            break;
+        }
+        if picked
+            .iter()
+            .chain(avoid)
+            .all(|other| other.distance(hex) >= gap)
+        {
+            picked.push(hex);
+        }
+    }
+    picked
+}
+
+/// Ruins: about one per side, each nearly equidistant on foot from the two
+/// starts nearest it, well away from every start and from each other.
+fn place_ruins(
+    grid: &HexGrid,
+    starts: &[Hex],
+    distances: &[HashMap<Hex, i32>],
+    spacing: f32,
+    rng: &mut Rng,
+) -> Vec<Hex> {
+    let near = ((spacing * 0.35) as i32).max(5);
+    let far = ((spacing * 0.9) as i32).max(near + 2);
+    let options = contested_hexes(grid, starts, distances, near, far, 1);
+    let wanted = starts.len() + rng.below(2);
+    let gap = ((spacing * 0.6) as i32).max(4);
+    pick_spread(options, wanted, gap, starts, rng)
+}
+
+/// Special tiles (`Special`): about one per side, of every kind in turn,
+/// between the starts like the ruins but with more leeway, away from the
+/// ruins and each other.
+fn place_specials(
+    grid: &mut HexGrid,
+    starts: &[Hex],
+    distances: &[HashMap<Hex, i32>],
+    ruins: &[Hex],
+    spacing: f32,
+    rng: &mut Rng,
+) {
+    let near = ((spacing * 0.3) as i32).max(4);
+    let far = ((spacing * 1.1) as i32).max(near + 2);
+    let options: Vec<(Hex, i32)> = contested_hexes(grid, starts, distances, near, far, 3)
+        .into_iter()
+        .filter(|&(h, _)| ruins.iter().all(|r| r.distance(h) >= 3))
+        .collect();
+    let wanted = starts.len() + rng.below(2);
+    let gap = ((spacing * 0.5) as i32).max(4);
+    let first = rng.below(Special::ALL.len());
+    for (i, hex) in pick_spread(options, wanted, gap, starts, rng)
+        .into_iter()
+        .enumerate()
+    {
+        grid.set_special(hex, Special::ALL[(first + i) % Special::ALL.len()]);
+    }
 }
 
 /// Whether every side starting at `site` sees the same: the settler and
@@ -567,40 +901,168 @@ mod tests {
 
     #[test]
     fn a_seed_always_builds_the_same_map() {
-        let (a, b) = (generate(7), generate(7));
+        let (a, b) = (generate(7, 5), generate(7, 5));
         assert_eq!(fingerprint(&a), fingerprint(&b));
         assert_eq!(a.starts, b.starts);
+        assert_eq!(a.ruins, b.ruins);
+        let extras = |map: &GeneratedMap| -> Vec<_> {
+            map.grid
+                .all_hexes()
+                .map(|h| (h, map.grid.resource(h), map.grid.special(h)))
+                .collect()
+        };
+        assert_eq!(extras(&a), extras(&b));
         let mut rivers_a: Vec<_> = a.grid.rivers().collect();
         let mut rivers_b: Vec<_> = b.grid.rivers().collect();
         rivers_a.sort_by_key(|(x, y)| (x.q, x.r, y.q, y.r));
         rivers_b.sort_by_key(|(x, y)| (x.q, x.r, y.q, y.r));
         assert_eq!(rivers_a, rivers_b);
-        assert_ne!(fingerprint(&a), fingerprint(&generate(8)));
+        assert_ne!(fingerprint(&a), fingerprint(&generate(8, 5)));
+    }
+
+    /// The spacing a map's starts aim for (see `pick_starts`).
+    fn spacing(map: &GeneratedMap) -> f32 {
+        let all: Vec<Hex> = map.grid.all_hexes().collect();
+        let land = components(&all, |h| map.grid.is_passable(h))
+            .into_iter()
+            .map(|c| c.len())
+            .max()
+            .unwrap();
+        1.075 * (land as f32 / map.starts.len() as f32).sqrt()
     }
 
     #[test]
-    fn starts_are_far_apart_on_connected_open_land() {
-        for seed in 0..12 {
-            let map = generate(seed);
-            let [a, b] = map.starts;
-            assert!(
-                map.grid.is_passable(a) && map.grid.is_passable(b),
-                "seed {seed}"
-            );
-            assert!(a.distance(b) >= 10, "seed {seed}: {a:?} {b:?}");
-            assert!(a.to_world().x <= b.to_world().x, "blue starts on the left");
-            let all: Vec<Hex> = map.grid.all_hexes().collect();
-            let joined = components(&all, |h| map.grid.is_passable(h))
-                .into_iter()
-                .any(|land| land.contains(&a) && land.contains(&b));
-            assert!(joined, "seed {seed}: starts on different landmasses");
+    fn every_side_gets_a_start_neither_crowded_nor_isolated() {
+        for sides in [2, 5, 7] {
+            for seed in 0..8 {
+                let map = generate(seed, sides);
+                let starts = &map.starts;
+                assert_eq!(starts.len(), sides, "seed {seed}");
+                let all: Vec<Hex> = map.grid.all_hexes().collect();
+                let land = components(&all, |h| map.grid.is_passable(h))
+                    .into_iter()
+                    .find(|land| land.contains(&starts[0]))
+                    .unwrap();
+                let spacing = spacing(&map);
+                for (i, a) in starts.iter().enumerate() {
+                    assert!(map.grid.is_passable(*a), "seed {seed}");
+                    assert!(
+                        land.contains(a),
+                        "seed {seed}: starts on different landmasses"
+                    );
+                    let nearest = starts
+                        .iter()
+                        .enumerate()
+                        .filter(|&(j, _)| j != i)
+                        .map(|(_, b)| a.distance(*b) as f32)
+                        .fold(f32::MAX, f32::min);
+                    if sides > 1 {
+                        assert!(
+                            nearest >= (0.45 * spacing).max(4.0),
+                            "{sides} sides, seed {seed}: a start {nearest} from its nearest, \
+                             spacing {spacing}"
+                        );
+                        assert!(
+                            nearest <= 2.0 * spacing,
+                            "{sides} sides, seed {seed}: a start {nearest} from its nearest, \
+                             spacing {spacing}"
+                        );
+                    }
+                }
+            }
         }
+    }
+
+    #[test]
+    fn every_start_has_horses_and_iron_close_by() {
+        for seed in 0..8 {
+            let map = generate(seed, 6);
+            for (i, &start) in map.starts.iter().enumerate() {
+                for resource in [Resource::Horses, Resource::Iron] {
+                    let own =
+                        within(start, 5).find(|&h| {
+                            map.grid.resource(h) == Some(resource)
+                                && map.starts.iter().enumerate().all(|(j, other)| {
+                                    j == i || h.distance(*other) > h.distance(start)
+                                })
+                        });
+                    let own =
+                        own.unwrap_or_else(|| panic!("seed {seed}: no {resource:?} near a start"));
+                    assert!(own.distance(start) >= 2, "not under the city");
+                    assert!(map.grid.is_passable(own));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ruins_and_special_tiles_lie_between_starts_and_near_none() {
+        let (mut ruins, mut specials) = (0, 0);
+        for seed in 0..8 {
+            let map = generate(seed, 5);
+            let distances: Vec<HashMap<Hex, i32>> = map
+                .starts
+                .iter()
+                .map(|&s| walking_distances(&map.grid, s))
+                .collect();
+            let spacing = spacing(&map);
+            let check = |hex: Hex, near: i32, slack: i32, what: &str| {
+                assert!(map.grid.is_passable(hex), "seed {seed}: {what} off land");
+                assert!(
+                    map.grid.edge_distance(hex) >= 2,
+                    "seed {seed}: {what} at the edge"
+                );
+                let steps = distances_to_starts(&distances, hex)
+                    .unwrap_or_else(|| panic!("seed {seed}: some start can't reach the {what}"));
+                assert!(
+                    steps[0] >= near,
+                    "seed {seed}: {what} {} from a start",
+                    steps[0]
+                );
+                assert!(
+                    steps[1] - steps[0] <= slack + steps[0] / 8,
+                    "seed {seed}: {what} {steps:?} steps from the starts: one side's alone"
+                );
+            };
+            for &ruin in &map.ruins {
+                check(ruin, ((spacing * 0.35) as i32).max(5), 1, "ruins");
+            }
+            let special_hexes: Vec<Hex> = map
+                .grid
+                .all_hexes()
+                .filter(|&h| map.grid.special(h).is_some())
+                .collect();
+            for &hex in &special_hexes {
+                check(hex, ((spacing * 0.3) as i32).max(4), 3, "special tile");
+                assert!(map.ruins.iter().all(|r| r.distance(hex) >= 3));
+            }
+            ruins += map.ruins.len();
+            specials += special_hexes.len();
+        }
+        assert!(
+            ruins >= 16,
+            "about one ruin per side: {ruins} in 8 maps of 5"
+        );
+        assert!(
+            specials >= 16,
+            "about one special tile per side: {specials} in 8 maps"
+        );
+    }
+
+    #[test]
+    fn the_world_grows_with_the_players() {
+        let area = |sides| match world_shape(sides) {
+            Shape::Rectangle { cols, rows } => cols * rows,
+            Shape::Hexagon { radius } => radius * radius,
+        };
+        assert_eq!(area(2), area(4), "four players' worth at least");
+        assert!(area(7) > area(5) && area(5) > area(4));
     }
 
     #[test]
     fn the_land_is_one_continent_with_only_small_islands() {
         for seed in 0..8 {
-            let map = generate(seed);
+            let map = generate(seed, 4);
             let all: Vec<Hex> = map.grid.all_hexes().collect();
             let mut masses = components(&all, |h| !map.grid.terrain(h).is_water());
             masses.sort_by_key(|m| std::cmp::Reverse(m.len()));
@@ -620,7 +1082,7 @@ mod tests {
 
     #[test]
     fn the_world_is_wider_than_tall() {
-        let map = generate(1);
+        let map = generate(1, 4);
         let extent = map
             .grid
             .all_hexes()
@@ -633,7 +1095,7 @@ mod tests {
     fn rivers_run_between_adjacent_land_hexes() {
         let mut total = 0;
         for seed in 0..8 {
-            let map = generate(seed);
+            let map = generate(seed, 4);
             for (a, b) in map.grid.rivers() {
                 assert_eq!(a.distance(b), 1);
                 assert!(!map.grid.terrain(a).is_water() && !map.grid.terrain(b).is_water());
@@ -653,7 +1115,7 @@ mod tests {
         let mut hilly_grounds = HashSet::new();
         let (mut water, mut hexes) = (0, 0);
         for seed in 0..10 {
-            let map = generate(seed);
+            let map = generate(seed, 4);
             for h in map.grid.all_hexes() {
                 let tile = map.grid.tile(h);
                 let ground = format!("{:?}", tile.terrain);

@@ -6,6 +6,7 @@
 
 use rand::RngExt;
 
+use super::settings::Settings;
 use super::{GameRng, GameState};
 
 /// The test scenarios F1-F4 switch between.
@@ -17,7 +18,7 @@ pub enum Scenario {
     Cities,
     /// A settler each and no cities yet.
     Frontier,
-    /// A settler each on a randomly generated map (`mapgen.rs`).
+    /// The player and 4-6 AI sides on a randomly generated map (`mapgen.rs`).
     World,
     /// A ready-to-play attack on the Red city's interior.
     Siege,
@@ -63,16 +64,19 @@ impl Scenario {
 
     /// A fresh game of this scenario, on a random map for the world.
     pub fn new_game(self) -> GameState {
-        self.start(&mut rand::SeedableRng::seed_from_u64(rand::random()))
+        let mut rng = rand::SeedableRng::seed_from_u64(rand::random());
+        self.start(&mut rng, &Settings::default())
     }
 
-    /// A fresh game of this scenario, drawing the world's map seed from `rng`.
-    fn start(self, rng: &mut GameRng) -> GameState {
+    /// A fresh game of this scenario, drawing the world's map seed from `rng`
+    /// and building it as `settings` say (`Settings::world_ai`,
+    /// `Settings::world_start_city`).
+    fn start(self, rng: &mut GameRng, settings: &Settings) -> GameState {
         match self {
             Scenario::Combat => GameState::new(),
             Scenario::Cities => GameState::city_scenario(),
             Scenario::Frontier => GameState::frontier_scenario(),
-            Scenario::World => GameState::world_scenario(rng.random()),
+            Scenario::World => GameState::world_scenario_with(rng.random(), settings),
             Scenario::Siege => GameState::siege_scenario(),
         }
     }
@@ -96,7 +100,7 @@ impl GameState {
         let settings = std::mem::take(&mut self.settings);
         let (settings_open, fog_of_war) = (self.settings_open, self.fog_of_war);
         let mut rng = self.rng.clone();
-        *self = scenario.start(&mut rng);
+        *self = scenario.start(&mut rng, &settings);
         self.rng = rng;
         self.savestate = savestate;
         self.settings = settings;
@@ -163,7 +167,9 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::PLAYER_TEAM;
     use crate::game::hex::Hex;
+    use crate::game::unit::{Team, UnitType};
 
     #[test]
     fn loading_restores_the_snapshot_and_keeps_it() {
@@ -233,22 +239,62 @@ mod tests {
     }
 
     #[test]
-    fn the_world_starts_you_alone_with_a_settler_and_a_scout() {
-        let game = GameState::world_scenario(5);
-        assert_eq!(game.scenario, Scenario::World);
-        assert_eq!(game.map_seed, Some(5));
-        assert_eq!(game.units.len(), 2);
-        assert!(
-            game.units
-                .iter()
-                .all(|u| u.team == crate::game::PLAYER_TEAM),
-            "no AI opponent"
-        );
-        assert_eq!(game.settlers.len(), 1);
-        assert!(game.field_workers.is_empty(), "workers come with cities");
-        assert!(game.units.iter().all(|u| game.grid.is_passable(u.pos)));
+    fn the_world_starts_every_side_with_a_city_and_a_scout() {
+        for seed in [5, 6, 7] {
+            let game = GameState::world_scenario(seed);
+            assert_eq!(game.scenario, Scenario::World);
+            assert_eq!(game.map_seed, Some(seed));
+            // 4 to 6 AI sides, by the seed, and the player.
+            let sides = 1 + 4 + (seed % 3) as usize;
+            assert_eq!(game.cities.len(), sides, "seed {seed}");
+            assert_eq!(game.units.len(), sides, "a scout each");
+            assert!(game.settlers.is_empty());
+            for team in &Team::ALL[..sides] {
+                assert_eq!(game.cities.iter().filter(|c| c.team == *team).count(), 1);
+                assert!(
+                    game.units
+                        .iter()
+                        .any(|u| u.team == *team && u.unit_type == UnitType::Scout)
+                );
+            }
+            assert_eq!(game.ai_teams().len(), sides - 1);
+            assert!(game.units.iter().all(|u| game.grid.is_passable(u.pos)));
+            assert!(!game.ruins.is_empty(), "ruins to fight over");
+            let player_city = game.cities.iter().find(|c| c.team == PLAYER_TEAM).unwrap();
+            let selected = &game.units[game.selected.unwrap()];
+            assert_eq!(selected.team, PLAYER_TEAM);
+            assert_eq!(
+                selected.pos.distance(player_city.pos),
+                1,
+                "the scout by the city"
+            );
+        }
+    }
+
+    #[test]
+    fn the_world_can_start_with_settlers_and_a_chosen_number_of_ai() {
+        let settings = Settings {
+            world_ai: 2,
+            world_start_city: false,
+            ..Settings::default()
+        };
+        let game = GameState::world_scenario_with(9, &settings);
+        assert!(game.cities.is_empty());
+        assert_eq!(game.settlers.len(), 3, "the player's and two AI settlers");
+        assert_eq!(game.units.len(), 6, "and a scout each");
         let selected = &game.units[game.selected.unwrap()];
         assert!(game.settlers.contains(&selected.id), "the player's settler");
+        assert_eq!(selected.team, PLAYER_TEAM);
+    }
+
+    #[test]
+    fn world_settings_carry_into_the_next_world() {
+        let mut game = GameState::new();
+        game.settings.world_ai = 1;
+        game.settings.world_start_city = false;
+        game.switch_scenario(Scenario::World);
+        assert_eq!(game.settlers.len(), 2);
+        assert_eq!(game.ai_teams(), vec![Team::Red]);
     }
 
     #[test]

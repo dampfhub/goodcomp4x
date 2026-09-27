@@ -19,7 +19,7 @@ behavior.
 | `combat.rs` | damage formula, retaliation, combat log helpers |
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
-| `ai.rs` | the Red AI |
+| `ai.rs` | the AI, playing every side but the player's (`ai_teams`) |
 | `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (barracks HP and defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
 | `city/logistics.rs` | roads, logistics routes (`routes_from_by`), `delivered_share`, tile yields, mill food share, city and Barracks income |
 | `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy` |
@@ -30,7 +30,8 @@ behavior.
 | `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture |
 | `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
-| `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
+| `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map): terrain, balanced starts for any number of sides, horses and iron by each start, and special tiles and ruins on contested ground |
+| `ruins.rs` | ruins: holding them for `RUIN_HOLD_TURNS` claims a reward (`resolve_ruins`, at each turn's end before the economy) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
 | `scenario.rs` | scenarios (F1-F4, F12), savestate (F6/F7), instant playback (F8) |
 | `settings.rs` | the player's options (`Settings`, one field each, and `Setting`, how the menu lists and steps them), Escape (`press_escape`) and the settings menu's open state; its module comment says how to add a setting |

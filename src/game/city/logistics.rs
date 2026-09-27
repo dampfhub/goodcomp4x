@@ -148,13 +148,18 @@ impl GameState {
     }
 
     /// What a worked tile produces: its site's yield or its terrain's, plus
-    /// one food for fresh water (a river or lake beside it).
+    /// one food for fresh water (a river or lake beside it) and a special
+    /// tile's bonus.
     pub(in crate::game) fn tile_yield(&self, hex: Hex) -> (i32, i32) {
         let (food, production) = self
             .sites
             .get(&hex)
             .map_or_else(|| self.grid.tile(hex).yields(), |s| (s.food, s.production));
-        (food + i32::from(self.grid.has_fresh_water(hex)), production)
+        let (extra_food, extra_production) = self.grid.special(hex).map_or((0, 0), |s| s.bonus());
+        (
+            food + i32::from(self.grid.has_fresh_water(hex)) + extra_food,
+            production + extra_production,
+        )
     }
 
     pub(in crate::game) fn mill_food_share(&self, city: usize, hex: Hex, cost: i32) -> i32 {

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use glam::Vec2;
 
-use super::terrain::{Resource, Terrain, Tile};
+use super::terrain::{Resource, Special, Terrain, Tile};
 
 /// Center-to-corner radius of a hex, in world units.
 pub const HEX_SIZE: f32 = 1.0;
@@ -97,6 +97,8 @@ pub struct HexGrid {
     rivers: HashSet<(Hex, Hex)>,
     /// Strategic resources on hexes.
     resources: HashMap<Hex, Resource>,
+    /// Special high-yield tiles (`Special`).
+    specials: HashMap<Hex, Special>,
 }
 
 /// The edge between two adjacent hexes, the same whichever way round they're
@@ -136,6 +138,7 @@ impl HexGrid {
                 .collect(),
             rivers: HashSet::new(),
             resources: HashMap::new(),
+            specials: HashMap::new(),
         }
     }
 
@@ -153,10 +156,6 @@ impl HexGrid {
     pub fn with_rivers(mut self, rivers: HashSet<(Hex, Hex)>) -> Self {
         self.rivers = rivers;
         self
-    }
-
-    pub fn shape(&self) -> Shape {
-        self.shape
     }
 
     pub fn contains(&self, hex: Hex) -> bool {
@@ -205,6 +204,18 @@ impl HexGrid {
 
     pub fn resource(&self, hex: Hex) -> Option<Resource> {
         self.resources.get(&hex).copied()
+    }
+
+    pub fn set_resource(&mut self, hex: Hex, resource: Resource) {
+        self.resources.insert(hex, resource);
+    }
+
+    pub fn special(&self, hex: Hex) -> Option<Special> {
+        self.specials.get(&hex).copied()
+    }
+
+    pub fn set_special(&mut self, hex: Hex, special: Special) {
+        self.specials.insert(hex, special);
     }
 
     /// On the grid and not blocked by terrain (units aside).

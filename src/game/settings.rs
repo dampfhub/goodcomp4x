@@ -33,7 +33,16 @@ pub struct Settings {
     /// Draw unexplored hexes under clouds (`push_cloud_banks`, `draw.rs`)
     /// rather than a flat grey.
     pub cloud_fog: bool,
+    /// AI players in the next world (F4, `setup_world`): 1 to 6, or 0 for
+    /// 4 to 6 picked by the map's seed.
+    pub world_ai: usize,
+    /// Each side in the next world starts with its city already founded,
+    /// rather than a settler to found it with.
+    pub world_start_city: bool,
 }
+
+/// `Settings::world_ai` for 4 to 6 AI players, picked by the map's seed.
+pub const WORLD_AI_BY_SEED: usize = 0;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -41,6 +50,19 @@ impl Default for Settings {
             instant_playback: true,
             max_queued_turns: 6,
             cloud_fog: true,
+            world_ai: WORLD_AI_BY_SEED,
+            world_start_city: true,
+        }
+    }
+}
+
+impl Settings {
+    /// How many AI players a world from `seed` gets.
+    pub fn world_ai_for(&self, seed: u32) -> usize {
+        if self.world_ai == WORLD_AI_BY_SEED {
+            4 + (seed % 3) as usize
+        } else {
+            self.world_ai
         }
     }
 }
@@ -51,14 +73,18 @@ pub enum Setting {
     TurnPlayback,
     MaxQueuedTurns,
     FogStyle,
+    WorldAi,
+    WorldStart,
 }
 
 impl Setting {
     /// Every setting, in the order the menu lists them.
-    pub const ALL: [Setting; 3] = [
+    pub const ALL: [Setting; 5] = [
         Setting::TurnPlayback,
         Setting::MaxQueuedTurns,
         Setting::FogStyle,
+        Setting::WorldAi,
+        Setting::WorldStart,
     ];
 
     /// Its label in the menu.
@@ -67,6 +93,8 @@ impl Setting {
             Setting::TurnPlayback => "TURN PLAYBACK",
             Setting::MaxQueuedTurns => "QUEUE LIMIT",
             Setting::FogStyle => "FOG",
+            Setting::WorldAi => "WORLD AI",
+            Setting::WorldStart => "WORLD START",
         }
     }
 
@@ -82,6 +110,10 @@ impl Setting {
                  FARTHER AWAY QUEUES THE MOVE AS FAR AS THE LIMIT GOES."
             }
             Setting::FogStyle => "HOW UNEXPLORED LAND IS HIDDEN: UNDER CLOUDS, OR A FLAT GREY.",
+            Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4). THE MAP GROWS WITH THEM.",
+            Setting::WorldStart => {
+                "WHETHER EVERY SIDE IN THE NEXT WORLD (F4) STARTS WITH ITS CITY, OR A SETTLER."
+            }
         }
     }
 
@@ -91,6 +123,8 @@ impl Setting {
             Setting::TurnPlayback => 0..=1,
             Setting::MaxQueuedTurns => 1..=20,
             Setting::FogStyle => 0..=1,
+            Setting::WorldAi => 0..=6,
+            Setting::WorldStart => 0..=1,
         }
     }
 
@@ -106,6 +140,9 @@ impl Setting {
             Setting::MaxQueuedTurns if value == 1 => "1 TURN".into(),
             Setting::MaxQueuedTurns => format!("{value} TURNS"),
             Setting::FogStyle => if value == 1 { "CLOUDS" } else { "SOLID GREY" }.into(),
+            Setting::WorldAi if value == WORLD_AI_BY_SEED as i32 => "4-6 BY MAP".into(),
+            Setting::WorldAi => value.to_string(),
+            Setting::WorldStart => if value == 1 { "CITY" } else { "SETTLER" }.into(),
         }
     }
 }
@@ -117,6 +154,8 @@ impl Settings {
             Setting::TurnPlayback => self.instant_playback as i32,
             Setting::MaxQueuedTurns => self.max_queued_turns as i32,
             Setting::FogStyle => self.cloud_fog as i32,
+            Setting::WorldAi => self.world_ai as i32,
+            Setting::WorldStart => self.world_start_city as i32,
         }
     }
 
@@ -126,6 +165,8 @@ impl Settings {
             Setting::TurnPlayback => self.instant_playback = value == 1,
             Setting::MaxQueuedTurns => self.max_queued_turns = value as usize,
             Setting::FogStyle => self.cloud_fog = value == 1,
+            Setting::WorldAi => self.world_ai = value as usize,
+            Setting::WorldStart => self.world_start_city = value == 1,
         }
     }
 
