@@ -1261,6 +1261,23 @@ mod tests {
     use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
     use crate::game::unit::{Unit, UnitType};
 
+    /// Every vertex as plain data, sorted: labels over a route map come out
+    /// in hash order, so two builds of one scene can differ only in order.
+    fn scene(game: &GameState) -> Vec<[u32; 9]> {
+        let mut vertices: Vec<[u32; 9]> = game
+            .build_vertices()
+            .iter()
+            .map(|v| {
+                let [x, y, z] = v.pos.map(f32::to_bits);
+                let [r, g, b, a] = v.color.map(f32::to_bits);
+                let [u, w] = v.uv.map(f32::to_bits);
+                [x, y, z, r, g, b, a, u, w]
+            })
+            .collect();
+        vertices.sort_unstable();
+        vertices
+    }
+
     fn count_color(vertices: &[Vertex], color: Color) -> usize {
         vertices.iter().filter(|v| v.color == color).count()
     }
@@ -1278,12 +1295,65 @@ mod tests {
     }
 
     #[test]
-    fn yield_badges_do_not_react_to_unseen_units() {
+    fn a_remembered_enemy_in_range_is_highlighted_as_a_target() {
+        // A ranged unit (range 2) behind the mountain, so (2, 0) is in range
+        // but out of sight.
+        let target_hexes = |remember_enemy: bool| {
+            let (mut game, idx, hidden) = behind_the_mountain();
+            game.units[idx].unit_type = UnitType::Ranged;
+            game.units[idx].ability_queued = false;
+            if remember_enemy {
+                game.units
+                    .push(Unit::new(2, hidden, Team::Red, UnitType::Melee));
+            }
+            glance_at(&mut game, idx, hidden);
+            game.selected = Some(idx);
+            count_color(&game.build_vertices(), ATTACK_RANGE_COLOR)
+        };
+        assert!(target_hexes(true) > target_hexes(false));
+    }
+
+    #[test]
+    fn yield_badges_do_not_react_to_what_happens_out_of_sight() {
         let (mut game, city, far) = remembered_route_hex();
         assert!(game.show_yields && game.yields_city() == Some(city));
-        let before = game.build_vertices().len();
+        let before = scene(&game);
         game.units
             .push(Unit::new(51, far, Team::Red, UnitType::Melee));
-        assert_eq!(game.build_vertices().len(), before);
+        assert_eq!(scene(&game), before);
+        game.sites.insert(
+            far,
+            crate::game::city::Site {
+                team: Team::Red,
+                food: 9,
+                production: 9,
+                label: "FARM",
+            },
+        );
+        assert_eq!(scene(&game), before);
+    }
+
+    #[test]
+    fn barracks_delivery_labels_do_not_react_to_unseen_units() {
+        let (mut game, city, far) = remembered_route_hex();
+        // A barracks two hexes from the remembered hex: it sees only 1.
+        let fog = game.fog();
+        let site = game
+            .grid
+            .all_hexes()
+            .filter(|&h| {
+                h.distance(far) == 2
+                    && game.site_available(city, crate::game::city::Building::Barracks, h)
+            })
+            .find(|&h| !fog.sees(far) && game.routes_from(PLAYER_TEAM, h).costs.contains_key(&far))
+            .expect("a barracks site whose goods reach the hex");
+        game.cities[city].barracks = Some(site);
+        game.selected_city = None;
+        game.selected_barracks = Some(city);
+        assert!(!game.fog().sees(far));
+        let before = scene(&game);
+        game.units
+            .push(Unit::new(51, far, Team::Red, UnitType::Melee));
+        assert_eq!(scene(&game), before);
     }
 }

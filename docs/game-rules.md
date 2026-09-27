@@ -105,9 +105,12 @@ queue them. Nothing heals.
   remembered hexes from memory.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
   An unseen unit doesn't shrink the move range and clicking its hex plans a move, which then
-  meets it at resolution; a remembered one blocks and can be attacked as if still there. Yield
-  badges and tooltip yields out of sight are as last seen, and a city or barracks shows its live
-  hover panel only if it is the player's own or in sight.
+  meets it at resolution; a remembered one blocks and can be attacked as if still there.
+- What the map and panels show follows the same rule: yields, and which hexes a city's or
+  barracks' goods reach (badges, delivery percentages, tooltip, SELECTED TILE), use remembered
+  units, cities and roads out of sight. A city or barracks shows its live hover panel only if it
+  is the player's own or in sight. The economy itself runs on the real board, so income and the
+  red disrupted-tile rings can still reflect an unseen enemy on a route.
 - The AI ignores the fog.
 
 ## Orders (planning)
@@ -351,6 +354,10 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - Hills and forest cost the same to enter as plains, and rivers don't slow or penalize crossing
   units.
 - Generated maps have no resources yet, and there are only two sides on the four-player map.
+- Income, disrupted-tile rings and the city view's route notice react to enemies the player
+  can't see (#37).
+- An enemy seen in one place stays remembered where it was seen before, and blocks plans there
+  (#38).
 - Swaps only work between adjacent units.
 - Worker roads and improvements are instant.
 - No victory condition; F1-F4 restart a scenario.
