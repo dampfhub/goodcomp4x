@@ -1,5 +1,5 @@
 //! Geometry-only docking for screen-space panels. Callers provide measured
-//! panel sizes; placement is shared by rendering and hit testing in `ui.rs`.
+//! panel sizes; placement is shared by rendering and hit testing in `mod.rs`.
 
 use glam::Vec2;
 

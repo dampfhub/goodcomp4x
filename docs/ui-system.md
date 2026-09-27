@@ -1,7 +1,11 @@
 # Screen-space UI panels
 
-The UI lives in `src/game/ui.rs`. Its reusable placement code is in
-`src/game/ui/dock.rs`. `src/game/AGENTS.md` points contributors here.
+The UI lives in `src/game/ui/`. `mod.rs` holds the shared constants and types,
+`Layout`, and the entry points (`build_ui`, `click_ui`, `layout`); `builder.rs`
+has `PanelBuilder`; the panels themselves are in `trays.rs`, `panels.rs`,
+`queue.rs` and `tooltips.rs`; the layout tests are in `tests.rs`. Its reusable
+placement code is in `src/game/ui/dock.rs`. `src/game/AGENTS.md` points
+contributors here.
 
 `PanelBuilder` is the content primitive. Add rows with `text`, `bar`, `gap`,
 `buttons`, `compact_buttons`, or `queue_item`; `size()` measures the finished panel. A
