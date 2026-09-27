@@ -258,6 +258,29 @@ impl GameState {
             .filter(|&(city, _)| self.selected_city == Some(city))
     }
 
+    /// Stops choosing a building site. A building queued without a site is
+    /// taken back out of the queue, since it can't be built without one (a
+    /// finished one waits for its site instead). Returns whether a site was
+    /// being chosen.
+    pub(in crate::game) fn abandon_site_placement(&mut self) -> bool {
+        let Some((city, building)) = self.placing_building.take() else {
+            return false;
+        };
+        let c = &mut self.cities[city];
+        if c.placed_site(building).is_none()
+            && !c.planned_sites.contains_key(&building)
+            && c.pending_building != Some(building)
+            && let Some(index) = c.queue.iter().position(|&b| b == Build::Building(building))
+        {
+            c.queue.remove(index);
+            if index == 0 {
+                c.production = 0;
+            }
+            self.notice = format!("{} CANCELLED - NO SITE CHOSEN", building.name());
+        }
+        true
+    }
+
     /// A placeable building queued in (or finished by) `city` that has no
     /// site yet, so it can't be confirmed until one is chosen.
     pub(in crate::game) fn needs_site(&self, city: usize, building: Building) -> bool {
