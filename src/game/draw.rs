@@ -708,7 +708,7 @@ impl GameState {
         let Some(city) = self.yields_city() else {
             return;
         };
-        let routes = self.routes(city);
+        let routes = self.known_routes(city, fog);
         for hex in self
             .grid
             .all_hexes()

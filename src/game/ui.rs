@@ -1267,10 +1267,15 @@ impl GameState {
         panel.bar(growth_percent as f32 / 100.0);
 
         if let Some(hex) = self.inspected_tile {
-            let (tile_food, tile_production) = self.tile_yield(hex);
-            let shares = self.routes(i).costs.get(&hex).map_or((0, 0), |cost| {
-                (self.mill_food_share(i, hex, *cost), delivered_share(*cost))
-            });
+            let fog = self.fog();
+            let (tile_food, tile_production) = self.known_yield(hex, &fog);
+            let shares = self
+                .known_routes(i, &fog)
+                .costs
+                .get(&hex)
+                .map_or((0, 0), |cost| {
+                    (self.mill_food_share(i, hex, *cost), delivered_share(*cost))
+                });
             panel.gap(GAP);
             panel.text(
                 SMALL,
@@ -1766,7 +1771,7 @@ impl GameState {
             && self.cities[open].pos != hex
         {
             let city = &self.cities[open];
-            match self.routes(open).costs.get(&hex) {
+            match self.known_routes(open, &fog).costs.get(&hex) {
                 Some(&cost) => notes.push(format!(
                     "FOOD {}% / PRODUCTION {}% REACHES CITY {}",
                     self.mill_food_share(open, hex, cost) * 25,

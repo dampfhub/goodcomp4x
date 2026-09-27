@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::city::{BARRACKS_MAX_HP, Building, CITY_MAX_HP};
+use super::city::{BARRACKS_MAX_HP, Building, CITY_MAX_HP, Routes};
 use super::draw::UnitLook;
 use super::hex::Hex;
 use super::terrain::Terrain;
@@ -223,6 +223,32 @@ impl GameState {
         fog: &Fog,
     ) -> HashSet<Hex> {
         self.reachable_hexes_by(start, move_range, |hex| self.known_occupied(hex, fog))
+    }
+
+    /// City `city`'s delivery routes as the player knows the board: what
+    /// the yield badges, tooltips and city panel show. Income still follows
+    /// the real routes (`routes`).
+    pub(super) fn known_routes(&self, city: usize, fog: &Fog) -> Routes {
+        let (team, origin) = (self.cities[city].team, self.cities[city].pos);
+        // Out of sight, the memory (none for a hex never seen); in sight, the board.
+        let memory = |hex: Hex| (!fog.sees(hex)).then(|| self.remembered(hex));
+        self.routes_from_by(
+            origin,
+            |hex| match memory(hex) {
+                Some(seen) => seen.is_some_and(|seen| {
+                    seen.units.iter().any(|(unit, _)| unit.team != team)
+                        || seen.city.is_some_and(|c| c.team != team)
+                }),
+                None => {
+                    self.enemy_of_team_at(hex, team).is_some()
+                        || self.cities.iter().any(|c| c.pos == hex && c.team != team)
+                }
+            },
+            |hex| match memory(hex) {
+                Some(seen) => seen.is_some_and(|seen| seen.road || seen.city.is_some()),
+                None => self.is_road_hex(hex),
+            },
+        )
     }
 
     /// Records everything in sight as the player's latest memory of it.
