@@ -2,8 +2,9 @@
 //! - in sight: hexes the player's units, cities and barracks see now, shown
 //!   as they are;
 //! - remembered: hexes seen before but out of sight now, shown under a grey
-//!   veil as they were when last seen (`Sighting`): enemy units, cities,
-//!   barracks, improvements and roads;
+//!   veil as they were when last seen (`Sighting`): cities, barracks,
+//!   improvements and roads. Units move, so they aren't remembered: out of
+//!   sight, no unit is known to be anywhere;
 //! - unexplored: never seen, blank.
 //!
 //! A debug setting (F10) turns the fog off. The AI ignores it.
@@ -11,7 +12,6 @@
 use std::collections::{HashMap, HashSet};
 
 use super::city::{BARRACKS_MAX_HP, Building, CITY_MAX_HP, Routes};
-use super::draw::UnitLook;
 use super::hex::Hex;
 use super::terrain::Terrain;
 use super::unit::{Team, Unit};
@@ -47,12 +47,10 @@ impl Fog {
 }
 
 /// A hex as the player last saw it. Only what can change is kept; the
-/// ground itself never does.
+/// ground itself never does. Units aren't kept: a sighting of one says
+/// nothing about where it is now.
 #[derive(Clone, Default)]
 pub(super) struct Sighting {
-    /// Other sides' units there, each with how it's drawn. The player's
-    /// own are always shown where they really are.
-    pub units: Vec<(Unit, UnitLook)>,
     pub city: Option<SeenBuilding>,
     pub barracks: Option<SeenBuilding>,
     /// An improvement's label and owner.
@@ -142,11 +140,6 @@ impl GameState {
 
     /// `hex` as it is right now, for the memory.
     fn sighting(&self, hex: Hex) -> Sighting {
-        let units = self
-            .units_at(hex)
-            .filter(|&i| !self.is_player_controlled(i))
-            .map(|i| (self.units[i].clone(), self.unit_look(&self.units[i])))
-            .collect();
         let city = self
             .cities
             .iter()
@@ -170,7 +163,6 @@ impl GameState {
                 granary: false,
             });
         Sighting {
-            units,
             city,
             barracks,
             site: self.sites.get(&hex).map(|s| (s.label, s.team)),
@@ -183,25 +175,21 @@ impl GameState {
     // seen. Planning and drawing for the player go through these, so nothing
     // out of sight gives away what's really there. The AI uses the real board.
 
-    /// Whether the player knows of a unit on `hex`.
+    /// Whether the player knows of a unit on `hex`: only in sight, since
+    /// units aren't remembered.
     pub(super) fn known_occupied(&self, hex: Hex, fog: &Fog) -> bool {
-        if fog.sees(hex) {
-            self.is_occupied(hex)
-        } else {
-            self.remembered(hex)
-                .is_some_and(|seen| !seen.units.is_empty())
-        }
+        fog.sees(hex) && self.is_occupied(hex)
     }
 
     /// Whether the player knows of something on `hex` that `team` can attack:
-    /// an enemy unit, city or barracks.
+    /// an enemy unit in sight, or an enemy city or barracks in sight or
+    /// remembered.
     pub(super) fn known_enemy_target_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
         if fog.sees(hex) {
             return self.has_enemy_target_at(hex, team);
         }
         self.remembered(hex).is_some_and(|seen| {
-            seen.units.iter().any(|(unit, _)| unit.team != team)
-                || seen.city.is_some_and(|city| city.team != team)
+            seen.city.is_some_and(|city| city.team != team)
                 || seen.barracks.is_some_and(|barracks| barracks.team != team)
         })
     }
@@ -239,10 +227,7 @@ impl GameState {
         self.routes_from_by(
             origin,
             |hex| match memory(hex) {
-                Some(seen) => seen.is_some_and(|seen| {
-                    seen.units.iter().any(|(unit, _)| unit.team != team)
-                        || seen.city.is_some_and(|c| c.team != team)
-                }),
+                Some(seen) => seen.is_some_and(|seen| seen.city.is_some_and(|c| c.team != team)),
                 None => {
                     self.enemy_of_team_at(hex, team).is_some()
                         || self.cities.iter().any(|c| c.pos == hex && c.team != team)
@@ -438,10 +423,10 @@ pub(super) mod tests {
         assert!(game.known_reachable_hexes(start, 3, &fog).contains(&hidden));
         assert!(!game.known_occupied(hidden, &fog));
 
-        // Once the player has seen it there, it blocks their plans too.
+        // Having seen it there doesn't change that once it's out of sight.
         glance_at(&mut game, cavalry, hidden);
         let fog = game.fog();
-        assert!(!game.known_reachable_hexes(start, 3, &fog).contains(&hidden));
+        assert!(game.known_reachable_hexes(start, 3, &fog).contains(&hidden));
     }
 
     #[test]
@@ -455,16 +440,33 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_remembered_enemy_is_still_a_target() {
+    fn an_enemy_seen_then_seen_elsewhere_leaves_no_ghost() {
+        // Red is seen at `hidden`, then walks into sight next to Blue.
+        let (mut game, cavalry, hidden) = behind_the_mountain();
+        game.units
+            .push(Unit::new(2, hidden, Team::Red, UnitType::Melee));
+        glance_at(&mut game, cavalry, hidden);
+        let red = game.units.len() - 1;
+        game.units[red].pos = Hex::new(0, 1);
+        game.explore();
+        let fog = game.fog();
+        assert!(fog.sees(Hex::new(0, 1)) && !fog.sees(hidden));
+        assert!(!game.known_occupied(hidden, &fog));
+        assert!(!game.known_enemy_target_at(hidden, Team::Blue, &fog));
+        // A click there plans a move, not an attack on the empty hex.
+        game.queue_order_at(cavalry, hidden);
+        assert_eq!(game.units[cavalry].planned_move, Some(hidden));
+        assert_eq!(game.units[cavalry].planned_attack, None);
+    }
+
+    #[test]
+    fn an_enemy_out_of_sight_is_not_a_target_even_if_seen_there() {
         let (mut game, cavalry, hidden) = behind_the_mountain();
         game.units
             .push(Unit::new(2, hidden, Team::Red, UnitType::Melee));
         glance_at(&mut game, cavalry, hidden);
         let fog = game.fog();
-        assert!(game.known_enemy_target_at(hidden, Team::Blue, &fog));
-        // It left while out of sight, but the player still thinks it's there.
-        game.units.pop();
-        assert!(game.known_enemy_target_at(hidden, Team::Blue, &fog));
+        assert!(!game.known_enemy_target_at(hidden, Team::Blue, &fog));
     }
 
     #[test]
@@ -509,7 +511,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn remembered_hexes_keep_what_was_last_seen() {
+    fn units_are_forgotten_once_out_of_sight() {
         let mut game = GameState::world_scenario(3);
         let settler = game.units[0].pos;
         let near = settler
@@ -525,34 +527,22 @@ pub(super) mod tests {
             .unwrap();
         game.units[red].pos = near;
         game.explore();
-        assert_eq!(game.remembered(near).unwrap().units.len(), 1);
+        assert!(game.known_occupied(near, &game.fog()));
 
-        // Every Blue unit leaves, and the scout moves on unseen.
-        let far = game.units.iter().find(|u| u.team == Team::Red).unwrap().pos;
+        // Every Blue unit leaves, with the scout still standing there.
+        let far = game
+            .units
+            .iter()
+            .find(|u| u.team == Team::Red && u.pos != near)
+            .unwrap()
+            .pos;
         for unit in game.units.iter_mut().filter(|u| u.team == Team::Blue) {
             unit.pos = far;
         }
-        game.units[red].pos = Hex::new(far.q, far.r + 1);
         game.explore();
-        assert!(!game.fog().sees(near));
-        let seen = game.remembered(near).unwrap();
-        assert_eq!(seen.units.len(), 1, "still remembered where it was");
-        assert_eq!(seen.units[0].0.team, Team::Red);
-
-        // Coming back into sight updates the memory.
-        for unit in game.units.iter_mut().filter(|u| u.team == Team::Blue) {
-            unit.pos = settler;
-        }
-        game.explore();
-        assert!(game.remembered(near).unwrap().units.is_empty());
-    }
-
-    #[test]
-    fn the_players_own_units_are_never_remembered() {
-        let mut game = GameState::world_scenario(3);
-        game.explore();
-        let blue = game.units.iter().find(|u| u.team == Team::Blue).unwrap();
-        assert!(game.remembered(blue.pos).unwrap().units.is_empty());
+        let fog = game.fog();
+        assert!(!fog.sees(near) && game.is_explored(near));
+        assert!(!game.known_occupied(near, &fog));
     }
 
     #[test]

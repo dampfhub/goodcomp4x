@@ -1783,14 +1783,11 @@ impl GameState {
         }
         let describe =
             |unit: &Unit| format!("{:?} {}", unit.team, self.unit_role(unit)).to_uppercase();
-        let mut units: Vec<String> = self
+        let units: Vec<String> = self
             .units_at(hex)
             .filter(|&i| fog.shows(&self.units[i]))
             .map(|i| describe(&self.units[i]))
             .collect();
-        if let Some(seen) = memory {
-            units.extend(seen.units.iter().map(|(unit, _)| describe(unit)));
-        }
         if !units.is_empty() {
             notes.push(units.join(", "));
         }
