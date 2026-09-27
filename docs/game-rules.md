@@ -98,17 +98,19 @@ queue them. Nothing heals.
 - The player's units see 2 hexes (Scout and Cavalry 3), +1 on hills, +2 through the turn
   after a Lookout. The player's cities see 3 and barracks 1.
 - A mountain strictly between two hexes blocks sight; the mountain itself is visible.
-- Every frame, each hex in sight is recorded as last seen: other sides' units, cities and
-  barracks (with their health), improvements and roads. Remembered hexes out of sight draw that
-  memory under a grey veil; never-seen hexes draw nothing.
+- Every frame, each hex in sight is recorded as last seen: cities and barracks (with their
+  health), improvements and roads. Units aren't remembered, since they move: out of sight, the
+  player knows of no unit anywhere. Remembered hexes out of sight draw that memory under a grey
+  veil; never-seen hexes draw nothing.
 - Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
   remembered hexes from memory.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
-  An unseen unit doesn't shrink the move range and clicking its hex plans a move, which then
-  meets it at resolution; a remembered one blocks and can be attacked as if still there.
+  A unit out of sight, even one seen there before, doesn't shrink the move range, and clicking
+  its hex plans a move, which then meets it at resolution. A remembered enemy city or barracks
+  can still be attacked.
 - What the map and panels show follows the same rule: yields, and which hexes a city's or
   barracks' goods reach (badges, delivery percentages, tooltip, SELECTED TILE), use remembered
-  units, cities and roads out of sight. A city or barracks shows its live hover panel only if it
+  cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
   is the player's own or in sight. The economy itself runs on the real board, so income and the
   red disrupted-tile rings can still reflect an unseen enemy on a route.
 - The AI ignores the fog.
@@ -356,8 +358,6 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - Generated maps have no resources yet, and there are only two sides on the four-player map.
 - Income, disrupted-tile rings and the city view's route notice react to enemies the player
   can't see (#37).
-- An enemy seen in one place stays remembered where it was seen before, and blocks plans there
-  (#38).
 - Swaps only work between adjacent units.
 - Worker roads and improvements are instant.
 - No victory condition; F1-F4 restart a scenario.

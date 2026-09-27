@@ -224,7 +224,6 @@ impl GameState {
         push_rivers(&self.grid, |h| self.is_explored(h), &mut out);
 
         self.push_city_map(&fog, &mut out);
-        self.push_remembered_units(&fog, &mut out);
         self.push_fog(&fog, &mut out);
         self.push_order_markers(&fog, &mut out);
 
@@ -674,32 +673,6 @@ impl GameState {
             }
         }
         view
-    }
-
-    /// Other sides' units where they were last seen, on remembered hexes out
-    /// of sight. Drawn before the fog, so its grey veil marks them as old.
-    fn push_remembered_units(&self, fog: &Fog, out: &mut Vec<Vertex>) {
-        if !self.fog_of_war {
-            return;
-        }
-        for (&hex, seen) in self.memory.iter().filter(|(h, _)| !fog.sees(**h)) {
-            // Two units last seen together were contesting the hex.
-            let shared = seen.units.len() > 1;
-            for (unit, look) in &seen.units {
-                let (center, scale) = if shared {
-                    let dy = if unit.team == Team::Blue {
-                        CONTESTED_OFFSET_Y
-                    } else {
-                        -CONTESTED_OFFSET_Y
-                    };
-                    (hex.to_world() + Vec2::new(0.0, dy), CONTESTED_SCALE)
-                } else {
-                    (hex.to_world(), 1.0)
-                };
-                push_unit_icon(center, *look, scale, unit.team.color(), out);
-                push_health_bar(center, unit.hp / unit.max_hp(), scale, out);
-            }
-        }
     }
 }
 
@@ -1384,22 +1357,23 @@ mod tests {
     }
 
     #[test]
-    fn a_remembered_enemy_in_range_is_highlighted_as_a_target() {
+    fn an_enemy_seen_before_leaves_no_trace_once_out_of_sight() {
         // A ranged unit (range 2) behind the mountain, so (2, 0) is in range
-        // but out of sight.
-        let target_hexes = |remember_enemy: bool| {
+        // but out of sight: neither a ghost of the enemy seen there nor a
+        // target highlight shows.
+        let drawn = |enemy_seen: bool| {
             let (mut game, idx, hidden) = behind_the_mountain();
             game.units[idx].unit_type = UnitType::Ranged;
             game.units[idx].ability_queued = false;
-            if remember_enemy {
+            if enemy_seen {
                 game.units
                     .push(Unit::new(2, hidden, Team::Red, UnitType::Melee));
             }
             glance_at(&mut game, idx, hidden);
             game.selected = Some(idx);
-            count_color(&game.build_vertices(), ATTACK_RANGE_COLOR)
+            scene(&game)
         };
-        assert!(target_hexes(true) > target_hexes(false));
+        assert!(drawn(true) == drawn(false));
     }
 
     #[test]
