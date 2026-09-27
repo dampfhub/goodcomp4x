@@ -77,3 +77,9 @@ Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world) are construc
 save, F7 load) clones the whole `GameState`. Both live in `scenario.rs` and in memory only. Unit
 tests build a scenario and drive the same methods input does, so no window or GPU is needed;
 `simulation.rs` plays whole AI-vs-AI games that way and checks invariants every turn.
+
+`GameState.rng` (a `Xoshiro256PlusPlus`, `Clone` for the savestate) rolls damage and picks each
+F4 world's map seed. The game seeds it from entropy; tests seed it (`seed_rng`), and it carries
+across scenario switches, so a seed replays the same game, map included. Loading a savestate
+keeps the current RNG, so retrying a save rolls afresh. `mapgen.rs` has its own RNG, seeded by
+the map seed.

@@ -16,7 +16,9 @@ keys are in `controls.md`; screen-space panels in `ui-system.md`. Amounts below 
 
 Pressing F1-F3 restarts that scenario; F4 always makes a new map. The savestate (F6 save, F7
 load) holds a copy of the whole game in memory; it survives scenario switches, loading keeps the
-snapshot (and the camera, within the same scenario), and saving is refused mid-turn. Instant
+snapshot (and the camera, within the same scenario), and saving is refused mid-turn. Loading
+doesn't restore the dice: combat rolls carry on from the current game, so a retry can go
+differently. Instant
 playback (F8, on by default) resolves every step of a turn at once, in the same order, so
 outcomes don't change. Fog of war (F10) is on by default. Both settings survive switches and
 loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
