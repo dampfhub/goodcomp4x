@@ -184,9 +184,12 @@ queue them. Nothing heals.
   plan leaves the unit. Each turn the unit moves to the hex it can reach that turn that is the
   shortest walk from the clicked hex, going around terrain and known walls and gates (the
   straight distance decides if there is no way there; staying put wins ties). Turns are added
-  until nobody can get any closer, so a far hex takes one click (a queue toward an enemy in sight
-  stops next to it). This turn's move plans around the units the player can see, like a plain
-  move; later turns plan around terrain and known walls and gates only (units will have moved),
+  until nobody can get any closer (a queue toward an enemy in sight stops next to it), but one
+  click adds at most as many turns as the **move queue limit** setting allows (6 by default,
+  1 to 20; see `controls.md`, Settings menu). A hex farther away than that is queued that many
+  turns along the way, and the notice says so ("6-TURN LIMIT - SHIFT-CLICK FOR MORE"); the
+  same Shift-click again carries on from where the plan ends. This turn's move plans around the
+  units the player can see, like a plain move; later turns plan around terrain and known walls and gates only (units will have moved),
   and never end on an ally's planned hex for that turn, on a hex an enemy in sight stands on, or
   on a hex an ally leaves only in a later step of that turn (see Turn resolution). A click that
   gets nobody closer (the hex already reached, say) queues nothing.
@@ -201,7 +204,9 @@ queue them. Nothing heals.
   once, and turns already queued stay as they were. Members that arrive first or can't get
   closer wait at the end, the members nearest the target choose their hexes first, and no
   member ends a turn where another member's plan has it. A move keeps adding turns until no
-  member can get any closer. An attack goes in at the end of the group's plans, which members
+  member can get any closer, with the limit counted for each member from the end of its own
+  plan: a member that had three turns queued, with a limit of 6, ends up with nine, and one
+  that had none moves for six turns and then waits for it. An attack goes in at the end of the group's plans, which members
   with shorter plans reach by waiting.
 - Queuing never moves selection on, so a unit (or group) can be given several turns in a row.
 - **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
