@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::ability::{Ability, VOLLEY_DAMAGE};
-use super::city::{BARRACKS_DEFENSE, CITY_ATTACK, CITY_ATTACK_RANGE, CITY_DEFENSE};
+use super::city::{BARRACKS_DEFENSE, Building, CITY_ATTACK, CITY_ATTACK_RANGE, CITY_DEFENSE};
 use super::effects::{Effect, Outcome};
 use super::hex::Hex;
 use super::unit::{Unit, UnitType};
@@ -489,6 +489,12 @@ impl GameState {
                 if city.barracks_hp == 0.0 {
                     city.barracks = None;
                     city.barracks_queue.clear();
+                    city.barracks_production = 0;
+                    // Gone from the map, so the city may build another.
+                    city.built.retain(|&b| b != Building::Barracks);
+                    if self.selected_barracks == Some(i) {
+                        self.selected_barracks = None;
+                    }
                 }
             }
         }

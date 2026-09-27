@@ -230,9 +230,10 @@ every turn end.
   includes terrain and Shield Wall; attack includes Charge.
 - Melee attacks (base range 1) draw retaliation from a defender that survives the hit.
 - **Cities** have 320 HP and 30 defense and fire back at every attacker within range 2 with attack
-  26. **Barracks** have 220 HP and 25 defense and are removed (with their queue) at 0 HP. A
-  structure is hit only when the attack hits no enemy unit at all (for a Volley, none on the
-  target or its neighbors); Volley's 60% applies to structures too. Cities cannot be captured.
+  26. **Barracks** have 220 HP and 25 defense and are removed (with their queue) at 0 HP; the city
+  can then build a new one, at full HP. A structure is hit only when the attack hits no enemy unit
+  at all (for a Volley, none on the target or its neighbors); Volley's 60% applies to structures
+  too. Cities cannot be captured.
 
 ## Cities (`city.rs`)
 
@@ -348,7 +349,6 @@ Known bugs link to their board item; the rest are design questions nobody has de
   and the structure hover panel shows for cities in fog (#21).
 - Swaps only work between adjacent units.
 - Worker roads and improvements are instant.
-- A destroyed Barracks stays in the city's built list, so it can never be rebuilt (#8).
 - The Barracks card says it is placed on a worked tile, but any explored land site is accepted
   (#9).
 - MISS shows for a hit on an empty enemy city or barracks (#10).
