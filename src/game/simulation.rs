@@ -57,8 +57,9 @@ fn play_turn(game: &mut GameState) {
 }
 
 /// Like `play_turn`, but the player's units are ordered through Shift-click queues: each unit
-/// without a queue gets three turns of moves toward the nearest enemy and then an attack on
-/// its hex, as a player would queue them. The AI still runs the player's cities and workers;
+/// without a queue gets one Shift-click's worth of moves toward the nearest enemy (every
+/// turn it takes to get next to it) and then an attack on its hex, as a player would queue
+/// them. The AI still runs the player's cities and workers;
 /// units already following a queue keep their orders.
 fn play_queued_turn(game: &mut GameState) -> usize {
     game.selected = None;
@@ -93,9 +94,7 @@ fn play_queued_turn(game: &mut GameState) -> usize {
             continue;
         };
         game.selected = Some(idx);
-        for _ in 0..3 {
-            game.queue_move(target);
-        }
+        game.queue_move(target);
         game.queue_attack(target);
     }
     game.selected = None;
