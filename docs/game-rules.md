@@ -300,7 +300,7 @@ every turn end.
   another team's site is there. Neither works while a turn plays out.
 - Economy runs once per turn, after the last combat step.
 
-## Interface (`ui.rs`, `ui/dock.rs`)
+## Interface (`src/game/ui/`)
 
 - Panels dock in four corner zones and never overlap (`docs/ui-system.md`).
 - **Top bar:** turn number, the latest notice, and the End Turn button, whose label names what is

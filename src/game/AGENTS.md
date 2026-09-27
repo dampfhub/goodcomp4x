@@ -30,7 +30,11 @@ behavior.
 | `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |
 | `map_icons.rs` | resource and improvement icons (horse head, ingot, wheat, ore cart, fence, logs) in a hex's top corners, and the food and production icons in yield pips; dark-edged shapes in their mockup coordinates |
 | `effects.rs` | attack animations during playback |
-| `ui.rs`, `ui/dock.rs` | screen-space UI (`build_ui`): top bar, trays, queue panels, tooltips, hover panels, debug panel; `dock.rs` places panels by screen zone |
+| `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
+| `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
+| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling and drag to reorder |
+| `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
+| `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
 | `mesh.rs`, `font.rs` | shape helpers (`polygon` ear-clips concave outlines); TrueType text and the glyph atlas |
 
 ## Invariants
@@ -70,19 +74,20 @@ behavior.
 - **New key:** a `KeyCode` arm in `App::window_event` (`src/app.rs`) calling a `GameState`
   method (a key that acts on release or while held needs its own arm, like Escape), a row in
   `docs/controls.md`, and a line in `CONTROLS_HELP` (printed at startup).
-- **New unit button:** in `ui.rs`, a `UnitAction` variant, a `ButtonSpec` in the tray's button
-  list, its tooltip text (the `UnitAction` match under `tooltip_lines`), and an arm in
-  `click_ui`'s dispatch. Add a hit-test unit test.
+- **New unit button:** a `UnitAction` variant (`ui/mod.rs`), a `ButtonSpec` in the tray's
+  button list (`unit_buttons` in `ui/trays.rs`), its tooltip text (the `UnitAction` match in
+  `unit_action_text`, `ui/tooltips.rs`), and an arm in `click_ui`'s dispatch (`ui/mod.rs`). Add
+  a hit-test unit test in `ui/tests.rs`.
 - **Stat or tuning change:** `unit.rs` or `ability.rs`, then every place that states the number
-  to players: `ability_text` in `ui.rs` (tooltips), `CONTROLS_HELP` in `mod.rs`, and the tables
+  to players: `ability_text` in `ui/text.rs` (tooltips), `CONTROLS_HELP` in `mod.rs`, and the tables
   in `docs/game-rules.md`. Grep for the old value.
 - **New scenario:** a `Scenario` variant (`scenario.rs`: `ALL`, `name`, `key`, `start`), its
   constructor in `mod.rs`, a key in `app.rs`; the debug panel lists `Scenario::ALL` itself.
 
 ## Tests
 
-Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city.rs` and `ui.rs`
-hold most of them). Build a `GameState` from a scenario constructor, drive it through the same
+Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city.rs` and
+`ui/tests.rs` hold most of them). Build a `GameState` from a scenario constructor, drive it through the same
 methods input uses, and assert on state. `cargo test` needs no GPU or window. A new rule that
 constrains the board (occupancy, HP, population...) belongs in `simulation.rs`'s
 `check_invariants` too, so every scenario exercises it.

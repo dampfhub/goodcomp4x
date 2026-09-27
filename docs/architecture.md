@@ -52,7 +52,7 @@ Nothing is retained between frames except the font atlas: every vertex is rebuil
 ## A turn
 
 1. **Planning.** Input calls `GameState` methods in `orders.rs`, `group.rs`, `city.rs` and
-   `ui.rs`, which queue orders on units and builds on cities. `pending()` counts what still needs
+   `ui/`, which queue orders on units and builds on cities. `pending()` counts what still needs
    attention; the End Turn button names it.
 2. **End of planning.** Space with nothing waiting and the End Turn button both call
    `end_planning` (`city.rs`), which holds unfinished units, may open a city still needing a build
