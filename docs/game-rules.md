@@ -245,7 +245,7 @@ every turn end.
   at all (for a Volley, none on the target or its neighbors); Volley's 60% applies to structures
   too. Cities cannot be captured.
 
-## Cities (`city.rs`)
+## Cities (`city/`)
 
 - **Founding:** F with a selected settler, at least 3 hexes from any other city; the new city
   starts at population 1, auto-assigns and opens. The AI founds a city in place, at the start of

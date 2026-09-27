@@ -19,7 +19,13 @@ behavior.
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `ai.rs` | the Red AI |
-| `city.rs` | cities, sites, roads, logistics routes, citizens, growth, build queues, buildings, settlers and workers |
+| `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (HP, defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
+| `city/logistics.rs` | roads, logistics routes (`routes_from_by`), `delivered_share`, tile yields, mill food share, city and Barracks income |
+| `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy` |
+| `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, building sites, Workshop discount, confirmation, `complete_builds` |
+| `city/workers.rs` | settlers and workers: founding cities, roads, tile improvements |
+| `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
+| `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
@@ -82,7 +88,7 @@ behavior.
 
 ## Tests
 
-Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city.rs` and `ui.rs`
+Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city/tests.rs` and `ui.rs`
 hold most of them). Build a `GameState` from a scenario constructor, drive it through the same
 methods input uses, and assert on state. `cargo test` needs no GPU or window. A new rule that
 constrains the board (occupancy, HP, population...) belongs in `simulation.rs`'s
