@@ -266,8 +266,10 @@ impl ApplicationHandler for App {
             .with_title("Hex Combat Sandbox")
             .with_inner_size(self.requested_size.unwrap_or(DEFAULT_WINDOW_SIZE))
             .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)))
-            // A screenshot needs no window on screen, or taking focus.
-            .with_visible(self.screenshot.is_none());
+            // Created hidden and shown once it exists (below), so its icons are
+            // set before the taskbar button is made. A screenshot needs no
+            // window on screen, or taking focus, so it stays hidden.
+            .with_visible(false);
         // Windows shows a separate, larger icon on the taskbar.
         #[cfg(windows)]
         {
@@ -289,6 +291,12 @@ impl ApplicationHandler for App {
         let window = event_loop
             .create_window(attributes)
             .expect("failed to create window");
+        // winit attaches the icons after creating the window. Shown before
+        // that, Windows could make the taskbar button with the blank default
+        // icon and not always update it; shown now, the button has ours.
+        if self.screenshot.is_none() {
+            window.set_visible(true);
+        }
 
         let mut imgui = ImGuiContext::create();
         imgui.set_ini_filename(None);
