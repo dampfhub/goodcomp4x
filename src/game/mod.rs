@@ -65,6 +65,9 @@ pub struct GameState {
     selected_city: Option<usize>,
     /// Barracks have their own production screen, separate from city labor.
     selected_barracks: Option<usize>,
+    /// City interior currently being inspected and ordered.
+    interior_view: Option<usize>,
+    interior_selected: Option<u32>,
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option<usize>,
     /// City and building whose site is being chosen.
@@ -167,6 +170,8 @@ impl GameState {
             roads: HashSet::new(),
             selected_city: None,
             selected_barracks: None,
+            interior_view: None,
+            interior_selected: None,
             moving_manager: None,
             placing_building: None,
             hovered_city: None,
@@ -212,6 +217,31 @@ impl GameState {
         game.scenario = Scenario::Cities;
         game.setup_cities();
         game.start_on_whole_map();
+        game
+    }
+
+    /// A compact test of the nested-city battle with opposing units already
+    /// projecting through four gates of the Red city.
+    pub fn siege_scenario() -> Self {
+        let mut game = Self::city_scenario();
+        game.scenario = Scenario::Siege;
+        for (id, pos) in [
+            (0, Hex::new(3, 0)),
+            (1, Hex::new(3, 1)),
+            (4, Hex::new(5, 0)),
+            (5, Hex::new(4, -1)),
+        ] {
+            game.units
+                .iter_mut()
+                .find(|unit| unit.id == id)
+                .unwrap()
+                .pos = pos;
+        }
+        for city in &mut game.cities {
+            city.queue.push(city::Build::Unit(city::BuildUnit::Melee));
+        }
+        game.open_city_interior(1);
+        game.notice = "SIEGE TEST: BLUE COPIES ENTER FROM TWO GATES - CAPTURE RED CENTER".into();
         game
     }
 

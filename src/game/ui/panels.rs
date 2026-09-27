@@ -35,8 +35,9 @@ impl GameState {
             armed: false,
         };
         panel.compact_buttons(
-            Scenario::ALL
-                .into_iter()
+            Scenario::ALL[..4]
+                .iter()
+                .copied()
                 .map(|scenario| {
                     let current = ButtonState::new(scenario == self.scenario, false);
                     debug_button(
@@ -56,6 +57,12 @@ impl GameState {
         }
         panel.gap(GAP);
         panel.compact_buttons(vec![
+            debug_button(
+                Target::Scenario(Scenario::Siege),
+                "SIEGE",
+                "F12",
+                ButtonState::new(self.scenario == Scenario::Siege, false),
+            ),
             debug_button(
                 Target::SaveState,
                 "SAVE",

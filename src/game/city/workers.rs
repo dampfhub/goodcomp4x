@@ -1,7 +1,7 @@
 //! Settlers and workers: founding cities, building roads and improving tiles.
 use std::collections::HashMap;
 
-use super::{BARRACKS_MAX_HP, CITY_MAX_HP, City, LaborFocus, Site};
+use super::{BARRACKS_MAX_HP, CITY_MAX_HP, City, Interior, LaborFocus, Site};
 use crate::game::terrain::Terrain;
 use crate::game::{GameState, PLAYER_TEAM};
 
@@ -46,6 +46,7 @@ impl GameState {
             planned_sites: HashMap::new(),
             barracks_queue: Vec::new(),
             barracks_production: 0,
+            interior: Interior::default(),
         });
         self.settlers.remove(&unit.id);
         self.units.remove(index);

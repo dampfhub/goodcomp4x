@@ -1289,7 +1289,10 @@ fn draw_outer_boxes(
 
 impl GameState {
     fn layout_view(&self) -> ViewScope {
-        if self.selected_city.is_some() || self.selected_barracks.is_some() {
+        if self.selected_city.is_some()
+            || self.selected_barracks.is_some()
+            || self.interior_view.is_some()
+        {
             ViewScope::City
         } else if self.selected.is_some() || !self.group.is_empty() {
             ViewScope::Troop
@@ -1694,7 +1697,14 @@ impl GameState {
                     }
                     let available = ui.content_region_avail()[0];
                     let spacing = ui.clone_style().item_spacing[0];
-                    let min_width = 128.0;
+                    let min_width = if buttons
+                        .iter()
+                        .all(|button| matches!(button.target, Target::InteriorTile(_)))
+                    {
+                        96.0
+                    } else {
+                        128.0
+                    };
                     let columns = (((available + spacing) / (min_width + spacing)).floor()
                         as usize)
                         .clamp(1, buttons.len());
@@ -1938,6 +1948,8 @@ impl GameState {
         let mut tray = PanelBuilder::default();
         if selection_is_pinned {
             // Its persistent window owns these controls while the structure is selected.
+        } else if let Some(city) = self.interior_view {
+            self.interior_tray(city, &mut tray);
         } else if let Some(city) = self.selected_city {
             self.city_tray(city, &mut tray);
         } else if let Some(city) = self.selected_barracks {
@@ -1951,6 +1963,8 @@ impl GameState {
         }
         let selection_context = if selection_is_pinned {
             String::new()
+        } else if let Some(city) = self.interior_view {
+            format!("interior-{city}")
         } else if let Some(city) = self.selected_city {
             format!("city-{city}")
         } else if let Some(city) = self.selected_barracks {

@@ -74,3 +74,6 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     room. Holding Alt shows extra map info: units' turn-order numbers (no longer always shown)
     and every explored tile's yields. Yields are die-face pips of wheat and hammers (one icon
     and a number past six) instead of a strip with numbers.
+32. City interior battle prototype (`codex/city-interior-battle`): each city has a 19-hex tactical
+    grid. Adjacent combat troops project independently controlled copies into its gates; breaching
+    and occupying the command post captures the city. F12 opens a ready-made siege setup.

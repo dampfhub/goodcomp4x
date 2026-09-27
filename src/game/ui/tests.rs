@@ -163,6 +163,42 @@ fn build_card_queues_its_unit() {
     assert_eq!(game.cities[city].queue, vec![Build::Unit(BuildUnit::Siege)]);
 }
 
+#[test]
+fn city_interior_panel_fits_and_its_tiles_issue_orders() {
+    let mut game = GameState::siege_scenario();
+    let layout = game.layout(SCREEN);
+    let tile_buttons: Vec<_> = layout
+        .buttons
+        .iter()
+        .filter(|button| matches!(button.target, Target::InteriorTile(_)))
+        .collect();
+    assert_eq!(tile_buttons.len(), 25);
+    for button in tile_buttons {
+        assert!(button.min.x >= 0.0 && button.max.x <= SCREEN.x);
+        assert!(button.min.y >= 0.0 && button.max.y <= SCREEN.y);
+    }
+    game.handle_click(
+        button_cursor(&game, Target::InteriorTile(Hex::new(-2, 0))),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    game.handle_click(
+        button_cursor(&game, Target::InteriorTile(Hex::new(-1, 0))),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(
+        game.cities[1]
+            .interior
+            .fighters
+            .iter()
+            .find(|f| f.source_id == 0)
+            .unwrap()
+            .planned_move,
+        Some(Hex::new(-1, 0))
+    );
+}
+
 /// The city scenario with the player's city open and the camera settled on it.
 fn city_view() -> GameState {
     let mut game = GameState::city_scenario();

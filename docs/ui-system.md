@@ -7,6 +7,8 @@ experimental ImGui presentation (`src/game/ui/imgui.rs`), and F11 switches
 between it and the classic layout. `src/game/AGENTS.md` points contributors
 here. Add new controls to the shared `PanelBuilder` content and route their
 `Target` actions through `GameState::activate_target`, so both views work.
+The city interior uses the same Selection panel and shared `Target` dispatch for
+its tactical grid; it participates in the City / Building view scope.
 
 ImGui uses native windows, buttons, scrolling, drag/drop, hover tooltips, and
 input capture. It is drawn at the end of the existing Vulkan render pass.

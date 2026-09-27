@@ -4,6 +4,7 @@
 //! setup; each submodule adds an `impl GameState` block for one concern.
 mod builds;
 mod citizens;
+mod interior;
 mod logistics;
 #[cfg(test)]
 mod tests;
@@ -19,6 +20,8 @@ use super::unit::{Team, Unit, UnitType};
 use super::{GameState, PLAYER_TEAM};
 
 pub use builds::{Build, BuildUnit, Building};
+pub(super) use interior::CORE_HP;
+pub(super) use interior::Interior;
 pub(super) use logistics::{Routes, delivered_share};
 
 /// Camera zoom the city scenarios start at: most of the radius-six map in view.
@@ -75,6 +78,8 @@ pub(super) struct City {
     /// Barracks production is independent of the city's main queue.
     pub barracks_queue: Vec<BuildUnit>,
     pub barracks_production: i32,
+    /// A separate tactical board. Adjacent field troops project copies here.
+    pub interior: Interior,
 }
 
 impl City {
@@ -155,6 +160,7 @@ impl GameState {
                 planned_sites: HashMap::new(),
                 barracks_queue: Vec::new(),
                 barracks_production: 0,
+                interior: Interior::default(),
             });
             for (q, r, food, production, label) in [
                 (4, -1, 4, 0, "FARM"),

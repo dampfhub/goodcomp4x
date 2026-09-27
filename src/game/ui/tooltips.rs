@@ -344,6 +344,24 @@ impl GameState {
                     "RETURNS TO THIS CITY'S LABOR AND MAIN PRODUCTION PANEL.".into(),
                     None,
                 ),
+                Target::OpenInterior => (
+                    "CITY INTERIOR".into(),
+                    "V".into(),
+                    "OPEN THE CITY'S TACTICAL GRID. ADJACENT FIELD TROOPS APPEAR AS SEPARATE COPIES.".into(),
+                    None,
+                ),
+                Target::InteriorTile(_) => (
+                    "INTERIOR TILE".into(),
+                    "CLICK".into(),
+                    "SELECT A BLUE COPY, THEN CHOOSE AN OPEN TILE OR ENEMY. CAPTURE THE CENTER AFTER ITS DEFENSE FALLS.".into(),
+                    None,
+                ),
+                Target::InteriorClear => (
+                    "CLEAR INTERIOR ORDERS".into(),
+                    "BACKSPACE".into(),
+                    "REMOVES THE SELECTED COPY'S MOVE AND ATTACK FOR THIS TURN.".into(),
+                    None,
+                ),
                 Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => (
                     "REMOVE".into(),
                     "CLICK".into(),
@@ -372,6 +390,7 @@ impl GameState {
                             "A SETTLER, WORKER AND SCOUT EACH. BOTH SCOUTS ARE YOURS."
                         }
                         Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS.",
+                        Scenario::Siege => "OPPOSING FIELD TROOPS ALREADY FIGHT INSIDE A CITY.",
                     }
                     .into(),
                     None,

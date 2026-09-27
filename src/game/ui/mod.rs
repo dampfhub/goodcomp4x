@@ -164,6 +164,9 @@ enum Target {
     BarracksBuild(BuildUnit),
     OpenBarracks,
     OpenCity,
+    OpenInterior,
+    InteriorTile(Hex),
+    InteriorClear,
     CityQueueRemove(usize),
     BarracksQueueRemove(usize),
     Focus(LaborFocus),
@@ -486,6 +489,9 @@ impl GameState {
                 }
             }
             Target::OpenCity => self.open_selected_city_from_barracks(),
+            Target::OpenInterior => self.toggle_city_interior(),
+            Target::InteriorTile(tile) => self.interior_click(tile),
+            Target::InteriorClear => self.clear_selected_interior_orders(),
             Target::CityQueueRemove(index) => self.remove_selected_city_queue_item(index),
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
             Target::Focus(focus) => self.set_selected_city_focus(focus),
@@ -537,7 +543,9 @@ impl GameState {
         self.top_bar(screen_size, &mut layout);
 
         let mut tray = PanelBuilder::default();
-        if let Some(city) = self.selected_city {
+        if let Some(city) = self.interior_view {
+            self.interior_tray(city, &mut tray);
+        } else if let Some(city) = self.selected_city {
             self.city_tray(city, &mut tray);
         } else if let Some(city) = self.selected_barracks {
             self.barracks_tray(city, &mut tray);

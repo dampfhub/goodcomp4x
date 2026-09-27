@@ -25,11 +25,12 @@ behavior.
 | `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, building sites, Workshop discount, confirmation, `complete_builds` |
 | `city/workers.rs` | settlers and workers: founding cities, roads, tile improvements |
 | `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
+| `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture |
 | `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
-| `scenario.rs` | scenarios (F1-F4), savestate (F6/F7), instant playback (F8) |
+| `scenario.rs` | scenarios (F1-F4, F12), savestate (F6/F7), instant playback (F8) |
 | `simulation.rs` | tests only: seeded AI-vs-AI games in every scenario, board invariants checked each turn, same seed replays the same game |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |

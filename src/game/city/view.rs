@@ -31,6 +31,8 @@ impl GameState {
 
     /// Opens city `i`'s view and glides the camera to it.
     pub(in crate::game) fn open_city(&mut self, i: usize) {
+        self.interior_view = None;
+        self.interior_selected = None;
         if self.selected_city != Some(i) {
             self.city_queue_scroll = 0;
         }
@@ -58,6 +60,8 @@ impl GameState {
         self.queue_drag = None;
         self.selected_city = None;
         self.selected_barracks = None;
+        self.interior_view = None;
+        self.interior_selected = None;
         self.moving_manager = None;
         self.placing_building = None;
         self.inspected_tile = None;
@@ -66,7 +70,10 @@ impl GameState {
     /// Escape and Space dismiss city or building management without issuing a
     /// unit order or starting the quit hold.
     pub fn exit_structure_menu(&mut self) -> bool {
-        if self.selected_city.is_none() && self.selected_barracks.is_none() {
+        if self.selected_city.is_none()
+            && self.selected_barracks.is_none()
+            && self.interior_view.is_none()
+        {
             return false;
         }
         self.leave_city_view();
@@ -75,6 +82,8 @@ impl GameState {
     }
 
     pub(in crate::game) fn open_barracks(&mut self, city: usize) {
+        self.interior_view = None;
+        self.interior_selected = None;
         if self.cities[city].barracks.is_none() {
             return;
         }
@@ -98,6 +107,10 @@ impl GameState {
     }
 
     pub(in crate::game) fn city_click(&mut self, hex: Hex) -> bool {
+        if self.interior_view.is_some() {
+            self.notice = "CITY INTERIOR OPEN - PRESS V, ESC OR SPACE TO EXIT".into();
+            return true;
+        }
         // A structure menu owns all map clicks until its explicit exit action.
         // This keeps city assignment, Barracks management, and unit selection
         // on one consistent interaction model.

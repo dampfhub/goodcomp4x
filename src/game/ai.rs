@@ -43,6 +43,7 @@ impl GameState {
                 planned_sites: std::collections::HashMap::new(),
                 barracks_queue: Vec::new(),
                 barracks_production: 0,
+                interior: super::city::Interior::default(),
             });
             self.auto_assign_city(self.cities.len() - 1);
         }
@@ -53,6 +54,28 @@ impl GameState {
                 || self.settlers.contains(&self.units[idx].id)
                 || self.workers.contains(&self.units[idx].id)
             {
+                continue;
+            }
+            // A defender already holding a city gate should keep projecting its
+            // interior copy while enemy troops contest the surrounding ring.
+            let gate_under_attack = self.cities.iter().any(|city| {
+                city.team == team
+                    && self.units[idx].pos.distance(city.pos) == 1
+                    && self
+                        .units
+                        .iter()
+                        .any(|enemy| enemy.team != team && enemy.pos.distance(city.pos) == 1)
+            });
+            if gate_under_attack {
+                let unit = &self.units[idx];
+                let attack = self
+                    .units
+                    .iter()
+                    .filter(|enemy| enemy.team != team)
+                    .filter(|enemy| unit.pos.distance(enemy.pos) <= unit.stats().attack_range)
+                    .min_by_key(|enemy| (unit.pos.distance(enemy.pos), enemy.id))
+                    .map(|enemy| enemy.pos);
+                self.units[idx].planned_attack = attack;
                 continue;
             }
             let Some(target) = self.nearest_enemy_pos(idx) else {

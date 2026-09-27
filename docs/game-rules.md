@@ -13,6 +13,7 @@ keys are in `controls.md`; screen-space panels in `ui-system.md`. Amounts below 
 | F2 | Cities (default) | radius-6 map; the Combat units plus a city, a worker, owned farms/mines/pastures and dirt roads per side; Horses and Iron deposits |
 | F3 | Frontier | radius-6 map; a settler, a worker and a scout per side, no cities. Red's scout is player-controlled, to test route cuts and contests without the AI |
 | F4 | World | a generated map (see World generation) with a settler, a worker and a scout per side; a new random seed every press |
+| F12 | Siege | the Cities map with two combat troops from each side already at the gates of Red's city; its interior opens for testing |
 
 Pressing F1-F3 restarts that scenario; F4 always makes a new map. The savestate (F6 save, F7
 load) holds a copy of the whole game in memory; it survives scenario switches, loading keeps the
@@ -252,7 +253,30 @@ every turn end.
   26. **Barracks** have 220 HP and 25 defense and are removed (with their queue) at 0 HP; the city
   can then build a new one, at full HP. A structure is hit only when the attack hits no enemy unit
   at all (for a Volley, none on the target or its neighbors); Volley's 60% applies to structures
-  too. Cities cannot be captured.
+  too. Exterior damage still does not capture a city; its command post can be captured from the interior.
+
+## City interiors (`city/interior.rs`)
+
+- Press V while viewing a city, hovering a visible city, or controlling a field unit near one. Each
+  city has a 19-hex tactical interior (radius 2) with a fixed command post at the center.
+- Each combat unit on one of the six exterior hexes neighboring that city projects a separate
+  fighter through the corresponding outer gate. Settlers and workers do not project. The copy
+  has its own HP, position and orders; damage inside does not harm its field unit. A defeated
+  copy does not return while its source holds that gate. Leaving and re-entering the ring creates
+  a fresh copy; moving away or dying removes the copy.
+- Select a Blue copy in the interior panel, then click an open tile to queue its move or an enemy
+  to queue an attack. Range uses that unit type's move and attack stats. Click the command post to
+  attack it when within range. Backspace clears the selected copy's orders. V or Escape exits.
+  Field orders and interior orders resolve independently in the same global turn: field combat
+  first, then one simultaneous interior move/attack step for every city, then city economy.
+- The post starts with 80 HP, 18 defense and a range-1 retaliation against one adjacent attacker
+  per turn at attack 12. Damage follows the normal combat formula. Once its HP reaches zero, move
+  a hostile interior fighter onto the center hex to capture the city. Capture changes ownership,
+  restores the post, sets exterior city HP to half, and clears its production queue and building
+  plans. The exterior city can still be attacked under the existing rules.
+- Red's interior fighters defend their own city's post by engaging intruders. When attacking an
+  enemy city they head toward its post. Exterior Red defenders hold contested city gates and can
+  attack nearby enemies, so their projected copies stay in the siege.
 
 ## Cities (`city/`)
 
@@ -347,7 +371,8 @@ attacking if that brings it into range. It skips hexes a teammate already claime
 contested hex stay and fight. It never uses abilities, never attacks cities, never builds
 buildings, ignores the fog, and ignores its civilians and any player-controlled Red unit; its
 scouts fight like any other unit. Red cities auto-assign citizens at every end of planning and
-queue Melee whenever their queue is empty. Ties break by hex coordinates, so it is deterministic.
+queue Melee whenever their queue is empty. At a contested friendly city gate they hold position
+and attack an enemy in range. Ties break by hex coordinates, so it is deterministic.
 
 ## Open questions
 
@@ -355,7 +380,7 @@ Known bugs link to their board item; the rest are design questions nobody has de
 
 - The AI never uses abilities, attacks cities, builds, or uses workers; it ignores the fog, and
   its scouts just fight.
-- Cities and barracks can be damaged but not captured, and nothing heals.
+- Barracks can be damaged but not captured, and nothing heals.
 - Cooldowns tick every turn whether or not the unit acted.
 - Contests only form when two enemies arrive in the same step. A later arrival is just blocked; it
   could be allowed to charge in and contest instead.

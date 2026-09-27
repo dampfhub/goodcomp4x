@@ -116,6 +116,7 @@ impl GameState {
         }
 
         if !self.is_resolving() {
+            self.resolve_city_interiors();
             self.resolve_economy();
             for unit in &mut self.units {
                 if unit.ability_queued && unit.ability() == Ability::Deploy {

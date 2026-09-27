@@ -634,6 +634,7 @@ impl ApplicationHandler for App {
                     KeyCode::Tab => self.game.select_next_unit(),
                     KeyCode::KeyQ => self.game.toggle_selected_ability(),
                     KeyCode::KeyC => self.game.select_city(),
+                    KeyCode::KeyV => self.game.toggle_city_interior(),
                     KeyCode::KeyA => self.game.auto_assign_selected_city(),
                     KeyCode::KeyM => self.game.choose_move_action(),
                     KeyCode::KeyX => self.game.choose_attack_action(),
@@ -661,12 +662,16 @@ impl ApplicationHandler for App {
                     KeyCode::Digit7 => self
                         .game
                         .queue_selected_city_building(crate::game::Building::Workshop),
+                    KeyCode::Backspace if self.game.is_in_city_interior() => {
+                        self.game.clear_selected_interior_orders()
+                    }
                     KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
                     KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
                     KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
                     KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),
                     KeyCode::F3 => self.game.switch_scenario(Scenario::Frontier),
                     KeyCode::F4 => self.game.switch_scenario(Scenario::World),
+                    KeyCode::F12 => self.game.switch_scenario(Scenario::Siege),
                     KeyCode::KeyY => self.game.toggle_yields(),
                     KeyCode::KeyG => self.game.toggle_guard(),
                     KeyCode::F5 => self.toggle_fullscreen(),

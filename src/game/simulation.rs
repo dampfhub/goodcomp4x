@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::thread;
 
-use super::city::{CITY_MAX_HP, MAX_CITY_POPULATION};
+use super::city::{CITY_MAX_HP, CORE_HP, MAX_CITY_POPULATION};
 use super::hex::Hex;
 use super::scenario::Scenario;
 use super::unit::Team;
@@ -149,6 +149,38 @@ fn check_invariants(game: &GameState, context: &str) {
             city.worked.len(),
             city.population
         );
+        assert!(
+            (0.0..=CORE_HP).contains(&city.interior.core_hp),
+            "{context}: city {} command post has {} HP",
+            city.id,
+            city.interior.core_hp
+        );
+        let mut sources = HashSet::new();
+        let mut tiles = HashSet::new();
+        for fighter in &city.interior.fighters {
+            assert!(
+                sources.insert(fighter.source_id),
+                "{context}: repeated interior source"
+            );
+            assert!(
+                tiles.insert(fighter.pos),
+                "{context}: two fighters on one interior tile"
+            );
+            assert!(
+                fighter.pos.distance(Hex::new(0, 0)) <= 2,
+                "{context}: fighter outside interior"
+            );
+            assert!(
+                fighter.hp > 0.0 && fighter.hp <= fighter.unit_type.stats().max_hp,
+                "{context}: interior fighter has invalid HP"
+            );
+            assert!(
+                game.units.iter().any(|unit| unit.id == fighter.source_id
+                    && unit.team == fighter.team
+                    && unit.pos.distance(city.pos) == 1),
+                "{context}: interior fighter lacks adjacent source"
+            );
+        }
     }
 }
 

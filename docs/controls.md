@@ -68,6 +68,9 @@ plays out.
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |
 | See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types) |
+| V / City Interior button | Open the selected or hovered city's tactical interior; press again to leave |
+| Click a Blue copy, then another interior tile | Queue its independent move or attack |
+| Backspace in the interior | Clear the selected copy's orders |
 | Open City (in the barracks view) | Go back to the city view |
 | Space / Escape / click off the map | Close the city or barracks view |
 | Tab | Close the city or barracks view |
@@ -87,6 +90,7 @@ While a city view is open, map clicks manage tiles and never select units.
 | Hold Escape for 1 s | Quit (a prompt shows while it's held) |
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
 | F4 | Start a newly generated world; every press makes a new map |
+| F12 | Start a siege at Red's city with its interior open |
 | F6 | Save a snapshot of the whole game (in memory only) |
 | F7 | Load the snapshot; it is kept, so it can be loaded again |
 | F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome) |
@@ -96,7 +100,7 @@ While a city view is open, map clicks manage tiles and never select units.
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
 | Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
-The faded DEBUG panel at the top-left has buttons for F1-F4 and F6-F10; the current scenario is
+The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10; the current scenario is
 gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
 order.
 
@@ -107,7 +111,7 @@ them.
 
 | Flag | Effect |
 | --- | --- |
-| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier` or `world` (F1-F4) |
+| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier`, `world` or `siege` (F12) |
 | `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
 | `--size <W>x<H>` | Open the window at this size in pixels |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |

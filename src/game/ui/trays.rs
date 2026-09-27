@@ -7,10 +7,141 @@ use super::{
     TEXT, TITLE, Target, UnitAction,
 };
 use crate::game::GameState;
-use crate::game::city::{Build, BuildUnit, Building, LaborFocus, delivered_share};
+use crate::game::city::{Build, BuildUnit, Building, CORE_HP, LaborFocus, delivered_share};
 use crate::game::orders::ClickMode;
 
 impl GameState {
+    /// The tactical hex board inside a city. These fighters are independent
+    /// copies of field troops on the six tiles neighboring the city.
+    pub(super) fn interior_tray(&self, i: usize, panel: &mut PanelBuilder) {
+        let city = &self.cities[i];
+        let interior = &city.interior;
+        panel.text(
+            TITLE,
+            vec![(format!("CITY {} INTERIOR", city.id + 1), city.team.color())],
+        );
+        panel.text(
+            BODY,
+            vec![(
+                format!(
+                    "{} COMMAND POST  {:.0}/{:.0} HP",
+                    if city.team == crate::game::PLAYER_TEAM {
+                        "BLUE"
+                    } else {
+                        "RED"
+                    },
+                    interior.core_hp,
+                    CORE_HP
+                ),
+                GOLD_TEXT,
+            )],
+        );
+        panel.bar(interior.core_hp / CORE_HP);
+        let blue = interior
+            .fighters
+            .iter()
+            .filter(|f| f.team == crate::game::PLAYER_TEAM)
+            .count();
+        let red = interior.fighters.len() - blue;
+        panel.text(
+            SMALL,
+            vec![(format!("BLUE {blue}  /  RED {red} COPIES"), DIM_TEXT)],
+        );
+        panel.text(
+            SMALL,
+            vec![(
+                "SELECT A BLUE COPY, THEN CLICK A TILE OR ENEMY".into(),
+                LABEL_TEXT,
+            )],
+        );
+        panel.gap(GAP);
+        for r in -2..=2 {
+            let tiles: Vec<_> = (-2..=2).map(|q| crate::game::hex::Hex::new(q, r)).collect();
+            panel.compact_buttons(
+                tiles
+                    .into_iter()
+                    .map(|tile| {
+                        if tile.distance(crate::game::hex::Hex::new(0, 0)) > 2 {
+                            return ButtonSpec {
+                                target: Target::InteriorTile(tile),
+                                label: " ".into(),
+                                hint: String::new(),
+                                state: ButtonState::Disabled,
+                                armed: false,
+                            };
+                        }
+                        let fighter = interior.fighters.iter().find(|f| f.pos == tile);
+                        let label = if let Some(f) = fighter {
+                            let side = if f.team == crate::game::PLAYER_TEAM {
+                                "B"
+                            } else {
+                                "R"
+                            };
+                            let kind = match f.unit_type {
+                                crate::game::unit::UnitType::Melee => "M",
+                                crate::game::unit::UnitType::Ranged => "R",
+                                crate::game::unit::UnitType::Cavalry => "C",
+                                crate::game::unit::UnitType::Siege => "S",
+                                crate::game::unit::UnitType::Scout => "SC",
+                                crate::game::unit::UnitType::Armored => "A",
+                            };
+                            format!("{side}-{kind} {:.0}", f.hp)
+                        } else if tile == crate::game::hex::Hex::new(0, 0) {
+                            "CENTER".into()
+                        } else {
+                            "OPEN".into()
+                        };
+                        let hint = if let Some(f) = fighter {
+                            if f.planned_move.is_some() && f.planned_attack.is_some() {
+                                "M+A".into()
+                            } else if f.planned_move.is_some() {
+                                "MOVE".into()
+                            } else if f.planned_attack.is_some() {
+                                "ATTACK".into()
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        };
+                        ButtonSpec {
+                            target: Target::InteriorTile(tile),
+                            label,
+                            hint,
+                            state: ButtonState::Ready,
+                            armed: fighter
+                                .is_some_and(|f| self.interior_selected == Some(f.source_id)),
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        panel.gap(GAP);
+        panel.text(
+            SMALL,
+            vec![(
+                "BREAK THE POST, THEN OCCUPY CENTER TO CAPTURE".into(),
+                GOLD_TEXT,
+            )],
+        );
+        panel.compact_buttons(vec![
+            ButtonSpec {
+                target: Target::InteriorClear,
+                label: "CLEAR ORDERS".into(),
+                hint: "BACKSPACE".into(),
+                state: ButtonState::new(false, self.interior_selected.is_none()),
+                armed: false,
+            },
+            ButtonSpec {
+                target: Target::OpenInterior,
+                label: "LEAVE INTERIOR".into(),
+                hint: "V / ESC".into(),
+                state: ButtonState::Ready,
+                armed: false,
+            },
+        ]);
+    }
+
     /// A unit's name, stats as they stand this turn, and anything notable
     /// about it. Stats boosted above their base value are green, reduced red.
     pub(super) fn unit_info(&self, idx: usize, panel: &mut PanelBuilder) {
@@ -401,13 +532,22 @@ impl GameState {
                 .collect(),
         );
         panel.gap(GAP);
-        panel.buttons(vec![ButtonSpec {
-            target: Target::ToggleYields,
-            label: "YIELDS".into(),
-            hint: "Y".into(),
-            state: ButtonState::new(self.show_yields, false),
-            armed: false,
-        }]);
+        panel.buttons(vec![
+            ButtonSpec {
+                target: Target::ToggleYields,
+                label: "YIELDS".into(),
+                hint: "Y".into(),
+                state: ButtonState::new(self.show_yields, false),
+                armed: false,
+            },
+            ButtonSpec {
+                target: Target::OpenInterior,
+                label: "CITY INTERIOR".into(),
+                hint: "V".into(),
+                state: ButtonState::Ready,
+                armed: false,
+            },
+        ]);
         panel.gap(GAP);
         panel.text(
             SMALL,
