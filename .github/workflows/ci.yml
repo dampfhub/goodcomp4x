@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    # ready_for_review too, so a draft marked ready is checked and merged.
+    types: [opened, synchronize, reopened, ready_for_review]
+  # The merge job below starts a run on main this way.
+  workflow_dispatch:
 
 jobs:
   rust:
@@ -47,3 +51,31 @@ jobs:
       - name: Lint this PR's commit messages
         if: github.event_name == 'pull_request'
         run: node tools/commit-msg-lint.mjs --range "origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}"
+
+  # Merges a pull request as soon as every check above passes. Drafts are
+  # left alone, which is the way to keep a PR open. The merge uses
+  # GITHUB_TOKEN, and pushes made with it start no workflows, so this then
+  # starts CI on main itself (workflow_dispatch is the exception to that rule).
+  merge:
+    needs: [rust, msrv, tools]
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # --match-head-commit refuses to merge if a commit landed after the
+      # one these checks ran on; that push runs the checks again.
+      # --delete-branch removes the merged head branch.
+      - run: >-
+          gh pr merge "${{ github.event.pull_request.number }}" --merge
+          --match-head-commit "${{ github.event.pull_request.head.sha }}"
+          --delete-branch
+      - run: gh workflow run ci.yml --ref main
