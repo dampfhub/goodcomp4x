@@ -12,7 +12,7 @@ use super::GameState;
 use super::fog::Fog;
 use super::hex::Hex;
 use super::turn::{Phase, step_rank};
-use super::unit::{Team, TurnOrder};
+use super::unit::{Team, TurnOrder, Unit};
 
 /// The most turns one Shift-click queues: a safety net, since every queued
 /// turn brings some unit nearer.
@@ -23,9 +23,12 @@ impl GameState {
     /// takes to get to `target`. Each turn every unit moves to the hex it can
     /// reach that turn, with no ally standing on it, that is the shortest walk
     /// from `target` (around terrain and known walls), until nobody can get
-    /// any closer. A group's plans always have the same number of turns:
-    /// members that arrive first, or can't get closer, wait. Returns whether
-    /// anything was queued.
+    /// any closer. Each member continues from the end of its own plan, so a
+    /// unit added to a group with queues starts moving this turn instead of
+    /// waiting for the others' queues to run out; what the others already
+    /// had queued stays as it was. Afterwards every member's plan has the
+    /// same number of turns: those that arrive first, or can't get closer,
+    /// wait at the end. Returns whether anything was queued.
     pub(super) fn queue_move(&mut self, target: Hex) -> bool {
         let members = self.selection();
         if members.is_empty() || self.is_resolving() {
@@ -34,38 +37,62 @@ impl GameState {
         let fog = self.fog();
         let team = self.units[members[0]].team;
         let walk = self.planned_walk_to(target, team, &fog);
-        let first = self.plan_length(&members);
+        let before: Vec<Unit> = members.iter().map(|&i| self.units[i].clone()).collect();
+        let first = members
+            .iter()
+            .map(|&i| self.units[i].plan_len())
+            .min()
+            .unwrap_or(0);
+        let longest = self.plan_length(&members);
+        let mut moved_any = false;
         let mut turn = first;
         while turn - first < MAX_QUEUED_TURNS {
-            let legs = self.plan_move_turn(&members, target, turn, &walk, &fog);
-            if legs.iter().all(|(_, dest)| dest.is_none()) {
+            // Members whose plans end here take this turn; the rest are still
+            // busy with what they had queued, and hold their hexes.
+            let active: Vec<usize> = members
+                .iter()
+                .copied()
+                .filter(|&i| self.units[i].plan_len() == turn)
+                .collect();
+            let legs = self.plan_move_turn(&active, target, turn, &walk, &fog);
+            let moved = legs.iter().any(|(_, dest)| dest.is_some());
+            if !moved && turn >= longest {
                 break;
             }
             for (i, dest) in legs {
-                self.pad_plan(i, turn);
                 self.append_turn(i, dest, None);
             }
+            moved_any |= moved;
             turn += 1;
         }
-        if turn == first {
+        if !moved_any {
+            for (&i, unit) in members.iter().zip(before) {
+                self.units[i] = unit;
+            }
             self.notice = "CAN'T GET ANY CLOSER THERE".into();
             return false;
         }
-        self.notice = queued_notice(first, turn - first);
+        let length = self.plan_length(&members);
+        for &i in &members {
+            self.pad_plan(i, length);
+        }
+        self.notice = queued_notice(first, length - first);
         true
     }
 
-    /// One turn of a queued move toward `target` for each of `members`, on
+    /// One turn of a queued move toward `target` for each of `active`, on
     /// turn `turn` of their plans: where each moves, or `None` to wait.
+    /// Everyone else on the side (including selected units still busy with
+    /// earlier turns) keeps the hex its plan has it on then.
     fn plan_move_turn(
         &self,
-        members: &[usize],
+        active: &[usize],
         target: Hex,
         turn: usize,
         walk: &HashMap<Hex, i32>,
         fog: &Fog,
     ) -> Vec<(usize, Option<Hex>)> {
-        let team = self.units[members[0]].team;
+        let team = self.units[active[0]].team;
         let allies: Vec<usize> = (0..self.units.len())
             .filter(|&i| self.units[i].team == team)
             .collect();
@@ -74,7 +101,7 @@ impl GameState {
         // right-click attacks it.
         let mut claimed: HashSet<Hex> = allies
             .iter()
-            .filter(|i| !members.contains(i))
+            .filter(|i| !active.contains(i))
             .map(|&i| self.units[i].pos_after(turn + 1))
             .chain(
                 self.units
@@ -95,7 +122,7 @@ impl GameState {
                 hex.distance(target),
             )
         };
-        let mut order = members.to_vec();
+        let mut order = active.to_vec();
         order.sort_by_key(|&i| (away(self.units[i].pos_after(turn)), i));
         let mut legs = Vec::new();
         for i in order {
@@ -649,11 +676,10 @@ mod tests {
             lengths.iter().all(|&len| len == lengths[0]),
             "plans differ: {lengths:?}"
         );
-        // The others waited two turns for the cavalry, then set off, and the
-        // group went as far as it could in one click.
-        assert_eq!(g.units[0].planned_move, None);
-        assert_eq!(g.units[0].queued[0].move_to, None);
-        assert!(g.units[0].queued[1].move_to.is_some());
+        // The others set off at once rather than waiting for the cavalry's
+        // two turns, and the group went as far as it could in one click.
+        assert!(g.units[0].planned_move.is_some());
+        assert!(g.units[2].planned_move.is_some());
         assert!(g.units[0].plan_len() > 5);
         assert!(!g.queue_move(far), "nobody can get any closer");
         assert!((0..3).any(|i| g.units[i].plan_end() == far));
@@ -675,6 +701,35 @@ mod tests {
         for turn in 1..=g.units[0].plan_len() {
             let ends: HashSet<Hex> = (0..3).map(|i| g.units[i].pos_after(turn)).collect();
             assert_eq!(ends.len(), 3, "turn {turn}");
+        }
+    }
+
+    #[test]
+    fn a_unit_added_to_a_queued_group_starts_moving_this_turn() {
+        let mut g = open_field(&[UnitType::Melee, UnitType::Ranged]);
+        // The melee has three turns of its own queued.
+        g.selected = Some(0);
+        assert!(g.queue_move(Hex::new(-1, 0)));
+        let queued: Vec<Hex> = (1..=3).map(|t| g.units[0].pos_after(t)).collect();
+        assert_eq!(g.units[0].plan_len(), 3);
+
+        // The ranged unit joins, and the group is sent farther on.
+        g.set_selection(vec![0, 1]);
+        assert!(g.queue_move(Hex::new(4, 1)));
+        let ranged = &g.units[1];
+        assert!(
+            ranged.planned_move.is_some(),
+            "the new member moves on turn 1, not after the others' queues"
+        );
+        assert_eq!(
+            (1..=3).map(|t| g.units[0].pos_after(t)).collect::<Vec<_>>(),
+            queued,
+            "what the melee had queued is untouched"
+        );
+        assert_eq!(g.units[0].plan_len(), g.units[1].plan_len(), "same length");
+        // No two members plan to end any turn on the same hex.
+        for turn in 1..=g.units[0].plan_len() {
+            assert_ne!(g.units[0].pos_after(turn), g.units[1].pos_after(turn));
         }
     }
 

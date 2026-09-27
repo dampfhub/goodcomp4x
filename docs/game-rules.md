@@ -195,11 +195,14 @@ queue them. Nothing heals.
   Range counts from where the plan has the unit that turn, with its later-turn stats (no ability;
   a siege that sets up this turn is deployed). With nothing planned and no attack possible this
   turn (a siege setting up), it goes in the next turn. Out of range, nothing is queued.
-- **Groups:** Shift-clicks with a group selected add the same turns to every member, so their
-  plans always have the same number of turns. Members with shorter plans wait until they line
-  up, members that arrive first, can't get closer or can't reach the target wait that turn, and
-  the members nearest the target choose their hexes first. A move keeps adding turns until no
-  member can get any closer.
+- **Groups:** a Shift-click with a group selected queues for every member, and afterwards
+  their plans all have the same number of turns. For a move, each member continues from the end
+  of its own plan: one with a shorter plan (say, just added to the selection) starts moving at
+  once, and turns already queued stay as they were. Members that arrive first or can't get
+  closer wait at the end, the members nearest the target choose their hexes first, and no
+  member ends a turn where another member's plan has it. A move keeps adding turns until no
+  member can get any closer. An attack goes in at the end of the group's plans, which members
+  with shorter plans reach by waiting.
 - Queuing never moves selection on, so a unit (or group) can be given several turns in a row.
 - **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
   turn and every turn it has queued orders for.
