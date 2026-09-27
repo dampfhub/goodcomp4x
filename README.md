@@ -15,6 +15,7 @@ build looks in `$VULKAN_SDK/bin`, then `PATH`).
 cargo run --release     # play
 cargo run               # debug build with the Vulkan validation layer (from the SDK)
 cargo test              # unit tests; no GPU needed
+cargo run -- --screenshot out.png --scenario cities   # save one frame as a PNG and exit
 ```
 
 The city scenario opens by default; F1-F4 switch between the combat, city, frontier and

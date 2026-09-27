@@ -10,6 +10,7 @@ mod device;
 mod instance;
 mod msaa;
 mod pipeline;
+mod readback;
 mod swapchain;
 mod sync;
 mod texture;
@@ -23,10 +24,12 @@ use winit::window::Window;
 
 use device::QueueFamilyIndices;
 use msaa::ColorTarget;
+use readback::Readback;
 use swapchain::SwapchainData;
 use sync::{MAX_FRAMES_IN_FLIGHT, SyncObjects};
 use texture::Texture;
 
+pub use readback::Frame;
 pub use texture::Atlas;
 pub use vertex::{SOLID_UV, Vertex};
 
@@ -92,6 +95,12 @@ pub struct Renderer {
 
     window_size: (u32, u32),
     framebuffer_resized: bool,
+
+    /// Set by `capture_next_frame`: the next frame drawn is also copied into
+    /// `readback`.
+    capture_requested: bool,
+    /// Where the last captured frame was copied, until `take_captured_frame`.
+    readback: Option<Readback>,
 }
 
 impl Renderer {
@@ -218,6 +227,8 @@ impl Renderer {
             current_frame: 0,
             window_size,
             framebuffer_resized: false,
+            capture_requested: false,
+            readback: None,
         })
     }
 
@@ -234,6 +245,49 @@ impl Renderer {
         let _ = unsafe { self.device.device_wait_idle() };
     }
 
+    /// Asks for the next frame `draw_frame` draws to also be copied back to
+    /// the CPU; `take_captured_frame` returns it.
+    pub fn capture_next_frame(&mut self) {
+        self.capture_requested = true;
+    }
+
+    /// The frame captured since the last call (see `capture_next_frame`), or
+    /// `None` if none has been drawn yet. Waits for the GPU to finish it.
+    pub fn take_captured_frame(&mut self) -> Result<Option<Frame>> {
+        if self.capture_requested {
+            return Ok(None);
+        }
+        let Some(readback) = self.readback.take() else {
+            return Ok(None);
+        };
+        self.wait_idle();
+        let frame = unsafe { readback.read(&self.device) };
+        unsafe { readback.destroy(&self.device) };
+        frame.map(Some)
+    }
+
+    /// A fresh buffer for this frame's copy, sized for the current swapchain.
+    unsafe fn prepare_readback(&mut self) -> Result<()> {
+        if !self.swapchain.readable {
+            anyhow::bail!("this surface's swapchain images can't be copied from");
+        }
+        if let Some(old) = self.readback.take() {
+            // Its frame may still be in flight.
+            self.wait_idle();
+            unsafe { old.destroy(&self.device) };
+        }
+        self.readback = Some(unsafe {
+            Readback::new(
+                &self.instance,
+                &self.device,
+                self.physical_device,
+                self.swapchain.extent,
+                self.swapchain.format,
+            )
+        }?);
+        Ok(())
+    }
+
     /// Draws `batches` in order, each through its own view-projection matrix.
     pub fn draw_frame(&mut self, batches: &[DrawBatch]) -> Result<()> {
         if self.window_size.0 == 0 || self.window_size.1 == 0 {
@@ -245,6 +299,12 @@ impl Renderer {
         let fence = self.sync.in_flight[self.current_frame];
         unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }?;
         let ranges = unsafe { self.write_vertices(batches) }?;
+        // Before acquiring, so a failure here doesn't strand an acquired
+        // image. A swapchain rebuilt below makes it the wrong size, but then
+        // this frame isn't drawn and the next one prepares a fresh buffer.
+        if self.capture_requested {
+            unsafe { self.prepare_readback() }?;
+        }
 
         let image_available = self.sync.image_available[self.current_frame];
         let acquired = unsafe {
@@ -296,6 +356,7 @@ impl Renderer {
             self.device
                 .queue_submit(self.graphics_queue, &[submit_info], fence)?;
         }
+        self.capture_requested = false;
 
         let swapchains = [self.swapchain.swapchain];
         let image_indices = [image_index as u32];
@@ -443,6 +504,11 @@ impl Renderer {
                 device.cmd_draw(command_buffer, range.count, 1, range.first, 0);
             }
             device.cmd_end_render_pass(command_buffer);
+            if self.capture_requested
+                && let Some(readback) = &self.readback
+            {
+                readback.record_copy(device, command_buffer, self.swapchain.images[image_index]);
+            }
             device.end_command_buffer(command_buffer)?;
         }
         Ok(())
@@ -519,6 +585,9 @@ impl Drop for Renderer {
             self.cleanup_swapchain();
             self.texture.destroy(&self.device);
             self.sync.destroy(&self.device);
+            if let Some(readback) = self.readback.take() {
+                readback.destroy(&self.device);
+            }
             for &(buffer, memory, _) in &self.vertex_buffers {
                 self.device.destroy_buffer(buffer, None);
                 self.device.free_memory(memory, None);

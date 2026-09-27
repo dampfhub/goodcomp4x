@@ -97,6 +97,18 @@ The faded DEBUG panel at the top-left has buttons for F1-F4 and F6-F10; the curr
 gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
 order.
 
+## Command line
+
+Flags go after `--`, e.g. `cargo run --release -- --scenario world --seed 42`; `--help` lists
+them.
+
+| Flag | Effect |
+| --- | --- |
+| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier` or `world` (F1-F4) |
+| `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
+| `--size <W>x<H>` | Open the window at this size in pixels |
+| `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
+
 ## Reading the map
 
 - Holding Alt shows blue and red numbers on each unit: its move and attack ranks in the turn

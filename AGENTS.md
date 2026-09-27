@@ -13,6 +13,7 @@ sides queue orders, then the turn resolves in a fixed order by unit type. One bi
 | Format | `cargo fmt` (CI runs `cargo fmt --check`) |
 | Play | `cargo run --release` (release skips Vulkan validation) |
 | Debug with validation | `cargo run` (the validation layer comes with the Vulkan SDK; without it the game warns and runs unvalidated) |
+| Screenshot | `cargo run -- --screenshot out.png --scenario cities` (hidden window, writes one frame, exits; needs a GPU) |
 | Repo tool self-tests | `node tools/board/board.mjs selftest`, `node tools/commit-msg-lint.mjs --self-test` |
 
 Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
@@ -24,7 +25,7 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 1. Done means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`
    all pass: CI (`.github/workflows/ci.yml`) runs exactly these on every PR. A visible change also
    needs evidence it looks right: a layout or hit-test unit test (`src/game/ui/tests.rs` has examples),
-   or running the game.
+   a screenshot you have looked at (see Verifying), or running the game.
 2. Before editing in a directory that has its own `AGENTS.md` (see the table below), read it.
    Some agents load those files automatically and some don't.
 3. When behavior changes, update the doc that describes it in the same change: rules in
@@ -45,6 +46,7 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 | Path | What | Read first |
 |---|---|---|
 | `src/app.rs`, `src/main.rs` | window, input and key map, frame loop | `src/AGENTS.md` |
+| `src/cli.rs`, `src/screenshot.rs` | command-line flags; screenshot mode | `src/AGENTS.md` |
 | `src/renderer/` | general 2D Vulkan renderer; knows nothing about the game | `src/renderer/AGENTS.md` |
 | `src/game/` | all game state, rules, AI, drawing and UI | `src/game/AGENTS.md` |
 | `shaders/` | GLSL, compiled by `build.rs` | `src/renderer/AGENTS.md` |
@@ -62,8 +64,16 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
   fixed seeds by default), and a failure prints the seed: `SIM_SEED=<seed> cargo test simulation`
   replays exactly that game (`$env:SIM_SEED=<seed>` first in PowerShell), and `SIM_SEEDS=<n>`
   plays seeds `0..n` to hunt for failures.
-- Anything visual: run `cargo run` (validation on) and watch for validation errors in the log;
-  UI layout and click targets are testable without a window (see `src/game/ui/tests.rs`).
+- Anything visual: take a screenshot and look at it (an agent can open the PNG with its
+  image-reading tool): `cargo run -- --screenshot out.png --scenario <combat|cities|frontier|world>`
+  renders the scenario in a hidden window (no input, no focus), waits about a second for it to
+  settle, writes one frame as a PNG and exits 0 (non-zero, with the reason, if it fails or takes
+  over 20 s). `--seed N` fixes the world's map and `--size 1280x720` the window size (default
+  1600x900); the same arguments give the same image, so before/after shots compare directly.
+  Write screenshots outside the repo (or delete them). It's a debug build, so check its log for
+  validation errors too. It shows the scenario's opening position only; for anything past that,
+  run the game. UI layout and click targets are testable without a window (see
+  `src/game/ui/tests.rs`).
 - In-game testing aids: F1-F4 restart a scenario (F4 generates a new map), F6/F7 save and load a
   snapshot, F8 toggles instant turn playback, F9 finishes the current build, F10 toggles fog of
   war (`docs/controls.md`).
