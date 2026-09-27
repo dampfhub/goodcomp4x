@@ -16,7 +16,8 @@
 //! `builder.rs` (`PanelBuilder`), `paint.rs` (shapes to vertices), `trays.rs`
 //! (unit, group, city and Barracks trays), `panels.rs` (top bar, debug panel,
 //! structure hover panel), `queue.rs` (queue panels, scrolling and dragging),
-//! `roster.rs` (the unit strip), `tooltips.rs`, `text.rs` (number and text
+//! `roster.rs` (the unit strip), `settings_menu.rs` (the settings menu),
+//! `tooltips.rs`, `text.rs` (number and text
 //! formatting), `tests.rs`.
 
 mod builder;
@@ -26,6 +27,7 @@ mod paint;
 mod panels;
 mod queue;
 mod roster;
+mod settings_menu;
 mod text;
 mod tooltips;
 mod trays;
@@ -37,6 +39,7 @@ use super::draw::UnitLook;
 use super::hex::Hex;
 use super::orders::ClickMode;
 use super::scenario::Scenario;
+use super::settings::Setting;
 use super::workers::JobKind;
 use super::{GameState, mesh};
 use crate::renderer::Vertex;
@@ -204,6 +207,9 @@ enum Target {
     CompleteProduction,
     TogglePlayback,
     ToggleFog,
+    /// Settings menu: step a setting down (-1) or up (+1) through its range.
+    StepSetting(Setting, i32),
+    CloseSettings,
 }
 
 /// An order for the selected unit.
@@ -597,6 +603,8 @@ impl GameState {
             Target::CompleteProduction => self.debug_complete_current_production(),
             Target::TogglePlayback => self.toggle_instant_playback(),
             Target::ToggleFog => self.toggle_fog(),
+            Target::StepSetting(setting, delta) => self.step_setting(setting, delta),
+            Target::CloseSettings => self.close_settings(),
         }
     }
 
@@ -693,6 +701,7 @@ impl GameState {
             self.tile_tray(hex, &mut tray);
         } else {
             self.dock_roster(&mut layout);
+            self.dock_settings(&mut layout);
             self.debug_panel(&mut layout);
             return layout;
         }
@@ -714,6 +723,7 @@ impl GameState {
             }
         }
         self.dock_roster(&mut layout);
+        self.dock_settings(&mut layout);
         self.debug_panel(&mut layout);
         layout
     }

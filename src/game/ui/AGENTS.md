@@ -40,7 +40,13 @@ file holds.
 - **New panel:** shared content in a `GameState` method returning a `PanelBuilder`; dock it in
   `layout()` for classic and give it an ImGui slot (above). Add a layout test (no overlap,
   buttons inside their panel) in `tests.rs`, and for ImGui extend the `plan` tests in
-  `imgui.rs`.
+  `imgui.rs` (their size arrays have one entry per slot). A slot's place in `PLAN_ORDER` is
+  its priority within its zone.
+- **New player setting:** no UI change. `settings_menu.rs` builds a row (name, value, < and >)
+  for every entry of `Setting::ALL`, so add the setting in `game/settings.rs` (its module
+  comment lists the steps). The settings menu tests in `tests.rs` walk `Setting::ALL` too. A
+  setting that needs a different kind of control (text entry, a slider) is a new `Row` variant
+  (see Both presentations).
 
 ## Verifying
 

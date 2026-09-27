@@ -448,7 +448,7 @@ mod tests {
 
     /// Ends planning and plays the whole turn out at once.
     fn play_turn(game: &mut GameState) {
-        game.instant_playback = true;
+        game.settings.instant_playback = true;
         game.end_planning();
         game.update(0.0);
         assert!(!game.is_resolving());

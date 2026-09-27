@@ -1390,3 +1390,110 @@ fn clear_orders_drops_a_groups_queues() {
         .unwrap();
     assert_eq!(clear.state, ButtonState::Disabled, "nothing left to clear");
 }
+
+/// The panel (min, max) around `point`, in UI pixels.
+fn panel_around(layout: &Layout, point: Vec2) -> (Vec2, Vec2) {
+    layout
+        .panels
+        .iter()
+        .copied()
+        .find(|&(min, max)| contains(min, max, point))
+        .expect("inside a panel")
+}
+
+#[test]
+fn the_settings_menu_docks_without_overlap_and_its_buttons_work() {
+    let playback = Setting::TurnPlayback;
+    let down = Target::StepSetting(playback, -1);
+    let up = Target::StepSetting(playback, 1);
+    // Nothing selected, a unit selected, and a city with its queue open.
+    let mut plain = GameState::new();
+    plain.clear_selection();
+    let unit = GameState::new();
+    let mut city = GameState::city_scenario();
+    city.select_city();
+    city.queue_selected_city_unit(BuildUnit::Melee);
+    for mut game in [plain, unit, city] {
+        assert!(!game.layout(SCREEN).buttons.iter().any(|b| b.target == up));
+        game.settings_open = true;
+        for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+            let layout = game.layout(screen);
+            for (i, &(a_min, a_max)) in layout.panels.iter().enumerate() {
+                for &(b_min, b_max) in &layout.panels[i + 1..] {
+                    let apart = a_max.x <= b_min.x
+                        || b_max.x <= a_min.x
+                        || a_max.y <= b_min.y
+                        || b_max.y <= a_min.y;
+                    assert!(apart, "panels overlap at {screen}");
+                }
+            }
+            let close = layout
+                .buttons
+                .iter()
+                .find(|b| b.target == Target::CloseSettings)
+                .expect("Close shown");
+            let menu = panel_around(&layout, (close.min + close.max) / 2.0);
+            for target in [down, up] {
+                let button = layout.buttons.iter().find(|b| b.target == target).unwrap();
+                assert!(contains(menu.0, menu.1, button.min));
+                assert!(contains(menu.0, menu.1, button.max));
+            }
+            assert!(menu.1.x >= screen.x - MARGIN - 1.0, "docked at the right");
+        }
+
+        // All at once by default: > is spent, < steps down, and then < is.
+        let state = |game: &GameState, target| {
+            game.layout(SCREEN)
+                .buttons
+                .iter()
+                .find(|b| b.target == target)
+                .unwrap()
+                .state
+        };
+        assert!(game.settings.instant_playback);
+        assert_eq!(state(&game, up), ButtonState::Disabled);
+        game.handle_click(button_cursor(&game, down), SCREEN, ClickMode::Normal);
+        assert!(!game.settings.instant_playback);
+        assert_eq!(state(&game, down), ButtonState::Disabled);
+        game.handle_click(button_cursor(&game, down), SCREEN, ClickMode::Normal);
+        assert!(
+            !game.settings.instant_playback,
+            "a spent button does nothing"
+        );
+        game.handle_click(button_cursor(&game, up), SCREEN, ClickMode::Normal);
+        assert!(game.settings.instant_playback);
+
+        let close = button_cursor(&game, Target::CloseSettings);
+        game.handle_click(close, SCREEN, ClickMode::Normal);
+        assert!(!game.settings_open);
+    }
+}
+
+#[test]
+fn the_settings_menu_shows_every_setting_and_its_value() {
+    let game = GameState::new();
+    let text = panel_strings(|panel| *panel = game.settings_panel_content());
+    for setting in Setting::ALL {
+        let value = setting.value_text(game.settings.get(setting));
+        assert_shows(&text, setting.name());
+        assert_shows(&text, &value);
+    }
+    let tooltip = |target| {
+        let button = Button {
+            target,
+            label: String::new(),
+            hint: String::new(),
+            state: ButtonState::Ready,
+            armed: false,
+            faded: false,
+            min: Vec2::ZERO,
+            max: Vec2::ZERO,
+        };
+        line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l))
+    };
+    let spent = tooltip(Target::StepSetting(Setting::TurnPlayback, 1));
+    assert_shows(&spent, "TURN PLAYBACK");
+    assert_shows(&spent, "ALREADY ALL AT ONCE");
+    let open = tooltip(Target::StepSetting(Setting::TurnPlayback, -1));
+    assert!(!open.iter().any(|line| line.contains("ALREADY")));
+}

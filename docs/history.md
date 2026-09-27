@@ -110,3 +110,8 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     hold. Queued plans are drawn per unit (fanned numbers, a ghost at each plan's end) and the
     turns-left tag reads `3T`. A plain click that would replace a multi-turn queue must be
     repeated on the same hex, so viewing a plan and clicking away can't wipe it.
+40. Settings menu (`claude/settings-menu`): Escape with nothing left to close opens a settings
+    menu (top-right, dockable, in both presentations), and closes it again; holding Escape from
+    there still quits. Player options live in one `Settings` struct (`settings.rs`) kept across
+    scenario switches and loads, each an integer the menu steps with < and > buttons, so a new
+    option is a field and an entry in `Setting::ALL`. Turn playback (F8) is the first.
