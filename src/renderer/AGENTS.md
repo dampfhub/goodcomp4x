@@ -20,12 +20,12 @@ constants out of this directory. Its whole interface:
 | `mod.rs` | `Renderer`: setup, `draw_frame`, swapchain recreation, teardown |
 | `instance.rs` | instance, validation layer (debug builds only), debug messenger into `log` |
 | `device.rs` | GPU selection, logical device, queues |
-| `swapchain.rs` | swapchain and image views |
+| `swapchain.rs` | swapchain, image views, and per-image render-finished semaphores |
 | `pipeline.rs` | render pass (MSAA target resolved into the swapchain image), the pipeline, shader modules |
 | `msaa.rs` | multisampled color target, rebuilt with the swapchain; `pick_samples` |
 | `texture.rs` | the coverage atlas (R8 with mips), uploaded once |
 | `buffer.rs` | buffer and memory allocation |
-| `sync.rs` | per-frame semaphores and fences (`MAX_FRAMES_IN_FLIGHT` = 2) |
+| `sync.rs` | per-frame acquire semaphores and fences (`MAX_FRAMES_IN_FLIGHT` = 2) |
 | `vertex.rs` | `Vertex`, `SOLID_UV` |
 
 Shaders are GLSL in `/shaders`. `build.rs` compiles every `.vert`/`.frag`/... there to
@@ -40,6 +40,11 @@ needs no build change; using it needs a pipeline change here.
   always have valid derivatives. Keep the sample unconditional.
 - The swapchain format is sRGB and vertex colors are linear, so colors display much lighter than
   their values suggest (dark UI panels need values around 0.01-0.05).
+- The semaphore a present waits on is per swapchain image (`SwapchainData::render_finished`),
+  not per frame in flight: no fence covers a present's wait, so a semaphore is only safe to
+  signal again once its image is acquired again. Acquire semaphores and fences stay per frame.
+  An acquire that returns suboptimal still signals its semaphore, so that frame is drawn and
+  presented before the swapchain is rebuilt; only `ERROR_OUT_OF_DATE_KHR` skips the frame.
 - MSAA uses the highest supported count from `PREFERRED_SAMPLES` (16, then 8), falling back to 4.
 - Validation runs only in debug builds (`cfg!(debug_assertions)`). Check `cargo run` output for
   validation errors after any change here.

@@ -6,6 +6,8 @@ use ::imgui::{
     StyleColor, StyleVar, Ui, WindowFlags,
 };
 
+use super::builder::Row;
+use super::text::end_turn_label;
 use super::*;
 use crate::game::PLAYER_TEAM;
 

@@ -1,6 +1,8 @@
 # Screen-space UI panels
 
-The shared UI content lives in `src/game/ui.rs`. The game starts with the
+The shared UI content lives in `src/game/ui/`. The module is split into
+`mod.rs` (shared types and entry points), `builder.rs` (panel content),
+`trays.rs`, `panels.rs`, `queue.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
 experimental ImGui presentation (`src/game/ui/imgui.rs`), and F11 switches
 between it and the classic layout. `src/game/AGENTS.md` points contributors
 here. Add new controls to the shared `PanelBuilder` content and route their

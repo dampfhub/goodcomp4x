@@ -11,7 +11,7 @@ behavior.
 
 | Module | Concern |
 |---|---|
-| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP`, the main tests |
+| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
 | `orders.rs` | player input and order planning: click, right-click, swap, ability toggle, hold, guard |
 | `group.rs` | multi-unit selection (Alt-drag, Alt-click) and group orders |
 | `turn.rs` | `RESOLUTION_ORDER`, `update(dt)`, simultaneous step resolution (moves, attacks) |
@@ -19,18 +19,29 @@ behavior.
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `ai.rs` | the Red AI |
-| `city.rs` | cities, sites, roads, logistics routes, citizens, growth, build queues, buildings, settlers and workers |
+| `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (HP, defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
+| `city/logistics.rs` | roads, logistics routes (`routes_from_by`), `delivered_share`, tile yields, mill food share, city and Barracks income |
+| `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy` |
+| `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, building sites, Workshop discount, confirmation, `complete_builds` |
+| `city/workers.rs` | settlers and workers: founding cities, roads, tile improvements |
+| `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
+| `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
 | `scenario.rs` | scenarios (F1-F4), savestate (F6/F7), instant playback (F8) |
-| `simulation.rs` | tests only: AI-vs-AI games in every scenario, board invariants checked each turn |
+| `simulation.rs` | tests only: seeded AI-vs-AI games in every scenario, board invariants checked each turn, same seed replays the same game |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
 | `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |
 | `map_icons.rs` | resource and improvement icons (horse head, ingot, wheat, ore cart, fence, logs) in a hex's top corners, and the food and production icons in yield pips; dark-edged shapes in their mockup coordinates |
 | `effects.rs` | attack animations during playback |
-| `ui.rs`, `ui/dock.rs`, `ui/imgui.rs` | shared panel content, classic screen-space UI, and the default ImGui presentation with dockable windows |
+| `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
+| `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
+| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling and drag to reorder |
+| `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
+| `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
+| `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
 | `mesh.rs`, `font.rs` | shape helpers (`polygon` ear-clips concave outlines); TrueType text and the glyph atlas |
 
 ## Invariants
@@ -64,26 +75,30 @@ behavior.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05.
 - `Camera::view_proj` builds an OpenGL orthographic projection and flips Y itself, because
   glam 0.33's `vulkan::orthographic` flips the Y scale but not the translation.
-- The AI must stay deterministic: ties break by hex coordinates.
+- The AI must stay deterministic: ties break by hex coordinates. All randomness goes through
+  `GameState.rng` (never `rand::random` or the thread RNG) and never depends on hash-map
+  iteration order, so a seed replays the same game (`simulation.rs` checks this).
 
 ## Recipes
 
 - **New key:** a `KeyCode` arm in `App::window_event` (`src/app.rs`) calling a `GameState`
-  method (a key that acts on release or while held needs its own arm, like Escape), a row in
-  `docs/controls.md`, and a line in `CONTROLS_HELP` (printed at startup).
-- **New unit button:** in `ui.rs`, a `UnitAction` variant, a `ButtonSpec` in the tray's button
-  list, its tooltip text (the `UnitAction` match under `tooltip_lines`), and an arm in
-  `click_ui`'s dispatch. Add a hit-test unit test.
+  method (a key that acts on release or while held needs its own arm, like Escape), and a row in
+  `docs/controls.md`, the one description of the controls. `CONTROLS_HELP` (printed at startup)
+  only points to that file; don't list keys in it.
+- **New unit button:** a `UnitAction` variant (`ui/mod.rs`), a `ButtonSpec` in the tray's
+  button list (`unit_buttons` in `ui/trays.rs`), its tooltip text (the `UnitAction` match in
+  `unit_action_text`, `ui/tooltips.rs`), and an arm in `click_ui`'s dispatch (`ui/mod.rs`). Add
+  a hit-test unit test in `ui/tests.rs`.
 - **Stat or tuning change:** `unit.rs` or `ability.rs`, then every place that states the number
-  to players: `ability_text` in `ui.rs` (tooltips), `CONTROLS_HELP` in `mod.rs`, and the tables
-  in `docs/game-rules.md`. Grep for the old value.
+  to players: `ability_text` in `ui/text.rs` (tooltips) and the tables in
+  `docs/game-rules.md`. Grep for the old value.
 - **New scenario:** a `Scenario` variant (`scenario.rs`: `ALL`, `name`, `key`, `start`), its
   constructor in `mod.rs`, a key in `app.rs`; the debug panel lists `Scenario::ALL` itself.
 
 ## Tests
 
-Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city.rs` and `ui.rs`
-hold most of them). Build a `GameState` from a scenario constructor, drive it through the same
+Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city/tests.rs` and
+`ui/tests.rs` hold most of them). Build a `GameState` from a scenario constructor, drive it through the same
 methods input uses, and assert on state. `cargo test` needs no GPU or window. A new rule that
 constrains the board (occupancy, HP, population...) belongs in `simulation.rs`'s
 `check_invariants` too, so every scenario exercises it.
