@@ -174,23 +174,26 @@ queue them. Nothing heals.
 
 - A unit's plan is a list of turns, each with at most one move and one attack: turn 1 is this
   turn's ordinary orders, later turns wait in its queue (`Unit::queued`).
-- **Shift-left-click** adds a turn in which the unit moves toward the clicked hex: to the hex
-  nearest it that the unit can reach that turn from where its plan leaves it (the clicked hex
-  itself if reachable), staying put wins ties. One click is always one turn; a far hex takes
-  several clicks. This turn's move plans around the units the player can see, like a plain
+- **Shift-left-click** adds every turn it takes to get to the clicked hex, starting where the
+  plan leaves the unit. Each turn the unit moves to the hex it can reach that turn that is the
+  shortest walk from the clicked hex, going around terrain and known walls and gates (the
+  straight distance decides if there is no way there; staying put wins ties). Turns are added
+  until nobody can get any closer, so a far hex takes one click (a queue toward an enemy in sight
+  stops next to it). This turn's move plans around the units the player can see, like a plain
   move; later turns plan around terrain and known walls and gates only (units will have moved),
   and never end on an ally's planned hex for that turn, on a hex an enemy in sight stands on, or
   on a hex an ally leaves only in a later step of that turn (see Turn resolution). A click that
-  gets nobody closer queues nothing.
+  gets nobody closer (the hex already reached, say) queues nothing.
 - **Shift-right-click** adds an attack on the hex: into the plan's last turn if nobody who could
   make it from there already attacks that turn, otherwise into a new turn spent standing still.
   Range counts from where the plan has the unit that turn, with its later-turn stats (no ability;
   a siege that sets up this turn is deployed). With nothing planned and no attack possible this
   turn (a siege setting up), it goes in the next turn. Out of range, nothing is queued.
-- **Groups:** Shift-clicks with a group selected add the same turn to every member, so their
+- **Groups:** Shift-clicks with a group selected add the same turns to every member, so their
   plans always have the same number of turns. Members with shorter plans wait until they line
-  up, members that can't get closer or reach the target wait that turn, and the nearest members
-  choose their hexes first.
+  up, members that arrive first, can't get closer or can't reach the target wait that turn, and
+  the members nearest the target choose their hexes first. A move keeps adding turns until no
+  member can get any closer.
 - Queuing never moves selection on, so a unit (or group) can be given several turns in a row.
 - **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
   turn and every turn it has queued orders for.

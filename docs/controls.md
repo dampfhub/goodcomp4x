@@ -12,7 +12,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Left-click your unit | Select it |
 | Left-click a green hex | Move there this turn; click again to cancel |
 | Right-click a hex in range | Attack it this turn: an enemy unit, city or barracks, or an empty hex someone may step into |
-| Shift-left-click a hex | Queue one more turn moving toward it (as close as the unit gets that turn) |
+| Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued |
 | Shift-right-click a hex | Queue an attack on it: in the queue's last turn if that turn has none yet and it's in range, else in one more turn |
 | Ctrl-click an adjacent ally | Queue a swap |
 | M / X (or Move / Attack buttons) | Arm Move / Attack for the next map click (again to disarm) |

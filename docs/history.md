@@ -88,3 +88,5 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     queues always have the same number of turns. Queued units don't hold up ending the turn, any
     other order cancels the queue, and a queued turn that no longer fits drops the queue. Plans
     show as turn numbers along a line, only while the unit is selected or hovered.
+34. Far Shift-clicks (`claude/queue-far-moves`): one Shift-left-click queues every turn it takes
+    to walk to the hex, around terrain and known walls, instead of one turn per click.

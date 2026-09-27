@@ -1,12 +1,12 @@
 //! Order queues: Shift-click plans a unit's (or a group's) orders over
-//! several turns. Shift-left-click adds a turn that moves toward the clicked
-//! hex; Shift-right-click adds an attack on it. Turn 0 of a plan is the
+//! several turns. Shift-left-click adds the turns it takes to walk to the
+//! clicked hex; Shift-right-click adds an attack on it. Turn 0 of a plan is the
 //! unit's ordinary `planned_move` and `planned_attack`; later turns wait in
 //! `Unit::queued`, and each turn's end moves the next one up
 //! (`advance_queues`). A unit following a queue doesn't hold up ending the
 //! turn, and any other order cancels its queue.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::GameState;
 use super::fog::Fog;
@@ -14,19 +14,57 @@ use super::hex::Hex;
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, TurnOrder};
 
+/// The most turns one Shift-click queues: a safety net, since every queued
+/// turn brings some unit nearer.
+const MAX_QUEUED_TURNS: usize = 64;
+
 impl GameState {
-    /// Shift-left-click: adds a turn to the selection's plan in which each
-    /// unit moves toward `target`, taking the hex nearest it that it can
-    /// reach that turn and no ally will stand on. A group's plans always have
-    /// the same number of turns: members that can't get closer wait that
-    /// turn. Returns whether anything was queued.
+    /// Shift-left-click: adds as many turns to the selection's plan as it
+    /// takes to get to `target`. Each turn every unit moves to the hex it can
+    /// reach that turn, with no ally standing on it, that is the shortest walk
+    /// from `target` (around terrain and known walls), until nobody can get
+    /// any closer. A group's plans always have the same number of turns:
+    /// members that arrive first, or can't get closer, wait. Returns whether
+    /// anything was queued.
     pub(super) fn queue_move(&mut self, target: Hex) -> bool {
         let members = self.selection();
         if members.is_empty() || self.is_resolving() {
             return false;
         }
         let fog = self.fog();
-        let turn = self.plan_length(&members);
+        let team = self.units[members[0]].team;
+        let walk = self.planned_walk_to(target, team, &fog);
+        let first = self.plan_length(&members);
+        let mut turn = first;
+        while turn - first < MAX_QUEUED_TURNS {
+            let legs = self.plan_move_turn(&members, target, turn, &walk, &fog);
+            if legs.iter().all(|(_, dest)| dest.is_none()) {
+                break;
+            }
+            for (i, dest) in legs {
+                self.pad_plan(i, turn);
+                self.append_turn(i, dest, None);
+            }
+            turn += 1;
+        }
+        if turn == first {
+            self.notice = "CAN'T GET ANY CLOSER THERE".into();
+            return false;
+        }
+        self.notice = queued_notice(first, turn - first);
+        true
+    }
+
+    /// One turn of a queued move toward `target` for each of `members`, on
+    /// turn `turn` of their plans: where each moves, or `None` to wait.
+    fn plan_move_turn(
+        &self,
+        members: &[usize],
+        target: Hex,
+        turn: usize,
+        walk: &HashMap<Hex, i32>,
+        fog: &Fog,
+    ) -> Vec<(usize, Option<Hex>)> {
         let team = self.units[members[0]].team;
         let allies: Vec<usize> = (0..self.units.len())
             .filter(|&i| self.units[i].team == team)
@@ -49,16 +87,24 @@ impl GameState {
         // Nearest the target choose first, so nobody ahead is cut off: a
         // leg always ends nearer the target than the unit starts, so it
         // never ends where a member choosing later starts.
-        let mut order = members.clone();
-        order.sort_by_key(|&i| (self.units[i].pos_after(turn).distance(target), i));
+        // The shortest walk to the target, or past everything the target
+        // can't be walked to from, the straight distance.
+        let away = |hex: Hex| {
+            (
+                walk.get(&hex).copied().unwrap_or(i32::MAX),
+                hex.distance(target),
+            )
+        };
+        let mut order = members.to_vec();
+        order.sort_by_key(|&i| (away(self.units[i].pos_after(turn)), i));
         let mut legs = Vec::new();
         for i in order {
             let unit = &self.units[i];
             let start = unit.pos_after(turn);
             let reachable = if turn == 0 {
-                self.known_reachable_hexes(start, unit.stats().move_range, team, &fog)
+                self.known_reachable_hexes(start, unit.stats().move_range, team, fog)
             } else {
-                self.planned_reachable(start, unit.later_stats().move_range, team, &fog)
+                self.planned_reachable(start, unit.later_stats().move_range, team, fog)
             };
             // An ally that starts the turn on a hex and moves off it in a
             // later step would still be there when this unit arrives.
@@ -75,21 +121,33 @@ impl GameState {
             let best = reachable
                 .into_iter()
                 .filter(|&hex| hex == start || !(claimed.contains(&hex) || vacated_too_late(hex)))
-                .min_by_key(|hex| (hex.distance(target), hex.distance(start), hex.q, hex.r));
+                .min_by_key(|&hex| (away(hex), hex.distance(start), hex.q, hex.r));
             let dest = best.filter(|&dest| dest != start);
             claimed.insert(dest.unwrap_or(start));
             legs.push((i, dest));
         }
-        if legs.iter().all(|(_, dest)| dest.is_none()) {
-            self.notice = "CAN'T GET ANY CLOSER THERE".into();
-            return false;
+        legs
+    }
+
+    /// How many steps each hex is from `target` for a unit of `team` in a
+    /// later turn, as far as the player knows (around terrain, walls and
+    /// gates, not units). Hexes with no way to `target` are left out.
+    fn planned_walk_to(&self, target: Hex, team: Team, fog: &Fog) -> HashMap<Hex, i32> {
+        let mut steps = HashMap::from([(target, 0)]);
+        let mut frontier = VecDeque::from([target]);
+        while let Some(hex) = frontier.pop_front() {
+            let next = steps[&hex] + 1;
+            for neighbor in hex.neighbors() {
+                if !steps.contains_key(&neighbor)
+                    && self.can_enter(neighbor)
+                    && self.known_can_cross(neighbor, hex, team, fog)
+                {
+                    steps.insert(neighbor, next);
+                    frontier.push_back(neighbor);
+                }
+            }
         }
-        for (i, dest) in legs {
-            self.pad_plan(i, turn);
-            self.append_turn(i, dest, None);
-        }
-        self.notice = queued_notice(turn);
-        true
+        steps
     }
 
     /// Shift-right-click: adds an attack on `target` to the selection's
@@ -143,7 +201,7 @@ impl GameState {
                 self.append_turn(i, None, attack);
             }
         }
-        self.notice = queued_notice(turn);
+        self.notice = queued_notice(turn, 1);
         true
     }
 
@@ -313,11 +371,15 @@ impl GameState {
     }
 }
 
-/// What the top bar says after a Shift-click queued turn `turn` (0 is this one).
-fn queued_notice(turn: usize) -> String {
-    match turn {
-        0 => "QUEUED FOR THIS TURN - SHIFT-CLICK AGAIN FOR THE NEXT".into(),
-        n => format!("QUEUED FOR TURN {} FROM NOW", n + 1),
+/// What the top bar says after a Shift-click queued `turns` turns starting
+/// on turn `first` (0 is this one).
+fn queued_notice(first: usize, turns: usize) -> String {
+    let last = first + turns;
+    match (first, turns) {
+        (0, 1) => "QUEUED FOR THIS TURN - SHIFT-CLICK AGAIN FOR THE NEXT".into(),
+        (0, _) => format!("QUEUED FOR THE NEXT {turns} TURNS"),
+        (_, 1) => format!("QUEUED FOR TURN {last} FROM NOW"),
+        _ => format!("QUEUED FOR TURNS {} TO {last} FROM NOW", first + 1),
     }
 }
 
@@ -326,8 +388,10 @@ mod tests {
     use glam::Vec2;
 
     use super::*;
+    use crate::game::hex::edge;
     use crate::game::orders::ClickMode;
     use crate::game::unit::{Unit, UnitType};
+    use crate::game::workers::{Structure, StructureKind};
 
     const SCREEN: Vec2 = Vec2::new(1600.0, 900.0);
 
@@ -384,15 +448,56 @@ mod tests {
     }
 
     #[test]
-    fn a_far_shift_click_moves_one_turn_toward_it() {
+    fn one_far_shift_click_queues_every_turn_it_takes_to_get_there() {
         let mut g = open_field(&[UnitType::Melee]);
         g.selected = Some(0);
         let far = Hex::new(2, 0);
         assert!(g.queue_move(far));
+        let unit = &g.units[0];
+        assert_eq!(unit.plan_len(), unit.pos.distance(far) as usize);
+        assert_eq!(unit.plan_end(), far);
+        assert!(!g.queue_move(far), "already there");
+        for _ in 0..6 {
+            play_turn(&mut g);
+        }
+        assert_eq!(g.units[0].pos, far);
+    }
+
+    #[test]
+    fn a_far_shift_click_walks_around_a_wall() {
+        let mut g = open_field(&[UnitType::Melee]);
+        // A wall from (-2, -1) to (-2, 2) along their east edges, so the
+        // straight way east is shut and the unit has to go round.
+        for r in -1..=2 {
+            for across in [Hex::new(-1, r), Hex::new(-1, r - 1)] {
+                let structure = Structure {
+                    kind: StructureKind::Wall,
+                    team: Team::Red,
+                };
+                g.barriers.insert(edge(Hex::new(-2, r), across), structure);
+            }
+        }
+        g.selected = Some(0);
+        let far = Hex::new(0, 0);
         assert!(g.queue_move(far));
         let unit = &g.units[0];
-        assert_eq!(unit.plan_len(), 2);
-        assert_eq!(unit.plan_end().distance(far), unit.pos.distance(far) - 2);
+        assert_eq!(unit.plan_end(), far);
+        assert!(
+            unit.plan_len() > unit.pos.distance(far) as usize,
+            "the detour takes longer than the straight line"
+        );
+        for turn in 0..unit.plan_len() {
+            let (from, to) = (unit.pos_after(turn), unit.pos_after(turn + 1));
+            assert!(
+                g.can_step(from, to, Team::Blue),
+                "turn {turn} crosses the wall"
+            );
+        }
+        let turns = unit.plan_len();
+        for _ in 0..turns {
+            play_turn(&mut g);
+        }
+        assert_eq!(g.units[0].pos, far);
     }
 
     #[test]
@@ -403,7 +508,7 @@ mod tests {
             .push(Unit::new(200, enemy, Team::Red, UnitType::Melee));
         g.selected = Some(0);
         assert!(g.queue_move(enemy));
-        assert!(g.queue_move(enemy));
+        assert_eq!(g.units[0].plan_len(), 2);
         assert!(!g.queue_move(enemy), "already next to it");
         assert_eq!(g.units[0].plan_end().distance(enemy), 1);
         assert!(g.queue_attack(enemy));
@@ -532,19 +637,21 @@ mod tests {
         assert!(g.queue_move(Hex::new(0, 1)));
         g.set_selection(vec![0, 1, 2]);
         let far = Hex::new(4, 0);
-        for _ in 0..3 {
-            assert!(g.queue_move(far));
-            let lengths: Vec<usize> = (0..3).map(|i| g.units[i].plan_len()).collect();
-            assert!(
-                lengths.iter().all(|&len| len == lengths[0]),
-                "plans differ: {lengths:?}"
-            );
-        }
-        assert_eq!(g.units[0].plan_len(), 5);
-        // The others waited two turns for the cavalry, then set off.
+        assert!(g.queue_move(far));
+        let lengths: Vec<usize> = (0..3).map(|i| g.units[i].plan_len()).collect();
+        assert!(
+            lengths.iter().all(|&len| len == lengths[0]),
+            "plans differ: {lengths:?}"
+        );
+        // The others waited two turns for the cavalry, then set off, and the
+        // group went as far as it could in one click.
         assert_eq!(g.units[0].planned_move, None);
         assert_eq!(g.units[0].queued[0].move_to, None);
         assert!(g.units[0].queued[1].move_to.is_some());
+        assert!(g.units[0].plan_len() > 5);
+        assert!(!g.queue_move(far), "nobody can get any closer");
+        assert!((0..3).any(|i| g.units[i].plan_end() == far));
+        assert!((0..3).all(|i| g.units[i].plan_end().distance(far) <= 2));
 
         // An attack only some can make is still a turn for all of them.
         let end = g.units[2].plan_end();
@@ -570,11 +677,9 @@ mod tests {
         let mut g = open_field(&[UnitType::Melee, UnitType::Melee, UnitType::Ranged]);
         g.set_selection(vec![0, 1, 2]);
         let far = Hex::new(3, 1);
-        for _ in 0..4 {
-            assert!(g.queue_move(far));
-        }
+        assert!(g.queue_move(far));
         let planned: Vec<Hex> = (0..3).map(|i| g.units[i].plan_end()).collect();
-        for _ in 0..4 {
+        for _ in 0..g.units[0].plan_len() {
             play_turn(&mut g);
         }
         let reached: Vec<Hex> = (0..3).map(|i| g.units[i].pos).collect();
