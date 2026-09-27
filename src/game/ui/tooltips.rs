@@ -138,6 +138,9 @@ impl GameState {
         }
         if let Some((owner, building)) = placed {
             notes.push(building.description().into());
+            if building == Building::CoastalBattery {
+                notes.push(format!("BATTERY {:.0}/150 HP", owner.coastal_battery_hp));
+            }
             let city_index = self.cities.iter().position(|c| c.id == owner.id).unwrap();
             match building {
                 Building::WorkCamp => notes.push(
@@ -445,6 +448,7 @@ impl GameState {
                         Scenario::Frontier => "A SETTLER AND A SCOUT EACH. BOTH SCOUTS ARE YOURS.",
                         Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS, YOURS ALONE: NO AI OPPONENT.",
                         Scenario::Siege => "OPPOSING FIELD TROOPS ALREADY FIGHT INSIDE A CITY.",
+                        Scenario::Naval => "COASTAL CITIES, SHIPS AND BATTERIES FOR NAVAL PLAYTESTING.",
                     }
                     .into(),
                     None,

@@ -134,6 +134,51 @@ impl GameState {
             return;
         }
 
+        // A selected land troop boards a friendly landing craft; a selected
+        // craft lands its first passenger on adjacent open ground. Both orders
+        // resolve after combat, so a ship sunk this turn cannot unload.
+        if mode == ClickMode::Normal
+            && let Some(selected) = self.selected
+        {
+            if let Some(craft) = self.controlled_unit_at(hex)
+                && self.units[craft].unit_type == super::unit::UnitType::LandingCraft
+                && !self.units[selected].is_naval()
+                && self.units[selected].team == self.units[craft].team
+                && self.units[selected].pos.distance(hex) == 1
+            {
+                let id = self.units[craft].id;
+                let reserved = self
+                    .units
+                    .iter()
+                    .filter(|u| u.planned_board == Some(id))
+                    .count();
+                if self.units[craft].cargo.len() + reserved < 4 {
+                    self.units[selected].planned_board = Some(id);
+                    self.units[selected].planned_move = None;
+                    self.units[selected].planned_attack = None;
+                    self.units[selected].guarding = false;
+                    self.units[selected].holding = false;
+                    self.notice = "BOARDING LANDING CRAFT AFTER COMBAT".into();
+                } else {
+                    self.notice = "LANDING CRAFT FULL (4 TROOPS)".into();
+                }
+                return;
+            }
+            if self.units[selected].unit_type == super::unit::UnitType::LandingCraft
+                && !self.grid.terrain(hex).is_water()
+                && self.grid.is_passable(hex)
+                && self.units[selected].pos.distance(hex) == 1
+            {
+                if !self.units[selected].cargo.is_empty()
+                    && !self.is_occupied(hex)
+                    && self.cities.iter().all(|city| city.pos != hex)
+                {
+                    self.units[selected].planned_unload = Some(hex);
+                    self.notice = "LANDING FIRST PASSENGER AFTER COMBAT".into();
+                }
+                return;
+            }
+        }
         let ally = self.controlled_unit_at(hex);
         // Shift-clicking one of your units adds it to the selection, and
         // Ctrl-clicking a member of a group takes it out (with one unit
@@ -451,7 +496,12 @@ impl GameState {
     /// already has its fight, so it's done.
     pub(super) fn needs_orders(&self, idx: usize) -> bool {
         let unit = &self.units[idx];
-        if unit.holding || unit.guarding || unit.has_queue() || self.rival_of(idx).is_some() {
+        if unit.holding
+            || unit.guarding
+            || unit.has_queue()
+            || unit.planned_board.is_some()
+            || self.rival_of(idx).is_some()
+        {
             return false;
         }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
@@ -560,8 +610,13 @@ impl GameState {
     /// other friendly unit is already heading there.
     pub(super) fn try_queue_move(&mut self, idx: usize, dest: Hex) {
         let unit = &self.units[idx];
-        let reachable =
-            self.known_reachable_hexes(unit.pos, unit.stats().move_range, unit.team, &self.fog());
+        let reachable = self.known_reachable_for_domain(
+            unit.pos,
+            unit.stats().move_range,
+            unit.team,
+            &self.fog(),
+            unit.is_naval(),
+        );
         let claimed_by_ally = self
             .units
             .iter()
@@ -590,7 +645,21 @@ impl GameState {
     /// fight its rival there.
     pub(super) fn try_queue_attack(&mut self, idx: usize, target: Hex) {
         let unable = !self.units[idx].can_attack() || self.rival_of(idx).is_some();
-        if unable || !self.grid.is_passable(target) {
+        if self.grid.contains(target)
+            && self.grid.terrain(target).is_water()
+            && !self.units[idx].is_naval()
+            && !matches!(
+                self.units[idx].unit_type,
+                super::unit::UnitType::Ranged | super::unit::UnitType::Siege
+            )
+        {
+            self.notice = "ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS".into();
+            return;
+        }
+        if unable
+            || !(self.grid.is_passable(target)
+                || (self.grid.contains(target) && self.grid.terrain(target).is_water()))
+        {
             return;
         }
         if self.empty_city_target(target, self.units[idx].team) {

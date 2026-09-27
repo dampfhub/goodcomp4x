@@ -21,10 +21,12 @@ pub enum Building {
     WorkCamp,
     Smelter,
     Railhead,
+    Harbor,
+    CoastalBattery,
 }
 
 impl Building {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::Granary,
         Self::Barracks,
         Self::Mill,
@@ -38,8 +40,10 @@ impl Building {
         Self::WorkCamp,
         Self::Smelter,
         Self::Railhead,
+        Self::Harbor,
+        Self::CoastalBattery,
     ];
-    pub const PLACEABLE: [Self; 12] = [
+    pub const PLACEABLE: [Self; 14] = [
         Self::Barracks,
         Self::Mill,
         Self::Workshop,
@@ -52,6 +56,8 @@ impl Building {
         Self::WorkCamp,
         Self::Smelter,
         Self::Railhead,
+        Self::Harbor,
+        Self::CoastalBattery,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -68,6 +74,8 @@ impl Building {
             Self::WorkCamp => "WORK CAMP",
             Self::Smelter => "SMELTER",
             Self::Railhead => "RAILHEAD",
+            Self::Harbor => "HARBOR",
+            Self::CoastalBattery => "COASTAL BATTERY",
         }
     }
     pub fn cost(self) -> i32 {
@@ -83,6 +91,8 @@ impl Building {
             Self::WorkCamp => 72,
             Self::Smelter => 96,
             Self::Railhead => 120,
+            Self::Harbor => 80,
+            Self::CoastalBattery => 96,
         }
     }
     pub fn shortcut(self) -> char {
@@ -99,7 +109,9 @@ impl Building {
             | Self::Cannery
             | Self::WorkCamp
             | Self::Smelter
-            | Self::Railhead => ' ',
+            | Self::Railhead
+            | Self::Harbor
+            | Self::CoastalBattery => ' ',
         }
     }
     pub fn description(self) -> &'static str {
@@ -119,6 +131,8 @@ impl Building {
             Self::WorkCamp => "CONNECTED WORKERS START AND END NEARBY JOBS HERE, NOT AT THE CITY.",
             Self::Smelter => "COLLECTS PRODUCTION FROM THREE REMOTE MINES WITHIN 3 HEXES.",
             Self::Railhead => "A CITY-ROAD LINK LETS TROOPS BY THE CITY MOVE HERE IN ONE TURN.",
+            Self::Harbor => "ON A COASTAL LAND TILE: TRAINS SHIPS INTO ADJACENT WATER.",
+            Self::CoastalBattery => "ON COASTAL LAND: FIRES AT HOSTILE SHIPS WITHIN 2 TILES.",
         }
     }
 
@@ -163,6 +177,9 @@ pub enum BuildUnit {
     Cavalry,
     Siege,
     Armored,
+    PatrolGalley,
+    LandingCraft,
+    BombardShip,
 }
 
 impl BuildUnit {
@@ -173,6 +190,9 @@ impl BuildUnit {
             Self::Cavalry => UnitType::Cavalry,
             Self::Siege => UnitType::Siege,
             Self::Armored => UnitType::Armored,
+            Self::PatrolGalley => UnitType::PatrolGalley,
+            Self::LandingCraft => UnitType::LandingCraft,
+            Self::BombardShip => UnitType::BombardShip,
         }
     }
     pub fn name(self) -> &'static str {
@@ -182,6 +202,9 @@ impl BuildUnit {
             Self::Cavalry => "CAVALRY",
             Self::Siege => "SIEGE",
             Self::Armored => "ARMORED",
+            Self::PatrolGalley => "PATROL GALLEY",
+            Self::LandingCraft => "LANDING CRAFT",
+            Self::BombardShip => "BOMBARD SHIP",
         }
     }
     pub fn cost(self) -> i32 {
@@ -191,6 +214,9 @@ impl BuildUnit {
             Self::Cavalry => 64,
             Self::Siege => 72,
             Self::Armored => 80,
+            Self::PatrolGalley => 72,
+            Self::LandingCraft => 88,
+            Self::BombardShip => 104,
         }
     }
     pub fn description(self) -> &'static str {
@@ -200,6 +226,9 @@ impl BuildUnit {
             Self::Cavalry => "FAST FLANKER, NEEDS HORSES",
             Self::Siege => "LONG RANGE, SLOW",
             Self::Armored => "HEAVY IRON INFANTRY",
+            Self::PatrolGalley => "FAST COASTAL FIGHTER; STRONG AGAINST SHIPS",
+            Self::LandingCraft => "CARRIES UP TO FOUR LAND TROOPS",
+            Self::BombardShip => "RANGE 3 SHORE AND SHIP BOMBARDMENT",
         }
     }
     pub fn shortcut(self) -> char {
@@ -207,7 +236,11 @@ impl BuildUnit {
             Self::Melee => '1',
             Self::Ranged => '2',
             Self::Siege => '3',
-            Self::Cavalry | Self::Armored => '-',
+            Self::Cavalry
+            | Self::Armored
+            | Self::PatrolGalley
+            | Self::LandingCraft
+            | Self::BombardShip => '-',
         }
     }
 
@@ -230,6 +263,11 @@ impl GameState {
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
+            return;
+        }
+        if build.unit_type().is_naval() && self.cities[city].placed_site(Building::Harbor).is_none()
+        {
+            self.notice = "BUILD A HARBOR BEFORE TRAINING SHIPS".into();
             return;
         }
         if let Some(resource) = build.required_resource() {
@@ -379,6 +417,10 @@ impl GameState {
                     .any(|n| self.grid.has_river(hex, n)),
                 Building::Forge => self.resource_near(hex, Resource::Iron),
                 Building::Stable => self.resource_near(hex, Resource::Horses),
+                Building::Harbor | Building::CoastalBattery => hex
+                    .neighbors()
+                    .into_iter()
+                    .any(|n| self.grid.contains(n) && self.grid.terrain(n).is_water()),
                 Building::Smelter => {
                     self.grid.tile(hex).hills
                         || hex.neighbors().into_iter().any(|n| {
@@ -470,6 +512,9 @@ impl GameState {
         self.cities[city].queue.remove(0);
         self.cities[city].production = 0;
         self.cities[city].set_placed_site(building, site);
+        if building == Building::CoastalBattery {
+            self.cities[city].coastal_battery_hp = 150.0;
+        }
         self.cities[city].planned_sites.remove(&building);
         self.cities[city].built.push(building);
         self.notice = format!("{} FINALIZED", building.name());
@@ -651,7 +696,7 @@ impl GameState {
         self.move_selected_city_queue_item(0, up);
     }
 
-    pub(super) fn complete_builds(&mut self) {
+    pub(in crate::game) fn complete_builds(&mut self) {
         self.complete_builds_for(None);
     }
 
@@ -706,11 +751,23 @@ impl GameState {
                 continue;
             }
             let city = self.cities[i].pos;
-            let Some(pos) = city
-                .neighbors()
-                .into_iter()
-                .find(|&h| self.is_open_spawn(h, &spawn))
-            else {
+            let naval = matches!(build, Build::Unit(unit) if unit.unit_type().is_naval());
+            let origin = if naval {
+                let Some(harbor) = self.cities[i].placed_site(Building::Harbor) else {
+                    self.cities[i].production = build.cost();
+                    continue;
+                };
+                harbor
+            } else {
+                city
+            };
+            let Some(pos) = origin.neighbors().into_iter().find(|&h| {
+                if naval {
+                    self.is_open_naval_spawn(h, &spawn)
+                } else {
+                    self.is_open_spawn(h, &spawn)
+                }
+            }) else {
                 // The city holds the finished unit until a hex opens, and
                 // banks nothing more meanwhile: a bank would let the rest of
                 // the queue come out one unit a turn once one did (#54).
@@ -766,6 +823,17 @@ impl GameState {
     /// Whether a finished unit can appear on `hex`: passable, with no unit on
     /// it and none already finishing there this turn (a barracks beside its
     /// city shares hexes with it).
+    fn is_open_naval_spawn(
+        &self,
+        hex: Hex,
+        spawn: &[(Team, Hex, UnitType, Option<Resource>)],
+    ) -> bool {
+        self.grid.contains(hex)
+            && self.grid.terrain(hex).is_water()
+            && !self.is_occupied(hex)
+            && spawn.iter().all(|&(_, pos, _, _)| pos != hex)
+    }
+
     fn is_open_spawn(&self, hex: Hex, spawn: &[(Team, Hex, UnitType, Option<Resource>)]) -> bool {
         self.grid.is_passable(hex)
             && !self.is_occupied(hex)

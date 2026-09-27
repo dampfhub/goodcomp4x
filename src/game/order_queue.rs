@@ -36,7 +36,12 @@ impl GameState {
         }
         let fog = self.fog();
         let team = self.units[members[0]].team;
-        let walk = self.planned_walk_to(target, team, &fog);
+        let naval = self.units[members[0]].is_naval();
+        if members.iter().any(|&i| self.units[i].is_naval() != naval) {
+            self.notice = "QUEUE LAND AND NAVAL UNITS SEPARATELY".into();
+            return false;
+        }
+        let walk = self.planned_walk_to(target, team, &fog, naval);
         let before: Vec<Unit> = members.iter().map(|&i| self.units[i].clone()).collect();
         let first = members
             .iter()
@@ -129,9 +134,21 @@ impl GameState {
             let unit = &self.units[i];
             let start = unit.pos_after(turn);
             let reachable = if turn == 0 {
-                self.known_reachable_hexes(start, unit.stats().move_range, team, fog)
+                self.known_reachable_for_domain(
+                    start,
+                    unit.stats().move_range,
+                    team,
+                    fog,
+                    unit.is_naval(),
+                )
             } else {
-                self.planned_reachable(start, unit.later_stats().move_range, team, fog)
+                self.planned_reachable(
+                    start,
+                    unit.later_stats().move_range,
+                    team,
+                    fog,
+                    unit.is_naval(),
+                )
             };
             // An ally that starts the turn on a hex and moves off it in a
             // later step would still be there when this unit arrives.
@@ -159,14 +176,24 @@ impl GameState {
     /// How many steps each hex is from `target` for a unit of `team` in a
     /// later turn, as far as the player knows (around terrain, walls and
     /// gates, not units). Hexes with no way to `target` are left out.
-    fn planned_walk_to(&self, target: Hex, team: Team, fog: &Fog) -> HashMap<Hex, i32> {
+    fn planned_walk_to(
+        &self,
+        target: Hex,
+        team: Team,
+        fog: &Fog,
+        naval: bool,
+    ) -> HashMap<Hex, i32> {
         let mut steps = HashMap::from([(target, 0)]);
         let mut frontier = VecDeque::from([target]);
         while let Some(hex) = frontier.pop_front() {
             let next = steps[&hex] + 1;
             for neighbor in hex.neighbors() {
                 if !steps.contains_key(&neighbor)
-                    && self.can_enter(neighbor)
+                    && (if naval {
+                        self.grid.contains(neighbor) && self.grid.terrain(neighbor).is_water()
+                    } else {
+                        self.can_enter(neighbor)
+                    })
                     && self.known_can_cross(neighbor, hex, team, fog)
                 {
                     steps.insert(neighbor, next);
@@ -183,7 +210,11 @@ impl GameState {
     /// out of range spend waiting. Returns whether anything was queued.
     pub(super) fn queue_attack(&mut self, target: Hex) -> bool {
         let members = self.selection();
-        if members.is_empty() || self.is_resolving() || !self.grid.is_passable(target) {
+        if members.is_empty()
+            || self.is_resolving()
+            || !(self.grid.is_passable(target)
+                || (self.grid.contains(target) && self.grid.terrain(target).is_water()))
+        {
             return false;
         }
         if self.empty_city_target(target, self.units[members[0]].team) {
@@ -299,6 +330,16 @@ impl GameState {
     /// from where the plan has it standing then.
     fn can_attack_on_turn(&self, idx: usize, turn: usize, target: Hex) -> bool {
         let unit = &self.units[idx];
+        if self.grid.contains(target)
+            && self.grid.terrain(target).is_water()
+            && !unit.is_naval()
+            && !matches!(
+                unit.unit_type,
+                super::unit::UnitType::Ranged | super::unit::UnitType::Siege
+            )
+        {
+            return false;
+        }
         let (able, range) = if turn == 0 {
             (
                 unit.can_attack() && self.rival_of(idx).is_none(),
@@ -319,9 +360,14 @@ impl GameState {
         move_range: i32,
         team: Team,
         fog: &Fog,
+        naval: bool,
     ) -> HashSet<Hex> {
         self.reachable_hexes_by(start, move_range, |from, to| {
-            self.can_enter(to) && self.known_can_cross(from, to, team, fog)
+            (if naval {
+                self.grid.contains(to) && self.grid.terrain(to).is_water()
+            } else {
+                self.can_enter(to)
+            }) && self.known_can_cross(from, to, team, fog)
         })
     }
 
@@ -379,8 +425,13 @@ impl GameState {
             return Some("IT IS FIGHTING FOR ITS HEX");
         }
         if let Some(dest) = unit.planned_move {
-            let reachable =
-                self.planned_reachable(unit.pos, unit.stats().move_range, unit.team, fog);
+            let reachable = self.planned_reachable(
+                unit.pos,
+                unit.stats().move_range,
+                unit.team,
+                fog,
+                unit.is_naval(),
+            );
             if !reachable.contains(&dest) {
                 return Some("ITS WAY IS BLOCKED");
             }

@@ -49,7 +49,7 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 | Forest | -1 food (not below 0), +1 production, +15% defense, +1 route cost |
 | Jungle (marsh only) | +1 food, +1 production, +15% defense, +1 route cost |
 
-- **Water:** units can't enter it or target it. Cities can work it: a route may end on a water
+- **Water:** land units cannot enter it. Patrol Galleys, Landing Craft and Bombard Ships move only on water; attacks may cross the shoreline. Cities can work it: a route may end on a water
   tile but never continues across one.
 - **Rivers** run along hex edges (World maps only). Land beside a river or a lake has fresh water:
   +1 food, on top of any improvement. A Canoe House makes the connected riverbank a transport
@@ -89,6 +89,9 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 | Siege | 65 | 32 | 6 | 1 | 2 | 2 | Deploy | catapult |
 | Scout | 60 | 8 | 10 | 3 | 1 | 3 | Lookout | spyglass |
 | Armored | 140 | 30 | 28 | 1 | 1 | 2 | Shield Wall | heater shield |
+| Patrol Galley | 115 | 23 | 17 | 3 | 1 | 3 | Lookout | sailboat |
+| Landing Craft | 125 | 8 | 15 | 2 | — | 2 | Lookout | cargo boat |
+| Bombard Ship | 105 | 30 | 12 | 2 | 3 | 2 | Lookout | gunship |
 
 `Unit::stats()` applies abilities and siege deployment on top of these; everything that asks
 what a unit can do goes through it. Settlers (a planted flag) are civilians with the Melee body,
@@ -98,7 +101,13 @@ see Workers below. Cavalry and
 Armored are built at a Barracks on Horses or Iron, or supported by an adjacent Stable or Forge;
 cities can't queue them. Stable-trained Cavalry get +1 move; Forge-trained Armored get +20% HP
 and +15% defense. These upgrades stay with the unit, including in city interiors. A Field
-Hospital heals nearby troops (see Buildings).
+Hospital heals nearby troops (see Buildings). A Harbor lets its city build naval units; a
+Landing Craft can carry four land units. Select a land troop and click an adjacent friendly craft
+to plan boarding. Select the craft and click adjacent empty land to plan landing its first
+passenger. Both happen after combat, so cargo sinks with its ship. A craft cannot attack.
+Patrol Galleys fight ships well but deal 35% damage to land troops; Bombard Ships attack from
+three hexes. Land melee troops cannot attack ships; Ranged deal 40% and Siege 60% damage to
+ships. Shore and ship attacks do not draw melee retaliation across the waterline.
 
 ## Fog of war (`fog.rs`)
 
@@ -173,7 +182,7 @@ Hospital heals nearby troops (see Buildings).
   finished unit can be reselected to edit. Tab looks at the next unit without holding the current
   one. Whenever the game picks the unit, the camera glides to it; middle-drag cancels the glide.
 - Movement is a BFS through passable, unoccupied hexes: units can't pass through each other,
-  mountains or water. Two allies can't head for the same hex.
+  mountains or, for land troops, water. Ships instead move through water only. Two allies can't head for the same hex.
 - A connected Railhead adds its tile as a distant, one-turn move for troops at their city center
   or in its adjacent ring. The move still resolves with normal occupancy and collision rules.
 - **Ending the turn:** `pending()` counts player units that still need orders and player cities
@@ -253,7 +262,9 @@ Everyone in a step acts simultaneously:
   each other in the same step make one exchange of blows, not two attacks that each draw
   retaliation.
 - Each mover's order is spent when its step runs, whether it got through or not.
-- After the last step: city economy (income, growth, builds), then each unit's end of turn
+- After the last unit and worker step: Coastal Batteries fire, then landing craft unload and
+  board their passengers; city interior battles and city economy (income, growth, builds) follow.
+  Then each unit's end of turn
   (ability cooldown, siege setup, Lookout, orders cleared), then units with an order queue take
   their next turn's orders (see Order queues).
 
@@ -411,7 +422,8 @@ every turn end.
   with an empty queue holds up the turn.
 - **Costs:** Melee 12, Ranged 14, Cavalry 16, Siege 18, Armored 20; Granary 12, Barracks 16,
   Mill 15, Workshop 20, Canoe House 16, Forge 20, Stable 20, Watchpost 16, Field Hospital 24,
-  Cannery 24, Work Camp 18, Smelter 24, Railhead 30. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue Cavalry or
+  Cannery 24, Work Camp 18, Smelter 24, Railhead 30, Harbor 20, Coastal Battery 24;
+  Patrol Galley 18, Landing Craft 22, Bombard Ship 26. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue Cavalry or
   Armored), 4-7 Granary, Barracks, Mill, Workshop. The other buildings use the city's paged
   build cards.
   One of each building per city.
@@ -457,6 +469,12 @@ every turn end.
   - **Smelter:** must stand on or beside hills or Iron. It collects production from up to three
     owned, unworked mines within 3 hexes using the same local-route and 100/75/50% distance
     rules as the Cannery, even beyond city delivery range. It feeds the city queue, not Barracks.
+  - **Harbor:** placed on land next to water. It unlocks all three ships in the city queue and
+    spawns them onto an open neighboring water tile. Ship construction uses the city production
+    pool; it waits at full cost when every adjacent water tile is occupied.
+  - **Coastal Battery:** placed on land next to water. It automatically attacks the nearest
+    hostile ship within 2 hexes after unit combat, dealing a 28-attack strike. It has 150 HP,
+    can be bombarded and rebuilt if destroyed. Its health bar appears over its badge.
   - **Railhead:** the city center acts as its origin terminal, so no second building is needed
     beside the city. An unbroken chain of roads from city center to Railhead lets a friendly
     land unit on the center or an adjacent hex move directly to the Railhead in one turn. The
@@ -586,4 +604,5 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - An order queue only stops for an enemy standing on its next destination (or blocking the
   move); it doesn't stop when an enemy merely comes into sight, and it can't queue abilities,
   swaps or holds for later turns.
-- No victory condition; F1-F4 restart a scenario.
+- No victory condition; F1-F4 restart a scenario. The Debug panel offers a Naval scenario
+  with two coastal cities, prebuilt Harbors and Coastal Batteries, and ships ready to fight.

@@ -11,11 +11,11 @@ behavior.
 
 | Module | Concern |
 |---|---|
-| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
+| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`, `naval_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
 | `orders.rs` | player input and order planning: `ClickMode`, click (move), right-click (attack), swap, ability toggle, hold, guard |
 | `order_queue.rs` | multi-turn order queues: Shift-click adds turns (`queue_move`, `queue_attack`, equal lengths for a group), `advance_queues` at each turn's end |
 | `group.rs` | multi-unit selection (drag a box, Shift-click adds, Ctrl-click removes) and group orders |
-| `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks) |
+| `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks), coastal battery fire and ship boarding |
 | `combat.rs` | damage formula, retaliation, combat log helpers |
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
@@ -24,7 +24,7 @@ behavior.
 | `city/logistics.rs` | roads and Canoe House river corridors, logistics routes (`routes_from_by`), `delivered_share`, tile yields, Mill food share, Cannery/Smelter collection, city and Barracks income |
 | `city/rail.rs` | Railhead road connectivity and long-range transfer eligibility; city center is the origin terminal |
 | `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy`, Field Hospital healing |
-| `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, building sites, resource support from Forge/Stable, Workshop discount, confirmation, `complete_builds` |
+| `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, Harbor naval spawning, building sites, resource support from Forge/Stable, Workshop discount, confirmation, `complete_builds` |
 | `city/founding.rs` | settlers founding cities |
 | `workers.rs` | workers: each city's pool and job list, Work Camp bases, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
 | `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
@@ -33,7 +33,7 @@ behavior.
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
-| `scenario.rs` | scenarios (F1-F4, F12), savestate (F6/F7), instant playback (F8) |
+| `scenario.rs` | scenarios (F1-F4, F12, Debug Naval), savestate (F6/F7), instant playback (F8) |
 | `settings.rs` | the player's options (`Settings`, one field each, and `Setting`, how the menu lists and steps them), Escape (`press_escape`) and the settings menu's open state; its module comment says how to add a setting |
 | `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues) in every scenario, board invariants checked each turn, same seed replays the same game |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |

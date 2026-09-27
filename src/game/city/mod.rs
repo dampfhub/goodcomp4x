@@ -59,6 +59,7 @@ pub(super) struct City {
     pub food: i32,
     pub production: i32,
     pub barracks_hp: f32,
+    pub coastal_battery_hp: f32,
     pub worked: Vec<Hex>,
     /// Manual tiles displaced by a blocked logistics route. They return when
     /// available unless the player changes the assignment.
@@ -99,6 +100,7 @@ impl City {
             food: 0,
             production: 0,
             barracks_hp: BARRACKS_MAX_HP,
+            coastal_battery_hp: 150.0,
             worked: Vec::new(),
             remembered_worked: Vec::new(),
             focus: LaborFocus::Balanced,

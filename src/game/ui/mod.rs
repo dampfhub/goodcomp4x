@@ -46,13 +46,9 @@ use crate::renderer::Vertex;
 use builder::PanelBuilder;
 use dock::{Dock, Rect, Zone};
 pub use imgui::ImGuiLayoutState;
-<<<<<<< HEAD
-use paint::{draw_button, draw_shape};
+use paint::{draw_button, draw_chip_hover, draw_shape};
 
 const BUILDING_PAGE_SIZE: usize = 4;
-=======
-use paint::{draw_button, draw_chip_hover, draw_shape};
->>>>>>> origin/main
 use queue::queue_items_that_fit;
 
 type Color = [f32; 4];

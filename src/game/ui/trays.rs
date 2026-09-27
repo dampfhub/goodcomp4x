@@ -215,6 +215,14 @@ impl GameState {
         if unit.deployed {
             notes.push("DEPLOYED".to_string());
         }
+        if unit.unit_type == crate::game::unit::UnitType::LandingCraft {
+            notes.push(format!(
+                "CARGO {}/4 - CLICK ADJACENT LAND TO UNLOAD",
+                unit.cargo.len()
+            ));
+        } else if !unit.is_naval() {
+            notes.push("CLICK AN ADJACENT LANDING CRAFT TO BOARD".to_string());
+        }
         if unit.lookout {
             notes.push(format!(
                 "LOOKOUT: +{} SIGHT",
@@ -542,7 +550,18 @@ impl GameState {
         }
 
         panel.gap(GAP);
-        let builds = [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege];
+        let builds: Vec<BuildUnit> = if city.placed_site(Building::Harbor).is_some() {
+            vec![
+                BuildUnit::Melee,
+                BuildUnit::Ranged,
+                BuildUnit::Siege,
+                BuildUnit::PatrolGalley,
+                BuildUnit::LandingCraft,
+                BuildUnit::BombardShip,
+            ]
+        } else {
+            vec![BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
+        };
         panel.buttons(
             builds
                 .into_iter()

@@ -80,14 +80,28 @@ impl GameState {
             // An enemy worker is caught by stepping onto it, when that's in
             // reach this turn.
             let worker = self.enemy_of_team_at(target, team).is_none();
-            let reachable = self.reachable_hexes(unit.pos, stats.move_range, team);
+            let reachable = if unit.is_naval() {
+                self.reachable_hexes_by(unit.pos, stats.move_range, |_, to| {
+                    self.grid.contains(to)
+                        && self.grid.terrain(to).is_water()
+                        && !self.is_occupied(to)
+                })
+            } else {
+                self.reachable_hexes(unit.pos, stats.move_range, team)
+            };
             let dest = if worker && reachable.contains(&target) {
                 target
             } else if unit.pos.distance(target) <= stats.attack_range {
                 unit.pos
             } else {
                 let to_target = self.walking_distances(target, team);
-                let steps_left = |hex: &Hex| to_target.get(hex).copied().unwrap_or(i32::MAX);
+                let steps_left = |hex: &Hex| {
+                    if unit.is_naval() {
+                        hex.distance(target)
+                    } else {
+                        to_target.get(hex).copied().unwrap_or(i32::MAX)
+                    }
+                };
                 let claimed_by_ally = |hex: &Hex| {
                     self.units
                         .iter()
@@ -104,7 +118,7 @@ impl GameState {
             if dest != unit.pos {
                 unit.planned_move = Some(dest);
             }
-            if dest != target && dest.distance(target) <= stats.attack_range {
+            if unit.can_attack() && dest != target && dest.distance(target) <= stats.attack_range {
                 unit.planned_attack = Some(target);
             }
         }
@@ -127,7 +141,11 @@ impl GameState {
             )
             .min_by_key(|pos| {
                 (
-                    from_unit.get(pos).copied().unwrap_or(i32::MAX),
+                    if unit.is_naval() {
+                        unit.pos.distance(*pos)
+                    } else {
+                        from_unit.get(pos).copied().unwrap_or(i32::MAX)
+                    },
                     pos.q,
                     pos.r,
                 )

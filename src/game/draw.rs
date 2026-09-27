@@ -240,7 +240,13 @@ impl GameState {
                 team: unit.team,
                 stats,
                 reachable: if shows_moves {
-                    self.known_reachable_hexes(unit.pos, stats.move_range, unit.team, &fog)
+                    self.known_reachable_for_domain(
+                        unit.pos,
+                        stats.move_range,
+                        unit.team,
+                        &fog,
+                        unit.is_naval(),
+                    )
                 } else {
                     HashSet::new()
                 },
@@ -890,6 +896,9 @@ impl GameState {
                 let (badge, color) = building_badge(building);
                 mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, color, out);
                 font::push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
+                if building == super::city::Building::CoastalBattery {
+                    push_health_bar(hex.to_world(), city.coastal_battery_hp / 150.0, 0.62, out);
+                }
             }
         }
         // Planned sites stay visible until confirmation. An active placement
@@ -1097,6 +1106,8 @@ fn building_badge(building: super::city::Building) -> (char, Color) {
         super::city::Building::WorkCamp => ('K', [0.67, 0.55, 0.36, 1.0]),
         super::city::Building::Smelter => ('T', [0.82, 0.43, 0.29, 1.0]),
         super::city::Building::Railhead => ('R', [0.47, 0.68, 0.79, 1.0]),
+        super::city::Building::Harbor => ('P', [0.34, 0.67, 0.90, 1.0]),
+        super::city::Building::CoastalBattery => ('D', [0.85, 0.57, 0.28, 1.0]),
         super::city::Building::Granary => unreachable!(),
     }
 }

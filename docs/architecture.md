@@ -74,7 +74,10 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    step. The last step, `resolve_workers`
    (`workers.rs`), sends cities' idle workers out to their queued jobs and walks, works or brings
    home every worker on the map. A connected Work Camp can be their base for nearby jobs.
-4. **End of turn:** `resolve_city_interiors` (`city/interior.rs`) projects adjacent field troops,
+4. **End of turn:** `resolve_coastal_batteries` targets ships from placed batteries, then
+   `resolve_transport` unloads and boards surviving Landing Craft passengers. Ships use
+   domain-aware reachability and the same unit order pipeline; Harbors spawn them onto water
+   from the city queue. `resolve_city_interiors` (`city/interior.rs`) projects adjacent field troops,
    resolves their separate tactical orders and any command-post capture. Then `resolve_economy`
    (`city/citizens.rs`) applies city income, including local Cannery and Smelter collection from
    `city/logistics.rs`, growth and builds; each
@@ -97,7 +100,7 @@ one file; both UI presentations pick it up (`docs/ui-system.md`). `switch_scenar
 
 ## Testing aids
 
-Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world, F12 siege) are constructors on
+Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world, F12 siege, Debug Naval) are constructors on
 `GameState`; the savestate (F6
 save, F7 load) clones the whole `GameState`. Both live in `scenario.rs` and in memory only. Unit
 tests build a scenario and drive the same methods input does, so no window or GPU is needed;

@@ -21,15 +21,17 @@ pub enum Scenario {
     World,
     /// A ready-to-play attack on the Red city's interior.
     Siege,
+    Naval,
 }
 
 impl Scenario {
-    pub const ALL: [Scenario; 5] = [
+    pub const ALL: [Scenario; 6] = [
         Scenario::Combat,
         Scenario::Cities,
         Scenario::Frontier,
         Scenario::World,
         Scenario::Siege,
+        Scenario::Naval,
     ];
 
     pub fn name(self) -> &'static str {
@@ -39,6 +41,7 @@ impl Scenario {
             Scenario::Frontier => "FRONTIER",
             Scenario::World => "WORLD",
             Scenario::Siege => "SIEGE",
+            Scenario::Naval => "NAVAL",
         }
     }
 
@@ -50,6 +53,7 @@ impl Scenario {
             Scenario::Frontier => "F3",
             Scenario::World => "F4",
             Scenario::Siege => "F12",
+            Scenario::Naval => "DEBUG",
         }
     }
 
@@ -74,6 +78,7 @@ impl Scenario {
             Scenario::Frontier => GameState::frontier_scenario(),
             Scenario::World => GameState::world_scenario(rng.random()),
             Scenario::Siege => GameState::siege_scenario(),
+            Scenario::Naval => GameState::naval_scenario(),
         }
     }
 }

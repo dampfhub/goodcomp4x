@@ -64,6 +64,12 @@ impl GameState {
                 ButtonState::new(self.scenario == Scenario::Siege, false),
             ),
             debug_button(
+                Target::Scenario(Scenario::Naval),
+                "NAVAL",
+                "",
+                ButtonState::new(self.scenario == Scenario::Naval, false),
+            ),
+            debug_button(
                 Target::SaveState,
                 "SAVE",
                 "F6",

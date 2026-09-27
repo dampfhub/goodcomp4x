@@ -292,6 +292,53 @@ impl GameState {
         game
     }
 
+    /// A narrow strait between two coastal cities, with ships and shore
+    /// defenses already deployed for deterministic naval playtesting.
+    pub fn naval_scenario() -> Self {
+        let mut game = Self::city_scenario();
+        game.scenario = Scenario::Naval;
+        let water: Vec<_> = game
+            .grid
+            .all_hexes()
+            .filter(|hex| (-1..=1).contains(&hex.q))
+            .map(|hex| (hex, terrain::Terrain::Coast))
+            .collect();
+        game.grid = HexGrid::new(6, water);
+        game.roads.retain(|h| game.grid.is_passable(*h));
+        game.sites.retain(|h, _| game.grid.is_passable(*h));
+        game.units.clear();
+        game.next_unit_id = 0;
+        for (team, sign) in [(Team::Blue, -1), (Team::Red, 1)] {
+            let city = if team == Team::Blue { 0 } else { 1 };
+            game.cities[city]
+                .extra_buildings
+                .insert(city::Building::Harbor, Hex::new(sign * 2, 0));
+            game.cities[city]
+                .extra_buildings
+                .insert(city::Building::CoastalBattery, Hex::new(sign * 2, sign));
+            game.cities[city]
+                .built
+                .extend([city::Building::Harbor, city::Building::CoastalBattery]);
+            for (pos, kind) in [
+                (Hex::new(sign * 2, -sign), UnitType::Melee),
+                (Hex::new(sign, -sign), UnitType::LandingCraft),
+                (Hex::new(sign, sign), UnitType::PatrolGalley),
+                (Hex::new(0, sign * 2), UnitType::BombardShip),
+            ] {
+                let id = game.next_unit_id;
+                game.next_unit_id += 1;
+                game.units.push(Unit::new(id, pos, team, kind));
+            }
+        }
+        game.cities[0]
+            .queue
+            .push(city::Build::Unit(city::BuildUnit::PatrolGalley));
+        game.start_on_whole_map();
+        game.notice =
+            "NAVAL TEST: SELECT TROOP THEN CLICK CRAFT TO BOARD; CRAFT THEN SHORE TO LAND".into();
+        game
+    }
+
     /// Fresh economy match: each side begins with one settler and no city.
     pub fn frontier_scenario() -> Self {
         let mut game = Self::new();
@@ -350,6 +397,9 @@ impl GameState {
                 UnitType::Siege => "SIEGE",
                 UnitType::Scout => "SCOUT",
                 UnitType::Armored => "ARMORED",
+                UnitType::PatrolGalley => "PATROL GALLEY",
+                UnitType::LandingCraft => "LANDING CRAFT",
+                UnitType::BombardShip => "BOMBARD SHIP",
             }
         }
     }
@@ -382,8 +432,18 @@ impl GameState {
         })
     }
 
+    fn enemy_coastal_battery_at(&self, hex: Hex, team: Team) -> Option<usize> {
+        self.cities.iter().position(|city| {
+            city.team != team
+                && city.placed_site(city::Building::CoastalBattery) == Some(hex)
+                && city.coastal_battery_hp > 0.0
+        })
+    }
+
     fn has_enemy_target_at(&self, hex: Hex, team: Team) -> bool {
-        self.enemy_of_team_at(hex, team).is_some() || self.enemy_barracks_at(hex, team).is_some()
+        self.enemy_of_team_at(hex, team).is_some()
+            || self.enemy_barracks_at(hex, team).is_some()
+            || self.enemy_coastal_battery_at(hex, team).is_some()
     }
 
     /// An empty city center is not an exterior attack target. Units and

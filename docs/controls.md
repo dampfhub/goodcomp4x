@@ -108,7 +108,10 @@ plays out.
 | Y / Yields button | Show or hide tile yields around the open city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron) |
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
-| BUILDS > / < BUILDS in the city tray | Page through the building cards, including Canoe House, Forge, Stable, Watchpost, Field Hospital, Cannery, Work Camp, Smelter and Railhead |
+| BUILDS > / < BUILDS in the city tray | Page through the building cards, including Canoe House, Forge, Stable, Watchpost, Field Hospital, Cannery, Work Camp, Smelter, Railhead, Harbor and Coastal Battery |
+| Build a Harbor, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for water deployment |
+| Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers) |
+| Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
 | Click a tile after queuing a placed building | Choose its site |
@@ -149,6 +152,7 @@ city center enters the interior map; its clicks control only the interior copies
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
 | F4 | Start a newly generated world; every press makes a new map |
 | F12 | Start a siege at Red's city with its interior open |
+| NAVAL in the Debug panel | Start the coastal naval test scenario |
 | F6 | Save a snapshot of the whole game (in memory only) |
 | F7 | Load the snapshot; it is kept, so it can be loaded again |
 | F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome); also in the settings menu |
@@ -189,7 +193,7 @@ them.
 
 | Flag | Effect |
 | --- | --- |
-| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier`, `world` or `siege` (F12) |
+| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier`, `world`, `siege` (F12), or `naval` |
 | `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
 | `--size <W>x<H>` | Open the window at this size in pixels |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
@@ -218,7 +222,7 @@ them.
 - Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Orange hex:
   contested.
 - Units are tokens in team color with a pictogram of what they are: sword (melee), bow
-  (ranged), horse head (cavalry), catapult (siege), spyglass (scout), shield (armored) on a
+  (ranged), horse head (cavalry), catapult (siege), spyglass (scout), shield (armored), sailboat (Patrol Galley), cargo boat (Landing Craft), gunship (Bombard Ship) on a
   disc. Settlers (a planted flag) are hollow hexagons.
 - Workers out on the map are small hollow hexagons with a shovel (tucked into a corner when a
   unit shares their hex), with a dotted line to the job they're walking to. A dark tag with a
@@ -236,7 +240,7 @@ them.
   lines are dirt roads, and blue lines between hexes are rivers.
 - Terrain: two small peaks are hills, pines forest, round canopies jungle; dunes, grass tufts and
   reeds mark desert, tundra and marsh. A large snowy peak is a mountain (impassable) and waves
-  are water (units can't enter it; cities can work it). Terrain defense and yields are in
+  are water (ships enter it, land units do not; cities can work it). Terrain defense and yields are in
   `game-rules.md`.
 - Fog of war: never-seen hexes are blank; hexes you've seen but can't see now are under a grey
   veil with cloud puffs and show the cities, improvements, roads and structures that were there

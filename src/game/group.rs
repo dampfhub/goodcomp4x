@@ -108,7 +108,9 @@ impl GameState {
     /// it. Clicking a target all of them already attack calls it off. Being
     /// a new order, it replaces every member's queue.
     fn group_attack(&mut self, target: Hex) {
-        if !self.grid.is_passable(target) {
+        if !self.grid.is_passable(target)
+            && !(self.grid.contains(target) && self.grid.terrain(target).is_water())
+        {
             return;
         }
         if let Some(&first) = self.group.first()
@@ -168,11 +170,12 @@ impl GameState {
             let start = self.units[i].pos;
             // Staying put wins ties, so nobody shuffles sideways for nothing.
             let best = self
-                .known_reachable_hexes(
+                .known_reachable_for_domain(
                     start,
                     self.units[i].stats().move_range,
                     self.units[i].team,
                     &fog,
+                    self.units[i].is_naval(),
                 )
                 .into_iter()
                 .filter(|hex| *hex == start || !claimed.contains(hex))

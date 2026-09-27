@@ -217,7 +217,9 @@ impl GameState {
                 .units
                 .iter()
                 .filter(|unit| {
-                    unit.pos.distance(city.pos) == 1 && !self.settlers.contains(&unit.id)
+                    unit.pos.distance(city.pos) == 1
+                        && !unit.is_naval()
+                        && !self.settlers.contains(&unit.id)
                 })
                 .collect();
             let ids: HashSet<_> = adjacent.iter().map(|unit| unit.id).collect();

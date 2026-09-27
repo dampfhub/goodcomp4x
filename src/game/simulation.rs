@@ -168,9 +168,33 @@ fn check_invariants(game: &GameState, context: &str) {
             unit.interior_hp
         );
         assert!(
-            game.can_enter(unit.pos),
+            if unit.is_naval() {
+                game.grid.contains(unit.pos) && game.grid.terrain(unit.pos).is_water()
+            } else {
+                game.can_enter(unit.pos)
+            },
             "{context}: {unit} stands on an impassable or off-map hex"
         );
+        assert!(unit.cargo.len() <= 4, "{context}: craft over capacity");
+        assert!(
+            unit.cargo.is_empty() || unit.unit_type == super::unit::UnitType::LandingCraft,
+            "{context}: non-craft holds cargo"
+        );
+        for passenger in &unit.cargo {
+            assert!(
+                ids.insert(passenger.id),
+                "{context}: cargo id {} appears twice",
+                passenger.id
+            );
+            assert_eq!(
+                passenger.team, unit.team,
+                "{context}: enemy passenger aboard"
+            );
+            assert!(
+                !passenger.is_naval() && passenger.hp > 0.0 && passenger.interior_hp > 0.0,
+                "{context}: invalid passenger"
+            );
+        }
         occupants.entry(unit.pos).or_default().push(unit.team);
         // A queue is a chain: each queued turn starts where the one before it ends.
         let mut from = unit.planned_pos();

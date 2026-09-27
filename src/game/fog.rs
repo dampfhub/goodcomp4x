@@ -248,13 +248,27 @@ impl GameState {
         team: Team,
         fog: &Fog,
     ) -> HashSet<Hex> {
+        self.known_reachable_for_domain(start, move_range, team, fog, false)
+    }
+
+    pub(super) fn known_reachable_for_domain(
+        &self,
+        start: Hex,
+        move_range: i32,
+        team: Team,
+        fog: &Fog,
+        naval: bool,
+    ) -> HashSet<Hex> {
         let mut reachable = self.reachable_hexes_by(start, move_range, |from, to| {
-            self.can_enter(to)
-                && !self.known_enemy_city_at(to, team, fog)
+            (if naval {
+                self.grid.contains(to) && self.grid.terrain(to).is_water()
+            } else {
+                self.can_enter(to)
+            }) && !self.known_enemy_city_at(to, team, fog)
                 && self.known_can_cross(from, to, team, fog)
                 && !self.known_occupied(to, fog)
         });
-        if move_range > 0 {
+        if move_range > 0 && !naval {
             for city in self.cities.iter().filter(|city| city.team == team) {
                 if let Some(dest) = city.placed_site(Building::Railhead)
                     && !self.known_occupied(dest, fog)

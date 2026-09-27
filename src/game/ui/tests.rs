@@ -196,6 +196,31 @@ fn build_card_queues_its_unit() {
 }
 
 #[test]
+fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
+    let mut game = GameState::naval_scenario();
+    game.select_city();
+    for build in [
+        BuildUnit::PatrolGalley,
+        BuildUnit::LandingCraft,
+        BuildUnit::BombardShip,
+    ] {
+        let card = button_cursor(&game, Target::Build(build));
+        assert!(game.layout(SCREEN).button_at(to_ui(card, SCREEN)).is_some());
+    }
+    game.handle_click(
+        button_cursor(&game, Target::Build(BuildUnit::LandingCraft)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    let city = game.selected_city.unwrap();
+    assert!(
+        game.cities[city]
+            .queue
+            .contains(&Build::Unit(BuildUnit::LandingCraft))
+    );
+}
+
+#[test]
 fn city_interior_map_fits_and_its_tiles_issue_orders() {
     let mut game = GameState::siege_scenario();
     let layout = game.layout(SCREEN);
