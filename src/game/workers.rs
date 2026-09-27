@@ -24,6 +24,9 @@ use super::{GameState, PLAYER_TEAM};
 
 /// Hexes a worker walks per turn.
 pub(super) const WORKER_MOVE: usize = 1;
+/// How far from one of its side's cities a worker will go to work, in hexes,
+/// unless a road runs by the job (`in_worker_reach`).
+pub(super) const WORKER_REACH: i32 = 3;
 /// How far an outpost lets its owner see, and a worker out on the map.
 pub(super) const OUTPOST_SIGHT: i32 = 2;
 pub(super) const WORKER_SIGHT: i32 = 1;
@@ -271,6 +274,9 @@ impl GameState {
         if !self.grid.contains(hex) || !self.grid.is_passable(hex) {
             return Some("WORKERS CAN'T WORK THIS TERRAIN");
         }
+        if !self.in_worker_reach(team, hex) {
+            return Some("OUT OF REACH: WORKERS GO 3 TILES FROM A CITY, OR NEXT TO A ROAD");
+        }
         if let Some(across) = job.across {
             return if hex.distance(across) != 1 || !self.grid.contains(across) {
                 Some("WALLS AND GATES GO BETWEEN TWO TILES ON THE MAP")
@@ -301,6 +307,64 @@ impl GameState {
             _ if self.structures.contains_key(&hex) => Some("A STRUCTURE STANDS HERE"),
             _ => None,
         }
+    }
+
+    /// Whether `team`'s workers will work at `hex`: within `WORKER_REACH` of
+    /// one of its cities, or on or next to a road, so roads carry the reach
+    /// out as far as they go.
+    pub(super) fn in_worker_reach(&self, team: Team, hex: Hex) -> bool {
+        self.cities
+            .iter()
+            .any(|c| c.team == team && c.pos.distance(hex) <= WORKER_REACH)
+            || std::iter::once(hex)
+                .chain(hex.neighbors())
+                .any(|h| self.roads.contains(&h))
+    }
+
+    /// W, or Worker Jobs in the city panel: turns worker mode on or off.
+    pub fn toggle_worker_mode(&mut self) {
+        let on = !self.worker_mode;
+        self.set_worker_mode(on);
+    }
+
+    /// Worker mode: the map shows every tile the player's workers can reach,
+    /// and a click on any tile, units or not, opens its tile panel to pick a
+    /// job. It ends with W, Escape, or selecting a unit or a city.
+    pub(super) fn set_worker_mode(&mut self, on: bool) {
+        if on == self.worker_mode || self.is_resolving() {
+            return;
+        }
+        if on && !self.cities.iter().any(|c| c.team == PLAYER_TEAM) {
+            self.notice = "FOUND A CITY FIRST - ITS WORKERS DO THE WORK".into();
+            return;
+        }
+        if on {
+            self.leave_city_view();
+        }
+        self.selected = None;
+        self.group.clear();
+        self.inspected_tile = None;
+        self.placing_barrier = None;
+        self.hovered_edge = None;
+        self.ui_click_mode = None;
+        self.worker_mode = on;
+        self.notice = if on {
+            "WORKER JOBS: CLICK A HIGHLIGHTED TILE, THEN PICK A JOB - W WHEN DONE".into()
+        } else {
+            "DONE WITH WORKER JOBS".into()
+        };
+    }
+
+    /// A map click in worker mode: opens the clicked tile's panel.
+    pub(super) fn worker_mode_click(&mut self, hex: Option<Hex>) {
+        self.inspected_tile = hex.filter(|&h| self.grid.contains(h));
+        self.notice = match self.inspected_tile {
+            Some(h) if !self.in_worker_reach(PLAYER_TEAM, h) => {
+                "OUT OF REACH - WORKERS GO 3 TILES FROM A CITY, OR NEXT TO A ROAD".into()
+            }
+            Some(_) => "PICK A JOB FOR THIS TILE - OR CLICK ANOTHER, W WHEN DONE".into(),
+            None => "WORKER JOBS: CLICK A HIGHLIGHTED TILE, THEN PICK A JOB - W WHEN DONE".into(),
+        };
     }
 
     /// Whether `team` already has a job queued or under way in `job`'s place.
@@ -838,6 +902,74 @@ mod tests {
     fn queue(game: &mut GameState, hex: Hex, kind: JobKind) {
         game.inspected_tile = Some(hex);
         game.queue_worker_job(kind);
+    }
+
+    #[test]
+    fn workers_reach_three_tiles_from_a_city_or_next_to_a_road() {
+        let mut game = cities();
+        // Blue's city is at (-4, 0); (0, 0) is four away, with no road by it.
+        let far = Hex::new(0, 0);
+        assert_eq!(game.cities[0].pos.distance(far), 4);
+        assert!(!game.in_worker_reach(PLAYER_TEAM, far));
+        let reason = game
+            .job_unavailable(far, JobKind::Road)
+            .expect("out of reach");
+        assert!(reason.starts_with("OUT OF REACH"), "{reason}");
+        let near = Hex::new(-1, 0);
+        assert!(game.in_worker_reach(PLAYER_TEAM, near), "three away");
+
+        // A road next to it brings it into reach, and each road reaches on.
+        game.roads.insert(near);
+        assert!(game.in_worker_reach(PLAYER_TEAM, far));
+        assert!(game.job_unavailable(far, JobKind::Road).is_none());
+        assert!(
+            !game.in_worker_reach(PLAYER_TEAM, Hex::new(1, 1)),
+            "two past the road"
+        );
+        // Red's reach is its own.
+        assert!(!game.in_worker_reach(Team::Red, Hex::new(-4, 4)));
+    }
+
+    #[test]
+    fn worker_mode_opens_any_tile_and_ends_with_escape_or_a_selection() {
+        let mut game = GameState::city_scenario();
+        game.select_city();
+        assert!(game.selected_city.is_some());
+        game.toggle_worker_mode();
+        assert!(game.worker_mode);
+        assert_eq!(game.selected_city, None, "the city view closes");
+        assert_eq!(game.selected, None);
+
+        // A click on one of your units opens its tile, not the unit.
+        let unit = game
+            .units
+            .iter()
+            .position(|u| u.team == PLAYER_TEAM)
+            .unwrap();
+        let hex = game.units[unit].pos;
+        game.worker_mode_click(Some(hex));
+        assert_eq!(game.inspected_tile, Some(hex));
+        assert_eq!(game.selected, None);
+
+        // Escape ends it, tile panel and all.
+        game.press_escape();
+        assert!(!game.worker_mode);
+        assert_eq!(game.inspected_tile, None);
+        assert!(!game.settings_open, "Escape closed worker mode, not more");
+
+        // Selecting a unit ends it too; so does opening a city.
+        game.toggle_worker_mode();
+        game.set_selection(vec![unit]);
+        assert!(!game.worker_mode);
+        game.toggle_worker_mode();
+        game.select_city();
+        assert!(!game.worker_mode);
+
+        // No city, no workers.
+        let mut game = GameState::new();
+        game.toggle_worker_mode();
+        assert!(!game.worker_mode);
+        assert!(game.notice.contains("FOUND A CITY"), "{}", game.notice);
     }
 
     #[test]

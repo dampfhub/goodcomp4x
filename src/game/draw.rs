@@ -87,6 +87,13 @@ const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
 /// The ring just inside the tile the tile panel shows.
 const INSPECTED_TILE_COLOR: Color = [0.92, 0.92, 0.96, 1.0];
 const INSPECTED_TILE_WIDTH: f32 = 0.08;
+/// Worker mode's tint over tiles the player's workers can reach...
+const WORKER_REACH_TINT: Color = [0.95, 0.78, 0.42, 0.16];
+/// ...and over the explored tiles they can't.
+const OUT_OF_REACH_TINT: Color = [0.0, 0.0, 0.0, 0.45];
+/// A queued wall or gate: an opaque, muted gold, so where edges meet the
+/// rounded ends blend into one line instead of doubling up.
+const PLANNED_EDGE_COLOR: Color = [0.52, 0.42, 0.24, 1.0];
 const CONTESTED_COLOR: Color = [0.55, 0.32, 0.10, 1.0];
 const MOVE_RANGE_COLOR: Color = [0.24, 0.42, 0.26, 1.0];
 const ATTACK_RANGE_COLOR: Color = [0.45, 0.22, 0.22, 1.0];
@@ -346,6 +353,26 @@ impl GameState {
 
         self.push_city_map(&fog, &mut out);
         self.push_fog(&fog, &mut out);
+        // Worker mode: the tiles the player's workers can reach are lit, and
+        // the rest dimmed, so the reach stands out.
+        if self.worker_mode {
+            for hex in self.grid.all_hexes().filter(|&h| self.is_explored(h)) {
+                let reach = self.grid.is_passable(hex) && self.in_worker_reach(PLAYER_TEAM, hex);
+                let tint = if reach {
+                    WORKER_REACH_TINT
+                } else {
+                    OUT_OF_REACH_TINT
+                };
+                mesh::regular_polygon(
+                    hex.to_world(),
+                    HEX_SIZE * HEX_FILL_SCALE,
+                    6,
+                    0.0,
+                    tint,
+                    &mut out,
+                );
+            }
+        }
         // The tile the tile panel shows.
         if let Some(hex) = self.inspected_tile.filter(|&h| self.grid.contains(h)) {
             mesh::polygon_outline(
@@ -635,6 +662,15 @@ impl GameState {
                 }
             }
         }
+    }
+}
+
+/// A line from `a` to `b` with round ends, so lines meeting at a point join
+/// smoothly.
+fn push_rounded_segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec<Vertex>) {
+    mesh::segment(a, b, width, color, out);
+    for end in [a, b] {
+        mesh::regular_polygon(end, width / 2.0, 12, 0.0, color, out);
     }
 }
 
@@ -1132,7 +1168,7 @@ impl GameState {
         }
         if let Some((a, b)) = self.hovered_edge {
             let (start, end) = edge_corners(a, b);
-            mesh::segment(start, end, BARRIER_WIDTH, PLANNED_JOB_COLOR_SOLID, out);
+            push_rounded_segment(start, end, BARRIER_WIDTH, PLANNED_JOB_COLOR_SOLID, out);
         }
         for &(h, label) in &view.sites {
             let center = h.to_world() + IMPROVEMENT_SPOT;
@@ -1227,7 +1263,7 @@ impl GameState {
         for job in queued {
             if let Some(across) = job.across {
                 let (start, end) = edge_corners(job.hex, across);
-                mesh::segment(start, end, BARRIER_WIDTH * 0.6, PLANNED_JOB_COLOR, out);
+                push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, PLANNED_EDGE_COLOR, out);
                 continue;
             }
             let center = job.hex.to_world();
@@ -2425,6 +2461,48 @@ mod tests {
         assert_eq!(count_color(&game.build_vertices(), INSPECTED_TILE_COLOR), 0);
         game.inspected_tile = Some(Hex::new(0, 1));
         assert!(count_color(&game.build_vertices(), INSPECTED_TILE_COLOR) > 0);
+    }
+
+    #[test]
+    fn worker_mode_tints_the_tiles_in_reach() {
+        let mut game = GameState::city_scenario();
+        game.explore();
+        assert_eq!(count_color(&game.build_vertices(), WORKER_REACH_TINT), 0);
+        game.toggle_worker_mode();
+        let tinted = count_color(&game.build_vertices(), WORKER_REACH_TINT);
+        let reachable = game
+            .grid
+            .all_hexes()
+            .filter(|&h| {
+                game.is_explored(h)
+                    && game.grid.is_passable(h)
+                    && game.in_worker_reach(PLAYER_TEAM, h)
+            })
+            .count();
+        assert!(reachable > 0);
+        assert_eq!(
+            tinted % reachable,
+            0,
+            "the same fill on each reachable tile"
+        );
+        assert!(tinted > 0);
+    }
+
+    #[test]
+    fn queued_walls_are_drawn_with_round_ends() {
+        let mut game = GameState::city_scenario();
+        let city = game.cities[0].pos;
+        let (a, b) = (city.neighbors()[0], city.neighbors()[1]);
+        game.cities[0]
+            .worker_jobs
+            .push(crate::game::workers::WorkerJob {
+                hex: a,
+                kind: crate::game::workers::JobKind::Wall,
+                across: Some(b),
+            });
+        let vertices = game.build_vertices();
+        // A segment is two triangles; each round end is twelve more.
+        assert_eq!(count_color(&vertices, PLANNED_EDGE_COLOR), 6 + 2 * 12 * 3);
     }
 
     /// The color of the last opaque triangle drawn over `point`.

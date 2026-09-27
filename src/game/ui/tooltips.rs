@@ -482,6 +482,12 @@ impl GameState {
                             .then(|| format!("ALREADY {}", setting.value_text(value))),
                     )
                 }
+                Target::WorkerMode => (
+                    "WORKER JOBS".into(),
+                    "W".into(),
+                    "SHOWS WHERE YOUR WORKERS REACH; CLICK A TILE THERE TO GIVE THEM A JOB.".into(),
+                    None,
+                ),
                 Target::CloseSettings => (
                     "CLOSE SETTINGS".into(),
                     "ESC".into(),

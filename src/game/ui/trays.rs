@@ -569,6 +569,7 @@ impl GameState {
                 state: ButtonState::Ready,
                 armed: false,
             },
+            worker_mode_button("WORKER JOBS"),
         ]);
         panel.gap(GAP);
         panel.text(
@@ -687,13 +688,10 @@ impl GameState {
     fn city_workers(&self, i: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let out: Vec<_> = self.field_workers.iter().filter(|w| w.home == i).collect();
-        let mut line = vec![(
+        let line = vec![(
             format!("WORKERS: {} HOME, {} OUT", city.workers, out.len()),
             LABEL_TEXT,
         )];
-        if city.worker_jobs.is_empty() {
-            line.push((" · CLOSE THE CITY, CLICK A TILE FOR JOBS".into(), DIM_TEXT));
-        }
         panel.text(SMALL, line);
         for worker in out {
             let doing = match (worker.job, worker.work_left) {
@@ -757,6 +755,38 @@ impl GameState {
 
     /// A tile clicked with nothing selected: what it is, and the jobs the
     /// nearest city's workers can do there.
+    /// Worker mode's panel before a tile is picked: what to do, where
+    /// workers reach, each city's workers, and Done.
+    pub(super) fn worker_mode_tray(&self, panel: &mut PanelBuilder) {
+        panel.text(TITLE, vec![("WORKER JOBS".into(), TEXT)]);
+        for line in [
+            "CLICK A HIGHLIGHTED TILE, THEN PICK A JOB FOR IT.",
+            "WORKERS GO UP TO 3 TILES FROM A CITY, OR ANYWHERE NEXT TO A ROAD:",
+            "BUILD ROADS TO WORK FARTHER OUT.",
+        ] {
+            panel.text(SMALL, vec![(line.into(), DIM_TEXT)]);
+        }
+        for (i, city) in self.cities.iter().enumerate() {
+            if city.team == PLAYER_TEAM {
+                panel.text(
+                    SMALL,
+                    vec![(
+                        format!(
+                            "CITY {}: {} AT HOME, {} OUT, {} JOBS WAITING",
+                            city.id + 1,
+                            city.workers,
+                            self.workers_out(i),
+                            city.worker_jobs.len()
+                        ),
+                        LABEL_TEXT,
+                    )],
+                );
+            }
+        }
+        panel.gap(GAP);
+        panel.buttons(vec![worker_mode_button("DONE")]);
+    }
+
     pub(super) fn tile_tray(&self, hex: Hex, panel: &mut PanelBuilder) {
         let tile = self.grid.tile(hex);
         let mut name = tile.terrain.name().to_string();
@@ -807,10 +837,21 @@ impl GameState {
                     .collect(),
             );
         }
-        panel.text(
-            SMALL,
-            vec![("WORKER JOBS · ESC TO CLOSE".into(), LABEL_TEXT)],
-        );
+        if !self.in_worker_reach(PLAYER_TEAM, hex) {
+            panel.text(
+                SMALL,
+                vec![(
+                    "OUT OF REACH: WORKERS GO 3 TILES FROM A CITY, OR NEXT TO A ROAD".into(),
+                    GOLD_TEXT,
+                )],
+            );
+        }
+        let how = if self.worker_mode {
+            "WORKER JOBS · CLICK ANOTHER TILE, OR W WHEN DONE"
+        } else {
+            "WORKER JOBS · ESC TO CLOSE"
+        };
+        panel.text(SMALL, vec![(how.into(), LABEL_TEXT)]);
         for row in JobKind::ALL.chunks(3) {
             panel.buttons(
                 row.iter()
@@ -924,5 +965,16 @@ impl GameState {
             state: ButtonState::new(false, false),
             armed: false,
         }]);
+    }
+}
+
+/// The button that turns worker mode on (in the city panel) or off (Done).
+fn worker_mode_button(label: &str) -> ButtonSpec {
+    ButtonSpec {
+        target: Target::WorkerMode,
+        label: label.into(),
+        hint: "W".into(),
+        state: ButtonState::Ready,
+        armed: false,
     }
 }

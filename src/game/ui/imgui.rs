@@ -2352,6 +2352,8 @@ impl GameState {
             self.group_tray(&mut tray);
         } else if let Some(hex) = self.inspected_tile {
             self.tile_tray(hex, &mut tray);
+        } else if self.worker_mode {
+            self.worker_mode_tray(&mut tray);
         }
         let selection_context = if selection_is_pinned {
             String::new()
@@ -2367,6 +2369,8 @@ impl GameState {
             "group".into()
         } else if let Some(hex) = self.inspected_tile {
             format!("tile-{}-{}", hex.q, hex.r)
+        } else if self.worker_mode {
+            "workers".into()
         } else {
             String::new()
         };

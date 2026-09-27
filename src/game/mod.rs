@@ -154,6 +154,9 @@ pub struct GameState {
     /// The turn strip's group whose units it lists one by one, while one of
     /// them is selected (`ui/roster.rs`).
     roster_open: Option<ui::RosterKey>,
+    /// Worker mode (W): reachable tiles are shown, and map clicks open tile
+    /// panels for jobs (`workers.rs`).
+    worker_mode: bool,
     /// Ruins not yet claimed (`ruins.rs`), in the order the map made them.
     ruins: Vec<ruins::Ruin>,
     /// Workers out on the map; the ones at home are counted by their city
@@ -253,6 +256,7 @@ impl GameState {
             settlers: HashSet::new(),
             ruins: Vec::new(),
             roster_open: None,
+            worker_mode: false,
             field_workers: Vec::new(),
             structures: HashMap::new(),
             barriers: HashMap::new(),

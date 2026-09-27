@@ -588,7 +588,7 @@ impl GameState {
                 self.cities[i].workers += 1;
                 log::info!("{:?} city completed a worker", self.cities[i].team);
                 if self.cities[i].team == PLAYER_TEAM {
-                    self.notice = "WORKER READY - CLICK A TILE TO GIVE IT A JOB".into();
+                    self.notice = "WORKER READY - PRESS W TO GIVE IT A JOB".into();
                 }
                 continue;
             }

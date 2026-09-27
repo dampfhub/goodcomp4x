@@ -98,6 +98,11 @@ impl GameState {
         if self.paint_barrier_at(cursor, screen_size, false) {
             return;
         }
+        if self.worker_mode {
+            let hex = self.hex_at_screen(cursor, screen_size);
+            self.worker_mode_click(hex);
+            return;
+        }
         let armed = self.ui_click_mode.take();
         let mode = match (mode, armed) {
             (ClickMode::Normal, Some(armed)) => armed,
@@ -419,6 +424,9 @@ impl GameState {
     /// Selects `idx` and glides the camera to it. Used when the game picks the
     /// unit, not when the player clicks one they can already see.
     fn select_and_focus(&mut self, idx: Option<usize>) {
+        if idx.is_some() {
+            self.worker_mode = false;
+        }
         self.selected = idx;
         self.group.clear();
         self.ui_click_mode = None;

@@ -168,6 +168,9 @@ enum Target {
     BuildWorker,
     /// A job on the inspected tile, for the city whose workers would do it.
     WorkerJob(JobKind),
+    /// Worker mode on or off (W): the city panel's Worker Jobs, and Done in
+    /// worker mode's panel.
+    WorkerMode,
     /// The X on one of the open city's worker jobs.
     WorkerJobRemove(usize),
     /// Sends the worker with this id straight home.
@@ -578,6 +581,7 @@ impl GameState {
             Target::RosterRemove(id) => self.roster_remove(id),
             Target::BuildWorker => self.queue_selected_city_worker(),
             Target::WorkerJob(kind) => self.queue_worker_job(kind),
+            Target::WorkerMode => self.toggle_worker_mode(),
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
             Target::RecallWorker(id) => self.recall_worker(id),
             Target::Build(build) => self.queue_selected_city_unit(build),
@@ -700,6 +704,8 @@ impl GameState {
             self.group_tray(&mut tray);
         } else if let Some(hex) = self.inspected_tile {
             self.tile_tray(hex, &mut tray);
+        } else if self.worker_mode {
+            self.worker_mode_tray(&mut tray);
         } else {
             self.debug_panel(&mut layout);
             self.dock_roster(&mut layout);

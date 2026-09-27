@@ -76,6 +76,7 @@ Workers).
 
 | Control | Action |
 | --- | --- |
+| W / Worker Jobs button (city view) | Worker mode: tiles your workers can reach are lit and the rest dimmed, and a panel explains what to do. Click any tile (units on it or not) to open its tile panel and pick a job. W, Escape, the panel's Done button, or selecting a unit or city ends it |
 | Click a tile with nothing selected | Open its tile panel: terrain, whose workers would go, and a button per job. A white ring marks the tile |
 | Road / Improve / Outpost / Fort buttons | Queue that job on the tile, for the open city or else your nearest one |
 | R / I | Queue a road / an improvement on the tile in the tile panel |
@@ -83,7 +84,7 @@ Workers).
 | Click near a hex edge (armed) | Queue a wall or gate on that edge (highlighted under the cursor) |
 | Drag across hex edges (armed) | Queue one on every edge the cursor passes |
 | Escape or right-click (armed) | Stop placing walls or gates |
-| Escape | Close the tile panel |
+| Escape | Close the tile panel (in worker mode: end worker mode) |
 | 8 / Worker button (city view) | Build a worker for the city |
 | Drag a worker job onto another (city view) | Reorder the city's worker jobs |
 | Click a worker job's X (city view) | Remove the job |
@@ -240,7 +241,8 @@ them.
   with the job's name.
 - Structures: walls are stone bands along hex edges with posts in their owner's color; a gate is
   a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,
-  a fort a ring of stakes around it. Queued walls and gates are faded gold edges.
+  a fort a ring of stakes around it. Queued walls and gates are muted gold edges with rounded ends,
+  so a run of them reads as one line.
 - Cities are crenellated towers showing their population, with a gold G disc once they have a
   granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
   a Workshop a blue diamond marked W. While you choose or move a site, a translucent diamond with

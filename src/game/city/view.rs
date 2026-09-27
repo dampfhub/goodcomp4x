@@ -31,6 +31,7 @@ impl GameState {
 
     /// Opens city `i`'s view and glides the camera to it.
     pub(in crate::game) fn open_city(&mut self, i: usize) {
+        self.worker_mode = false;
         self.close_city_interior();
         if self.selected_city != Some(i) {
             self.city_queue_scroll = 0;

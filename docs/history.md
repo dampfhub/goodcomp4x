@@ -156,3 +156,8 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 49. Workers apart (`claude/turn-tasks`): idle workers left the turn strip (they never held up
     the turn). A tile takes one worker job at a time, so a road and an improvement can't be
     queued on it together, and the tile the tile panel shows has a white ring.
+50. Worker reach and worker mode (`claude/worker-reach`): workers only work within 3 tiles of a
+    city, or next to a road, so roads extend their reach. W (or Worker Jobs in the city panel)
+    turns on worker mode, which lights the reachable tiles, dims the rest, explains itself in a
+    panel, and opens the tile panel for any clicked tile. Queued walls and gates have rounded
+    ends, so a run of them joins into one line.

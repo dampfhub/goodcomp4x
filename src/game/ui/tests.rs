@@ -1261,6 +1261,29 @@ fn worker_jobs_reorder_by_dragging() {
     assert_eq!(kinds, [JobKind::Fort, JobKind::Road]);
 }
 
+#[test]
+fn the_city_panel_and_worker_mode_panel_turn_worker_mode_on_and_off() {
+    let mut game = GameState::city_scenario();
+    game.select_city();
+    game.handle_click(
+        button_cursor(&game, Target::WorkerMode),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(game.worker_mode);
+    assert_eq!(game.selected_city, None);
+    let text = panel_strings(|panel| game.worker_mode_tray(panel));
+    assert_shows(&text, "WORKER JOBS");
+    assert_shows(&text, "3 TILES FROM A CITY");
+    // Its Done button ends it.
+    game.handle_click(
+        button_cursor(&game, Target::WorkerMode),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(!game.worker_mode);
+}
+
 /// Where to click, in window pixels, on `key`'s chip in the turn strip.
 fn roster_cursor(game: &GameState, key: RosterKey) -> Vec2 {
     let layout = game.layout(SCREEN);

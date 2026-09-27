@@ -478,14 +478,22 @@ every turn end.
 - **Pool:** each city keeps its workers at home, off the map, where nothing can touch them. A new
   city starts with one; the city queue builds more (8). A tag on each of your cities counts the
   workers at home.
-- **Jobs:** with nothing selected, click a tile to open its tile panel (a white ring marks the
-  tile) and pick a job, or press R (road) or I (improve). The job goes to the open city, or else your nearest city, and waits in
+- **Jobs:** press W (or Worker Jobs in the city panel) for worker mode, which lights the tiles
+  workers can reach, dims the rest, and makes any map click open that tile's panel; or, with
+  nothing selected, click a tile. The tile panel (a white ring marks the tile) has a button
+  per job, or press R (road) or I (improve). The job goes to the open city, or else your nearest city, and waits in
   its worker list, which the city panel shows: drag to reorder, X to remove. Queued jobs show on
-  the map as faded gold rings (walls and gates as faded gold edges). A job needs explored open
-  ground, no city there, and no other job on the tile, queued or under way: a tile takes one job
+  the map as faded gold rings (walls and gates as muted gold edges with rounded ends). A job
+  needs explored open ground within workers' reach, no city there, and no other job on the
+  tile, queued or under way: a tile takes one job
   at a time (walls and gates, on its edges, aside). Improvements and outposts or
   forts also can't go on a barracks, mill or workshop, an improvement not on another side's site,
   an outpost or fort not on another one.
+- **Reach:** workers go up to 3 tiles from one of their side's cities, or anywhere on or next
+  to a road (any road: roads belong to no one), so a line of roads carries the reach out as far
+  as it goes. A wall or gate counts from the tile the worker stands on to build it. The AI's
+  workers keep to the same reach. A job out of reach can't be queued, and one under way that
+  falls out of reach is abandoned.
 - **Walls and gates** stand on the edge between two hexes, not on a tile. Wall or Gate in the
   tile panel arms placement: each click on the map queues one on the hex edge nearest the cursor
   (highlighted), and dragging queues every edge the cursor passes, until Escape or a right-click.
