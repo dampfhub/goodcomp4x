@@ -15,6 +15,9 @@ use std.time.with_system_clock;
 use std.env.Env;
 use log.Level;
 use log.Log;
+use log.error;
+use font.ttf.FontError;
+use std.fmt.Out;
 use log.with_env_level;
 use win32.events.Event;
 use win32.events.Button;
@@ -33,6 +36,7 @@ use renderer.run;
 use renderer.pipelines.MeshVertex;
 use icon.icon;
 use game.GameState;
+use renderer.Atlas;
 use game.font.atlas;
 use game.city.BUILDS;
 use game.orders.ClickMode;
@@ -247,7 +251,12 @@ fn window_spec() -> WindowSpec {
 fn play(frames: i32, validate: bool) -> i32 can {Log, Clock} {
     let mut rng = seed(Clock.now_nanos() as u64);
     let spec = window_spec();
-    let atlas = atlas();
+    let mut built: Option[Atlas] = Option.None;
+    let failed = handle { built = Option.Some(atlas()); 0 } with FontError { fail(code) => { abort code } };
+    let atlas = match built {
+        Option.Some(a) => a,
+        Option.None => { error(fn() can {Out} { Out.put("the built-in font could not be rasterized"); }); return failed; }
+    };
     let icons = Icons { small: icon(WINDOW_ICON_SIZE), small_size: WINDOW_ICON_SIZE, big: icon(TASKBAR_ICON_SIZE), big_size: TASKBAR_ICON_SIZE };
     handle {
         let mut game = GameState.city_scenario();

@@ -11,6 +11,7 @@ use std.linalg.Vec2;
 use std.linalg.vec2;
 use std.math.Float;
 use std.str.chars;
+use font.ttf.FontError;
 use font.subset_font;
 use font.atlas.mip_chain;
 use renderer.Atlas;
@@ -160,8 +161,9 @@ fn push_glyph_quad(min: Vec2, max: Vec2, g: AtlasGlyph, color: Color, out: &mut 
     out.push(top_left);
 }
 
-/// Every glyph rasterized into the atlas, with its mip chain: what the renderer uploads.
-pub fn atlas() -> Atlas {
+/// Every glyph rasterized into the atlas, with its mip chain: what the renderer uploads. The
+/// font's bytes were read and checked by `glyphs`' `#run`, so a `FontError` here is a defect.
+pub fn atlas() -> Atlas can {FontError} {
     let ops = hack_ops();
     let font = subset_font(HACK_FACE, &HACK_GLYPHS, &ops);
     let cs = characters();

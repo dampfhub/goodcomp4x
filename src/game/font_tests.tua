@@ -2,13 +2,18 @@
 
 use std.test.assert;
 use game.font.TextSize;
+use font.ttf.FontError;
+use renderer.Atlas;
 use game.font.atlas;
 use game.font.ui;
 use game.glyphs.MIP_LEVELS;
 
 @test
 fn atlas_levels_halve_in_size() {
-    let a = atlas();
+    let mut built: Option[Atlas] = Option.None;
+    let failed = handle { built = Option.Some(atlas()); 0 } with FontError { fail(code) => { abort code } };
+    assert(failed == 0);
+    let a = match built { Option.Some(a) => a, Option.None => return };
     assert(a.levels.len() == MIP_LEVELS);
     for i in 0..a.levels.len() {
         let expected = (a.width >> i) * (a.height >> i);
