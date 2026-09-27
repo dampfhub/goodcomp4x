@@ -22,10 +22,10 @@ Hold Ctrl to show the title bars, collapse buttons, and resize grips for
 arranging panels. During normal play, expanded panels hide their title bars;
 collapsed panels keep a short title bar so they can be expanded again. While
 Ctrl is held and a panel is being dragged, ImGui owns its position and size
-until the drag ends, so dock previews remain stable. A floating panel the
-player has placed keeps its own size, so the frame Ctrl shows or hides its
-title bar it grows or shrinks by the title bar's height (`title_bar_change`);
-otherwise the title bar would push its content down and clip it.
+until the drag ends, so dock previews remain stable. Showing title bars keeps
+panel outer rectangles fixed, including automatically placed and player-sized
+panels. While Ctrl is held, the title bar takes space inside the panel; content
+can scroll until Ctrl is released.
 The `imgui` dependency enables its `docking` feature. Selection, Production
 Queue, and Debug can dock to one another. The transparent dockspace starts
 below the ImGui status bar but does not accept drops onto the empty map;
