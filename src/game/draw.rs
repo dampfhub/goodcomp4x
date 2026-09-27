@@ -681,7 +681,7 @@ impl GameState {
                 super::city::Building::Workshop,
             ] {
                 let planned = city.planned_sites.get(&building).copied();
-                let preview = if self.placing_building == Some((i, building)) {
+                let preview = if self.site_placement() == Some((i, building)) {
                     self.hovered_tile
                         .filter(|&h| self.site_available(i, building, h))
                         .or(planned)
@@ -1705,6 +1705,36 @@ mod tests {
         // the renderer's dark background.
         let beyond = unexplored.to_world();
         assert_eq!(top_color(&vertices, beyond), None);
+    }
+
+    #[test]
+    fn a_site_preview_follows_the_cursor_only_in_its_open_city() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.selected = None;
+        game.explore();
+        let city = game
+            .cities
+            .iter()
+            .position(|c| c.team == PLAYER_TEAM)
+            .unwrap();
+        let building = crate::game::city::Building::Barracks;
+        let site = game
+            .grid
+            .all_hexes()
+            .find(|&h| game.site_available(city, building, h))
+            .expect("an open site");
+        game.hovered_tile = Some(site);
+        let without = |game: &GameState| {
+            let mut plain = game.clone();
+            plain.placing_building = None;
+            scene(&plain)
+        };
+        game.placing_building = Some((city, building));
+        game.selected_city = None;
+        assert_eq!(scene(&game), without(&game), "no city open: no preview");
+        game.selected_city = Some(city);
+        assert_ne!(scene(&game), without(&game), "its city open: a preview");
     }
 
     /// Every vertex as plain data, sorted: labels over a route map come out

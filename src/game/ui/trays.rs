@@ -444,11 +444,15 @@ impl GameState {
                         building.shortcut(),
                         quantity(building.cost())
                     ),
+                    // Queued or finished, the card is spent, unless the
+                    // building still has no site: then it picks one.
                     state: ButtonState::new(
                         city.queue.first() == Some(&Build::Building(building))
-                            || self.placing_building == Some((i, building)),
-                        city.pending_building == Some(building)
-                            || city.queue.contains(&Build::Building(building)),
+                            || self.needs_site(i, building)
+                            || self.site_placement() == Some((i, building)),
+                        (city.pending_building == Some(building)
+                            || city.queue.contains(&Build::Building(building)))
+                            && !self.needs_site(i, building),
                     ),
                     armed: false,
                 })
@@ -479,6 +483,18 @@ impl GameState {
         }
         for building in [Building::Barracks, Building::Mill, Building::Workshop] {
             let Some(site) = city.planned_sites.get(&building) else {
+                if self.needs_site(i, building) {
+                    let how = if self.site_placement() == Some((i, building)) {
+                        "CLICK AN OPEN TILE ON THE MAP"
+                    } else {
+                        "CLICK ITS CARD TO CHOOSE ONE"
+                    };
+                    panel.text(
+                        SMALL,
+                        vec![(format!("{} NEEDS A SITE", building.name()), GOLD_TEXT)],
+                    );
+                    panel.text(SMALL, vec![(how.into(), DIM_TEXT)]);
+                }
                 continue;
             };
             let ready = city.queue.first() == Some(&Build::Building(building))

@@ -303,8 +303,10 @@ every turn end.
 - **Buildings:**
   - **Granary:** +2 food per turn. Completes when paid for.
   - **Barracks, Mill, Workshop** stand on a site: queuing one starts site selection (passable land
-    you have explored, not a city, building or other planned site). Click the site's map badge to
-    move it. When paid for, the building waits (blocking the queue) until you click Confirm in the
+    you have explored, not a city, building or other planned site). Site selection belongs to the
+    open city: leaving its view or ending the turn stops it. Until a site is chosen the card stays
+    live and resumes selection, and one that finishes without a site starts selection when its
+    city is next opened. Click the site's map badge to move it. When paid for, the building waits (blocking the queue) until you click Confirm in the
     tray. Completing any building resets production to 0.
   - **Barracks:** its own view and queue (all five unit types) with its own production pool, earned
     only while the city's manager stands on the barracks: each worked tile's production times its

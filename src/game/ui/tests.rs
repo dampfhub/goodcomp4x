@@ -216,6 +216,141 @@ fn barracks_map_click_locks_site_and_exits_placement() {
     assert_eq!(game.placing_building, None);
 }
 
+/// The state of `building`'s card in the open city's tray.
+fn building_card(game: &GameState, building: Building) -> ButtonState {
+    game.layout(SCREEN)
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::Building(building))
+        .expect("building card shown")
+        .state
+}
+
+/// Plays the turn out to the next planning phase.
+fn play_turn(game: &mut GameState) {
+    game.end_planning();
+    assert!(game.is_resolving());
+    while game.is_resolving() {
+        game.update(10.0);
+    }
+}
+
+#[test]
+fn ending_the_turn_while_choosing_a_site_leaves_no_preview_on_the_map() {
+    // #51: End Turn closed the city but kept its site placement, so the
+    // preview followed the cursor with no city open.
+    let mut game = city_view();
+    game.units.clear();
+    let city = game.selected_city.unwrap();
+    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
+    play_turn(&mut game);
+    assert_eq!(game.selected_city, None);
+    assert_eq!(game.site_placement(), None);
+    assert_eq!(game.placing_building, None);
+}
+
+#[test]
+fn a_building_finished_with_its_city_closed_picks_its_site_when_reopened() {
+    let mut game = city_view();
+    game.units.clear();
+    let city = game.selected_city.unwrap();
+    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    // Leave without choosing a site.
+    assert!(game.exit_structure_menu());
+    game.cities[city].production = Building::Barracks.cost();
+    play_turn(&mut game);
+    assert_eq!(
+        game.cities[city].pending_building,
+        Some(Building::Barracks),
+        "paid for, the Barracks waits for a site"
+    );
+    // #51: finishing it during the turn started placement with no city open.
+    assert_eq!(game.placing_building, None);
+    assert_eq!(game.site_placement(), None);
+
+    // Opening the city resumes choosing the site, and the card isn't dead.
+    game.open_city(city);
+    game.update(10.0);
+    assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
+    assert_ne!(
+        building_card(&game, Building::Barracks),
+        ButtonState::Disabled
+    );
+    let site = Hex::new(-2, 0);
+    assert!(game.site_available(city, Building::Barracks, site));
+    game.city_click(site);
+    game.confirm_building(Building::Barracks);
+    assert_eq!(game.cities[city].barracks, Some(site));
+}
+
+#[test]
+fn a_queued_building_left_without_a_site_keeps_its_card_live() {
+    // #52: queuing a Barracks and leaving the city before choosing a site
+    // greyed its card out, with no site anywhere and no way to choose one.
+    let mut game = city_view();
+    game.units.clear();
+    let city = game.selected_city.unwrap();
+    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
+    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert!(game.exit_structure_menu());
+    assert_eq!(game.site_placement(), None);
+
+    game.open_city(city);
+    game.update(10.0);
+    assert_eq!(
+        game.site_placement(),
+        None,
+        "not finished: no forced placement"
+    );
+    assert_eq!(
+        building_card(&game, Building::Barracks),
+        ButtonState::Queued
+    );
+    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
+    assert_eq!(
+        game.cities[city]
+            .queue
+            .iter()
+            .filter(|&&b| b == Build::Building(Building::Barracks))
+            .count(),
+        1,
+        "the card resumes the site, it doesn't queue a second Barracks"
+    );
+
+    // With its site chosen, the card is spent until the Barracks is removed.
+    game.city_click(Hex::new(-2, 0));
+    assert_eq!(
+        building_card(&game, Building::Barracks),
+        ButtonState::Disabled
+    );
+    let at = game.cities[city]
+        .queue
+        .iter()
+        .position(|&b| b == Build::Building(Building::Barracks))
+        .unwrap();
+    game.remove_selected_city_queue_item(at);
+    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
+}
+
+#[test]
+fn opening_another_view_drops_the_site_placement() {
+    let mut game = city_view();
+    game.units.clear();
+    let city = game.selected_city.unwrap();
+    game.cities[city].barracks = Some(Hex::new(-2, 0));
+    game.queue_selected_city_building(Building::Mill);
+    assert_eq!(game.site_placement(), Some((city, Building::Mill)));
+    game.open_barracks(city);
+    assert_eq!(game.site_placement(), None);
+    assert_eq!(game.placing_building, None);
+}
+
 #[test]
 fn mill_and_workshop_cards_use_shared_placement_controls() {
     let mut game = city_view();
