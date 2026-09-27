@@ -991,6 +991,43 @@ mod tests {
     }
 
     #[test]
+    fn hitting_an_empty_enemy_city_or_barracks_is_a_hit_not_a_miss() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let target = game
+            .cities
+            .iter()
+            .position(|city| city.team == Team::Red)
+            .unwrap();
+        let city = game.cities[target].pos;
+        let barracks = city.neighbors()[0];
+        game.cities[target].barracks = Some(barracks);
+        for (id, hex) in [(901, city), (902, barracks)] {
+            game.units.clear();
+            game.effects.clear();
+            game.units.push(Unit::new(
+                id,
+                Hex::new(hex.q, hex.r + 2),
+                Team::Blue,
+                UnitType::Ranged,
+            ));
+            game.units[0].planned_attack = Some(hex);
+            game.resolve_step(UnitType::Ranged, Phase::Attack);
+            let shots: Vec<_> = game
+                .effects
+                .iter()
+                .filter_map(|(effect, _)| match effect {
+                    effects::Effect::Shot { outcome, .. } => Some(*outcome),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(shots, [effects::Outcome::Hit], "attack on {hex:?}");
+        }
+        assert!(game.cities[target].hp < city::CITY_MAX_HP);
+        assert!(game.cities[target].barracks_hp < city::BARRACKS_MAX_HP);
+    }
+
+    #[test]
     fn barracks_is_tanky_but_does_not_return_fire() {
         let mut game = GameState::city_scenario();
         game.units.clear();

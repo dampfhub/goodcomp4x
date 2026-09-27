@@ -207,9 +207,9 @@ Everyone in a step acts simultaneously:
 - Queued attacks are curved arrows from the attacker (or its ghost, if it moves first) to just
   short of the target. Only the player's own attacks get arrows; the AI's plans stay hidden.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
-  "MISS" on a hex with no enemy unit, or "OUT OF RANGE" if the target moved away. Every unit hurt
-  (retaliation included) shows a rising damage number, or "KILLED". Enemy attacks animate too. An
-  attack on an empty enemy city or barracks shows MISS but still deals its damage.
+  "MISS" on a hex with no enemy unit, city or barracks, or "OUT OF RANGE" if the target moved
+  away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
+  "KILLED". Enemy attacks animate too.
 
 ## Abilities (`ability.rs`)
 
@@ -351,5 +351,4 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - A destroyed Barracks stays in the city's built list, so it can never be rebuilt (#8).
 - The Barracks card says it is placed on a worked tile, but any explored land site is accepted
   (#9).
-- MISS shows for a hit on an empty enemy city or barracks (#10).
 - No victory condition; F1-F4 restart a scenario.
