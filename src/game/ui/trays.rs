@@ -684,16 +684,31 @@ impl GameState {
                 (None, _) => "WALKING HOME".into(),
             };
             if worker.recalled {
-                panel.text(SMALL, vec![(format!("  {doing}"), DIM_TEXT)]);
+                panel.compact_buttons(vec![ButtonSpec {
+                    target: Target::ShowWorker(worker.id),
+                    label: doing,
+                    hint: String::new(),
+                    state: ButtonState::Ready,
+                    armed: false,
+                }]);
                 continue;
             }
-            panel.compact_buttons(vec![ButtonSpec {
-                target: Target::RecallWorker(worker.id),
-                label: doing,
-                hint: "RECALL".into(),
-                state: ButtonState::Ready,
-                armed: false,
-            }]);
+            panel.compact_buttons(vec![
+                ButtonSpec {
+                    target: Target::ShowWorker(worker.id),
+                    label: doing,
+                    hint: String::new(),
+                    state: ButtonState::Ready,
+                    armed: false,
+                },
+                ButtonSpec {
+                    target: Target::RecallWorker(worker.id),
+                    label: "RECALL".into(),
+                    hint: String::new(),
+                    state: ButtonState::Ready,
+                    armed: false,
+                },
+            ]);
         }
         if city.worker_jobs.is_empty() {
             return;

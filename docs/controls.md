@@ -87,9 +87,11 @@ The worker menu is the only way to give workers orders.
 | Click or drag along hex edges (a wall or gate picked) | Place one on each edge the cursor touches (highlighted under the cursor) |
 | Escape or right-click (a job picked) | Put the job down, leaving the menu open |
 | City buttons (worker menu, with several cities) | List that city's workers and jobs |
+| Click a worker job (worker menu) | Show it on the map |
 | Drag a worker job onto another (worker menu) | Reorder the city's worker jobs |
 | Click a worker job's X (worker menu) | Remove the job |
-| Recall on a worker's row (worker menu) | Send that worker straight home; its job goes back on top of the list |
+| Click a worker's row (worker menu) | Show the worker on the map |
+| Recall beside a worker's row (worker menu) | Send that worker straight home; its job goes back on top of the list |
 | Sleep / Space (worker menu) | That city's idle workers rest this turn, and the turn moves on |
 | 8 / Worker button (city view) | Build a worker for the city |
 

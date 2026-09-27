@@ -483,10 +483,12 @@ every turn end.
   a job with its button (or R for roads, I for improvements), then place it: click or drag over
   tiles, or along hex edges for walls and gates. A ring under the cursor shows where a tile job
   would go (red where it can't); the job stays picked for more until Escape, a right-click or
-  another pick. The menu lists one city's workers (with Recall) and waiting jobs (drag to
-  reorder, X to remove), with a button per city when you have several, and has Sleep (below)
+  another pick. The menu lists one city's workers (click one to show it on the map; Recall
+  beside it) and waiting jobs (click to show on the map, drag to reorder, X to remove), with a button per city when you have several, and has Sleep (below)
   and Done.
-- **Jobs:** a job goes to the nearest city, and waits in its worker list. Queued jobs show on
+- **Jobs:** a job goes to the nearest city, and waits in its worker list. A job a worker is out
+  on shows as a bright gold ring (or edge) named with the job, and once the worker is at work
+  with the turns left, like IMPROVE 2T. Queued jobs show on
   the map as faded gold rings (walls and gates as muted gold edges with rounded ends). A job
   needs explored open ground within workers' reach, no city there, and no other job on the
   tile, queued or under way: a tile takes one job

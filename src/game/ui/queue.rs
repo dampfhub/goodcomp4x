@@ -130,7 +130,35 @@ impl GameState {
         else {
             return;
         };
-        self.reorder_queue(kind, source, target);
+        if source == target {
+            self.queue_item_clicked(kind, source);
+        } else {
+            self.reorder_queue(kind, source, target);
+        }
+    }
+
+    /// A click on queue row `index`, rather than a drag: the camera goes to a
+    /// worker job's tile (or edge). City and barracks rows do nothing.
+    pub(super) fn queue_item_clicked(&mut self, kind: QueueKind, index: usize) {
+        if kind != QueueKind::Workers {
+            return;
+        }
+        let Some(job) = self
+            .worker_list_city()
+            .and_then(|city| self.cities[city].worker_jobs.get(index).copied())
+        else {
+            return;
+        };
+        let spot = job.across.map_or(job.hex.to_world(), |across| {
+            (job.hex.to_world() + across.to_world()) / 2.0
+        });
+        self.camera.focus_on(spot);
+        self.notice = format!(
+            "{} AT ({}, {}) - WAITING FOR A WORKER",
+            job.kind.name(),
+            job.hex.q,
+            job.hex.r
+        );
     }
 
     pub(super) fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {

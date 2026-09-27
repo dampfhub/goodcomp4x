@@ -385,6 +385,18 @@ impl GameState {
                 Target::RosterSelect(_) | Target::RosterAdd(_) | Target::RosterRemove(_) => {
                     return Vec::new();
                 }
+                Target::ShowWorker(_) => (
+                    "WORKER".into(),
+                    "CLICK".into(),
+                    "SHOW THIS WORKER ON THE MAP.".into(),
+                    None,
+                ),
+                Target::QueueItem(..) => (
+                    "QUEUED".into(),
+                    "CLICK · DRAG".into(),
+                    "CLICK TO SHOW IT ON THE MAP; DRAG TO REORDER.".into(),
+                    None,
+                ),
                 Target::RecallWorker(_) => (
                     "RECALL".into(),
                     "CLICK".into(),

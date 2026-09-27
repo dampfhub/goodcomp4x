@@ -631,6 +631,17 @@ impl GameState {
         }
     }
 
+    /// A worker's row in the worker menu: the camera goes to the worker.
+    pub fn show_worker(&mut self, id: u32) {
+        if let Some(worker) = self
+            .field_workers
+            .iter()
+            .find(|w| w.id == id && w.team == PLAYER_TEAM)
+        {
+            self.camera.focus_on(worker.pos.to_world());
+        }
+    }
+
     /// A Recall button: sends one of the player's workers out on the map
     /// straight home, out of danger. Its job goes back to the top of its
     /// city's list, and it takes no new one on the way.

@@ -1306,6 +1306,44 @@ fn idle_workers_wait_in_the_turn_order_until_they_get_a_job_or_sleep() {
     assert_eq!(game.pending().2, 0);
 }
 
+#[test]
+fn clicking_a_worker_job_or_a_worker_shows_it_on_the_map() {
+    let (mut game, hex) = empty_tile_near_blue_city();
+    place_road_and_fort(&mut game, hex);
+    game.toggle_worker_mode();
+    // A click on the road's row, not a drag, takes the camera to it.
+    let layout = game.layout(SCREEN);
+    let row = layout
+        .queue_items
+        .iter()
+        .find(|item| item.kind == QueueKind::Workers && item.index == 0)
+        .expect("the road's row");
+    let cursor = to_ui(
+        Vec2::new(row.min.x + 20.0, (row.min.y + row.max.y) / 2.0),
+        SCREEN,
+    );
+    assert!(game.start_queue_drag_at(cursor, SCREEN));
+    game.finish_queue_drag_at(cursor, SCREEN);
+    game.camera.update(10.0);
+    assert!(game.camera.center.distance(hex.to_world()) < 0.01);
+    let kinds: Vec<_> = game.cities[0].worker_jobs.iter().map(|j| j.kind).collect();
+    assert_eq!(kinds, [JobKind::Road, JobKind::Fort], "nothing reordered");
+
+    // A worker's row takes the camera to the worker.
+    game.toggle_worker_mode();
+    game.resolve_workers();
+    let worker = game.field_workers[0].clone();
+    game.toggle_worker_mode();
+    game.handle_click(
+        button_cursor(&game, Target::ShowWorker(worker.id)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    game.camera.update(10.0);
+    assert!(game.camera.center.distance(worker.pos.to_world()) < 0.01);
+    assert!(!game.field_workers[0].recalled, "showing isn't recalling");
+}
+
 /// Where to click, in window pixels, on `key`'s chip in the turn strip.
 fn roster_cursor(game: &GameState, key: RosterKey) -> Vec2 {
     let layout = game.layout(SCREEN);

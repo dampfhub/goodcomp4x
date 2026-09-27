@@ -2175,7 +2175,7 @@ impl GameState {
                             [0.11, 0.14, 0.16, 1.0]
                         },
                     );
-                    ui.button_with_size(
+                    if ui.button_with_size(
                         format!(
                             "::  {}##queue-{:?}-{}",
                             item.label.trim_start_matches("> ").trim(),
@@ -2183,7 +2183,12 @@ impl GameState {
                             item.index
                         ),
                         [width, 30.0],
-                    );
+                    ) {
+                        actions.push(Action::Button(
+                            scope,
+                            Target::QueueItem(item.kind, item.index),
+                        ));
+                    }
                     drop(_background);
                     drop(_align);
                     if !item.locked && !self.is_resolving() {

@@ -179,6 +179,11 @@ enum Target {
     WorkerJobRemove(usize),
     /// Sends the worker with this id straight home.
     RecallWorker(u32),
+    /// A worker's row in the worker menu: the camera goes to it.
+    ShowWorker(u32),
+    /// A click on a queue row (not a drag): for a worker job, the camera
+    /// goes to it.
+    QueueItem(QueueKind, usize),
     /// The unit strip, by unit id: click selects that unit and moves the
     /// camera to it, Shift-click adds it to the selection, and Ctrl-click
     /// takes it out.
@@ -590,6 +595,8 @@ impl GameState {
             Target::SleepWorkers => self.sleep_workers(),
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
             Target::RecallWorker(id) => self.recall_worker(id),
+            Target::ShowWorker(id) => self.show_worker(id),
+            Target::QueueItem(kind, index) => self.queue_item_clicked(kind, index),
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
             Target::Building(building) => self.queue_selected_city_building(building),

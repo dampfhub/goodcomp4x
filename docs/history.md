@@ -169,3 +169,6 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 52. No tile selection (`claude/worker-reach`): with the worker menu doing workers' jobs, clicking
     a tile no longer selects it (the ring and the city panel's selected-tile line are gone). Roads
     take 2 turns of work and improvements 3.
+53. Following workers' work (`claude/worker-reach`): clicking a waiting job or a worker in the
+    worker menu shows it on the map (Recall is its own button now), and a job under way is ringed
+    in bright gold with its name and turns of work left.

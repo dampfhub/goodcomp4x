@@ -134,6 +134,8 @@ const WORKER_BESIDE_SCALE: f32 = 0.45;
 const WORKER_BESIDE_UNIT: Vec2 = Vec2::new(0.45, -0.32);
 const PLANNED_JOB_COLOR: Color = [0.95, 0.78, 0.42, 0.75];
 const PLANNED_JOB_COLOR_SOLID: Color = [0.95, 0.78, 0.42, 1.0];
+/// A job a worker is out on, brighter than one still queued.
+const JOB_UNDER_WAY_COLOR: Color = [1.0, 0.88, 0.52, 1.0];
 /// The armed worker job's preview on a tile where it can't go.
 const BLOCKED_JOB_COLOR: Color = [0.90, 0.30, 0.25, 1.0];
 const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2::new(0.0, 0.6);
@@ -1265,8 +1267,10 @@ impl GameState {
         }
     }
 
-    /// The player's queued worker jobs: a faded ring on each tile, named.
+    /// The player's worker jobs: those under way (`push_jobs_under_way`),
+    /// and those queued, a faded ring on each tile, named.
     fn push_planned_jobs(&self, out: &mut Vec<Vertex>) {
+        self.push_jobs_under_way(out);
         let queued = self
             .cities
             .iter()
@@ -1293,6 +1297,50 @@ impl GameState {
                 PLANNED_JOB_LABEL_HEIGHT,
                 job.kind.name(),
                 PLANNED_JOB_COLOR,
+                out,
+            );
+        }
+    }
+
+    /// The jobs the player's workers are out on: a solid ring on the tile (or
+    /// the edge, for a wall or gate) named with the job and, once the worker
+    /// is there working, the turns of work left, like "IMPROVE 2T".
+    fn push_jobs_under_way(&self, out: &mut Vec<Vertex>) {
+        let working = self
+            .field_workers
+            .iter()
+            .filter(|w| w.team == PLAYER_TEAM && !w.recalled);
+        for worker in working {
+            let Some(job) = worker.job else { continue };
+            let label = match worker.work_left.filter(|_| worker.pos == job.hex) {
+                Some(left) => format!("{} {left}T", job.kind.name()),
+                None => job.kind.name().into(),
+            };
+            let at = match job.across {
+                Some(across) => {
+                    let (start, end) = edge_corners(job.hex, across);
+                    push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, JOB_UNDER_WAY_COLOR, out);
+                    (start + end) / 2.0 + PLANNED_JOB_LABEL_OFFSET * 0.5
+                }
+                None => {
+                    let center = job.hex.to_world();
+                    mesh::polygon_outline(
+                        center,
+                        WORKED_OUTLINE_RADIUS,
+                        0.06,
+                        6,
+                        0.0,
+                        JOB_UNDER_WAY_COLOR,
+                        out,
+                    );
+                    center + PLANNED_JOB_LABEL_OFFSET
+                }
+            };
+            font::push_text_centered(
+                at,
+                PLANNED_JOB_LABEL_HEIGHT,
+                &label,
+                JOB_UNDER_WAY_COLOR,
                 out,
             );
         }
@@ -2530,6 +2578,37 @@ mod tests {
         assert!(!game.is_explored(forgotten));
         let fewer = count_color(&game.build_vertices(), label);
         assert!(fewer < seen, "{fewer} vs {seen}");
+    }
+
+    #[test]
+    fn work_under_way_is_ringed_and_counts_its_turns_left() {
+        let mut game = GameState::city_scenario();
+        game.explore();
+        let city = game.cities[0].pos;
+        // Two hexes out: a turn walking, then at work.
+        let hex = game
+            .grid
+            .all_hexes()
+            .filter(|&h| h.distance(city) == 2)
+            .find(|&h| {
+                game.job_unavailable(h, crate::game::workers::JobKind::Improve)
+                    .is_none()
+            })
+            .unwrap();
+        game.placing_job = Some(crate::game::workers::JobKind::Improve);
+        assert!(game.place_job_at(hex, None));
+        game.placing_job = None;
+        let solid = |game: &GameState| count_color(&game.build_vertices(), JOB_UNDER_WAY_COLOR);
+        assert_eq!(solid(&game), 0, "only queued, not under way");
+        // Out and walking there: its name in solid gold.
+        game.resolve_workers();
+        let walking = solid(&game);
+        assert!(walking > 0);
+        assert_ne!(game.field_workers[0].pos, hex, "still walking");
+        // At work: "IMPROVE 3T", more glyphs than "IMPROVE".
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].work_left, Some(3));
+        assert!(solid(&game) > walking);
     }
 
     /// The color of the last opaque triangle drawn over `point`.
