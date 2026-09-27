@@ -150,3 +150,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 47. Sessions remembered (`claude/turn-tasks`): settings are saved as they change, and on quitting
     the window size, the presentation and the ImGui panel layout (with ImGui's docking data) are
     saved too, in the config folder, so the next session starts the same way.
+48. Production first (`claude/turn-tasks`): the game moves through a turn in the turn strip's
+    order, cities needing a build before units and settlers before the military, and a new
+    world opens on the city. The idle workers' chip shows a tile they could work in the tile
+    panel instead of opening the city.

@@ -33,15 +33,17 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Right-click a hex with a group | Every member in range attacks it (again to call it off) |
 | Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
-| Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
+| Click a chip in the turn strip | A city's production: open the city. A city's idle workers: show a tile they could work on in the tile panel, whose buttons give the job (again: the next such tile). A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
 | F / Found City button | Found a city with the selected settler |
 | Escape | Let go of the selected unit or group (and close the tile panel) |
 
 A unit can queue a move and an attack; it attacks from the hex it moves to. Units can't move
 through occupied hexes, and two allies can't head for the same hex. Once the selected unit has a
-move and an attack queued (or can't do one of them), the next unit needing orders is selected
-and the camera glides to it; a unit you select by clicking stays selected.
+move and an attack queued (or can't do one of them), the game moves on to what needs you next,
+in the turn strip's order: a city with nothing to build opens first, then the next unit
+needing orders (settlers before the military) is selected and the camera glides to it. A turn,
+and a new world, start the same way. A unit you select by clicking stays selected.
 
 The turn strip ("need orders"; a panel that starts at the bottom of the screen, centered or as
 near the middle as the other panels allow) shows a chip for everything you still have to see to

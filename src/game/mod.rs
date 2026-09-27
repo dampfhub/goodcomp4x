@@ -361,11 +361,10 @@ impl GameState {
                     .map(|u| u.pos)
             })
             .unwrap_or(Hex::new(0, 0));
-        // The settler, or else the scout by the city.
-        game.selected = game
-            .unit_of_team_at(home, PLAYER_TEAM)
-            .or_else(|| game.units.iter().position(|u| u.team == PLAYER_TEAM));
         game.camera = Camera::new(home.to_world(), game.camera.half_height);
+        // What needs seeing to first, as every turn starts: the city's
+        // production, or else the settler.
+        game.select_next_or_end_turn(None);
         game
     }
 

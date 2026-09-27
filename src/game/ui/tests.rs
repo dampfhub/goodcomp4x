@@ -1315,15 +1315,34 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
     let unit_type = game.units[last].unit_type;
     assert_eq!(roster_keys(&game)[2], RosterKey::Group(unit_type, true));
 
-    // Clicking the city's chips opens it, and frames them.
+    // The production chip opens the city, and is framed while it's open.
     game.handle_click(
-        roster_cursor(&game, RosterKey::Workers(city)),
+        roster_cursor(&game, RosterKey::Production(city)),
         SCREEN,
         ClickMode::Normal,
     );
     let open = game.selected_city.expect("the city opened");
     assert_eq!(game.cities[open].id, city);
-    assert!(roster(&game)[0].1 && roster(&game)[1].1);
+    assert!(roster(&game)[0].1 && !roster(&game)[1].1);
+
+    // The workers' chip shows a tile they could work, with its job buttons,
+    // and the next click the next one; the city closes.
+    let workers = RosterKey::Workers(city);
+    game.handle_click(roster_cursor(&game, workers), SCREEN, ClickMode::Normal);
+    assert_eq!(game.selected_city, None);
+    let tiles = game.worker_job_tiles(open);
+    assert!(tiles.len() >= 2, "{tiles:?}");
+    assert_eq!(game.inspected_tile, Some(tiles[0]));
+    assert!(roster(&game)[1].1, "the workers' chip framed");
+    let job = |game: &GameState| {
+        game.layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| matches!(b.target, Target::WorkerJob(_)))
+    };
+    assert!(job(&game), "the tile panel's job buttons");
+    game.handle_click(roster_cursor(&game, workers), SCREEN, ClickMode::Normal);
+    assert_eq!(game.inspected_tile, Some(tiles[1]));
 
     // Once it has a build and a job for its worker, it leaves the strip.
     game.cities[open].queue.push(Build::Unit(BuildUnit::Melee));

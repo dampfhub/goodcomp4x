@@ -263,14 +263,18 @@ mod tests {
             assert_eq!(game.ai_teams().len(), sides - 1);
             assert!(game.units.iter().all(|u| game.grid.is_passable(u.pos)));
             assert!(!game.ruins.is_empty(), "ruins to fight over");
-            let player_city = game.cities.iter().find(|c| c.team == PLAYER_TEAM).unwrap();
-            let selected = &game.units[game.selected.unwrap()];
-            assert_eq!(selected.team, PLAYER_TEAM);
-            assert_eq!(
-                selected.pos.distance(player_city.pos),
-                1,
-                "the scout by the city"
-            );
+            // It opens on the city, which has nothing to build yet.
+            let open = game
+                .selected_city
+                .expect("the city's production comes first");
+            assert_eq!(game.cities[open].team, PLAYER_TEAM);
+            assert_eq!(game.selected, None);
+            let scout = game
+                .units
+                .iter()
+                .find(|u| u.team == PLAYER_TEAM)
+                .expect("the player's scout");
+            assert_eq!(scout.pos.distance(game.cities[open].pos), 1, "by the city");
         }
     }
 

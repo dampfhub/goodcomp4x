@@ -204,7 +204,9 @@ queue them. Nothing heals.
   mountains or water. Two allies can't head for the same hex.
 - **Ending the turn:** `pending()` counts player units that still need orders and player cities
   with nothing queued; citizen assignments never count. Space selects what is still waiting (a
-  unit, then a city needing a build) and ends the turn once nothing is. The End Turn button
+  city needing a build, then a unit, settlers first, as the turn strip lists them) and ends the
+  turn once nothing is. A unit done with its orders moves on the same way, and so does the
+  start of every turn and of a new world. The End Turn button
   (`end_planning`) holds every unfinished unit, opens a city if one still needs a build, and
   otherwise ends the turn. Input, including UI clicks, is ignored while a turn plays out.
 
@@ -318,11 +320,15 @@ Everyone in a step acts simultaneously:
   player still has to see to this turn, civilian tasks first: cities with an empty queue,
   cities with workers at home and no jobs, settlers, then military units needing orders.
   Units are grouped by kind (settlers apart), each group in the order its first unit comes in
-  unit order, with a count. Clicking a city's chip opens it; clicking a group selects all its
+  unit order, with a count. Clicking a city's production chip opens it. Clicking its idle
+  workers' chip shows, in the tile panel, a tile the city works that could take an improvement
+  (or else a road) and that no job covers yet; its buttons give the job, and clicking the chip
+  again shows the next such tile. Clicking a group selects all its
   units and moves the camera to the first, and while any of them is selected, a second row
   lists them one by one. Clicking a unit's chip selects just it; Shift-click adds a chip's units
-  to the selection and Ctrl-click takes them out (leaving at least one). Selected units and the
-  open city are framed. Research will join it when there is any.
+  to the selection and Ctrl-click takes them out (leaving at least one). Selected units, the
+  open city, and a tile shown for idle workers are framed. Research will join it when there is
+  any.
 - Left-clicking a hex (or Move) converges: members' old moves are dropped, then, nearest to the
   target first, each takes the reachable hex closest to the target that no ally is heading for,
   staying put if it can't get closer. Members keep their own speeds, so the group doesn't hold
