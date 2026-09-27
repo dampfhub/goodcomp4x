@@ -568,3 +568,137 @@ fn city_menu_keeps_barracks_clicks_in_manager_assignment_context() {
     assert_eq!(g.selected_city, Some(0));
     assert_eq!(g.selected_barracks, None);
 }
+
+/// Plays one turn of city 0's economy and returns the production it earned and how many of
+/// its (Blue) units came out of it. Newly finished units walk away at once, so the city
+/// always has an open hex beside it unless the test blocks them.
+fn economy_turn(g: &mut GameState, blockers: &[u32]) -> (i32, usize) {
+    let blue = |g: &GameState| g.units.iter().filter(|u| u.team == Team::Blue).count();
+    let income = g.income(0).1;
+    let before = blue(g);
+    g.resolve_economy();
+    let finished = blue(g) - before;
+    g.units
+        .retain(|u| u.team != Team::Blue || blockers.contains(&u.id));
+    (income, finished)
+}
+
+/// #54: with production per turn below a unit's cost, a queue of units comes out at the
+/// rate production allows. A finished unit that waits for an open hex doesn't bank the
+/// production earned meanwhile, which used to empty the rest of the queue one unit a turn.
+#[test]
+fn a_queue_of_units_completes_at_the_rate_production_allows() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.roads.clear();
+    g.cities[0].worked = vec![Hex::new(-3, 0)];
+    g.cities[0].queue = vec![Build::Unit(BuildUnit::Melee); 6];
+    g.cities[0].production = 0;
+    let cost = BuildUnit::Melee.cost();
+
+    // Open hexes: the first unit takes several turns, as its cost allows.
+    let (mut earned, mut turns) = (0, 0);
+    loop {
+        let (income, finished) = economy_turn(&mut g, &[]);
+        assert!(
+            income < cost,
+            "the test needs production below a unit's cost"
+        );
+        earned += income;
+        turns += 1;
+        if finished > 0 {
+            assert_eq!(finished, 1);
+            assert!(
+                earned >= cost,
+                "a unit finished with {earned} of {cost} production"
+            );
+            break;
+        }
+    }
+    assert!(turns > 1, "a unit finished in {turns} turn");
+    assert_eq!(
+        g.cities[0].production,
+        earned - cost,
+        "the leftover carries over"
+    );
+
+    // Every open hex beside the city is taken: the next unit waits in the city.
+    let blockers: Vec<u32> = g.cities[0]
+        .pos
+        .neighbors()
+        .into_iter()
+        .filter(|&hex| g.grid.is_passable(hex))
+        .enumerate()
+        .map(|(n, hex)| {
+            let id = 1000 + n as u32;
+            g.units
+                .push(Unit::new(id, hex, Team::Blue, UnitType::Melee));
+            id
+        })
+        .collect();
+    let mut blocked_earnings = 0;
+    while blocked_earnings < 5 * cost {
+        let (income, finished) = economy_turn(&mut g, &blockers);
+        blocked_earnings += income;
+        assert_eq!(finished, 0, "no hex is open");
+    }
+    assert_eq!(
+        g.cities[0].production, cost,
+        "the waiting unit is paid for, and nothing more is banked"
+    );
+
+    // A hex opens: the waiting unit comes out, and each after it takes its cost again.
+    g.units.retain(|u| u.team != Team::Blue);
+    let (mut earned, mut finished) = (0, 0);
+    for _ in 0..6 {
+        let (income, done) = economy_turn(&mut g, &[]);
+        earned += income;
+        finished += done;
+        assert!(
+            (finished as i32 - 1) * cost <= earned,
+            "{finished} units came out of {earned} production after the wait"
+        );
+    }
+    assert!(finished >= 1, "the waiting unit came out");
+}
+
+/// A city and a barracks beside it that finish units the same turn with only one hex open
+/// between them don't both put a unit on it.
+#[test]
+fn a_city_and_its_barracks_never_finish_units_onto_one_hex() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    let city = g.cities[0].pos;
+    let barracks = Hex::new(-3, 0);
+    assert_eq!(city.distance(barracks), 1);
+    g.cities[0].barracks = Some(barracks);
+    let shared: Vec<Hex> = city
+        .neighbors()
+        .into_iter()
+        .filter(|h| h.distance(barracks) == 1 && g.grid.is_passable(*h))
+        .collect();
+    let open = shared[0];
+    for (n, hex) in city
+        .neighbors()
+        .into_iter()
+        .chain(barracks.neighbors())
+        .filter(|&h| h != open && g.grid.is_passable(h))
+        .enumerate()
+    {
+        if !g.is_occupied(hex) {
+            g.units
+                .push(Unit::new(1000 + n as u32, hex, Team::Blue, UnitType::Melee));
+        }
+    }
+    g.cities[0].queue = vec![Build::Unit(BuildUnit::Melee)];
+    g.cities[0].production = BuildUnit::Melee.cost();
+    g.cities[0].barracks_queue = vec![BuildUnit::Ranged];
+    g.cities[0].barracks_production = BuildUnit::Ranged.cost();
+    g.complete_builds();
+    assert_eq!(g.units_at(open).count(), 1, "one unit on the open hex");
+    assert_eq!(
+        g.cities[0].barracks_queue,
+        vec![BuildUnit::Ranged],
+        "the barracks waits for a hex"
+    );
+}

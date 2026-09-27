@@ -294,8 +294,11 @@ every turn end.
   the head is removed). Reordering keeps the pool, so progress moves to the new head; a finished
   building waiting for Confirm locks the head in place. Drag a row
   to reorder, click its X to remove; Backspace removes the head and PageDown swaps the first two.
-  A finished unit appears on an open neighboring hex (the city holds it until one opens) and keeps
-  leftover production. A player city with an empty queue holds up the turn.
+  A city finishes at most one item a turn. A finished unit appears on an open neighboring hex
+  (not one another unit is appearing on that turn) and keeps leftover production. With no hex
+  open, the city holds the unit until one opens, and the pool stays at the unit's cost meanwhile:
+  production earned while it waits is lost, not banked for the rest of the queue. A player city
+  with an empty queue holds up the turn.
 - **Costs:** Melee 12, Ranged 14, Cavalry 16, Siege 18, Armored 20; Granary 12, Barracks 16,
   Mill 15, Workshop 20. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue Cavalry or
   Armored), 4-7 Granary, Barracks, Mill, Workshop.

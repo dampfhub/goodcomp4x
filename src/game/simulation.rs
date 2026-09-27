@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::thread;
 
-use super::city::{CITY_MAX_HP, MAX_CITY_POPULATION};
+use super::city::{Build, CITY_MAX_HP, MAX_CITY_POPULATION};
 use super::hex::Hex;
 use super::scenario::Scenario;
 use super::unit::Team;
@@ -177,6 +177,33 @@ fn check_invariants(game: &GameState, context: &str) {
             city.id,
             city.worked.len(),
             city.population
+        );
+    }
+    for (i, city) in game.cities.iter().enumerate() {
+        // A paid-for unit at the head of the queue is one waiting for an open hex, and the
+        // city banks nothing more behind it (#54). A city earning a unit's cost in a turn
+        // could have that much left over, so it isn't checked.
+        let Some(&Build::Unit(unit)) = city.queue.first() else {
+            continue;
+        };
+        if city.production < unit.cost() || game.income(i).1 >= unit.cost() {
+            continue;
+        }
+        assert_eq!(
+            city.production,
+            unit.cost(),
+            "{context}: city {} banked production behind a finished {}",
+            city.id,
+            unit.name()
+        );
+        assert!(
+            city.pos
+                .neighbors()
+                .into_iter()
+                .all(|hex| !game.grid.is_passable(hex) || game.is_occupied(hex)),
+            "{context}: city {} holds a finished {} beside an open hex",
+            city.id,
+            unit.name()
         );
     }
 }

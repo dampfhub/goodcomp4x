@@ -543,8 +543,12 @@ impl GameState {
             let Some(pos) = city
                 .neighbors()
                 .into_iter()
-                .find(|h| self.grid.is_passable(*h) && !self.is_occupied(*h))
+                .find(|&h| self.is_open_spawn(h, &spawn))
             else {
+                // The city holds the finished unit until a hex opens, and
+                // banks nothing more meanwhile: a bank would let the rest of
+                // the queue come out one unit a turn once one did (#54).
+                self.cities[i].production = build.cost();
                 continue;
             };
             self.cities[i].production -= build.cost();
@@ -570,7 +574,7 @@ impl GameState {
             let Some(pos) = barracks
                 .neighbors()
                 .into_iter()
-                .find(|h| self.grid.is_passable(*h) && !self.is_occupied(*h))
+                .find(|&h| self.is_open_spawn(h, &spawn))
             else {
                 continue;
             };
@@ -584,5 +588,14 @@ impl GameState {
             self.units.push(Unit::new(id, pos, team, kind));
             log::info!("{team:?} city completed {kind:?}");
         }
+    }
+
+    /// Whether a finished unit can appear on `hex`: passable, with no unit on
+    /// it and none already finishing there this turn (a barracks beside its
+    /// city shares hexes with it).
+    fn is_open_spawn(&self, hex: Hex, spawn: &[(Team, Hex, UnitType)]) -> bool {
+        self.grid.is_passable(hex)
+            && !self.is_occupied(hex)
+            && spawn.iter().all(|&(_, pos, _)| pos != hex)
     }
 }
