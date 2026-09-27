@@ -57,7 +57,7 @@ pub(super) fn end_turn_label((units, cities): (usize, usize)) -> String {
         (1, _) => "UNIT NEEDS ORDERS".into(),
         (0, 0) => "END TURN".into(),
         (0, 1) => "CHOOSE PRODUCTION".into(),
-        (0, cities) => format!("{cities} CITIES NEED PRODUCTION"),
+        (0, cities) => format!("{cities} REEFS NEED PRODUCTION"),
         (units, _) => format!("{units} UNITS NEED ORDERS"),
     }
 }
@@ -74,7 +74,7 @@ pub(super) fn pending_text((units, cities): (usize, usize)) -> Option<String> {
         parts.push(plural(units, "UNIT", "UNITS"));
     }
     if cities > 0 {
-        parts.push(plural(cities, "CITY", "CITIES"));
+        parts.push(plural(cities, "REEF", "REEFS"));
     }
     let verb = if units + cities == 1 { "NEEDS" } else { "NEED" };
     (!parts.is_empty()).then(|| format!("{} {verb} ORDERS", parts.join(" AND ")))
@@ -109,11 +109,20 @@ pub(super) fn wrap(text: &str, max_chars: usize) -> Vec<String> {
 /// The ability's name and a short description of what it does.
 pub(super) fn ability_text(unit: &Unit) -> (&'static str, &'static str) {
     match unit.ability() {
-        Ability::ShieldWall => ("SHIELD WALL", "+50% DEFENSE THIS TURN, NO MOVING"),
-        Ability::Volley => ("VOLLEY", "ALSO HITS ENEMIES NEXT TO THE TARGET, ALL AT 60%"),
-        Ability::Charge => ("CHARGE", "+1 MOVE AND +50% ATTACK THIS TURN"),
+        Ability::ShieldWall => ("SHELL WALL", "+50% DEFENSE THIS TURN, NO MOVING"),
+        Ability::Volley => (
+            "SPINE VOLLEY",
+            "SPINES ALSO HIT ENEMIES NEXT TO THE TARGET, ALL AT 60%",
+        ),
+        Ability::Charge => ("RAM", "+1 MOVE AND +50% ATTACK THIS TURN"),
         Ability::Deploy if unit.deployed => ("PACK UP", "A TURN PACKING UP, THEN IT CAN MOVE"),
-        Ability::Deploy => ("DEPLOY", "A TURN SETTING UP, THEN +1 RANGE BUT NO MOVING"),
-        Ability::Lookout => ("LOOKOUT", "NO MOVING THIS TURN, +2 SIGHT NEXT TURN"),
+        Ability::Deploy => (
+            "INK BARRAGE",
+            "A TURN SETTLING IN, THEN +1 INK RANGE BUT NO MOVING",
+        ),
+        Ability::Lookout => (
+            "ECHOLOCATE",
+            "NO MOVING THIS TURN, +2 SONAR SIGHT NEXT TURN",
+        ),
     }
 }

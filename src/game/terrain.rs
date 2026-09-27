@@ -41,8 +41,8 @@ pub enum Resource {
 impl Resource {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Horses => "HORSES",
-            Self::Iron => "IRON",
+            Self::Horses => "SEAHORSES",
+            Self::Iron => "PEARLS",
         }
     }
 }
@@ -50,16 +50,16 @@ impl Resource {
 impl Terrain {
     pub fn name(self) -> &'static str {
         match self {
-            Terrain::Grassland => "GRASSLAND",
-            Terrain::Plains => "PLAINS",
-            Terrain::Desert => "DESERT",
-            Terrain::Tundra => "TUNDRA",
-            Terrain::Snow => "SNOW",
-            Terrain::Marsh => "MARSH",
-            Terrain::Mountains => "MOUNTAINS",
-            Terrain::Coast => "COAST",
-            Terrain::Ocean => "OCEAN",
-            Terrain::Lake => "LAKE",
+            Terrain::Grassland => "SEAGRASS",
+            Terrain::Plains => "SANDBANK",
+            Terrain::Desert => "SILT",
+            Terrain::Tundra => "COLD SHELF",
+            Terrain::Snow => "ICE SHELF",
+            Terrain::Marsh => "MUD FLATS",
+            Terrain::Mountains => "SEAMOUNT",
+            Terrain::Coast => "BEACH",
+            Terrain::Ocean => "ISLAND",
+            Terrain::Lake => "TIDE POOL",
         }
     }
 
@@ -105,8 +105,8 @@ pub enum Feature {
 impl Feature {
     pub fn name(self) -> &'static str {
         match self {
-            Feature::Forest => "FOREST",
-            Feature::Jungle => "JUNGLE",
+            Feature::Forest => "KELP FOREST",
+            Feature::Jungle => "CORAL THICKET",
         }
     }
 }
@@ -147,11 +147,11 @@ impl Tile {
         feature: None,
     };
 
-    /// Like "DESERT HILLS" or "GRASSLAND HILLS + FOREST".
+    /// Like "SILT REEF" or "SEAGRASS REEF + KELP FOREST": the ocean theme's display names.
     pub fn name(self) -> String {
         let mut name = self.terrain.name().to_string();
         if self.hills {
-            name += " HILLS";
+            name += " REEF";
         }
         if let Some(feature) = self.feature {
             name += " + ";
@@ -219,7 +219,7 @@ mod tests {
             feature: None,
         };
         assert_eq!(desert_hills.yields(), (0, 2));
-        assert_eq!(desert_hills.name(), "DESERT HILLS");
+        assert_eq!(desert_hills.name(), "SILT REEF");
         let forested_hills = Tile {
             terrain: Terrain::Plains,
             hills: true,
@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(forested_hills.yields(), (1, 3));
         assert_eq!(forested_hills.route_cost(), 4);
         assert!((forested_hills.defense_multiplier() - 1.4).abs() < 1e-6);
-        assert_eq!(forested_hills.name(), "PLAINS HILLS + FOREST");
+        assert_eq!(forested_hills.name(), "SANDBANK REEF + KELP FOREST");
         let jungle = Tile {
             terrain: Terrain::Marsh,
             hills: false,

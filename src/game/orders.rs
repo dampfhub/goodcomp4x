@@ -177,7 +177,7 @@ impl GameState {
         // A wall or gate being placed stops first, leaving the tile panel.
         if self.placing_barrier.take().is_some() {
             self.hovered_edge = None;
-            self.notice = "STOPPED PLACING - CLICK A TILE FOR MORE WORKER JOBS".into();
+            self.notice = "STOPPED PLACING - CLICK A TILE FOR MORE SHRIMP JOBS".into();
             return true;
         }
         let had =

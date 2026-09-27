@@ -172,6 +172,33 @@ fn city_view() -> GameState {
 }
 
 #[test]
+fn city_tray_keeps_the_open_city_and_its_ring_in_view() {
+    // The ocean theme's building names are long: the cards go two to a row
+    // so the tray doesn't stretch over the city it manages.
+    let game = city_view();
+    let city = &game.cities[game.selected_city.unwrap()];
+    let layout = game.layout(SCREEN);
+    for hex in std::iter::once(city.pos).chain(city.pos.neighbors()) {
+        assert!(
+            !layout.covers(to_ui(hex_cursor(&game, hex), SCREEN)),
+            "{hex:?}"
+        );
+    }
+    let cards: Vec<_> = layout
+        .buttons
+        .iter()
+        .filter(|b| matches!(b.target, Target::Building(_)))
+        .collect();
+    assert_eq!(cards.len(), 4);
+    for card in &cards {
+        assert!(layout.covers((card.min + card.max) / 2.0));
+    }
+    let mut rows: Vec<i32> = cards.iter().map(|b| b.min.y as i32).collect();
+    rows.dedup();
+    assert_eq!(rows.len(), 2, "two cards a row");
+}
+
+#[test]
 fn barracks_map_click_locks_site_and_exits_placement() {
     let mut game = city_view();
     game.units.clear();
@@ -853,7 +880,7 @@ fn tooltip_and_city_panel_show_an_unseen_hex_as_last_seen() {
     };
     let before = read(&game);
     assert!(
-        before.0.iter().any(|s| s.contains("REACHES CITY")),
+        before.0.iter().any(|s| s.contains("REACHES REEF")),
         "{:?}",
         before.0
     );
@@ -872,7 +899,7 @@ fn tooltip_and_city_panel_show_an_unseen_hex_as_last_seen() {
             team: Team::Red,
             food: 9,
             production: 9,
-            label: "FARM",
+            label: "KELP FARM",
         },
     );
     assert_eq!(read(&game), before);
@@ -920,24 +947,24 @@ fn every_panel_shows_production_per_turn_in_displayed_units() {
     let tray = panel_strings(|panel| game.city_tray(0, panel));
     assert_shows(&tray, &format!("{city_rate} PER TURN"));
     let hover = panel_strings(|panel| game.structure_hover_panel(0, false, panel));
-    assert_shows(&hover, &format!("{city_rate} PROD/T"));
+    assert_shows(&hover, &format!("{city_rate} SHELLS/T"));
     let city_tooltip = line_strings(
         game.tile_tooltip_lines(game.cities[0].pos)
             .into_iter()
             .map(|(_, line)| line),
     );
-    assert_shows(&city_tooltip, &format!("{city_rate} PRODUCTION"));
+    assert_shows(&city_tooltip, &format!("{city_rate} SHELLS"));
 
     let barracks_tray = panel_strings(|panel| game.barracks_tray(0, panel));
-    assert_shows(&barracks_tray, &format!("{barracks_rate} PROD/T"));
+    assert_shows(&barracks_tray, &format!("{barracks_rate} SHELLS/T"));
     let barracks_hover = panel_strings(|panel| game.structure_hover_panel(0, true, panel));
-    assert_shows(&barracks_hover, &format!("{barracks_rate} PROD/T"));
+    assert_shows(&barracks_hover, &format!("{barracks_rate} SHELLS/T"));
     let barracks_tooltip = line_strings(
         game.tile_tooltip_lines(manager)
             .into_iter()
             .map(|(_, line)| line),
     );
-    assert_shows(&barracks_tooltip, &format!("{barracks_rate} PROD/T"));
+    assert_shows(&barracks_tooltip, &format!("{barracks_rate} SHELLS/T"));
 }
 
 #[test]
@@ -954,7 +981,7 @@ fn end_turn_button_names_what_is_waiting() {
     assert_eq!(end_turn_label((3, 1)), "3 UNITS NEED ORDERS");
     assert_eq!(end_turn_label((1, 1)), "UNIT NEEDS ORDERS");
     assert_eq!(end_turn_label((0, 1)), "CHOOSE PRODUCTION");
-    assert_eq!(end_turn_label((0, 2)), "2 CITIES NEED PRODUCTION");
+    assert_eq!(end_turn_label((0, 2)), "2 REEFS NEED PRODUCTION");
     assert_eq!(end_turn_label((0, 0)), "END TURN");
 
     let game = GameState::new();

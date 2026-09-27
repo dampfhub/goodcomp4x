@@ -92,11 +92,11 @@ impl GameState {
             notes.push(format!("+{bonus:.0}% DEFENSE FROM TERRAIN"));
         }
         if unit.deployed {
-            notes.push("DEPLOYED".to_string());
+            notes.push("INK DEPLOYED".to_string());
         }
         if unit.lookout {
             notes.push(format!(
-                "LOOKOUT: +{} SIGHT",
+                "ECHOLOCATING: +{} SIGHT",
                 crate::game::fog::LOOKOUT_SIGHT
             ));
         }
@@ -164,7 +164,7 @@ impl GameState {
             armed: armed(ClickMode::Swap),
         });
         if settler {
-            buttons.push(ButtonSpec::plain(UnitAction::Settle, "FOUND CITY", "F"));
+            buttons.push(ButtonSpec::plain(UnitAction::Settle, "FOUND REEF", "F"));
         } else {
             let (name, _) = ability_text(unit);
             let label = match unit.ability_cooldown {
@@ -279,7 +279,7 @@ impl GameState {
         panel.text(
             TITLE,
             vec![
-                (format!("CITY {}", city.id + 1), city.team.color()),
+                (format!("REEF {}", city.id + 1), city.team.color()),
                 (
                     format!(
                         "   POPULATION {}/{}",
@@ -307,13 +307,13 @@ impl GameState {
                 TEXT,
             )]),
         );
-        let mut food_line = stat_spans(&[("FOOD", quantity(city.food), TEXT)]);
+        let mut food_line = stat_spans(&[("FISH", quantity(city.food), TEXT)]);
         food_line.push((
             format!("   {} PER TURN", signed_quantity(net_food)),
             net_color,
         ));
         panel.text(BODY, food_line);
-        let mut production_line = stat_spans(&[("PRODUCTION", quantity(city.production), TEXT)]);
+        let mut production_line = stat_spans(&[("SHELLS", quantity(city.production), TEXT)]);
         production_line.push((
             format!("   {} PER TURN", signed_quantity(production)),
             DIM_TEXT,
@@ -325,7 +325,7 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "{}: {} / {} PRODUCTION",
+                        "{}: {} / {} SHELLS",
                         build.name(),
                         quantity(city.production.min(cost)),
                         quantity(cost)
@@ -348,7 +348,10 @@ impl GameState {
             None => ("NOTHING - CHOOSE BELOW".to_string(), DIM_TEXT),
         };
         panel.text(BODY, stat_spans(&[("BUILDING", building.0, building.1)]));
-        panel.text(SMALL, vec![("LABOR FOCUS".into(), LABEL_TEXT)]);
+        panel.text(
+            SMALL,
+            vec![("LABOR FOCUS · AUTO ASSIGNS".into(), LABEL_TEXT)],
+        );
         panel.compact_buttons(
             [
                 LaborFocus::Food,
@@ -359,10 +362,19 @@ impl GameState {
             .map(|focus| ButtonSpec {
                 target: Target::Focus(focus),
                 label: focus.name().into(),
-                hint: "AUTO".into(),
+                hint: String::new(),
                 state: ButtonState::new(city.focus == focus, false),
                 armed: false,
             })
+            // The yields overlay shares the row: the building cards need
+            // the height it would take on its own.
+            .chain([ButtonSpec {
+                target: Target::ToggleYields,
+                label: "YIELDS".into(),
+                hint: "Y".into(),
+                state: ButtonState::new(self.show_yields, false),
+                armed: false,
+            }])
             .collect(),
         );
 
@@ -388,7 +400,7 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "SELECTED TILE: {tile_food} FOOD, {tile_production} PRODUCTION · FOOD {}% / PROD {}%",
+                        "SELECTED TILE: {tile_food} FISH, {tile_production} SHELLS · FISH {}% / SHELLS {}%",
                         shares.0 * 25, shares.1 * 25
                     ),
                     DIM_TEXT,
@@ -404,27 +416,19 @@ impl GameState {
                 .map(|build| ButtonSpec {
                     target: Target::Build(build),
                     label: build.name().into(),
-                    hint: format!("{} · {} PROD", build.shortcut(), quantity(build.cost())),
+                    hint: format!("{} · {} SHELLS", build.shortcut(), quantity(build.cost())),
                     state: ButtonState::new(city.queue.first() == Some(&Build::Unit(build)), false),
                     armed: false,
                 })
                 .chain([ButtonSpec {
                     target: Target::BuildWorker,
-                    label: "WORKER".into(),
-                    hint: format!("{WORKER_SHORTCUT} · {} PROD", quantity(WORKER_COST)),
+                    label: Build::Worker.name().into(),
+                    hint: format!("{WORKER_SHORTCUT} · {} SHELLS", quantity(WORKER_COST)),
                     state: ButtonState::new(city.queue.first() == Some(&Build::Worker), false),
                     armed: false,
                 }])
                 .collect(),
         );
-        panel.gap(GAP);
-        panel.buttons(vec![ButtonSpec {
-            target: Target::ToggleYields,
-            label: "YIELDS".into(),
-            hint: "Y".into(),
-            state: ButtonState::new(self.show_yields, false),
-            armed: false,
-        }]);
         panel.gap(GAP);
         panel.text(
             SMALL,
@@ -439,50 +443,53 @@ impl GameState {
             Building::Mill,
             Building::Workshop,
         ];
-        panel.buttons(
-            buildings
-                .into_iter()
-                .filter(|&building| !city.built.contains(&building))
-                .map(|building| ButtonSpec {
-                    target: Target::Building(building),
-                    label: building.name().into(),
-                    hint: format!(
-                        "{} · {} PROD",
-                        building.shortcut(),
-                        quantity(building.cost())
-                    ),
-                    // Queued or finished, the card is spent, unless the
-                    // building still has no site: then it picks one.
-                    state: ButtonState::new(
-                        city.queue.first() == Some(&Build::Building(building))
-                            || self.needs_site(i, building)
-                            || self.site_placement() == Some((i, building)),
-                        (city.pending_building == Some(building)
-                            || city.queue.contains(&Build::Building(building)))
-                            && !self.needs_site(i, building),
-                    ),
-                    armed: false,
-                })
-                .collect(),
-        );
+        // Two cards a row: the ocean names are long enough that four side
+        // by side would stretch the tray across the city it belongs to.
+        let cards: Vec<ButtonSpec> = buildings
+            .into_iter()
+            .filter(|&building| !city.built.contains(&building))
+            .map(|building| ButtonSpec {
+                target: Target::Building(building),
+                label: building.name().into(),
+                hint: format!(
+                    "{} · {} SHELLS",
+                    building.shortcut(),
+                    quantity(building.cost())
+                ),
+                // Queued or finished, the card is spent, unless the
+                // building still has no site: then it picks one.
+                state: ButtonState::new(
+                    city.queue.first() == Some(&Build::Building(building))
+                        || self.needs_site(i, building)
+                        || self.site_placement() == Some((i, building)),
+                    (city.pending_building == Some(building)
+                        || city.queue.contains(&Build::Building(building)))
+                        && !self.needs_site(i, building),
+                ),
+                armed: false,
+            })
+            .collect();
+        for row in cards.chunks(2) {
+            panel.buttons(row.to_vec());
+        }
         if let Some(tile) = city.barracks {
             let active = city.worked.first() == Some(&tile);
             let status = if active {
                 "MANAGER ACTIVE"
             } else {
-                "MOVE MANAGER ONTO BARRACKS"
+                "MOVE MANAGER ONTO SHIPWRECK"
             };
             panel.gap(GAP);
             panel.text(
                 SMALL,
                 vec![(
-                    format!("BARRACKS: {status}"),
+                    format!("SHIPWRECK: {status}"),
                     if active { BOOSTED_TEXT } else { REDUCED_TEXT },
                 )],
             );
             panel.buttons(vec![ButtonSpec {
                 target: Target::OpenBarracks,
-                label: "SEE BARRACKS".into(),
+                label: "SEE SHIPWRECK".into(),
                 hint: "CLICK".into(),
                 state: ButtonState::new(false, false),
                 armed: false,
@@ -543,11 +550,11 @@ impl GameState {
         let city = &self.cities[i];
         let out: Vec<_> = self.field_workers.iter().filter(|w| w.home == i).collect();
         let mut line = vec![(
-            format!("WORKERS: {} HOME, {} OUT", city.workers, out.len()),
+            format!("SHRIMP: {} HOME, {} OUT", city.workers, out.len()),
             LABEL_TEXT,
         )];
         if city.worker_jobs.is_empty() {
-            line.push((" · CLOSE THE CITY, CLICK A TILE FOR JOBS".into(), DIM_TEXT));
+            line.push((" · CLOSE THE REEF, CLICK A TILE FOR JOBS".into(), DIM_TEXT));
         }
         panel.text(SMALL, line);
         for worker in out {
@@ -585,7 +592,7 @@ impl GameState {
         }
         panel.text(
             SMALL,
-            vec![("WORKER JOBS - DRAG TO REORDER".into(), LABEL_TEXT)],
+            vec![("SHRIMP JOBS - DRAG TO REORDER".into(), LABEL_TEXT)],
         );
         let drag = self
             .queue_drag
@@ -613,14 +620,7 @@ impl GameState {
     /// A tile clicked with nothing selected: what it is, and the jobs the
     /// nearest city's workers can do there.
     pub(super) fn tile_tray(&self, hex: Hex, panel: &mut PanelBuilder) {
-        let tile = self.grid.tile(hex);
-        let mut name = tile.terrain.name().to_string();
-        if tile.hills {
-            name.push_str(" HILLS");
-        }
-        if let Some(feature) = tile.feature {
-            name = format!("{} {name}", feature.name());
-        }
+        let name = self.grid.tile(hex).name();
         panel.text(
             TITLE,
             vec![
@@ -633,14 +633,14 @@ impl GameState {
             Some(city) => {
                 let c = &self.cities[city];
                 format!(
-                    "WORKERS FROM CITY {}: {} AT HOME, {} OUT, {} JOBS WAITING",
+                    "SHRIMP FROM REEF {}: {} AT HOME, {} OUT, {} JOBS WAITING",
                     c.id + 1,
                     c.workers,
                     self.workers_out(city),
                     c.worker_jobs.len()
                 )
             }
-            None => "FOUND A CITY TO GET WORKERS".into(),
+            None => "FOUND A REEF TO GET SHRIMP".into(),
         };
         panel.text(SMALL, vec![(from, DIM_TEXT)]);
         // Your workers standing here can be sent home from the tile.
@@ -654,7 +654,7 @@ impl GameState {
                 here.iter()
                     .map(|worker| ButtonSpec {
                         target: Target::RecallWorker(worker.id),
-                        label: "RECALL WORKER".into(),
+                        label: "RECALL SHRIMP".into(),
                         hint: "SEND IT HOME".into(),
                         state: ButtonState::Ready,
                         armed: false,
@@ -664,7 +664,7 @@ impl GameState {
         }
         panel.text(
             SMALL,
-            vec![("WORKER JOBS · ESC TO CLOSE".into(), LABEL_TEXT)],
+            vec![("SHRIMP JOBS · ESC TO CLOSE".into(), LABEL_TEXT)],
         );
         for row in JobKind::ALL.chunks(3) {
             panel.buttons(
@@ -702,7 +702,7 @@ impl GameState {
         let barracks_production = if active { self.barracks_income(i) } else { 0 };
         panel.text(
             TITLE,
-            vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
+            vec![(format!("REEF {} SHIPWRECK", city.id + 1), city.team.color())],
         );
         panel.text(
             BODY,
@@ -720,7 +720,7 @@ impl GameState {
             SMALL,
             vec![(
                 format!(
-                    "{} · {} PROD/T",
+                    "{} · {} SHELLS/T",
                     if active {
                         "MANAGER ACTIVE"
                     } else {
@@ -736,7 +736,7 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "TRAINING {}: {} / {} PROD",
+                        "TRAINING {}: {} / {} SHELLS",
                         build.name(),
                         quantity(city.barracks_production.min(build.cost())),
                         quantity(build.cost())
@@ -761,7 +761,7 @@ impl GameState {
                     target: Target::BarracksBuild(build),
                     label: format!("TRAIN {}", build.name()),
                     hint: build.required_resource().map_or_else(
-                        || format!("{} PROD", quantity(build.cost())),
+                        || format!("{} SHELLS", quantity(build.cost())),
                         |resource| format!("{} · {}", resource.name(), quantity(build.cost())),
                     ),
                     state: ButtonState::new(
@@ -774,7 +774,7 @@ impl GameState {
         );
         panel.buttons(vec![ButtonSpec {
             target: Target::OpenCity,
-            label: "OPEN CITY".into(),
+            label: "OPEN REEF".into(),
             hint: "CLICK".into(),
             state: ButtonState::new(false, false),
             armed: false,
