@@ -346,7 +346,7 @@ impl PanelBuilder {
                         .round();
                         let max = min + Vec2::splat(ROSTER_CHIP);
                         layout.shapes.push(Shape::UnitChip { min, max, chip });
-                        layout.roster_chips.push((min, max, chip.id));
+                        layout.roster_chips.push((min, max, chip.key));
                     }
                 }
             }

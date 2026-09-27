@@ -414,8 +414,27 @@ impl GameState {
         } else if self.job_taken(PLAYER_TEAM, job) {
             Some(format!("{} IS QUEUED HERE ALREADY", kind.name()))
         } else {
-            None
+            // A tile takes one job at a time.
+            self.tile_job_at(PLAYER_TEAM, hex)
+                .map(|other| format!("{} IS QUEUED HERE - ONE JOB AT A TIME", other.name()))
         }
+    }
+
+    /// The job `team` has queued or under way on tile `hex`, if any (walls
+    /// and gates, on edges, aside). A tile takes one job at a time.
+    pub(super) fn tile_job_at(&self, team: Team, hex: Hex) -> Option<JobKind> {
+        self.cities
+            .iter()
+            .filter(|c| c.team == team)
+            .flat_map(|c| &c.worker_jobs)
+            .chain(
+                self.field_workers
+                    .iter()
+                    .filter(|w| w.team == team)
+                    .filter_map(|w| w.job.as_ref()),
+            )
+            .find(|job| job.across.is_none() && job.hex == hex)
+            .map(|job| job.kind)
     }
 
     pub(super) fn queue_worker_job_at(&mut self, hex: Hex, kind: JobKind) {
@@ -850,6 +869,28 @@ mod tests {
     fn queue(game: &mut GameState, hex: Hex, kind: JobKind) {
         game.inspected_tile = Some(hex);
         game.queue_worker_job(kind);
+    }
+
+    #[test]
+    fn a_tile_takes_one_job_at_a_time() {
+        let mut game = cities();
+        let city = game.cities[0].pos;
+        let tile = city
+            .neighbors()
+            .into_iter()
+            .find(|&h| {
+                game.job_unavailable(h, JobKind::Road).is_none()
+                    && game.job_unavailable(h, JobKind::Improve).is_none()
+            })
+            .expect("a tile that could take either");
+        game.queue_worker_job_at(tile, JobKind::Improve);
+        assert_eq!(game.tile_job_at(PLAYER_TEAM, tile), Some(JobKind::Improve));
+        let reason = game.job_unavailable(tile, JobKind::Road).expect("refused");
+        assert_eq!(reason, "IMPROVE IS QUEUED HERE - ONE JOB AT A TIME");
+        game.queue_worker_job_at(tile, JobKind::Road);
+        assert_eq!(game.cities[0].worker_jobs.len(), 1, "no road queued");
+        // A wall on one of its edges is another matter.
+        assert!(game.job_unavailable(tile, JobKind::Wall).is_none());
     }
 
     #[test]

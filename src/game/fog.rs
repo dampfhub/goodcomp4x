@@ -6,7 +6,7 @@
 //!   tint as they were when last seen (`Sighting`): cities, barracks,
 //!   improvements, roads and structures. Units and workers move, so they
 //!   aren't remembered: out of sight, none is known to be anywhere;
-//! - unexplored: never seen, covered by dark clouds.
+//! - unexplored: never seen, covered by clouds (`push_cloud_banks`, `draw.rs`).
 //!
 //! A debug setting (F10) turns the fog off. The AI ignores it.
 
@@ -70,6 +70,8 @@ pub(super) struct Sighting {
     pub barriers: Vec<(Hex, Structure)>,
     /// The tile's food and production, with any improvement or city.
     pub yields: (i32, i32),
+    /// Unclaimed ruins (`ruins.rs`).
+    pub ruin: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -208,6 +210,7 @@ impl GameState {
                 .filter_map(|n| Some((n, *self.barriers.get(&edge(hex, n))?)))
                 .collect(),
             yields: self.raw_yield(hex),
+            ruin: self.ruin_at(hex).is_some(),
         }
     }
 
@@ -387,7 +390,7 @@ pub(super) mod tests {
 
     #[test]
     fn units_see_around_them_and_explored_hexes_stay_explored() {
-        let mut game = GameState::world_scenario(3);
+        let mut game = GameState::solo_world(3);
         game.explore();
         let scout = game
             .units
@@ -711,7 +714,7 @@ pub(super) mod tests {
     /// World 3, which has no Red side, with a Red scout added far from
     /// Blue's units.
     fn world_with_a_distant_red_scout() -> (GameState, usize) {
-        let mut game = GameState::world_scenario(3);
+        let mut game = GameState::solo_world(3);
         let far = game
             .grid
             .all_hexes()

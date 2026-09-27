@@ -19,7 +19,7 @@ behavior.
 | `combat.rs` | damage formula, retaliation, combat log helpers |
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
-| `ai.rs` | the Red AI |
+| `ai.rs` | the AI, playing every side but the player's (`ai_teams`) |
 | `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (barracks HP and defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
 | `city/logistics.rs` | roads and Canoe House river corridors, logistics routes (`routes_from_by`), `delivered_share`, tile yields, Mill food share, Cannery/Smelter collection, city and Barracks income |
 | `city/rail.rs` | Railhead road connectivity and long-range transfer eligibility; city center is the origin terminal |
@@ -31,7 +31,8 @@ behavior.
 | `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture |
 | `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
-| `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
+| `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map): terrain, balanced starts for any number of sides, horses and iron by each start, and special tiles and ruins on contested ground |
+| `ruins.rs` | ruins: holding them for `RUIN_HOLD_TURNS` claims a reward (`resolve_ruins`, at each turn's end before the economy) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
 | `scenario.rs` | scenarios (F1-F4, F12, Debug Naval), savestate (F6/F7), instant playback (F8) |
 | `settings.rs` | the player's options (`Settings`, one field each, and `Setting`, how the menu lists and steps them), Escape (`press_escape`) and the settings menu's open state; its module comment says how to add a setting |
@@ -43,7 +44,7 @@ behavior.
 | `effects.rs` | attack animations during playback |
 | `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
-| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling and drag to reorder; the unit strip of units needing orders; the settings menu (a row per `Setting`) |
+| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling and drag to reorder; the turn strip of everything needing orders (cities, unit groups); the settings menu (a row per `Setting`) |
 | `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
 | `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |

@@ -11,9 +11,10 @@ use std::thread;
 
 use super::city::{Build, CORE_HP, MAX_CITY_POPULATION};
 use super::hex::Hex;
+use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
 use super::unit::Team;
-use super::{AI_TEAM, GameState, PLAYER_TEAM};
+use super::{GameState, PLAYER_TEAM};
 
 const TURNS: u32 = 40;
 
@@ -58,7 +59,8 @@ fn play_turn(game: &mut GameState) {
 
 /// Like `play_turn`, but the player's units are ordered through Shift-click queues: each unit
 /// without a queue gets one Shift-click's worth of moves toward the nearest enemy (every
-/// turn it takes to get next to it) and then an attack on its hex, as a player would queue
+/// turn it takes to get next to it, up to the default `Settings::max_queued_turns`) and then
+/// an attack on its hex (queued only if in range from where the moves end), as a player would queue
 /// them. The AI still runs the player's cities and workers;
 /// units already following a queue keep their orders.
 fn play_queued_turn(game: &mut GameState) -> usize {
@@ -148,6 +150,23 @@ fn for_every_game(scenarios: &[Scenario], seeds: &[u64], play: impl Fn(Scenario,
 }
 
 fn check_invariants(game: &GameState, context: &str) {
+    for ruin in &game.ruins {
+        assert!(
+            game.grid.is_passable(ruin.pos),
+            "{context}: ruins on impassable ground"
+        );
+        // Held long enough, they'd have been claimed and gone.
+        assert!(
+            ruin.held < RUIN_HOLD_TURNS,
+            "{context}: ruins held {} turns and still there",
+            ruin.held
+        );
+        assert_eq!(
+            ruin.holder.is_some(),
+            ruin.held > 0,
+            "{context}: ruins with a count but no holder, or the reverse"
+        );
+    }
     let mut ids = HashSet::new();
     let mut occupants: HashMap<_, Vec<Team>> = HashMap::new();
     for (idx, unit) in game.units.iter().enumerate() {
@@ -343,7 +362,9 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
         let mut game = start(scenario, seed);
         let name = format!("{} seed {seed}", scenario.name());
         check_invariants(&game, &format!("{name} at start"));
+        let ruins_at_start = game.ruins.len();
         for turn in 1..=TURNS {
+            let ruins_before = game.ruins.len();
             play_turn(&mut game);
             let context = format!("{name} turn {turn}");
             assert!(
@@ -351,7 +372,48 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 "{context}: the turn did not finish resolving"
             );
             assert_eq!(game.turn, turn, "{context}: turn counter");
+            assert!(
+                game.ruins.len() <= ruins_before,
+                "{context}: ruins appeared"
+            );
             check_invariants(&game, &context);
+        }
+        // Anti-vacuity: the AI goes for the world's ruins, and claims some.
+        if scenario == Scenario::World {
+            assert!(
+                game.ruins.len() < ruins_at_start,
+                "{name}: no ruins claimed in {TURNS} turns ({ruins_at_start} on the map)"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_crowded_world_of_settlers_keeps_the_board_consistent() {
+    // The most sides there are, each starting with a settler to found its
+    // city: the other way a world can start (`Settings::world_start_city`).
+    for_every_game(&[Scenario::World], &seeds(), |scenario, seed| {
+        let mut game = GameState::new();
+        game.settings.instant_playback = true;
+        game.settings.world_ai = Team::ALL.len() - 1;
+        game.settings.world_start_city = false;
+        game.seed_rng(seed);
+        game.switch_scenario(scenario);
+        let name = format!("crowded settler world seed {seed}");
+        assert_eq!(game.ai_teams().len(), Team::ALL.len() - 1, "{name}");
+        check_invariants(&game, &format!("{name} at start"));
+        for turn in 1..=TURNS {
+            play_turn(&mut game);
+            check_invariants(&game, &format!("{name} turn {turn}"));
+            if turn == 1 {
+                // Every side founded its city on its start.
+                for team in Team::ALL {
+                    assert!(
+                        game.cities.iter().any(|c| c.team == team),
+                        "{name}: {team:?} founded no city"
+                    );
+                }
+            }
         }
     });
 }
@@ -369,11 +431,7 @@ fn queued_orders_against_the_ai_keep_the_board_consistent() {
             check_invariants(&game, &context);
         }
         // Anti-vacuity: queues were actually carried from turn to turn.
-        let has_units = scenario != Scenario::World;
-        assert!(
-            followed > 0 || !has_units,
-            "{name}: no unit ever followed a queued turn"
-        );
+        assert!(followed > 0, "{name}: no unit ever followed a queued turn");
     });
 }
 
@@ -394,8 +452,8 @@ fn ai_against_ai_combat_ends_with_fewer_units() {
         assert!(
             game.units
                 .iter()
-                .all(|u| u.team == AI_TEAM || u.team == PLAYER_TEAM),
-            "only the two teams exist"
+                .all(|u| u.team == Team::Red || u.team == PLAYER_TEAM),
+            "only the combat scenario's two teams exist"
         );
     });
 }

@@ -14,11 +14,12 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::cli::Options;
+use crate::game::Settings;
 use crate::game::{
-    ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, quit_prompt, selection_box,
-    ui_projection,
+    ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, selection_box, ui_projection,
 };
 use crate::icon;
+use crate::persist;
 use crate::renderer::{DrawBatch, Renderer};
 use crate::screenshot::{self, Screenshot};
 
@@ -29,11 +30,16 @@ const FRAME_DURATION: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
 const DRAG_THRESHOLD: f32 = 6.0;
 /// The window opens at this fraction of the primary monitor's size.
 const WINDOW_SCREEN_FRACTION: f32 = 0.8;
+
+/// The files the session is kept in between runs (`persist.rs`): the
+/// player's settings, saved whenever they change; the window's size, the UI
+/// presentation and the ImGui panels' layout, and ImGui's own docking data,
+/// saved on quitting.
+const SETTINGS_FILE: &str = "settings.txt";
+const LAYOUT_FILE: &str = "layout.txt";
+const IMGUI_FILE: &str = "imgui.ini";
 /// Window size when the monitor's size can't be found.
 const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1600, 900);
-
-/// How long Escape must be held to quit.
-const QUIT_HOLD: Duration = Duration::from_secs(1);
 
 /// Window icon sizes, in pixels; Windows scales them to fit.
 const WINDOW_ICON_SIZE: u32 = 64;
@@ -68,9 +74,6 @@ pub struct App {
     building_scroll_dragging: bool,
     queue_item_dragging: bool,
     modifiers: Modifiers,
-    /// When Escape was pressed, while it's held; the game quits once it's
-    /// been held for `QUIT_HOLD`.
-    quit_held_since: Option<Instant>,
     /// Where a left press on the map started, while the button is down: once
     /// the cursor moves `DRAG_THRESHOLD` away it's a selection box, not a
     /// click.
@@ -83,27 +86,85 @@ pub struct App {
     screenshot: Option<Screenshot>,
     /// Why the app quit, if something failed; `main` returns it.
     failure: Option<anyhow::Error>,
+    /// Keep settings and layout between sessions: everywhere but screenshot
+    /// mode, which always starts from the defaults so shots are repeatable.
+    remember: bool,
+    /// The settings as last saved, to save again only when they change.
+    saved_settings: String,
+    /// ImGui's docking data from the last session, for the new context.
+    imgui_ini: Option<String>,
+    /// Start maximized, as the window was when the last session ended.
+    start_maximized: bool,
+    /// The window's size when last neither maximized nor fullscreen, to
+    /// open at next time.
+    normal_size: Option<PhysicalSize<u32>>,
+}
+
+/// What `LAYOUT_FILE` says about the window, beside the ImGui layout
+/// (`ImGuiLayoutState::from_text` skips these lines): the presentation, the
+/// window's size and whether it's maximized.
+struct SavedWindow {
+    imgui: bool,
+    size: Option<PhysicalSize<u32>>,
+    maximized: bool,
+}
+
+impl SavedWindow {
+    fn from_text(text: &str) -> Self {
+        let mut saved = SavedWindow {
+            imgui: true,
+            size: None,
+            maximized: false,
+        };
+        for (key, values) in text.lines().filter_map(persist::key_and_values) {
+            let number = |i: usize| values.get(i).and_then(|v| v.parse::<u32>().ok());
+            match key {
+                "presentation" => saved.imgui = values.first() != Some(&"classic"),
+                "window_size" => {
+                    if let (Some(width), Some(height)) = (number(0), number(1))
+                        && width >= 320
+                        && height >= 240
+                    {
+                        saved.size = Some(PhysicalSize::new(width, height));
+                    }
+                }
+                "maximized" => saved.maximized = number(0) == Some(1),
+                _ => {}
+            }
+        }
+        saved
+    }
 }
 
 impl App {
     pub fn new(options: Options) -> Self {
         let screenshot = options.screenshot.map(Screenshot::new);
+        let remember = screenshot.is_none();
+        let load = |name| if remember { persist::read(name) } else { None };
+        let settings =
+            load(SETTINGS_FILE).map_or_else(Settings::default, |text| Settings::from_text(&text));
+        let layout = load(LAYOUT_FILE).unwrap_or_default();
+        let saved = SavedWindow::from_text(&layout);
         let requested_size = options
             .size
             .or(screenshot.as_ref().map(|_| screenshot::DEFAULT_SIZE))
-            .map(|(width, height)| PhysicalSize::new(width, height));
+            .map(|(width, height)| PhysicalSize::new(width, height))
+            .or(saved.size);
+        let mut game = match options.seed {
+            Some(seed) => GameState::world_scenario_with(seed, &settings),
+            None => options.scenario.new_game(&settings),
+        };
+        game.set_settings(settings);
         Self {
             renderer: None,
             window: None,
-            game: match options.seed {
-                Some(seed) => GameState::world_scenario(seed),
-                None => options.scenario.new_game(),
-            },
+            saved_settings: game.settings_text(),
+            game,
             imgui: None,
             imgui_platform: None,
             imgui_fonts: None,
-            imgui_layout: ImGuiLayoutState::default(),
-            use_imgui: true,
+            imgui_layout: ImGuiLayoutState::from_text(&layout),
+            use_imgui: saved.imgui,
 
             last_frame: None,
             minimized: false,
@@ -117,11 +178,51 @@ impl App {
             building_scroll_dragging: false,
             queue_item_dragging: false,
             modifiers: Modifiers::default(),
-            quit_held_since: None,
             box_start: None,
             requested_size,
             screenshot,
             failure: None,
+            remember,
+            imgui_ini: load(IMGUI_FILE),
+            start_maximized: remember && saved.maximized,
+            normal_size: requested_size,
+        }
+    }
+
+    /// Saves the settings if they changed since last saved.
+    fn save_settings_if_changed(&mut self) {
+        if !self.remember {
+            return;
+        }
+        let text = self.game.settings_text();
+        if text != self.saved_settings {
+            persist::write(SETTINGS_FILE, &text);
+            self.saved_settings = text;
+        }
+    }
+
+    /// On quitting: saves the settings, the window, the presentation and the
+    /// layout of the panels, ImGui's docking included, for the next session.
+    fn save_session(&mut self) {
+        if !self.remember {
+            return;
+        }
+        self.save_settings_if_changed();
+        let mut layout = format!(
+            "presentation {}\n",
+            if self.use_imgui { "imgui" } else { "classic" }
+        );
+        if let Some(size) = self.normal_size {
+            layout += &format!("window_size {} {}\n", size.width, size.height);
+        }
+        let maximized = self.window.as_ref().is_some_and(Window::is_maximized);
+        layout += &format!("maximized {}\n", u8::from(maximized));
+        layout += &self.imgui_layout.to_text();
+        persist::write(LAYOUT_FILE, &layout);
+        if let Some(imgui) = &mut self.imgui {
+            let mut ini = String::new();
+            imgui.save_ini_settings(&mut ini);
+            persist::write(IMGUI_FILE, &ini);
         }
     }
 
@@ -171,6 +272,11 @@ impl App {
         let dt = now - self.last_frame.unwrap_or(now);
         self.last_frame = Some(now);
         self.game.update(dt.as_secs_f32());
+        // A screenshot shows the clouds still, so the same arguments give the
+        // same image.
+        if self.screenshot.is_none() {
+            self.game.animate_clouds(dt.as_secs_f32());
+        }
         if self.icon_refresh_at.is_some_and(|at| now >= at) {
             self.icon_refresh_at = None;
             self.refresh_icons();
@@ -200,16 +306,15 @@ impl App {
         } else {
             self.game.build_ui(size, self.cursor_pos)
         };
-        if let Some(since) = self.quit_held_since {
-            let progress = since.elapsed().as_secs_f32() / QUIT_HOLD.as_secs_f32();
-            if progress >= 1.0 {
-                if let Some(renderer) = &self.renderer {
-                    renderer.wait_idle();
-                }
-                event_loop.exit();
-                return;
+        self.save_settings_if_changed();
+        // The settings menu's Quit button.
+        if self.game.quit_requested() {
+            self.save_session();
+            if let Some(renderer) = &self.renderer {
+                renderer.wait_idle();
             }
-            ui.extend(quit_prompt(progress, size));
+            event_loop.exit();
+            return;
         }
         if let (Some(start), Some(end)) = (self.box_start, self.cursor_pos)
             && start.distance(end) >= DRAG_THRESHOLD
@@ -296,7 +401,8 @@ impl ApplicationHandler for App {
             // Created hidden and shown once it exists (below), so its icons are
             // set before the taskbar button is made. A screenshot needs no
             // window on screen, or taking focus, so it stays hidden.
-            .with_visible(false);
+            .with_visible(false)
+            .with_maximized(self.start_maximized);
         // Windows shows a separate, larger icon on the taskbar.
         #[cfg(windows)]
         {
@@ -328,7 +434,12 @@ impl ApplicationHandler for App {
         }
 
         let mut imgui = ImGuiContext::create();
+        // No file of its own: its docking data is kept with the rest of the
+        // session (`save_session`) and loaded before the first frame.
         imgui.set_ini_filename(None);
+        if let Some(ini) = &self.imgui_ini {
+            imgui.load_ini_settings(ini);
+        }
         imgui
             .io_mut()
             .config_flags
@@ -431,6 +542,7 @@ impl ApplicationHandler for App {
         }
         match event {
             WindowEvent::CloseRequested => {
+                self.save_session();
                 if let Some(renderer) = &self.renderer {
                     renderer.wait_idle();
                 }
@@ -438,6 +550,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(size) => {
                 self.minimized = size.width == 0 || size.height == 0;
+                let normal = self
+                    .window
+                    .as_ref()
+                    .is_some_and(|w| !w.is_maximized() && w.fullscreen().is_none());
+                if normal && !self.minimized {
+                    self.normal_size = Some(size);
+                }
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
                 }
@@ -506,8 +625,6 @@ impl ApplicationHandler for App {
                 self.game.cancel_queue_drag();
                 self.panning = false;
                 self.cursor_pos = None;
-                // The release may never arrive once focus is gone.
-                self.quit_held_since = None;
                 self.box_start = None;
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -671,21 +788,17 @@ impl ApplicationHandler for App {
                 }
             }
             // Escape closes the settings menu, a view or the selection first;
-            // with nothing to close it opens the settings menu, and holding
-            // it from there quits.
+            // with nothing to close it opens the settings menu.
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         physical_key: PhysicalKey::Code(KeyCode::Escape),
-                        state,
+                        state: ElementState::Pressed,
                         repeat: false,
                         ..
                     },
                 ..
-            } => {
-                self.quit_held_since =
-                    (state == ElementState::Pressed && self.game.press_escape()).then(Instant::now);
-            }
+            } => self.game.press_escape(),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {

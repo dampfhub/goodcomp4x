@@ -758,7 +758,7 @@ impl GameState {
             if only.is_some_and(|lane| lane != (i, false)) {
                 continue;
             }
-            if self.cities[i].queue.is_empty() && self.cities[i].team == Team::Red {
+            if self.cities[i].queue.is_empty() && self.cities[i].team != PLAYER_TEAM {
                 self.cities[i].queue.push(Build::Unit(BuildUnit::Melee));
             }
             let Some(build) = self.cities[i].queue.first().copied() else {

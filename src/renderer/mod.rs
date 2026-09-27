@@ -33,7 +33,7 @@ use texture::Texture;
 
 pub use readback::Frame;
 pub use texture::Atlas;
-pub use vertex::{SOLID_UV, Vertex};
+pub use vertex::{SOLID_UV, Vertex, soft_disc_uv};
 
 /// Vertices each frame slot's buffer starts with room for. A frame that needs
 /// more grows its buffer (see `write_vertices`).

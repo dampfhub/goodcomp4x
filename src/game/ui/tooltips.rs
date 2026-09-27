@@ -196,6 +196,20 @@ impl GameState {
         if let Some(resource) = self.grid.resource(hex) {
             notes.push(format!("{} RESOURCE", resource.name()));
         }
+        if let Some(special) = self.grid.special(hex) {
+            let (food, production) = special.bonus();
+            let gains: Vec<String> = [(food, "FOOD"), (production, "PRODUCTION")]
+                .into_iter()
+                .filter(|&(amount, _)| amount > 0)
+                .map(|(amount, what)| format!("+{amount} {what}"))
+                .collect();
+            notes.push(format!(
+                "{}: {} WHEN WORKED",
+                special.name(),
+                gains.join(" ")
+            ));
+        }
+        notes.extend(self.ruin_notes(hex, memory.is_some()));
         if let Some(worker) = self
             .cities
             .iter()
@@ -491,6 +505,12 @@ impl GameState {
                     "CLOSE SETTINGS".into(),
                     "ESC".into(),
                     String::new(),
+                    None,
+                ),
+                Target::Quit => (
+                    "QUIT".into(),
+                    String::new(),
+                    "CLOSES THE GAME.".into(),
                     None,
                 ),
                 Target::ToggleYields => (

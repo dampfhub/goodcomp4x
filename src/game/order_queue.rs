@@ -14,21 +14,21 @@ use super::hex::Hex;
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, TurnOrder, Unit};
 
-/// The most turns one Shift-click queues: a safety net, since every queued
-/// turn brings some unit nearer.
-const MAX_QUEUED_TURNS: usize = 64;
-
 impl GameState {
     /// Shift-left-click: adds as many turns to the selection's plan as it
-    /// takes to get to `target`. Each turn every unit moves to the hex it can
-    /// reach that turn, with no ally standing on it, that is the shortest walk
-    /// from `target` (around terrain and known walls), until nobody can get
-    /// any closer. Each member continues from the end of its own plan, so a
+    /// takes to get to `target`, as long as no member's plan grows past
+    /// `Settings::max_queued_turns` turns in all (this one included). Each
+    /// turn every unit moves to the hex it can reach that turn, with no ally
+    /// standing on it, that is the shortest walk from `target` (around
+    /// terrain and known walls), until nobody can get any closer or every
+    /// member's plan is full. A hex farther away is queued as far as the
+    /// limit goes. Each member continues from the end of its own plan, so a
     /// unit added to a group with queues starts moving this turn instead of
     /// waiting for the others' queues to run out; what the others already
     /// had queued stays as it was. Afterwards every member's plan has the
-    /// same number of turns: those that arrive first, or can't get closer,
-    /// wait at the end. Returns whether anything was queued.
+    /// same number of turns: those that arrive first, can't get closer or
+    /// reach the limit sooner wait at the end. Returns whether anything was
+    /// queued.
     pub(super) fn queue_move(&mut self, target: Hex) -> bool {
         let members = self.selection();
         if members.is_empty() || self.is_resolving() {
@@ -43,22 +43,28 @@ impl GameState {
         }
         let walk = self.planned_walk_to(target, team, &fog, naval);
         let before: Vec<Unit> = members.iter().map(|&i| self.units[i].clone()).collect();
-        let first = members
-            .iter()
-            .map(|&i| self.units[i].plan_len())
-            .min()
-            .unwrap_or(0);
+        // No member's plan grows past `limit` turns.
+        let limit = self.settings.max_queued_turns.max(1);
+        let first = before.iter().map(Unit::plan_len).min().unwrap_or(0);
         let longest = self.plan_length(&members);
         let mut moved_any = false;
         let mut turn = first;
-        while turn - first < MAX_QUEUED_TURNS {
-            // Members whose plans end here take this turn; the rest are still
-            // busy with what they had queued, and hold their hexes.
+        loop {
+            // Members whose plans end here take this turn, unless their plans
+            // are full; the rest are still busy with what they had queued,
+            // and hold their hexes.
             let active: Vec<usize> = members
                 .iter()
                 .copied()
-                .filter(|&i| self.units[i].plan_len() == turn)
+                .filter(|&i| self.units[i].plan_len() == turn && turn < limit)
                 .collect();
+            if active.is_empty() {
+                if turn >= longest {
+                    break;
+                }
+                turn += 1;
+                continue;
+            }
             let legs = self.plan_move_turn(&active, target, turn, &walk, &fog);
             let moved = legs.iter().any(|(_, dest)| dest.is_some());
             if !moved && turn >= longest {
@@ -74,14 +80,35 @@ impl GameState {
             for (&i, unit) in members.iter().zip(before) {
                 self.units[i] = unit;
             }
-            self.notice = "CAN'T GET ANY CLOSER THERE".into();
+            self.notice = if first >= limit {
+                format!("QUEUE FULL - {limit}-TURN LIMIT")
+            } else {
+                "CAN'T GET ANY CLOSER THERE".into()
+            };
             return false;
         }
+        // Whether a member whose plan is full could still have got closer,
+        // checked before padding (which would count as its turns).
+        let cut_short = members.iter().any(|&i| {
+            let len = self.units[i].plan_len();
+            len >= limit
+                && self
+                    .plan_move_turn(&[i], target, len, &walk, &fog)
+                    .iter()
+                    .any(|(_, dest)| dest.is_some())
+        });
         let length = self.plan_length(&members);
         for &i in &members {
             self.pad_plan(i, length);
         }
-        self.notice = queued_notice(first, length - first);
+        // Cut short, the limit is the news (the plan drawn on the map shows
+        // how far it goes), and the notice stays short enough for the top
+        // bar of a small window.
+        self.notice = if cut_short {
+            format!("QUEUED UP TO THE {limit}-TURN LIMIT")
+        } else {
+            queued_notice(first, length - first)
+        };
         true
     }
 
@@ -207,7 +234,8 @@ impl GameState {
     /// Shift-right-click: adds an attack on `target` to the selection's
     /// plan. It goes into the plan's last turn if nobody who could make it
     /// there attacks anything yet; otherwise into a new turn, which members
-    /// out of range spend waiting. Returns whether anything was queued.
+    /// out of range spend waiting, unless that would take the plan past
+    /// `Settings::max_queued_turns`. Returns whether anything was queued.
     pub(super) fn queue_attack(&mut self, target: Hex) -> bool {
         let members = self.selection();
         if members.is_empty()
@@ -247,6 +275,11 @@ impl GameState {
         if attackers.is_empty() && turn == 0 {
             turn = 1;
             attackers = attackers_on(turn);
+        }
+        let limit = self.settings.max_queued_turns.max(1);
+        if turn >= limit {
+            self.notice = format!("QUEUE FULL - {limit}-TURN LIMIT");
+            return false;
         }
         if attackers.is_empty() {
             self.notice = "OUT OF RANGE THERE".into();
@@ -474,6 +507,7 @@ mod tests {
     use super::*;
     use crate::game::hex::edge;
     use crate::game::orders::ClickMode;
+    use crate::game::settings::Setting;
     use crate::game::unit::{Unit, UnitType};
     use crate::game::workers::{Structure, StructureKind};
 
@@ -535,8 +569,10 @@ mod tests {
     fn one_far_shift_click_queues_every_turn_it_takes_to_get_there() {
         let mut g = open_field(&[UnitType::Melee]);
         g.selected = Some(0);
+        // Six hexes: as many turns as a queue holds by default.
         let far = Hex::new(2, 0);
         assert!(g.queue_move(far));
+        assert_eq!(g.notice, "QUEUED FOR THE NEXT 6 TURNS", "no limit hit");
         let unit = &g.units[0];
         assert_eq!(unit.plan_len(), unit.pos.distance(far) as usize);
         assert_eq!(unit.plan_end(), far);
@@ -545,6 +581,123 @@ mod tests {
             play_turn(&mut g);
         }
         assert_eq!(g.units[0].pos, far);
+    }
+
+    /// Unit `idx`'s move on each turn of its plan (`None` for a wait).
+    fn moves(game: &GameState, idx: usize) -> Vec<Option<Hex>> {
+        let unit = &game.units[idx];
+        let queued = unit.queued.iter().map(|turn| turn.move_to);
+        std::iter::once(unit.planned_move).chain(queued).collect()
+    }
+
+    #[test]
+    fn a_hex_past_the_limit_is_queued_as_far_as_the_limit_goes() {
+        let mut g = open_field(&[UnitType::Melee]);
+        assert_eq!(g.settings.max_queued_turns, 6, "the default");
+        g.selected = Some(0);
+        // Eight hexes away: six turns of it, and then the queue is full.
+        let far = Hex::new(4, 0);
+        assert!(g.queue_move(far));
+        assert_eq!(g.units[0].plan_len(), 6);
+        assert_eq!(g.units[0].plan_end(), Hex::new(2, 0), "along the way");
+        assert!(moves(&g, 0).iter().all(Option::is_some), "every turn moves");
+        assert_eq!(g.notice, "QUEUED UP TO THE 6-TURN LIMIT");
+        assert!(!g.queue_move(far), "no more on another click");
+        assert_eq!(g.units[0].plan_len(), 6);
+        assert_eq!(g.notice, "QUEUE FULL - 6-TURN LIMIT");
+        // An attack still fits into the last turn, but a second one would
+        // need a turn of its own.
+        g.units
+            .push(Unit::new(99, Hex::new(3, 0), Team::Red, UnitType::Melee));
+        assert!(g.queue_attack(Hex::new(3, 0)));
+        assert_eq!(g.units[0].plan_len(), 6);
+        assert!(!g.queue_attack(Hex::new(3, 0)));
+        assert_eq!(g.units[0].plan_len(), 6);
+        assert_eq!(g.notice, "QUEUE FULL - 6-TURN LIMIT");
+
+        // Each turn played frees a turn of the queue.
+        g.units.pop();
+        play_turn(&mut g);
+        assert_eq!(g.units[0].plan_len(), 5);
+        g.selected = Some(0);
+        assert!(g.queue_move(far));
+        assert_eq!(g.units[0].plan_len(), 6);
+        assert_eq!(g.units[0].plan_end(), Hex::new(3, 0));
+    }
+
+    #[test]
+    fn several_shift_clicks_never_queue_past_the_limit() {
+        let mut g = open_field(&[UnitType::Melee]);
+        g.selected = Some(0);
+        // Short hops, one after another, stop at six turns in all.
+        for (hop, x) in (-3..=4).enumerate() {
+            let queued = g.queue_move(Hex::new(x, 0));
+            assert_eq!(queued, hop < 6, "hop {hop}: {}", g.notice);
+            assert!(g.units[0].plan_len() <= 6);
+        }
+        assert_eq!(g.units[0].plan_len(), 6);
+        assert_eq!(g.units[0].plan_end(), Hex::new(2, 0));
+    }
+
+    #[test]
+    fn the_limit_is_the_queue_limit_setting() {
+        let mut g = open_field(&[UnitType::Melee]);
+        g.step_setting(Setting::MaxQueuedTurns, -3);
+        assert_eq!(g.settings.max_queued_turns, 3);
+        assert_eq!(g.notice, "QUEUE LIMIT: 3 TURNS");
+        g.selected = Some(0);
+        let far = Hex::new(4, 0);
+        assert!(g.queue_move(far));
+        assert_eq!(g.units[0].plan_len(), 3);
+        assert_eq!(g.notice, "QUEUED UP TO THE 3-TURN LIMIT");
+
+        // A higher limit lets the next click go the rest of the way.
+        g.step_setting(Setting::MaxQueuedTurns, 20);
+        assert_eq!(g.settings.max_queued_turns, 20, "the top of its range");
+        assert!(g.queue_move(far));
+        assert_eq!(g.units[0].plan_len(), 8);
+        assert_eq!(g.units[0].plan_end(), far);
+        assert!(!g.notice.contains("LIMIT"), "{}", g.notice);
+
+        // At the lowest, only this turn.
+        let mut g = open_field(&[UnitType::Melee]);
+        g.step_setting(Setting::MaxQueuedTurns, -20);
+        assert_eq!(g.settings.max_queued_turns, 1);
+        g.selected = Some(0);
+        assert!(g.queue_move(far));
+        assert_eq!(g.units[0].plan_len(), 1);
+        assert!(!g.queue_move(far));
+        assert_eq!(g.units[0].plan_len(), 1);
+    }
+
+    #[test]
+    fn no_group_member_queues_past_the_limit() {
+        let mut g = open_field(&[UnitType::Melee, UnitType::Ranged]);
+        g.settings.max_queued_turns = 5;
+        // The melee has three turns of its own queued.
+        g.selected = Some(0);
+        assert!(g.queue_move(Hex::new(-1, 0)));
+        assert_eq!(g.units[0].plan_len(), 3);
+        let queued = moves(&g, 0);
+
+        // Both are sent farther than five turns take them.
+        g.set_selection(vec![0, 1]);
+        let far = Hex::new(5, 0);
+        assert!(g.queue_move(far));
+        assert_eq!(g.notice, "QUEUED UP TO THE 5-TURN LIMIT");
+        // The melee keeps its three turns and adds two; the ranged unit,
+        // starting now, moves all five.
+        for i in 0..2 {
+            assert_eq!(g.units[i].plan_len(), 5, "unit {i}");
+        }
+        let melee = moves(&g, 0);
+        assert_eq!(melee[..3], queued[..], "what it had queued stays");
+        assert!(melee[3..].iter().all(Option::is_some), "{melee:?}");
+        let ranged = moves(&g, 1);
+        assert!(ranged.iter().all(Option::is_some), "{ranged:?}");
+
+        assert!(!g.queue_move(far), "both queues are full");
+        assert_eq!(g.notice, "QUEUE FULL - 5-TURN LIMIT");
     }
 
     #[test]
@@ -767,6 +920,8 @@ mod tests {
     #[test]
     fn a_group_queues_the_same_number_of_turns_for_every_member() {
         let mut g = open_field(&[UnitType::Melee, UnitType::Cavalry, UnitType::Siege]);
+        // Far enough that the whole way fits in one click.
+        g.settings.max_queued_turns = 20;
         // One member already has two turns of its own queued.
         g.selected = Some(1);
         assert!(g.queue_move(Hex::new(-2, 1)));

@@ -1,21 +1,29 @@
 //! The settings menu Escape opens: a row for every `Setting` (its name, its
-//! value and < > buttons that step it), then Close. The settings themselves,
+//! value and < > buttons that step it), then Close and Quit. It opens in the
+//! middle of the screen, over the map and the other panels. The settings themselves,
 //! and how to add one, are in `game/settings.rs`; this file needs no change
 //! for a new setting.
 
 use super::builder::{ButtonSpec, PanelBuilder};
-use super::dock::Zone;
-use super::{
-    BODY, ButtonState, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, SMALL, TEXT, TITLE, Target,
-};
+use glam::Vec2;
+
+use super::{BODY, ButtonState, GAP, GOLD_TEXT, LABEL_TEXT, Layout, TEXT, TITLE, Target};
 use crate::game::GameState;
 use crate::game::settings::Setting;
 
 impl GameState {
-    /// The classic presentation's settings menu, while it's open.
-    pub(super) fn dock_settings(&self, layout: &mut Layout) {
+    /// The classic presentation's settings menu, while it's open: centered
+    /// on the screen and placed last, so it draws over the other panels and
+    /// its buttons take clicks before theirs (`Layout::button_at`).
+    pub(super) fn place_settings(&self, screen_size: Vec2, layout: &mut Layout) {
         if self.settings_open {
-            layout.dock_panel(self.settings_panel_content(), Zone::TopRight);
+            let panel = self.settings_panel_content();
+            let size = panel.size();
+            let top_left = Vec2::new(
+                (screen_size.x - size.x) / 2.0,
+                (screen_size.y + size.y) / 2.0,
+            );
+            panel.place_top_left(top_left, layout);
         }
     }
 
@@ -47,17 +55,22 @@ impl GameState {
             ]);
         }
         panel.gap(GAP);
-        panel.compact_buttons(vec![ButtonSpec {
-            target: Target::CloseSettings,
-            label: "CLOSE".into(),
-            hint: "ESC".into(),
-            state: ButtonState::Ready,
-            armed: false,
-        }]);
-        panel.text(
-            SMALL,
-            vec![("HOLD ESC WITH NOTHING OPEN TO QUIT".into(), DIM_TEXT)],
-        );
+        panel.compact_buttons(vec![
+            ButtonSpec {
+                target: Target::CloseSettings,
+                label: "CLOSE".into(),
+                hint: "ESC".into(),
+                state: ButtonState::Ready,
+                armed: false,
+            },
+            ButtonSpec {
+                target: Target::Quit,
+                label: "QUIT".into(),
+                hint: String::new(),
+                state: ButtonState::Ready,
+                armed: false,
+            },
+        ]);
         panel
     }
 }

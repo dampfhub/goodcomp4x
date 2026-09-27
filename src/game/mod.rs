@@ -18,6 +18,7 @@ mod mapgen;
 mod mesh;
 mod order_queue;
 mod orders;
+mod ruins;
 mod scenario;
 mod settings;
 #[cfg(test)]
@@ -40,9 +41,10 @@ pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
+pub use settings::Settings;
 use terrain::Tile;
 use turn::Step;
-pub use ui::{ImGuiLayoutState, quit_prompt, selection_box, ui_projection};
+pub use ui::{ImGuiLayoutState, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
 use unit_icons::UnitIcon;
 pub use workers::JobKind;
@@ -53,7 +55,6 @@ type GameRng = rand::rngs::Xoshiro256PlusPlus;
 
 const GRID_RADIUS: i32 = 3;
 const PLAYER_TEAM: Team = Team::Blue;
-const AI_TEAM: Team = Team::Red;
 
 /// Logged at startup. It only says where the controls are: `docs/controls.md`
 /// is their one description, so don't list keys here.
@@ -127,6 +128,8 @@ pub struct GameState {
     /// Whether the settings menu (Escape) is open. Kept across scenario
     /// switches and loads, like the rest of the UI.
     settings_open: bool,
+    /// The settings menu's Quit button was clicked; the app closes the window.
+    quit_requested: bool,
     /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
     /// Kept across scenario switches and loads.
     fog_of_war: bool,
@@ -144,8 +147,15 @@ pub struct GameState {
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec<u32>,
     highlight_timer: f32,
+    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.rs`).
+    cloud_time: f32,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: HashSet<u32>,
+    /// The turn strip's group whose units it lists one by one, while one of
+    /// them is selected (`ui/roster.rs`).
+    roster_open: Option<ui::RosterKey>,
+    /// Ruins not yet claimed (`ruins.rs`), in the order the map made them.
+    ruins: Vec<ruins::Ruin>,
     /// Workers out on the map; the ones at home are counted by their city
     /// (`workers.rs`).
     field_workers: Vec<workers::FieldWorker>,
@@ -189,7 +199,9 @@ impl GameState {
             (Hex::new(2, -2), Tile::HILLS),
         ];
 
-        log::info!("You control {PLAYER_TEAM:?}; {AI_TEAM:?} is AI-controlled.\n{CONTROLS_HELP}");
+        log::info!(
+            "You control {PLAYER_TEAM:?}; every other team is AI-controlled.\n{CONTROLS_HELP}"
+        );
 
         let mut game = Self {
             cities: Vec::new(),
@@ -227,6 +239,7 @@ impl GameState {
             effects: Vec::new(),
             settings: settings::Settings::default(),
             settings_open: false,
+            quit_requested: false,
             fog_of_war: true,
             memory: fog::Memory::new(),
             turn: 0,
@@ -236,7 +249,10 @@ impl GameState {
             step_timer: 0.0,
             recent_actors: Vec::new(),
             highlight_timer: 0.0,
+            cloud_time: 0.0,
             settlers: HashSet::new(),
+            ruins: Vec::new(),
+            roster_open: None,
             field_workers: Vec::new(),
             structures: HashMap::new(),
             barriers: HashMap::new(),
@@ -358,17 +374,53 @@ impl GameState {
         game
     }
 
-    /// A generated map (`mapgen.rs`) from `seed`, with a settler, a worker
-    /// and a scout per side.
+    /// A generated map (`mapgen.rs`) from `seed`, with the default settings.
+    #[cfg(test)]
     pub fn world_scenario(seed: u32) -> Self {
+        Self::world_scenario_with(seed, &settings::Settings::default())
+    }
+
+    /// A world from `seed` with the player alone on it, with a settler
+    /// (first) and a scout: the AI sides' units and cities are taken away.
+    #[cfg(test)]
+    pub fn solo_world(seed: u32) -> Self {
+        let settings = settings::Settings {
+            world_start_city: false,
+            ..Default::default()
+        };
+        let mut game = Self::world_scenario_with(seed, &settings);
+        game.units.retain(|u| u.team == PLAYER_TEAM);
+        game.cities.retain(|c| c.team == PLAYER_TEAM);
+        game.selected = Some(0);
+        game
+    }
+
+    /// A generated map (`mapgen.rs`) from `seed` with the player and as many
+    /// AI sides as `settings` ask for (`setup_world`).
+    pub fn world_scenario_with(seed: u32, settings: &settings::Settings) -> Self {
         let mut game = Self::new();
         game.scenario = Scenario::World;
         game.units.clear();
-        game.setup_world(seed);
+        game.setup_world(seed, settings);
         game.start_on_whole_map();
-        game.selected = game.unit_of_team_at(game.units[0].pos, PLAYER_TEAM);
-        // The map is too big to take in at once: start on the settler.
-        game.camera = Camera::new(game.units[0].pos.to_world(), game.camera.half_height);
+        // The map is too big to take in at once: start on the player's city
+        // or settler.
+        let home = game
+            .cities
+            .iter()
+            .find(|c| c.team == PLAYER_TEAM)
+            .map(|c| c.pos)
+            .or_else(|| {
+                game.units
+                    .iter()
+                    .find(|u| u.team == PLAYER_TEAM && game.settlers.contains(&u.id))
+                    .map(|u| u.pos)
+            })
+            .unwrap_or(Hex::new(0, 0));
+        game.camera = Camera::new(home.to_world(), game.camera.half_height);
+        // What needs seeing to first, as every turn starts: the city's
+        // production, or else the settler.
+        game.select_next_or_end_turn(None);
         game
     }
 
