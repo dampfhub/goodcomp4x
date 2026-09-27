@@ -215,7 +215,7 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
-        self.selected_city = None;
+        self.leave_city_view();
         let next = self
             .next_unit_needing_orders(self.selected)
             .or_else(|| self.next_player_unit(self.selected));
@@ -470,5 +470,37 @@ impl GameState {
                 self.units[i].drop_unreachable_attack();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::city::Building;
+
+    #[test]
+    fn tab_closes_the_barracks_view_and_its_placement_modes() {
+        let mut g = GameState::city_scenario();
+        g.cities[0].barracks = Some(Hex::new(-1, 0));
+        g.open_barracks(0);
+        g.moving_manager = Some(0);
+        g.placing_building = Some((0, Building::Barracks));
+        g.select_next_unit();
+        assert_eq!(g.selected_barracks, None);
+        assert_eq!(g.selected_city, None);
+        assert_eq!(g.moving_manager, None);
+        assert_eq!(g.placing_building, None);
+        assert!(g.selected.is_some(), "Tab still moves on to a unit");
+    }
+
+    #[test]
+    fn tab_from_the_city_view_drops_a_building_site_preview() {
+        let mut g = GameState::city_scenario();
+        g.open_city(0);
+        g.queue_selected_city_building(Building::Barracks);
+        assert!(g.placing_building.is_some());
+        g.select_next_unit();
+        assert_eq!(g.selected_city, None);
+        assert_eq!(g.placing_building, None);
     }
 }
