@@ -4,6 +4,7 @@ use super::ability::{
     Ability, CHARGE_ATTACK, CHARGE_EXTRA_MOVE, DEPLOYED_EXTRA_RANGE, SHIELD_WALL_DEFENSE,
 };
 use super::hex::Hex;
+use super::terrain::Resource;
 
 /// A side. Blue is the player (`PLAYER_TEAM`); every other team is played
 /// by the AI, and every team is at war with every other.
@@ -53,6 +54,9 @@ pub enum UnitType {
     /// Fast and far-sighted, but hardly a fighter: for exploring.
     Scout,
     Armored,
+    PatrolGalley,
+    LandingCraft,
+    BombardShip,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -64,7 +68,25 @@ pub struct UnitStats {
     pub attack_range: i32,
 }
 
+pub(crate) fn apply_training_upgrade(stats: &mut UnitStats, upgrade: Option<Resource>) {
+    match upgrade {
+        Some(Resource::Iron) => {
+            stats.max_hp *= 1.2;
+            stats.defense *= 1.15;
+        }
+        Some(Resource::Horses) => stats.move_range += 1,
+        None => {}
+    }
+}
+
 impl UnitType {
+    pub fn is_naval(self) -> bool {
+        matches!(
+            self,
+            Self::PatrolGalley | Self::LandingCraft | Self::BombardShip
+        )
+    }
+
     /// Melee is the balanced baseline; ranged trades toughness for reach,
     /// cavalry trades defense for mobility, and siege hits hardest but folds
     /// once anything reaches it. Scouts give up fighting for speed and sight.
@@ -76,6 +98,9 @@ impl UnitType {
             UnitType::Siege => (65.0, 32.0, 6.0, 1, 2),
             UnitType::Scout => (60.0, 8.0, 10.0, 3, 1),
             UnitType::Armored => (140.0, 30.0, 28.0, 1, 1),
+            UnitType::PatrolGalley => (115.0, 23.0, 17.0, 3, 1),
+            UnitType::LandingCraft => (125.0, 8.0, 15.0, 2, 1),
+            UnitType::BombardShip => (105.0, 30.0, 12.0, 2, 3),
         };
         UnitStats {
             max_hp,
@@ -89,7 +114,7 @@ impl UnitType {
     /// How many hexes around it the unit sees through the fog of war.
     pub fn sight(self) -> i32 {
         match self {
-            UnitType::Scout | UnitType::Cavalry => 3,
+            UnitType::Scout | UnitType::Cavalry | UnitType::PatrolGalley => 3,
             _ => 2,
         }
     }
@@ -122,6 +147,8 @@ pub struct Unit {
     /// Independent tactical health inside cities. Either health bar reaching
     /// zero kills the same logical unit in both layers.
     pub interior_hp: f32,
+    /// A Forge or Stable upgrade earned when this troop was trained.
+    pub training_upgrade: Option<Resource>,
     /// Orders queued for this turn. The attack targets a hex rather than a
     /// unit: whichever enemy stands there when it resolves gets hit.
     pub planned_move: Option<Hex>,
@@ -147,6 +174,11 @@ pub struct Unit {
     /// This turn's orders came from a queue the player built with Shift, so
     /// the unit doesn't hold up ending the turn.
     pub following_queue: bool,
+    /// Land units carried by a landing craft. Cargo is lost if it sinks.
+    pub cargo: Vec<Unit>,
+    /// Boarding and landing resolve with the rest of the turn.
+    pub planned_board: Option<u32>,
+    pub planned_unload: Option<Hex>,
 }
 
 impl Unit {
@@ -158,6 +190,7 @@ impl Unit {
             unit_type,
             hp: unit_type.stats().max_hp,
             interior_hp: unit_type.stats().max_hp,
+            training_upgrade: None,
             planned_move: None,
             planned_attack: None,
             ability_queued: false,
@@ -168,7 +201,14 @@ impl Unit {
             lookout: false,
             queued: Vec::new(),
             following_queue: false,
+            cargo: Vec::new(),
+            planned_board: None,
+            planned_unload: None,
         }
+    }
+
+    pub fn is_naval(&self) -> bool {
+        self.unit_type.is_naval()
     }
 
     pub fn ability(&self) -> Ability {
@@ -178,6 +218,7 @@ impl Unit {
     /// The unit's stats with its queued ability and siege deployment applied.
     pub fn stats(&self) -> UnitStats {
         let mut stats = self.unit_type.stats();
+        apply_training_upgrade(&mut stats, self.training_upgrade);
         if self.ability_queued {
             match self.ability() {
                 Ability::ShieldWall => {
@@ -204,7 +245,8 @@ impl Unit {
 
     /// Siege spends the turn it sets up or packs up unable to attack.
     pub fn can_attack(&self) -> bool {
-        !(self.ability_queued && self.ability() == Ability::Deploy)
+        self.unit_type != UnitType::LandingCraft
+            && !(self.ability_queued && self.ability() == Ability::Deploy)
     }
 
     /// Where the unit will be once its queued move (if any) resolves.
@@ -228,6 +270,7 @@ impl Unit {
     /// if it packs up).
     pub fn later_stats(&self) -> UnitStats {
         let mut stats = self.unit_type.stats();
+        apply_training_upgrade(&mut stats, self.training_upgrade);
         let deploying = self.ability_queued && self.ability() == Ability::Deploy;
         if self.deployed != deploying {
             stats.move_range = 0;
@@ -307,6 +350,8 @@ impl Unit {
     pub fn clear_orders(&mut self) {
         self.planned_move = None;
         self.planned_attack = None;
+        self.planned_board = None;
+        self.planned_unload = None;
         self.ability_queued = false;
         self.holding = false;
         self.cancel_queue();
@@ -332,7 +377,7 @@ impl Unit {
     }
 
     pub fn max_hp(&self) -> f32 {
-        self.unit_type.stats().max_hp
+        self.stats().max_hp
     }
 
     pub fn is_alive(&self) -> bool {

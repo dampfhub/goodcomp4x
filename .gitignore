@@ -1,4 +1,5 @@
 /target
+docs/building-ideas.local.md
 
 # board.mjs whole-board read cache (10-minute TTL; regenerated on demand)
 tools/board/cache.json

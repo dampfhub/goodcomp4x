@@ -214,11 +214,28 @@ impl GameState {
         if unit.deployed {
             notes.push("DEPLOYED".to_string());
         }
+        if unit.unit_type == crate::game::unit::UnitType::LandingCraft {
+            notes.push(format!(
+                "CARGO {}/4 - CLICK ADJACENT LAND TO UNLOAD",
+                unit.cargo.len()
+            ));
+        } else if !unit.is_naval() {
+            notes.push("CLICK AN ADJACENT LANDING CRAFT TO BOARD".to_string());
+        }
         if unit.lookout {
             notes.push(format!(
                 "LOOKOUT: +{} SIGHT",
                 crate::game::fog::LOOKOUT_SIGHT
             ));
+        }
+        match unit.training_upgrade {
+            Some(crate::game::terrain::Resource::Iron) => {
+                notes.push("FORGED ARMOR: +20% HP, +15% DEFENSE".to_string());
+            }
+            Some(crate::game::terrain::Resource::Horses) => {
+                notes.push("STABLE TRAINING: +1 MOVE".to_string());
+            }
+            None => {}
         }
         if self.rival_of(idx).is_some() {
             notes.push("CONTESTED".to_string());
@@ -506,7 +523,19 @@ impl GameState {
         panel.bar(growth_percent as f32 / 100.0);
 
         panel.gap(GAP);
-        let builds = [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege];
+        let builds: Vec<BuildUnit> =
+            if self.city_is_coastal(i) && city.placed_site(Building::Harbor).is_some() {
+                vec![
+                    BuildUnit::Melee,
+                    BuildUnit::Ranged,
+                    BuildUnit::Siege,
+                    BuildUnit::PatrolGalley,
+                    BuildUnit::LandingCraft,
+                    BuildUnit::BombardShip,
+                ]
+            } else {
+                vec![BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
+            };
         panel.buttons(
             builds
                 .into_iter()
@@ -552,38 +581,39 @@ impl GameState {
                 LABEL_TEXT,
             )],
         );
-        let buildings = [
-            Building::Granary,
-            Building::Barracks,
-            Building::Mill,
-            Building::Workshop,
-        ];
-        panel.buttons(
-            buildings
-                .into_iter()
-                .filter(|&building| !city.built.contains(&building))
-                .map(|building| ButtonSpec {
-                    target: Target::Building(building),
-                    label: building.name().into(),
-                    hint: format!(
-                        "{} · {} PROD",
+        let building_buttons: Vec<_> = Building::ALL
+            .iter()
+            .copied()
+            .filter(|&building| !city.built.contains(&building))
+            .filter(|&building| {
+                !matches!(building, Building::Harbor | Building::CoastalBattery)
+                    || self.city_is_coastal(i)
+            })
+            .map(|building| ButtonSpec {
+                target: Target::Building(building),
+                label: building.name().into(),
+                hint: if building.shortcut() == ' ' {
+                    format!("{} PROD", quantity(building.cost()))
+                } else {
+                    format!(
+                        "{} | {} PROD",
                         building.shortcut(),
                         quantity(building.cost())
-                    ),
-                    // Queued or finished, the card is spent, unless the
-                    // building still has no site: then it picks one.
-                    state: ButtonState::new(
-                        city.queue.first() == Some(&Build::Building(building))
-                            || self.needs_site(i, building)
-                            || self.site_placement() == Some((i, building)),
-                        (city.pending_building == Some(building)
-                            || city.queue.contains(&Build::Building(building)))
-                            && !self.needs_site(i, building),
-                    ),
-                    armed: false,
-                })
-                .collect(),
-        );
+                    )
+                },
+                state: ButtonState::new(
+                    city.queue.first() == Some(&Build::Building(building))
+                        || self.needs_site(i, building)
+                        || self.site_placement() == Some((i, building)),
+                    (city.pending_building == Some(building)
+                        || city.queue.contains(&Build::Building(building)))
+                        && !self.needs_site(i, building),
+                ),
+                armed: false,
+            })
+            .collect();
+        panel.text(SMALL, vec![("BUILDINGS".into(), LABEL_TEXT)]);
+        panel.building_catalog(i, building_buttons, city.building_scroll);
         if let Some(tile) = city.barracks {
             let active = city.worked.first() == Some(&tile);
             let status = if active {
@@ -607,7 +637,7 @@ impl GameState {
                 armed: false,
             }]);
         }
-        for building in [Building::Barracks, Building::Mill, Building::Workshop] {
+        for building in Building::PLACEABLE {
             let Some(site) = city.planned_sites.get(&building) else {
                 if self.needs_site(i, building) {
                     let how = if self.site_placement() == Some((i, building)) {

@@ -119,12 +119,17 @@ plays out.
 | Y / Yields button | Show or hide tile yields around the open city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron) |
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
+| Scroll inside BUILDINGS in the city tray | Browse building cards without paging; Harbor and Coastal Battery appear only in cities whose center touches the sea |
+| Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
+| Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers) |
+| Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
+| Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
-| Click a tile after queuing a Barracks, Mill or Workshop | Choose its site |
+| Click a tile after queuing a placed building | Choose its site |
 | Escape while choosing a site | Cancel it: the building comes back out of the queue (the city stays open) |
 | Its card (or key) while a finished building has no site | Resume choosing the site |
 | Click a planned site's map badge | Move that site |
-| Confirm button | Place a finished Barracks, Mill or Workshop on its site |
+| Confirm button | Place a finished building on its site |
 | Drag a queue row onto another | Reorder the queue |
 | Click a row's X | Remove it (removing the item in progress loses its production) |
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
@@ -157,6 +162,7 @@ city center enters the interior map; its clicks control only the interior copies
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
 | F4 | Start a newly generated world, for you and the AI sides the World AI setting asks for; every press makes a new map |
 | F12 | Start a siege at Red's city with its interior open |
+| NAVAL in the Debug panel | Start the coastal naval test scenario |
 | F6 | Save a snapshot of the whole game (in memory only) |
 | F7 | Load the snapshot; it is kept, so it can be loaded again |
 | F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome); also in the settings menu |
@@ -209,7 +215,7 @@ them.
 
 | Flag | Effect |
 | --- | --- |
-| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier`, `world` or `siege` (F12) |
+| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier`, `world`, `siege` (F12), or `naval` |
 | `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
 | `--size <W>x<H>` | Open the window at this size in pixels |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
@@ -238,7 +244,7 @@ them.
 - Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Orange hex:
   contested.
 - Units are tokens in team color with a pictogram of what they are: sword (melee), bow
-  (ranged), horse head (cavalry), catapult (siege), spyglass (scout), shield (armored) on a
+  (ranged), horse head (cavalry), catapult (siege), spyglass (scout), shield (armored), sailboat (Patrol Galley), cargo boat (Landing Craft), gunship (Bombard Ship) on a
   disc. Settlers (a planted flag) are hollow hexagons.
 - Workers out on the map are small hollow hexagons with a shovel (tucked into a corner when a
   unit shares their hex), with a dotted line to the job they're walking to. A dark tag with a
@@ -250,14 +256,14 @@ them.
   so a run of them reads as one line.
 - Cities are crenellated towers showing their population, with a gold G disc once they have a
   granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
-  a Workshop a blue diamond marked W. While you choose or move a site, a translucent diamond with
+  a Workshop a blue diamond marked W. Other buildings have colored letter badges. While you choose or move a site, a translucent diamond with
   the building's letter previews it. Improvements are small icons in a hex's top-left corner: a
   wheat stalk (farm), an ore cart (mine), a fence (pasture), stacked logs (lumber mill).
   Resources are icons in the top-right corner: a horse's head (Horses), an ingot (Iron). Brown
   lines are dirt roads, and blue lines between hexes are rivers.
 - Terrain: two small peaks are hills, pines forest, round canopies jungle; dunes, grass tufts and
   reeds mark desert, tundra and marsh. A large snowy peak is a mountain (impassable) and waves
-  are water (units can't enter it; cities can work it). Terrain defense and yields are in
+  are water (ships enter it, land units do not; cities can work it). Terrain defense and yields are in
   `game-rules.md`.
 - Fog of war: never-seen hexes are under clouds; hexes you've seen but can't see now are under a
   grey veil and show the cities, improvements, roads and structures that were there when you

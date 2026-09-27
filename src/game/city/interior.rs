@@ -4,7 +4,8 @@
 use std::collections::HashSet;
 
 use crate::game::hex::Hex;
-use crate::game::unit::{Team, UnitType};
+use crate::game::terrain::Resource;
+use crate::game::unit::{Team, UnitStats, UnitType, apply_training_upgrade};
 use crate::game::{Camera, GameState, PLAYER_TEAM, combat};
 
 pub(in crate::game) const CORE_HP: f32 = 80.0;
@@ -33,10 +34,19 @@ pub(in crate::game) struct InteriorFighter {
     pub source_id: u32,
     pub team: Team,
     pub unit_type: UnitType,
+    pub training_upgrade: Option<Resource>,
     pub pos: Hex,
     pub hp: f32,
     pub planned_move: Option<Hex>,
     pub planned_attack: Option<Hex>,
+}
+
+impl InteriorFighter {
+    fn stats(&self) -> UnitStats {
+        let mut stats = self.unit_type.stats();
+        apply_training_upgrade(&mut stats, self.training_upgrade);
+        stats
+    }
 }
 
 pub(super) fn in_bounds(hex: Hex) -> bool {
@@ -166,7 +176,7 @@ impl GameState {
             && self.cities[city].team != PLAYER_TEAM
             && self.cities[city].interior.core_hp > 0.0;
         if enemy || core {
-            if from.distance(tile) <= fighter.unit_type.stats().attack_range {
+            if from.distance(tile) <= fighter.stats().attack_range {
                 let fighter = self.cities[city]
                     .interior
                     .fighters
@@ -180,7 +190,7 @@ impl GameState {
             }
         } else if clicked.is_none()
             && (tile != CENTER || self.cities[city].interior.core_hp <= 0.0)
-            && from.distance(tile) <= fighter.unit_type.stats().move_range.max(1)
+            && from.distance(tile) <= fighter.stats().move_range.max(1)
         {
             let fighter = self.cities[city]
                 .interior
@@ -207,7 +217,9 @@ impl GameState {
                 .units
                 .iter()
                 .filter(|unit| {
-                    unit.pos.distance(city.pos) == 1 && !self.settlers.contains(&unit.id)
+                    unit.pos.distance(city.pos) == 1
+                        && !unit.is_naval()
+                        && !self.settlers.contains(&unit.id)
                 })
                 .collect();
             let ids: HashSet<_> = adjacent.iter().map(|unit| unit.id).collect();
@@ -235,6 +247,7 @@ impl GameState {
                         source_id: unit.id,
                         team: unit.team,
                         unit_type: unit.unit_type,
+                        training_upgrade: unit.training_upgrade,
                         pos,
                         hp: unit.interior_hp,
                         planned_move: None,
@@ -299,7 +312,7 @@ impl GameState {
                     .map(|other| other.pos)
             };
             let Some(target) = target else { continue };
-            let range = fighter.unit_type.stats().attack_range;
+            let range = fighter.stats().attack_range;
             if fighter.pos.distance(target) <= range
                 && !(target == CENTER && fighter.team != owner && core_breached)
             {
@@ -349,16 +362,16 @@ impl GameState {
             let Some(target) = fighter.planned_attack else {
                 continue;
             };
-            if fighter.pos.distance(target) > fighter.unit_type.stats().attack_range {
+            if fighter.pos.distance(target) > fighter.stats().attack_range {
                 continue;
             }
-            let attack = fighter.unit_type.stats().attack;
+            let attack = fighter.stats().attack;
             if let Some((index, defender)) = snapshot
                 .iter()
                 .enumerate()
                 .find(|(_, other)| other.pos == target && other.team != fighter.team)
             {
-                let defense = defender.unit_type.stats().defense;
+                let defense = defender.stats().defense;
                 damage[index] += combat::roll_damage_against(attack, defense, &mut self.rng);
             } else if target == CENTER && fighter.team != owner && interior.core_hp > 0.0 {
                 core_damage += combat::roll_damage_against(attack, CORE_DEFENSE, &mut self.rng);
@@ -371,11 +384,8 @@ impl GameState {
                 .filter(|(_, f)| f.team != owner && f.pos.distance(CENTER) <= CORE_ATTACK_RANGE)
                 .min_by_key(|(_, f)| f.source_id)
         {
-            damage[index] += combat::roll_damage_against(
-                CORE_ATTACK,
-                fighter.unit_type.stats().defense,
-                &mut self.rng,
-            );
+            damage[index] +=
+                combat::roll_damage_against(CORE_ATTACK, fighter.stats().defense, &mut self.rng);
         }
         interior.core_hp = (interior.core_hp - core_damage).max(0.0);
         if core_damage > 0.0 && interior.core_hp <= 0.0 {
@@ -667,6 +677,7 @@ mod tests {
             id: 10_000,
             team: Team::Red,
             home: 1,
+            base: game.cities[1].pos,
             pos: game.cities[1].pos,
             job: None,
             work_left: None,
@@ -771,7 +782,7 @@ mod tests {
                 if fighter.team != Team::Blue {
                     continue;
                 }
-                let range = fighter.unit_type.stats().attack_range;
+                let range = fighter.stats().attack_range;
                 if let Some(enemy) = snapshot
                     .iter()
                     .filter(|other| {

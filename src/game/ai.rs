@@ -105,17 +105,30 @@ impl GameState {
 
             let unit = &self.units[idx];
             let stats = unit.stats();
-            // An enemy worker is caught, and ruins taken, by stepping onto
-            // them, when that's in reach this turn.
+            // Workers and ruins are captured by moving onto them. Ships keep
+            // their water-only movement domain while land units use roads and gates.
             let capture = self.enemy_of_team_at(target, team).is_none();
-            let reachable = self.reachable_hexes(unit.pos, stats.move_range, team);
+            let reachable = if unit.is_naval() {
+                self.reachable_hexes_by(unit.pos, stats.move_range, |_, to| {
+                    self.grid.contains(to)
+                        && self.grid.terrain(to).is_water()
+                        && !self.is_occupied(to)
+                })
+            } else {
+                self.reachable_hexes(unit.pos, stats.move_range, team)
+            };
             let dest = if capture && reachable.contains(&target) {
                 target
             } else if !capture && unit.pos.distance(target) <= stats.attack_range {
                 unit.pos
             } else {
-                let to_target = self.steps_to(target, team, &reachable);
-                let steps_left = |hex: &Hex| to_target.get(hex).copied().unwrap_or(i32::MAX);
+                let to_target = (!unit.is_naval()).then(|| self.steps_to(target, team, &reachable));
+                let steps_left = |hex: &Hex| {
+                    to_target.as_ref().map_or_else(
+                        || hex.distance(target),
+                        |distances| distances.get(hex).copied().unwrap_or(i32::MAX),
+                    )
+                };
                 let claimed_by_ally = |hex: &Hex| {
                     self.units
                         .iter()
@@ -132,8 +145,10 @@ impl GameState {
                 self.units[idx].planned_move = Some(dest);
             }
             let ruins = self.ruin_at(target).is_some() && !self.is_occupied(target);
+            let can_attack = self.units[idx].can_attack();
             let unit = &mut self.units[idx];
-            if !ruins && dest != target && dest.distance(target) <= stats.attack_range {
+            if can_attack && !ruins && dest != target && dest.distance(target) <= stats.attack_range
+            {
                 unit.planned_attack = Some(target);
             }
         }
@@ -158,17 +173,25 @@ impl GameState {
                     .map(|worker| worker.pos),
             )
             .collect();
-        let open_ruins: Vec<Hex> = self
-            .ruins
-            .iter()
-            .map(|ruin| ruin.pos)
-            .filter(|&pos| {
-                !self
-                    .units
-                    .iter()
-                    .any(|u| u.team == team && (u.pos == pos || u.planned_move == Some(pos)))
-            })
-            .collect();
+        let open_ruins: Vec<Hex> = if unit.is_naval() {
+            Vec::new()
+        } else {
+            self.ruins
+                .iter()
+                .map(|ruin| ruin.pos)
+                .filter(|&pos| {
+                    !self
+                        .units
+                        .iter()
+                        .any(|u| u.team == team && (u.pos == pos || u.planned_move == Some(pos)))
+                })
+                .collect()
+        };
+        if unit.is_naval() {
+            return enemies
+                .into_iter()
+                .min_by_key(|pos| (unit.pos.distance(*pos), pos.q, pos.r));
+        }
         let is_target = |hex: &Hex| enemies.contains(hex) || open_ruins.contains(hex);
         // Search outward ring by ring, stopping at the first ring with a target.
         let mut seen = HashSet::from([unit.pos]);

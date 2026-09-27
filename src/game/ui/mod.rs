@@ -48,6 +48,8 @@ use builder::PanelBuilder;
 use dock::{Dock, Rect, Zone};
 pub use imgui::ImGuiLayoutState;
 use paint::{draw_button, draw_chip_hover, draw_shape};
+
+const BUILDING_LIST_VISIBLE: usize = 2;
 use queue::queue_items_that_fit;
 
 type Color = [f32; 4];
@@ -370,6 +372,16 @@ struct QueueItemRegion {
     locked: bool,
 }
 
+struct BuildingScrollRegion {
+    city: usize,
+    min: Vec2,
+    max: Vec2,
+    track_min: Vec2,
+    track_max: Vec2,
+    thumb_height: f32,
+    max_offset: usize,
+}
+
 struct QueueScrollRegion {
     kind: QueueKind,
     panel_min: Vec2,
@@ -388,6 +400,7 @@ struct Layout {
     buttons: Vec<Button>,
     panels: Vec<(Vec2, Vec2)>,
     queue_scrollbars: Vec<QueueScrollRegion>,
+    building_scrollbars: Vec<BuildingScrollRegion>,
     queue_items: Vec<QueueItemRegion>,
     /// The unit strip's tokens and the unit id each one stands for.
     roster_chips: Vec<(Vec2, Vec2, RosterKey)>,
@@ -551,7 +564,9 @@ impl GameState {
     pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) -> bool {
         let point = to_ui(cursor, screen_size);
         let layout = self.layout_with_hover(screen_size, Some(cursor)).0;
-        if self.drag_queue_scrollbar_at(cursor, screen_size, false) {
+        if self.drag_queue_scrollbar_at(cursor, screen_size, false)
+            || self.drag_building_scrollbar_at(cursor, screen_size, false)
+        {
             return true;
         }
         // A button (the centered settings menu's, drawn over the strip) takes

@@ -17,16 +17,15 @@ input capture. It is drawn at the end of the existing Vulkan render pass.
 `ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible
 windows without overlap. A window follows the dock as its content changes
 until the player drags its title bar or resize grip; moved windows reserve
-their space so other panels avoid them. Only the production queue has a
-deliberately bounded height and scrolls when it grows beyond that bound.
+their space so other panels avoid them. The production queue and the city tray's building catalogue have bounded heights and scroll internally when their content grows.
 Hold Ctrl to show the title bars, collapse buttons, and resize grips for
 arranging panels. During normal play, expanded panels hide their title bars;
 collapsed panels keep a short title bar so they can be expanded again. While
 Ctrl is held and a panel is being dragged, ImGui owns its position and size
-until the drag ends, so dock previews remain stable. A floating panel the
-player has placed keeps its own size, so the frame Ctrl shows or hides its
-title bar it grows or shrinks by the title bar's height (`title_bar_change`);
-otherwise the title bar would push its content down and clip it.
+until the drag ends, so dock previews remain stable. Showing title bars keeps
+panel outer rectangles fixed, including automatically placed and player-sized
+panels. While Ctrl is held, the title bar takes space inside the panel; content
+can scroll until Ctrl is released.
 The `imgui` dependency enables its `docking` feature. Selection, Production
 Queue, and Debug can dock to one another. The transparent dockspace starts
 below the ImGui status bar but does not accept drops onto the empty map;
@@ -158,3 +157,5 @@ hover, and debug panels belong in a `Zone`.
 Add a layout test when adding a new panel or zone behavior. Useful assertions
 are that panel rectangles do not overlap, buttons remain inside their panel,
 and the same target is clickable after the screen size or content changes.
+
+The city tray uses a shared `Row::BuildingCatalog`: ImGui renders it as a four-row child window with native scrolling, while classic renders a compact two-row inset with wheel and draggable scrollbar. All building cards remain in one list; no page buttons are needed.

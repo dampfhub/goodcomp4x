@@ -28,7 +28,7 @@ pub(super) enum Phase {
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-const RESOLUTION_ORDER: [(UnitType, Phase); 12] = [
+const RESOLUTION_ORDER: [(UnitType, Phase); 18] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
     (UnitType::Melee, Phase::Move),
@@ -41,6 +41,12 @@ const RESOLUTION_ORDER: [(UnitType, Phase); 12] = [
     (UnitType::Siege, Phase::Attack),
     (UnitType::Armored, Phase::Move),
     (UnitType::Armored, Phase::Attack),
+    (UnitType::PatrolGalley, Phase::Move),
+    (UnitType::LandingCraft, Phase::Move),
+    (UnitType::BombardShip, Phase::Move),
+    (UnitType::PatrolGalley, Phase::Attack),
+    (UnitType::LandingCraft, Phase::Attack),
+    (UnitType::BombardShip, Phase::Attack),
 ];
 
 /// One step of a turn: a unit type's moves or attacks, or, after all of
@@ -136,6 +142,8 @@ impl GameState {
         }
 
         if !self.is_resolving() {
+            self.resolve_coastal_batteries();
+            self.resolve_transport();
             self.resolve_city_interiors();
             // Before the economy, so a city reward is spent (or capped) like
             // the turn's own income.
@@ -154,6 +162,98 @@ impl GameState {
             }
             log::info!("=== turn {} resolved ===", self.turn);
             self.select_next_or_end_turn(None);
+        }
+    }
+
+    /// Cargo remains the same logical unit, with its exterior and interior HP.
+    /// It does not occupy a map tile while embarked, and goes down with the ship.
+    fn resolve_coastal_batteries(&mut self) {
+        let batteries: Vec<_> = self
+            .cities
+            .iter()
+            .filter_map(|city| {
+                city.placed_site(Building::CoastalBattery)
+                    .filter(|_| city.coastal_battery_hp > 0.0)
+                    .map(|site| (site, city.team))
+            })
+            .collect();
+        let mut hits = vec![0.0; self.units.len()];
+        for (site, team) in batteries {
+            if let Some((index, target)) = self
+                .units
+                .iter()
+                .enumerate()
+                .filter(|(_, unit)| {
+                    unit.team != team && unit.is_naval() && site.distance(unit.pos) <= 2
+                })
+                .min_by_key(|(_, unit)| (site.distance(unit.pos), unit.id))
+            {
+                hits[index] +=
+                    combat::roll_damage_against(28.0, target.stats().defense, &mut self.rng);
+                self.play(Effect::Shot {
+                    from: site.to_world(),
+                    to: target.pos.to_world(),
+                    outcome: Outcome::Hit,
+                });
+            }
+        }
+        for (unit, hit) in self.units.iter_mut().zip(hits) {
+            unit.hp = (unit.hp - hit).max(0.0);
+        }
+        self.units.retain(Unit::is_alive);
+        self.discard_interior_copies_of_dead_units();
+    }
+
+    fn resolve_transport(&mut self) {
+        let unloads: Vec<(u32, Hex)> = self
+            .units
+            .iter_mut()
+            .filter_map(|u| u.planned_unload.take().map(|hex| (u.id, hex)))
+            .collect();
+        for (ship_id, dest) in unloads {
+            let Some(ship) = self.units.iter().position(|u| u.id == ship_id) else {
+                continue;
+            };
+            if self.units[ship].unit_type != UnitType::LandingCraft
+                || self.units[ship].pos.distance(dest) != 1
+                || !self.grid.is_passable(dest)
+                || self.is_occupied(dest)
+                || self.cities.iter().any(|city| city.pos == dest)
+            {
+                continue;
+            }
+            if !self.units[ship].cargo.is_empty() {
+                let mut passenger = self.units[ship].cargo.remove(0);
+                passenger.pos = dest;
+                passenger.clear_orders();
+                self.units.push(passenger);
+            }
+        }
+        let mut boarders: Vec<usize> = self
+            .units
+            .iter()
+            .enumerate()
+            .filter_map(|(i, u)| u.planned_board.map(|_| i))
+            .collect();
+        boarders.sort_unstable_by(|a, b| b.cmp(a));
+        for i in boarders {
+            let Some(ship_id) = self.units[i].planned_board.take() else {
+                continue;
+            };
+            let Some(ship) = self.units.iter().position(|u| u.id == ship_id) else {
+                continue;
+            };
+            if self.units[ship].unit_type != UnitType::LandingCraft
+                || self.units[ship].team != self.units[i].team
+                || self.units[ship].pos.distance(self.units[i].pos) != 1
+                || self.units[ship].cargo.len() >= 4
+            {
+                continue;
+            }
+            let mut passenger = self.units.remove(i);
+            passenger.clear_orders();
+            let ship = self.units.iter().position(|u| u.id == ship_id).unwrap();
+            self.units[ship].cargo.push(passenger);
         }
     }
 
@@ -217,9 +317,14 @@ impl GameState {
                 let unit = &self.units[i];
                 let open = self
                     .reachable_hexes_by(unit.pos, unit.stats().move_range.max(1), |a, b| {
-                        self.can_step(a, b, unit.team)
+                        if unit.is_naval() {
+                            self.grid.contains(b) && self.grid.terrain(b).is_water()
+                        } else {
+                            self.can_step(a, b, unit.team)
+                        }
                     })
-                    .contains(&dest);
+                    .contains(&dest)
+                    || self.rail_transfer_available(unit.pos, dest, unit.team, None);
                 if !open {
                     log::info!(
                         "{unit} move blocked: a wall stands in the way to ({}, {})",
@@ -357,6 +462,7 @@ impl GameState {
     fn resolve_attacks(&mut self, attackers: &[usize]) {
         let mut engagements: Vec<Engagement> = Vec::new();
         let mut barracks_hits: Vec<(usize, usize, f32)> = Vec::new();
+        let mut battery_hits: Vec<(usize, usize, f32)> = Vec::new();
         let mut killed_workers: Vec<u32> = Vec::new();
         // Each attack's animation, played once the step's damage is known.
         let mut shots: Vec<Effect> = Vec::new();
@@ -412,18 +518,30 @@ impl GameState {
             if let Some(city) = barracks {
                 barracks_hits.push((a, city, scale));
             }
+            let battery = if defenders.is_empty() && barracks.is_none() {
+                self.enemy_coastal_battery_at(target, attacker.team)
+            } else {
+                None
+            };
+            if let Some(city) = battery {
+                battery_hits.push((a, city, scale));
+            }
             // With nothing else to hit, the attack kills any enemy workers
             // out on its hexes. A unit on a worker's hex shields it.
-            let workers_hit: Vec<u32> = if defenders.is_empty() && barracks.is_none() {
-                hexes
-                    .iter()
-                    .flat_map(|&hex| self.enemy_workers_at(hex, attacker.team))
-                    .map(|w| self.field_workers[w].id)
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let outcome = if !defenders.is_empty() || barracks.is_some() || !workers_hit.is_empty()
+            let workers_hit: Vec<u32> =
+                if defenders.is_empty() && barracks.is_none() && battery.is_none() {
+                    hexes
+                        .iter()
+                        .flat_map(|&hex| self.enemy_workers_at(hex, attacker.team))
+                        .map(|w| self.field_workers[w].id)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            let outcome = if !defenders.is_empty()
+                || barracks.is_some()
+                || battery.is_some()
+                || !workers_hit.is_empty()
             {
                 Outcome::Hit
             } else {
@@ -456,7 +574,19 @@ impl GameState {
                 self.defense_multiplier(attacker),
                 self.defense_multiplier(defender),
             );
-            let hit = engagement.damage_scale
+            let shore_scale = if !attacker.is_naval() && defender.is_naval() {
+                match attacker.unit_type {
+                    UnitType::Ranged => 0.4,
+                    UnitType::Siege => 0.6,
+                    _ => 0.0,
+                }
+            } else if attacker.unit_type == UnitType::PatrolGalley && !defender.is_naval() {
+                0.35
+            } else {
+                1.0
+            };
+            let hit = shore_scale
+                * engagement.damage_scale
                 * combat::roll_damage(attacker, defender, defender_cover, &mut self.rng);
             damage[d] += hit;
             let attacker_note = combat::unit_note(attacker, &self.grid, self.in_fort(attacker));
@@ -469,7 +599,12 @@ impl GameState {
 
             let retaliation_scale = match reverse {
                 Some(reverse) => Some(reverse.damage_scale),
-                None if combat::draws_retaliation(attacker) && defender.hp > hit => Some(1.0),
+                None if combat::draws_retaliation(attacker)
+                    && attacker.is_naval() == defender.is_naval()
+                    && defender.hp > hit =>
+                {
+                    Some(1.0)
+                }
                 None => None,
             };
             if let Some(back_scale) = retaliation_scale {
@@ -495,6 +630,16 @@ impl GameState {
             let attack = self.units[attacker].stats().attack;
             let hit = scale * combat::roll_damage_against(attack, BARRACKS_DEFENSE, &mut self.rng);
             barracks_damage[city] += hit;
+        }
+
+        let mut battery_damage = vec![0.0; self.cities.len()];
+        for (attacker, city, scale) in battery_hits {
+            battery_damage[city] += scale
+                * combat::roll_damage_against(
+                    self.units[attacker].stats().attack,
+                    18.0,
+                    &mut self.rng,
+                );
         }
 
         for shot in shots {
@@ -547,6 +692,15 @@ impl GameState {
                 }
             }
         }
+        for (city, taken) in self.cities.iter_mut().zip(battery_damage) {
+            if taken > 0.0 {
+                city.coastal_battery_hp = (city.coastal_battery_hp - taken).max(0.0);
+                if city.coastal_battery_hp == 0.0 {
+                    city.extra_buildings.remove(&Building::CoastalBattery);
+                    city.built.retain(|&b| b != Building::CoastalBattery);
+                }
+            }
+        }
         for (unit, &taken) in self.units.iter_mut().zip(&damage) {
             if taken > 0.0 {
                 unit.hp = (unit.hp - taken).max(0.0);
@@ -578,5 +732,96 @@ impl Engagement {
             defender,
             damage_scale,
         }
+    }
+}
+
+#[cfg(test)]
+mod naval_tests {
+    use super::*;
+    use crate::game::city::{Build, BuildUnit};
+    use crate::game::unit::Team;
+
+    #[test]
+    fn harbor_produces_a_ship_on_water_and_it_cannot_walk_ashore() {
+        let mut g = GameState::naval_scenario();
+        g.cities[0].production = BuildUnit::PatrolGalley.cost();
+        let before = g.units.len();
+        g.complete_builds();
+        assert_eq!(g.units.len(), before + 1);
+        let ship = g.units.last().unwrap();
+        assert_eq!(ship.unit_type, UnitType::PatrolGalley);
+        assert!(g.grid.terrain(ship.pos).is_water());
+        let reachable = g.known_reachable_for_domain(ship.pos, 3, Team::Blue, &g.fog(), true);
+        assert!(reachable.iter().all(|h| g.grid.terrain(*h).is_water()));
+        assert!(!reachable.is_empty());
+        assert!(
+            !g.cities[0]
+                .queue
+                .contains(&Build::Unit(BuildUnit::PatrolGalley))
+        );
+    }
+
+    #[test]
+    fn landing_craft_carries_four_troops_and_lands_one_on_open_shore() {
+        let mut g = GameState::naval_scenario();
+        g.units.clear();
+        let ship_id = 90;
+        g.units.push(Unit::new(
+            ship_id,
+            Hex::new(-1, 0),
+            Team::Blue,
+            UnitType::LandingCraft,
+        ));
+        for (id, pos) in [(91, Hex::new(-2, 0)), (92, Hex::new(-2, 1))] {
+            let mut troop = Unit::new(id, pos, Team::Blue, UnitType::Melee);
+            troop.planned_board = Some(ship_id);
+            g.units.push(troop);
+        }
+        g.resolve_transport();
+        assert_eq!(g.units[0].cargo.len(), 2);
+        g.units[0].pos = Hex::new(-1, 2);
+        for (id, pos) in [(93, Hex::new(-2, 2)), (94, Hex::new(-2, 3))] {
+            let mut troop = Unit::new(id, pos, Team::Blue, UnitType::Melee);
+            troop.planned_board = Some(ship_id);
+            g.units.push(troop);
+        }
+        g.resolve_transport();
+        assert_eq!(g.units.len(), 1);
+        assert_eq!(g.units[0].cargo.len(), 4);
+        g.units[0].pos = Hex::new(-1, 0);
+        let mut fifth = Unit::new(95, Hex::new(-2, 0), Team::Blue, UnitType::Melee);
+        fifth.planned_board = Some(ship_id);
+        g.units.push(fifth);
+        g.resolve_transport();
+        assert_eq!(g.units[0].cargo.len(), 4);
+        assert_eq!(g.units.len(), 2);
+        g.units[0].planned_unload = Some(Hex::new(-2, 1));
+        g.resolve_transport();
+        assert_eq!(g.units[0].cargo.len(), 3);
+        assert_eq!(g.units[2].id, 92);
+        assert_eq!(g.units[2].pos, Hex::new(-2, 1));
+    }
+
+    #[test]
+    fn coastal_battery_hits_ships_and_can_be_destroyed() {
+        let mut g = GameState::naval_scenario();
+        g.units.clear();
+        g.units.push(Unit::new(
+            300,
+            Hex::new(-1, 0),
+            Team::Red,
+            UnitType::PatrolGalley,
+        ));
+        let initial = g.units[0].hp;
+        g.resolve_coastal_batteries();
+        assert!(g.units[0].hp < initial);
+        g.units.clear();
+        let site = g.cities[1].placed_site(Building::CoastalBattery).unwrap();
+        let mut ship = Unit::new(301, Hex::new(1, 0), Team::Blue, UnitType::BombardShip);
+        ship.planned_attack = Some(site);
+        g.units.push(ship);
+        g.cities[1].coastal_battery_hp = 1.0;
+        g.resolve_attacks(&[0]);
+        assert_eq!(g.cities[1].placed_site(Building::CoastalBattery), None);
     }
 }

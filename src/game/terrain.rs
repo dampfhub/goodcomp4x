@@ -21,8 +21,7 @@ pub enum Terrain {
     Marsh,
     /// Impassable: nothing can enter or path through.
     Mountains,
-    /// Shallow water along a shore. Units can't enter water, but cities can
-    /// work it.
+    /// Shallow water along a shore. Ships can enter; cities can work it.
     Coast,
     /// Deep water, away from any shore.
     Ocean,

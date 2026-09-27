@@ -285,7 +285,6 @@ struct WindowGeometry {
     docked: bool,
     collapsed: bool,
     content_height: f32,
-    title_visible: bool,
 }
 
 /// ImGui windows follow collision-free docks until the player drags a title
@@ -987,7 +986,7 @@ impl ImGuiLayoutState {
         }
     }
 
-    fn size(&self, slot: usize, measured: Vec2, viewport: Vec2, arranging: bool) -> Vec2 {
+    fn size(&self, slot: usize, measured: Vec2, viewport: Vec2) -> Vec2 {
         let window = self.windows[slot];
         let preferred = if window.docked && window.size != Vec2::ZERO {
             window.size
@@ -998,8 +997,7 @@ impl ImGuiLayoutState {
                 window.size
             }
         } else if window.content_height > 0.0 {
-            let chrome_delta = 30.0 * (arranging as i32 - window.title_visible as i32) as f32;
-            let observed = (window.content_height + chrome_delta).max(60.0);
+            let observed = window.content_height.max(60.0);
             Vec2::new(
                 measured.x,
                 if slot == QUEUE {
@@ -1145,9 +1143,7 @@ impl ImGuiLayoutState {
         }
     }
 
-    /// `resized` says whether this frame's geometry was ours to set (see
-    /// `title_bar_after`).
-    fn record(&mut self, slot: usize, ui: &Ui, arranging: bool, resized: bool) {
+    fn record(&mut self, slot: usize, ui: &Ui, arranging: bool) {
         let docked = unsafe { ::imgui::sys::igIsWindowDocked() };
         if self.windows[slot].docked && !docked {
             self.windows[slot].manual = true;
@@ -1159,8 +1155,14 @@ impl ImGuiLayoutState {
             self.windows[slot].floating_size = self.windows[slot].size;
             self.windows[slot].floating_pos = self.windows[slot].pos;
         }
-        self.windows[slot].content_height = ui.cursor_pos()[1] + ui.clone_style().window_padding[1];
-        self.windows[slot].title_visible = title_bar_after(self.windows[slot], arranging, resized);
+        // Cursor position includes the title bar when Ctrl shows it. Store
+        // content height in the same coordinates in both modes so automatic
+        // placement never changes its outer rectangle just for the chrome.
+        self.windows[slot].content_height = panel_content_height(
+            ui.cursor_pos()[1],
+            ui.clone_style().window_padding[1],
+            arranging.then(|| ui.frame_height()),
+        );
     }
 }
 
@@ -1386,15 +1388,13 @@ fn scope_from_text(text: &str) -> Option<BoxScope> {
     }
 }
 
-fn measure_panel(
-    ui: &Ui,
-    panel: &PanelBuilder,
-    fonts: &[FontId; 3],
-    width: f32,
-    arranging: bool,
-) -> f32 {
+fn panel_content_height(cursor_y: f32, padding_y: f32, title_height: Option<f32>) -> f32 {
+    cursor_y + padding_y - title_height.unwrap_or(0.0)
+}
+
+fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32) -> f32 {
     let inner = (width - 45.0).max(100.0);
-    let mut height = if arranging { 56.0 } else { 26.0 }; // title, border and padding
+    let mut height = 26.0; // border and padding
     for row in &panel.rows {
         height += match row {
             Row::Text(px, line) => {
@@ -1421,41 +1421,11 @@ fn measure_panel(
                 rows as f32 * (if *compact { 34.0 } else { 54.0 })
             }
             Row::QueueItem(_) => 37.0,
+            Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 4) as f32 * 34.0) + 18.0,
             Row::Roster(_) => ROSTER_CHIP + 6.0,
         };
     }
     height + 12.0
-}
-
-/// For a floating panel the player placed (which keeps its own size), how much
-/// taller it must get this frame because Ctrl just showed its title bar
-/// (`title_height`), or shorter because it just hid it. `None` when the title
-/// bar didn't just change, or the panel is laid out automatically, docked or
-/// collapsed (those already account for it).
-fn title_bar_change(window: WindowGeometry, arranging: bool, title_height: f32) -> Option<f32> {
-    let changed = arranging != window.title_visible;
-    (changed && window.manual && !window.docked && !window.collapsed && window.size != Vec2::ZERO)
-        .then_some(if arranging {
-            title_height
-        } else {
-            -title_height
-        })
-}
-
-/// Whether `window` counts its title bar as shown after this frame. It
-/// follows Ctrl (`arranging`), except when the title bar just changed on a
-/// panel `title_bar_change` resizes and this frame's geometry wasn't ours to
-/// set (`resized` false: ImGui is dragging it, or it's docked). The resize
-/// that goes with the change was skipped then, so the change stays pending for
-/// the next frame; recording it anyway would leave the panel a title bar too
-/// tall (Ctrl let go mid-drag) or too short, and every Ctrl after that would
-/// add to it.
-fn title_bar_after(window: WindowGeometry, arranging: bool, resized: bool) -> bool {
-    if !resized && title_bar_change(window, arranging, 0.0).is_some() {
-        window.title_visible
-    } else {
-        arranging
-    }
 }
 
 /// How wide the unit strip's window wants to be: its widest row of tokens,
@@ -1854,7 +1824,7 @@ impl GameState {
         }
         let title = pin.title();
         let width = 370.0_f32.min(viewport.x - 2.0 * PANEL_MARGIN);
-        let height = measure_panel(ui, &panel, fonts, width, arranging)
+        let height = measure_panel(ui, &panel, fonts, width)
             .min(viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN)
             .max(180.0);
         let column = ((viewport.x - 2.0 * PANEL_MARGIN) / (width + PANEL_GAP))
@@ -1984,27 +1954,6 @@ impl GameState {
         } else {
             Condition::Always
         };
-        // A panel the player moved or resized keeps its own size, so when Ctrl
-        // shows or hides its title bar it would push the content down and clip
-        // it. Grow (or shrink) it by the title bar instead, that one frame.
-        let geometry = layout.windows[slot];
-        let (condition, size_condition, size) =
-            match title_bar_change(geometry, arranging, ui.frame_height()) {
-                Some(delta) => (
-                    Condition::Always,
-                    Condition::Always,
-                    (geometry.size + Vec2::new(0.0, delta)).min(Vec2::new(
-                        viewport.x - 2.0 * PANEL_MARGIN,
-                        viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN,
-                    )),
-                ),
-                None => (condition, size_condition, size),
-            };
-        let position = if title_bar_change(geometry, arranging, 0.0).is_some() {
-            geometry.pos
-        } else {
-            position
-        };
         let flags = panel_chrome(arranging, layout.windows[slot].collapsed);
         let mut window = ui.window(title).flags(flags);
         // While ImGui is moving a panel or showing docking targets it owns the
@@ -2033,7 +1982,7 @@ impl GameState {
                 ui.set_scroll_y(0.0);
             }
             self.render_imgui_panel(ui, panel, fonts, None, actions);
-            layout.record(slot, ui, arranging, resized);
+            layout.record(slot, ui, arranging);
         });
         // A collapsed window skips the build closure; native state is still
         // available after Begin/End for the next layout pass.
@@ -2163,6 +2112,51 @@ impl GameState {
                             });
                         }
                     }
+                }
+                Row::BuildingCatalog(city, buttons, _) => {
+                    let height = buttons.len().clamp(1, 4) as f32 * 34.0 + 18.0;
+                    ui.child_window(format!("##building-catalog-{city}-{scope:?}"))
+                        .size([0.0, height])
+                        .border(true)
+                        .build(|| {
+                            let _align = ui.push_style_var(StyleVar::ButtonTextAlign([0.03, 0.5]));
+                            for spec in buttons {
+                                let _accent = match spec.state {
+                                    ButtonState::Queued => Some(ui.push_style_color(
+                                        StyleColor::Button,
+                                        [0.34, 0.30, 0.17, 1.0],
+                                    )),
+                                    _ => None,
+                                };
+                                let _disabled =
+                                    ui.begin_disabled(spec.state == ButtonState::Disabled);
+                                let label =
+                                    format!("{}  {}##{:?}", spec.label, spec.hint, spec.target);
+                                let width = ui.content_region_avail()[0].max(80.0);
+                                if ui.button_with_size(label, [width, 28.0]) {
+                                    actions.push(Action::Button(scope, spec.target));
+                                }
+                                if ui.is_item_hovered_with_flags(
+                                    ItemHoveredFlags::ALLOW_WHEN_DISABLED,
+                                ) {
+                                    let tooltip = Button {
+                                        target: spec.target,
+                                        label: spec.label.clone(),
+                                        hint: spec.hint.clone(),
+                                        state: spec.state,
+                                        armed: spec.armed,
+                                        faded: false,
+                                        min: Vec2::ZERO,
+                                        max: Vec2::ZERO,
+                                    };
+                                    ui.tooltip(|| {
+                                        for (_, line) in self.tooltip_lines(&tooltip) {
+                                            text_line(ui, &line);
+                                        }
+                                    });
+                                }
+                            }
+                        });
                 }
                 Row::QueueItem(item) => {
                     let width = (ui.content_region_avail()[0] - 39.0).max(50.0);
@@ -2432,8 +2426,8 @@ impl GameState {
         };
         let units = self.roster_panel();
         let settings = self.settings_open.then(|| self.settings_panel_content());
-        let queue_height = measure_panel(ui, &queue, fonts, left_width, arranging).min(225.0);
-        let mut tray_height = measure_panel(ui, &tray, fonts, left_width, arranging).min(available);
+        let queue_height = measure_panel(ui, &queue, fonts, left_width).min(225.0);
+        let mut tray_height = measure_panel(ui, &tray, fonts, left_width).min(available);
         // On a narrow screen the queue cannot wrap into a second column, so
         // reserve its space above the selection before docking either window.
         if !tray.rows.is_empty()
@@ -2447,29 +2441,25 @@ impl GameState {
             (!queue.rows.is_empty()).then_some(Vec2::new(left_width, queue_height)),
             Some(Vec2::new(
                 debug_width,
-                measure_panel(ui, &debug, fonts, debug_width, arranging).min(available),
+                measure_panel(ui, &debug, fonts, debug_width).min(available),
             )),
             (!hover.rows.is_empty()).then_some(Vec2::new(
                 345.0_f32.min(max_width),
-                measure_panel(ui, &hover, fonts, 345.0_f32.min(max_width), arranging)
-                    .min(available),
+                measure_panel(ui, &hover, fonts, 345.0_f32.min(max_width)).min(available),
             )),
             units.as_ref().map(|units| {
                 let width = roster_width(units).min(max_width);
-                Vec2::new(
-                    width,
-                    measure_panel(ui, units, fonts, width, arranging).min(available),
-                )
+                Vec2::new(width, measure_panel(ui, units, fonts, width).min(available))
             }),
             settings.as_ref().map(|settings| {
                 Vec2::new(
                     debug_width,
-                    measure_panel(ui, settings, fonts, debug_width, arranging).min(available),
+                    measure_panel(ui, settings, fonts, debug_width).min(available),
                 )
             }),
         ];
         let mut sizes = std::array::from_fn(|slot| {
-            measured[slot].map(|size| layout.size(slot, size, viewport, arranging))
+            measured[slot].map(|size| layout.size(slot, size, viewport))
         });
         let pins = layout.pinned.clone();
         for (index, pin) in pins.into_iter().enumerate() {
@@ -2885,71 +2875,26 @@ mod tests {
     }
 
     #[test]
-    fn a_placed_panel_grows_by_its_title_bar_while_ctrl_shows_it() {
-        let placed = WindowGeometry {
-            size: Vec2::new(300.0, 120.0),
-            manual: true,
-            ..WindowGeometry::default()
-        };
-        // Ctrl pressed: the title bar appears, so the panel grows by it.
-        assert_eq!(title_bar_change(placed, true, 26.0), Some(26.0));
-        // Held: no further change once the title bar is showing.
-        let showing = WindowGeometry {
-            title_visible: true,
-            ..placed
-        };
-        assert_eq!(title_bar_change(showing, true, 26.0), None);
-        // Released: it shrinks back.
-        assert_eq!(title_bar_change(showing, false, 26.0), Some(-26.0));
-        // Automatically placed, docked or collapsed panels are sized elsewhere.
-        for other in [
-            WindowGeometry {
-                manual: false,
-                ..placed
-            },
-            WindowGeometry {
-                docked: true,
-                ..placed
-            },
-            WindowGeometry {
-                collapsed: true,
-                ..placed
-            },
-        ] {
-            assert_eq!(title_bar_change(other, true, 26.0), None);
-        }
-    }
+    fn showing_ctrl_chrome_preserves_panel_bounds() {
+        let viewport = Vec2::new(1200.0, 800.0);
+        let measured = Vec2::new(300.0, 200.0);
+        let mut layout = ImGuiLayoutState::default();
+        // ImGui moves the content cursor down by one title bar. Normalize
+        // that observation before feeding it back into automatic placement.
+        let normal = panel_content_height(212.0, 8.0, None);
+        let arranging = panel_content_height(238.0, 8.0, Some(26.0));
+        assert_eq!(normal, arranging);
+        layout.windows[SELECTION].content_height = normal;
+        let automatic = layout.size(SELECTION, measured, viewport);
+        layout.windows[SELECTION].content_height = arranging;
+        assert_eq!(layout.size(SELECTION, measured, viewport), automatic);
 
-    #[test]
-    fn letting_go_of_ctrl_mid_drag_still_shrinks_the_panel_once() {
-        // A panel the player placed, dragged with Ctrl held: title bar shown.
-        let mut window = WindowGeometry {
-            pos: Vec2::new(40.0, 80.0),
-            size: Vec2::new(300.0, 226.0),
-            manual: true,
-            title_visible: true,
-            ..WindowGeometry::default()
-        };
-        // Ctrl let go while the mouse still drags: ImGui owns the geometry,
-        // so the shrink can't happen yet, and the title bar still counts.
-        assert_eq!(title_bar_change(window, false, 26.0), Some(-26.0));
-        window.title_visible = title_bar_after(window, false, false);
-        assert!(window.title_visible, "the change waits");
-        // The next frame is ours: it shrinks, once, and the change is done.
-        assert_eq!(title_bar_change(window, false, 26.0), Some(-26.0));
-        window.size.y -= 26.0;
-        window.title_visible = title_bar_after(window, false, true);
-        assert!(!window.title_visible);
-        assert_eq!(title_bar_change(window, false, 26.0), None);
-        assert_eq!(window.size.y, 200.0);
-        // Pressing Ctrl again grows it back by the same, no more.
-        assert_eq!(title_bar_change(window, true, 26.0), Some(26.0));
-        // An automatic panel just follows Ctrl, resized or not.
-        let auto = WindowGeometry {
-            manual: false,
-            ..window
-        };
-        assert!(title_bar_after(auto, true, false));
+        layout.windows[SELECTION].manual = true;
+        layout.windows[SELECTION].floating_size = Vec2::new(340.0, 270.0);
+        assert_eq!(
+            layout.size(SELECTION, measured, viewport),
+            Vec2::new(340.0, 270.0)
+        );
     }
 
     #[test]
@@ -2964,7 +2909,6 @@ mod tests {
             collapsed: true,
             // Recomputed every frame, so not saved.
             content_height: 180.0,
-            title_visible: true,
         };
         let mut layout = ImGuiLayoutState::default();
         layout.windows[UNITS] = placed;
@@ -3057,28 +3001,16 @@ mod tests {
         layout.windows[QUEUE].content_height = 310.0;
         let viewport = Vec2::new(1200.0, 800.0);
         assert_eq!(
-            layout
-                .size(SELECTION, Vec2::new(500.0, 250.0), viewport, false)
-                .y,
+            layout.size(SELECTION, Vec2::new(500.0, 250.0), viewport).y,
             310.0
         );
         assert_eq!(
-            layout
-                .size(SELECTION, Vec2::new(500.0, 250.0), viewport, true)
-                .y,
-            340.0
-        );
-        assert_eq!(
-            layout
-                .size(QUEUE, Vec2::new(500.0, 225.0), viewport, false)
-                .y,
+            layout.size(QUEUE, Vec2::new(500.0, 225.0), viewport).y,
             225.0
         );
         layout.windows[SELECTION].collapsed = true;
         assert_eq!(
-            layout
-                .size(SELECTION, Vec2::new(500.0, 250.0), viewport, false)
-                .y,
+            layout.size(SELECTION, Vec2::new(500.0, 250.0), viewport).y,
             COLLAPSED_HEIGHT
         );
     }
@@ -3237,7 +3169,6 @@ mod tests {
             docked: false,
             collapsed: false,
             content_height: 0.0,
-            title_visible: false,
         };
         let positions = layout.plan(viewport, &mut sizes);
         assert!(positions[..3].iter().all(Option::is_some));
@@ -3256,7 +3187,7 @@ mod tests {
             ..WindowGeometry::default()
         };
         let mut sizes = [
-            Some(layout.size(SELECTION, Vec2::new(560.0, 200.0), viewport, false)),
+            Some(layout.size(SELECTION, Vec2::new(560.0, 200.0), viewport)),
             Some(Vec2::new(560.0, 180.0)),
             None,
             None,
@@ -3289,16 +3220,12 @@ mod tests {
             ..WindowGeometry::default()
         };
         assert_eq!(
-            layout
-                .size(QUEUE, Vec2::new(560.0, 225.0), viewport, false)
-                .y,
+            layout.size(QUEUE, Vec2::new(560.0, 225.0), viewport).y,
             120.0
         );
         layout.windows[QUEUE].docked = false;
         assert_eq!(
-            layout
-                .size(QUEUE, Vec2::new(560.0, 225.0), viewport, false)
-                .y,
+            layout.size(QUEUE, Vec2::new(560.0, 225.0), viewport).y,
             225.0
         );
     }

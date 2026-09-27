@@ -22,6 +22,7 @@ use super::{GameState, PLAYER_TEAM};
 /// How far a city sees, and a barracks.
 const CITY_SIGHT: i32 = 3;
 const BARRACKS_SIGHT: i32 = 1;
+const WATCHPOST_SIGHT: i32 = 4;
 /// Extra sight for a unit standing on hills.
 const HILLS_SIGHT: i32 = 1;
 /// Extra sight for a scout after a turn on lookout.
@@ -152,6 +153,12 @@ impl GameState {
             if let Some(barracks) = city.barracks {
                 look(barracks, BARRACKS_SIGHT);
             }
+            if let Some(post) = city.placed_site(Building::Watchpost) {
+                look(
+                    post,
+                    WATCHPOST_SIGHT + i32::from(self.grid.tile(post).hills),
+                );
+            }
         }
         for (&hex, structure) in &self.structures {
             if structure.team == PLAYER_TEAM && structure.kind == StructureKind::Outpost {
@@ -244,12 +251,37 @@ impl GameState {
         team: Team,
         fog: &Fog,
     ) -> HashSet<Hex> {
-        self.reachable_hexes_by(start, move_range, |from, to| {
-            self.can_enter(to)
-                && !self.known_enemy_city_at(to, team, fog)
+        self.known_reachable_for_domain(start, move_range, team, fog, false)
+    }
+
+    pub(super) fn known_reachable_for_domain(
+        &self,
+        start: Hex,
+        move_range: i32,
+        team: Team,
+        fog: &Fog,
+        naval: bool,
+    ) -> HashSet<Hex> {
+        let mut reachable = self.reachable_hexes_by(start, move_range, |from, to| {
+            (if naval {
+                self.grid.contains(to) && self.grid.terrain(to).is_water()
+            } else {
+                self.can_enter(to)
+            }) && !self.known_enemy_city_at(to, team, fog)
                 && self.known_can_cross(from, to, team, fog)
                 && !self.known_occupied(to, fog)
-        })
+        });
+        if move_range > 0 && !naval {
+            for city in self.cities.iter().filter(|city| city.team == team) {
+                if let Some(dest) = city.placed_site(Building::Railhead)
+                    && !self.known_occupied(dest, fog)
+                    && self.rail_transfer_available(start, dest, team, Some(fog))
+                {
+                    reachable.insert(dest);
+                }
+            }
+        }
+        reachable
     }
 
     fn known_enemy_city_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
@@ -299,6 +331,7 @@ impl GameState {
     pub(super) fn known_routes_from(&self, team: Team, origin: Hex, fog: &Fog) -> Routes {
         // Out of sight, the memory (none for a hex never seen); in sight, the board.
         let memory = |hex: Hex| (!fog.sees(hex)).then(|| self.remembered(hex));
+        let river_banks = self.navigable_river_banks(team);
         self.routes_from_by(
             origin,
             |hex| match memory(hex) {
@@ -309,9 +342,12 @@ impl GameState {
                 }
             },
             |from, to| self.known_can_cross(from, to, team, fog),
-            |hex| match memory(hex) {
-                Some(seen) => seen.is_some_and(|seen| seen.road || seen.city.is_some()),
-                None => self.is_road_hex(hex),
+            |from, to| {
+                river_banks.contains(&from) && river_banks.contains(&to)
+                    || match memory(to) {
+                        Some(seen) => seen.is_some_and(|seen| seen.road || seen.city.is_some()),
+                        None => self.is_road_hex(to),
+                    }
             },
         )
     }

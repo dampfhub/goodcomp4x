@@ -299,9 +299,58 @@ impl GameState {
                 .truncate(city.population.min(MAX_CITY_POPULATION));
         }
         self.complete_builds();
+        self.heal_at_hospitals();
         for i in 0..self.cities.len() {
             self.reconcile_citizens(i);
         }
         self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+    }
+
+    /// Each hospital treats two nearby survivors once per turn. Both health
+    /// bars belong to the same unit, so a projected fighter benefits too.
+    fn heal_at_hospitals(&mut self) {
+        let mut treated = std::collections::HashSet::new();
+        let hospitals: Vec<_> = self
+            .cities
+            .iter()
+            .filter_map(|city| {
+                city.placed_site(super::Building::FieldHospital)
+                    .map(|site| (city.team, site))
+            })
+            .collect();
+        for (team, site) in hospitals {
+            let mut candidates: Vec<_> = self
+                .units
+                .iter()
+                .enumerate()
+                .filter(|(_, unit)| {
+                    unit.team == team
+                        && unit.pos.distance(site) <= 2
+                        && !treated.contains(&unit.id)
+                        && (unit.hp < unit.max_hp() || unit.interior_hp < unit.max_hp())
+                })
+                .map(|(index, unit)| {
+                    let missing = 2.0 * unit.max_hp() - unit.hp - unit.interior_hp;
+                    (index, missing, unit.id)
+                })
+                .collect();
+            candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.2.cmp(&b.2)));
+            for (index, _, id) in candidates.into_iter().take(2) {
+                let unit = &mut self.units[index];
+                unit.hp = (unit.hp + 20.0).min(unit.max_hp());
+                unit.interior_hp = (unit.interior_hp + 20.0).min(unit.max_hp());
+                treated.insert(id);
+            }
+        }
+        for city in &mut self.cities {
+            for fighter in &mut city.interior.fighters {
+                if treated.contains(&fighter.source_id)
+                    && let Some(source) =
+                        self.units.iter().find(|unit| unit.id == fighter.source_id)
+                {
+                    fighter.hp = source.interior_hp;
+                }
+            }
+        }
     }
 }

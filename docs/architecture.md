@@ -70,12 +70,18 @@ copies in place of the exterior world; the exterior camera is restored on exit.
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each unit step resolves one unit type's moves or attacks
    simultaneously; `effects.rs` animates attacks; dead units are removed at the end of an attack
-   step, and enemy workers caught by a move are captured. The last step, `resolve_workers`
+   step, and enemy workers caught by a move are captured. `city/rail.rs` checks road connectivity
+   for one-turn transfers from a city ring to its remote Railhead; a blocked line fails at this
+   step. The last step, `resolve_workers`
    (`workers.rs`), sends cities' idle workers out to their queued jobs and walks, works or brings
-   home every worker on the map.
-4. **End of turn:** `resolve_city_interiors` (`city/interior.rs`) projects adjacent field troops,
+   home every worker on the map. A connected Work Camp can be their base for nearby jobs.
+4. **End of turn:** `resolve_coastal_batteries` targets ships from placed batteries, then
+   `resolve_transport` unloads and boards surviving Landing Craft passengers. Ships use
+   domain-aware reachability and the same unit order pipeline; Harbors spawn them onto water
+   from the city queue. `resolve_city_interiors` (`city/interior.rs`) projects adjacent field troops,
    resolves their separate tactical orders and any command-post capture. Then `resolve_economy`
-   (`city/citizens.rs`) applies city income, growth and builds; each
+   (`city/citizens.rs`) applies city income, including local Cannery and Smelter collection from
+   `city/logistics.rs`, growth and builds; each
    unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,
    sets or clears Lookout, and clears its orders; `advance_queues` (`order_queue.rs`) gives each
    unit with a queue its next turn's orders, dropping queues that no longer fit; then selection
@@ -115,7 +121,7 @@ for the rest. Screenshot mode neither reads nor writes any of it, so shots stay 
 
 ## Testing aids
 
-Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world, F12 siege) are constructors on
+Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world, F12 siege, Debug Naval) are constructors on
 `GameState`; the savestate (F6
 save, F7 load) clones the whole `GameState`. Both live in `scenario.rs` and in memory only. Unit
 tests build a scenario and drive the same methods input does, so no window or GPU is needed;

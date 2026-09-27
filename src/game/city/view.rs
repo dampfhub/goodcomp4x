@@ -157,8 +157,8 @@ impl GameState {
         }
         let i = self.selected_city.unwrap();
         if let Some((_, building)) = self.site_placement() {
-            if !self.site_available(i, building, hex) {
-                self.notice = format!("{} NEEDS AN OPEN LAND TILE", building.name());
+            if let Some(reason) = self.site_issue(i, building, hex) {
+                self.notice = format!("{} {reason}", building.name());
             } else {
                 self.cities[i].planned_sites.insert(building, hex);
                 self.placing_building = None;
