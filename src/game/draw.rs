@@ -569,18 +569,37 @@ struct Puff {
     alpha: f32,
 }
 
-/// The puffs of one cloud bank, relative to its center and scaled by
-/// `CLOUD_SPACING`: a wide base of four and three billows on top,
-/// as (x, y, radius), each nudged by the bank's hash.
-const BANK_PUFFS: [(f32, f32, f32); 7] = [
-    (-0.42, -0.14, 0.28),
-    (-0.14, -0.18, 0.33),
-    (0.16, -0.16, 0.33),
-    (0.44, -0.10, 0.27),
-    (-0.26, 0.10, 0.27),
-    (0.04, 0.16, 0.28),
-    (0.30, 0.10, 0.24),
-];
+/// The most puffs in one cloud bank; each has between 4 and this many.
+const MAX_BANK_PUFFS: usize = 9;
+
+/// The shape of the cloud bank at lattice point (`x`, `y`): its puffs'
+/// places around the bank's center and their radii, in units of the bank's
+/// scale. The bank grows from one puff: each next one buds off a puff
+/// already placed, in any direction and overlapping it, so every bank is
+/// its own irregular clump rather than a copy of one template.
+fn bank_shape(x: i32, y: i32) -> ([(Vec2, f32); MAX_BANK_PUFFS], usize) {
+    let hash =
+        |i: usize, salt: u32| cloud_hash(x, y, salt ^ (i as u32 + 1).wrapping_mul(0x9E37_79B9));
+    let count = 4 + (cloud_hash(x, y, 0x3C6E_F372) * (MAX_BANK_PUFFS - 3) as f32) as usize;
+    let count = count.min(MAX_BANK_PUFFS);
+    let mut puffs = [(Vec2::ZERO, 0.0); MAX_BANK_PUFFS];
+    for i in 0..count {
+        let radius = 0.2 + hash(i, 0x68E3_1DA4) * 0.16;
+        puffs[i].1 = radius;
+        if i > 0 {
+            let (parent, parent_radius) = puffs[(hash(i, 0x1B87_3593) * i as f32) as usize % i];
+            let angle = hash(i, 0x7E95_761E) * TAU;
+            let reach = (parent_radius + radius) * (0.5 + hash(i, 0x2F1D_9A07) * 0.25);
+            puffs[i].0 = parent + Vec2::from_angle(angle) * reach;
+        }
+    }
+    // Centered on the bank, so a large bank doesn't lean off its place.
+    let mean = puffs[..count].iter().map(|p| p.0).sum::<Vec2>() / count as f32;
+    for puff in &mut puffs[..count] {
+        puff.0 -= mean;
+    }
+    (puffs, count)
+}
 
 /// How fast the whole cloud field drifts, in world units a second (a hex is
 /// 1 from center to corner): slow enough to read as weather, not motion.
@@ -621,8 +640,8 @@ fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
 
 /// Draws the unexplored map as banks of cumulus: one bank per point of a
 /// world-space lattice that drifts with `CLOUD_WIND` as `time` (seconds)
-/// passes, each bank a soft shadow under a cluster of puffs that slowly
-/// billow. Every puff fades out at its edge and is lit from above
+/// passes, each bank a soft shadow under an irregular clump of puffs
+/// (`bank_shape`) that slowly billow. Every puff fades out at its edge and is lit from above
 /// (`push_cloud_puff`); higher puffs are drawn first, so the lit top of a
 /// lower billow overlaps the shaded underside of the one behind it. A bank
 /// keeps its lattice point's hash as it drifts, so the pattern moves whole.
@@ -650,35 +669,29 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, out: &mut Vec<Vertex>) {
     let mut puffs = Vec::new();
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            // Rows are offset by half a bank, and each bank wanders a little,
-            // so the lattice doesn't show.
+            // Rows are offset by half a bank, and each bank wanders off its
+            // lattice point, so the lattice doesn't show.
             let jitter = Vec2::new(
                 cloud_hash(x, y, 0xA341_316C) - 0.5,
                 cloud_hash(x, y, 0xC801_3EA4) - 0.5,
-            ) * 0.45;
+            ) * 0.7;
             let row_shift = if y.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
             let bank = (Vec2::new(x as f32 + row_shift, y as f32) + jitter) * CLOUD_SPACING + drift;
-            let scale = CLOUD_SPACING * (0.9 + cloud_hash(x, y, 0xAD90_777D) * 0.3);
-            for (i, &(px, py, pr)) in BANK_PUFFS.iter().enumerate() {
+            let scale = CLOUD_SPACING * (0.8 + cloud_hash(x, y, 0xAD90_777D) * 0.5);
+            let (shape, count) = bank_shape(x, y);
+            for (i, &(place, size)) in shape[..count].iter().enumerate() {
                 let salt = (i as u32 + 1).wrapping_mul(0x9E37_79B9);
-                let nudge = Vec2::new(
-                    cloud_hash(x, y, 0x7E95_761E ^ salt) - 0.5,
-                    cloud_hash(x, y, 0x1B87_3593 ^ salt) - 0.5,
-                ) * 0.12;
                 // Each puff billows at its own phase and pace.
                 let pace = 0.75 + cloud_hash(x, y, 0x2545_F491 ^ salt) * 0.5;
                 let phase = cloud_hash(x, y, 0x5851_F42D ^ salt) * TAU
                     + time * pace * TAU / CLOUD_BILLOW_PERIOD;
                 let wander = Vec2::new(phase.cos(), (phase * 0.8).sin()) * CLOUD_WANDER;
-                let center = bank + (Vec2::new(px, py) + nudge) * scale + wander;
+                let center = bank + place * scale + wander;
                 let alpha = edge_fade(grid, center);
                 if alpha <= 0.0 {
                     continue;
                 }
-                let radius = pr
-                    * scale
-                    * (1.35 + cloud_hash(x, y, 0x68E3_1DA4 ^ salt) * 0.3)
-                    * (1.0 + CLOUD_BILLOW * (phase * 1.3).sin());
+                let radius = size * scale * 1.5 * (1.0 + CLOUD_BILLOW * (phase * 1.3).sin());
                 puffs.push(Puff {
                     center,
                     radius,
@@ -696,13 +709,7 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, out: &mut Vec<Vertex>) {
     out.reserve((shadows.len() + puffs.len()) * CLOUD_PUFF_VERTICES);
     for (center, alpha) in shadows {
         let color = with_alpha(CLOUD_SHADOW_COLOR, CLOUD_SHADOW_COLOR[3] * alpha);
-        push_soft_disc(
-            center,
-            Vec2::new(0.78, 0.45) * CLOUD_SPACING,
-            color,
-            color,
-            out,
-        );
+        push_soft_disc(center, Vec2::splat(0.62 * CLOUD_SPACING), color, color, out);
     }
     for puff in &puffs {
         push_cloud_puff(puff, out);
