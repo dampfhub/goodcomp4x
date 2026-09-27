@@ -677,4 +677,75 @@ mod tests {
         assert_eq!(game.field_workers[0].team, Team::Blue);
         assert_eq!(game.field_workers[0].home, 1);
     }
+
+    #[test]
+    fn siege_scenario_can_capture_with_a_direct_assault() {
+        let results: Vec<_> = (0..16).map(direct_assault_capture_turn).collect();
+        assert!(
+            results
+                .iter()
+                .all(|turn| turn.is_some_and(|turn| turn <= 8)),
+            "F12 assault capture turns by seed: {results:?}"
+        );
+    }
+
+    fn direct_assault_capture_turn(seed: u64) -> Option<usize> {
+        let mut game = GameState::siege_scenario();
+        game.seed_rng(seed);
+        assert_eq!(game.cities[1].interior.fighters.len(), 6);
+
+        for turn in 0..12 {
+            let snapshot = game.cities[1].interior.fighters.clone();
+            let core_breached = game.cities[1].interior.core_hp <= 0.0;
+            let occupied: HashSet<_> = snapshot.iter().map(|fighter| fighter.pos).collect();
+            let mut claimed = HashSet::new();
+            for fighter in &mut game.cities[1].interior.fighters {
+                if fighter.team != Team::Blue {
+                    continue;
+                }
+                let range = fighter.unit_type.stats().attack_range;
+                if let Some(enemy) = snapshot
+                    .iter()
+                    .filter(|other| {
+                        other.team == Team::Red && fighter.pos.distance(other.pos) <= range
+                    })
+                    .min_by_key(|other| (other.hp as i32, other.source_id))
+                {
+                    fighter.planned_attack = Some(enemy.pos);
+                } else if !core_breached && fighter.pos.distance(CENTER) <= range {
+                    fighter.planned_attack = Some(CENTER);
+                } else if let Some(next) = fighter
+                    .pos
+                    .neighbors()
+                    .into_iter()
+                    .filter(|&hex| {
+                        in_bounds(hex) && !occupied.contains(&hex) && !claimed.contains(&hex)
+                    })
+                    .filter(|&hex| hex != CENTER || core_breached)
+                    .min_by_key(|hex| (hex.distance(CENTER), hex.q, hex.r))
+                {
+                    fighter.planned_move = Some(next);
+                    claimed.insert(next);
+                }
+            }
+            let field = game.units.clone();
+            for unit in &mut game.units {
+                if unit.team != Team::Blue {
+                    continue;
+                }
+                unit.planned_attack = field
+                    .iter()
+                    .filter(|enemy| enemy.team == Team::Red)
+                    .filter(|enemy| unit.pos.distance(enemy.pos) <= unit.stats().attack_range)
+                    .min_by_key(|enemy| (enemy.hp as i32, enemy.id))
+                    .map(|enemy| enemy.pos);
+            }
+            game.resolve_turn();
+            game.update(10.0);
+            if game.cities[1].team == Team::Blue {
+                return Some(turn + 1);
+            }
+        }
+        None
+    }
 }

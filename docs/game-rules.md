@@ -13,7 +13,7 @@ keys are in `controls.md`; screen-space panels in `ui-system.md`. Amounts below 
 | F2 | Cities (default) | radius-6 map; the Combat units plus a city (with one worker at home), owned farms/mines/pastures and dirt roads per side; Horses and Iron deposits |
 | F3 | Frontier | radius-6 map; a settler and a scout per side, no cities. Red's scout is player-controlled, to test route cuts and contests without the AI |
 | F4 | World | a generated map (see World generation) with your settler and scout and no AI opponent; a new random seed every press |
-| F12 | Siege | the Cities map with two combat troops from each side already at the gates of Red's city; its interior opens for testing |
+| F12 | Siege | the Cities map with four Blue attackers against two Red gate defenders; the Red city's interior opens for testing |
 
 Pressing F1-F3 restarts that scenario; F4 always makes a new map. The savestate (F6 save, F7
 load) holds a copy of the whole game in memory; it survives scenario switches, loading keeps the
@@ -342,6 +342,9 @@ every turn end.
 - Red's interior fighters defend their own city's post by engaging intruders. When attacking an
   enemy city they head toward its post. Exterior Red defenders hold contested city gates and can
   attack nearby enemies, so their projected copies stay in the siege.
+- F12 starts a siege practice position with four Blue troops at the Red city's gates (including
+  a siege unit) against two Red defenders and the post. Order Blue attacks on the exterior as well
+  as inside; without field orders, the defenders can kill gate troops before the post is breached.
 
 ## Cities (`city/`)
 

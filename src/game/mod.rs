@@ -246,8 +246,8 @@ impl GameState {
         game
     }
 
-    /// A compact test of the nested-city battle with opposing units already
-    /// projecting through four gates of the Red city.
+    /// A playable siege: Blue surrounds four gates with enough force to
+    /// breach the defended command post.
     pub fn siege_scenario() -> Self {
         let mut game = Self::city_scenario();
         game.scenario = Scenario::Siege;
@@ -263,11 +263,23 @@ impl GameState {
                 .unwrap()
                 .pos = pos;
         }
+        // Keep the practice battle at the gates. The Cities scenario's other
+        // troops would require unrelated orders and Red's roamers would
+        // arrive mid-siege, changing the intended four-on-two test.
+        game.units.retain(|unit| ![2, 3, 6, 7].contains(&unit.id));
+        for (pos, kind) in [
+            (Hex::new(5, -1), UnitType::Siege),
+            (Hex::new(4, 1), UnitType::Melee),
+        ] {
+            let id = game.next_unit_id;
+            game.next_unit_id += 1;
+            game.units.push(Unit::new(id, pos, Team::Blue, kind));
+        }
         for city in &mut game.cities {
             city.queue.push(city::Build::Unit(city::BuildUnit::Melee));
         }
         game.open_city_interior(1);
-        game.notice = "SIEGE TEST: BLUE COPIES ENTER FROM TWO GATES - CAPTURE RED CENTER".into();
+        game.notice = "SIEGE: FIGHT ON BOTH MAPS (V) - BREACH POST, THEN OCCUPY IT".into();
         game
     }
 
