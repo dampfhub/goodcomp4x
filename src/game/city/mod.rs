@@ -7,6 +7,7 @@ mod citizens;
 mod founding;
 mod interior;
 mod logistics;
+mod rail;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -60,6 +61,7 @@ pub(super) struct City {
     pub food: i32,
     pub production: i32,
     pub barracks_hp: f32,
+    pub coastal_battery_hp: f32,
     pub worked: Vec<Hex>,
     /// Manual tiles displaced by a blocked logistics route. They return when
     /// available unless the player changes the assignment.
@@ -72,6 +74,10 @@ pub(super) struct City {
     pub barracks: Option<Hex>,
     pub mill: Option<Hex>,
     pub workshop: Option<Hex>,
+    /// New placed buildings share one site map instead of adding a city field each.
+    pub extra_buildings: HashMap<Building, Hex>,
+    /// Scroll position in the city tray's building list.
+    pub building_scroll: usize,
     pub pending_building: Option<Building>,
     pub planned_sites: HashMap<Building, Hex>,
     /// Barracks production is independent of the city's main queue.
@@ -96,6 +102,7 @@ impl City {
             food: 0,
             production: 0,
             barracks_hp: BARRACKS_MAX_HP,
+            coastal_battery_hp: 150.0,
             worked: Vec::new(),
             remembered_worked: Vec::new(),
             focus: LaborFocus::Balanced,
@@ -104,6 +111,8 @@ impl City {
             barracks: None,
             mill: None,
             workshop: None,
+            extra_buildings: HashMap::new(),
+            building_scroll: 0,
             pending_building: None,
             planned_sites: HashMap::new(),
             barracks_queue: Vec::new(),
@@ -120,6 +129,7 @@ impl City {
             Building::Barracks => self.barracks,
             Building::Mill => self.mill,
             Building::Workshop => self.workshop,
+            _ => self.extra_buildings.get(&building).copied(),
         }
     }
 
@@ -132,6 +142,9 @@ impl City {
             }
             Building::Mill => self.mill = Some(site),
             Building::Workshop => self.workshop = Some(site),
+            _ => {
+                self.extra_buildings.insert(building, site);
+            }
         }
     }
 }

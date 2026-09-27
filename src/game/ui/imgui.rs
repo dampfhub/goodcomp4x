@@ -1421,6 +1421,7 @@ fn measure_panel(
                 rows as f32 * (if *compact { 34.0 } else { 54.0 })
             }
             Row::QueueItem(_) => 37.0,
+            Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 4) as f32 * 34.0) + 18.0,
             Row::Roster(_) => ROSTER_CHIP + 6.0,
         };
     }
@@ -2163,6 +2164,51 @@ impl GameState {
                             });
                         }
                     }
+                }
+                Row::BuildingCatalog(city, buttons, _) => {
+                    let height = buttons.len().clamp(1, 4) as f32 * 34.0 + 18.0;
+                    ui.child_window(format!("##building-catalog-{city}-{scope:?}"))
+                        .size([0.0, height])
+                        .border(true)
+                        .build(|| {
+                            let _align = ui.push_style_var(StyleVar::ButtonTextAlign([0.03, 0.5]));
+                            for spec in buttons {
+                                let _accent = match spec.state {
+                                    ButtonState::Queued => Some(ui.push_style_color(
+                                        StyleColor::Button,
+                                        [0.34, 0.30, 0.17, 1.0],
+                                    )),
+                                    _ => None,
+                                };
+                                let _disabled =
+                                    ui.begin_disabled(spec.state == ButtonState::Disabled);
+                                let label =
+                                    format!("{}  {}##{:?}", spec.label, spec.hint, spec.target);
+                                let width = ui.content_region_avail()[0].max(80.0);
+                                if ui.button_with_size(label, [width, 28.0]) {
+                                    actions.push(Action::Button(scope, spec.target));
+                                }
+                                if ui.is_item_hovered_with_flags(
+                                    ItemHoveredFlags::ALLOW_WHEN_DISABLED,
+                                ) {
+                                    let tooltip = Button {
+                                        target: spec.target,
+                                        label: spec.label.clone(),
+                                        hint: spec.hint.clone(),
+                                        state: spec.state,
+                                        armed: spec.armed,
+                                        faded: false,
+                                        min: Vec2::ZERO,
+                                        max: Vec2::ZERO,
+                                    };
+                                    ui.tooltip(|| {
+                                        for (_, line) in self.tooltip_lines(&tooltip) {
+                                            text_line(ui, &line);
+                                        }
+                                    });
+                                }
+                            }
+                        });
                 }
                 Row::QueueItem(item) => {
                     let width = (ui.content_region_avail()[0] - 39.0).max(50.0);

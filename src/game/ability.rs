@@ -34,6 +34,9 @@ impl Ability {
             UnitType::Siege => Ability::Deploy,
             UnitType::Scout => Ability::Lookout,
             UnitType::Armored => Ability::ShieldWall,
+            UnitType::PatrolGalley | UnitType::LandingCraft | UnitType::BombardShip => {
+                Ability::Lookout
+            }
         }
     }
 

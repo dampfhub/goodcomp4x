@@ -19,6 +19,51 @@ fn hovering_a_button_shows_its_tooltip() {
 }
 
 #[test]
+fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
+    let mut game = GameState::city_scenario();
+    game.select_city();
+    let first = game.layout(SCREEN);
+    let region = first
+        .building_scrollbars
+        .first()
+        .expect("nested building list");
+    assert!(region.max_offset > 0);
+    let cursor = to_ui((region.min + region.max) / 2.0, SCREEN);
+    assert!(
+        first
+            .buttons
+            .iter()
+            .any(|button| button.target == Target::Building(Building::Granary))
+    );
+    assert!(
+        !first
+            .buttons
+            .iter()
+            .any(|button| button.target == Target::Building(Building::Railhead))
+    );
+    assert!(game.scroll_buildings_at(cursor, SCREEN, -20.0));
+    let scrolled = game.layout(SCREEN);
+    let card = scrolled
+        .buttons
+        .iter()
+        .find(|button| button.target == Target::Building(Building::Railhead))
+        .expect("railhead card shown after scrolling");
+    let middle = (card.min + card.max) / 2.0;
+    assert_eq!(
+        scrolled.button_at(middle).map(|button| button.target),
+        Some(Target::Building(Building::Railhead))
+    );
+    let scrolled_region = scrolled.building_scrollbars.first().unwrap();
+    assert!(contains(scrolled_region.min, scrolled_region.max, middle));
+    assert!(
+        !scrolled
+            .buttons
+            .iter()
+            .any(|button| button.target == Target::Building(Building::Harbor))
+    );
+}
+
+#[test]
 fn hovering_an_enemy_describes_it() {
     let mut game = GameState::new();
     game.fog_of_war = false;
@@ -165,6 +210,31 @@ fn build_card_queues_its_unit() {
 }
 
 #[test]
+fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
+    let mut game = GameState::naval_scenario();
+    game.select_city();
+    for build in [
+        BuildUnit::PatrolGalley,
+        BuildUnit::LandingCraft,
+        BuildUnit::BombardShip,
+    ] {
+        let card = button_cursor(&game, Target::Build(build));
+        assert!(game.layout(SCREEN).button_at(to_ui(card, SCREEN)).is_some());
+    }
+    game.handle_click(
+        button_cursor(&game, Target::Build(BuildUnit::LandingCraft)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    let city = game.selected_city.unwrap();
+    assert!(
+        game.cities[city]
+            .queue
+            .contains(&Build::Unit(BuildUnit::LandingCraft))
+    );
+}
+
+#[test]
 fn city_interior_map_fits_and_its_tiles_issue_orders() {
     let mut game = GameState::siege_scenario();
     let layout = game.layout(SCREEN);
@@ -226,6 +296,33 @@ fn city_view() -> GameState {
 }
 
 #[test]
+fn invalid_stable_site_click_reports_horses_instead_of_open_land() {
+    let mut game = city_view();
+    game.units.clear();
+    game.fog_of_war = false;
+    let city = game.selected_city.unwrap();
+    let site = game
+        .grid
+        .all_hexes()
+        .find(|&hex| {
+            let cursor = hex_cursor(&game, hex);
+            cursor.x > 0.0
+                && cursor.x < SCREEN.x
+                && cursor.y > 0.0
+                && cursor.y < SCREEN.y
+                && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
+                && game.site_available(city, Building::Barracks, hex)
+                && game.site_issue(city, Building::Stable, hex)
+                    == Some("NEEDS HORSES ON OR NEXT TO THE TILE")
+        })
+        .expect("visible open tile away from horses");
+    game.queue_selected_city_building(Building::Stable);
+    game.handle_click(hex_cursor(&game, site), SCREEN, ClickMode::Normal);
+    assert_eq!(game.notice, "STABLE NEEDS HORSES ON OR NEXT TO THE TILE");
+    assert_eq!(game.site_placement(), Some((city, Building::Stable)));
+}
+
+#[test]
 fn barracks_map_click_locks_site_and_exits_placement() {
     let mut game = city_view();
     game.units.clear();
@@ -240,8 +337,7 @@ fn barracks_map_click_locks_site_and_exits_placement() {
         .flat_map(|q| (-8..=8).map(move |r| Hex::new(q, r)))
         .filter(|&hex| {
             let cursor = hex_cursor(&game, hex);
-            game.grid.is_passable(hex)
-                && !game.cities.iter().any(|c| c.pos == hex)
+            game.site_available(city, Building::Barracks, hex)
                 && (0.0..SCREEN.x).contains(&cursor.x)
                 && (0.0..SCREEN.y).contains(&cursor.y)
                 && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
@@ -444,6 +540,7 @@ fn mill_and_workshop_cards_use_shared_placement_controls() {
         (Building::Mill, Hex::new(-2, 0)),
         (Building::Workshop, Hex::new(-1, 0)),
     ] {
+        game.cities[city].building_scroll = if building == Building::Mill { 1 } else { 2 };
         game.handle_click(
             button_cursor(&game, Target::Building(building)),
             SCREEN,

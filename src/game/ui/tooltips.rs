@@ -38,16 +38,12 @@ impl GameState {
             .iter()
             .filter(visible)
             .find(|c| c.barracks == Some(hex));
-        let mill = self
-            .cities
-            .iter()
-            .filter(visible)
-            .find(|c| c.mill == Some(hex));
-        let workshop = self
-            .cities
-            .iter()
-            .filter(visible)
-            .find(|c| c.workshop == Some(hex));
+        let placed = self.cities.iter().filter(visible).find_map(|c| {
+            Building::PLACEABLE
+                .into_iter()
+                .find(|&b| b != Building::Barracks && c.placed_site(b) == Some(hex))
+                .map(|b| (c, b))
+        });
         let seen_city = memory.and_then(|m| m.city.filter(|c| c.team != crate::game::PLAYER_TEAM));
         let seen_barracks =
             memory.and_then(|m| m.barracks.filter(|b| b.team != crate::game::PLAYER_TEAM));
@@ -68,11 +64,9 @@ impl GameState {
                 format!("{:?} BARRACKS", seen.team).to_uppercase(),
                 seen.team.color(),
             ),
-            (None, None, None, None) if mill.is_some() => {
-                ("MILL".into(), mill.unwrap().team.color())
-            }
-            (None, None, None, None) if workshop.is_some() => {
-                ("WORKSHOP".into(), workshop.unwrap().team.color())
+            (None, None, None, None) if placed.is_some() => {
+                let (owner, building) = placed.unwrap();
+                (building.name().into(), owner.team.color())
             }
             (None, None, None, None) => (tile.name(), TEXT),
         };
@@ -142,14 +136,38 @@ impl GameState {
         if self.grid.has_fresh_water(hex) {
             notes.push("FRESH WATER: +1 FOOD".into());
         }
-        if mill.is_some() {
-            notes.push("ADJACENT REACHABLE TILES DELIVER 100% FOOD".into());
-        }
-        if workshop.is_some() {
-            notes.push("ADJACENT BUILDINGS CONFIRM AT 50% PRODUCTION".into());
+        if let Some((owner, building)) = placed {
+            notes.push(building.description().into());
+            if building == Building::CoastalBattery {
+                notes.push(format!("BATTERY {:.0}/150 HP", owner.coastal_battery_hp));
+            }
+            let city_index = self.cities.iter().position(|c| c.id == owner.id).unwrap();
+            match building {
+                Building::WorkCamp => notes.push(
+                    if self.routes(city_index).costs.contains_key(&hex) {
+                        "WORK CAMP CONNECTED: NEARBY JOBS USE THIS BASE"
+                    } else {
+                        "WORK CAMP CUT OFF: WORKERS START AT CITY"
+                    }
+                    .into(),
+                ),
+                Building::Smelter => notes.push(format!(
+                    "SMELTER {} PRODUCTION/T",
+                    signed_quantity(self.smelter_income(city_index))
+                )),
+                Building::Railhead => notes.push(
+                    if self.rail_connected(city_index, Some(&fog)) {
+                        "RAIL LINK OPEN: CITY-RING TROOPS CAN MOVE HERE"
+                    } else {
+                        "RAIL LINK CUT: BUILD A CONTINUOUS ROAD"
+                    }
+                    .into(),
+                ),
+                _ => {}
+            }
         }
         if let Some(open) = self.selected_city
-            && let Some(building) = [Building::Barracks, Building::Mill, Building::Workshop]
+            && let Some(building) = Building::PLACEABLE
                 .into_iter()
                 .find(|building| self.cities[open].planned_sites.get(building) == Some(&hex))
         {
@@ -327,7 +345,7 @@ impl GameState {
                 ),
                 Target::Building(building) => (
                     building.name().into(),
-                    building.shortcut().to_string(),
+                    if building.shortcut() == ' ' { "CITY BUILD MENU".into() } else { building.shortcut().to_string() },
                     format!(
                         "{} COSTS {} PRODUCTION. ONE PER CITY.",
                         building.description(),
@@ -438,6 +456,7 @@ impl GameState {
                         Scenario::Frontier => "A SETTLER AND A SCOUT EACH. BOTH SCOUTS ARE YOURS.",
                         Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS, YOURS ALONE: NO AI OPPONENT.",
                         Scenario::Siege => "OPPOSING FIELD TROOPS ALREADY FIGHT INSIDE A CITY.",
+                        Scenario::Naval => "COASTAL CITIES, SHIPS AND BATTERIES FOR NAVAL PLAYTESTING.",
                     }
                     .into(),
                     None,

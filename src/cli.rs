@@ -11,7 +11,7 @@ Usage: vulkan_engine [OPTIONS]
 
 Options:
   --scenario <NAME>    start in this scenario: combat, cities (the default),
-                       frontier, world (a new random map), or siege
+                       frontier, world (a new random map), siege, or naval
   --seed <N>           generate the world scenario's map from seed N (the
                        debug panel shows a map's seed), so it's the same
                        map every run
@@ -61,7 +61,7 @@ impl Options {
                     let name = value()?;
                     options.scenario = Scenario::from_name(&name).with_context(|| {
                         format!(
-                            "no scenario called {name:?}: try combat, cities, frontier, world or siege"
+                            "no scenario called {name:?}: try combat, cities, frontier, world, siege or naval"
                         )
                     })?;
                 }

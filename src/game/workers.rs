@@ -176,6 +176,8 @@ pub(super) struct FieldWorker {
     pub team: Team,
     /// The city it belongs to and returns to.
     pub home: usize,
+    /// The city center or connected Work Camp this assignment uses as a base.
+    pub base: Hex,
     pub pos: Hex,
     /// What it's out to do; `None` while it walks home.
     pub job: Option<WorkerJob>,
@@ -283,10 +285,11 @@ impl GameState {
         if self.cities.iter().any(|c| c.pos == hex) {
             return Some("A CITY STANDS HERE");
         }
-        let building = self
-            .cities
-            .iter()
-            .any(|c| [c.barracks, c.mill, c.workshop].contains(&Some(hex)));
+        let building = self.cities.iter().any(|c| {
+            crate::game::city::Building::PLACEABLE
+                .into_iter()
+                .any(|b| c.placed_site(b) == Some(hex))
+        });
         match job.kind {
             JobKind::Road if self.is_road_hex(hex) => Some("THERE IS A ROAD HERE ALREADY"),
             JobKind::Road => None,
@@ -488,6 +491,7 @@ impl GameState {
         worker.job = None;
         worker.work_left = None;
         worker.recalled = true;
+        worker.base = self.cities[worker.home].pos;
         self.notice = "WORKER RECALLED - IT HEADS HOME; ITS JOB WAITS ON THE LIST".into();
     }
 
@@ -508,6 +512,23 @@ impl GameState {
         None
     }
 
+    fn work_base_for(&self, city: usize, job: WorkerJob) -> Hex {
+        let center = self.cities[city].pos;
+        self.cities[city]
+            .placed_site(crate::game::city::Building::WorkCamp)
+            .filter(|&camp| {
+                camp.distance(job.hex) <= 3 && self.routes(city).costs.contains_key(&camp)
+            })
+            .unwrap_or(center)
+    }
+
+    fn return_base_for(&self, worker: &FieldWorker, home: usize) -> Hex {
+        self.cities[home]
+            .placed_site(crate::game::city::Building::WorkCamp)
+            .filter(|&camp| worker.base == camp && self.routes(home).costs.contains_key(&camp))
+            .unwrap_or(self.cities[home].pos)
+    }
+
     /// The last step of a turn: workers heading home take newly queued jobs,
     /// cities send idle workers out, and every worker out on the map walks,
     /// works or arrives home. Returns the ids of the workers that did any of
@@ -516,7 +537,10 @@ impl GameState {
         for w in 0..self.field_workers.len() {
             if self.field_workers[w].job.is_none() && !self.field_workers[w].recalled {
                 let home = self.field_workers[w].home;
-                self.field_workers[w].job = self.take_job(home);
+                if let Some(job) = self.take_job(home) {
+                    self.field_workers[w].base = self.work_base_for(home, job);
+                    self.field_workers[w].job = Some(job);
+                }
             }
         }
         for city in 0..self.cities.len() {
@@ -527,11 +551,13 @@ impl GameState {
                 self.cities[city].workers -= 1;
                 let id = self.next_unit_id;
                 self.next_unit_id += 1;
+                let base = self.work_base_for(city, job);
                 self.field_workers.push(FieldWorker {
                     id,
                     team: self.cities[city].team,
                     home: city,
-                    pos: self.cities[city].pos,
+                    base,
+                    pos: base,
                     job: Some(job),
                     work_left: None,
                     recalled: false,
@@ -578,6 +604,9 @@ impl GameState {
             }
             self.complete_job(worker.team, job);
             let next = self.take_job(worker.home);
+            if let Some(next_job) = next {
+                self.field_workers[w].base = self.work_base_for(worker.home, next_job);
+            }
             self.field_workers[w].job = next;
             self.field_workers[w].work_left = None;
             return (true, false);
@@ -587,7 +616,9 @@ impl GameState {
         let Some(home) = self.home_of(&worker) else {
             return (false, false);
         };
-        let target = worker.job.map_or(self.cities[home].pos, |job| job.hex);
+        let target = worker
+            .job
+            .map_or_else(|| self.return_base_for(&worker, home), |job| job.hex);
         let Some(path) = self.worker_path(worker.team, worker.pos, target) else {
             if let Some(job) = worker.job {
                 if worker.team == PLAYER_TEAM {
@@ -878,6 +909,20 @@ mod tests {
     }
 
     #[test]
+    fn new_placed_buildings_keep_worker_structures_off_their_tile() {
+        let mut game = cities();
+        let tile = bare_tile(&game, 2);
+        game.cities[0]
+            .extra_buildings
+            .insert(crate::game::city::Building::FieldHospital, tile);
+        queue(&mut game, tile, JobKind::Improve);
+        assert!(game.cities[0].worker_jobs.is_empty());
+        assert!(game.notice.contains("BUILDING"));
+        queue(&mut game, tile, JobKind::Fort);
+        assert!(game.cities[0].worker_jobs.is_empty());
+    }
+
+    #[test]
     fn a_worker_walks_out_works_and_comes_home() {
         let mut game = cities();
         let hex = bare_tile(&game, 2);
@@ -900,6 +945,27 @@ mod tests {
         // And home, two turns back.
         game.resolve_workers();
         assert_eq!(game.field_workers.len(), 1);
+        game.resolve_workers();
+        assert!(game.field_workers.is_empty());
+        assert_eq!(game.cities[0].workers, 1);
+    }
+
+    #[test]
+    fn connected_work_camp_is_a_fast_base_for_nearby_jobs() {
+        let mut game = cities();
+        game.roads.clear();
+        let camp = Hex::new(-3, 1);
+        let job = Hex::new(-2, 1);
+        game.cities[0]
+            .extra_buildings
+            .insert(crate::game::city::Building::WorkCamp, camp);
+        assert!(game.routes(0).costs.contains_key(&camp));
+        queue(&mut game, job, JobKind::Road);
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].base, camp);
+        assert_eq!(game.field_workers[0].pos, job);
+        game.resolve_workers();
+        assert!(game.roads.contains(&job));
         game.resolve_workers();
         assert!(game.field_workers.is_empty());
         assert_eq!(game.cities[0].workers, 1);
@@ -965,6 +1031,7 @@ mod tests {
             id: 100,
             team: Team::Blue,
             home: 0,
+            base: game.cities[0].pos,
             pos: hex,
             job: Some(WorkerJob::on_tile(hex, JobKind::Fort)),
             work_left: Some(3),

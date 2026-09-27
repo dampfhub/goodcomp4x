@@ -30,6 +30,9 @@ pub(super) enum UnitIcon {
     Spyglass,
     /// Armored: a heater shield.
     Shield,
+    Galley,
+    LandingCraft,
+    BombardShip,
     /// Settler: a flag planted to found a city.
     Flag,
     /// Worker: a shovel.
@@ -45,6 +48,9 @@ impl UnitIcon {
             UnitType::Siege => Self::Catapult,
             UnitType::Scout => Self::Spyglass,
             UnitType::Armored => Self::Shield,
+            UnitType::PatrolGalley => Self::Galley,
+            UnitType::LandingCraft => Self::LandingCraft,
+            UnitType::BombardShip => Self::BombardShip,
         }
     }
 }
@@ -129,6 +135,32 @@ pub(super) fn push_pictogram(
             outline.extend(quadratic((0.0, 31.0), (-22.0, 18.0), (-22.0, -4.0)));
             outline.pop();
             pen.polygon(&outline);
+        }
+        UnitIcon::Galley => {
+            pen.polygon(&[(-30.0, 8.0), (30.0, 8.0), (21.0, 21.0), (-21.0, 21.0)]);
+            pen.rect(-2.0, -28.0, 4.0, 34.0);
+            pen.polygon(&[(1.0, -25.0), (21.0, 3.0), (1.0, 3.0)]);
+            pen.line((-22.0, 26.0), (22.0, 26.0), 2.0);
+        }
+        UnitIcon::LandingCraft => {
+            pen.polygon(&[
+                (-29.0, 3.0),
+                (22.0, 3.0),
+                (30.0, 10.0),
+                (20.0, 22.0),
+                (-22.0, 22.0),
+            ]);
+            pen.rect(-23.0, -3.0, 5.0, 7.0);
+            for x in [-14.0, -4.0, 6.0, 16.0] {
+                pen.circle(x, 7.0, 3.0);
+            }
+            pen.line((22.0, 3.0), (31.0, -3.0), 3.0);
+        }
+        UnitIcon::BombardShip => {
+            pen.polygon(&[(-31.0, 9.0), (31.0, 9.0), (22.0, 23.0), (-22.0, 23.0)]);
+            pen.rect(-14.0, -1.0, 18.0, 10.0);
+            pen.circle(6.0, 0.0, 9.0);
+            pen.line((10.0, -5.0), (26.0, -22.0), 5.0);
         }
         UnitIcon::Flag => {
             pen.rect(-10.0, -20.0, 4.0, 34.0);
@@ -238,13 +270,16 @@ impl Pen<'_> {
 mod tests {
     use super::*;
 
-    const ICONS: [UnitIcon; 8] = [
+    const ICONS: [UnitIcon; 11] = [
         UnitIcon::Sword,
         UnitIcon::Bow,
         UnitIcon::HorseHead,
         UnitIcon::Catapult,
         UnitIcon::Spyglass,
         UnitIcon::Shield,
+        UnitIcon::Galley,
+        UnitIcon::LandingCraft,
+        UnitIcon::BombardShip,
         UnitIcon::Flag,
         UnitIcon::Shovel,
     ];
