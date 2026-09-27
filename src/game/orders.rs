@@ -96,7 +96,7 @@ impl GameState {
         // for manager and citizen clicks.
         if mode == ClickMode::Normal
             && let Some(city) = self.selected_city
-            && self.placing_building.is_none()
+            && self.site_placement().is_none()
             && self.moving_manager.is_none()
             && self
                 .camera

@@ -339,8 +339,11 @@ every turn end.
   the head is removed). Reordering keeps the pool, so progress moves to the new head; a finished
   building waiting for Confirm locks the head in place. Drag a row
   to reorder, click its X to remove; Backspace removes the head and PageDown swaps the first two.
-  A finished unit appears on an open neighboring hex (the city holds it until one opens) and keeps
-  leftover production. A player city with an empty queue holds up the turn.
+  A city finishes at most one item a turn. A finished unit appears on an open neighboring hex
+  (not one another unit is appearing on that turn) and keeps leftover production. With no hex
+  open, the city holds the unit until one opens, and the pool stays at the unit's cost meanwhile:
+  production earned while it waits is lost, not banked for the rest of the queue. A player city
+  with an empty queue holds up the turn.
 - **Costs:** Melee 12, Ranged 14, Cavalry 16, Siege 18, Armored 20; Granary 12, Barracks 16,
   Mill 15, Workshop 20. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue Cavalry or
   Armored), 4-7 Granary, Barracks, Mill, Workshop.
@@ -348,8 +351,10 @@ every turn end.
 - **Buildings:**
   - **Granary:** +2 food per turn. Completes when paid for.
   - **Barracks, Mill, Workshop** stand on a site: queuing one starts site selection (passable land
-    you have explored, not a city, building or other planned site). Click the site's map badge to
-    move it. When paid for, the building waits (blocking the queue) until you click Confirm in the
+    you have explored, not a city, building or other planned site). Site selection belongs to the
+    open city: leaving its view or ending the turn stops it. Until a site is chosen the card stays
+    live and resumes selection, and one that finishes without a site starts selection when its
+    city is next opened. Click the site's map badge to move it. When paid for, the building waits (blocking the queue) until you click Confirm in the
     tray. Completing any building resets production to 0.
   - **Barracks:** its own view and queue (all five unit types) with its own production pool, earned
     only while the city's manager stands on the barracks: each worked tile's production times its
@@ -434,9 +439,9 @@ every turn end.
 - **City view:** C opens the first city needing a build (or your first city), and left-clicking
   your city opens that one. While open, map clicks manage tiles and never select units; it closes
   on Tab, Space, Escape, or a click off the map. A barracks view closes the same way; C switches
-  it to its city. Worked tiles are outlined green (the manager's
-  in gold; red if disrupted), with dotted links from the manager to its workers. With yields
-  shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
+  it to its city. Worked tiles are outlined green (the manager's in gold; red if disrupted).
+  Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
+  route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
   food (green grain) and production (amber hammers) with delivery percentages.
 - Escape closes an open city or barracks view, or else lets go of the selected unit or group and
   closes the tile panel; with none of those open, holding it for a second quits, with a

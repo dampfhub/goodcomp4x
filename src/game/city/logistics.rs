@@ -9,6 +9,23 @@ use crate::game::unit::Team;
 
 pub(in crate::game) struct Routes {
     pub costs: HashMap<Hex, i32>,
+    /// Each reached hex's next hex toward the origin on its cheapest route.
+    toward_origin: HashMap<Hex, Hex>,
+}
+
+impl Routes {
+    /// The hexes goods from `hex` pass through to reach the origin, `hex`
+    /// first and the origin last; empty if they can't reach it.
+    pub(in crate::game) fn path_from(&self, hex: Hex) -> Vec<Hex> {
+        if !self.costs.contains_key(&hex) {
+            return Vec::new();
+        }
+        let mut path = vec![hex];
+        while let Some(&next) = self.toward_origin.get(path.last().unwrap()) {
+            path.push(next);
+        }
+        path
+    }
 }
 
 pub(in crate::game) fn delivered_share(cost: i32) -> i32 {
@@ -68,6 +85,7 @@ impl GameState {
     ) -> Routes {
         let mut result = Routes {
             costs: HashMap::new(),
+            toward_origin: HashMap::new(),
         };
         if blocked(origin) {
             return result;
@@ -103,6 +121,7 @@ impl GameState {
                 let total = cost + step;
                 if total <= 8 && result.costs.get(&n).is_none_or(|old| total < *old) {
                     result.costs.insert(n, total);
+                    result.toward_origin.insert(n, hex);
                 }
             }
         }

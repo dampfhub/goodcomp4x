@@ -90,6 +90,7 @@ plays out.
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
 | 8 | Queue a worker |
 | Click a tile after queuing a Barracks, Mill or Workshop | Choose its site |
+| Its card (or key) again while it's queued with no site | Resume choosing the site (leaving the city stops it) |
 | Click a planned site's map badge | Move that site |
 | Confirm button | Place a finished Barracks, Mill or Workshop on its site |
 | Drag a queue row onto another | Reorder the queue |
@@ -186,6 +187,6 @@ them.
   veil with cloud puffs and show the cities, improvements, roads and structures that were there
   when you last looked, but no units or workers.
 - In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
-  the manager,
-  and dotted lines link it to its workers. Green grain and amber hammers show food and production,
-  with the share that reaches the city.
+  the manager; hovering the manager draws a dotted line along the way its goods travel to the
+  city. Green grain and amber hammers show food and production, with the share that reaches the
+  city.
