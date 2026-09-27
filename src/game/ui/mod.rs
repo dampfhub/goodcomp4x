@@ -16,7 +16,8 @@
 //! `builder.rs` (`PanelBuilder`), `paint.rs` (shapes to vertices), `trays.rs`
 //! (unit, group, city and Barracks trays), `panels.rs` (top bar, debug panel,
 //! structure hover panel), `queue.rs` (queue panels, scrolling and dragging),
-//! `tooltips.rs`, `text.rs` (number and text formatting), `tests.rs`.
+//! `roster.rs` (the unit strip), `tooltips.rs`, `text.rs` (number and text
+//! formatting), `tests.rs`.
 
 mod builder;
 mod dock;
@@ -24,6 +25,7 @@ mod imgui;
 mod paint;
 mod panels;
 mod queue;
+mod roster;
 mod text;
 mod tooltips;
 mod trays;
@@ -31,7 +33,9 @@ mod trays;
 use glam::{Mat4, Vec2, Vec3};
 
 use super::city::{BuildUnit, Building, LaborFocus};
+use super::draw::UnitLook;
 use super::hex::Hex;
+use super::orders::ClickMode;
 use super::scenario::Scenario;
 use super::workers::JobKind;
 use super::{GameState, mesh};
@@ -39,7 +43,7 @@ use crate::renderer::Vertex;
 use builder::PanelBuilder;
 use dock::{Dock, Rect, Zone};
 pub use imgui::ImGuiLayoutState;
-use paint::{draw_button, draw_shape};
+use paint::{draw_button, draw_chip_hover, draw_shape};
 use queue::queue_items_that_fit;
 
 type Color = [f32; 4];
@@ -73,6 +77,13 @@ const SCROLLBAR_WIDTH: f32 = 12.0;
 const QUEUE_ITEM_HEIGHT: f32 = 48.0;
 const QUEUE_ITEM_GAP: f32 = 4.0;
 const QUEUE_REMOVE_WIDTH: f32 = 34.0;
+/// A unit's square in the unit strip, and the space between squares.
+const ROSTER_CHIP: f32 = 44.0;
+const ROSTER_CHIP_GAP: f32 = 6.0;
+/// Most units in one row of the strip before it wraps.
+const ROSTER_PER_ROW: usize = 12;
+/// How much of its square a unit's token fills, across.
+const ROSTER_TOKEN_SHARE: f32 = 0.8;
 /// Tooltip descriptions wrap at this many characters.
 const TOOLTIP_WRAP: usize = 50;
 const TOOLTIP_GAP: f32 = 8.0;
@@ -177,6 +188,12 @@ enum Target {
     WorkerJobRemove(usize),
     /// Sends the worker with this id straight home.
     RecallWorker(u32),
+    /// The unit strip, by unit id: click selects that unit and moves the
+    /// camera to it, Shift-click adds it to the selection, and Ctrl-click
+    /// takes it out.
+    RosterSelect(u32),
+    RosterAdd(u32),
+    RosterRemove(u32),
     Focus(LaborFocus),
     ConfirmBuilding(Building),
     EndTurn,
@@ -200,6 +217,8 @@ enum UnitAction {
     Guard,
     Settle,
     Disband,
+    /// Drops every order, queue, hold and guard (Ctrl-right-click).
+    ClearOrders,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -275,6 +294,22 @@ enum Shape {
         drop_target: bool,
         locked: bool,
     },
+    /// A unit's token in the unit strip, framed while it's selected.
+    UnitChip {
+        min: Vec2,
+        max: Vec2,
+        chip: RosterChip,
+    },
+}
+
+/// A unit in the unit strip: which one, how its token looks, and whether it's
+/// selected.
+#[derive(Clone, Copy)]
+pub(super) struct RosterChip {
+    pub(super) id: u32,
+    pub(super) look: UnitLook,
+    pub(super) color: Color,
+    pub(super) selected: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -342,6 +377,8 @@ struct Layout {
     panels: Vec<(Vec2, Vec2)>,
     queue_scrollbars: Vec<QueueScrollRegion>,
     queue_items: Vec<QueueItemRegion>,
+    /// The unit strip's tokens and the unit id each one stands for.
+    roster_chips: Vec<(Vec2, Vec2, u32)>,
     dock: Option<Dock>,
 }
 
@@ -385,6 +422,23 @@ impl Layout {
         self.shapes.push(Shape::Panel { min, max, faded });
         self.panels.push((min, max));
     }
+
+    /// The unit whose token in the unit strip is under `point`, if any.
+    fn roster_chip_at(&self, point: Vec2) -> Option<u32> {
+        self.roster_chips
+            .iter()
+            .find(|&&(min, max, _)| contains(min, max, point))
+            .map(|&(_, _, id)| id)
+    }
+}
+
+/// What a click on unit `id` in the unit strip does, by its modifiers.
+fn roster_target(id: u32, mode: ClickMode) -> Target {
+    match mode {
+        ClickMode::QueueMove => Target::RosterAdd(id),
+        ClickMode::Swap => Target::RosterRemove(id),
+        _ => Target::RosterSelect(id),
+    }
 }
 
 impl GameState {
@@ -398,6 +452,14 @@ impl GameState {
         let mut out = Vec::new();
         for shape in &layout.shapes {
             draw_shape(shape, &mut out);
+        }
+        if let Some(&(min, max, _)) = point.and_then(|p| {
+            layout
+                .roster_chips
+                .iter()
+                .find(|&&(min, max, _)| contains(min, max, p))
+        }) {
+            draw_chip_hover(min, max, &mut out);
         }
         for button in &layout.buttons {
             draw_button(button, hovered == Some(button.target), &mut out);
@@ -470,10 +532,16 @@ impl GameState {
     /// Handles a click on the UI, returning whether it hit anything (in which
     /// case it shouldn't also count as a click on the map). `cursor` is in
     /// window pixels with the origin at the top-left.
-    pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2) -> bool {
+    /// `mode` carries the click's modifiers: Shift-clicking the unit strip
+    /// adds to the selection and Ctrl-clicking takes out.
+    pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) -> bool {
         let point = to_ui(cursor, screen_size);
         let layout = self.layout_with_hover(screen_size, Some(cursor)).0;
         if self.drag_queue_scrollbar_at(cursor, screen_size, false) {
+            return true;
+        }
+        if let Some(id) = layout.roster_chip_at(point) {
+            self.activate_target(roster_target(id, mode));
             return true;
         }
         let Some(button) = layout.button_at(point) else {
@@ -497,7 +565,11 @@ impl GameState {
                 UnitAction::Guard => self.toggle_guard(),
                 UnitAction::Settle => self.found_city_selected(),
                 UnitAction::Disband => self.disband_selected(),
+                UnitAction::ClearOrders => self.handle_right_click(),
             },
+            Target::RosterSelect(id) => self.roster_select(id),
+            Target::RosterAdd(id) => self.roster_add(id),
+            Target::RosterRemove(id) => self.roster_remove(id),
             Target::BuildWorker => self.queue_selected_city_worker(),
             Target::WorkerJob(kind) => self.queue_worker_job(kind),
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
@@ -620,6 +692,7 @@ impl GameState {
         } else if let Some(hex) = self.inspected_tile {
             self.tile_tray(hex, &mut tray);
         } else {
+            self.dock_roster(&mut layout);
             self.debug_panel(&mut layout);
             return layout;
         }
@@ -640,8 +713,18 @@ impl GameState {
                 layout.dock_panel(queue, Zone::BottomLeft);
             }
         }
+        self.dock_roster(&mut layout);
         self.debug_panel(&mut layout);
         layout
+    }
+
+    /// Whether `cursor` (window pixels, origin top-left) is over a classic
+    /// panel, where a left drag isn't a selection box.
+    pub fn ui_covers(&self, cursor: Vec2, screen_size: Vec2) -> bool {
+        let point = to_ui(cursor, screen_size);
+        self.layout_with_hover(screen_size, Some(cursor))
+            .0
+            .covers(point)
     }
 
     /// The unit drawn under `cursor` (window pixels, origin top-left). In a

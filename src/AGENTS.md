@@ -15,10 +15,11 @@ window/taskbar icon in code.
 - The key map is the `KeyCode` match in `App::window_event`; most arms call one `GameState`
   method. Escape has its own `KeyboardInput` arm because it acts on press and release (close a
   view, or hold to quit); F5 is handled by `App` itself.
-- Left clicks act on release, and only if the cursor moved less than the 6-pixel drag threshold
-  (otherwise it was a pan): `handle_click` (the modifiers pick its `ClickMode`: Shift queues,
-  Ctrl swaps), or with Alt held, `toggle_in_selection` / `select_in_box`. Right clicks act on
-  press: `handle_context_click` (attack; Shift queues, Ctrl clears).
+- Left clicks act on release, and only if the cursor moved less than the 6-pixel drag threshold:
+  `handle_click` (the modifiers pick its `ClickMode`: Shift queues, or adds a clicked unit to
+  the selection; Ctrl swaps, or takes a clicked group member out). A longer drag that started
+  on the map is a selection box: `select_in_box` (Shift adds). Only the middle button pans.
+  Right clicks act on press: `handle_context_click` (attack; Shift queues, Ctrl clears).
 - Frame pacing: `about_to_wait` schedules redraws at 165 FPS with `ControlFlow::WaitUntil`.
 - The window opens at 80% of the primary monitor (or `--size`), centered; the city scenarios
   start with the camera on the whole map (`start_on_whole_map`). F5 toggles borderless

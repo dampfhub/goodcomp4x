@@ -101,3 +101,9 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     from both. The command post retaliates at range two.
 38. City centers no longer accept exterior attacks or have an exterior HP bar. Units standing
     there and barracks remain attackable; the tactical command post is the capture target.
+39. Selection and the unit strip (`claude/selection-roster`): a left-drag on the map draws a
+    selection box (Shift-drag adds) instead of panning, which is now middle-drag only; Shift-click
+    adds a unit to the selection and Ctrl-click takes a group member out; Alt no longer selects.
+    A unit strip at the top-left shows the military units still needing orders, in turn order,
+    with the selection framed: click to jump to one, Shift- or Ctrl-click to add or remove it.
+    The group panel gained a Clear Orders button.

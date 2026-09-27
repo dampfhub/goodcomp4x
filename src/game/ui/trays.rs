@@ -356,8 +356,8 @@ impl GameState {
         for help in [
             "CLICK A HEX: EACH MOVES AS CLOSE TO IT AS IT CAN",
             "RIGHT-CLICK A HEX: EVERY UNIT IN RANGE ATTACKS IT",
-            "SHIFT: ADD THE MOVE OR ATTACK AS ONE MORE TURN FOR ALL",
-            "CLICK ONE UNIT TO SELECT JUST IT · ALT-CLICK ADDS OR REMOVES",
+            "SHIFT: QUEUE THE MOVE OR ATTACK FOR LATER TURNS FOR ALL",
+            "CLICK ONE UNIT TO SELECT JUST IT · SHIFT-CLICK ADDS · CTRL-CLICK REMOVES",
         ] {
             panel.text(SMALL, vec![(help.into(), LABEL_TEXT)]);
         }
@@ -365,6 +365,14 @@ impl GameState {
 
         let armed = |mode| self.group == group && self.ui_click_mode == Some(mode);
         let all_guarding = group.iter().all(|&i| self.units[i].guarding);
+        let any_orders = group.iter().any(|&i| {
+            let unit = &self.units[i];
+            unit.has_queue()
+                || unit.planned_move.is_some()
+                || unit.planned_attack.is_some()
+                || unit.holding
+                || unit.guarding
+        });
         panel.buttons(vec![
             ButtonSpec {
                 target: Target::Unit(UnitAction::Move),
@@ -386,6 +394,13 @@ impl GameState {
                 label: "GUARD".into(),
                 hint: "G".into(),
                 state: ButtonState::new(all_guarding, false),
+                armed: false,
+            },
+            ButtonSpec {
+                target: Target::Unit(UnitAction::ClearOrders),
+                label: "CLEAR ORDERS".into(),
+                hint: "CTRL-RMB".into(),
+                state: ButtonState::new(false, !any_orders),
                 armed: false,
             },
         ]);

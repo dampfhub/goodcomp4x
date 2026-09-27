@@ -1245,3 +1245,148 @@ fn worker_jobs_reorder_by_dragging() {
     let kinds: Vec<_> = game.cities[0].worker_jobs.iter().map(|j| j.kind).collect();
     assert_eq!(kinds, [JobKind::Fort, JobKind::Road]);
 }
+
+/// Where to click, in window pixels, on unit `id`'s token in the unit strip.
+fn roster_cursor(game: &GameState, id: u32) -> Vec2 {
+    let layout = game.layout(SCREEN);
+    let &(min, max, _) = layout
+        .roster_chips
+        .iter()
+        .find(|chip| chip.2 == id)
+        .expect("token shown");
+    to_ui((min + max) / 2.0, SCREEN)
+}
+
+/// The unit ids in the unit strip, in order, and which are framed as selected.
+fn roster(game: &GameState) -> Vec<(u32, bool)> {
+    game.layout(SCREEN)
+        .shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            Shape::UnitChip { chip, .. } => Some((chip.id, chip.selected)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_unit_strip_lists_units_needing_orders_and_selects_from_them() {
+    let mut game = GameState::new();
+    let blue: Vec<usize> = (0..game.units.len())
+        .filter(|&i| game.is_player_controlled(i))
+        .collect();
+    let id = |i: usize| game.units[i].id;
+    let ids: Vec<u32> = blue.iter().map(|&i| id(i)).collect();
+    assert_eq!(
+        roster(&game).iter().map(|c| c.0).collect::<Vec<_>>(),
+        ids,
+        "every unit needing orders, in the order the game selects them"
+    );
+    assert_eq!(
+        roster(&game)[0],
+        (ids[0], true),
+        "the selected one is framed"
+    );
+
+    // A unit with its orders leaves the strip.
+    game.set_selection(vec![blue[0]]);
+    game.hold_selected_unit();
+    assert!(roster(&game).iter().all(|c| c.0 != ids[0]));
+
+    // Clicking a token selects just that unit and moves the camera to it.
+    game.handle_click(roster_cursor(&game, ids[2]), SCREEN, ClickMode::Normal);
+    assert_eq!(game.selection(), vec![blue[2]]);
+    let focus_before = game.camera.center;
+    // Shift adds, Ctrl takes out, and the strip frames whatever is selected.
+    game.handle_click(roster_cursor(&game, ids[3]), SCREEN, ClickMode::QueueMove);
+    assert_eq!(game.selection(), vec![blue[2], blue[3]]);
+    assert_eq!(
+        game.camera.center, focus_before,
+        "adding doesn't move the camera"
+    );
+    let framed: Vec<u32> = roster(&game).iter().filter(|c| c.1).map(|c| c.0).collect();
+    assert_eq!(framed, vec![ids[2], ids[3]]);
+    game.handle_click(roster_cursor(&game, ids[2]), SCREEN, ClickMode::Swap);
+    assert_eq!(game.selection(), vec![blue[3]]);
+    // With one unit selected, Ctrl-clicking it keeps it.
+    game.handle_click(roster_cursor(&game, ids[3]), SCREEN, ClickMode::Swap);
+    assert_eq!(game.selection(), vec![blue[3]]);
+    assert!(
+        game.units.iter().all(|u| !u.has_queue()),
+        "nothing got orders"
+    );
+}
+
+#[test]
+fn the_unit_strip_leaves_out_settlers_and_clears_every_panel() {
+    let game = GameState::frontier_scenario();
+    let listed: Vec<u32> = roster(&game).iter().map(|c| c.0).collect();
+    assert!(!listed.is_empty());
+    assert!(
+        listed.iter().all(|&id| !game.settlers.contains(&id)),
+        "only military units"
+    );
+
+    // The strip never overlaps another panel, with or without a city open.
+    let mut game = GameState::city_scenario();
+    for open_city in [false, true] {
+        if open_city {
+            game.select_city();
+        }
+        let layout = game.layout(SCREEN);
+        assert!(!layout.roster_chips.is_empty());
+        for (a, &(amin, amax)) in layout.panels.iter().enumerate() {
+            for &(bmin, bmax) in &layout.panels[a + 1..] {
+                let (a, b) = (
+                    Rect {
+                        min: amin,
+                        max: amax,
+                    },
+                    Rect {
+                        min: bmin,
+                        max: bmax,
+                    },
+                );
+                assert!(!a.overlaps(b, 0.0), "{a:?} overlaps {b:?}");
+            }
+        }
+        for &(min, max, _) in &layout.roster_chips {
+            assert!(
+                layout
+                    .panels
+                    .iter()
+                    .any(|&(pmin, pmax)| { min.cmpge(pmin).all() && max.cmple(pmax).all() }),
+                "every token sits inside the strip's panel"
+            );
+        }
+    }
+}
+
+#[test]
+fn clear_orders_drops_a_groups_queues() {
+    let mut game = GameState::new();
+    game.fog_of_war = false;
+    let blue: Vec<usize> = (0..game.units.len())
+        .filter(|&i| game.is_player_controlled(i))
+        .take(2)
+        .collect();
+    game.set_selection(blue.clone());
+    assert!(game.queue_move(Hex::new(0, 1)));
+    assert!(blue.iter().any(|&i| game.units[i].has_queue()));
+    game.handle_click(
+        button_cursor(&game, Target::Unit(UnitAction::ClearOrders)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    for &i in &blue {
+        let unit = &game.units[i];
+        assert!(!unit.has_queue() && unit.planned_move.is_none());
+    }
+    let clear = game
+        .layout(SCREEN)
+        .buttons
+        .into_iter()
+        .find(|b| b.target == Target::Unit(UnitAction::ClearOrders))
+        .unwrap();
+    assert_eq!(clear.state, ButtonState::Disabled, "nothing left to clear");
+}

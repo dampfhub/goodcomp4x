@@ -1557,6 +1557,19 @@ pub(super) struct UnitLook {
     pub civilian: bool,
 }
 
+/// A unit's token (as on the map) sized so a military unit's disc has
+/// `radius`, in whatever space `center` is in: the UI draws the unit strip
+/// with it.
+pub(super) fn push_unit_token(
+    center: Vec2,
+    look: UnitLook,
+    radius: f32,
+    color: Color,
+    out: &mut Vec<Vertex>,
+) {
+    push_unit_icon(center, look, radius / UNIT_ICON_RADIUS, color, out);
+}
+
 /// The unit's token in its team color with a dark outline, so it reads on
 /// any terrain, and its pictogram on top. Military units stand on a disc;
 /// civilians on a hollow pointy-top hexagon (a pale center inside a

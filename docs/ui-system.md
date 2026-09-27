@@ -2,7 +2,7 @@
 
 The shared UI content lives in `src/game/ui/`. The module is split into
 `mod.rs` (shared types and entry points), `builder.rs` (panel content),
-`trays.rs`, `panels.rs`, `queue.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
+`trays.rs`, `panels.rs`, `queue.rs`, `roster.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
 experimental ImGui presentation (`src/game/ui/imgui.rs`), and F11 switches
 between it and the classic layout. `src/game/AGENTS.md` points contributors
 here. Add new controls to the shared `PanelBuilder` content and route their
@@ -33,6 +33,12 @@ are clamped below the status bar. Docking uses a transparent drag payload so
 the chosen split target stays visible, and floating sizes are preserved across
 dock and undock. Inspect stays transient unless docked into an outer box, where
 it keeps the most recent hover summary visible.
+The unit strip (`roster.rs`, a `Row::Roster` of unit tokens) is a fixed,
+auto-sized window under the status bar at the top-left, not a dockable slot;
+its last drawn rectangle is reserved in the dock plan so the other windows keep
+clear of it. Its tokens are drawn with the map's own token geometry through
+the window draw list. In the classic layout it docks at `Zone::TopLeft` before
+the debug panel.
 At the start of each frame, synchronize native ImGui dock state before planning
 floating positions: ImGui commits a highlighted drop in `NewFrame`, and using
 the previous frame's floating state can immediately undo that split.

@@ -115,6 +115,13 @@ const STATUS_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
     .union(WindowFlags::NO_SAVED_SETTINGS)
     .union(WindowFlags::NO_SCROLLBAR)
     .union(WindowFlags::NO_SCROLL_WITH_MOUSE);
+/// The unit strip: fixed under the status bar, sized to its tokens, never
+/// focused or docked.
+const ROSTER_FLAGS: WindowFlags = STATUS_FLAGS
+    .union(WindowFlags::ALWAYS_AUTO_RESIZE)
+    .union(WindowFlags::NO_COLLAPSE)
+    .union(WindowFlags::NO_FOCUS_ON_APPEARING)
+    .union(WindowFlags::NO_NAV);
 /// Height of a progress bar row (`Row::Bar`).
 const BAR_HEIGHT: f32 = 12.0;
 const COLLAPSED_HEIGHT: f32 = 30.0;
@@ -311,6 +318,9 @@ pub struct ImGuiLayoutState {
     debug_attached: bool,
     debug_reposition: bool,
     debug_outer_relation: Option<(PinnedPanel, QueueDockRelation)>,
+    /// The unit strip's window as last drawn (top-left position and size),
+    /// which the other windows keep clear of.
+    roster_rect: Option<(Vec2, Vec2)>,
 }
 
 impl ImGuiLayoutState {
@@ -1016,6 +1026,12 @@ impl ImGuiLayoutState {
             PANEL_GAP,
             STATUS_HEIGHT + PANEL_MARGIN,
         );
+        if let Some((pos, size)) = self.roster_rect {
+            dock.reserve(Rect {
+                min: Vec2::new(pos.x, viewport.y - pos.y - size.y),
+                max: Vec2::new(pos.x + size.x, viewport.y - pos.y),
+            });
+        }
         for geometry in self
             .pinned_geometry
             .iter()
@@ -1167,9 +1183,41 @@ fn measure_panel(
                 rows as f32 * (if *compact { 34.0 } else { 54.0 })
             }
             Row::QueueItem(_) => 37.0,
+            Row::Roster(_) => ROSTER_CHIP + 6.0,
         };
     }
     height + 12.0
+}
+
+/// A unit strip token drawn with ImGui's draw list: the same token as on the
+/// map, in a framed square (bright while selected, white while hovered).
+fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, hovered: bool) {
+    let draw = ui.get_window_draw_list();
+    let (bg, border) = if chip.selected {
+        (BUTTON_HOVER_BG, ARMED_BORDER_COLOR)
+    } else {
+        (BUTTON_BG, BORDER_COLOR)
+    };
+    let edge = if hovered { TEXT } else { border };
+    let thickness = if chip.selected { ARMED_BORDER } else { BORDER };
+    draw.add_rect(min, max, bg).filled(true).build();
+    draw.add_rect(min, max, edge).thickness(thickness).build();
+    let mut vertices = Vec::new();
+    let radius = (max[0] - min[0]) * ROSTER_TOKEN_SHARE / 2.0;
+    super::super::draw::push_unit_token(Vec2::ZERO, chip.look, radius, chip.color, &mut vertices);
+    // The token is built Y-up around the origin; ImGui's Y points down.
+    let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
+    let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+    for triangle in vertices.chunks_exact(3) {
+        draw.add_triangle(
+            at(&triangle[0]),
+            at(&triangle[1]),
+            at(&triangle[2]),
+            triangle[0].color,
+        )
+        .filled(true)
+        .build();
+    }
 }
 
 fn text_line(ui: &Ui, line: &Line) {
@@ -1698,6 +1746,36 @@ impl GameState {
                     text_line(ui, line);
                 }
                 Row::Gap(height) => ui.dummy([0.0, height.max(0.0)]),
+                Row::Roster(chips) => {
+                    let io = ui.io();
+                    let mode = if io.key_shift {
+                        ClickMode::QueueMove
+                    } else if io.key_ctrl {
+                        ClickMode::Swap
+                    } else {
+                        ClickMode::Normal
+                    };
+                    for (index, chip) in chips.iter().enumerate() {
+                        if index != 0 {
+                            ui.same_line_with_spacing(0.0, ROSTER_CHIP_GAP);
+                        }
+                        let clicked = ui.invisible_button(
+                            format!("##roster-{}", chip.id),
+                            [ROSTER_CHIP, ROSTER_CHIP],
+                        );
+                        let hovered = ui.is_item_hovered();
+                        draw_roster_chip(ui, ui.item_rect_min(), ui.item_rect_max(), chip, hovered);
+                        if clicked {
+                            actions.push(Action::Button(scope, roster_target(chip.id, mode)));
+                        }
+                        if hovered && let Some(unit) = self.units.iter().find(|u| u.id == chip.id) {
+                            ui.tooltip_text(format!(
+                                "{} - CLICK: SELECT · SHIFT: ADD · CTRL: REMOVE",
+                                self.unit_role(unit)
+                            ));
+                        }
+                    }
+                }
                 Row::Bar(fraction) => {
                     // No "0%" overlay: it doesn't fit a 12 px bar, and the row
                     // above already says what the bar counts toward.
@@ -1935,6 +2013,25 @@ impl GameState {
                     actions.push(Action::Button(None, Target::EndTurn));
                 }
             });
+
+        // The unit strip: a fixed window under the status bar at the
+        // top-left, whose space the docked windows keep clear of.
+        layout.roster_rect = None;
+        if let Some(roster) = self.roster_panel() {
+            ui.window("Units needing orders")
+                .flags(ROSTER_FLAGS)
+                .position(
+                    [PANEL_MARGIN, STATUS_HEIGHT + PANEL_MARGIN],
+                    Condition::Always,
+                )
+                .build(|| {
+                    self.render_imgui_panel(ui, &roster, fonts, None, &mut actions);
+                    layout.roster_rect = Some((
+                        Vec2::from_array(ui.window_pos()),
+                        Vec2::from_array(ui.window_size()),
+                    ));
+                });
+        }
 
         draw_outer_boxes(ui, layout, viewport, arranging, &mut actions);
 

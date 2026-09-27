@@ -65,7 +65,9 @@ pub struct App {
     /// When Escape was pressed, while it's held; the game quits once it's
     /// been held for `QUIT_HOLD`.
     quit_held_since: Option<Instant>,
-    /// Where an Alt-drag selection box started, while the button is down.
+    /// Where a left press on the map started, while the button is down: once
+    /// the cursor moves `DRAG_THRESHOLD` away it's a selection box, not a
+    /// click.
     box_start: Option<Vec2>,
     /// The window's inner size, if set on the command line (or by screenshot
     /// mode); otherwise it's a fraction of the monitor.
@@ -426,7 +428,6 @@ impl ApplicationHandler for App {
                     self.cursor_pos = Some(pos);
                     return;
                 }
-                let mut pan_from = self.cursor_pos;
                 if self.use_imgui
                     && self
                         .imgui
@@ -436,18 +437,16 @@ impl ApplicationHandler for App {
                     self.cursor_pos = Some(pos);
                     return;
                 }
+                // A left press that moves far enough is a selection box (drawn
+                // from `box_start`), not a click; only the middle button pans.
                 if let Some((origin, _, _)) = self.left_press
                     && !self.left_dragging
                     && pos.distance(origin) >= DRAG_THRESHOLD
                 {
                     self.left_dragging = true;
-                    // Include motion below the threshold when the drag begins.
-                    if !self.panning {
-                        pan_from = Some(origin);
-                    }
                 }
-                if (self.panning || self.left_dragging)
-                    && let (Some(last), Some(size)) = (pan_from, self.screen_size())
+                if self.panning
+                    && let (Some(last), Some(size)) = (self.cursor_pos, self.screen_size())
                 {
                     self.game.camera.pan(pos - last, size);
                 }
@@ -489,11 +488,6 @@ impl ApplicationHandler for App {
                             return;
                         }
                         let keys = self.modifiers.state();
-                        // Alt starts a selection box instead of a click or pan.
-                        if keys.alt_key() {
-                            self.box_start = Some(cursor);
-                            return;
-                        }
                         if !self.use_imgui
                             && !keys.shift_key()
                             && !keys.control_key()
@@ -521,6 +515,13 @@ impl ApplicationHandler for App {
                         };
                         self.left_press = Some((cursor, mode, !self.game.is_resolving()));
                         self.left_dragging = self.panning;
+                        // A drag from the map (not from a classic panel) selects
+                        // the units inside its box.
+                        let on_panel = !self.use_imgui
+                            && self
+                                .screen_size()
+                                .is_some_and(|size| self.game.ui_covers(cursor, size));
+                        self.box_start = (!on_panel && !self.panning).then_some(cursor);
                     }
                 }
                 (ElementState::Released, MouseButton::Left) => {
@@ -543,13 +544,14 @@ impl ApplicationHandler for App {
                     }
                     if let (Some(start), Some(end), Some(size)) =
                         (self.box_start.take(), self.cursor_pos, self.screen_size())
+                        && self.left_dragging
+                        && start.distance(end) >= DRAG_THRESHOLD
                     {
-                        // Barely moving makes it an Alt-click on one unit.
-                        if start.distance(end) < DRAG_THRESHOLD {
-                            self.game.toggle_in_selection(end, size);
-                        } else {
-                            self.game.select_in_box(start, end, size);
-                        }
+                        // Shift adds the boxed units to the selection.
+                        let add = self.modifiers.state().shift_key();
+                        self.game.select_in_box(start, end, size, add);
+                        self.left_press = None;
+                        self.left_dragging = false;
                         return;
                     }
                     if let Some((origin, mode, may_click)) = self.left_press.take()
@@ -588,6 +590,8 @@ impl ApplicationHandler for App {
                 }
                 (ElementState::Pressed, MouseButton::Middle) => {
                     self.panning = true;
+                    // Panning mid-press cancels both the click and the box.
+                    self.box_start = None;
                     if self.left_press.is_some() {
                         self.left_dragging = true;
                     }

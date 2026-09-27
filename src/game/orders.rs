@@ -17,9 +17,11 @@ pub enum ClickMode {
     /// Attack the clicked hex, occupied or not: right-click, or armed from
     /// the tray.
     Attack,
-    /// Swap places with the clicked adjacent ally.
+    /// Ctrl-left-click: swap places with the clicked adjacent ally, or with
+    /// several units selected, take the clicked one out of the selection.
     Swap,
-    /// Shift-left-click: add a turn moving toward the hex to the queue.
+    /// Shift-left-click: add the turns moving to the hex to the queue, or on
+    /// one of the player's units, add it to the selection.
     QueueMove,
     /// Shift-right-click: add an attack on the hex to the queue.
     QueueAttack,
@@ -65,7 +67,7 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
-        if self.click_ui(cursor, screen_size) {
+        if self.click_ui(cursor, screen_size, mode) {
             return;
         }
         self.handle_map_click(cursor, screen_size, mode);
@@ -126,6 +128,19 @@ impl GameState {
         }
 
         let ally = self.controlled_unit_at(hex);
+        // Shift-clicking one of your units adds it to the selection, and
+        // Ctrl-clicking a member of a group takes it out (with one unit
+        // selected, Ctrl-click still swaps).
+        if let Some(ally) = ally {
+            if mode == ClickMode::QueueMove {
+                self.add_to_selection(ally);
+                return;
+            }
+            if mode == ClickMode::Swap && !self.group.is_empty() && self.remove_from_selection(ally)
+            {
+                return;
+            }
+        }
         // With a group selected, a plain click on one of your units picks
         // just it; anything else is an order for the whole group.
         if !self.group.is_empty() {

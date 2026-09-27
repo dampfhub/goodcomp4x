@@ -14,7 +14,7 @@ behavior.
 | `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
 | `orders.rs` | player input and order planning: `ClickMode`, click (move), right-click (attack), swap, ability toggle, hold, guard |
 | `order_queue.rs` | multi-turn order queues: Shift-click adds turns (`queue_move`, `queue_attack`, equal lengths for a group), `advance_queues` at each turn's end |
-| `group.rs` | multi-unit selection (Alt-drag, Alt-click) and group orders |
+| `group.rs` | multi-unit selection (drag a box, Shift-click adds, Ctrl-click removes) and group orders |
 | `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks) |
 | `combat.rs` | damage formula, retaliation, combat log helpers |
 | `ability.rs` | the abilities and their tuning constants |
@@ -41,7 +41,7 @@ behavior.
 | `effects.rs` | attack animations during playback |
 | `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
-| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling and drag to reorder |
+| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling and drag to reorder; the unit strip of units needing orders |
 | `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
 | `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |

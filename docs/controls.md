@@ -23,12 +23,17 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
 | Delete / Disband button, twice | Remove the selected unit for good (the first press asks to confirm) |
 | Tab | Look at the next unit without holding this one; leave the city or barracks view |
-| Alt-drag a box | Select every one of your units inside it as a group |
-| Alt-click a unit | Add it to, or remove it from, the group |
+| Left-drag a box on the map | Select every one of your units inside it (two or more become a group) |
+| Shift-left-drag a box | Add the units inside it to the selection |
+| Shift-click one of your units | Add it to the selection |
+| Ctrl-click a unit in the group | Take it out of the group (with one unit selected, Ctrl-click swaps instead) |
 | Hold Alt | Show extra map info: each unit's turn order, and every explored tile's yields |
 | Left-click a hex with a group | Each member moves as close to it as it can get |
 | Right-click a hex with a group | Every member in range attacks it (again to call it off) |
-| Shift-left / Shift-right-click with a group | Queue one more turn for every member, so their queues stay the same length |
+| Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
+| Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
+| Click a unit in the unit strip | Select just it and move the camera to it |
+| Shift-click / Ctrl-click a unit in the unit strip | Add it to / take it out of the selection |
 | F / Found City button | Found a city with the selected settler |
 | Escape | Let go of the selected unit or group (and close the tile panel) |
 
@@ -37,7 +42,13 @@ through occupied hexes, and two allies can't head for the same hex. Once the sel
 move and an attack queued (or can't do one of them), the next unit needing orders is selected
 and the camera glides to it; a unit you select by clicking stays selected.
 
-Shift-clicks build an order queue over several turns (rules: `game-rules.md`, Order queues).
+The unit strip at the top-left shows a token for each of your military units (not settlers)
+that still needs orders this turn, in the order the game selects them: the next one after the
+selected unit is the next to its right, wrapping around. Selected units are framed; a unit
+leaves the strip once it has its orders (or holds, guards or follows a queue).
+
+Shift-clicks on a hex build an order queue over several turns (rules: `game-rules.md`, Order
+queues); a Shift-click on one of your own units adds it to the selection instead.
 Selection stays on the unit while you queue; let go of it (Escape, Tab, or click another unit)
 when done. A queued unit doesn't hold up the turn, and any other order (a plain click or
 right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. A plan
@@ -118,7 +129,7 @@ city center enters the interior map; its clicks control only the interior copies
 | Control | Action |
 | --- | --- |
 | Wheel | Zoom (except over a scrollable queue) |
-| Left-drag (6 px or more) / middle-drag | Pan |
+| Middle-drag | Pan (a left-drag draws a selection box instead) |
 | Rest the cursor on a hex | After 0.75 s, a tooltip: terrain, yields, site, road, who works it, units |
 | Hover a unit | Its stats, in a box at the top-right |
 | Hover a city or barracks | Its production and current build (plus city growth or barracks HP), at the bottom-left |

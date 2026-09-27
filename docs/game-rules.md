@@ -133,8 +133,9 @@ queue them. Nothing heals.
 
 ## Orders (planning)
 
-- Left-click acts on release. Dragging at least 6 pixels pans the map instead and suppresses the
-  click; middle-drag also pans. Losing focus or leaving the window cancels the gesture.
+- Left-click acts on release. Dragging at least 6 pixels from the map draws a selection box
+  instead and suppresses the click (see Groups); middle-drag pans. Losing focus or leaving the
+  window cancels the gesture.
 - **Left click moves, right click attacks.** Click one of your units to select it. Left-click a
   green hex to queue a move; click it again to cancel. Left-clicking a hex with an enemy the
   player can see only says "RIGHT-CLICK TO ATTACK". Left-clicking your own city or barracks hex
@@ -261,9 +262,15 @@ Everyone in a step acts simultaneously:
 
 ## Groups (`group.rs`)
 
-- Alt-drag a box to select your units drawn inside it; Alt-click adds or removes one unit. Two or
-  more become the group; one is an ordinary selection. The group's hexes are highlighted and the
-  tray summarizes it.
+- Left-drag a box to select your units drawn inside it (Shift-drag adds them to the
+  selection); Shift-click adds one unit, and Ctrl-click takes a member back out. Two or more
+  become the group; one is an ordinary selection. The group's hexes are highlighted and the tray
+  summarizes it, with a Clear Orders button that drops every member's orders and queues (as
+  Ctrl-right-click does).
+- The unit strip at the top-left lists the player's military units (not settlers) that still
+  need orders, in unit order, which is the order the game selects them in. Clicking one selects
+  it and moves the camera there; Shift-click adds it to the selection and Ctrl-click takes it
+  out. Selected units are framed.
 - Left-clicking a hex (or Move) converges: members' old moves are dropped, then, nearest to the
   target first, each takes the reachable hex closest to the target that no ally is heading for,
   staying put if it can't get closer. Members keep their own speeds, so the group doesn't hold

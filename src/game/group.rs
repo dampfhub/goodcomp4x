@@ -1,5 +1,6 @@
-//! Ordering several units at once. Alt-drag a box (or Alt-click units) to
-//! select a group. Clicking a hex then sends every member toward it at its own
+//! Ordering several units at once. Drag a box on the map (or Shift-click
+//! units, or Shift-click them in the unit strip) to select a group, and
+//! Ctrl-click a member to take it back out. Clicking a hex then sends every member toward it at its own
 //! speed, each taking the free hex nearest the target that it can reach; the
 //! nearest members choose first. Right-clicking a hex has every member in
 //! range attack it. Members that can't get any closer, or reach, stay as they
@@ -14,45 +15,51 @@ use super::hex::Hex;
 use super::orders::ClickMode;
 
 impl GameState {
-    /// Alt-drag: selects the player's units drawn inside the rectangle
-    /// between `a` and `b` (window pixels, origin top-left).
-    pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2) {
+    /// Left-drag: selects the player's units drawn inside the rectangle
+    /// between `a` and `b` (window pixels, origin top-left). With `add`
+    /// (Shift held), they join the current selection instead of replacing it.
+    pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2, add: bool) {
         if self.is_resolving() || self.interior_view.is_some() {
             return;
         }
         let (min, max) = (a.min(b), a.max(b));
-        let inside = (0..self.units.len())
-            .filter(|&i| self.is_player_controlled(i))
-            .filter(|&i| {
-                let drawn_at = self
-                    .camera
-                    .world_to_screen(self.unit_layout(i).0, screen_size);
-                drawn_at.cmpge(min).all() && drawn_at.cmple(max).all()
-            })
-            .collect();
-        self.set_selection(inside);
-    }
-
-    /// Alt-click: adds the player's unit under the cursor to the selection,
-    /// or takes it out if it's already in.
-    pub fn toggle_in_selection(&mut self, cursor: Vec2, screen_size: Vec2) {
-        if self.is_resolving() || self.interior_view.is_some() {
-            return;
-        }
-        let Some(unit) = self
-            .hex_at_screen(cursor, screen_size)
-            .and_then(|hex| self.controlled_unit_at(hex))
-        else {
-            return;
-        };
-        let mut members = self.selection();
-        match members.iter().position(|&i| i == unit) {
-            Some(at) => {
-                members.remove(at);
+        let mut members = if add { self.selection() } else { Vec::new() };
+        for i in 0..self.units.len() {
+            let drawn_at = self
+                .camera
+                .world_to_screen(self.unit_layout(i).0, screen_size);
+            if self.is_player_controlled(i)
+                && drawn_at.cmpge(min).all()
+                && drawn_at.cmple(max).all()
+                && !members.contains(&i)
+            {
+                members.push(i);
             }
-            None => members.push(unit),
         }
         self.set_selection(members);
+    }
+
+    /// Shift-click (on the map or in the unit strip): adds unit `idx` to the
+    /// selection. Nothing selected, it's selected on its own.
+    pub(super) fn add_to_selection(&mut self, idx: usize) {
+        let mut members = self.selection();
+        if !members.contains(&idx) {
+            members.push(idx);
+        }
+        self.set_selection(members);
+    }
+
+    /// Ctrl-click with several units selected: takes unit `idx` out of the
+    /// selection, leaving an ordinary single selection once one is left.
+    /// Returns whether it was a member.
+    pub(super) fn remove_from_selection(&mut self, idx: usize) -> bool {
+        let mut members = self.selection();
+        let Some(at) = members.iter().position(|&i| i == idx) else {
+            return false;
+        };
+        members.remove(at);
+        self.set_selection(members);
+        true
     }
 
     /// Every selected unit: the group, or else the one selected unit.
@@ -228,7 +235,7 @@ mod tests {
     #[test]
     fn a_box_around_the_army_selects_it_as_a_group() {
         let mut game = GameState::new();
-        game.select_in_box(Vec2::ZERO, SCREEN / Vec2::new(2.0, 1.0), SCREEN);
+        game.select_in_box(Vec2::ZERO, SCREEN / Vec2::new(2.0, 1.0), SCREEN, false);
         let mut group = game.group.clone();
         group.sort();
         assert_eq!(
@@ -238,16 +245,56 @@ mod tests {
         );
         assert_eq!(game.selected, None);
 
-        // Alt-clicking members back out leaves an ordinary single selection.
+        // Ctrl-clicking members back out leaves an ordinary single selection.
         let units = blue(&game);
         for &i in &units[1..] {
             let cursor = game
                 .camera
                 .world_to_screen(game.units[i].pos.to_world(), SCREEN);
-            game.toggle_in_selection(cursor, SCREEN);
+            game.handle_map_click(cursor, SCREEN, ClickMode::Swap);
         }
         assert!(game.group.is_empty());
         assert_eq!(game.selected, Some(units[0]));
+
+        // Shift-clicking them adds them back, one at a time.
+        for &i in &units[1..] {
+            let cursor = game
+                .camera
+                .world_to_screen(game.units[i].pos.to_world(), SCREEN);
+            game.handle_map_click(cursor, SCREEN, ClickMode::QueueMove);
+        }
+        let mut group = game.group.clone();
+        group.sort();
+        assert_eq!(group, units);
+        assert!(
+            units.iter().all(|&i| !game.units[i].has_queue()),
+            "adding a unit queues nothing"
+        );
+    }
+
+    #[test]
+    fn a_shift_drag_adds_to_the_selection_and_a_plain_one_replaces_it() {
+        let mut game = GameState::new();
+        let units = blue(&game);
+        game.set_selection(vec![units[0]]);
+        // An empty corner of the screen adds nobody.
+        game.select_in_box(Vec2::ZERO, Vec2::splat(4.0), SCREEN, true);
+        assert_eq!(game.selection(), vec![units[0]]);
+        let around = |game: &GameState, i: usize| {
+            let at = game
+                .camera
+                .world_to_screen(game.units[i].pos.to_world(), SCREEN);
+            (at - Vec2::splat(5.0), at + Vec2::splat(5.0))
+        };
+        let (a, b) = around(&game, units[1]);
+        game.select_in_box(a, b, SCREEN, true);
+        assert_eq!(game.selection(), vec![units[0], units[1]]);
+        let (a, b) = around(&game, units[2]);
+        game.select_in_box(a, b, SCREEN, false);
+        assert_eq!(game.selection(), vec![units[2]]);
+        // A plain drag over nothing lets go of everything.
+        game.select_in_box(Vec2::ZERO, Vec2::splat(4.0), SCREEN, false);
+        assert!(game.selection().is_empty());
     }
 
     #[test]
