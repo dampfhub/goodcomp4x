@@ -20,6 +20,7 @@
 
 mod builder;
 mod dock;
+mod imgui;
 mod paint;
 mod panels;
 mod queue;
@@ -36,6 +37,7 @@ use super::{GameState, mesh};
 use crate::renderer::Vertex;
 use builder::PanelBuilder;
 use dock::{Dock, Rect, Zone};
+pub use imgui::ImGuiLayoutState;
 use paint::{draw_button, draw_shape};
 use queue::queue_items_that_fit;
 
@@ -278,6 +280,7 @@ pub(super) struct QueueDrag {
     target: Option<usize>,
 }
 
+#[derive(Clone)]
 struct QueueItemSpec {
     kind: QueueKind,
     index: usize,
@@ -456,7 +459,12 @@ impl GameState {
         if button.state == ButtonState::Disabled {
             return true;
         }
-        match button.target {
+        self.activate_target(button.target);
+        true
+    }
+
+    fn activate_target(&mut self, target: Target) {
+        match target {
             Target::Unit(action) => match action {
                 UnitAction::Move => self.choose_move_action(),
                 UnitAction::Attack => self.choose_attack_action(),
@@ -490,7 +498,6 @@ impl GameState {
             Target::TogglePlayback => self.toggle_instant_playback(),
             Target::ToggleFog => self.toggle_fog(),
         }
-        true
     }
 
     /// Tracks which map hex the cursor is over (ignoring the UI) and how long
@@ -508,6 +515,21 @@ impl GameState {
             self.hover_seconds = 0.0;
         }
         self.hovered_city = hex.and_then(|h| self.cities.iter().position(|c| c.pos == h));
+    }
+
+    pub fn update_hover_imgui(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
+        let hex = cursor.and_then(|c| self.hex_at_screen(c, screen_size));
+        if hex == self.hovered_tile {
+            self.hover_seconds += dt;
+        } else {
+            self.hovered_tile = hex;
+            self.hover_seconds = 0.0;
+        }
+        self.hovered_city = hex.and_then(|h| self.cities.iter().position(|c| c.pos == h));
+    }
+
+    pub fn set_ui_notice(&mut self, notice: &str) {
+        self.notice = notice.into();
     }
 
     fn layout(&self, screen_size: Vec2) -> Layout {

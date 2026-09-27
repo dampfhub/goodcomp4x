@@ -43,13 +43,14 @@ tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
 
 1. `game.update(dt)`: camera glide, effect ages, fog-of-war memory (`explore`), and, while a
    turn is resolving, the next step (or every step, with instant playback).
-2. `game.update_hover(cursor, ..)`: which map hex the cursor rests on (for the tile tooltip).
+2. `game.update_hover_imgui` or `game.update_hover`: which map hex the cursor rests on.
 3. `game.build_vertices()`: world geometry, drawn with `game.camera.view_proj(size)`.
-4. `game.build_ui(size, cursor)`: screen-space UI, drawn with `ui_projection(size)`.
-5. `renderer.draw_frame(&[world, ui])`.
+4. The default ImGui presentation builds dockable windows from shared panel content. F11
+   selects the classic `game.build_ui(size, cursor)` presentation instead.
+5. `renderer.draw_frame(&[world, optional classic UI], optional ImGui data)`.
 
-Nothing is retained between frames except the font atlas: every vertex is rebuilt from
-`GameState` each frame, so drawing code is a pure function of state.
+World and classic UI vertices are rebuilt from `GameState` each frame. ImGui retains window
+layout state so the player's panel positions survive view changes.
 
 ## A turn
 

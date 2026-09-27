@@ -290,7 +290,7 @@ impl GameState {
 
     /// A tooltip's title (with the shortcut), description, and why the
     /// button is unavailable, if it is.
-    fn tooltip_lines(&self, button: &Button) -> Vec<(u32, Line)> {
+    pub(super) fn tooltip_lines(&self, button: &Button) -> Vec<(u32, Line)> {
         let (title, shortcut, description, unavailable): (String, String, String, Option<String>) =
             match button.target {
                 Target::Unit(action) => {

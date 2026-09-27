@@ -92,6 +92,9 @@ While a city view is open, map clicks manage tiles and never select units.
 | F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome) |
 | F9 | Pay for the open city's or barracks' current build at once (debug; a building still needs its site and Confirm) |
 | F10 | Toggle fog of war (on by default) |
+| F11 | Switch between the ImGui and classic UI presentations |
+| Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
+| Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
 The faded DEBUG panel at the top-left has buttons for F1-F4 and F6-F10; the current scenario is
 gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an

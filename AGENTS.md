@@ -40,6 +40,8 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
    (Codex reads them there) with a pointer copy in `.claude/skills/` (Claude Code reads them
    there; `board.mjs selftest` checks the two match), scripts in `tools/`. Anything that must hold
    for everyone goes in CI or a script, not in one agent's settings or hooks.
+8. The ImGui presentation is active by default, with F11 switching to the classic UI.
+   Shared panel content and actions must work in both; read `docs/ui-system.md` before UI edits.
 
 ## Where things are
 

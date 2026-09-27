@@ -8,11 +8,10 @@ window/taskbar icon in code.
 
 ## Frame and input flow
 
-- Each redraw, `App` calls `game.update(dt)` and `game.update_hover(..)`, then builds two
-  batches: world vertices (`game.build_vertices()`, through `game.camera.view_proj`) and UI
-  vertices (`game.build_ui(..)`, through `ui_projection`), and passes both to
-  `Renderer::draw_frame`. All geometry is rebuilt from game state every frame; nothing is cached
-  on the GPU except the font atlas.
+- Each redraw, `App` calls `game.update(dt)` and updates hover, then builds world vertices.
+  The classic presentation adds a `game.build_ui(..)` batch; the default ImGui presentation
+  builds native windows from the same panel content. `Renderer::draw_frame` draws the world,
+  optional classic UI, and ImGui data in order. F11 switches presentations.
 - The key map is the `KeyCode` match in `App::window_event`; most arms call one `GameState`
   method. Escape has its own `KeyboardInput` arm because it acts on press and release (close a
   view, or hold to quit); F5 is handled by `App` itself.

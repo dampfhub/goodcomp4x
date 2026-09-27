@@ -127,6 +127,10 @@ impl GameState {
         else {
             return;
         };
+        self.reorder_queue(kind, source, target);
+    }
+
+    pub(super) fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {
         if source == target {
             return;
         }

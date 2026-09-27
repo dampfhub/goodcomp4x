@@ -18,6 +18,10 @@ impl GameState {
     /// don't read as game UI: the scenario pages (the current one gold;
     /// pressing it again restarts it) and the savestate.
     pub(super) fn debug_panel(&self, layout: &mut Layout) {
+        layout.dock_panel(self.debug_panel_content(), Zone::TopLeft);
+    }
+
+    pub(super) fn debug_panel_content(&self) -> PanelBuilder {
         let mut panel = PanelBuilder {
             faded: true,
             ..PanelBuilder::default()
@@ -107,7 +111,7 @@ impl GameState {
             "F10",
             ButtonState::Ready,
         )]);
-        layout.dock_panel(panel, Zone::TopLeft);
+        panel
     }
 
     /// Turn number on the left, the latest notice in the middle, and on the

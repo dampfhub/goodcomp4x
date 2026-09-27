@@ -2,16 +2,21 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use glam::Vec2;
+use imgui::{ConfigFlags, Context as ImGuiContext, FontConfig, FontId, FontSource, StyleColor};
+use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    ElementState, Event, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::cli::Options;
 use crate::game::{
-    ClickMode, GameState, Scenario, font_atlas, quit_prompt, selection_box, ui_projection,
+    ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, quit_prompt, selection_box,
+    ui_projection,
 };
 use crate::icon;
 use crate::renderer::{DrawBatch, Renderer};
@@ -41,6 +46,11 @@ pub struct App {
     renderer: Option<Renderer>,
     window: Option<Window>,
     game: GameState,
+    imgui: Option<ImGuiContext>,
+    imgui_platform: Option<WinitPlatform>,
+    imgui_fonts: Option<[FontId; 3]>,
+    imgui_layout: ImGuiLayoutState,
+    use_imgui: bool,
     last_frame: Option<Instant>,
     minimized: bool,
     cursor_pos: Option<Vec2>,
@@ -79,6 +89,12 @@ impl App {
                 Some(seed) => GameState::world_scenario(seed),
                 None => options.scenario.new_game(),
             },
+            imgui: None,
+            imgui_platform: None,
+            imgui_fonts: None,
+            imgui_layout: ImGuiLayoutState::default(),
+            use_imgui: true,
+
             last_frame: None,
             minimized: false,
             cursor_pos: None,
@@ -131,10 +147,27 @@ impl App {
         let Some(size) = self.screen_size() else {
             return;
         };
-        self.game
-            .update_hover(self.cursor_pos, size, dt.as_secs_f32());
+        if self.use_imgui {
+            self.game.update_hover_imgui(
+                self.cursor_pos.filter(|_| {
+                    !self
+                        .imgui
+                        .as_ref()
+                        .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                }),
+                size,
+                dt.as_secs_f32(),
+            );
+        } else {
+            self.game
+                .update_hover(self.cursor_pos, size, dt.as_secs_f32());
+        }
         let world = self.game.build_vertices();
-        let mut ui = self.game.build_ui(size, self.cursor_pos);
+        let mut ui = if self.use_imgui {
+            Vec::new()
+        } else {
+            self.game.build_ui(size, self.cursor_pos)
+        };
         if let Some(since) = self.quit_held_since {
             let progress = since.elapsed().as_secs_f32() / QUIT_HOLD.as_secs_f32();
             if progress >= 1.0 {
@@ -161,11 +194,28 @@ impl App {
                 vertices: &ui,
             },
         ];
+        let imgui_data = if let (Some(imgui), Some(platform), Some(window)) =
+            (&mut self.imgui, &mut self.imgui_platform, &self.window)
+        {
+            imgui.io_mut().update_delta_time(dt);
+            let _ = platform.prepare_frame(imgui.io_mut(), window);
+            let frame = imgui.frame();
+            if self.use_imgui
+                && let Some(fonts) = self.imgui_fonts
+            {
+                self.game
+                    .draw_imgui(frame, size, self.cursor_pos, &fonts, &mut self.imgui_layout);
+            }
+            platform.prepare_render(frame, window);
+            Some(imgui.render())
+        } else {
+            None
+        };
         let Some(renderer) = &mut self.renderer else {
             return;
         };
         let finished = renderer
-            .draw_frame(&batches)
+            .draw_frame(&batches, imgui_data)
             .context("draw_frame failed")
             .and_then(|()| match &mut self.screenshot {
                 Some(shot) => shot.after_frame(renderer),
@@ -235,8 +285,78 @@ impl ApplicationHandler for App {
             .create_window(attributes)
             .expect("failed to create window");
 
+        let mut imgui = ImGuiContext::create();
+        imgui.set_ini_filename(None);
+        imgui
+            .io_mut()
+            .config_flags
+            .insert(ConfigFlags::DOCKING_ENABLE);
+        imgui.io_mut().config_docking_transparent_payload = true;
+        // The corner grip is reliable here; edge resizing conflicts with the
+        // game's panel placement and offers no useful cursor feedback.
+        imgui.io_mut().config_windows_resize_from_edges = false;
+        // Use the host UI font when available. ImGui copies the bytes into its atlas.
+        let system_font = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf").ok();
+        let mut add_font = |size| {
+            if let Some(font) = &system_font {
+                imgui.fonts().add_font(&[FontSource::TtfData {
+                    data: font,
+                    size_pixels: size,
+                    config: None,
+                }])
+            } else {
+                imgui.fonts().add_font(&[FontSource::DefaultFontData {
+                    config: Some(FontConfig {
+                        size_pixels: size,
+                        ..FontConfig::default()
+                    }),
+                }])
+            }
+        };
+        let body_font = add_font(18.0);
+        let small_font = add_font(15.0);
+        let title_font = add_font(22.0);
+        let style = imgui.style_mut();
+        style.window_padding = [12.0, 10.0];
+        style.frame_padding = [10.0, 6.0];
+        style.item_spacing = [7.0, 6.0];
+        style.window_rounding = 0.0;
+        style.frame_rounding = 0.0;
+        style.scrollbar_rounding = 0.0;
+        style.popup_rounding = 0.0;
+        style.child_rounding = 0.0;
+        style.grab_rounding = 0.0;
+        style.tab_rounding = 0.0;
+        style.window_border_size = 1.0;
+        style.frame_border_size = 1.0;
+        style.window_title_align = [0.0, 0.5];
+        style.button_text_align = [0.5, 0.5];
+        style.colors[StyleColor::Text as usize] = [0.91, 0.92, 0.91, 1.0];
+        style.colors[StyleColor::TextDisabled as usize] = [0.46, 0.48, 0.50, 1.0];
+        style.colors[StyleColor::WindowBg as usize] = [0.018, 0.022, 0.030, 0.96];
+        style.colors[StyleColor::PopupBg as usize] = [0.025, 0.030, 0.041, 0.98];
+        style.colors[StyleColor::Border as usize] = [0.29, 0.32, 0.38, 0.95];
+        style.colors[StyleColor::TitleBg as usize] = [0.030, 0.036, 0.050, 1.0];
+        style.colors[StyleColor::TitleBgActive as usize] = [0.055, 0.065, 0.086, 1.0];
+        style.colors[StyleColor::TitleBgCollapsed as usize] = [0.030, 0.036, 0.050, 0.96];
+        style.colors[StyleColor::FrameBg as usize] = [0.032, 0.039, 0.052, 1.0];
+        style.colors[StyleColor::FrameBgHovered as usize] = [0.073, 0.084, 0.108, 1.0];
+        style.colors[StyleColor::FrameBgActive as usize] = [0.12, 0.14, 0.18, 1.0];
+        style.colors[StyleColor::Button as usize] = [0.045, 0.053, 0.070, 1.0];
+        style.colors[StyleColor::ButtonHovered as usize] = [0.085, 0.10, 0.13, 1.0];
+        style.colors[StyleColor::ButtonActive as usize] = [0.13, 0.15, 0.19, 1.0];
+        style.colors[StyleColor::Header as usize] = [0.075, 0.090, 0.12, 1.0];
+        style.colors[StyleColor::HeaderHovered as usize] = [0.12, 0.15, 0.19, 1.0];
+        style.colors[StyleColor::ScrollbarBg as usize] = [0.024, 0.029, 0.039, 1.0];
+        style.colors[StyleColor::ScrollbarGrab as usize] = [0.21, 0.24, 0.28, 1.0];
+        style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.31, 0.35, 0.39, 1.0];
+        style.colors[StyleColor::PlotHistogram as usize] = [0.80, 0.69, 0.35, 1.0];
+        style.colors[StyleColor::DragDropTarget as usize] = [0.91, 0.77, 0.38, 1.0];
+        let mut imgui_platform = WinitPlatform::new(&mut imgui);
+        imgui_platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
+
         // Safety: `App` drops the renderer before the window (see field order).
-        match unsafe { Renderer::new(&window, font_atlas()) } {
+        match unsafe { Renderer::new(&window, font_atlas(), &mut imgui) } {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(err) => {
                 self.fail(event_loop, err.context("failed to initialize the renderer"));
@@ -244,12 +364,26 @@ impl ApplicationHandler for App {
             }
         }
         self.window = Some(window);
+        self.imgui = Some(imgui);
+        self.imgui_platform = Some(imgui_platform);
+        self.imgui_fonts = Some([small_font, body_font, title_font]);
         self.last_frame = Some(Instant::now());
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        // A screenshot shows the scenario as it starts, whatever the mouse
-        // and keyboard do.
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let (Some(imgui), Some(platform), Some(window)) =
+            (&mut self.imgui, &mut self.imgui_platform, &self.window)
+        {
+            platform.handle_event(
+                imgui.io_mut(),
+                window,
+                &Event::<()>::WindowEvent {
+                    window_id: id,
+                    event: event.clone(),
+                },
+            );
+        }
+        // A screenshot shows the scenario as it starts, whatever the mouse and keyboard do.
         if self.screenshot.is_some() && is_input(&event) {
             return;
         }
@@ -268,14 +402,14 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Vec2::new(position.x as f32, position.y as f32);
-                if self.queue_scroll_dragging {
+                if !self.use_imgui && self.queue_scroll_dragging {
                     if let Some(size) = self.screen_size() {
                         self.game.drag_queue_scrollbar_at(pos, size, true);
                     }
                     self.cursor_pos = Some(pos);
                     return;
                 }
-                if self.queue_item_dragging {
+                if !self.use_imgui && self.queue_item_dragging {
                     if let Some(size) = self.screen_size() {
                         self.game.update_queue_drag_at(pos, size);
                     }
@@ -283,6 +417,15 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let mut pan_from = self.cursor_pos;
+                if self.use_imgui
+                    && self
+                        .imgui
+                        .as_ref()
+                        .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                {
+                    self.cursor_pos = Some(pos);
+                    return;
+                }
                 if let Some((origin, _, _)) = self.left_press
                     && !self.left_dragging
                     && pos.distance(origin) >= DRAG_THRESHOLD
@@ -318,8 +461,17 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state, button, .. } => match (state, button) {
                 (ElementState::Pressed, MouseButton::Left) => {
+                    if self.use_imgui
+                        && self
+                            .imgui
+                            .as_ref()
+                            .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                    {
+                        return;
+                    }
                     if let Some(cursor) = self.cursor_pos {
-                        if let Some(size) = self.screen_size()
+                        if !self.use_imgui
+                            && let Some(size) = self.screen_size()
                             && self.game.drag_queue_scrollbar_at(cursor, size, false)
                         {
                             self.queue_scroll_dragging = true;
@@ -331,7 +483,8 @@ impl ApplicationHandler for App {
                             self.box_start = Some(cursor);
                             return;
                         }
-                        if !keys.shift_key()
+                        if !self.use_imgui
+                            && !keys.shift_key()
                             && !keys.control_key()
                             && let Some(size) = self.screen_size()
                             && self.game.start_queue_drag_at(cursor, size)
@@ -380,11 +533,23 @@ impl ApplicationHandler for App {
                         && may_click
                         && let Some(size) = self.screen_size()
                     {
-                        self.game.handle_click(origin, size, mode);
+                        if self.use_imgui {
+                            self.game.handle_map_click(origin, size, mode);
+                        } else {
+                            self.game.handle_click(origin, size, mode);
+                        }
                     }
                     self.left_dragging = false;
                 }
                 (ElementState::Pressed, MouseButton::Right) => {
+                    if self.use_imgui
+                        && self
+                            .imgui
+                            .as_ref()
+                            .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                    {
+                        return;
+                    }
                     if let (Some(cursor), Some(size)) = (self.cursor_pos, self.screen_size()) {
                         self.game.handle_context_click(
                             cursor,
@@ -403,6 +568,14 @@ impl ApplicationHandler for App {
                 _ => {}
             },
             WindowEvent::MouseWheel { delta, .. } => {
+                if self.use_imgui
+                    && self
+                        .imgui
+                        .as_ref()
+                        .is_some_and(|ctx| ctx.io().want_capture_mouse)
+                {
+                    return;
+                }
                 let steps = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y / 100.0) as f32,
@@ -438,63 +611,83 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
-            } => match key {
-                KeyCode::Space => {
-                    // With a city or barracks open, Space only closes it.
-                    let closed_menu = self.game.exit_structure_menu();
-                    if !closed_menu {
-                        self.game.hold_or_end_turn();
+            } => {
+                let modifiers = self.modifiers.state();
+                if self.use_imgui
+                    && key == KeyCode::KeyR
+                    && modifiers.control_key()
+                    && modifiers.shift_key()
+                {
+                    if self.imgui_layout.request_reset_active_view() {
+                        self.game
+                            .set_ui_notice("VIEW DEBUG LAYOUT RESET TO DEFAULT");
                     }
+                    return;
                 }
-                KeyCode::Tab => self.game.select_next_unit(),
-                KeyCode::KeyQ => self.game.toggle_selected_ability(),
-                KeyCode::KeyC => self.game.select_city(),
-                KeyCode::KeyA => self.game.auto_assign_selected_city(),
-                KeyCode::KeyM => self.game.choose_move_action(),
-                KeyCode::KeyX => self.game.choose_attack_action(),
-                KeyCode::KeyR => self.game.build_worker_road_selected(),
-                KeyCode::KeyI => self.game.improve_worker_tile_selected(),
-                KeyCode::KeyF => self.game.found_city_selected(),
-                KeyCode::Digit1 => self
-                    .game
-                    .queue_selected_city_unit(crate::game::BuildUnit::Melee),
-                KeyCode::Digit2 => self
-                    .game
-                    .queue_selected_city_unit(crate::game::BuildUnit::Ranged),
-                KeyCode::Digit3 => self
-                    .game
-                    .queue_selected_city_unit(crate::game::BuildUnit::Siege),
-                KeyCode::Digit4 => self
-                    .game
-                    .queue_selected_city_building(crate::game::Building::Granary),
-                KeyCode::Digit5 => self
-                    .game
-                    .queue_selected_city_building(crate::game::Building::Barracks),
-                KeyCode::Digit6 => self
-                    .game
-                    .queue_selected_city_building(crate::game::Building::Mill),
-                KeyCode::Digit7 => self
-                    .game
-                    .queue_selected_city_building(crate::game::Building::Workshop),
-                // Queue management stays compact as the build catalogue grows:
-                // Backspace removes the active item; PageDown promotes the
-                // second item into production.
-                KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
-                KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
-                KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
-                KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),
-                KeyCode::F3 => self.game.switch_scenario(Scenario::Frontier),
-                KeyCode::F4 => self.game.switch_scenario(Scenario::World),
-                KeyCode::KeyY => self.game.toggle_yields(),
-                KeyCode::KeyG => self.game.toggle_guard(),
-                KeyCode::F5 => self.toggle_fullscreen(),
-                KeyCode::F6 => self.game.save_state(),
-                KeyCode::F7 => self.game.load_state(),
-                KeyCode::F8 => self.game.toggle_instant_playback(),
-                KeyCode::F9 => self.game.debug_complete_current_production(),
-                KeyCode::F10 => self.game.toggle_fog(),
-                _ => {}
-            },
+                match key {
+                    KeyCode::Space => {
+                        let closed_menu = self.game.exit_structure_menu();
+                        if !closed_menu {
+                            self.game.hold_or_end_turn();
+                        }
+                    }
+                    KeyCode::Tab => self.game.select_next_unit(),
+                    KeyCode::KeyQ => self.game.toggle_selected_ability(),
+                    KeyCode::KeyC => self.game.select_city(),
+                    KeyCode::KeyA => self.game.auto_assign_selected_city(),
+                    KeyCode::KeyM => self.game.choose_move_action(),
+                    KeyCode::KeyX => self.game.choose_attack_action(),
+                    KeyCode::KeyR => self.game.build_worker_road_selected(),
+                    KeyCode::KeyI => self.game.improve_worker_tile_selected(),
+                    KeyCode::KeyF => self.game.found_city_selected(),
+                    KeyCode::Digit1 => self
+                        .game
+                        .queue_selected_city_unit(crate::game::BuildUnit::Melee),
+                    KeyCode::Digit2 => self
+                        .game
+                        .queue_selected_city_unit(crate::game::BuildUnit::Ranged),
+                    KeyCode::Digit3 => self
+                        .game
+                        .queue_selected_city_unit(crate::game::BuildUnit::Siege),
+                    KeyCode::Digit4 => self
+                        .game
+                        .queue_selected_city_building(crate::game::Building::Granary),
+                    KeyCode::Digit5 => self
+                        .game
+                        .queue_selected_city_building(crate::game::Building::Barracks),
+                    KeyCode::Digit6 => self
+                        .game
+                        .queue_selected_city_building(crate::game::Building::Mill),
+                    KeyCode::Digit7 => self
+                        .game
+                        .queue_selected_city_building(crate::game::Building::Workshop),
+                    KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
+                    KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
+                    KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
+                    KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),
+                    KeyCode::F3 => self.game.switch_scenario(Scenario::Frontier),
+                    KeyCode::F4 => self.game.switch_scenario(Scenario::World),
+                    KeyCode::KeyY => self.game.toggle_yields(),
+                    KeyCode::KeyG => self.game.toggle_guard(),
+                    KeyCode::F5 => self.toggle_fullscreen(),
+                    KeyCode::F6 => self.game.save_state(),
+                    KeyCode::F7 => self.game.load_state(),
+                    KeyCode::F8 => self.game.toggle_instant_playback(),
+                    KeyCode::F9 => self.game.debug_complete_current_production(),
+                    KeyCode::F10 => self.game.toggle_fog(),
+                    KeyCode::F11 => {
+                        self.use_imgui = !self.use_imgui;
+                        self.left_press = None;
+                        self.game.cancel_queue_drag();
+                        self.game.set_ui_notice(if self.use_imgui {
+                            "IMGUI UI (F11 TO COMPARE)"
+                        } else {
+                            "CLASSIC UI (F11 TO COMPARE)"
+                        });
+                    }
+                    _ => {}
+                }
+            }
             WindowEvent::RedrawRequested => self.redraw(event_loop),
             _ => {}
         }

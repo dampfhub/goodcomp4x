@@ -40,6 +40,7 @@ behavior.
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
 | `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling and drag to reorder |
 | `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
+| `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
 | `mesh.rs`, `font.rs` | shape helpers (`polygon` ear-clips concave outlines); TrueType text and the glyph atlas |
 
@@ -53,8 +54,9 @@ behavior.
   directly.
 - Attack steps read the board as it stood at the step's start and apply summed damage at its
   end; moves in a step are simultaneous. Keep new resolution logic in that shape (`turn.rs`).
-- **Screen-space UI: read `docs/ui-system.md` first.** Build a panel with `PanelBuilder` and
-  place it with `Layout::dock_panel(panel, Zone::..)` (zones in `ui/dock.rs`); never position a
+- **Screen-space UI: read `docs/ui-system.md` first.** Build shared content with `PanelBuilder`.
+  The ImGui presentation uses that content for native windows; preserve the classic path by
+  placing it with `Layout::dock_panel(panel, Zone::..)` (zones in `ui/dock.rs`); never position a
   persistent panel by hand or compute offsets from another panel's size. `layout()` docks the
   persistent panels and `layout_with_hover()` adds the hover panels; drawing (`build_ui`) and
   button clicks (`click_ui`) both use `layout_with_hover()`, so a drawn button is clickable.

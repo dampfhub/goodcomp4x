@@ -10,6 +10,7 @@ use crate::game::font::{self, Face};
 use glam::Vec2;
 
 /// A button before it's placed.
+#[derive(Clone)]
 pub(super) struct ButtonSpec {
     pub(super) target: Target,
     pub(super) label: String,
@@ -30,6 +31,7 @@ impl ButtonSpec {
     }
 }
 
+#[derive(Clone)]
 pub(super) enum Row {
     Text(u32, Line),
     Gap(f32),
@@ -41,7 +43,7 @@ pub(super) enum Row {
 
 /// Reusable panel content primitive. Stacks rows top to bottom and measures
 /// its own size; place persistent panels through `Layout::dock_panel`.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct PanelBuilder {
     pub(super) rows: Vec<Row>,
     /// See-through, for the debug panel.

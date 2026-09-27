@@ -60,6 +60,14 @@ impl GameState {
         if self.click_ui(cursor, screen_size) {
             return;
         }
+        self.handle_map_click(cursor, screen_size, mode);
+    }
+
+    /// Map clicks after an external UI (such as ImGui) has handled its own hit testing.
+    pub fn handle_map_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) {
+        if self.is_resolving() {
+            return;
+        }
         let armed = self.ui_click_mode.take();
         let mode = match (mode, armed) {
             (ClickMode::Normal, Some(armed)) => armed,
