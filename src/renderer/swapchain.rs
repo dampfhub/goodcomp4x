@@ -2,11 +2,19 @@ use anyhow::Result;
 use ash::vk;
 
 use super::device::{self, QueueFamilyIndices};
+use super::sync;
 
 pub struct SwapchainData {
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
     pub image_views: Vec<vk::ImageView>,
+    /// One per image: signaled when rendering to that image finishes, and
+    /// waited on by its present. Per image rather than per frame in flight
+    /// because no fence covers a present's wait: the only sign it is done is
+    /// the same image being acquired again, so only then is its semaphore
+    /// safe to signal again. Destroyed after the swapchain, which releases
+    /// any it still holds.
+    pub render_finished: Vec<vk::Semaphore>,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
 }
@@ -58,11 +66,13 @@ pub unsafe fn create_swapchain(
     let swapchain = unsafe { swapchain_loader.create_swapchain(&create_info, None) }?;
     let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }?;
     let image_views = unsafe { create_image_views(device, &images, surface_format.format) }?;
+    let render_finished = unsafe { sync::create_semaphores(device, images.len()) }?;
 
     Ok(SwapchainData {
         swapchain,
         images,
         image_views,
+        render_finished,
         format: surface_format.format,
         extent,
     })
@@ -79,6 +89,9 @@ impl SwapchainData {
                 device.destroy_image_view(view, None);
             }
             swapchain_loader.destroy_swapchain(self.swapchain, None);
+            for semaphore in self.render_finished.drain(..) {
+                device.destroy_semaphore(semaphore, None);
+            }
         }
     }
 }
