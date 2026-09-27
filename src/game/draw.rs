@@ -884,7 +884,6 @@ impl GameState {
         }
         for (hex, city) in &view.cities {
             push_city_marker(hex.to_world(), city, out);
-            push_health_bar(hex.to_world(), city.health, 1.0, out);
         }
         for city in self.cities.iter().filter(|c| c.team == PLAYER_TEAM) {
             push_worker_count(city.pos.to_world(), city.workers, out);
@@ -986,8 +985,7 @@ impl GameState {
                 granary: city.built.contains(&super::city::Building::Granary),
             };
             if own || fog.sees(city.pos) {
-                view.cities
-                    .push((city.pos, seen(city.hp / super::city::CITY_MAX_HP)));
+                view.cities.push((city.pos, seen(1.0)));
             }
             if let Some(hex) = city.barracks.filter(|h| own || fog.sees(*h)) {
                 let health = city.barracks_hp / super::city::BARRACKS_MAX_HP;

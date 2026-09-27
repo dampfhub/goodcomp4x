@@ -355,12 +355,6 @@ impl GameState {
         self.units_at(hex).find(|&i| self.units[i].team != team)
     }
 
-    fn enemy_city_at(&self, hex: Hex, team: Team) -> Option<usize> {
-        self.cities
-            .iter()
-            .position(|city| city.team != team && city.pos == hex && city.hp > 0.0)
-    }
-
     fn enemy_barracks_at(&self, hex: Hex, team: Team) -> Option<usize> {
         self.cities.iter().position(|city| {
             city.team != team && city.barracks == Some(hex) && city.barracks_hp > 0.0
@@ -368,9 +362,15 @@ impl GameState {
     }
 
     fn has_enemy_target_at(&self, hex: Hex, team: Team) -> bool {
-        self.enemy_of_team_at(hex, team).is_some()
-            || self.enemy_city_at(hex, team).is_some()
-            || self.enemy_barracks_at(hex, team).is_some()
+        self.enemy_of_team_at(hex, team).is_some() || self.enemy_barracks_at(hex, team).is_some()
+    }
+
+    /// An empty city center is not an exterior attack target. Units and
+    /// workers standing there can still be attacked normally.
+    fn empty_city_target(&self, hex: Hex, team: Team) -> bool {
+        self.cities.iter().any(|city| city.pos == hex)
+            && self.enemy_of_team_at(hex, team).is_none()
+            && self.enemy_workers_at(hex, team).is_empty()
     }
 
     /// Whether two enemies are fighting over this hex.
@@ -1013,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn city_is_a_tanky_ranged_target_that_returns_fire() {
+    fn empty_city_center_rejects_exterior_attacks() {
         let mut game = GameState::city_scenario();
         game.units.clear();
         let target = game
@@ -1028,19 +1028,53 @@ mod tests {
             Team::Blue,
             UnitType::Ranged,
         ));
-        let city_hp = game.cities[target].hp;
-        let unit_hp = game.units[0].hp;
         game.try_queue_attack(0, pos);
+        assert_eq!(game.units[0].planned_attack, None);
+        assert!(!game.queue_attack(pos));
+        game.group.push(0);
+        game.group_order(pos, ClickMode::Attack);
+        assert_eq!(game.units[0].planned_attack, None);
+        game.group.clear();
+
+        // An old or externally supplied order cannot damage the city either.
+        game.units[0].planned_attack = Some(pos);
         game.resolve_step(UnitType::Ranged, Phase::Attack);
-        assert!(game.cities[target].hp < city_hp);
-        assert!(
-            game.units[0].hp < unit_hp,
-            "the city should return ranged fire"
-        );
+        assert!(game.effects.iter().any(|(effect, _)| matches!(
+            effect,
+            effects::Effect::Shot {
+                outcome: effects::Outcome::Miss,
+                ..
+            }
+        )));
+        assert_eq!(game.units[0].hp, game.units[0].max_hp());
     }
 
     #[test]
-    fn hitting_an_empty_enemy_city_or_barracks_is_a_hit_not_a_miss() {
+    fn unit_on_city_center_remains_attackable() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let city = game
+            .cities
+            .iter()
+            .find(|city| city.team == Team::Red)
+            .unwrap()
+            .pos;
+        game.units
+            .push(Unit::new(901, city, Team::Red, UnitType::Melee));
+        game.units.push(Unit::new(
+            902,
+            city.neighbors()[0],
+            Team::Blue,
+            UnitType::Ranged,
+        ));
+        game.try_queue_attack(1, city);
+        assert_eq!(game.units[1].planned_attack, Some(city));
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert!(game.units[0].hp < game.units[0].max_hp());
+    }
+
+    #[test]
+    fn hitting_an_empty_enemy_barracks_is_a_hit_not_a_miss() {
         let mut game = GameState::city_scenario();
         game.units.clear();
         let target = game
@@ -1051,28 +1085,23 @@ mod tests {
         let city = game.cities[target].pos;
         let barracks = city.neighbors()[0];
         game.cities[target].barracks = Some(barracks);
-        for (id, hex) in [(901, city), (902, barracks)] {
-            game.units.clear();
-            game.effects.clear();
-            game.units.push(Unit::new(
-                id,
-                Hex::new(hex.q, hex.r + 2),
-                Team::Blue,
-                UnitType::Ranged,
-            ));
-            game.units[0].planned_attack = Some(hex);
-            game.resolve_step(UnitType::Ranged, Phase::Attack);
-            let shots: Vec<_> = game
-                .effects
-                .iter()
-                .filter_map(|(effect, _)| match effect {
-                    effects::Effect::Shot { outcome, .. } => Some(*outcome),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(shots, [effects::Outcome::Hit], "attack on {hex:?}");
-        }
-        assert!(game.cities[target].hp < city::CITY_MAX_HP);
+        game.units.push(Unit::new(
+            902,
+            Hex::new(barracks.q, barracks.r + 2),
+            Team::Blue,
+            UnitType::Ranged,
+        ));
+        game.units[0].planned_attack = Some(barracks);
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        let shots: Vec<_> = game
+            .effects
+            .iter()
+            .filter_map(|(effect, _)| match effect {
+                effects::Effect::Shot { outcome, .. } => Some(*outcome),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shots, [effects::Outcome::Hit]);
         assert!(game.cities[target].barracks_hp < city::BARRACKS_MAX_HP);
     }
 

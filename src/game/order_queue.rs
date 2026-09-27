@@ -159,6 +159,10 @@ impl GameState {
         if members.is_empty() || self.is_resolving() || !self.grid.is_passable(target) {
             return false;
         }
+        if self.empty_city_target(target, self.units[members[0]].team) {
+            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            return false;
+        }
         let len = self.plan_length(&members);
         let fill = len > 0 && {
             let able: Vec<usize> = members

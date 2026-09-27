@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::ability::{Ability, VOLLEY_DAMAGE};
-use super::city::{BARRACKS_DEFENSE, Building, CITY_ATTACK, CITY_ATTACK_RANGE, CITY_DEFENSE};
+use super::city::{BARRACKS_DEFENSE, Building};
 use super::effects::{Effect, Outcome};
 use super::hex::Hex;
 use super::unit::{Unit, UnitType};
@@ -347,7 +347,7 @@ impl GameState {
     /// planning time. A unit in a contested hex fights its rival instead.
     fn resolve_attacks(&mut self, attackers: &[usize]) {
         let mut engagements: Vec<Engagement> = Vec::new();
-        let mut structure_hits: Vec<(usize, usize, bool, f32)> = Vec::new();
+        let mut barracks_hits: Vec<(usize, usize, f32)> = Vec::new();
         let mut killed_workers: Vec<u32> = Vec::new();
         // Each attack's animation, played once the step's damage is known.
         let mut shots: Vec<Effect> = Vec::new();
@@ -395,22 +395,17 @@ impl GameState {
                 .filter_map(|&hex| self.enemy_of_team_at(hex, attacker.team))
                 .collect();
             // A structure is hit only when no enemy unit is.
-            let structure = if defenders.is_empty() {
-                self.enemy_city_at(target, attacker.team)
-                    .map(|city| (city, false))
-                    .or_else(|| {
-                        self.enemy_barracks_at(target, attacker.team)
-                            .map(|city| (city, true))
-                    })
+            let barracks = if defenders.is_empty() {
+                self.enemy_barracks_at(target, attacker.team)
             } else {
                 None
             };
-            if let Some((city, barracks)) = structure {
-                structure_hits.push((a, city, barracks, scale));
+            if let Some(city) = barracks {
+                barracks_hits.push((a, city, scale));
             }
             // With nothing else to hit, the attack kills any enemy workers
             // out on its hexes. A unit on a worker's hex shields it.
-            let workers_hit: Vec<u32> = if defenders.is_empty() && structure.is_none() {
+            let workers_hit: Vec<u32> = if defenders.is_empty() && barracks.is_none() {
                 hexes
                     .iter()
                     .flat_map(|&hex| self.enemy_workers_at(hex, attacker.team))
@@ -419,7 +414,7 @@ impl GameState {
             } else {
                 Vec::new()
             };
-            let outcome = if !defenders.is_empty() || structure.is_some() || !workers_hit.is_empty()
+            let outcome = if !defenders.is_empty() || barracks.is_some() || !workers_hit.is_empty()
             {
                 Outcome::Hit
             } else {
@@ -436,7 +431,6 @@ impl GameState {
         }
 
         let mut damage = vec![0.0; self.units.len()];
-        let mut city_damage = vec![0.0; self.cities.len()];
         let mut barracks_damage = vec![0.0; self.cities.len()];
         for engagement in &engagements {
             let (a, d) = (engagement.attacker, engagement.defender);
@@ -488,26 +482,10 @@ impl GameState {
             }
         }
 
-        for (attacker, city, barracks, scale) in structure_hits {
+        for (attacker, city, scale) in barracks_hits {
             let attack = self.units[attacker].stats().attack;
-            let defense = if barracks {
-                BARRACKS_DEFENSE
-            } else {
-                CITY_DEFENSE
-            };
-            let hit = scale * combat::roll_damage_against(attack, defense, &mut self.rng);
-            if barracks {
-                barracks_damage[city] += hit;
-            } else {
-                city_damage[city] += hit;
-                // A city returns fire at every unit attacking from its range.
-                let unit = &self.units[attacker];
-                if self.cities[city].pos.distance(unit.pos) <= CITY_ATTACK_RANGE {
-                    let defense = unit.stats().defense * self.defense_multiplier(unit);
-                    damage[attacker] +=
-                        combat::roll_damage_against(CITY_ATTACK, defense, &mut self.rng);
-                }
-            }
+            let hit = scale * combat::roll_damage_against(attack, BARRACKS_DEFENSE, &mut self.rng);
+            barracks_damage[city] += hit;
         }
 
         for shot in shots {
@@ -533,20 +511,6 @@ impl GameState {
                     amount: taken,
                     fatal,
                 });
-            }
-        }
-        for (i, &taken) in city_damage.iter().enumerate() {
-            if taken > 0.0 {
-                let (at, fatal) = {
-                    let city = &self.cities[i];
-                    (city.pos.to_world(), city.hp <= taken)
-                };
-                self.play(Effect::Damage {
-                    at,
-                    amount: taken,
-                    fatal,
-                });
-                self.cities[i].hp = (self.cities[i].hp - taken).max(0.0);
             }
         }
         for (i, &taken) in barracks_damage.iter().enumerate() {

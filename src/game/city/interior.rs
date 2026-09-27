@@ -3,7 +3,6 @@
 
 use std::collections::HashSet;
 
-use super::CITY_MAX_HP;
 use crate::game::hex::Hex;
 use crate::game::unit::{Team, UnitType};
 use crate::game::{Camera, GameState, PLAYER_TEAM, combat};
@@ -404,7 +403,6 @@ impl GameState {
             let city_ref = &mut self.cities[city];
             city_ref.team = team;
             city_ref.interior.core_hp = CORE_HP;
-            city_ref.hp = CITY_MAX_HP * 0.5;
             city_ref.queue.clear();
             city_ref.production = 0;
             city_ref.pending_building = None;

@@ -11,7 +11,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | --- | --- |
 | Left-click your unit | Select it |
 | Left-click a green hex | Move there this turn; click again to cancel |
-| Right-click a hex in range | Attack it this turn: an enemy unit, city or barracks, or an empty hex someone may step into |
+| Right-click a hex in range | Attack it this turn: an enemy unit or barracks, or an empty hex someone may step into; empty city centers cannot be targeted |
 | Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued |
 | Shift-right-click a hex | Queue an attack on it: in the queue's last turn if that turn has none yet and it's in range, else in one more turn |
 | Ctrl-click an adjacent ally | Queue a swap |
@@ -119,7 +119,7 @@ city center enters the interior map; its clicks control only the interior copies
 | Left-drag (6 px or more) / middle-drag | Pan |
 | Rest the cursor on a hex | After 0.75 s, a tooltip: terrain, yields, site, road, who works it, units |
 | Hover a unit | Its stats, in a box at the top-right |
-| Hover a city or barracks | Its HP, production and current build (and a city's growth), at the bottom-left |
+| Hover a city or barracks | Its production and current build (plus city growth or barracks HP), at the bottom-left |
 | F5 | Toggle borderless fullscreen |
 | Hold Escape for 1 s | Quit (a prompt shows while it's held), once no view, selection or tile panel is open for it to close |
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
@@ -160,7 +160,7 @@ them.
   holding Alt shows them on every explored tile that can be worked.
 - Your queued attacks are orange arrows from the attacker (or its ghost) to the target; the AI's
   are hidden. During playback each arrow shoots to its target: a burst is a hit, grey MISS a hex
-  with no enemy unit (a hit on an empty city or barracks still does damage), OUT OF RANGE a
+  with no enemy unit, worker or barracks (an empty city center cannot be targeted), OUT OF RANGE a
   target that moved away. Damage numbers rise from every unit hurt.
 - A unit following an order queue shows no ghost. While it is selected (alone or in a group) or
   under the cursor, a line in team color runs along its moves, with each turn's number (1 is

@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::city::{BARRACKS_MAX_HP, Building, CITY_MAX_HP, Routes};
+use super::city::{BARRACKS_MAX_HP, Building, Routes};
 use super::hex::{Hex, edge};
 use super::terrain::Terrain;
 use super::unit::{Team, Unit};
@@ -174,7 +174,7 @@ impl GameState {
             .map(|c| SeenBuilding {
                 team: c.team,
                 id: c.id,
-                health: c.hp / CITY_MAX_HP,
+                health: 1.0,
                 population: c.population,
                 granary: c.built.contains(&Building::Granary),
             });
@@ -215,16 +215,13 @@ impl GameState {
     }
 
     /// Whether the player knows of something on `hex` that `team` can attack:
-    /// an enemy unit in sight, or an enemy city or barracks in sight or
-    /// remembered.
+    /// an enemy unit in sight, or an enemy barracks in sight or remembered.
     pub(super) fn known_enemy_target_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
         if fog.sees(hex) {
             return self.has_enemy_target_at(hex, team);
         }
-        self.remembered(hex).is_some_and(|seen| {
-            seen.city.is_some_and(|city| city.team != team)
-                || seen.barracks.is_some_and(|barracks| barracks.team != team)
-        })
+        self.remembered(hex)
+            .is_some_and(|seen| seen.barracks.is_some_and(|barracks| barracks.team != team))
     }
 
     /// A tile's food and production as the player knows them.

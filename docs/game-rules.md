@@ -55,7 +55,7 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   +1 food, on top of any improvement. Rivers affect nothing else yet.
 - **Route cost** of entering a hex: 2 (3 on snow or marsh), +1 for hills, +1 for a feature; a road
   or city hex costs 1.
-- **Defense** bonuses apply to units only: city and barracks defense are fixed.
+- **Defense** bonuses apply to units only; barracks defense is fixed.
 - **Resources:** Horses and Iron give no yield; they let a Barracks standing on them train Cavalry
   or Armored. Only the Cities scenario places them.
 
@@ -107,7 +107,7 @@ queue them. Nothing heals.
   moved elsewhere until it reopens (see Cities), so an enemy that ends a turn on a worked tile
   stays in sight. Only the tile itself is seen, not the hexes around it.
 - A mountain strictly between two hexes blocks sight; the mountain itself is visible.
-- Every frame, each hex in sight is recorded as last seen: cities and barracks (with their
+- Every frame, each hex in sight is recorded as last seen: cities, barracks (with their
   health), improvements, roads and structures. Units and workers aren't remembered, since they
   move: out of sight, the player knows of none anywhere. Planning goes around the walls and gates
   the player knows of. Remembered hexes out of sight draw that memory under a dark tint, keeping
@@ -119,8 +119,8 @@ queue them. Nothing heals.
   remembered hexes from memory.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
   A unit out of sight, even one seen there before, doesn't shrink the move range, and clicking
-  its hex plans a move, which then meets it at resolution. A remembered enemy city or barracks
-  can still be attacked.
+  its hex plans a move, which then meets it at resolution. A remembered enemy barracks can
+  still be attacked; an empty city center cannot.
 - What the map and panels show follows the same rule: yields, and which hexes a city's or
   barracks' goods reach (badges, delivery percentages, tooltip, SELECTED TILE), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
@@ -140,7 +140,8 @@ queue them. Nothing heals.
   player can see only says "RIGHT-CLICK TO ATTACK". Left-clicking your own city or barracks hex
   opens its view instead, even with a unit selected, so a left click can't move a unit onto that
   hex or select a unit standing there.
-- Right-click any hex in range to queue an attack on it, occupied or not (again to cancel).
+- Right-click any hex in range to queue an attack on it, occupied or not (again to cancel),
+  except an empty city center. Units or workers standing on a city center remain attackable.
   **Attacks target hexes:** whoever stands there when the attack resolves gets hit.
 - A unit can queue a move and an attack; the attack range is measured from the planned
   destination. Changing or cancelling the move drops an attack that is no longer in range.
@@ -283,7 +284,7 @@ Everyone in a step acts simultaneously:
   turn's number, attacks as arrows numbered by turn) shows only while it is selected or
   hovered, and otherwise a `>N` tag counts its turns of orders left.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
-  "MISS" on a hex with no enemy unit, city or barracks, or "OUT OF RANGE" if the target moved
+  "MISS" on a hex with no enemy unit, worker or barracks, or "OUT OF RANGE" if the target moved
   away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
   "KILLED". Enemy attacks animate too.
 
@@ -305,11 +306,11 @@ every turn end.
 - Damage = `30 * e^((attack - defense) * 0.04) * random(0.8..1.2)`, clamped to 1..100. Defense
   includes terrain and Shield Wall; attack includes Charge.
 - Melee attacks (base range 1) draw retaliation from a defender that survives the hit.
-- **Cities** have 320 HP and 30 defense and fire back at every attacker within range 2 with attack
-  26. **Barracks** have 220 HP and 25 defense and are removed (with their queue) at 0 HP; the city
+- **Cities** cannot be attacked on the exterior map; capture happens by breaching and occupying
+  the command post inside. **Barracks** have 220 HP and 25 defense and are removed (with their queue) at 0 HP; the city
   can then build a new one, at full HP. A structure is hit only when the attack hits no enemy unit
   at all (for a Volley, none on the target or its neighbors); Volley's 60% applies to structures
-  too. Exterior damage still does not capture a city; its command post can be captured from the interior.
+  too.
 
 ## City interiors (`city/interior.rs`)
 
@@ -331,10 +332,10 @@ every turn end.
 - The post starts with 80 HP, 18 defense and a range-2 retaliation against one attacker
   per turn at attack 12. Damage follows the normal combat formula. Once its HP reaches zero, move
   a hostile interior fighter onto the center hex to capture the city. Capture changes ownership,
-  restores the post, sets exterior city HP to half, and clears its production queue, building
+  restores the post and clears its production queue, building
   plans and worker jobs. Workers at home pass to the new owner. Field workers from that city
   return to another friendly city if one exists; otherwise they pass to the new owner. The
-  exterior city can still be attacked under the existing rules.
+  exterior city remains non-attackable.
 - Red's interior fighters defend their own city's post by engaging intruders. When attacking an
   enemy city they head toward its post. Exterior Red defenders hold contested city gates and can
   attack nearby enemies, so their projected copies stay in the siege.
@@ -464,7 +465,7 @@ every turn end.
   pressing the button again or right-clicking disarms. The armed button has a bright border, a
   queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows
-  a structure panel at the bottom-left instead (HP, growth progress for a city, production,
+  a structure panel at the bottom-left instead (barracks HP, growth progress for a city, production,
   current build). Hovering a city also outlines its worked tiles, without yield badges. After the
   cursor rests on a hex for 0.75 s, a tooltip shows terrain or city, yields, defense, site, road,
   which city works it, its delivery share to the open city, and units on it.

@@ -99,9 +99,7 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · GROWTH {growth}% · {} PRODUCTION",
-                        city.hp,
-                        crate::game::city::CITY_MAX_HP,
+                        "GROWTH {growth}% · {} PRODUCTION",
                         signed_quantity(production_per_turn)
                     ),
                     GOLD_TEXT,

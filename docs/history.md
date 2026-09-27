@@ -99,3 +99,5 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 37. Shared unit deaths across the exterior and interior maps: units retain separate HP bars,
     interior wounds persist across gate exits, and fatal damage in either layer removes the unit
     from both. The command post retaliates at range two.
+38. City centers no longer accept exterior attacks or have an exterior HP bar. Units standing
+    there and barracks remain attackable; the tactical command post is the capture target.

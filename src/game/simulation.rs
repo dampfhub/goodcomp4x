@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::thread;
 
-use super::city::{Build, CITY_MAX_HP, CORE_HP, MAX_CITY_POPULATION};
+use super::city::{Build, CORE_HP, MAX_CITY_POPULATION};
 use super::hex::Hex;
 use super::scenario::Scenario;
 use super::unit::Team;
@@ -227,12 +227,6 @@ fn check_invariants(game: &GameState, context: &str) {
     }
     for city in &game.cities {
         assert!(
-            (0.0..=CITY_MAX_HP).contains(&city.hp),
-            "{context}: city {} has {} HP",
-            city.id,
-            city.hp
-        );
-        assert!(
             (1..=MAX_CITY_POPULATION).contains(&city.population),
             "{context}: city {} has population {}",
             city.id,
@@ -382,7 +376,7 @@ struct Fingerprint {
     turn: u32,
     map_seed: Option<u32>,
     units: Vec<(u32, Hex, f32, f32)>,
-    cities: Vec<(u32, f32, usize)>,
+    cities: Vec<(u32, usize)>,
 }
 
 fn fingerprint(scenario: Scenario, seed: u64, turns: u32) -> Fingerprint {
@@ -398,11 +392,7 @@ fn fingerprint(scenario: Scenario, seed: u64, turns: u32) -> Fingerprint {
             .iter()
             .map(|u| (u.id, u.pos, u.hp, u.interior_hp))
             .collect(),
-        cities: game
-            .cities
-            .iter()
-            .map(|c| (c.id, c.hp, c.population))
-            .collect(),
+        cities: game.cities.iter().map(|c| (c.id, c.population)).collect(),
     }
 }
 

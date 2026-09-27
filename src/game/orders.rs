@@ -506,6 +506,10 @@ impl GameState {
         if unable || !self.grid.is_passable(target) {
             return;
         }
+        if self.empty_city_target(target, self.units[idx].team) {
+            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            return;
+        }
         let unit = &mut self.units[idx];
         if unit.planned_pos().distance(target) <= unit.stats().attack_range {
             unit.planned_attack = if unit.planned_attack == Some(target) {

@@ -241,12 +241,7 @@ impl GameState {
             panel.text(
                 SMALL,
                 vec![(
-                    format!(
-                        "HP {:.0}/{:.0} · POP {growth}% · {} PROD/T",
-                        city.hp,
-                        crate::game::city::CITY_MAX_HP,
-                        signed_quantity(production)
-                    ),
+                    format!("POP {growth}% · {} PROD/T", signed_quantity(production)),
                     GOLD_TEXT,
                 )],
             );

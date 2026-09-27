@@ -104,6 +104,12 @@ impl GameState {
         if !self.grid.is_passable(target) {
             return;
         }
+        if let Some(&first) = self.group.first()
+            && self.empty_city_target(target, self.units[first].team)
+        {
+            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            return;
+        }
         for &i in &self.group {
             self.units[i].cancel_queue();
         }

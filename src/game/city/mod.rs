@@ -30,12 +30,8 @@ pub(super) use logistics::{Routes, delivered_share};
 const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
 /// One manager and up to six nearby workers.
 pub(super) const MAX_CITY_POPULATION: usize = 7;
-pub(super) const CITY_MAX_HP: f32 = 320.0;
 pub(super) const BARRACKS_MAX_HP: f32 = 220.0;
-pub(super) const CITY_DEFENSE: f32 = 30.0;
 pub(super) const BARRACKS_DEFENSE: f32 = 25.0;
-pub(super) const CITY_ATTACK: f32 = 26.0;
-pub(super) const CITY_ATTACK_RANGE: i32 = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LaborFocus {
@@ -61,7 +57,6 @@ pub(super) struct City {
     pub population: usize,
     pub food: i32,
     pub production: i32,
-    pub hp: f32,
     pub barracks_hp: f32,
     pub worked: Vec<Hex>,
     /// Manual tiles displaced by a blocked logistics route. They return when
@@ -98,7 +93,6 @@ impl City {
             population: 1,
             food: 0,
             production: 0,
-            hp: CITY_MAX_HP,
             barracks_hp: BARRACKS_MAX_HP,
             worked: Vec::new(),
             remembered_worked: Vec::new(),
