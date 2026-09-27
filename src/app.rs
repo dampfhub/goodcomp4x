@@ -39,6 +39,8 @@ const QUIT_HOLD: Duration = Duration::from_secs(1);
 const WINDOW_ICON_SIZE: u32 = 64;
 #[cfg(windows)]
 const TASKBAR_ICON_SIZE: u32 = 256;
+/// How long after the window first shows its icons are set again.
+const ICON_REFRESH_DELAY: Duration = Duration::from_secs(1);
 
 pub struct App {
     // Declared before `window` so it's dropped first: the Vulkan surface
@@ -53,6 +55,9 @@ pub struct App {
     use_imgui: bool,
     last_frame: Option<Instant>,
     minimized: bool,
+    /// When to set the window's icons again (`ICON_REFRESH_DELAY` after it
+    /// first shows), so the taskbar button picks them up.
+    icon_refresh_at: Option<Instant>,
     cursor_pos: Option<Vec2>,
     panning: bool,
     left_press: Option<(Vec2, ClickMode, bool)>,
@@ -101,6 +106,7 @@ impl App {
 
             last_frame: None,
             minimized: false,
+            icon_refresh_at: None,
             cursor_pos: None,
             panning: false,
             left_press: None,
@@ -139,6 +145,21 @@ impl App {
     }
 
     /// Advances the game by the time since the last frame and draws it.
+    /// Sets the window's icons again, as new icon handles, so Windows sees
+    /// them change and redraws the taskbar button with them (it doesn't
+    /// always pick up the icons set as the window is created).
+    fn refresh_icons(&self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        window.set_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)));
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::WindowExtWindows;
+            window.set_taskbar_icon(Some(icon::icon(TASKBAR_ICON_SIZE)));
+        }
+    }
+
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         if self.minimized {
             return;
@@ -148,6 +169,10 @@ impl App {
         let dt = now - self.last_frame.unwrap_or(now);
         self.last_frame = Some(now);
         self.game.update(dt.as_secs_f32());
+        if self.icon_refresh_at.is_some_and(|at| now >= at) {
+            self.icon_refresh_at = None;
+            self.refresh_icons();
+        }
 
         let Some(size) = self.screen_size() else {
             return;
@@ -291,11 +316,13 @@ impl ApplicationHandler for App {
         let window = event_loop
             .create_window(attributes)
             .expect("failed to create window");
-        // winit attaches the icons after creating the window. Shown before
-        // that, Windows could make the taskbar button with the blank default
-        // icon and not always update it; shown now, the button has ours.
+        // Shown once winit has attached the icons. Windows can still make the
+        // taskbar button with the blank default icon and not update it until
+        // the window is minimized and restored, so the icons are set again
+        // shortly after (`refresh_icons`).
         if self.screenshot.is_none() {
             window.set_visible(true);
+            self.icon_refresh_at = Some(Instant::now() + ICON_REFRESH_DELAY);
         }
 
         let mut imgui = ImGuiContext::create();

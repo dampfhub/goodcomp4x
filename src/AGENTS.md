@@ -6,8 +6,12 @@
 calls, and builds each frame. `screenshot.rs` is screenshot mode. `icon_art.rs` draws the
 game's icon in code (std only); `icon.rs` hands it to the window (title bar and taskbar), and
 `build.rs` includes `icon_art.rs` to embed it in the Windows executable as a `.res` the MSVC
-linker takes. The window is created hidden and shown once winit has set its icons, so the
-taskbar button never starts with the blank default.
+linker takes. On Windows the taskbar button needs two more things (`icon.rs`, `app.rs`): the
+process claims its own application id before any window exists
+(`claim_taskbar_identity`), so the button shows the window's icon rather than one derived
+from the executable, and the icons are set again as new handles a second after the window
+shows (`refresh_icons`), because Windows doesn't always redraw the button with icons set as
+the window is created (it did once the window was minimized and restored).
 
 ## Frame and input flow
 
