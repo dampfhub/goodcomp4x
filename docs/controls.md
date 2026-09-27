@@ -81,6 +81,7 @@ plays out.
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
 | 8 | Queue a worker |
 | Click a tile after queuing a Barracks, Mill or Workshop | Choose its site |
+| Its card (or key) again while it's queued with no site | Resume choosing the site (leaving the city stops it) |
 | Click a planned site's map badge | Move that site |
 | Confirm button | Place a finished Barracks, Mill or Workshop on its site |
 | Drag a queue row onto another | Reorder the queue |
