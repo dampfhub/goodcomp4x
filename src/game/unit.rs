@@ -217,6 +217,13 @@ impl Unit {
         self.following_queue || !self.queued.is_empty()
     }
 
+    /// Whether the unit's plan reaches past this turn, so the map shows it as
+    /// numbered turns. A plan of this turn alone draws like ordinary orders:
+    /// a ghost and an attack arrow.
+    pub fn plans_later_turns(&self) -> bool {
+        !self.queued.is_empty()
+    }
+
     /// How many turns the unit has orders for: none, this turn, or this turn
     /// and its queue. A queued turn may be spent waiting.
     pub fn plan_len(&self) -> usize {
