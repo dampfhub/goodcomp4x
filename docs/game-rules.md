@@ -65,8 +65,9 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **Ruins** (World maps only; `ruins.rs`): a one-use tile, marked with a stone rim and broken
   columns. A side claims ruins by holding their hex with military units (anything but a settler;
   scouts count) at the end of 3 turns; the ruins then give their reward at once and are gone.
-  While the hex is contested, or empty, the count pauses; when another side takes it, the count
-  starts over for that side. Pips beside the ruins show the count in the holder's color. Each
+  While the hex is contested the count pauses; when another side takes it, the count starts over
+  for that side; and when the holder leaves it empty, the count is lost, so ruins must be held
+  without a break. Pips beside the ruins show the count in the holder's color. Each
   ruin has one reward, shown in its tooltip: a Cavalry unit beside the ruins (Recruits), +6
   production (Supplies) or +8 food (Harvest) in the claimant's nearest city; a side without a
   city gets the Cavalry. Rewards are claimed before the turn's economy, so a city reward is spent

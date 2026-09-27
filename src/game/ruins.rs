@@ -3,8 +3,9 @@
 //! reason to fight. A side claims one by holding it with a military unit
 //! (anything but a settler, scouts included) at the end of
 //! `RUIN_HOLD_TURNS` turns, and gets its reward at once; the ruins are then
-//! gone. The count pauses while the hex is contested or empty, and starts
-//! over when another side takes it. The rewards are a first pass.
+//! gone. The count pauses while the hex is contested, starts over when
+//! another side takes it, and is lost if the holder leaves: the ruins must
+//! be held without a break. The rewards are a first pass.
 
 use super::city::City;
 use super::hex::Hex;
@@ -126,13 +127,21 @@ impl GameState {
 
     /// At the end of a turn: counts a turn for every ruins held by one side
     /// alone, starting over for a side that has just taken them from another,
-    /// and hands out the reward for any held long enough. Contested or empty
-    /// ruins keep their count.
+    /// and hands out the reward for any held long enough. Contested ruins
+    /// keep their count; empty ones lose it.
     pub(super) fn resolve_ruins(&mut self) {
         let mut claimed = Vec::new();
         for i in 0..self.ruins.len() {
-            let Some(Some(team)) = self.sole_holder(self.ruins[i].pos) else {
-                continue;
+            let team = match self.sole_holder(self.ruins[i].pos) {
+                Some(Some(team)) => team,
+                Some(None) => {
+                    let ruin = &mut self.ruins[i];
+                    ruin.holder = None;
+                    ruin.held = 0;
+                    continue;
+                }
+                // Contested.
+                None => continue,
             };
             let ruin = &mut self.ruins[i];
             if ruin.holder == Some(team) {
@@ -267,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn a_contested_or_empty_ruin_pauses_and_a_new_holder_starts_over() {
+    fn a_contested_ruin_pauses_a_new_holder_starts_over_and_leaving_loses_it() {
         let mut game = ruins_game(RuinReward::Recruits);
         let ruin = Hex::new(0, 0);
         put(&mut game, 1, ruin, Team::Blue, UnitType::Melee);
@@ -286,10 +295,11 @@ mod tests {
         assert_eq!(game.ruins[0].holder, Some(Team::Red));
         assert_eq!(game.ruins[0].held, 1);
 
-        // Left empty, the count holds.
+        // Left empty, the count is lost.
         game.units.clear();
-        end_turns(&mut game, 5);
-        assert_eq!(game.ruins[0].held, 1);
+        end_turns(&mut game, 1);
+        assert_eq!(game.ruins[0].held, 0);
+        assert_eq!(game.ruins[0].holder, None);
         assert_eq!(game.ruins.len(), 1);
     }
 

@@ -138,3 +138,5 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     setting). Between the starts it places special tiles (Orchard, Quarry) that yield more, and
     ruins a side claims by holding them for three turns. The AI heads for ruins as well as
     enemies, and its searches stop early, so turns with many sides stay quick.
+45. Ruins must be held without a break (`claude/world-players-ruins-reset-when-left`, a variant
+    of 44): leaving ruins empty loses the count instead of pausing it.
