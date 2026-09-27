@@ -348,20 +348,17 @@ impl ApplicationHandler for App {
                     .queue_selected_city_unit(crate::game::BuildUnit::Ranged),
                 KeyCode::Digit3 => self
                     .game
-                    .queue_selected_city_unit(crate::game::BuildUnit::Cavalry),
+                    .queue_selected_city_unit(crate::game::BuildUnit::Siege),
                 KeyCode::Digit4 => self
                     .game
-                    .queue_selected_city_unit(crate::game::BuildUnit::Siege),
+                    .queue_selected_city_building(crate::game::Building::Granary),
                 KeyCode::Digit5 => self
                     .game
-                    .queue_selected_city_building(crate::game::Building::Granary),
+                    .queue_selected_city_building(crate::game::Building::Barracks),
                 KeyCode::Digit6 => self
                     .game
-                    .queue_selected_city_building(crate::game::Building::Barracks),
-                KeyCode::Digit7 => self
-                    .game
                     .queue_selected_city_building(crate::game::Building::Mill),
-                KeyCode::Digit8 => self
+                KeyCode::Digit7 => self
                     .game
                     .queue_selected_city_building(crate::game::Building::Workshop),
                 // Queue management stays compact as the build catalogue grows:

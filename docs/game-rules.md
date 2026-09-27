@@ -53,8 +53,8 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **Route cost** of entering a hex: 2 (3 on snow or marsh), +1 for hills, +1 for a feature; a road
   or city hex costs 1.
 - **Defense** bonuses apply to units only: city and barracks defense are fixed.
-- **Resources:** Horses and Iron give no yield; they let a Barracks standing on them train Horse or
-  Armored. Only the Cities scenario places them.
+- **Resources:** Horses and Iron give no yield; they let a Barracks standing on them train Cavalry
+  or Armored. Only the Cities scenario places them.
 
 ## Maps
 
@@ -77,24 +77,25 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 
 | Type | HP | Attack | Defense | Move | Range | Sight | Ability | Icon |
 |---|---|---|---|---|---|---|---|---|
-| Melee | 100 | 22 | 20 | 1 | 1 | 2 | Shield Wall | triangle, M |
-| Ranged | 75 | 24 | 10 | 1 | 2 | 2 | Volley | diamond, R |
-| Cavalry | 100 | 24 | 14 | 2 | 1 | 3 | Charge | pentagon, C |
-| Siege | 65 | 32 | 6 | 1 | 2 | 2 | Deploy | upright square, S |
-| Scout | 60 | 8 | 10 | 3 | 1 | 3 | Lookout | small circle, X |
-| Horse | 100 | 28 | 16 | 3 | 1 | 3 | Charge | downward pentagon, H |
-| Armored | 140 | 30 | 28 | 1 | 1 | 2 | Shield Wall | octagon, A |
+| Melee | 100 | 22 | 20 | 1 | 1 | 2 | Shield Wall | sword |
+| Ranged | 75 | 24 | 10 | 1 | 2 | 2 | Volley | bow and arrow |
+| Cavalry | 100 | 24 | 14 | 2 | 1 | 3 | Charge | horse head |
+| Siege | 65 | 32 | 6 | 1 | 2 | 2 | Deploy | catapult |
+| Scout | 60 | 8 | 10 | 3 | 1 | 3 | Lookout | spyglass |
+| Armored | 140 | 30 | 28 | 1 | 1 | 2 | Shield Wall | heater shield |
 
 `Unit::stats()` applies abilities and siege deployment on top of these; everything that asks
-what a unit can do goes through it. Settlers (`T`) and workers (`W`) are civilians with the Melee
-body, drawn as hollow hexagons with only a move badge. Workers never attack (their attack step is
-skipped) but still retaliate; settlers can be ordered to attack, though no badge shows it. Horse and Armored are built only at a Barracks
-standing on Horses or Iron respectively. Nothing heals.
+what a unit can do goes through it. Settlers (a planted flag) and workers (a shovel) are
+civilians with the Melee body, drawn as hollow hexagons with only a move badge; every other unit
+is a team-colored disc with its pictogram. Workers never attack (their attack step is skipped)
+but still retaliate; settlers can be ordered to attack, though no badge shows it. Cavalry and
+Armored are built only at a Barracks standing on Horses or Iron respectively; cities can't
+queue them. Nothing heals.
 
 ## Fog of war (`fog.rs`)
 
 - On by default; F10 or the debug panel toggles it.
-- The player's units see 2 hexes (Scout, Cavalry and Horse 3), +1 on hills, +2 through the turn
+- The player's units see 2 hexes (Scout and Cavalry 3), +1 on hills, +2 through the turn
   after a Lookout. The player's cities see 3 and barracks 1.
 - A mountain strictly between two hexes blocks sight; the mountain itself is visible.
 - Every frame, each hex in sight is recorded as last seen: other sides' units, cities and
@@ -144,13 +145,13 @@ standing on Horses or Iron respectively. Nothing heals.
 
 ## Turn resolution (`turn.rs`)
 
-After a 0.6 s pause (so the last order is visible), the turn plays out in 14 steps, one every
+After a 0.6 s pause (so the last order is visible), the turn plays out in 12 steps, one every
 0.6 s, with the acting units flashing (or all at once with instant playback). Steps where nobody
 acts are skipped.
 
 1. Scout move  2. Cavalry move  3. Melee move  4. Ranged attack  5. Scout attack
 6. Cavalry attack  7. Melee attack  8. Ranged move  9. Siege move  10. Siege attack
-11. Horse move  12. Horse attack  13. Armored move  14. Armored attack
+11. Armored move  12. Armored attack
 
 The badges on each unit show its rank: blue number = its move among move steps, red = its attack
 among attack steps.
@@ -216,7 +217,7 @@ Everyone in a step acts simultaneously:
 |---|---|---|---|
 | Shield Wall | Melee, Armored | +50% defense this turn, can't move | 1 turn |
 | Volley | Ranged | attack also hits enemies adjacent to the target, all hits at 60% | 2 turns |
-| Charge | Cavalry, Horse | +1 move, +50% attack this turn | 2 turns |
+| Charge | Cavalry | +1 move, +50% attack this turn | 2 turns |
 | Deploy / Pack Up | Siege | spend a turn setting up (no move or attack); deployed: +1 range, can't move; packing up takes a turn too | none |
 | Lookout | Scout | stay put this turn; +2 sight through the next turn | none |
 
@@ -267,8 +268,9 @@ every turn end.
   to reorder, click its X to remove; Backspace removes the head and PageDown swaps the first two.
   A finished unit appears on an open neighboring hex (the city holds it until one opens) and keeps
   leftover production. A player city with an empty queue holds up the turn.
-- **Costs:** Melee 12, Ranged 14, Cavalry 16, Siege 18, Horse 17, Armored 20; Granary 12, Barracks
-  16, Mill 15, Workshop 20. Keys 1-4 queue Melee to Siege, 5-8 Granary, Barracks, Mill, Workshop.
+- **Costs:** Melee 12, Ranged 14, Cavalry 16, Siege 18, Armored 20; Granary 12, Barracks 16,
+  Mill 15, Workshop 20. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue Cavalry or
+  Armored), 4-7 Granary, Barracks, Mill, Workshop.
   One of each building per city.
 - **Buildings:**
   - **Granary:** +2 food per turn. Completes when paid for.
@@ -276,9 +278,9 @@ every turn end.
     you have explored, not a city, building or other planned site). Click the site's map badge to
     move it. When paid for, the building waits (blocking the queue) until you click Confirm in the
     tray. Completing any building resets production to 0.
-  - **Barracks:** its own view and queue (all six unit types) with its own production pool, earned
+  - **Barracks:** its own view and queue (all five unit types) with its own production pool, earned
     only while the city's manager stands on the barracks: each worked tile's production times its
-    delivery share from the barracks. The city's own income still counts those tiles too. Horse
+    delivery share from the barracks. The city's own income still counts those tiles too. Cavalry
     needs the barracks on Horses, Armored on Iron. A unit appears next to the barracks, and the
     pool resets after each.
   - **Mill:** worked tiles adjacent to it deliver all their food, if they can reach the city.
@@ -293,9 +295,9 @@ every turn end.
   still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
   TURN.
 - **Command tray** (bottom-left): with a city open, it shows population, stores and rates, the
-  current build, labor focus buttons, the growth meter, the selected tile, unit cards (1-4), the
-  Yields button, cards for buildings not yet built (5-8), barracks status with See Barracks, and
-  planned sites with Confirm once they are paid for; the queue docks above it. With a barracks open, its six train buttons and Open City, queue above. With a unit
+  current build, labor focus buttons, the growth meter, the selected tile, unit cards (1-3), the
+  Yields button, cards for buildings not yet built (4-7), barracks status with See Barracks, and
+  planned sites with Confirm once they are paid for; the queue docks above it. With a barracks open, its five train buttons and Open City, queue above. With a unit
   selected: stats (boosted values green, reduced red), notes, and buttons Move, Attack, Swap, then
   its ability (or Found City, or Build Road and Improve for workers, who get no Attack), then Hold
   and Guard. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
@@ -344,7 +346,6 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - The fog leaks: unseen enemies still block paths, clicking a hidden enemy's hex queues an attack,
   and the structure hover panel shows for cities in fog (#21).
 - Swaps only work between adjacent units.
-- Horse (move 3) moves in step 11, after every other type except Armored.
 - Worker roads and improvements are instant, can overwrite an enemy site, and are not blocked
   while a turn plays out (#11).
 - A destroyed Barracks stays in the city's built list, so it can never be rebuilt (#8).

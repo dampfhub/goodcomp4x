@@ -26,7 +26,8 @@ src/app.rs           App: window, input -> GameState calls, frame pacing (165 FP
 src/icon.rs          window/taskbar icon drawn in code
 src/renderer/        Vulkan setup, swapchain, MSAA, the single pipeline, coverage atlas
 src/game/            GameState and everything game-specific
-shaders/             mesh.vert (view-projection), mesh.frag (color x atlas coverage)
+shaders/             mesh.vert (view-projection), mesh.frag (color x atlas coverage or distance field)
+assets/fonts/        IBM Plex Mono SemiBold, embedded by font.rs (OFL)
 docs/                architecture, rules, controls, design proposals, history (docs/README.md)
 tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
 .agents/skills/      agent skills, read by Codex (canonical)

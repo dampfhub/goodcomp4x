@@ -7,8 +7,10 @@ constants out of this directory. Its whole interface:
   `wait_idle`.
 - `draw_frame(&[DrawBatch])`: each batch is a triangle list (`Vertex { pos, color, uv }`) with its
   own view-projection matrix, drawn in order, so later batches layer on top.
-- One pipeline: alpha-blended vertex color, multiplied by the R8 coverage atlas (bound once at
-  set 0) unless the vertex's UV is `SOLID_UV`. Text is the only atlas user today.
+- One pipeline: alpha-blended vertex color, multiplied by the R8 atlas (bound once at set 0)
+  unless the vertex's UV is `SOLID_UV` (negative `u`). The atlas holds coverage, except where
+  `u` is 1 or more: those texels are a signed distance field, sampled at `u - 1` and
+  thresholded at 0.5 with a one-pixel `fwidth` ramp. Text is the only atlas user today.
 
 ## Files
 
@@ -33,8 +35,8 @@ needs no build change; using it needs a pipeline change here.
 
 - Copy SPIR-V from `include_bytes!` into a `Vec<u32>` (`create_shader_module` does). The bytes
   have no alignment guarantee; reinterpreting them in place once broke release builds only.
-- `mesh.frag` samples the atlas outside the solid-geometry branch so mip selection always has
-  valid derivatives. Keep the sample unconditional.
+- `mesh.frag` samples the atlas outside the solid-geometry branch so mip selection and `fwidth`
+  always have valid derivatives. Keep the sample unconditional.
 - The swapchain format is sRGB and vertex colors are linear, so colors display much lighter than
   their values suggest (dark UI panels need values around 0.01-0.05).
 - MSAA uses the highest supported count from `PREFERRED_SAMPLES` (16, then 8), falling back to 4.

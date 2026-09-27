@@ -50,8 +50,8 @@ plays out.
 | A | Auto-assign citizens by the city's labor focus |
 | Food / Production / Balanced buttons | Set the labor focus (and re-assign) |
 | Y / Yields button | Show or hide tile yields around the open city |
-| 1 / 2 / 3 / 4 | Queue Melee / Ranged / Cavalry / Siege |
-| 5 / 6 / 7 / 8 | Queue Granary / Barracks / Mill / Workshop |
+| 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron) |
+| 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
 | Click a tile after queuing a Barracks, Mill or Workshop | Choose its site |
 | Click a planned site's map badge | Move that site |
 | Confirm button | Place a finished Barracks, Mill or Workshop on its site |
@@ -60,7 +60,7 @@ plays out.
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |
-| See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all six unit types) |
+| See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types) |
 | Open City (in the barracks view) | Go back to the city view |
 | Space / Escape / click off the map | Close the city or barracks view |
 | Tab | Close the city view |
@@ -99,9 +99,9 @@ order.
   target that moved away. Damage numbers rise from every unit hurt.
 - Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Orange hex:
   contested.
-- Unit icons are shapes in team color: triangle (melee), diamond (ranged), pentagon (cavalry),
-  square (siege), small circle (scout), downward pentagon (horse), octagon (armored). Settlers
-  (`T`) and workers (`W`) are hollow hexagons.
+- Units are tokens in team color with a pictogram of what they are: sword (melee), bow
+  (ranged), horse head (cavalry), catapult (siege), spyglass (scout), shield (armored) on a
+  disc. Settlers (a planted flag) and workers (a shovel) are hollow hexagons.
 - Cities are crenellated towers showing their population, with a gold G disc once they have a
   granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
   a Workshop a blue diamond marked W. While you choose or move a site, a translucent diamond with

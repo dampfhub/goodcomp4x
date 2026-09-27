@@ -6,7 +6,7 @@
 //!   barracks, improvements and roads;
 //! - unexplored: never seen, blank.
 //!
-//! A debug setting (F9) turns the fog off. The AI ignores it.
+//! A debug setting (F10) turns the fog off. The AI ignores it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -188,14 +188,14 @@ impl GameState {
         }
     }
 
-    /// F9: turns the fog of war on or off.
+    /// F10: turns the fog of war on or off.
     pub fn toggle_fog(&mut self) {
         self.fog_of_war = !self.fog_of_war;
         self.explore();
         self.notice = if self.fog_of_war {
-            "FOG OF WAR ON - F9 TO LIFT IT".into()
+            "FOG OF WAR ON - F10 TO LIFT IT".into()
         } else {
-            "FOG OF WAR OFF - F9 TO BRING IT BACK".into()
+            "FOG OF WAR OFF - F10 TO BRING IT BACK".into()
         };
     }
 }

@@ -27,9 +27,10 @@ behavior.
 | `simulation.rs` | tests only: AI-vs-AI games in every scenario, board invariants checked each turn |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
+| `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |
 | `effects.rs` | attack animations during playback |
 | `ui.rs`, `ui/dock.rs` | screen-space UI (`build_ui`): top bar, trays, queue panels, tooltips, hover panels, debug panel; `dock.rs` places panels by screen zone |
-| `mesh.rs`, `font.rs` | shape helpers; TrueType text and the glyph atlas |
+| `mesh.rs`, `font.rs` | shape helpers (`polygon` ear-clips concave outlines); TrueType text and the glyph atlas |
 
 ## Invariants
 
@@ -51,10 +52,13 @@ behavior.
   Cursor-following tooltips, the quit prompt and the selection box are overlays with their own
   anchors. Add a layout test for a new panel (no overlap, buttons inside their panel), and run
   `cargo build --release` after UI changes.
-- Text: `font.rs` rasterizes printable ASCII from the Hack font once into one R8 atlas with 4 mip
-  levels, padding glyphs by 8 px so the smallest mip doesn't bleed neighbors together. UI text
-  uses `font::ui(px)` with `px` one of `UI_SIZES` and snaps to whole pixels; world text
-  (`push_text`, `push_glyph`) is sized by capital-letter height and scales a 64 px set.
+- Text: `font.rs` rasterizes printable ASCII from IBM Plex Mono SemiBold (`assets/fonts/`, SIL
+  Open Font License) once into one R8 atlas with 4 mip levels, padding glyphs by 8 px so the
+  smallest mip doesn't bleed neighbors together. UI text uses coverage glyphs from
+  `font::ui(px)` with `px` one of `UI_SIZES` and snaps to whole pixels; world text (`push_text`,
+  `push_glyph`) is sized by capital-letter height and scales one 64 px set of signed distance
+  fields (measured on a 4x raster), which the shader thresholds so outlines stay sharp at any
+  zoom. Distance-field glyphs carry `u` shifted up by 1 so the shader can tell them apart.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05.
 - `Camera::view_proj` builds an OpenGL orthographic projection and flips Y itself, because
   glam 0.33's `vulkan::orthographic` flips the Y scale but not the translation.

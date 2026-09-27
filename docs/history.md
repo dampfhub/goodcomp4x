@@ -63,3 +63,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     the GitHub Projects work board (`tools/board/`, skill in `.agents/skills/`), a commit-message
     lint, CI (fmt, clippy, tests, MSRV 1.92, tool self-tests), a PR template, and an AI-vs-AI
     simulation test of board invariants.
+30. Unit pictograms and sharper text (`claude/unit-icons-font`): units show a pictogram built from
+    simple shapes (sword, bow, horse head, catapult, spyglass, shield; flag and shovel for
+    civilians) instead of a letter; text is IBM Plex Mono, with world text as signed distance
+    fields; the Horse unit merged into Cavalry, which now needs a barracks on Horses.
