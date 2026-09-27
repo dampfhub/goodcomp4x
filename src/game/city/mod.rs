@@ -83,6 +83,9 @@ pub(super) struct City {
     pub workers: u32,
     /// Jobs waiting for a worker, first to go first.
     pub worker_jobs: Vec<WorkerJob>,
+    /// The player let the workers at home rest this turn (Sleep in the
+    /// worker menu), so they don't wait for orders until the next.
+    pub workers_resting: bool,
 }
 
 impl City {
@@ -111,6 +114,7 @@ impl City {
             interior: Interior::default(),
             workers: 1,
             worker_jobs: Vec::new(),
+            workers_resting: false,
         }
     }
 

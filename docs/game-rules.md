@@ -202,13 +202,13 @@ queue them. Nothing heals.
   one. Whenever the game picks the unit, the camera glides to it; middle-drag cancels the glide.
 - Movement is a BFS through passable, unoccupied hexes: units can't pass through each other,
   mountains or water. Two allies can't head for the same hex.
-- **Ending the turn:** `pending()` counts player units that still need orders and player cities
-  with nothing queued; citizen assignments never count. Space selects what is still waiting (a
-  city needing a build, then a unit, settlers first, as the turn strip lists them) and ends the
-  turn once nothing is. A unit done with its orders moves on the same way, and so does the
-  start of every turn and of a new world. The End Turn button
-  (`end_planning`) holds every unfinished unit, opens a city if one still needs a build, and
-  otherwise ends the turn. Input, including UI clicks, is ignored while a turn plays out.
+- **Ending the turn:** `pending()` counts player units that still need orders, player cities
+  with nothing queued, and idle workers; citizen assignments never count. Space selects what is
+  still waiting (a city needing a build, then idle workers in the worker menu, where Space lets
+  them sleep, then a unit, settlers first, as the turn strip lists them) and ends the turn once
+  nothing is. A unit done with its orders moves on the same way, and so does the start of every
+  turn and of a new world. The End Turn button (`end_planning`) holds every unfinished unit,
+  rests idle workers, opens a city if one still needs a build, and otherwise ends the turn. Input, including UI clicks, is ignored while a turn plays out.
 
 ## Order queues (`order_queue.rs`)
 
@@ -318,8 +318,8 @@ Everyone in a step acts simultaneously:
   Ctrl-right-click does).
 - The turn strip (`ui/roster.rs`, a panel starting at the bottom center) lists what the
   player still has to see to this turn, civilian tasks first: cities with an empty queue,
-  settlers, then military units needing orders. Workers aren't listed; they never hold up the
-  turn.
+  cities with idle workers (opening the worker menu), settlers, then military units needing
+  orders.
   Units are grouped by kind (settlers apart), each group in the order its first unit comes in
   unit order, with a count. Clicking a city's chip opens it. Clicking a group selects all its
   units and moves the camera to the first, and while any of them is selected, a second row
@@ -478,11 +478,15 @@ every turn end.
 - **Pool:** each city keeps its workers at home, off the map, where nothing can touch them. A new
   city starts with one; the city queue builds more (8). A tag on each of your cities counts the
   workers at home.
-- **Jobs:** press W (or Worker Jobs in the city panel) for worker mode, which lights the tiles
-  workers can reach, dims the rest, and makes any map click open that tile's panel; or, with
-  nothing selected, click a tile. The tile panel (a white ring marks the tile) has a button
-  per job, or press R (road) or I (improve). The job goes to the open city, or else your nearest city, and waits in
-  its worker list, which the city panel shows: drag to reorder, X to remove. Queued jobs show on
+- **Worker menu** (W, the Workers chip in the turn strip, or Worker Jobs in the city panel): the
+  only way to give workers orders. It lights the tiles workers can reach and dims the rest. Pick
+  a job with its button (or R for roads, I for improvements), then place it: click or drag over
+  tiles, or along hex edges for walls and gates. A ring under the cursor shows where a tile job
+  would go (red where it can't); the job stays picked for more until Escape, a right-click or
+  another pick. The menu lists one city's workers (with Recall) and waiting jobs (drag to
+  reorder, X to remove), with a button per city when you have several, and has Sleep (below)
+  and Done.
+- **Jobs:** a job goes to the nearest city, and waits in its worker list. Queued jobs show on
   the map as faded gold rings (walls and gates as muted gold edges with rounded ends). A job
   needs explored open ground within workers' reach, no city there, and no other job on the
   tile, queued or under way: a tile takes one job
@@ -494,9 +498,14 @@ every turn end.
   as it goes. A wall or gate counts from the tile the worker stands on to build it. The AI's
   workers keep to the same reach. A job out of reach can't be queued, and one under way that
   falls out of reach is abandoned.
-- **Walls and gates** stand on the edge between two hexes, not on a tile. Wall or Gate in the
-  tile panel arms placement: each click on the map queues one on the hex edge nearest the cursor
-  (highlighted), and dragging queues every edge the cursor passes, until Escape or a right-click.
+- **Idle workers** (at home, with no job waiting in their city's list) wait for the player like
+  units needing orders: the turn strip lists their city after production, and the turn moves to
+  them after production and before units, opening the worker menu. Sleep (or Space in the menu)
+  lets them rest this turn; the End Turn button rests any still idle. They're idle again next
+  turn.
+- **Walls and gates** stand on the edge between two hexes, not on a tile. Picked in the worker
+  menu, each click on the map places one on the hex edge nearest the cursor (highlighted), and
+  dragging places one on every edge the cursor passes.
   The worker builds it standing on whichever side is nearer its city (open, explored ground).
   One wall or gate per edge; an edge beside a city is fine.
 
@@ -521,8 +530,7 @@ every turn end.
   standing on the same hex shields it from both, since it blocks the move and takes the hit.
   A captured or killed worker's job goes back to the top of its city's list.
 - **Recall:** workers otherwise follow their jobs on their own, so each of your workers out on
-  the map has a Recall button: in its city's panel, and in the tile panel of the tile it stands
-  on. A recalled worker drops its job (back to the top of the city's list) and walks straight
+  the map has a Recall button in the worker menu. A recalled worker drops its job (back to the top of the city's list) and walks straight
   home at its usual 1 hex a turn in the Workers step, taking no new job on the way.
 - **Structures** are never destroyed or captured yet. Units plan moves around the walls and gates
   they know of; a move whose way is blocked by one (say, one not seen when it was planned), with
@@ -538,13 +546,12 @@ every turn end.
 - **Command tray** (bottom-left): with a city open, it shows population, stores and rates, the
   current build, labor focus buttons, the growth meter, the selected tile, unit cards (1-3), the
   Yields button, cards for buildings not yet built (4-7), barracks status with See Barracks,
-  planned sites with Confirm once they are paid for, and its workers (home, out and what each is
-  doing) with the worker list; the queue docks above it. With a barracks open, its five train
+  planned sites with Confirm once they are paid for, and Worker Jobs (the worker menu); the
+  queue docks above it. With a barracks open, its five train
   buttons and Open City, queue above. With a unit selected: stats (boosted values green, reduced
   red), notes, and buttons Move, Attack, Swap, then its ability (or Found City), then Hold,
-  Guard and Disband (press twice: the first press asks to confirm). With nothing selected, a
-  clicked tile shows its tile panel: its terrain, whose workers would go, and a button per worker
-  job. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
+  Guard and Disband (press twice: the first press asks to confirm). With the worker menu open,
+  the worker menu. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
   pressing the button again or right-clicking disarms. The armed button has a bright border, a
   queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows
@@ -560,7 +567,8 @@ every turn end.
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
   food (green grain) and production (amber hammers) with delivery percentages.
 - Escape closes the settings menu, or else an open city or barracks view, or else lets go of the
-  selected unit or group and closes the tile panel; with none of those open, it opens the
+  selected unit or group (a worker job being placed, and then the worker menu, close first);
+  with none of those open, it opens the
   settings menu, whose Quit button closes the game. F5 toggles borderless fullscreen.
 
 ## AI (`ai.rs`)

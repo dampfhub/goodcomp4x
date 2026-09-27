@@ -149,6 +149,9 @@ impl GameState {
                 unit.end_turn();
             }
             self.advance_queues();
+            for city in &mut self.cities {
+                city.workers_resting = false;
+            }
             log::info!("=== turn {} resolved ===", self.turn);
             self.select_next_or_end_turn(None);
         }

@@ -252,6 +252,14 @@ impl GameState {
                 self.units[i].holding = true;
             }
         }
+        // Idle workers rest, as unfinished units hold.
+        for city in &mut self.cities {
+            if city.team == PLAYER_TEAM && city.worker_jobs.is_empty() {
+                city.workers_resting = true;
+            }
+        }
+        self.worker_mode = false;
+        self.placing_job = None;
         if let Some(i) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
             self.open_city(i);
             return;

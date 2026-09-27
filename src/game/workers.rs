@@ -321,15 +321,71 @@ impl GameState {
                 .any(|h| self.roads.contains(&h))
     }
 
-    /// W, or Worker Jobs in the city panel: turns worker mode on or off.
+    /// W, or Worker Jobs in the city panel: opens or closes the worker menu.
     pub fn toggle_worker_mode(&mut self) {
         let on = !self.worker_mode;
         self.set_worker_mode(on);
     }
 
-    /// Worker mode: the map shows every tile the player's workers can reach,
-    /// and a click on any tile, units or not, opens its tile panel to pick a
-    /// job. It ends with W, Escape, or selecting a unit or a city.
+    /// Workers at home in city `city` waiting for the player: none have a
+    /// job to go to and they aren't resting this turn.
+    pub(super) fn idle_workers(&self, city: usize) -> u32 {
+        let c = &self.cities[city];
+        if c.team == PLAYER_TEAM && c.worker_jobs.is_empty() && !c.workers_resting {
+            c.workers
+        } else {
+            0
+        }
+    }
+
+    /// The first of the player's cities with idle workers.
+    pub(super) fn next_idle_workers(&self) -> Option<usize> {
+        (0..self.cities.len()).find(|&i| self.idle_workers(i) > 0)
+    }
+
+    /// Opens the worker menu on city `city` (the turn strip's workers, and
+    /// the turn order).
+    pub(super) fn open_worker_menu(&mut self, city: usize) {
+        self.set_worker_mode(true);
+        if self.worker_mode {
+            self.worker_menu_city = Some(city);
+        }
+    }
+
+    /// The city whose worker jobs a queue row or its X acts on: the open
+    /// city, or else the worker menu's.
+    pub(super) fn worker_list_city(&self) -> Option<usize> {
+        self.selected_city
+            .or(self.worker_menu_city.filter(|_| self.worker_mode))
+    }
+
+    /// Sleep in the worker menu, or Space there: the menu city's idle
+    /// workers rest this turn, and the menu moves on to the next city with
+    /// idle workers; with none left, it closes and the turn moves on.
+    pub fn sleep_workers(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(city) = self.worker_menu_city.filter(|_| self.worker_mode) else {
+            return;
+        };
+        if self.idle_workers(city) > 0 {
+            self.cities[city].workers_resting = true;
+            self.notice = format!("CITY {}'S WORKERS REST THIS TURN", self.cities[city].id + 1);
+        }
+        match self.next_idle_workers() {
+            Some(next) => self.worker_menu_city = Some(next),
+            None => {
+                self.set_worker_mode(false);
+                self.select_next_or_end_turn(None);
+            }
+        }
+    }
+
+    /// The worker menu: the only way to give workers jobs. The map shows
+    /// every tile the player's workers can reach; a job picked in the menu
+    /// (`arm_worker_job`) is placed with clicks and drags on the map. It
+    /// ends with W, Escape, Done, or selecting a unit or a city.
     pub(super) fn set_worker_mode(&mut self, on: bool) {
         if on == self.worker_mode || self.is_resolving() {
             return;
@@ -344,29 +400,20 @@ impl GameState {
         self.selected = None;
         self.group.clear();
         self.inspected_tile = None;
-        self.placing_barrier = None;
-        self.hovered_edge = None;
+        self.placing_job = None;
+        self.hovered_job = None;
         self.ui_click_mode = None;
         self.worker_mode = on;
-        self.notice = if on {
-            "WORKER JOBS: CLICK A HIGHLIGHTED TILE, THEN PICK A JOB - W WHEN DONE".into()
+        self.worker_menu_city = if on {
+            self.next_idle_workers()
+                .or_else(|| self.cities.iter().position(|c| c.team == PLAYER_TEAM))
         } else {
-            "DONE WITH WORKER JOBS".into()
+            None
         };
-    }
-
-    /// A map click in worker mode: opens the clicked tile's panel.
-    pub(super) fn worker_mode_click(&mut self, hex: Option<Hex>) {
-        self.inspected_tile = hex.filter(|&h| self.grid.contains(h) && self.is_explored(h));
-        self.notice = match self.inspected_tile {
-            Some(h) if !self.in_worker_reach(PLAYER_TEAM, h) => {
-                "OUT OF REACH - WORKERS GO 3 TILES FROM A CITY, OR NEXT TO A ROAD".into()
-            }
-            Some(_) => "PICK A JOB FOR THIS TILE - OR CLICK ANOTHER, W WHEN DONE".into(),
-            None if hex.is_some_and(|h| self.grid.contains(h)) => {
-                "UNEXPLORED - SCOUT IT FIRST".into()
-            }
-            None => "WORKER JOBS: CLICK A HIGHLIGHTED TILE, THEN PICK A JOB - W WHEN DONE".into(),
+        self.notice = if on {
+            "WORKERS: PICK A JOB, THEN PLACE IT ON THE MAP - W WHEN DONE".into()
+        } else {
+            "DONE WITH WORKERS".into()
         };
     }
 
@@ -385,40 +432,71 @@ impl GameState {
             .any(|other| other.same_place(job))
     }
 
-    /// Tile panel buttons, or R and I: queues `kind` on the inspected tile
-    /// for the city whose workers would do it. A wall or gate instead arms
-    /// edge placement: clicks (or a drag) on hex edges queue them there.
-    pub fn queue_worker_job(&mut self, kind: JobKind) {
+    /// A job button in the worker menu, or R and I: arms `kind` for placing
+    /// on the map (opening the worker menu if it isn't open), or disarms it
+    /// if it's the one armed already.
+    pub fn arm_worker_job(&mut self, kind: JobKind) {
         if self.is_resolving() {
             return;
         }
-        if kind.on_edge() {
-            if self.nearest_city(PLAYER_TEAM, Hex::new(0, 0)).is_none() {
-                self.notice = "FOUND A CITY FIRST - ITS WORKERS DO THE WORK".into();
+        if !self.worker_mode {
+            self.set_worker_mode(true);
+            if !self.worker_mode {
                 return;
             }
-            self.placing_barrier = Some(kind);
-            self.notice = format!(
-                "CLICK OR DRAG ALONG HEX EDGES TO QUEUE {}S - ESC TO STOP",
-                kind.name()
-            );
+        }
+        if self.placing_job == Some(kind) {
+            self.placing_job = None;
+            self.hovered_job = None;
+            self.notice = "PICK A JOB TO PLACE - W WHEN DONE".into();
             return;
         }
-        let Some(hex) = self.inspected_tile else {
-            self.notice = "CLICK A TILE FIRST, THEN CHOOSE A WORKER JOB".into();
-            return;
+        self.placing_job = Some(kind);
+        self.notice = if kind.on_edge() {
+            format!(
+                "CLICK OR DRAG ALONG HEX EDGES TO PLACE {}S - ESC TO STOP",
+                kind.name()
+            )
+        } else {
+            format!(
+                "CLICK OR DRAG OVER LIT TILES TO PLACE {}S - ESC TO STOP",
+                kind.name()
+            )
         };
-        self.queue_worker_job_at(hex, kind);
     }
 
-    /// With a wall or gate armed: the edge under a map point, as the hex the
-    /// point is in and the neighbor across the edge.
-    pub(super) fn barrier_edge_at(&self, point: Vec2) -> Option<(Hex, Hex)> {
-        self.placing_barrier?;
+    /// With a job armed: where a map point would place it, as the tile the
+    /// point is in and, for a wall or gate, the neighbor across the edge
+    /// nearest the point.
+    pub(super) fn job_target_at(&self, point: Vec2) -> Option<(Hex, Option<Hex>)> {
+        let kind = self.placing_job?;
         let hex = Hex::from_world(point);
-        self.grid
-            .contains(hex)
-            .then(|| (hex, nearest_edge(hex, point)))
+        if !self.grid.contains(hex) {
+            return None;
+        }
+        Some((hex, kind.on_edge().then(|| nearest_edge(hex, point))))
+    }
+
+    /// Places the armed job at `hex` (across the edge to `across`, for a
+    /// wall or gate). Returns whether it was queued. A drag calls this for
+    /// every tile or edge it passes, so a place that already has this job
+    /// is skipped without a notice.
+    pub(super) fn place_job_at(&mut self, hex: Hex, across: Option<Hex>) -> bool {
+        let Some(kind) = self.placing_job.filter(|_| !self.is_resolving()) else {
+            return false;
+        };
+        if let Some(across) = across {
+            return self.queue_barrier_at(hex, across);
+        }
+        if self.job_taken(PLAYER_TEAM, WorkerJob::on_tile(hex, kind)) {
+            return false;
+        }
+        if let Some(reason) = self.job_unavailable(hex, kind) {
+            self.notice = reason;
+            return false;
+        }
+        self.queue_worker_job_at(hex, kind);
+        true
     }
 
     /// Queues the armed wall or gate on the edge between `a` and `b`. The
@@ -426,7 +504,7 @@ impl GameState {
     /// was queued; a drag calls this for every edge it passes, so an edge
     /// already queued is skipped without a notice.
     pub(super) fn queue_barrier_at(&mut self, a: Hex, b: Hex) -> bool {
-        let Some(kind) = self.placing_barrier else {
+        let Some(kind) = self.placing_job else {
             return false;
         };
         let Some(city) = self.job_city(a) else {
@@ -460,6 +538,25 @@ impl GameState {
             self.cities[city].id + 1,
             self.cities[city].worker_jobs.len()
         );
+        true
+    }
+
+    /// With a job armed, places it at the tile or hex edge under `cursor`
+    /// (window pixels). Called on the press and for every cursor move while
+    /// the button is held, so a drag places it on each tile or edge it
+    /// passes. Returns whether the press belongs to placing: false over the
+    /// classic UI (`check_ui`) or with nothing armed.
+    pub fn paint_job_at(&mut self, cursor: Vec2, screen_size: Vec2, check_ui: bool) -> bool {
+        if self.placing_job.is_none() || self.is_resolving() {
+            return false;
+        }
+        if check_ui && self.ui_covers(cursor, screen_size) {
+            return false;
+        }
+        let point = self.camera.screen_to_world(cursor, screen_size);
+        if let Some((hex, across)) = self.job_target_at(point) {
+            self.place_job_at(hex, across);
+        }
         true
     }
 
@@ -526,7 +623,7 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
-        let Some(city) = self.selected_city else {
+        let Some(city) = self.worker_list_city() else {
             return;
         };
         if index < self.cities[city].worker_jobs.len() {
@@ -903,8 +1000,9 @@ mod tests {
     }
 
     fn queue(game: &mut GameState, hex: Hex, kind: JobKind) {
-        game.inspected_tile = Some(hex);
-        game.queue_worker_job(kind);
+        game.placing_job = Some(kind);
+        game.place_job_at(hex, None);
+        game.placing_job = None;
     }
 
     #[test]
@@ -934,35 +1032,41 @@ mod tests {
     }
 
     #[test]
-    fn worker_mode_opens_any_tile_and_ends_with_escape_or_a_selection() {
+    fn the_worker_menu_places_jobs_and_ends_with_escape_or_a_selection() {
         let mut game = GameState::city_scenario();
         game.explore();
         game.select_city();
-        assert!(game.selected_city.is_some());
         game.toggle_worker_mode();
         assert!(game.worker_mode);
         assert_eq!(game.selected_city, None, "the city view closes");
         assert_eq!(game.selected, None);
+        assert_eq!(
+            game.worker_menu_city,
+            Some(0),
+            "on the city with idle workers"
+        );
 
-        // A click on one of your units opens its tile, not the unit.
+        // R picks roads; Escape puts them down, and again closes the menu.
+        game.arm_worker_job(JobKind::Road);
+        assert_eq!(game.placing_job, Some(JobKind::Road));
+        game.press_escape();
+        assert_eq!(game.placing_job, None);
+        assert!(game.worker_mode);
+        game.press_escape();
+        assert!(!game.worker_mode);
+        assert!(!game.settings_open, "Escape closed the menu, not more");
+
+        // R with the menu closed opens it with roads picked.
+        game.arm_worker_job(JobKind::Road);
+        assert!(game.worker_mode);
+        assert_eq!(game.placing_job, Some(JobKind::Road));
+
+        // Selecting a unit ends it; so does opening a city.
         let unit = game
             .units
             .iter()
             .position(|u| u.team == PLAYER_TEAM)
             .unwrap();
-        let hex = game.units[unit].pos;
-        game.worker_mode_click(Some(hex));
-        assert_eq!(game.inspected_tile, Some(hex));
-        assert_eq!(game.selected, None);
-
-        // Escape ends it, tile panel and all.
-        game.press_escape();
-        assert!(!game.worker_mode);
-        assert_eq!(game.inspected_tile, None);
-        assert!(!game.settings_open, "Escape closed worker mode, not more");
-
-        // Selecting a unit ends it too; so does opening a city.
-        game.toggle_worker_mode();
         game.set_selection(vec![unit]);
         assert!(!game.worker_mode);
         game.toggle_worker_mode();
@@ -977,20 +1081,36 @@ mod tests {
     }
 
     #[test]
-    fn an_unexplored_tile_can_not_be_picked() {
-        let mut game = GameState::solo_world(3);
-        game.explore();
-        let unseen = game
-            .grid
-            .all_hexes()
-            .find(|&h| !game.is_explored(h))
-            .expect("fog left on the map");
-        game.worker_mode_click(Some(unseen));
-        assert_eq!(game.inspected_tile, None);
-        assert_eq!(game.notice, "UNEXPLORED - SCOUT IT FIRST");
-        let seen = game.units[0].pos;
-        game.worker_mode_click(Some(seen));
-        assert_eq!(game.inspected_tile, Some(seen));
+    fn a_job_can_not_go_on_an_unexplored_tile() {
+        let mut game = cities();
+        let unseen = Hex::new(-2, 3);
+        game.memory.remove(&unseen);
+        game.fog_of_war = true;
+        assert!(!game.is_explored(unseen));
+        game.placing_job = Some(JobKind::Road);
+        assert!(!game.place_job_at(unseen, None));
+        assert_eq!(game.notice, "WORKERS CAN'T WORK AN UNEXPLORED TILE");
+    }
+
+    #[test]
+    fn sleeping_workers_rest_for_the_turn_and_wait_again_the_next() {
+        let mut game = GameState::city_scenario();
+        game.units.retain(|u| u.team != PLAYER_TEAM);
+        game.cities[0].queue.push(crate::game::city::Build::Worker);
+        assert_eq!(game.idle_workers(0), 1);
+        // The turn order comes to them: the worker menu opens.
+        game.select_next_or_end_turn(None);
+        assert!(game.worker_mode);
+        game.sleep_workers();
+        assert_eq!(game.idle_workers(0), 0);
+        assert!(!game.worker_mode, "nothing else idle: the menu closes");
+        // End the turn; next turn they wait again.
+        game.end_planning();
+        while game.is_resolving() {
+            game.update(1.0);
+        }
+        assert!(!game.cities[0].workers_resting);
+        assert_eq!(game.idle_workers(0), 1);
     }
 
     #[test]
@@ -1223,15 +1343,14 @@ mod tests {
                 Some((near, far))
             })
             .unwrap();
-        game.inspected_tile = Some(near);
-        game.queue_worker_job(JobKind::Wall);
-        assert_eq!(game.placing_barrier, Some(JobKind::Wall));
+        game.arm_worker_job(JobKind::Wall);
+        assert_eq!(game.placing_job, Some(JobKind::Wall));
         assert!(game.queue_barrier_at(far, near));
         let job = game.cities[0].worker_jobs[0];
         assert_eq!((job.hex, job.across), (near, Some(far)));
         // The same edge, either way round, or as a gate, isn't queued again.
         assert!(!game.queue_barrier_at(near, far));
-        game.placing_barrier = Some(JobKind::Gate);
+        game.placing_job = Some(JobKind::Gate);
         assert!(!game.queue_barrier_at(far, near));
         assert_eq!(game.cities[0].worker_jobs.len(), 1);
 

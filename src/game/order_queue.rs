@@ -764,7 +764,7 @@ mod tests {
         );
         g.selected = Some(1);
         g.hold_selected_unit();
-        assert_eq!(g.pending(), (0, 0));
+        assert_eq!(g.pending(), (0, 0, 0));
 
         // Next turn it follows the queue's second turn and still doesn't wait
         // for orders, while the unit that held does.

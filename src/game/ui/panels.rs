@@ -159,7 +159,7 @@ impl GameState {
             state: if self.is_resolving() {
                 ButtonState::Disabled
             } else {
-                ButtonState::new(pending == (0, 0), false)
+                ButtonState::new(pending == (0, 0, 0), false)
             },
             armed: false,
             faded: false,

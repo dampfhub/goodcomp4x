@@ -247,15 +247,14 @@ impl GameState {
 
     /// A press of Escape. It closes one thing, in this order: the settings
     /// menu, then a city view, interior or site being chosen
-    /// (`exit_structure_menu`), then worker mode (after any wall or gate
-    /// placement in it), then wall or gate placement, the selection or the
-    /// tile panel (`clear_selection`). With nothing to close it opens the
+    /// (`exit_structure_menu`), then a worker job being placed, then the
+    /// worker menu, then the selection or the tile picked (`clear_selection`). With nothing to close it opens the
     /// settings menu, which has the Quit button.
     pub fn press_escape(&mut self) {
         if self.settings_open {
             self.settings_open = false;
         } else if self.exit_structure_menu() {
-        } else if self.worker_mode && self.placing_barrier.is_none() {
+        } else if self.worker_mode && self.placing_job.is_none() {
             self.set_worker_mode(false);
         } else if !self.clear_selection() {
             self.settings_open = true;
@@ -367,7 +366,7 @@ mod tests {
         game.select_city();
         assert!(game.selected_city.is_some());
 
-        // The city view closes first, then the tile panel.
+        // The city view closes first, then the tile picked.
         game.press_escape();
         assert_eq!(game.selected_city, None);
         assert!(!game.settings_open);

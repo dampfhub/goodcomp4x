@@ -137,7 +137,11 @@ impl GameState {
         if source == target {
             return;
         }
-        let Some(city) = self.selected_city.or(self.selected_barracks) else {
+        let city = match kind {
+            QueueKind::Workers => self.worker_list_city(),
+            _ => self.selected_city.or(self.selected_barracks),
+        };
+        let Some(city) = city else {
             return;
         };
         match kind {

@@ -16,7 +16,7 @@ use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, Unit, UnitStats};
 use super::unit_icons::{self, UnitIcon};
-use super::workers::{Structure, StructureKind};
+use super::workers::{Structure, StructureKind, WorkerJob};
 use super::{GameState, PLAYER_TEAM, font, mesh};
 use crate::renderer::Vertex;
 
@@ -84,7 +84,7 @@ const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
 const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
 const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
 const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
-/// The ring just inside the tile the tile panel shows.
+/// The ring just inside the tile picked in a city or barracks view.
 const INSPECTED_TILE_COLOR: Color = [0.92, 0.92, 0.96, 1.0];
 const INSPECTED_TILE_WIDTH: f32 = 0.08;
 /// Worker mode's tint over tiles the player's workers can reach...
@@ -137,6 +137,8 @@ const WORKER_BESIDE_SCALE: f32 = 0.45;
 const WORKER_BESIDE_UNIT: Vec2 = Vec2::new(0.45, -0.32);
 const PLANNED_JOB_COLOR: Color = [0.95, 0.78, 0.42, 0.75];
 const PLANNED_JOB_COLOR_SOLID: Color = [0.95, 0.78, 0.42, 1.0];
+/// The armed worker job's preview on a tile where it can't go.
+const BLOCKED_JOB_COLOR: Color = [0.90, 0.30, 0.25, 1.0];
 const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2::new(0.0, 0.6);
 const PLANNED_JOB_LABEL_HEIGHT: f32 = 0.12;
 const WORKER_TAG_MIN: Vec2 = Vec2::new(-0.78, -0.58);
@@ -373,7 +375,7 @@ impl GameState {
                 );
             }
         }
-        // The tile the tile panel shows.
+        // The tile picked in a city or barracks view.
         if let Some(hex) = self.inspected_tile.filter(|&h| self.grid.contains(h)) {
             mesh::polygon_outline(
                 hex.to_world(),
@@ -1167,9 +1169,33 @@ impl GameState {
         for (&(a, b), barrier) in &view.barriers {
             push_barrier(a, b, barrier.kind, barrier.team.color(), out);
         }
-        if let Some((a, b)) = self.hovered_edge {
-            let (start, end) = edge_corners(a, b);
-            push_rounded_segment(start, end, BARRIER_WIDTH, PLANNED_JOB_COLOR_SOLID, out);
+        // Where the armed worker job would go: an edge, or a ring on a tile,
+        // red where it can't.
+        if let (Some((hex, across)), Some(kind)) = (self.hovered_job, self.placing_job) {
+            match across {
+                Some(across) => {
+                    let (start, end) = edge_corners(hex, across);
+                    push_rounded_segment(start, end, BARRIER_WIDTH, PLANNED_JOB_COLOR_SOLID, out);
+                }
+                None => {
+                    let color = if self.job_unavailable(hex, kind).is_none()
+                        || self.job_taken(PLAYER_TEAM, WorkerJob::on_tile(hex, kind))
+                    {
+                        PLANNED_JOB_COLOR_SOLID
+                    } else {
+                        BLOCKED_JOB_COLOR
+                    };
+                    mesh::polygon_outline(
+                        hex.to_world(),
+                        WORKED_OUTLINE_RADIUS,
+                        0.07,
+                        6,
+                        0.0,
+                        color,
+                        out,
+                    );
+                }
+            }
         }
         for &(h, label) in &view.sites {
             let center = h.to_world() + IMPROVEMENT_SPOT;

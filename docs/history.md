@@ -161,3 +161,8 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     turns on worker mode, which lights the reachable tiles, dims the rest, explains itself in a
     panel, and opens the tile panel for any clicked tile. Queued walls and gates have rounded
     ends, so a run of them joins into one line.
+51. The worker menu (`claude/worker-reach`): the only way to give workers orders. Pick a job,
+    then place it on the map by clicking or dragging over tiles or edges, with a preview ring
+    under the cursor; the menu also lists each city's workers and jobs (moved from the city
+    panel). The tile panel is gone. Idle workers are back in the turn strip and the turn order,
+    after production, and can sleep for a turn.

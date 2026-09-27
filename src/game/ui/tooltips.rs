@@ -483,9 +483,21 @@ impl GameState {
                     )
                 }
                 Target::WorkerMode => (
-                    "WORKER JOBS".into(),
+                    "WORKERS".into(),
                     "W".into(),
-                    "SHOWS WHERE YOUR WORKERS REACH; CLICK A TILE THERE TO GIVE THEM A JOB.".into(),
+                    "THE WORKER MENU: PICK A JOB, THEN PLACE IT ON THE MAP WHERE YOUR WORKERS REACH.".into(),
+                    None,
+                ),
+                Target::WorkerCity(city) => (
+                    format!("CITY {}", self.cities.get(city).map_or(0, |c| c.id + 1)),
+                    String::new(),
+                    "LIST THIS CITY'S WORKERS AND JOBS.".into(),
+                    None,
+                ),
+                Target::SleepWorkers => (
+                    "SLEEP".into(),
+                    "SPACE".into(),
+                    "THIS CITY'S IDLE WORKERS REST THIS TURN, AND THE TURN MOVES ON.".into(),
                     None,
                 ),
                 Target::CloseSettings => (

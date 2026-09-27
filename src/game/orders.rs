@@ -95,12 +95,13 @@ impl GameState {
             }
             return;
         }
-        if self.paint_barrier_at(cursor, screen_size, false) {
+        if self.paint_job_at(cursor, screen_size, false) {
             return;
         }
+        // In the worker menu, clicks place the armed job (`paint_job_at`,
+        // above); with none armed, they do nothing.
         if self.worker_mode {
-            let hex = self.hex_at_screen(cursor, screen_size);
-            self.worker_mode_click(hex);
+            self.notice = "PICK A JOB TO PLACE FROM THE WORKER MENU - W WHEN DONE".into();
             return;
         }
         let armed = self.ui_click_mode.take();
@@ -177,10 +178,10 @@ impl GameState {
             return;
         }
         let Some(selected) = self.selected else {
-            // With nothing selected, a tile with none of your units on it
-            // opens its panel, for worker jobs.
+            // With nothing selected, a click selects your unit there, if any.
+            // Workers are given jobs from the worker menu (W).
             self.selected = ally;
-            self.inspected_tile = (ally.is_none() && self.is_explored(hex)).then_some(hex);
+            self.inspected_tile = None;
             return;
         };
 
@@ -259,13 +260,13 @@ impl GameState {
     }
 
     /// Escape, once no structure menu is open: lets go of the selected unit
-    /// or group and closes the tile panel. Returns whether there was
+    /// or group and any tile picked. Returns whether there was
     /// anything to let go of.
     pub fn clear_selection(&mut self) -> bool {
-        // A wall or gate being placed stops first, leaving the tile panel.
-        if self.placing_barrier.take().is_some() {
-            self.hovered_edge = None;
-            self.notice = "STOPPED PLACING - CLICK A TILE FOR MORE WORKER JOBS".into();
+        // A worker job being placed stops first, leaving the worker menu open.
+        if self.placing_job.take().is_some() {
+            self.hovered_job = None;
+            self.notice = "STOPPED PLACING - PICK ANOTHER JOB, OR W WHEN DONE".into();
             return true;
         }
         let had =
@@ -283,13 +284,18 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
+        // In the worker menu: the workers there rest, and the turn moves on.
+        if self.worker_mode {
+            self.sleep_workers();
+            return;
+        }
         if !self.group.is_empty() {
             self.hold_group();
             return;
         }
         let selected_needs_orders = self.selected.is_some_and(|idx| self.needs_orders(idx));
         let selected_holding = self.selected.is_some_and(|idx| self.units[idx].holding);
-        if selected_needs_orders || selected_holding || self.pending() != (0, 0) {
+        if selected_needs_orders || selected_holding || self.pending() != (0, 0, 0) {
             self.hold_selected_unit();
         } else {
             self.end_planning();
@@ -373,14 +379,17 @@ impl GameState {
     /// How many of the player's units still need orders, and how many of
     /// their cities still need something to build. The turn can't end until
     /// both are zero; assigning citizens never holds it up.
-    pub(super) fn pending(&self) -> (usize, usize) {
+    pub(super) fn pending(&self) -> (usize, usize, usize) {
         let units = (0..self.units.len())
             .filter(|&i| self.is_player_controlled(i) && self.needs_orders(i))
             .count();
         let cities = (0..self.cities.len())
             .filter(|&i| self.city_needs_build(i))
             .count();
-        (units, cities)
+        let workers = (0..self.cities.len())
+            .map(|i| self.idle_workers(i) as usize)
+            .sum();
+        (units, cities, workers)
     }
 
     /// Tab: selects the next unit that still needs orders, or just the next
@@ -411,9 +420,12 @@ impl GameState {
     /// `after` that still needs orders (`next_unit_needing_orders`). With
     /// neither, clears the selection and waits for the player to end the turn.
     pub(super) fn select_next_or_end_turn(&mut self, after: Option<usize>) {
-        // In the turn strip's order: production first, then the units.
+        // In the turn strip's order: production first, then idle workers,
+        // then the units.
         if let Some(city) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
             self.open_city(city);
+        } else if let Some(city) = self.next_idle_workers() {
+            self.open_worker_menu(city);
         } else if let Some(next) = self.next_unit_needing_orders(after) {
             self.select_and_focus(Some(next));
         } else {
@@ -523,8 +535,8 @@ impl GameState {
         if self.ui_click_mode.take().is_some() {
             return;
         }
-        if self.placing_barrier.take().is_some() {
-            self.hovered_edge = None;
+        if self.placing_job.take().is_some() {
+            self.hovered_job = None;
             return;
         }
         if clear {

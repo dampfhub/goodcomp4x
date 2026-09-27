@@ -69,7 +69,7 @@ pub struct App {
     left_press: Option<(Vec2, ClickMode, bool)>,
     left_dragging: bool,
     /// The left button is down placing walls or gates on hex edges.
-    painting_barriers: bool,
+    painting_jobs: bool,
     queue_scroll_dragging: bool,
     queue_item_dragging: bool,
     modifiers: Modifiers,
@@ -172,7 +172,7 @@ impl App {
             panning: false,
             left_press: None,
             left_dragging: false,
-            painting_barriers: false,
+            painting_jobs: false,
             queue_scroll_dragging: false,
             queue_item_dragging: false,
             modifiers: Modifiers::default(),
@@ -575,9 +575,9 @@ impl ApplicationHandler for App {
                     self.cursor_pos = Some(pos);
                     return;
                 }
-                if self.painting_barriers {
+                if self.painting_jobs {
                     if let Some(size) = self.screen_size() {
-                        self.game.paint_barrier_at(pos, size, false);
+                        self.game.paint_job_at(pos, size, false);
                     }
                     self.cursor_pos = Some(pos);
                     return;
@@ -607,7 +607,7 @@ impl ApplicationHandler for App {
                 self.cursor_pos = Some(pos);
             }
             WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
-                self.painting_barriers = false;
+                self.painting_jobs = false;
                 self.left_press = None;
                 self.left_dragging = false;
                 self.queue_scroll_dragging = false;
@@ -652,9 +652,9 @@ impl ApplicationHandler for App {
                         // With a wall or gate armed, the press (and any drag)
                         // places it on hex edges instead of clicking or panning.
                         if let Some(size) = self.screen_size()
-                            && self.game.paint_barrier_at(cursor, size, !self.use_imgui)
+                            && self.game.paint_job_at(cursor, size, !self.use_imgui)
                         {
-                            self.painting_barriers = true;
+                            self.painting_jobs = true;
                             return;
                         }
                         // Left-click moves; Shift adds the move to the queue.
@@ -677,8 +677,8 @@ impl ApplicationHandler for App {
                     }
                 }
                 (ElementState::Released, MouseButton::Left) => {
-                    if self.painting_barriers {
-                        self.painting_barriers = false;
+                    if self.painting_jobs {
+                        self.painting_jobs = false;
                         return;
                     }
                     if self.queue_scroll_dragging {
@@ -817,8 +817,8 @@ impl ApplicationHandler for App {
                     KeyCode::KeyA => self.game.auto_assign_selected_city(),
                     KeyCode::KeyM => self.game.choose_move_action(),
                     KeyCode::KeyX => self.game.choose_attack_action(),
-                    KeyCode::KeyR => self.game.queue_worker_job(crate::game::JobKind::Road),
-                    KeyCode::KeyI => self.game.queue_worker_job(crate::game::JobKind::Improve),
+                    KeyCode::KeyR => self.game.arm_worker_job(crate::game::JobKind::Road),
+                    KeyCode::KeyI => self.game.arm_worker_job(crate::game::JobKind::Improve),
                     KeyCode::KeyW => self.game.toggle_worker_mode(),
                     KeyCode::KeyF => self.game.found_city_selected(),
                     KeyCode::Digit1 => self

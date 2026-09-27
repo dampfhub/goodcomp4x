@@ -9,9 +9,8 @@ use super::{
 use crate::game::city::{
     Build, BuildUnit, Building, CORE_HP, LaborFocus, WORKER_COST, WORKER_SHORTCUT, delivered_share,
 };
-use crate::game::hex::Hex;
 use crate::game::orders::ClickMode;
-use crate::game::workers::{JobKind, WorkerJob};
+use crate::game::workers::JobKind;
 use crate::game::{GameState, PLAYER_TEAM};
 
 impl GameState {
@@ -679,7 +678,6 @@ impl GameState {
                 }]);
             }
         }
-        self.city_workers(i, panel);
     }
 
     /// The city's workers: how many are home and out, what those out are
@@ -753,130 +751,89 @@ impl GameState {
         }
     }
 
-    /// A tile clicked with nothing selected: what it is, and the jobs the
-    /// nearest city's workers can do there.
-    /// Worker mode's panel before a tile is picked: what to do, where
-    /// workers reach, each city's workers, and Done.
-    pub(super) fn worker_mode_tray(&self, panel: &mut PanelBuilder) {
-        panel.text(TITLE, vec![("WORKER JOBS".into(), TEXT)]);
-        for line in [
-            "CLICK A HIGHLIGHTED TILE, THEN PICK A JOB FOR IT.",
-            "WORKERS GO UP TO 3 TILES FROM A CITY, OR ANYWHERE NEXT TO A ROAD:",
-            "BUILD ROADS TO WORK FARTHER OUT.",
-        ] {
-            panel.text(SMALL, vec![(line.into(), DIM_TEXT)]);
-        }
-        for (i, city) in self.cities.iter().enumerate() {
-            if city.team == PLAYER_TEAM {
-                panel.text(
-                    SMALL,
-                    vec![(
-                        format!(
-                            "CITY {}: {} AT HOME, {} OUT, {} JOBS WAITING",
-                            city.id + 1,
-                            city.workers,
-                            self.workers_out(i),
-                            city.worker_jobs.len()
-                        ),
-                        LABEL_TEXT,
-                    )],
-                );
-            }
-        }
-        panel.gap(GAP);
-        panel.buttons(vec![worker_mode_button("DONE")]);
-    }
-
-    pub(super) fn tile_tray(&self, hex: Hex, panel: &mut PanelBuilder) {
-        let tile = self.grid.tile(hex);
-        let mut name = tile.terrain.name().to_string();
-        if tile.hills {
-            name.push_str(" HILLS");
-        }
-        if let Some(feature) = tile.feature {
-            name = format!("{} {name}", feature.name());
-        }
+    /// The worker menu (W): the only way to give workers orders. Its job
+    /// buttons arm a job to place on the map; it lists a city's workers
+    /// (with Recall) and waiting jobs (drag to reorder, X to remove), with a
+    /// button per city when there are several; Sleep rests that city's idle
+    /// workers this turn, and Done closes it.
+    pub(super) fn worker_menu(&self, panel: &mut PanelBuilder) {
+        panel.text(TITLE, vec![("WORKERS".into(), TEXT)]);
+        let how = match self.placing_job {
+            Some(kind) if kind.on_edge() => format!(
+                "PLACING {}S: CLICK OR DRAG ALONG HEX EDGES · ESC TO STOP",
+                kind.name()
+            ),
+            Some(kind) => format!(
+                "PLACING {}S: CLICK OR DRAG OVER LIT TILES · ESC TO STOP",
+                kind.name()
+            ),
+            None => "PICK A JOB, THEN PLACE IT ON THE MAP.".into(),
+        };
+        panel.text(SMALL, vec![(how, LABEL_TEXT)]);
         panel.text(
-            TITLE,
-            vec![
-                ("TILE ".into(), LABEL_TEXT),
-                (format!("({}, {})  ", hex.q, hex.r), TEXT),
-                (name, DIM_TEXT),
-            ],
+            SMALL,
+            vec![(
+                "LIT: WHERE WORKERS REACH, 3 TILES FROM A CITY OR NEXT TO A ROAD".into(),
+                DIM_TEXT,
+            )],
         );
-        let from = match self.job_city(hex) {
-            Some(city) => {
-                let c = &self.cities[city];
-                format!(
-                    "WORKERS FROM CITY {}: {} AT HOME, {} OUT, {} JOBS WAITING",
-                    c.id + 1,
-                    c.workers,
-                    self.workers_out(city),
-                    c.worker_jobs.len()
-                )
-            }
-            None => "FOUND A CITY TO GET WORKERS".into(),
-        };
-        panel.text(SMALL, vec![(from, DIM_TEXT)]);
-        // Your workers standing here can be sent home from the tile.
-        let here: Vec<_> = self
-            .field_workers
-            .iter()
-            .filter(|w| w.pos == hex && w.team == PLAYER_TEAM && !w.recalled)
-            .collect();
-        if !here.is_empty() {
-            panel.buttons(
-                here.iter()
-                    .map(|worker| ButtonSpec {
-                        target: Target::RecallWorker(worker.id),
-                        label: "RECALL WORKER".into(),
-                        hint: "SEND IT HOME".into(),
-                        state: ButtonState::Ready,
-                        armed: false,
-                    })
-                    .collect(),
-            );
-        }
-        if !self.in_worker_reach(PLAYER_TEAM, hex) {
-            panel.text(
-                SMALL,
-                vec![(
-                    "OUT OF REACH: WORKERS GO 3 TILES FROM A CITY, OR NEXT TO A ROAD".into(),
-                    GOLD_TEXT,
-                )],
-            );
-        }
-        let how = if self.worker_mode {
-            "WORKER JOBS · CLICK ANOTHER TILE, OR W WHEN DONE"
-        } else {
-            "WORKER JOBS · ESC TO CLOSE"
-        };
-        panel.text(SMALL, vec![(how.into(), LABEL_TEXT)]);
         for row in JobKind::ALL.chunks(3) {
-            panel.buttons(
+            panel.compact_buttons(
                 row.iter()
                     .map(|&kind| {
-                        let taken = self.job_taken(PLAYER_TEAM, WorkerJob::on_tile(hex, kind));
                         let key = match kind {
                             JobKind::Road => "R · ",
                             JobKind::Improve => "I · ",
-                            JobKind::Wall | JobKind::Gate => "EDGES · ",
                             _ => "",
                         };
                         ButtonSpec {
                             target: Target::WorkerJob(kind),
                             label: kind.name().into(),
                             hint: format!("{key}{}", turns_text(kind.turns())),
-                            state: ButtonState::new(
-                                taken,
-                                !taken && self.job_unavailable(hex, kind).is_some(),
-                            ),
-                            armed: self.placing_barrier == Some(kind),
+                            state: ButtonState::Ready,
+                            armed: self.placing_job == Some(kind),
                         }
                     })
                     .collect(),
             );
         }
+        let cities: Vec<usize> = (0..self.cities.len())
+            .filter(|&i| self.cities[i].team == PLAYER_TEAM)
+            .collect();
+        if cities.len() > 1 {
+            panel.gap(GAP);
+            panel.compact_buttons(
+                cities
+                    .iter()
+                    .map(|&i| ButtonSpec {
+                        target: Target::WorkerCity(i),
+                        label: format!("CITY {}", self.cities[i].id + 1),
+                        hint: match self.idle_workers(i) {
+                            0 => String::new(),
+                            n => format!("{n} IDLE"),
+                        },
+                        state: ButtonState::new(self.worker_menu_city == Some(i), false),
+                        armed: false,
+                    })
+                    .collect(),
+            );
+        }
+        if let Some(city) = self.worker_menu_city {
+            panel.gap(GAP);
+            self.city_workers(city, panel);
+        }
+        panel.gap(GAP);
+        let idle = self.worker_menu_city.map_or(0, |i| self.idle_workers(i));
+        panel.compact_buttons(vec![
+            ButtonSpec {
+                target: Target::SleepWorkers,
+                label: "SLEEP".into(),
+                hint: "SPACE".into(),
+                state: ButtonState::new(false, idle == 0),
+                armed: false,
+            },
+            worker_mode_button("DONE"),
+        ]);
     }
 
     pub(super) fn barracks_tray(&self, i: usize, panel: &mut PanelBuilder) {
