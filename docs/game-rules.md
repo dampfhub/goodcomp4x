@@ -106,8 +106,11 @@ queue them. Nothing heals.
 - A mountain strictly between two hexes blocks sight; the mountain itself is visible.
 - Every frame, each hex in sight is recorded as last seen: cities and barracks (with their
   health), improvements and roads. Units aren't remembered, since they move: out of sight, the
-  player knows of no unit anywhere. Remembered hexes out of sight draw that memory under a grey
-  veil; never-seen hexes draw nothing.
+  player knows of no unit anywhere. Remembered hexes out of sight draw that memory under a dark
+  tint, keeping the terrain readable. Rounded, overlapping dark cloud puffs cover unexplored tiles
+  without tile seams, with dense small lobes and soft edges spilling slightly beyond the
+  region's border; their pattern stays anchored to the map as sight changes.
+  Never-seen terrain and objects are not drawn beneath the clouds.
 - Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
   remembered hexes from memory.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
