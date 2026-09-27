@@ -1180,6 +1180,21 @@ fn measure_panel(
     height + 12.0
 }
 
+/// For a floating panel the player placed (which keeps its own size), how much
+/// taller it must get this frame because Ctrl just showed its title bar
+/// (`title_height`), or shorter because it just hid it. `None` when the title
+/// bar didn't just change, or the panel is laid out automatically, docked or
+/// collapsed (those already account for it).
+fn title_bar_change(window: WindowGeometry, arranging: bool, title_height: f32) -> Option<f32> {
+    let changed = arranging != window.title_visible;
+    (changed && window.manual && !window.docked && !window.collapsed && window.size != Vec2::ZERO)
+        .then_some(if arranging {
+            title_height
+        } else {
+            -title_height
+        })
+}
+
 /// How wide the unit strip's window wants to be: its widest row of tokens,
 /// plus the same allowance for padding and border `measure_panel` takes off.
 fn roster_width(panel: &PanelBuilder) -> f32 {
@@ -1691,6 +1706,27 @@ impl GameState {
             Condition::FirstUseEver
         } else {
             Condition::Always
+        };
+        // A panel the player moved or resized keeps its own size, so when Ctrl
+        // shows or hides its title bar it would push the content down and clip
+        // it. Grow (or shrink) it by the title bar instead, that one frame.
+        let geometry = layout.windows[slot];
+        let (condition, size_condition, size) =
+            match title_bar_change(geometry, arranging, ui.frame_height()) {
+                Some(delta) => (
+                    Condition::Always,
+                    Condition::Always,
+                    (geometry.size + Vec2::new(0.0, delta)).min(Vec2::new(
+                        viewport.x - 2.0 * PANEL_MARGIN,
+                        viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN,
+                    )),
+                ),
+                None => (condition, size_condition, size),
+            };
+        let position = if title_bar_change(geometry, arranging, 0.0).is_some() {
+            geometry.pos
+        } else {
+            position
         };
         let flags = panel_chrome(arranging, layout.windows[slot].collapsed);
         let mut window = ui.window(title).flags(flags);
@@ -2539,6 +2575,42 @@ mod tests {
             STATUS_FLAGS.contains(WindowFlags::NO_SCROLLBAR | WindowFlags::NO_SCROLL_WITH_MOUSE)
         );
         assert!(STATUS_FLAGS.contains(WindowFlags::NO_TITLE_BAR | WindowFlags::NO_MOVE));
+    }
+
+    #[test]
+    fn a_placed_panel_grows_by_its_title_bar_while_ctrl_shows_it() {
+        let placed = WindowGeometry {
+            size: Vec2::new(300.0, 120.0),
+            manual: true,
+            ..WindowGeometry::default()
+        };
+        // Ctrl pressed: the title bar appears, so the panel grows by it.
+        assert_eq!(title_bar_change(placed, true, 26.0), Some(26.0));
+        // Held: no further change once the title bar is showing.
+        let showing = WindowGeometry {
+            title_visible: true,
+            ..placed
+        };
+        assert_eq!(title_bar_change(showing, true, 26.0), None);
+        // Released: it shrinks back.
+        assert_eq!(title_bar_change(showing, false, 26.0), Some(-26.0));
+        // Automatically placed, docked or collapsed panels are sized elsewhere.
+        for other in [
+            WindowGeometry {
+                manual: false,
+                ..placed
+            },
+            WindowGeometry {
+                docked: true,
+                ..placed
+            },
+            WindowGeometry {
+                collapsed: true,
+                ..placed
+            },
+        ] {
+            assert_eq!(title_bar_change(other, true, 26.0), None);
+        }
     }
 
     #[test]
