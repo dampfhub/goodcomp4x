@@ -5,17 +5,24 @@ use glam::Vec2;
 use super::GameState;
 use super::hex::Hex;
 
-/// What a left-click on a hex should do, based on the modifier keys held.
+/// What a click on a hex should do, based on the button and the modifier
+/// keys held: left-click moves, right-click attacks, Shift adds to the
+/// order queue (`order_queue.rs`) instead.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ClickMode {
-    /// Select a unit, or queue a move or attack for the selected one.
+    /// Left-click: select a unit, or move the selected one.
     Normal,
     /// Move only, chosen from the unit command tray.
     Move,
-    /// Attack the clicked hex, occupied or not.
+    /// Attack the clicked hex, occupied or not: right-click, or armed from
+    /// the tray.
     Attack,
     /// Swap places with the clicked adjacent ally.
     Swap,
+    /// Shift-left-click: add a turn moving toward the hex to the queue.
+    QueueMove,
+    /// Shift-right-click: add an attack on the hex to the queue.
+    QueueAttack,
 }
 
 impl GameState {
@@ -47,8 +54,9 @@ impl GameState {
         }
     }
 
-    /// Left-click: selects one of the player's units, or queues an order for
-    /// the selected one. Clicking an already-queued order again cancels it.
+    /// Left-click: selects one of the player's units, or moves the selected
+    /// one (Shift: adds to its queue instead). Clicking an already-queued
+    /// order again cancels it.
     /// An action armed from the command tray applies to this map click only,
     /// unless a modifier key picked `mode` itself. Once the selected unit has
     /// nothing left to plan, selection moves on to the next unit that does.
@@ -112,8 +120,8 @@ impl GameState {
         }
 
         let ally = self.controlled_unit_at(hex);
-        // With a group selected, clicking one of your units picks just it;
-        // anything else is an order for the whole group.
+        // With a group selected, a plain click on one of your units picks
+        // just it; anything else is an order for the whole group.
         if !self.group.is_empty() {
             match ally {
                 Some(ally) if mode == ClickMode::Normal => self.set_selection(vec![ally]),
@@ -150,6 +158,14 @@ impl GameState {
             (ClickMode::Normal, None) => {
                 self.queue_order_at(selected, hex);
                 self.advance_selection_if_done();
+            }
+            // Queuing never moves selection on: the player keeps adding
+            // turns until they let go of the unit.
+            (ClickMode::QueueMove, _) => {
+                self.queue_move(hex);
+            }
+            (ClickMode::QueueAttack, _) => {
+                self.queue_attack(hex);
             }
         }
     }
@@ -220,6 +236,7 @@ impl GameState {
         let Some(idx) = self.selected else { return };
         let unit = &mut self.units[idx];
         unit.guarding = !unit.guarding;
+        unit.cancel_queue();
         if unit.guarding {
             self.select_next_or_end_turn(Some(idx));
         }
@@ -339,11 +356,12 @@ impl GameState {
 
     /// Whether the unit still has something to plan: a move or an attack it
     /// could queue but hasn't. Any hex in range can be attacked, so a unit
-    /// that can attack needs orders until it does (or holds, or guards). A
-    /// unit locked in a contested hex already has its fight, so it's done.
+    /// that can attack needs orders until it does (or holds, guards, or
+    /// follows a queue built with Shift). A unit locked in a contested hex
+    /// already has its fight, so it's done.
     pub(super) fn needs_orders(&self, idx: usize) -> bool {
         let unit = &self.units[idx];
-        if unit.holding || unit.guarding || self.rival_of(idx).is_some() {
+        if unit.holding || unit.guarding || unit.has_queue() || self.rival_of(idx).is_some() {
             return false;
         }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
@@ -368,10 +386,17 @@ impl GameState {
         }
     }
 
-    /// Context order: right-click moves to an open hex or attacks an enemy.
-    /// Ctrl-right-click retains the explicit clear-order behavior. With an
-    /// action armed, right-click just disarms it.
-    pub fn handle_context_click(&mut self, cursor: Vec2, screen_size: Vec2, clear: bool) {
+    /// Right-click: the selected unit (or group) attacks the hex, occupied or
+    /// not; with Shift (`queue`), the attack is added to its order queue.
+    /// Ctrl-right-click (`clear`) clears its orders instead. With an action
+    /// armed, or walls or gates being placed, right-click just stops that.
+    pub fn handle_context_click(
+        &mut self,
+        cursor: Vec2,
+        screen_size: Vec2,
+        clear: bool,
+        queue: bool,
+    ) {
         if self.is_resolving() {
             return;
         }
@@ -386,28 +411,33 @@ impl GameState {
             self.handle_right_click();
             return;
         }
-        if !self.group.is_empty() {
-            if let Some(hex) = self.hex_at_screen(cursor, screen_size) {
-                self.group_order(hex, ClickMode::Normal);
-            }
-            return;
-        }
-        let Some(selected) = self.selected else {
-            return;
-        };
         let Some(hex) = self.hex_at_screen(cursor, screen_size) else {
             return;
         };
-        self.queue_order_at(selected, hex);
-        self.advance_selection_if_done();
+        let mode = if queue {
+            ClickMode::QueueAttack
+        } else {
+            ClickMode::Attack
+        };
+        if !self.group.is_empty() {
+            self.group_order(hex, mode);
+        } else if let Some(selected) = self.selected {
+            if queue {
+                self.queue_attack(hex);
+            } else {
+                self.try_queue_attack(selected, hex);
+                self.advance_selection_if_done();
+            }
+        }
     }
 
-    /// A plain click or right-click on `hex`: attacks an enemy the player
-    /// knows is there, and otherwise moves there. An enemy out of sight isn't
-    /// known, so clicking its hex plans a move.
+    /// A plain left click on `hex` with a unit selected: moves there. An
+    /// enemy the player knows is there isn't a move, so they're reminded
+    /// that right-click attacks; one out of sight isn't known, so clicking
+    /// its hex plans a move.
     pub(super) fn queue_order_at(&mut self, idx: usize, hex: Hex) {
         if self.known_enemy_target_at(hex, self.units[idx].team, &self.fog()) {
-            self.try_queue_attack(idx, hex);
+            self.notice = "RIGHT-CLICK TO ATTACK".into();
         } else {
             self.try_queue_move(idx, hex);
         }
@@ -443,8 +473,9 @@ impl GameState {
             Some(dest)
         };
         unit.drop_unreachable_attack();
-        // Any order wakes a guarding unit.
+        // Any order wakes a guarding unit, and replaces a queue.
         unit.guarding = false;
+        unit.cancel_queue();
     }
 
     /// Toggles an attack on `target`, measured from the unit's planned
@@ -464,6 +495,7 @@ impl GameState {
                 Some(target)
             };
             unit.guarding = false;
+            unit.cancel_queue();
         }
     }
 
@@ -494,6 +526,7 @@ impl GameState {
         for i in [idx, ally] {
             self.units[i].drop_unreachable_attack();
             self.units[i].guarding = false;
+            self.units[i].cancel_queue();
         }
     }
 
@@ -508,6 +541,8 @@ impl GameState {
             return;
         }
         unit.ability_queued = !unit.ability_queued;
+        // The queue was planned with the unit's old stats.
+        unit.cancel_queue();
         self.drop_orders_now_impossible(idx);
         self.advance_selection_if_done();
     }

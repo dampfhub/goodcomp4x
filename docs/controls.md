@@ -10,13 +10,14 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Control | Action |
 | --- | --- |
 | Left-click your unit | Select it |
-| Click a green hex | Queue a move; click again to cancel |
-| Click an enemy in range | Queue an attack on its hex (units, cities and barracks) |
-| Shift-click a hex in range | Attack that hex, even if it is empty now |
+| Left-click a green hex | Move there this turn; click again to cancel |
+| Right-click a hex in range | Attack it this turn: an enemy unit, city or barracks, or an empty hex someone may step into |
+| Shift-left-click a hex | Queue one more turn moving toward it (as close as the unit gets that turn) |
+| Shift-right-click a hex | Queue an attack on it: in the queue's last turn if that turn has none yet and it's in range, else in one more turn |
 | Ctrl-click an adjacent ally | Queue a swap |
 | M / X (or Move / Attack buttons) | Arm Move / Attack for the next map click (again to disarm) |
-| Right-click | Queue a move to an open hex or an attack on an enemy; with an action armed, disarm it |
-| Ctrl-right-click | Clear the selected unit's orders, hold and guard |
+| Right-click (armed) | Disarm the armed action |
+| Ctrl-right-click | Clear the selected unit's orders, queue, hold and guard |
 | Q / ability button | Toggle the unit's ability (what each does: `game-rules.md`, Abilities) |
 | Space / Hold button | Hold the unit this turn, keeping queued orders, and move on to what's next |
 | G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
@@ -25,8 +26,9 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Alt-drag a box | Select every one of your units inside it as a group |
 | Alt-click a unit | Add it to, or remove it from, the group |
 | Hold Alt | Show extra map info: each unit's turn order, and every explored tile's yields |
-| Click a hex with a group | Each member moves as close to it as it can get |
-| Click an enemy with a group | Every member in range attacks it (again to call it off) |
+| Left-click a hex with a group | Each member moves as close to it as it can get |
+| Right-click a hex with a group | Every member in range attacks it (again to call it off) |
+| Shift-left / Shift-right-click with a group | Queue one more turn for every member, so their queues stay the same length |
 | F / Found City button | Found a city with the selected settler |
 | Escape | Let go of the selected unit or group (and close the tile panel) |
 
@@ -34,6 +36,13 @@ A unit can queue a move and an attack; it attacks from the hex it moves to. Unit
 through occupied hexes, and two allies can't head for the same hex. Once the selected unit has a
 move and an attack queued (or can't do one of them), the next unit needing orders is selected
 and the camera glides to it; a unit you select by clicking stays selected.
+
+Shift-clicks build an order queue over several turns (rules: `game-rules.md`, Order queues).
+Selection stays on the unit while you queue; let go of it (Escape, Tab, or click another unit)
+when done. A queued unit doesn't hold up the turn, and any other order (a plain click or
+right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. Its plan
+shows as turn numbers only while it is selected or the cursor is on it; otherwise a small `>N`
+tag beside it counts the turns left.
 
 ## Workers
 
@@ -145,6 +154,11 @@ them.
   are hidden. During playback each arrow shoots to its target: a burst is a hit, grey MISS a hex
   with no enemy unit (a hit on an empty city or barracks still does damage), OUT OF RANGE a
   target that moved away. Damage numbers rise from every unit hurt.
+- A unit following an order queue shows no ghost. While it is selected (alone or in a group) or
+  under the cursor, a line in team color runs along its moves, with each turn's number (1 is
+  this turn) in a dark disc on the hex it moves to, and an orange-rimmed number on each queued
+  attack's arrow; a hex or arrow used on several turns lists them ("2,3"). Otherwise only a
+  `>N` tag at the unit's lower left shows, N being the turns of orders it has left.
 - Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Orange hex:
   contested.
 - Units are tokens in team color with a pictogram of what they are: sword (melee), bow

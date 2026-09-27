@@ -82,3 +82,9 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     captures it and an attack kills it. A Recall button sends a worker home. The AI queues
     improvements and roads and hunts enemy workers. The World scenario has no AI opponent. Units
     can be disbanded (Delete or Disband, twice).
+33. Order queues (`claude/order-queues`): left click moves and right click attacks (any hex in
+    range; Shift-click no longer attacks). Shift-left-click queues one more turn moving toward a
+    hex and Shift-right-click an attack, so units carry orders over several turns; a group's
+    queues always have the same number of turns. Queued units don't hold up ending the turn, any
+    other order cancels the queue, and a queued turn that no longer fits drops the queue. Plans
+    show as turn numbers along a line, only while the unit is selected or hovered.

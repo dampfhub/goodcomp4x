@@ -134,18 +134,20 @@ queue them. Nothing heals.
 
 - Left-click acts on release. Dragging at least 6 pixels pans the map instead and suppresses the
   click; middle-drag also pans. Losing focus or leaving the window cancels the gesture.
-- Click one of your units to select it. Click a green hex to queue a move; click it again to
-  cancel. Left-clicking your own city or barracks hex opens its view instead, even with a unit
-  selected, so a left click can't move a unit onto that hex or select a unit standing there.
-- Click an enemy (unit, city or barracks) in range to queue an attack on its hex. Shift-click
-  attacks any hex in range, occupied or not. **Attacks target hexes:** whoever stands there when
-  the attack resolves gets hit.
+- **Left click moves, right click attacks.** Click one of your units to select it. Left-click a
+  green hex to queue a move; click it again to cancel. Left-clicking a hex with an enemy the
+  player can see only says "RIGHT-CLICK TO ATTACK". Left-clicking your own city or barracks hex
+  opens its view instead, even with a unit selected, so a left click can't move a unit onto that
+  hex or select a unit standing there.
+- Right-click any hex in range to queue an attack on it, occupied or not (again to cancel).
+  **Attacks target hexes:** whoever stands there when the attack resolves gets hit.
 - A unit can queue a move and an attack; the attack range is measured from the planned
   destination. Changing or cancelling the move drops an attack that is no longer in range.
-- M and X (or the Move and Attack buttons) arm the next map click as a move or attack.
+- M and X (or the Move and Attack buttons) arm the next map click as a move or attack; with one
+  armed, a right-click disarms it.
 - Ctrl-click an adjacent ally to swap places (see Swaps).
-- Right-click queues a move to an open hex or an attack on an enemy (or disarms an armed action);
-  Ctrl-right-click clears the selected unit's orders, including a hold or guard.
+- Ctrl-right-click clears the selected unit's orders, including its queue, a hold or a guard.
+- Shift-left-click and Shift-right-click queue orders for later turns (see Order queues).
 - Q (or the ability button) toggles the selected unit's ability.
 - **Hold:** Space holds the selected unit if it still needs orders: it keeps what it has queued
   and gives up the rest of its turn. With nothing left waiting, Space ends the turn. With a city
@@ -155,8 +157,8 @@ queue them. Nothing heals.
   Ctrl-right-click. Guarding units get a white hex outline.
 - **Selection flow:** the first unit needing orders is selected at the start of each turn, and
   once the selected unit is done the next one is selected automatically. "Done" (`needs_orders`)
-  means holding or guarding, or having a move queued (or unable to move) and an attack queued (or
-  unable to attack). Enemies in range don't matter, since hex attacks are always possible. A unit
+  means holding, guarding or following an order queue, or having a move queued (or unable to
+  move) and an attack queued (or unable to attack). Enemies in range don't matter, since hex attacks are always possible. A unit
   in a contested hex is always done. Selecting a unit by clicking never auto-advances, so a
   finished unit can be reselected to edit. Tab looks at the next unit without holding the current
   one. Whenever the game picks the unit, the camera glides to it; middle-drag cancels the glide.
@@ -167,6 +169,41 @@ queue them. Nothing heals.
   unit, then a city needing a build) and ends the turn once nothing is. The End Turn button
   (`end_planning`) holds every unfinished unit, opens a city if one still needs a build, and
   otherwise ends the turn. Input, including UI clicks, is ignored while a turn plays out.
+
+## Order queues (`order_queue.rs`)
+
+- A unit's plan is a list of turns, each with at most one move and one attack: turn 1 is this
+  turn's ordinary orders, later turns wait in its queue (`Unit::queued`).
+- **Shift-left-click** adds a turn in which the unit moves toward the clicked hex: to the hex
+  nearest it that the unit can reach that turn from where its plan leaves it (the clicked hex
+  itself if reachable), staying put wins ties. One click is always one turn; a far hex takes
+  several clicks. This turn's move plans around the units the player can see, like a plain
+  move; later turns plan around terrain and known walls and gates only (units will have moved),
+  and never end on an ally's planned hex for that turn, on a hex an enemy in sight stands on, or
+  on a hex an ally leaves only in a later step of that turn (see Turn resolution). A click that
+  gets nobody closer queues nothing.
+- **Shift-right-click** adds an attack on the hex: into the plan's last turn if nobody who could
+  make it from there already attacks that turn, otherwise into a new turn spent standing still.
+  Range counts from where the plan has the unit that turn, with its later-turn stats (no ability;
+  a siege that sets up this turn is deployed). With nothing planned and no attack possible this
+  turn (a siege setting up), it goes in the next turn. Out of range, nothing is queued.
+- **Groups:** Shift-clicks with a group selected add the same turn to every member, so their
+  plans always have the same number of turns. Members with shorter plans wait until they line
+  up, members that can't get closer or reach the target wait that turn, and the nearest members
+  choose their hexes first.
+- Queuing never moves selection on, so a unit (or group) can be given several turns in a row.
+- **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
+  turn and every turn it has queued orders for.
+- **Cancelling:** any other order to the unit (a plain move or attack, a group move or attack, a
+  swap, its ability, Guard, Ctrl-right-click) drops its queue. Hold keeps it. This turn's orders
+  stay, so the unit needs orders again unless the new order completes them.
+- **Carrying over:** at the end of the turn, after each unit's `end_turn`, every unit with a
+  queue takes its next turn's orders (`advance_queues`). The whole queue is dropped, with a
+  notice ("MELEE STOPPED: ..."), and the unit needs orders, if the turn no longer fits: the unit
+  isn't where the queue expected (a move was blocked), it's in a contested hex, its way or
+  destination is blocked by terrain or a known wall, an enemy it can see or an ally stands on
+  the destination, or its target is out of range.
+- The savestate (F6/F7) keeps queues, like every other order.
 
 ## Turn resolution (`turn.rs`)
 
@@ -196,7 +233,8 @@ Everyone in a step acts simultaneously:
   retaliation.
 - Each mover's order is spent when its step runs, whether it got through or not.
 - After the last step: city economy (income, growth, builds), then each unit's end of turn
-  (ability cooldown, siege setup, Lookout, orders cleared).
+  (ability cooldown, siege setup, Lookout, orders cleared), then units with an order queue take
+  their next turn's orders (see Order queues).
 
 ## Contested hexes
 
@@ -212,19 +250,23 @@ Everyone in a step acts simultaneously:
 - Ctrl-click an adjacent ally. Both units get a move into the other's hex, drawn linked by a line.
 - The swap happens at whichever of the two moves first; the other is pulled along and skips its
   own move step.
-- Clicking again, re-ordering either unit, or right-clicking cancels both halves. Not allowed for
-  units in a contested hex or units that can't move.
+- Clicking again, giving either unit a new move, or Ctrl-right-clicking cancels both halves. Not
+  allowed for units in a contested hex or units that can't move. A swap drops both units' order
+  queues.
 
 ## Groups (`group.rs`)
 
 - Alt-drag a box to select your units drawn inside it; Alt-click adds or removes one unit. Two or
   more become the group; one is an ordinary selection. The group's hexes are highlighted and the
   tray summarizes it.
-- Clicking a hex (or Move) converges: members' old moves are dropped, then, nearest to the target
-  first, each takes the reachable hex closest to the target that no ally is heading for, staying
-  put if it can't get closer. Members keep their own speeds, so the group doesn't hold formation.
-- Clicking an enemy (or Attack/Shift) has every member that can reach the hex attack it; clicking
-  a target they all already attack calls it off.
+- Left-clicking a hex (or Move) converges: members' old moves are dropped, then, nearest to the
+  target first, each takes the reachable hex closest to the target that no ally is heading for,
+  staying put if it can't get closer. Members keep their own speeds, so the group doesn't hold
+  formation. An enemy's hex is moved toward like any other.
+- Right-clicking a hex (or Attack) has every member that can reach the hex attack it; clicking a
+  target they all already attack calls it off.
+- Either drops every member's order queue. Shift-clicks queue turns for the whole group instead
+  (see Order queues).
 - Space/Hold holds every member, G guards them all (or unguards if all are), Ctrl-right-click
   clears their orders, clicking one member selects just it.
 - The group is cleared when a turn resolves.
@@ -233,6 +275,9 @@ Everyone in a step acts simultaneously:
 
 - Queued attacks are curved arrows from the attacker (or its ghost, if it moves first) to just
   short of the target. Only the player's own attacks get arrows; the AI's plans stay hidden.
+- A unit following an order queue gets no ghost: its whole plan (moves as a line with each
+  turn's number, attacks as arrows numbered by turn) shows only while it is selected or
+  hovered, and otherwise a `>N` tag counts its turns of orders left.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
   "MISS" on a hex with no enemy unit, city or barracks, or "OUT OF RANGE" if the target moved
   away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
@@ -431,4 +476,7 @@ Known bugs link to their board item; the rest are design questions nobody has de
   units.
 - Generated maps have no resources yet, and there are only two sides on the four-player map.
 - Swaps only work between adjacent units.
+- An order queue only stops for an enemy standing on its next destination (or blocking the
+  move); it doesn't stop when an enemy merely comes into sight, and it can't queue abilities,
+  swaps or holds for later turns.
 - No victory condition; F1-F4 restart a scenario.

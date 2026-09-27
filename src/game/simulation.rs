@@ -56,6 +56,54 @@ fn play_turn(game: &mut GameState) {
     game.update(0.0);
 }
 
+/// Like `play_turn`, but the player's units are ordered through Shift-click queues: each unit
+/// without a queue gets three turns of moves toward the nearest enemy and then an attack on
+/// its hex, as a player would queue them. The AI still runs the player's cities and workers;
+/// units already following a queue keep their orders.
+fn play_queued_turn(game: &mut GameState) -> usize {
+    game.selected = None;
+    game.group.clear();
+    let queued: HashMap<u32, (Option<Hex>, Option<Hex>)> = game
+        .units
+        .iter()
+        .filter(|u| u.has_queue())
+        .map(|u| (u.id, (u.planned_move, u.planned_attack)))
+        .collect();
+    game.plan_ai_turn(PLAYER_TEAM);
+    for idx in 0..game.units.len() {
+        let unit = &mut game.units[idx];
+        if unit.team != PLAYER_TEAM {
+            continue;
+        }
+        if let Some(&(planned_move, planned_attack)) = queued.get(&unit.id) {
+            unit.planned_move = planned_move;
+            unit.planned_attack = planned_attack;
+            continue;
+        }
+        unit.planned_move = None;
+        unit.planned_attack = None;
+        let pos = unit.pos;
+        let Some(target) = game
+            .units
+            .iter()
+            .filter(|u| u.team != PLAYER_TEAM)
+            .map(|u| u.pos)
+            .min_by_key(|t| (t.distance(pos), t.q, t.r))
+        else {
+            continue;
+        };
+        game.selected = Some(idx);
+        for _ in 0..3 {
+            game.queue_move(target);
+        }
+        game.queue_attack(target);
+    }
+    game.selected = None;
+    game.resolve_turn();
+    game.update(0.0);
+    game.units.iter().filter(|u| u.following_queue).count()
+}
+
 /// Prints how to replay a game if it panics, whether from a failed check or inside the game.
 struct ReplayHint {
     scenario: Scenario,
@@ -103,7 +151,7 @@ fn for_every_game(scenarios: &[Scenario], seeds: &[u64], play: impl Fn(Scenario,
 fn check_invariants(game: &GameState, context: &str) {
     let mut ids = HashSet::new();
     let mut occupants: HashMap<_, Vec<Team>> = HashMap::new();
-    for unit in &game.units {
+    for (idx, unit) in game.units.iter().enumerate() {
         assert!(
             ids.insert(unit.id),
             "{context}: unit id {} appears twice",
@@ -120,6 +168,21 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: {unit} stands on an impassable or off-map hex"
         );
         occupants.entry(unit.pos).or_default().push(unit.team);
+        // A queue is a chain: each queued turn starts where the one before it ends.
+        let mut from = unit.planned_pos();
+        for (turn, order) in unit.queued.iter().enumerate() {
+            assert_eq!(
+                order.from,
+                from,
+                "{context}: {unit}'s queued turn {} doesn't start where the last one ends",
+                turn + 2
+            );
+            from = order.end_pos();
+        }
+        assert!(
+            !unit.has_queue() || game.is_player_controlled(idx),
+            "{context}: {unit} follows a queue but isn't the player's"
+        );
     }
     for worker in &game.field_workers {
         assert!(
@@ -197,6 +260,27 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
             assert_eq!(game.turn, turn, "{context}: turn counter");
             check_invariants(&game, &context);
         }
+    });
+}
+
+#[test]
+fn queued_orders_against_the_ai_keep_the_board_consistent() {
+    for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
+        let mut game = start(scenario, seed);
+        let name = format!("{} seed {seed}", scenario.name());
+        let mut followed = 0;
+        for turn in 1..=TURNS {
+            followed += play_queued_turn(&mut game);
+            let context = format!("{name} queued turn {turn}");
+            assert!(!game.is_resolving(), "{context}: the turn did not finish");
+            check_invariants(&game, &context);
+        }
+        // Anti-vacuity: queues were actually carried from turn to turn.
+        let has_units = scenario != Scenario::World;
+        assert!(
+            followed > 0 || !has_units,
+            "{name}: no unit ever followed a queued turn"
+        );
     });
 }
 

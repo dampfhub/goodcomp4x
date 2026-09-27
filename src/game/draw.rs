@@ -160,6 +160,21 @@ const WORKED_OUTLINE_RIM_COLOR: Color = [0.02, 0.05, 0.03, 1.0];
 const GHOST_ALPHA: f32 = 0.4;
 const GHOST_FAN_RADIUS: f32 = HEX_SIZE * 0.3;
 
+/// A unit following a queue (Shift-click) shows its plan instead of a ghost,
+/// while selected or hovered: a line along its moves, each turn's number on
+/// the hex it moves to (and on each attack's arrow), all in pills rimmed in
+/// team color (orange for attacks). A small tag beside the unit says a queue
+/// is there, with the number of turns it has left.
+const QUEUE_LINE_WIDTH: f32 = 0.07;
+const QUEUE_LINE_ALPHA: f32 = 0.7;
+const QUEUE_DIGIT_HEIGHT: f32 = 0.2;
+const QUEUE_BADGE_HALF_HEIGHT: f32 = 0.18;
+const QUEUE_BADGE_PADDING: f32 = 0.09;
+const QUEUE_BADGE_RIM: f32 = 0.04;
+const QUEUE_TEXT_COLOR: Color = [0.95, 0.95, 0.95, 1.0];
+const QUEUE_TAG_OFFSET: Vec2 = Vec2::new(-0.44, -0.4);
+const QUEUE_TAG_SCALE: f32 = 0.7;
+
 /// A queued swap is drawn as a link between the two allies.
 const SWAP_LINK_WIDTH: f32 = 0.1;
 const SWAP_LINK_ALPHA: f32 = 0.8;
@@ -279,6 +294,17 @@ impl GameState {
                 push_order_badges(center, unit, look, scale, &mut out);
             }
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
+            if unit.has_queue() && self.is_player_controlled(idx) {
+                let text = format!(">{}", unit.plan_len());
+                let at = center + QUEUE_TAG_OFFSET * scale;
+                push_turn_badge(
+                    at,
+                    &text,
+                    QUEUE_TAG_SCALE * scale,
+                    unit.team.color(),
+                    &mut out,
+                );
+            }
         }
         self.push_field_workers(&fog, &mut out);
 
@@ -404,7 +430,9 @@ fn push_cloud_puff(center: Vec2, radius: f32, rotation: f32, out: &mut Vec<Verte
 impl GameState {
     /// Ghosts at queued move destinations, links between allies queued to
     /// swap, and diamonds on attacked hexes. Markers for units sharing a target
-    /// hex are fanned out so each order stays visible.
+    /// hex are fanned out so each order stays visible. Units following a
+    /// queue show their numbered plan instead, and only while selected or
+    /// hovered.
     fn push_order_markers(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         let swapping: HashSet<u32> = (0..self.units.len())
             .filter(|&i| self.swap_partner(i).is_some())
@@ -415,7 +443,7 @@ impl GameState {
         let mut ghosts: HashMap<u32, Vec2> = HashMap::new();
         let plain_moves = group_by_target(&self.units, |u| {
             u.planned_move
-                .filter(|_| !swapping.contains(&u.id) && fog.shows(u))
+                .filter(|_| !swapping.contains(&u.id) && !u.has_queue() && fog.shows(u))
         });
         for (hex, movers) in plain_moves {
             for (i, unit) in movers.iter().enumerate() {
@@ -438,7 +466,7 @@ impl GameState {
         for (idx, unit) in self.units.iter().enumerate() {
             let Some(target) = unit
                 .planned_attack
-                .filter(|_| self.is_player_controlled(idx))
+                .filter(|_| self.is_player_controlled(idx) && !unit.has_queue())
             else {
                 continue;
             };
@@ -450,6 +478,17 @@ impl GameState {
             };
             push_attack_arc(from, target.to_world(), out);
         }
+
+        let selection = self.selection();
+        let hovered = self
+            .hovered_tile
+            .and_then(|hex| self.controlled_unit_at(hex));
+        let plans: Vec<&Unit> = (0..self.units.len())
+            .filter(|&i| selection.contains(&i) || hovered == Some(i))
+            .filter(|&i| self.units[i].has_queue() && self.is_player_controlled(i))
+            .map(|i| &self.units[i])
+            .collect();
+        push_queue_plans(&plans, out);
     }
 
     /// Where to draw a unit and at what scale: full size in the middle of its
@@ -1233,6 +1272,87 @@ fn push_attack_arc(from: Vec2, to: Vec2, out: &mut Vec<Vertex>) {
     push_arrow(&points, ATTACK_ARC_COLOR, ATTACK_ARC_OUTLINE_COLOR, out);
 }
 
+/// The plans of units following a queue: a line along each one's moves with each
+/// turn's number (1 is this turn) on the hex it moves to, and each attack's
+/// arrow from where the unit stands that turn, numbered at its middle. A hex
+/// or arrow used on several turns lists them all ("2,4").
+fn push_queue_plans(units: &[&Unit], out: &mut Vec<Vertex>) {
+    // Several units' plans (a group's) share labels, so two of them passing
+    // one hex on different turns read "2,3" instead of hiding each other.
+    let mut stops: Vec<(Hex, Vec<usize>)> = Vec::new();
+    let mut strikes: Vec<((Hex, Hex), Vec<usize>)> = Vec::new();
+    for unit in units {
+        let line = with_alpha(unit.team.color(), QUEUE_LINE_ALPHA);
+        for turn in 0..unit.plan_len() {
+            let (from, to) = (unit.pos_after(turn), unit.pos_after(turn + 1));
+            if from != to {
+                mesh::segment(from.to_world(), to.to_world(), QUEUE_LINE_WIDTH, line, out);
+                add_label(&mut stops, to, turn + 1);
+            }
+            if let Some(target) = unit.attack_on_turn(turn) {
+                add_label(&mut strikes, (to, target), turn + 1);
+            }
+        }
+    }
+    let mut badges = Vec::new();
+    for ((from, target), turns) in strikes {
+        let points = attack_arc_points(from.to_world(), target.to_world(), 1.0);
+        push_arrow(&points, ATTACK_ARC_COLOR, ATTACK_ARC_OUTLINE_COLOR, out);
+        let middle = points
+            .get(points.len() / 2)
+            .copied()
+            .unwrap_or(target.to_world());
+        badges.push((middle, turns, ATTACK_ARC_COLOR));
+    }
+    // Every queue shown is the player's, so one team color rims the moves.
+    let rim = units.first().map_or(PLAYER_TEAM, |u| u.team).color();
+    badges.extend(
+        stops
+            .into_iter()
+            .map(|(hex, turns)| (hex.to_world(), turns, rim)),
+    );
+    for (at, mut turns, rim) in badges {
+        turns.sort_unstable();
+        turns.dedup();
+        let text: Vec<String> = turns.iter().map(usize::to_string).collect();
+        push_turn_badge(at, &text.join(","), 1.0, rim, out);
+    }
+}
+
+/// Adds `turn` to the turns labeled at `key`, in first-seen order.
+fn add_label<K: PartialEq>(labels: &mut Vec<(K, Vec<usize>)>, key: K, turn: usize) {
+    match labels.iter_mut().find(|(k, _)| *k == key) {
+        Some((_, turns)) => turns.push(turn),
+        None => labels.push((key, vec![turn])),
+    }
+}
+
+/// A dark pill rimmed in `rim` with `text` on it, centered on `center`.
+fn push_turn_badge(center: Vec2, text: &str, scale: f32, rim: Color, out: &mut Vec<Vertex>) {
+    let height = QUEUE_DIGIT_HEIGHT * scale;
+    let radius = QUEUE_BADGE_HALF_HEIGHT * scale;
+    // How far the round ends' centers sit from the middle: none for a
+    // single digit, which makes the pill a disc.
+    let reach = (font::world_text_width(text, height) / 2.0 + QUEUE_BADGE_PADDING * scale - radius)
+        .max(0.0);
+    push_pill(center, reach, radius + QUEUE_BADGE_RIM * scale, rim, out);
+    push_pill(center, reach, radius, BADGE_BG_COLOR, out);
+    font::push_text_centered(center, height, text, QUEUE_TEXT_COLOR, out);
+}
+
+/// A horizontal pill: discs of `radius` `reach` either side of `center`,
+/// joined by a band.
+fn push_pill(center: Vec2, reach: f32, radius: f32, color: Color, out: &mut Vec<Vertex>) {
+    for side in [-1.0, 1.0] {
+        let end = center + Vec2::new(side * reach, 0.0);
+        mesh::regular_polygon(end, radius, 20, 0.0, color, out);
+    }
+    if reach > 0.0 {
+        let half = Vec2::new(reach, radius);
+        mesh::quad(center - half, center + half, color, out);
+    }
+}
+
 /// Points along an attack's curve from `from` toward `to`: a quadratic curve
 /// bowing to the left of the direction of travel (so opposing attacks
 /// between two hexes don't overlap), from the edge of the attacker's icon to
@@ -1734,6 +1854,38 @@ mod tests {
 
     fn count_color(vertices: &[Vertex], color: Color) -> usize {
         vertices.iter().filter(|v| v.color == color).count()
+    }
+
+    #[test]
+    fn a_queue_shows_numbered_turns_only_while_selected_or_hovered() {
+        let mut game = GameState::new();
+        game.fog_of_war = false;
+        let melee = game
+            .units
+            .iter()
+            .position(|u| u.team == Team::Blue && u.unit_type == crate::game::unit::UnitType::Melee)
+            .unwrap();
+        game.selected = Some(melee);
+        game.hovered_tile = None;
+        let start = game.units[melee].pos;
+        let first = start.neighbors()[0];
+        let second = first.neighbors()[0];
+        assert!(game.queue_move(first) && game.queue_move(second));
+        let line = with_alpha(Team::Blue.color(), QUEUE_LINE_ALPHA);
+        let ghost = with_alpha(Team::Blue.color(), GHOST_ALPHA);
+
+        let selected = game.build_vertices();
+        assert!(count_color(&selected, line) > 0, "the path shows");
+        assert_eq!(count_color(&selected, ghost), 0, "numbers, not a ghost");
+
+        game.selected = None;
+        let deselected = game.build_vertices();
+        assert_eq!(count_color(&deselected, line), 0, "hidden once let go of");
+        assert_eq!(count_color(&deselected, ghost), 0);
+
+        game.hovered_tile = Some(start);
+        let hovered = game.build_vertices();
+        assert_eq!(count_color(&hovered, line), count_color(&selected, line));
     }
 
     #[test]

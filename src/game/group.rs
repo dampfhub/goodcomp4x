@@ -1,8 +1,9 @@
 //! Ordering several units at once. Alt-drag a box (or Alt-click units) to
 //! select a group. Clicking a hex then sends every member toward it at its own
 //! speed, each taking the free hex nearest the target that it can reach; the
-//! nearest members choose first. Clicking an enemy has every member in range
-//! attack it. Members that can't get any closer, or reach, stay as they are.
+//! nearest members choose first. Right-clicking a hex has every member in
+//! range attack it. Members that can't get any closer, or reach, stay as they
+//! are. Shift-clicks queue orders for later turns (`order_queue.rs`).
 
 use std::collections::HashSet;
 
@@ -78,27 +79,33 @@ impl GameState {
         }
     }
 
-    /// A map click with a group selected. In the normal mode an enemy's hex
-    /// is attacked and any other hex is moved toward; an armed Move or
-    /// Attack (or Shift) picks one. Swapping is for single units.
+    /// A map click with a group selected: left-click (or an armed Move)
+    /// moves toward the hex, right-click (or an armed Attack) attacks it, and
+    /// Shift adds either to every member's queue. Swapping is for single
+    /// units.
     pub(super) fn group_order(&mut self, hex: Hex, mode: ClickMode) {
-        let team = self.units[self.group[0]].team;
         match mode {
             ClickMode::Attack => self.group_attack(hex),
-            ClickMode::Move => self.group_move(hex),
-            ClickMode::Normal if self.known_enemy_target_at(hex, team, &self.fog()) => {
-                self.group_attack(hex)
+            ClickMode::Move | ClickMode::Normal => self.group_move(hex),
+            ClickMode::QueueMove => {
+                self.queue_move(hex);
             }
-            ClickMode::Normal => self.group_move(hex),
+            ClickMode::QueueAttack => {
+                self.queue_attack(hex);
+            }
             ClickMode::Swap => {}
         }
     }
 
     /// Every member that can reach `target` from where it's heading attacks
-    /// it. Clicking a target all of them already attack calls it off.
+    /// it. Clicking a target all of them already attack calls it off. Being
+    /// a new order, it replaces every member's queue.
     fn group_attack(&mut self, target: Hex) {
         if !self.grid.is_passable(target) {
             return;
+        }
+        for &i in &self.group {
+            self.units[i].cancel_queue();
         }
         let able: Vec<usize> = self
             .group
@@ -131,6 +138,7 @@ impl GameState {
         for &i in &members {
             self.cancel_swap(i);
             self.units[i].planned_move = None;
+            self.units[i].cancel_queue();
         }
         let team = self.units[members[0]].team;
         let mut claimed: HashSet<Hex> = self
@@ -180,6 +188,7 @@ impl GameState {
         let all_guarding = self.group.iter().all(|&i| self.units[i].guarding);
         for &i in &self.group {
             self.units[i].guarding = !all_guarding;
+            self.units[i].cancel_queue();
         }
         if !all_guarding {
             self.group.clear();
