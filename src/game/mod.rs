@@ -41,6 +41,7 @@ pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
+pub use settings::Settings;
 use terrain::Tile;
 use turn::Step;
 pub use ui::{ImGuiLayoutState, selection_box, ui_projection};
@@ -318,6 +319,7 @@ impl GameState {
     }
 
     /// A generated map (`mapgen.rs`) from `seed`, with the default settings.
+    #[cfg(test)]
     pub fn world_scenario(seed: u32) -> Self {
         Self::world_scenario_with(seed, &settings::Settings::default())
     }

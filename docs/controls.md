@@ -188,6 +188,13 @@ resize or dock it like the other panels. The game carries on while it's open.
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).
 
+Settings are also kept between sessions, saved as soon as one changes. On quitting, the game
+also saves the window's size (and whether it's maximized), the UI presentation (F11), and the
+ImGui panels as you arranged them: where each is, its size, which are docked or collapsed, and
+the boxes. The next session opens the same way. They're kept in `%APPDATA%\riskofcivlike`
+(`~/.config/riskofcivlike` elsewhere); delete that folder to start over from the defaults.
+Screenshot mode (`--screenshot`) ignores it.
+
 ## Command line
 
 Flags go after `--`, e.g. `cargo run --release -- --scenario world --seed 42`; `--help` lists

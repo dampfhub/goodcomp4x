@@ -38,6 +38,11 @@ file holds.
 
 ## Recipes
 
+- **New piece of ImGui layout state** worth keeping between sessions (where the player put
+  something): a line in `ImGuiLayoutState::to_text` and its reading in `from_text`
+  (`imgui.rs`), with the round-trip test. Save only what the player chose; what the layout
+  computes is computed again.
+
 - **New unit button:** a `UnitAction` variant (`mod.rs`), a `ButtonSpec` in the tray's button
   list (`unit_buttons` or `group_tray_for` in `trays.rs`), its tooltip text (the `UnitAction`
   match in `unit_action_text`, `tooltips.rs`), and an arm in `activate_target` (`mod.rs`). Add

@@ -147,3 +147,6 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     workers, settlers), then military units grouped by kind with a count. Selecting a group lists
     its units one by one below it. It starts at the bottom center, in a new
     `Zone::BottomCenter` that slides aside for other panels.
+47. Sessions remembered (`claude/turn-tasks`): settings are saved as they change, and on quitting
+    the window size, the presentation and the ImGui panel layout (with ImGui's docking data) are
+    saved too, in the config folder, so the next session starts the same way.

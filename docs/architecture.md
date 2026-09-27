@@ -93,6 +93,26 @@ integer stepped through its `range`, so a new setting is a field and its `Settin
 one file; both UI presentations pick it up (`docs/ui-system.md`). `switch_scenario` and
 `load_state` carry the settings, and whether the menu is open, over into the new game.
 
+## Between sessions (`src/persist.rs`)
+
+The session is kept in text files in the config folder (`%APPDATA%\riskofcivlike`, or
+`$XDG_CONFIG_HOME` / `~/.config` `/riskofcivlike`), each written whole through a temporary file:
+
+- `settings.txt`: `Settings::to_text`, a `key value` line per setting (`Setting::key`). `App`
+  saves it whenever the text changes, and builds the first game with it (`Scenario::new_game`),
+  so a world started from the command line uses the saved world settings.
+- `layout.txt`: saved on quitting (the window's close button or the settings menu's Quit): the
+  presentation, the window's normal size and whether it's maximized (`SavedWindow` in
+  `app.rs`), then `ImGuiLayoutState::to_text`: every panel slot's geometry, the boxes, and the
+  Debug and Selection panels' placements the player chose.
+- `imgui.ini`: ImGui's own settings (`save_ini_settings`), which hold the dock nodes and which
+  panel is docked in which; panels no longer set `NO_SAVED_SETTINGS`. Loaded into the context
+  before the first frame. A box's dockspace id comes from its window title, so panels saved in
+  a box land back in it.
+
+Every reader skips what it doesn't understand, so an old or damaged file loads with defaults
+for the rest. Screenshot mode neither reads nor writes any of it, so shots stay repeatable.
+
 ## Testing aids
 
 Scenarios (F1 combat, F2 cities, F3 frontier, F4 a generated world, F12 siege) are constructors on

@@ -62,10 +62,13 @@ impl Scenario {
             .find(|scenario| scenario.name().eq_ignore_ascii_case(name))
     }
 
-    /// A fresh game of this scenario, on a random map for the world.
-    pub fn new_game(self) -> GameState {
+    /// A fresh game of this scenario with the player's `settings`, on a
+    /// random map for the world.
+    pub fn new_game(self, settings: &Settings) -> GameState {
         let mut rng = rand::SeedableRng::seed_from_u64(rand::random());
-        self.start(&mut rng, &Settings::default())
+        let mut game = self.start(&mut rng, settings);
+        game.settings = settings.clone();
+        game
     }
 
     /// A fresh game of this scenario, drawing the world's map seed from `rng`
