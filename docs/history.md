@@ -80,3 +80,6 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 33. City interior map interaction: clicking the city center from management enters a separate
     rendered hex map. Troops and command post are drawn in-world; map clicks issue interior orders,
     and exiting restores the exterior camera and city view.
+34. Shared unit deaths across the exterior and interior maps: units retain separate HP bars,
+    interior wounds persist across gate exits, and fatal damage in either layer removes the unit
+    from both. The command post retaliates at range two.

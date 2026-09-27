@@ -127,6 +127,19 @@ impl GameState {
                 ),
             ]),
         );
+        if unit.interior_hp < unit.max_hp() {
+            panel.text(
+                SMALL,
+                vec![(
+                    format!(
+                        "INTERIOR HP {:.0}/{:.0}",
+                        unit.interior_hp.ceil(),
+                        unit.max_hp()
+                    ),
+                    REDUCED_TEXT,
+                )],
+            );
+        }
         let (ability_name, _) = ability_text(unit);
         let (ability_status, ability_color) = if unit.ability_queued {
             ("QUEUED".to_string(), GOLD_TEXT)

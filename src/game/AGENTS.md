@@ -50,6 +50,8 @@ behavior.
 - `units` holds living units only. Dead units are removed with `retain` at the end of an attack
   step, which shifts indices, so code that spans a removal uses unit `id`s, not indices.
   `selected` and `group` are cleared before a turn resolves for the same reason.
+  A unit has exterior `hp` and persistent `interior_hp`; death in either layer removes its
+  exterior body and every interior copy with that source id.
 - Everything that asks what a unit can do goes through `Unit::stats()`, which applies abilities
   and siege deployment on top of the base table in `UnitType::stats()`. Don't read base stats
   directly.

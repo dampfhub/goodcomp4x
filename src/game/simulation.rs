@@ -116,6 +116,11 @@ fn check_invariants(game: &GameState, context: &str) {
             unit.max_hp()
         );
         assert!(
+            unit.interior_hp > 0.0 && unit.interior_hp <= unit.max_hp(),
+            "{context}: {unit} has {} interior HP",
+            unit.interior_hp
+        );
+        assert!(
             game.grid.is_passable(unit.pos),
             "{context}: {unit} stands on an impassable or off-map hex"
         );
@@ -175,6 +180,12 @@ fn check_invariants(game: &GameState, context: &str) {
                 "{context}: interior fighter has invalid HP"
             );
             assert!(
+                game.units
+                    .iter()
+                    .any(|unit| unit.id == fighter.source_id && unit.interior_hp == fighter.hp),
+                "{context}: interior copy and source health differ"
+            );
+            assert!(
                 game.units.iter().any(|unit| unit.id == fighter.source_id
                     && unit.team == fighter.team
                     && unit.pos.distance(city.pos) == 1),
@@ -231,7 +242,7 @@ fn ai_against_ai_combat_ends_with_fewer_units() {
 struct Fingerprint {
     turn: u32,
     map_seed: Option<u32>,
-    units: Vec<(u32, Hex, f32)>,
+    units: Vec<(u32, Hex, f32, f32)>,
     cities: Vec<(u32, f32, usize)>,
 }
 
@@ -243,7 +254,11 @@ fn fingerprint(scenario: Scenario, seed: u64, turns: u32) -> Fingerprint {
     Fingerprint {
         turn: game.turn,
         map_seed: game.map_seed,
-        units: game.units.iter().map(|u| (u.id, u.pos, u.hp)).collect(),
+        units: game
+            .units
+            .iter()
+            .map(|u| (u.id, u.pos, u.hp, u.interior_hp))
+            .collect(),
         cities: game
             .cities
             .iter()

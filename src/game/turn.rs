@@ -516,6 +516,7 @@ impl GameState {
             self.units[a].planned_attack = None;
         }
         self.units.retain(Unit::is_alive);
+        self.discard_interior_copies_of_dead_units();
     }
 }
 

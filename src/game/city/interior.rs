@@ -11,14 +11,13 @@ use crate::game::{Camera, GameState, PLAYER_TEAM, combat};
 pub(in crate::game) const CORE_HP: f32 = 80.0;
 const CORE_DEFENSE: f32 = 18.0;
 const CORE_ATTACK: f32 = 12.0;
+const CORE_ATTACK_RANGE: i32 = 2;
 const CENTER: Hex = Hex::new(0, 0);
 
 #[derive(Clone)]
 pub(in crate::game) struct Interior {
     pub core_hp: f32,
     pub fighters: Vec<InteriorFighter>,
-    /// A defeated copy stays defeated while its field unit holds that gate.
-    fallen_sources: HashSet<u32>,
 }
 
 impl Default for Interior {
@@ -26,7 +25,6 @@ impl Default for Interior {
         Self {
             core_hp: CORE_HP,
             fighters: Vec::new(),
-            fallen_sources: HashSet::new(),
         }
     }
 }
@@ -214,14 +212,12 @@ impl GameState {
             city.interior
                 .fighters
                 .retain(|f| ids.contains(&f.source_id));
-            city.interior.fallen_sources.retain(|id| ids.contains(id));
             for unit in adjacent {
-                if city.interior.fallen_sources.contains(&unit.id)
-                    || city
-                        .interior
-                        .fighters
-                        .iter()
-                        .any(|f| f.source_id == unit.id)
+                if city
+                    .interior
+                    .fighters
+                    .iter()
+                    .any(|f| f.source_id == unit.id)
                 {
                     continue;
                 }
@@ -238,13 +234,30 @@ impl GameState {
                         team: unit.team,
                         unit_type: unit.unit_type,
                         pos,
-                        hp: unit.unit_type.stats().max_hp,
+                        hp: unit.interior_hp,
                         planned_move: None,
                         planned_attack: None,
                     });
                 }
             }
             city.interior.fighters.sort_by_key(|f| f.source_id);
+        }
+    }
+
+    /// Exterior combat may remove a source before the interior phase. Its
+    /// tactical copy disappears as part of that same death, not at next entry.
+    pub(in crate::game) fn discard_interior_copies_of_dead_units(&mut self) {
+        let living: HashSet<_> = self.units.iter().map(|unit| unit.id).collect();
+        for city in &mut self.cities {
+            city.interior
+                .fighters
+                .retain(|fighter| living.contains(&fighter.source_id));
+        }
+        if self
+            .interior_selected
+            .is_some_and(|source| !living.contains(&source))
+        {
+            self.interior_selected = None;
         }
     }
 
@@ -353,7 +366,7 @@ impl GameState {
             && let Some((index, fighter)) = snapshot
                 .iter()
                 .enumerate()
-                .filter(|(_, f)| f.team != owner && f.pos.distance(CENTER) <= 1)
+                .filter(|(_, f)| f.team != owner && f.pos.distance(CENTER) <= CORE_ATTACK_RANGE)
                 .min_by_key(|(_, f)| f.source_id)
         {
             damage[index] += combat::roll_damage_against(
@@ -367,10 +380,18 @@ impl GameState {
             fighter.hp = (fighter.hp - amount).max(0.0);
             fighter.planned_move = None;
             fighter.planned_attack = None;
-            if fighter.hp <= 0.0 {
-                interior.fallen_sources.insert(fighter.source_id);
-            }
         }
+        let casualties: HashSet<_> = interior
+            .fighters
+            .iter()
+            .filter(|fighter| fighter.hp <= 0.0)
+            .map(|fighter| fighter.source_id)
+            .collect();
+        let health_after_battle: Vec<_> = interior
+            .fighters
+            .iter()
+            .map(|fighter| (fighter.source_id, fighter.hp))
+            .collect();
         interior.fighters.retain(|f| f.hp > 0.0);
         let conqueror = (interior.core_hp <= 0.0)
             .then(|| {
@@ -396,6 +417,25 @@ impl GameState {
             log::info!("{}: {team:?} captures its command post", city_ref.id + 1);
             self.auto_assign_city(city);
         }
+        for (source, hp) in health_after_battle {
+            if let Some(unit) = self.units.iter_mut().find(|unit| unit.id == source) {
+                unit.interior_hp = hp;
+            }
+            for other_city in &mut self.cities {
+                if let Some(copy) = other_city
+                    .interior
+                    .fighters
+                    .iter_mut()
+                    .find(|fighter| fighter.source_id == source)
+                {
+                    copy.hp = hp;
+                }
+            }
+        }
+        if !casualties.is_empty() {
+            self.units.retain(|unit| !casualties.contains(&unit.id));
+            self.discard_interior_copies_of_dead_units();
+        }
     }
 }
 
@@ -404,41 +444,90 @@ mod tests {
     use super::*;
 
     #[test]
-    fn adjacent_troops_project_independent_copies_and_fallen_copy_stays_fallen() {
+    fn wounded_copy_keeps_its_health_after_leaving_and_reentering() {
         let mut game = GameState::siege_scenario();
-        let unit_hp = game.units.iter().find(|u| u.id == 0).unwrap().hp;
-        let copy = game.cities[1]
-            .interior
-            .fighters
-            .iter_mut()
-            .find(|f| f.source_id == 0)
-            .unwrap();
-        assert_eq!(copy.pos, Hex::new(-2, 0));
-        copy.hp = 1.0;
-        assert_eq!(game.units.iter().find(|u| u.id == 0).unwrap().hp, unit_hp);
-        game.cities[1].interior.fallen_sources.insert(0);
+        // Leave only the ranged attacker in range of the post so its new
+        // range-two shot must hurt that fighter.
+        game.units.retain(|unit| unit.id != 0);
+        game.discard_interior_copies_of_dead_units();
+        let exterior_hp = game.units.iter().find(|unit| unit.id == 1).unwrap().hp;
+        game.resolve_one_interior(1);
+        let wounded = game
+            .units
+            .iter()
+            .find(|unit| unit.id == 1)
+            .unwrap()
+            .interior_hp;
+        assert!(wounded < UnitType::Ranged.stats().max_hp);
+        assert_eq!(
+            game.units.iter().find(|unit| unit.id == 1).unwrap().hp,
+            exterior_hp
+        );
+
+        game.units.iter_mut().find(|unit| unit.id == 1).unwrap().pos = Hex::new(2, 0);
+        game.sync_city_interiors();
+        assert!(
+            game.cities[1]
+                .interior
+                .fighters
+                .iter()
+                .all(|f| f.source_id != 1)
+        );
+        game.units.iter_mut().find(|unit| unit.id == 1).unwrap().pos = Hex::new(3, 1);
+        game.sync_city_interiors();
+        assert_eq!(
+            game.cities[1]
+                .interior
+                .fighters
+                .iter()
+                .find(|f| f.source_id == 1)
+                .unwrap()
+                .hp,
+            wounded
+        );
+    }
+
+    #[test]
+    fn interior_death_kills_its_exterior_source() {
+        let mut game = GameState::siege_scenario();
+        game.units.retain(|unit| unit.id != 0);
+        game.discard_interior_copies_of_dead_units();
         game.cities[1]
             .interior
             .fighters
-            .retain(|f| f.source_id != 0);
-        game.sync_city_interiors();
+            .iter_mut()
+            .find(|f| f.source_id == 1)
+            .unwrap()
+            .hp = 1.0;
+        game.resolve_one_interior(1);
+        assert!(game.units.iter().all(|unit| unit.id != 1));
+        assert!(
+            game.cities[1]
+                .interior
+                .fighters
+                .iter()
+                .all(|f| f.source_id != 1)
+        );
+    }
+
+    #[test]
+    fn exterior_death_removes_its_interior_copy_in_the_attack_step() {
+        let mut game = GameState::siege_scenario();
+        game.units.iter_mut().find(|unit| unit.id == 0).unwrap().hp = 1.0;
+        let target = game.units.iter().find(|unit| unit.id == 0).unwrap().pos;
+        game.units
+            .iter_mut()
+            .find(|unit| unit.id == 5)
+            .unwrap()
+            .planned_attack = Some(target);
+        game.resolve_step(UnitType::Ranged, crate::game::turn::Phase::Attack);
+        assert!(game.units.iter().all(|unit| unit.id != 0));
         assert!(
             game.cities[1]
                 .interior
                 .fighters
                 .iter()
                 .all(|f| f.source_id != 0)
-        );
-        game.units.iter_mut().find(|u| u.id == 0).unwrap().pos = Hex::new(2, 0);
-        game.sync_city_interiors();
-        game.units.iter_mut().find(|u| u.id == 0).unwrap().pos = Hex::new(3, 0);
-        game.sync_city_interiors();
-        assert!(
-            game.cities[1]
-                .interior
-                .fighters
-                .iter()
-                .any(|f| f.source_id == 0)
         );
     }
 
@@ -457,6 +546,31 @@ mod tests {
         let source = game.units.iter().find(|u| u.id == 0).unwrap();
         assert_eq!(source.planned_move, None);
         assert_eq!(source.planned_attack, None);
+    }
+
+    #[test]
+    fn nonfatal_exterior_damage_leaves_interior_health_unchanged() {
+        let mut game = GameState::siege_scenario();
+        let target = game.units.iter().find(|unit| unit.id == 0).unwrap().pos;
+        game.units
+            .iter_mut()
+            .find(|unit| unit.id == 5)
+            .unwrap()
+            .planned_attack = Some(target);
+        game.resolve_step(UnitType::Ranged, crate::game::turn::Phase::Attack);
+        let source = game.units.iter().find(|unit| unit.id == 0).unwrap();
+        assert!(source.hp < source.max_hp());
+        assert_eq!(source.interior_hp, source.max_hp());
+        assert_eq!(
+            game.cities[1]
+                .interior
+                .fighters
+                .iter()
+                .find(|fighter| fighter.source_id == 0)
+                .unwrap()
+                .hp,
+            source.max_hp()
+        );
     }
 
     #[test]

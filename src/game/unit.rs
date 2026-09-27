@@ -78,6 +78,9 @@ pub struct Unit {
     pub team: Team,
     pub unit_type: UnitType,
     pub hp: f32,
+    /// Independent tactical health inside cities. Either health bar reaching
+    /// zero kills the same logical unit in both layers.
+    pub interior_hp: f32,
     /// Orders queued for this turn. The attack targets a hex rather than a
     /// unit: whichever enemy stands there when it resolves gets hit.
     pub planned_move: Option<Hex>,
@@ -107,6 +110,7 @@ impl Unit {
             team,
             unit_type,
             hp: unit_type.stats().max_hp,
+            interior_hp: unit_type.stats().max_hp,
             planned_move: None,
             planned_attack: None,
             ability_queued: false,
