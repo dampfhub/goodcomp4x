@@ -229,7 +229,11 @@ impl GameState {
     /// the yield badges, tooltips and city panel show. Income still follows
     /// the real routes (`routes`).
     pub(super) fn known_routes(&self, city: usize, fog: &Fog) -> Routes {
-        let (team, origin) = (self.cities[city].team, self.cities[city].pos);
+        self.known_routes_from(self.cities[city].team, self.cities[city].pos, fog)
+    }
+
+    /// `routes_from` as the player knows the board.
+    pub(super) fn known_routes_from(&self, team: Team, origin: Hex, fog: &Fog) -> Routes {
         // Out of sight, the memory (none for a hex never seen); in sight, the board.
         let memory = |hex: Hex| (!fog.sees(hex)).then(|| self.remembered(hex));
         self.routes_from_by(
@@ -279,10 +283,11 @@ impl GameState {
 pub(super) type Memory = HashMap<Hex, Sighting>;
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::game::city::Site;
     use crate::game::hex::HexGrid;
+    use crate::game::orders::ClickMode;
     use crate::game::terrain::Tile;
     use crate::game::unit::{Team, UnitType};
 
@@ -327,7 +332,7 @@ mod tests {
     /// A lone Blue cavalry at the origin with Charge queued (move 3, sight 3)
     /// and a mountain at (1, 0) hiding (2, 0), which is still three steps away
     /// around the mountain.
-    fn behind_the_mountain() -> (GameState, usize, Hex) {
+    pub(in crate::game) fn behind_the_mountain() -> (GameState, usize, Hex) {
         let mut game = GameState::frontier_scenario();
         game.grid = HexGrid::new(6, [(Hex::new(1, 0), Tile::MOUNTAINS)]);
         game.units.clear();
@@ -347,13 +352,79 @@ mod tests {
     }
 
     /// Walks unit `idx` next to `hex` to look at it, then back out of sight.
-    fn glance_at(game: &mut GameState, idx: usize, hex: Hex) {
+    pub(in crate::game) fn glance_at(game: &mut GameState, idx: usize, hex: Hex) {
         let home = game.units[idx].pos;
         game.units[idx].pos = Hex::new(hex.q, hex.r - 1);
         game.explore();
         game.units[idx].pos = home;
         game.explore();
         assert!(!game.fog().sees(hex) && game.is_explored(hex));
+    }
+
+    /// The Cities scenario with no units and Blue's city open, plus a hex
+    /// its goods reach that its own sight doesn't, seen once while empty.
+    pub(in crate::game) fn remembered_route_hex() -> (GameState, usize, Hex) {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.selected = None;
+        let city = game
+            .cities
+            .iter()
+            .position(|c| c.team == PLAYER_TEAM)
+            .unwrap();
+        game.selected_city = Some(city);
+        let fog = game.fog();
+        let far = game
+            .routes(city)
+            .costs
+            .keys()
+            .copied()
+            .filter(|&h| !fog.sees(h) && game.grid.terrain(h).is_workable())
+            .min_by_key(|h| (h.q, h.r))
+            .expect("a route hex out of the city's sight");
+        game.units
+            .push(Unit::new(50, far, PLAYER_TEAM, UnitType::Scout));
+        game.explore();
+        game.units.clear();
+        assert!(!game.fog().sees(far) && game.is_explored(far));
+        (game, city, far)
+    }
+
+    #[test]
+    fn unseen_enemies_do_not_cut_the_routes_the_player_is_shown() {
+        let (mut game, city, far) = remembered_route_hex();
+        game.units
+            .push(Unit::new(51, far, Team::Red, UnitType::Melee));
+        assert!(
+            !game.routes(city).costs.contains_key(&far),
+            "goods really are cut"
+        );
+        let fog = game.fog();
+        assert!(game.known_routes(city, &fog).costs.contains_key(&far));
+    }
+
+    #[test]
+    fn a_group_click_on_an_unseen_enemy_moves_there() {
+        let (mut game, cavalry, hidden) = behind_the_mountain();
+        game.units
+            .push(Unit::new(2, Hex::new(-1, 0), Team::Blue, UnitType::Melee));
+        game.units
+            .push(Unit::new(3, hidden, Team::Red, UnitType::Melee));
+        assert!(!game.fog().sees(hidden));
+        game.group = vec![cavalry, 1];
+        game.group_order(hidden, ClickMode::Normal);
+        assert_eq!(game.units[cavalry].planned_move, Some(hidden));
+        assert!(game.units.iter().all(|u| u.planned_attack.is_none()));
+    }
+
+    #[test]
+    fn a_move_toward_an_unseen_enemy_survives_an_order_check() {
+        let (mut game, cavalry, hidden) = behind_the_mountain();
+        game.units
+            .push(Unit::new(2, hidden, Team::Red, UnitType::Melee));
+        game.queue_order_at(cavalry, hidden);
+        game.drop_orders_now_impossible(cavalry);
+        assert_eq!(game.units[cavalry].planned_move, Some(hidden));
     }
 
     #[test]

@@ -432,8 +432,10 @@ impl GameState {
             .or(self.selected_city)
             .filter(|&i| self.cities[i].team == PLAYER_TEAM || fog.sees(self.cities[i].pos))
         {
+            // Delivery labels show routes as the player knows them; the
+            // worked-tile rings below show whether goods really arrive.
             let routes = self.routes(i);
-            for (h, cost) in &routes.costs {
+            for (h, cost) in &self.known_routes(i, fog).costs {
                 if self.yields_city() != Some(i) {
                     continue;
                 }
@@ -505,7 +507,7 @@ impl GameState {
         if let Some(i) = self.selected_barracks
             && let Some(barracks) = self.cities[i].barracks
         {
-            let routes = self.routes_from(self.cities[i].team, barracks);
+            let routes = self.known_routes_from(self.cities[i].team, barracks, fog);
             for (hex, cost) in &routes.costs {
                 font::push_text(
                     hex.to_world() + Vec2::new(-0.3, 0.52),
@@ -1251,4 +1253,37 @@ fn brighten([r, g, b, a]: Color) -> Color {
 
 fn with_alpha([r, g, b, _]: Color, a: f32) -> Color {
     [r, g, b, a]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
+    use crate::game::unit::{Unit, UnitType};
+
+    fn count_color(vertices: &[Vertex], color: Color) -> usize {
+        vertices.iter().filter(|v| v.color == color).count()
+    }
+
+    #[test]
+    fn an_unseen_unit_leaves_its_hex_in_the_green_move_range() {
+        let (mut game, cavalry, hidden) = behind_the_mountain();
+        glance_at(&mut game, cavalry, hidden);
+        game.selected = Some(cavalry);
+        let empty = count_color(&game.build_vertices(), MOVE_RANGE_COLOR);
+        assert!(empty > 0);
+        game.units
+            .push(Unit::new(2, hidden, Team::Red, UnitType::Melee));
+        assert_eq!(count_color(&game.build_vertices(), MOVE_RANGE_COLOR), empty);
+    }
+
+    #[test]
+    fn yield_badges_do_not_react_to_unseen_units() {
+        let (mut game, city, far) = remembered_route_hex();
+        assert!(game.show_yields && game.yields_city() == Some(city));
+        let before = game.build_vertices().len();
+        game.units
+            .push(Unit::new(51, far, Team::Red, UnitType::Melee));
+        assert_eq!(game.build_vertices().len(), before);
+    }
 }

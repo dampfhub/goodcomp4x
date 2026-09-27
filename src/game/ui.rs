@@ -3325,11 +3325,63 @@ mod tests {
             game.fog_of_war = true;
             assert_eq!(clear, fogged + 1, "{hex:?}");
         }
+        // Seen once and remembered, it's still out of sight: no live panel.
+        let red_pos = game.cities[red].pos;
+        game.units.push(Unit::new(
+            50,
+            red_pos.neighbors()[3],
+            Team::Blue,
+            UnitType::Scout,
+        ));
+        game.explore();
+        game.units.clear();
+        assert!(game.is_explored(red_pos) && !game.fog().sees(red_pos));
+        game.hovered_tile = Some(red_pos);
+        let fogged = game.layout_with_hover(SCREEN, None).0.panels.len();
+        game.hovered_tile = None;
+        assert_eq!(fogged, game.layout_with_hover(SCREEN, None).0.panels.len());
+
         // The player's own city always has its panel.
         game.hovered_tile = Some(game.cities[blue].pos);
         let own = game.layout_with_hover(SCREEN, None).0.panels.len();
         game.hovered_tile = None;
         assert_eq!(own, game.layout_with_hover(SCREEN, None).0.panels.len() + 1);
+    }
+
+    #[test]
+    fn tooltip_and_city_panel_show_an_unseen_hex_as_last_seen() {
+        let (mut game, city, far) = crate::game::fog::tests::remembered_route_hex();
+        game.inspected_tile = Some(far);
+        let read = |game: &GameState| {
+            let tooltip = line_strings(game.tile_tooltip_lines(far).into_iter().map(|(_, l)| l));
+            let tray = panel_strings(|panel| game.city_tray(city, panel));
+            (tooltip, tray)
+        };
+        let before = read(&game);
+        assert!(
+            before.0.iter().any(|s| s.contains("REACHES CITY")),
+            "{:?}",
+            before.0
+        );
+        assert!(
+            before.1.iter().any(|s| s.starts_with("SELECTED TILE")),
+            "{:?}",
+            before.1
+        );
+
+        // Red moves in and farms the hex, all out of sight.
+        game.units
+            .push(Unit::new(51, far, Team::Red, UnitType::Melee));
+        game.sites.insert(
+            far,
+            super::super::city::Site {
+                team: Team::Red,
+                food: 9,
+                production: 9,
+                label: "FARM",
+            },
+        );
+        assert_eq!(read(&game), before);
     }
 
     fn line_strings(lines: impl IntoIterator<Item = Line>) -> Vec<String> {

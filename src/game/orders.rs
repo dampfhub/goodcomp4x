@@ -450,7 +450,7 @@ impl GameState {
 
     /// After a unit's abilities change what it can do, drops any queued move
     /// or attack it can no longer carry out.
-    fn drop_orders_now_impossible(&mut self, idx: usize) {
+    pub(super) fn drop_orders_now_impossible(&mut self, idx: usize) {
         let unit = &self.units[idx];
         let move_range = unit.stats().move_range;
         let move_still_possible = match (unit.planned_move, self.swap_partner(idx)) {
