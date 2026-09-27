@@ -51,57 +51,11 @@ const GRID_RADIUS: i32 = 3;
 const PLAYER_TEAM: Team = Team::Blue;
 const AI_TEAM: Team = Team::Red;
 
+/// Logged at startup. It only says where the controls are: `docs/controls.md`
+/// is their one description, so don't list keys here.
 const CONTROLS_HELP: &str = "\
-Controls:
-  Click a unit to select it.
-  Click a green hex to queue a move; click it again to cancel.
-  Click an enemy in range to queue an attack on it.
-  Shift-click any hex in range to attack that square instead: whoever stands there when the attack resolves gets hit.
-  A unit can queue a move and an attack; it attacks from its new hex.
-  Ctrl-click an adjacent ally to swap places with it.
-  Alt-drag a box (or Alt-click units) to select a group: clicking a hex sends each member as
-  close to it as it can get, and clicking an enemy has every member in range attack it.
-  Queued attacks are drawn as arrows from the attacker (or its ghost) to the target.
-  Units can't move through occupied hexes, and two allies can't head for the same hex.
-  Space holds the selected unit: it keeps any orders already queued and skips the rest.
-  G guards it instead: it stays put and is skipped every turn until given an order.
-  Ctrl-right-click clears the selected unit's orders (and a hold or guard).
-  Once a unit has queued a move and an attack (or can't do one of them), the next unit is
-  selected automatically and the camera glides to it. Tab looks at the next unit without
-  holding this one.
-  The End Turn button holds unfinished units and ends the turn. Cities still need a build queued.
-  C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
-  Rest the cursor on any hex for a moment to see what it is and yields.
-  Hold Alt to see each unit's turn order and every explored tile's yields.
-  1-3 queue city units; 4-7 queue buildings. Cavalry and armored train at a barracks on Horses or Iron. Drag queue rows to reorder or click X to remove;
-  Backspace removes the active city build and PageDown promotes the next item. F founds with a settler.
-  F1 combat, F2 cities, F3 settler frontier, F4 random world (again to restart; F4 makes a new map). F6 saves a snapshot, F7 loads it, F8 changes playback, F9 completes production, F10 toggles fog of war.
-  The faded DEBUG panel at the top-left has buttons for these.
-  Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
-  F5 toggles fullscreen.
-Turn order:
-  Each unit's blue number is when it moves and its red number when it attacks (1 = first).
-  Units of the same type act simultaneously; simultaneous attacks all land before anyone is removed.
-  A swap happens when whichever of the two allies moves first acts.
-Abilities (button at the bottom of the screen, or Q, for the selected unit):
-  Melee - Shield Wall: +50% defense this turn, but no moving.
-  Ranged - Volley: the attack also hits enemies next to the target, all at 60% damage.
-  Cavalry - Charge: +1 move and +50% attack this turn.
-  Siege - Deploy: spend a turn setting up, then +1 range but no moving until packed up.
-  Scout - Lookout: stay put this turn, then see 2 hexes farther through the next.
-  A gold ring marks a queued ability; a steel ring marks deployed siege.
-Contested hexes:
-  Two enemies moving onto the same hex both take it, turning it orange. Every turn they
-  fight there instead of attacking anything else, until one dies or moves out.
-Terrain:
-  Tiles are a ground (grassland, plains, desert, tundra, snow, marsh), optionally with hills
-  (small peaks: +25% defense) and forest or jungle (pines or round canopies: +15%).
-  Mountains (large snowy peak): impassable. Water (waves): units can't enter, cities can work it.
-  Each yields differently; rest the cursor on a hex to see. Blue lines between hexes are
-  rivers: land beside a river or lake has fresh water, +1 food.
-Fog of war:
-  Hexes you have never seen are blank. Hexes seen before but out of sight now are greyed and
-  show what was there when you last saw them: enemy units, cities, improvements and roads. Units see 2 hexes (scouts and cavalry 3, +1 on hills), cities 3. F10 toggles it.";
+Controls: see docs/controls.md (every key, mouse action and map symbol).
+Rules: see docs/game-rules.md.";
 
 #[derive(Clone)]
 pub struct GameState {
@@ -436,6 +390,20 @@ mod tests {
             .iter()
             .position(|u| u.team == team && u.unit_type == unit_type)
             .unwrap()
+    }
+
+    /// The startup log sends players to the docs, so the files it names
+    /// must exist.
+    #[test]
+    fn controls_help_points_at_existing_docs() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for doc in ["docs/controls.md", "docs/game-rules.md"] {
+            assert!(
+                CONTROLS_HELP.contains(doc),
+                "CONTROLS_HELP should name {doc}"
+            );
+            assert!(root.join(doc).is_file(), "{doc} is missing");
+        }
     }
 
     #[test]

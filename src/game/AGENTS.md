@@ -11,7 +11,7 @@ behavior.
 
 | Module | Concern |
 |---|---|
-| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP`, the main tests |
+| `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
 | `orders.rs` | player input and order planning: click, right-click, swap, ability toggle, hold, guard |
 | `group.rs` | multi-unit selection (Alt-drag, Alt-click) and group orders |
 | `turn.rs` | `RESOLUTION_ORDER`, `update(dt)`, simultaneous step resolution (moves, attacks) |
@@ -19,7 +19,13 @@ behavior.
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `ai.rs` | the Red AI |
-| `city.rs` | cities, sites, roads, logistics routes, citizens, growth, build queues, buildings, settlers and workers |
+| `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (HP, defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
+| `city/logistics.rs` | roads, logistics routes (`routes_from_by`), `delivered_share`, tile yields, mill food share, city and Barracks income |
+| `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy` |
+| `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, building sites, Workshop discount, confirmation, `complete_builds` |
+| `city/workers.rs` | settlers and workers: founding cities, roads, tile improvements |
+| `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
+| `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
@@ -70,20 +76,21 @@ behavior.
 ## Recipes
 
 - **New key:** a `KeyCode` arm in `App::window_event` (`src/app.rs`) calling a `GameState`
-  method (a key that acts on release or while held needs its own arm, like Escape), a row in
-  `docs/controls.md`, and a line in `CONTROLS_HELP` (printed at startup).
+  method (a key that acts on release or while held needs its own arm, like Escape), and a row in
+  `docs/controls.md`, the one description of the controls. `CONTROLS_HELP` (printed at startup)
+  only points to that file; don't list keys in it.
 - **New unit button:** in `ui.rs`, a `UnitAction` variant, a `ButtonSpec` in the tray's button
   list, its tooltip text (the `UnitAction` match under `tooltip_lines`), and an arm in
   `click_ui`'s dispatch. Add a hit-test unit test.
 - **Stat or tuning change:** `unit.rs` or `ability.rs`, then every place that states the number
-  to players: `ability_text` in `ui.rs` (tooltips), `CONTROLS_HELP` in `mod.rs`, and the tables
-  in `docs/game-rules.md`. Grep for the old value.
+  to players: `ability_text` in `ui.rs` (tooltips) and the tables in `docs/game-rules.md`. Grep
+  for the old value.
 - **New scenario:** a `Scenario` variant (`scenario.rs`: `ALL`, `name`, `key`, `start`), its
   constructor in `mod.rs`, a key in `app.rs`; the debug panel lists `Scenario::ALL` itself.
 
 ## Tests
 
-Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city.rs` and `ui.rs`
+Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city/tests.rs` and `ui.rs`
 hold most of them). Build a `GameState` from a scenario constructor, drive it through the same
 methods input uses, and assert on state. `cargo test` needs no GPU or window. A new rule that
 constrains the board (occupancy, HP, population...) belongs in `simulation.rs`'s

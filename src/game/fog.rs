@@ -1,6 +1,6 @@
 //! Fog of war for the player's side, in three layers:
-//! - in sight: hexes the player's units, cities and barracks see now, shown
-//!   as they are;
+//! - in sight: hexes the player's units, cities and barracks see now, and
+//!   the tiles the player's cities work, shown as they are;
 //! - remembered: hexes seen before but out of sight now, shown under a grey
 //!   veil as they were when last seen (`Sighting`): cities, barracks,
 //!   improvements and roads. Units move, so they aren't remembered: out of
@@ -111,7 +111,12 @@ impl GameState {
         })
     }
 
-    /// Every hex the player's units, cities and barracks can see now.
+    /// Every hex the player's units, cities and barracks can see now, and
+    /// every tile a player's city works, whatever the range or mountains: an
+    /// enemy standing on one of the player's tiles is always seen. That
+    /// includes a tile the city was working until a cut route took its
+    /// citizen off it (`remembered_worked`), so an enemy that ends a turn on
+    /// a worked tile doesn't vanish when the city reassigns the citizen.
     fn visible_hexes(&self) -> HashSet<Hex> {
         let mut seen = HashSet::new();
         let mut look = |from: Hex, range: i32| {
@@ -134,6 +139,9 @@ impl GameState {
             if let Some(barracks) = city.barracks {
                 look(barracks, BARRACKS_SIGHT);
             }
+        }
+        for city in self.cities.iter().filter(|c| c.team == PLAYER_TEAM) {
+            seen.extend(city.worked.iter().chain(&city.remembered_worked).copied());
         }
         seen
     }
@@ -386,6 +394,99 @@ pub(super) mod tests {
         );
         let fog = game.fog();
         assert!(game.known_routes(city, &fog).costs.contains_key(&far));
+    }
+
+    /// A lone Blue city at the origin in marsh, working one tile five hexes
+    /// east that a mountain at (3, 0) hides from it. Only a road around the
+    /// mountain, through (4, -1), brings its goods home.
+    fn worked_tile_behind_the_mountain() -> (GameState, usize, Hex) {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.sites.clear();
+        game.memory.clear();
+        game.player_controlled_units.clear();
+        game.selected = None;
+        game.selected_city = None;
+        game.cities.retain(|c| c.team == PLAYER_TEAM);
+        let origin = Hex::new(0, 0);
+        let mountain = Hex::new(3, 0);
+        let road = [(1, 0), (2, 0), (3, -1), (4, -1), (4, 0), (5, 0)].map(|(q, r)| Hex::new(q, r));
+        let tile = |h: Hex| -> Tile {
+            if h == mountain {
+                Tile::MOUNTAINS
+            } else if h == origin || road.contains(&h) {
+                Terrain::Plains.into()
+            } else {
+                Terrain::Marsh.into()
+            }
+        };
+        let hexes: Vec<Hex> = HexGrid::new(7, [(origin, Tile::default())])
+            .all_hexes()
+            .collect();
+        game.grid = HexGrid::new(7, hexes.into_iter().map(|h| (h, tile(h))));
+        game.roads = road.into_iter().collect();
+        let worked = Hex::new(5, 0);
+        let city = &mut game.cities[0];
+        city.pos = origin;
+        city.population = 1;
+        city.worked = vec![worked];
+        city.remembered_worked = vec![worked];
+        assert_eq!(game.routes(0).costs.get(&worked), Some(&6));
+        (game, 0, worked)
+    }
+
+    #[test]
+    fn a_worked_tile_is_in_sight_past_range_and_mountains() {
+        let (mut game, city, worked) = worked_tile_behind_the_mountain();
+        let pos = game.cities[city].pos;
+        assert!(pos.distance(worked) > CITY_SIGHT && !game.in_line_of_sight(pos, worked));
+        game.explore();
+        let fog = game.fog();
+        assert!(fog.sees(worked) && game.is_explored(worked));
+        assert!(
+            !fog.sees(Hex::new(4, 0)),
+            "only the tile itself, not around it"
+        );
+
+        // A Red unit steps onto it: the player sees it there.
+        game.units
+            .push(Unit::new(51, worked, Team::Red, UnitType::Melee));
+        assert!(game.fog().shows(&game.units[0]));
+        assert!(game.known_occupied(worked, &game.fog()));
+
+        // The turn ends, and the cut-off citizen moves elsewhere; the enemy
+        // stays in sight on the tile it took.
+        game.resolve_economy();
+        assert!(!game.cities[city].worked.contains(&worked));
+        let fog = game.fog();
+        assert!(fog.sees(worked) && fog.shows(&game.units[0]));
+
+        // Once the player assigns citizens elsewhere, which forgets that
+        // tile, it's out of sight again.
+        game.cities[city].remembered_worked = game.cities[city].worked.clone();
+        assert!(!game.fog().shows(&game.units[0]));
+    }
+
+    #[test]
+    fn an_unseen_enemy_on_a_route_hex_still_cuts_goods() {
+        // Accepted: an enemy on a route hex that isn't a worked tile stays
+        // hidden, but the city's real income, rings and route notice (all
+        // from `routes`) show the goods it cuts off.
+        let (mut game, city, worked) = worked_tile_behind_the_mountain();
+        let full = game.income(city);
+        let blocker = Hex::new(4, -1);
+        game.units
+            .push(Unit::new(51, blocker, Team::Red, UnitType::Melee));
+        game.explore();
+        let fog = game.fog();
+        assert!(fog.sees(worked) && !fog.sees(blocker));
+        assert!(!fog.shows(&game.units[0]));
+        assert!(!game.routes(city).costs.contains_key(&worked));
+        assert!(
+            game.income(city) < full,
+            "{:?} vs {full:?}",
+            game.income(city)
+        );
     }
 
     #[test]
