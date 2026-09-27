@@ -170,22 +170,27 @@ them.
   unit shares their hex), with a dotted line to the job they're walking to. A dark tag with a
   shovel beside each of your cities counts its workers at home. Queued jobs are faded gold rings
   with the job's name.
-- Structures: walls are stone bands along hex edges with posts in their owner's color; a gate is
-  a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,
-  a fort a ring of stakes around it. Queued walls and gates are faded gold edges.
-- Cities are crenellated towers showing their population, with a gold G disc once they have a
-  granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
-  a Workshop a blue diamond marked W. While you choose or move a site, a translucent diamond with
-  the building's letter previews it. Improvements are small icons in a hex's top-left corner: a
+- Structures: coral walls are coral bands along hex edges with round posts in their owner's
+  color; a sponge gate is a wall with a porous door in its owner's color in the middle. A lantern
+  post (outpost) is a glowing lamp on a stalk, a clam fort a giant clam's scalloped shell around
+  its tile, rimmed in its owner's color. Queued walls and gates are faded gold edges.
+- Reef cities are coral towers showing their population, with a small pearly shell once they
+  have a granary (clam larder), and HP bars; a barracks is a shipwreck, a Mill a teal disc with
+  a whirlpool, a Workshop a slate disc with an anvil and embers (a sunken forge). While you
+  choose or move a site, a translucent copy of the building previews it.
+  Improvements are small icons in a hex's top-left corner: a
   wheat stalk (farm), an ore cart (mine), a fence (pasture), stacked logs (lumber mill).
-  Resources are icons in the top-right corner: a horse's head (Horses), an ingot (Iron). Brown
-  lines are dirt roads, and blue lines between hexes are rivers.
-- Terrain: two small peaks are hills, pines forest, round canopies jungle; dunes, grass tufts and
-  reeds mark desert, tundra and marsh. A large snowy peak is a mountain (impassable) and waves
-  are water (units can't enter it; cities can work it). Terrain defense and yields are in
-  `game-rules.md`.
-- Fog of war: never-seen hexes are blank; hexes you've seen but can't see now are under a grey
-  veil with cloud puffs and show the cities, improvements, roads and structures that were there
+  Resources are icons in the top-right corner: a horse's head (Horses), an ingot (Iron). Pale
+  lanes with buoys are sea lanes (roads), and light bands with flow dashes between hexes are
+  currents (rivers).
+- Terrain is the sea floor (names in `ocean-theme.md`): coral heads along the bottom are a reef
+  (hills), stalks kelp forest, branching coral a coral thicket; blades, ripples, pebbles, flat
+  stones, cracks and bubbles mark seagrass, sandbank, silt, cold shelf, ice shelf and mud flats.
+  Dark basalt spires are a seamount (impassable). Beaches (with foam where they meet the sea
+  floor), palm islands and rock-ringed tide pools are dry land (units can't enter it; cities can
+  work it). Terrain defense and yields are in `game-rules.md`.
+- Fog of war: never-seen hexes are dark deep-water murk; hexes you've seen but can't see now are
+  under a dark veil and show the cities, improvements, roads and structures that were there
   when you last looked, but no units or workers.
 - In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
   the manager; hovering the manager draws a dotted line along the way its goods travel to the

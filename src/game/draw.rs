@@ -1,7 +1,7 @@
 //! Builds each frame's geometry from the game state.
 
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
+use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::Vec2;
 
@@ -19,52 +19,95 @@ use crate::renderer::Vertex;
 
 type Color = [f32; 4];
 
-const BORDER_COLOR: Color = [0.10, 0.10, 0.13, 1.0];
+/// The channels between hexes: dark water, a little lighter than the deep
+/// navy behind the map.
+const BORDER_COLOR: Color = [0.012, 0.03, 0.055, 1.0];
 /// Each hex's fill as a share of its size; the rest is the border between hexes.
 const HEX_FILL_SCALE: f32 = 0.92;
 /// How far an explored hex's border reaches: past its own edge by as much as
 /// a neighbor's border reaches in, so facing a never-seen hex or the map's
 /// edge it is as wide as the whole gap between two hexes.
 const OUTER_BORDER_RADIUS: f32 = HEX_SIZE * (2.0 - HEX_FILL_SCALE);
-/// The grey veil over remembered hexes out of sight, and the line where they
-/// meet hexes in sight: a light, cool grey like the cloud, so it can't be
-/// mistaken for the dark gaps between ordinary hexes.
-const FOG_EDGE_COLOR: Color = [0.24, 0.25, 0.28, 1.0];
+/// The dark veil over remembered hexes out of sight, and the line where they
+/// meet hexes in sight: a murky blue lighter than the channels, so it can't
+/// be mistaken for the dark gaps between ordinary hexes.
+const FOG_EDGE_COLOR: Color = [0.07, 0.15, 0.22, 1.0];
 /// The fog edge fills the whole gap between two hexes' fills: each fill stops
 /// short of its hex's edge by (1 - HEX_FILL_SCALE) of the apothem, sqrt(3) / 2.
 const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 /// Along a river the fog edge widens to cover it whole, since a river is wider
 /// than the gap; otherwise a sliver of it would show on the side in sight.
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
-const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
+const REMEMBERED_TINT: Color = [0.0, 0.004, 0.015, 0.6];
 const CLOUD_SPACING: f32 = 4.6;
-const PLAINS_COLOR: Color = [0.26, 0.24, 0.12, 1.0];
-const GRASSLAND_COLOR: Color = [0.12, 0.20, 0.08, 1.0];
-const DESERT_COLOR: Color = [0.45, 0.36, 0.17, 1.0];
-const DUNE_COLOR: Color = [0.30, 0.22, 0.09, 1.0];
-const TUNDRA_COLOR: Color = [0.20, 0.21, 0.19, 1.0];
-const TUFT_COLOR: Color = [0.36, 0.38, 0.33, 1.0];
-const SNOWFIELD_COLOR: Color = [0.55, 0.60, 0.66, 1.0];
-const FOREST_COLOR: Color = [0.03, 0.10, 0.03, 1.0];
-const MARSH_COLOR: Color = [0.09, 0.15, 0.11, 1.0];
-const REED_COLOR: Color = [0.22, 0.30, 0.15, 1.0];
-const JUNGLE_COLOR: Color = [0.02, 0.12, 0.05, 1.0];
-const CANOPY_COLOR: Color = [0.01, 0.06, 0.02, 1.0];
-const TREE_COLOR: Color = [0.015, 0.045, 0.015, 1.0];
-const COAST_COLOR: Color = [0.06, 0.16, 0.30, 1.0];
-const OCEAN_COLOR: Color = [0.02, 0.06, 0.16, 1.0];
-const LAKE_COLOR: Color = [0.07, 0.19, 0.30, 1.0];
-const WAVE_COLOR: Color = [0.16, 0.32, 0.52, 1.0];
-const DEEP_WAVE_COLOR: Color = [0.05, 0.13, 0.28, 1.0];
-const RIVER_COLOR: Color = [0.12, 0.34, 0.70, 1.0];
+/// The murk over never-seen water: each puff is lighter, bluer deep water in
+/// the middle fading out to its rim.
+const MURK_MIDDLE_COLOR: Color = [0.02, 0.062, 0.10, 0.66];
+const MURK_RIM_COLOR: Color = [0.006, 0.02, 0.045, 0.38];
+/// Bubble trails rising through the murk.
+const BUBBLE_COLOR: Color = [0.30, 0.55, 0.65, 0.4];
+
+// The sea floor (see docs/ocean-theme.md). Old land is the floor units swim
+// over; old water is dry land they can't enter.
+/// SEAGRASS (grassland): a green-teal meadow with swaying blades.
+const SEAGRASS_COLOR: Color = [0.05, 0.18, 0.12, 1.0];
+const SEAGRASS_BLADE_COLOR: Color = [0.16, 0.44, 0.27, 1.0];
+/// SANDBANK (plains): pale sand with ripples.
+const SANDBANK_COLOR: Color = [0.34, 0.28, 0.16, 1.0];
+const RIPPLE_COLOR: Color = [0.20, 0.155, 0.08, 1.0];
+/// SILT (desert): dull grey-brown with a few pebbles.
+const SILT_COLOR: Color = [0.17, 0.145, 0.11, 1.0];
+const PEBBLE_COLOR: Color = [0.07, 0.055, 0.045, 1.0];
+/// COLD SHELF (tundra): slate blue-grey with flat stones.
+const COLD_SHELF_COLOR: Color = [0.11, 0.15, 0.20, 1.0];
+const SLATE_COLOR: Color = [0.22, 0.28, 0.35, 1.0];
+/// ICE SHELF (snow): pale ice with fine cracks.
+const ICE_SHELF_COLOR: Color = [0.52, 0.66, 0.78, 1.0];
+const ICE_CRACK_COLOR: Color = [0.30, 0.43, 0.56, 1.0];
+/// MUD FLATS (marsh): olive-brown murk with gas bubbles.
+const MUD_COLOR: Color = [0.11, 0.10, 0.04, 1.0];
+const MUD_BUBBLE_COLOR: Color = [0.28, 0.26, 0.12, 1.0];
+/// SEAMOUNT (mountains): dark basalt spires, lit on one face.
+const SEAMOUNT_COLOR: Color = [0.055, 0.06, 0.08, 1.0];
+const BASALT_COLOR: Color = [0.016, 0.016, 0.026, 1.0];
+const BASALT_LIT_COLOR: Color = [0.20, 0.22, 0.28, 1.0];
+/// BEACH (coast): dry sand, foam where it meets the sea floor.
+const BEACH_COLOR: Color = [0.60, 0.47, 0.26, 1.0];
+const FOAM_COLOR: Color = [0.80, 0.90, 0.92, 1.0];
+/// ISLAND (ocean): sand with a palm tree.
+const ISLAND_COLOR: Color = [0.44, 0.35, 0.18, 1.0];
+const ISLAND_SHADE_COLOR: Color = [0.33, 0.26, 0.12, 1.0];
+const PALM_TRUNK_COLOR: Color = [0.20, 0.10, 0.035, 1.0];
+const PALM_LEAF_COLOR: Color = [0.08, 0.30, 0.06, 1.0];
+/// TIDE POOL (lake): turquoise water ringed by rock.
+const TIDE_ROCK_COLOR: Color = [0.10, 0.10, 0.11, 1.0];
+const TIDE_STONE_COLOR: Color = [0.20, 0.20, 0.22, 1.0];
+const TIDE_POOL_COLOR: Color = [0.03, 0.40, 0.42, 1.0];
+const TIDE_GLINT_COLOR: Color = [0.50, 0.90, 0.88, 1.0];
+/// REEF (hills): ridges of coral heads in a pinker shade of their ground.
+const REEF_CORAL_COLOR: Color = [0.62, 0.30, 0.36, 1.0];
+/// KELP FOREST (forest): a dark kelp bed with tall stalks.
+const KELP_BED_COLOR: Color = [0.03, 0.08, 0.035, 1.0];
+const KELP_COLOR: Color = [0.30, 0.28, 0.05, 1.0];
+/// CORAL THICKET (jungle): a dark bed with branching bright coral.
+const THICKET_BED_COLOR: Color = [0.06, 0.03, 0.08, 1.0];
+const THICKET_CORALS: [Color; 3] = [
+    [0.85, 0.20, 0.50, 1.0],
+    [0.50, 0.22, 0.85, 1.0],
+    [0.90, 0.66, 0.12, 1.0],
+];
+/// CURRENT (a river along hex edges): a lighter streaming band with dashes
+/// showing its flow.
+const RIVER_COLOR: Color = [0.10, 0.36, 0.50, 1.0];
+const CURRENT_DASH_COLOR: Color = [0.55, 0.90, 0.96, 1.0];
 /// Rivers are a little wider than the dark gap between hexes they run along.
 const RIVER_WIDTH: f32 = 0.16;
-const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
-const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
-const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
+/// SEA LANE (a road): a pale pearl lane on a dark bed.
+const SEA_LANE_COLOR: Color = [0.46, 0.62, 0.60, 1.0];
+const SEA_LANE_BED_COLOR: Color = [0.02, 0.05, 0.07, 1.0];
 const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
 const CONTESTED_COLOR: Color = [0.55, 0.32, 0.10, 1.0];
-const MOVE_RANGE_COLOR: Color = [0.24, 0.42, 0.26, 1.0];
+const MOVE_RANGE_COLOR: Color = [0.16, 0.42, 0.32, 1.0];
 const ATTACK_RANGE_COLOR: Color = [0.45, 0.22, 0.22, 1.0];
 const ATTACK_RANGE_EMPTY_COLOR: Color = [0.36, 0.24, 0.20, 1.0];
 const LABEL_COLOR: Color = [0.05, 0.05, 0.05, 1.0];
@@ -111,14 +154,26 @@ const PLANNED_JOB_LABEL_HEIGHT: f32 = 0.12;
 const WORKER_TAG_MIN: Vec2 = Vec2::new(-0.78, -0.58);
 const WORKER_TAG_MAX: Vec2 = Vec2::new(-0.3, -0.32);
 const WORKER_TAG_COLOR: Color = [0.03, 0.03, 0.04, 0.92];
-/// Structures workers build.
-const STONE_COLOR: Color = [0.24, 0.23, 0.21, 1.0];
+/// Structures workers build: coral walls, sponge gates, lantern posts and
+/// clam forts.
+const CORAL_WALL_COLOR: Color = [0.50, 0.30, 0.30, 1.0];
+const CORAL_KNOB_COLOR: Color = [0.80, 0.56, 0.50, 1.0];
 /// How thick a wall or gate is along its hex edge.
 const BARRIER_WIDTH: f32 = 0.16;
-const MORTAR_COLOR: Color = [0.09, 0.085, 0.08, 1.0];
-const WOOD_COLOR: Color = [0.40, 0.20, 0.07, 1.0];
-/// The granary marker beside a city.
-const GRANARY_COLOR: Color = [0.95, 0.72, 0.22, 1.0];
+const SPONGE_PORE_COLOR: Color = [0.03, 0.03, 0.04, 0.75];
+const LANTERN_STALK_COLOR: Color = [0.10, 0.08, 0.12, 1.0];
+const LANTERN_COLOR: Color = [1.0, 0.95, 0.55, 1.0];
+const LANTERN_GLOW_COLOR: Color = [0.9, 1.0, 0.7, 0.22];
+const SHELL_COLOR: Color = [0.82, 0.74, 0.64, 1.0];
+/// The wrecked ship's mast and spar.
+const WRECK_WOOD_COLOR: Color = [0.16, 0.09, 0.04, 1.0];
+/// The clam larder (granary) beside a city: a pearly shell.
+const GRANARY_COLOR: Color = [0.95, 0.80, 0.55, 1.0];
+/// Buildings on their own hexes: a whirlpool mill and a sunken forge.
+const MILL_COLOR: Color = [0.10, 0.48, 0.50, 1.0];
+const WHIRL_COLOR: Color = [0.85, 0.98, 0.98, 1.0];
+const FORGE_COLOR: Color = [0.24, 0.28, 0.42, 1.0];
+const EMBER_COLOR: Color = [1.0, 0.62, 0.18, 1.0];
 /// Icon growth while a unit is highlighted for having just acted.
 const ACTED_SCALE: f32 = 1.35;
 
@@ -240,8 +295,9 @@ impl GameState {
             }
         });
 
-        // The fixed cloud field sits behind the map. Known terrain painted
-        // afterward hides it without clipping or rebuilding around sight.
+        // The fixed field of murk (cloud banks) sits behind the map. Known
+        // terrain painted afterward hides it without clipping or rebuilding
+        // around sight.
         if self.fog_of_war {
             push_cloud_banks(&self.grid, &mut out);
         }
@@ -269,7 +325,11 @@ impl GameState {
             let center = hex.to_world();
             let fill = self.hex_fill(hex, selection.as_ref(), &fog);
             mesh::regular_polygon(center, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
-            push_tile_symbols(center, self.grid.tile(hex), &mut out);
+            let tile = self.grid.tile(hex);
+            push_tile_symbols(center, tile, &mut out);
+            if tile.terrain == Terrain::Coast {
+                push_beach_foam(&self.grid, hex, &mut out);
+            }
             if let Some(resource) = self.grid.resource(hex) {
                 let icon = MapIcon::resource(resource);
                 map_icons::push_map_icon(center + RESOURCE_SPOT, icon, &mut out);
@@ -317,7 +377,7 @@ impl GameState {
         out
     }
 
-    /// Darkens remembered terrain and covers unexplored areas with clouds.
+    /// Darkens remembered terrain and covers unexplored areas with murk.
     /// Drawn over the map and cities but under units and orders.
     fn push_fog(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         if !self.fog_of_war {
@@ -371,9 +431,10 @@ fn cloud_hash(x: i32, y: i32, salt: u32) -> f32 {
     bits as f32 / u32::MAX as f32
 }
 
-/// Draws one shaded octagon per world-space lattice point. This keeps
-/// the cloud pattern continuous across hexes while doing constant, cheap work
-/// per puff: no recursive subdivision and no noise sampling per vertex.
+/// Draws the murk: shaded octagons around each world-space lattice point, and
+/// now and then a trail of bubbles. This keeps the pattern continuous across
+/// hexes while doing constant, cheap work per puff: no recursive subdivision
+/// and no noise sampling per vertex.
 fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
     let Some((min, max)) =
         grid.all_hexes()
@@ -408,7 +469,26 @@ fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
                 let rotation = cloud_hash(x, y, 0x7E95_761E ^ salt) * TAU;
                 push_cloud_puff(center, radius, rotation, out);
             }
+            // Now and then a trail of bubbles rises through the murk.
+            if cloud_hash(x, y, 0x5BD1_E995) < 0.12 {
+                let offset = Vec2::new(
+                    cloud_hash(x, y, 0x1B87_3593) - 0.5,
+                    cloud_hash(x, y, 0xCC9E_2D51) - 0.5,
+                ) * CLOUD_SPACING;
+                let at = bank + offset;
+                if grid.contains(Hex::from_world(at)) {
+                    push_bubble_trail(at, out);
+                }
+            }
         }
+    }
+}
+
+/// Three bubbles, smaller as they rise, drifting a little to one side.
+fn push_bubble_trail(at: Vec2, out: &mut Vec<Vertex>) {
+    for (dx, dy, radius) in [(0.0, 0.0, 0.1), (0.12, 0.32, 0.075), (0.04, 0.6, 0.055)] {
+        let center = at + Vec2::new(dx, dy);
+        mesh::polygon_outline(center, radius, 0.022, 6, 0.0, BUBBLE_COLOR, out);
     }
 }
 
@@ -419,14 +499,14 @@ fn push_cloud_puff(center: Vec2, radius: f32, rotation: f32, out: &mut Vec<Verte
         color,
         uv: crate::renderer::SOLID_UV,
     };
-    let middle = vertex(center, [0.19, 0.20, 0.23, 0.64]);
+    let middle = vertex(center, MURK_MIDDLE_COLOR);
     for i in 0..SIDES {
         let corner =
             |i| center + Vec2::from_angle(rotation + TAU * i as f32 / SIDES as f32) * radius;
         out.extend([
             middle,
-            vertex(corner(i), [0.10, 0.11, 0.14, 0.38]),
-            vertex(corner(i + 1), [0.10, 0.11, 0.14, 0.38]),
+            vertex(corner(i), MURK_RIM_COLOR),
+            vertex(corner(i + 1), MURK_RIM_COLOR),
         ]);
     }
 }
@@ -559,26 +639,7 @@ impl GameState {
     /// show what was there when last seen.
     fn push_city_map(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         let view = self.map_view(fog);
-        for &h in &view.roads {
-            mesh::regular_polygon(h.to_world(), 0.12, 8, 0.0, [0.65, 0.45, 0.24, 1.0], out);
-        }
-        // Road segments join roads to each other and to cities, even though a
-        // city center is drawn as its larger marker.
-        let joins = |h: Hex| view.roads.contains(&h) || view.cities.iter().any(|c| c.0 == h);
-        for &h in &view.roads {
-            for n in h.neighbors() {
-                let city = !view.roads.contains(&n);
-                if joins(n) && (city || (h.q, h.r) < (n.q, n.r)) {
-                    mesh::segment(
-                        h.to_world(),
-                        n.to_world(),
-                        0.09,
-                        [0.65, 0.45, 0.24, 1.0],
-                        out,
-                    );
-                }
-            }
-        }
+        push_sea_lanes(&view, out);
         if let Some(i) = self
             .hovered_city
             .or(self.selected_city)
@@ -703,9 +764,7 @@ impl GameState {
                 if city.team != PLAYER_TEAM && !fog.sees(hex) {
                     continue;
                 }
-                let (badge, color) = building_badge(building);
-                mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, color, out);
-                font::push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
+                push_building_marker(hex.to_world(), building, building_color(building), out);
             }
         }
         // Planned sites stay visible until confirmation. An active placement
@@ -730,7 +789,7 @@ impl GameState {
                 let Some(hex) = preview else {
                     continue;
                 };
-                let (badge, mut color) = building_badge(building);
+                let mut color = building_color(building);
                 let is_hovered = self.hovered_tile == Some(hex);
                 color[3] = if is_hovered { 0.95 } else { 0.55 };
                 mesh::polygon_outline(
@@ -742,15 +801,7 @@ impl GameState {
                     color,
                     out,
                 );
-                mesh::regular_polygon(
-                    hex.to_world(),
-                    0.31,
-                    4,
-                    FRAC_PI_4,
-                    [color[0], color[1], color[2], 0.48],
-                    out,
-                );
-                font::push_glyph(hex.to_world(), 0.30, badge, [0.08, 0.05, 0.03, 0.65], out);
+                push_building_marker(hex.to_world(), building, with_alpha(color, 0.48), out);
             }
         }
         for (hex, city) in &view.cities {
@@ -905,12 +956,96 @@ struct MapView {
     barracks: Vec<(Hex, SeenBuilding)>,
 }
 
-fn building_badge(building: super::city::Building) -> (char, Color) {
+/// Sea lanes (roads): pale lanes on a dark bed joining lane hexes to each
+/// other and to cities (even though a city center is drawn as its larger
+/// marker), with a marker buoy on each lane hex.
+fn push_sea_lanes(view: &MapView, out: &mut Vec<Vertex>) {
+    let joins = |h: Hex| view.roads.contains(&h) || view.cities.iter().any(|c| c.0 == h);
+    let mut legs = Vec::new();
+    for &h in &view.roads {
+        for n in h.neighbors() {
+            let city = !view.roads.contains(&n);
+            if joins(n) && (city || (h.q, h.r) < (n.q, n.r)) {
+                legs.push((h.to_world(), n.to_world()));
+            }
+        }
+    }
+    for (width, buoy, color) in [
+        (0.13, 0.14, SEA_LANE_BED_COLOR),
+        (0.06, 0.09, SEA_LANE_COLOR),
+    ] {
+        for &(a, b) in &legs {
+            mesh::segment(a, b, width, color, out);
+        }
+        for &h in &view.roads {
+            mesh::regular_polygon(h.to_world(), buoy, 12, 0.0, color, out);
+        }
+    }
+    for &h in &view.roads {
+        mesh::regular_polygon(h.to_world(), 0.045, 10, 0.0, SEA_LANE_BED_COLOR, out);
+    }
+}
+
+/// The color a building's marker (or its planned site) is drawn in: a
+/// shipwreck's is its team's where it stands, so this is only its preview.
+fn building_color(building: super::city::Building) -> Color {
     match building {
-        super::city::Building::Barracks => ('B', [0.72, 0.35, 0.18, 1.0]),
-        super::city::Building::Mill => ('M', [0.35, 0.65, 0.28, 1.0]),
-        super::city::Building::Workshop => ('W', [0.38, 0.52, 0.82, 1.0]),
+        super::city::Building::Barracks => [0.55, 0.62, 0.66, 1.0],
+        super::city::Building::Mill => MILL_COLOR,
+        super::city::Building::Workshop => FORGE_COLOR,
         super::city::Building::Granary => unreachable!(),
+    }
+}
+
+/// A building's marker on its hex: a shipwreck (barracks) in `color`, or a
+/// round badge with a whirlpool (mill) or a forge's anvil (workshop).
+fn push_building_marker(
+    center: Vec2,
+    building: super::city::Building,
+    color: Color,
+    out: &mut Vec<Vertex>,
+) {
+    let alpha = color[3];
+    let outline = with_alpha(ICON_OUTLINE_COLOR, alpha);
+    if building == super::city::Building::Barracks {
+        push_barracks_marker(center, color, out);
+        return;
+    }
+    mesh::regular_polygon(center, 0.3 + ICON_OUTLINE_WIDTH, 24, 0.0, outline, out);
+    mesh::regular_polygon(center, 0.3, 24, 0.0, color, out);
+    let at = |x: f32, y: f32| center + Vec2::new(x, y);
+    match building {
+        super::city::Building::Mill => {
+            // A spiral winding in to the middle.
+            let spiral: Vec<Vec2> = (0..=28)
+                .map(|i| {
+                    let t = i as f32 / 28.0;
+                    center + Vec2::from_angle(t * TAU * 2.2) * (0.22 * (1.0 - t) + 0.02)
+                })
+                .collect();
+            mesh::polyline(&spiral, 0.045, with_alpha(WHIRL_COLOR, alpha), out);
+        }
+        super::city::Building::Workshop => {
+            // An anvil over a glowing hearth.
+            let ember = with_alpha(EMBER_COLOR, alpha);
+            for (x, y, r) in [(-0.07, 0.16, 0.03), (0.02, 0.2, 0.04), (0.1, 0.15, 0.025)] {
+                mesh::regular_polygon(at(x, y), r, 8, 0.0, ember, out);
+            }
+            let anvil = [
+                at(-0.19, 0.1),
+                at(0.2, 0.1),
+                at(0.2, 0.04),
+                at(0.08, -0.01),
+                at(0.08, -0.08),
+                at(0.14, -0.13),
+                at(-0.12, -0.13),
+                at(-0.06, -0.08),
+                at(-0.06, -0.01),
+                at(-0.13, 0.03),
+            ];
+            mesh::polygon(&anvil, outline, out);
+        }
+        _ => {}
     }
 }
 
@@ -1096,23 +1231,24 @@ fn rounded_rect(center: Vec2, half: Vec2, radius: f32) -> Vec<Vec2> {
         .collect()
 }
 
-/// The ground's color, tinted green under forest or jungle.
+/// The ground's color, darkened into a kelp bed or a coral thicket's bed
+/// under a feature.
 fn tile_color(tile: Tile) -> Color {
     let ground = match tile.terrain {
-        Terrain::Grassland => GRASSLAND_COLOR,
-        Terrain::Plains => PLAINS_COLOR,
-        Terrain::Desert => DESERT_COLOR,
-        Terrain::Tundra => TUNDRA_COLOR,
-        Terrain::Snow => SNOWFIELD_COLOR,
-        Terrain::Marsh => MARSH_COLOR,
-        Terrain::Mountains => MOUNTAIN_COLOR,
-        Terrain::Coast => COAST_COLOR,
-        Terrain::Ocean => OCEAN_COLOR,
-        Terrain::Lake => LAKE_COLOR,
+        Terrain::Grassland => SEAGRASS_COLOR,
+        Terrain::Plains => SANDBANK_COLOR,
+        Terrain::Desert => SILT_COLOR,
+        Terrain::Tundra => COLD_SHELF_COLOR,
+        Terrain::Snow => ICE_SHELF_COLOR,
+        Terrain::Marsh => MUD_COLOR,
+        Terrain::Mountains => SEAMOUNT_COLOR,
+        Terrain::Coast => BEACH_COLOR,
+        Terrain::Ocean => ISLAND_COLOR,
+        Terrain::Lake => TIDE_ROCK_COLOR,
     };
     match tile.feature {
-        Some(Feature::Forest) => mix(ground, FOREST_COLOR, 0.5),
-        Some(Feature::Jungle) => mix(ground, JUNGLE_COLOR, 0.6),
+        Some(Feature::Forest) => mix(ground, KELP_BED_COLOR, 0.55),
+        Some(Feature::Jungle) => mix(ground, THICKET_BED_COLOR, 0.55),
         None => ground,
     }
 }
@@ -1121,35 +1257,55 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
     std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
 }
 
+/// A stable number from 0 to 1 for the tile at `center`, so decorations vary
+/// from tile to tile but never from frame to frame.
+fn tile_hash(center: Vec2, salt: u32) -> f32 {
+    let cell = (center * 8.0).round();
+    cloud_hash(cell.x as i32, cell.y as i32, salt)
+}
+
 /// Symbols drawn over the hex fill, so a tile stays recognizable under
 /// selection highlights. They sit clear of the middle, where a unit's icon
-/// goes. Hills are two small peaks in a darker shade of their ground along
-/// the bottom; forest (pines) and jungle (round canopies) go along the
-/// bottom too, or along the top on hills. Bare ground gets its own marks
-/// along the bottom: dunes for desert, grass tufts for tundra, reeds for
-/// marsh. Mountains get one large snow-capped peak, water waves.
+/// goes. A reef (hills) is two ridges of coral heads along the bottom; kelp
+/// stalks and branching coral go along the bottom too, or along the top on
+/// a reef. Bare sea floor gets its own marks along the bottom: seagrass
+/// blades, sand ripples, silt pebbles, slate stones, ice cracks, mud
+/// bubbles. The dry tiles fill the hex: basalt spires on a seamount, a palm
+/// on an island, a pool ringed by rocks. A beach's foam is drawn by
+/// `push_beach_foam`, which knows its neighbors.
 fn push_tile_symbols(center: Vec2, tile: Tile, out: &mut Vec<Vertex>) {
-    // A triangle rotated a quarter turn points straight up.
-    let peak = |offset: Vec2, radius: f32, color: Color, out: &mut Vec<Vertex>| {
-        mesh::regular_polygon(center + offset, radius, 3, FRAC_PI_2, color, out);
-    };
+    let at = |x: f32, y: f32| center + Vec2::new(x, y);
     if tile.hills {
-        let shade = mix(tile_color(tile), [0.0, 0.0, 0.0, 1.0], 0.55);
-        peak(Vec2::new(-0.3, -0.5), 0.2, shade, out);
-        peak(Vec2::new(0.25, -0.47), 0.17, shade, out);
+        let ground = tile_color(tile);
+        let shade = mix(ground, [0.0, 0.0, 0.0, 1.0], 0.55);
+        let coral = mix(ground, REEF_CORAL_COLOR, 0.65);
+        coral_ridge(at(-0.28, -0.71), 0.5, shade, coral, out);
+        coral_ridge(at(0.29, -0.67), 0.42, shade, coral, out);
     }
-    let row_y = if tile.hills { 1.0 } else { -1.0 };
+    // Where plants take root: the bottom of the hex, or the top on a reef.
+    let (root, reach) = if tile.hills {
+        (0.3, 0.85)
+    } else {
+        (-0.74, 1.0)
+    };
     match tile.feature {
         Some(Feature::Forest) => {
-            for (x, y, r) in [(-0.36, 0.46, 0.15), (0.0, 0.6, 0.17), (0.36, 0.46, 0.15)] {
-                peak(Vec2::new(x, y * row_y), r, TREE_COLOR, out);
+            for (i, (x, height)) in [(-0.36, 0.4), (-0.02, 0.5), (0.33, 0.44)]
+                .into_iter()
+                .enumerate()
+            {
+                let sway = (tile_hash(center, i as u32) - 0.5) * 0.14;
+                kelp_stalk(at(x, root), height * reach, sway, out);
             }
             return;
         }
         Some(Feature::Jungle) => {
-            for (x, y, r) in [(-0.34, 0.48, 0.12), (0.0, 0.6, 0.14), (0.34, 0.48, 0.12)] {
-                let at = center + Vec2::new(x, y * row_y);
-                mesh::regular_polygon(at, r, 10, 0.0, CANOPY_COLOR, out);
+            for (i, (x, height)) in [(-0.34, 0.27), (0.0, 0.34), (0.34, 0.27)]
+                .into_iter()
+                .enumerate()
+            {
+                let color = THICKET_CORALS[(i + (tile_hash(center, 7) * 3.0) as usize) % 3];
+                branching_coral(at(x, root), height * reach, color, out);
             }
             return;
         }
@@ -1157,57 +1313,94 @@ fn push_tile_symbols(center: Vec2, tile: Tile, out: &mut Vec<Vertex>) {
         None => {}
     }
     match tile.terrain {
-        Terrain::Grassland | Terrain::Plains | Terrain::Snow => {}
-        Terrain::Marsh => {
-            for (x, y) in [(-0.34, -0.52), (0.0, -0.62), (0.34, -0.52)] {
-                let base = center + Vec2::new(x, y);
-                for dx in [-0.06, 0.0, 0.06] {
-                    mesh::segment(
-                        base + Vec2::new(dx, 0.0),
-                        base + Vec2::new(dx, 0.13),
-                        0.02,
-                        REED_COLOR,
-                        out,
-                    );
+        Terrain::Grassland => {
+            let lean = 0.04 + tile_hash(center, 1) * 0.05;
+            for (x, y) in [(-0.34, -0.6), (0.0, -0.7), (0.34, -0.6)] {
+                let base = at(x, y);
+                for (dx, height) in [(-0.05, 0.18), (0.0, 0.24), (0.05, 0.15)] {
+                    let foot = base + Vec2::new(dx, 0.0);
+                    let blade = [
+                        foot,
+                        foot + Vec2::new(lean * 0.3, height * 0.55),
+                        foot + Vec2::new(lean, height),
+                    ];
+                    mesh::polyline(&blade, 0.03, SEAGRASS_BLADE_COLOR, out);
                 }
+            }
+        }
+        Terrain::Plains => {
+            for (x, y) in [(-0.3, -0.5), (0.06, -0.64), (0.36, -0.48)] {
+                wave(at(x, y), 0.24, RIPPLE_COLOR, out);
+                wave(at(x + 0.03, y - 0.06), 0.18, RIPPLE_COLOR, out);
             }
         }
         Terrain::Desert => {
-            for (x, y) in [(-0.32, -0.5), (0.08, -0.62), (0.34, -0.42)] {
-                wave(center + Vec2::new(x, y), 0.2, DUNE_COLOR, out);
+            for (x, y, r) in [
+                (-0.38, -0.5, 0.035),
+                (-0.29, -0.58, 0.025),
+                (0.06, -0.64, 0.042),
+                (0.14, -0.6, 0.02),
+                (0.33, -0.5, 0.03),
+                (0.42, -0.57, 0.02),
+            ] {
+                mesh::regular_polygon(at(x, y), r, 8, 0.3, PEBBLE_COLOR, out);
             }
         }
         Terrain::Tundra => {
-            for (x, y) in [(-0.34, -0.5), (0.0, -0.62), (0.34, -0.5)] {
-                let base = center + Vec2::new(x, y);
-                for dx in [-0.05, 0.0, 0.05] {
-                    mesh::segment(base, base + Vec2::new(dx, 0.1), 0.025, TUFT_COLOR, out);
-                }
+            for (x, y) in [(-0.34, -0.54), (0.02, -0.65), (0.34, -0.52)] {
+                let slab = [
+                    at(x - 0.09, y),
+                    at(x - 0.03, y + 0.04),
+                    at(x + 0.09, y + 0.025),
+                    at(x + 0.05, y - 0.035),
+                ];
+                mesh::polygon(&slab, SLATE_COLOR, out);
             }
         }
-        Terrain::Coast | Terrain::Lake => {
-            wave(center + Vec2::new(-0.15, 0.15), 0.4, WAVE_COLOR, out);
-            wave(center + Vec2::new(0.15, -0.2), 0.4, WAVE_COLOR, out);
+        Terrain::Snow => {
+            for crack in [
+                [
+                    (-0.46, -0.48),
+                    (-0.28, -0.58),
+                    (-0.14, -0.51),
+                    (0.02, -0.63),
+                ],
+                [(0.1, -0.44), (0.22, -0.53), (0.34, -0.47), (0.46, -0.55)],
+            ] {
+                let points = crack.map(|(x, y)| at(x, y));
+                mesh::polyline(&points, 0.022, ICE_CRACK_COLOR, out);
+            }
         }
-        Terrain::Ocean => {
-            wave(center + Vec2::new(-0.15, 0.15), 0.4, DEEP_WAVE_COLOR, out);
-            wave(center + Vec2::new(0.15, -0.2), 0.4, DEEP_WAVE_COLOR, out);
+        Terrain::Marsh => {
+            for (x, y, r) in [
+                (-0.3, -0.54, 0.055),
+                (0.02, -0.65, 0.04),
+                (0.12, -0.5, 0.022),
+                (0.32, -0.54, 0.048),
+            ] {
+                mesh::polygon_outline(at(x, y), r, 0.02, 12, 0.0, MUD_BUBBLE_COLOR, out);
+            }
         }
         Terrain::Mountains => {
-            let (base, radius, cap_radius) = (Vec2::new(0.0, -0.05), 0.55, 0.2);
-            peak(base, radius, MOUNTAIN_PEAK_COLOR, out);
-            // Same shape scaled down so it shares the big peak's apex.
-            peak(
-                base + Vec2::new(0.0, radius - cap_radius),
-                cap_radius,
-                SNOW_COLOR,
-                out,
-            );
+            // Back spires first, the tall one in front.
+            for (x, foot, half, height) in [
+                (-0.32, -0.46, 0.15, 0.66),
+                (0.3, -0.46, 0.14, 0.78),
+                (-0.02, -0.56, 0.21, 1.12),
+            ] {
+                let (left, right) = (at(x - half, foot), at(x + half, foot));
+                let apex = at(x + half * 0.15, foot + height);
+                mesh::triangle(left, right, apex, BASALT_COLOR, out);
+                mesh::triangle(left, at(x - half * 0.25, foot), apex, BASALT_LIT_COLOR, out);
+            }
         }
+        Terrain::Coast => {}
+        Terrain::Ocean => palm_tree(center, tile_hash(center, 3) * 2.0 - 1.0, out),
+        Terrain::Lake => tide_pool(center, out),
     }
 }
 
-/// A small wave (or dune), `width` across, centered on `at`.
+/// A small wave (or ripple), `width` across, centered on `at`.
 fn wave(at: Vec2, width: f32, color: Color, out: &mut Vec<Vertex>) {
     let (w, h) = (width / 4.0, width * 0.12);
     let points = [
@@ -1220,14 +1413,177 @@ fn wave(at: Vec2, width: f32, color: Color, out: &mut Vec<Vertex>) {
     mesh::polyline(&points, width * 0.1, color, out);
 }
 
-/// Rivers along hex edges, with a round joint at each end so consecutive
-/// edges meet cleanly.
+/// A low mound, `width` across on `base`, in `shade` with round coral heads
+/// along its top.
+fn coral_ridge(base: Vec2, width: f32, shade: Color, coral: Color, out: &mut Vec<Vertex>) {
+    const STEPS: usize = 10;
+    let (half, height) = (width / 2.0, width * 0.36);
+    let mound: Vec<Vec2> = (0..=STEPS)
+        .map(|i| {
+            let angle = std::f32::consts::PI * i as f32 / STEPS as f32;
+            base + Vec2::new(-angle.cos() * half, angle.sin() * height)
+        })
+        .collect();
+    mesh::polygon(&mound, shade, out);
+    for (t, r) in [(-0.55, 0.13), (-0.08, 0.17), (0.45, 0.14)] {
+        let x = t * half;
+        let y = height * (1.0 - t * t).sqrt() - width * 0.04;
+        mesh::regular_polygon(base + Vec2::new(x, y), r * width, 10, 0.0, coral, out);
+    }
+}
+
+/// A kelp stalk rising `height` from `root`, waving as it goes and leaning
+/// by `sway` at the tip, with blades off alternate sides and a float on top.
+fn kelp_stalk(root: Vec2, height: f32, sway: f32, out: &mut Vec<Vertex>) {
+    const STEPS: usize = 6;
+    let points: Vec<Vec2> = (0..=STEPS)
+        .map(|i| {
+            let t = i as f32 / STEPS as f32;
+            root + Vec2::new((t * 7.0).sin() * 0.03 + sway * t * t, t * height)
+        })
+        .collect();
+    mesh::polyline(&points, 0.036, KELP_COLOR, out);
+    for (k, &p) in points.iter().enumerate().skip(2).take(STEPS - 2) {
+        let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+        let tip = p + Vec2::new(side * 0.1, 0.06);
+        mesh::triangle(
+            p - Vec2::Y * 0.035,
+            p + Vec2::Y * 0.03,
+            tip,
+            KELP_COLOR,
+            out,
+        );
+    }
+    if let Some(&top) = points.last() {
+        mesh::regular_polygon(top, 0.034, 8, 0.0, KELP_COLOR, out);
+    }
+}
+
+/// A branching coral `height` tall on `root`: a trunk forking into three
+/// branches, each tipped with a round polyp, and two side twigs.
+fn branching_coral(root: Vec2, height: f32, color: Color, out: &mut Vec<Vertex>) {
+    let width = 0.036;
+    let fork = root + Vec2::new(0.0, height * 0.4);
+    mesh::segment(root, fork, width, color, out);
+    mesh::regular_polygon(fork, width / 2.0, 8, 0.0, color, out);
+    for (dx, dy) in [(-0.12, 0.82), (0.01, 1.0), (0.12, 0.76)] {
+        let tip = root + Vec2::new(dx, height * dy);
+        mesh::segment(fork, tip, width * 0.85, color, out);
+        mesh::regular_polygon(tip, width * 0.75, 8, 0.0, color, out);
+        if dx != 0.01 {
+            let from = fork.lerp(tip, 0.55);
+            let twig = from + Vec2::new(dx * 0.45, height * 0.2);
+            mesh::segment(from, twig, width * 0.7, color, out);
+            mesh::regular_polygon(twig, width * 0.55, 8, 0.0, color, out);
+        }
+    }
+}
+
+/// An island's palm, leaning by `lean` (-1 to 1): a curved trunk on a
+/// shaded mound of sand, fronds drooping from its crown, and coconuts.
+fn palm_tree(center: Vec2, lean: f32, out: &mut Vec<Vertex>) {
+    const SIDES: usize = 16;
+    let mound_at = center + Vec2::new(0.0, -0.44);
+    let mound: Vec<Vec2> = (0..SIDES)
+        .map(|i| {
+            let angle = TAU * i as f32 / SIDES as f32;
+            mound_at + Vec2::new(angle.cos() * 0.36, angle.sin() * 0.1)
+        })
+        .collect();
+    mesh::polygon(&mound, ISLAND_SHADE_COLOR, out);
+    let foot = mound_at + Vec2::new(-0.04 * lean, 0.0);
+    let crown = center + Vec2::new(0.18 * lean, 0.24);
+    let bend = center + Vec2::new(-0.08 * lean, -0.06);
+    let trunk: Vec<Vec2> = (0..=6)
+        .map(|i| {
+            let t = i as f32 / 6.0;
+            foot.lerp(bend, t).lerp(bend.lerp(crown, t), t)
+        })
+        .collect();
+    mesh::polyline(&trunk, 0.085, PALM_TRUNK_COLOR, out);
+    for angle in [168.0_f32, 128.0, 88.0, 52.0, 12.0] {
+        let direction = Vec2::from_angle(angle.to_radians() + lean * 0.15);
+        let middle = crown + direction * 0.22 + Vec2::new(0.0, 0.04);
+        let tip = crown + direction * 0.42 + Vec2::new(0.0, -0.12);
+        mesh::polyline(&[crown, middle, tip], 0.095, PALM_LEAF_COLOR, out);
+    }
+    for dx in [-0.035, 0.035] {
+        let nut = crown + Vec2::new(dx, -0.045);
+        mesh::regular_polygon(nut, 0.036, 8, 0.0, PALM_TRUNK_COLOR, out);
+    }
+}
+
+/// A tide pool: turquoise water with a couple of glints, ringed by stones on
+/// the rock of the hex's fill.
+fn tide_pool(center: Vec2, out: &mut Vec<Vertex>) {
+    const SIDES: u32 = 12;
+    let pool: Vec<Vec2> = (0..SIDES)
+        .map(|i| {
+            let angle = TAU * i as f32 / SIDES as f32;
+            let radius = 0.54 + tile_hash(center, 20 + i) * 0.08;
+            center + Vec2::from_angle(angle) * radius
+        })
+        .collect();
+    mesh::polygon(&pool, TIDE_POOL_COLOR, out);
+    for i in 0..9 {
+        let angle = TAU * (i as f32 + tile_hash(center, 40 + i) * 0.5) / 9.0;
+        let radius = 0.045 + tile_hash(center, 60 + i) * 0.035;
+        let at = center + Vec2::from_angle(angle) * 0.64;
+        mesh::regular_polygon(at, radius, 8, angle, TIDE_STONE_COLOR, out);
+    }
+    for (from, to) in [((-0.28, 0.18), (-0.1, 0.24)), ((0.08, -0.2), (0.3, -0.14))] {
+        let (a, b) = (center + Vec2::from(from), center + Vec2::from(to));
+        mesh::segment(a, b, 0.03, TIDE_GLINT_COLOR, out);
+    }
+}
+
+/// A beach's waterline: wet sand and a scalloped line of foam just inside
+/// each of its edges that meets the sea floor (any tile but the old water).
+fn push_beach_foam(grid: &HexGrid, hex: Hex, out: &mut Vec<Vertex>) {
+    const STEPS: usize = 8;
+    let center = hex.to_world();
+    let toward = |p: Vec2, share: f32| center + (p - center) * share;
+    for n in hex.neighbors() {
+        if !grid.contains(n) || grid.terrain(n).is_water() {
+            continue;
+        }
+        let (a, b) = edge_corners(hex, n);
+        let wet = [
+            toward(a, HEX_FILL_SCALE),
+            toward(b, HEX_FILL_SCALE),
+            toward(b, 0.8),
+            toward(a, 0.8),
+        ];
+        mesh::polygon(&wet, mix(BEACH_COLOR, BORDER_COLOR, 0.35), out);
+        let foam: Vec<Vec2> = (0..=STEPS)
+            .map(|i| {
+                let t = i as f32 / STEPS as f32;
+                let share = 0.8 - 0.035 * (t * TAU * 2.0).sin().abs();
+                toward(a.lerp(b, t), share)
+            })
+            .collect();
+        mesh::polyline(&foam, 0.045, FOAM_COLOR, out);
+    }
+}
+
+/// Currents along hex edges: a lighter band with a round joint at each end
+/// so consecutive edges meet cleanly, then pale dashes streaming along it.
 fn push_rivers(grid: &HexGrid, explored: impl Fn(Hex) -> bool, out: &mut Vec<Vertex>) {
-    for (a, b) in grid.rivers().filter(|(a, b)| explored(*a) || explored(*b)) {
-        let (start, end) = edge_corners(a, b);
+    let edges: Vec<(Vec2, Vec2)> = grid
+        .rivers()
+        .filter(|(a, b)| explored(*a) || explored(*b))
+        .map(|(a, b)| edge_corners(a, b))
+        .collect();
+    for &(start, end) in &edges {
         mesh::segment(start, end, RIVER_WIDTH, RIVER_COLOR, out);
         for p in [start, end] {
             mesh::regular_polygon(p, RIVER_WIDTH / 2.0, 12, 0.0, RIVER_COLOR, out);
+        }
+    }
+    for &(start, end) in &edges {
+        for (from, to) in [(0.12, 0.38), (0.6, 0.86)] {
+            let (a, b) = (start.lerp(end, from), start.lerp(end, to));
+            mesh::segment(a, b, 0.034, CURRENT_DASH_COLOR, out);
         }
     }
 }
@@ -1430,56 +1786,113 @@ fn push_unit_icon(center: Vec2, look: UnitLook, scale: f32, color: Color, out: &
     );
 }
 
-/// Axis-aligned rectangles in `color` with a dark border, the border drawn
-/// first under all of them so shapes built from several rectangles get one
-/// clean outline.
-fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec<Vertex>) {
-    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
-    let grow = Vec2::splat(ICON_OUTLINE_WIDTH);
-    for &(min, max) in rects {
-        mesh::quad(min - grow, max + grow, outline, out);
-    }
-    for &(min, max) in rects {
-        mesh::quad(min, max, color, out);
-    }
-}
-
-/// A city: a crenellated tower in its team's color with its population on
-/// it, and a small gold granary beside it once it has one.
+/// A reef city: coral towers in its team's color rising from a broad base
+/// with its population on it, and a small clam larder beside it once it has
+/// a granary.
 fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
-    let rect =
-        |x0: f32, y0: f32, x1: f32, y1: f32| (pos + Vec2::new(x0, y0), pos + Vec2::new(x1, y1));
-    push_outlined_rects(
-        &[
-            rect(-0.42, -0.4, 0.42, 0.24),
-            // Three merlons along the top.
-            rect(-0.42, 0.24, -0.24, 0.4),
-            rect(-0.09, 0.24, 0.09, 0.4),
-            rect(0.24, 0.24, 0.42, 0.4),
-        ],
-        city.team.color(),
-        out,
-    );
-    // Centered in the tower's body, below the merlons.
+    let at = |x: f32, y: f32| pos + Vec2::new(x, y);
+    // Each tower: its middle, the height of its round tip, its half width
+    // at the foot and at the tip.
+    let towers = [
+        (-0.27, 0.28, 0.13, 0.05),
+        (0.0, 0.46, 0.15, 0.06),
+        (0.27, 0.22, 0.13, 0.05),
+    ];
+    let mut shapes = vec![vec![
+        at(-0.42, -0.4),
+        at(0.42, -0.4),
+        at(0.42, 0.14),
+        at(-0.42, 0.14),
+    ]];
+    let mut discs = vec![
+        // Coral knobs on the base's shoulders.
+        (at(-0.42, -0.06), 0.07),
+        (at(0.42, -0.2), 0.06),
+    ];
+    for (x, top, foot, tip) in towers {
+        shapes.push(vec![
+            at(x - foot, 0.1),
+            at(x + foot, 0.1),
+            at(x + tip, top),
+            at(x - tip, top),
+        ]);
+        discs.push((at(x, top), tip * 1.5));
+    }
+    push_outlined_shapes(&shapes, &discs, city.team.color(), out);
+    for (x, top, _, _) in towers {
+        let window = at(x, 0.1 + (top - 0.1) * 0.45);
+        mesh::regular_polygon(window, 0.035, 10, 0.0, LABEL_COLOR, out);
+    }
+    // Centered in the base, below the towers.
     font::push_text_centered(
-        pos + Vec2::new(0.0, -0.08),
+        pos + Vec2::new(0.0, -0.13),
         0.3,
         &city.population.to_string(),
         LABEL_COLOR,
         out,
     );
     if city.granary {
-        let at = pos + Vec2::new(0.46, -0.42);
-        mesh::regular_polygon(
-            at,
-            0.15 + ICON_OUTLINE_WIDTH,
-            16,
-            0.0,
-            ICON_OUTLINE_COLOR,
+        push_clam(
+            pos + Vec2::new(0.47, -0.44),
+            0.15,
+            Vec2::Y,
+            GRANARY_COLOR,
             out,
         );
-        mesh::regular_polygon(at, 0.15, 16, 0.0, GRANARY_COLOR, out);
-        font::push_glyph(at, 0.16, 'G', LABEL_COLOR, out);
+    }
+}
+
+/// Polygons and discs in `color` with one dark border around them all:
+/// every border first, under every fill.
+fn push_outlined_shapes(
+    polygons: &[Vec<Vec2>],
+    discs: &[(Vec2, f32)],
+    color: Color,
+    out: &mut Vec<Vertex>,
+) {
+    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
+    for &(at, radius) in discs {
+        mesh::regular_polygon(at, radius + ICON_OUTLINE_WIDTH, 20, 0.0, outline, out);
+    }
+    for polygon in polygons {
+        mesh::outline(polygon, ICON_OUTLINE_WIDTH * 2.0, outline, out);
+    }
+    for polygon in polygons {
+        mesh::polygon(polygon, color, out);
+    }
+    for &(at, radius) in discs {
+        mesh::regular_polygon(at, radius, 20, 0.0, color, out);
+    }
+}
+
+/// A scallop shell `radius` across, its hinge below `at` and its fan opening
+/// toward `up`, with a dark rim and ribs.
+fn push_clam(at: Vec2, radius: f32, up: Vec2, color: Color, out: &mut Vec<Vertex>) {
+    const STEPS: usize = 10;
+    let side = -up.perp();
+    let hinge = at - up * (radius * 0.6);
+    let fan = |reach: f32| -> Vec<Vec2> {
+        let mut points = vec![hinge - up * (reach - radius * 1.3)];
+        points.extend((0..=STEPS).map(|i| {
+            let angle = (0.12 + 0.76 * i as f32 / STEPS as f32) * std::f32::consts::PI;
+            // Scalloped: each rib bulges a little past the rim between.
+            let bulge = 1.0 + 0.06 * (angle * 5.0).cos().abs();
+            hinge + (side * angle.cos() + up * angle.sin()) * reach * bulge
+        }));
+        points
+    };
+    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
+    mesh::polygon(&fan(radius * 1.3 + ICON_OUTLINE_WIDTH), outline, out);
+    mesh::polygon(&fan(radius * 1.3), color, out);
+    let rib = with_alpha(mix(color, ICON_OUTLINE_COLOR, 0.55), color[3]);
+    for angle in [0.3_f32, 0.5, 0.7] {
+        let angle = angle * std::f32::consts::PI;
+        let direction = side * angle.cos() + up * angle.sin();
+        let (from, to) = (
+            hinge + direction * radius * 0.2,
+            hinge + direction * radius * 1.15,
+        );
+        mesh::segment(from, to, radius * 0.12, rib, out);
     }
 }
 
@@ -1508,12 +1921,13 @@ fn push_worker_count(city: Vec2, count: u32, out: &mut Vec<Vertex>) {
     );
 }
 
-/// A wall or gate along the edge between `a` and `b`: a band of stone with
-/// mortar joints and posts in its team's color at both ends; a gate's middle
-/// is a door in the team's color.
+/// A coral wall or sponge gate along the edge between `a` and `b`: a band of
+/// coral studded with knobs, with posts in its team's color at both ends; a
+/// gate's middle is a porous sponge in the team's color.
 fn push_barrier(a: Hex, b: Hex, kind: StructureKind, team: Color, out: &mut Vec<Vertex>) {
     let (start, end) = edge_corners(a, b);
     let along = |t: f32| start.lerp(end, t);
+    let across = (end - start).perp().normalize_or_zero();
     mesh::segment(
         start,
         end,
@@ -1521,128 +1935,169 @@ fn push_barrier(a: Hex, b: Hex, kind: StructureKind, team: Color, out: &mut Vec<
         ICON_OUTLINE_COLOR,
         out,
     );
-    mesh::segment(start, end, BARRIER_WIDTH, STONE_COLOR, out);
-    let across = (end - start).perp().normalize_or_zero() * (BARRIER_WIDTH / 2.0);
+    mesh::segment(start, end, BARRIER_WIDTH, CORAL_WALL_COLOR, out);
+    let knobs: &[f32] = if kind == StructureKind::Gate {
+        &[0.14, 0.22, 0.78, 0.86]
+    } else {
+        &[0.14, 0.27, 0.4, 0.53, 0.66, 0.79, 0.88]
+    };
+    for (i, &t) in knobs.iter().enumerate() {
+        let wobble = if i % 2 == 0 { 0.025 } else { -0.025 };
+        let at = along(t) + across * wobble;
+        mesh::regular_polygon(at, 0.04, 8, 0.0, CORAL_KNOB_COLOR, out);
+    }
     if kind == StructureKind::Gate {
         let door = [along(0.3), along(0.7)];
         mesh::segment(
             door[0],
             door[1],
-            BARRIER_WIDTH + ICON_OUTLINE_WIDTH,
+            BARRIER_WIDTH * 1.25 + ICON_OUTLINE_WIDTH,
             ICON_OUTLINE_COLOR,
             out,
         );
-        mesh::segment(door[0], door[1], BARRIER_WIDTH, team, out);
-        mesh::segment(
-            along(0.5) - across,
-            along(0.5) + across,
-            0.02,
-            ICON_OUTLINE_COLOR,
-            out,
-        );
-        for t in [0.15, 0.85] {
-            mesh::segment(
-                along(t) - across,
-                along(t) + across,
-                0.02,
-                MORTAR_COLOR,
-                out,
-            );
-        }
-    } else {
-        for t in [0.25, 0.5, 0.75] {
-            mesh::segment(
-                along(t) - across,
-                along(t) + across,
-                0.02,
-                MORTAR_COLOR,
-                out,
-            );
+        mesh::segment(door[0], door[1], BARRIER_WIDTH * 1.25, team, out);
+        for (t, side, radius) in [
+            (0.36, 0.03, 0.022),
+            (0.43, -0.035, 0.018),
+            (0.5, 0.02, 0.026),
+            (0.57, -0.03, 0.02),
+            (0.64, 0.035, 0.018),
+        ] {
+            let pore = along(t) + across * side;
+            mesh::regular_polygon(pore, radius, 8, 0.0, SPONGE_PORE_COLOR, out);
         }
     }
     for p in [start, end] {
-        let half = Vec2::splat(BARRIER_WIDTH * 0.62);
-        let edge = Vec2::splat(ICON_OUTLINE_WIDTH / 2.0);
-        mesh::quad(p - half - edge, p + half + edge, ICON_OUTLINE_COLOR, out);
-        mesh::quad(p - half, p + half, team, out);
+        let radius = BARRIER_WIDTH * 0.7;
+        mesh::regular_polygon(
+            p,
+            radius + ICON_OUTLINE_WIDTH / 2.0,
+            12,
+            0.0,
+            ICON_OUTLINE_COLOR,
+            out,
+        );
+        mesh::regular_polygon(p, radius, 12, 0.0, team, out);
     }
 }
 
-/// A structure on a tile, in its team's color: an outpost (a watchtower) or
-/// a fort (a palisade of stakes).
+/// A structure on a tile, in its team's color: an outpost (a lantern post:
+/// a lanternfish's lamp glowing on a curved stalk) or a fort (a giant clam's
+/// scalloped shell lips around the hex, rimmed in the team's color).
 fn push_structure(center: Vec2, kind: StructureKind, team: Color, out: &mut Vec<Vertex>) {
     let at = |x: f32, y: f32| center + Vec2::new(x, y);
     match kind {
         // Walls and gates stand on hex edges (`push_barrier`).
         StructureKind::Wall | StructureKind::Gate => {}
         StructureKind::Outpost => {
-            for (foot, top) in [
-                ((-0.16, -0.36), (-0.09, 0.05)),
-                ((0.16, -0.36), (0.09, 0.05)),
-            ] {
-                let (foot, top) = (at(foot.0, foot.1), at(top.0, top.1));
-                mesh::segment(foot, top, 0.09, ICON_OUTLINE_COLOR, out);
-                mesh::segment(foot, top, 0.05, WOOD_COLOR, out);
-            }
-            push_outlined_rects(&[(at(-0.15, 0.03), at(0.15, 0.24))], WOOD_COLOR, out);
-            let roof = [at(-0.22, 0.24), at(0.22, 0.24), at(0.0, 0.44)];
-            mesh::polygon(
-                &[at(-0.27, 0.21), at(0.27, 0.21), at(0.0, 0.48)],
+            let (foot, bend, lamp) = (at(-0.06, -0.3), at(-0.16, 0.34), at(0.15, 0.3));
+            let stalk: Vec<Vec2> = (0..=8)
+                .map(|i| {
+                    let t = i as f32 / 8.0;
+                    foot.lerp(bend, t).lerp(bend.lerp(lamp, t), t)
+                })
+                .collect();
+            mesh::regular_polygon(lamp, 0.24, 20, 0.0, LANTERN_GLOW_COLOR, out);
+            mesh::polyline(&stalk, 0.05 + ICON_OUTLINE_WIDTH, ICON_OUTLINE_COLOR, out);
+            mesh::polyline(&stalk, 0.05, LANTERN_STALK_COLOR, out);
+            // The mound it grows from, in the team's color.
+            let mound: Vec<Vec2> = (0..=10)
+                .map(|i| {
+                    let angle = std::f32::consts::PI * i as f32 / 10.0;
+                    at(-0.06, -0.38) + Vec2::new(-angle.cos() * 0.24, angle.sin() * 0.14)
+                })
+                .collect();
+            mesh::outline(&mound, ICON_OUTLINE_WIDTH * 2.0, ICON_OUTLINE_COLOR, out);
+            mesh::polygon(&mound, team, out);
+            mesh::regular_polygon(
+                lamp,
+                0.09 + ICON_OUTLINE_WIDTH,
+                16,
+                0.0,
                 ICON_OUTLINE_COLOR,
                 out,
             );
-            mesh::polygon(&roof, team, out);
+            mesh::regular_polygon(lamp, 0.09, 16, 0.0, LANTERN_COLOR, out);
         }
         StructureKind::Fort => {
-            // Stakes around the hex, points outward, over a ring in the
-            // team's color.
-            mesh::polygon_outline(center, 0.56, 0.05, 6, 0.0, team, out);
-            for i in 0..12 {
-                let out_dir = Vec2::from_angle(i as f32 * std::f32::consts::TAU / 12.0);
-                let side = out_dir.perp() * 0.06;
-                let base = center + out_dir * 0.56;
-                let tip = center + out_dir * 0.74;
-                mesh::polygon(
-                    &[
-                        base - side * 1.6 - out_dir * 0.03,
-                        base + side * 1.6 - out_dir * 0.03,
-                        tip + out_dir * 0.03,
-                    ],
-                    ICON_OUTLINE_COLOR,
-                    out,
+            const STEPS: usize = 30;
+            use std::f32::consts::PI;
+            for (from, to) in [(0.3, PI - 0.3), (PI + 0.3, TAU - 0.3)] {
+                let angle = |i: usize| from + (to - from) * i as f32 / STEPS as f32;
+                let outer: Vec<Vec2> = (0..=STEPS)
+                    .map(|i| {
+                        // Five scallops along each lip.
+                        let t = i as f32 / STEPS as f32;
+                        let reach = 0.66 + 0.08 * (t * PI * 5.0).sin().abs();
+                        center + Vec2::from_angle(angle(i)) * reach
+                    })
+                    .collect();
+                let mut lip = outer.clone();
+                lip.extend(
+                    (0..=STEPS)
+                        .rev()
+                        .map(|i| center + Vec2::from_angle(angle(i)) * 0.54),
                 );
-                mesh::polygon(&[base - side, base + side, tip], WOOD_COLOR, out);
+                mesh::outline(&lip, ICON_OUTLINE_WIDTH * 2.0, ICON_OUTLINE_COLOR, out);
+                mesh::polygon(&lip, SHELL_COLOR, out);
+                // Ribs down the valleys between scallops.
+                for k in 1..5 {
+                    let direction = Vec2::from_angle(angle(k * STEPS / 5));
+                    mesh::segment(
+                        center + direction * 0.56,
+                        center + direction * 0.68,
+                        0.02,
+                        mix(SHELL_COLOR, ICON_OUTLINE_COLOR, 0.5),
+                        out,
+                    );
+                }
+                let rim: Vec<Vec2> = (0..=STEPS)
+                    .map(|i| center + Vec2::from_angle(angle(i)) * 0.56)
+                    .collect();
+                mesh::polyline(&rim, 0.07, team, out);
             }
         }
     }
 }
 
-/// A barracks: a small house (walls and a pitched roof) in `color`, its
-/// team's, marked B.
+/// A barracks: a shipwreck in `color`, its team's: a hull listing on the
+/// sea floor with portholes and a breach, and a broken mast.
 fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
     let alpha = color[3];
     let outline = with_alpha(ICON_OUTLINE_COLOR, alpha);
-    let (eave, peak, half) = (0.1, 0.4, 0.38);
-    let roof = |grow: f32| {
-        (
-            pos + Vec2::new(-half - grow, eave - grow / 2.0),
-            pos + Vec2::new(half + grow, eave - grow / 2.0),
-            pos + Vec2::new(0.0, peak + grow),
-        )
-    };
-    let (a, b, c) = roof(ICON_OUTLINE_WIDTH * 1.6);
-    mesh::triangle(a, b, c, outline, out);
-    let walls = (pos + Vec2::new(-0.28, -0.32), pos + Vec2::new(0.28, eave));
-    push_outlined_rects(&[walls], color, out);
-    let (a, b, c) = roof(0.0);
-    mesh::triangle(a, b, c, color, out);
-    font::push_glyph(
-        pos + Vec2::new(0.0, -0.09),
-        0.26,
-        'B',
-        with_alpha(LABEL_COLOR, alpha),
-        out,
-    );
+    let at = |x: f32, y: f32| pos + Vec2::new(x, y);
+    let wood = with_alpha(WRECK_WOOD_COLOR, alpha);
+    for (from, to, width) in [
+        ((0.0, 0.0), (0.16, 0.44), 0.06),
+        ((0.02, 0.3), (0.26, 0.24), 0.04),
+    ] {
+        let (from, to) = (at(from.0, from.1), at(to.0, to.1));
+        mesh::segment(from, to, width + ICON_OUTLINE_WIDTH, outline, out);
+        mesh::segment(from, to, width, wood, out);
+    }
+    let hull = [
+        at(-0.42, 0.06),
+        at(0.44, 0.14),
+        at(0.26, -0.24),
+        at(-0.34, -0.32),
+    ];
+    mesh::outline(&hull, ICON_OUTLINE_WIDTH * 2.0, outline, out);
+    mesh::polygon(&hull, color, out);
+    // A plank line along the hull, portholes above it, a breach below.
+    mesh::segment(at(-0.38, -0.08), at(0.36, 0.0), 0.02, outline, out);
+    for x in [-0.22, 0.0, 0.2] {
+        let porthole = at(x, 0.0 + x * 0.1);
+        mesh::regular_polygon(porthole, 0.04, 10, 0.0, outline, out);
+    }
+    let breach = [
+        at(-0.1, -0.14),
+        at(0.0, -0.11),
+        at(0.07, -0.16),
+        at(0.04, -0.25),
+        at(-0.06, -0.27),
+        at(-0.03, -0.2),
+    ];
+    mesh::polygon(&breach, outline, out);
 }
 
 /// Status rings behind the icon. They're filled discs, so only the rim shows
@@ -1763,6 +2218,42 @@ mod tests {
         // allowing that per-frame cost back in.
         assert!(vertices.len() < 25_000, "{} cloud vertices", vertices.len());
         assert!(vertices.iter().any(|v| v.color[3] < 1.0));
+    }
+
+    #[test]
+    fn a_beach_foams_only_along_edges_that_meet_the_sea_floor() {
+        let beach = Hex::new(0, 0);
+        let around = |terrains: [Terrain; 6]| {
+            let neighbors = beach.neighbors().into_iter().zip(terrains);
+            HexGrid::new(1, [(beach, Terrain::Coast)].into_iter().chain(neighbors))
+        };
+        let foam = |grid: &HexGrid| {
+            let mut out = Vec::new();
+            push_beach_foam(grid, beach, &mut out);
+            count_color(&out, FOAM_COLOR)
+        };
+        use Terrain::{Coast, Lake, Mountains, Ocean, Plains};
+        let one = foam(&around([Plains, Ocean, Ocean, Ocean, Ocean, Ocean]));
+        assert!(one > 0, "foam where it meets the sea floor");
+        // A seamount isn't water either; beaches, islands and pools are.
+        let two = foam(&around([Plains, Ocean, Lake, Mountains, Coast, Ocean]));
+        assert_eq!(two, 2 * one);
+        assert_eq!(foam(&around([Ocean; 6])), 0);
+        let alone = HexGrid::new(0, [(beach, Terrain::Coast)]);
+        assert_eq!(foam(&alone), 0, "no foam off the map's edge");
+    }
+
+    #[test]
+    fn currents_stream_with_pale_dashes() {
+        let (a, b) = (Hex::new(0, 0), Hex::new(1, 0));
+        let grid = HexGrid::new(1, [(a, Terrain::Plains)]).with_rivers([edge(a, b)].into());
+        let mut out = Vec::new();
+        push_rivers(&grid, |_| true, &mut out);
+        assert!(count_color(&out, RIVER_COLOR) > 0);
+        assert!(count_color(&out, CURRENT_DASH_COLOR) > 0);
+        out.clear();
+        push_rivers(&grid, |_| false, &mut out);
+        assert!(out.is_empty(), "unexplored currents aren't drawn");
     }
 
     /// The color of the last opaque triangle drawn over `point`.
