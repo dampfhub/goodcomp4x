@@ -1,8 +1,56 @@
 //! Formatting helpers for numbers, stats and descriptions shown in the UI.
 
-use super::{BOOSTED_TEXT, Color, LABEL_TEXT, Line, REDUCED_TEXT, TEXT};
+use super::{
+    BOOSTED_TEXT, Color, DIM_TEXT, FOOD_TEXT, LABEL_TEXT, Line, METAL_TEXT, REDUCED_TEXT, TEXT,
+    WOOD_TEXT,
+};
 use crate::game::ability::Ability;
+use crate::game::city::Stock;
 use crate::game::unit::Unit;
+
+/// A price in short form for a build card's hint, like "2F 6W 1M" (whole
+/// units, zeros left out).
+pub(super) fn price_hint(price: Stock) -> String {
+    let parts: Vec<String> = [("F", price.food), ("W", price.wood), ("M", price.metal)]
+        .into_iter()
+        .filter(|&(_, amount)| amount > 0)
+        .map(|(letter, amount)| format!("{}{letter}", quantity(amount)))
+        .collect();
+    if parts.is_empty() {
+        "FREE".into()
+    } else {
+        parts.join(" ")
+    }
+}
+
+/// Each resource's color.
+pub(super) fn resource_color(name: &str) -> Color {
+    match name {
+        "FOOD" => FOOD_TEXT,
+        "WOOD" => WOOD_TEXT,
+        _ => METAL_TEXT,
+    }
+}
+
+/// A stockpile with its change a turn: "FOOD 12 +3   WOOD 8 +2   METAL 4 +0",
+/// names in their resource's color and changes green, red or dim.
+pub(super) fn stock_spans(stock: Stock, change: Stock) -> Line {
+    let mut line = Vec::new();
+    for (i, ((name, amount), (_, delta))) in
+        stock.parts().into_iter().zip(change.parts()).enumerate()
+    {
+        let separator = if i == 0 { "" } else { "   " };
+        line.push((format!("{separator}{name} "), resource_color(name)));
+        line.push((quantity(amount), TEXT));
+        let delta_color = match delta.signum() {
+            1 => BOOSTED_TEXT,
+            -1 => REDUCED_TEXT,
+            _ => DIM_TEXT,
+        };
+        line.push((format!(" {}", signed_quantity(delta)), delta_color));
+    }
+    line
+}
 
 /// "LABEL value" pairs on one line, labels dim and values in their own color.
 pub(super) fn stat_spans(stats: &[(&str, String, Color)]) -> Line {

@@ -3,23 +3,50 @@
 use super::builder::PanelBuilder;
 use super::paint::draw_shape;
 use super::text::{
-    ability_text, pending_text, quantity, signed_quantity, stat_spans, turns_text, wrap,
+    ability_text, pending_text, price_hint, signed_quantity, stat_spans, turns_text, wrap,
 };
 use super::{
-    BODY, BOOSTED_TEXT, BORDER, Button, DIM_TEXT, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN,
-    REDUCED_TEXT, SMALL, TEXT, TILE_TOOLTIP_OFFSET, TOOLTIP_GAP, TOOLTIP_WRAP, Target, UnitAction,
-    contains,
+    BODY, BORDER, Button, DIM_TEXT, FOOD_TEXT, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN,
+    METAL_TEXT, REDUCED_TEXT, SMALL, TEXT, TILE_TOOLTIP_OFFSET, TOOLTIP_GAP, TOOLTIP_WRAP, Target,
+    UnitAction, WOOD_TEXT, contains,
 };
-use crate::game::GameState;
-use crate::game::city::{Building, WORKER_COST, WORKER_SHORTCUT, delivered_share};
+use crate::game::city::{
+    Build, Building, GROW_SHORTCUT, MAX_CITY_POPULATION, WORKER_SHORTCUT, delivered_share,
+    stock_words,
+};
 use crate::game::hex::Hex;
 use crate::game::scenario::Scenario;
 use crate::game::unit::Unit;
 use crate::game::workers::JobKind;
+use crate::game::{GameState, PLAYER_TEAM};
 use crate::renderer::Vertex;
 use glam::Vec2;
 
 impl GameState {
+    /// What queuing `build` in the open city (or Barracks) costs from the
+    /// stockpile, and how long it takes: "COSTS 2 FOOD AND 6 WOOD; 2 TURNS."
+    fn price_text(&self, build: Build) -> String {
+        let price = self
+            .selected_city
+            .or(self.selected_barracks)
+            .map_or_else(|| build.price(), |city| self.queue_price(city, build));
+        format!(
+            "COSTS {}; {}.",
+            stock_words(price),
+            turns_text(build.turns() as u32)
+        )
+    }
+
+    /// What the stockpile is short of to queue `build` in the open city, if
+    /// anything.
+    fn shortfall_text(&self, build: Build) -> Option<String> {
+        let city = self.selected_city.or(self.selected_barracks)?;
+        let short = self
+            .stock(PLAYER_TEAM)
+            .shortfall(self.queue_price(city, build));
+        (short != Default::default()).then(|| format!("SHORT OF {}", stock_words(short)))
+    }
+
     /// Everything about a map hex: terrain, what it yields, and what's on it.
     pub(super) fn tile_tooltip_lines(&self, hex: Hex) -> Vec<(u32, Line)> {
         if !self.is_explored(hex) {
@@ -77,24 +104,25 @@ impl GameState {
             return lines;
         }
         let (food, production) = self.known_yield(hex, &fog);
+        let metal = self.metal_yield(hex, production);
         lines.push((
             SMALL,
             stat_spans(&[
-                ("FOOD", food.to_string(), BOOSTED_TEXT),
-                ("PRODUCTION", production.to_string(), GOLD_TEXT),
+                ("FOOD", food.to_string(), FOOD_TEXT),
+                ("WOOD", (production - metal).to_string(), WOOD_TEXT),
+                ("METAL", metal.to_string(), METAL_TEXT),
             ]),
         ));
         if let Some(city) = city {
             let city_index = self.cities.iter().position(|c| c.pos == hex).unwrap();
-            let (growth, _, _) = self.growth_status(city_index);
-            let (_, production_per_turn) = self.income(city_index);
             let queue = city.queue.first().map_or("NOTHING", |build| build.name());
             lines.push((
                 SMALL,
                 vec![(
                     format!(
-                        "GROWTH {growth}% · {} PRODUCTION",
-                        signed_quantity(production_per_turn)
+                        "POP {}/{MAX_CITY_POPULATION} · DELIVERS {}",
+                        city.population,
+                        price_hint(self.income(city_index))
                     ),
                     GOLD_TEXT,
                 )],
@@ -102,17 +130,7 @@ impl GameState {
             lines.push((SMALL, vec![(format!("BUILDING {queue}"), DIM_TEXT)]));
         }
         if let Some(city) = barracks {
-            let city_index = self
-                .cities
-                .iter()
-                .position(|c| c.barracks == Some(hex))
-                .unwrap();
             let active = city.worked.first() == Some(&hex);
-            let production_per_turn = if active {
-                self.barracks_income(city_index)
-            } else {
-                0
-            };
             let queue = city
                 .barracks_queue
                 .first()
@@ -121,10 +139,14 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · {} PROD/T",
+                        "HP {:.0}/{:.0} · {}",
                         city.barracks_hp,
                         crate::game::city::BARRACKS_MAX_HP,
-                        signed_quantity(production_per_turn)
+                        if active {
+                            "MANAGER ACTIVE"
+                        } else {
+                            "NO MANAGER"
+                        }
                     ),
                     GOLD_TEXT,
                 )],
@@ -337,31 +359,31 @@ impl GameState {
                     build.name().into(),
                     build.shortcut().to_string(),
                     format!(
-                        "{}. {} PRODUCTION.",
+                        "{}. {}",
                         build.description(),
-                        quantity(build.cost())
+                        self.price_text(Build::Unit(build))
                     ),
-                    None,
+                    self.shortfall_text(Build::Unit(build)),
                 ),
                 Target::Building(building) => (
                     building.name().into(),
                     if building.shortcut() == ' ' { "CITY BUILD MENU".into() } else { building.shortcut().to_string() },
                     format!(
-                        "{} COSTS {} PRODUCTION. ONE PER CITY.",
+                        "{} {} ONE PER CITY.",
                         building.description(),
-                        quantity(building.cost())
+                        self.price_text(Build::Building(building))
                     ),
-                    None,
+                    self.shortfall_text(Build::Building(building)),
                 ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
                     "BARRACKS".into(),
                     format!(
-                        "{} COSTS {} PRODUCTION FROM THE ACTIVE MANAGER'S WORK GROUP.",
+                        "{} {} TRAINING ADVANCES ONLY WHILE THE MANAGER STANDS ON THE BARRACKS.",
                         build.description(),
-                        quantity(build.cost())
+                        self.price_text(Build::Unit(build))
                     ),
-                    None,
+                    self.shortfall_text(Build::Unit(build)),
                 ),
                 Target::OpenBarracks => (
                     "SEE BARRACKS".into(),
@@ -426,10 +448,19 @@ impl GameState {
                     "WORKER".into(),
                     WORKER_SHORTCUT.to_string(),
                     format!(
-                        "JOINS THE CITY'S WORKERS, WHO GO OUT TO BUILD WHAT YOU ORDER FROM A TILE. {} PRODUCTION.",
-                        quantity(WORKER_COST)
+                        "JOINS THE CITY'S WORKERS, WHO GO OUT TO BUILD WHAT YOU ORDER FROM A TILE. {}",
+                        self.price_text(Build::Worker)
                     ),
-                    None,
+                    self.shortfall_text(Build::Worker),
+                ),
+                Target::Grow => (
+                    "GROW".into(),
+                    GROW_SHORTCUT.to_string(),
+                    format!(
+                        "ONE MORE CITIZEN TO WORK A TILE; EACH EATS 2 FOOD A TURN. COSTS MORE FOOD THE BIGGER THE CITY. {}",
+                        self.price_text(Build::Grow)
+                    ),
+                    self.shortfall_text(Build::Grow),
                 ),
                 Target::WorkerJob(kind) => (
                     kind.name().into(),
@@ -501,6 +532,12 @@ impl GameState {
                     None,
                 ),
                 Target::ToggleFog => ("FOG OF WAR".into(), "F10".into(), String::new(), None),
+                Target::ToggleProductionSpeedup => (
+                    "PRODUCTION SPEEDS BUILDS".into(),
+                    "DEBUG".into(),
+                    "ECONOMY EXPERIMENT: ON, A CITY'S WOOD AND METAL INCOME ALSO SPEEDS ITS QUEUE (EACH POINT A QUARTER TURN OF WORK); OFF, EVERY BUILD TAKES ITS FIXED TURNS.".into(),
+                    None,
+                ),
                 Target::StepSetting(setting, delta) => {
                     let value = self.settings.get(setting);
                     let next = value + delta;

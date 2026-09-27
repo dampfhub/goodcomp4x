@@ -427,11 +427,11 @@ impl GameState {
             city_ref.team = team;
             city_ref.interior.core_hp = CORE_HP;
             city_ref.queue.clear();
-            city_ref.production = 0;
+            city_ref.progress = 0;
             city_ref.pending_building = None;
             city_ref.planned_sites.clear();
             city_ref.barracks_queue.clear();
-            city_ref.barracks_production = 0;
+            city_ref.barracks_progress = 0;
             city_ref.worker_jobs.clear();
             self.notice = format!("CITY {} CAPTURED IN THE INTERIOR", city_ref.id + 1);
             log::info!("{}: {team:?} captures its command post", city_ref.id + 1);

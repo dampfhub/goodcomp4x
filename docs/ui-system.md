@@ -76,6 +76,9 @@ The last standalone position is frozen while dragging and is not overwritten
 during an undock transition.
 Dock relation detection walks the native dock tree, so it works beside a
 nested Selection+Queue group as well as beside Selection alone.
+Beside the turn number, the status bar (and the classic top bar) shows the
+player's stockpile from `GameState::stockpile_line`, one shared line of
+colored spans, so both presentations read the same.
 The status bar names the active **Default**, **City / Building**, or **Troop**
 view. **EDIT VIEW** means panel placement and **+ BOX** belong to that view;
 switching to **EDIT OUTER** creates boxes shared by all views and makes a moved

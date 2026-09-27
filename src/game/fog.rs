@@ -587,7 +587,7 @@ pub(super) mod tests {
         assert!(!fog.shows(&game.units[0]));
         assert!(!game.routes(city).costs.contains_key(&worked));
         assert!(
-            game.income(city) < full,
+            game.income(city).food + game.income(city).production() < full.food + full.production(),
             "{:?} vs {full:?}",
             game.income(city)
         );

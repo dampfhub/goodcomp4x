@@ -2274,6 +2274,10 @@ impl GameState {
         } else {
             self.turn + 1
         };
+        let mut stockpile = self.stockpile_line();
+        if let Some((first, _)) = stockpile.first_mut() {
+            first.insert_str(0, "   ");
+        }
         ui.window("Status")
             .flags(STATUS_FLAGS)
             .position([0.0, 0.0], Condition::Always)
@@ -2281,8 +2285,15 @@ impl GameState {
             .build(|| {
                 let end_width = 220.0;
                 ui.text(format!("TURN {turn}"));
-                ui.same_line();
-                let max_notice = (viewport.x - end_width - 520.0).max(0.0);
+                // The player's stockpile, then the notice in what's left.
+                let mut stockpile_width = 0.0;
+                for (text, color) in &stockpile {
+                    ui.same_line_with_spacing(0.0, 0.0);
+                    ui.text_colored(*color, text);
+                    stockpile_width += ui.calc_text_size(text)[0];
+                }
+                ui.same_line_with_spacing(0.0, 24.0);
+                let max_notice = (viewport.x - end_width - 520.0 - stockpile_width).max(0.0);
                 if ui.calc_text_size(self.shown_notice())[0] <= max_notice {
                     ui.text_colored(NOTICE_TEXT, self.shown_notice());
                 } else {

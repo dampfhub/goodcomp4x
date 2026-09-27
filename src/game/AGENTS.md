@@ -21,10 +21,11 @@ behavior.
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `ai.rs` | the AI, playing every side but the player's (`ai_teams`) |
 | `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (barracks HP and defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
-| `city/logistics.rs` | roads and Canoe House river corridors, logistics routes (`routes_from_by`), `delivered_share`, tile yields, Mill food share, Cannery/Smelter collection, city and Barracks income |
+| `city/logistics.rs` | roads and Canoe House river corridors, logistics routes (`routes_from_by`), `delivered_share`, tile yields, Mill food share, Cannery/Smelter collection, city income (as food, wood and metal) and Barracks income |
 | `city/rail.rs` | Railhead road connectivity and long-range transfer eligibility; city center is the origin terminal |
-| `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, growth, `resolve_economy`, Field Hospital healing |
-| `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, Harbor naval spawning, building sites, resource support from Forge/Stable, Workshop discount, confirmation, `complete_builds` |
+| `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, `resolve_economy` (the turn's economy), Field Hospital healing |
+| `city/economy.rs` | the stockpile experiment (`docs/rts-economy.md`): `Stock` (food, wood, metal), each side's stockpile, paying for builds when queued and refunding them (`try_queue_build`, `take_queue_item`), growth prices, the wood/metal split of production (`metal_yield`), feeding citizens, a queue's work a turn (`work_rate`) and the production-speedup toggle |
+| `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, Harbor naval spawning, building sites, resource support from Forge/Stable, prices and turns of every build, the Grow build, Workshop speedup, confirmation, `complete_builds` |
 | `city/founding.rs` | settlers founding cities |
 | `workers.rs` | workers: each city's pool and job list, Work Camp bases, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
 | `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
@@ -67,6 +68,10 @@ behavior.
   edges (`barriers`, keyed by `hex::edge`), so passability is per step: anything that walks
   (units, workers, the AI's distances) or routes goods checks `can_step` / `can_cross`, and the
   player's planning checks what they know (`known_can_cross`, `fog.rs`).
+- Builds are paid when queued: add to a city or Barracks queue only through `try_queue_build` /
+  `try_queue_barracks`, and take items out through `take_queue_item` / `take_barracks_item`,
+  which refund them (`city/economy.rs`). Pushing to `queue` directly is for tests and scenario
+  setup; it skips the price. `simulation.rs` checks that no stockpile goes negative.
 - **Screen-space UI: read `ui/AGENTS.md` and `docs/ui-system.md` first.** Its rules (shared
   `PanelBuilder` content for both presentations, every new ImGui panel draggable and dockable,
   classic docking by zone) live there.

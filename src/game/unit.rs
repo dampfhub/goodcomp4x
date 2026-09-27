@@ -20,6 +20,11 @@ pub enum Team {
 }
 
 impl Team {
+    /// Its place in `ALL`.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
     /// Every team, the player's first: the order AI teams plan their turns in
     /// and take the world's starts in.
     pub const ALL: [Team; 7] = [

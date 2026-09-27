@@ -117,7 +117,7 @@ plays out.
 | A | Auto-assign citizens by the city's labor focus |
 | Food / Production / Balanced buttons | Set the labor focus (and re-assign) |
 | Y / Yields button | Show or hide tile yields around the open city |
-| 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron) |
+| 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron), paid from the stockpile |
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
 | Scroll inside BUILDINGS in the city tray | Browse building cards without paging; Harbor and Coastal Battery appear only in cities whose center touches the sea |
 | Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
@@ -125,13 +125,15 @@ plays out.
 | Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
+| 9 / Grow card | Queue one more citizen, paid in food (the city doesn't grow on its own) |
+| A dimmed build card | The stockpile can't pay for it; its tooltip says what's short |
 | Click a tile after queuing a placed building | Choose its site |
 | Escape while choosing a site | Cancel it: the building comes back out of the queue (the city stays open) |
 | Its card (or key) while a finished building has no site | Resume choosing the site |
 | Click a planned site's map badge | Move that site |
 | Confirm button | Place a finished building on its site |
 | Drag a queue row onto another | Reorder the queue |
-| Click a row's X | Remove it (removing the item in progress loses its production) |
+| Click a row's X | Remove it, refunding its price (removing the item in progress loses its progress) |
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |
@@ -166,14 +168,15 @@ city center enters the interior map; its clicks control only the interior copies
 | F6 | Save a snapshot of the whole game (in memory only) |
 | F7 | Load the snapshot; it is kept, so it can be loaded again |
 | F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome); also in the settings menu |
-| F9 | Pay for the open city's or barracks' current build at once (debug; a building still needs its site and Confirm) |
+| F9 | Finish the open city's or barracks' current build at once (debug; a building still needs its site and Confirm) |
 | F10 | Toggle fog of war (on by default) |
 | F11 | Switch between the ImGui and classic UI presentations |
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
 | Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
-The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10; the current scenario is
-gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
+The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10, and PROD SPEEDUP,
+which switches the stockpile economy's variant where a city's production speeds its builds
+(`rts-economy.md`); the current scenario is gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
 order.
 
 ## Settings menu

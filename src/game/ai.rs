@@ -4,8 +4,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::city::{Build, BuildUnit, City};
 use super::hex::Hex;
-use super::unit::Team;
+use super::unit::{Team, UnitType};
 use super::{GameState, PLAYER_TEAM};
+
+/// Units (scouts and settlers aside) the AI wants for each of its cities
+/// before it spends on growth.
+const AI_ARMY_PER_CITY: usize = 2;
 
 impl GameState {
     /// The teams the AI plays: every team but the player's that still has a
@@ -19,6 +23,48 @@ impl GameState {
                     || self.cities.iter().any(|c| c.team == team)
             })
             .collect()
+    }
+
+    /// What each of `team`'s cities with an empty queue starts, paid from the
+    /// side's stockpile (`city/economy.rs`); a city the side can't pay for
+    /// waits a turn. A city with no workers left trains one first. Otherwise
+    /// a city grows once the side's army has `AI_ARMY_PER_CITY` units for
+    /// each of its cities, and trains Melee until then, falling back on the
+    /// other when it can't pay for the first choice.
+    fn plan_ai_cities(&mut self, team: Team) {
+        let mut army = self
+            .units
+            .iter()
+            .filter(|u| {
+                u.team == team && u.unit_type != UnitType::Scout && !self.settlers.contains(&u.id)
+            })
+            .count();
+        let cities: Vec<usize> = (0..self.cities.len())
+            .filter(|&i| self.cities[i].team == team)
+            .collect();
+        for &city in &cities {
+            let c = &self.cities[city];
+            if !c.queue.is_empty() {
+                continue;
+            }
+            let melee = Build::Unit(BuildUnit::Melee);
+            let choices = if c.workers == 0 && self.workers_out(city) == 0 {
+                vec![Build::Worker]
+            } else if army >= AI_ARMY_PER_CITY * cities.len() {
+                vec![Build::Grow, melee]
+            } else {
+                vec![melee, Build::Grow]
+            };
+            for build in choices {
+                if build == Build::Grow && !self.can_grow(city) {
+                    continue;
+                }
+                if self.try_queue_build(city, build).is_ok() {
+                    army += usize::from(build == melee);
+                    break;
+                }
+            }
+        }
     }
 
     /// Each unit closes on its nearest enemy, or on ruins nobody on its side
@@ -38,23 +84,10 @@ impl GameState {
             let unit = self.units.remove(i);
             self.settlers.remove(&unit.id);
             let id = self.cities.len() as u32;
-            self.cities.push(City {
-                queue: vec![Build::Unit(BuildUnit::Melee)],
-                ..City::new(id, team, unit.pos)
-            });
+            self.cities.push(City::new(id, team, unit.pos));
             self.auto_assign_city(self.cities.len() - 1);
         }
-        // A city that has lost every worker trains a new one first.
-        for city in 0..self.cities.len() {
-            let c = &self.cities[city];
-            if c.team == team
-                && c.workers == 0
-                && self.workers_out(city) == 0
-                && !c.queue.contains(&Build::Worker)
-            {
-                self.cities[city].queue.insert(0, Build::Worker);
-            }
-        }
+        self.plan_ai_cities(team);
         self.plan_ai_workers(team);
         for idx in 0..self.units.len() {
             if self.units[idx].team != team

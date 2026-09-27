@@ -4,15 +4,18 @@
 //! Every game is seeded (`GameState::seed_rng`: damage rolls and the F4 world's map), so a
 //! failure names its scenario, seed and turn, and replays exactly:
 //! `SIM_SEED=<seed> cargo test simulation`. `SIM_SEEDS=<n>` plays seeds `0..n` instead of
-//! `DEFAULT_SEEDS`, to hunt for failures.
+//! `DEFAULT_SEEDS`, to hunt for failures. `SIM_SPEEDUP=1` plays them with production speeding
+//! builds (the stockpile economy's variant, `docs/rts-economy.md`), and `economy_report`
+//! (ignored by default) prints how the stockpiles flow.
 
 use std::collections::{HashMap, HashSet};
 use std::thread;
 
-use super::city::{Build, CORE_HP, MAX_CITY_POPULATION};
+use super::city::{Build, Building, CORE_HP, MAX_CITY_POPULATION};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
+use super::terrain::Terrain;
 use super::unit::Team;
 use super::{GameState, PLAYER_TEAM};
 
@@ -38,10 +41,12 @@ fn env_number(name: &str) -> Option<u64> {
     Some(number.unwrap_or_else(|_| panic!("{name}={value:?} is not a whole number")))
 }
 
-/// A fresh game of `scenario` with its RNG seeded, playing every step at once.
+/// A fresh game of `scenario` with its RNG seeded, playing every step at once, and with
+/// production speeding builds if `SIM_SPEEDUP` is set to a number above 0.
 fn start(scenario: Scenario, seed: u64) -> GameState {
     let mut game = GameState::new();
     game.settings.instant_playback = true;
+    game.production_speedup = env_number("SIM_SPEEDUP").is_some_and(|n| n > 0);
     game.seed_rng(seed);
     game.switch_scenario(scenario);
     game
@@ -328,31 +333,84 @@ fn check_invariants(game: &GameState, context: &str) {
         }
     }
     for (i, city) in game.cities.iter().enumerate() {
-        // A paid-for unit at the head of the queue is one waiting for an open hex, and the
-        // city banks nothing more behind it (#54). A city earning a unit's cost in a turn
+        // A finished unit at the head of the queue is one waiting for an open hex, and the
+        // city banks no more work behind it (#54). A city doing a unit's work in a turn
         // could have that much left over, so it isn't checked.
         let Some(&Build::Unit(unit)) = city.queue.first() else {
             continue;
         };
-        if city.production < unit.cost() || game.income(i).1 >= unit.cost() {
+        if city.progress < unit.work() || game.work_rate(game.income(i).production()) >= unit.work()
+        {
             continue;
         }
         assert_eq!(
-            city.production,
-            unit.cost(),
+            city.progress,
+            unit.work(),
             "{context}: city {} banked production behind a finished {}",
             city.id,
             unit.name()
         );
-        assert!(
+        // A ship comes out on the water beside the Harbor, anything else on land beside
+        // the city.
+        let naval = unit.unit_type().is_naval();
+        let origin = if naval {
+            city.placed_site(Building::Harbor).unwrap_or(city.pos)
+        } else {
             city.pos
-                .neighbors()
-                .into_iter()
-                .all(|hex| !game.grid.is_passable(hex) || game.is_occupied(hex)),
+        };
+        assert!(
+            origin.neighbors().into_iter().all(|hex| {
+                let open_ground = if naval {
+                    game.grid.contains(hex)
+                        && matches!(game.grid.terrain(hex), Terrain::Coast | Terrain::Ocean)
+                } else {
+                    game.grid.is_passable(hex)
+                };
+                !open_ground || game.is_occupied(hex)
+            }),
             "{context}: city {} holds a finished {} beside an open hex",
             city.id,
             unit.name()
         );
+    }
+    for team in Team::ALL {
+        let stock = game.stock(team);
+        assert!(
+            stock.food >= 0 && stock.wood >= 0 && stock.metal >= 0,
+            "{context}: {team:?}'s stockpile went negative: {stock:?}"
+        );
+    }
+}
+
+/// What the stockpile economy bought over a game: troops that appeared (trained, or ruins'
+/// recruits) and whether any city grew past the size it started at (or was founded at).
+struct EconomyWatch {
+    seen: HashSet<u32>,
+    start_population: HashMap<u32, usize>,
+    trained: usize,
+    grew: bool,
+}
+
+impl EconomyWatch {
+    fn new(game: &GameState) -> Self {
+        Self {
+            seen: game.units.iter().map(|u| u.id).collect(),
+            start_population: game.cities.iter().map(|c| (c.id, c.population)).collect(),
+            trained: 0,
+            grew: false,
+        }
+    }
+
+    fn watch(&mut self, game: &GameState) {
+        for unit in &game.units {
+            if self.seen.insert(unit.id) && !game.settlers.contains(&unit.id) {
+                self.trained += 1;
+            }
+        }
+        self.grew |= game
+            .cities
+            .iter()
+            .any(|c| c.population > self.start_population.get(&c.id).copied().unwrap_or(1));
     }
 }
 
@@ -363,6 +421,7 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
         let name = format!("{} seed {seed}", scenario.name());
         check_invariants(&game, &format!("{name} at start"));
         let ruins_at_start = game.ruins.len();
+        let mut economy = EconomyWatch::new(&game);
         for turn in 1..=TURNS {
             let ruins_before = game.ruins.len();
             play_turn(&mut game);
@@ -377,6 +436,7 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 "{context}: ruins appeared"
             );
             check_invariants(&game, &context);
+            economy.watch(&game);
         }
         // Anti-vacuity: the AI goes for the world's ruins, and claims some.
         if scenario == Scenario::World {
@@ -384,6 +444,11 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 game.ruins.len() < ruins_at_start,
                 "{name}: no ruins claimed in {TURNS} turns ({ruins_at_start} on the map)"
             );
+        }
+        // Anti-vacuity: with cities, the AI buys both troops and growth from its stockpile.
+        if matches!(scenario, Scenario::Cities | Scenario::World) {
+            assert!(economy.trained > 0, "{name}: no city trained a unit");
+            assert!(economy.grew, "{name}: no city grew in {TURNS} turns");
         }
     });
 }
@@ -504,4 +569,70 @@ fn the_same_seed_replays_the_same_game() {
         fingerprint(Scenario::Combat, 2, 2),
         "two seeds played the same combat"
     );
+}
+
+/// Not a check: prints how the stockpile economy flows in AI-vs-AI games of the Cities and
+/// World scenarios (`docs/rts-economy.md`). Every `REPORT_EVERY` turns, one line per side with
+/// cities: its stockpile (whole units), total population, cities, army (units other than
+/// scouts and settlers) and units trained so far. Run it with
+/// `cargo test economy_report -- --ignored --nocapture`; `SIM_SEED`/`SIM_SEEDS` pick the
+/// seeds as for the other simulations, and `SIM_SPEEDUP=1` turns on production speeding builds.
+#[test]
+#[ignore = "a report to read, not a check"]
+fn economy_report() {
+    const REPORT_EVERY: u32 = 5;
+    let speedup = env_number("SIM_SPEEDUP").is_some_and(|n| n > 0);
+    for scenario in [Scenario::Cities, Scenario::World] {
+        for seed in seeds() {
+            let mut game = start(scenario, seed);
+            let mut seen: HashSet<u32> = game.units.iter().map(|u| u.id).collect();
+            let mut trained: HashMap<Team, usize> = HashMap::new();
+            println!(
+                "{} seed {seed}{}",
+                scenario.name(),
+                if speedup {
+                    " (production speeds builds)"
+                } else {
+                    ""
+                }
+            );
+            for turn in 1..=TURNS {
+                play_turn(&mut game);
+                for unit in &game.units {
+                    if seen.insert(unit.id) && !game.settlers.contains(&unit.id) {
+                        *trained.entry(unit.team).or_default() += 1;
+                    }
+                }
+                if turn % REPORT_EVERY != 0 {
+                    continue;
+                }
+                for team in Team::ALL {
+                    let cities: Vec<_> = game.cities.iter().filter(|c| c.team == team).collect();
+                    if cities.is_empty() {
+                        continue;
+                    }
+                    let stock = game.stock(team);
+                    let army = game
+                        .units
+                        .iter()
+                        .filter(|u| {
+                            u.team == team
+                                && u.unit_type != super::unit::UnitType::Scout
+                                && !game.settlers.contains(&u.id)
+                        })
+                        .count();
+                    println!(
+                        "  turn {turn:2} {team:?}: food {:3} wood {:3} metal {:3} | pop {:2} in {} cities | army {:2} | trained {:2}",
+                        stock.food / 4,
+                        stock.wood / 4,
+                        stock.metal / 4,
+                        cities.iter().map(|c| c.population).sum::<usize>(),
+                        cities.len(),
+                        army,
+                        trained.get(&team).copied().unwrap_or(0)
+                    );
+                }
+            }
+        }
+    }
 }

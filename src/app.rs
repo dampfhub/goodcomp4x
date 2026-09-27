@@ -864,6 +864,7 @@ impl ApplicationHandler for App {
                         self.game.clear_selected_interior_orders()
                     }
                     KeyCode::Digit8 => self.game.queue_selected_city_worker(),
+                    KeyCode::Digit9 => self.game.queue_selected_city_growth(),
                     KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
                     KeyCode::Delete => self.game.disband_selected(),
                     KeyCode::PageDown => self.game.move_selected_city_queue_head(false),

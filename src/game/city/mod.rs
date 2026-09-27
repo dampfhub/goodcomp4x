@@ -4,6 +4,7 @@
 //! setup; each submodule adds an `impl GameState` block for one concern.
 mod builds;
 mod citizens;
+mod economy;
 mod founding;
 mod interior;
 mod logistics;
@@ -24,7 +25,9 @@ use super::workers::WorkerJob;
 use super::{GameState, PLAYER_TEAM};
 
 pub use builds::{Build, BuildUnit, Building};
-pub(in crate::game) use builds::{WORKER_COST, WORKER_SHORTCUT};
+pub(in crate::game) use builds::{GROW_SHORTCUT, WORKER_SHORTCUT};
+pub use economy::Stock;
+pub(in crate::game) use economy::{FOOD_PER_CITIZEN, STARTING_STOCK, stock_words};
 pub(super) use interior::CORE_HP;
 pub(super) use interior::Interior;
 pub(super) use logistics::{Routes, delivered_share};
@@ -58,8 +61,9 @@ pub(super) struct City {
     pub team: Team,
     pub pos: Hex,
     pub population: usize,
-    pub food: i32,
-    pub production: i32,
+    /// Work done on the head of the queue, in quarter turns
+    /// (`WORK_PER_TURN` a turn, `economy.rs`).
+    pub progress: i32,
     pub barracks_hp: f32,
     pub coastal_battery_hp: f32,
     pub worked: Vec<Hex>,
@@ -80,9 +84,10 @@ pub(super) struct City {
     pub building_scroll: usize,
     pub pending_building: Option<Building>,
     pub planned_sites: HashMap<Building, Hex>,
-    /// Barracks production is independent of the city's main queue.
+    /// The Barracks' own queue, independent of the city's main queue; it
+    /// advances only while the manager stands on the Barracks.
     pub barracks_queue: Vec<BuildUnit>,
-    pub barracks_production: i32,
+    pub barracks_progress: i32,
     /// A separate tactical board. Adjacent field troops project copies here.
     pub interior: Interior,
     /// Workers at home, safe and off the map (`workers.rs`).
@@ -102,8 +107,7 @@ impl City {
             team,
             pos,
             population: 1,
-            food: 0,
-            production: 0,
+            progress: 0,
             barracks_hp: BARRACKS_MAX_HP,
             coastal_battery_hp: 150.0,
             worked: Vec::new(),
@@ -119,7 +123,7 @@ impl City {
             pending_building: None,
             planned_sites: HashMap::new(),
             barracks_queue: Vec::new(),
-            barracks_production: 0,
+            barracks_progress: 0,
             interior: Interior::default(),
             workers: 1,
             worker_jobs: Vec::new(),
@@ -161,12 +165,14 @@ pub(super) struct Site {
     pub label: &'static str,
 }
 
+/// Quarters as whole units, with decimals only when they aren't whole:
+/// "3", "2.25".
 pub(super) fn amount(quarters: i32) -> String {
-    format!(
-        "{}{:.2}",
-        if quarters < 0 { "-" } else { "" },
-        quarters.abs() as f32 / 4.0
-    )
+    if quarters % 4 == 0 {
+        (quarters / 4).to_string()
+    } else {
+        format!("{:.2}", quarters as f32 / 4.0)
+    }
 }
 
 impl GameState {
@@ -189,7 +195,6 @@ impl GameState {
             let pos = Hex::new(sign * 4, 0);
             self.cities.push(City {
                 population: 2,
-                food: 32,
                 ..City::new(id, team, pos)
             });
             for (q, r, food, production, label) in [
@@ -276,18 +281,10 @@ impl GameState {
                 .collect();
             let (_, scout) = start_units(&self.grid, start).unwrap_or((open[0], open[1]));
             if settings.world_start_city {
+                // Every queue starts empty: the AI picks and pays for its
+                // builds as it plans (`plan_ai_cities`).
                 let id = self.cities.len() as u32;
-                // The AI keeps training melee (`complete_builds`); the
-                // player's queue starts empty.
-                let queue = if team == PLAYER_TEAM {
-                    Vec::new()
-                } else {
-                    vec![Build::Unit(BuildUnit::Melee)]
-                };
-                self.cities.push(City {
-                    queue,
-                    ..City::new(id, team, start)
-                });
+                self.cities.push(City::new(id, team, start));
                 self.auto_assign_city(self.cities.len() - 1);
             } else {
                 let id = self.next_unit_id;

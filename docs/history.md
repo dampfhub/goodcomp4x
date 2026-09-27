@@ -176,3 +176,11 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     a turn count, like FARM · GRASSLAND · 3T, instead of coordinates and "turns of work".
 55. Work Camps extend reach (`claude/work-camp-reach`): a Work Camp connected to its city is a
     base like the city itself: workers reach 3 tiles from it.
+56. A stockpile economy, as an experiment (`claude/rts-economy`, `rts-economy.md`): each side
+    keeps one stockpile of food, wood and metal that its cities' tiles fill (a tile's production
+    splits into metal from hills, mines and quarries, and wood from the rest). Builds are paid
+    from it when queued, refunded when removed, and take a fixed number of turns; growth is a
+    Grow build bought with food instead of automatic, and citizens eat from the stockpile. The
+    top bar shows the stockpile, build cards their price and turns, dimmed when unaffordable. The
+    AI pays for its troops, workers and growth the same way. A Debug toggle lets a city's
+    production also speed its builds, to compare the two.
