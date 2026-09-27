@@ -863,10 +863,30 @@ impl GameState {
     /// Delivery network to a city center or a placed building. Each endpoint
     /// has its own falloff, so a worker can deliver differently to each.
     pub(super) fn routes_from(&self, team: Team, origin: Hex) -> Routes {
+        self.routes_from_by(
+            origin,
+            |hex| {
+                self.enemy_of_team_at(hex, team).is_some()
+                    || self.cities.iter().any(|c| c.pos == hex && c.team != team)
+            },
+            |hex| self.is_road_hex(hex),
+        )
+    }
+
+    /// Like `routes_from`, with `blocked` deciding which hexes goods can't
+    /// cross and `road` which carry them cheaply: the real board for the
+    /// economy, or what the player knows of it for what's shown to them
+    /// (`known_routes`).
+    pub(super) fn routes_from_by(
+        &self,
+        origin: Hex,
+        blocked: impl Fn(Hex) -> bool,
+        road: impl Fn(Hex) -> bool,
+    ) -> Routes {
         let mut result = Routes {
             costs: HashMap::new(),
         };
-        if self.enemy_of_team_at(origin, team).is_some() {
+        if blocked(origin) {
             return result;
         }
         result.costs.insert(origin, 0);
@@ -885,14 +905,10 @@ impl GameState {
                 continue;
             }
             for n in hex.neighbors() {
-                if !self.grid.contains(n)
-                    || !self.grid.terrain(n).is_workable()
-                    || self.enemy_of_team_at(n, team).is_some()
-                    || self.cities.iter().any(|c| c.pos == n && c.team != team)
-                {
+                if !self.grid.contains(n) || !self.grid.terrain(n).is_workable() || blocked(n) {
                     continue;
                 }
-                let step = if self.is_road_hex(n) {
+                let step = if road(n) {
                     1
                 } else {
                     self.grid.tile(n).route_cost()

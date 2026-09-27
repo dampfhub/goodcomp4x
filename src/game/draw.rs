@@ -184,7 +184,7 @@ impl GameState {
                 team: unit.team,
                 stats,
                 reachable: if shows_moves {
-                    self.reachable_hexes(unit.pos, stats.move_range)
+                    self.known_reachable_hexes(unit.pos, stats.move_range, &fog)
                 } else {
                     HashSet::new()
                 },
@@ -245,7 +245,7 @@ impl GameState {
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
         }
 
-        self.push_tile_yields(&mut out);
+        self.push_tile_yields(&fog, &mut out);
         self.push_effects(&mut out);
         out
     }
@@ -411,8 +411,8 @@ impl GameState {
 
         let in_attack_range =
             !sel.locked && sel.planned_pos.distance(hex) <= sel.stats.attack_range;
-        let has_enemy = fog.sees(hex) && self.has_enemy_target_at(hex, sel.team);
-        if self.is_occupied(hex) || has_enemy {
+        let has_enemy = self.known_enemy_target_at(hex, sel.team, fog);
+        if self.known_occupied(hex, fog) || has_enemy {
             return if has_enemy && in_attack_range {
                 ATTACK_RANGE_COLOR
             } else {
@@ -460,8 +460,10 @@ impl GameState {
             .or(self.selected_city)
             .filter(|&i| self.cities[i].team == PLAYER_TEAM || fog.sees(self.cities[i].pos))
         {
+            // Delivery labels show routes as the player knows them; the
+            // worked-tile rings below show whether goods really arrive.
             let routes = self.routes(i);
-            for (h, cost) in &routes.costs {
+            for (h, cost) in &self.known_routes(i, fog).costs {
                 if self.yields_city() != Some(i) {
                     continue;
                 }
@@ -533,7 +535,7 @@ impl GameState {
         if let Some(i) = self.selected_barracks
             && let Some(barracks) = self.cities[i].barracks
         {
-            let routes = self.routes_from(self.cities[i].team, barracks);
+            let routes = self.known_routes_from(self.cities[i].team, barracks, fog);
             for (hex, cost) in &routes.costs {
                 font::push_text(
                     hex.to_world() + Vec2::new(-0.3, 0.52),
@@ -732,11 +734,11 @@ fn push_dotted_segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec
 impl GameState {
     /// Yield badges around the open city while yields are shown, limited to
     /// its economic reach.
-    fn push_tile_yields(&self, out: &mut Vec<Vertex>) {
+    fn push_tile_yields(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         let Some(city) = self.yields_city() else {
             return;
         };
-        let routes = self.routes(city);
+        let routes = self.known_routes(city, fog);
         for hex in self
             .grid
             .all_hexes()
@@ -745,7 +747,7 @@ impl GameState {
             if !routes.costs.contains_key(&hex) && !self.cities[city].worked.contains(&hex) {
                 continue;
             }
-            let (food, production) = self.raw_yield(hex);
+            let (food, production) = self.known_yield(hex, fog);
             let center = hex.to_world() + Vec2::new(0.0, -0.49);
             mesh::quad(
                 center - Vec2::new(0.52, 0.18),
@@ -1284,11 +1286,15 @@ fn with_alpha([r, g, b, _]: Color, a: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
+    use crate::game::unit::{Unit, UnitType};
 
     /// The color of the last opaque triangle drawn over `point`.
     fn top_color(vertices: &[Vertex], point: Vec2) -> Option<Color> {
         vertices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .rev()
             .filter(|t| t[0].color[3] == 1.0)
             .find(|t| {
@@ -1342,5 +1348,101 @@ mod tests {
         // Beyond that, the background shows.
         let beyond = unexplored.to_world();
         assert_eq!(top_color(&vertices, beyond), None);
+    }
+
+    /// Every vertex as plain data, sorted: labels over a route map come out
+    /// in hash order, so two builds of one scene can differ only in order.
+    fn scene(game: &GameState) -> Vec<[u32; 9]> {
+        let mut vertices: Vec<[u32; 9]> = game
+            .build_vertices()
+            .iter()
+            .map(|v| {
+                let [x, y, z] = v.pos.map(f32::to_bits);
+                let [r, g, b, a] = v.color.map(f32::to_bits);
+                let [u, w] = v.uv.map(f32::to_bits);
+                [x, y, z, r, g, b, a, u, w]
+            })
+            .collect();
+        vertices.sort_unstable();
+        vertices
+    }
+
+    fn count_color(vertices: &[Vertex], color: Color) -> usize {
+        vertices.iter().filter(|v| v.color == color).count()
+    }
+
+    #[test]
+    fn an_unseen_unit_leaves_its_hex_in_the_green_move_range() {
+        let (mut game, cavalry, hidden) = behind_the_mountain();
+        glance_at(&mut game, cavalry, hidden);
+        game.selected = Some(cavalry);
+        let empty = count_color(&game.build_vertices(), MOVE_RANGE_COLOR);
+        assert!(empty > 0);
+        game.units
+            .push(Unit::new(2, hidden, Team::Red, UnitType::Melee));
+        assert_eq!(count_color(&game.build_vertices(), MOVE_RANGE_COLOR), empty);
+    }
+
+    #[test]
+    fn a_remembered_enemy_in_range_is_highlighted_as_a_target() {
+        // A ranged unit (range 2) behind the mountain, so (2, 0) is in range
+        // but out of sight.
+        let target_hexes = |remember_enemy: bool| {
+            let (mut game, idx, hidden) = behind_the_mountain();
+            game.units[idx].unit_type = UnitType::Ranged;
+            game.units[idx].ability_queued = false;
+            if remember_enemy {
+                game.units
+                    .push(Unit::new(2, hidden, Team::Red, UnitType::Melee));
+            }
+            glance_at(&mut game, idx, hidden);
+            game.selected = Some(idx);
+            count_color(&game.build_vertices(), ATTACK_RANGE_COLOR)
+        };
+        assert!(target_hexes(true) > target_hexes(false));
+    }
+
+    #[test]
+    fn yield_badges_do_not_react_to_what_happens_out_of_sight() {
+        let (mut game, city, far) = remembered_route_hex();
+        assert!(game.show_yields && game.yields_city() == Some(city));
+        let before = scene(&game);
+        game.units
+            .push(Unit::new(51, far, Team::Red, UnitType::Melee));
+        assert_eq!(scene(&game), before);
+        game.sites.insert(
+            far,
+            crate::game::city::Site {
+                team: Team::Red,
+                food: 9,
+                production: 9,
+                label: "FARM",
+            },
+        );
+        assert_eq!(scene(&game), before);
+    }
+
+    #[test]
+    fn barracks_delivery_labels_do_not_react_to_unseen_units() {
+        let (mut game, city, far) = remembered_route_hex();
+        // A barracks two hexes from the remembered hex: it sees only 1.
+        let fog = game.fog();
+        let site = game
+            .grid
+            .all_hexes()
+            .filter(|&h| {
+                h.distance(far) == 2
+                    && game.site_available(city, crate::game::city::Building::Barracks, h)
+            })
+            .find(|&h| !fog.sees(far) && game.routes_from(PLAYER_TEAM, h).costs.contains_key(&far))
+            .expect("a barracks site whose goods reach the hex");
+        game.cities[city].barracks = Some(site);
+        game.selected_city = None;
+        game.selected_barracks = Some(city);
+        assert!(!game.fog().sees(far));
+        let before = scene(&game);
+        game.units
+            .push(Unit::new(51, far, Team::Red, UnitType::Melee));
+        assert_eq!(scene(&game), before);
     }
 }
