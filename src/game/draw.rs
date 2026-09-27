@@ -301,7 +301,7 @@ impl GameState {
                 push_order_badges(center, unit, look, scale, &mut out);
             }
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
-            if unit.has_queue() && self.is_player_controlled(idx) {
+            if unit.plans_later_turns() && self.is_player_controlled(idx) {
                 let text = format!(">{}", unit.plan_len());
                 let at = center + QUEUE_TAG_OFFSET * scale;
                 push_turn_badge(
@@ -599,9 +599,9 @@ fn push_cloud_puff(center: Vec2, radius: f32, rotation: f32, out: &mut Vec<Verte
 impl GameState {
     /// Ghosts at queued move destinations, links between allies queued to
     /// swap, and diamonds on attacked hexes. Markers for units sharing a target
-    /// hex are fanned out so each order stays visible. Units following a
-    /// queue show their numbered plan instead, and only while selected or
-    /// hovered.
+    /// hex are fanned out so each order stays visible. Units whose queue
+    /// reaches past this turn show their numbered plan instead, and only while
+    /// selected or hovered; a queue of this turn alone draws like plain orders.
     fn push_order_markers(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         let swapping: HashSet<u32> = (0..self.units.len())
             .filter(|&i| self.swap_partner(i).is_some())
@@ -612,7 +612,7 @@ impl GameState {
         let mut ghosts: HashMap<u32, Vec2> = HashMap::new();
         let plain_moves = group_by_target(&self.units, |u| {
             u.planned_move
-                .filter(|_| !swapping.contains(&u.id) && !u.has_queue() && fog.shows(u))
+                .filter(|_| !swapping.contains(&u.id) && !u.plans_later_turns() && fog.shows(u))
         });
         for (hex, movers) in plain_moves {
             for (i, unit) in movers.iter().enumerate() {
@@ -635,7 +635,7 @@ impl GameState {
         for (idx, unit) in self.units.iter().enumerate() {
             let Some(target) = unit
                 .planned_attack
-                .filter(|_| self.is_player_controlled(idx) && !unit.has_queue())
+                .filter(|_| self.is_player_controlled(idx) && !unit.plans_later_turns())
             else {
                 continue;
             };
@@ -654,7 +654,7 @@ impl GameState {
             .and_then(|hex| self.controlled_unit_at(hex));
         let plans: Vec<&Unit> = (0..self.units.len())
             .filter(|&i| selection.contains(&i) || hovered == Some(i))
-            .filter(|&i| self.units[i].has_queue() && self.is_player_controlled(i))
+            .filter(|&i| self.units[i].plans_later_turns() && self.is_player_controlled(i))
             .map(|i| &self.units[i])
             .collect();
         push_queue_plans(&plans, out);
@@ -2080,6 +2080,50 @@ mod tests {
         game.hovered_tile = Some(start);
         let hovered = game.build_vertices();
         assert_eq!(count_color(&hovered, line), count_color(&selected, line));
+    }
+
+    #[test]
+    fn a_queue_of_this_turn_alone_draws_a_plain_ghost_and_arrow() {
+        let mut game = GameState::new();
+        game.fog_of_war = false;
+        let melee = game
+            .units
+            .iter()
+            .position(|u| u.team == Team::Blue && u.unit_type == crate::game::unit::UnitType::Melee)
+            .unwrap();
+        game.selected = Some(melee);
+        game.hovered_tile = None;
+        let first = game.units[melee].pos.neighbors()[0];
+        let target = first.neighbors()[0];
+        let line = with_alpha(Team::Blue.color(), QUEUE_LINE_ALPHA);
+        let ghost = with_alpha(Team::Blue.color(), GHOST_ALPHA);
+        let arrows = |game: &GameState| count_color(&game.build_vertices(), ATTACK_ARC_COLOR);
+        let before = arrows(&game);
+
+        // Shift-clicks that only fill this turn: a move, then an attack from there.
+        assert!(game.queue_move(first) && game.queue_attack(target));
+        assert!(
+            game.units[melee].queued.is_empty(),
+            "nothing past this turn"
+        );
+        let vertices = game.build_vertices();
+        assert!(
+            count_color(&vertices, ghost) > 0,
+            "a ghost, not a numbered 1"
+        );
+        assert_eq!(count_color(&vertices, line), 0, "no plan line");
+        assert!(arrows(&game) > before, "the attack's plain arrow");
+
+        // A second turn switches to the numbered plan.
+        let next = first
+            .neighbors()
+            .into_iter()
+            .find(|&h| game.grid.is_passable(h) && game.units.iter().all(|u| u.pos != h))
+            .expect("an open hex next to the first move");
+        assert!(game.queue_move(next));
+        let vertices = game.build_vertices();
+        assert!(count_color(&vertices, line) > 0);
+        assert_eq!(count_color(&vertices, ghost), 0);
     }
 
     #[test]

@@ -40,9 +40,10 @@ and the camera glides to it; a unit you select by clicking stays selected.
 Shift-clicks build an order queue over several turns (rules: `game-rules.md`, Order queues).
 Selection stays on the unit while you queue; let go of it (Escape, Tab, or click another unit)
 when done. A queued unit doesn't hold up the turn, and any other order (a plain click or
-right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. Its plan
-shows as turn numbers only while it is selected or the cursor is on it; otherwise a small `>N`
-tag beside it counts the turns left.
+right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. A plan
+reaching past this turn shows as turn numbers only while it is selected or the cursor is on it;
+otherwise a small `>N` tag beside it counts the turns left. A plan of this turn alone shows like
+plain orders (ghost and arrow).
 
 ## Workers
 
@@ -163,7 +164,8 @@ them.
   are hidden. During playback each arrow shoots to its target: a burst is a hit, grey MISS a hex
   with no enemy unit, worker or barracks (an empty city center cannot be targeted), OUT OF RANGE a
   target that moved away. Damage numbers rise from every unit hurt.
-- A unit following an order queue shows no ghost. While it is selected (alone or in a group) or
+- A unit whose order queue reaches past this turn shows no ghost (one queued for this turn only
+  shows the usual ghost and arrow). While it is selected (alone or in a group) or
   under the cursor, a line in team color runs along its moves, with each turn's number (1 is
   this turn) in a dark disc on the hex it moves to, and an orange-rimmed number on each queued
   attack's arrow; a hex or arrow used on several turns lists them ("2,3"). Otherwise only a

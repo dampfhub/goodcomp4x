@@ -280,9 +280,10 @@ Everyone in a step acts simultaneously:
 
 - Queued attacks are curved arrows from the attacker (or its ghost, if it moves first) to just
   short of the target. Only the player's own attacks get arrows; the AI's plans stay hidden.
-- A unit following an order queue gets no ghost: its whole plan (moves as a line with each
-  turn's number, attacks as arrows numbered by turn) shows only while it is selected or
-  hovered, and otherwise a `>N` tag counts its turns of orders left.
+- A unit whose order queue reaches past this turn gets no ghost: its whole plan (moves as a
+  line with each turn's number, attacks as arrows numbered by turn) shows only while it is
+  selected or hovered, and otherwise a `>N` tag counts its turns of orders left. A queue of this
+  turn alone draws like plain orders: a ghost and an attack arrow, no numbers.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
   "MISS" on a hex with no enemy unit, worker or barracks, or "OUT OF RANGE" if the target moved
   away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
