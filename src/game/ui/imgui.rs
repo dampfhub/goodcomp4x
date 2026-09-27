@@ -1229,7 +1229,7 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
     // The token is built Y-up around the origin; ImGui's Y points down.
     let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
-    for triangle in vertices.chunks_exact(3) {
+    for triangle in vertices.as_chunks::<3>().0 {
         draw.add_triangle(
             at(&triangle[0]),
             at(&triangle[1]),
