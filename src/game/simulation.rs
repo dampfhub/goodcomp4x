@@ -359,6 +359,36 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
 }
 
 #[test]
+fn a_crowded_world_of_settlers_keeps_the_board_consistent() {
+    // The most sides there are, each starting with a settler to found its
+    // city: the other way a world can start (`Settings::world_start_city`).
+    for_every_game(&[Scenario::World], &seeds(), |scenario, seed| {
+        let mut game = GameState::new();
+        game.settings.instant_playback = true;
+        game.settings.world_ai = Team::ALL.len() - 1;
+        game.settings.world_start_city = false;
+        game.seed_rng(seed);
+        game.switch_scenario(scenario);
+        let name = format!("crowded settler world seed {seed}");
+        assert_eq!(game.ai_teams().len(), Team::ALL.len() - 1, "{name}");
+        check_invariants(&game, &format!("{name} at start"));
+        for turn in 1..=TURNS {
+            play_turn(&mut game);
+            check_invariants(&game, &format!("{name} turn {turn}"));
+            if turn == 1 {
+                // Every side founded its city on its start.
+                for team in Team::ALL {
+                    assert!(
+                        game.cities.iter().any(|c| c.team == team),
+                        "{name}: {team:?} founded no city"
+                    );
+                }
+            }
+        }
+    });
+}
+
+#[test]
 fn queued_orders_against_the_ai_keep_the_board_consistent() {
     for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
         let mut game = start(scenario, seed);
