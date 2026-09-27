@@ -2,11 +2,11 @@
 //! - in sight: hexes the player's units, cities, barracks, outposts and
 //!   workers out on the map see now, and the tiles the player's cities work,
 //!   shown as they are;
-//! - remembered: hexes seen before but out of sight now, shown under a grey
-//!   veil as they were when last seen (`Sighting`): cities, barracks,
+//! - remembered: hexes seen before but out of sight now, shown under a dark
+//!   tint as they were when last seen (`Sighting`): cities, barracks,
 //!   improvements, roads and structures. Units and workers move, so they
 //!   aren't remembered: out of sight, none is known to be anywhere;
-//! - unexplored: never seen, blank.
+//! - unexplored: never seen, covered by dark clouds.
 //!
 //! A debug setting (F10) turns the fog off. The AI ignores it.
 
