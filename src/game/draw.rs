@@ -41,7 +41,7 @@ const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
 const CLOUD_SPACING: f32 = 2.8;
 /// Under the clouds, filling the gaps between puffs: the shade of their
 /// undersides, so the fog reads as cloud all the way through.
-const CLOUD_BASE_COLOR: Color = [0.07, 0.072, 0.088, 1.0];
+const CLOUD_BASE_COLOR: Color = [0.10, 0.103, 0.123, 1.0];
 /// The fog without clouds (the Fog setting's SOLID GREY).
 const SOLID_FOG_COLOR: Color = [0.13, 0.135, 0.155, 1.0];
 const PLAINS_COLOR: Color = [0.26, 0.24, 0.12, 1.0];
@@ -627,7 +627,7 @@ fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
                 if !grid.contains(Hex::from_world(center)) {
                     continue;
                 }
-                let radius = pr * scale * (1.1 + cloud_hash(x, y, 0x68E3_1DA4 ^ salt) * 0.3);
+                let radius = pr * scale * (1.35 + cloud_hash(x, y, 0x68E3_1DA4 ^ salt) * 0.3);
                 puffs.push(Puff { center, radius });
                 any = true;
             }
