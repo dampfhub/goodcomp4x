@@ -38,7 +38,7 @@ const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
 const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
 /// Distance between cloud banks, in world units (a hex is 1 from center to corner).
-const CLOUD_SPACING: f32 = 3.6;
+const CLOUD_SPACING: f32 = 2.8;
 /// Under the clouds, filling the gaps between puffs: the shade of their
 /// undersides, so the fog reads as cloud all the way through.
 const CLOUD_BASE_COLOR: Color = [0.07, 0.072, 0.088, 1.0];
@@ -627,7 +627,7 @@ fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
                 if !grid.contains(Hex::from_world(center)) {
                     continue;
                 }
-                let radius = pr * scale * (0.85 + cloud_hash(x, y, 0x68E3_1DA4 ^ salt) * 0.3);
+                let radius = pr * scale * (1.1 + cloud_hash(x, y, 0x68E3_1DA4 ^ salt) * 0.3);
                 puffs.push(Puff { center, radius });
                 any = true;
             }
@@ -2143,7 +2143,7 @@ mod tests {
         // The former recursively sampled mesh emitted well over 150,000 fog
         // vertices here. Keep enough headroom for map-size tuning without
         // allowing that per-frame cost back in.
-        assert!(vertices.len() < 25_000, "{} cloud vertices", vertices.len());
+        assert!(vertices.len() < 45_000, "{} cloud vertices", vertices.len());
         assert!(vertices.iter().any(|v| v.color[3] < 1.0));
     }
 
