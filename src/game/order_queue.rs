@@ -639,7 +639,7 @@ mod tests {
         let (a, b) = (Hex::new(-5, 1), Hex::new(-5, 0));
         g.handle_map_click(cursor(&g, a), SCREEN, ClickMode::Normal);
         assert_eq!(g.queue_replace_hex(), Some(a));
-        assert!(g.notice.contains("CLICK AGAIN"), "{}", g.notice);
+        assert_eq!(g.shown_notice(), "CLICK AGAIN TO REPLACE THEIR QUEUES");
         g.handle_map_click(cursor(&g, b), SCREEN, ClickMode::Normal);
         assert_eq!(g.queue_replace_hex(), Some(b));
         // A right-click on the marked hex is a different order: still a warning.
@@ -651,6 +651,10 @@ mod tests {
         // Letting go of the group forgets the pending click.
         g.set_selection(vec![0]);
         assert_eq!(g.queue_replace_hex(), None);
+        assert!(
+            !g.shown_notice().contains("CLICK AGAIN"),
+            "the warning goes away"
+        );
 
         // The same click twice replaces the queue.
         g.handle_map_click(cursor(&g, b), SCREEN, ClickMode::Normal);
@@ -659,6 +663,7 @@ mod tests {
         assert!(!g.units[0].has_queue());
         assert_eq!(g.units[0].planned_move, Some(b));
         assert_eq!(g.queue_replace_hex(), None);
+        assert!(!g.shown_notice().contains("CLICK AGAIN"));
     }
 
     #[test]

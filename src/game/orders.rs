@@ -231,12 +231,18 @@ impl GameState {
             return true;
         }
         self.queue_replace_armed = Some(pending);
-        self.notice = if members.len() > 1 {
-            "CLICK AGAIN TO REPLACE THEIR QUEUES".into()
-        } else {
-            "CLICK AGAIN TO REPLACE ITS QUEUE".into()
-        };
+        // The warning shows through `shown_notice`, only while it applies.
         false
+    }
+
+    /// What the top bar says: the warning that a click is waiting to be
+    /// repeated to replace a queue, while one is, or else the latest notice.
+    pub(super) fn shown_notice(&self) -> &str {
+        match self.queue_replace_hex() {
+            Some(_) if self.group.is_empty() => "CLICK AGAIN TO REPLACE ITS QUEUE",
+            Some(_) => "CLICK AGAIN TO REPLACE THEIR QUEUES",
+            None => &self.notice,
+        }
     }
 
     /// The hex a click is waiting to be repeated on to replace the selection's

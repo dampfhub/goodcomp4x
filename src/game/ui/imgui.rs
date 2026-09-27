@@ -2008,10 +2008,10 @@ impl GameState {
                 ui.text(format!("TURN {turn}"));
                 ui.same_line();
                 let max_notice = (viewport.x - end_width - 520.0).max(0.0);
-                if ui.calc_text_size(&self.notice)[0] <= max_notice {
-                    ui.text_colored(NOTICE_TEXT, &self.notice);
+                if ui.calc_text_size(self.shown_notice())[0] <= max_notice {
+                    ui.text_colored(NOTICE_TEXT, self.shown_notice());
                 } else {
-                    let mut shortened = self.notice.clone();
+                    let mut shortened = self.shown_notice().to_string();
                     while !shortened.is_empty() && ui.calc_text_size(&shortened)[0] > max_notice {
                         shortened.pop();
                     }
