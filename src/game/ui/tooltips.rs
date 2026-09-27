@@ -474,6 +474,12 @@ impl GameState {
                     String::new(),
                     None,
                 ),
+                Target::Quit => (
+                    "QUIT".into(),
+                    String::new(),
+                    "CLOSES THE GAME.".into(),
+                    None,
+                ),
                 Target::ToggleYields => (
                     "YIELDS".into(),
                     "Y".into(),

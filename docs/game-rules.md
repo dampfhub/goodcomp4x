@@ -111,10 +111,13 @@ queue them. Nothing heals.
   health), improvements, roads and structures. Units and workers aren't remembered, since they
   move: out of sight, the player knows of none anywhere. Planning goes around the walls and gates
   the player knows of. Remembered hexes out of sight draw that memory under a dark tint, keeping
-  the terrain readable. Rounded, overlapping dark cloud puffs cover unexplored tiles without tile
-  seams, with dense small lobes and soft edges spilling slightly beyond the region's border;
-  their pattern stays anchored to the map as sight changes. Never-seen terrain and objects are
-  not drawn beneath the clouds.
+  the terrain readable. Unexplored tiles lie under a dense cover of muted cumulus: soft-edged
+  puffs lit from above, lower billows overlapping the shaded undersides of those behind them,
+  over a dark fill so no gaps show. The clouds drift slowly on a steady wind and each puff
+  gently billows; puffs fade out as they drift past the map's edge. The Fog setting swaps the
+  clouds for a flat grey. The fog is drawn behind the map, so explored terrain simply covers it
+  as sight grows. Never-seen terrain and objects are not drawn beneath
+  the clouds.
 - Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
   remembered hexes from memory.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
@@ -184,11 +187,12 @@ queue them. Nothing heals.
   plan leaves the unit. Each turn the unit moves to the hex it can reach that turn that is the
   shortest walk from the clicked hex, going around terrain and known walls and gates (the
   straight distance decides if there is no way there; staying put wins ties). Turns are added
-  until nobody can get any closer (a queue toward an enemy in sight stops next to it), but one
-  click adds at most as many turns as the **move queue limit** setting allows (6 by default,
-  1 to 20; see `controls.md`, Settings menu). A hex farther away than that is queued that many
-  turns along the way, and the notice says so ("6-TURN LIMIT - SHIFT-CLICK FOR MORE"); the
-  same Shift-click again carries on from where the plan ends. This turn's move plans around the
+  until nobody can get any closer (a queue toward an enemy in sight stops next to it), but no
+  unit's plan grows past the **queue limit** setting (6 turns by default, 1 to 20, this turn
+  included; see `controls.md`, Settings menu). A hex farther away than that is queued as far
+  along the way as the limit allows, and the notice says so ("QUEUED UP TO THE 6-TURN LIMIT").
+  A full queue takes no more turns, moves or attacks ("QUEUE FULL - 6-TURN LIMIT"), except an
+  attack that fits into its last turn; each turn played frees one. This turn's move plans around the
   units the player can see, like a plain move; later turns plan around terrain and known walls and gates only (units will have moved),
   and never end on an ally's planned hex for that turn, on a hex an enemy in sight stands on, or
   on a hex an ally leaves only in a later step of that turn (see Turn resolution). A click that
@@ -511,7 +515,7 @@ every turn end.
   food (green grain) and production (amber hammers) with delivery percentages.
 - Escape closes the settings menu, or else an open city or barracks view, or else lets go of the
   selected unit or group and closes the tile panel; with none of those open, it opens the
-  settings menu, and holding it for a second quits, with a "HOLD ESC TO QUIT" bar. F5 toggles borderless fullscreen.
+  settings menu, whose Quit button closes the game. F5 toggles borderless fullscreen.
 
 ## AI (`ai.rs`)
 

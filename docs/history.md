@@ -120,3 +120,14 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     64-turn safety net. A hex farther away is queued as far as the limit goes, with a notice
     saying so, and the same Shift-click again carries on; in a group the limit counts from the
     end of each member's own plan.
+42. Settings menu follow-ups (`claude/settings-quit-and-queue-cap`): the menu opens centered and
+    has a Quit button, which replaces holding Escape to quit. The queue limit now caps a unit's
+    whole plan (this turn included) rather than each Shift-click, so repeated clicks can't queue
+    past it; a full queue refuses more turns until turns are played.
+43. Fog clouds (`claude/fog-clouds`): the grey octagons over unexplored hexes became banks of
+    muted cumulus, each puff one quad the shader rounds and feathers (`soft_disc_uv`, a new
+    renderer primitive) and shades from a lit top to a dark underside, over a soft shadow per
+    bank and a dark fill, so unexplored land is cloud nearly all the way through, in about a
+    quarter of the vertices the old sampled mesh took. Each bank grows its own irregular clump
+    of 4 to 9 puffs. The clouds drift on a slow wind and billow, fading out past the map's edge.
+    A third setting, Fog, swaps them for solid grey.

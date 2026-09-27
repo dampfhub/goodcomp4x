@@ -137,8 +137,7 @@ const SLOT_TITLES: [&str; SLOT_COUNT] = [
     "Settings",
 ];
 /// The order `plan` places automatic panels in: earlier ones get the space
-/// nearest their zone's corner. The settings menu, which Escape just
-/// opened, goes above Debug.
+/// nearest their zone's corner. The settings menu isn't docked: it's centered.
 const PLAN_ORDER: [usize; SLOT_COUNT] = [SELECTION, QUEUE, SETTINGS, DEBUG, INSPECT, UNITS];
 
 #[derive(Clone, Copy)]
@@ -1091,10 +1090,20 @@ impl ImGuiLayoutState {
                 continue;
             }
             let Some(size) = sizes[slot] else { continue };
+            // The settings menu opens in the middle of the screen, over the
+            // map, and takes no room from the docked panels.
+            if slot == SETTINGS {
+                let top = STATUS_HEIGHT + PANEL_MARGIN;
+                positions[slot] = Some(
+                    ((viewport - size) / 2.0)
+                        .max(Vec2::new(PANEL_MARGIN, top))
+                        .round(),
+                );
+                continue;
+            }
             let zone = match slot {
                 SELECTION | QUEUE | INSPECT => Zone::BottomLeft,
                 UNITS => Zone::TopLeft,
-                // Debug and Settings.
                 _ => Zone::TopRight,
             };
             for height_scale in [1.0, 0.85, 0.65, 0.45, 0.25] {
@@ -2810,7 +2819,7 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_menu_opens_top_right_above_debug() {
+    fn the_settings_menu_opens_in_the_middle_of_the_screen() {
         let viewport = Vec2::new(1600.0, 900.0);
         let mut sizes = [
             Some(Vec2::new(560.0, 300.0)),
@@ -2822,15 +2831,18 @@ mod tests {
         ];
         let positions = ImGuiLayoutState::default().plan(viewport, &mut sizes);
         let settings = positions[SETTINGS].expect("settings placed");
-        let debug = positions[DEBUG].expect("debug placed");
-        assert_eq!(settings.y, STATUS_HEIGHT + PANEL_MARGIN, "at the top");
-        assert_eq!(
-            settings.x + sizes[SETTINGS].unwrap().x,
-            viewport.x - PANEL_MARGIN,
-            "at the right"
+        let center = settings + sizes[SETTINGS].unwrap() / 2.0;
+        assert!(
+            (center - viewport / 2.0).abs().max_element() <= 1.0,
+            "{center}"
         );
-        assert!(debug.y >= settings.y + sizes[SETTINGS].unwrap().y, "below");
-        assert_fits_without_overlap(viewport, sizes, positions);
+        // The docked panels keep their places, as if it weren't open.
+        let mut without = sizes;
+        without[SETTINGS] = None;
+        let docked = ImGuiLayoutState::default().plan(viewport, &mut without);
+        for slot in [SELECTION, DEBUG, INSPECT, UNITS] {
+            assert_eq!(positions[slot], docked[slot], "slot {slot}");
+        }
     }
 
     #[test]
