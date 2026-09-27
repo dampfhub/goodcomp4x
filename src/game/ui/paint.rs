@@ -1,6 +1,7 @@
 //! Turning laid-out shapes and buttons into vertices.
 
 use super::ChipIcon;
+use super::builder::visible_button_hint;
 use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
     BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,
@@ -159,23 +160,23 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         [bg, border_color, text_color, hint_color].map(|color| fade(color, button.faded));
     draw_box(button.min, button.max, bg, border, border_color, out);
 
+    let hint = visible_button_hint(&button.hint, hovered || button.faded);
     let (label_face, hint_face) = (font::ui(BODY), font::ui(SMALL));
     let center = (button.min + button.max) / 2.0;
     let height = button.max.y - button.min.y;
     if height < BUTTON_HEIGHT {
         // One line: the label, then the hint beside it.
-        let gap = if button.hint.is_empty() { 0.0 } else { GAP };
-        let width = label_face.width(&button.label) + gap + hint_face.width(&button.hint);
+        let gap = if hint.is_empty() { 0.0 } else { GAP };
+        let width = label_face.width(&button.label) + gap + hint_face.width(hint);
         let left = center.x - width / 2.0;
         let baseline = center.y - label_face.cap_height / 2.0;
         label_face.push(Vec2::new(left, baseline), &button.label, text_color, out);
         let hint_left = left + label_face.width(&button.label) + gap;
-        hint_face.push(
-            Vec2::new(hint_left, baseline),
-            &button.hint,
-            hint_color,
-            out,
-        );
+        hint_face.push(Vec2::new(hint_left, baseline), hint, hint_color, out);
+    } else if hint.is_empty() {
+        let baseline = center.y - label_face.cap_height / 2.0;
+        let left = center.x - label_face.width(&button.label) / 2.0;
+        label_face.push(Vec2::new(left, baseline), &button.label, text_color, out);
     } else {
         // Two lines: the label, with the hint under it.
         let gap = LINE_GAP + 2.0;
@@ -183,19 +184,14 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         let label_baseline = center.y + block / 2.0 - label_face.cap_height;
         let hint_baseline = center.y - block / 2.0;
         let label_left = center.x - label_face.width(&button.label) / 2.0;
-        let hint_left = center.x - hint_face.width(&button.hint) / 2.0;
+        let hint_left = center.x - hint_face.width(hint) / 2.0;
         label_face.push(
             Vec2::new(label_left, label_baseline),
             &button.label,
             text_color,
             out,
         );
-        hint_face.push(
-            Vec2::new(hint_left, hint_baseline),
-            &button.hint,
-            hint_color,
-            out,
-        );
+        hint_face.push(Vec2::new(hint_left, hint_baseline), hint, hint_color, out);
     }
 }
 

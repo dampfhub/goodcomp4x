@@ -6,7 +6,7 @@ use ::imgui::{
     StyleColor, StyleVar, Ui, WindowFlags,
 };
 
-use super::builder::Row;
+use super::builder::{Row, visible_button_hint};
 use super::text::end_turn_label;
 use super::*;
 use crate::game::PLAYER_TEAM;
@@ -1388,6 +1388,18 @@ fn scope_from_text(text: &str) -> Option<BoxScope> {
     }
 }
 
+/// Decide the label before submitting the ImGui button, without changing
+/// its fixed rectangle or relying on the previous frame's hovered item.
+fn next_button_hovered(ui: &Ui, size: [f32; 2]) -> bool {
+    let [x, y] = ui.cursor_screen_pos();
+    let [mouse_x, mouse_y] = ui.io().mouse_pos;
+    ui.is_window_hovered()
+        && mouse_x >= x
+        && mouse_x < x + size[0]
+        && mouse_y >= y
+        && mouse_y < y + size[1]
+}
+
 fn panel_content_height(cursor_y: f32, padding_y: f32, title_height: Option<f32>) -> f32 {
     cursor_y + padding_y - title_height.unwrap_or(0.0)
 }
@@ -2077,21 +2089,20 @@ impl GameState {
                             _ => None,
                         };
                         let _disabled = ui.begin_disabled(spec.state == ButtonState::Disabled);
-                        let label = if *compact {
-                            if spec.hint.is_empty()
-                                || matches!(spec.hint.as_str(), "AUTO" | "CLICK")
-                            {
-                                spec.label.clone()
-                            } else {
-                                format!("{}  {}", spec.label, spec.hint)
-                            }
-                        } else if spec.hint.is_empty() {
+                        let height = if *compact { 28.0 } else { 48.0 };
+                        let hint = visible_button_hint(
+                            &spec.hint,
+                            panel.faded || next_button_hovered(ui, [width, height]),
+                        );
+                        let label = if hint.is_empty() {
                             spec.label.clone()
+                        } else if *compact {
+                            format!("{}  {hint}", spec.label)
                         } else {
-                            format!("{}\n{}", spec.label, spec.hint)
+                            format!("{}\n{hint}", spec.label)
                         };
                         let label = format!("{label}##{:?}", spec.target);
-                        if ui.button_with_size(label, [width, if *compact { 28.0 } else { 48.0 }]) {
+                        if ui.button_with_size(label, [width, height]) {
                             actions.push(Action::Button(scope, spec.target));
                         }
                         if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
@@ -2130,9 +2141,16 @@ impl GameState {
                                 };
                                 let _disabled =
                                     ui.begin_disabled(spec.state == ButtonState::Disabled);
-                                let label =
-                                    format!("{}  {}##{:?}", spec.label, spec.hint, spec.target);
                                 let width = ui.content_region_avail()[0].max(80.0);
+                                let hint = visible_button_hint(
+                                    &spec.hint,
+                                    next_button_hovered(ui, [width, 28.0]),
+                                );
+                                let label = if hint.is_empty() {
+                                    format!("{}##{:?}", spec.label, spec.target)
+                                } else {
+                                    format!("{}  {hint}##{:?}", spec.label, spec.target)
+                                };
                                 if ui.button_with_size(label, [width, 28.0]) {
                                     actions.push(Action::Button(scope, spec.target));
                                 }
@@ -2304,11 +2322,13 @@ impl GameState {
                 }
                 if layout.active_view != ViewScope::Default && !layout.editing_outer {
                     ui.same_line();
-                    if ui.small_button("RESET [CTRL+SHIFT+R]") {
+                    if ui.small_button("RESET") {
                         layout.request_reset_active_view();
                     }
                     if ui.is_item_hovered() {
-                        ui.tooltip_text("Restore this view's Debug placement from Default");
+                        ui.tooltip_text(
+                            "Ctrl+Shift+R: Restore this view's Debug placement from Default",
+                        );
                     }
                 }
                 ui.set_cursor_pos([(viewport.x - end_width).max(8.0), 7.0]);
@@ -2318,8 +2338,17 @@ impl GameState {
                     end_turn_label(pending)
                 };
                 let _disabled = ui.begin_disabled(self.is_resolving());
-                if ui.button_with_size(format!("{label}  [SPACE]"), [end_width - 15.0, 29.0]) {
+                let end_size = [end_width - 15.0, 29.0];
+                let end_label = if next_button_hovered(ui, end_size) {
+                    format!("{label}  [SPACE]")
+                } else {
+                    label
+                };
+                if ui.button_with_size(end_label, end_size) {
                     actions.push(Action::Button(None, Target::EndTurn));
+                }
+                if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
+                    ui.tooltip_text("Space: End turn or select what still needs orders");
                 }
             });
 
