@@ -904,24 +904,14 @@ fn hovering_an_enemy_city_or_barracks_out_of_sight_shows_no_live_panel() {
 }
 
 #[test]
-fn tooltip_and_city_panel_show_an_unseen_hex_as_last_seen() {
-    let (mut game, city, far) = crate::game::fog::tests::remembered_route_hex();
-    game.inspected_tile = Some(far);
-    let read = |game: &GameState| {
-        let tooltip = line_strings(game.tile_tooltip_lines(far).into_iter().map(|(_, l)| l));
-        let tray = panel_strings(|panel| game.city_tray(city, panel));
-        (tooltip, tray)
-    };
+fn the_tooltip_shows_an_unseen_hex_as_last_seen() {
+    let (mut game, _, far) = crate::game::fog::tests::remembered_route_hex();
+    let read =
+        |game: &GameState| line_strings(game.tile_tooltip_lines(far).into_iter().map(|(_, l)| l));
     let before = read(&game);
     assert!(
-        before.0.iter().any(|s| s.contains("REACHES CITY")),
-        "{:?}",
-        before.0
-    );
-    assert!(
-        before.1.iter().any(|s| s.starts_with("SELECTED TILE")),
-        "{:?}",
-        before.1
+        before.iter().any(|s| s.contains("REACHES CITY")),
+        "{before:?}"
     );
 
     // Red moves in and farms the hex, all out of sight.
@@ -1099,7 +1089,7 @@ fn the_worker_menu_places_a_picked_job_on_the_map() {
 fn a_plain_click_on_an_empty_tile_opens_nothing() {
     let (mut game, hex) = empty_tile_near_blue_city();
     game.handle_click(hex_cursor(&game, hex), SCREEN, ClickMode::Normal);
-    assert_eq!(game.inspected_tile, None);
+    assert_eq!(game.selected, None);
     assert!(
         !game
             .layout(SCREEN)

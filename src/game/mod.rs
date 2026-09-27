@@ -91,7 +91,6 @@ pub struct GameState {
     hovered_tile: Option<Hex>,
     hover_seconds: f32,
     ui_click_mode: Option<orders::ClickMode>,
-    inspected_tile: Option<Hex>,
     /// The worker job armed in the worker menu (`workers.rs`): map clicks
     /// and drags place it, on tiles or (a wall or gate) on hex edges, until
     /// Escape or another pick.
@@ -226,7 +225,6 @@ impl GameState {
             hovered_tile: None,
             hover_seconds: 0.0,
             ui_click_mode: None,
-            inspected_tile: None,
             placing_job: None,
             disband_armed: None,
             queue_replace_armed: None,

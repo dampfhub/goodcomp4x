@@ -73,7 +73,6 @@ impl GameState {
         self.interior_selected = None;
         self.moving_manager = None;
         self.abandon_site_placement();
-        self.inspected_tile = None;
     }
 
     /// Escape and Space dismiss city or building management without issuing a
@@ -134,7 +133,6 @@ impl GameState {
         // This keeps city assignment, Barracks management, and unit selection
         // on one consistent interaction model.
         if self.selected_barracks.is_some() {
-            self.inspected_tile = self.is_explored(hex).then_some(hex);
             self.notice = "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT".into();
             return true;
         }
@@ -192,13 +190,11 @@ impl GameState {
         // City management owns map clicks. Dismiss it with Escape or Space
         // before selecting units, so workers may be assigned onto a unit's
         // tile without the unit stealing the click. A tile never seen can't
-        // be picked or worked.
+        // be worked.
         if !self.is_explored(hex) {
-            self.inspected_tile = None;
             self.notice = "UNEXPLORED - SCOUT IT FIRST".into();
             return true;
         }
-        self.inspected_tile = Some(hex);
         if self.moving_manager == Some(i) {
             if self.cities[i].worked.first() == Some(&hex) {
                 self.moving_manager = None;

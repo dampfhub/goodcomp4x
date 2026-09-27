@@ -154,7 +154,7 @@ queue them. Nothing heals.
   its hex plans a move, which then meets it at resolution. A remembered enemy barracks can
   still be attacked; an empty city center cannot.
 - What the map and panels show follows the same rule: yields, and which hexes a city's or
-  barracks' goods reach (badges, delivery percentages, tooltip, SELECTED TILE), use remembered
+  barracks' goods reach (badges, delivery percentages, tooltip), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
   is the player's own or in sight. The economy itself runs on the real board: an enemy out of
   sight on a route hex that isn't a worked tile still cuts the goods behind it, and that shows as
@@ -511,8 +511,8 @@ every turn end.
 
   | Job | Work | Effect |
   |---|---|---|
-  | Road | 1 turn | a dirt road |
-  | Improve | 2 turns | a mine, lumber mill or farm (see Yields) |
+  | Road | 2 turns | a dirt road |
+  | Improve | 3 turns | a mine, lumber mill or farm (see Yields) |
   | Wall | 2 turns | on an edge: no unit, worker or goods cross it, yours included |
   | Gate | 3 turns | on an edge: only your units, workers and goods cross it |
   | Outpost | 3 turns | you see 2 hexes around it |
@@ -544,7 +544,7 @@ every turn end.
   still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
   TURN.
 - **Command tray** (bottom-left): with a city open, it shows population, stores and rates, the
-  current build, labor focus buttons, the growth meter, the selected tile, unit cards (1-3), the
+  current build, labor focus buttons, the growth meter, unit cards (1-3), the
   Yields button, cards for buildings not yet built (4-7), barracks status with See Barracks,
   planned sites with Confirm once they are paid for, and Worker Jobs (the worker menu); the
   queue docks above it. With a barracks open, its five train

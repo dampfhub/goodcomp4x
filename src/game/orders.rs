@@ -181,7 +181,6 @@ impl GameState {
             // With nothing selected, a click selects your unit there, if any.
             // Workers are given jobs from the worker menu (W).
             self.selected = ally;
-            self.inspected_tile = None;
             return;
         };
 
@@ -260,7 +259,7 @@ impl GameState {
     }
 
     /// Escape, once no structure menu is open: lets go of the selected unit
-    /// or group and any tile picked. Returns whether there was
+    /// or group. Returns whether there was
     /// anything to let go of.
     pub fn clear_selection(&mut self) -> bool {
         // A worker job being placed stops first, leaving the worker menu open.
@@ -269,11 +268,9 @@ impl GameState {
             self.notice = "STOPPED PLACING - PICK ANOTHER JOB, OR W WHEN DONE".into();
             return true;
         }
-        let had =
-            self.selected.is_some() || !self.group.is_empty() || self.inspected_tile.is_some();
+        let had = self.selected.is_some() || !self.group.is_empty();
         self.selected = None;
         self.group.clear();
-        self.inspected_tile = None;
         self.ui_click_mode = None;
         had
     }

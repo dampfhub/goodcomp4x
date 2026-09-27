@@ -68,8 +68,8 @@ impl JobKind {
     /// Turns of work once the worker stands on the tile.
     pub fn turns(self) -> u32 {
         match self {
-            Self::Road => 1,
-            Self::Improve | Self::Wall => 2,
+            Self::Road | Self::Wall => 2,
+            Self::Improve => 3,
             Self::Gate | Self::Outpost => 3,
             Self::Fort => 4,
         }
@@ -399,7 +399,6 @@ impl GameState {
         }
         self.selected = None;
         self.group.clear();
-        self.inspected_tile = None;
         self.placing_job = None;
         self.hovered_job = None;
         self.ui_click_mode = None;
@@ -1163,10 +1162,12 @@ mod tests {
         assert_eq!(game.field_workers[0].pos.distance(hex), 1);
         game.resolve_workers();
         assert_eq!(game.field_workers[0].pos, hex);
-        assert_eq!(game.field_workers[0].work_left, Some(2));
-        // Two turns of work.
-        game.resolve_workers();
-        assert!(!game.sites.contains_key(&hex));
+        assert_eq!(game.field_workers[0].work_left, Some(3));
+        // Three turns of work.
+        for _ in 0..2 {
+            game.resolve_workers();
+            assert!(!game.sites.contains_key(&hex));
+        }
         game.resolve_workers();
         assert_eq!(game.sites[&hex].team, PLAYER_TEAM);
         assert_eq!(game.field_workers[0].job, None);
@@ -1184,7 +1185,8 @@ mod tests {
         let (first, second) = (bare_tile(&game, 1), bare_tile(&game, 2));
         queue(&mut game, first, JobKind::Road);
         queue(&mut game, second, JobKind::Road);
-        for _ in 0..2 {
+        // A turn to get there, two of work.
+        for _ in 0..3 {
             game.resolve_workers();
         }
         assert!(game.roads.contains(&first));

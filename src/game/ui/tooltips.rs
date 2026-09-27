@@ -414,8 +414,7 @@ impl GameState {
                         kind.turns(),
                         if kind.turns() == 1 { "" } else { "S" }
                     ),
-                    self.inspected_tile
-                        .and_then(|hex| self.job_unavailable(hex, kind)),
+                    None,
                 ),
                 Target::Focus(focus) => (
                     format!("{} FOCUS", focus.name()),

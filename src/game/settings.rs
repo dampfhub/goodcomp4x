@@ -248,7 +248,7 @@ impl GameState {
     /// A press of Escape. It closes one thing, in this order: the settings
     /// menu, then a city view, interior or site being chosen
     /// (`exit_structure_menu`), then a worker job being placed, then the
-    /// worker menu, then the selection or the tile picked (`clear_selection`).
+    /// worker menu, then the selection (`clear_selection`).
     /// With nothing to close it opens the settings menu, which has the Quit
     /// button.
     pub fn press_escape(&mut self) {
@@ -274,7 +274,6 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::hex::Hex;
     use crate::game::{PLAYER_TEAM, Scenario};
 
     #[test]
@@ -363,17 +362,16 @@ mod tests {
         let mut game = GameState::city_scenario();
         game.leave_city_view();
         game.clear_selection();
-        game.inspected_tile = Some(Hex::new(0, 0));
         game.select_city();
         assert!(game.selected_city.is_some());
 
-        // The city view closes first, then the tile picked.
+        // The city view closes first, then the selection.
         game.press_escape();
         assert_eq!(game.selected_city, None);
         assert!(!game.settings_open);
-        game.inspected_tile = Some(Hex::new(0, 0));
+        game.selected = Some(0);
         game.press_escape();
-        assert_eq!(game.inspected_tile, None);
+        assert_eq!(game.selected, None);
         assert!(!game.settings_open);
 
         // With nothing left, Escape opens the menu, and the next press

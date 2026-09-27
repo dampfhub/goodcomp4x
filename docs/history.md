@@ -166,3 +166,6 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     under the cursor; the menu also lists each city's workers and jobs (moved from the city
     panel). The tile panel is gone. Idle workers are back in the turn strip and the turn order,
     after production, and can sleep for a turn.
+52. No tile selection (`claude/worker-reach`): with the worker menu doing workers' jobs, clicking
+    a tile no longer selects it (the ring and the city panel's selected-tile line are gone). Roads
+    take 2 turns of work and improvements 3.

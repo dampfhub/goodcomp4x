@@ -7,7 +7,7 @@ use super::{
     QueueKind, REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
 };
 use crate::game::city::{
-    Build, BuildUnit, Building, CORE_HP, LaborFocus, WORKER_COST, WORKER_SHORTCUT, delivered_share,
+    Build, BuildUnit, Building, CORE_HP, LaborFocus, WORKER_COST, WORKER_SHORTCUT,
 };
 use crate::game::orders::ClickMode;
 use crate::game::workers::JobKind;
@@ -504,32 +504,6 @@ impl GameState {
         panel.gap(GAP);
         panel.text(SMALL, vec![(growth_label, DIM_TEXT)]);
         panel.bar(growth_percent as f32 / 100.0);
-
-        if let Some(hex) = self
-            .inspected_tile
-            .filter(|_| self.selected_city == Some(i))
-        {
-            let fog = self.fog();
-            let (tile_food, tile_production) = self.known_yield(hex, &fog);
-            let shares = self
-                .known_routes(i, &fog)
-                .costs
-                .get(&hex)
-                .map_or((0, 0), |cost| {
-                    (self.mill_food_share(i, hex, *cost), delivered_share(*cost))
-                });
-            panel.gap(GAP);
-            panel.text(
-                SMALL,
-                vec![(
-                    format!(
-                        "SELECTED TILE: {tile_food} FOOD, {tile_production} PRODUCTION · FOOD {}% / PROD {}%",
-                        shares.0 * 25, shares.1 * 25
-                    ),
-                    DIM_TEXT,
-                )],
-            );
-        }
 
         panel.gap(GAP);
         let builds = [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege];
