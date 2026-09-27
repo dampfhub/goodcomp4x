@@ -123,7 +123,9 @@ only Melee, Workers and Grows, never buildings):
 - **Fixed time makes the queue the bottleneck once cities grow.** From about turn 20 each city
   earns more than one queue can spend at a build every 2 turns, so food and wood pile up (200+
   food by turn 40) and cities reach the cap of 7 by turns 20-30. Spending is capped by time, not
-  by resources, which is the opposite of the RTS feel wanted.
+  by resources, which is the opposite of the RTS feel wanted. Pricier troops don't change that:
+  with Melee at 3 food and 8 wood (Ranged 3 and 9) the same games end with 80 wood instead of
+  91 and 196 food instead of 222, so the numbers above stay the first pass.
 - **The speedup variant spends what it earns.** With production speeding builds, the same games
   train about 1.8 times as many units, and wood stays low (15-25) all game: the side is
   resource-bound, which is the RTS feel. Growth is about as fast. Food still piles up once
