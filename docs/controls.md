@@ -172,6 +172,6 @@ them.
   veil with cloud puffs and show the cities, improvements, roads and structures that were there
   when you last looked, but no units or workers.
 - In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
-  the manager,
-  and dotted lines link it to its workers. Green grain and amber hammers show food and production,
-  with the share that reaches the city.
+  the manager; hovering the manager draws a dotted line along the way its goods travel to the
+  city. Green grain and amber hammers show food and production, with the share that reaches the
+  city.

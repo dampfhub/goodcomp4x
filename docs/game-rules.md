@@ -389,9 +389,9 @@ every turn end.
 - **City view:** C opens the first city needing a build (or your first city), and left-clicking
   your city opens that one. While open, map clicks manage tiles and never select units; it closes
   on Tab, Space, Escape, or a click off the map. A barracks view closes the same way; C switches
-  it to its city. Worked tiles are outlined green (the manager's
-  in gold; red if disrupted), with dotted links from the manager to its workers. With yields
-  shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
+  it to its city. Worked tiles are outlined green (the manager's in gold; red if disrupted).
+  Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
+  route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
   food (green grain) and production (amber hammers) with delivery percentages.
 - Escape closes an open city or barracks view, or else lets go of the selected unit or group and
   closes the tile panel; with none of those open, holding it for a second quits, with a
