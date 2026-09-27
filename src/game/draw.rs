@@ -20,6 +20,10 @@ type Color = [f32; 4];
 const BORDER_COLOR: Color = [0.10, 0.10, 0.13, 1.0];
 /// Each hex's fill as a share of its size; the rest is the border between hexes.
 const HEX_FILL_SCALE: f32 = 0.92;
+/// How far an explored hex's border reaches: past its own edge by as much as
+/// a neighbor's border reaches in, so facing a never-seen hex or the map's
+/// edge it is as wide as the whole gap between two hexes.
+const OUTER_BORDER_RADIUS: f32 = HEX_SIZE * (2.0 - HEX_FILL_SCALE);
 /// The grey veil over remembered hexes out of sight, and the line where they
 /// meet hexes in sight: a light, cool grey like the cloud, so it can't be
 /// mistaken for the dark gaps between ordinary hexes.
@@ -189,14 +193,28 @@ impl GameState {
             }
         });
 
-        for hex in self.grid.all_hexes() {
-            // Never-seen hexes are only the blank fog `push_fog` draws.
-            if !self.is_explored(hex) {
-                continue;
-            }
+        // Never-seen hexes aren't drawn at all: the background shows there.
+        let explored: Vec<Hex> = self
+            .grid
+            .all_hexes()
+            .filter(|&h| self.is_explored(h))
+            .collect();
+        // Every border first, each reaching across the whole gap: the fills
+        // drawn next cover what lies inside an explored neighbor, leaving a
+        // full-width border facing never-seen hexes and the map's edge.
+        for &hex in &explored {
+            mesh::regular_polygon(
+                hex.to_world(),
+                OUTER_BORDER_RADIUS,
+                6,
+                0.0,
+                BORDER_COLOR,
+                &mut out,
+            );
+        }
+        for &hex in &explored {
             let center = hex.to_world();
             let fill = self.hex_fill(hex, selection.as_ref(), &fog);
-            mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
             mesh::regular_polygon(center, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
             push_tile_symbols(center, self.grid.tile(hex), &mut out);
             if let Some(resource) = self.grid.resource(hex) {
@@ -245,8 +263,18 @@ impl GameState {
             .all_hexes()
             .filter(|h| self.is_explored(*h) && !fog.sees(*h))
             .collect();
+        let blank = |h: Hex| !self.grid.contains(h) || !self.is_explored(h);
         for &hex in &remembered {
-            mesh::regular_polygon(hex.to_world(), HEX_SIZE, 6, 0.0, OUT_OF_SIGHT_COLOR, out);
+            let center = hex.to_world();
+            mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, OUT_OF_SIGHT_COLOR, out);
+            // Facing blank, the border reaches past the hex (see
+            // OUTER_BORDER_RADIUS); veil that outer half too, so the band
+            // is one shade.
+            for n in hex.neighbors().into_iter().filter(|&n| blank(n)) {
+                let (a, b) = edge_corners(hex, n);
+                let grow = |p: Vec2| center + (p - center) * (OUTER_BORDER_RADIUS / HEX_SIZE);
+                mesh::polygon(&[a, b, grow(b), grow(a)], OUT_OF_SIGHT_COLOR, out);
+            }
         }
         for &hex in &remembered {
             push_cloud_puffs(hex, out);
@@ -1054,11 +1082,11 @@ fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
         city.team.color(),
         out,
     );
-    let digits = city.population.to_string();
-    font::push_text(
-        pos + Vec2::new(-0.11 * digits.len() as f32, -0.08),
+    // Centered in the tower's body, below the merlons.
+    font::push_text_centered(
+        pos + Vec2::new(0.0, -0.08),
         0.3,
-        &digits,
+        &city.population.to_string(),
         LABEL_COLOR,
         out,
     );
@@ -1251,4 +1279,68 @@ fn brighten([r, g, b, a]: Color) -> Color {
 
 fn with_alpha([r, g, b, _]: Color, a: f32) -> Color {
     [r, g, b, a]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The color of the last opaque triangle drawn over `point`.
+    fn top_color(vertices: &[Vertex], point: Vec2) -> Option<Color> {
+        vertices
+            .chunks_exact(3)
+            .rev()
+            .filter(|t| t[0].color[3] == 1.0)
+            .find(|t| {
+                let [a, b, c] = [0, 1, 2].map(|i| Vec2::new(t[i].pos[0], t[i].pos[1]));
+                let sides = [
+                    (b - a).perp_dot(point - a),
+                    (c - b).perp_dot(point - b),
+                    (a - c).perp_dot(point - c),
+                ];
+                sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0)
+            })
+            .map(|t| t[0].color)
+    }
+
+    /// A point in the gap between adjacent hexes, on `from`'s side of their
+    /// edge, midway along it.
+    fn in_gap(from: Hex, to: Hex) -> Vec2 {
+        let (a, b) = edge_corners(from, to);
+        let middle = (a + b) / 2.0;
+        middle + (from.to_world() - middle).normalize() * FOG_EDGE_WIDTH / 4.0
+    }
+
+    #[test]
+    fn the_border_spans_the_whole_gap_beside_unexplored_hexes() {
+        let mut game = GameState::world_scenario(3);
+        game.explore();
+        let vertices = game.build_vertices();
+        let fog = game.fog();
+        // An edge from a hex in sight to a neighbor matching `wanted`, with
+        // no river along it.
+        let edge_to = |wanted: &dyn Fn(Hex) -> bool| {
+            game.grid
+                .all_hexes()
+                .filter(|&h| fog.sees(h))
+                .find_map(|hex| {
+                    let n = hex
+                        .neighbors()
+                        .into_iter()
+                        .find(|&n| wanted(n) && !game.grid.has_river(hex, n))?;
+                    Some((hex, n))
+                })
+                .expect("such an edge on the map")
+        };
+
+        // Both halves of the gap are border: the explored hex's own and the
+        // never-seen hex's, which draws nothing itself.
+        let (hex, unexplored) = edge_to(&|h: Hex| game.grid.contains(h) && !game.is_explored(h));
+        for point in [in_gap(hex, unexplored), in_gap(unexplored, hex)] {
+            assert_eq!(top_color(&vertices, point), Some(BORDER_COLOR));
+        }
+        // Beyond that, the background shows.
+        let beyond = unexplored.to_world();
+        assert_eq!(top_color(&vertices, beyond), None);
+    }
 }
