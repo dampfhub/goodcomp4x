@@ -165,7 +165,6 @@ enum Target {
     OpenBarracks,
     OpenCity,
     OpenInterior,
-    InteriorTile(Hex),
     InteriorClear,
     CityQueueRemove(usize),
     BarracksQueueRemove(usize),
@@ -490,7 +489,6 @@ impl GameState {
             }
             Target::OpenCity => self.open_selected_city_from_barracks(),
             Target::OpenInterior => self.toggle_city_interior(),
-            Target::InteriorTile(tile) => self.interior_click(tile),
             Target::InteriorClear => self.clear_selected_interior_orders(),
             Target::CityQueueRemove(index) => self.remove_selected_city_queue_item(index),
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
@@ -510,6 +508,12 @@ impl GameState {
     /// it has rested there, for city hover outlines and the tile tooltip.
     /// `cursor` is in window pixels with the origin at the top-left.
     pub fn update_hover(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
+        if self.interior_view.is_some() {
+            self.hovered_tile = None;
+            self.hovered_city = None;
+            self.hover_seconds = 0.0;
+            return;
+        }
         let layout = self.layout(screen_size);
         let hex = cursor
             .filter(|&c| !layout.covers(to_ui(c, screen_size)))
@@ -524,6 +528,12 @@ impl GameState {
     }
 
     pub fn update_hover_imgui(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
+        if self.interior_view.is_some() {
+            self.hovered_tile = None;
+            self.hovered_city = None;
+            self.hover_seconds = 0.0;
+            return;
+        }
         let hex = cursor.and_then(|c| self.hex_at_screen(c, screen_size));
         if hex == self.hovered_tile {
             self.hover_seconds += dt;

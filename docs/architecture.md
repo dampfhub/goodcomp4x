@@ -51,6 +51,8 @@ tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
 
 World and classic UI vertices are rebuilt from `GameState` each frame. ImGui retains window
 layout state so the player's panel positions survive view changes.
+While a city interior is open, `build_vertices` draws its tactical grid and
+copies in place of the exterior world; the exterior camera is restored on exit.
 
 ## A turn
 

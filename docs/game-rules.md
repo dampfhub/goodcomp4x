@@ -257,16 +257,18 @@ every turn end.
 
 ## City interiors (`city/interior.rs`)
 
-- Press V while viewing a city, hovering a visible city, or controlling a field unit near one. Each
-  city has a 19-hex tactical interior (radius 2) with a fixed command post at the center.
+- While in a city view, click that city's center hex to enter its separate tactical map. V also
+  opens the selected or hovered city's interior. Each city has a 19-hex grid (radius 2) with a
+  fixed command post at the center. Escape or V returns to the city view.
 - Each combat unit on one of the six exterior hexes neighboring that city projects a separate
   fighter through the corresponding outer gate. Settlers and workers do not project. The copy
   has its own HP, position and orders; damage inside does not harm its field unit. A defeated
   copy does not return while its source holds that gate. Leaving and re-entering the ring creates
   a fresh copy; moving away or dying removes the copy.
-- Select a Blue copy in the interior panel, then click an open tile to queue its move or an enemy
-  to queue an attack. Range uses that unit type's move and attack stats. Click the command post to
-  attack it when within range. Backspace clears the selected copy's orders. V or Escape exits.
+- Click a Blue copy on the interior map, then click an open hex to queue its move or an enemy
+  to queue an attack. The map outlines valid moves in green and attacks in red. Range uses that
+  unit type's move and attack stats. Click the command post to attack it when within range.
+  Backspace clears the selected copy's orders.
   Field orders and interior orders resolve independently in the same global turn: field combat
   first, then one simultaneous interior move/attack step for every city, then city economy.
 - The post starts with 80 HP, 18 defense and a range-1 retaliation against one adjacent attacker

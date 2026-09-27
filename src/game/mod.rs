@@ -68,6 +68,8 @@ pub struct GameState {
     /// City interior currently being inspected and ordered.
     interior_view: Option<usize>,
     interior_selected: Option<u32>,
+    /// Preserve the exterior camera while the tactical city map is open.
+    exterior_camera: Option<Camera>,
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option<usize>,
     /// City and building whose site is being chosen.
@@ -172,6 +174,7 @@ impl GameState {
             selected_barracks: None,
             interior_view: None,
             interior_selected: None,
+            exterior_camera: None,
             moving_manager: None,
             placing_building: None,
             hovered_city: None,

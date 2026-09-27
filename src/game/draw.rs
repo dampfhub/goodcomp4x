@@ -179,6 +179,9 @@ impl GameState {
     /// The whole scene as a triangle list, back to front: hex grid, cities,
     /// fog, queued order markers, then units.
     pub fn build_vertices(&self) -> Vec<Vertex> {
+        if let Some(city) = self.interior_view {
+            return self.build_interior_vertices(city);
+        }
         let mut out = Vec::new();
         let fog = self.fog();
 
@@ -259,6 +262,132 @@ impl GameState {
 
         self.push_tile_yields(&fog, &mut out);
         self.push_effects(&mut out);
+        out
+    }
+
+    /// The city interior is a separate world map, drawn with the normal hex
+    /// and unit primitives rather than as buttons in a screen-space panel.
+    fn build_interior_vertices(&self, city: usize) -> Vec<Vertex> {
+        let mut out = Vec::new();
+        let city = &self.cities[city];
+        let center_hex = Hex::new(0, 0);
+        let selected = self.interior_selected.and_then(|source| {
+            city.interior
+                .fighters
+                .iter()
+                .find(|f| f.source_id == source)
+        });
+        for q in -2..=2 {
+            for r in -2..=2 {
+                let hex = Hex::new(q, r);
+                if hex.distance(center_hex) > 2 {
+                    continue;
+                }
+                let at = hex.to_world();
+                mesh::regular_polygon(at, OUTER_BORDER_RADIUS, 6, 0.0, BORDER_COLOR, &mut out);
+                let fill = if hex == center_hex {
+                    if city.interior.core_hp > 0.0 {
+                        [0.30, 0.24, 0.14, 1.0]
+                    } else {
+                        [0.19, 0.10, 0.09, 1.0]
+                    }
+                } else if hex.distance(center_hex) == 2 {
+                    [0.21, 0.24, 0.27, 1.0]
+                } else {
+                    [0.26, 0.29, 0.31, 1.0]
+                };
+                mesh::regular_polygon(at, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
+                if let Some(fighter) = selected {
+                    let from = fighter.planned_move.unwrap_or(fighter.pos);
+                    let occupied = city.interior.fighters.iter().find(|f| f.pos == hex);
+                    let can_move = occupied.is_none()
+                        && (hex != center_hex || city.interior.core_hp <= 0.0)
+                        && from.distance(hex) <= fighter.unit_type.stats().move_range.max(1);
+                    let can_attack = (occupied.is_some_and(|other| other.team != fighter.team)
+                        || (hex == center_hex
+                            && city.team != fighter.team
+                            && city.interior.core_hp > 0.0))
+                        && from.distance(hex) <= fighter.unit_type.stats().attack_range;
+                    if can_move || can_attack {
+                        mesh::polygon_outline(
+                            at,
+                            HEX_SIZE * 0.82,
+                            0.065,
+                            6,
+                            0.0,
+                            if can_attack {
+                                ATTACK_RANGE_COLOR
+                            } else {
+                                MOVE_RANGE_COLOR
+                            },
+                            &mut out,
+                        );
+                    }
+                }
+            }
+        }
+
+        let post = center_hex.to_world();
+        mesh::regular_polygon(post, 0.56, 6, 0.0, ICON_OUTLINE_COLOR, &mut out);
+        mesh::regular_polygon(post, 0.48, 6, 0.0, city.team.color(), &mut out);
+        font::push_text_centered(
+            post + Vec2::new(0.0, -0.07),
+            0.23,
+            "POST",
+            LABEL_COLOR,
+            &mut out,
+        );
+        push_health_bar(
+            post,
+            city.interior.core_hp / super::city::CORE_HP,
+            1.1,
+            &mut out,
+        );
+
+        for fighter in &city.interior.fighters {
+            let at = fighter.pos.to_world();
+            if self.interior_selected == Some(fighter.source_id) {
+                mesh::polygon_outline(at, 0.72, 0.09, 6, 0.0, SELECTED_COLOR, &mut out);
+            }
+            if let Some(dest) = fighter.planned_move {
+                push_unit_icon(
+                    dest.to_world(),
+                    UnitLook {
+                        icon: UnitIcon::of(fighter.unit_type),
+                        civilian: false,
+                    },
+                    0.85,
+                    with_alpha(fighter.team.color(), GHOST_ALPHA),
+                    &mut out,
+                );
+            }
+            if let Some(target) = fighter.planned_attack {
+                push_attack_arc(
+                    fighter.planned_move.unwrap_or(fighter.pos).to_world(),
+                    target.to_world(),
+                    &mut out,
+                );
+            }
+        }
+        for fighter in &city.interior.fighters {
+            let at = fighter.pos.to_world();
+            push_unit_icon(
+                at,
+                UnitLook {
+                    icon: UnitIcon::of(fighter.unit_type),
+                    civilian: false,
+                },
+                1.0,
+                fighter.team.color(),
+                &mut out,
+            );
+            push_health_bar(
+                at,
+                fighter.hp / fighter.unit_type.stats().max_hp,
+                1.0,
+                &mut out,
+            );
+        }
         out
     }
 

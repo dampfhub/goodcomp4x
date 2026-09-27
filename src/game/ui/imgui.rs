@@ -1697,14 +1697,7 @@ impl GameState {
                     }
                     let available = ui.content_region_avail()[0];
                     let spacing = ui.clone_style().item_spacing[0];
-                    let min_width = if buttons
-                        .iter()
-                        .all(|button| matches!(button.target, Target::InteriorTile(_)))
-                    {
-                        96.0
-                    } else {
-                        128.0
-                    };
+                    let min_width = 128.0;
                     let columns = (((available + spacing) / (min_width + spacing)).floor()
                         as usize)
                         .clamp(1, buttons.len());

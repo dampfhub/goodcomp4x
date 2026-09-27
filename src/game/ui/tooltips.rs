@@ -347,13 +347,7 @@ impl GameState {
                 Target::OpenInterior => (
                     "CITY INTERIOR".into(),
                     "V".into(),
-                    "OPEN THE CITY'S TACTICAL GRID. ADJACENT FIELD TROOPS APPEAR AS SEPARATE COPIES.".into(),
-                    None,
-                ),
-                Target::InteriorTile(_) => (
-                    "INTERIOR TILE".into(),
-                    "CLICK".into(),
-                    "SELECT A BLUE COPY, THEN CHOOSE AN OPEN TILE OR ENEMY. CAPTURE THE CENTER AFTER ITS DEFENSE FALLS.".into(),
+                    "ENTER THE CITY'S TACTICAL MAP. YOU CAN ALSO CLICK ITS CENTER HEX FROM CITY VIEW.".into(),
                     None,
                 ),
                 Target::InteriorClear => (

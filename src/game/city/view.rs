@@ -31,8 +31,7 @@ impl GameState {
 
     /// Opens city `i`'s view and glides the camera to it.
     pub(in crate::game) fn open_city(&mut self, i: usize) {
-        self.interior_view = None;
-        self.interior_selected = None;
+        self.close_city_interior();
         if self.selected_city != Some(i) {
             self.city_queue_scroll = 0;
         }
@@ -57,6 +56,7 @@ impl GameState {
     }
 
     pub(in crate::game) fn leave_city_view(&mut self) {
+        self.close_city_interior();
         self.queue_drag = None;
         self.selected_city = None;
         self.selected_barracks = None;
@@ -70,6 +70,10 @@ impl GameState {
     /// Escape and Space dismiss city or building management without issuing a
     /// unit order or starting the quit hold.
     pub fn exit_structure_menu(&mut self) -> bool {
+        if self.interior_view.is_some() {
+            self.close_city_interior();
+            return true;
+        }
         if self.selected_city.is_none()
             && self.selected_barracks.is_none()
             && self.interior_view.is_none()
@@ -82,8 +86,7 @@ impl GameState {
     }
 
     pub(in crate::game) fn open_barracks(&mut self, city: usize) {
-        self.interior_view = None;
-        self.interior_selected = None;
+        self.close_city_interior();
         if self.cities[city].barracks.is_none() {
             return;
         }
@@ -108,7 +111,7 @@ impl GameState {
 
     pub(in crate::game) fn city_click(&mut self, hex: Hex) -> bool {
         if self.interior_view.is_some() {
-            self.notice = "CITY INTERIOR OPEN - PRESS V, ESC OR SPACE TO EXIT".into();
+            self.interior_click(hex);
             return true;
         }
         // A structure menu owns all map clicks until its explicit exit action.
@@ -139,6 +142,10 @@ impl GameState {
             return false;
         }
         let i = self.selected_city.unwrap();
+        if hex == self.cities[i].pos {
+            self.open_city_interior(i);
+            return true;
+        }
         if let Some((city, building)) = self.placing_building
             && city == i
         {

@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use super::CITY_MAX_HP;
 use crate::game::hex::Hex;
 use crate::game::unit::{Team, UnitType};
-use crate::game::{GameState, PLAYER_TEAM, combat};
+use crate::game::{Camera, GameState, PLAYER_TEAM, combat};
 
 pub(in crate::game) const CORE_HP: f32 = 80.0;
 const CORE_DEFENSE: f32 = 18.0;
@@ -74,7 +74,7 @@ impl GameState {
             return;
         }
         if self.interior_view.is_some() {
-            self.leave_city_view();
+            self.close_city_interior();
             return;
         }
         let fog = self.fog();
@@ -105,6 +105,9 @@ impl GameState {
     }
 
     pub(in crate::game) fn open_city_interior(&mut self, city: usize) {
+        if self.interior_view.is_none() {
+            self.exterior_camera = Some(self.camera.clone());
+        }
         self.sync_city_interiors();
         self.interior_view = Some(city);
         self.interior_selected = None;
@@ -113,8 +116,27 @@ impl GameState {
         self.selected = None;
         self.group.clear();
         self.ui_click_mode = None;
-        self.camera.focus_on(self.cities[city].pos.to_world());
-        self.notice = "CITY INTERIOR: SELECT A BLUE COPY, THEN MOVE OR ATTACK; V/ESC EXITS".into();
+        // Leave room for the command panel on the left and Debug on the right.
+        self.camera = Camera::new(glam::Vec2::new(-1.35, 0.0), 6.0);
+        self.notice = "CITY INTERIOR: CLICK A BLUE TROOP, THEN A TILE OR ENEMY; ESC RETURNS".into();
+    }
+
+    pub(in crate::game) fn close_city_interior(&mut self) {
+        let Some(city) = self.interior_view.take() else {
+            return;
+        };
+        if let Some(camera) = self.exterior_camera.take() {
+            self.camera = camera;
+        }
+        self.interior_selected = None;
+        self.selected_city = (self.cities[city].team == PLAYER_TEAM).then_some(city);
+        self.hovered_tile = None;
+        self.hovered_city = None;
+        self.notice = if self.selected_city.is_some() {
+            "CITY VIEW: CLICK THE CITY CENTER TO RE-ENTER THE INTERIOR".into()
+        } else {
+            "EXTERIOR MAP: HOVER THE CITY AND PRESS V TO RE-ENTER".into()
+        };
     }
 
     /// Clicking a tile in the interior view selects a copy or gives it an

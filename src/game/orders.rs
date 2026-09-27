@@ -68,6 +68,12 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
+        if self.interior_view.is_some() {
+            if let Some(tile) = self.hex_at_screen(cursor, screen_size) {
+                self.interior_click(tile);
+            }
+            return;
+        }
         let armed = self.ui_click_mode.take();
         let mode = match (mode, armed) {
             (ClickMode::Normal, Some(armed)) => armed,
@@ -322,6 +328,14 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
+        if self.interior_view.is_some() {
+            if clear {
+                self.clear_selected_interior_orders();
+            } else if let Some(tile) = self.hex_at_screen(cursor, screen_size) {
+                self.interior_click(tile);
+            }
+            return;
+        }
         if self.ui_click_mode.take().is_some() {
             return;
         }
@@ -361,7 +375,11 @@ impl GameState {
             return None;
         }
         let hex = Hex::from_world(self.camera.screen_to_world(cursor, screen_size));
-        self.grid.contains(hex).then_some(hex)
+        if self.interior_view.is_some() {
+            (hex.distance(Hex::new(0, 0)) <= 2).then_some(hex)
+        } else {
+            self.grid.contains(hex).then_some(hex)
+        }
     }
 
     /// Toggles a move to `dest`, if there's a path to it within range and no

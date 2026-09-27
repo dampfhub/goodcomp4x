@@ -68,14 +68,17 @@ plays out.
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |
 | See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types) |
-| V / City Interior button | Open the selected or hovered city's tactical interior; press again to leave |
-| Click a Blue copy, then another interior tile | Queue its independent move or attack |
+| Click the city center while in city view | Enter that city's tactical interior map |
+| V / City Interior button | Open the selected or hovered city's interior; press again to return |
+| Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |
 | Backspace in the interior | Clear the selected copy's orders |
+| Escape / V / Return to City in the interior | Return to the city view |
 | Open City (in the barracks view) | Go back to the city view |
 | Space / Escape / click off the map | Close the city or barracks view |
 | Tab | Close the city or barracks view |
 
-While a city view is open, map clicks manage tiles and never select units.
+While a city view is open, map clicks manage tiles and never select field units. Clicking the
+city center enters the interior map; its clicks control only the interior copies.
 
 ## Camera, game and testing
 

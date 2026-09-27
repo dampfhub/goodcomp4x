@@ -23,16 +23,7 @@ impl GameState {
         panel.text(
             BODY,
             vec![(
-                format!(
-                    "{} COMMAND POST  {:.0}/{:.0} HP",
-                    if city.team == crate::game::PLAYER_TEAM {
-                        "BLUE"
-                    } else {
-                        "RED"
-                    },
-                    interior.core_hp,
-                    CORE_HP
-                ),
+                format!("COMMAND POST  {:.0}/{:.0} HP", interior.core_hp, CORE_HP),
                 GOLD_TEXT,
             )],
         );
@@ -45,84 +36,31 @@ impl GameState {
         let red = interior.fighters.len() - blue;
         panel.text(
             SMALL,
-            vec![(format!("BLUE {blue}  /  RED {red} COPIES"), DIM_TEXT)],
+            vec![(format!("BLUE {blue} / RED {red} TROOPS"), DIM_TEXT)],
         );
-        panel.text(
-            SMALL,
-            vec![(
-                "SELECT A BLUE COPY, THEN CLICK A TILE OR ENEMY".into(),
-                LABEL_TEXT,
-            )],
-        );
-        panel.gap(GAP);
-        for r in -2..=2 {
-            let tiles: Vec<_> = (-2..=2).map(|q| crate::game::hex::Hex::new(q, r)).collect();
-            panel.compact_buttons(
-                tiles
-                    .into_iter()
-                    .map(|tile| {
-                        if tile.distance(crate::game::hex::Hex::new(0, 0)) > 2 {
-                            return ButtonSpec {
-                                target: Target::InteriorTile(tile),
-                                label: " ".into(),
-                                hint: String::new(),
-                                state: ButtonState::Disabled,
-                                armed: false,
-                            };
-                        }
-                        let fighter = interior.fighters.iter().find(|f| f.pos == tile);
-                        let label = if let Some(f) = fighter {
-                            let side = if f.team == crate::game::PLAYER_TEAM {
-                                "B"
-                            } else {
-                                "R"
-                            };
-                            let kind = match f.unit_type {
-                                crate::game::unit::UnitType::Melee => "M",
-                                crate::game::unit::UnitType::Ranged => "R",
-                                crate::game::unit::UnitType::Cavalry => "C",
-                                crate::game::unit::UnitType::Siege => "S",
-                                crate::game::unit::UnitType::Scout => "SC",
-                                crate::game::unit::UnitType::Armored => "A",
-                            };
-                            format!("{side}-{kind} {:.0}", f.hp)
-                        } else if tile == crate::game::hex::Hex::new(0, 0) {
-                            "CENTER".into()
-                        } else {
-                            "OPEN".into()
-                        };
-                        let hint = if let Some(f) = fighter {
-                            if f.planned_move.is_some() && f.planned_attack.is_some() {
-                                "M+A".into()
-                            } else if f.planned_move.is_some() {
-                                "MOVE".into()
-                            } else if f.planned_attack.is_some() {
-                                "ATTACK".into()
-                            } else {
-                                String::new()
-                            }
-                        } else {
-                            String::new()
-                        };
-                        ButtonSpec {
-                            target: Target::InteriorTile(tile),
-                            label,
-                            hint,
-                            state: ButtonState::Ready,
-                            armed: fighter
-                                .is_some_and(|f| self.interior_selected == Some(f.source_id)),
-                        }
-                    })
-                    .collect(),
+        if let Some(fighter) = self
+            .interior_selected
+            .and_then(|source| interior.fighters.iter().find(|f| f.source_id == source))
+        {
+            panel.gap(GAP);
+            panel.text(
+                BODY,
+                vec![(
+                    format!("{:?}  {:.0} HP", fighter.unit_type, fighter.hp).to_uppercase(),
+                    BOOSTED_TEXT,
+                )],
+            );
+            panel.text(SMALL, vec![("GREEN: MOVE  RED: ATTACK".into(), LABEL_TEXT)]);
+        } else {
+            panel.text(
+                SMALL,
+                vec![("CLICK A BLUE TROOP ON THE MAP".into(), LABEL_TEXT)],
             );
         }
         panel.gap(GAP);
         panel.text(
             SMALL,
-            vec![(
-                "BREAK THE POST, THEN OCCUPY CENTER TO CAPTURE".into(),
-                GOLD_TEXT,
-            )],
+            vec![("BREACH POST, THEN OCCUPY CENTER".into(), GOLD_TEXT)],
         );
         panel.compact_buttons(vec![
             ButtonSpec {
@@ -134,7 +72,12 @@ impl GameState {
             },
             ButtonSpec {
                 target: Target::OpenInterior,
-                label: "LEAVE INTERIOR".into(),
+                label: if city.team == crate::game::PLAYER_TEAM {
+                    "RETURN TO CITY"
+                } else {
+                    "LEAVE INTERIOR"
+                }
+                .into(),
                 hint: "V / ESC".into(),
                 state: ButtonState::Ready,
                 armed: false,
