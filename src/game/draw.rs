@@ -36,7 +36,7 @@ const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 /// than the gap; otherwise a sliver of it would show on the side in sight.
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
 const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
-const CLOUD_SPACING: f32 = 3.4;
+const CLOUD_SPACING: f32 = 4.6;
 const PLAINS_COLOR: Color = [0.26, 0.24, 0.12, 1.0];
 const GRASSLAND_COLOR: Color = [0.12, 0.20, 0.08, 1.0];
 const DESERT_COLOR: Color = [0.45, 0.36, 0.17, 1.0];
@@ -201,6 +201,12 @@ impl GameState {
             }
         });
 
+        // The fixed cloud field sits behind the map. Known terrain painted
+        // afterward hides it without clipping or rebuilding around sight.
+        if self.fog_of_war {
+            push_cloud_banks(&self.grid, &mut out);
+        }
+
         // Never-seen hexes aren't drawn at all: the background shows there.
         let explored: Vec<Hex> = self
             .grid
@@ -301,15 +307,6 @@ impl GameState {
                 }
             }
         }
-        let unexplored: HashSet<Hex> = self
-            .grid
-            .all_hexes()
-            .filter(|h| !self.is_explored(*h) && !fog.sees(*h))
-            .collect();
-        // Unknown terrain was never drawn, so the renderer's dark background
-        // is already the cloud base. Reserve once for the sparse puff mesh.
-        out.reserve(unexplored.len() * 120);
-        push_cloud_banks(&self.grid, &unexplored, out);
     }
 }
 
@@ -326,7 +323,7 @@ fn cloud_hash(x: i32, y: i32, salt: u32) -> f32 {
 /// Draws one shaded octagon per world-space lattice point. This keeps
 /// the cloud pattern continuous across hexes while doing constant, cheap work
 /// per puff: no recursive subdivision and no noise sampling per vertex.
-fn push_cloud_banks(grid: &HexGrid, unexplored: &HashSet<Hex>, out: &mut Vec<Vertex>) {
+fn push_cloud_banks(grid: &HexGrid, out: &mut Vec<Vertex>) {
     let Some((min, max)) =
         grid.all_hexes()
             .map(Hex::to_world)
@@ -343,26 +340,20 @@ fn push_cloud_banks(grid: &HexGrid, unexplored: &HashSet<Hex>, out: &mut Vec<Ver
     let max_x = (max.x / CLOUD_SPACING).ceil() as i32 + 1;
     let min_y = (min.y / CLOUD_SPACING).floor() as i32 - 1;
     let max_y = (max.y / CLOUD_SPACING).ceil() as i32 + 1;
+    let cells = ((max_x - min_x + 1) * (max_y - min_y + 1)) as usize;
+    out.reserve(cells * 3 * 8 * 3);
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let bank = Vec2::new(x as f32, y as f32) * CLOUD_SPACING;
             for puff in 0..3_u32 {
                 let salt = puff.wrapping_mul(0x9E37_79B9);
                 let angle = cloud_hash(x, y, 0xA341_316C ^ salt) * TAU;
-                let offset = 0.35 + cloud_hash(x, y, 0xC801_3EA4 ^ salt) * 1.25;
+                let offset = 0.45 + cloud_hash(x, y, 0xC801_3EA4 ^ salt) * 1.45;
                 let center = bank + Vec2::from_angle(angle) * offset;
-                let hex = Hex::from_world(center);
-                if !unexplored.contains(&hex) {
+                if !grid.contains(Hex::from_world(center)) {
                     continue;
                 }
-                let boundary = hex
-                    .neighbors()
-                    .into_iter()
-                    .any(|n| !unexplored.contains(&n));
-                let mut radius = 0.88 + cloud_hash(x, y, 0xAD90_777D ^ salt) * 0.42;
-                if boundary {
-                    radius = radius.min(0.62);
-                }
+                let radius = 1.9 + cloud_hash(x, y, 0xAD90_777D ^ salt) * 0.9;
                 let rotation = cloud_hash(x, y, 0x7E95_761E ^ salt) * TAU;
                 push_cloud_puff(center, radius, rotation, out);
             }
@@ -1400,11 +1391,11 @@ mod tests {
     fn unexplored_cloud_geometry_stays_small() {
         let game = GameState::world_scenario(3);
         let mut vertices = Vec::new();
-        game.push_fog(&game.fog(), &mut vertices);
+        push_cloud_banks(&game.grid, &mut vertices);
         // The former recursively sampled mesh emitted well over 150,000 fog
         // vertices here. Keep enough headroom for map-size tuning without
         // allowing that per-frame cost back in.
-        assert!(vertices.len() < 70_000, "{} fog vertices", vertices.len());
+        assert!(vertices.len() < 25_000, "{} cloud vertices", vertices.len());
         assert!(vertices.iter().any(|v| v.color[3] < 1.0));
     }
 
