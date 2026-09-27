@@ -35,8 +35,8 @@ behavior.
 | `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues) in every scenario, board invariants checked each turn, same seed replays the same game |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
-| `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |
-| `map_icons.rs` | resource and improvement icons (horse head, ingot, wheat, ore cart, fence, logs) in a hex's top corners, and the food and production icons in yield pips; dark-edged shapes in their mockup coordinates |
+| `unit_icons.rs` | unit pictograms, sea creatures on this branch (swordfish, pufferfish, seahorse, ...; see `docs/ocean-theme.md`), built from shapes, strokes and curves in the mockup coordinates they were designed in |
+| `map_icons.rs` | resource and improvement icons (seahorse head, pearl, kelp, coral quarry, seahorse pen, driftwood) in a hex's top corners, and the fish and scallop icons in yield pips; dark-edged shapes in their mockup coordinates |
 | `effects.rs` | attack animations during playback |
 | `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
