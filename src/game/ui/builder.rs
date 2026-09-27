@@ -1,11 +1,12 @@
 //! `PanelBuilder`, the panel content primitive, and its text and button measuring.
 
+use super::action_icons::{self, CLASSIC_ICON_COLUMNS, ICON_BUTTON_SIZE};
 use super::{
     BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
-    BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GROWTH_BAR_HEIGHT, LINE_GAP,
-    Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT, QUEUE_REMOVE_WIDTH, QueueItemRegion,
-    QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP, ROSTER_CHIP_GAP, RosterChip,
-    SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
+    BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GROWTH_BAR_HEIGHT, LABEL_TEXT,
+    LINE_GAP, Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT, QUEUE_REMOVE_WIDTH,
+    QueueItemRegion, QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP, ROSTER_CHIP_GAP,
+    RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
 };
 use crate::game::font::{self, Face};
 use glam::Vec2;
@@ -50,6 +51,13 @@ pub(super) fn visible_button_hint(hint: &str, reveal_shortcut: bool) -> &str {
     } else {
         hint
     }
+}
+
+pub(super) fn icon_row(buttons: &[ButtonSpec]) -> bool {
+    !buttons.is_empty()
+        && buttons
+            .iter()
+            .all(|button| action_icons::for_button(button.target, &button.label).is_some())
 }
 
 fn is_shortcut(text: &str) -> bool {
@@ -141,6 +149,14 @@ impl PanelBuilder {
         self.rows.push(Row::Buttons(buttons, false));
     }
 
+    /// A labeled order toolbar; pictograms and click targets stay shared
+    /// between the classic and ImGui presentations.
+    pub(super) fn action_toolbar(&mut self, buttons: Vec<ButtonSpec>) {
+        self.gap(GAP);
+        self.text(SMALL, vec![("ORDERS".into(), LABEL_TEXT)]);
+        self.buttons(buttons);
+    }
+
     /// A row of equally wide one-line buttons.
     pub(super) fn compact_buttons(&mut self, buttons: Vec<ButtonSpec>) {
         self.space_button_rows();
@@ -161,6 +177,10 @@ impl PanelBuilder {
             Row::Gap(height) => *height,
             Row::Bar(_) => GROWTH_BAR_HEIGHT,
             Row::QueueItem(_) => QUEUE_ITEM_HEIGHT,
+            Row::Buttons(buttons, _) if icon_row(buttons) => {
+                let rows = buttons.len().div_ceil(CLASSIC_ICON_COLUMNS);
+                rows as f32 * ICON_BUTTON_SIZE + rows.saturating_sub(1) as f32 * GAP
+            }
             Row::Buttons(_, false) => BUTTON_HEIGHT,
             Row::Buttons(_, true) => END_TURN_HEIGHT,
             Row::Roster(_) => ROSTER_CHIP,
@@ -179,8 +199,13 @@ impl PanelBuilder {
                 font::ui(SMALL).width(&item.label) + 2.0 * BUTTON_PADDING + QUEUE_REMOVE_WIDTH
             }
             Row::Buttons(buttons, compact) => {
-                let width = button_width(buttons, *compact);
-                buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
+                if icon_row(buttons) {
+                    let columns = buttons.len().min(CLASSIC_ICON_COLUMNS);
+                    columns as f32 * ICON_BUTTON_SIZE + columns.saturating_sub(1) as f32 * GAP
+                } else {
+                    let width = button_width(buttons, *compact);
+                    buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
+                }
             }
             Row::BuildingCatalog(_, buttons, _) => buttons
                 .iter()
@@ -300,9 +325,29 @@ impl PanelBuilder {
                     });
                 }
                 Row::Buttons(buttons, compact) => {
-                    let width = button_width(&buttons, compact);
+                    let icons = icon_row(&buttons);
+                    let width = if icons {
+                        ICON_BUTTON_SIZE
+                    } else {
+                        button_width(&buttons, compact)
+                    };
                     for (i, spec) in buttons.into_iter().enumerate() {
-                        let min = Vec2::new(left + i as f32 * (width + GAP), top - height);
+                        let (min, size) = if icons {
+                            let column = i % CLASSIC_ICON_COLUMNS;
+                            let row = i / CLASSIC_ICON_COLUMNS;
+                            (
+                                Vec2::new(
+                                    left + column as f32 * (ICON_BUTTON_SIZE + GAP),
+                                    top - ICON_BUTTON_SIZE - row as f32 * (ICON_BUTTON_SIZE + GAP),
+                                ),
+                                Vec2::splat(ICON_BUTTON_SIZE),
+                            )
+                        } else {
+                            (
+                                Vec2::new(left + i as f32 * (width + GAP), top - height),
+                                Vec2::new(width, height),
+                            )
+                        };
                         layout.buttons.push(Button {
                             target: spec.target,
                             label: spec.label,
@@ -311,7 +356,7 @@ impl PanelBuilder {
                             armed: spec.armed,
                             faded: self.faded,
                             min: min.round(),
-                            max: (min + Vec2::new(width, height)).round(),
+                            max: (min + size).round(),
                         });
                     }
                 }

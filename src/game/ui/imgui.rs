@@ -6,7 +6,8 @@ use ::imgui::{
     StyleColor, StyleVar, Ui, WindowFlags,
 };
 
-use super::builder::{Row, visible_button_hint};
+use super::action_icons::{self, ICON_BUTTON_SIZE};
+use super::builder::{Row, icon_row, visible_button_hint};
 use super::text::end_turn_label;
 use super::*;
 use crate::game::PLAYER_TEAM;
@@ -1428,9 +1429,15 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
             Row::Gap(gap) => gap + 6.0,
             Row::Bar(_) => 18.0,
             Row::Buttons(buttons, compact) => {
-                let columns = ((inner + 7.0) / 135.0).floor().max(1.0) as usize;
-                let rows = buttons.len().div_ceil(columns);
-                rows as f32 * (if *compact { 34.0 } else { 54.0 })
+                if icon_row(buttons) {
+                    let columns =
+                        ((inner + 7.0) / (ICON_BUTTON_SIZE + 7.0)).floor().max(1.0) as usize;
+                    buttons.len().div_ceil(columns) as f32 * (ICON_BUTTON_SIZE + 6.0)
+                } else {
+                    let columns = ((inner + 7.0) / 135.0).floor().max(1.0) as usize;
+                    let rows = buttons.len().div_ceil(columns);
+                    rows as f32 * (if *compact { 34.0 } else { 54.0 })
+                }
             }
             Row::QueueItem(_) => 37.0,
             Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 4) as f32 * 34.0) + 18.0,
@@ -1497,6 +1504,45 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
         .filled(true)
         .build();
         draw.add_text(origin, TEXT, &text);
+    }
+}
+
+fn draw_action_icon(
+    ui: &Ui,
+    min: [f32; 2],
+    max: [f32; 2],
+    icon: action_icons::ActionIcon,
+    color: Color,
+    cooldown: Option<&str>,
+    small_font: FontId,
+) {
+    let draw = ui.get_window_draw_list();
+    let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
+    let mut vertices = Vec::new();
+    action_icons::push_icon(Vec2::ZERO, 14.0, icon, color, &mut vertices);
+    for triangle in vertices.as_chunks::<3>().0 {
+        let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+        draw.add_triangle(
+            at(&triangle[0]),
+            at(&triangle[1]),
+            at(&triangle[2]),
+            triangle[0].color,
+        )
+        .filled(true)
+        .build();
+    }
+    if let Some(turns) = cooldown {
+        let _font = ui.push_font(small_font);
+        let width = ui.calc_text_size(turns)[0];
+        let pos = [max[0] - width - 3.0, min[1] + 2.0];
+        draw.add_rect(
+            [pos[0] - 2.0, pos[1] - 1.0],
+            [max[0] - 1.0, pos[1] + 13.0],
+            PANEL_BG,
+        )
+        .filled(true)
+        .build();
+        draw.add_text(pos, color, turns);
     }
 }
 
@@ -1801,8 +1847,7 @@ impl GameState {
                     return;
                 };
                 self.unit_info(unit, &mut panel);
-                panel.gap(GAP);
-                panel.buttons(self.unit_buttons(unit));
+                panel.action_toolbar(self.unit_buttons(unit));
             }
             PinnedKind::Group => {
                 let Some(ids) = layout.pinned_groups.get(&pin.city_id) else {
@@ -2069,12 +2114,17 @@ impl GameState {
                     }
                     let available = ui.content_region_avail()[0];
                     let spacing = ui.clone_style().item_spacing[0];
-                    let min_width = 128.0;
+                    let icons = icon_row(buttons);
+                    let min_width = if icons { ICON_BUTTON_SIZE } else { 128.0 };
                     let columns = (((available + spacing) / (min_width + spacing)).floor()
                         as usize)
                         .clamp(1, buttons.len());
-                    let width = ((available - spacing * (columns - 1) as f32) / columns as f32)
-                        .max(min_width);
+                    let width = if icons {
+                        ICON_BUTTON_SIZE
+                    } else {
+                        ((available - spacing * (columns - 1) as f32) / columns as f32)
+                            .max(min_width)
+                    };
                     for (index, spec) in buttons.iter().enumerate() {
                         if index % columns != 0 {
                             ui.same_line();
@@ -2089,12 +2139,20 @@ impl GameState {
                             _ => None,
                         };
                         let _disabled = ui.begin_disabled(spec.state == ButtonState::Disabled);
-                        let height = if *compact { 28.0 } else { 48.0 };
+                        let height = if icons {
+                            ICON_BUTTON_SIZE
+                        } else if *compact {
+                            28.0
+                        } else {
+                            48.0
+                        };
                         let hint = visible_button_hint(
                             &spec.hint,
                             panel.faded || next_button_hovered(ui, [width, height]),
                         );
-                        let label = if hint.is_empty() {
+                        let label = if icons {
+                            String::new()
+                        } else if hint.is_empty() {
                             spec.label.clone()
                         } else if *compact {
                             format!("{}  {hint}", spec.label)
@@ -2104,6 +2162,25 @@ impl GameState {
                         let label = format!("{label}##{:?}", spec.target);
                         if ui.button_with_size(label, [width, height]) {
                             actions.push(Action::Button(scope, spec.target));
+                        }
+                        if icons {
+                            let icon = action_icons::for_button(spec.target, &spec.label)
+                                .expect("icon row");
+                            let color = match spec.state {
+                                ButtonState::Disabled => DIM_TEXT,
+                                ButtonState::Queued => GOLD_TEXT,
+                                ButtonState::Ready if spec.armed => BOOSTED_TEXT,
+                                ButtonState::Ready => TEXT,
+                            };
+                            draw_action_icon(
+                                ui,
+                                ui.item_rect_min(),
+                                ui.item_rect_max(),
+                                icon,
+                                color,
+                                action_icons::cooldown(&spec.label),
+                                fonts[0],
+                            );
                         }
                         if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
                             let tooltip = Button {
@@ -2369,8 +2446,7 @@ impl GameState {
             self.barracks_tray(city, &mut tray);
         } else if let Some(idx) = self.selected {
             self.unit_info(idx, &mut tray);
-            tray.gap(GAP);
-            tray.buttons(self.unit_buttons(idx));
+            tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         } else if let Some(hex) = self.inspected_tile {

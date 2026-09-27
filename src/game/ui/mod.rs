@@ -20,6 +20,7 @@
 //! `tooltips.rs`, `text.rs` (number and text
 //! formatting), `tests.rs`.
 
+mod action_icons;
 mod builder;
 mod dock;
 mod imgui;
@@ -709,8 +710,7 @@ impl GameState {
             self.barracks_tray(city, &mut tray);
         } else if let Some(idx) = self.selected {
             self.unit_info(idx, &mut tray);
-            tray.gap(GAP);
-            tray.buttons(self.unit_buttons(idx));
+            tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         } else if let Some(hex) = self.inspected_tile {

@@ -385,12 +385,10 @@ impl GameState {
         ] {
             panel.text(SMALL, vec![(help.into(), LABEL_TEXT)]);
         }
-        panel.gap(GAP);
-
         let armed = |mode| self.group == group && self.ui_click_mode == Some(mode);
         let all_guarding = group.iter().all(|&i| self.units[i].guarding);
         let any_orders = group.iter().any(|&i| self.units[i].has_orders());
-        panel.buttons(vec![
+        panel.action_toolbar(vec![
             ButtonSpec {
                 target: Target::Unit(UnitAction::Move),
                 label: "MOVE".into(),

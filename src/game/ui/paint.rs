@@ -1,6 +1,7 @@
 //! Turning laid-out shapes and buttons into vertices.
 
 use super::ChipIcon;
+use super::action_icons;
 use super::builder::visible_button_hint;
 use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
@@ -159,6 +160,24 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
     let [bg, border_color, text_color, hint_color] =
         [bg, border_color, text_color, hint_color].map(|color| fade(color, button.faded));
     draw_box(button.min, button.max, bg, border, border_color, out);
+
+    if let Some(icon) = action_icons::for_button(button.target, &button.label) {
+        let center = (button.min + button.max) / 2.0;
+        action_icons::push_icon(center, 14.0, icon, text_color, out);
+        if let Some(turns) = action_icons::cooldown(&button.label) {
+            let face = font::ui(SMALL);
+            face.push(
+                Vec2::new(
+                    button.max.x - face.width(turns) - 3.0,
+                    button.max.y - face.cap_height - 2.0,
+                ),
+                turns,
+                hint_color,
+                out,
+            );
+        }
+        return;
+    }
 
     let hint = visible_button_hint(&button.hint, hovered || button.faded);
     let (label_face, hint_face) = (font::ui(BODY), font::ui(SMALL));

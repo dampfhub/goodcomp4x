@@ -10,6 +10,66 @@ use crate::game::unit::{Team, Unit, UnitType};
 const SCREEN: Vec2 = Vec2::new(1600.0, 900.0);
 
 #[test]
+fn action_toolbar_is_compact_and_every_icon_keeps_its_click_target() {
+    let game = GameState::city_scenario();
+    let unit = game
+        .units
+        .iter()
+        .position(|u| u.team == PLAYER_TEAM && u.unit_type == UnitType::Melee)
+        .unwrap();
+    let targets: Vec<_> = game
+        .unit_buttons(unit)
+        .iter()
+        .map(|button| button.target)
+        .collect();
+    let mut panel = PanelBuilder::default();
+    panel.action_toolbar(game.unit_buttons(unit));
+    assert!(
+        panel.size().x <= 240.0,
+        "icon toolbar should fit four columns"
+    );
+    assert!(
+        panel.size().y <= 175.0,
+        "icons should use only two short rows"
+    );
+    let mut layout = Layout::default();
+    panel.place_bottom_left(Vec2::ZERO, &mut layout);
+    for target in targets {
+        let button = layout
+            .buttons
+            .iter()
+            .find(|button| button.target == target)
+            .unwrap();
+        assert_eq!(
+            button.max - button.min,
+            Vec2::splat(action_icons::ICON_BUTTON_SIZE)
+        );
+        assert_eq!(
+            layout
+                .button_at((button.min + button.max) / 2.0)
+                .map(|hit| hit.target),
+            Some(target)
+        );
+    }
+
+    let mut city_panel = PanelBuilder::default();
+    game.city_tray(0, &mut city_panel);
+    let focus = city_panel
+        .rows
+        .iter()
+        .find_map(|row| match row {
+            builder::Row::Buttons(buttons, _)
+                if buttons.iter().any(|b| matches!(b.target, Target::Focus(_))) =>
+            {
+                Some(buttons)
+            }
+            _ => None,
+        })
+        .expect("labor focus buttons");
+    assert!(builder::icon_row(focus));
+}
+
+#[test]
 fn hovering_a_button_shows_its_tooltip() {
     let mut game = GameState::city_scenario();
     game.select_city();
