@@ -323,6 +323,9 @@ every turn end.
   either layer leaves the other HP bar unchanged, and interior HP persists if the unit leaves and
   re-enters a gate. If either HP bar reaches zero, the unit dies in both layers. Moving away
   removes its interior presence until it returns.
+- Units cannot move onto an enemy city center on the exterior map; they fight for the six
+  surrounding gates and capture the command post inside. A unit already standing on a city center
+  can still be attacked there.
 - Click a Blue copy on the interior map, then click an open hex to queue its move or an enemy
   to queue an attack. The map outlines valid moves in green and attacks in red. Range uses that
   unit type's move and attack stats. Click the command post to attack it when within range.

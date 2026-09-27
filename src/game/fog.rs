@@ -243,9 +243,21 @@ impl GameState {
     ) -> HashSet<Hex> {
         self.reachable_hexes_by(start, move_range, |from, to| {
             self.can_enter(to)
+                && !self.known_enemy_city_at(to, team, fog)
                 && self.known_can_cross(from, to, team, fog)
                 && !self.known_occupied(to, fog)
         })
+    }
+
+    fn known_enemy_city_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
+        if fog.sees(hex) {
+            return self
+                .cities
+                .iter()
+                .any(|city| city.pos == hex && city.team != team);
+        }
+        self.remembered(hex)
+            .is_some_and(|seen| seen.city.is_some_and(|city| city.team != team))
     }
 
     /// The wall or gate the player knows of on the edge between adjacent

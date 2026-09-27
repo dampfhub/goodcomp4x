@@ -561,6 +561,48 @@ mod tests {
                 .iter()
                 .all(|f| f.source_id != 0)
         );
+        game.resolve_city_interiors();
+        assert!(game.units.iter().all(|unit| unit.id != 0));
+        assert!(game.cities.iter().all(|city| {
+            city.interior
+                .fighters
+                .iter()
+                .all(|fighter| fighter.source_id != 0)
+        }));
+    }
+
+    #[test]
+    fn exterior_unit_cannot_walk_onto_enemy_city_and_lose_its_interior_copy() {
+        let mut game = GameState::siege_scenario();
+        let archer = game.units.iter().position(|unit| unit.id == 1).unwrap();
+        let city = game.cities[1].pos;
+        assert_eq!(game.units[archer].pos.distance(city), 1);
+        assert!(!game.can_step(game.units[archer].pos, city, Team::Blue));
+        assert!(
+            !game
+                .known_reachable_hexes(
+                    game.units[archer].pos,
+                    game.units[archer].stats().move_range,
+                    Team::Blue,
+                    &game.fog(),
+                )
+                .contains(&city)
+        );
+
+        // Even a stale order from before the city was revealed cannot bypass
+        // the check when the move actually resolves.
+        game.units[archer].planned_move = Some(city);
+        let start = game.units[archer].pos;
+        game.resolve_step(UnitType::Ranged, crate::game::turn::Phase::Move);
+        assert_eq!(game.units[archer].pos, start);
+        game.sync_city_interiors();
+        assert!(
+            game.cities[1]
+                .interior
+                .fighters
+                .iter()
+                .any(|fighter| fighter.source_id == 1)
+        );
     }
 
     #[test]
