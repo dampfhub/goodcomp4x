@@ -54,6 +54,8 @@ dependency, not prose).
   with `#N` also closes #N, invisibly. `node tools/commit-msg-lint.mjs` refuses that shape in commit
   messages (default range `origin/<default-branch>..HEAD`; `--file <body> --declared 1` asserts a
   merge body closes exactly one item). It does not read PR descriptions: check those by eye.
+- A non-draft PR merges itself once CI passes (`AGENTS.md`, Commits and PRs), so evidence for
+  `done` comes from the CI run on `main` that follows.
 - After merging and running the tests: `done <#> --body-file <evidence>` (commit, test output, what
   you checked by hand). If a PR's `Closes #N` already closed the issue, `done` still records the
   evidence and sets Status.
