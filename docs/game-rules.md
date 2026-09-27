@@ -310,8 +310,8 @@ every turn end.
   which city works it, its delivery share to the open city, and units on it.
 - **City view:** C opens the first city needing a build (or your first city), and left-clicking
   your city opens that one. While open, map clicks manage tiles and never select units; it closes
-  on Tab, Space, Escape, or a click off the map. A barracks view closes on Space, Escape or a click
-  off the map (not Tab); C switches it to its city. Worked tiles are outlined green (the manager's
+  on Tab, Space, Escape, or a click off the map. A barracks view closes the same way; C switches
+  it to its city. Worked tiles are outlined green (the manager's
   in gold; red if disrupted), with dotted links from the manager to its workers. With yields
   shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
   food (green grain) and production (amber hammers) with delivery percentages.
@@ -352,6 +352,4 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - The Barracks card says it is placed on a worked tile, but any explored land site is accepted
   (#9).
 - MISS shows for a hit on an empty enemy city or barracks (#10).
-- Tab leaves the city view but not the barracks view, and leaves a building-site preview
-  following the cursor (#7).
 - No victory condition; F1-F4 restart a scenario.

@@ -19,7 +19,7 @@ rules behind each action are in `game-rules.md`.
 | Q / ability button | Toggle the unit's ability |
 | Space / Hold button | Hold the unit this turn, keeping queued orders, and move on to what's next |
 | G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
-| Tab | Look at the next unit without holding this one; leave the city view |
+| Tab | Look at the next unit without holding this one; leave the city or barracks view |
 | Alt-drag a box | Select every one of your units inside it as a group |
 | Alt-click a unit | Add it to, or remove it from, the group |
 | Click a hex with a group | Each member moves as close to it as it can get |
@@ -63,7 +63,7 @@ plays out.
 | See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types) |
 | Open City (in the barracks view) | Go back to the city view |
 | Space / Escape / click off the map | Close the city or barracks view |
-| Tab | Close the city view |
+| Tab | Close the city or barracks view |
 
 While a city view is open, map clicks manage tiles and never select units.
 
