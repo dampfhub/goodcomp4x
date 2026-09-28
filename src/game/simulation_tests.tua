@@ -14,7 +14,9 @@ use game.PLAYER_TEAM;
 use game.ruins.RUIN_HOLD_TURNS;
 use game.scenario.SCENARIOS;
 use game.scenario.Scenario;
+use game.hex.Hex;
 use game.unit.TEAMS;
+use game.unit.Team;
 
 const TURNS: u32 = 40;
 /// The seeds every run plays.
@@ -149,4 +151,152 @@ fn a_crowded_world_of_settlers_keeps_the_board_consistent() {
             }
         });
     }
+}
+
+/// This turn's orders of a unit already following a queue, which the AI's planning replaces.
+struct Kept { id: u32, planned_move: Option[Hex], planned_attack: Option[Hex] }
+
+/// Like `play_turn`, but the player's units are ordered through Shift-click queues: each unit
+/// without a queue gets one Shift-click's worth of moves toward the nearest enemy (every turn it
+/// takes to get next to it, up to the default `Settings.max_queued_turns`) and then an attack on
+/// its hex (queued only if in range from where the moves end), as a player would queue them.
+/// The AI still runs the player's cities; units already following a queue keep their orders.
+/// Answers how many units follow a queue once the turn is done.
+fn play_queued_turn(game: &mut GameState) -> i32 can {Log, Rand} {
+    game.selected = Option.None;
+    game.group.clear();
+    let mut kept: Vec[Kept] = Vec.new();
+    for i in 0..game.units.len() {
+        let unit = &game.units[i];
+        if unit.has_queue() { kept.push(Kept { id: unit.id, planned_move: unit.planned_move, planned_attack: unit.planned_attack }); }
+    }
+    game.plan_ai_turn(PLAYER_TEAM);
+    for idx in 0..game.units.len() {
+        if game.units[idx].team != PLAYER_TEAM { continue; }
+        let id = game.units[idx].id;
+        let mut following = false;
+        for k in 0..kept.len() {
+            if kept[k].id == id {
+                game.units[idx].planned_move = kept[k].planned_move;
+                game.units[idx].planned_attack = kept[k].planned_attack;
+                following = true;
+            }
+        }
+        if following { continue; }
+        game.units[idx].planned_move = Option.None;
+        game.units[idx].planned_attack = Option.None;
+        let pos = game.units[idx].pos;
+        let mut target: Option[Hex] = Option.None;
+        for j in 0..game.units.len() {
+            if game.units[j].team == PLAYER_TEAM { continue; }
+            let t = game.units[j].pos;
+            let better = match target {
+                Option.None => true,
+                Option.Some(b) => t.distance(pos) < b.distance(pos) || (t.distance(pos) == b.distance(pos) && (t.q < b.q || (t.q == b.q && t.r < b.r))),
+            };
+            if better { target = Option.Some(t); }
+        }
+        let Option.Some(t) = target else { continue; };
+        game.selected = Option.Some(idx);
+        let _moved = game.queue_move(t);
+        let _attacked = game.queue_attack(t);
+    }
+    game.selected = Option.None;
+    game.resolve_turn();
+    game.update(0.0);
+    let mut followed = 0;
+    for i in 0..game.units.len() { if game.units[i].following_queue { followed = followed + 1; } }
+    followed
+}
+
+@test
+fn queued_orders_against_the_ai_keep_the_board_consistent() {
+    for s in 0..4 {
+        for k in 0..3 {
+            seeded(SEEDS[k], fn() can {Log, Rand, Assert} {
+                let mut game = start(SCENARIOS[s]);
+                let mut followed = 0;
+                for _turn in 1..=TURNS {
+                    followed = followed + play_queued_turn(&mut game);
+                    // The turn finished.
+                    assert(!game.is_resolving());
+                    check_invariants(&game);
+                }
+                // Anti-vacuity: queues were actually carried from turn to turn.
+                assert(followed > 0);
+            });
+        }
+    }
+}
+
+@test
+fn ai_against_ai_combat_ends_with_fewer_units() {
+    // Anti-vacuity: the combat scenario must actually fight, or the invariant test above would
+    // pass on a game where nothing happens.
+    for k in 0..3 {
+        seeded(SEEDS[k], fn() can {Log, Rand, Assert} {
+            let mut game = start(Scenario.Combat);
+            let at_start = game.units.len();
+            for _turn in 0..TURNS { play_turn(&mut game); }
+            // Some unit died.
+            assert(game.units.len() < at_start);
+            // Only the combat scenario's two teams exist.
+            for i in 0..game.units.len() { assert(game.units[i].team == Team.Red || game.units[i].team == PLAYER_TEAM); }
+        });
+    }
+}
+
+/// What a replay must reproduce: the map, every unit and every city, as numbers.
+fn fingerprint(scenario: Scenario, turns: u32) -> Vec[f64] can {Log, Rand} {
+    let mut game = start(scenario);
+    for _turn in 0..turns { play_turn(&mut game); }
+    let mut out: Vec[f64] = Vec.new();
+    out.push(game.turn as f64);
+    out.push(match game.map_seed { Option.Some(m) => m as f64, Option.None => -1.0 });
+    for i in 0..game.units.len() {
+        let unit = &game.units[i];
+        out.push(unit.id as f64);
+        out.push(unit.pos.q as f64);
+        out.push(unit.pos.r as f64);
+        out.push(unit.hp as f64);
+    }
+    for c in 0..game.cities.len() {
+        out.push(game.cities[c].id as f64);
+        out.push(game.cities[c].population as f64);
+    }
+    out
+}
+
+/// `fingerprint` with `Rand` drawing from `s`.
+fn replayed(s: u64, scenario: Scenario, turns: u32) -> Vec[f64] can {Log} {
+    let mut g = seed(s);
+    handle { fingerprint(scenario, turns) } with Rand { rand() => { resume g.next() } }
+}
+
+/// Runs `body` with the combat log discarded.
+fn quiet(body: affine fn() can {Log, Assert}) can {Assert} {
+    handle { body(); } with Log {
+        enabled(level) => { resume false }
+        record(level, text) => { resume }
+    }
+}
+
+fn same(a: &Vec[f64], b: &Vec[f64]) -> bool {
+    if a.len() != b.len() { return false; }
+    for i in 0..a.len() { if a[i] != b[i] { return false; } }
+    true
+}
+
+@test
+fn the_same_seed_replays_the_same_game() {
+    quiet(fn() can {Log, Assert} {
+        // One seed is enough to catch hidden nondeterminism (map iteration order deciding an
+        // outcome, say).
+        for s in 0..4 {
+            assert(same(&replayed(SEEDS[0], SCENARIOS[s], 20), &replayed(SEEDS[0], SCENARIOS[s], 20)));
+        }
+        // Anti-vacuity: the seed does drive the rolls. The armies meet on turn 2 and are gone
+        // within a few more, so compare right after the first clash.
+        assert(!same(&replayed(1, Scenario.Combat, 2), &replayed(2, Scenario.Combat, 2)));
+    });
 }
