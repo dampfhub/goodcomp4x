@@ -432,9 +432,7 @@ impl GameState {
             city_ref.team = team;
             city_ref.interior.core_hp = CORE_HP;
             city_ref.queue.clear();
-            city_ref.progress = 0;
             city_ref.barracks_queue.clear();
-            city_ref.barracks_progress = 0;
             city_ref.worker_jobs.clear();
             // Its workers at home serve the new owner, none of them held.
             city_ref.held_workers = 0;

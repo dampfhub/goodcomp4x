@@ -3,7 +3,7 @@
 //! cost and how the stockpile pays for them is in `economy.rs`.
 use super::MAX_CITY_POPULATION;
 use super::barracks::CITY_TRAINING_SLOWDOWN;
-use super::economy::{Stock, WORK_PER_TURN, stock_icons, turns_icon};
+use super::economy::{Lane, Stock, WORK_PER_TURN, stock_icons, turns_icon};
 use crate::game::GameState;
 use crate::game::JobKind;
 use crate::game::hex::Hex;
@@ -286,6 +286,25 @@ impl BuildUnit {
     }
 }
 
+/// What taking one item off a queue gave back, for its notice.
+fn refund_word(paid: bool) -> &'static str {
+    if paid {
+        "REFUNDED"
+    } else {
+        "UNPAID, NOTHING TO REFUND"
+    }
+}
+
+/// What clearing a queue of `count` items, `paid` of them paid for, gave
+/// back, for its notice.
+fn cleared_words(count: usize, paid: usize) -> String {
+    match paid {
+        0 => format!("{count} UNPAID, NOTHING TO REFUND"),
+        _ if paid == count => format!("{count} REFUNDED"),
+        _ => format!("{paid} PAID OF {count} REFUNDED"),
+    }
+}
+
 impl GameState {
     /// A city's center must touch sea water to support naval construction.
     pub(in crate::game) fn city_is_coastal(&self, city: usize) -> bool {
@@ -323,28 +342,49 @@ impl GameState {
             );
             return;
         }
-        self.queue_paid(city, Build::Unit(build));
+        self.queue_in_city(city, Build::Unit(build));
     }
 
-    /// Pays for `build` and queues it in the player's `city`, or says what
-    /// the side is short. Returns whether it was queued.
-    fn queue_paid(&mut self, city: usize, build: Build) -> bool {
+    /// Queues `build` in the player's `city`, unpaid (`queue_build`), and
+    /// says what it costs, or what it waits for.
+    fn queue_in_city(&mut self, city: usize, build: Build) {
         let price = self.queue_price(city, build);
-        match self.try_queue_build(city, build) {
-            Ok(()) => {
-                self.notice = format!(
-                    "QUEUED {} - PAID {} - {}",
-                    build.name(),
-                    stock_icons(price),
-                    turns_icon(self.city_build_turns(city, build))
-                );
-                true
-            }
-            Err(short) => {
-                self.notice = format!("{} - SHORT OF {}", build.name(), stock_icons(short));
-                false
-            }
+        self.queue_build(city, build);
+        let index = self.cities[city].queue.len() - 1;
+        let turns = self.city_build_turns(city, build);
+        self.notice = self.queued_notice(city, Lane::City, index, price, turns);
+    }
+
+    /// The notice for item `index`, just queued in one of `city`'s queues
+    /// at `price`: what it costs and takes, paid when work starts, or what
+    /// the stockpile is short of if it waits (`waiting_items`).
+    fn queued_notice(
+        &self,
+        city: usize,
+        lane: Lane,
+        index: usize,
+        price: Stock,
+        turns: i32,
+    ) -> String {
+        let name = match lane {
+            Lane::City => self.cities[city].queue[index].build.name(),
+            Lane::Barracks => self.cities[city].barracks_queue[index].build.name(),
+        };
+        let forecast = self.forecast(self.cities[city].team);
+        let waits = forecast.lane(city, lane).and_then(|lane| {
+            self.waiting_items(lane)
+                .into_iter()
+                .find(|&(waiting, _)| waiting == index)
+        });
+        if let Some((_, short)) = waits {
+            return format!("QUEUED {name} - WAITS FOR {}", stock_icons(short));
         }
+        let cost = [stock_icons(price), turns_icon(turns)]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("QUEUED {name} - {cost}")
     }
 
     /// 9 or the Grow card: one more citizen, bought with food.
@@ -363,14 +403,14 @@ impl GameState {
             self.notice = format!("A CITY HOLDS AT MOST {MAX_CITY_POPULATION} CITIZENS");
             return;
         }
-        self.queue_paid(city, Build::Grow);
+        self.queue_in_city(city, Build::Grow);
     }
 
     /// Whether another Grow fits: the city's population plus the Grows
     /// already queued stays under the cap.
     pub(in crate::game) fn can_grow(&self, city: usize) -> bool {
         let c = &self.cities[city];
-        let queued = c.queue.iter().filter(|&&b| b == Build::Grow).count();
+        let queued = c.queue.iter().filter(|q| q.build == Build::Grow).count();
         c.population + queued < MAX_CITY_POPULATION
     }
 
@@ -386,7 +426,7 @@ impl GameState {
         if self.cities[city].team != self.local_team {
             return;
         }
-        self.queue_paid(city, Build::Worker);
+        self.queue_in_city(city, Build::Worker);
     }
 
     pub fn queue_selected_city_building(&mut self, building: Building) {
@@ -428,7 +468,7 @@ impl GameState {
         if self.cities[city].team != self.local_team {
             return;
         }
-        self.queue_paid(city, Build::Gather);
+        self.queue_in_city(city, Build::Gather);
     }
 
     /// The first reason `building` can't stand on `hex` for city `city`:
@@ -560,15 +600,9 @@ impl GameState {
             self.notice = format!("{}: {reason}", build.name());
             return;
         }
-        self.notice = match self.try_queue_barracks(city, build) {
-            Ok(()) => format!(
-                "BARRACKS TRAINING {} - PAID {} - {}",
-                build.name(),
-                stock_icons(build.price()),
-                turns_icon(build.turns())
-            ),
-            Err(short) => format!("{} - SHORT OF {}", build.name(), stock_icons(short)),
-        };
+        self.queue_barracks(city, build);
+        let index = self.cities[city].barracks_queue.len() - 1;
+        self.notice = self.queued_notice(city, Lane::Barracks, index, build.price(), build.turns());
     }
 
     /// Whether city `city`'s Barracks can train `build` at all: it has one,
@@ -582,7 +616,8 @@ impl GameState {
                 .is_none_or(|resource| !self.barracks_deposits(city, resource).is_empty())
     }
 
-    /// Completes only the active queue in the currently open structure.
+    /// Completes only the active queue in the currently open structure: the
+    /// item it works now (`pick_item`), paid for if it wasn't.
     pub fn debug_complete_current_production(&mut self) {
         if self.refuses_debug() {
             return;
@@ -590,29 +625,33 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
-        if let Some(city) = self.selected_barracks {
-            let Some(build) = self.cities[city].barracks_queue.first().copied() else {
-                return;
-            };
-            self.cities[city].barracks_progress = build.work();
-            self.complete_builds_for(Some((city, true)));
-            self.notice = if self.cities[city].barracks_queue.first() == Some(&build) {
+        let (city, lane) = match (self.selected_barracks, self.selected_city) {
+            (Some(city), _) => (city, Lane::Barracks),
+            (None, Some(city)) => (city, Lane::City),
+            (None, None) => return,
+        };
+        let team = self.cities[city].team;
+        let Some((index, price)) = self.pick_item(city, lane, self.stock(team)) else {
+            if self.lane_len(city, lane) > 0 {
+                self.notice = "DEBUG: NOTHING QUEUED THE STOCKPILE CAN PAY FOR".into();
+            }
+            return;
+        };
+        let name = match lane {
+            Lane::City => self.cities[city].queue[index].build.name(),
+            Lane::Barracks => self.cities[city].barracks_queue[index].build.name(),
+        };
+        let needed = self.lane_item(city, lane, index).2;
+        self.work_item(city, lane, index, price, needed);
+        let before = self.lane_len(city, lane);
+        self.complete_builds_for(Some((city, lane == Lane::Barracks)));
+        self.notice = match lane {
+            _ if self.lane_len(city, lane) == before => {
                 "DEBUG: PRODUCTION READY - NO OPEN SPAWN TILE".into()
-            } else {
-                format!("DEBUG: {} TRAINING COMPLETED", build.name())
-            };
-        } else if let Some(city) = self.selected_city {
-            let Some(build) = self.cities[city].queue.first().copied() else {
-                return;
-            };
-            self.cities[city].progress = self.city_build_work(city, build);
-            self.complete_builds_for(Some((city, false)));
-            self.notice = if self.cities[city].queue.first() == Some(&build) {
-                "DEBUG: PRODUCTION READY - NO OPEN SPAWN TILE".into()
-            } else {
-                format!("DEBUG: {} PRODUCTION COMPLETED", build.name())
-            };
-        }
+            }
+            Lane::City => format!("DEBUG: {name} PRODUCTION COMPLETED"),
+            Lane::Barracks => format!("DEBUG: {name} TRAINING COMPLETED"),
+        };
     }
 
     pub fn move_selected_city_queue_item(&mut self, index: usize, up: bool) {
@@ -632,8 +671,8 @@ impl GameState {
     }
 
     /// A city queue row's X, or Backspace for the head: takes it off,
-    /// refunded. Not while a turn plays out (or, in a network game, waits
-    /// for the others' plans), like queueing.
+    /// refunded if it was paid for. Not while a turn plays out (or, in a
+    /// network game, waits for the others' plans), like queueing.
     pub fn remove_selected_city_queue_item(&mut self, index: usize) {
         if self.is_resolving() {
             return;
@@ -641,17 +680,21 @@ impl GameState {
         let Some(city) = self.selected_city else {
             return;
         };
-        if index >= self.cities[city].queue.len() {
+        let Some(paid) = self.cities[city].queue.get(index).map(|q| q.paid) else {
             return;
-        }
+        };
         let removed = self.take_queue_item(city, index);
-        self.notice = format!("REMOVED {} FROM CITY QUEUE - REFUNDED", removed.name());
+        self.notice = format!(
+            "REMOVED {} FROM CITY QUEUE - {}",
+            removed.name(),
+            refund_word(paid)
+        );
     }
 
     /// The city queue's Clear button: takes every item off, each through
     /// `take_queue_item` as its X would, so the stockpile ends as it would
     /// after removing them one by one (Grows included: what one refunds
-    /// depends only on how many are queued, not on the order).
+    /// depends only on how many are paid for, not on the order).
     pub fn clear_selected_city_queue(&mut self) {
         if self.is_resolving() {
             return;
@@ -663,11 +706,12 @@ impl GameState {
         if count == 0 {
             return;
         }
+        let paid = self.cities[city].queue.iter().filter(|q| q.paid).count();
         while let Some(last) = self.cities[city].queue.len().checked_sub(1) {
             self.take_queue_item(city, last);
         }
         self.city_queue_scroll = 0;
-        self.notice = format!("CLEARED THE CITY QUEUE - {count} REFUNDED");
+        self.notice = format!("CLEARED THE CITY QUEUE - {}", cleared_words(count, paid));
     }
 
     #[cfg(test)]
@@ -687,8 +731,8 @@ impl GameState {
         }
     }
 
-    /// A Barracks queue row's X: takes it off, refunded. Not while a turn
-    /// plays out.
+    /// A Barracks queue row's X: takes it off, refunded if it was paid for.
+    /// Not while a turn plays out.
     pub fn remove_selected_barracks_queue_item(&mut self, index: usize) {
         if self.is_resolving() {
             return;
@@ -696,11 +740,15 @@ impl GameState {
         let Some(city) = self.selected_barracks.or(self.selected_city) else {
             return;
         };
-        if index >= self.cities[city].barracks_queue.len() {
+        let Some(paid) = self.cities[city].barracks_queue.get(index).map(|q| q.paid) else {
             return;
-        }
+        };
         let removed = self.take_barracks_item(city, index);
-        self.notice = format!("REMOVED {} FROM BARRACKS QUEUE - REFUNDED", removed.name());
+        self.notice = format!(
+            "REMOVED {} FROM BARRACKS QUEUE - {}",
+            removed.name(),
+            refund_word(paid)
+        );
     }
 
     /// The Barracks queue's Clear button: takes every troop off, each
@@ -716,11 +764,19 @@ impl GameState {
         if count == 0 {
             return;
         }
+        let paid = self.cities[city]
+            .barracks_queue
+            .iter()
+            .filter(|q| q.paid)
+            .count();
         while let Some(last) = self.cities[city].barracks_queue.len().checked_sub(1) {
             self.take_barracks_item(city, last);
         }
         self.barracks_queue_scroll = 0;
-        self.notice = format!("CLEARED THE BARRACKS QUEUE - {count} REFUNDED");
+        self.notice = format!(
+            "CLEARED THE BARRACKS QUEUE - {}",
+            cleared_words(count, paid)
+        );
     }
 
     /// Queue hotkeys operate on the city line currently being produced.
@@ -744,16 +800,18 @@ impl GameState {
             if only.is_some_and(|lane| lane != (i, false)) {
                 continue;
             }
-            let Some(build) = self.cities[i].queue.first().copied() else {
+            // The first finished item: the one worked this turn, or one
+            // finished before and held for want of an open hex.
+            let Some(index) = (0..self.cities[i].queue.len()).find(|&index| {
+                let (paid, progress, work) = self.lane_item(i, Lane::City, index);
+                paid && progress >= work
+            }) else {
                 continue;
             };
-            if self.cities[i].progress < self.city_build_work(i, build) {
-                continue;
-            }
+            let build = self.cities[i].queue[index].build;
             if build == Build::Gather {
                 let c = &mut self.cities[i];
-                c.progress -= build.work();
-                c.queue.remove(0);
+                c.queue.remove(index);
                 let (team, id) = (c.team, c.id);
                 *self.stock_mut(team) += GATHER_YIELD;
                 if team == self.local_team {
@@ -762,8 +820,7 @@ impl GameState {
                 continue;
             }
             if build == Build::Worker {
-                self.cities[i].progress -= build.work();
-                self.cities[i].queue.remove(0);
+                self.cities[i].queue.remove(index);
                 self.cities[i].workers += 1;
                 log::info!("{:?} city completed a worker", self.cities[i].team);
                 if self.cities[i].team == self.local_team {
@@ -775,8 +832,7 @@ impl GameState {
             }
             if build == Build::Grow {
                 let c = &mut self.cities[i];
-                c.progress -= build.work();
-                c.queue.remove(0);
+                c.queue.remove(index);
                 // Starving can't take it over the cap, but a Grow bought
                 // before the cap was reached could.
                 c.population = (c.population + 1).min(MAX_CITY_POPULATION);
@@ -786,15 +842,17 @@ impl GameState {
                 }
                 continue;
             }
+            // A finished unit waits, done, until a hex opens for it. Work
+            // never passes what an item needs, so none is banked for the
+            // rest of the queue: a bank would let the rest come out one unit
+            // a turn once one did (#54).
             let city = self.cities[i].pos;
             let naval = matches!(build, Build::Unit(unit) if unit.unit_type().is_naval());
             let origin = if naval {
                 if !self.city_is_coastal(i) {
-                    self.cities[i].progress = self.city_build_work(i, build);
                     continue;
                 }
                 let Some(harbor) = self.cities[i].placed_site(Building::Harbor) else {
-                    self.cities[i].progress = self.city_build_work(i, build);
                     continue;
                 };
                 harbor
@@ -808,14 +866,9 @@ impl GameState {
                     self.is_open_spawn(h, self.cities[i].team, &spawn)
                 }
             }) else {
-                // The city holds the finished unit until a hex opens, and
-                // banks nothing more meanwhile: a bank would let the rest of
-                // the queue come out one unit a turn once one did (#54).
-                self.cities[i].progress = self.city_build_work(i, build);
                 continue;
             };
-            self.cities[i].progress -= self.city_build_work(i, build);
-            self.cities[i].queue.remove(0);
+            self.cities[i].queue.remove(index);
             let Build::Unit(unit) = build else {
                 unreachable!()
             };
@@ -825,12 +878,13 @@ impl GameState {
             if only.is_some_and(|lane| lane != (i, true)) {
                 continue;
             }
-            let Some(build) = self.cities[i].barracks_queue.first().copied() else {
+            let Some(index) = (0..self.cities[i].barracks_queue.len()).find(|&index| {
+                let (paid, progress, work) = self.lane_item(i, Lane::Barracks, index);
+                paid && progress >= work
+            }) else {
                 continue;
             };
-            if self.cities[i].barracks_progress < build.work() {
-                continue;
-            }
+            let build = self.cities[i].barracks_queue[index].build;
             let Some(barracks) = self.cities[i].barracks else {
                 continue;
             };
@@ -841,8 +895,7 @@ impl GameState {
             else {
                 continue;
             };
-            self.cities[i].barracks_progress = 0;
-            self.cities[i].barracks_queue.remove(0);
+            self.cities[i].barracks_queue.remove(index);
             let upgrade = build
                 .required_resource()
                 .filter(|&resource| self.barracks_support(i, resource));

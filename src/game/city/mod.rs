@@ -27,11 +27,11 @@ use crate::game::fast_hash::HashMap;
 pub(in crate::game) use barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 pub use builds::{Build, BuildUnit, Building};
 pub(in crate::game) use builds::{GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, WORKER_SHORTCUT};
-pub use economy::Stock;
 pub(in crate::game) use economy::{
-    FOOD_PER_CITIZEN, STARTING_STOCK, grow_price, resource_icon, stock_icons, stock_words,
+    FOOD_PER_CITIZEN, Lane, STARTING_STOCK, grow_price, resource_icon, stock_icons, stock_words,
     turns_icon,
 };
+pub use economy::{Queued, Stock};
 pub(super) use interior::CORE_HP;
 pub(super) use interior::Interior;
 pub(in crate::game) use interior::in_bounds as in_interior;
@@ -70,9 +70,6 @@ pub(super) struct City {
     pub team: Team,
     pub pos: Hex,
     pub population: usize,
-    /// Work done on the head of the queue, in quarter turns
-    /// (`WORK_PER_TURN` a turn, `economy.rs`).
-    pub progress: i32,
     pub barracks_hp: f32,
     pub coastal_battery_hp: f32,
     pub worked: Vec<Hex>,
@@ -80,9 +77,11 @@ pub(super) struct City {
     /// available unless the player changes the assignment.
     pub remembered_worked: Vec<Hex>,
     pub focus: LaborFocus,
-    /// The city works the first item, then immediately continues with the
-    /// following items. Buildings and units deliberately share this queue.
-    pub queue: Vec<Build>,
+    /// Units, workers, Grows and Gathers, each with whether it's paid and
+    /// the work done on it (`Queued`). Each turn the city works the first
+    /// item that's paid for or that the stockpile can pay for
+    /// (`economy.rs`).
+    pub queue: Vec<Queued<Build>>,
     pub built: Vec<Building>,
     pub barracks: Option<Hex>,
     pub mill: Option<Hex>,
@@ -91,10 +90,9 @@ pub(super) struct City {
     pub extra_buildings: HashMap<Building, Hex>,
     /// Scroll position in the city tray's building list.
     pub building_scroll: usize,
-    /// The Barracks' own queue, independent of the city's main queue; it
-    /// advances only while the manager stands on the Barracks.
-    pub barracks_queue: Vec<BuildUnit>,
-    pub barracks_progress: i32,
+    /// The Barracks' own queue, independent of the city's main queue and
+    /// worked the same way.
+    pub barracks_queue: Vec<Queued<BuildUnit>>,
     /// A separate tactical board. Adjacent field troops project copies here.
     pub interior: Interior,
     /// Workers at home, safe and off the map (`workers.rs`).
@@ -115,7 +113,6 @@ impl City {
             team,
             pos,
             population: 1,
-            progress: 0,
             barracks_hp: BARRACKS_MAX_HP,
             coastal_battery_hp: 150.0,
             worked: Vec::new(),
@@ -129,7 +126,6 @@ impl City {
             extra_buildings: HashMap::default(),
             building_scroll: 0,
             barracks_queue: Vec::new(),
-            barracks_progress: 0,
             interior: Interior::default(),
             workers: 1,
             held_workers: 0,
@@ -285,8 +281,8 @@ impl GameState {
                 .collect();
             let (_, scout) = start_units(&self.grid, start).unwrap_or((open[0], open[1]));
             if settings.world_start_city {
-                // Every queue starts empty: the AI picks and pays for its
-                // builds as it plans (`plan_ai_cities`).
+                // Every queue starts empty: the AI picks its builds as it
+                // plans (`plan_ai_cities`).
                 let id = self.cities.len() as u32;
                 self.cities.push(City::new(id, team, start));
                 self.auto_assign_city(self.cities.len() - 1);

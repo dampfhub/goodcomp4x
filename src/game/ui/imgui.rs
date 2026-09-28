@@ -2666,6 +2666,9 @@ impl GameState {
                         StyleColor::Button,
                         if item.active {
                             [0.26, 0.24, 0.15, 1.0]
+                        } else if item.waiting {
+                            // Waits for the stockpile: a dull red.
+                            [0.24, 0.10, 0.08, 1.0]
                         } else {
                             [0.11, 0.14, 0.16, 1.0]
                         },
@@ -2685,6 +2688,7 @@ impl GameState {
                             Target::QueueItem(item.kind, item.index),
                         ));
                     }
+                    note_drawn_button(ui, Target::QueueItem(item.kind, item.index));
                     drop(_background);
                     drop(_align);
                     if !item.locked && !self.is_resolving() {

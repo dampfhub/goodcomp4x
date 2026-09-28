@@ -80,7 +80,7 @@ impl GameState {
             .iter()
             .filter(|c| c.team == team)
             .flat_map(|c| &c.barracks_queue)
-            .filter(|build| build.required_resource() == Some(resource))
+            .filter(|q| q.build.required_resource() == Some(resource))
             .count();
         let trained = if self.lifetime_special_cap {
             self.special_trained[team.index()][resource.index()] as usize

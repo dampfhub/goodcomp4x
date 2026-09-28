@@ -12,8 +12,8 @@ use super::{
 use crate::game::GameState;
 use crate::game::city::{
     Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, FOOD_PER_CITIZEN, GATHER_SHORTCUT,
-    GATHER_YIELD, GROW_SHORTCUT, LaborFocus, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, resource_icon,
-    stock_icons, turns_icon,
+    GATHER_YIELD, GROW_SHORTCUT, LaborFocus, Lane, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT,
+    resource_icon, stock_icons, turns_icon,
 };
 use crate::game::orders::ClickMode;
 use crate::game::terrain::Resource;
@@ -430,7 +430,6 @@ impl GameState {
         let city = &self.cities[i];
         let income = self.income(i);
         let upkeep = city.population as i32 * FOOD_PER_CITIZEN;
-        let stock = self.stock(city.team);
 
         panel.text(
             TITLE,
@@ -472,18 +471,23 @@ impl GameState {
             DIM_TEXT,
         ));
         panel.text(BODY, income_line);
-        let building = match (city.queue.first().copied(), self.turns_left(i)) {
-            (Some(_), Some(0)) => ("READY - WAITING FOR AN OPEN HEX".to_string(), GOLD_TEXT),
-            (Some(build), Some(turns)) => (
-                format!("{} · {} LEFT", build.name(), turns_text(turns as u32)),
+        let status = self.queue_status(i, Lane::City);
+        let worked = self.worked_item(i, Lane::City, &status);
+        let building = match worked {
+            Some((_, 0, _)) => ("READY - WAITING FOR AN OPEN HEX".to_string(), GOLD_TEXT),
+            Some((name, turns, _)) => (
+                format!("{name} · {} LEFT", turns_text(turns as u32)),
                 GOLD_TEXT,
             ),
-            _ => ("NOTHING - CHOOSE BELOW".to_string(), DIM_TEXT),
+            None if city.queue.is_empty() => ("NOTHING - CHOOSE BELOW".to_string(), DIM_TEXT),
+            None => ("NOTHING IT CAN PAY FOR".to_string(), REDUCED_TEXT),
         };
         panel.text(BODY, stat_spans(&[("BUILDING", building.0, building.1)]));
-        if let Some(build) = city.queue.first().copied() {
-            let work = self.city_build_work(i, build);
-            panel.bar((city.progress as f32 / work as f32).clamp(0.0, 1.0));
+        if let Some((_, _, done)) = worked {
+            panel.bar(done);
+        }
+        if let Some(waiting) = self.head_waiting_text(i, Lane::City, &status) {
+            panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
         }
         panel.text(SMALL, vec![("LABOR FOCUS".into(), LABEL_TEXT)]);
         panel.compact_buttons(
@@ -501,25 +505,28 @@ impl GameState {
 
         panel.gap(GAP);
         // A build card's hint is its price and turns; its key is in its
-        // tooltip, to keep the cards narrow.
+        // tooltip, to keep the cards narrow. Anything can be queued: what
+        // the side can't pay for yet waits in the queue, which its tooltip
+        // says.
         let card = |target, label: String, build: Build, head: bool| {
             let price = self.queue_price(i, build);
             ButtonSpec {
                 target,
                 label,
                 hint: cost_hint(price, self.city_build_turns(i, build)),
-                state: ButtonState::new(head, !stock.covers(price)),
+                state: ButtonState::new(head, false),
                 armed: false,
             }
         };
-        let queued_grows = city.queue.iter().filter(|&&b| b == Build::Grow).count();
+        let queued_grows = city.queue.iter().filter(|q| q.build == Build::Grow).count();
+        let first = city.queue.first().map(|q| q.build);
         let grow = if self.can_grow(i) {
             // One line, so there's room for its key.
             let grow = card(
                 Target::Grow,
                 format!("GROW TO {}", city.population + queued_grows + 1),
                 Build::Grow,
-                city.queue.first() == Some(&Build::Grow),
+                first == Some(Build::Grow),
             );
             ButtonSpec {
                 hint: format!("{GROW_SHORTCUT} · {}", grow.hint),
@@ -543,7 +550,7 @@ impl GameState {
                 stock_icons(GATHER_YIELD),
                 turns_icon(Build::Gather.turns())
             ),
-            state: ButtonState::new(city.queue.first() == Some(&Build::Gather), false),
+            state: ButtonState::new(first == Some(Build::Gather), false),
             armed: false,
         };
         panel.compact_buttons(vec![grow, gather]);
@@ -576,14 +583,14 @@ impl GameState {
                     Target::Build(build),
                     build.name().into(),
                     Build::Unit(build),
-                    city.queue.first() == Some(&Build::Unit(build)),
+                    first == Some(Build::Unit(build)),
                 )
             })
             .chain([card(
                 Target::BuildWorker,
                 "WORKER".into(),
                 Build::Worker,
-                city.queue.first() == Some(&Build::Worker),
+                first == Some(Build::Worker),
             )])
             .collect();
         panel.buttons(vec![ButtonSpec {
@@ -697,12 +704,16 @@ impl GameState {
         panel.gap(GAP);
         self.city_workers(i, panel);
         if city.barracks.is_some() {
-            let training = match city.barracks_queue.first() {
-                Some(build) => format!("BARRACKS: TRAINING {}", build.name()),
-                None => "BARRACKS: IDLE - TRAIN TROOPS THERE".into(),
+            let status = self.queue_status(i, Lane::Barracks);
+            let training = match self.worked_item(i, Lane::Barracks, &status) {
+                Some((name, ..)) => (format!("BARRACKS: TRAINING {name}"), GOLD_TEXT),
+                None if city.barracks_queue.is_empty() => {
+                    ("BARRACKS: IDLE - TRAIN TROOPS THERE".into(), GOLD_TEXT)
+                }
+                None => ("BARRACKS: NOTHING IT CAN PAY FOR".into(), REDUCED_TEXT),
             };
             panel.gap(GAP);
-            panel.text(SMALL, vec![(training, GOLD_TEXT)]);
+            panel.text(SMALL, vec![training]);
             panel.buttons(vec![ButtonSpec {
                 target: Target::OpenBarracks,
                 label: "SEE BARRACKS".into(),
@@ -805,6 +816,7 @@ impl GameState {
                 index,
                 label: format!("{} · {turns}", self.job_title(*job)),
                 active: false,
+                waiting: false,
                 dragging: drag.is_some_and(|drag| drag.source == index),
                 drop_target: drag
                     .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
@@ -818,7 +830,6 @@ impl GameState {
         let Some(tile) = city.barracks else {
             return;
         };
-        let stock = self.stock(city.team);
         panel.text(
             TITLE,
             vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
@@ -881,22 +892,19 @@ impl GameState {
             };
             panel.text(SMALL, vec![line]);
         }
-        if let (Some(build), Some(turns)) = (
-            city.barracks_queue.first().copied(),
-            self.barracks_turns_left(i),
-        ) {
+        let status = self.queue_status(i, Lane::Barracks);
+        if let Some((name, turns, done)) = self.worked_item(i, Lane::Barracks, &status) {
             panel.text(
                 SMALL,
                 vec![(
-                    format!(
-                        "TRAINING {} · {} LEFT",
-                        build.name(),
-                        turns_text(turns as u32)
-                    ),
+                    format!("TRAINING {name} · {} LEFT", turns_text(turns as u32)),
                     GOLD_TEXT,
                 )],
             );
-            panel.bar((city.barracks_progress as f32 / build.work() as f32).clamp(0.0, 1.0));
+            panel.bar(done);
+        }
+        if let Some(waiting) = self.head_waiting_text(i, Lane::Barracks, &status) {
+            panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
         }
         let builds = [
             BuildUnit::Melee,
@@ -910,15 +918,16 @@ impl GameState {
             builds
                 .into_iter()
                 .map(|build| {
-                    // Locked (no deposit, or the cap is used up) or
-                    // unaffordable cards are dimmed; the tooltip says why.
+                    // Locked cards (no deposit, or the cap is used up) are
+                    // dimmed; the tooltip says why. One the side can't pay for
+                    // yet can be queued, and waits.
                     ButtonSpec {
                         target: Target::BarracksBuild(build),
                         label: build.name().into(),
                         hint: cost_hint(build.price(), build.turns()),
                         state: ButtonState::new(
-                            city.barracks_queue.first() == Some(&build),
-                            self.barracks_lock(i, build).is_some() || !stock.covers(build.price()),
+                            city.barracks_queue.first().map(|q| q.build) == Some(build),
+                            self.barracks_lock(i, build).is_some(),
                         ),
                         armed: false,
                     }

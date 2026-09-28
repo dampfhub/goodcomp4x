@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::GameState;
 use super::camera::Camera;
 use super::city::{
-    Build, BuildUnit, Building, City, LaborFocus, MAX_CITY_POPULATION, Stock, grow_price,
+    Build, BuildUnit, Building, City, LaborFocus, MAX_CITY_POPULATION, Queued, Stock, grow_price,
     in_interior,
 };
 use super::hex::Hex;
@@ -32,7 +32,7 @@ use super::workers::WorkerJob;
 /// Bumped whenever a message or a plan changes shape, or the rules a turn
 /// plays out by, so mismatched builds refuse each other instead of
 /// desyncing.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -131,10 +131,9 @@ pub struct CityPlan {
     /// The settler that founded it this turn, for a city new since the turn
     /// began.
     pub founded_by: Option<u32>,
-    pub queue: Vec<Build>,
-    pub progress: i32,
-    pub barracks_queue: Vec<BuildUnit>,
-    pub barracks_progress: i32,
+    /// Each item with whether it's paid for and its work (`Queued`).
+    pub queue: Vec<Queued<Build>>,
+    pub barracks_queue: Vec<Queued<BuildUnit>>,
     pub worked: Vec<Hex>,
     pub remembered_worked: Vec<Hex>,
     pub focus: LaborFocus,
@@ -162,18 +161,49 @@ pub struct FighterPlan {
     pub planned_attack: Option<Hex>,
 }
 
-/// What a side has paid for and not yet got: every item in its cities'
+/// Whether a planned queue, `now`, could come of a city's queue as the turn
+/// began, `before`, by planning alone: every unpaid item has no work, and
+/// every paid item is one of `before`'s paid items, each at most once, with
+/// the same build and work. Planning adds, removes and reorders items; only
+/// the turn's economy pays for them or works on them.
+fn keeps_what_was_paid<B: PartialEq>(before: &[Queued<B>], now: &[Queued<B>]) -> bool {
+    let mut paid: Vec<&Queued<B>> = before.iter().filter(|q| q.paid).collect();
+    now.iter().all(|item| {
+        if !item.paid {
+            return item.progress == 0;
+        }
+        match paid.iter().position(|was| *was == item) {
+            Some(i) => {
+                paid.swap_remove(i);
+                true
+            }
+            None => false,
+        }
+    })
+}
+
+/// A city's queues and jobs as `committed` reads them: its population, its
+/// queue, its Barracks' queue and its placed jobs.
+type CityBooks<'a> = (
+    usize,
+    &'a [Queued<Build>],
+    &'a [Queued<BuildUnit>],
+    &'a [WorkerJob],
+);
+
+/// What a side has paid for and not yet got: every paid item in its cities'
 /// queues and Barracks' queues and every job it has placed, at the price it
-/// paid (a Grow's depends on how many are queued ahead of it in its city).
+/// paid. Its city's paid Grows were priced a citizen apart, from its
+/// population up (`GameState::item_price`). Unpaid items cost nothing yet.
 fn committed<'a>(
-    cities: impl Iterator<Item = (usize, &'a [Build], &'a [BuildUnit], &'a [WorkerJob])>,
+    cities: impl Iterator<Item = CityBooks<'a>>,
     field_jobs: impl Iterator<Item = WorkerJob>,
 ) -> Stock {
     let mut total = Stock::default();
     for (population, queue, barracks, jobs) in cities {
         let mut grows = 0;
-        for build in queue {
-            total += match build {
+        for item in queue.iter().filter(|q| q.paid) {
+            total += match item.build {
                 Build::Grow => {
                     grows += 1;
                     grow_price(population + grows - 1)
@@ -181,8 +211,8 @@ fn committed<'a>(
                 build => build.price(),
             };
         }
-        for unit in barracks {
-            total += unit.price();
+        for item in barracks.iter().filter(|q| q.paid) {
+            total += item.build.price();
         }
         for job in jobs {
             total += job.kind.price();
@@ -764,14 +794,18 @@ impl GameState {
             let at = format!("CITY AT ({}, {})", city.pos.q, city.pos.r);
             let before = start.cities.iter().find(|c| c.pos == city.pos);
             let population = before.map_or(1, |c| c.population);
-            // Planning keeps a build's progress, or clears it by taking the
-            // build off: it never adds any.
-            let (progress, barracks_progress) =
-                before.map_or((0, 0), |c| (c.progress, c.barracks_progress));
-            if ![0, progress].contains(&city.progress)
-                || ![0, barracks_progress].contains(&city.barracks_progress)
+            // Planning pays for nothing and works on nothing: that happens as
+            // the turn plays out (`work_queues`). What it queues is unpaid,
+            // with no work, and every paid item it keeps is one this city
+            // had paid for, with the work it had. It never adds work or
+            // marks an item paid.
+            let (queue, barracks_queue) = before.map_or((&[][..], &[][..]), |c| {
+                (&c.queue[..], &c.barracks_queue[..])
+            });
+            if !keeps_what_was_paid(queue, &city.queue)
+                || !keeps_what_was_paid(barracks_queue, &city.barracks_queue)
             {
-                return bad(format!("{at}: PROGRESS IT DIDN'T MAKE"));
+                return bad(format!("{at}: PAYMENT OR PROGRESS IT DIDN'T MAKE"));
             }
             // Planning releases held workers; only coming home recalled
             // holds one, as the turn plays out.
@@ -781,19 +815,23 @@ impl GameState {
             // Its queue holds what a city trains: no Cavalry or Armored,
             // ships only with a Harbor, no growing past the cap.
             let harbor = before.is_some_and(|c| c.placed_site(Building::Harbor).is_some());
-            let trainable = |build: &Build| match build {
+            let trainable = |item: &Queued<Build>| match item.build {
                 Build::Unit(unit) => {
                     unit.required_resource().is_none() && (!unit.unit_type().is_naval() || harbor)
                 }
                 _ => true,
             };
-            let grows = city.queue.iter().filter(|&&b| b == Build::Grow).count();
+            let grows = city.queue.iter().filter(|q| q.build == Build::Grow).count();
             if !city.queue.iter().all(trainable) || population + grows > MAX_CITY_POPULATION {
                 return bad(format!("{at}: A BUILD IT CAN'T MAKE"));
             }
             let barracks = before.is_some_and(|c| c.barracks.is_some());
             if !city.barracks_queue.is_empty()
-                && (!barracks || city.barracks_queue.iter().any(|u| u.unit_type().is_naval()))
+                && (!barracks
+                    || city
+                        .barracks_queue
+                        .iter()
+                        .any(|q| q.build.unit_type().is_naval()))
             {
                 return bad(format!("{at}: A BARRACKS BUILD IT CAN'T MAKE"));
             }
@@ -814,9 +852,9 @@ impl GameState {
         // Cavalry and Armored: no more queued than its deposits allow, or
         // at least no more than it had queued.
         for resource in [Resource::Horses, Resource::Iron] {
-            let queued = |queues: &mut dyn Iterator<Item = &BuildUnit>| {
+            let queued = |queues: &mut dyn Iterator<Item = &Queued<BuildUnit>>| {
                 queues
-                    .filter(|u| u.required_resource() == Some(resource))
+                    .filter(|q| q.build.required_resource() == Some(resource))
                     .count()
             };
             let before = queued(
@@ -914,10 +952,11 @@ impl GameState {
                 return bad(format!("TROOP {} INSIDE A CITY", fighter.source_id));
             }
         }
-        // Nothing comes free. Every price is paid when queued and refunded
-        // when taken off, so what the side holds plus everything it has
-        // queued and placed is worth exactly what it held and had queued
-        // when the turn began.
+        // Nothing comes free. Planning pays for no queued item (the check
+        // above), placing a job pays its price, and taking a paid item or a
+        // job off refunds what was paid, so what the side holds plus every
+        // paid item and placed job is worth exactly what it held and had
+        // paid for when the turn began. Unpaid items count for nothing.
         let population = |pos: Hex| {
             start
                 .cities
@@ -1093,9 +1132,7 @@ impl GameState {
                     pos: c.pos,
                     founded_by,
                     queue: c.queue.clone(),
-                    progress: c.progress,
                     barracks_queue: c.barracks_queue.clone(),
-                    barracks_progress: c.barracks_progress,
                     worked: c.worked.clone(),
                     remembered_worked: c.remembered_worked.clone(),
                     focus: c.focus,
@@ -1197,9 +1234,7 @@ impl GameState {
                 continue;
             }
             city.queue = city_plan.queue.clone();
-            city.progress = city_plan.progress;
             city.barracks_queue = city_plan.barracks_queue.clone();
-            city.barracks_progress = city_plan.barracks_progress;
             city.worked = city_plan.worked.clone();
             city.remembered_worked = city_plan.remembered_worked.clone();
             city.focus = city_plan.focus;
@@ -1249,9 +1284,15 @@ impl GameState {
             (u.ability_cooldown, u.deployed, u.cargo.len()).hash(&mut h);
         }
         for c in &self.cities {
-            (c.id, c.team, c.pos, c.population, c.progress, c.workers).hash(&mut h);
+            (c.id, c.team, c.pos, c.population, c.workers).hash(&mut h);
             c.held_workers.hash(&mut h);
-            (c.barracks, c.barracks_hp.to_bits(), c.barracks_progress).hash(&mut h);
+            (c.barracks, c.barracks_hp.to_bits()).hash(&mut h);
+            for q in &c.queue {
+                (q.paid, q.progress).hash(&mut h);
+            }
+            for q in &c.barracks_queue {
+                (q.paid, q.progress).hash(&mut h);
+            }
             c.worked.hash(&mut h);
             c.built.len().hash(&mut h);
             c.queue.len().hash(&mut h);
@@ -1538,6 +1579,196 @@ mod tests {
         assert!(why.contains("WORK IT DIDN'T DO"), "{why}");
     }
 
+    /// The guest's city with queues part paid for and under way, as earlier
+    /// turns' economies leave them, the same on both machines as this
+    /// turn's planning begins; and the city's index.
+    fn paid_queues(host: &mut GameState, guest: &mut GameState) -> usize {
+        let city = guest
+            .cities
+            .iter()
+            .position(|c| c.team == GUEST_SEAT)
+            .unwrap();
+        // Beside the city, on no tile its citizens work.
+        let c = &guest.cities[city];
+        let barracks = c
+            .pos
+            .neighbors()
+            .into_iter()
+            .find(|h| guest.grid.is_passable(*h) && !c.worked.contains(h))
+            .unwrap();
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        for c in [&mut guest.cities[city], &mut start.cities[city]] {
+            c.barracks = Some(barracks);
+            c.queue = vec![
+                Queued::worked(Build::Unit(BuildUnit::Melee), 4),
+                Queued::prepaid(Build::Grow),
+                Queued::new(Build::Worker),
+                Queued::prepaid(Build::Grow),
+                Queued::new(Build::Unit(BuildUnit::Siege)),
+            ];
+            c.barracks_queue = vec![
+                Queued::new(BuildUnit::Ranged),
+                Queued::worked(BuildUnit::Melee, 2),
+            ];
+        }
+        city
+    }
+
+    #[test]
+    fn planning_keeps_what_was_paid_and_pays_for_nothing() {
+        let (mut host, mut guest) = pair();
+        let city = paid_queues(&mut host, &mut guest);
+        let good = guest.team_plan(GUEST_SEAT);
+        assert_eq!(host.check_plan(&good), Ok(()));
+        let c = good
+            .cities
+            .iter()
+            .position(|c| c.pos == guest.cities[city].pos)
+            .unwrap();
+        let refused = |host: &GameState, plan: &TeamPlan| {
+            let why = host.check_plan(plan).expect_err("refused");
+            assert!(
+                why.contains("PAYMENT OR PROGRESS") || why.contains("SPENDING"),
+                "{why}"
+            );
+        };
+        // Paying as it queues: the Siege marked paid, with or without its
+        // price off the stockpile.
+        let mut plan = good.clone();
+        plan.cities[c].queue[4].paid = true;
+        refused(&host, &plan);
+        plan.stock -= BuildUnit::Siege.price();
+        refused(&host, &plan);
+        // Work it didn't do, on a paid item or an unpaid one.
+        let mut plan = good.clone();
+        plan.cities[c].queue[0].progress += 4;
+        refused(&host, &plan);
+        let mut plan = good.clone();
+        plan.cities[c].barracks_queue[0].progress = 1;
+        refused(&host, &plan);
+        // A paid item kept but unpaid, keeping its work.
+        let mut plan = good.clone();
+        plan.cities[c].queue[0].paid = false;
+        refused(&host, &plan);
+        // A paid item copied.
+        let mut plan = good.clone();
+        let copy = plan.cities[c].queue[1];
+        plan.cities[c].queue.push(copy);
+        refused(&host, &plan);
+        // A refund for an unpaid item taken off.
+        let mut plan = good.clone();
+        plan.cities[c].queue.remove(2);
+        plan.stock += Build::Worker.price();
+        refused(&host, &plan);
+
+        // Taken off paid, the Melee refunds its price, and a paid Grow the
+        // dearer Grow's: the checks take both, and nothing more.
+        guest.open_city(city);
+        guest.remove_selected_city_queue_item(0);
+        guest.remove_selected_city_queue_item(0);
+        let plan = guest.team_plan(GUEST_SEAT);
+        assert_eq!(host.check_plan(&plan), Ok(()));
+        let population = guest.cities[city].population;
+        assert_eq!(
+            plan.stock,
+            good.stock + BuildUnit::Melee.price() + grow_price(population + 1)
+        );
+        let mut greedy = plan.clone();
+        greedy.stock.food += 1;
+        refused(&host, &greedy);
+    }
+
+    /// Whatever the player does to its queues, the plan passes; and any
+    /// tampering with what's paid, the work done or the stockpile on top of
+    /// that is refused.
+    #[test]
+    fn no_plan_pays_early_or_gets_a_build_for_free() {
+        use rand::{RngExt, SeedableRng};
+        let (mut host, mut guest) = pair();
+        let city = paid_queues(&mut host, &mut guest);
+        guest.fund(GUEST_SEAT);
+        host.lockstep
+            .as_mut()
+            .unwrap()
+            .turn_start
+            .as_mut()
+            .unwrap()
+            .fund(GUEST_SEAT);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+        for round in 0..400 {
+            let mut game = guest.clone();
+            game.open_city(city);
+            for _ in 0..rng.random_range(0..8) {
+                let len = game.cities[city].queue.len();
+                let troops = game.cities[city].barracks_queue.len();
+                match rng.random_range(0..9) {
+                    0 => game.queue_selected_city_unit(BuildUnit::Melee),
+                    1 => game.queue_selected_city_growth(),
+                    2 => game.queue_selected_city_worker(),
+                    3 => game.queue_selected_city_gather(),
+                    4 => game.queue_selected_barracks_unit(BuildUnit::Siege),
+                    5 if len > 0 => game.remove_selected_city_queue_item(rng.random_range(0..len)),
+                    6 if troops > 0 => {
+                        game.remove_selected_barracks_queue_item(rng.random_range(0..troops))
+                    }
+                    7 if len > 1 => {
+                        game.move_selected_city_queue_item(rng.random_range(1..len), true)
+                    }
+                    8 => game.clear_selected_city_queue(),
+                    _ => {}
+                }
+            }
+            let plan = game.team_plan(GUEST_SEAT);
+            assert_eq!(host.check_plan(&plan), Ok(()), "round {round}");
+            let c = plan
+                .cities
+                .iter()
+                .position(|c| c.pos == game.cities[city].pos)
+                .unwrap();
+            let mut tampered = plan.clone();
+            let queue = &mut tampered.cities[c].queue;
+            let unpaid: Vec<usize> = (0..queue.len()).filter(|&i| !queue[i].paid).collect();
+            let paid: Vec<usize> = (0..queue.len()).filter(|&i| queue[i].paid).collect();
+            match rng.random_range(0..5) {
+                0 if !unpaid.is_empty() => {
+                    let i = unpaid[rng.random_range(0..unpaid.len())];
+                    queue[i].paid = true;
+                    if rng.random_bool(0.5) {
+                        let price = queue[i].build.price();
+                        tampered.stock -= price;
+                    }
+                }
+                1 if !queue.is_empty() => {
+                    let i = rng.random_range(0..queue.len());
+                    queue[i].progress += rng.random_range(1..8);
+                }
+                2 if !paid.is_empty() => {
+                    let copy = queue[paid[rng.random_range(0..paid.len())]];
+                    queue.push(copy);
+                }
+                3 if !paid.is_empty() => {
+                    // Unpaid, but no refund for it.
+                    let i = paid[rng.random_range(0..paid.len())];
+                    queue[i].paid = false;
+                    queue[i].progress = 0;
+                }
+                _ => {
+                    let mut coin = Stock::default();
+                    match rng.random_range(0..3) {
+                        0 => coin.food = 1,
+                        1 => coin.wood = 1,
+                        _ => coin.metal = 1,
+                    }
+                    tampered.stock += coin;
+                }
+            }
+            assert!(
+                host.check_plan(&tampered).is_err(),
+                "round {round}: {tampered:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_plan_releases_held_workers_but_never_holds_more() {
         let (mut host, mut guest) = pair();
@@ -1636,18 +1867,29 @@ mod tests {
         let mut plan = good.clone();
         plan.stock = Stock::whole(1_000_000, 0, 0);
         refused(&mut host, plan);
+        // A build marked paid that it never paid for, and one paid for as
+        // it's queued: only the turn's economy pays, as work starts.
         let mut plan = good.clone();
-        plan.cities[0].queue.push(Build::Unit(BuildUnit::Siege));
+        plan.cities[0]
+            .queue
+            .push(Queued::prepaid(Build::Unit(BuildUnit::Siege)));
+        refused(&mut host, plan.clone());
+        plan.stock -= BuildUnit::Siege.price();
         refused(&mut host, plan);
         // Progress it didn't make, a troop a city can't train, and tiles
         // out of its reach.
         let mut plan = good.clone();
-        plan.cities[0].queue = vec![Build::Gather];
-        plan.cities[0].progress = 999;
+        plan.cities[0].queue = vec![Queued {
+            progress: 999,
+            ..Queued::new(Build::Gather)
+        }];
+        refused(&mut host, plan.clone());
+        plan.cities[0].queue[0].paid = true;
         refused(&mut host, plan);
         let mut plan = good.clone();
-        plan.cities[0].queue.push(Build::Unit(BuildUnit::Cavalry));
-        plan.stock -= BuildUnit::Cavalry.price();
+        plan.cities[0]
+            .queue
+            .push(Queued::new(Build::Unit(BuildUnit::Cavalry)));
         refused(&mut host, plan);
         let mut plan = good.clone();
         let far = host
@@ -1659,7 +1901,7 @@ mod tests {
         refused(&mut host, plan);
         // A queue far longer than play makes.
         let mut plan = good.clone();
-        plan.cities[0].queue = vec![Build::Gather; MAX_PLAN_LIST + 1];
+        plan.cities[0].queue = vec![Queued::new(Build::Gather); MAX_PLAN_LIST + 1];
         refused(&mut host, plan);
         // The wrong turn.
         let mut plan = good.clone();
@@ -1758,7 +2000,11 @@ mod tests {
             }
             for city in &mut plan.cities {
                 city.queue = (0..rng.random_range(0..4))
-                    .map(|_| builds[rng.random_range(0..builds.len())])
+                    .map(|_| Queued {
+                        build: builds[rng.random_range(0..builds.len())],
+                        paid: rng.random_bool(0.1),
+                        progress: if rng.random_bool(0.1) { 4 } else { 0 },
+                    })
                     .collect();
                 city.worked.reverse();
                 city.worker_jobs = (0..rng.random_range(0..4))

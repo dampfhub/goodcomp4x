@@ -27,13 +27,23 @@ more citizens and everything else that eats it (troops, workers).
 - **Upkeep:** each citizen still eats 2 food a turn, now from the side's stockpile, so a farming
   city can feed a mining one. If the stockpile can't pay the whole side's upkeep, it empties and the
   side's largest city (lowest index on ties) loses a citizen (never below 1).
-- **Paying:** a build is paid in full when it is queued, the way RTS games charge at the queue
-  and refund on cancel: a card the side can't afford is dimmed and its tooltip names the
-  shortfall. Taking an item out of a queue (its X, Backspace, or dropping an unsited building)
-  refunds its full price. A captured city's queue and a destroyed Barracks' queue are lost.
-- **Time:** every build takes a fixed number of turns (`WORK_PER_TURN` work a turn). The queue
-  still works one item at a time; its progress resets on an empty queue, as production did. A
-  Workshop halves the time of an adjacent building instead of its cost.
+- **Paying** (round 5, #200): a build is paid in full when work on it starts, not when it is
+  queued, so a player can queue what they can't afford yet and plan ahead. Anything can be
+  queued (Harbors, deposits, the population cap and a Barracks still limit what). At each
+  turn's economy, after income and upkeep, each queue works the first item that's paid for or
+  that the stockpile can pay for then (`work_queues`), paying for it if it isn't; items ahead of
+  it that it can't pay for wait, unpaid, and it goes back to them once it can. Queues pay in city
+  order, each city's queue before its Barracks', so two cities waiting on one stockpile are
+  served the same way on every machine. Taking an item off refunds its price if it was paid,
+  and nothing if it wasn't. A captured city's queue and a destroyed Barracks' queue are lost,
+  paid items with them. Worker jobs (roads, improvements, buildings on a site) are still paid
+  when placed, as before: they reserve a tile and send a worker, so they stay as they are for
+  now.
+- **Time:** every build takes a fixed number of turns (`WORK_PER_TURN` work a turn). A queue
+  works one item a turn; each item keeps its own work (`Queued`), so a skipped-to item that
+  finishes leaves the waiting ones untouched, and reordering carries work with its item. Work
+  never passes what an item needs: none carries over to the next. A Workshop halves the time
+  of an adjacent building instead of its cost.
 - **Barracks** (`city/barracks.rs`, second round): the primary military building. It trains
   land troops in their listed turns, whatever the manager does; a city center takes twice as
   long (`CITY_TRAINING_SLOWDOWN`), so it can still raise a Melee in an emergency. Only a
@@ -48,32 +58,39 @@ more citizens and everything else that eats it (troops, workers).
   expansion to new deposits), is the Debug panel's UNIT CAP: EVER. The simulations check both
   (`SIM_LIFETIME_CAP=1`): a side never has more drawn troops than its deposits ever allowed.
   Ruins' Cavalry don't count against the cap.
-- **Growth:** the Grow card (9) queues one citizen, costing `5 + 5 x population` food (counting
-  Grows already queued ahead of it) and 2 turns. It shares the city queue, so growing also costs
-  the city's build time. No food store, no automatic growth, no growth meter. Removing a Grow
-  refunds the dearest queued Grow's price, so the ones left are paid for exactly what they cost
-  now.
+- **Growth:** the Grow card (9) queues one citizen, costing `5 + 5 x population` food and 2
+  turns. It's priced when it's paid, at the population then, counting the Grows already paid
+  for in that city (their citizens are coming), so the card shows the price counting the Grows
+  queued ahead of it. It shares the city queue, so growing also costs the city's build time. No
+  food store, no automatic growth, no growth meter. Removing a paid Grow refunds the dearest
+  paid Grow's price, so the ones left are paid for exactly what they cost now.
 - **Ruins:** Harvest gives the side 8 food and Supplies 4 wood and 2 metal, into the stockpile.
-- **Turn gating:** a player city with an empty queue holds up the turn only while the side can
-  pay for a Melee, Ranged, Worker or Grow; a broke side isn't forced to pick something it can't
-  buy.
-- **AI** (`plan_ai_cities`): a city with an empty queue buys one build or waits: a Worker if it
-  has none; then Grow. With a worker it places a Barracks for its workers to build, sited on a
+- **Turn gating:** a player city with an empty queue holds up the turn (it can always Gather);
+  one whose items all wait doesn't.
+- **AI** (`plan_ai_cities`): a city with an empty queue queues one build it can pay for this
+  turn, counting what its other queues start (`forecast`'s spare stockpile), so what it queues is
+  paid and started this turn: a Worker if it has none; then Grow. A queue whose items all wait
+  (the income it counted on didn't come) is emptied, at no cost as they're unpaid, and planned
+  again, so an AI city never stands idle waiting. With a worker it places a Barracks for its workers to build, sited on a
   Horses or Iron deposit within 3 hexes when there is one (`ai_barracks_site`) and paid when
   placed. Until it has a Barracks it trains
   Melee itself (slowly) while the side has fewer than 2 units per city. An idle AI Barracks
   trains Cavalry or Armored when its cap and stockpile allow, else Melee, or Ranged for every two
-  Melee. The AI pays through the same `try_queue_build` as the
-  player, so `simulation.rs` checks that no stockpile ever goes negative, and that cities both
-  train troops and grow.
+  Melee. The AI's builds are paid by the same `work_queues` as the player's, so
+  `simulation.rs` checks that no stockpile ever goes negative, that no unpaid item has work, and
+  that cities both train troops and grow.
 - **UI:** food, wood, metal and turns have icons (wheat, a log, an ingot, a clock;
   `map_icons.rs`), drawn on the map's yield pips and inline in text: an icon character
   (`FOOD_ICON` and the rest) in any UI string draws as its icon, in the classic font
   (`font::Face`) and in ImGui (`rich_text`, `rich_button`). The top bar shows the stockpile by
   icon with each resource's change a turn. The city tray shows what the city delivers and eats,
-  the build in progress with its turns left, a one-line Grow card, and cards whose hints are the
-  price and turns in icons, dimmed when unaffordable (or, at a Barracks, locked); a dimmed
-  card's tooltip says why. Queue rows show turns left, and notices name prices in icons. The
+  the build worked with its turns left and what the first item waits for, a one-line Grow card,
+  and cards whose hints are the price and turns in icons, never dimmed for the price (at a
+  Barracks, dimmed when locked); a card's tooltip says what the side is short of this turn.
+  Queue rows show turns left, or, tinted red, what they wait for; a waiting city has a badge
+  over its tower on the map with the missing resources' icons. Whether an item waits is judged
+  on the stockpile as this turn's economy will find it (`forecast`: now, plus the turn's income,
+  less the citizens' food and what the queues ahead start). Notices name prices in icons. The
   barracks panel shows each deposit kind's troops left, or why they're locked.
 
 ## First-pass numbers
@@ -113,8 +130,9 @@ Debug panel toggle **PROD SPEEDUP** (beside fog of war; off by default; kept acr
 switches and loads, like fog), so both can be tried in one build. With it on, a city's queue gains `WORK_PER_TURN` plus its production
 (the wood and metal it delivers this turn, in quarters, divided by 4) each turn: every whole
 point of production adds a quarter turn of work. A Barracks adds the production delivered to it
-(`barracks_income`) the same way. The price is still paid up front, so costs are "starting the
-thing" and production is how fast it goes. Production is not spent by this: the same wood and
+(`barracks_income`) the same way. The price is still paid as work starts, so costs are
+"starting the thing" and production is how fast it goes; work past what an item needs is lost,
+not carried to the next. Production is not spent by this: the same wood and
 metal still reach the stockpile.
 
 ## What the simulations showed
@@ -210,8 +228,9 @@ Averages per side over seeds 0-7 (`economy_report`), fixed time, cap counting th
 - **Labor focus:** done in round 4: Food, Wood, Metal or Balanced, a focus per resource.
 - **AI spending:** it builds a Barracks and trains Cavalry or Armored now, but no other building,
   and it should grow more when food piles up, to test the late game properly.
-- **Refunds:** full refunds make the queue a free bank; RTS games often refund in full, but a
-  partial refund for an item in progress is worth trying if players park resources in queues.
+- **Refunds:** a paid item refunds in full; since round 5 an item is only paid once work on it
+  starts, so parking resources in a queue means starting builds. A partial refund for an item
+  in progress is still worth trying if players do that.
 
 ## Round 3: workers build what a city places
 
@@ -234,3 +253,42 @@ city build that brings in 2 food, 2 wood and 1 metal (`GATHER_YIELD`): always po
 worth choosing on its own when metal is short. An empty city queue now always holds up the
 turn. The Granary is gone (the last building built in the city queue). To try: whether the
 yield should scale with the city (a share of its income, say) rather than be fixed.
+
+## Round 5: pay when work starts (#200)
+
+Players wanted to plan ahead: queue what they can't afford yet and have it wait. Now anything
+can be queued, a build is paid when its city starts work on it, and a queue works the first
+item it can pay for, skipping what it can't (see Paying above). How the open points were
+settled:
+
+- **Progress belongs to the item** (`Queued`: build, paid, work), not one number for the queue
+  head: a skipped-to item that finishes leaves the waiting ones untouched, and reordering
+  carries work with its item. Work never passes what an item needs, so none carries over to
+  the next (it used to, in the production-speedup variant).
+- **Refunds:** an item taken off refunds its price only if it was paid. A captured city's
+  queues and a destroyed Barracks' are lost, paid items with them, as before.
+- **Several cities on one stockpile:** queues pay in city order, each city's queue before its
+  Barracks', which is deterministic for the simulations and network lockstep.
+- **Grow's price** is set when it's paid, at the population then plus the Grows already paid
+  for in the city. The card prices it counting every Grow queued ahead, which is what it will
+  cost once they're done.
+- **Worker jobs** are still paid when placed: they claim a tile and send a worker out, so a
+  job the side can't pay for isn't placed.
+- **Waiting** is judged on the stockpile as this turn's economy will find it (`forecast`):
+  the stockpile now, plus the turn's income, less the citizens' food, less what the queues
+  ahead of it start. A city whose first item (of its queue or its Barracks') waits shows a badge
+  with the missing resources on the map; its waiting rows are tinted and say what they lack.
+- **The AI** still queues only what it can pay for this turn, counting income and what its
+  other queues start, one item per empty queue; a queue whose items all wait is emptied and
+  planned again, so it never queues endlessly or stands idle.
+- **Network play:** planning can't pay for anything, so `check_plan` accepts a plan's queues
+  only if every unpaid item has no work and every paid item is one the city had paid for, with
+  the work it had; spending is still accounted exactly, over paid items only.
+
+To try: whether the forecast's counting of this turn's income surprises players when the income
+doesn't come (a route cut during the turn), and whether a waiting item should hold up the turn.
+
+`economy_report` over seeds 0-7, per side, before and after this round: units trained by turn 40
+are about the same (Cities 11.9 and 11.9, World 14.7 and 14.1); the AI spends a little sooner,
+since it counts the turn's income (Cities population 4.4 against 3.5 at turn 10), and World
+sides bank less metal (40 against 87 at turn 40).

@@ -11,7 +11,7 @@
 
 use std::thread;
 
-use super::city::{Build, Building, CORE_HP, MAX_CITY_POPULATION};
+use super::city::{Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, Queued};
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
@@ -386,22 +386,29 @@ fn check_invariants(game: &GameState, context: &str) {
         }
     }
     for (i, city) in game.cities.iter().enumerate() {
-        // A finished unit waits at exactly its cost while no safe spawn is open.
-        // One turn's work can legitimately cross that cost.
-        let Some(&Build::Unit(unit)) = city.queue.first() else {
+        // Paid for as work starts (`work_queues`): an unpaid item has no work
+        // done, and no item more than it needs, so none is banked.
+        for lane in [Lane::City, Lane::Barracks] {
+            for index in 0..game.lane_len(i, lane) {
+                let (paid, progress, work) = game.lane_item(i, lane, index);
+                assert!(
+                    (0..=work).contains(&progress) && (paid || progress == 0),
+                    "{context}: city {} {lane:?} item {index}: paid {paid}, work {progress} of {work}",
+                    city.id
+                );
+            }
+        }
+        // A finished unit waits, done, only while no safe spawn is open.
+        let finished = city.queue.iter().find(|q| {
+            matches!(q.build, Build::Unit(_)) && q.progress >= game.city_build_work(i, q.build)
+        });
+        let Some(&Queued {
+            build: Build::Unit(unit),
+            ..
+        }) = finished
+        else {
             continue;
         };
-        let work = game.city_build_work(i, Build::Unit(unit));
-        if city.progress < work || game.work_rate(game.income(i).production()) >= work {
-            continue;
-        }
-        assert_eq!(
-            city.progress,
-            work,
-            "{context}: city {} banked production behind a finished {}",
-            city.id,
-            unit.name()
-        );
         let naval = unit.unit_type().is_naval();
         let origin = if naval {
             city.placed_site(Building::Harbor).unwrap_or(city.pos)

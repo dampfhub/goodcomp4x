@@ -346,7 +346,10 @@ impl GameState {
             game.units.push(Unit::new(id, pos, Team::Blue, kind));
         }
         for city in &mut game.cities {
-            city.queue.push(city::Build::Unit(city::BuildUnit::Melee));
+            // Paid for already, as scenario setup: the queue skips the price.
+            city.queue.push(city::Queued::prepaid(city::Build::Unit(
+                city::BuildUnit::Melee,
+            )));
         }
         game.open_city_interior(1);
         game.notice = "SIEGE: FIGHT ON BOTH MAPS (V) - BREACH POST, THEN OCCUPY IT".into();
@@ -402,7 +405,9 @@ impl GameState {
         }
         game.cities[0]
             .queue
-            .push(city::Build::Unit(city::BuildUnit::PatrolGalley));
+            .push(city::Queued::prepaid(city::Build::Unit(
+                city::BuildUnit::PatrolGalley,
+            )));
         game.start_on_whole_map();
         game.notice =
             "NAVAL TEST: SELECT TROOP THEN CLICK CRAFT TO BOARD; CRAFT THEN SHORE TO LAND".into();

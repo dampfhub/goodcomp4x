@@ -6,7 +6,8 @@ use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
     BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,
     DISABLED_BG, DISABLED_TEXT, GAP, GOLD_TEXT, GROWTH_COLOR, LINE_GAP, PANEL_BG, QUEUED_BG,
-    QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, ROSTER_TOKEN_SHARE, SMALL, Shape, TEXT,
+    QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, REDUCED_TEXT, ROSTER_TOKEN_SHARE, SMALL, Shape,
+    TEXT,
 };
 use super::{ChipIcon, Target};
 use crate::game::draw::{push_city_tower, push_unit_token};
@@ -48,6 +49,7 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             max,
             label,
             active,
+            waiting,
             dragging,
             drop_target,
             locked,
@@ -61,6 +63,8 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
                 ARMED_BORDER_COLOR
             } else if *active {
                 GOLD_TEXT
+            } else if *waiting {
+                REDUCED_TEXT
             } else {
                 BORDER_COLOR
             };
@@ -77,6 +81,8 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
                     DIM_TEXT
                 } else if *active {
                     GOLD_TEXT
+                } else if *waiting {
+                    REDUCED_TEXT
                 } else {
                     TEXT
                 },

@@ -10,7 +10,7 @@ use super::{
 };
 use crate::game::GameState;
 use crate::game::city::{
-    Build, Building, GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, MAX_CITY_POPULATION,
+    Build, Building, GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, Lane, MAX_CITY_POPULATION,
     UNITS_PER_DEPOSIT, WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
 };
 use crate::game::hex::Hex;
@@ -22,9 +22,9 @@ use crate::renderer::Vertex;
 use glam::Vec2;
 
 impl GameState {
-    /// What queuing `build` in the open city (or Barracks, with
-    /// `barracks`) costs from the stockpile, and how long it takes there:
-    /// the price's icons, then the clock and the turns.
+    /// What `build` queued in the open city (or Barracks, with `barracks`)
+    /// costs from the stockpile when work on it starts, and how long it
+    /// takes there: the price's icons, then the clock and the turns.
     fn price_text(&self, build: Build, barracks: bool) -> String {
         let city = self.selected_city.or(self.selected_barracks);
         let price = city.map_or_else(|| build.price(), |city| self.queue_price(city, build));
@@ -46,14 +46,32 @@ impl GameState {
         format!(" · {left} OF {cap} LEFT")
     }
 
-    /// What the stockpile is short of to queue `build` in the open city, if
-    /// anything.
+    /// What the stockpile is short of to pay for `build` in the open city
+    /// this turn, on top of what its queues start (`forecast`'s `spare`),
+    /// if anything: queued, it waits until the side can pay.
     fn shortfall_text(&self, build: Build) -> Option<String> {
         let city = self.selected_city.or(self.selected_barracks)?;
         let short = self
-            .stock(self.local_team)
+            .forecast(self.local_team)
+            .spare
             .shortfall(self.queue_price(city, build));
-        (short != Default::default()).then(|| format!("SHORT OF {}", stock_icons(short)))
+        (short != Default::default()).then(|| {
+            format!(
+                "SHORT OF {} THIS TURN: QUEUED, IT WAITS UNTIL PAID",
+                stock_icons(short)
+            )
+        })
+    }
+
+    /// What one of `city`'s queues works, by name, for a tile's tooltip:
+    /// `empty` if it holds nothing.
+    fn queue_word(&self, city: usize, lane: Lane, empty: &'static str) -> &'static str {
+        let status = self.queue_status(city, lane);
+        match self.worked_item(city, lane, &status) {
+            Some((name, ..)) => name,
+            None if self.lane_len(city, lane) == 0 => empty,
+            None => "NOTHING IT CAN PAY FOR",
+        }
     }
 
     /// Everything about a map hex: terrain, what it yields, and what's on it.
@@ -121,7 +139,7 @@ impl GameState {
         ));
         if let Some(city) = city {
             let city_index = self.cities.iter().position(|c| c.pos == hex).unwrap();
-            let queue = city.queue.first().map_or("NOTHING", |build| build.name());
+            let queue = self.queue_word(city_index, Lane::City, "NOTHING");
             lines.push((
                 SMALL,
                 vec![(
@@ -136,10 +154,12 @@ impl GameState {
             lines.push((SMALL, vec![(format!("BUILDING {queue}"), DIM_TEXT)]));
         }
         if let Some(city) = barracks {
-            let queue = city
-                .barracks_queue
-                .first()
-                .map_or("EMPTY", |build| build.name());
+            let index = self
+                .cities
+                .iter()
+                .position(|c| std::ptr::eq(c, city))
+                .unwrap();
+            let queue = self.queue_word(index, Lane::Barracks, "EMPTY");
             lines.push((
                 SMALL,
                 vec![(
@@ -416,14 +436,13 @@ impl GameState {
                 Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => (
                     "REMOVE".into(),
                     "CLICK".into(),
-                    "REFUNDED. WORK DONE ON IT IS LOST.".into(),
+                    "REFUNDED IF IT WAS PAID FOR (WORK ON IT STARTED). ITS WORK IS LOST.".into(),
                     None,
                 ),
                 Target::ClearCityQueue | Target::ClearBarracksQueue => (
                     "CLEAR QUEUE".into(),
                     "CLICK".into(),
-                    "TAKES EVERY ITEM OFF, EACH REFUNDED AS ITS X WOULD. WORK DONE ON THE FIRST IS LOST."
-                        .into(),
+                    "TAKES EVERY ITEM OFF, EACH REFUNDED AS ITS X WOULD. THEIR WORK IS LOST.".into(),
                     self.is_resolving()
                         .then(|| "NOT WHILE THE TURN PLAYS OUT".into()),
                 ),

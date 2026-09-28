@@ -113,10 +113,13 @@ can watch or change what's sent. What's in place:
   interior); moves and attacks within the unit's range; an ability only when it's ready; every
   list short (`MAX_PLAN_LIST`). The guest checks the host's `Resolve` the same way, and the
   seat and scenario in its `Welcome`.
-- **Cheats the checks catch**: spending is accounted exactly (the stockpile plus everything
-  queued and placed must be worth what it was when the turn began, so nothing is free); build
-  progress, and the work kept on a worker job, can't be added (or copied onto another job), only
-  kept or cleared; a city queues only what it can train (no Cavalry
+- **Cheats the checks catch**: spending is accounted exactly (the stockpile plus every paid
+  queue item and placed job must be worth what it was when the turn began, so nothing is free);
+  planning pays for no queued item, since a build is paid as the turn's economy starts work on
+  it, the same on every machine (`work_queues`), so a plan's queues hold unpaid items with no
+  work and the paid items the city had, each once, with the work it had (no item marked paid,
+  none copied, none refunded without being taken off); the work kept on a worker job can't be
+  added (or copied onto another job), only kept or cleared; a city queues only what it can train (no Cavalry
   or Armored, ships only with a Harbor, no growing past the cap), a Barracks no more Cavalry or
   Armored than its deposits allow; citizens work only tiles in their city's reach, never a city
   or a building; workers out on the map can only be recalled, and workers held at home only
