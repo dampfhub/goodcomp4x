@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use super::city::{Build, BuildUnit, City};
+use super::city::{Build, BuildUnit, Building, City};
 use super::hex::Hex;
 use super::unit::{Team, UnitType};
 use super::{GameState, PLAYER_TEAM};
@@ -25,38 +25,84 @@ impl GameState {
             .collect()
     }
 
-    /// What each of `team`'s cities with an empty queue starts, paid from the
-    /// side's stockpile (`city/economy.rs`); a city the side can't pay for
-    /// waits a turn. A city with no workers left trains one first. Otherwise
-    /// a city grows once the side's army has `AI_ARMY_PER_CITY` units for
-    /// each of its cities, and trains Melee until then, falling back on the
-    /// other when it can't pay for the first choice.
+    /// What `team`'s cities and Barracks start, paid from the side's
+    /// stockpile (`city/economy.rs`); what the side can't pay for waits a
+    /// turn. The Barracks is the military building (`city/barracks.rs`): an
+    /// idle one trains Cavalry or Armored when its deposits allow and the
+    /// side can pay, else Melee, or Ranged for one in three. A city's own
+    /// queue trains a worker first if it has none left, then a Barracks
+    /// (sited by `ai_barracks_site`), then grows; a city without a Barracks
+    /// trains Melee itself, slowly, until the side has `AI_ARMY_PER_CITY`
+    /// units per city, falling back on growth when it can't pay.
     fn plan_ai_cities(&mut self, team: Team) {
-        let mut army = self
-            .units
-            .iter()
-            .filter(|u| {
-                u.team == team && u.unit_type != UnitType::Scout && !self.settlers.contains(&u.id)
-            })
-            .count();
+        let soldiers = |game: &GameState, kind: Option<UnitType>| {
+            game.units
+                .iter()
+                .filter(|u| {
+                    u.team == team
+                        && u.unit_type != UnitType::Scout
+                        && !game.settlers.contains(&u.id)
+                        && kind.is_none_or(|kind| u.unit_type == kind)
+                })
+                .count()
+        };
+        let mut army = soldiers(self, None);
         let cities: Vec<usize> = (0..self.cities.len())
             .filter(|&i| self.cities[i].team == team)
             .collect();
         for &city in &cities {
+            self.confirm_ai_building(city);
+            if self.cities[city].barracks.is_some() && self.cities[city].barracks_queue.is_empty() {
+                let basic = if soldiers(self, Some(UnitType::Ranged)) * 2
+                    < soldiers(self, Some(UnitType::Melee))
+                {
+                    BuildUnit::Ranged
+                } else {
+                    BuildUnit::Melee
+                };
+                for build in [BuildUnit::Cavalry, BuildUnit::Armored, basic] {
+                    if self.barracks_lock(city, build).is_none()
+                        && self.try_queue_barracks(city, build).is_ok()
+                    {
+                        army += 1;
+                        break;
+                    }
+                }
+            }
             let c = &self.cities[city];
             if !c.queue.is_empty() {
                 continue;
             }
             let melee = Build::Unit(BuildUnit::Melee);
-            let choices = if c.workers == 0 && self.workers_out(city) == 0 {
+            let barracks = Build::Building(Building::Barracks);
+            let has_barracks =
+                c.barracks.is_some() || c.planned_sites.contains_key(&Building::Barracks);
+            let mut choices = if c.workers == 0 && self.workers_out(city) == 0 {
                 vec![Build::Worker]
-            } else if army >= AI_ARMY_PER_CITY * cities.len() {
-                vec![Build::Grow, melee]
+            } else if !has_barracks {
+                vec![barracks]
             } else {
-                vec![melee, Build::Grow]
+                Vec::new()
             };
+            if c.barracks.is_none() && army < AI_ARMY_PER_CITY * cities.len() {
+                choices.extend([melee, Build::Grow]);
+            } else {
+                choices.push(Build::Grow);
+            }
             for build in choices {
                 if build == Build::Grow && !self.can_grow(city) {
+                    continue;
+                }
+                if build == barracks {
+                    let Some(site) = self.ai_barracks_site(city) else {
+                        continue;
+                    };
+                    if self.try_queue_build(city, build).is_ok() {
+                        self.cities[city]
+                            .planned_sites
+                            .insert(Building::Barracks, site);
+                        break;
+                    }
                     continue;
                 }
                 if self.try_queue_build(city, build).is_ok() {
@@ -65,6 +111,40 @@ impl GameState {
                 }
             }
         }
+    }
+
+    /// Where city `city` of the AI puts its Barracks: on a Horses or Iron
+    /// deposit within 3 hexes, of a kind its side has none of yet if it can,
+    /// else on the nearest open, unworked tile within 2; ties by distance,
+    /// then hex coordinates.
+    fn ai_barracks_site(&self, city: usize) -> Option<Hex> {
+        let c = &self.cities[city];
+        let team = c.team;
+        let open = |hex: Hex| {
+            self.grid.contains(hex)
+                && self.ai_site_issue(city, Building::Barracks, hex).is_none()
+                && self.enemy_of_team_at(hex, team).is_none()
+        };
+        let mut near: Vec<Hex> = self
+            .grid
+            .all_hexes()
+            .filter(|h| (1..=3).contains(&h.distance(c.pos)) && open(*h))
+            .collect();
+        near.sort_by_key(|h| (h.distance(c.pos), h.q, h.r));
+        let deposit = |hex: &Hex| self.grid.resource(*hex);
+        let lacking = |hex: &Hex| {
+            deposit(hex).is_some_and(|resource| self.side_deposits(team, resource).is_empty())
+        };
+        near.iter()
+            .find(|h| lacking(h))
+            .or_else(|| near.iter().find(|h| deposit(h).is_some()))
+            .or_else(|| {
+                near.iter().find(|h| {
+                    h.distance(c.pos) <= 2 && !self.cities.iter().any(|o| o.worked.contains(h))
+                })
+            })
+            .or_else(|| near.first())
+            .copied()
     }
 
     /// Each unit closes on its nearest enemy, or on ruins nobody on its side

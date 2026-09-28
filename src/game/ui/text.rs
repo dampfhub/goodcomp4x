@@ -5,22 +5,23 @@ use super::{
     WOOD_TEXT,
 };
 use crate::game::ability::Ability;
-use crate::game::city::Stock;
+use crate::game::city::{Stock, resource_icon, stock_icons, turns_icon};
 use crate::game::unit::Unit;
 
-/// A price in short form for a build card's hint, like "2F 6W 1M" (whole
-/// units, zeros left out).
+/// A price in short form for a build card's hint: each resource's icon and
+/// whole amount, zeros left out (`stock_icons`), or FREE.
 pub(super) fn price_hint(price: Stock) -> String {
-    let parts: Vec<String> = [("F", price.food), ("W", price.wood), ("M", price.metal)]
-        .into_iter()
-        .filter(|&(_, amount)| amount > 0)
-        .map(|(letter, amount)| format!("{}{letter}", quantity(amount)))
-        .collect();
-    if parts.is_empty() {
+    let icons = stock_icons(price);
+    if icons.is_empty() {
         "FREE".into()
     } else {
-        parts.join(" ")
+        icons
     }
+}
+
+/// A build card's hint: its price and, after the clock icon, its turns.
+pub(super) fn cost_hint(price: Stock, turns: i32) -> String {
+    format!("{} {}", price_hint(price), turns_icon(turns))
 }
 
 /// Each resource's color.
@@ -32,15 +33,18 @@ pub(super) fn resource_color(name: &str) -> Color {
     }
 }
 
-/// A stockpile with its change a turn: "FOOD 12 +3   WOOD 8 +2   METAL 4 +0",
-/// names in their resource's color and changes green, red or dim.
+/// A stockpile with its change a turn, each resource's icon, amount and
+/// change: changes green, red or dim.
 pub(super) fn stock_spans(stock: Stock, change: Stock) -> Line {
     let mut line = Vec::new();
     for (i, ((name, amount), (_, delta))) in
         stock.parts().into_iter().zip(change.parts()).enumerate()
     {
         let separator = if i == 0 { "" } else { "   " };
-        line.push((format!("{separator}{name} "), resource_color(name)));
+        line.push((
+            format!("{separator}{}", resource_icon(name)),
+            resource_color(name),
+        ));
         line.push((quantity(amount), TEXT));
         let delta_color = match delta.signum() {
             1 => BOOSTED_TEXT,
@@ -95,7 +99,7 @@ pub(super) fn turns_at_rate(remaining: i32, per_turn: i32) -> String {
         return "—".into();
     }
     let turns = (remaining.max(1) + per_turn - 1) / per_turn;
-    format!("{turns}T")
+    turns_icon(turns)
 }
 
 /// The End Turn button's label: the next thing the turn is waiting on, in

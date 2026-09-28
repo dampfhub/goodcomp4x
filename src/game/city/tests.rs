@@ -1,5 +1,7 @@
+use super::barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 use super::economy::{WORK_PER_TURN, grow_price};
 use super::*;
+use crate::game::map_icons::WOOD_ICON;
 
 #[test]
 fn roads_improve_delivery_and_enemy_occupation_blocks_the_site() {
@@ -272,7 +274,11 @@ fn builds_are_paid_when_queued_refunded_when_removed_and_refused_when_short() {
     g.queue_selected_city_unit(BuildUnit::Melee);
     assert!(g.cities[0].queue.is_empty());
     assert_eq!(g.stock(Team::Blue), Stock::whole(20, 1, 0));
-    assert!(g.notice.contains("SHORT OF 5 WOOD"), "{}", g.notice);
+    assert!(
+        g.notice.contains(&format!("SHORT OF {WOOD_ICON}5")),
+        "{}",
+        g.notice
+    );
     assert!(g.can_afford_a_build(0), "20 food still buys a Grow");
     g.stockpiles[Team::Blue.index()] = Stock::default();
     assert!(!g.can_afford_a_build(0));
@@ -286,8 +292,14 @@ fn builds_are_paid_when_queued_refunded_when_removed_and_refused_when_short() {
 fn a_build_takes_its_fixed_turns_whatever_the_city_produces() {
     let mut g = GameState::city_scenario();
     g.units.clear();
-    g.cities[0].queue = vec![Build::Unit(BuildUnit::Siege)];
-    for turn in 1..BuildUnit::Siege.turns() {
+    let siege = Build::Unit(BuildUnit::Siege);
+    g.cities[0].queue = vec![siege];
+    // A city center trains troops at half a Barracks' pace.
+    assert_eq!(
+        g.city_build_turns(0, siege),
+        BuildUnit::Siege.turns() * CITY_TRAINING_SLOWDOWN
+    );
+    for turn in 1..g.city_build_turns(0, siege) {
         g.resolve_economy();
         assert_eq!(g.cities[0].queue.len(), 1, "not done after {turn} turns");
     }
@@ -422,7 +434,7 @@ fn frontier_settler_founds_city_and_city_spends_production_on_unit() {
     assert_eq!(g.cities.len(), 1);
     assert_eq!(g.settlers.len(), 1, "the opposing settler remains");
     g.queue_selected_city_unit(BuildUnit::Melee);
-    g.cities[0].progress = BuildUnit::Melee.work();
+    g.cities[0].progress = g.city_build_work(0, Build::Unit(BuildUnit::Melee));
     g.complete_builds();
     assert!(g.cities[0].queue.is_empty());
     let finished = g.units.last().unwrap();
@@ -448,7 +460,7 @@ fn granary_is_unique_and_adds_two_food_per_turn() {
 }
 
 #[test]
-fn barracks_trains_only_with_the_manager_on_site() {
+fn barracks_trains_whatever_the_manager_does_and_faster_than_the_city() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     let manager = Hex::new(-1, 0);
@@ -464,11 +476,18 @@ fn barracks_trains_only_with_the_manager_on_site() {
         g.cities[0].progress, WORK_PER_TURN,
         "the city and Barracks both work"
     );
+    assert_eq!(
+        g.city_build_work(0, Build::Unit(BuildUnit::Siege)),
+        CITY_TRAINING_SLOWDOWN * BuildUnit::Siege.work(),
+        "but the city needs twice the work"
+    );
 
+    // The manager elsewhere doesn't pause it.
     g.cities[0].worked.swap(0, 1);
     g.cities[0].remembered_worked = g.cities[0].worked.clone();
     g.resolve_economy();
-    assert_eq!(g.cities[0].barracks_progress, WORK_PER_TURN, "paused");
+    assert_eq!(g.cities[0].barracks_progress, 2 * WORK_PER_TURN);
+    g.cities[0].barracks_progress = WORK_PER_TURN;
 
     // With production speeding builds, the Barracks adds what's delivered
     // to it, with its own delivery falloff.
@@ -616,7 +635,7 @@ fn city_queue_completes_in_order_and_can_be_reordered_or_removed() {
     assert_eq!(g.cities[0].queue[0], Build::Unit(BuildUnit::Ranged));
     g.remove_selected_city_queue_item(1);
     assert_eq!(g.cities[0].queue, vec![Build::Unit(BuildUnit::Ranged)]);
-    g.cities[0].progress = BuildUnit::Ranged.work();
+    g.cities[0].progress = g.city_build_work(0, Build::Unit(BuildUnit::Ranged));
     g.complete_builds();
     assert!(g.cities[0].queue.is_empty());
     assert!(
@@ -866,6 +885,113 @@ fn resource_units_require_a_barracks_on_the_matching_resource() {
     assert!(!g.barracks_can_train(0, BuildUnit::Cavalry));
 }
 
+/// A Barracks on Horses with plenty in the stockpile, and nothing else on
+/// the map.
+fn horse_barracks() -> GameState {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.fund(Team::Blue);
+    g.selected_city = Some(0);
+    g.cities[0].barracks = Some(Hex::new(-2, 0));
+    g.cities[0].built.push(Building::Barracks);
+    g
+}
+
+/// Finishes the Barracks' queue, a troop a call, each walking off so the
+/// next has room.
+fn train_all(g: &mut GameState) {
+    while let Some(&build) = g.cities[0].barracks_queue.first() {
+        g.cities[0].barracks_progress = build.work();
+        g.complete_builds();
+        for unit in &mut g.units {
+            unit.pos = Hex::new(unit.pos.q, 6 - unit.id as i32 % 4);
+        }
+    }
+}
+
+#[test]
+fn a_horses_deposit_allows_three_cavalry_alive_at_once() {
+    let mut g = horse_barracks();
+    assert_eq!(
+        g.special_cap(Team::Blue, Resource::Horses),
+        UNITS_PER_DEPOSIT
+    );
+    for _ in 0..UNITS_PER_DEPOSIT {
+        g.queue_selected_barracks_unit(BuildUnit::Cavalry);
+    }
+    assert_eq!(g.cities[0].barracks_queue.len(), UNITS_PER_DEPOSIT);
+    // Queued ones count: a fourth is refused, unpaid.
+    let stock = g.stock(Team::Blue);
+    g.queue_selected_barracks_unit(BuildUnit::Cavalry);
+    assert_eq!(g.cities[0].barracks_queue.len(), UNITS_PER_DEPOSIT);
+    assert_eq!(g.stock(Team::Blue), stock);
+    assert!(g.notice.contains("CAP REACHED"), "{}", g.notice);
+    train_all(&mut g);
+    let cavalry: Vec<u32> = g
+        .units
+        .iter()
+        .filter(|u| u.drawn_from == Some(Resource::Horses))
+        .map(|u| u.id)
+        .collect();
+    assert_eq!(cavalry.len(), UNITS_PER_DEPOSIT);
+    assert!(g.barracks_lock(0, BuildUnit::Cavalry).is_some());
+    // One dies: with the cap on those alive, another can be trained.
+    g.units.retain(|u| u.id != cavalry[0]);
+    assert_eq!(g.barracks_lock(0, BuildUnit::Cavalry), None);
+    // With the lifetime cap, the deposit is spent.
+    g.toggle_lifetime_special_cap();
+    assert!(g.barracks_lock(0, BuildUnit::Cavalry).is_some());
+    assert_eq!(
+        g.special_trained[Team::Blue.index()][Resource::Horses.index()],
+        UNITS_PER_DEPOSIT as u32
+    );
+    // Armored stay locked: no Iron under or beside this Barracks.
+    let reason = g.barracks_lock(0, BuildUnit::Armored).unwrap();
+    assert!(reason.contains("IRON"), "{reason}");
+    // A basic troop never is.
+    assert_eq!(g.barracks_lock(0, BuildUnit::Melee), None);
+}
+
+#[test]
+fn an_enemy_on_the_deposit_takes_its_cap_away() {
+    let mut g = horse_barracks();
+    g.units
+        .push(Unit::new(900, Hex::new(-2, 0), Team::Red, UnitType::Melee));
+    assert_eq!(g.special_cap(Team::Blue, Resource::Horses), 0);
+    let reason = g.barracks_lock(0, BuildUnit::Cavalry).unwrap();
+    assert!(reason.contains("ENEMY"), "{reason}");
+    g.units.clear();
+    assert_eq!(
+        g.special_cap(Team::Blue, Resource::Horses),
+        UNITS_PER_DEPOSIT
+    );
+}
+
+#[test]
+fn the_ai_puts_its_barracks_on_a_deposit_and_trains_there() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.fund(Team::Red);
+    g.plan_ai_turn(Team::Red);
+    let red = 1;
+    let site = g.cities[red].planned_sites[&Building::Barracks];
+    assert!(g.grid.resource(site).is_some(), "{site:?} is no deposit");
+    assert_eq!(
+        g.cities[red].queue,
+        vec![Build::Building(Building::Barracks)]
+    );
+    // Once built, it goes up on its site with no Confirm, and trains.
+    g.cities[red].progress = g.city_build_work(red, Build::Building(Building::Barracks));
+    g.complete_builds();
+    assert_eq!(g.cities[red].barracks, Some(site));
+    g.plan_ai_turn(Team::Red);
+    let special = g.cities[red].barracks_queue.first().copied();
+    assert!(
+        special.is_some_and(|b| b.required_resource() == g.grid.resource(site)),
+        "{special:?}"
+    );
+}
+
 #[test]
 fn structure_menu_can_be_dismissed_without_selecting_a_unit() {
     let mut g = GameState::city_scenario();
@@ -920,7 +1046,7 @@ fn a_queue_of_units_completes_at_the_rate_production_allows() {
     g.cities[0].worked = vec![Hex::new(-3, 0)];
     g.cities[0].queue = vec![Build::Unit(BuildUnit::Melee); 6];
     g.cities[0].progress = 0;
-    let cost = BuildUnit::Melee.work();
+    let cost = g.city_build_work(0, Build::Unit(BuildUnit::Melee));
 
     // Open hexes: the first unit takes several turns, as its cost allows.
     let (mut earned, mut turns) = (0, 0);
@@ -1017,7 +1143,7 @@ fn a_city_and_its_barracks_never_finish_units_onto_one_hex() {
         }
     }
     g.cities[0].queue = vec![Build::Unit(BuildUnit::Melee)];
-    g.cities[0].progress = BuildUnit::Melee.work();
+    g.cities[0].progress = g.city_build_work(0, Build::Unit(BuildUnit::Melee));
     g.cities[0].barracks_queue = vec![BuildUnit::Ranged];
     g.cities[0].barracks_progress = BuildUnit::Ranged.work();
     g.complete_builds();
@@ -1114,4 +1240,41 @@ fn final_confirmation_explains_a_site_that_lost_its_required_feature() {
         game.notice,
         "STABLE SITE INVALID: NEEDS HORSES ON OR NEXT TO THE TILE"
     );
+}
+
+/// A finished troop never appears on a worker out on the map: it would share
+/// the hex with an enemy's without capturing it.
+#[test]
+fn a_finished_troop_does_not_appear_on_a_worker() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    let city = g.cities[0].pos;
+    let open: Vec<Hex> = city
+        .neighbors()
+        .into_iter()
+        .filter(|&h| g.grid.is_passable(h))
+        .collect();
+    for (n, &hex) in open.iter().enumerate().skip(1) {
+        g.units
+            .push(Unit::new(1000 + n as u32, hex, Team::Blue, UnitType::Melee));
+    }
+    g.field_workers.push(crate::game::workers::FieldWorker {
+        id: 10_000,
+        team: Team::Red,
+        home: 1,
+        base: g.cities[1].pos,
+        pos: open[0],
+        job: None,
+        work_left: None,
+        recalled: false,
+    });
+    g.cities[0].queue = vec![Build::Unit(BuildUnit::Melee)];
+    g.cities[0].progress = g.city_build_work(0, Build::Unit(BuildUnit::Melee));
+    g.complete_builds();
+    assert_eq!(
+        g.units_at(open[0]).count(),
+        0,
+        "the worker's hex stays clear"
+    );
+    assert_eq!(g.cities[0].queue.len(), 1, "the troop waits");
 }

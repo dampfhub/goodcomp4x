@@ -108,6 +108,7 @@ impl GameState {
         let settings = std::mem::take(&mut self.settings);
         let (settings_open, fog_of_war) = (self.settings_open, self.fog_of_war);
         let production_speedup = self.production_speedup;
+        let lifetime_special_cap = self.lifetime_special_cap;
         let mut rng = self.rng.clone();
         *self = scenario.start(&mut rng, &settings);
         self.rng = rng;
@@ -116,6 +117,7 @@ impl GameState {
         self.settings_open = settings_open;
         self.fog_of_war = fog_of_war;
         self.production_speedup = production_speedup;
+        self.lifetime_special_cap = lifetime_special_cap;
     }
 
     /// F8: switches turn playback between one step at a time and all at once.
@@ -159,6 +161,7 @@ impl GameState {
         restored.settings_open = self.settings_open;
         restored.fog_of_war = self.fog_of_war;
         restored.production_speedup = self.production_speedup;
+        restored.lifetime_special_cap = self.lifetime_special_cap;
         // Rolls carry on from the current game rather than replaying the
         // saved ones, so retrying a save can go differently.
         restored.rng = self.rng.clone();

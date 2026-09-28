@@ -38,6 +38,14 @@ pub enum Resource {
 }
 
 impl Resource {
+    #[cfg(test)]
+    pub const ALL: [Resource; 2] = [Resource::Horses, Resource::Iron];
+
+    /// Its place in `ALL`.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Horses => "HORSES",

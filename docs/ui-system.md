@@ -79,6 +79,13 @@ nested Selection+Queue group as well as beside Selection alone.
 Beside the turn number, the status bar (and the classic top bar) shows the
 player's stockpile from `GameState::stockpile_line`, one shared line of
 colored spans, so both presentations read the same.
+Resources and turns appear in text as icons: a UI string may hold the icon
+characters of `map_icons.rs` (`FOOD_ICON`, `WOOD_ICON`, `METAL_ICON`,
+`TIME_ICON`), which the classic font (`font::Face::width` and `push`) and
+ImGui (`rich_text`, `rich_width`, `rich_button` in `imgui.rs`, drawing the
+icon's triangles into the window draw list) both draw as the map's own
+icons. ImGui buttons with icons are drawn blank with the lines laid over
+them; a dimmed button dims its icons too.
 The status bar names the active **Default**, **City / Building**, or **Troop**
 view. **EDIT VIEW** means panel placement and **+ BOX** belong to that view;
 switching to **EDIT OUTER** creates boxes shared by all views and makes a moved

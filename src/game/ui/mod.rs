@@ -210,6 +210,9 @@ enum Target {
     ToggleFog,
     /// Debug panel: production speeds builds, or builds take fixed time.
     ToggleProductionSpeedup,
+    /// Debug panel: the Cavalry and Armored cap counts those alive, or every
+    /// one ever trained.
+    ToggleLifetimeCap,
     /// Settings menu: step a setting down (-1) or up (+1) through its range.
     StepSetting(Setting, i32),
     CloseSettings,
@@ -645,6 +648,7 @@ impl GameState {
             Target::TogglePlayback => self.toggle_instant_playback(),
             Target::ToggleFog => self.toggle_fog(),
             Target::ToggleProductionSpeedup => self.toggle_production_speedup(),
+            Target::ToggleLifetimeCap => self.toggle_lifetime_special_cap(),
             Target::StepSetting(setting, delta) => self.step_setting(setting, delta),
             Target::CloseSettings => self.close_settings(),
             Target::Quit => self.quit_requested = true,

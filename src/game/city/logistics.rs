@@ -65,14 +65,22 @@ impl GameState {
     pub(in crate::game) fn is_road_hex(&self, hex: Hex) -> bool {
         self.roads.contains(&hex) || self.cities.iter().any(|city| city.pos == hex)
     }
-    /// What `hex` produces when worked: a city center's own yield, a site's,
-    /// or its terrain's.
-    pub(in crate::game) fn raw_yield(&self, hex: Hex) -> (i32, i32) {
+    /// What `hex` produces when worked, as whole food, wood and metal: a
+    /// city center's own 2 food and 1 wood, or its tile's (`tile_goods`).
+    pub(in crate::game) fn raw_yield(&self, hex: Hex) -> (i32, i32, i32) {
         if self.cities.iter().any(|c| c.pos == hex) {
-            (2, 1)
+            (2, 1, 0)
         } else {
-            self.tile_yield(hex)
+            self.tile_goods(hex)
         }
+    }
+
+    /// A worked tile's food, wood and metal: its yield (`tile_yield`), with
+    /// production split into metal (`metal_yield`) and wood.
+    pub(in crate::game) fn tile_goods(&self, hex: Hex) -> (i32, i32, i32) {
+        let (food, production) = self.tile_yield(hex);
+        let metal = self.metal_yield(hex, production);
+        (food, production - metal, metal)
     }
 
     pub(in crate::game) fn routes(&self, city: usize) -> Routes {
@@ -286,11 +294,10 @@ impl GameState {
                     delivered_share(cost),
                 )
             });
-            let (food, production) = self.tile_yield(*hex);
-            let metal = self.metal_yield(*hex, production);
+            let (food, wood, metal) = self.tile_goods(*hex);
             sum + Stock {
                 food: food * food_share,
-                wood: (production - metal) * share,
+                wood: wood * share,
                 metal: metal * share,
             }
         });

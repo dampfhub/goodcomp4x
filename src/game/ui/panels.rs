@@ -8,7 +8,7 @@ use super::{
     BODY, Button, ButtonState, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, Line,
     MARGIN, NOTICE_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
 };
-use crate::game::city::{MAX_CITY_POPULATION, Stock};
+use crate::game::city::{MAX_CITY_POPULATION, Stock, turns_icon};
 use crate::game::font;
 use crate::game::scenario::Scenario;
 use crate::game::{GameState, PLAYER_TEAM};
@@ -90,12 +90,22 @@ impl GameState {
         } else {
             false
         };
-        panel.compact_buttons(vec![debug_button(
-            Target::CompleteProduction,
-            "COMPLETE PRODUCTION",
-            "F9",
-            ButtonState::new(false, self.is_resolving() || !can_complete),
-        )]);
+        // Beside it, how the Cavalry and Armored cap counts
+        // (`city/barracks.rs`): those alive, or every one ever trained.
+        let cap = if self.lifetime_special_cap {
+            "UNIT CAP: EVER"
+        } else {
+            "UNIT CAP: ALIVE"
+        };
+        panel.compact_buttons(vec![
+            debug_button(
+                Target::CompleteProduction,
+                "FINISH BUILD",
+                "F9",
+                ButtonState::new(false, self.is_resolving() || !can_complete),
+            ),
+            debug_button(Target::ToggleLifetimeCap, cap, "", ButtonState::Ready),
+        ]);
         if let Some(saved) = self.saved_summary() {
             panel.text(
                 SMALL,
@@ -227,13 +237,10 @@ impl GameState {
     pub(super) fn structure_hover_panel(&self, i: usize, barracks: bool, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if barracks {
-            let tile = city.barracks.unwrap();
-            let active = city.worked.first() == Some(&tile);
             let queue = match (city.barracks_queue.first(), self.barracks_turns_left(i)) {
-                (Some(build), Some(turns)) if active => {
-                    format!("{} · {turns}T LEFT", build.name())
+                (Some(build), Some(turns)) => {
+                    format!("{} · {} LEFT", build.name(), turns_icon(turns))
                 }
-                (Some(build), _) => format!("{} · PAUSED, NO MANAGER", build.name()),
                 _ => "EMPTY".into(),
             };
             panel.text(
@@ -257,7 +264,9 @@ impl GameState {
             }
         } else {
             let queue = match (city.queue.first(), self.turns_left(i)) {
-                (Some(build), Some(turns)) => format!("{} · {turns}T LEFT", build.name()),
+                (Some(build), Some(turns)) => {
+                    format!("{} · {} LEFT", build.name(), turns_icon(turns))
+                }
                 _ => "EMPTY".into(),
             };
             panel.text(

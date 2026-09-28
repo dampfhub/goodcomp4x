@@ -250,8 +250,7 @@ impl GameState {
 
     /// The turn's economy (`economy.rs`): every city's goods go to its
     /// side's stockpile, the citizens eat from it, each queue does a turn's
-    /// work (a Barracks' only with the manager on it), and finished builds
-    /// complete.
+    /// work, and finished builds complete.
     pub(in crate::game) fn resolve_economy(&mut self) {
         self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
         let income: Vec<_> = (0..self.cities.len()).map(|i| self.income(i)).collect();
@@ -274,12 +273,11 @@ impl GameState {
             } else {
                 city.progress += rate;
             }
-            let manager_on_barracks = city
-                .barracks
-                .is_some_and(|tile| city.worked.first() == Some(&tile));
+            // A Barracks trains whatever the manager does; with production
+            // speeding builds, the manager on it adds its group's work.
             if city.barracks_queue.is_empty() {
                 city.barracks_progress = 0;
-            } else if manager_on_barracks {
+            } else {
                 city.barracks_progress += barracks_rate;
             }
             city.worked

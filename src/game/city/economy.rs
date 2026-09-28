@@ -9,6 +9,7 @@ use std::ops::{Add, AddAssign, Sub, SubAssign};
 use super::{Build, BuildUnit};
 use crate::game::GameState;
 use crate::game::hex::Hex;
+use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 use crate::game::terrain::Special;
 use crate::game::unit::Team;
 
@@ -124,6 +125,33 @@ pub(in crate::game) fn stock_words(stock: Stock) -> String {
         1 => parts[0].clone(),
         n => format!("{} AND {}", parts[..n - 1].join(", "), parts[n - 1]),
     }
+}
+
+/// The icon character (`map_icons`) that stands in UI text for each of
+/// `Stock::parts`' names.
+pub(in crate::game) fn resource_icon(name: &str) -> char {
+    match name {
+        "FOOD" => FOOD_ICON,
+        "WOOD" => WOOD_ICON,
+        _ => METAL_ICON,
+    }
+}
+
+/// The nonzero parts of `stock` for UI text, each its icon and whole amount:
+/// "🌾2 🪵6" with the icon characters. Empty for nothing.
+pub(in crate::game) fn stock_icons(stock: Stock) -> String {
+    stock
+        .parts()
+        .into_iter()
+        .filter(|&(_, amount)| amount > 0)
+        .map(|(name, amount)| format!("{}{}", resource_icon(name), super::amount(amount)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A number of turns for UI text: the clock icon and the number.
+pub(in crate::game) fn turns_icon(turns: i32) -> String {
+    format!("{TIME_ICON}{turns}")
 }
 
 impl GameState {

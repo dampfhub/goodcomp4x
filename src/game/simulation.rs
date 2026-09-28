@@ -5,7 +5,8 @@
 //! failure names its scenario, seed and turn, and replays exactly:
 //! `SIM_SEED=<seed> cargo test simulation`. `SIM_SEEDS=<n>` plays seeds `0..n` instead of
 //! `DEFAULT_SEEDS`, to hunt for failures. `SIM_SPEEDUP=1` plays them with production speeding
-//! builds (the stockpile economy's variant, `docs/rts-economy.md`), and `economy_report`
+//! builds (the stockpile economy's variant, `docs/rts-economy.md`), `SIM_LIFETIME_CAP=1` with
+//! the Cavalry and Armored cap counting every one ever trained, and `economy_report`
 //! (ignored by default) prints how the stockpiles flow.
 
 use std::collections::{HashMap, HashSet};
@@ -15,7 +16,7 @@ use super::city::{Build, Building, CORE_HP, MAX_CITY_POPULATION};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
-use super::terrain::Terrain;
+use super::terrain::{Resource, Terrain};
 use super::unit::Team;
 use super::{GameState, PLAYER_TEAM};
 
@@ -42,11 +43,13 @@ fn env_number(name: &str) -> Option<u64> {
 }
 
 /// A fresh game of `scenario` with its RNG seeded, playing every step at once, and with
-/// production speeding builds if `SIM_SPEEDUP` is set to a number above 0.
+/// production speeding builds if `SIM_SPEEDUP` is set to a number above 0, and the Cavalry
+/// and Armored cap counting every one ever trained if `SIM_LIFETIME_CAP` is.
 fn start(scenario: Scenario, seed: u64) -> GameState {
     let mut game = GameState::new();
     game.settings.instant_playback = true;
     game.production_speedup = env_number("SIM_SPEEDUP").is_some_and(|n| n > 0);
+    game.lifetime_special_cap = env_number("SIM_LIFETIME_CAP").is_some_and(|n| n > 0);
     game.seed_rng(seed);
     game.switch_scenario(scenario);
     game
@@ -339,13 +342,13 @@ fn check_invariants(game: &GameState, context: &str) {
         let Some(&Build::Unit(unit)) = city.queue.first() else {
             continue;
         };
-        if city.progress < unit.work() || game.work_rate(game.income(i).production()) >= unit.work()
-        {
+        let work = game.city_build_work(i, Build::Unit(unit));
+        if city.progress < work || game.work_rate(game.income(i).production()) >= work {
             continue;
         }
         assert_eq!(
             city.progress,
-            unit.work(),
+            work,
             "{context}: city {} banked production behind a finished {}",
             city.id,
             unit.name()
@@ -364,7 +367,7 @@ fn check_invariants(game: &GameState, context: &str) {
                     game.grid.contains(hex)
                         && matches!(game.grid.terrain(hex), Terrain::Coast | Terrain::Ocean)
                 } else {
-                    game.grid.is_passable(hex)
+                    game.grid.is_passable(hex) && !game.field_workers.iter().any(|w| w.pos == hex)
                 };
                 !open_ground || game.is_occupied(hex)
             }),
@@ -383,34 +386,79 @@ fn check_invariants(game: &GameState, context: &str) {
 }
 
 /// What the stockpile economy bought over a game: troops that appeared (trained, or ruins'
-/// recruits) and whether any city grew past the size it started at (or was founded at).
+/// recruits), whether any city grew past the size it started at (or was founded at) and
+/// whether any side built a Barracks. It also checks the Cavalry and Armored cap
+/// (`city/barracks.rs`) as the game goes: a side never has more troops drawn from a
+/// resource alive (or, with the lifetime cap, ever trained) than the most its deposits
+/// allowed at any point, since a troop is only queued within the cap of the moment.
 struct EconomyWatch {
     seen: HashSet<u32>,
     start_population: HashMap<u32, usize>,
     trained: usize,
     grew: bool,
+    barracks: bool,
+    /// The highest cap seen, by `Team::index` and `Resource::index`.
+    max_cap: [[usize; 2]; Team::ALL.len()],
 }
 
 impl EconomyWatch {
     fn new(game: &GameState) -> Self {
-        Self {
+        let mut watch = Self {
             seen: game.units.iter().map(|u| u.id).collect(),
             start_population: game.cities.iter().map(|c| (c.id, c.population)).collect(),
             trained: 0,
             grew: false,
-        }
+            barracks: false,
+            max_cap: [[0; 2]; Team::ALL.len()],
+        };
+        watch.watch(game, "at start");
+        watch
     }
 
-    fn watch(&mut self, game: &GameState) {
+    fn watch(&mut self, game: &GameState, context: &str) {
         for unit in &game.units {
             if self.seen.insert(unit.id) && !game.settlers.contains(&unit.id) {
                 self.trained += 1;
+            }
+            if let Some(resource) = unit.drawn_from {
+                assert_eq!(
+                    unit.unit_type,
+                    match resource {
+                        Resource::Horses => super::unit::UnitType::Cavalry,
+                        Resource::Iron => super::unit::UnitType::Armored,
+                    },
+                    "{context}: a {:?} drew on {resource:?}",
+                    unit.unit_type
+                );
             }
         }
         self.grew |= game
             .cities
             .iter()
             .any(|c| c.population > self.start_population.get(&c.id).copied().unwrap_or(1));
+        self.barracks |= game.cities.iter().any(|c| c.barracks.is_some());
+        for team in Team::ALL {
+            for resource in Resource::ALL {
+                let max = &mut self.max_cap[team.index()][resource.index()];
+                *max = (*max).max(game.special_cap(team, resource));
+                let alive = game
+                    .units
+                    .iter()
+                    .filter(|u| u.team == team && u.drawn_from == Some(resource))
+                    .count();
+                let ever = game.special_trained[team.index()][resource.index()] as usize;
+                let counted = if game.lifetime_special_cap {
+                    ever
+                } else {
+                    alive
+                };
+                assert!(
+                    counted <= *max,
+                    "{context}: {team:?} has {counted} troops drawn on {resource:?}, over the \
+                     most its deposits ever allowed ({max})"
+                );
+            }
+        }
     }
 }
 
@@ -436,7 +484,7 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 "{context}: ruins appeared"
             );
             check_invariants(&game, &context);
-            economy.watch(&game);
+            economy.watch(&game, &context);
         }
         // Anti-vacuity: the AI goes for the world's ruins, and claims some.
         if scenario == Scenario::World {
@@ -449,6 +497,12 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
         if matches!(scenario, Scenario::Cities | Scenario::World) {
             assert!(economy.trained > 0, "{name}: no city trained a unit");
             assert!(economy.grew, "{name}: no city grew in {TURNS} turns");
+            assert!(economy.barracks, "{name}: no side built a Barracks");
+        }
+        // The Cities map puts Horses and Iron beside both cities: their Barracks use them.
+        if scenario == Scenario::Cities {
+            let special: u32 = game.special_trained.iter().flatten().sum();
+            assert!(special > 0, "{name}: no Cavalry or Armored trained");
         }
     });
 }
@@ -622,14 +676,16 @@ fn economy_report() {
                         })
                         .count();
                     println!(
-                        "  turn {turn:2} {team:?}: food {:3} wood {:3} metal {:3} | pop {:2} in {} cities | army {:2} | trained {:2}",
+                        "  turn {turn:2} {team:?}: food {:3} wood {:3} metal {:3} | pop {:2} in {} cities | army {:2} | trained {:2} | special {:2} | barracks {}",
                         stock.food / 4,
                         stock.wood / 4,
                         stock.metal / 4,
                         cities.iter().map(|c| c.population).sum::<usize>(),
                         cities.len(),
                         army,
-                        trained.get(&team).copied().unwrap_or(0)
+                        trained.get(&team).copied().unwrap_or(0),
+                        game.special_trained[team.index()].iter().sum::<u32>(),
+                        cities.iter().filter(|c| c.barracks.is_some()).count()
                     );
                 }
             }

@@ -24,7 +24,8 @@ behavior.
 | `city/logistics.rs` | roads and Canoe House river corridors, logistics routes (`routes_from_by`), `delivered_share`, tile yields, Mill food share, Cannery/Smelter collection, city income (as food, wood and metal) and Barracks income |
 | `city/rail.rs` | Railhead road connectivity and long-range transfer eligibility; city center is the origin terminal |
 | `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, `resolve_economy` (the turn's economy), Field Hospital healing |
-| `city/economy.rs` | the stockpile experiment (`docs/rts-economy.md`): `Stock` (food, wood, metal), each side's stockpile, paying for builds when queued and refunding them (`try_queue_build`, `take_queue_item`), growth prices, the wood/metal split of production (`metal_yield`), feeding citizens, a queue's work a turn (`work_rate`) and the production-speedup toggle |
+| `city/economy.rs` | the stockpile experiment (`docs/rts-economy.md`): `Stock` (food, wood, metal), each side's stockpile, paying for builds when queued and refunding them (`try_queue_build`, `take_queue_item`), growth prices, the wood/metal split of production (`metal_yield`), feeding citizens, a queue's work a turn (`work_rate`) and the production-speedup toggle; the icon forms of prices and turns (`stock_icons`, `turns_icon`) |
+| `city/barracks.rs` | the Barracks as the military building: a city center's slower training (`CITY_TRAINING_SLOWDOWN`), the Horses and Iron deposits a Barracks draws on, the Cavalry and Armored cap (`UNITS_PER_DEPOSIT`, `special_cap`, `special_used`, alive or lifetime) and why a troop is locked (`barracks_lock`) |
 | `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, Harbor naval spawning, building sites, resource support from Forge/Stable, prices and turns of every build, the Grow build, Workshop speedup, confirmation, `complete_builds` |
 | `city/founding.rs` | settlers founding cities |
 | `workers.rs` | workers: each city's pool and job list, Work Camp bases, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
@@ -41,7 +42,7 @@ behavior.
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
 | `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |
-| `map_icons.rs` | resource and improvement icons (horse head, ingot, wheat, ore cart, fence, logs) in a hex's top corners, and the food and production icons in yield pips; dark-edged shapes in their mockup coordinates |
+| `map_icons.rs` | resource and improvement icons (horse head, ingot, wheat, ore cart, fence, logs) in a hex's top corners, and the food, wood and metal icons in yield pips; the icon characters (`FOOD_ICON`, `WOOD_ICON`, `METAL_ICON`, `TIME_ICON`) that UI text draws as those icons (`push_inline_icon`); dark-edged shapes in their mockup coordinates |
 | `effects.rs` | attack animations during playback |
 | `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
@@ -82,6 +83,10 @@ behavior.
   `push_glyph`) is sized by capital-letter height and scales one 64 px set of signed distance
   fields (measured on a 4x raster), which the shader thresholds so outlines stay sharp at any
   zoom. Distance-field glyphs carry `u` shifted up by 1 so the shader can tell them apart.
+  UI text may hold the icon characters of `map_icons.rs`: `font::Face` (classic) and ImGui's
+  `rich_text` / `rich_button` (`ui/imgui.rs`) draw each as its icon, so put resources and
+  turns in text with `stock_icons` and `turns_icon`, and draw any new game text in ImGui
+  through those helpers, not `ui.text`.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05.
 - `Camera::view_proj` builds an OpenGL orthographic projection and flips Y itself, because
   glam 0.33's `vulkan::orthographic` flips the Y scale but not the translation.

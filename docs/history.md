@@ -184,3 +184,11 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     top bar shows the stockpile, build cards their price and turns, dimmed when unaffordable. The
     AI pays for its troops, workers and growth the same way. A Debug toggle lets a city's
     production also speed its builds, to compare the two.
+57. Icons and Barracks (`claude/rts-economy`, `rts-economy.md`): the map's yield pips and the
+    tile tooltip show food, wood and metal (wheat, a log, an ingot), and prices, turns and the
+    stockpile show as those icons (and a clock) in both UI presentations, drawn inline from icon
+    characters in any UI text. The Barracks became the military building: it trains troops twice
+    as fast as a city center, whatever the manager does, and alone trains Cavalry and Armored,
+    3 per Horses or Iron deposit it draws on, counting those alive (a Debug toggle counts every
+    one ever trained instead). The AI builds a Barracks, on a deposit when it can, and trains
+    there.

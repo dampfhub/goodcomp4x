@@ -68,8 +68,8 @@ pub(super) struct Sighting {
     pub structure: Option<Structure>,
     /// Walls and gates on the hex's edges, by the neighbor across each.
     pub barriers: Vec<(Hex, Structure)>,
-    /// The tile's food and production, with any improvement or city.
-    pub yields: (i32, i32),
+    /// The tile's food, wood and metal, with any improvement or city.
+    pub yields: (i32, i32, i32),
     /// Unclaimed ruins (`ruins.rs`).
     pub ruin: bool,
 }
@@ -234,8 +234,8 @@ impl GameState {
             .is_some_and(|seen| seen.barracks.is_some_and(|barracks| barracks.team != team))
     }
 
-    /// A tile's food and production as the player knows them.
-    pub(super) fn known_yield(&self, hex: Hex, fog: &Fog) -> (i32, i32) {
+    /// A tile's food, wood and metal as the player knows them.
+    pub(super) fn known_yield(&self, hex: Hex, fog: &Fog) -> (i32, i32, i32) {
         match self.remembered(hex) {
             Some(seen) if !fog.sees(hex) => seen.yields,
             _ => self.raw_yield(hex),

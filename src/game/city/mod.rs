@@ -2,6 +2,7 @@
 //!
 //! This file holds the city types, the tuning constants and the city scenarios'
 //! setup; each submodule adds an `impl GameState` block for one concern.
+mod barracks;
 mod builds;
 mod citizens;
 mod economy;
@@ -24,10 +25,13 @@ use super::unit::{Team, Unit, UnitType};
 use super::workers::WorkerJob;
 use super::{GameState, PLAYER_TEAM};
 
+pub(in crate::game) use barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 pub use builds::{Build, BuildUnit, Building};
 pub(in crate::game) use builds::{GROW_SHORTCUT, WORKER_SHORTCUT};
 pub use economy::Stock;
-pub(in crate::game) use economy::{FOOD_PER_CITIZEN, STARTING_STOCK, stock_words};
+pub(in crate::game) use economy::{
+    FOOD_PER_CITIZEN, STARTING_STOCK, resource_icon, stock_icons, stock_words, turns_icon,
+};
 pub(super) use interior::CORE_HP;
 pub(super) use interior::Interior;
 pub(super) use logistics::{Routes, delivered_share};

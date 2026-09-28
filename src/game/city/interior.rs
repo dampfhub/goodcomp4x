@@ -454,6 +454,9 @@ impl GameState {
                     worker.recalled = true;
                 }
             }
+            // A worker that changed sides may stand with a unit of its old
+            // side, now an enemy's: it's captured, as by a move.
+            self.capture_workers();
             self.auto_assign_city(city);
         }
         for (source, hp) in health_after_battle {

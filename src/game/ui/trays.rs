@@ -2,7 +2,7 @@
 
 use super::builder::{ButtonSpec, PanelBuilder};
 use super::text::{
-    ability_text, compare, price_hint, quantity, resource_color, signed_quantity, stat_spans,
+    ability_text, compare, cost_hint, quantity, resource_color, signed_quantity, stat_spans,
     turns_text,
 };
 use super::{
@@ -10,10 +10,11 @@ use super::{
     QueueKind, REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
 };
 use crate::game::city::{
-    Build, BuildUnit, Building, CORE_HP, FOOD_PER_CITIZEN, GROW_SHORTCUT, LaborFocus,
-    MAX_CITY_POPULATION,
+    Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, FOOD_PER_CITIZEN, GROW_SHORTCUT,
+    LaborFocus, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, resource_icon,
 };
 use crate::game::orders::ClickMode;
+use crate::game::terrain::Resource;
 use crate::game::workers::JobKind;
 use crate::game::{GameState, PLAYER_TEAM};
 
@@ -463,11 +464,14 @@ impl GameState {
         let mut income_line = vec![("DELIVERS ".to_string(), LABEL_TEXT)];
         for (name, amount) in income.parts() {
             income_line.push((
-                format!("{} {name}  ", signed_quantity(amount)),
+                format!("{}{}   ", resource_icon(name), signed_quantity(amount)),
                 resource_color(name),
             ));
         }
-        income_line.push((format!("EATS {}", quantity(upkeep)), DIM_TEXT));
+        income_line.push((
+            format!("EATS {}{}", resource_icon("FOOD"), quantity(upkeep)),
+            DIM_TEXT,
+        ));
         panel.text(BODY, income_line);
         let building = match (city.queue.first().copied(), self.turns_left(i)) {
             (Some(_), Some(0)) => ("READY - CONFIRM ITS SITE".to_string(), GOLD_TEXT),
@@ -508,7 +512,7 @@ impl GameState {
             ButtonSpec {
                 target,
                 label,
-                hint: format!("{} {}T", price_hint(price), build.turns()),
+                hint: cost_hint(price, self.city_build_turns(i, build)),
                 state: ButtonState::new(head, !stock.covers(price)),
                 armed: false,
             }
@@ -551,6 +555,13 @@ impl GameState {
             } else {
                 vec![BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
             };
+        panel.text(
+            SMALL,
+            vec![(
+                format!("A BARRACKS TRAINS TROOPS {CITY_TRAINING_SLOWDOWN}× FASTER THAN THE CITY"),
+                DIM_TEXT,
+            )],
+        );
         panel.buttons(
             builds
                 .into_iter()
@@ -605,7 +616,7 @@ impl GameState {
                     || self.city_is_coastal(i)
             })
             .map(|building| {
-                let cost = format!("{} · {}T", price_hint(building.price()), building.turns());
+                let cost = cost_hint(building.price(), building.turns());
                 let queued = city.pending_building == Some(building)
                     || city.queue.contains(&Build::Building(building));
                 ButtonSpec {
@@ -632,21 +643,13 @@ impl GameState {
             .collect();
         panel.text(SMALL, vec![("BUILDINGS".into(), LABEL_TEXT)]);
         panel.building_catalog(i, building_buttons, city.building_scroll);
-        if let Some(tile) = city.barracks {
-            let active = city.worked.first() == Some(&tile);
-            let status = if active {
-                "MANAGER ACTIVE"
-            } else {
-                "MOVE MANAGER ONTO BARRACKS"
+        if city.barracks.is_some() {
+            let training = match city.barracks_queue.first() {
+                Some(build) => format!("BARRACKS: TRAINING {}", build.name()),
+                None => "BARRACKS: IDLE - TRAIN TROOPS THERE".into(),
             };
             panel.gap(GAP);
-            panel.text(
-                SMALL,
-                vec![(
-                    format!("BARRACKS: {status}"),
-                    if active { BOOSTED_TEXT } else { REDUCED_TEXT },
-                )],
-            );
+            panel.text(SMALL, vec![(training, GOLD_TEXT)]);
             panel.buttons(vec![ButtonSpec {
                 target: Target::OpenBarracks,
                 label: "SEE BARRACKS".into(),
@@ -862,11 +865,21 @@ impl GameState {
         let Some(tile) = city.barracks else {
             return;
         };
-        let active = city.worked.first() == Some(&tile);
         let stock = self.stock(city.team);
         panel.text(
             TITLE,
             vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
+        );
+        let on = self
+            .grid
+            .resource(tile)
+            .map_or_else(|| "OPEN GROUND".into(), |r| r.name().to_string());
+        panel.text(
+            SMALL,
+            vec![(
+                format!("ON {on} · TRAINS TROOPS TWICE AS FAST AS THE CITY"),
+                DIM_TEXT,
+            )],
         );
         panel.text(
             BODY,
@@ -880,18 +893,41 @@ impl GameState {
                 GOLD_TEXT,
             )]),
         );
-        panel.text(
-            SMALL,
-            vec![(
-                if active {
-                    "MANAGER ACTIVE - TRAINING ADVANCES"
-                } else {
-                    "NEEDS MANAGER - TRAINING PAUSED"
-                }
-                .into(),
-                if active { BOOSTED_TEXT } else { REDUCED_TEXT },
-            )],
-        );
+        // Each deposit kind: how many troops it still allows, or why none.
+        for (resource, unit) in [
+            (Resource::Horses, BuildUnit::Cavalry),
+            (Resource::Iron, BuildUnit::Armored),
+        ] {
+            let line = if self.barracks_deposits(i, resource).is_empty() {
+                (
+                    format!(
+                        "{}: LOCKED - PUT A BARRACKS ON {}",
+                        unit.name(),
+                        resource.name()
+                    ),
+                    REDUCED_TEXT,
+                )
+            } else {
+                let cap = self.special_cap(city.team, resource);
+                let used = self.special_used(city.team, resource);
+                let left = cap.saturating_sub(used);
+                (
+                    format!(
+                        "{}: {left} OF {cap} LEFT ({} {} DEPOSIT{} × {UNITS_PER_DEPOSIT})",
+                        unit.name(),
+                        cap / UNITS_PER_DEPOSIT,
+                        resource.name(),
+                        if cap / UNITS_PER_DEPOSIT == 1 {
+                            ""
+                        } else {
+                            "S"
+                        }
+                    ),
+                    if left > 0 { BOOSTED_TEXT } else { GOLD_TEXT },
+                )
+            };
+            panel.text(SMALL, vec![line]);
+        }
         if let (Some(build), Some(turns)) = (
             city.barracks_queue.first().copied(),
             self.barracks_turns_left(i),
@@ -921,17 +957,15 @@ impl GameState {
             builds
                 .into_iter()
                 .map(|build| {
-                    let cost = format!("{} · {}T", price_hint(build.price()), build.turns());
+                    // Locked (no deposit, or the cap is used up) or
+                    // unaffordable cards are dimmed; the tooltip says why.
                     ButtonSpec {
                         target: Target::BarracksBuild(build),
-                        label: format!("TRAIN {}", build.name()),
-                        hint: build.required_resource().map_or_else(
-                            || cost.clone(),
-                            |resource| format!("{} · {cost}", resource.name()),
-                        ),
+                        label: build.name().into(),
+                        hint: cost_hint(build.price(), build.turns()),
                         state: ButtonState::new(
                             city.barracks_queue.first() == Some(&build),
-                            !self.barracks_can_train(i, build) || !stock.covers(build.price()),
+                            self.barracks_lock(i, build).is_some() || !stock.covers(build.price()),
                         ),
                         armed: false,
                     }

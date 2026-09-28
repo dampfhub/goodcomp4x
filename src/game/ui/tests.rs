@@ -4,6 +4,7 @@ use super::*;
 
 use crate::game::PLAYER_TEAM;
 use crate::game::city::{Build, Stock};
+use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 use crate::game::orders::ClickMode;
 use crate::game::unit::{Team, Unit, UnitType};
 
@@ -305,6 +306,9 @@ fn invalid_stable_site_click_reports_horses_instead_of_open_land() {
     game.units.clear();
     game.fog_of_war = false;
     let city = game.selected_city.unwrap();
+    // Queued first, so the tile is found clear of the panels as they are
+    // when it's clicked.
+    game.queue_selected_city_building(Building::Stable);
     let site = game
         .grid
         .all_hexes()
@@ -320,7 +324,6 @@ fn invalid_stable_site_click_reports_horses_instead_of_open_land() {
                     == Some("NEEDS HORSES ON OR NEXT TO THE TILE")
         })
         .expect("visible open tile away from horses");
-    game.queue_selected_city_building(Building::Stable);
     game.handle_click(hex_cursor(&game, site), SCREEN, ClickMode::Normal);
     assert_eq!(game.notice, "STABLE NEEDS HORSES ON OR NEXT TO THE TILE");
     assert_eq!(game.site_placement(), Some((city, Building::Stable)));
@@ -1062,11 +1065,17 @@ fn every_panel_shows_what_a_city_delivers_in_displayed_units() {
     // Stored in quarters: a raw value would read four times too high.
     assert!(income.food > 4 && income.wood > 4);
     let short = price_hint(income);
-    assert!(short.contains(&format!("{}F", quantity(income.food))));
+    assert!(short.contains(&format!("{FOOD_ICON}{}", quantity(income.food))));
 
     let tray = panel_strings(|panel| game.city_tray(0, panel));
-    assert_shows(&tray, &format!("{} WOOD", signed_quantity(income.wood)));
-    assert_shows(&tray, &format!("{} FOOD", signed_quantity(income.food)));
+    assert_shows(
+        &tray,
+        &format!("{WOOD_ICON}{}", signed_quantity(income.wood)),
+    );
+    assert_shows(
+        &tray,
+        &format!("{FOOD_ICON}{}", signed_quantity(income.food)),
+    );
     let hover = panel_strings(|panel| game.structure_hover_panel(0, false, panel));
     assert_shows(&hover, &format!("DELIVERS {short}"));
     let city_tooltip = line_strings(
@@ -1088,9 +1097,9 @@ fn the_stockpile_shows_in_the_top_bar_with_its_change_a_turn() {
         .into_iter()
         .map(|(text, _)| text)
         .collect();
-    assert!(text.starts_with("FOOD 12 "), "{text}");
-    assert!(text.contains("WOOD 7 "), "{text}");
-    assert!(text.contains("METAL 3 "), "{text}");
+    assert!(text.starts_with(&format!("{FOOD_ICON}12 ")), "{text}");
+    assert!(text.contains(&format!("{WOOD_ICON}7 ")), "{text}");
+    assert!(text.contains(&format!("{METAL_ICON}3 ")), "{text}");
     assert!(
         text.contains(&signed_quantity(food_change)),
         "net food in {text}"
@@ -1120,8 +1129,14 @@ fn build_cards_show_prices_and_dim_what_the_stockpile_cannot_pay() {
     game.open_city(0);
     let melee = find_button(&game, Target::Build(BuildUnit::Melee));
     assert_eq!(melee.state, ButtonState::Ready);
-    assert!(melee.hint.contains("2F 6W"), "{}", melee.hint);
-    assert!(melee.hint.contains("2T"), "{}", melee.hint);
+    let price = format!("{FOOD_ICON}2 {WOOD_ICON}6");
+    assert!(melee.hint.contains(&price), "{}", melee.hint);
+    // The city center takes twice a Barracks' turns.
+    assert!(
+        melee.hint.ends_with(&format!("{TIME_ICON}4")),
+        "{}",
+        melee.hint
+    );
     let grow = find_button(&game, Target::Grow);
     assert!(grow.label.starts_with("GROW TO 3"), "{}", grow.label);
 
@@ -1888,4 +1903,33 @@ fn the_settings_menu_shows_every_setting_and_its_value() {
     assert_shows(&spent, "ALREADY ALL AT ONCE");
     let open = tooltip(Target::StepSetting(Setting::TurnPlayback, -1));
     assert!(!open.iter().any(|line| line.contains("ALREADY")));
+}
+
+#[test]
+fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
+    let mut game = city_view();
+    game.units.clear();
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    game.open_barracks(0);
+    let tray = panel_strings(|panel| game.barracks_tray(0, panel));
+    assert_shows(&tray, "CAVALRY: 3 OF 3 LEFT (1 HORSES DEPOSIT × 3)");
+    assert_shows(&tray, "ARMORED: LOCKED - PUT A BARRACKS ON IRON");
+    let cavalry = find_button(&game, Target::BarracksBuild(BuildUnit::Cavalry));
+    assert_eq!(cavalry.state, ButtonState::Ready);
+    let armored = find_button(&game, Target::BarracksBuild(BuildUnit::Armored));
+    assert_eq!(armored.state, ButtonState::Disabled);
+    let tooltip: String = game
+        .tooltip_lines(&armored)
+        .into_iter()
+        .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
+        .collect();
+    assert!(tooltip.contains("NEEDS THIS BARRACKS ON IRON"), "{tooltip}");
+    // A Barracks trains at its own pace: a Melee's card shows its 2 turns.
+    let melee = find_button(&game, Target::BarracksBuild(BuildUnit::Melee));
+    assert!(
+        melee.hint.ends_with(&format!("{TIME_ICON}2")),
+        "{}",
+        melee.hint
+    );
 }

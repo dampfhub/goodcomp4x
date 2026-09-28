@@ -117,7 +117,7 @@ plays out.
 | A | Auto-assign citizens by the city's labor focus |
 | Food / Production / Balanced buttons | Set the labor focus (and re-assign) |
 | Y / Yields button | Show or hide tile yields around the open city |
-| 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron), paid from the stockpile |
+| 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
 | Scroll inside BUILDINGS in the city tray | Browse building cards without paging; Harbor and Coastal Battery appear only in cities whose center touches the sea |
 | Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
@@ -126,7 +126,7 @@ plays out.
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
 | 9 / Grow card | Queue one more citizen, paid in food (the city doesn't grow on its own) |
-| A dimmed build card | The stockpile can't pay for it; its tooltip says what's short |
+| A dimmed build card | The stockpile can't pay for it, or (Cavalry, Armored) the barracks has no deposit or its cap is used up; its tooltip says why. Prices show as resource icons and amounts, turns after a clock |
 | Click a tile after queuing a placed building | Choose its site |
 | Escape while choosing a site | Cancel it: the building comes back out of the queue (the city stays open) |
 | Its card (or key) while a finished building has no site | Resume choosing the site |
@@ -137,7 +137,7 @@ plays out.
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |
-| See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types) |
+| See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types, and how many Cavalry and Armored its deposits still allow) |
 | Click the city center while in city view | Enter that city's tactical interior map |
 | V / City Interior button | Open the selected or hovered city's interior; press again to return |
 | Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |
@@ -158,7 +158,7 @@ city center enters the interior map; its clicks control only the interior copies
 | Middle-drag | Pan (a left-drag draws a selection box instead) |
 | Rest the cursor on a hex | After 0.75 s, a tooltip: terrain, yields, site, road, who works it, units |
 | Hover a unit | Its stats, in a box at the top-right |
-| Hover a city or barracks | Its production and current build (plus city growth or barracks HP), at the bottom-left |
+| Hover a city or barracks | What the city delivers and its population, or the barracks' HP, and the current build, at the bottom-left |
 | F5 | Toggle borderless fullscreen |
 | Escape with nothing open | Open the settings menu (below), which has the Quit button; Escape again, or its Close button, closes it |
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
@@ -174,9 +174,10 @@ city center enters the interior map; its clicks control only the interior copies
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
 | Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
-The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10, and PROD SPEEDUP,
-which switches the stockpile economy's variant where a city's production speeds its builds
-(`rts-economy.md`); the current scenario is gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
+The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10 (F9 is FINISH
+BUILD), PROD SPEEDUP, which switches the stockpile economy's variant where a city's production
+speeds its builds, and UNIT CAP, which switches the Cavalry and Armored cap between counting
+those alive and every one ever trained (`rts-economy.md`); the current scenario is gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
 order.
 
 ## Settings menu
@@ -227,8 +228,8 @@ them.
 
 - Holding Alt shows blue and red numbers on each unit: its move and attack ranks in the turn
   order.
-- Tile yields sit below the unit spot: wheat stalks for food, then hammers for production, one
-  per point laid out like a die's pips (3 a triangle, 4 a square, 5 a square with one in the
+- Tile yields sit below the unit spot: wheat stalks for food, logs for wood, then ingots for
+  metal, one per point laid out like a die's pips (3 a triangle, 4 a square, 5 a square with one in the
   middle, 6 two rows of three); past 6, one icon and the number. The open city shows them on the tiles it reaches (Y hides them);
   holding Alt shows them on every explored tile that can be worked.
 - Your queued attacks are orange arrows from the attacker (or its ghost) to the target; the AI's

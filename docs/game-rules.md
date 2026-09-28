@@ -25,11 +25,12 @@ differently. Instant
 playback (F8, or Turn Playback in the settings menu; on by default) resolves every step of a
 turn at once, in the same order, so outcomes don't change. Fog of war (F10) is on by default.
 Both settings, and every other player setting (`settings.rs`), survive switches and loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
-seed, and has COMPLETE PRODUCTION (F9), which finishes the open city's or barracks' current
+seed, and has FINISH BUILD (F9), which finishes the open city's or barracks' current
 build at once: a unit appears if a neighboring hex is open, and a placed building
-still needs its site and Confirm. PROD SPEEDUP, beside fog, switches the economy experiment's
-variant where production speeds builds (see Cities); it is off by default and survives switches
-and loads.
+still needs its site and Confirm. Two toggles try the economy experiment's alternatives, both
+off by default and surviving switches and loads: PROD SPEEDUP, beside fog, where production
+speeds builds (see Cities), and UNIT CAP, beside Finish Build, whether the Cavalry and Armored
+cap counts those ALIVE (the default) or every one EVER trained (see Barracks).
 
 ## Tiles (`terrain.rs`, `hex.rs`)
 
@@ -64,11 +65,11 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **Goods:** a tile's food is food; its production splits into **metal**, what's dug out of the
   ground (+1 for hills, +2 for a mine, +3 for a Quarry, never more than the tile's production),
   and **wood**, the rest (plains, tundra and desert ground, forest, jungle, lumber mills,
-  pastures). The tile tooltip shows food, wood and metal; the map's yield pips still show food
-  and production (wood and metal together).
-- **Resources:** Horses and Iron give no yield. A Barracks on them trains Cavalry or Armored;
-  an adjacent Stable or Forge on or beside the matching deposit also unlocks and upgrades that
-  troop type. The Cities scenario places both resources, and every World start has one of each
+  pastures). The map's yield pips (wheat, a log, an ingot) and the tile tooltip show food,
+  wood and metal.
+- **Resources:** Horses and Iron give no yield. Only a Barracks on them trains Cavalry or
+  Armored, 3 per deposit (see Barracks); an adjacent Stable or Forge on or beside the matching
+  deposit also gives a Barracks that deposit, and upgrades the troop. The Cities scenario places both resources, and every World start has one of each
   nearby.
 - **Special tiles** (World maps only; `Special`, `terrain.rs`): land worth scouting for and
   fighting over, marked with a gold rim and an icon in the hex's bottom-left corner. An Orchard
@@ -490,13 +491,16 @@ every turn end.
 - **Production speeds builds** (the Debug panel's PROD SPEEDUP, off by default): a city's queue
   also gains a quarter turn of work a turn for each point of production (wood and metal) the city
   delivers, and a Barracks for each point delivered to it; the stockpile still gets those goods.
-- **Prices and turns** (food / wood / metal, turns): Melee 2/6/0, 2; Ranged 2/7/0, 2; Cavalry
-  3/4/3, 3; Siege 1/8/4, 3; Armored 3/2/7, 3; Patrol Galley 1/10/2, 3; Landing Craft 1/12/2, 4;
-  Bombard Ship 1/12/6, 4; Worker 4/2/0, 2; Grow as above, 2. Granary 0/8/0, 3; Barracks 0/10/2,
+- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 2/6/0, 2; Ranged
+  2/7/0, 2; Cavalry 3/4/3, 3; Siege 1/8/4, 3; Armored 3/2/7, 3; Patrol Galley 1/10/2, 3; Landing
+  Craft 1/12/2, 4; Bombard Ship 1/12/6, 4; Worker 4/2/0, 2; Grow as above, 2. A city center
+  trains land troops at half a Barracks' pace (twice the turns: a Melee takes 4); ships, which
+  only a city with a Harbor builds, take their own turns. Granary 0/8/0, 3; Barracks 0/10/0,
   3; Mill, Canoe House and Watchpost 0/10/0, 3; Workshop 0/10/4, 4; Forge 0/6/8, 4; Stable
   2/12/0, 4; Field Hospital 4/10/4, 4; Cannery 0/12/4, 4; Work Camp 2/10/2, 3; Smelter 0/8/8, 4;
-  Railhead 0/12/12, 5; Harbor 0/14/0, 4; Coastal Battery 0/8/10, 4. Cards show a price as
-  "2F 6W" and the turns as "2T". Keys 1-3 queue Melee, Ranged and Siege (a city can't queue
+  Railhead 0/12/12, 5; Harbor 0/14/0, 4; Coastal Battery 0/8/10, 4. Cards, tooltips, queue rows
+  and notices show a price as each resource's icon and amount (the map's wheat, log and ingot)
+  and the turns after a clock icon. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue
   Cavalry or Armored), 4-7 Granary, Barracks, Mill, Workshop, 8 a Worker and 9 a Grow. The other
   buildings use the city's scrollable building list.
   One of each building per city.
@@ -512,13 +516,19 @@ every turn end.
     old save's queue, say) keeps its card live and starts selection when its city is next
     opened. Click the site's map badge to move it. When its turns are done, the building waits (blocking the queue) until you click Confirm in
     the tray. Completing any building resets the queue's progress to 0.
-  - **Barracks:** its own view and queue (all five unit types), paid from the stockpile like the
-    city's, whose training advances only while the city's manager stands on the barracks (with
-    production speeding builds, each worked tile's production times its delivery share from the
-    barracks adds to it). The city's own delivery still counts those tiles too. Cavalry
-    needs the barracks on Horses or a supporting Stable, Armored on Iron or a supporting Forge.
-    A unit appears next to the barracks, and the
-    progress resets after each.
+  - **Barracks** (`city/barracks.rs`): the side's military building. Its own view and queue
+    (Melee, Ranged, Cavalry, Siege, Armored), paid from the stockpile like the city's, training
+    twice as fast as a city center, wherever the city's manager is (with production speeding
+    builds, the manager on the barracks adds its worked tiles' production, times their delivery
+    share from the barracks). Only a Barracks trains Cavalry and Armored, and only one drawing
+    on a deposit: Horses or Iron under it, or on or beside a Stable or Forge next to it. Each
+    deposit a side's Barracks draw on allows 3 of that troop, counting those alive and queued, so
+    a lost one can be replaced (the Debug panel's UNIT CAP: EVER counts every one ever trained
+    instead, so a deposit runs out). A deposit an enemy unit stands on counts for nothing while
+    it's there. The barracks panel shows each deposit kind's troops left, or why they're locked,
+    and a locked or unaffordable card is dimmed with the reason in its tooltip. Troops from the
+    ruins don't count. A unit appears next to the barracks (never on a worker out on the map),
+    and the progress resets after each.
   - **Mill:** worked tiles adjacent to it deliver all their food, if they can reach the city.
   - **Workshop:** a building planned on a site adjacent to a workshop takes half its turns (its
     price is unchanged). Moving it away before confirmation restores the full time.
@@ -526,8 +536,8 @@ every turn end.
     friendly delivery routes (cost 1 between banks); walls, enemy occupation and the 8-cost
     delivery limit still apply. This can bring several remote tiles into a city's reach at once.
   - **Forge and Stable:** must stand on or adjacent to Iron or Horses respectively. If also
-    adjacent to a Barracks, they let it train the matching unit even when the Barracks is off
-    the resource. Forge-trained Armored have +20% HP and +15% defense; Stable-trained Cavalry
+    adjacent to a Barracks, they give it the matching deposits on or beside them (and their
+    cap), even when the Barracks is off the resource. Forge-trained Armored have +20% HP and +15% defense; Stable-trained Cavalry
     have +1 move. Units trained before the building was placed retain their original stats.
   - **Watchpost:** sees 4 hexes, or 5 from hills, through ordinary sight lines. It does not
     need a worker, unlike an outpost.
@@ -631,7 +641,7 @@ every turn end.
 ## Interface (`src/game/ui/`)
 
 - Panels dock in four corner zones and never overlap (`docs/ui-system.md`).
-- **Top bar:** turn number, your stockpile (food, wood and metal, each with its change a turn:
+- **Top bar:** turn number, your stockpile (food, wood and metal, by icon, each with its change a turn:
   every city's delivery, less the citizens' food), the latest notice, and the End Turn button, whose label names what is
   still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
   TURN.
@@ -639,10 +649,10 @@ every turn end.
   and its citizens eat, the current build and its turns left, labor focus buttons, the Grow card
   (9), unit cards (1-3) and the Worker card (8), each with its price and turns and dimmed when the
   stockpile can't pay, the Yields button,
-  paged cards for buildings not yet built (4-7 for the first four), barracks status with See
-  Barracks, planned sites with Confirm once they are built, and Worker Jobs (the worker menu);
-  the queue docks above it. With a barracks open, its five train
-  buttons and Open City, queue above. With a unit selected: stats (boosted values green, reduced
+  paged cards for buildings not yet built (4-7 for the first four), what the barracks is
+  training with See Barracks, planned sites with Confirm once they are built, and Worker Jobs (the worker menu);
+  the queue docks above it. With a barracks open, what it stands on, each deposit
+  kind's Cavalry or Armored left (or why none), its five train cards and Open City, queue above. With a unit selected: stats (boosted values green, reduced
   red), notes, and buttons Move, Attack, Swap, then its ability (or Found City), then Hold,
   Guard and Disband (press twice: the first press asks to confirm). With the worker menu open,
   the worker menu. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
@@ -659,8 +669,8 @@ every turn end.
   it to its city. Worked tiles are outlined green (the manager's in gold; red if disrupted).
   Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
-  food (green grain) and production (amber hammers: wood and metal together) with delivery
-  percentages.
+  food (wheat), wood (a log) and metal (an ingot) with delivery percentages. Alt shows
+  every explored tile's yields.
 - Escape closes the settings menu, or else an open city or barracks view, or else lets go of the
   selected unit or group (a worker job being placed, and then the worker menu, close first);
   with none of those open, it opens the
@@ -678,10 +688,14 @@ remaining walk, attacking if that brings it into range. It skips hexes a teammat
 claimed, and units in a contested hex stay and fight. It never uses abilities, never attacks
 cities, never builds buildings, ignores the fog, and ignores its civilians and any
 player-controlled AI unit; its scouts fight like any other unit. AI cities auto-assign citizens
-at every end of planning. An AI city with an empty queue buys one build from its side's
-stockpile, or waits a turn if it can't pay: a worker first when it has none; otherwise a Grow
-once the side has at least 2 units (scouts and settlers aside) for each of its cities, and a
-Melee until then, taking the other when the stockpile can't pay for the first. An AI city with a worker at home and an empty list gives it one job: an
+at every end of planning. AI queues buy from their side's stockpile, or wait a turn if it
+can't pay. An AI city with an empty queue trains a worker first when it has none, then builds
+a Barracks: on a Horses or Iron deposit within 3 hexes (a kind it has none of first), else on
+the nearest open unworked tile within 2; its buildings go up on their site as soon as they're
+done, with no Confirm. After that the city grows. A city without a Barracks trains Melee itself,
+slowly, until the side has 2 units (scouts and settlers aside) per city, growing when it can't
+pay. An idle AI Barracks trains Cavalry or Armored when its deposits allow and the side can pay,
+else Melee, or Ranged for every two Melee. An AI city with a worker at home and an empty list gives it one job: an
 improvement on a tile it works, or else a road there. At a contested friendly city gate, AI
 units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
@@ -710,7 +724,8 @@ Known bugs link to their board item; the rest are design questions nobody has de
 - An order queue only stops for an enemy standing on its next destination (or blocking the
   move); it doesn't stop when an enemy merely comes into sight, and it can't queue abilities,
   swaps or holds for later turns.
-- The stockpile economy's prices, times and growth cost are a first pass, and the late game has
-  nothing to spend a growing stockpile on once cities are full (see `rts-economy.md`).
+- The stockpile economy's prices, times, growth cost and the Barracks' 3 troops per deposit are
+  a first pass, and the late game has nothing to spend a growing stockpile on once cities are
+  full (see `rts-economy.md`).
 - No victory condition; F1-F4 restart a scenario. The Debug panel offers a Naval scenario
   with two coastal cities, prebuilt Harbors and Coastal Batteries, and ships ready to fight.

@@ -33,8 +33,21 @@ more citizens and everything else that eats it (troops, workers).
   refunds its full price. A captured city's queue and a destroyed Barracks' queue are lost.
 - **Time:** every build takes a fixed number of turns (`WORK_PER_TURN` work a turn). The queue
   still works one item at a time; its progress resets on an empty queue, as production did. A
-  Barracks' queue advances only while the city's manager stands on it (as before, when only then
-  did it earn production). A Workshop halves the time of an adjacent building instead of its cost.
+  Workshop halves the time of an adjacent building instead of its cost.
+- **Barracks** (`city/barracks.rs`, second round): the primary military building. It trains
+  land troops in their listed turns, whatever the manager does; a city center takes twice as
+  long (`CITY_TRAINING_SLOWDOWN`), so it can still raise a Melee in an emergency. Only a
+  Barracks trains Cavalry and Armored, and only one drawing on a deposit: Horses or Iron under
+  it (or on or beside a Stable or Forge next to it). Each deposit a side's Barracks use allows
+  `UNITS_PER_DEPOSIT` (3) of that troop. A deposit an enemy unit stands on counts for nothing,
+  so deposits are worth taking and holding. The Barracks costs no metal (10 wood), so the first
+  one is affordable at the start.
+- **The cap counts units alive** (and queued) by default: a deposit keeps its worth all game,
+  losses can be replaced, and taking or blocking an enemy's deposit cuts its cavalry at once.
+  The alternative, a **lifetime** cap (every one ever trained; the deposit runs out, which pushes
+  expansion to new deposits), is the Debug panel's UNIT CAP: EVER. The simulations check both
+  (`SIM_LIFETIME_CAP=1`): a side never has more drawn troops than its deposits ever allowed.
+  Ruins' Cavalry don't count against the cap.
 - **Growth:** the Grow card (9) queues one citizen, costing `5 + 5 x population` food (counting
   Grows already queued ahead of it) and 2 turns. It shares the city queue, so growing also costs
   the city's build time. No food store, no automatic growth, no growth meter. Removing a Grow
@@ -45,19 +58,26 @@ more citizens and everything else that eats it (troops, workers).
   pay for a Melee, Ranged, Worker or Grow; a broke side isn't forced to pick something it can't
   buy.
 - **AI** (`plan_ai_cities`): a city with an empty queue buys one build or waits: a Worker if it
-  has none; else Melee until the side has 2 units per city, then Grow; each falls back on the
-  other when the stockpile can't pay. The AI pays through the same `try_queue_build` as the
+  has none; then a Barracks, sited on a Horses or Iron deposit within 3 hexes when there is one
+  (`ai_barracks_site`) and placed with no Confirm; then Grow. Until it has a Barracks it trains
+  Melee itself (slowly) while the side has fewer than 2 units per city. An idle AI Barracks
+  trains Cavalry or Armored when its cap and stockpile allow, else Melee, or Ranged for every two
+  Melee. The AI pays through the same `try_queue_build` as the
   player, so `simulation.rs` checks that no stockpile ever goes negative, and that cities both
   train troops and grow.
-- **UI:** the top bar (ImGui status bar and classic) shows the stockpile with each resource's
-  change a turn. The city tray shows what the city delivers and eats, the build in progress with
-  its turns left, a one-line Grow card, and cards with "2F 6W 2T" hints (price, turns), dimmed
-  when unaffordable; a dimmed card's tooltip says what's short. Queue rows show turns left. The
-  tile tooltip splits production into wood and metal; the map's yield pips don't yet.
+- **UI:** food, wood, metal and turns have icons (wheat, a log, an ingot, a clock;
+  `map_icons.rs`), drawn on the map's yield pips and inline in text: an icon character
+  (`FOOD_ICON` and the rest) in any UI string draws as its icon, in the classic font
+  (`font::Face`) and in ImGui (`rich_text`, `rich_button`). The top bar shows the stockpile by
+  icon with each resource's change a turn. The city tray shows what the city delivers and eats,
+  the build in progress with its turns left, a one-line Grow card, and cards whose hints are the
+  price and turns in icons, dimmed when unaffordable (or, at a Barracks, locked); a dimmed
+  card's tooltip says why. Queue rows show turns left, and notices name prices in icons. The
+  barracks panel shows each deposit kind's troops left, or why they're locked.
 
 ## First-pass numbers
 
-| Build | Food | Wood | Metal | Turns |
+| Build | Food | Wood | Metal | Turns (a land troop takes twice as long at a city center) |
 |---|---|---|---|---|
 | Melee | 2 | 6 | 0 | 2 |
 | Ranged | 2 | 7 | 0 | 2 |
@@ -70,7 +90,7 @@ more citizens and everything else that eats it (troops, workers).
 | Worker | 4 | 2 | 0 | 2 |
 | Grow | 5 + 5 x pop | | | 2 |
 | Granary | | 8 | | 3 |
-| Barracks | | 10 | 2 | 3 |
+| Barracks | | 10 | | 3 |
 | Mill, Canoe House, Watchpost | | 10 | | 3 |
 | Workshop | | 10 | 4 | 4 |
 | Forge | | 6 | 8 | 4 |
@@ -134,7 +154,40 @@ only Melee, Workers and Grows, never buildings):
   World sides bank 50+. Metal only matters to a player building Siege, Armored, Cavalry, ships
   and the metal buildings.
 
+### Second round: Barracks and the unit cap
+
+Averages per side over seeds 0-7 (`economy_report`), fixed time, cap counting those alive:
+
+| | turn 10 | turn 20 | turn 30 | turn 40 |
+|---|---|---|---|---|
+| Cities: food / wood / metal | 31 / 6 / 1 | 23 / 14 / 1 | 75 / 38 / 1 | 185 / 107 / 1 |
+| Cities: units trained, Cavalry or Armored | 2.5, 1 | 7, 1 | 13, 1 | 19, 1 |
+| World: food / wood / metal | 17 / 7 / 4 | 33 / 18 / 10 | 88 / 41 / 22 | 172 / 72 / 37 |
+| World: units trained, Cavalry or Armored | 2.0, 0.7 | 5.9, 1.4 | 10.4, 2.2 | 14.9, 3.2 |
+
+- **Every AI side builds its Barracks by turn 5**, on a deposit where it has one within 3 hexes.
+  Wood is scarcer early (the Barracks' 10 wood), and total troops trained end about where they
+  did with city training.
+- **Metal, not the cap, limits Cavalry and Armored for the AI.** Cavalry's 3 metal and Armored's
+  7 need worked hills: Cities sides earn no metal, so each trains one Cavalry from its starting
+  metal and never reaches its cap of 3; World sides earn a little and train about 3 by turn 40.
+  Metal now has a use, but the AI doesn't work hills for it: its labor focus picks food, then
+  wood and metal alike.
+- **Two latent bugs surfaced** and are fixed: a troop could appear on a worker out on the map
+  (sharing a hex with an enemy's worker without capturing it), and a city captured in its
+  interior could hand an outlying worker to its conqueror while one of its old side's units
+  stood on it.
+
 ## Open questions and next experiments
+
+- **The unit cap:** alive (the default) or lifetime? Alive keeps deposits worth holding all game;
+  lifetime makes each deposit a one-off to spend, pushing expansion. Try both with the Debug
+  toggle; 3 per deposit is a guess (World starts have one of each nearby).
+- **Metal income:** give the AI (and the Production labor focus) a reason to work hills and mines
+  when it has a deposit to use, or make Iron itself yield metal.
+- **Barracks and the manager:** training no longer needs the manager on the Barracks; with
+  production speeding builds it still adds its work group's production. If the manager should
+  matter again, a manager bonus (say, a turn faster) is gentler than a pause.
 
 - **Keep the speedup, or add queues?** The numbers favor production speeding builds (or,
   equivalently, shorter fixed times) so the stockpile, not the clock, limits spending. The
@@ -152,9 +205,9 @@ only Melee, Workers and Grows, never buildings):
   rush its build.
 - **Should upkeep starve per city?** Pooled food lets one farming city feed the rest; if that is
   too forgiving, deliveries could feed their own city first.
-- **Map readouts:** yield pips on the map still show production; they should show wood and
-  metal once the split settles. The Production labor focus picks wood and metal alike.
-- **AI spending:** it should build Barracks and metal troops, and grow more when food piles up,
-  to test the late game properly.
+- **Labor focus:** the Production focus picks wood and metal alike; a Wood / Metal split (or a
+  focus per resource) may read better now that the map shows them apart.
+- **AI spending:** it builds a Barracks and trains Cavalry or Armored now, but no other building,
+  and it should grow more when food piles up, to test the late game properly.
 - **Refunds:** full refunds make the queue a free bank; RTS games often refund in full, but a
   partial refund for an item in progress is worth trying if players park resources in queues.

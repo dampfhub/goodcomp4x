@@ -10,6 +10,7 @@ use super::builder::Row;
 use super::text::end_turn_label;
 use super::*;
 use crate::game::PLAYER_TEAM;
+use crate::game::map_icons;
 
 enum Action {
     Button(Option<PinnedPanel>, Target),
@@ -1500,8 +1501,123 @@ fn text_line(ui: &Ui, line: &Line) {
         } else {
             *color
         };
-        ui.text_colored(readable, text);
+        rich_text(ui, text, readable);
     }
+}
+
+/// Whether `text` holds any inline icon characters (`map_icons::inline_icon`).
+fn has_icons(text: &str) -> bool {
+    text.chars().any(|ch| map_icons::inline_icon(ch).is_some())
+}
+
+/// The room one inline icon takes, at the current font.
+fn icon_box(ui: &Ui) -> f32 {
+    ui.current_font_size() * 1.1
+}
+
+/// How wide `text` draws with its icons.
+fn rich_width(ui: &Ui, text: &str) -> f32 {
+    let mut width = 0.0;
+    let mut run = String::new();
+    for ch in text.chars() {
+        if map_icons::inline_icon(ch).is_some() {
+            width += ui.calc_text_size(&run)[0] + icon_box(ui);
+            run.clear();
+        } else {
+            run.push(ch);
+        }
+    }
+    width + ui.calc_text_size(&run)[0]
+}
+
+/// Draws `text` into the window's draw list with its top-left at `pos`, each
+/// icon character as its icon, the same pictures as the map's yield chips.
+/// A dimmed line's icons fade with it.
+fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
+    let draw = ui.get_window_draw_list();
+    let size = icon_box(ui);
+    let middle = pos[1] + ui.current_font_size() / 2.0;
+    let mut x = pos[0];
+    let mut run = String::new();
+    let flush = |run: &mut String, x: &mut f32| {
+        if !run.is_empty() {
+            draw.add_text([*x, pos[1]], color, run.as_str());
+            *x += ui.calc_text_size(run.as_str())[0];
+            run.clear();
+        }
+    };
+    for ch in text.chars() {
+        if map_icons::inline_icon(ch).is_none() {
+            run.push(ch);
+            continue;
+        }
+        flush(&mut run, &mut x);
+        let mut vertices = Vec::new();
+        map_icons::push_inline_icon(Vec2::ZERO, size * 0.85, ch, false, &mut vertices);
+        let center = [x + size / 2.0, middle];
+        // The icon is built Y-up around the origin; ImGui's Y points down.
+        let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+        for triangle in vertices.as_chunks::<3>().0 {
+            let mut fill = triangle[0].color;
+            if dim {
+                fill[3] *= 0.4;
+            }
+            draw.add_triangle(at(&triangle[0]), at(&triangle[1]), at(&triangle[2]), fill)
+                .filled(true)
+                .build();
+        }
+        x += size;
+    }
+    flush(&mut run, &mut x);
+}
+
+/// `text` as a widget, with its icons drawn in: plain text when it has none.
+fn rich_text(ui: &Ui, text: &str, color: [f32; 4]) {
+    if !has_icons(text) {
+        ui.text_colored(color, text);
+        return;
+    }
+    let pos = ui.cursor_screen_pos();
+    ui.dummy([rich_width(ui, text), ui.text_line_height()]);
+    draw_rich(ui, pos, text, color, false);
+}
+
+/// A button whose lines may hold icons: ImGui's own button when they
+/// don't; otherwise a blank button with the lines drawn over it, centered,
+/// or from the left with `left` set.
+fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) -> bool {
+    if !lines.iter().any(|line| has_icons(line)) {
+        return ui.button_with_size(format!("{}##{id}", lines.join("\n")), size);
+    }
+    let clicked = ui.button_with_size(format!("##{id}"), size);
+    let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
+    let disabled = ui.clone_style().alpha < 1.0;
+    let color = ui.style_color(StyleColor::Text);
+    let line_height = ui.text_line_height();
+    let total = line_height * lines.len() as f32;
+    let top = min[1] + (max[1] - min[1] - total) / 2.0;
+    for (index, line) in lines.iter().enumerate() {
+        let width = rich_width(ui, line);
+        let x = if left {
+            min[0] + (max[0] - min[0]) * 0.03
+        } else {
+            min[0] + (max[0] - min[0] - width) / 2.0
+        };
+        let faded = [
+            color[0],
+            color[1],
+            color[2],
+            if disabled { 0.45 } else { 1.0 },
+        ];
+        draw_rich(
+            ui,
+            [x, top + line_height * index as f32],
+            line,
+            faded,
+            disabled,
+        );
+    }
+    clicked
 }
 
 fn draw_game_dockspace(ui: &Ui, viewport: Vec2) {
@@ -2077,21 +2193,22 @@ impl GameState {
                             _ => None,
                         };
                         let _disabled = ui.begin_disabled(spec.state == ButtonState::Disabled);
-                        let label = if *compact {
+                        let lines = if *compact {
                             if spec.hint.is_empty()
                                 || matches!(spec.hint.as_str(), "AUTO" | "CLICK")
                             {
-                                spec.label.clone()
+                                vec![spec.label.clone()]
                             } else {
-                                format!("{}  {}", spec.label, spec.hint)
+                                vec![format!("{}  {}", spec.label, spec.hint)]
                             }
                         } else if spec.hint.is_empty() {
-                            spec.label.clone()
+                            vec![spec.label.clone()]
                         } else {
-                            format!("{}\n{}", spec.label, spec.hint)
+                            vec![spec.label.clone(), spec.hint.clone()]
                         };
-                        let label = format!("{label}##{:?}", spec.target);
-                        if ui.button_with_size(label, [width, if *compact { 28.0 } else { 48.0 }]) {
+                        let id = format!("{:?}", spec.target);
+                        let size = [width, if *compact { 28.0 } else { 48.0 }];
+                        if rich_button(ui, &id, &lines, size, false) {
                             actions.push(Action::Button(scope, spec.target));
                         }
                         if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
@@ -2130,10 +2247,10 @@ impl GameState {
                                 };
                                 let _disabled =
                                     ui.begin_disabled(spec.state == ButtonState::Disabled);
-                                let label =
-                                    format!("{}  {}##{:?}", spec.label, spec.hint, spec.target);
+                                let line = format!("{}  {}", spec.label, spec.hint);
                                 let width = ui.content_region_avail()[0].max(80.0);
-                                if ui.button_with_size(label, [width, 28.0]) {
+                                let id = format!("{:?}", spec.target);
+                                if rich_button(ui, &id, &[line], [width, 28.0], true) {
                                     actions.push(Action::Button(scope, spec.target));
                                 }
                                 if ui.is_item_hovered_with_flags(
@@ -2169,14 +2286,15 @@ impl GameState {
                             [0.11, 0.14, 0.16, 1.0]
                         },
                     );
-                    if ui.button_with_size(
-                        format!(
-                            "::  {}##queue-{:?}-{}",
-                            item.label.trim_start_matches("> ").trim(),
-                            item.kind,
-                            item.index
-                        ),
+                    if rich_button(
+                        ui,
+                        &format!("queue-{:?}-{}", item.kind, item.index),
+                        &[format!(
+                            "::  {}",
+                            item.label.trim_start_matches("> ").trim()
+                        )],
                         [width, 30.0],
+                        true,
                     ) {
                         actions.push(Action::Button(
                             scope,
@@ -2195,7 +2313,7 @@ impl GameState {
                         if let Some(source) =
                             ui.drag_drop_source_config(&name).begin_payload(item.index)
                         {
-                            ui.text(&item.label);
+                            rich_text(ui, &item.label, TEXT);
                             source.end();
                         }
                         if let Some(target) = ui.drag_drop_target() {
@@ -2289,19 +2407,19 @@ impl GameState {
                 let mut stockpile_width = 0.0;
                 for (text, color) in &stockpile {
                     ui.same_line_with_spacing(0.0, 0.0);
-                    ui.text_colored(*color, text);
-                    stockpile_width += ui.calc_text_size(text)[0];
+                    rich_text(ui, text, *color);
+                    stockpile_width += rich_width(ui, text);
                 }
                 ui.same_line_with_spacing(0.0, 24.0);
                 let max_notice = (viewport.x - end_width - 520.0 - stockpile_width).max(0.0);
-                if ui.calc_text_size(self.shown_notice())[0] <= max_notice {
-                    ui.text_colored(NOTICE_TEXT, self.shown_notice());
+                if rich_width(ui, self.shown_notice()) <= max_notice {
+                    rich_text(ui, self.shown_notice(), NOTICE_TEXT);
                 } else {
                     let mut shortened = self.shown_notice().to_string();
-                    while !shortened.is_empty() && ui.calc_text_size(&shortened)[0] > max_notice {
+                    while !shortened.is_empty() && rich_width(ui, &shortened) > max_notice {
                         shortened.pop();
                     }
-                    ui.text_colored(NOTICE_TEXT, shortened);
+                    rich_text(ui, &shortened, NOTICE_TEXT);
                 }
                 ui.set_cursor_pos([(viewport.x - end_width - 365.0).max(8.0), 7.0]);
                 ui.text(format!("VIEW: {}", layout.active_view.label()));
