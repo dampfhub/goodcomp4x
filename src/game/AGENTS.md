@@ -42,6 +42,7 @@ behavior.
 | `scenario.rs` | scenarios (F1-F4, F12, Debug Naval), savestate (F6/F7), instant playback (F8) |
 | `settings.rs` | the player's options (`Settings`, one field each, and `Setting`, how the menu lists and changes them: heading, control, range), Escape (`press_escape`) and the settings menu's open state; its module comment says how to add a setting |
 | `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues) in every scenario, board invariants checked each turn, same seed replays the same game |
+| `simulation/economy.rs` | tests only: `economy_report` (ignored; run with `--release -- --ignored --nocapture`) measures the economy's tempo over many seeds (units by type and turn, growth, stockpiles, fights, build times, spread; its `REPORT_*` knobs are in its module comment, its numbers in `docs/rts-economy.md`) |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
 | `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |
