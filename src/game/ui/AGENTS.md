@@ -58,11 +58,12 @@ file holds.
   buttons inside their panel) in `tests.rs`, and for ImGui extend the `plan` tests in
   `imgui.rs` (their size arrays have one entry per slot). A slot's place in `PLAN_ORDER` is
   its priority within its zone.
-- **New player setting:** no UI change. `settings_menu.rs` builds a row (name, value, < and >)
-  for every entry of `Setting::ALL`, so add the setting in `game/settings.rs` (its module
-  comment lists the steps). The settings menu tests in `tests.rs` walk `Setting::ALL` too. A
-  setting that needs a different kind of control (text entry, a slider) is a new `Row` variant
-  (see Both presentations).
+- **New player setting:** no UI change. `settings_menu.rs` builds a `Row::Setting` for every
+  entry of `Setting::ALL`, under its `group`'s heading, and its `control` (checkbox, slider or
+  choice) picks the widget in both presentations, so add the setting in `game/settings.rs`
+  (its module comment lists the steps). The settings menu tests in `tests.rs` walk
+  `Setting::ALL` too. A new kind of control (text entry, say) is a `Control` variant, drawn by
+  `render_setting` (`imgui.rs`) and laid out as buttons by `classic_setting_rows`.
 
 ## Verifying
 

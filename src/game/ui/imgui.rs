@@ -3,14 +3,16 @@
 
 use ::imgui::{
     Condition, DragDropFlags, FontId, ItemHoveredFlags, MouseButton as ImMouseButton, ProgressBar,
-    StyleColor, StyleVar, Ui, WindowFlags,
+    SliderFlags, StyleColor, StyleVar, Ui, WindowFlags,
 };
 
-use super::builder::Row;
+use super::action_icons::{self, ICON_BUTTON_SIZE};
+use super::builder::{CatalogEntry, Row, icon_row, visible_button_hint};
 use super::text::end_turn_label;
 use super::*;
 use crate::game::PLAYER_TEAM;
 use crate::game::map_icons;
+use crate::game::settings::{Control, Setting};
 
 enum Action {
     Button(Option<PinnedPanel>, Target),
@@ -118,6 +120,8 @@ const STATUS_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
     .union(WindowFlags::NO_SCROLL_WITH_MOUSE);
 /// Height of a progress bar row (`Row::Bar`).
 const BAR_HEIGHT: f32 = 12.0;
+/// The settings menu's width, before a narrow screen takes some off.
+const SETTINGS_WIDTH: f32 = 460.0;
 const COLLAPSED_HEIGHT: f32 = 30.0;
 const SLOT_COUNT: usize = 6;
 const SELECTION: usize = 0;
@@ -1389,6 +1393,18 @@ fn scope_from_text(text: &str) -> Option<BoxScope> {
     }
 }
 
+/// Decide the label before submitting the ImGui button, without changing
+/// its fixed rectangle or relying on the previous frame's hovered item.
+fn next_button_hovered(ui: &Ui, size: [f32; 2]) -> bool {
+    let [x, y] = ui.cursor_screen_pos();
+    let [mouse_x, mouse_y] = ui.io().mouse_pos;
+    ui.is_window_hovered()
+        && mouse_x >= x
+        && mouse_x < x + size[0]
+        && mouse_y >= y
+        && mouse_y < y + size[1]
+}
+
 fn panel_content_height(cursor_y: f32, padding_y: f32, title_height: Option<f32>) -> f32 {
     cursor_y + padding_y - title_height.unwrap_or(0.0)
 }
@@ -1417,16 +1433,154 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
             Row::Gap(gap) => gap + 6.0,
             Row::Bar(_) => 18.0,
             Row::Buttons(buttons, compact) => {
-                let columns = ((inner + 7.0) / 135.0).floor().max(1.0) as usize;
-                let rows = buttons.len().div_ceil(columns);
-                rows as f32 * (if *compact { 34.0 } else { 54.0 })
+                if icon_row(buttons) {
+                    let columns =
+                        ((inner + 7.0) / (ICON_BUTTON_SIZE + 7.0)).floor().max(1.0) as usize;
+                    buttons.len().div_ceil(columns) as f32 * (ICON_BUTTON_SIZE + 6.0)
+                } else {
+                    let columns = ((inner + 7.0) / 135.0).floor().max(1.0) as usize;
+                    let rows = buttons.len().div_ceil(columns);
+                    rows as f32 * (if *compact { 34.0 } else { 54.0 })
+                }
             }
             Row::QueueItem(_) => 37.0,
-            Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 4) as f32 * 34.0) + 18.0,
+            Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 5) as f32 * 34.0) + 18.0,
             Row::Roster(_) => ROSTER_CHIP + 6.0,
+            Row::Heading(_) => {
+                let _font = ui.push_font(fonts[0]);
+                // The text, the rule under it, and the spacing after each.
+                ui.calc_text_size("A")[1] + 2.0 * SPACING_Y + 1.0
+            }
+            Row::Setting(..) => {
+                let _font = ui.push_font(fonts[1]);
+                ui.calc_text_size("A")[1] + 2.0 * FRAME_PADDING_Y + SPACING_Y
+            }
         };
     }
     height + 12.0
+}
+
+/// The style's vertical item spacing and frame padding (`app.rs`), as
+/// `measure_panel` counts them for the settings menu's rows.
+const SPACING_Y: f32 = 6.0;
+const FRAME_PADDING_Y: f32 = 6.0;
+
+/// The width of the settings menu's label column: its longest setting name,
+/// and a gap before the controls.
+fn setting_label_width(ui: &Ui, panel: &PanelBuilder, font: FontId) -> f32 {
+    let _font = ui.push_font(font);
+    panel
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Setting(setting, _) => Some(ui.calc_text_size(setting.name())[0]),
+            _ => None,
+        })
+        .fold(0.0, f32::max)
+        + 18.0
+}
+
+/// A setting's name and what it does, for the tooltip on its label and
+/// control.
+fn setting_tooltip(ui: &Ui, setting: Setting) {
+    ui.tooltip(|| {
+        ui.text_colored(TEXT, setting.name());
+        for line in super::text::wrap(setting.description(), TOOLTIP_WRAP) {
+            ui.text_colored([0.72, 0.75, 0.76, 1.0], line);
+        }
+    });
+}
+
+/// A setting's row in the settings menu: its name in the label column, then
+/// the control `Setting::control` names across the rest of the width. A
+/// change is a `Target::SetSetting` action.
+fn render_setting(
+    ui: &Ui,
+    setting: Setting,
+    value: i32,
+    label_width: f32,
+    scope: Option<PinnedPanel>,
+    actions: &mut Vec<Action>,
+) {
+    let range = setting.range();
+    let mut set = |to: i32| {
+        if to != value {
+            actions.push(Action::Button(scope, Target::SetSetting(setting, to)));
+        }
+    };
+    let tooltip = || {
+        if ui.is_item_hovered() {
+            setting_tooltip(ui, setting);
+        }
+    };
+    let left = ui.cursor_pos()[0];
+    ui.align_text_to_frame_padding();
+    ui.text_colored([0.82, 0.84, 0.86, 1.0], setting.name());
+    tooltip();
+    ui.same_line_with_pos(left + label_width);
+    let width = ui.content_region_avail()[0];
+    let id = format!("##setting-{setting:?}");
+    match setting.control() {
+        Control::Toggle => {
+            let mut on = value == 1;
+            if ui.checkbox(format!("{}{id}", setting.value_text(value)), &mut on) {
+                set(on as i32);
+            }
+            tooltip();
+        }
+        Control::Slider => {
+            let mut to = value;
+            ui.set_next_item_width(width);
+            // ImGui formats the value itself; the text has no %d, so it
+            // shows `value_text` as it is.
+            let shown = setting.value_text(value).replace('%', "%%");
+            if ui
+                .slider_config(&id, *range.start(), *range.end())
+                .display_format(shown)
+                .flags(SliderFlags::ALWAYS_CLAMP | SliderFlags::NO_INPUT)
+                .build(&mut to)
+            {
+                set(to);
+            }
+            tooltip();
+        }
+        Control::Choice if range.clone().count() > Control::MAX_BUTTONS => {
+            ui.set_next_item_width(width);
+            match ui.begin_combo(&id, setting.value_text(value)) {
+                Some(_combo) => {
+                    for to in range {
+                        let label = format!("{}{id}-{to}", setting.value_text(to));
+                        if ui.selectable_config(label).selected(to == value).build() {
+                            set(to);
+                        }
+                    }
+                }
+                None => tooltip(),
+            }
+        }
+        Control::Choice => {
+            let count = range.clone().count() as f32;
+            let spacing = ui.clone_style().item_spacing[0];
+            let each = ((width - spacing * (count - 1.0)) / count).floor();
+            for (index, to) in range.enumerate() {
+                if index != 0 {
+                    ui.same_line();
+                }
+                // The current choice is gold, like a queued build.
+                let _accent = (to == value).then(|| {
+                    (
+                        ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]),
+                        ui.push_style_color(StyleColor::ButtonHovered, [0.42, 0.37, 0.20, 1.0]),
+                    )
+                });
+                let label = format!("{}{id}-{to}", setting.value_text(to));
+                if ui.button_with_size(label, [each, 0.0]) {
+                    set(to);
+                }
+                tooltip();
+            }
+        }
+    }
 }
 
 /// How wide the unit strip's window wants to be: its widest row of tokens,
@@ -1486,6 +1640,68 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
         .filled(true)
         .build();
         draw.add_text(origin, TEXT, &text);
+    }
+}
+
+fn draw_action_icon(
+    ui: &Ui,
+    min: [f32; 2],
+    max: [f32; 2],
+    icon: action_icons::ActionIcon,
+    color: Color,
+    cooldown: Option<&str>,
+    small_font: FontId,
+) {
+    let draw = ui.get_window_draw_list();
+    let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
+    let mut vertices = Vec::new();
+    action_icons::push_icon(Vec2::ZERO, 14.0, icon, color, &mut vertices);
+    for triangle in vertices.as_chunks::<3>().0 {
+        let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+        draw.add_triangle(
+            at(&triangle[0]),
+            at(&triangle[1]),
+            at(&triangle[2]),
+            triangle[0].color,
+        )
+        .filled(true)
+        .build();
+    }
+    if let Some(turns) = cooldown {
+        let _font = ui.push_font(small_font);
+        let width = ui.calc_text_size(turns)[0];
+        let pos = [max[0] - width - 3.0, min[1] + 2.0];
+        draw.add_rect(
+            [pos[0] - 2.0, pos[1] - 1.0],
+            [max[0] - 1.0, pos[1] + 13.0],
+            PANEL_BG,
+        )
+        .filled(true)
+        .build();
+        draw.add_text(pos, color, turns);
+    }
+}
+
+fn draw_production_icon(
+    ui: &Ui,
+    min: [f32; 2],
+    max: [f32; 2],
+    icon: crate::game::unit_icons::UnitIcon,
+) {
+    let center = [min[0] + 19.0, (min[1] + max[1]) / 2.0];
+    let mut vertices = Vec::new();
+    crate::game::unit_icons::push_pictogram(Vec2::ZERO, 10.0, icon, TEXT, &mut vertices);
+    let draw = ui.get_window_draw_list();
+    for triangle in vertices.as_chunks::<3>().0 {
+        let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+        draw.add_triangle(
+            at(&triangle[0]),
+            at(&triangle[1]),
+            at(&triangle[2]),
+            triangle[0].color,
+        )
+        .filled(true)
+        .build();
     }
 }
 
@@ -1596,9 +1812,9 @@ fn rich_text(ui: &Ui, text: &str, color: [f32; 4]) {
 /// or from the left with `left` set.
 fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) -> bool {
     if !lines.iter().any(|line| has_icons(line)) {
-        return ui.button_with_size(format!("{}##{id}", lines.join("\n")), size);
+        return ui.button_with_size(format!("{}###{id}", lines.join("\n")), size);
     }
-    let clicked = ui.button_with_size(format!("##{id}"), size);
+    let clicked = ui.button_with_size(format!("###{id}"), size);
     let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
     let disabled = ui.clone_style().alpha < 1.0;
     let color = ui.style_color(StyleColor::Text);
@@ -1633,7 +1849,7 @@ fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) 
 /// with its right edge, so a list of them lines their right parts up (the
 /// building catalog's prices).
 fn split_button(ui: &Ui, id: &str, left: &str, right: &str, size: [f32; 2]) -> bool {
-    let clicked = ui.button_with_size(format!("##{id}"), size);
+    let clicked = ui.button_with_size(format!("###{id}"), size);
     let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
     let disabled = ui.clone_style().alpha < 1.0;
     let color = ui.style_color(StyleColor::Text);
@@ -1936,8 +2152,7 @@ impl GameState {
                     return;
                 };
                 self.unit_info(unit, &mut panel);
-                panel.gap(GAP);
-                panel.buttons(self.unit_buttons(unit));
+                panel.action_toolbar(self.unit_buttons(unit));
             }
             PinnedKind::Group => {
                 let Some(ids) = layout.pinned_groups.get(&pin.city_id) else {
@@ -2103,6 +2318,11 @@ impl GameState {
         };
         let flags = panel_chrome(arranging, layout.windows[slot].collapsed);
         let mut window = ui.window(title).flags(flags);
+        if slot == SETTINGS {
+            // It opens over the other panels: keep their text from showing
+            // through its labels.
+            window = window.bg_alpha(1.0);
+        }
         // While ImGui is moving a panel or showing docking targets it owns the
         // geometry. Applying our automatic position here makes edge previews
         // oscillate between the two layout systems.
@@ -2150,8 +2370,18 @@ impl GameState {
         scope: Option<PinnedPanel>,
         actions: &mut Vec<Action>,
     ) {
+        let label_width = setting_label_width(ui, panel, fonts[1]);
         for row in &panel.rows {
             match row {
+                Row::Heading(text) => {
+                    let _font = ui.push_font(fonts[0]);
+                    ui.text_colored(GOLD_TEXT, text);
+                    ui.separator();
+                }
+                Row::Setting(setting, value) => {
+                    let _font = ui.push_font(fonts[1]);
+                    render_setting(ui, *setting, *value, label_width, scope, actions);
+                }
                 Row::Text(px, line) => {
                     let font = match *px {
                         TITLE => fonts[2],
@@ -2204,12 +2434,17 @@ impl GameState {
                     }
                     let available = ui.content_region_avail()[0];
                     let spacing = ui.clone_style().item_spacing[0];
-                    let min_width = 128.0;
+                    let icons = icon_row(buttons);
+                    let min_width = if icons { ICON_BUTTON_SIZE } else { 128.0 };
                     let columns = (((available + spacing) / (min_width + spacing)).floor()
                         as usize)
                         .clamp(1, buttons.len());
-                    let width = ((available - spacing * (columns - 1) as f32) / columns as f32)
-                        .max(min_width);
+                    let width = if icons {
+                        ICON_BUTTON_SIZE
+                    } else {
+                        ((available - spacing * (columns - 1) as f32) / columns as f32)
+                            .max(min_width)
+                    };
                     for (index, spec) in buttons.iter().enumerate() {
                         if index % columns != 0 {
                             ui.same_line();
@@ -2224,23 +2459,48 @@ impl GameState {
                             _ => None,
                         };
                         let _disabled = ui.begin_disabled(spec.state == ButtonState::Disabled);
-                        let lines = if *compact {
-                            if spec.hint.is_empty()
-                                || matches!(spec.hint.as_str(), "AUTO" | "CLICK")
-                            {
-                                vec![spec.label.clone()]
-                            } else {
-                                vec![format!("{}  {}", spec.label, spec.hint)]
-                            }
-                        } else if spec.hint.is_empty() {
-                            vec![spec.label.clone()]
+                        let height = if icons {
+                            ICON_BUTTON_SIZE
+                        } else if *compact {
+                            28.0
                         } else {
-                            vec![spec.label.clone(), spec.hint.clone()]
+                            48.0
+                        };
+                        let hint = visible_button_hint(
+                            &spec.hint,
+                            panel.faded || next_button_hovered(ui, [width, height]),
+                        );
+                        let lines = if icons {
+                            vec![String::new()]
+                        } else if hint.is_empty() {
+                            vec![spec.label.clone()]
+                        } else if *compact {
+                            vec![format!("{}  {hint}", spec.label)]
+                        } else {
+                            vec![spec.label.clone(), hint.to_string()]
                         };
                         let id = format!("{:?}", spec.target);
-                        let size = [width, if *compact { 28.0 } else { 48.0 }];
-                        if rich_button(ui, &id, &lines, size, false) {
+                        if rich_button(ui, &id, &lines, [width, height], false) {
                             actions.push(Action::Button(scope, spec.target));
+                        }
+                        if icons {
+                            let icon = action_icons::for_button(spec.target, &spec.label)
+                                .expect("icon row");
+                            let color = match spec.state {
+                                ButtonState::Disabled => DIM_TEXT,
+                                ButtonState::Queued => GOLD_TEXT,
+                                ButtonState::Ready if spec.armed => BOOSTED_TEXT,
+                                ButtonState::Ready => TEXT,
+                            };
+                            draw_action_icon(
+                                ui,
+                                ui.item_rect_min(),
+                                ui.item_rect_max(),
+                                icon,
+                                color,
+                                action_icons::cooldown(&spec.label),
+                                fonts[0],
+                            );
                         }
                         if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
                             let tooltip = Button {
@@ -2262,13 +2522,20 @@ impl GameState {
                     }
                 }
                 Row::BuildingCatalog(city, buttons, _) => {
-                    let height = buttons.len().clamp(1, 4) as f32 * 34.0 + 18.0;
+                    let height = buttons.len().clamp(1, 5) as f32 * 34.0 + 18.0;
                     ui.child_window(format!("##building-catalog-{city}-{scope:?}"))
                         .size([0.0, height])
                         .border(true)
                         .build(|| {
                             let _align = ui.push_style_var(StyleVar::ButtonTextAlign([0.03, 0.5]));
-                            for spec in buttons {
+                            for entry in buttons {
+                                let CatalogEntry::Card(spec) = entry else {
+                                    if let CatalogEntry::Heading(label) = entry {
+                                        ui.text_colored(LABEL_TEXT, *label);
+                                        ui.dummy([1.0, 4.0]);
+                                    }
+                                    continue;
+                                };
                                 let _accent = match spec.state {
                                     ButtonState::Queued => Some(ui.push_style_color(
                                         StyleColor::Button,
@@ -2279,9 +2546,26 @@ impl GameState {
                                 let _disabled =
                                     ui.begin_disabled(spec.state == ButtonState::Disabled);
                                 let width = ui.content_region_avail()[0].max(80.0);
+                                let hint = visible_button_hint(
+                                    &spec.hint,
+                                    next_button_hovered(ui, [width, 28.0]),
+                                );
+                                let has_icon =
+                                    action_icons::production_unit_icon(spec.target).is_some();
+                                let prefix = if has_icon { "     " } else { "" };
+                                let left = format!("{prefix}{}", spec.label);
                                 let id = format!("{:?}", spec.target);
-                                if split_button(ui, &id, &spec.label, &spec.hint, [width, 28.0]) {
+                                if split_button(ui, &id, &left, hint, [width, 28.0]) {
                                     actions.push(Action::Button(scope, spec.target));
+                                }
+                                if let Some(icon) = action_icons::production_unit_icon(spec.target)
+                                {
+                                    draw_production_icon(
+                                        ui,
+                                        ui.item_rect_min(),
+                                        ui.item_rect_max(),
+                                        icon,
+                                    );
                                 }
                                 if ui.is_item_hovered_with_flags(
                                     ItemHoveredFlags::ALLOW_WHEN_DISABLED,
@@ -2451,6 +2735,10 @@ impl GameState {
                     }
                     rich_text(ui, &shortened, NOTICE_TEXT);
                 }
+                ui.set_cursor_pos([15.0, 27.0]);
+                if ui.small_button("MENU") {
+                    actions.push(Action::Button(None, Target::OpenSettings));
+                }
                 ui.set_cursor_pos([(viewport.x - end_width - 365.0).max(8.0), 7.0]);
                 ui.text(format!("VIEW: {}", layout.active_view.label()));
                 ui.set_cursor_pos([(viewport.x - end_width - 365.0).max(8.0), 27.0]);
@@ -2468,11 +2756,13 @@ impl GameState {
                 }
                 if layout.active_view != ViewScope::Default && !layout.editing_outer {
                     ui.same_line();
-                    if ui.small_button("RESET [CTRL+SHIFT+R]") {
+                    if ui.small_button("RESET") {
                         layout.request_reset_active_view();
                     }
                     if ui.is_item_hovered() {
-                        ui.tooltip_text("Restore this view's Debug placement from Default");
+                        ui.tooltip_text(
+                            "Ctrl+Shift+R: Restore this view's Debug placement from Default",
+                        );
                     }
                 }
                 ui.set_cursor_pos([(viewport.x - end_width).max(8.0), 7.0]);
@@ -2482,8 +2772,17 @@ impl GameState {
                     end_turn_label(pending)
                 };
                 let _disabled = ui.begin_disabled(self.is_resolving());
-                if ui.button_with_size(format!("{label}  [SPACE]"), [end_width - 15.0, 29.0]) {
+                let end_size = [end_width - 15.0, 29.0];
+                let end_label = if next_button_hovered(ui, end_size) {
+                    format!("{label}  [SPACE]")
+                } else {
+                    label
+                };
+                if ui.button_with_size(format!("{end_label}###EndTurn"), end_size) {
                     actions.push(Action::Button(None, Target::EndTurn));
+                }
+                if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
+                    ui.tooltip_text("Space: End turn or select what still needs orders");
                 }
             });
 
@@ -2504,8 +2803,7 @@ impl GameState {
             self.barracks_tray(city, &mut tray);
         } else if let Some(idx) = self.selected {
             self.unit_info(idx, &mut tray);
-            tray.gap(GAP);
-            tray.buttons(self.unit_buttons(idx));
+            tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         } else if self.worker_mode {
@@ -2611,9 +2909,11 @@ impl GameState {
                 Vec2::new(width, measure_panel(ui, units, fonts, width).min(available))
             }),
             settings.as_ref().map(|settings| {
+                // Wide enough for a label column and a control beside it.
+                let width = SETTINGS_WIDTH.min(max_width);
                 Vec2::new(
-                    debug_width,
-                    measure_panel(ui, settings, fonts, debug_width).min(available),
+                    width,
+                    measure_panel(ui, settings, fonts, width).min(available),
                 )
             }),
         ];
@@ -2818,6 +3118,24 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hover_text_keeps_the_same_imgui_button_id() {
+        let mut context = ::imgui::Context::create();
+        context.io_mut().display_size = [640.0, 480.0];
+        context.fonts().build_rgba32_texture();
+        let ui = context.frame();
+        ui.window("ID test").build(|| {
+            assert_eq!(
+                ui.new_id_str("MOVE###Unit(Move)"),
+                ui.new_id_str("MOVE\nM###Unit(Move)"),
+            );
+            assert_ne!(
+                ui.new_id_str("MOVE##Unit(Move)"),
+                ui.new_id_str("MOVE\nM##Unit(Move)"),
+            );
+        });
+    }
 
     #[test]
     fn default_debug_placement_flows_into_views_until_customized() {

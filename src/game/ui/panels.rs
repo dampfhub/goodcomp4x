@@ -218,6 +218,20 @@ impl GameState {
             max: (button_min + Vec2::new(width, END_TURN_HEIGHT)).round(),
         };
 
+        let menu_width = single_line_button_width("MENU", "");
+        let menu_min = Vec2::new(left_end + GAP * 2.0, middle - END_TURN_HEIGHT / 2.0);
+        layout.buttons.push(Button {
+            target: Target::OpenSettings,
+            label: "MENU".into(),
+            hint: String::new(),
+            state: ButtonState::Ready,
+            armed: false,
+            faded: false,
+            min: menu_min.round(),
+            max: (menu_min + Vec2::new(menu_width, END_TURN_HEIGHT)).round(),
+        });
+        let left_end = menu_min.x + menu_width;
+
         // The notice sits centered in the space left between the two.
         let notice = self.shown_notice();
         if !notice.is_empty() {

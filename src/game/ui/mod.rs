@@ -20,6 +20,7 @@
 //! `tooltips.rs`, `text.rs` (number and text
 //! formatting), `tests.rs`.
 
+mod action_icons;
 mod builder;
 mod dock;
 mod imgui;
@@ -49,7 +50,7 @@ use dock::{Dock, Rect, Zone};
 pub use imgui::ImGuiLayoutState;
 use paint::{draw_button, draw_chip_hover, draw_shape};
 
-const BUILDING_LIST_VISIBLE: usize = 2;
+const BUILDING_LIST_VISIBLE: usize = 5;
 use queue::queue_items_that_fit;
 
 type Color = [f32; 4];
@@ -162,6 +163,7 @@ enum Target {
     Unit(UnitAction),
     Build(BuildUnit),
     ToggleYields,
+    OpenSettings,
     Building(Building),
     BarracksBuild(BuildUnit),
     OpenBarracks,
@@ -213,8 +215,9 @@ enum Target {
     /// Debug panel: the Cavalry and Armored cap counts those alive, or every
     /// one ever trained.
     ToggleLifetimeCap,
-    /// Settings menu: step a setting down (-1) or up (+1) through its range.
-    StepSetting(Setting, i32),
+    /// Settings menu: set a setting to a value (the nearer end of its range
+    /// if outside it), from its checkbox, slider or choice.
+    SetSetting(Setting, i32),
     CloseSettings,
     /// Settings menu: close the game.
     Quit,
@@ -416,6 +419,10 @@ struct Layout {
     /// The unit strip's tokens and the unit id each one stands for.
     roster_chips: Vec<(Vec2, Vec2, RosterKey)>,
     dock: Option<Dock>,
+    /// Where the settings menu's shapes and buttons start, while it's open:
+    /// `build_ui` draws them after everything before them, buttons
+    /// included, so no other panel's buttons show through it.
+    overlay: Option<(usize, usize)>,
 }
 
 impl Layout {
@@ -488,7 +495,14 @@ impl GameState {
         let hovered = point.and_then(|p| layout.button_at(p)).map(|b| b.target);
 
         let mut out = Vec::new();
-        for shape in &layout.shapes {
+        // The settings menu (and anything placed after it) is a layer of
+        // its own over the rest.
+        let (shapes_split, buttons_split) = layout
+            .overlay
+            .unwrap_or((layout.shapes.len(), layout.buttons.len()));
+        let (under_shapes, over_shapes) = layout.shapes.split_at(shapes_split);
+        let (under_buttons, over_buttons) = layout.buttons.split_at(buttons_split);
+        for shape in under_shapes {
             draw_shape(shape, &mut out);
         }
         if let Some(&(min, max, _)) = point.and_then(|p| {
@@ -499,7 +513,13 @@ impl GameState {
         }) {
             draw_chip_hover(min, max, &mut out);
         }
-        for button in &layout.buttons {
+        for button in under_buttons {
+            draw_button(button, hovered == Some(button.target), &mut out);
+        }
+        for shape in over_shapes {
+            draw_shape(shape, &mut out);
+        }
+        for button in over_buttons {
             draw_button(button, hovered == Some(button.target), &mut out);
         }
         if let Some(button) = hovered.and_then(|t| layout.buttons.iter().find(|b| b.target == t)) {
@@ -626,6 +646,7 @@ impl GameState {
             Target::QueueItem(kind, index) => self.queue_item_clicked(kind, index),
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
+            Target::OpenSettings => self.settings_open = true,
             Target::Building(building) => self.queue_selected_city_building(building),
             Target::BarracksBuild(build) => self.queue_selected_barracks_unit(build),
             Target::OpenBarracks => {
@@ -649,7 +670,7 @@ impl GameState {
             Target::ToggleFog => self.toggle_fog(),
             Target::ToggleProductionSpeedup => self.toggle_production_speedup(),
             Target::ToggleLifetimeCap => self.toggle_lifetime_special_cap(),
-            Target::StepSetting(setting, delta) => self.step_setting(setting, delta),
+            Target::SetSetting(setting, value) => self.set_setting(setting, value),
             Target::CloseSettings => self.close_settings(),
             Target::Quit => self.quit_requested = true,
         }
@@ -721,8 +742,7 @@ impl GameState {
             self.barracks_tray(city, &mut tray);
         } else if let Some(idx) = self.selected {
             self.unit_info(idx, &mut tray);
-            tray.gap(GAP);
-            tray.buttons(self.unit_buttons(idx));
+            tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         } else if self.worker_mode {

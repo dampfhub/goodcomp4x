@@ -1,4 +1,4 @@
-use super::builder::{ButtonSpec, Row};
+use super::builder::{ButtonSpec, Row, classic_rows};
 use super::text::{end_turn_label, price_hint, quantity, signed_quantity, wrap};
 use super::*;
 
@@ -9,6 +9,66 @@ use crate::game::orders::ClickMode;
 use crate::game::unit::{Team, Unit, UnitType};
 
 const SCREEN: Vec2 = Vec2::new(1600.0, 900.0);
+
+#[test]
+fn action_toolbar_is_compact_and_every_icon_keeps_its_click_target() {
+    let game = GameState::city_scenario();
+    let unit = game
+        .units
+        .iter()
+        .position(|u| u.team == PLAYER_TEAM && u.unit_type == UnitType::Melee)
+        .unwrap();
+    let targets: Vec<_> = game
+        .unit_buttons(unit)
+        .iter()
+        .map(|button| button.target)
+        .collect();
+    let mut panel = PanelBuilder::default();
+    panel.action_toolbar(game.unit_buttons(unit));
+    assert!(
+        panel.size().x <= 240.0,
+        "icon toolbar should fit four columns"
+    );
+    assert!(
+        panel.size().y <= 175.0,
+        "icons should use only two short rows"
+    );
+    let mut layout = Layout::default();
+    panel.place_bottom_left(Vec2::ZERO, &mut layout);
+    for target in targets {
+        let button = layout
+            .buttons
+            .iter()
+            .find(|button| button.target == target)
+            .unwrap();
+        assert_eq!(
+            button.max - button.min,
+            Vec2::splat(action_icons::ICON_BUTTON_SIZE)
+        );
+        assert_eq!(
+            layout
+                .button_at((button.min + button.max) / 2.0)
+                .map(|hit| hit.target),
+            Some(target)
+        );
+    }
+
+    let mut city_panel = PanelBuilder::default();
+    game.city_tray(0, &mut city_panel);
+    let focus = city_panel
+        .rows
+        .iter()
+        .find_map(|row| match row {
+            builder::Row::Buttons(buttons, _)
+                if buttons.iter().any(|b| matches!(b.target, Target::Focus(_))) =>
+            {
+                Some(buttons)
+            }
+            _ => None,
+        })
+        .expect("labor focus buttons");
+    assert!(builder::icon_row(focus));
+}
 
 #[test]
 fn hovering_a_button_shows_its_tooltip() {
@@ -34,7 +94,7 @@ fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
         first
             .buttons
             .iter()
-            .any(|button| button.target == Target::Building(Building::Granary))
+            .any(|button| button.target == Target::Build(BuildUnit::Melee))
     );
     assert!(
         !first
@@ -110,6 +170,23 @@ fn button_cursor(game: &GameState, target: Target) -> Vec2 {
         .find(|b| b.target == target)
         .expect("button shown");
     to_ui((button.min + button.max) / 2.0, SCREEN)
+}
+
+/// Scroll the shared city production catalogue until a requested card is visible.
+fn catalog_cursor(game: &mut GameState, target: Target) -> Vec2 {
+    let city = game.selected_city.expect("city view open");
+    for offset in 0..64 {
+        game.cities[city].building_scroll = offset;
+        if game
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == target)
+        {
+            return button_cursor(game, target);
+        }
+    }
+    panic!("production card not shown: {target:?}");
 }
 
 /// Where `hex` is drawn, in window pixels.
@@ -220,14 +297,11 @@ fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
         BuildUnit::LandingCraft,
         BuildUnit::BombardShip,
     ] {
-        let card = button_cursor(&game, Target::Build(build));
+        let card = catalog_cursor(&mut game, Target::Build(build));
         assert!(game.layout(SCREEN).button_at(to_ui(card, SCREEN)).is_some());
     }
-    game.handle_click(
-        button_cursor(&game, Target::Build(BuildUnit::LandingCraft)),
-        SCREEN,
-        ClickMode::Normal,
-    );
+    let landing_craft = catalog_cursor(&mut game, Target::Build(BuildUnit::LandingCraft));
+    game.handle_click(landing_craft, SCREEN, ClickMode::Normal);
     let city = game.selected_city.unwrap();
     assert!(
         game.cities[city]
@@ -334,7 +408,7 @@ fn barracks_map_click_locks_site_and_exits_placement() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
-    let button = button_cursor(&game, Target::Building(Building::Barracks));
+    let button = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(button, SCREEN, ClickMode::Normal);
     assert_eq!(game.placing_building, Some((city, Building::Barracks)));
 
@@ -374,7 +448,8 @@ fn barracks_map_click_locks_site_and_exits_placement() {
 }
 
 /// The state of `building`'s card in the open city's tray.
-fn building_card(game: &GameState, building: Building) -> ButtonState {
+fn building_card(game: &mut GameState, building: Building) -> ButtonState {
+    catalog_cursor(game, Target::Building(building));
     game.layout(SCREEN)
         .buttons
         .iter()
@@ -401,7 +476,7 @@ fn ending_the_turn_while_choosing_a_site_leaves_no_preview_on_the_map() {
     let city = game.selected_city.unwrap();
     // Something else to build, so the city isn't left empty-handed.
     game.queue_selected_city_worker();
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
     play_turn(&mut game);
@@ -443,7 +518,7 @@ fn a_building_finished_with_its_city_closed_picks_its_site_when_reopened() {
     game.update(10.0);
     assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
     assert_ne!(
-        building_card(&game, Building::Barracks),
+        building_card(&mut game, Building::Barracks),
         ButtonState::Disabled
     );
     let site = Hex::new(-2, 0);
@@ -465,8 +540,11 @@ fn escape_while_choosing_a_site_cancels_the_building() {
             .queue
             .contains(&Build::Building(Building::Barracks))
     };
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     assert!(barracks_queued(&game));
 
@@ -475,11 +553,14 @@ fn escape_while_choosing_a_site_cancels_the_building() {
     assert_eq!(game.selected_city, Some(city), "the city stays open");
     assert_eq!(game.site_placement(), None);
     assert!(!barracks_queued(&game));
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
 
     // End Turn mid-placement cancels it, and the city, left with nothing to
     // build, asks for something instead of ending the turn.
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     game.end_planning();
     assert!(!game.is_resolving());
@@ -487,17 +568,20 @@ fn escape_while_choosing_a_site_cancels_the_building() {
     assert!(!barracks_queued(&game));
 
     // Closing the city mid-placement cancels it too.
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     game.leave_city_view();
     game.open_city(city);
     game.update(10.0);
     assert!(!barracks_queued(&game));
     assert_eq!(game.site_placement(), None);
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
 
     // With its site chosen, the card is spent until the Barracks is removed.
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
     game.city_click(Hex::new(-2, 0));
     assert!(game.exit_structure_menu());
@@ -508,7 +592,7 @@ fn escape_while_choosing_a_site_cancels_the_building() {
     );
     game.open_city(city);
     assert_eq!(
-        building_card(&game, Building::Barracks),
+        building_card(&mut game, Building::Barracks),
         ButtonState::Disabled
     );
     let at = game.cities[city]
@@ -517,7 +601,10 @@ fn escape_while_choosing_a_site_cancels_the_building() {
         .position(|&b| b == Build::Building(Building::Barracks))
         .unwrap();
     game.remove_selected_city_queue_item(at);
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
 }
 
 #[test]
@@ -547,12 +634,8 @@ fn mill_and_workshop_cards_use_shared_placement_controls() {
         (Building::Mill, Hex::new(-2, 0)),
         (Building::Workshop, Hex::new(-1, 0)),
     ] {
-        game.cities[city].building_scroll = if building == Building::Mill { 1 } else { 2 };
-        game.handle_click(
-            button_cursor(&game, Target::Building(building)),
-            SCREEN,
-            ClickMode::Normal,
-        );
+        let card = catalog_cursor(&mut game, Target::Building(building));
+        game.handle_click(card, SCREEN, ClickMode::Normal);
         assert_eq!(game.placing_building, Some((city, building)));
         game.city_click(site);
         assert_eq!(game.cities[city].planned_sites.get(&building), Some(&site));
@@ -842,7 +925,7 @@ fn queue_row_count_tracks_available_screen_height() {
         );
         counts.push(count);
     }
-    assert_eq!(counts[1], 4);
+    assert_eq!(counts[1], 3);
     assert!(counts[0] < counts[1]);
     assert!(counts[2] > counts[1]);
 }
@@ -921,6 +1004,12 @@ fn yields_show_only_for_the_open_city_and_toggle() {
     let mut game = city_view();
     let shown = game.build_vertices().len();
     game.handle_click(
+        button_cursor(&game, Target::OpenSettings),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(game.settings_open);
+    game.handle_click(
         button_cursor(&game, Target::ToggleYields),
         SCREEN,
         ClickMode::Normal,
@@ -929,6 +1018,7 @@ fn yields_show_only_for_the_open_city_and_toggle() {
     assert!(game.build_vertices().len() < shown, "badges hidden");
     game.toggle_yields();
     assert_eq!(game.build_vertices().len(), shown);
+    game.close_settings();
 
     // Hovering a city without opening it no longer shows its yields.
     let city = game.cities[game.selected_city.unwrap()].pos;
@@ -1147,6 +1237,13 @@ fn build_cards_show_prices_and_dim_what_the_stockpile_cannot_pay() {
         Target::Grow,
         Target::Building(Building::Granary),
     ] {
+        // Buildings come after the units in the production list: scroll to
+        // them.
+        game.cities[0].building_scroll = if matches!(target, Target::Building(_)) {
+            5
+        } else {
+            0
+        };
         let card = find_button(&game, target);
         assert_eq!(card.state, ButtonState::Disabled, "{target:?}");
         let tooltip: String = game
@@ -1156,6 +1253,7 @@ fn build_cards_show_prices_and_dim_what_the_stockpile_cannot_pay() {
             .collect();
         assert!(tooltip.contains("SHORT OF"), "{target:?}: {tooltip}");
     }
+    game.cities[0].building_scroll = 0;
     // A dimmed card takes no click.
     game.handle_click(
         button_cursor(&game, Target::Build(BuildUnit::Melee)),
@@ -1786,11 +1884,22 @@ fn clear_orders_drops_a_groups_queues() {
     assert_eq!(clear.state, ButtonState::Disabled, "nothing left to clear");
 }
 
+/// The classic settings menu's buttons for `setting`, in order.
+fn setting_buttons(game: &GameState, setting: Setting) -> Vec<(i32, ButtonState)> {
+    game.layout(SCREEN)
+        .buttons
+        .iter()
+        .filter_map(|b| match b.target {
+            Target::SetSetting(s, to) if s == setting => Some((to, b.state)),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
-    let playback = Setting::TurnPlayback;
-    let down = Target::StepSetting(playback, -1);
-    let up = Target::StepSetting(playback, 1);
+    let off = Target::SetSetting(Setting::TurnPlayback, 0);
+    let on = Target::SetSetting(Setting::TurnPlayback, 1);
     // Nothing selected, a unit selected, and a city with its queue open.
     let mut plain = GameState::new();
     plain.clear_selection();
@@ -1799,7 +1908,7 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
     city.select_city();
     city.queue_selected_city_unit(BuildUnit::Melee);
     for mut game in [plain, unit, city] {
-        assert!(!game.layout(SCREEN).buttons.iter().any(|b| b.target == up));
+        assert!(!game.layout(SCREEN).buttons.iter().any(|b| b.target == on));
         game.settings_open = true;
         for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
             let layout = game.layout(screen);
@@ -1820,42 +1929,65 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
                     assert!(apart, "panels overlap at {screen}");
                 }
             }
-            let close = layout
+            // Every setting's buttons, Close and Quit are inside the menu,
+            // and a panel underneath never takes their clicks.
+            let menu_buttons: Vec<_> = layout
                 .buttons
                 .iter()
-                .find(|b| b.target == Target::CloseSettings)
-                .expect("Close shown");
-            assert!(contains(menu_rect.0, menu_rect.1, close.min));
-            for target in [down, up, Target::Quit] {
-                let button = layout.buttons.iter().find(|b| b.target == target).unwrap();
+                .filter(|b| {
+                    matches!(
+                        b.target,
+                        Target::SetSetting(..)
+                            | Target::ToggleYields
+                            | Target::CloseSettings
+                            | Target::Quit
+                    )
+                })
+                .collect();
+            for setting in Setting::ALL {
+                assert!(
+                    menu_buttons
+                        .iter()
+                        .any(|b| matches!(b.target, Target::SetSetting(s, _) if s == setting)),
+                    "{setting:?} has buttons"
+                );
+            }
+            for target in [Target::CloseSettings, Target::Quit] {
+                assert!(menu_buttons.iter().any(|b| b.target == target));
+            }
+            // The menu is drawn as a layer over everything else: its panel
+            // first, then only its own buttons.
+            let (shapes_at, buttons_at) = layout.overlay.expect("the menu is an overlay");
+            assert!(matches!(
+                layout.shapes[shapes_at],
+                Shape::Panel { min, max, .. } if (min, max) == menu_rect
+            ));
+            assert_eq!(layout.buttons.len() - buttons_at, menu_buttons.len());
+            for button in menu_buttons {
                 assert!(contains(menu_rect.0, menu_rect.1, button.min));
                 assert!(contains(menu_rect.0, menu_rect.1, button.max));
-                // A panel underneath never takes the menu's clicks.
                 let middle = (button.min + button.max) / 2.0;
-                assert_eq!(layout.button_at(middle).unwrap().target, target);
+                assert_eq!(layout.button_at(middle).unwrap().target, button.target);
             }
         }
 
-        // All at once by default: > is spent, < steps down, and then < is.
-        let state = |game: &GameState, target| {
-            game.layout(SCREEN)
-                .buttons
-                .iter()
-                .find(|b| b.target == target)
-                .unwrap()
-                .state
-        };
+        // Instant playback is on by default: ON is gold, OFF switches it
+        // off and turns gold, and clicking it again changes nothing.
         assert!(game.settings.instant_playback);
-        assert_eq!(state(&game, up), ButtonState::Disabled);
-        game.handle_click(button_cursor(&game, down), SCREEN, ClickMode::Normal);
-        assert!(!game.settings.instant_playback);
-        assert_eq!(state(&game, down), ButtonState::Disabled);
-        game.handle_click(button_cursor(&game, down), SCREEN, ClickMode::Normal);
-        assert!(
-            !game.settings.instant_playback,
-            "a spent button does nothing"
+        let playback = |game: &GameState| setting_buttons(game, Setting::TurnPlayback);
+        assert_eq!(
+            playback(&game),
+            [(0, ButtonState::Ready), (1, ButtonState::Queued)]
         );
-        game.handle_click(button_cursor(&game, up), SCREEN, ClickMode::Normal);
+        game.handle_click(button_cursor(&game, off), SCREEN, ClickMode::Normal);
+        assert!(!game.settings.instant_playback);
+        assert_eq!(
+            playback(&game),
+            [(0, ButtonState::Queued), (1, ButtonState::Ready)]
+        );
+        game.handle_click(button_cursor(&game, off), SCREEN, ClickMode::Normal);
+        assert!(!game.settings.instant_playback);
+        game.handle_click(button_cursor(&game, on), SCREEN, ClickMode::Normal);
         assert!(game.settings.instant_playback);
 
         let close = button_cursor(&game, Target::CloseSettings);
@@ -1863,6 +1995,54 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
         assert!(!game.settings_open);
         assert!(!game.quit_requested());
     }
+}
+
+#[test]
+fn the_classic_settings_menu_has_a_button_per_choice_and_steps_the_rest() {
+    let mut game = GameState::new();
+    game.settings_open = true;
+    for setting in Setting::ALL {
+        let value = game.settings.get(setting);
+        let range = setting.range();
+        let buttons = setting_buttons(&game, setting);
+        if settings_menu::steps_in_classic(setting) {
+            // < and > set the values either side, faded at an end.
+            let at = |end: i32| ButtonState::new(false, value == end);
+            assert_eq!(
+                buttons,
+                [
+                    (value - 1, at(*range.start())),
+                    (value + 1, at(*range.end()))
+                ],
+                "{setting:?}"
+            );
+        } else {
+            // A button per value, the current one gold.
+            let expected: Vec<_> = range
+                .map(|to| (to, ButtonState::new(to == value, false)))
+                .collect();
+            assert_eq!(buttons, expected, "{setting:?}");
+        }
+    }
+
+    // The queue limit steps with < and >, and stops at the top.
+    let limit = Setting::MaxQueuedTurns;
+    let up = |game: &GameState| Target::SetSetting(limit, game.settings.get(limit) + 1);
+    game.handle_click(button_cursor(&game, up(&game)), SCREEN, ClickMode::Normal);
+    assert_eq!(game.settings.max_queued_turns, 7);
+    game.set_setting(limit, 20);
+    assert_eq!(
+        setting_buttons(&game, limit)[1],
+        (21, ButtonState::Disabled),
+        "spent at the top"
+    );
+    game.handle_click(button_cursor(&game, up(&game)), SCREEN, ClickMode::Normal);
+    assert_eq!(game.settings.max_queued_turns, 20);
+
+    // Fog picks its value by name.
+    let grey = Target::SetSetting(Setting::FogStyle, 0);
+    game.handle_click(button_cursor(&game, grey), SCREEN, ClickMode::Normal);
+    assert!(!game.settings.cloud_fog);
 }
 
 #[test]
@@ -1877,14 +2057,37 @@ fn the_settings_menu_quit_button_asks_the_app_to_quit() {
 }
 
 #[test]
-fn the_settings_menu_shows_every_setting_and_its_value() {
+fn the_settings_menu_shows_every_setting_under_its_heading() {
     let game = GameState::new();
-    let text = panel_strings(|panel| *panel = game.settings_panel_content());
-    for setting in Setting::ALL {
-        let value = setting.value_text(game.settings.get(setting));
-        assert_shows(&text, setting.name());
-        assert_shows(&text, &value);
+    let panel = game.settings_panel_content();
+    // Each heading once, then its settings at their current values, in
+    // `Setting::ALL`'s order.
+    let mut heading = None;
+    let mut listed = Vec::new();
+    for row in &panel.rows {
+        match row {
+            Row::Heading(text) => heading = Some(text.clone()),
+            Row::Setting(setting, value) => {
+                assert_eq!(heading.as_deref(), Some(setting.group()), "{setting:?}");
+                assert_eq!(*value, game.settings.get(*setting));
+                listed.push(*setting);
+            }
+            _ => {}
+        }
     }
+    assert_eq!(listed, Setting::ALL);
+
+    // Classic shows the headings and names as text, and the value of
+    // anything it steps.
+    let text = panel_strings(|p| p.rows = classic_rows(panel.rows.clone()));
+    for setting in Setting::ALL {
+        assert_shows(&text, setting.group());
+        assert_shows(&text, setting.name());
+        if settings_menu::steps_in_classic(setting) {
+            assert_shows(&text, &setting.value_text(game.settings.get(setting)));
+        }
+    }
+
     let tooltip = |target| {
         let button = Button {
             target,
@@ -1898,11 +2101,14 @@ fn the_settings_menu_shows_every_setting_and_its_value() {
         };
         line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l))
     };
-    let spent = tooltip(Target::StepSetting(Setting::TurnPlayback, 1));
-    assert_shows(&spent, "TURN PLAYBACK");
-    assert_shows(&spent, "ALREADY ALL AT ONCE");
-    let open = tooltip(Target::StepSetting(Setting::TurnPlayback, -1));
-    assert!(!open.iter().any(|line| line.contains("ALREADY")));
+    let current = tooltip(Target::SetSetting(Setting::TurnPlayback, 1));
+    assert_shows(&current, "INSTANT PLAYBACK");
+    assert_shows(&current, "ALREADY ON");
+    let other = tooltip(Target::SetSetting(Setting::TurnPlayback, 0));
+    assert_shows(&other, "OFF");
+    assert!(!other.iter().any(|line| line.contains("ALREADY")));
+    let past_the_end = tooltip(Target::SetSetting(Setting::MaxQueuedTurns, 0));
+    assert_shows(&past_the_end, "ALREADY 6 TURNS");
 }
 
 #[test]

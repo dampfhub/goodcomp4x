@@ -116,10 +116,10 @@ plays out.
 | Click the manager (`M`), then a tile | Move the manager; workers follow where they can |
 | A | Auto-assign citizens by the city's labor focus |
 | Food / Production / Balanced buttons | Set the labor focus (and re-assign) |
-| Y / Yields button | Show or hide tile yields around the open city |
+| Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
-| Scroll inside BUILDINGS in the city tray | Browse building cards without paging; Harbor and Coastal Battery appear only in cities whose center touches the sea |
+| Scroll inside the city production list | Browse unit and building cards in one list; coastal cards appear only in eligible cities |
 | Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
 | Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers) |
 | Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
@@ -162,7 +162,7 @@ city center enters the interior map; its clicks control only the interior copies
 | F5 | Toggle borderless fullscreen |
 | Escape with nothing open | Open the settings menu (below), which has the Quit button; Escape again, or its Close button, closes it |
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
-| F4 | Start a newly generated world, for you and the AI sides the World AI setting asks for; every press makes a new map |
+| F4 | Start a newly generated world, for you and the AI sides the AI Players setting asks for; every press makes a new map |
 | F12 | Start a siege at Red's city with its interior open |
 | NAVAL in the Debug panel | Start the coastal naval test scenario |
 | F6 | Save a snapshot of the whole game (in memory only) |
@@ -188,19 +188,29 @@ barracks view, a worker job being placed, the worker menu, then the selection. T
 in the middle of the screen, over the map; in the ImGui presentation, hold Ctrl to drag,
 resize or dock it like the other panels. The game carries on while it's open.
 
+The settings are grouped under headings (Turns, Map, Next World), each with its name on the
+left and its control beside it; hover over either for what the setting does.
+
 | Control | Action |
 | --- | --- |
-| < / > beside a setting | Step it down / up (a button is faded at that end of the setting's range) |
+| Checkbox | Switch an on/off setting |
+| Slider | Drag or click to pick a number; the slider shows the value |
+| Buttons side by side | Pick one of a few named values; the current one is gold |
+| Drop-down list | Pick one of a longer list of values |
 | Close button, or Escape | Close the menu |
 | Quit button | Close the game |
 
-| Setting | Values |
-| --- | --- |
-| Turn playback | All at once (the default) or step by step, the same switch as F8 |
-| Queue limit | 1 to 20 turns (6 by default): the most turns a unit can have queued, this turn included. A Shift-click toward a hex farther away queues the move as far as the limit goes, and once a queue is full, Shift-clicks add nothing to it until turns are played |
-| Fog | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
-| World AI | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |
-| World start | City (the default) or settler: what every side in the next world (F4) starts with, beside its scout |
+The classic presentation (F11) has no sliders, checkboxes or lists: an on/off setting there
+is a pair of OFF / ON buttons, and a slider or list is a < / > pair beside its value (faded at
+that end of the range).
+
+| Setting | Control | Values |
+| --- | --- | --- |
+| Instant playback (Turns) | Checkbox | On (the default): a turn plays out all at once; off: step by step. The same switch as F8 |
+| Queue limit (Turns) | Slider | 1 to 20 turns (6 by default): the most turns a unit can have queued, this turn included. A Shift-click toward a hex farther away queues the move as far as the limit goes, and once a queue is full, Shift-clicks add nothing to it until turns are played |
+| Fog (Map) | Buttons | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
+| AI players (Next World) | Drop-down list | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |
+| Start with (Next World) | Buttons | City (the default) or settler: what every side in the next world (F4) starts with, beside its scout |
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).

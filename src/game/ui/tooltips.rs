@@ -559,17 +559,27 @@ impl GameState {
                     format!("EACH HORSES OR IRON DEPOSIT YOUR BARRACKS USE ALLOWS {UNITS_PER_DEPOSIT} CAVALRY OR ARMORED. ALIVE: COUNTS THOSE ALIVE AND QUEUED, SO LOSSES CAN BE REPLACED. EVER: COUNTS EVERY ONE EVER TRAINED, SO A DEPOSIT RUNS OUT."),
                     None,
                 ),
-                Target::StepSetting(setting, delta) => {
-                    let value = self.settings.get(setting);
-                    let next = value + delta;
+                Target::SetSetting(setting, value) => {
+                    let current = self.settings.get(setting);
+                    let valid = setting.range().contains(&value);
                     (
                         setting.name().into(),
-                        if delta < 0 { "<" } else { ">" }.into(),
+                        if valid {
+                            setting.value_text(value)
+                        } else {
+                            String::new()
+                        },
                         setting.description().into(),
-                        (!setting.range().contains(&next))
-                            .then(|| format!("ALREADY {}", setting.value_text(value))),
+                        (!valid || value == current)
+                            .then(|| format!("ALREADY {}", setting.value_text(current))),
                     )
                 }
+                Target::OpenSettings => (
+                    "SETTINGS".into(),
+                    String::new(),
+                    "GAME OPTIONS AND CITY OVERLAYS.".into(),
+                    None,
+                ),
                 Target::WorkerMode => (
                     "WORKERS".into(),
                     "W".into(),

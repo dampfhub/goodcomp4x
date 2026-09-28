@@ -1,6 +1,6 @@
 //! The bottom-left command tray: a unit, a group, a city or a Barracks.
 
-use super::builder::{ButtonSpec, PanelBuilder};
+use super::builder::{ButtonSpec, CatalogEntry, PanelBuilder};
 use super::text::{
     ability_text, compare, cost_hint, quantity, resource_color, signed_quantity, stat_spans,
     turns_text,
@@ -389,12 +389,10 @@ impl GameState {
         ] {
             panel.text(SMALL, vec![(help.into(), LABEL_TEXT)]);
         }
-        panel.gap(GAP);
-
         let armed = |mode| self.group == group && self.ui_click_mode == Some(mode);
         let all_guarding = group.iter().all(|&i| self.units[i].guarding);
         let any_orders = group.iter().any(|&i| self.units[i].has_orders());
-        panel.buttons(vec![
+        panel.action_toolbar(vec![
             ButtonSpec {
                 target: Target::Unit(UnitAction::Move),
                 label: "MOVE".into(),
@@ -562,34 +560,24 @@ impl GameState {
                 DIM_TEXT,
             )],
         );
-        panel.buttons(
-            builds
-                .into_iter()
-                .map(|build| {
-                    card(
-                        Target::Build(build),
-                        build.name().into(),
-                        Build::Unit(build),
-                        city.queue.first() == Some(&Build::Unit(build)),
-                    )
-                })
-                .chain([card(
-                    Target::BuildWorker,
-                    "WORKER".into(),
-                    Build::Worker,
-                    city.queue.first() == Some(&Build::Worker),
-                )])
-                .collect(),
-        );
-        panel.gap(GAP);
+        let unit_buttons: Vec<_> = builds
+            .into_iter()
+            .map(|build| {
+                card(
+                    Target::Build(build),
+                    build.name().into(),
+                    Build::Unit(build),
+                    city.queue.first() == Some(&Build::Unit(build)),
+                )
+            })
+            .chain([card(
+                Target::BuildWorker,
+                "WORKER".into(),
+                Build::Worker,
+                city.queue.first() == Some(&Build::Worker),
+            )])
+            .collect();
         panel.buttons(vec![
-            ButtonSpec {
-                target: Target::ToggleYields,
-                label: "YIELDS".into(),
-                hint: "Y".into(),
-                state: ButtonState::new(self.show_yields, false),
-                armed: false,
-            },
             ButtonSpec {
                 target: Target::OpenInterior,
                 label: "CITY INTERIOR".into(),
@@ -639,8 +627,13 @@ impl GameState {
                 }
             })
             .collect();
-        panel.text(SMALL, vec![("BUILDINGS".into(), LABEL_TEXT)]);
-        panel.building_catalog(i, building_buttons, city.building_scroll);
+        let mut production_entries =
+            Vec::with_capacity(unit_buttons.len() + building_buttons.len() + 2);
+        production_entries.push(CatalogEntry::Heading("UNITS"));
+        production_entries.extend(unit_buttons.into_iter().map(CatalogEntry::Card));
+        production_entries.push(CatalogEntry::Heading("BUILDINGS"));
+        production_entries.extend(building_buttons.into_iter().map(CatalogEntry::Card));
+        panel.building_catalog(i, production_entries, city.building_scroll);
         if city.barracks.is_some() {
             let training = match city.barracks_queue.first() {
                 Some(build) => format!("BARRACKS: TRAINING {}", build.name()),

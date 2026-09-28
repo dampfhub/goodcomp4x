@@ -176,7 +176,11 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     a turn count, like FARM · GRASSLAND · 3T, instead of coordinates and "turns of work".
 55. Work Camps extend reach (`claude/work-camp-reach`): a Work Camp connected to its city is a
     base like the city itself: workers reach 3 tiles from it.
-56. A stockpile economy, as an experiment (`claude/rts-economy`, `rts-economy.md`): each side
+56. Settings controls (`claude/settings-controls`): the settings menu gives each setting a
+    control that fits it instead of < > arrows: a checkbox for Instant Playback, a slider for
+    the queue limit, buttons for Fog and Start With, and a drop-down list for AI Players, under
+    Turns, Map and Next World headings, with tooltips. Classic (F11) shows the same as buttons.
+57. A stockpile economy, as an experiment (`claude/rts-economy`, `rts-economy.md`): each side
     keeps one stockpile of food, wood and metal that its cities' tiles fill (a tile's production
     splits into metal from hills, mines and quarries, and wood from the rest). Builds are paid
     from it when queued, refunded when removed, and take a fixed number of turns; growth is a
@@ -184,7 +188,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     top bar shows the stockpile, build cards their price and turns, dimmed when unaffordable. The
     AI pays for its troops, workers and growth the same way. A Debug toggle lets a city's
     production also speed its builds, to compare the two.
-57. Icons and Barracks (`claude/rts-economy`, `rts-economy.md`): the map's yield pips and the
+58. Icons and Barracks (`claude/rts-economy`, `rts-economy.md`): the map's yield pips and the
     tile tooltip show food, wood and metal (wheat, a log, an ingot), and prices, turns and the
     stockpile show as those icons (and a clock) in both UI presentations, drawn inline from icon
     characters in any UI text. The Barracks became the military building: it trains troops twice
@@ -192,9 +196,10 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     3 per Horses or Iron deposit it draws on, counting those alive (a Debug toggle counts every
     one ever trained instead). The AI builds a Barracks, on a deposit when it can, and trains
     there.
-58. One mark for a count of turns (`claude/rts-economy`): every count of turns, in UI text and on
+59. One mark for a count of turns (`claude/rts-economy`): every count of turns, in UI text and on
     the map (a unit's queued-turns tag, work under way, worker jobs, build and training notices,
     cooldowns, the order queue's limit, ruins), shows as the clock icon and a number instead of
     "N TURNS" or "NT"; world text draws icon characters as UI text does. The text icons became
-    flat, one color each, and ImGui draws them unfeathered so they stay crisp at text size. The city's building list shows each name on the left and its price flush right, so the
-    prices line up (the key is in the tooltip).
+    flat, one color each, and ImGui draws them unfeathered so they stay crisp at text size. The city's
+    building list shows each name on the left and its price flush right, so the prices line up
+    (the key is in the tooltip).

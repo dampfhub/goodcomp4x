@@ -14,10 +14,14 @@ the City / Building view scope.
 
 ImGui uses native windows, buttons, scrolling, drag/drop, hover tooltips, and
 input capture. It is drawn at the end of the existing Vulkan render pass.
+Action buttons in both presentations reveal keyboard shortcuts on hover while
+keeping costs and work times visible. Debug buttons keep their keys visible.
+Unit orders and city labor focus use shared vector-icon toolbars; hovering an
+icon gives its action name, shortcut and explanation.
 `ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible
 windows without overlap. A window follows the dock as its content changes
 until the player drags its title bar or resize grip; moved windows reserve
-their space so other panels avoid them. The production queue and the city tray's building catalogue have bounded heights and scroll internally when their content grows.
+their space so other panels avoid them. The production queue and the city tray's production catalogue have bounded heights and scroll internally when their content grows.
 Hold Ctrl to show the title bars, collapse buttons, and resize grips for
 arranging panels. During normal play, expanded panels hide their title bars;
 collapsed panels keep a short title bar so they can be expanded again. While
@@ -55,12 +59,24 @@ move or dock it and keep playing. Both presentations open it centered on the
 screen, over the map, without taking room from the docked panels: ImGui's
 `plan` centers the `SETTINGS` slot until the player moves it, and classic
 places it last (`place_settings`), so it draws on top and `Layout::button_at`,
-which prefers the last-placed button, gives it the clicks. Its content,
-`settings_panel_content`, has a name-and-value line and a row of < and >
-buttons (`Target::StepSetting`) for every entry of `Setting::ALL`, then Close
-(`Target::CloseSettings`). A new setting therefore needs no UI code: add it
-in `game/settings.rs` as its module comment describes, and both
-presentations show it and step it through its range.
+which prefers the last-placed button, gives it the clicks; `build_ui` draws
+it as a layer of its own (`Layout::overlay`), after the other panels'
+buttons, so none shows through. ImGui draws it opaque for the same reason.
+Its content, `settings_panel_content`, has a `Row::Heading` for each
+`Setting::group` and a `Row::Setting` for every entry of `Setting::ALL`,
+then the City Yields overlay control, Close (`Target::CloseSettings`), and Quit. A setting's `control` picks
+its widget: ImGui (`render_setting`) puts the name in a label column and
+beside it a checkbox (`Control::Toggle`), a slider showing `value_text`
+(`Control::Slider`), or a button per value with the current one gold
+(`Control::Choice`; a combo box past `Control::MAX_BUTTONS` values), with
+the setting's description as the tooltip. Classic expands the two rows
+(`builder::classic_rows`, `settings_menu::classic_setting_rows`) into a
+gold heading line, the name, and compact buttons: one per value (OFF / ON
+for a switch), or < and > beside the value for a slider or long list.
+Every control acts through `Target::SetSetting(setting, value)`, which
+clamps to the range. A new setting therefore needs no UI code: add it in
+`game/settings.rs` as its module comment describes, and both presentations
+show it with its control.
 At the start of each frame, synchronize native ImGui dock state before planning
 floating positions: ImGui commits a highlighted drop in `NewFrame`, and using
 the previous frame's floating state can immediately undo that split.
@@ -127,7 +143,7 @@ window; their rows share the same reorder and remove game actions as classic.
 The classic layout uses reusable placement code in `src/game/ui/dock.rs`.
 
 `PanelBuilder` is the content primitive. Add rows with `text`, `bar`, `gap`,
-`buttons`, `compact_buttons`, or `queue_item`; `size()` measures the finished panel. A
+`buttons`, `compact_buttons`, `queue_item`, `heading`, or `setting`; `size()` measures the finished panel. A
 `Layout` owns shapes, buttons, panel hit boxes, scroll regions, and a `Dock`.
 `Layout::dock_panel(panel, Zone::BottomLeft)` places the measured panel and
 registers its render and hit-test geometry together. Available zones are
@@ -168,4 +184,4 @@ Add a layout test when adding a new panel or zone behavior. Useful assertions
 are that panel rectangles do not overlap, buttons remain inside their panel,
 and the same target is clickable after the screen size or content changes.
 
-The city tray uses a shared `Row::BuildingCatalog`: ImGui renders it as a four-row child window with native scrolling, while classic renders a compact two-row inset with wheel and draggable scrollbar. All building cards remain in one list; no page buttons are needed.
+The city tray uses a shared `Row::BuildingCatalog` for unit and building production cards, separated by headings. ImGui renders it as a five-row child window with native scrolling; classic renders a five-row inset with wheel and draggable scrollbar. City unit cards use the same pictograms in both presentations. The top-bar Menu button opens Settings without leaving a city view; the City Yields overlay toggle lives there.
