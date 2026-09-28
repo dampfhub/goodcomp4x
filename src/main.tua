@@ -22,6 +22,8 @@ use win32.events.Button;
 use win32.events.Key;
 use win32.events.Modifiers;
 use win32.primary_monitor;
+use win32.claim_app_id;
+use log.warn;
 use win32.cmdline.arguments_of;
 use std.io.Fs;
 use std.io.default_fs;
@@ -54,6 +56,8 @@ use game.ui.selection_box;
 use game.ui.ui_projection;
 
 const TITLE: str = "Hex Combat Sandbox";
+/// The game's application id on Windows (`claim_app_id`).
+const APP_USER_MODEL_ID: str = "dampfhub.riskofcivlike";
 /// The window opens at this fraction of the primary monitor's size, centered on it.
 const WINDOW_SCREEN_FRACTION: f32 = 0.8;
 /// Window size when the monitor's size can't be found.
@@ -288,6 +292,7 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs} {
         Option.Some(a) => a,
         Option.None => { error(fn() can {Out} { Out.put("the built-in font could not be rasterized"); }); return failed; }
     };
+    if !claim_app_id(APP_USER_MODEL_ID) { warn(fn() can {Out} { Out.put("couldn't set the taskbar application id"); }); }
     let icons = Icons { small: icon(WINDOW_ICON_SIZE), small_size: WINDOW_ICON_SIZE, big: icon(TASKBAR_ICON_SIZE), big_size: TASKBAR_ICON_SIZE };
     handle {
         let mut game = options.scenario.start();

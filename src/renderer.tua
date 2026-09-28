@@ -149,7 +149,8 @@ use log.warn;
 use log.info;
 use win32.Win32Error;
 use win32.Window;
-use win32.open_window_at;
+use win32.open_window_unshown_at;
+use win32.show_window;
 use win32.open_hidden_window;
 use win32.set_icons;
 use win32.toggle_fullscreen;
@@ -282,7 +283,11 @@ fn give_up_acquired(pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlig
 
 /// The per-run state the frame loop reads and reports: the frame budget (0 for none), the
 /// frames drawn, why the loop stopped (0 while running), and the pacer.
-struct Run { budget: i32, drawn: i32, stop: i32, pace: Pacer, vertices: Vec[MeshVertex], batches: Vec[DrawBatch], hidden: bool }
+struct Run { budget: i32, drawn: i32, stop: i32, pace: Pacer, vertices: Vec[MeshVertex], batches: Vec[DrawBatch], hidden: bool, icon_refresh_at: Option[i64] }
+
+/// How long after the window shows its icons are set again: Windows doesn't always redraw the
+/// taskbar button with icons set as the window is created.
+const ICON_REFRESH_NANOS: i64 = 1000000000;
 
 /// Draws one frame through the ring and hands the idle ring back.
 fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], rb: &Readback, a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
@@ -353,11 +358,22 @@ fn capture_frame(a: &mut Allocator, rb: &Readback, w: u32, h: u32) -> i32 can {G
     } with VkError { fail(e) => { abort e } }
 }
 
+/// Sets the window's icons again, as new handles.
+fn refresh_icons(win: &mut Window, icons: &Icons) {
+    let _ok = handle { set_icons(win, &icons.small, icons.small_size, &icons.big, icons.big_size); true } with Win32Error { fail(c) => { abort false } };
+}
+
 /// Draws frames through the ring until one reports a reason to stop.
-fn draw_frames(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], rb: &Readback, a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
+fn draw_frames(q: &mut Queue, win: &mut Window, icons: &Icons, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], rb: &Readback, a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
     let mut r = ring;
     while run.stop == 0 {
         r = draw_one(q, win, sc, pass, fbs, mesh, set, sb, rb, a, pool, t, r, run);
+        if let Option.Some(at) = run.icon_refresh_at {
+            if Clock.now_nanos() >= at {
+                run.icon_refresh_at = Option.None;
+                refresh_icons(win, icons);
+            }
+        }
     }
     r
 }
@@ -376,7 +392,7 @@ fn wait_while_minimized(win: &mut Window, run: &mut Run) can {Scene, Clock} {
 /// the pass draws into at that size. Frames are drawn until the program stops or the generation
 /// goes out of date; then the device is idled, the generation torn down, and the next one begun
 /// over the same ring.
-fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Surface, pass: &RenderPass[Bgra8Srgb, NoFormat], samples: u32, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Vk, Scene, Clock} {
+fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, icons: &Icons, surface: &Surface, pass: &RenderPass[Bgra8Srgb, NoFormat], samples: u32, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Vk, Scene, Clock} {
     wait_while_minimized(win, run);
     let mut raw: RingWords = consume_frames(ring);
     run.stop = 0;
@@ -400,7 +416,7 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Sur
         let fbs = create_framebuffers_multisampled(&sc, pass, &target, &target_view);
         defer { destroy_framebuffers(fbs); }
         ring_live = false;
-        let r2 = draw_frames(q, win, &sc, pass, &fbs, mesh, set, sb, &rb, a, pool, t, frames_from_words(raw), run);
+        let r2 = draw_frames(q, win, icons, &sc, pass, &fbs, mesh, set, sb, &rb, a, pool, t, frames_from_words(raw), run);
         raw = consume_frames(r2);
         ring_live = true;
         device_wait_idle();
@@ -410,7 +426,7 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Sur
     if rc != 0 { VkError.fail(rc) }
     if run.stop < 0 && run.stop != VK_ERROR_OUT_OF_DATE_KHR { give_up_ring(pool, t, frames_from_words(raw), run.stop) }
     if run.stop == VK_ERROR_OUT_OF_DATE_KHR {
-        generation(pd, q, win, surface, pass, samples, mesh, set, sb, a, pool, t, frames_from_words(raw), run)
+        generation(pd, q, win, icons, surface, pass, samples, mesh, set, sb, a, pool, t, frames_from_words(raw), run)
     } else {
         frames_from_words(raw)
     }
@@ -418,13 +434,18 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Sur
 
 fn run_on_device(family: u32, title: &str, spec: WindowSpec, icons: &Icons, atlas: &Atlas, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} {
     let (width, height) = (spec.width, spec.height);
-    let mut run = Run { budget: frames, drawn: 0, stop: 0, pace: pacer(TARGET_FPS), vertices: Vec.new(), batches: Vec.new(), hidden: spec.hidden };
+    let mut run = Run { budget: frames, drawn: 0, stop: 0, pace: pacer(TARGET_FPS), vertices: Vec.new(), batches: Vec.new(), hidden: spec.hidden, icon_refresh_at: Option.None };
     let rc = handle { handle {
         let mut q = get_queue(family, 0);
         let pd = first_physical_device();
-        let mut win = if spec.hidden { open_hidden_window(title, width, height) } else { open_window_at(title, spec.x, spec.y, width, height) };
+        let mut win = if spec.hidden { open_hidden_window(title, width, height) } else { open_window_unshown_at(title, spec.x, spec.y, width, height) };
         defer { destroy_window(win); }
+        // The icons first, so the window and its taskbar button show them from the start.
         set_icons(&mut win, &icons.small, icons.small_size, &icons.big, icons.big_size);
+        if !spec.hidden {
+            show_window(&mut win);
+            run.icon_refresh_at = Option.Some(Clock.now_nanos() + ICON_REFRESH_NANOS);
+        }
         let surface = create_surface(&win);
         defer { destroy_surface(surface); }
         let mut alloc = create_allocator(pd);
@@ -461,7 +482,7 @@ fn run_on_device(family: u32, title: &str, spec: WindowSpec, icons: &Icons, atla
         let mut sb = mesh.create_stream_buffer(&mut alloc, FRAMES_IN_FLIGHT, MAX_VERTICES);
         defer { destroy_stream_vertex_buffer(&mut alloc, sb); }
         let ring = create_frames(FRAMES_IN_FLIGHT);
-        let ring2 = generation(pd, &mut q, &mut win, &surface, &pass, samples, &mesh, &set, &mut sb, &mut alloc, &mut pool, &mut t, ring, &mut run);
+        let ring2 = generation(pd, &mut q, &mut win, icons, &surface, &pass, samples, &mesh, &set, &mut sb, &mut alloc, &mut pool, &mut t, ring, &mut run);
         destroy_frames(&mut pool, &mut t, ring2);
         0
     } with VkError { fail(c) => { abort c } }
