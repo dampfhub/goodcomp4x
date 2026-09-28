@@ -237,6 +237,14 @@ impl GameState {
             .is_some_and(|seen| seen.barracks.is_some_and(|barracks| barracks.team != team))
     }
 
+    /// `empty_city_target` as the player knows the board: a city center in
+    /// sight with nobody on it to attack. One out of sight never counts, since
+    /// the player can't know that nobody stands there (units aren't
+    /// remembered), and refusing an attack on it would say so.
+    pub(super) fn known_empty_city_target(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
+        fog.sees(hex) && self.empty_city_target(hex, team)
+    }
+
     /// A tile's food, wood and metal as the player knows them.
     pub(super) fn known_yield(&self, hex: Hex, fog: &Fog) -> (i32, i32, i32) {
         match self.remembered(hex) {

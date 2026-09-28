@@ -176,7 +176,9 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
   A unit out of sight, even one seen there before, doesn't shrink the move range, and clicking
   its hex plans a move, which then meets it at resolution. A remembered enemy barracks can
-  still be attacked; an empty city center cannot.
+  still be attacked; an empty city center in sight cannot, but one out of sight can (nobody
+  there is known of, and refusing it would give away that nobody is), and the attack misses if
+  nobody is there when it comes.
 - What the map and panels show follows the same rule: yields, and which hexes a city's or
   barracks' goods reach (badges, delivery percentages, tooltip), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
@@ -198,7 +200,8 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   opens its view instead, even with a unit selected, so a left click can't move a unit onto that
   hex or select a unit standing there.
 - Right-click any hex in range to queue an attack on it, occupied or not (again to cancel),
-  except an empty city center. Units or workers standing on a city center remain attackable.
+  except an empty city center in sight. Units or workers standing on a city center remain
+  attackable.
   **Attacks target hexes:** whoever stands there when the attack resolves gets hit.
 - A unit can queue a move and an attack; the attack range is measured from the planned
   destination. Changing or cancelling the move drops an attack that is no longer in range.
@@ -258,7 +261,10 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   make it from there already attacks that turn, otherwise into a new turn spent standing still.
   Range counts from where the plan has the unit that turn, with its later-turn stats (no ability;
   a siege that sets up this turn is deployed). With nothing planned and no attack possible this
-  turn (a siege setting up), it goes in the next turn. Out of range, nothing is queued.
+  turn (a siege setting up), it goes in the next turn. Out of range, nothing is queued; on
+  water, only ships and ranged and siege land troops can attack (the notice says so). Like a
+  queued move, it goes by what the player knows: a hex out of sight, even one never seen, is
+  attacked as a seen one would be (see Fog of war).
 - **Groups:** a Shift-click with a group selected queues for every member, and afterwards
   their plans all have the same number of turns. For a move, each member continues from the end
   of its own plan: one with a shorter plan (say, just added to the selection) starts moving at

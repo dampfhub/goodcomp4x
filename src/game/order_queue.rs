@@ -13,6 +13,7 @@ use super::city::turns_icon;
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::Fog;
 use super::hex::Hex;
+use super::orders::SHIPS_NOTICE;
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, TurnOrder, Unit};
 
@@ -237,17 +238,17 @@ impl GameState {
     /// plan. It goes into the plan's last turn if nobody who could make it
     /// there attacks anything yet; otherwise into a new turn, which members
     /// out of range spend waiting, unless that would take the plan past
-    /// `Settings::max_queued_turns`. Returns whether anything was queued.
+    /// `Settings::max_queued_turns`. Like a queued move, it's planned on the
+    /// board as the player knows it, so a hex out of sight (never seen, even)
+    /// can be attacked as a seen one can. Returns whether anything was queued.
     pub(super) fn queue_attack(&mut self, target: Hex) -> bool {
         let members = self.selection();
-        if members.is_empty()
-            || self.is_resolving()
-            || !(self.grid.is_passable(target)
-                || (self.grid.contains(target) && self.grid.terrain(target).is_water()))
-        {
+        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
+        if members.is_empty() || self.is_resolving() || !(self.grid.is_passable(target) || water) {
             return false;
         }
-        if self.empty_city_target(target, self.units[members[0]].team) {
+        let fog = self.fog();
+        if self.known_empty_city_target(target, self.units[members[0]].team, &fog) {
             self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return false;
         }
@@ -256,7 +257,7 @@ impl GameState {
             let able: Vec<usize> = members
                 .iter()
                 .copied()
-                .filter(|&i| self.can_attack_on_turn(i, len - 1, target))
+                .filter(|&i| self.can_attack_on_turn(i, len - 1, target, &fog))
                 .collect();
             !able.is_empty()
                 && able
@@ -267,7 +268,7 @@ impl GameState {
             members
                 .iter()
                 .copied()
-                .filter(|&i| self.can_attack_on_turn(i, turn, target))
+                .filter(|&i| self.can_attack_on_turn(i, turn, target, &fog))
                 .collect()
         };
         let mut turn = if fill { len - 1 } else { len };
@@ -284,7 +285,11 @@ impl GameState {
             return false;
         }
         if attackers.is_empty() {
-            self.notice = "OUT OF RANGE THERE".into();
+            self.notice = if water && members.iter().all(|&i| !self.units[i].attacks_water()) {
+                SHIPS_NOTICE.into()
+            } else {
+                "OUT OF RANGE THERE".into()
+            };
             return false;
         }
         for &i in &members {
@@ -362,10 +367,10 @@ impl GameState {
     }
 
     /// Whether unit `idx` could attack `target` on turn `turn` of its plan,
-    /// from where the plan has it standing then.
-    fn can_attack_on_turn(&self, idx: usize, turn: usize, target: Hex) -> bool {
+    /// from where the plan has it standing then, as far as the player knows.
+    fn can_attack_on_turn(&self, idx: usize, turn: usize, target: Hex, fog: &Fog) -> bool {
         let unit = &self.units[idx];
-        if !self.attack_target_legal(idx, target, turn > 0) {
+        if !self.known_attack_target_legal(idx, target, turn > 0, fog) {
             return false;
         }
         let (able, range) = if turn == 0 {
@@ -1089,5 +1094,99 @@ mod tests {
         assert_eq!(g.units[0].planned_attack, None, "no attack while deploying");
         assert_eq!(g.units[0].queued[0].attack, Some(target));
         assert!(g.units[0].ability_queued, "queuing keeps the ability");
+    }
+
+    /// `open_field` with the fog of war on and nothing seen yet but what
+    /// the units see now.
+    fn fogged_field(types: &[UnitType]) -> GameState {
+        let mut game = open_field(types);
+        game.fog_of_war = true;
+        game.memory.clear();
+        game.explore();
+        game
+    }
+
+    #[test]
+    fn a_queued_attack_can_target_a_hex_in_the_fog() {
+        // Queued moves end at (-2, 0); the melee attacks next door from there.
+        let target = Hex::new(-1, 0);
+        let queue = |game: &mut GameState| {
+            game.selected = Some(0);
+            assert!(game.queue_move(Hex::new(-2, 0)));
+            assert!(game.queue_attack(target), "{}", game.notice);
+            game.units[0].queued.clone()
+        };
+        let mut seen = open_field(&[UnitType::Melee]);
+        let planned = queue(&mut seen);
+        assert_eq!(planned.last().unwrap().attack, Some(target));
+
+        // Never seen: the same plan, and it's carried out.
+        let mut unseen = fogged_field(&[UnitType::Melee]);
+        assert!(!unseen.fog().sees(target) && !unseen.is_explored(target));
+        assert_eq!(queue(&mut unseen), planned);
+        assert_eq!(unseen.notice, seen.notice);
+        // Seen once and out of sight now.
+        let mut remembered = fogged_field(&[UnitType::Melee]);
+        remembered.units[0].pos = Hex::new(-2, 0);
+        remembered.explore();
+        remembered.units[0].pos = Hex::new(-4, 0);
+        assert!(remembered.is_explored(target) && !remembered.fog().sees(target));
+        assert_eq!(queue(&mut remembered), planned);
+
+        // Only in range of where the queue ends, as for a seen hex.
+        let mut far = fogged_field(&[UnitType::Melee]);
+        far.selected = Some(0);
+        assert!(far.queue_move(Hex::new(-2, 0)));
+        assert!(!far.queue_attack(Hex::new(0, 0)));
+        assert_eq!(far.notice, "OUT OF RANGE THERE");
+    }
+
+    #[test]
+    fn a_queued_attack_into_the_fog_gives_nothing_away() {
+        use crate::game::city::City;
+        // A Red city center out of sight, where the melee's queue ends next
+        // door: whether anyone stands in it, the attack is queued the same.
+        let center = Hex::new(-1, 0);
+        let plan = |occupied: bool| {
+            let mut g = fogged_field(&[UnitType::Melee]);
+            g.cities.push(City::new(7, Team::Red, center));
+            if occupied {
+                g.units
+                    .push(Unit::new(200, center, Team::Red, UnitType::Melee));
+            }
+            assert!(!g.fog().sees(center));
+            g.selected = Some(0);
+            assert!(g.queue_move(Hex::new(-2, 0)));
+            (g.queue_attack(center), g.notice.clone())
+        };
+        let (queued, notice) = plan(false);
+        assert!(queued, "{notice}");
+        assert_eq!(plan(true), (queued, notice));
+
+        // In sight and empty, it's still refused, as the player can see.
+        let mut g = open_field(&[UnitType::Melee]);
+        g.cities.push(City::new(7, Team::Red, Hex::new(-3, 0)));
+        g.selected = Some(0);
+        assert!(!g.queue_attack(Hex::new(-3, 0)));
+        assert_eq!(
+            g.notice,
+            "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR"
+        );
+    }
+
+    #[test]
+    fn a_queued_attack_on_water_says_who_can_attack_ships() {
+        use crate::game::hex::HexGrid;
+        use crate::game::terrain::Terrain;
+        let lake = Hex::new(-3, 0);
+        for (unit_type, queued) in [(UnitType::Melee, false), (UnitType::Ranged, true)] {
+            let mut g = open_field(&[unit_type]);
+            g.grid = HexGrid::new(6, [(lake, Terrain::Lake)]);
+            g.selected = Some(0);
+            assert_eq!(g.queue_attack(lake), queued, "{unit_type:?}");
+            if !queued {
+                assert_eq!(g.notice, SHIPS_NOTICE);
+            }
+        }
     }
 }
