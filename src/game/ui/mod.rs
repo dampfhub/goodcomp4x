@@ -121,6 +121,10 @@ const NOTICE_TEXT: Color = [0.95, 0.85, 0.55, 1.0];
 const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
 const BOOSTED_TEXT: Color = [0.55, 0.92, 0.50, 1.0];
 const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
+/// The stockpile's resources, wherever they're named.
+const FOOD_TEXT: Color = [0.62, 0.90, 0.40, 1.0];
+const WOOD_TEXT: Color = [0.85, 0.62, 0.36, 1.0];
+const METAL_TEXT: Color = [0.62, 0.74, 0.92, 1.0];
 const SELECTION_BOX_FILL: Color = [0.30, 0.55, 0.95, 0.12];
 const SELECTION_BOX_EDGE: Color = [0.55, 0.75, 1.00, 0.9];
 const SELECTION_BOX_BORDER: f32 = 2.0;
@@ -170,6 +174,8 @@ enum Target {
     BarracksQueueRemove(usize),
     /// A worker for the open city's pool.
     BuildWorker,
+    /// One more citizen for the open city, bought with food.
+    Grow,
     /// A job on the inspected tile, for the city whose workers would do it.
     WorkerJob(JobKind),
     /// Worker mode on or off (W): the city panel's Worker Jobs, and Done in
@@ -204,6 +210,11 @@ enum Target {
     CompleteProduction,
     TogglePlayback,
     ToggleFog,
+    /// Debug panel: production speeds builds, or builds take fixed time.
+    ToggleProductionSpeedup,
+    /// Debug panel: the Cavalry and Armored cap counts those alive, or every
+    /// one ever trained.
+    ToggleLifetimeCap,
     /// Settings menu: set a setting to a value (the nearer end of its range
     /// if outside it), from its checkbox, slider or choice.
     SetSetting(Setting, i32),
@@ -620,6 +631,7 @@ impl GameState {
             Target::RosterAdd(id) => self.roster_add(id),
             Target::RosterRemove(id) => self.roster_remove(id),
             Target::BuildWorker => self.queue_selected_city_worker(),
+            Target::Grow => self.queue_selected_city_growth(),
             Target::WorkerJob(kind) => self.arm_worker_job(kind),
             Target::WorkerMode => self.toggle_worker_mode(),
             Target::WorkerCity(city) => self.worker_menu_city = Some(city),
@@ -652,6 +664,8 @@ impl GameState {
             Target::CompleteProduction => self.debug_complete_current_production(),
             Target::TogglePlayback => self.toggle_instant_playback(),
             Target::ToggleFog => self.toggle_fog(),
+            Target::ToggleProductionSpeedup => self.toggle_production_speedup(),
+            Target::ToggleLifetimeCap => self.toggle_lifetime_special_cap(),
             Target::SetSetting(setting, value) => self.set_setting(setting, value),
             Target::CloseSettings => self.close_settings(),
             Target::Quit => self.quit_requested = true,

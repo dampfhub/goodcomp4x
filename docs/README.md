@@ -7,6 +7,7 @@
 | [controls.md](controls.md) | Every key and mouse action, for players | current; update with every input change |
 | [ui-system.md](ui-system.md) | How screen-space panels are built, docked and hit-tested | current; read before adding UI |
 | [city-system.md](city-system.md) | The design direction for cities | proposal; parts are implemented, see game-rules.md |
+| [rts-economy.md](rts-economy.md) | The stockpile economy experiment: model, numbers, findings, next tests | experiment; built on `claude/rts-economy`, rules in game-rules.md |
 | [history.md](history.md) | How the prototype got here | append an entry per milestone |
 
 Agent instructions are not here: they live in `AGENTS.md` at the repo root and in `src/`,

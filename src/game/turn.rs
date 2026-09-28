@@ -697,7 +697,7 @@ impl GameState {
                 if city.barracks_hp == 0.0 {
                     city.barracks = None;
                     city.barracks_queue.clear();
-                    city.barracks_production = 0;
+                    city.barracks_progress = 0;
                     // Gone from the map, so the city may build another.
                     city.built.retain(|&b| b != Building::Barracks);
                     if self.selected_barracks == Some(i) {
@@ -758,7 +758,7 @@ mod naval_tests {
     #[test]
     fn harbor_produces_a_ship_on_water_and_it_cannot_walk_ashore() {
         let mut g = GameState::naval_scenario();
-        g.cities[0].production = BuildUnit::PatrolGalley.cost();
+        g.cities[0].progress = BuildUnit::PatrolGalley.work();
         let before = g.units.len();
         g.complete_builds();
         assert_eq!(g.units.len(), before + 1);
