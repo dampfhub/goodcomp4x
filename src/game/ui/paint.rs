@@ -182,7 +182,7 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
     if let Some(icon) = action_icons::production_unit_icon(button.target) {
         let center = Vec2::new(button.min.x + 20.0, (button.min.y + button.max.y) / 2.0);
         crate::game::unit_icons::push_pictogram(center, 10.0, icon, text_color, out);
-        let hint = visible_button_hint(&button.hint, hovered || button.faded);
+        let hint = visible_button_hint(&button.hint, button.faded);
         let face = font::ui(SMALL);
         let label_x = button.min.x + 39.0;
         let baseline = center.y - face.cap_height / 2.0;
@@ -194,7 +194,7 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         return;
     }
 
-    let hint = visible_button_hint(&button.hint, hovered || button.faded);
+    let hint = visible_button_hint(&button.hint, button.faded);
     let (label_face, hint_face) = (font::ui(BODY), font::ui(SMALL));
     let center = (button.min + button.max) / 2.0;
     let height = button.max.y - button.min.y;

@@ -81,9 +81,8 @@ pub(super) struct SeenBuilding {
     pub id: u32,
     /// Share of full health, 0 to 1.
     pub health: f32,
-    /// For a city: its population, and whether it has a granary.
+    /// For a city: its population.
     pub population: usize,
-    pub granary: bool,
 }
 
 impl GameState {
@@ -185,7 +184,6 @@ impl GameState {
                 id: c.id,
                 health: 1.0,
                 population: c.population,
-                granary: c.built.contains(&Building::Granary),
             });
         let barracks = self
             .cities
@@ -196,7 +194,6 @@ impl GameState {
                 id: c.id,
                 health: c.barracks_hp / BARRACKS_MAX_HP,
                 population: 0,
-                granary: false,
             });
         Sighting {
             city,

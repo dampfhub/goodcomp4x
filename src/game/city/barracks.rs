@@ -101,34 +101,15 @@ impl GameState {
         }
         let resource = build.required_resource()?;
         if self.barracks_deposits(city, resource).is_empty() {
-            let support = match resource {
-                Resource::Horses => "STABLE",
-                Resource::Iron => "FORGE",
-            };
-            return Some(format!(
-                "NEEDS THIS BARRACKS ON {} (OR BESIDE A {support} ON {})",
-                resource.name(),
-                resource.name()
-            ));
+            return Some(format!("NEEDS {} UNDER THE BARRACKS", resource.name()));
         }
         let team = self.cities[city].team;
         let cap = self.special_cap(team, resource);
         if cap == 0 {
             return Some(format!("AN ENEMY HOLDS YOUR {} DEPOSIT", resource.name()));
         }
-        (self.special_used(team, resource) >= cap).then(|| {
-            format!(
-                "CAP REACHED: {cap} {} FOR {} {} DEPOSIT{}",
-                build.name(),
-                cap / UNITS_PER_DEPOSIT,
-                resource.name(),
-                if cap / UNITS_PER_DEPOSIT == 1 {
-                    ""
-                } else {
-                    "S"
-                }
-            )
-        })
+        (self.special_used(team, resource) >= cap)
+            .then(|| format!("CAP REACHED: {cap} {}", build.name()))
     }
 
     /// Debug panel: switches the Cavalry and Armored cap between counting

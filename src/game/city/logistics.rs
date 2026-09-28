@@ -164,7 +164,12 @@ impl GameState {
 
     pub(in crate::game) fn barracks_income(&self, city: usize) -> i32 {
         let c = &self.cities[city];
-        let Some(barracks) = c.barracks.filter(|tile| c.worked.first() == Some(tile)) else {
+        // The manager can't stand on the Barracks (no citizen works a
+        // building's tile): beside it will do.
+        let Some(barracks) = c
+            .barracks
+            .filter(|tile| c.worked.first().is_some_and(|m| m.distance(*tile) == 1))
+        else {
             return 0;
         };
         let routes = self.routes_from(c.team, barracks);
@@ -272,18 +277,13 @@ impl GameState {
     }
 
     /// What `city` delivers to its side's stockpile a turn, before upkeep:
-    /// the center's 2 food and 1 wood, a Granary's 2 food, each worked tile's
+    /// the center's 2 food and 1 wood, each worked tile's
     /// food, wood and metal (`metal_yield`) times its delivery share, and the
     /// Cannery's food and Smelter's metal.
     pub(in crate::game) fn income(&self, city: usize) -> Stock {
         let routes = self.routes(city);
-        let granary_food = if self.cities[city].built.contains(&Building::Granary) {
-            8
-        } else {
-            0
-        };
         let center = Stock {
-            food: 8 + granary_food,
+            food: 8,
             wood: 4,
             metal: 0,
         };

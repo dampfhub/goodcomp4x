@@ -4,6 +4,7 @@
 use super::MAX_CITY_POPULATION;
 use super::barracks::CITY_TRAINING_SLOWDOWN;
 use super::economy::{Stock, WORK_PER_TURN, stock_icons, turns_icon};
+use crate::game::JobKind;
 use crate::game::hex::Hex;
 use crate::game::terrain::{Resource, Terrain};
 use crate::game::unit::{Team, Unit, UnitType};
@@ -11,7 +12,6 @@ use crate::game::{GameState, PLAYER_TEAM};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Building {
-    Granary,
     Barracks,
     Mill,
     Workshop,
@@ -29,8 +29,7 @@ pub enum Building {
 }
 
 impl Building {
-    pub const ALL: [Self; 15] = [
-        Self::Granary,
+    pub const ALL: [Self; 14] = [
         Self::Barracks,
         Self::Mill,
         Self::Workshop,
@@ -46,25 +45,11 @@ impl Building {
         Self::Harbor,
         Self::CoastalBattery,
     ];
-    pub const PLACEABLE: [Self; 14] = [
-        Self::Barracks,
-        Self::Mill,
-        Self::Workshop,
-        Self::CanoeHouse,
-        Self::Forge,
-        Self::Stable,
-        Self::Watchpost,
-        Self::FieldHospital,
-        Self::Cannery,
-        Self::WorkCamp,
-        Self::Smelter,
-        Self::Railhead,
-        Self::Harbor,
-        Self::CoastalBattery,
-    ];
+    /// Every building stands on a site on the map, which the city's
+    /// workers build it on (`workers.rs`).
+    pub const PLACEABLE: [Self; 14] = Self::ALL;
     pub fn name(self) -> &'static str {
         match self {
-            Self::Granary => "GRANARY",
             Self::Barracks => "BARRACKS",
             Self::Mill => "MILL",
             Self::Workshop => "WORKSHOP",
@@ -84,7 +69,6 @@ impl Building {
     /// What queuing it takes from the side's stockpile (`economy.rs`).
     pub fn price(self) -> Stock {
         let (food, wood, metal) = match self {
-            Self::Granary => (0, 8, 0),
             Self::Barracks => (0, 10, 0),
             Self::Mill | Self::CanoeHouse | Self::Watchpost => (0, 10, 0),
             Self::Workshop => (0, 10, 4),
@@ -103,12 +87,7 @@ impl Building {
     /// Turns it takes at the head of the queue.
     pub fn turns(self) -> i32 {
         match self {
-            Self::Granary
-            | Self::Barracks
-            | Self::Mill
-            | Self::CanoeHouse
-            | Self::Watchpost
-            | Self::WorkCamp => 3,
+            Self::Barracks | Self::Mill | Self::CanoeHouse | Self::Watchpost | Self::WorkCamp => 3,
             Self::Workshop
             | Self::Forge
             | Self::Stable
@@ -120,13 +99,8 @@ impl Building {
             Self::Railhead => 5,
         }
     }
-    /// Work it needs, in quarter turns.
-    pub fn work(self) -> i32 {
-        self.turns() * WORK_PER_TURN
-    }
     pub fn shortcut(self) -> char {
         match self {
-            Self::Granary => '4',
             Self::Barracks => '5',
             Self::Mill => '6',
             Self::Workshop => '7',
@@ -145,52 +119,52 @@ impl Building {
     }
     pub fn description(self) -> &'static str {
         match self {
-            Self::Granary => "+2 FOOD PER TURN.",
             Self::Barracks => {
-                "ON OPEN LAND: TRAINS TROOPS TWICE AS FAST AS THE CITY. ON HORSES OR IRON, ALSO 3 CAVALRY OR ARMORED PER DEPOSIT."
+                "TRAINS TROOPS TWICE AS FAST. ON OPEN LAND; ON HORSES OR IRON, ALSO CAVALRY OR ARMORED."
             }
-            Self::Mill => "ADJACENT WORKED TILES DELIVER ALL FOOD IF THEY CAN REACH THE CITY.",
-            Self::Workshop => "ADJACENT PLACED BUILDINGS CAN BE CONFIRMED AT HALF PRODUCTION.",
-            Self::CanoeHouse => "ON A RIVERBANK: ITS CONNECTED RIVER CARRIES GOODS LIKE A ROAD.",
-            Self::Forge => "ON OR NEXT TO IRON, BESIDE BARRACKS: TRAINS TOUGHER ARMORED TROOPS.",
-            Self::Stable => "ON OR NEXT TO HORSES, BESIDE BARRACKS: TRAINS FASTER CAVALRY.",
-            Self::Watchpost => "SEES 4 HEXES, OR 5 FROM HILLS, THROUGH ORDINARY SIGHT LINES.",
-            Self::FieldHospital => "HEALS TWO NEARBY FRIENDLY TROOPS EACH TURN, INSIDE AND OUT.",
-            Self::Cannery => "COLLECTS FOOD FROM THREE REMOTE IMPROVEMENTS WITHIN 3 HEXES.",
-            Self::WorkCamp => "CONNECTED WORKERS START AND END NEARBY JOBS HERE, NOT AT THE CITY.",
-            Self::Smelter => "COLLECTS PRODUCTION FROM THREE REMOTE MINES WITHIN 3 HEXES.",
-            Self::Railhead => "A CITY-ROAD LINK LETS TROOPS BY THE CITY MOVE HERE IN ONE TURN.",
-            Self::Harbor => "ON A COASTAL LAND TILE: TRAINS SHIPS INTO ADJACENT WATER.",
-            Self::CoastalBattery => "ON COASTAL LAND: FIRES AT HOSTILE SHIPS WITHIN 2 TILES.",
+            Self::Mill => "ADJACENT WORKED TILES DELIVER ALL THEIR FOOD.",
+            Self::Workshop => "ADJACENT BUILDINGS TAKE HALF THE TURNS.",
+            Self::CanoeHouse => "ON A RIVERBANK: THE RIVER CARRIES GOODS LIKE A ROAD.",
+            Self::Forge => "NEXT TO IRON AND A BARRACKS: TOUGHER ARMORED.",
+            Self::Stable => "NEXT TO HORSES AND A BARRACKS: FASTER CAVALRY.",
+            Self::Watchpost => "SEES 4 HEXES, 5 FROM HILLS.",
+            Self::FieldHospital => "HEALS 2 NEARBY TROOPS A TURN.",
+            Self::Cannery => "COLLECTS FOOD FROM 3 IMPROVEMENTS WITHIN 3 HEXES.",
+            Self::WorkCamp => "NEARBY JOBS START FROM HERE.",
+            Self::Smelter => "COLLECTS METAL FROM 3 MINES WITHIN 3 HEXES.",
+            Self::Railhead => "TROOPS BY THE CITY REACH IT IN ONE TURN, ALONG A ROAD.",
+            Self::Harbor => "ON THE COAST: TRAINS SHIPS.",
+            Self::CoastalBattery => "ON THE COAST: FIRES AT SHIPS WITHIN 2.",
         }
-    }
-
-    pub fn is_placeable(self) -> bool {
-        self != Self::Granary
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Build {
     Unit(BuildUnit),
-    Building(Building),
     /// A worker for the city's pool (`workers.rs`).
     Worker,
     /// One more citizen, bought with food (`economy::grow_price`).
     Grow,
+    /// The city spends a turn gathering: free, and `GATHER_YIELD` goes to
+    /// the stockpile when it's done. Something a city can always do.
+    Gather,
 }
 
-/// The Worker and Grow cards' keys.
+/// The Worker, Grow and Gather cards' keys.
 pub(in crate::game) const WORKER_SHORTCUT: char = '8';
 pub(in crate::game) const GROW_SHORTCUT: char = '9';
+pub(in crate::game) const GATHER_SHORTCUT: char = '0';
+/// What a turn of gathering (`Build::Gather`) brings in.
+pub(in crate::game) const GATHER_YIELD: Stock = Stock::whole(2, 2, 1);
 
 impl Build {
     pub fn name(self) -> &'static str {
         match self {
             Self::Unit(u) => u.name(),
-            Self::Building(b) => b.name(),
             Self::Worker => "WORKER",
             Self::Grow => "GROW",
+            Self::Gather => "GATHER",
         }
     }
     /// Its price, except a Grow's, which depends on the city
@@ -198,16 +172,15 @@ impl Build {
     pub fn price(self) -> Stock {
         match self {
             Self::Unit(u) => u.price(),
-            Self::Building(b) => b.price(),
             Self::Worker => Stock::whole(4, 2, 0),
-            Self::Grow => Stock::default(),
+            Self::Grow | Self::Gather => Stock::default(),
         }
     }
     pub fn turns(self) -> i32 {
         match self {
             Self::Unit(u) => u.turns(),
-            Self::Building(b) => b.turns(),
             Self::Worker | Self::Grow => 2,
+            Self::Gather => 1,
         }
     }
     /// Work it needs, in quarter turns.
@@ -283,7 +256,7 @@ impl BuildUnit {
         match self {
             Self::Melee => "TOUGH CLOSE FIGHTER",
             Self::Ranged => "FIRES FROM 2 TILES",
-            Self::Cavalry => "FAST FLANKER, NEEDS HORSES",
+            Self::Cavalry => "FAST FLANKER",
             Self::Siege => "LONG RANGE, SLOW",
             Self::Armored => "HEAVY IRON INFANTRY",
             Self::PatrolGalley => "FAST COASTAL FIGHTER; STRONG AGAINST SHIPS",
@@ -438,86 +411,29 @@ impl GameState {
             self.notice = format!("{} ALREADY EXISTS IN THIS CITY", building.name());
             return;
         }
-        if c.pending_building == Some(building) || c.queue.contains(&Build::Building(building)) {
-            // Queued or finished without a site (the view was left before
-            // one was chosen): the card resumes choosing it.
-            if self.needs_site(city, building) {
-                self.placing_building = Some((city, building));
-                self.notice = format!("CHOOSE A {} SITE - CLICK A VALID TILE", building.name());
-            } else {
-                self.notice = format!("{} IS ALREADY QUEUED IN THIS CITY", building.name());
-            }
-            return;
-        }
-        if !self.queue_paid(city, Build::Building(building)) {
-            return;
-        }
-        // Site choice is part of queuing every placeable building, even when
-        // other work is ahead of it.
-        if building.is_placeable() {
-            self.placing_building = Some((city, building));
-            self.notice = format!(
-                "{} PAID - CLICK A VALID TILE TO CHOOSE ITS SITE",
-                building.name()
-            );
-        }
+        // Placed on the map, and the city's workers build it there
+        // (`workers.rs`).
+        self.arm_worker_job(JobKind::Build(building));
     }
 
-    /// The building whose site the player is choosing, while its city's view
-    /// is open. Placement belongs to that view: with no city open, or another
-    /// one, nothing follows the cursor and map clicks don't place it.
-    pub(in crate::game) fn site_placement(&self) -> Option<(usize, Building)> {
-        self.placing_building
-            .filter(|&(city, _)| self.selected_city == Some(city))
-    }
-
-    /// Stops choosing a building site. A building queued without a site is
-    /// taken back out of the queue, since it can't be built without one (a
-    /// finished one waits for its site instead). Returns whether a site was
-    /// being chosen.
-    pub(in crate::game) fn abandon_site_placement(&mut self) -> bool {
-        let Some((city, building)) = self.placing_building.take() else {
-            return false;
+    /// 0 or the Gather card: the open city spends a turn gathering.
+    pub fn queue_selected_city_gather(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(city) = self.selected_city else {
+            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            return;
         };
-        let c = &mut self.cities[city];
-        if c.placed_site(building).is_none()
-            && !c.planned_sites.contains_key(&building)
-            && c.pending_building != Some(building)
-            && let Some(index) = c.queue.iter().position(|&b| b == Build::Building(building))
-        {
-            self.take_queue_item(city, index);
-            self.notice = format!("{} CANCELLED - NO SITE CHOSEN - REFUNDED", building.name());
+        if self.cities[city].team != PLAYER_TEAM {
+            return;
         }
-        true
+        self.queue_paid(city, Build::Gather);
     }
 
-    /// A placeable building queued in (or finished by) `city` that has no
-    /// site yet, so it can't be confirmed until one is chosen.
-    pub(in crate::game) fn needs_site(&self, city: usize, building: Building) -> bool {
-        let c = &self.cities[city];
-        building.is_placeable()
-            && c.placed_site(building).is_none()
-            && !c.planned_sites.contains_key(&building)
-            && (c.pending_building == Some(building)
-                || c.queue.contains(&Build::Building(building)))
-    }
-
-    /// The first reason a building cannot use this site. Keep this as the
-    /// source of truth for previews, placement clicks, and final confirmation.
-    pub(in crate::game) fn site_issue(
-        &self,
-        city: usize,
-        building: Building,
-        hex: Hex,
-    ) -> Option<&'static str> {
-        if !self.is_explored(hex) && !self.fog().sees(hex) && self.grid.is_passable(hex) {
-            return Some("NEEDS AN EXPLORED TILE");
-        }
-        self.ai_site_issue(city, building, hex)
-    }
-
-    /// Like `site_issue`, but for the AI, which sees the whole map: the
-    /// same rules without the player's exploration.
+    /// The first reason `building` can't stand on `hex` for city `city`:
+    /// the rules of its site (workers' reach and exploration aside, which
+    /// `job_problem` and `job_unavailable` check).
     pub(in crate::game) fn ai_site_issue(
         &self,
         city: usize,
@@ -527,14 +443,11 @@ impl GameState {
         if !self.grid.is_passable(hex) {
             return Some("NEEDS AN OPEN LAND TILE");
         }
-        if self.cities.iter().enumerate().any(|(i, c)| {
+        if self.cities.iter().any(|c| {
             c.pos == hex
                 || Building::PLACEABLE
                     .into_iter()
                     .any(|kind| c.placed_site(kind) == Some(hex))
-                || c.planned_sites
-                    .iter()
-                    .any(|(&kind, &site)| site == hex && (i != city || kind != building))
         }) {
             return Some("SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
         }
@@ -580,13 +493,16 @@ impl GameState {
         }
     }
 
+    /// Tests: whether `building` may stand on `hex` for city `city`, by its
+    /// site's rules alone (`ai_site_issue`).
+    #[cfg(test)]
     pub(in crate::game) fn site_available(
         &self,
         city: usize,
         building: Building,
         hex: Hex,
     ) -> bool {
-        self.site_issue(city, building, hex).is_none()
+        self.ai_site_issue(city, building, hex).is_none()
     }
 
     pub(in crate::game) fn resource_near(&self, hex: Hex, resource: Resource) -> bool {
@@ -609,7 +525,7 @@ impl GameState {
         })
     }
 
-    fn beside_workshop(&self, team: Team, site: Hex) -> bool {
+    pub(in crate::game) fn beside_workshop(&self, team: Team, site: Hex) -> bool {
         self.cities.iter().any(|c| {
             c.team == team
                 && c.workshop
@@ -617,89 +533,14 @@ impl GameState {
         })
     }
 
-    /// Work `build` needs in `city`'s own queue: its own; half for a
-    /// building sited beside one of the side's Workshops; and for a land
+    /// Work `build` needs in `city`'s own queue: its own, and for a land
     /// troop `CITY_TRAINING_SLOWDOWN` times a Barracks' (`barracks.rs`).
-    pub(in crate::game) fn city_build_work(&self, city: usize, build: Build) -> i32 {
+    pub(in crate::game) fn city_build_work(&self, _city: usize, build: Build) -> i32 {
         match build {
             Build::Unit(unit) if !unit.unit_type().is_naval() => {
                 unit.work() * CITY_TRAINING_SLOWDOWN
             }
-            Build::Building(building) if building.is_placeable() => {
-                if self.cities[city]
-                    .planned_sites
-                    .get(&building)
-                    .is_some_and(|&site| self.beside_workshop(self.cities[city].team, site))
-                {
-                    (building.work() + 1) / 2
-                } else {
-                    building.work()
-                }
-            }
             _ => build.work(),
-        }
-    }
-
-    pub fn confirm_building(&mut self, building: Building) {
-        if !building.is_placeable() {
-            return;
-        }
-        let Some(city) = self.selected_city else {
-            return;
-        };
-        let Some(&site) = self.cities[city].planned_sites.get(&building) else {
-            self.notice = format!("CHOOSE A {} SITE ON THE MAP FIRST", building.name());
-            return;
-        };
-        if let Some(reason) = self.site_issue(city, building, site) {
-            self.notice = format!("{} SITE INVALID: {reason}", building.name());
-            return;
-        }
-        if self.cities[city].queue.first() != Some(&Build::Building(building))
-            || self.cities[city].progress < self.city_build_work(city, Build::Building(building))
-        {
-            self.notice = format!("{} IS STILL UNDER CONSTRUCTION", building.name());
-            return;
-        }
-        self.finish_building(city, building, site);
-        self.notice = format!("{} FINALIZED", building.name());
-    }
-
-    /// Puts the finished head of `city`'s queue, `building`, on `site`.
-    fn finish_building(&mut self, city: usize, building: Building, site: Hex) {
-        let c = &mut self.cities[city];
-        c.pending_building = None;
-        c.queue.remove(0);
-        c.progress = 0;
-        c.set_placed_site(building, site);
-        if building == Building::CoastalBattery {
-            c.coastal_battery_hp = 150.0;
-        }
-        c.planned_sites.remove(&building);
-        c.built.push(building);
-    }
-
-    /// The AI's buildings go up on their planned site as soon as they're
-    /// done, where the player confirms theirs: a finished one waiting at
-    /// the head of `city`'s queue is placed now (for the player's side when
-    /// the AI plans it, as the simulations do).
-    pub(in crate::game) fn confirm_ai_building(&mut self, city: usize) {
-        if let Some(building) = self.cities[city].pending_building {
-            self.place_ai_building(city, building);
-        }
-    }
-
-    /// Places `building`, finished at the head of `city`'s queue, on its
-    /// planned site, or drops it (refunded) if that site went bad.
-    fn place_ai_building(&mut self, city: usize, building: Building) {
-        match self.cities[city].planned_sites.get(&building).copied() {
-            Some(site) if self.ai_site_issue(city, building, site).is_none() => {
-                self.finish_building(city, building, site);
-            }
-            _ => {
-                self.take_queue_item(city, 0);
-                self.cities[city].planned_sites.remove(&building);
-            }
         }
     }
 
@@ -741,22 +582,6 @@ impl GameState {
                 .is_none_or(|resource| !self.barracks_deposits(city, resource).is_empty())
     }
 
-    /// Reopens placement for a queued or completed building before confirmation.
-    pub fn change_selected_building_site(&mut self, building: Building) {
-        let Some(city) = self.selected_city else {
-            return;
-        };
-        if self.cities[city].team != PLAYER_TEAM
-            || !building.is_placeable()
-            || self.cities[city].placed_site(building).is_some()
-            || !self.cities[city].planned_sites.contains_key(&building)
-        {
-            return;
-        }
-        self.placing_building = Some((city, building));
-        self.notice = format!("CHANGE {} SITE - CLICK A NEW VALID TILE", building.name());
-    }
-
     /// Completes only the active queue in the currently open structure.
     pub fn debug_complete_current_production(&mut self) {
         if self.is_resolving() {
@@ -777,16 +602,9 @@ impl GameState {
             let Some(build) = self.cities[city].queue.first().copied() else {
                 return;
             };
-            if self.cities[city].pending_building.is_some() {
-                return;
-            }
             self.cities[city].progress = self.city_build_work(city, build);
             self.complete_builds_for(Some((city, false)));
-            self.notice = if let Build::Building(building) = build
-                && self.cities[city].pending_building == Some(building)
-            {
-                format!("DEBUG: {} READY - CONFIRM ITS SITE", building.name())
-            } else if self.cities[city].queue.first() == Some(&build) {
+            self.notice = if self.cities[city].queue.first() == Some(&build) {
                 "DEBUG: PRODUCTION READY - NO OPEN SPAWN TILE".into()
             } else {
                 format!("DEBUG: {} PRODUCTION COMPLETED", build.name())
@@ -798,7 +616,6 @@ impl GameState {
         let Some(city) = self.selected_city else {
             return;
         };
-        let pending = self.cities[city].pending_building.is_some();
         let queue = &mut self.cities[city].queue;
         let other = if up {
             index.checked_sub(1)
@@ -806,10 +623,6 @@ impl GameState {
             index.checked_add(1)
         };
         if let Some(other) = other.filter(|&other| other < queue.len()) {
-            if pending && (index == 0 || other == 0) {
-                self.notice = "CONFIRM OR REMOVE THE READY BUILDING FIRST".into();
-                return;
-            }
             queue.swap(index, other);
             self.notice = "CITY QUEUE REORDERED".into();
         }
@@ -823,14 +636,6 @@ impl GameState {
             return;
         }
         let removed = self.take_queue_item(city, index);
-        if let Build::Building(building) = removed
-            && building.is_placeable()
-        {
-            if self.placing_building == Some((city, building)) {
-                self.placing_building = None;
-            }
-            self.cities[city].planned_sites.remove(&building);
-        }
         self.notice = format!("REMOVED {} FROM CITY QUEUE - REFUNDED", removed.name());
     }
 
@@ -886,32 +691,17 @@ impl GameState {
             let Some(build) = self.cities[i].queue.first().copied() else {
                 continue;
             };
-            if self.cities[i].pending_building.is_some()
-                || self.cities[i].progress < self.city_build_work(i, build)
-            {
+            if self.cities[i].progress < self.city_build_work(i, build) {
                 continue;
             }
-            if let Build::Building(building) = build {
-                match building {
-                    Building::Granary => {
-                        self.cities[i].progress = 0;
-                        self.cities[i].queue.remove(0);
-                        self.cities[i].built.push(building);
-                        self.notice = "GRANARY COMPLETE - +2 FOOD PER TURN".into();
-                    }
-                    // The AI puts a building on its planned site at once.
-                    _ if self.cities[i].team != PLAYER_TEAM => self.place_ai_building(i, building),
-                    _ => {
-                        self.cities[i].pending_building = Some(building);
-                        // Placement starts here only in the open city (F9);
-                        // a turn's completion leaves it for when the city is
-                        // next opened (`open_city`).
-                        if self.selected_city == Some(i) && self.needs_site(i, building) {
-                            self.placing_building = Some((i, building));
-                        }
-                        self.notice =
-                            format!("{} COMPLETE - CHOOSE A SITE, THEN CONFIRM", building.name());
-                    }
+            if build == Build::Gather {
+                let c = &mut self.cities[i];
+                c.progress -= build.work();
+                c.queue.remove(0);
+                let (team, id) = (c.team, c.id);
+                *self.stock_mut(team) += GATHER_YIELD;
+                if team == PLAYER_TEAM {
+                    self.notice = format!("CITY {} GATHERED {}", id + 1, stock_icons(GATHER_YIELD));
                 }
                 continue;
             }
@@ -921,7 +711,9 @@ impl GameState {
                 self.cities[i].workers += 1;
                 log::info!("{:?} city completed a worker", self.cities[i].team);
                 if self.cities[i].team == PLAYER_TEAM {
-                    self.notice = "WORKER READY - PRESS W TO GIVE IT A JOB".into();
+                    self.notice =
+                        "WORKER READY - PLACE ROADS, IMPROVEMENTS AND BUILDINGS FROM THE CITY"
+                            .into();
                 }
                 continue;
             }

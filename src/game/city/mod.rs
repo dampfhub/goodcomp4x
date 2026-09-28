@@ -27,7 +27,7 @@ use super::{GameState, PLAYER_TEAM};
 
 pub(in crate::game) use barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 pub use builds::{Build, BuildUnit, Building};
-pub(in crate::game) use builds::{GROW_SHORTCUT, WORKER_SHORTCUT};
+pub(in crate::game) use builds::{GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, WORKER_SHORTCUT};
 pub use economy::Stock;
 pub(in crate::game) use economy::{
     FOOD_PER_CITIZEN, STARTING_STOCK, resource_icon, stock_icons, stock_words, turns_icon,
@@ -46,14 +46,18 @@ pub(super) const BARRACKS_DEFENSE: f32 = 25.0;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LaborFocus {
     Food,
-    Production,
+    Wood,
+    Metal,
     Balanced,
 }
 impl LaborFocus {
+    pub const ALL: [Self; 4] = [Self::Food, Self::Wood, Self::Metal, Self::Balanced];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Food => "FOOD",
-            Self::Production => "PRODUCTION",
+            Self::Wood => "WOOD",
+            Self::Metal => "METAL",
             Self::Balanced => "BALANCED",
         }
     }
@@ -86,8 +90,6 @@ pub(super) struct City {
     pub extra_buildings: HashMap<Building, Hex>,
     /// Scroll position in the city tray's building list.
     pub building_scroll: usize,
-    pub pending_building: Option<Building>,
-    pub planned_sites: HashMap<Building, Hex>,
     /// The Barracks' own queue, independent of the city's main queue; it
     /// advances only while the manager stands on the Barracks.
     pub barracks_queue: Vec<BuildUnit>,
@@ -96,11 +98,9 @@ pub(super) struct City {
     pub interior: Interior,
     /// Workers at home, safe and off the map (`workers.rs`).
     pub workers: u32,
-    /// Jobs waiting for a worker, first to go first.
+    /// What the city placed on the map, waiting for a worker, first to go
+    /// first (`workers.rs`).
     pub worker_jobs: Vec<WorkerJob>,
-    /// The player let the workers at home rest this turn (Sleep in the
-    /// worker menu), so they don't wait for orders until the next.
-    pub workers_resting: bool,
 }
 
 impl City {
@@ -124,20 +124,16 @@ impl City {
             workshop: None,
             extra_buildings: HashMap::new(),
             building_scroll: 0,
-            pending_building: None,
-            planned_sites: HashMap::new(),
             barracks_queue: Vec::new(),
             barracks_progress: 0,
             interior: Interior::default(),
             workers: 1,
             worker_jobs: Vec::new(),
-            workers_resting: false,
         }
     }
 
     pub fn placed_site(&self, building: Building) -> Option<Hex> {
         match building {
-            Building::Granary => None,
             Building::Barracks => self.barracks,
             Building::Mill => self.mill,
             Building::Workshop => self.workshop,
@@ -145,9 +141,8 @@ impl City {
         }
     }
 
-    fn set_placed_site(&mut self, building: Building, site: Hex) {
+    pub(in crate::game) fn set_placed_site(&mut self, building: Building, site: Hex) {
         match building {
-            Building::Granary => unreachable!(),
             Building::Barracks => {
                 self.barracks = Some(site);
                 self.barracks_hp = BARRACKS_MAX_HP;

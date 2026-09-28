@@ -154,23 +154,11 @@ impl Setting {
     /// What it does, for its tooltip.
     pub fn description(self) -> &'static str {
         match self {
-            Setting::TurnPlayback => {
-                "ON: A TURN PLAYS OUT ALL AT ONCE. OFF: ONE STEP AT A TIME. THE OUTCOME IS \
-                 THE SAME. F8 SWITCHES IT TOO."
-            }
-            Setting::MaxQueuedTurns => {
-                "THE MOST TURNS A UNIT CAN HAVE QUEUED, THIS ONE INCLUDED. SHIFT-CLICKING A HEX \
-                 FARTHER AWAY QUEUES THE MOVE AS FAR AS THE LIMIT GOES."
-            }
-            Setting::FogStyle => "HOW UNEXPLORED LAND IS HIDDEN: UNDER CLOUDS, OR A FLAT GREY.",
-            Setting::WorldAi => {
-                "HOW MANY AI PLAYERS THE NEXT WORLD (F4) HAS. THE MAP GROWS WITH THEM. BY MAP \
-                 PICKS 4 TO 6 FROM THE MAP'S SEED."
-            }
-            Setting::WorldStart => {
-                "WHETHER EVERY SIDE IN THE NEXT WORLD (F4) STARTS WITH ITS CITY, OR A SETTLER \
-                 TO FOUND IT WITH."
-            }
+            Setting::TurnPlayback => "PLAY EACH TURN OUT AT ONCE (F8).",
+            Setting::MaxQueuedTurns => "THE MOST TURNS A UNIT CAN QUEUE.",
+            Setting::FogStyle => "CLOUDS OR FLAT GREY OVER UNEXPLORED LAND.",
+            Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4).",
+            Setting::WorldStart => "START THE NEXT WORLD (F4) WITH A CITY OR A SETTLER.",
         }
     }
 
@@ -282,17 +270,15 @@ impl GameState {
     }
 
     /// A press of Escape. It closes one thing, in this order: the settings
-    /// menu, then a city view, interior or site being chosen
-    /// (`exit_structure_menu`), then a worker job being placed, then the
-    /// worker menu, then the selection (`clear_selection`).
+    /// menu, then something being placed from a city, then a city view or
+    /// interior (`exit_structure_menu`), then the selection
+    /// (`clear_selection`).
     /// With nothing to close it opens the settings menu, which has the Quit
     /// button.
     pub fn press_escape(&mut self) {
         if self.settings_open {
             self.settings_open = false;
         } else if self.exit_structure_menu() {
-        } else if self.worker_mode && self.placing_job.is_none() {
-            self.set_worker_mode(false);
         } else if !self.clear_selection() {
             self.settings_open = true;
         }

@@ -73,9 +73,6 @@ impl GameState {
 
     /// Selects `units`: nothing, one unit as usual, or several as a group.
     pub(super) fn set_selection(&mut self, units: Vec<usize>) {
-        if !units.is_empty() {
-            self.worker_mode = false;
-        }
         self.ui_click_mode = None;
         if !units.is_empty() {
             self.leave_city_view();

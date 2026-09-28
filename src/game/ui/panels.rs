@@ -86,7 +86,7 @@ impl GameState {
         let can_complete = if let Some(city) = self.selected_barracks {
             !self.cities[city].barracks_queue.is_empty()
         } else if let Some(city) = self.selected_city {
-            !self.cities[city].queue.is_empty() && self.cities[city].pending_building.is_none()
+            !self.cities[city].queue.is_empty()
         } else {
             false
         };
@@ -210,7 +210,7 @@ impl GameState {
             state: if self.is_resolving() {
                 ButtonState::Disabled
             } else {
-                ButtonState::new(pending == (0, 0, 0), false)
+                ButtonState::new(pending == (0, 0), false)
             },
             armed: false,
             faded: false,

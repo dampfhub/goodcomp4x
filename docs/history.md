@@ -203,3 +203,30 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     flat, one color each, and ImGui draws them unfeathered so they stay crisp at text size. The city's
     building list shows each name on the left and its price flush right, so the prices line up
     (the key is in the tooltip).
+60. Map and citizen fixes (`claude/map-yield-fixes`): no citizen works a city center (its yield
+    comes on its own) or a placed building's tile, whose yields no longer show. A picked-up
+    manager takes its workers off the map until it's placed. The worker menu shows its city's
+    yields and delivery percentages with yields on, and the percentages with Alt otherwise; a
+    job's name moves under a tile's percentage instead of over it. Remembered hexes beside
+    never-seen ones no longer darken twice at their shared corners. Buttons no longer show their
+    hotkey on hover (it's in the tooltip), so hovering never moves their text. With production
+    speeding builds, the manager beside the Barracks (not on it) speeds its training.
+61. Workers build what a city places (`claude/city-builds-by-workers`, `rts-economy.md`): the
+    worker menu is gone. A city's production list has WORKS (road, improve, wall, gate, outpost,
+    fort) beside its units and buildings; picking one, or a building with a site, places it on the
+    map within workers' reach, paid then and refunded if taken off, and a worker from the city
+    walks out and builds it. A city needs a worker to place anything. Buildings with a site no
+    longer go through the city queue, a site, and Confirm, and a Workshop halves a neighbor's
+    work. Idle workers no longer hold up the turn, and the AI's Barracks is built the same way.
+62. Shorter tooltips (`claude/city-builds-by-workers`): every button, tile and setting tooltip says
+    what the thing does, its price and turns, and why it's unavailable, and no more; building and
+    work descriptions are cut to a line.
+63. Gather, and no Granary (`claude/city-builds-by-workers`): a city can always Gather, a free
+    one-turn build that brings in 2 food, 2 wood and 1 metal, so a broke city still has a move and
+    an empty queue always waits for one. The Granary, the last building built in the city queue,
+    is gone; every building is now placed for workers. The AI gathers when it can't pay.
+64. A focus per resource, and crisp silhouettes (`claude/city-builds-by-workers`): the labor focus
+    is Food, Wood, Metal or Balanced (food until the citizens are fed, then wood and metal),
+    picking tiles by what they deliver of each; its buttons are a wheat ear, a log, an ingot and a
+    balance. ImGui draws every small silhouette (toolbar icons, the production list's unit
+    pictograms, text icons) unfeathered, so they're crisp instead of fuzzy and seamed.

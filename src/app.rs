@@ -837,7 +837,6 @@ impl ApplicationHandler for App {
                     KeyCode::KeyX => self.game.choose_attack_action(),
                     KeyCode::KeyR => self.game.arm_worker_job(crate::game::JobKind::Road),
                     KeyCode::KeyI => self.game.arm_worker_job(crate::game::JobKind::Improve),
-                    KeyCode::KeyW => self.game.toggle_worker_mode(),
                     KeyCode::KeyF => self.game.found_city_selected(),
                     KeyCode::Digit1 => self
                         .game
@@ -848,9 +847,6 @@ impl ApplicationHandler for App {
                     KeyCode::Digit3 => self
                         .game
                         .queue_selected_city_unit(crate::game::BuildUnit::Siege),
-                    KeyCode::Digit4 => self
-                        .game
-                        .queue_selected_city_building(crate::game::Building::Granary),
                     KeyCode::Digit5 => self
                         .game
                         .queue_selected_city_building(crate::game::Building::Barracks),
@@ -865,6 +861,7 @@ impl ApplicationHandler for App {
                     }
                     KeyCode::Digit8 => self.game.queue_selected_city_worker(),
                     KeyCode::Digit9 => self.game.queue_selected_city_growth(),
+                    KeyCode::Digit0 => self.game.queue_selected_city_gather(),
                     KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
                     KeyCode::Delete => self.game.disband_selected(),
                     KeyCode::PageDown => self.game.move_selected_city_queue_head(false),

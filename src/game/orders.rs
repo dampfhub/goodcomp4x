@@ -98,12 +98,6 @@ impl GameState {
         if self.paint_job_at(cursor, screen_size, false) {
             return;
         }
-        // In the worker menu, clicks place the armed job (`paint_job_at`,
-        // above); with none armed, they do nothing.
-        if self.worker_mode {
-            self.notice = "PICK A JOB TO PLACE FROM THE WORKER MENU - W WHEN DONE".into();
-            return;
-        }
         let armed = self.ui_click_mode.take();
         let mode = match (mode, armed) {
             (ClickMode::Normal, Some(armed)) => armed,
@@ -115,26 +109,6 @@ impl GameState {
             self.leave_city_view();
             return;
         };
-
-        // The preview badge is smaller than the hex. On a worked tile its
-        // center picks up the planned building; the rest remains available
-        // for manager and citizen clicks.
-        if mode == ClickMode::Normal
-            && let Some(city) = self.selected_city
-            && self.site_placement().is_none()
-            && self.moving_manager.is_none()
-            && self
-                .camera
-                .screen_to_world(cursor, screen_size)
-                .distance(hex.to_world())
-                <= 0.34
-            && let Some(building) = super::city::Building::PLACEABLE
-                .into_iter()
-                .find(|building| self.cities[city].planned_sites.get(building) == Some(&hex))
-        {
-            self.change_selected_building_site(building);
-            return;
-        }
 
         if self.city_click(hex) {
             return;
@@ -220,7 +194,7 @@ impl GameState {
         }
         let Some(selected) = self.selected else {
             // With nothing selected, a click selects your unit there, if any.
-            // Workers are given jobs from the worker menu (W).
+            // Workers are given jobs from their city's production list.
             self.selected = ally;
             return;
         };
@@ -303,10 +277,10 @@ impl GameState {
     /// or group. Returns whether there was
     /// anything to let go of.
     pub fn clear_selection(&mut self) -> bool {
-        // A worker job being placed stops first, leaving the worker menu open.
-        if self.placing_job.take().is_some() {
+        // Something being placed for a city's workers stops first.
+        if let Some(kind) = self.placing_job.take() {
             self.hovered_job = None;
-            self.notice = "STOPPED PLACING - PICK ANOTHER JOB, OR W WHEN DONE".into();
+            self.notice = format!("STOPPED PLACING {}", kind.name());
             return true;
         }
         let had = self.selected.is_some() || !self.group.is_empty();
@@ -322,18 +296,13 @@ impl GameState {
         if self.is_resolving() {
             return;
         }
-        // In the worker menu: the workers there rest, and the turn moves on.
-        if self.worker_mode {
-            self.sleep_workers();
-            return;
-        }
         if !self.group.is_empty() {
             self.hold_group();
             return;
         }
         let selected_needs_orders = self.selected.is_some_and(|idx| self.needs_orders(idx));
         let selected_holding = self.selected.is_some_and(|idx| self.units[idx].holding);
-        if selected_needs_orders || selected_holding || self.pending() != (0, 0, 0) {
+        if selected_needs_orders || selected_holding || self.pending() != (0, 0) {
             self.hold_selected_unit();
         } else {
             self.end_planning();
@@ -417,17 +386,14 @@ impl GameState {
     /// How many of the player's units still need orders, and how many of
     /// their cities still need something to build. The turn can't end until
     /// both are zero; assigning citizens never holds it up.
-    pub(super) fn pending(&self) -> (usize, usize, usize) {
+    pub(super) fn pending(&self) -> (usize, usize) {
         let units = (0..self.units.len())
             .filter(|&i| self.is_player_controlled(i) && self.needs_orders(i))
             .count();
         let cities = (0..self.cities.len())
             .filter(|&i| self.city_needs_build(i))
             .count();
-        let workers = (0..self.cities.len())
-            .map(|i| self.idle_workers(i) as usize)
-            .sum();
-        (units, cities, workers)
+        (units, cities)
     }
 
     /// Tab: selects the next unit that still needs orders, or just the next
@@ -458,12 +424,9 @@ impl GameState {
     /// `after` that still needs orders (`next_unit_needing_orders`). With
     /// neither, clears the selection and waits for the player to end the turn.
     pub(super) fn select_next_or_end_turn(&mut self, after: Option<usize>) {
-        // In the turn strip's order: production first, then idle workers,
-        // then the units.
+        // In the turn strip's order: production first, then the units.
         if let Some(city) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
             self.open_city(city);
-        } else if let Some(city) = self.next_idle_workers() {
-            self.open_worker_menu(city);
         } else if let Some(next) = self.next_unit_needing_orders(after) {
             self.select_and_focus(Some(next));
         } else {
@@ -474,9 +437,6 @@ impl GameState {
     /// Selects `idx` and glides the camera to it. Used when the game picks the
     /// unit, not when the player clicks one they can already see.
     fn select_and_focus(&mut self, idx: Option<usize>) {
-        if idx.is_some() {
-            self.worker_mode = false;
-        }
         self.selected = idx;
         self.group.clear();
         self.ui_click_mode = None;
@@ -804,6 +764,7 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::JobKind;
     use crate::game::city::Building;
     use crate::game::unit::Team;
 
@@ -907,23 +868,23 @@ mod tests {
         g.cities[0].barracks = Some(Hex::new(-1, 0));
         g.open_barracks(0);
         g.moving_manager = Some(0);
-        g.placing_building = Some((0, Building::Barracks));
+        g.placing_job = Some(JobKind::Road);
         g.select_next_unit();
         assert_eq!(g.selected_barracks, None);
         assert_eq!(g.selected_city, None);
         assert_eq!(g.moving_manager, None);
-        assert_eq!(g.placing_building, None);
+        assert_eq!(g.placing_job, None);
         assert!(g.selected.is_some(), "Tab still moves on to a unit");
     }
 
     #[test]
-    fn tab_from_the_city_view_drops_a_building_site_preview() {
+    fn tab_from_the_city_view_stops_placing_a_building() {
         let mut g = GameState::city_scenario();
         g.open_city(0);
         g.queue_selected_city_building(Building::Barracks);
-        assert!(g.placing_building.is_some());
+        assert_eq!(g.placing_job, Some(JobKind::Build(Building::Barracks)));
         g.select_next_unit();
         assert_eq!(g.selected_city, None);
-        assert_eq!(g.placing_building, None);
+        assert_eq!(g.placing_job, None);
     }
 }

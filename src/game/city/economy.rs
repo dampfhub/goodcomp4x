@@ -246,7 +246,6 @@ impl GameState {
         let removed = c.queue.remove(index);
         if index == 0 {
             c.progress = 0;
-            c.pending_building = None;
         }
         removed
     }
@@ -283,20 +282,6 @@ impl GameState {
         removed
     }
 
-    /// Whether `city`'s side can pay for one of the basic builds every city
-    /// can start: a Melee, Ranged or Worker, or a Grow while there's room.
-    pub(in crate::game) fn can_afford_a_build(&self, city: usize) -> bool {
-        let stock = self.stock(self.cities[city].team);
-        [
-            Build::Unit(BuildUnit::Melee),
-            Build::Unit(BuildUnit::Ranged),
-            Build::Worker,
-        ]
-        .into_iter()
-        .chain(self.can_grow(city).then_some(Build::Grow))
-        .any(|build| stock.covers(self.queue_price(city, build)))
-    }
-
     /// Debug panel: switches between fixed build times and production
     /// speeding builds (`work_rate`).
     pub fn toggle_production_speedup(&mut self) {
@@ -319,8 +304,8 @@ impl GameState {
         }
     }
 
-    /// Turns until the head of `city`'s queue is done at this turn's rate:
-    /// 0 for a building waiting to be confirmed, `None` with nothing queued.
+    /// Turns until the head of `city`'s queue is done at this turn's rate,
+    /// `None` with nothing queued.
     pub(in crate::game) fn turns_left(&self, city: usize) -> Option<i32> {
         let c = &self.cities[city];
         let build = *c.queue.first()?;

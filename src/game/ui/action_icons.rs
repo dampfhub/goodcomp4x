@@ -27,7 +27,8 @@ pub(super) enum ActionIcon {
     Disband,
     Settle,
     Food,
-    Production,
+    Wood,
+    Metal,
     Balanced,
 }
 
@@ -50,7 +51,8 @@ pub(super) fn for_button(target: Target, label: &str) -> Option<ActionIcon> {
             _ => return None,
         },
         Target::Focus(LaborFocus::Food) => ActionIcon::Food,
-        Target::Focus(LaborFocus::Production) => ActionIcon::Production,
+        Target::Focus(LaborFocus::Wood) => ActionIcon::Wood,
+        Target::Focus(LaborFocus::Metal) => ActionIcon::Metal,
         Target::Focus(LaborFocus::Balanced) => ActionIcon::Balanced,
         _ => return None,
     })
@@ -154,65 +156,64 @@ pub(super) fn push_icon(
             line(out, (0.17, -0.40), (0.17, 0.29), 0.10);
         }
         ActionIcon::Food => food(center, radius, color, out),
-        ActionIcon::Production => production(center, radius, color, out),
+        ActionIcon::Wood => {
+            // A log, leaning right, with rounded ends.
+            let (a, b) = (Vec2::new(-0.5, -0.45), Vec2::new(0.5, 0.45));
+            let width = 0.38 * radius;
+            mesh::segment(center + a * radius, center + b * radius, width, color, out);
+            for end in [a, b] {
+                mesh::regular_polygon(center + end * radius, width / 2.0, 12, 0.0, color, out);
+            }
+        }
+        ActionIcon::Metal => {
+            // An ingot, side on.
+            let bar = [(-0.72, -0.34), (0.72, -0.34), (0.48, 0.34), (-0.48, 0.34)]
+                .map(|(x, y)| center + Vec2::new(x, y) * radius);
+            mesh::polygon(&bar, color, out);
+        }
         ActionIcon::Balanced => {
-            food(
-                center + Vec2::new(-0.38 * radius, 0.0),
-                radius * 0.62,
-                color,
-                out,
-            );
-            production(
-                center + Vec2::new(0.38 * radius, 0.0),
-                radius * 0.62,
-                color,
-                out,
-            );
+            // A balance: post and base, beam, and a pan hanging from each end.
+            line(out, (0.0, -0.62), (0.0, 0.5), 0.12);
+            rect(out, (-0.34, -0.72), (0.34, -0.6));
+            line(out, (-0.72, 0.46), (0.72, 0.46), 0.1);
+            for side in [-1.0_f32, 1.0] {
+                let x = 0.62 * side;
+                line(out, (x, 0.46), (x - 0.2, -0.02), 0.06);
+                line(out, (x, 0.46), (x + 0.2, -0.02), 0.06);
+                let pan: Vec<Vec2> = (0..=8)
+                    .map(|i| {
+                        let angle = std::f32::consts::PI * (1.0 + i as f32 / 8.0);
+                        center + Vec2::new(x + 0.28 * angle.cos(), 0.16 * angle.sin()) * radius
+                    })
+                    .collect();
+                mesh::polygon(&pan, color, out);
+            }
         }
     }
 }
 
+/// A wheat ear: a stem and rounded kernels leaning out from it.
 fn food(center: Vec2, r: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
-    mesh::segment(
-        center + Vec2::new(0.0, -0.75) * r,
-        center + Vec2::new(0.0, 0.75) * r,
-        0.13 * r,
-        color,
-        out,
-    );
-    for y in [-0.32_f32, 0.0, 0.32] {
-        mesh::segment(
-            center + Vec2::new(0.0, y - 0.18) * r,
-            center + Vec2::new(-0.46, y + 0.12) * r,
-            0.17 * r,
-            color,
-            out,
-        );
-        mesh::segment(
-            center + Vec2::new(0.0, y - 0.18) * r,
-            center + Vec2::new(0.46, y + 0.12) * r,
-            0.17 * r,
-            color,
-            out,
-        );
+    let at = |x: f32, y: f32| center + Vec2::new(x, y) * r;
+    let stem_width = 0.12 * r;
+    mesh::segment(at(0.0, -0.78), at(0.0, 0.2), stem_width, color, out);
+    mesh::regular_polygon(at(0.0, -0.78), stem_width / 2.0, 8, 0.0, color, out);
+    let kernel = |x: f32, y: f32, degrees: f32, out: &mut Vec<Vertex>| {
+        let turn = Vec2::from_angle(degrees.to_radians());
+        let points: Vec<Vec2> = (0..12)
+            .map(|i| {
+                let angle = std::f32::consts::TAU * i as f32 / 12.0;
+                at(x, y) + turn.rotate(Vec2::new(0.13 * angle.cos(), 0.24 * angle.sin())) * r
+            })
+            .collect();
+        mesh::polygon(&points, color, out);
+    };
+    for y in [-0.26_f32, 0.16] {
+        for side in [-1.0_f32, 1.0] {
+            kernel(0.3 * side, y, -32.0 * side, out);
+        }
     }
-}
-
-fn production(center: Vec2, r: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
-    mesh::segment(
-        center + Vec2::new(-0.54, -0.66) * r,
-        center + Vec2::new(0.38, 0.37) * r,
-        0.17 * r,
-        color,
-        out,
-    );
-    mesh::segment(
-        center + Vec2::new(-0.08, 0.49) * r,
-        center + Vec2::new(0.42, 0.02) * r,
-        0.40 * r,
-        color,
-        out,
-    );
+    kernel(0.0, 0.56, 0.0, out);
 }
 
 /// City-production card pictogram, shared by both UI presentations.
@@ -252,7 +253,8 @@ mod tests {
             ActionIcon::Disband,
             ActionIcon::Settle,
             ActionIcon::Food,
-            ActionIcon::Production,
+            ActionIcon::Wood,
+            ActionIcon::Metal,
             ActionIcon::Balanced,
         ] {
             let mut vertices = Vec::new();

@@ -26,8 +26,8 @@ playback (F8, or Instant Playback in the settings menu; on by default) resolves 
 turn at once, in the same order, so outcomes don't change. Fog of war (F10) is on by default.
 Both settings, and every other player setting (`settings.rs`), survive switches and loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
 seed, and has FINISH BUILD (F9), which finishes the open city's or barracks' current
-build at once: a unit appears if a neighboring hex is open, and a placed building
-still needs its site and Confirm. Two toggles try the economy experiment's alternatives, both
+build at once: a unit appears if a neighboring hex is open. (Buildings with a site are built by
+workers, not the queue.) Two toggles try the economy experiment's alternatives, both
 off by default and surviving switches and loads: PROD SPEEDUP, beside fog, where production
 speeds builds (see Cities), and UNIT CAP, beside Finish Build, whether the Cavalry and Armored
 cap counts those ALIVE (the default) or every one EVER trained (see Barracks).
@@ -228,13 +228,12 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   mountains or, for land troops, water. Ships instead move through water only. Two allies can't head for the same hex.
 - A connected Railhead adds its tile as a distant, one-turn move for troops at their city center
   or in its adjacent ring. The move still resolves with normal occupancy and collision rules.
-- **Ending the turn:** `pending()` counts player units that still need orders, player cities
-  with nothing queued, and idle workers; citizen assignments never count. Space selects what is
-  still waiting (a city needing a build, then idle workers in the worker menu, where Space lets
-  them sleep, then a unit, settlers first, as the turn strip lists them) and ends the turn once
-  nothing is. A unit done with its orders moves on the same way, and so does the start of every
-  turn and of a new world. The End Turn button (`end_planning`) holds every unfinished unit,
-  rests idle workers, opens a city if one still needs a build, and otherwise ends the turn.
+- **Ending the turn:** `pending()` counts player units that still need orders and player cities
+  with nothing queued; citizen assignments and idle workers never count. Space selects what is
+  still waiting (a city needing a build, then a unit, settlers first, as the turn strip lists
+  them) and ends the turn once nothing is. A unit done with its orders moves on the same way, and
+  so does the start of every turn and of a new world. The End Turn button (`end_planning`) holds
+  every unfinished unit, opens a city if one still needs a build, and otherwise ends the turn.
   Input, including UI clicks, is ignored while a turn plays out.
 
 ## Order queues (`order_queue.rs`)
@@ -347,8 +346,7 @@ Everyone in a step acts simultaneously:
   Ctrl-right-click does).
 - The turn strip (`ui/roster.rs`, a panel starting at the bottom center) lists what the
   player still has to see to this turn, civilian tasks first: cities with an empty queue,
-  cities with idle workers (opening the worker menu), settlers, then military units needing
-  orders.
+  settlers, then military units needing orders.
   Units are grouped by kind (settlers apart), each group in the order its first unit comes in
   unit order, with a count. Clicking a city's chip opens it. Clicking a group selects all its
   units and moves the camera to the first, and while any of them is selected, a second row
@@ -447,8 +445,10 @@ every turn end.
 - **Founding:** F with a selected settler, at least 3 hexes from any other city; the new city
   starts at population 1, auto-assigns and opens. The AI founds a city in place, at the start of
   any resolution where it has a settler and no city, without the 3-hex rule.
-- **Yields:** the city center gives 2 food and 1 wood; each worked tile gives its food, wood and
-  metal (see Goods) times its delivery share. Improvements (built by workers, see Workers): a mine on
+- **Yields:** the city center gives 2 food and 1 wood on its own; each worked tile gives its
+  food, wood and metal (see Goods) times its delivery share. No citizen works a city center or a
+  tile a placed building stands on (`closed_to_citizens`): such a tile can't be assigned or take
+  the manager, and a citizen already there moves off. Improvements (built by workers, see Workers): a mine on
   hills (+2 production), a lumber mill under forest or jungle (+1 production), otherwise a farm (+2
   food); snow can't be improved. The Cities scenario's preplaced farms (4/0), mines (0/4) and
   pastures (3/1) have fixed yields.
@@ -459,12 +459,13 @@ every turn end.
   used.
 - **Manager and workers:** population is at most 7: the manager (the first worked tile, ringed in
   gold and marked `M`, which must be land) plus up to six workers, each adjacent to the manager.
-  No citizen can work a city center, and a worked tile belongs to only one city. To move the
-  manager, click it to pick it up, then click its destination; workers keep their offsets where
-  they can and are otherwise replaced by the best nearby tiles.
-- **Citizens:** click tiles to assign or release; A auto-assigns by the city's labor focus (Food,
-  Production, or Balanced, which picks food tiles until the city's food income covers upkeep plus
-  1, then production). Setting a focus
+  A worked tile belongs to only one city. To move the
+  manager, click it to pick it up (its workers leave the map with it), then click its
+  destination; workers keep their offsets where they can and are otherwise replaced by the best
+  nearby tiles. Clicking the manager again puts it and its workers back.
+- **Citizens:** click tiles to assign or release; A auto-assigns by the city's labor focus: Food,
+  Wood or Metal, each favoring tiles that deliver the most of it, or Balanced (the default), which
+  picks food tiles until the city's food income covers upkeep plus 1, then wood and metal alike. Setting a focus
   re-assigns. On growth or route disruption, reconciliation keeps valid manual assignments and
   fills or replaces the affected slot; a manual tile cut off by an enemy is remembered and returns
   when the route reopens, unless you changed it.
@@ -484,45 +485,44 @@ every turn end.
   queues and a destroyed Barracks' queue are lost, unrefunded. Each build then takes a fixed
   number of turns at the head of its queue: the queue's progress gains a turn's work each
   economy, and resets to 0 on an empty queue, when the first item is queued, and when the head
-  is removed. Reordering keeps the progress, so it moves to the new head; a finished building
-  waiting for Confirm locks the head in place. Drag a row to reorder, click its X to remove;
+  is removed. Reordering keeps the progress, so it moves to the new head. Drag a row to reorder, click its X to remove;
   Backspace removes the head and PageDown swaps the first two. A city finishes at most one item
   a turn. A finished unit appears on an open neighboring hex (not one another unit is appearing on
   that turn). With no hex open, the city holds the unit until one opens, and banks no work for the
-  rest of the queue meanwhile. A player city with an empty queue holds up the turn while its
-  side can pay for a Melee, Ranged, Worker or Grow.
+  rest of the queue meanwhile. A player city with an empty queue holds up the turn, since it can
+  always Gather.
+- **Gather** (0, or its card beside Grow): free, one turn; when it's done, the side's stockpile
+  gets 2 food, 2 wood and 1 metal. A city that can't pay for anything, or has nothing it wants,
+  gathers instead of standing idle.
 - **Production speeds builds** (the Debug panel's PROD SPEEDUP, off by default): a city's queue
   also gains a quarter turn of work a turn for each point of production (wood and metal) the city
   delivers, and a Barracks for each point delivered to it; the stockpile still gets those goods.
 - **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 2/6/0, 2; Ranged
   2/7/0, 2; Cavalry 3/4/3, 3; Siege 1/8/4, 3; Armored 3/2/7, 3; Patrol Galley 1/10/2, 3; Landing
-  Craft 1/12/2, 4; Bombard Ship 1/12/6, 4; Worker 4/2/0, 2; Grow as above, 2. A city center
+  Craft 1/12/2, 4; Bombard Ship 1/12/6, 4; Worker 4/2/0, 2; Grow as above, 2; Gather free, 1. A city center
   trains land troops at half a Barracks' pace (twice the turns: a Melee takes 4); ships, which
-  only a city with a Harbor builds, take their own turns. Granary 0/8/0, 3; Barracks 0/10/0,
+  only a city with a Harbor builds, take their own turns. Barracks 0/10/0,
   3; Mill, Canoe House and Watchpost 0/10/0, 3; Workshop 0/10/4, 4; Forge 0/6/8, 4; Stable
   2/12/0, 4; Field Hospital 4/10/4, 4; Cannery 0/12/4, 4; Work Camp 2/10/2, 3; Smelter 0/8/8, 4;
   Railhead 0/12/12, 5; Harbor 0/14/0, 4; Coastal Battery 0/8/10, 4. Cards, tooltips, queue rows
   and notices show a price as each resource's icon and amount (the map's wheat, log and ingot)
   and the turns after a clock icon. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue
-  Cavalry or Armored), 4-7 Granary, Barracks, Mill, Workshop, 8 a Worker and 9 a Grow. The other
-  buildings use the city's scrollable building list.
-  One of each building per city.
+  Cavalry or Armored), 5-7 pick a Barracks, Mill or Workshop to place, 8 a Worker, 9 a Grow
+  and 0 a Gather. The rest are in the city's scrollable production list. One of each building per
+  city.
 - **Buildings:**
-  - **Granary:** +2 food per turn. Completes when its turns are done.
-  - **All buildings except Granary** stand on a site: queuing one starts site selection (passable land
-    you have explored, not a city, building or other planned site). Site selection belongs to the
-    open city. Stopping it before a site is chosen (Escape, leaving the view, opening another
-    view, ending the turn) takes the building back out of the queue; End Turn then asks for
-    something to build if that left the city with nothing. An invalid site click explains
-    the first unmet requirement (such as Horses for a Stable, Iron for a Forge, or a riverbank
-    for a Canoe House) and keeps site selection active. One that finished without a site (an
-    old save's queue, say) keeps its card live and starts selection when its city is next
-    opened. Click the site's map badge to move it. When its turns are done, the building waits (blocking the queue) until you click Confirm in
-    the tray. Completing any building resets the queue's progress to 0.
+  - **Every building** stands on a site, and the city's workers build them there
+    like any other job (see Workers): its card picks it to place, a click on a lit tile within
+    workers' reach places it (passable land you have explored, not a city, building or
+    structure, and no other job on the tile), paying its price then, and a worker walks out
+    and builds it over its turns. It never enters the city queue. A site click that breaks a
+    building's own rule explains it (such as Horses for a Stable, Iron for a Forge, or a riverbank
+    for a Canoe House) and keeps it picked. One placed can't be placed again until it's done or
+    taken off the city's job list (refunded).
   - **Barracks** (`city/barracks.rs`): the side's military building. Its own view and queue
     (Melee, Ranged, Cavalry, Siege, Armored), paid from the stockpile like the city's, training
     twice as fast as a city center, wherever the city's manager is (with production speeding
-    builds, the manager on the barracks adds its worked tiles' production, times their delivery
+    builds, the manager beside the barracks adds its worked tiles' production, times their delivery
     share from the barracks). Only a Barracks trains Cavalry and Armored, and only one drawing
     on a deposit: Horses or Iron under it, or on or beside a Stable or Forge next to it. Each
     deposit a side's Barracks draw on allows 3 of that troop, counting those alive and queued, so
@@ -533,8 +533,8 @@ every turn end.
     ruins don't count. A unit appears next to the barracks (never on a worker out on the map),
     and the progress resets after each.
   - **Mill:** worked tiles adjacent to it deliver all their food, if they can reach the city.
-  - **Workshop:** a building planned on a site adjacent to a workshop takes half its turns (its
-    price is unchanged). Moving it away before confirmation restores the full time.
+  - **Workshop:** a building placed on a site adjacent to one of its side's workshops takes its
+    worker half the turns (rounded up; its price is unchanged).
   - **Canoe House:** must stand on a riverbank. Connected riverbank hexes act like roads for
     friendly delivery routes (cost 1 between banks); walls, enemy occupation and the 8-cost
     delivery limit still apply. This can bring several remote tiles into a city's reach at once.
@@ -582,37 +582,39 @@ every turn end.
   city starts with one; the city queue builds more (8, for 4 food and 2 wood). A tag on each of your cities counts the
   workers at home. A connected Work Camp can be the departure and return point for nearby jobs;
   the worker returns to the same city pool.
-- **Worker menu** (W, the Workers chip in the turn strip, or Worker Jobs in the city panel): the
-  only way to give workers orders. It lights the tiles workers can reach and dims the rest. Pick
-  a job with its button (or R for roads, I for improvements), then place it: click or drag over
-  tiles, or along hex edges for walls and gates. A ring under the cursor shows where a tile job
-  would go (red where it can't); the job stays picked for more until Escape, a right-click or
-  another pick. The menu lists one city's workers (click one to show it on the map; Recall
-  beside it) and waiting jobs (click to show on the map, drag to reorder, X to remove), with a
-  button per city when you have several, and has Sleep (below) and Done.
-- **Jobs:** a job goes to the nearest city, and waits in its worker list. A job a worker is out
+- **Placing** (`workers.rs`): everything a worker builds is placed from its city's production
+  list, under WORKS (Road, Improve, Wall, Gate, Outpost, Fort; R and I pick roads and
+  improvements) and BUILDINGS (those with a site). A city needs a worker, at home or out, to place
+  anything, and its side must pay the price, taken when placed: Road 0/2/0, Improve 0/4/0, Wall
+  0/3/0, Gate 0/3/2, Outpost 0/6/0, Fort 0/8/4 (food / wood / metal), and a building its own
+  price. Picking one lights the tiles workers can reach and dims the rest; then click or drag
+  over tiles, or along hex edges for walls and gates. A ring under the cursor shows where a tile
+  job would go (red where it can't); a work stays picked for more until Escape, picking it again,
+  or leaving the city, and a building is done once placed. The city panel lists its workers
+  (click one to show it on the map; Recall beside it) and its placed jobs (click to show on the
+  map, drag to reorder, X to take one off for a refund).
+- **Jobs:** a job waits in its city's list. A job a worker is out
   on shows as a bright gold ring (or edge) named with the job, and once the worker is at work
   with the turns left, like FARM [clock]2 (an improvement is named for what it becomes: farm, mine
-  or lumber mill). The worker menu names jobs the same way, with the tile: FARM · GRASSLAND ·
-  [clock]3. Queued jobs show on the map as faded gold rings (walls and gates as muted gold edges with
+  or lumber mill; a building by its name). The city panel names jobs the same way, with the tile:
+  FARM · GRASSLAND · [clock]3. Placed jobs show on the map as faded gold rings (walls and gates as muted gold edges with
   rounded ends). A job needs explored open ground within workers' reach, no city there, and no
   other job on the tile, queued or under way: a tile takes one job at a time (walls and gates,
   on its edges, aside). Improvements and outposts or forts also can't go on a placed building or
-  on another improvement, and an outpost or fort can't go on another one.
+  on another improvement, and an outpost or fort can't go on another one. A job dropped or
+  abandoned before it's done (it became impossible, or its worker can't reach it) is refunded.
 - **Reach:** workers go up to 3 tiles from one of their side's cities or Work Camps (a camp
   counts once connected to its city), or anywhere on or next to a road (any road: roads belong to no one), so a line of roads carries the reach out as far
   as it goes. A wall or gate counts from the tile the worker stands on to build it. The AI's
   workers keep to the same reach. A job out of reach can't be queued, and one under way that
   falls out of reach is abandoned. The player-facing reach tint and job checks use
   current sight or the last observed roads, sites, and structures; unseen enemy changes
-  take effect during resolution without revealing themselves while planning.
-- **Idle workers** (at home, with no job waiting in their city's list) wait for the player like
-  units needing orders: the turn strip lists their city after production, and the turn moves to
-  them after production and before units, opening the worker menu. Sleep (or Space in the menu)
-  lets them rest this turn; the End Turn button rests any still idle. They're idle again next
-  turn.
-- **Walls and gates** stand on the edge between two hexes, not on a tile. Picked in the worker
-  menu, each click on the map places one on the hex edge nearest the cursor (highlighted), and
+  take effect during resolution without revealing themselves while planning (a building placed
+  on a site an unseen building took is dropped, refunded, when its worker gets there).
+- **Idle workers** (at home, with no job in their city's list) wait there, and never hold up
+  the turn.
+- **Walls and gates** stand on the edge between two hexes, not on a tile. Picked in the city's
+  production list, each click on the map places one on the hex edge nearest the cursor (highlighted), and
   dragging places one on every edge the cursor passes.
   The worker builds it standing on whichever side is nearer its city (open, explored ground).
   One wall or gate per edge; an edge beside a city is fine.
@@ -625,6 +627,7 @@ every turn end.
   | Gate | 3 turns | on an edge: only your units, workers and goods cross it |
   | Outpost | 3 turns | you see 2 hexes around it |
   | Fort | 4 turns | your units in it get +50% defense (a placeholder) |
+  | A building | its turns (halved beside a Workshop) | the building, on its site |
 
 - **Going out:** in the Workers step, each city sends an idle worker out for each job at the top
   of its list. A worker walks 1 hex a turn by the shortest way around impassable terrain,
@@ -638,7 +641,7 @@ every turn end.
   standing on the same hex shields it from both, since it blocks the move and takes the hit.
   A captured or killed worker's job goes back to the top of its city's list.
 - **Recall:** workers otherwise follow their jobs on their own, so each of your workers out on
-  the map has a Recall button in the worker menu. A recalled worker drops its job (back to the top of the city's list) and walks straight
+  the map has a Recall button in its city's panel. A recalled worker drops its job (back to the top of the city's list) and walks straight
   home at its usual 1 hex a turn in the Workers step, taking no new job on the way.
 - **Structures** are never destroyed or captured yet. Units plan moves around the walls and gates
   they know of; a move whose way is blocked by one (say, one not seen when it was planned), with
@@ -656,13 +659,12 @@ every turn end.
   and its citizens eat, the current build and its turns left, labor focus buttons, the Grow card
   (9), unit cards (1-3) and the Worker card (8), each with its price and turns and dimmed when the
   stockpile can't pay, the Yields button,
-  paged cards for buildings not yet built (4-7 for the first four), what the barracks is
-  training with See Barracks, planned sites with Confirm once they are built, and Worker Jobs (the worker menu);
-  the queue docks above it. With a barracks open, what it stands on, each deposit
+  the production list (units, buildings not yet built, and works for its workers, each with its
+  price and turns), what the barracks is training with See Barracks, and its workers and placed
+  jobs; the queue docks above it. With a barracks open, what it stands on, each deposit
   kind's Cavalry or Armored left (or why none), its five train cards and Open City, queue above. With a unit selected: stats (boosted values green, reduced
   red), notes, and buttons Move, Attack, Swap, then its ability (or Found City), then Hold,
-  Guard and Disband (press twice: the first press asks to confirm). With the worker menu open,
-  the worker menu. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
+  Guard and Disband (press twice: the first press asks to confirm). Move, Attack and Swap arm the next map click only (a held modifier overrides it);
   pressing the button again or right-clicking disarms. The armed button has a bright border, a
   queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows
@@ -676,10 +678,13 @@ every turn end.
   it to its city. Worked tiles are outlined green (the manager's in gold; red if disrupted).
   Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
-  food (wheat), wood (a log) and metal (an ingot) with delivery percentages. Alt shows
-  every explored tile's yields.
+  food (wheat), wood (a log) and metal (an ingot) with delivery percentages. Alt shows every
+  explored tile's yields, and while something is being placed with yields off, the open city's
+  delivery percentages too. A tile a building stands
+  on shows neither (a city center keeps its yields); a job's name on a tile showing a percentage
+  sits just under it.
 - Escape closes the settings menu, or else an open city or barracks view, or else lets go of the
-  selected unit or group (a worker job being placed, and then the worker menu, close first);
+  selected unit or group (something being placed for a city's workers stops first);
   with none of those open, it opens the
   settings menu, whose Quit button closes the game. F5 toggles borderless fullscreen.
 
@@ -696,14 +701,14 @@ claimed, and units in a contested hex stay and fight. It never uses abilities, n
 cities, never builds buildings, ignores the fog, and ignores its civilians and any
 player-controlled AI unit; its scouts fight like any other unit. AI cities auto-assign citizens
 at every end of planning. AI queues buy from their side's stockpile, or wait a turn if it
-can't pay. An AI city with an empty queue trains a worker first when it has none, then builds
-a Barracks: on a Horses or Iron deposit within 3 hexes (a kind it has none of first), else on
-the nearest open unworked tile within 2; its buildings go up on their site as soon as they're
-done, with no Confirm. After that the city grows. A city without a Barracks trains Melee itself,
+can't pay. An AI city with an empty queue trains a worker first when it has none. With a worker,
+it places a Barracks for its workers to build, paid like the player's: on a Horses or Iron
+deposit within 3 hexes (a kind it has none of first), else on the nearest open unworked tile
+within 2. Its queue otherwise grows the city. A city without a Barracks trains Melee itself,
 slowly, until the side has 2 units (scouts and settlers aside) per city, growing when it can't
 pay. An idle AI Barracks trains Cavalry or Armored when its deposits allow and the side can pay,
-else Melee, or Ranged for every two Melee. An AI city with a worker at home and an empty list gives it one job: an
-improvement on a tile it works, or else a road there. At a contested friendly city gate, AI
+else Melee, or Ranged for every two Melee. An AI city with a worker at home and an empty list places one job it can
+pay for: an improvement on a tile it works, or else a road there. At a contested friendly city gate, AI
 units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
 

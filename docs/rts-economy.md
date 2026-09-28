@@ -15,7 +15,7 @@ more citizens and everything else that eats it (troops, workers).
 
 - **Resources:** Food, Wood, Metal. They come from the existing tile yields, so the map, the
   labor rules and logistics stay as they are:
-  - Food is the tile's food yield (farms, fresh water, Orchards, Granary, Cannery) as before.
+  - Food is the tile's food yield (farms, fresh water, Orchards, Cannery) as before.
   - A tile's production splits into **metal**, the part dug out of the ground (+1 for hills,
     +2 for a mine, +3 for a Quarry, never more than the tile's production), and **wood**, the
     rest (plains, tundra and desert ground, forest, jungle, lumber mills, pastures). The city
@@ -58,8 +58,9 @@ more citizens and everything else that eats it (troops, workers).
   pay for a Melee, Ranged, Worker or Grow; a broke side isn't forced to pick something it can't
   buy.
 - **AI** (`plan_ai_cities`): a city with an empty queue buys one build or waits: a Worker if it
-  has none; then a Barracks, sited on a Horses or Iron deposit within 3 hexes when there is one
-  (`ai_barracks_site`) and placed with no Confirm; then Grow. Until it has a Barracks it trains
+  has none; then Grow. With a worker it places a Barracks for its workers to build, sited on a
+  Horses or Iron deposit within 3 hexes when there is one (`ai_barracks_site`) and paid when
+  placed. Until it has a Barracks it trains
   Melee itself (slowly) while the side has fewer than 2 units per city. An idle AI Barracks
   trains Cavalry or Armored when its cap and stockpile allow, else Melee, or Ranged for every two
   Melee. The AI pays through the same `try_queue_build` as the
@@ -89,7 +90,7 @@ more citizens and everything else that eats it (troops, workers).
 | Bombard Ship | 1 | 12 | 6 | 4 |
 | Worker | 4 | 2 | 0 | 2 |
 | Grow | 5 + 5 x pop | | | 2 |
-| Granary | | 8 | | 3 |
+| Gather | free: +2 | +2 | +1 | 1 |
 | Barracks | | 10 | | 3 |
 | Mill, Canoe House, Watchpost | | 10 | | 3 |
 | Workshop | | 10 | 4 | 4 |
@@ -183,11 +184,12 @@ Averages per side over seeds 0-7 (`economy_report`), fixed time, cap counting th
 - **The unit cap:** alive (the default) or lifetime? Alive keeps deposits worth holding all game;
   lifetime makes each deposit a one-off to spend, pushing expansion. Try both with the Debug
   toggle; 3 per deposit is a guess (World starts have one of each nearby).
-- **Metal income:** give the AI (and the Production labor focus) a reason to work hills and mines
+- **Metal income:** give the AI (and the Metal labor focus) a reason to work hills and mines
   when it has a deposit to use, or make Iron itself yield metal.
-- **Barracks and the manager:** training no longer needs the manager on the Barracks; with
-  production speeding builds it still adds its work group's production. If the manager should
-  matter again, a manager bonus (say, a turn faster) is gentler than a pause.
+- **Barracks and the manager:** training no longer needs the manager at the Barracks, and no
+  citizen can stand on a building; with production speeding builds the manager beside it still adds
+  its work group's production. If the manager should matter again, a manager bonus (say, a turn
+  faster) is gentler than a pause.
 
 - **Keep the speedup, or add queues?** The numbers favor production speeding builds (or,
   equivalently, shorter fixed times) so the stockpile, not the clock, limits spending. The
@@ -205,9 +207,30 @@ Averages per side over seeds 0-7 (`economy_report`), fixed time, cap counting th
   rush its build.
 - **Should upkeep starve per city?** Pooled food lets one farming city feed the rest; if that is
   too forgiving, deliveries could feed their own city first.
-- **Labor focus:** the Production focus picks wood and metal alike; a Wood / Metal split (or a
-  focus per resource) may read better now that the map shows them apart.
+- **Labor focus:** done in round 4: Food, Wood, Metal or Balanced, a focus per resource.
 - **AI spending:** it builds a Barracks and trains Cavalry or Armored now, but no other building,
   and it should grow more when food piles up, to test the late game properly.
 - **Refunds:** full refunds make the queue a free bank; RTS games often refund in full, but a
   partial refund for an item in progress is worth trying if players park resources in queues.
+
+## Round 3: workers build what a city places
+
+Worker jobs and buildings with a site became one thing: everything a city puts on the map
+(roads, improvements, walls, gates, outposts, forts, and its buildings with a site) is placed
+from its production list, needs a worker, is paid from the stockpile when placed (refunded if
+taken off or dropped), and is built by a worker walking out to it within workers' reach. Prices
+for the works: Road 0/2/0, Improve 0/4/0, Wall 0/3/0, Gate 0/3/2, Outpost 0/6/0, Fort 0/8/4.
+The city queue keeps units, workers and Grow. The worker menu, its Sleep, and idle
+workers holding up the turn are gone.
+
+Open questions: whether the works' prices are right (roads at 2 wood each make long roads a real
+cost); whether a building should take several workers, or go faster with more; and whether the
+city queue and the workers now compete enough for the stockpile.
+
+## Round 4: Gather
+
+With builds costing resources, a broke city had nothing to do. **Gather** is a free, one-turn
+city build that brings in 2 food, 2 wood and 1 metal (`GATHER_YIELD`): always possible, and
+worth choosing on its own when metal is short. An empty city queue now always holds up the
+turn. The Granary is gone (the last building built in the city queue). To try: whether the
+yield should scale with the city (a share of its income, say) rather than be fixed.
