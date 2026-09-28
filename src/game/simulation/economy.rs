@@ -174,6 +174,8 @@ struct LaneUse {
     training: u32,
     idle: u32,
     idle_short: [u32; 3],
+    /// Turns each queue (city, Barracks) held a finished unit for want of an open hex beside it.
+    held: [u32; 2],
 }
 
 struct SideLog {
@@ -228,6 +230,8 @@ struct Tracked {
 type JobKey = (Team, Hex, Option<Hex>, JobKind);
 /// One number of a side's turn, to tabulate.
 type Measure<'a> = &'a dyn Fn(&SideTurn) -> f64;
+/// Named percentages, in the order to show them.
+type Shares = Vec<(String, f64)>;
 
 /// Watches one game as it is played: after the AI plans each turn and after the turn resolves.
 struct Observer {
@@ -714,6 +718,11 @@ impl Observer {
                 },
             );
         }
+        if let Some((_, _, true)) = head
+            && let Some(side) = self.side(team)
+        {
+            side.lanes.held[lane] += 1;
+        }
         if lane == 0 {
             let at_cap = !game.can_grow(city);
             let Some(side) = self.side(team) else {
@@ -1015,6 +1024,67 @@ impl KindReport {
         (mean(&gaps), mean(&leads))
     }
 
+    /// What the queues did, as shares of their turns: the city queue's by what it worked (and
+    /// gathering at the cap or below it, waiting, empty, holding a finished unit), and the
+    /// Barracks' (training, idle, what a Melee lacked when idle, holding a finished unit).
+    fn queue_use(&self) -> (Shares, Shares) {
+        let lanes: Vec<&LaneUse> = self.sides().map(|s| &s.lanes).collect();
+        let sum = |f: &dyn Fn(&LaneUse) -> u32| f64::from(lanes.iter().map(|l| f(l)).sum::<u32>());
+        let city_turns = sum(&|l| {
+            l.working.values().sum::<u32>() + l.gather_at_cap + l.gather_poor + l.waiting + l.empty
+        })
+        .max(1.0);
+        let mut working: Vec<(&str, u32)> = Vec::new();
+        for lane in &lanes {
+            for (&name, &n) in &lane.working {
+                match working.iter_mut().find(|(w, _)| *w == name) {
+                    Some((_, total)) => *total += n,
+                    None => working.push((name, n)),
+                }
+            }
+        }
+        working.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let mut city: Vec<(String, f64)> = working
+            .into_iter()
+            .map(|(name, n)| (name.to_string(), 100.0 * f64::from(n) / city_turns))
+            .collect();
+        for (name, n) in [
+            ("GATHER at the cap", sum(&|l| l.gather_at_cap)),
+            ("GATHER below the cap", sum(&|l| l.gather_poor)),
+            ("waiting", sum(&|l| l.waiting)),
+            ("empty", sum(&|l| l.empty)),
+            ("holding a finished unit", sum(&|l| l.held[0])),
+        ] {
+            city.push((name.into(), 100.0 * n / city_turns));
+        }
+        let barracks_turns = sum(&|l| l.training + l.idle).max(1.0);
+        let idle = sum(&|l| l.idle).max(1.0);
+        let barracks = vec![
+            (
+                "training".into(),
+                100.0 * sum(&|l| l.training) / barracks_turns,
+            ),
+            ("idle".into(), 100.0 * sum(&|l| l.idle) / barracks_turns),
+            (
+                "idle, a Melee lacked food".into(),
+                100.0 * sum(&|l| l.idle_short[0]) / idle,
+            ),
+            (
+                "idle, a Melee lacked wood".into(),
+                100.0 * sum(&|l| l.idle_short[1]) / idle,
+            ),
+            (
+                "idle, a Melee lacked metal".into(),
+                100.0 * sum(&|l| l.idle_short[2]) / idle,
+            ),
+            (
+                "holding a finished unit".into(),
+                100.0 * sum(&|l| l.held[1]) / barracks_turns,
+            ),
+        ];
+        (city, barracks)
+    }
+
     fn print(&self) {
         let sides = self.sides().count();
         let seeds: Vec<u64> = self.games.iter().map(|(s, _)| *s).collect();
@@ -1104,50 +1174,22 @@ impl KindReport {
             );
         }
 
-        let lanes: Vec<&LaneUse> = self.sides().map(|s| &s.lanes).collect();
-        let city_turns: u32 = lanes
-            .iter()
-            .map(|l| {
-                l.working.values().sum::<u32>()
-                    + l.gather_at_cap
-                    + l.gather_poor
-                    + l.waiting
-                    + l.empty
-            })
-            .sum();
-        let share = |n: u32| 100.0 * f64::from(n) / f64::from(city_turns.max(1));
-        let mut working: Vec<(&str, u32)> = Vec::new();
-        for lane in &lanes {
-            for (&name, &n) in &lane.working {
-                match working.iter_mut().find(|(w, _)| *w == name) {
-                    Some((_, total)) => *total += n,
-                    None => working.push((name, n)),
-                }
-            }
-        }
-        working.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-        let sum = |f: &dyn Fn(&LaneUse) -> u32| lanes.iter().map(|l| f(l)).sum::<u32>();
-        println!(
-            "\nCity queue, share of city-turns: {}; Gather at the cap {:.0}%, Gather below it {:.0}%, waiting {:.0}%, empty {:.0}%",
-            working
+        let (city, barracks) = self.queue_use();
+        let shares = |parts: &[(String, f64)]| {
+            parts
                 .iter()
-                .map(|(name, n)| format!("{name} {:.0}%", share(*n)))
+                .map(|(name, share)| format!("{name} {share:.0}%"))
                 .collect::<Vec<_>>()
-                .join(", "),
-            share(sum(&|l| l.gather_at_cap)),
-            share(sum(&|l| l.gather_poor)),
-            share(sum(&|l| l.waiting)),
-            share(sum(&|l| l.empty)),
-        );
-        let barracks_turns = sum(&|l| l.training + l.idle).max(1);
-        let idle = sum(&|l| l.idle);
+                .join(", ")
+        };
         println!(
-            "Barracks, share of Barracks-turns: training {:.0}%, idle {:.0}% (a Melee lacked food {:.0}%, wood {:.0}%, metal {:.0}% of those)",
-            100.0 * f64::from(sum(&|l| l.training)) / f64::from(barracks_turns),
-            100.0 * f64::from(idle) / f64::from(barracks_turns),
-            100.0 * f64::from(sum(&|l| l.idle_short[0])) / f64::from(idle.max(1)),
-            100.0 * f64::from(sum(&|l| l.idle_short[1])) / f64::from(idle.max(1)),
-            100.0 * f64::from(sum(&|l| l.idle_short[2])) / f64::from(idle.max(1)),
+            "
+City queue, share of city-turns: {}",
+            shares(&city)
+        );
+        println!(
+            "Barracks, share of Barracks-turns (what a Melee lacked as a share of idle turns): {}",
+            shares(&barracks)
         );
 
         println!(
@@ -1377,7 +1419,21 @@ impl KindReport {
             })
             .collect();
         out.push_str(&parts.join(","));
-        out.push_str("],\"spread\":{");
+        let (city, barracks) = self.queue_use();
+        let shares = |parts: &[(String, f64)]| {
+            parts
+                .iter()
+                .map(|(name, share)| format!("\"{name}\":{}", number(*share)))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let _ = write!(
+            out,
+            "],\"queue_use_percent\":{{\"city\":{{{}}},\"barracks\":{{{}}}}}",
+            shares(&city),
+            shares(&barracks)
+        );
+        out.push_str(",\"spread\":{");
         let spread_turns: Vec<u32> = (1..=self.turns).collect();
         let spreads: [(&str, Measure); 3] = [
             ("trained", &|s| s.trained),
