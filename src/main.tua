@@ -115,16 +115,13 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
         Event.Resized(w, h) => { input.size = vec2(w as f32, h as f32); }
         Event.CursorMoved(x, y) => {
             let pos = vec2(x, y);
-            let mut pan_from = input.cursor;
+            // A left press that moves far enough is a selection box (drawn from `box_start`),
+            // not a click; only the middle button pans.
             if let Option.Some(press) = input.left_press {
-                if !input.left_dragging && pos.distance(press.origin) >= DRAG_THRESHOLD {
-                    input.left_dragging = true;
-                    // Include motion below the threshold when the drag begins.
-                    if !input.panning { pan_from = Option.Some(press.origin); }
-                }
+                if !input.left_dragging && pos.distance(press.origin) >= DRAG_THRESHOLD { input.left_dragging = true; }
             }
-            if (input.panning || input.left_dragging) && input.size.y > 0.0 {
-                if let Option.Some(last) = pan_from { game.camera.pan(pos.sub(last), input.size); }
+            if input.panning && input.size.y > 0.0 {
+                if let Option.Some(last) = input.cursor { game.camera.pan(pos.sub(last), input.size); }
             }
             input.cursor = Option.Some(pos);
         }
@@ -134,15 +131,13 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
         Event.MouseDown(b) => match b {
             Button.Left => {
                 if let Option.Some(cursor) = input.cursor {
-                    // Alt starts a selection box instead of a click or pan.
-                    if input.mods.alt {
-                        input.box_start = Option.Some(cursor);
-                        return WindowRequest.Nothing;
-                    }
                     // Left-click moves; Shift adds the move to the queue.
                     let mode = if input.mods.shift { ClickMode.QueueMove } else if input.mods.control { ClickMode.Swap } else { ClickMode.Normal };
                     input.left_press = Option.Some(Press { origin: cursor, mode, may_click: !game.is_resolving() });
                     input.left_dragging = input.panning;
+                    // A drag from the map (not from a panel) selects the units inside its box.
+                    let on_panel = game.ui_covers(cursor, input.size);
+                    input.box_start = if !on_panel && !input.panning { Option.Some(cursor) } else { Option.None };
                 }
             }
             Button.Right => {
@@ -155,15 +150,14 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
         },
         Event.MouseUp(b) => match b {
             Button.Left => {
-                if let Option.Some(start) = input.box_start {
-                    input.box_start = Option.None;
-                    if let Option.Some(end) = input.cursor {
-                        // Barely moving makes it an Alt-click on one unit.
-                        if start.distance(end) < DRAG_THRESHOLD {
-                            game.toggle_in_selection(end, input.size);
-                        } else {
-                            game.select_in_box(start, end, input.size);
-                        }
+                let boxed = input.box_start;
+                input.box_start = Option.None;
+                if let (Option.Some(start), Option.Some(end)) = (boxed, input.cursor) {
+                    if input.left_dragging && start.distance(end) >= DRAG_THRESHOLD {
+                        // Shift adds the boxed units to the selection.
+                        game.select_in_box(start, end, input.size, input.mods.shift);
+                        input.left_press = Option.None;
+                        input.left_dragging = false;
                         return WindowRequest.Nothing;
                     }
                 }

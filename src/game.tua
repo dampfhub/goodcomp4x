@@ -50,8 +50,8 @@ pub const CONTROLS_HELP: str = "Controls:
   Shift-click queues moves over several turns, Shift-right-click an attack in a later turn;
   any other order replaces the queue (a click on the map needs repeating to do it).
   Ctrl-click an adjacent ally to swap places with it.
-  Alt-drag a box (or Alt-click units) to select a group, Shift-click to add a unit and
-  Ctrl-click to take one out: clicking a hex sends each member as close to it as it can get,
+  Drag a box on the map to select a group (Shift-drag adds to it), Shift-click to add a unit
+  and Ctrl-click to take one out: clicking a hex sends each member as close to it as it can get,
   and right-clicking has every member in range attack it.
   Delete twice disbands the selected unit.
   Queued attacks are drawn as arrows from the attacker (or its ghost) to the target.
@@ -70,7 +70,7 @@ pub const CONTROLS_HELP: str = "Controls:
   1-4 queue city units: melee, ranged, cavalry, siege. F founds with a settler.
   F1 combat, F2 cities, F3 settler frontier (again to restart). F6 saves a snapshot, F7 loads it, F8 plays turns all at once.
   The faded DEBUG panel at the top-left has buttons for these.
-  Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
+  Scroll to zoom, middle-drag to pan. Clicks act on release; dragging does not issue orders.
   F5 toggles fullscreen.
 Turn order:
   Each unit's blue number is when it moves and its red number when it attacks (1 = first).

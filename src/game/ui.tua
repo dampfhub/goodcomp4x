@@ -314,6 +314,13 @@ impl GameState {
         out
     }
 
+    /// Whether `cursor` (window pixels, origin top-left) is over a panel or button.
+    pub fn ui_covers(&self, cursor: Vec2, screen_size: Vec2) -> bool {
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        layout.button_at(point).is_some() || layout.covers(point)
+    }
+
     /// Handles a click on the UI, returning whether it hit anything (in which case it shouldn't
     /// also count as a click on the map). `cursor` is in window pixels with the origin at the
     /// top-left.

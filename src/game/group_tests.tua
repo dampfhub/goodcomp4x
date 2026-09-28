@@ -34,20 +34,63 @@ fn blue(game: &GameState) -> Vec[i32] {
 fn a_box_around_the_army_selects_it_as_a_group() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.new();
-        game.select_in_box(vec2(0.0, 0.0), vec2(SCREEN_W / 2.0, SCREEN_H), screen());
+        game.select_in_box(vec2(0.0, 0.0), vec2(SCREEN_W / 2.0, SCREEN_H), screen(), false);
         // Only the player's units, all on the left, in unit order.
         let units = blue(&game);
         assert(game.group.len() == units.len());
         for k in 0..units.len() { assert(game.group[k] == units[k]); }
         assert(game.selected == Option.None);
 
-        // Alt-clicking members back out leaves an ordinary single selection.
+        // Ctrl-clicking members back out leaves an ordinary single selection.
         for k in 1..units.len() {
             let cursor = game.camera.world_to_screen(game.units[units[k]].pos.to_world(), screen());
-            game.toggle_in_selection(cursor, screen());
+            game.handle_map_click(cursor, screen(), ClickMode.Swap);
         }
         assert(game.group.is_empty());
         assert(game.selected == Option.Some(units[0]));
+
+        // Shift-clicking them adds them back, one at a time, and queues nothing.
+        for k in 1..units.len() {
+            let cursor = game.camera.world_to_screen(game.units[units[k]].pos.to_world(), screen());
+            game.handle_map_click(cursor, screen(), ClickMode.QueueMove);
+        }
+        assert(game.group.len() == units.len());
+        for k in 0..units.len() {
+            assert(game.group.contains(units[k]));
+            assert(!game.units[units[k]].has_queue());
+        }
+    });
+}
+
+/// The screen box 5 pixels around unit `i`.
+fn around(game: &GameState, i: i32) -> (Vec2, Vec2) {
+    let at = game.camera.world_to_screen(game.units[i].pos.to_world(), screen());
+    (at.sub(vec2(5.0, 5.0)), at.add(vec2(5.0, 5.0)))
+}
+
+@test
+fn a_shift_drag_adds_to_the_selection_and_a_plain_one_replaces_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let units = blue(&game);
+        let mut first: Vec[i32] = Vec.new();
+        first.push(units[0]);
+        game.set_selection(first);
+        // An empty corner of the screen adds nobody.
+        game.select_in_box(vec2(0.0, 0.0), vec2(4.0, 4.0), screen(), true);
+        let s = game.selection();
+        assert(s.len() == 1 && s[0] == units[0]);
+        let (a, b) = around(&game, units[1]);
+        game.select_in_box(a, b, screen(), true);
+        let s = game.selection();
+        assert(s.len() == 2 && s[0] == units[0] && s[1] == units[1]);
+        let (a, b) = around(&game, units[2]);
+        game.select_in_box(a, b, screen(), false);
+        let s = game.selection();
+        assert(s.len() == 1 && s[0] == units[2]);
+        // A plain drag over nothing lets go of everything.
+        game.select_in_box(vec2(0.0, 0.0), vec2(4.0, 4.0), screen(), false);
+        assert(game.selection().is_empty());
     });
 }
 

@@ -1,8 +1,9 @@
-//! Ordering several units at once. Alt-drag a box (or Alt-click units) to select a group.
-//! Clicking a hex then sends every member toward it at its own speed, each taking the free
-//! hex nearest the target that it can reach; the nearest members choose first. Clicking an
-//! enemy has every member in range attack it. Members that can't get any closer, or reach,
-//! stay as they are.
+//! Ordering several units at once. Drag a box on the map (or Shift-click units) to select a
+//! group, and Ctrl-click a member to take it back out. Clicking a hex then sends every member
+//! toward it at its own speed, each taking the free hex nearest the target that it can reach;
+//! the nearest members choose first. Right-clicking a hex has every member in range attack it.
+//! Members that can't get any closer, or reach, stay as they are. Shift-clicks queue orders for
+//! later turns (`order_queue.tua`).
 
 use std.collections.Set;
 use std.core.Ordering;
@@ -15,33 +16,19 @@ use game.hex.Hex;
 use game.orders.ClickMode;
 
 impl GameState {
-    /// Alt-drag: selects the player's units drawn inside the rectangle between `a` and `b`
-    /// (window pixels, origin top-left).
-    pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2) {
+    /// Left-drag: selects the player's units drawn inside the rectangle between `a` and `b`
+    /// (window pixels, origin top-left). With `add` (Shift held), they join the current
+    /// selection instead of replacing it.
+    pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2, add: bool) {
         if self.is_resolving() { return; }
         let (min, max) = (a.min(b), a.max(b));
-        let mut inside: Vec[i32] = Vec.new();
+        let mut members: Vec[i32] = if add { self.selection() } else { Vec.new() };
         for i in 0..self.units.len() {
-            if !self.is_player_controlled(i) { continue; }
+            if !self.is_player_controlled(i) || members.contains(i) { continue; }
             let drawn_at = self.camera.world_to_screen(self.unit_layout(i).0, screen_size);
-            if drawn_at.x >= min.x && drawn_at.y >= min.y && drawn_at.x <= max.x && drawn_at.y <= max.y { inside.push(i); }
+            if drawn_at.x >= min.x && drawn_at.y >= min.y && drawn_at.x <= max.x && drawn_at.y <= max.y { members.push(i); }
         }
-        self.set_selection(inside);
-    }
-
-    /// Alt-click: adds the player's unit under the cursor to the selection, or takes it out
-    /// if it's already in.
-    pub fn toggle_in_selection(&mut self, cursor: Vec2, screen_size: Vec2) {
-        if self.is_resolving() { return; }
-        let Option.Some(hex) = self.hex_at_screen(cursor, screen_size) else { return; };
-        let Option.Some(unit) = self.controlled_unit_at(hex) else { return; };
-        let members = self.selection();
-        let mut next: Vec[i32] = Vec.new();
-        for i in 0..members.len() {
-            if members[i] != unit { next.push(members[i]); }
-        }
-        if !members.contains(unit) { next.push(unit); }
-        self.set_selection(next);
+        self.set_selection(members);
     }
 
     /// Every selected unit: the group, or else the one selected unit.
@@ -68,7 +55,8 @@ impl GameState {
         }
     }
 
-    /// Shift-click: adds the player's unit `idx` to the selection.
+    /// Shift-click: adds unit `idx` to the selection. Nothing selected, it's selected on its
+    /// own.
     pub fn add_to_selection(&mut self, idx: i32) {
         let mut members = self.selection();
         if !members.contains(idx) { members.push(idx); }
