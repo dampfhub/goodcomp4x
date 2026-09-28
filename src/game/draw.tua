@@ -1,6 +1,11 @@
 //! Builds each frame's geometry from the game state.
 
 use std.collections.Map;
+use std.math.Float;
+use std.sort.sort;
+use std.sort.Compare;
+use std.mem.elements_mut;
+use std.core.Ordering;
 use std.collections.Set;
 use std.fmt.Out;
 use std.fmt.show_i64;
@@ -69,6 +74,28 @@ const SPECIAL_RIM_COLOR: Color = [0.95, 0.66, 0.12, 1.0];
 const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
 /// Never-seen hexes, as the Fog setting's solid grey draws them.
 const SOLID_FOG_COLOR: Color = [0.13, 0.135, 0.155, 1.0];
+/// Distance between cloud banks, in world units (a hex is 1 from center to corner).
+pub const CLOUD_SPACING: f32 = 2.8;
+/// Under the clouds, filling the gaps between puffs: the shade of their undersides, so the fog
+/// reads as cloud all the way through.
+const CLOUD_BASE_COLOR: Color = [0.10, 0.103, 0.123, 1.0];
+/// The dark band under each cloud bank, fading out at its edge.
+const CLOUD_SHADOW_COLOR: Color = [0.03, 0.03, 0.04, 0.55];
+/// A puff's lit top and shaded underside (linear colors): muted, so the clouds stay behind the
+/// map rather than competing with it.
+const CLOUD_LIGHT: Color = [0.25, 0.26, 0.29, 0.96];
+const CLOUD_DARK: Color = [0.10, 0.105, 0.125, 0.96];
+/// The most puffs in one cloud bank; each has between 4 and this many.
+const MAX_BANK_PUFFS: i32 = 9;
+/// How fast the whole cloud field drifts, in world units a second: slow enough to read as
+/// weather, not motion.
+const CLOUD_WIND: Vec2 = Vec2 { x: 0.09, y: 0.025 };
+/// Each puff swells and shrinks by this share of its radius...
+const CLOUD_BILLOW: f32 = 0.06;
+/// ...and wanders by this much (world units) around its place in the bank...
+const CLOUD_WANDER: f32 = 0.12;
+/// ...over about this many seconds, each puff at its own pace.
+const CLOUD_BILLOW_PERIOD: f32 = 14.0;
 const RUIN_RIM_COLOR: Color = [0.62, 0.58, 0.50, 1.0];
 const LANDMARK_RIM_WIDTH: f32 = 0.05;
 /// Where the pips counting a ruin's hold start, from the hex's center, and their size.
@@ -220,15 +247,26 @@ impl GameState {
         // Only what the camera may show: a big map has far more hexes than a view, and more
         // vertices than a frame draws.
         let (view_min, view_max) = self.view_rect();
+        // The fog sits behind the map: a flat fill over every never-seen hex, and the drifting
+        // cloud field on top of it unless the player chose solid fog. Known terrain painted
+        // afterward hides it without clipping or rebuilding around sight.
+        if self.fog_of_war {
+            let cloud = self.settings.cloud_fog;
+            let base = if cloud { CLOUD_BASE_COLOR } else { SOLID_FOG_COLOR };
+            for h in self.grid.hexes() {
+                let hex = *h;
+                let center = hex.to_world();
+                if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
+                if !self.is_explored(hex) { regular_polygon(center, HEX_SIZE, 6, 0.0, base, &mut out); }
+            }
+            if cloud { push_cloud_banks(&self.grid, self.cloud_time, view_min, view_max, &mut out); }
+        }
         for h in self.grid.hexes() {
             let hex = *h;
             let center = hex.to_world();
             if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
             // Never-seen hexes are fog, nothing of what's there.
-            if !self.is_explored(hex) {
-                regular_polygon(center, HEX_SIZE, 6, 0.0, SOLID_FOG_COLOR, &mut out);
-                continue;
-            }
+            if !self.is_explored(hex) { continue; }
             let fill = self.hex_fill(hex, &selection, &fog);
             regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
             regular_polygon(center, HEX_SIZE * 0.92, 6, 0.0, fill, &mut out);
@@ -953,3 +991,197 @@ fn brighten(c: Color) -> Color {
 fn bright(v: f32) -> f32 { if v + 0.35 < 1.0 { v + 0.35 } else { 1.0 } }
 
 fn with_alpha(c: Color, a: f32) -> Color { [c[0], c[1], c[2], a] }
+
+impl GameState {
+    /// Moves the fog's clouds on by `dt` seconds (`push_cloud_banks`). The app calls it every
+    /// frame, except in screenshot mode.
+    pub fn animate_clouds(&mut self, dt: f32) {
+        // Wrapped long before f32 loses the precision a frame needs.
+        let t = self.cloud_time + dt;
+        self.cloud_time = t - (t / 100000.0).floor() * 100000.0;
+    }
+}
+
+/// The low 32 bits of `x`, as `u32` arithmetic would keep them.
+const LOW32: u64 = 4294967295;
+
+/// Stable pseudo-random number in [0, 1] for one cell of the cloud lattice.
+fn cloud_hash(x: i32, y: i32, salt: u64) -> f32 {
+    let xb = (x as i64 & 4294967295) as u64;
+    let yb = (y as i64 & 4294967295) as u64;
+    let mut bits = ((xb * 0x9E3779B1) & LOW32) ^ ((yb * 0x85EBCA77) & LOW32) ^ (salt & LOW32);
+    bits = bits ^ (bits >> 16);
+    bits = (bits * 0x7FEB352D) & LOW32;
+    bits = bits ^ (bits >> 15);
+    ((bits as i64) as f64 / 4294967295.0) as f32
+}
+
+/// `(i + 1) * 0x9E3779B9` in 32 bits: puff `i`'s own salt.
+fn puff_salt(i: i32) -> u64 { ((i as u64 + 1) * 0x9E3779B9) & LOW32 }
+
+/// One cloud puff: a soft disc lit from above.
+pub struct Puff {
+    center: Vec2,
+    radius: f32,
+    /// Its opacity: less past the map's edge (`edge_fade`).
+    alpha: f32,
+}
+
+/// A puff's place around its bank's center and its radius, in units of the bank's scale.
+struct Place { at: Vec2, radius: f32 }
+
+/// The shape of the cloud bank at lattice point (`x`, `y`). The bank grows from one puff: each
+/// next one buds off a puff already placed, in any direction and overlapping it, so every bank
+/// is its own irregular clump rather than a copy of one template.
+fn bank_shape(x: i32, y: i32) -> Vec[Place] {
+    let wanted = 4 + (cloud_hash(x, y, 0x3C6EF372) * (MAX_BANK_PUFFS - 3) as f32) as i32;
+    let count = if wanted < MAX_BANK_PUFFS { wanted } else { MAX_BANK_PUFFS };
+    let mut places: Vec[Place] = Vec.new();
+    for i in 0..count {
+        let salt = puff_salt(i);
+        let radius = 0.2 + cloud_hash(x, y, salt ^ 0x68E31DA4) * 0.16;
+        let mut at = vec2(0.0, 0.0);
+        if i > 0 {
+            let parent = (cloud_hash(x, y, salt ^ 0x1B873593) * i as f32) as i32 % i;
+            let angle = cloud_hash(x, y, salt ^ 0x7E95761E) * tau() as f32;
+            let reach = (places[parent].radius + radius) * (0.5 + cloud_hash(x, y, salt ^ 0x2F1D9A07) * 0.25);
+            at = places[parent].at.add(vec2_from_angle(angle).scale(reach));
+        }
+        places.push(Place { at, radius });
+    }
+    // Centered on the bank, so a large bank doesn't lean off its place.
+    let mut sum = vec2(0.0, 0.0);
+    for i in 0..count { sum = sum.add(places[i].at); }
+    let mean = sum.scale(1.0 / count as f32);
+    for i in 0..count { places[i].at = places[i].at.sub(mean); }
+    places
+}
+
+/// How much of a cloud puff centered at `point` shows: all of it over the map, fading out over
+/// the hexes beyond its edge, so puffs drifting past the edge come and go smoothly.
+pub fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
+    let hex = Hex.from_world(point);
+    if grid.contains(hex) { return 1.0; }
+    let mut nearest = 1.0e30;
+    let around = hex.neighbors();
+    for k in 0..6 {
+        let n = around[k];
+        if grid.contains(n) { nearest = min_f32(nearest, n.to_world().distance(point)); }
+        let further = n.neighbors();
+        for j in 0..6 {
+            if grid.contains(further[j]) { nearest = min_f32(nearest, further[j].to_world().distance(point)); }
+        }
+    }
+    let t = (nearest - 1.0) / 1.2;
+    1.0 - (if t < 0.0 { 0.0 } else if t > 1.0 { 1.0 } else { t })
+}
+
+fn min_f32(a: f32, b: f32) -> f32 { if a < b { a } else { b } }
+fn max_f32(a: f32, b: f32) -> f32 { if a > b { a } else { b } }
+
+/// A shadow under a cloud bank and its opacity.
+struct Shadow { center: Vec2, alpha: f32 }
+
+/// Draws the unexplored map as banks of cumulus, those that reach into the world rectangle
+/// `view_min`..`view_max`: one bank per point of a world-space lattice that drifts with
+/// `CLOUD_WIND` as `time` (seconds) passes, each bank a soft shadow under an irregular clump of
+/// puffs (`bank_shape`) that slowly billow. Every puff fades out at its edge and is lit from
+/// above (`push_soft_disc`); higher puffs are drawn first, so the lit top of a lower billow
+/// overlaps the shaded underside of the one behind it. A bank keeps its lattice point's hash as
+/// it drifts, so the pattern moves whole. The work per puff is constant and cheap: no noise
+/// sampling per vertex.
+pub fn push_cloud_banks(grid: &HexGrid, time: f32, view_min: Vec2, view_max: Vec2, out: &mut Vec[MeshVertex]) {
+    let mut any = false;
+    let mut lo = vec2(0.0, 0.0);
+    let mut hi = vec2(0.0, 0.0);
+    for h in grid.hexes() {
+        let p = (*h).to_world();
+        if !any { lo = p; hi = p; any = true; } else { lo = lo.min(p); hi = hi.max(p); }
+    }
+    if !any { return; }
+    // A bank reaches about two spacings from its lattice point.
+    let reach = vec2(2.0 * CLOUD_SPACING, 2.0 * CLOUD_SPACING);
+    let lo = lo.max(view_min.sub(reach));
+    let hi = hi.min(view_max.add(reach));
+    if lo.x > hi.x || lo.y > hi.y { return; }
+    let drift = CLOUD_WIND.scale(time);
+    let (lo, hi) = (lo.sub(drift), hi.sub(drift));
+    let min_x = (lo.x / CLOUD_SPACING).floor() as i32 - 1;
+    let max_x = (hi.x / CLOUD_SPACING).ceil() as i32 + 1;
+    let min_y = (lo.y / CLOUD_SPACING).floor() as i32 - 1;
+    let max_y = (hi.y / CLOUD_SPACING).ceil() as i32 + 1;
+    let mut shadows: Vec[Shadow] = Vec.new();
+    let mut puffs: Vec[Puff] = Vec.new();
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            // Rows are offset by half a bank, and each bank wanders off its lattice point, so
+            // the lattice doesn't show.
+            let jitter = vec2(cloud_hash(x, y, 0xA341316C) - 0.5, cloud_hash(x, y, 0xC8013EA4) - 0.5).scale(0.7);
+            let row_shift = if ((y % 2) + 2) % 2 == 1 { 0.5 } else { 0.0 };
+            let bank = vec2(x as f32 + row_shift, y as f32).add(jitter).scale(CLOUD_SPACING).add(drift);
+            let scale = CLOUD_SPACING * (0.8 + cloud_hash(x, y, 0xAD90777D) * 0.5);
+            let shape = bank_shape(x, y);
+            for i in 0..shape.len() {
+                let salt = puff_salt(i);
+                // Each puff billows at its own phase and pace.
+                let pace = 0.75 + cloud_hash(x, y, salt ^ 0x2545F491) * 0.5;
+                let phase = cloud_hash(x, y, salt ^ 0x5851F42D) * tau() as f32 + time * pace * tau() as f32 / CLOUD_BILLOW_PERIOD;
+                let wander = vec2(phase.cos(), (phase * 0.8).sin()).scale(CLOUD_WANDER);
+                let center = bank.add(shape[i].at.scale(scale)).add(wander);
+                let alpha = edge_fade(grid, center);
+                if alpha <= 0.0 { continue; }
+                let radius = shape[i].radius * scale * 1.5 * (1.0 + CLOUD_BILLOW * (phase * 1.3).sin());
+                puffs.push(Puff { center, radius, alpha });
+            }
+            let shadow = bank.add(vec2(0.04, -0.12).scale(scale));
+            let alpha = edge_fade(grid, shadow);
+            if alpha > 0.0 { shadows.push(Shadow { center: shadow, alpha }); }
+        }
+    }
+    // Higher first.
+    // `puffs.buf`: a `Vec` installs `ElementsMut` through its buffer until it has an installer of its own.
+    handle { with elements_mut(&mut puffs.buf) { sort() }; } with Compare[Puff] {
+        cmp(a, b) => { resume if a.center.y > b.center.y { Ordering.Less } else if a.center.y < b.center.y { Ordering.Greater } else { Ordering.Equal } }
+    };
+    for k in 0..shadows.len() {
+        let color = with_alpha(CLOUD_SHADOW_COLOR, CLOUD_SHADOW_COLOR[3] * shadows[k].alpha);
+        let r = 0.62 * CLOUD_SPACING;
+        push_soft_disc(shadows[k].center, vec2(r, r), color, color, out);
+    }
+    for k in 0..puffs.len() {
+        let puff = puffs[k];
+        let light = with_alpha(CLOUD_LIGHT, CLOUD_LIGHT[3] * puff.alpha);
+        let dark = with_alpha(CLOUD_DARK, CLOUD_DARK[3] * puff.alpha);
+        push_soft_disc(puff.center, vec2(puff.radius, puff.radius), light, dark, out);
+    }
+}
+
+/// The shade at `local` (-1 to 1 across the disc) between `dark` at the bottom and `light` at
+/// the top; the light comes from above and a little to the left.
+fn shade(local: Vec2, light: Color, dark: Color) -> Color {
+    let raw = 0.5 + 0.5 * local.dot(vec2(-0.35, 0.94));
+    let t = if raw < 0.0 { 0.0 } else if raw > 1.0 { 1.0 } else { raw };
+    [dark[0] + (light[0] - dark[0]) * t, dark[1] + (light[1] - dark[1]) * t, dark[2] + (light[2] - dark[2]) * t, dark[3] + (light[3] - dark[3]) * t]
+}
+
+fn disc_vertex(center: Vec2, radii: Vec2, x: f32, y: f32, light: Color, dark: Color) -> MeshVertex {
+    let local = vec2(x, y);
+    let p = center.add(vec2(x * radii.x, y * radii.y));
+    // A u of -2 or less marks a soft disc to the shader: (u + 3, v) is the point's place on it.
+    MeshVertex { pos: [p.x, p.y, 0.0], color: shade(local, light, dark), uv: [x - 3.0, y] }
+}
+
+/// An ellipse with half-axes `radii`, solid in the middle and fading to transparent at its rim
+/// (the shader's soft disc), shaded from `light` at the top to `dark` at the bottom.
+fn push_soft_disc(center: Vec2, radii: Vec2, light: Color, dark: Color, out: &mut Vec[MeshVertex]) {
+    let bl = disc_vertex(center, radii, -1.0, -1.0, light, dark);
+    let br = disc_vertex(center, radii, 1.0, -1.0, light, dark);
+    let tr = disc_vertex(center, radii, 1.0, 1.0, light, dark);
+    let tl = disc_vertex(center, radii, -1.0, 1.0, light, dark);
+    out.push(bl);
+    out.push(br);
+    out.push(tr);
+    out.push(bl);
+    out.push(tr);
+    out.push(tl);
+}

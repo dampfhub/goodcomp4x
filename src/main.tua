@@ -230,6 +230,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
 /// screenshot written, or its time run out.
 fn on_frame(game: &mut GameState, input: &Input, shot: &mut Option[Screenshot], w: u32, h: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool can {Log, Rand, Clock} {
     if input.closed { return false; }
+    let shooting = shot.is_some();
     if let &mut Option.Some(s) = shot {
         let now = Clock.now_nanos();
         if s.is_written() { return false; }
@@ -241,6 +242,8 @@ fn on_frame(game: &mut GameState, input: &Input, shot: &mut Option[Screenshot], 
         s.after_frame(now);
     }
     game.update(dt);
+    // A screenshot keeps the clouds where they start, so two shots of one scene match.
+    if !shooting { game.animate_clouds(dt); }
     let size = vec2(w as f32, h as f32);
     game.update_hover(input.cursor, size, dt);
     let world = game.build_vertices();

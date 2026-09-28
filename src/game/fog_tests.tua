@@ -7,7 +7,14 @@ use std.test.assert;
 use std.test.Assert;
 use std.rand.Rand;
 use log.Log;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use renderer.MAX_VERTICES;
+use renderer.pipelines.MeshVertex;
 use game.GameState;
+use game.draw.CLOUD_SPACING;
+use game.draw.edge_fade;
+use game.draw.push_cloud_banks;
 use game.PLAYER_TEAM;
 use game.city.Site;
 use game.city.SiteKind;
@@ -302,5 +309,79 @@ fn mountains_block_sight_beyond_them() {
         assert(fog.sees(Hex.new(2, -1)));
         // Other directions are open.
         assert(fog.sees(Hex.new(-3, 0)));
+    });
+}
+
+/// The whole world, as a view rectangle.
+fn whole_world() -> (Vec2, Vec2) { (vec2(-1.0e6, -1.0e6), vec2(1.0e6, 1.0e6)) }
+
+fn clouds(grid: &HexGrid, time: f32) -> Vec[MeshVertex] {
+    let (lo, hi) = whole_world();
+    let mut vertices: Vec[MeshVertex] = Vec.new();
+    push_cloud_banks(grid, time, lo, hi, &mut vertices);
+    vertices
+}
+
+@test
+fn the_clouds_drift_and_billow_but_stay_over_the_map() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.world_scenario(3);
+        let mut first = true;
+        let mut lo = vec2(0.0, 0.0);
+        let mut hi = vec2(0.0, 0.0);
+        for h in game.grid.hexes() {
+            let p = (*h).to_world();
+            if first { lo = p; hi = p; first = false; } else { lo = lo.min(p); hi = hi.max(p); }
+        }
+        let reach = vec2(2.5 * CLOUD_SPACING, 2.5 * CLOUD_SPACING);
+        let (lo, hi) = (lo.sub(reach), hi.add(reach));
+        let still = clouds(&game.grid, 0.0);
+        // The same time, the same clouds.
+        assert(still.len() > 0 && still.len() == clouds(&game.grid, 0.0).len());
+        let times = [0.5, 60.0, 600.0, 5000.0];
+        for t in 0..4 {
+            let later = clouds(&game.grid, times[t]);
+            assert(later.len() < 120000);
+            // The clouds move.
+            let mut moved = false;
+            let n = if later.len() < still.len() { later.len() } else { still.len() };
+            for k in 0..n { if later[k].pos[0] != still[k].pos[0] || later[k].pos[1] != still[k].pos[1] { moved = true; } }
+            assert(moved);
+            // Whatever has drifted past the map's edge fades out: nothing is drawn more than a
+            // bank's width beyond it.
+            for k in 0..later.len() {
+                let (x, y) = (later[k].pos[0], later[k].pos[1]);
+                assert(x >= lo.x && y >= lo.y && x <= hi.x && y <= hi.y);
+            }
+        }
+        game.animate_clouds(2.0);
+        game.animate_clouds(3.0);
+        assert(game.cloud_time == 5.0);
+    });
+}
+
+@test
+fn a_puff_fades_out_past_the_map_edge() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let game = GameState.world_scenario(3);
+        let mut inside = vec2(0.0, 0.0);
+        let mut found = false;
+        for h in game.grid.hexes() { if !found { inside = (*h).to_world(); found = true; } }
+        assert(edge_fade(&game.grid, inside) == 1.0);
+        assert(edge_fade(&game.grid, vec2(1.0e4, 0.0)) == 0.0);
+    });
+}
+
+@test
+fn the_widest_view_of_a_world_fits_the_vertex_buffer() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Fresh, under clouds, and with the fog lifted, every hex drawn.
+        let mut game = GameState.world_scenario(7);
+        game.explore();
+        game.camera.zoom(-1000.0);
+        // More than the renderer's buffer holds is cut off.
+        assert(game.build_vertices().len() as u32 <= MAX_VERTICES);
+        game.toggle_fog();
+        assert(game.build_vertices().len() as u32 <= MAX_VERTICES);
     });
 }

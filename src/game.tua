@@ -148,6 +148,8 @@ pub struct GameState {
     fog_of_war: bool,
     /// Every hex the player's side has seen, as it last saw it.
     memory: Map[Hex, Sighting],
+    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.tua`).
+    cloud_time: f32,
     /// A click that would replace the selection's queue, waiting to be repeated
     /// (`confirm_queue_replace`).
     queue_replace_armed: Option[QueueReplace],
@@ -231,6 +233,7 @@ impl GameState {
             ruins: Vec.new(),
             fog_of_war: true,
             memory: Map.new(),
+            cloud_time: 0.0,
             queue_replace_armed: Option.None,
             disband_armed: Option.None,
             effects: Vec.new(),

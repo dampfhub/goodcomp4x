@@ -171,8 +171,9 @@ use renderer.pipelines.destroy_mesh;
 const FRAMES_IN_FLIGHT: u32 = 2;
 /// The background, in linear colour.
 const CLEAR_COLOR: [f32; 4] = [0.06, 0.06, 0.08, 1.0];
-/// The most vertices one frame draws; a frame's vertices past this are not drawn.
-const MAX_VERTICES: u32 = 131072;
+/// The most vertices one frame draws; a frame's vertices past this are not drawn. The whole
+/// world map in view with the fog lifted takes about 300 thousand.
+pub const MAX_VERTICES: u32 = 524288;
 /// The cap on the frame rate, so the loop does not load the GPU with frames the display
 /// cannot show.
 const TARGET_FPS: i64 = 165;
