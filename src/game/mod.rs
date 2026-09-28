@@ -9,6 +9,7 @@ mod city;
 mod combat;
 mod draw;
 mod effects;
+mod fast_hash;
 mod fog;
 mod font;
 mod group;
@@ -19,6 +20,8 @@ mod mesh;
 mod multiplayer;
 mod order_queue;
 mod orders;
+#[cfg(test)]
+mod perf;
 mod ruins;
 mod scenario;
 mod settings;
@@ -31,7 +34,9 @@ mod unit;
 mod unit_icons;
 mod workers;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use fast_hash::{HashMap, HashSet};
+
+use std::collections::VecDeque;
 
 use glam::Vec2;
 use rand::SeedableRng;
@@ -86,7 +91,7 @@ pub struct GameState {
     /// trained from it, not those alive. Kept across scenario switches and
     /// loads.
     lifetime_special_cap: bool,
-    sites: std::collections::HashMap<Hex, city::Site>,
+    sites: crate::game::fast_hash::HashMap<Hex, city::Site>,
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
     /// Barracks have their own production screen, separate from city labor.
@@ -242,8 +247,8 @@ impl GameState {
             production_speedup: false,
             special_trained: [[0; 2]; Team::ALL.len()],
             lifetime_special_cap: false,
-            sites: std::collections::HashMap::new(),
-            roads: HashSet::new(),
+            sites: crate::game::fast_hash::HashMap::default(),
+            roads: HashSet::default(),
             selected_city: None,
             selected_barracks: None,
             interior_view: None,
@@ -277,7 +282,7 @@ impl GameState {
             net_menu: ui::NetMenu::default(),
             quit_requested: false,
             fog_of_war: true,
-            memory: fog::Memory::new(),
+            memory: fog::Memory::default(),
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
             rng: GameRng::seed_from_u64(rand::random()),
@@ -288,13 +293,13 @@ impl GameState {
             recent_actors: Vec::new(),
             highlight_timer: 0.0,
             cloud_time: 0.0,
-            settlers: HashSet::new(),
+            settlers: HashSet::default(),
             ruins: Vec::new(),
             roster_open: None,
             field_workers: Vec::new(),
-            structures: HashMap::new(),
-            barriers: HashMap::new(),
-            player_controlled_units: HashSet::new(),
+            structures: HashMap::default(),
+            barriers: HashMap::default(),
+            player_controlled_units: HashSet::default(),
             local_team: PLAYER_TEAM,
             humans: vec![PLAYER_TEAM],
             next_unit_id: 8,
@@ -615,7 +620,7 @@ impl GameState {
         move_range: i32,
         open: impl Fn(Hex, Hex) -> bool,
     ) -> HashSet<Hex> {
-        let mut visited = HashSet::from([start]);
+        let mut visited = HashSet::from_iter([start]);
         let mut frontier = vec![start];
 
         for _ in 0..move_range {

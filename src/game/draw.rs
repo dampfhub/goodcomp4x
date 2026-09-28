@@ -1,10 +1,10 @@
 //! Builds each frame's geometry from the game state.
 
-use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 use glam::Vec2;
 
+use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, SeenBuilding};
 use super::hex::{HEX_SIZE, Hex, HexGrid, edge, edge_corners};
 use super::map_icons::{
@@ -270,11 +270,23 @@ struct Selection {
 impl GameState {
     /// The whole scene as a triangle list, back to front: hex grid, cities,
     /// fog, queued order markers, then units.
+    #[cfg(test)]
     pub fn build_vertices(&self) -> Vec<Vertex> {
+        self.build_scene(Vec::new())
+    }
+
+    /// `build_vertices` into `buffer`, reusing its memory: the app keeps one
+    /// from frame to frame, as a scene is a few megabytes.
+    pub fn build_vertices_into(&self, buffer: &mut Vec<Vertex>) {
+        *buffer = self.build_scene(std::mem::take(buffer));
+    }
+
+    fn build_scene(&self, mut out: Vec<Vertex>) -> Vec<Vertex> {
+        out.clear();
         if let Some(city) = self.interior_view {
-            return self.build_interior_vertices(city);
+            out.extend(self.build_interior_vertices(city));
+            return out;
         }
-        let mut out = Vec::new();
         let fog = self.fog();
 
         let selection = self.selected.map(|idx| {
@@ -297,7 +309,7 @@ impl GameState {
                         unit.is_naval(),
                     )
                 } else {
-                    HashSet::new()
+                    HashSet::default()
                 },
                 locked: self.rival_of(idx).is_some(),
                 swapping: self.ui_click_mode == Some(ClickMode::Swap),
@@ -338,10 +350,11 @@ impl GameState {
         }
 
         // Never-seen hexes aren't drawn at all: the background shows there.
+        // Of those, only what the camera may show.
         let explored: Vec<Hex> = self
             .grid
             .all_hexes()
-            .filter(|&h| self.is_explored(h))
+            .filter(|&h| self.may_show(h) && self.is_explored(h))
             .collect();
         // Every border first, each reaching across the whole gap: the fills
         // drawn next cover what lies inside an explored neighbor, leaving a
@@ -373,7 +386,11 @@ impl GameState {
             }
             self.push_known_ruin(hex, &fog, &mut out);
         }
-        push_rivers(&self.grid, |h| self.is_explored(h), &mut out);
+        push_rivers(
+            &self.grid,
+            |h| self.may_show(h) && self.is_explored(h),
+            &mut out,
+        );
 
         self.push_city_map(&fog, &mut out);
         self.push_fog(&fog, &mut out);
@@ -430,7 +447,6 @@ impl GameState {
             }
         }
         self.push_field_workers(&fog, &mut out);
-
         self.push_tile_yields(&fog, &mut out);
         self.push_effects(&mut out);
         out
@@ -611,6 +627,17 @@ impl GameState {
         (self.camera.center - reach, self.camera.center + reach)
     }
 
+    /// Whether anything drawn on `hex` may be on screen (`cloud_view`, with
+    /// room for what reaches past the hex, like its border and labels). The
+    /// map's per-hex layers skip the rest: a big map has far more hexes than
+    /// a view.
+    fn may_show(&self, hex: Hex) -> bool {
+        let (min, max) = self.cloud_view();
+        let margin = Vec2::splat(2.0 * HEX_SIZE);
+        let p = hex.to_world();
+        p.cmpge(min - margin).all() && p.cmple(max + margin).all()
+    }
+
     /// Ruins on `hex` as the player knows them: in sight, with a pip for
     /// each turn their holder has held them, in its color; out of sight, as
     /// last seen, without.
@@ -647,7 +674,7 @@ impl GameState {
         let remembered: Vec<Hex> = self
             .grid
             .all_hexes()
-            .filter(|h| self.is_explored(*h) && !fog.sees(*h))
+            .filter(|&h| self.may_show(h) && self.is_explored(h) && !fog.sees(h))
             .collect();
         let blank = |h: Hex| !self.grid.contains(h) || !self.is_explored(h);
         for &hex in &remembered {
@@ -660,7 +687,7 @@ impl GameState {
             for n in hex.neighbors().into_iter().filter(|&n| blank(n)) {
                 let (a, b) = edge_corners(hex, n);
                 let grow = |p: Vec2| center + (p - center) * (OUTER_BORDER_RADIUS / HEX_SIZE);
-                mesh::polygon(&[a, b, grow(b), grow(a)], REMEMBERED_BORDER_COLOR, out);
+                mesh::convex_polygon(&[a, b, grow(b), grow(a)], REMEMBERED_BORDER_COLOR, out);
             }
         }
         for &hex in &remembered {
@@ -799,18 +826,7 @@ fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
 /// keeps its lattice point's hash as it drifts, so the pattern moves whole.
 /// The work per puff is constant and cheap: no noise sampling per vertex.
 fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec<Vertex>) {
-    let Some((min, max)) =
-        grid.all_hexes()
-            .map(Hex::to_world)
-            .fold(None, |bounds: Option<(Vec2, Vec2)>, p| {
-                Some(match bounds {
-                    None => (p, p),
-                    Some((min, max)) => (min.min(p), max.max(p)),
-                })
-            })
-    else {
-        return;
-    };
+    let (min, max) = grid.bounds();
     // A bank reaches about two spacings from its lattice point.
     let reach = Vec2::splat(2.0 * CLOUD_SPACING);
     let (min, max) = (min.max(view.0 - reach), max.min(view.1 + reach));
@@ -827,29 +843,17 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec
     let mut puffs = Vec::new();
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            // Rows are offset by half a bank, and each bank wanders off its
-            // lattice point, so the lattice doesn't show.
-            let jitter = Vec2::new(
-                cloud_hash(x, y, 0xA341_316C) - 0.5,
-                cloud_hash(x, y, 0xC801_3EA4) - 0.5,
-            ) * 0.7;
-            let row_shift = if y.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
-            let bank = (Vec2::new(x as f32 + row_shift, y as f32) + jitter) * CLOUD_SPACING + drift;
-            let scale = CLOUD_SPACING * (0.8 + cloud_hash(x, y, 0xAD90_777D) * 0.5);
-            let (shape, count) = bank_shape(x, y);
-            for (i, &(place, size)) in shape[..count].iter().enumerate() {
-                let salt = (i as u32 + 1).wrapping_mul(0x9E37_79B9);
-                // Each puff billows at its own phase and pace.
-                let pace = 0.75 + cloud_hash(x, y, 0x2545_F491 ^ salt) * 0.5;
-                let phase = cloud_hash(x, y, 0x5851_F42D ^ salt) * TAU
-                    + time * pace * TAU / CLOUD_BILLOW_PERIOD;
+            let look = cached_bank(x, y);
+            let (bank, scale) = (look.place + drift, look.scale);
+            for puff in &look.puffs[..look.count] {
+                let phase = puff.phase + time * puff.pace * TAU / CLOUD_BILLOW_PERIOD;
                 let wander = Vec2::new(phase.cos(), (phase * 0.8).sin()) * CLOUD_WANDER;
-                let center = bank + place * scale + wander;
+                let center = bank + puff.place * scale + wander;
                 let alpha = edge_fade(grid, center);
                 if alpha <= 0.0 {
                     continue;
                 }
-                let radius = size * scale * 1.5 * (1.0 + CLOUD_BILLOW * (phase * 1.3).sin());
+                let radius = puff.size * scale * 1.5 * (1.0 + CLOUD_BILLOW * (phase * 1.3).sin());
                 puffs.push(Puff {
                     center,
                     radius,
@@ -863,16 +867,84 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec
             }
         }
     }
-    puffs.sort_by(|a, b| b.center.y.total_cmp(&a.center.y));
+    puffs.sort_unstable_by(|a, b| b.center.y.total_cmp(&a.center.y));
     out.reserve((shadows.len() + puffs.len()) * CLOUD_PUFF_VERTICES);
     for (center, alpha) in shadows {
         let color = with_alpha(CLOUD_SHADOW_COLOR, CLOUD_SHADOW_COLOR[3] * alpha);
-        push_soft_disc(center, Vec2::splat(0.62 * CLOUD_SPACING), color, color, out);
+        push_soft_disc(center, Vec2::splat(SHADOW_RADIUS), color, color, out);
     }
     for puff in &puffs {
         push_cloud_puff(puff, out);
     }
 }
+
+/// A cloud bank's fixed look, all from its lattice point's hash: where it
+/// sits, how big it is, and its puffs.
+#[derive(Clone, Copy)]
+struct Bank {
+    /// Its place before the wind moves it.
+    place: Vec2,
+    scale: f32,
+    puffs: [BankPuff; MAX_BANK_PUFFS],
+    count: usize,
+}
+
+/// A puff of a `Bank`: its place around the bank's center and radius, in
+/// units of the bank's scale, and how it billows (its pace, and its phase at
+/// time 0).
+#[derive(Clone, Copy, Default)]
+struct BankPuff {
+    place: Vec2,
+    size: f32,
+    pace: f32,
+    phase: f32,
+}
+
+fn bank(x: i32, y: i32) -> Bank {
+    // Rows are offset by half a bank, and each bank wanders off its lattice
+    // point, so the lattice doesn't show.
+    let jitter = Vec2::new(
+        cloud_hash(x, y, 0xA341_316C) - 0.5,
+        cloud_hash(x, y, 0xC801_3EA4) - 0.5,
+    ) * 0.7;
+    let row_shift = if y.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
+    let (shape, count) = bank_shape(x, y);
+    let mut puffs = [BankPuff::default(); MAX_BANK_PUFFS];
+    for (i, (puff, &(place, size))) in puffs.iter_mut().zip(&shape[..count]).enumerate() {
+        let salt = (i as u32 + 1).wrapping_mul(0x9E37_79B9);
+        // Each puff billows at its own phase and pace.
+        *puff = BankPuff {
+            place,
+            size,
+            pace: 0.75 + cloud_hash(x, y, 0x2545_F491 ^ salt) * 0.5,
+            phase: cloud_hash(x, y, 0x5851_F42D ^ salt) * TAU,
+        };
+    }
+    Bank {
+        place: (Vec2::new(x as f32 + row_shift, y as f32) + jitter) * CLOUD_SPACING,
+        scale: CLOUD_SPACING * (0.8 + cloud_hash(x, y, 0xAD90_777D) * 0.5),
+        puffs,
+        count,
+    }
+}
+
+/// `bank`, worked out once per lattice point: the clouds are rebuilt every
+/// frame and it's most of their cost. The wind brings new points into view
+/// slowly, so the cache is simply emptied if it ever gets big.
+fn cached_bank(x: i32, y: i32) -> Bank {
+    thread_local! {
+        static BANKS: std::cell::RefCell<HashMap<(i32, i32), Bank>> = Default::default();
+    }
+    BANKS.with_borrow_mut(|banks| {
+        if banks.len() > 20_000 {
+            banks.clear();
+        }
+        *banks.entry((x, y)).or_insert_with(|| bank(x, y))
+    })
+}
+
+/// A cloud bank's shadow's radius.
+const SHADOW_RADIUS: f32 = 0.62 * CLOUD_SPACING;
 
 /// Vertices in one cloud disc: a quad the shader rounds and feathers
 /// (`soft_disc_uv`).
@@ -938,7 +1010,7 @@ impl GameState {
             .collect();
 
         // Where each moving unit's ghost is drawn, for its attack arc.
-        let mut ghosts: HashMap<u32, Vec2> = HashMap::new();
+        let mut ghosts: HashMap<u32, Vec2> = HashMap::default();
         let plain_moves = group_by_target(&self.units, |u| {
             u.planned_move
                 .filter(|_| !swapping.contains(&u.id) && !u.plans_later_turns() && fog.shows(u))
@@ -1242,14 +1314,14 @@ impl GameState {
     /// reach but those a building covers. Returns the tiles labeled, whose
     /// job names then sit below the share.
     fn push_delivery_shares(&self, fog: &Fog, out: &mut Vec<Vertex>) -> HashSet<Hex> {
-        let mut labeled = HashSet::new();
+        let mut labeled = HashSet::default();
         let Some(i) = self.shares_city() else {
             return labeled;
         };
         let known_routes = self.known_routes(i, fog);
         for (h, cost) in &known_routes.costs {
             // Nothing is known of a tile never seen, delivery included.
-            if !self.is_explored(*h) || self.known_building_at(*h, fog) {
+            if !self.may_show(*h) || !self.is_explored(*h) || self.known_building_at(*h, fog) {
                 continue;
             }
             let food_share = self.mill_food_share(i, *h, *cost);
@@ -1544,17 +1616,17 @@ impl GameState {
             return;
         }
         let reach = city.map(|city| (city, self.known_routes(city, fog)));
+        // The cheap tests first: most hexes fail one.
         for hex in self.grid.all_hexes().filter(|&h| {
-            self.grid.terrain(h).is_workable()
+            self.may_show(h)
+                && self.grid.terrain(h).is_workable()
+                && (self.show_details
+                    || reach.as_ref().is_some_and(|(city, routes)| {
+                        routes.costs.contains_key(&h) || self.cities[*city].worked.contains(&h)
+                    }))
                 && self.is_explored(h)
                 && !self.known_building_at_off_center(h, fog)
         }) {
-            let in_reach = reach.as_ref().is_some_and(|(city, routes)| {
-                routes.costs.contains_key(&hex) || self.cities[*city].worked.contains(&hex)
-            });
-            if !in_reach && !self.show_details {
-                continue;
-            }
             let goods = self.known_yield(hex, fog);
             push_yield_row(hex.to_world() + YIELD_ROW_OFFSET, goods, out);
         }
@@ -1570,7 +1642,7 @@ fn push_yield_row(center: Vec2, goods: (i32, i32, i32), out: &mut Vec<Vertex>) {
         return;
     }
     let pill = rounded_rect(center, row.half, YIELD_PIP_CORNER);
-    mesh::polygon(&pill, YIELD_ROW_COLOR, out);
+    mesh::convex_polygon(&pill, YIELD_ROW_COLOR, out);
     for (icon, at) in row.icons {
         map_icons::push_map_icon_scaled(center + at, icon, YIELD_ICON_SCALE * row.scale, out);
     }
@@ -2513,6 +2585,8 @@ mod tests {
             })
             .unwrap();
         let point = corner + (c.to_world() - corner).normalize() * 0.03;
+        // Only what the camera may show is drawn.
+        game.camera.center = a.to_world();
         let mut vertices = Vec::new();
         game.push_fog(&fog, &mut vertices);
         let translucent_over = vertices
@@ -3158,7 +3232,7 @@ mod tests {
         let label = GameState::job_label_at(tile, &shares);
         let share_bottom = tile.to_world().y + SHARE_LABEL_OFFSET.y;
         assert!(label.y + PLANNED_JOB_LABEL_HEIGHT / 2.0 < share_bottom);
-        let bare = GameState::job_label_at(tile, &HashSet::new());
+        let bare = GameState::job_label_at(tile, &HashSet::default());
         assert_eq!(bare, tile.to_world() + PLANNED_JOB_LABEL_OFFSET);
     }
 

@@ -11,13 +11,30 @@ pub fn regular_polygon(
     color: [f32; 4],
     out: &mut Vec<Vertex>,
 ) {
-    let corner = |i: u32| {
-        let angle = rotation + std::f32::consts::TAU * i as f32 / sides as f32;
-        center + Vec2::from_angle(angle) * radius
+    out.reserve(sides as usize * 3);
+    let mut corners = corner_directions(sides, rotation).map(|d| center + d * radius);
+    let Some(mut previous) = corners.next() else {
+        return;
     };
-    for i in 0..sides {
-        push_triangle(out, center, corner(i), corner(i + 1), color);
+    for corner in corners {
+        push_triangle(out, center, previous, corner, color);
+        previous = corner;
     }
+}
+
+/// The directions from a regular polygon's center to its corners, starting
+/// at `rotation` and going round to the first again (`sides` + 1 of them).
+/// Each is the last turned by one step, so it takes two sines and cosines
+/// however many sides there are: shapes are built every frame.
+fn corner_directions(sides: u32, rotation: f32) -> impl Iterator<Item = Vec2> {
+    let step = Vec2::from_angle(std::f32::consts::TAU / sides.max(1) as f32);
+    let first = Vec2::from_angle(rotation);
+    let mut direction = first;
+    (0..=sides).map(move |i| {
+        let current = if i == sides { first } else { direction };
+        direction = step.rotate(direction);
+        current
+    })
 }
 
 /// Appends the outline of a regular polygon: a band `width` thick centered on
@@ -34,16 +51,18 @@ pub fn polygon_outline(
     // Moving an edge `width / 2` along its normal moves the corners further,
     // since they're farther from the center than the edge's midpoint.
     let corner_offset = width / 2.0 / (std::f32::consts::PI / sides as f32).cos();
-    let corner = |i: u32, radius: f32| {
-        let angle = rotation + std::f32::consts::TAU * i as f32 / sides as f32;
-        center + Vec2::from_angle(angle) * radius
-    };
     let (outer, inner) = (radius + corner_offset, radius - corner_offset);
-    for i in 0..sides {
-        let (a, b) = (corner(i, outer), corner(i + 1, outer));
-        let (c, d) = (corner(i, inner), corner(i + 1, inner));
+    out.reserve(sides as usize * 6);
+    let mut directions = corner_directions(sides, rotation);
+    let Some(mut previous) = directions.next() else {
+        return;
+    };
+    for direction in directions {
+        let (a, b) = (center + previous * outer, center + direction * outer);
+        let (c, d) = (center + previous * inner, center + direction * inner);
         push_triangle(out, a, b, d, color);
         push_triangle(out, a, d, c, color);
+        previous = direction;
     }
 }
 
@@ -110,6 +129,38 @@ pub fn outline(points: &[Vec2], width: f32, color: [f32; 4], out: &mut Vec<Verte
     around.extend_from_slice(points);
     around.push(points[0]);
     polyline(&around, width, color, out);
+}
+
+/// Appends `shape`, triangles built around the origin, scaled by `scale`
+/// and moved to `center`, in `color` if given. Icons are built once this
+/// way and then placed wherever they're drawn.
+pub fn place(
+    shape: &[Vertex],
+    center: Vec2,
+    scale: f32,
+    color: Option<[f32; 4]>,
+    out: &mut Vec<Vertex>,
+) {
+    out.extend(shape.iter().map(|v| Vertex {
+        pos: [
+            v.pos[0] * scale + center.x,
+            v.pos[1] * scale + center.y,
+            v.pos[2],
+        ],
+        color: color.unwrap_or(v.color),
+        uv: v.uv,
+    }));
+}
+
+/// Appends a filled convex polygon: a fan from its first corner, without
+/// `polygon`'s search for ears.
+pub fn convex_polygon(points: &[Vec2], color: [f32; 4], out: &mut Vec<Vertex>) {
+    let Some((&first, rest)) = points.split_first() else {
+        return;
+    };
+    for pair in rest.windows(2) {
+        push_triangle(out, first, pair[0], pair[1], color);
+    }
 }
 
 /// Appends a filled triangle.

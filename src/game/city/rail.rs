@@ -1,9 +1,10 @@
 //! A city center is an implicit rail terminal. A remote Railhead connected by
 //! an unbroken road corridor receives one-turn moves from the city's ring.
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use super::Building;
 use crate::game::GameState;
+use crate::game::fast_hash::HashSet;
 use crate::game::fog::Fog;
 use crate::game::hex::Hex;
 use crate::game::unit::Team;
@@ -30,7 +31,7 @@ impl GameState {
             return false;
         };
         let team = owner.team;
-        let mut visited = HashSet::from([owner.pos]);
+        let mut visited = HashSet::from_iter([owner.pos]);
         let mut queue = VecDeque::from([owner.pos]);
         while let Some(from) = queue.pop_front() {
             if from == terminal {

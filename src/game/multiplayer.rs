@@ -668,6 +668,8 @@ impl GameState {
         }
         // Units: its own, each once, with orders on the map.
         let own_unit = |id: u32| start.units.iter().any(|u| u.id == id && u.team == team);
+        // std's set, with random keys, not `fast_hash`: these are a remote
+        // player's keys, not yet checked.
         let mut seen = std::collections::HashSet::new();
         for unit in &plan.units {
             if !own_unit(unit.id) || !seen.insert(unit.id) {

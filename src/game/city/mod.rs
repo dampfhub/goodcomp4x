@@ -14,8 +14,6 @@ mod rail;
 mod tests;
 mod view;
 
-use std::collections::HashMap;
-
 use super::hex::{Hex, HexGrid};
 use super::mapgen::{generate, start_units};
 use super::ruins::{Ruin, RuinReward};
@@ -24,6 +22,7 @@ use super::terrain::{Resource, Tile};
 use super::unit::{Team, Unit, UnitType};
 use super::workers::WorkerJob;
 use super::{GameState, PLAYER_TEAM};
+use crate::game::fast_hash::HashMap;
 
 pub(in crate::game) use barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 pub use builds::{Build, BuildUnit, Building};
@@ -124,7 +123,7 @@ impl City {
             barracks: None,
             mill: None,
             workshop: None,
-            extra_buildings: HashMap::new(),
+            extra_buildings: HashMap::default(),
             building_scroll: 0,
             barracks_queue: Vec::new(),
             barracks_progress: 0,

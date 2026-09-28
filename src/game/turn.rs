@@ -1,11 +1,10 @@
 //! Turn resolution: queued orders play out step by step, in an order set by
 //! each unit type's role. All units in a step act simultaneously.
 
-use std::collections::HashMap;
-
 use super::ability::{Ability, VOLLEY_DAMAGE};
 use super::city::{BARRACKS_DEFENSE, Building};
 use super::effects::{Effect, Outcome};
+use super::fast_hash::HashMap;
 use super::hex::Hex;
 use super::unit::{Unit, UnitType};
 use super::{GameState, combat};
@@ -337,7 +336,7 @@ impl GameState {
             .collect();
         let mut moving = moving;
 
-        let mut claims: HashMap<Hex, Vec<usize>> = HashMap::new();
+        let mut claims: HashMap<Hex, Vec<usize>> = HashMap::default();
         for (m, &dest) in dests.iter().enumerate().filter(|&(m, _)| moving[m]) {
             claims.entry(dest).or_default().push(m);
         }

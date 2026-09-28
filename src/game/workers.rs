@@ -14,12 +14,13 @@
 //! Outposts (the owner sees around them) and forts (the owner's units in one
 //! defend better) stand on a tile.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use glam::Vec2;
 
 use super::GameState;
 use super::city::{Building, Site, Stock, stock_icons};
+use super::fast_hash::HashMap;
 use super::hex::{Hex, edge};
 use super::terrain::Terrain;
 use super::unit::{Team, Unit};
@@ -1053,7 +1054,7 @@ impl GameState {
                 && self.enemy_of_team_at(hex, team).is_none()
                 && !self.cities.iter().any(|c| c.pos == hex && c.team != team)
         };
-        let mut came_from: HashMap<Hex, Hex> = HashMap::from([(from, from)]);
+        let mut came_from: HashMap<Hex, Hex> = HashMap::from_iter([(from, from)]);
         let mut queue = VecDeque::from([from]);
         while let Some(hex) = queue.pop_front() {
             if hex == to {

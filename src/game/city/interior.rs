@@ -1,8 +1,7 @@
 //! A small tactical board inside each city. Field units on the six neighboring
 //! hexes project independent fighters through the corresponding gates.
 
-use std::collections::HashSet;
-
+use crate::game::fast_hash::HashSet;
 use crate::game::hex::Hex;
 use crate::game::terrain::Resource;
 use crate::game::unit::{Team, UnitStats, UnitType, apply_training_upgrade};
@@ -831,7 +830,7 @@ mod tests {
             let snapshot = game.cities[1].interior.fighters.clone();
             let core_breached = game.cities[1].interior.core_hp <= 0.0;
             let occupied: HashSet<_> = snapshot.iter().map(|fighter| fighter.pos).collect();
-            let mut claimed = HashSet::new();
+            let mut claimed = HashSet::default();
             for fighter in &mut game.cities[1].interior.fighters {
                 if fighter.team != Team::Blue {
                     continue;

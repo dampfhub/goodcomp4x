@@ -9,10 +9,10 @@
 //! the Cavalry and Armored cap counting every one ever trained, and `economy_report`
 //! (ignored by default) prints how the stockpiles flow.
 
-use std::collections::{HashMap, HashSet};
 use std::thread;
 
 use super::city::{Build, Building, CORE_HP, MAX_CITY_POPULATION};
+use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
@@ -175,8 +175,8 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: ruins with a count but no holder, or the reverse"
         );
     }
-    let mut ids = HashSet::new();
-    let mut occupants: HashMap<_, Vec<Team>> = HashMap::new();
+    let mut ids = HashSet::default();
+    let mut occupants: HashMap<_, Vec<Team>> = HashMap::default();
     for (idx, unit) in game.units.iter().enumerate() {
         assert!(
             ids.insert(unit.id),
@@ -282,7 +282,7 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: {hex:?} holds {teams:?}"
         );
     }
-    let mut all_worked_tiles = HashSet::new();
+    let mut all_worked_tiles = HashSet::default();
     for city in &game.cities {
         assert!(
             (1..=MAX_CITY_POPULATION).contains(&city.population),
@@ -322,8 +322,8 @@ fn check_invariants(game: &GameState, context: &str) {
             city.id,
             city.interior.core_hp
         );
-        let mut sources = HashSet::new();
-        let mut tiles = HashSet::new();
+        let mut sources = HashSet::default();
+        let mut tiles = HashSet::default();
         for fighter in &city.interior.fighters {
             assert!(
                 sources.insert(fighter.source_id),
@@ -678,7 +678,7 @@ fn economy_report() {
         for seed in seeds() {
             let mut game = start(scenario, seed);
             let mut seen: HashSet<u32> = game.units.iter().map(|u| u.id).collect();
-            let mut trained: HashMap<Team, usize> = HashMap::new();
+            let mut trained: HashMap<Team, usize> = HashMap::default();
             println!(
                 "{} seed {seed}{}",
                 scenario.name(),
