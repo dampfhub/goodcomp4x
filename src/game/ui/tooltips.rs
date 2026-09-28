@@ -24,7 +24,7 @@ use glam::Vec2;
 impl GameState {
     /// What queuing `build` in the open city (or Barracks, with
     /// `barracks`) costs from the stockpile, and how long it takes there:
-    /// "COSTS" and the price's icons, then the clock and the turns.
+    /// the price's icons, then the clock and the turns.
     fn price_text(&self, build: Build, barracks: bool) -> String {
         let city = self.selected_city.or(self.selected_barracks);
         let price = city.map_or_else(|| build.price(), |city| self.queue_price(city, build));
@@ -32,27 +32,18 @@ impl GameState {
             Some(city) if !barracks => self.city_build_turns(city, build),
             _ => build.turns(),
         };
-        format!("COSTS {} · {}.", stock_icons(price), turns_icon(turns))
+        format!("{} {}", stock_icons(price), turns_icon(turns))
     }
 
     /// For a troop that needs Horses or Iron, how many more its side may
-    /// train (`city/barracks.rs`): " 2 OF 3 LEFT FOR YOUR 1 HORSES DEPOSIT."
+    /// train (`city/barracks.rs`): " · 2 OF 3 LEFT".
     fn special_note(&self, build: crate::game::BuildUnit) -> String {
         let Some(resource) = build.required_resource() else {
             return String::new();
         };
         let cap = self.special_cap(PLAYER_TEAM, resource);
         let left = cap.saturating_sub(self.special_used(PLAYER_TEAM, resource));
-        let deposits = cap / UNITS_PER_DEPOSIT;
-        format!(
-            " {left} OF {cap} LEFT: {UNITS_PER_DEPOSIT} PER {} DEPOSIT YOUR BARRACKS USE ({deposits} NOW){}.",
-            resource.name(),
-            if self.lifetime_special_cap {
-                ", COUNTING EVERY ONE EVER TRAINED"
-            } else {
-                ", COUNTING THOSE ALIVE"
-            }
-        )
+        format!(" · {left} OF {cap} LEFT")
     }
 
     /// What the stockpile is short of to queue `build` in the open city, if
@@ -167,7 +158,7 @@ impl GameState {
 
         let mut notes = Vec::new();
         if self.grid.has_fresh_water(hex) {
-            notes.push("FRESH WATER: +1 FOOD".into());
+            notes.push("FRESH WATER +1 FOOD".into());
         }
         if let Some((owner, building)) = placed {
             notes.push(building.description().into());
@@ -178,21 +169,21 @@ impl GameState {
             match building {
                 Building::WorkCamp => notes.push(
                     if self.routes(city_index).costs.contains_key(&hex) {
-                        "WORK CAMP CONNECTED: NEARBY JOBS USE THIS BASE"
+                        "CONNECTED"
                     } else {
-                        "WORK CAMP CUT OFF: WORKERS START AT CITY"
+                        "CUT OFF FROM ITS CITY"
                     }
                     .into(),
                 ),
                 Building::Smelter => notes.push(format!(
-                    "SMELTER {} PRODUCTION/T",
+                    "{} METAL A TURN",
                     signed_quantity(self.smelter_income(city_index))
                 )),
                 Building::Railhead => notes.push(
                     if self.rail_connected(city_index, Some(&fog)) {
-                        "RAIL LINK OPEN: CITY-RING TROOPS CAN MOVE HERE"
+                        "RAIL LINK OPEN"
                     } else {
-                        "RAIL LINK CUT: BUILD A CONTINUOUS ROAD"
+                        "RAIL LINK CUT: NEEDS A ROAD TO THE CITY"
                     }
                     .into(),
                 ),
@@ -201,7 +192,7 @@ impl GameState {
         }
         if tile.defense_multiplier() != 1.0 {
             let bonus = (tile.defense_multiplier() - 1.0) * 100.0;
-            notes.push(format!("+{bonus:.0}% DEFENSE FOR UNITS HERE"));
+            notes.push(format!("+{bonus:.0}% DEFENSE"));
         }
         let (site, road) = match memory {
             Some(seen) => (seen.site, seen.road),
@@ -214,10 +205,10 @@ impl GameState {
             notes.push(format!("{team:?} {label}").to_uppercase());
         }
         if road {
-            notes.push("ROAD: GOODS TRAVEL CHEAPER".into());
+            notes.push("ROAD".into());
         }
         if let Some(resource) = self.grid.resource(hex) {
-            notes.push(format!("{} RESOURCE", resource.name()));
+            notes.push(resource.name().into());
         }
         if let Some(special) = self.grid.special(hex) {
             let (food, production) = special.bonus();
@@ -226,11 +217,7 @@ impl GameState {
                 .filter(|&(amount, _)| amount > 0)
                 .map(|(amount, what)| format!("+{amount} {what}"))
                 .collect();
-            notes.push(format!(
-                "{}: {} WHEN WORKED",
-                special.name(),
-                gains.join(" ")
-            ));
+            notes.push(format!("{} {}", special.name(), gains.join(" ")));
         }
         notes.extend(self.ruin_notes(hex, memory.is_some()));
         if let Some(worker) = self
@@ -246,12 +233,20 @@ impl GameState {
         {
             let city = &self.cities[open];
             match self.known_routes(open, &fog).costs.get(&hex) {
-                Some(&cost) => notes.push(format!(
-                    "FOOD {}% / PRODUCTION {}% REACHES CITY {}",
-                    self.mill_food_share(open, hex, cost) * 25,
-                    delivered_share(cost) * 25,
-                    city.id + 1
-                )),
+                Some(&cost) => {
+                    let (food, rest) =
+                        (self.mill_food_share(open, hex, cost), delivered_share(cost));
+                    notes.push(if food == rest {
+                        format!("{}% REACHES CITY {}", rest * 25, city.id + 1)
+                    } else {
+                        format!(
+                            "FOOD {}%, REST {}% REACHES CITY {}",
+                            food * 25,
+                            rest * 25,
+                            city.id + 1
+                        )
+                    })
+                }
                 None => notes.push(format!("OUT OF CITY {}'S REACH", city.id + 1)),
             }
         }
@@ -360,7 +355,7 @@ impl GameState {
                     build.name().into(),
                     build.shortcut().to_string(),
                     format!(
-                        "{}. {} A BARRACKS TRAINS TROOPS TWICE AS FAST.",
+                        "{}. {}",
                         build.description(),
                         self.price_text(Build::Unit(build), false)
                     ),
@@ -368,16 +363,15 @@ impl GameState {
                 ),
                 Target::Building(building) => (
                     building.name().into(),
-                    if building.shortcut() == ' ' { "CITY BUILD MENU".into() } else { building.shortcut().to_string() },
+                    if building.shortcut() == ' ' {
+                        "CITY BUILD MENU".into()
+                    } else {
+                        building.shortcut().to_string()
+                    },
                     format!(
-                        "{} {} ONE PER CITY.{}",
+                        "{} {}",
                         building.description(),
-                        self.price_text(Build::Building(building), false),
-                        if building.is_placeable() {
-                            " PLACE IT ON THE MAP WITHIN YOUR WORKERS' REACH; A WORKER WALKS OUT AND BUILDS IT."
-                        } else {
-                            ""
-                        }
+                        self.price_text(Build::Building(building), false)
                     ),
                     if building.is_placeable() {
                         self.selected_city.and_then(|city| {
@@ -404,39 +398,36 @@ impl GameState {
                 Target::OpenBarracks => (
                     "SEE BARRACKS".into(),
                     "CLICK".into(),
-                    "OPENS THE BARRACKS' OWN TRAINING AND QUEUE PANEL.".into(),
+                    "ITS TRAINING AND QUEUE.".into(),
                     None,
                 ),
                 Target::OpenCity => (
                     "OPEN CITY".into(),
                     "CLICK".into(),
-                    "RETURNS TO THIS CITY'S LABOR AND MAIN PRODUCTION PANEL.".into(),
+                    "BACK TO THE CITY.".into(),
                     None,
                 ),
                 Target::OpenInterior => (
                     "CITY INTERIOR".into(),
                     "V".into(),
-                    "ENTER THE CITY'S TACTICAL MAP. YOU CAN ALSO CLICK ITS CENTER HEX FROM CITY VIEW.".into(),
+                    "THE CITY'S TACTICAL MAP.".into(),
                     None,
                 ),
                 Target::InteriorClear => (
                     "CLEAR INTERIOR ORDERS".into(),
                     "BACKSPACE".into(),
-                    "REMOVES THE SELECTED COPY'S MOVE AND ATTACK FOR THIS TURN.".into(),
+                    "DROPS THIS COPY'S ORDERS.".into(),
                     None,
                 ),
                 Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => (
                     "REMOVE".into(),
                     "CLICK".into(),
-                    "REMOVING THE ACTIVE ITEM LOSES ITS PRODUCTION.".into(),
+                    "REFUNDED. WORK DONE ON IT IS LOST.".into(),
                     None,
                 ),
-                Target::WorkerJobRemove(_) => (
-                    "REMOVE".into(),
-                    "CLICK".into(),
-                    "TAKES THIS JOB OFF THE CITY'S WORKER LIST.".into(),
-                    None,
-                ),
+                Target::WorkerJobRemove(_) => {
+                    ("REMOVE".into(), "CLICK".into(), "REFUNDED.".into(), None)
+                }
                 // Unit strip tokens aren't buttons: their help is in the strip.
                 Target::RosterSelect(_) | Target::RosterAdd(_) | Target::RosterRemove(_) => {
                     return Vec::new();
@@ -444,27 +435,26 @@ impl GameState {
                 Target::ShowWorker(_) => (
                     "WORKER".into(),
                     "CLICK".into(),
-                    "SHOW THIS WORKER ON THE MAP.".into(),
+                    "SHOW IT ON THE MAP.".into(),
                     None,
                 ),
                 Target::QueueItem(..) => (
                     "QUEUED".into(),
                     "CLICK · DRAG".into(),
-                    "CLICK TO SHOW IT ON THE MAP; DRAG TO REORDER.".into(),
+                    "CLICK: SHOW IT. DRAG: REORDER.".into(),
                     None,
                 ),
                 Target::RecallWorker(_) => (
                     "RECALL".into(),
                     "CLICK".into(),
-                    "THE WORKER HEADS STRAIGHT HOME, 1 TILE A TURN, WHERE IT'S SAFE. ITS JOB GOES BACK ON TOP OF THE CITY'S LIST."
-                        .into(),
+                    "SENDS IT HOME. ITS JOB WAITS ON THE LIST.".into(),
                     None,
                 ),
                 Target::BuildWorker => (
                     "WORKER".into(),
                     WORKER_SHORTCUT.to_string(),
                     format!(
-                        "JOINS THE CITY'S WORKERS, WHO GO OUT TO BUILD WHAT YOU ORDER FROM A TILE. {}",
+                        "BUILDS WHAT THE CITY PLACES. {}",
                         self.price_text(Build::Worker, false)
                     ),
                     self.shortfall_text(Build::Worker),
@@ -472,10 +462,7 @@ impl GameState {
                 Target::Grow => (
                     "GROW".into(),
                     GROW_SHORTCUT.to_string(),
-                    format!(
-                        "ONE MORE CITIZEN TO WORK A TILE; EACH EATS 2 FOOD A TURN. COSTS MORE FOOD THE BIGGER THE CITY. {}",
-                        self.price_text(Build::Grow, false)
-                    ),
+                    format!("ONE MORE CITIZEN. {}", self.price_text(Build::Grow, false)),
                     self.shortfall_text(Build::Grow),
                 ),
                 Target::WorkerJob(kind) => (
@@ -486,7 +473,7 @@ impl GameState {
                         _ => "CLICK".into(),
                     },
                     format!(
-                        "{} COSTS {} · {} OF WORK ONCE A WORKER GETS THERE. PLACE IT ON THE MAP WITHIN YOUR WORKERS' REACH.",
+                        "{} {} {}",
                         kind.description(),
                         stock_icons(kind.price()),
                         turns_icon(kind.turns() as i32)
@@ -497,7 +484,7 @@ impl GameState {
                 Target::Focus(focus) => (
                     format!("{} FOCUS", focus.name()),
                     "AUTO".into(),
-                    "REASSIGNS CITY LABOR WITH THIS AS ITS DEFAULT PRIORITY.".into(),
+                    "REASSIGNS THE CITIZENS.".into(),
                     None,
                 ),
                 Target::Scenario(scenario) => (
@@ -507,9 +494,9 @@ impl GameState {
                         Scenario::Combat => "FOUR UNITS A SIDE ACROSS A MOUNTAIN PASS.",
                         Scenario::Cities => "TWO ESTABLISHED CITIES WITH ARMIES.",
                         Scenario::Frontier => "A SETTLER AND A SCOUT EACH. BOTH SCOUTS ARE YOURS.",
-                        Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS, YOURS ALONE: NO AI OPPONENT.",
-                        Scenario::Siege => "OPPOSING FIELD TROOPS ALREADY FIGHT INSIDE A CITY.",
-                        Scenario::Naval => "COASTAL CITIES, SHIPS AND BATTERIES FOR NAVAL PLAYTESTING.",
+                        Scenario::World => "A NEW RANDOM WORLD EVERY PRESS.",
+                        Scenario::Siege => "A FIGHT ALREADY INSIDE A CITY.",
+                        Scenario::Naval => "COASTAL CITIES, SHIPS AND BATTERIES.",
                     }
                     .into(),
                     None,
@@ -517,7 +504,7 @@ impl GameState {
                 Target::SaveState => (
                     "SAVE".into(),
                     "F6".into(),
-                    "SNAPSHOTS THE WHOLE GAME UNTIL IT CLOSES.".into(),
+                    "SNAPSHOTS THE GAME.".into(),
                     self.is_resolving()
                         .then(|| "NOT WHILE A TURN PLAYS OUT".to_string()),
                 ),
@@ -532,27 +519,28 @@ impl GameState {
                 Target::CompleteProduction => (
                     "FINISH BUILD".into(),
                     "F9".into(),
-                    "INSTANTLY FINISHES THE CURRENT CITY BUILD OR BARRACKS UNIT FOR TESTING."
-                        .into(),
+                    "FINISHES THE CURRENT BUILD NOW.".into(),
                     None,
                 ),
                 Target::TogglePlayback => (
                     "PLAYBACK".into(),
                     "F8".into(),
-                    "STEP BY STEP OR ALL AT ONCE. THE OUTCOME IS THE SAME.".into(),
+                    "STEP BY STEP OR ALL AT ONCE.".into(),
                     None,
                 ),
                 Target::ToggleFog => ("FOG OF WAR".into(), "F10".into(), String::new(), None),
                 Target::ToggleProductionSpeedup => (
                     "PRODUCTION SPEEDS BUILDS".into(),
                     "DEBUG".into(),
-                    "ECONOMY EXPERIMENT: ON, A CITY'S WOOD AND METAL INCOME ALSO SPEEDS ITS QUEUE (EACH POINT A QUARTER TURN OF WORK); OFF, EVERY BUILD TAKES ITS FIXED TURNS.".into(),
+                    "ON: A CITY'S WOOD AND METAL INCOME SPEEDS ITS QUEUE.".into(),
                     None,
                 ),
                 Target::ToggleLifetimeCap => (
                     "CAVALRY AND ARMORED CAP".into(),
                     "DEBUG".into(),
-                    format!("EACH HORSES OR IRON DEPOSIT YOUR BARRACKS USE ALLOWS {UNITS_PER_DEPOSIT} CAVALRY OR ARMORED. ALIVE: COUNTS THOSE ALIVE AND QUEUED, SO LOSSES CAN BE REPLACED. EVER: COUNTS EVERY ONE EVER TRAINED, SO A DEPOSIT RUNS OUT."),
+                    format!(
+                        "{UNITS_PER_DEPOSIT} PER DEPOSIT. ALIVE: COUNTS LIVING ONES. EVER: COUNTS ALL TRAINED."
+                    ),
                     None,
                 ),
                 Target::SetSetting(setting, value) => {
@@ -573,25 +561,17 @@ impl GameState {
                 Target::OpenSettings => (
                     "SETTINGS".into(),
                     String::new(),
-                    "GAME OPTIONS AND CITY OVERLAYS.".into(),
+                    "GAME OPTIONS.".into(),
                     None,
                 ),
-                Target::CloseSettings => (
-                    "CLOSE SETTINGS".into(),
-                    "ESC".into(),
-                    String::new(),
-                    None,
-                ),
-                Target::Quit => (
-                    "QUIT".into(),
-                    String::new(),
-                    "CLOSES THE GAME.".into(),
-                    None,
-                ),
+                Target::CloseSettings => {
+                    ("CLOSE SETTINGS".into(), "ESC".into(), String::new(), None)
+                }
+                Target::Quit => ("QUIT".into(), String::new(), String::new(), None),
                 Target::ToggleYields => (
                     "YIELDS".into(),
                     "Y".into(),
-                    "TILE YIELDS AROUND THIS CITY, AND THE SHARE THAT REACHES IT.".into(),
+                    "TILE YIELDS AND DELIVERY SHARES.".into(),
                     None,
                 ),
                 Target::EndTurn => (
@@ -634,18 +614,13 @@ impl GameState {
             UnitAction::Move => (
                 "MOVE".into(),
                 "M OR CLICK",
-                "NEXT CLICK ON A GREEN HEX MOVES THERE. CLICK IT AGAIN TO CANCEL. \
-                 SHIFT-CLICK QUEUES A MOVE FOR ONE MORE TURN."
-                    .into(),
+                "CLICK A GREEN HEX. SHIFT-CLICK QUEUES LATER TURNS.".into(),
                 cannot_move,
             ),
             UnitAction::Attack => (
                 "ATTACK".into(),
                 "X OR RIGHT-CLICK",
-                "NEXT CLICK ATTACKS A HEX IN RANGE, HITTING WHOEVER IS THERE WHEN IT LANDS. \
-                 RANGE COUNTS FROM WHERE THE UNIT ENDS ITS MOVE. SHIFT-RIGHT-CLICK QUEUES \
-                 AN ATTACK FOR A LATER TURN."
-                    .into(),
+                "CLICK A HEX IN RANGE OF WHERE IT ENDS ITS MOVE.".into(),
                 if locked {
                     Some("LOCKED IN A CONTESTED HEX".into())
                 } else if !unit.can_attack() {
@@ -657,7 +632,7 @@ impl GameState {
             UnitAction::Swap => (
                 "SWAP".into(),
                 "CTRL-CLICK",
-                "NEXT CLICK ON AN ADJACENT ALLY SWAPS PLACES WITH IT.".into(),
+                "CLICK AN ADJACENT ALLY.".into(),
                 if locked {
                     Some("LOCKED IN A CONTESTED HEX".into())
                 } else {
@@ -668,42 +643,30 @@ impl GameState {
                 let (name, description) = ability_text(unit);
                 let description = match unit.ability().cooldown() {
                     0 => format!("{description}."),
-                    turns => format!("{description}. COOLDOWN {}.", turns_text(turns)),
+                    turns => format!("{description}. COOLDOWN {}", turns_text(turns)),
                 };
                 let unavailable = (unit.ability_cooldown > 0)
                     .then(|| format!("READY IN {}", turns_text(unit.ability_cooldown)));
                 (name.into(), "Q", description, unavailable)
             }
-            UnitAction::Hold => (
-                "HOLD".into(),
-                "SPACE",
-                "SKIPS THIS UNIT FOR THE TURN, KEEPING ANY QUEUED ORDERS. PRESS AGAIN ON A HOLDING UNIT TO PUT IT BACK IN THE TURN ORDER; ANY NEW ORDER ENDS THE HOLD TOO.".into(),
-                None,
-            ),
+            UnitAction::Hold => ("HOLD".into(), "SPACE", "SKIP IT THIS TURN.".into(), None),
             UnitAction::Guard => (
                 "GUARD".into(),
                 "G",
-                "SKIPS THIS UNIT EVERY TURN UNTIL IT'S GIVEN AN ORDER.".into(),
+                "SKIP IT UNTIL IT'S GIVEN AN ORDER.".into(),
                 None,
             ),
-            UnitAction::Disband => (
-                "DISBAND".into(),
-                "DEL",
-                "REMOVES THIS UNIT FOR GOOD. PRESS TWICE: THE FIRST PRESS ASKS TO CONFIRM.".into(),
-                None,
-            ),
+            UnitAction::Disband => ("DISBAND".into(), "DEL", "REMOVES IT FOR GOOD.".into(), None),
             UnitAction::Settle => (
                 "FOUND CITY".into(),
                 "F",
-                "AT LEAST 3 HEXES FROM ANY OTHER CITY.".into(),
+                "3 OR MORE HEXES FROM ANY CITY.".into(),
                 None,
             ),
             UnitAction::ClearOrders => (
                 "CLEAR ORDERS".into(),
                 "CTRL-RIGHT-CLICK",
-                "DROPS EVERY SELECTED UNIT'S ORDERS: MOVES, ATTACKS, QUEUED TURNS, HOLD AND \
-                 GUARD."
-                    .into(),
+                "DROPS ALL ITS ORDERS AND QUEUED TURNS.".into(),
                 None,
             ),
         }

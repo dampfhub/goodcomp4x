@@ -142,23 +142,23 @@ impl Building {
     }
     pub fn description(self) -> &'static str {
         match self {
-            Self::Granary => "+2 FOOD PER TURN.",
+            Self::Granary => "+2 FOOD A TURN.",
             Self::Barracks => {
-                "ON OPEN LAND: TRAINS TROOPS TWICE AS FAST AS THE CITY. ON HORSES OR IRON, ALSO 3 CAVALRY OR ARMORED PER DEPOSIT."
+                "TRAINS TROOPS TWICE AS FAST. ON OPEN LAND; ON HORSES OR IRON, ALSO CAVALRY OR ARMORED."
             }
-            Self::Mill => "ADJACENT WORKED TILES DELIVER ALL FOOD IF THEY CAN REACH THE CITY.",
-            Self::Workshop => "ADJACENT PLACED BUILDINGS CAN BE CONFIRMED AT HALF PRODUCTION.",
-            Self::CanoeHouse => "ON A RIVERBANK: ITS CONNECTED RIVER CARRIES GOODS LIKE A ROAD.",
-            Self::Forge => "ON OR NEXT TO IRON, BESIDE BARRACKS: TRAINS TOUGHER ARMORED TROOPS.",
-            Self::Stable => "ON OR NEXT TO HORSES, BESIDE BARRACKS: TRAINS FASTER CAVALRY.",
-            Self::Watchpost => "SEES 4 HEXES, OR 5 FROM HILLS, THROUGH ORDINARY SIGHT LINES.",
-            Self::FieldHospital => "HEALS TWO NEARBY FRIENDLY TROOPS EACH TURN, INSIDE AND OUT.",
-            Self::Cannery => "COLLECTS FOOD FROM THREE REMOTE IMPROVEMENTS WITHIN 3 HEXES.",
-            Self::WorkCamp => "CONNECTED WORKERS START AND END NEARBY JOBS HERE, NOT AT THE CITY.",
-            Self::Smelter => "COLLECTS PRODUCTION FROM THREE REMOTE MINES WITHIN 3 HEXES.",
-            Self::Railhead => "A CITY-ROAD LINK LETS TROOPS BY THE CITY MOVE HERE IN ONE TURN.",
-            Self::Harbor => "ON A COASTAL LAND TILE: TRAINS SHIPS INTO ADJACENT WATER.",
-            Self::CoastalBattery => "ON COASTAL LAND: FIRES AT HOSTILE SHIPS WITHIN 2 TILES.",
+            Self::Mill => "ADJACENT WORKED TILES DELIVER ALL THEIR FOOD.",
+            Self::Workshop => "ADJACENT BUILDINGS TAKE HALF THE TURNS.",
+            Self::CanoeHouse => "ON A RIVERBANK: THE RIVER CARRIES GOODS LIKE A ROAD.",
+            Self::Forge => "NEXT TO IRON AND A BARRACKS: TOUGHER ARMORED.",
+            Self::Stable => "NEXT TO HORSES AND A BARRACKS: FASTER CAVALRY.",
+            Self::Watchpost => "SEES 4 HEXES, 5 FROM HILLS.",
+            Self::FieldHospital => "HEALS 2 NEARBY TROOPS A TURN.",
+            Self::Cannery => "COLLECTS FOOD FROM 3 IMPROVEMENTS WITHIN 3 HEXES.",
+            Self::WorkCamp => "NEARBY JOBS START FROM HERE.",
+            Self::Smelter => "COLLECTS METAL FROM 3 MINES WITHIN 3 HEXES.",
+            Self::Railhead => "TROOPS BY THE CITY REACH IT IN ONE TURN, ALONG A ROAD.",
+            Self::Harbor => "ON THE COAST: TRAINS SHIPS.",
+            Self::CoastalBattery => "ON THE COAST: FIRES AT SHIPS WITHIN 2.",
         }
     }
 
@@ -280,7 +280,7 @@ impl BuildUnit {
         match self {
             Self::Melee => "TOUGH CLOSE FIGHTER",
             Self::Ranged => "FIRES FROM 2 TILES",
-            Self::Cavalry => "FAST FLANKER, NEEDS HORSES",
+            Self::Cavalry => "FAST FLANKER",
             Self::Siege => "LONG RANGE, SLOW",
             Self::Armored => "HEAVY IRON INFANTRY",
             Self::PatrolGalley => "FAST COASTAL FIGHTER; STRONG AGAINST SHIPS",

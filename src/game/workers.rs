@@ -97,14 +97,12 @@ impl JobKind {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Road => "LOWERS THE COST OF CARRYING GOODS THROUGH THIS TILE.",
-            Self::Improve => {
-                "A MINE ON HILLS (+2 PRODUCTION), LUMBER MILL IN FOREST OR JUNGLE (+1), FARM ELSEWHERE (+2 FOOD)."
-            }
-            Self::Wall => "ON A HEX EDGE: NO UNIT OR GOODS CROSS IT, YOURS INCLUDED.",
-            Self::Gate => "ON A HEX EDGE: YOUR UNITS AND GOODS CROSS IT; ENEMIES' DON'T.",
-            Self::Outpost => "YOU SEE 2 TILES AROUND IT.",
-            Self::Fort => "YOUR UNITS IN IT DEFEND 50% BETTER.",
+            Self::Road => "CHEAPER DELIVERY, AND WORKERS REACH ALONG IT.",
+            Self::Improve => "MINE ON HILLS, LUMBER MILL IN FOREST, ELSE A FARM.",
+            Self::Wall => "ON AN EDGE: NOBODY CROSSES.",
+            Self::Gate => "ON AN EDGE: ONLY YOUR SIDE CROSSES.",
+            Self::Outpost => "SEES 2 HEXES AROUND IT.",
+            Self::Fort => "+50% DEFENSE FOR YOUR UNITS IN IT.",
             Self::Build(building) => building.description(),
         }
     }

@@ -218,3 +218,6 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     walks out and builds it. A city needs a worker to place anything. Buildings with a site no
     longer go through the city queue, a site, and Confirm, and a Workshop halves a neighbor's
     work. Idle workers no longer hold up the turn, and the AI's Barracks is built the same way.
+62. Shorter tooltips (`claude/city-builds-by-workers`): every button, tile and setting tooltip says
+    what the thing does, its price and turns, and why it's unavailable, and no more; building and
+    work descriptions are cut to a line.

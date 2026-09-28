@@ -1914,7 +1914,10 @@ fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
         .into_iter()
         .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
         .collect();
-    assert!(tooltip.contains("NEEDS THIS BARRACKS ON IRON"), "{tooltip}");
+    assert!(
+        tooltip.contains("NEEDS IRON UNDER THE BARRACKS"),
+        "{tooltip}"
+    );
     // A Barracks trains at its own pace: a Melee's card shows its 2 turns.
     let melee = find_button(&game, Target::BarracksBuild(BuildUnit::Melee));
     assert!(

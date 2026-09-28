@@ -154,23 +154,11 @@ impl Setting {
     /// What it does, for its tooltip.
     pub fn description(self) -> &'static str {
         match self {
-            Setting::TurnPlayback => {
-                "ON: A TURN PLAYS OUT ALL AT ONCE. OFF: ONE STEP AT A TIME. THE OUTCOME IS \
-                 THE SAME. F8 SWITCHES IT TOO."
-            }
-            Setting::MaxQueuedTurns => {
-                "THE MOST TURNS A UNIT CAN HAVE QUEUED, THIS ONE INCLUDED. SHIFT-CLICKING A HEX \
-                 FARTHER AWAY QUEUES THE MOVE AS FAR AS THE LIMIT GOES."
-            }
-            Setting::FogStyle => "HOW UNEXPLORED LAND IS HIDDEN: UNDER CLOUDS, OR A FLAT GREY.",
-            Setting::WorldAi => {
-                "HOW MANY AI PLAYERS THE NEXT WORLD (F4) HAS. THE MAP GROWS WITH THEM. BY MAP \
-                 PICKS 4 TO 6 FROM THE MAP'S SEED."
-            }
-            Setting::WorldStart => {
-                "WHETHER EVERY SIDE IN THE NEXT WORLD (F4) STARTS WITH ITS CITY, OR A SETTLER \
-                 TO FOUND IT WITH."
-            }
+            Setting::TurnPlayback => "PLAY EACH TURN OUT AT ONCE (F8).",
+            Setting::MaxQueuedTurns => "THE MOST TURNS A UNIT CAN QUEUE.",
+            Setting::FogStyle => "CLOUDS OR FLAT GREY OVER UNEXPLORED LAND.",
+            Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4).",
+            Setting::WorldStart => "START THE NEXT WORLD (F4) WITH A CITY OR A SETTLER.",
         }
     }
 
