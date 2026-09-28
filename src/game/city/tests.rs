@@ -910,6 +910,42 @@ fn structure_menu_can_be_dismissed_without_selecting_a_unit() {
 }
 
 #[test]
+fn each_resource_focus_puts_the_manager_on_its_best_tile() {
+    /// One resource out of a tile's food, wood and metal.
+    type Pick = fn((i32, i32, i32)) -> i32;
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    let routes = g.routes(0);
+    // The most of each resource any tile the city could work delivers.
+    let best = |g: &GameState, pick: Pick| {
+        routes
+            .costs
+            .iter()
+            .filter(|(h, _)| g.may_assign(0, **h) && !g.grid.terrain(**h).is_water())
+            .map(|(h, cost)| pick(g.tile_goods(*h)) * delivered_share(*cost))
+            .max()
+            .unwrap()
+    };
+    let delivered = |g: &GameState, pick: Pick| {
+        let manager = g.cities[0].worked[0];
+        pick(g.tile_goods(manager)) * delivered_share(routes.costs[&manager])
+    };
+    let picks: [(LaborFocus, Pick); 3] = [
+        (LaborFocus::Wood, |(_, w, _)| w),
+        (LaborFocus::Metal, |(_, _, m)| m),
+        (LaborFocus::Food, |(f, _, _)| f),
+    ];
+    for (focus, pick) in picks {
+        g.cities[0].worked.clear();
+        let most = best(&g, pick);
+        assert!(most > 0, "{focus:?}: some tile yields it");
+        g.cities[0].focus = focus;
+        g.auto_assign_city(0);
+        assert_eq!(delivered(&g, pick), most, "{focus:?}");
+    }
+}
+
+#[test]
 fn no_citizen_works_a_city_center_or_a_building_tile() {
     let mut g = GameState::city_scenario();
     g.units.clear();

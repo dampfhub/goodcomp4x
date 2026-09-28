@@ -460,9 +460,9 @@ every turn end.
   manager, click it to pick it up (its workers leave the map with it), then click its
   destination; workers keep their offsets where they can and are otherwise replaced by the best
   nearby tiles. Clicking the manager again puts it and its workers back.
-- **Citizens:** click tiles to assign or release; A auto-assigns by the city's labor focus (Food,
-  Production, or Balanced, which picks food tiles until the city's food income covers upkeep plus
-  1, then production). Setting a focus
+- **Citizens:** click tiles to assign or release; A auto-assigns by the city's labor focus: Food,
+  Wood or Metal, each favoring tiles that deliver the most of it, or Balanced (the default), which
+  picks food tiles until the city's food income covers upkeep plus 1, then wood and metal alike. Setting a focus
   re-assigns. On growth or route disruption, reconciliation keeps valid manual assignments and
   fills or replaces the affected slot; a manual tile cut off by an enemy is remembered and returns
   when the route reopens, unless you changed it.

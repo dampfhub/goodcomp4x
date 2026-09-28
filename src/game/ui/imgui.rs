@@ -1644,17 +1644,7 @@ fn draw_action_icon(
     let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let mut vertices = Vec::new();
     action_icons::push_icon(Vec2::ZERO, 14.0, icon, color, &mut vertices);
-    for triangle in vertices.as_chunks::<3>().0 {
-        let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
-        draw.add_triangle(
-            at(&triangle[0]),
-            at(&triangle[1]),
-            at(&triangle[2]),
-            triangle[0].color,
-        )
-        .filled(true)
-        .build();
-    }
+    fill_shapes(&draw, center, &vertices);
     if let Some(turns) = cooldown {
         let _font = ui.push_font(small_font);
         let width = ui.calc_text_size(turns)[0];
@@ -1678,10 +1668,23 @@ fn draw_production_icon(
 ) {
     let center = [min[0] + 19.0, (min[1] + max[1]) / 2.0];
     let mut vertices = Vec::new();
-    crate::game::unit_icons::push_pictogram(Vec2::ZERO, 10.0, icon, TEXT, &mut vertices);
-    let draw = ui.get_window_draw_list();
+    crate::game::unit_icons::push_pictogram(Vec2::ZERO, 12.0, icon, TEXT, &mut vertices);
+    fill_shapes(&ui.get_window_draw_list(), center, &vertices);
+}
+
+/// Fills shapes built Y-up around the origin (triangle lists, like the
+/// map's) into `draw`, the current window's draw list (ImGui allows one
+/// handle on it at a time), centered on `center` (ImGui's Y
+/// points down). ImGui feathers every filled triangle's edges by a pixel,
+/// the inner ones too, which leaves a small silhouette fuzzy and seamed:
+/// these are drawn unfeathered, crisp and whole.
+fn fill_shapes(draw: &::imgui::DrawListMut, center: [f32; 2], vertices: &[Vertex]) {
+    let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+    let list = unsafe { ::imgui::sys::igGetWindowDrawList() };
+    let flags = unsafe { (*list).Flags };
+    let feathered = ::imgui::sys::ImDrawListFlags_AntiAliasedFill as ::imgui::sys::ImDrawListFlags;
+    unsafe { (*list).Flags = flags & !feathered };
     for triangle in vertices.as_chunks::<3>().0 {
-        let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
         draw.add_triangle(
             at(&triangle[0]),
             at(&triangle[1]),
@@ -1691,6 +1694,7 @@ fn draw_production_icon(
         .filled(true)
         .build();
     }
+    unsafe { (*list).Flags = flags };
 }
 
 fn text_line(ui: &Ui, line: &Line) {
@@ -1760,25 +1764,12 @@ fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
         map_icons::push_inline_icon(Vec2::ZERO, size * 0.85, ch, false, &mut vertices);
         let center = [x + size / 2.0, middle];
         // The icon is built Y-up around the origin; ImGui's Y points down.
-        let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
-        // ImGui feathers every filled triangle's edges by a pixel, the
-        // inner ones too, which swells a text-sized icon into a blob: draw
-        // its triangles unfeathered.
-        let list = unsafe { ::imgui::sys::igGetWindowDrawList() };
-        let flags = unsafe { (*list).Flags };
-        let feathered =
-            ::imgui::sys::ImDrawListFlags_AntiAliasedFill as ::imgui::sys::ImDrawListFlags;
-        unsafe { (*list).Flags = flags & !feathered };
-        for triangle in vertices.as_chunks::<3>().0 {
-            let mut fill = triangle[0].color;
-            if dim {
-                fill[3] *= 0.4;
+        if dim {
+            for vertex in &mut vertices {
+                vertex.color[3] *= 0.4;
             }
-            draw.add_triangle(at(&triangle[0]), at(&triangle[1]), at(&triangle[2]), fill)
-                .filled(true)
-                .build();
         }
-        unsafe { (*list).Flags = flags };
+        fill_shapes(&draw, center, &vertices);
         x += size;
     }
     flush(&mut run, &mut x);

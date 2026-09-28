@@ -184,7 +184,7 @@ Averages per side over seeds 0-7 (`economy_report`), fixed time, cap counting th
 - **The unit cap:** alive (the default) or lifetime? Alive keeps deposits worth holding all game;
   lifetime makes each deposit a one-off to spend, pushing expansion. Try both with the Debug
   toggle; 3 per deposit is a guess (World starts have one of each nearby).
-- **Metal income:** give the AI (and the Production labor focus) a reason to work hills and mines
+- **Metal income:** give the AI (and the Metal labor focus) a reason to work hills and mines
   when it has a deposit to use, or make Iron itself yield metal.
 - **Barracks and the manager:** training no longer needs the manager at the Barracks, and no
   citizen can stand on a building; with production speeding builds the manager beside it still adds
@@ -207,8 +207,7 @@ Averages per side over seeds 0-7 (`economy_report`), fixed time, cap counting th
   rush its build.
 - **Should upkeep starve per city?** Pooled food lets one farming city feed the rest; if that is
   too forgiving, deliveries could feed their own city first.
-- **Labor focus:** the Production focus picks wood and metal alike; a Wood / Metal split (or a
-  focus per resource) may read better now that the map shows them apart.
+- **Labor focus:** done in round 4: Food, Wood, Metal or Balanced, a focus per resource.
 - **AI spending:** it builds a Barracks and trains Cavalry or Armored now, but no other building,
   and it should grow more when food piles up, to test the late game properly.
 - **Refunds:** full refunds make the queue a free bank; RTS games often refund in full, but a

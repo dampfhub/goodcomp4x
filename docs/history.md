@@ -225,3 +225,8 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     one-turn build that brings in 2 food, 2 wood and 1 metal, so a broke city still has a move and
     an empty queue always waits for one. The Granary, the last building built in the city queue,
     is gone; every building is now placed for workers. The AI gathers when it can't pay.
+64. A focus per resource, and crisp silhouettes (`claude/city-builds-by-workers`): the labor focus
+    is Food, Wood, Metal or Balanced (food until the citizens are fed, then wood and metal),
+    picking tiles by what they deliver of each; its buttons are a wheat ear, a log, an ingot and a
+    balance. ImGui draws every small silhouette (toolbar icons, the production list's unit
+    pictograms, text icons) unfeathered, so they're crisp instead of fuzzy and seamed.

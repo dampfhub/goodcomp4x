@@ -46,14 +46,18 @@ pub(super) const BARRACKS_DEFENSE: f32 = 25.0;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LaborFocus {
     Food,
-    Production,
+    Wood,
+    Metal,
     Balanced,
 }
 impl LaborFocus {
+    pub const ALL: [Self; 4] = [Self::Food, Self::Wood, Self::Metal, Self::Balanced];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Food => "FOOD",
-            Self::Production => "PRODUCTION",
+            Self::Wood => "WOOD",
+            Self::Metal => "METAL",
             Self::Balanced => "BALANCED",
         }
     }

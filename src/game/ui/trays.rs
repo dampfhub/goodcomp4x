@@ -487,20 +487,16 @@ impl GameState {
         }
         panel.text(SMALL, vec![("LABOR FOCUS".into(), LABEL_TEXT)]);
         panel.compact_buttons(
-            [
-                LaborFocus::Food,
-                LaborFocus::Production,
-                LaborFocus::Balanced,
-            ]
-            .into_iter()
-            .map(|focus| ButtonSpec {
-                target: Target::Focus(focus),
-                label: focus.name().into(),
-                hint: "AUTO".into(),
-                state: ButtonState::new(city.focus == focus, false),
-                armed: false,
-            })
-            .collect(),
+            LaborFocus::ALL
+                .into_iter()
+                .map(|focus| ButtonSpec {
+                    target: Target::Focus(focus),
+                    label: focus.name().into(),
+                    hint: "AUTO".into(),
+                    state: ButtonState::new(city.focus == focus, false),
+                    armed: false,
+                })
+                .collect(),
         );
 
         panel.gap(GAP);

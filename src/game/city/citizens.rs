@@ -101,16 +101,18 @@ impl GameState {
     pub(in crate::game) fn auto_assign_city(&mut self, city: usize) {
         self.cities[city].worked.clear();
         let routes = self.routes(city);
+        // Each tile's food, wood and metal as delivered to the city.
         let mut tiles: Vec<_> = routes
             .costs
             .iter()
             .filter(|(h, _)| self.may_assign(city, **h))
             .map(|(h, cost)| {
-                let (f, p) = self.tile_yield(*h);
+                let (f, w, m) = self.tile_goods(*h);
+                let share = delivered_share(*cost);
                 (
                     *h,
                     f * self.mill_food_share(city, *h, *cost),
-                    p * delivered_share(*cost),
+                    (w * share, m * share),
                 )
             })
             .collect();
@@ -123,15 +125,18 @@ impl GameState {
             }
             let needs_food = food < self.cities[city].population as i32 * 8 + 4;
             let focus = self.cities[city].focus;
-            tiles.sort_by_key(|(h, f, p)| {
+            tiles.sort_by_key(|(h, f, (w, m))| {
                 let score = match focus {
-                    LaborFocus::Food => f * 5 + p,
-                    LaborFocus::Production => p * 5 + f,
+                    LaborFocus::Food => f * 5 + w + m,
+                    LaborFocus::Wood => w * 5 + f + m,
+                    LaborFocus::Metal => m * 5 + f + w,
+                    // Food until the city's citizens are fed, then wood and
+                    // metal alike.
                     LaborFocus::Balanced => {
                         if needs_food {
-                            f * 4 + p
+                            f * 4 + w + m
                         } else {
-                            p * 4 + f
+                            (w + m) * 4 + f
                         }
                     }
                 };

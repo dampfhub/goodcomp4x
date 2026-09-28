@@ -109,7 +109,7 @@ plays out.
 | Click a tile in the city view | Assign a citizen there, or release one |
 | Click the manager (`M`), then a tile | Move the manager; workers follow where they can |
 | A | Auto-assign citizens by the city's labor focus |
-| Food / Production / Balanced buttons | Set the labor focus (and re-assign) |
+| Food / Wood / Metal / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
 | 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |
