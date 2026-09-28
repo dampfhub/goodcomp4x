@@ -13,6 +13,8 @@ use renderer.MAX_VERTICES;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.draw.CLOUD_SPACING;
+use game.draw.MOVE_RANGE_COLOR;
+use game.mesh.Color;
 use game.draw.edge_fade;
 use game.draw.push_cloud_banks;
 use game.PLAYER_TEAM;
@@ -435,5 +437,58 @@ fn yield_badges_do_not_react_to_what_happens_out_of_sight() {
         assert(game.build_vertices().len() == before);
         let _old = game.sites.insert(far, Site { team: Team.Red, food: 9, production: 9, kind: SiteKind.Farm });
         assert(game.build_vertices().len() == before);
+    });
+}
+
+fn count_color(vertices: &Vec[MeshVertex], color: Color) -> i32 {
+    let mut n = 0;
+    for k in 0..vertices.len() {
+        let c = vertices[k].color;
+        if c[0] == color[0] && c[1] == color[1] && c[2] == color[2] && c[3] == color[3] { n = n + 1; }
+    }
+    n
+}
+
+/// Whether two vertex lists draw exactly the same, vertex for vertex.
+fn same_scene(a: &Vec[MeshVertex], b: &Vec[MeshVertex]) -> bool {
+    if a.len() != b.len() { return false; }
+    for k in 0..a.len() {
+        let (x, y) = (a[k], b[k]);
+        for c in 0..4 { if x.color[c] != y.color[c] { return false; } }
+        for p in 0..3 { if x.pos[p] != y.pos[p] { return false; } }
+    }
+    true
+}
+
+@test
+fn an_unseen_unit_leaves_its_hex_in_the_green_move_range() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        glance_at(&mut game, 0, HIDDEN);
+        game.selected = Option.Some(0);
+        let empty = count_color(&game.build_vertices(), MOVE_RANGE_COLOR);
+        assert(empty > 0);
+        game.units.push(Unit.new(2, HIDDEN, Team.Red, UnitType.Melee));
+        assert(count_color(&game.build_vertices(), MOVE_RANGE_COLOR) == empty);
+    });
+}
+
+/// The scene a ranged unit (range 2) behind the mountain draws once it has looked at the hidden
+/// hex, with an enemy seen there or not: in range but out of sight.
+fn drawn(enemy_seen: bool) -> Vec[MeshVertex] can {Log, Assert} {
+    let mut game = behind_the_mountain();
+    game.units[0].unit_type = UnitType.Ranged;
+    game.units[0].ability_queued = false;
+    if enemy_seen { game.units.push(Unit.new(2, HIDDEN, Team.Red, UnitType.Melee)); }
+    glance_at(&mut game, 0, HIDDEN);
+    game.selected = Option.Some(0);
+    game.build_vertices()
+}
+
+@test
+fn an_enemy_seen_before_leaves_no_trace_once_out_of_sight() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Neither a ghost of the enemy seen there nor a target highlight shows.
+        assert(same_scene(&drawn(true), &drawn(false)));
     });
 }
