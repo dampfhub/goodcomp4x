@@ -9,7 +9,8 @@
 //! and the window's size (`layout.txt`), and ImGui's own docking data
 //! (`imgui.ini`).
 
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 /// The folder the files live in, if the environment names one.
 fn config_dir() -> Option<PathBuf> {
@@ -34,20 +35,31 @@ pub fn write(name: &str, contents: &str) {
     let Some(dir) = config_dir() else {
         return;
     };
-    let path = dir.join(name);
-    let temporary = dir.join(format!("{name}.tmp"));
-    let result = std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::write(&temporary, contents))
-        .and_then(|()| std::fs::rename(&temporary, &path))
-        .or_else(|_| {
-            // Some file systems (a sandbox's, say) won't rename across the
-            // layers they keep: write the file in place instead.
-            let _ = std::fs::remove_file(&temporary);
-            std::fs::write(&path, contents)
-        });
-    if let Err(err) = result {
-        log::warn!("couldn't save {}: {err}", path.display());
+    if let Err(err) = write_in(&dir, name, contents) {
+        log::warn!("couldn't save {}: {err}", dir.join(name).display());
     }
+}
+
+/// Keep the old file intact if preparing the replacement fails. Some layered
+/// file systems reject rename, so only that failure uses the in-place fallback.
+fn write_in(dir: &Path, name: &str, contents: &str) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join(name);
+    let temporary = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    let prepared = (|| {
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()
+    })();
+    if let Err(err) = prepared {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(err);
+    }
+    if std::fs::rename(&temporary, &path).is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        std::fs::write(&path, contents)?;
+    }
+    Ok(())
 }
 
 /// Splits a line of saved text into its key and the rest, skipping blank
@@ -65,6 +77,29 @@ pub fn key_and_values(line: &str) -> Option<(&str, Vec<&str>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_temporary_write_preserves_the_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "riskofcivlike-persist-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("settings.txt");
+        std::fs::write(&path, "previous settings").unwrap();
+        let temporary = dir.join(format!("settings.txt.{}.tmp", std::process::id()));
+        std::fs::create_dir(&temporary).unwrap();
+        assert!(write_in(&dir, "settings.txt", "new settings").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous settings");
+        std::fs::remove_dir(&temporary).unwrap();
+        write_in(&dir, "settings.txt", "new settings").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new settings");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn lines_split_into_a_key_and_values() {

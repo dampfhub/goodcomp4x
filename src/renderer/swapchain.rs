@@ -21,6 +21,7 @@ pub struct SwapchainData {
     pub readable: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn create_swapchain(
     device: &ash::Device,
     swapchain_loader: &ash::khr::swapchain::Device,
@@ -29,13 +30,16 @@ pub unsafe fn create_swapchain(
     surface: vk::SurfaceKHR,
     indices: QueueFamilyIndices,
     window_size: (u32, u32),
-) -> Result<SwapchainData> {
+    old_swapchain: vk::SwapchainKHR,
+) -> Result<Option<SwapchainData>> {
     let support =
         unsafe { device::query_swapchain_support(surface_loader, physical_device, surface) }?;
     let caps = support.capabilities;
 
     let surface_format = choose_surface_format(&support.formats);
-    let extent = choose_extent(&caps, window_size);
+    let Some(extent) = choose_extent(&caps, window_size) else {
+        return Ok(None);
+    };
 
     // One more than the minimum so we're never stuck waiting on the driver.
     let mut image_count = caps.min_image_count + 1;
@@ -73,14 +77,38 @@ pub unsafe fn create_swapchain(
         .pre_transform(caps.current_transform)
         .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
         .present_mode(choose_present_mode(&support.present_modes))
-        .clipped(true);
+        .clipped(true)
+        .old_swapchain(old_swapchain);
 
     let swapchain = unsafe { swapchain_loader.create_swapchain(&create_info, None) }?;
-    let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }?;
-    let image_views = unsafe { create_image_views(device, &images, surface_format.format) }?;
-    let render_finished = unsafe { sync::create_semaphores(device, images.len()) }?;
+    let images = match unsafe { swapchain_loader.get_swapchain_images(swapchain) } {
+        Ok(images) => images,
+        Err(err) => {
+            unsafe { swapchain_loader.destroy_swapchain(swapchain, None) };
+            return Err(err.into());
+        }
+    };
+    let image_views = match unsafe { create_image_views(device, &images, surface_format.format) } {
+        Ok(views) => views,
+        Err(err) => {
+            unsafe { swapchain_loader.destroy_swapchain(swapchain, None) };
+            return Err(err);
+        }
+    };
+    let render_finished = match unsafe { sync::create_semaphores(device, images.len()) } {
+        Ok(semaphores) => semaphores,
+        Err(err) => {
+            unsafe {
+                for view in image_views {
+                    device.destroy_image_view(view, None);
+                }
+                swapchain_loader.destroy_swapchain(swapchain, None);
+            }
+            return Err(err);
+        }
+    };
 
-    Ok(SwapchainData {
+    Ok(Some(SwapchainData {
         swapchain,
         images,
         image_views,
@@ -88,7 +116,7 @@ pub unsafe fn create_swapchain(
         format: surface_format.format,
         extent,
         readable,
-    })
+    }))
 }
 
 impl SwapchainData {
@@ -101,7 +129,11 @@ impl SwapchainData {
             for view in self.image_views.drain(..) {
                 device.destroy_image_view(view, None);
             }
-            swapchain_loader.destroy_swapchain(self.swapchain, None);
+            let swapchain = std::mem::replace(&mut self.swapchain, vk::SwapchainKHR::null());
+            if swapchain != vk::SwapchainKHR::null() {
+                swapchain_loader.destroy_swapchain(swapchain, None);
+            }
+            self.images.clear();
             for semaphore in self.render_finished.drain(..) {
                 device.destroy_semaphore(semaphore, None);
             }
@@ -129,15 +161,24 @@ fn choose_present_mode(modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
     }
 }
 
-fn choose_extent(caps: &vk::SurfaceCapabilitiesKHR, (width, height): (u32, u32)) -> vk::Extent2D {
-    // u32::MAX means the surface size is ours to pick within the allowed range.
-    if caps.current_extent.width != u32::MAX {
-        return caps.current_extent;
-    }
-    vk::Extent2D {
-        width: width.clamp(caps.min_image_extent.width, caps.max_image_extent.width),
-        height: height.clamp(caps.min_image_extent.height, caps.max_image_extent.height),
-    }
+fn choose_extent(
+    caps: &vk::SurfaceCapabilitiesKHR,
+    (width, height): (u32, u32),
+) -> Option<vk::Extent2D> {
+    // A minimized surface may report a zero current extent even while winit
+    // still has a nonzero cached window size. Wait for a drawable surface.
+    let extent = if caps.current_extent.width != u32::MAX {
+        caps.current_extent
+    } else {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        vk::Extent2D {
+            width: width.clamp(caps.min_image_extent.width, caps.max_image_extent.width),
+            height: height.clamp(caps.min_image_extent.height, caps.max_image_extent.height),
+        }
+    };
+    (extent.width > 0 && extent.height > 0).then_some(extent)
 }
 
 unsafe fn create_image_views(
@@ -150,15 +191,56 @@ unsafe fn create_image_views(
         .level_count(1)
         .layer_count(1);
 
-    images
-        .iter()
-        .map(|&image| {
-            let create_info = vk::ImageViewCreateInfo::default()
-                .image(image)
-                .view_type(vk::ImageViewType::TYPE_2D)
-                .format(format)
-                .subresource_range(subresource_range);
-            Ok(unsafe { device.create_image_view(&create_info, None) }?)
-        })
-        .collect()
+    let mut views = Vec::with_capacity(images.len());
+    for &image in images {
+        let create_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .subresource_range(subresource_range);
+        match unsafe { device.create_image_view(&create_info, None) } {
+            Ok(view) => views.push(view),
+            Err(err) => {
+                for view in views {
+                    unsafe { device.destroy_image_view(view, None) };
+                }
+                return Err(err.into());
+            }
+        }
+    }
+    Ok(views)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_current_extent_has_no_swapchain_extent() {
+        let caps = vk::SurfaceCapabilitiesKHR {
+            current_extent: vk::Extent2D {
+                width: 0,
+                height: 0,
+            },
+            ..Default::default()
+        };
+        assert!(choose_extent(&caps, (1280, 720)).is_none());
+        let caps = vk::SurfaceCapabilitiesKHR {
+            current_extent: vk::Extent2D {
+                width: u32::MAX,
+                height: u32::MAX,
+            },
+            min_image_extent: vk::Extent2D {
+                width: 1,
+                height: 1,
+            },
+            max_image_extent: vk::Extent2D {
+                width: 4096,
+                height: 4096,
+            },
+            ..Default::default()
+        };
+        assert!(choose_extent(&caps, (0, 720)).is_none());
+        assert_eq!(choose_extent(&caps, (1280, 720)).unwrap().width, 1280);
+    }
 }

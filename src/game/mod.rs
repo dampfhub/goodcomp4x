@@ -499,6 +499,18 @@ impl GameState {
         draw::UnitLook { icon, civilian }
     }
 
+    /// A spawn may not materialize on an enemy city center or an uncaptured
+    /// enemy field worker, even though neither counts as a unit occupant.
+    fn spawn_clear_of_enemy_civilians(&self, hex: Hex, team: Team) -> bool {
+        self.cities
+            .iter()
+            .all(|city| city.pos != hex || city.team == team)
+            && self
+                .field_workers
+                .iter()
+                .all(|worker| worker.pos != hex || worker.team == team)
+    }
+
     fn is_occupied(&self, hex: Hex) -> bool {
         self.units_at(hex).next().is_some()
     }

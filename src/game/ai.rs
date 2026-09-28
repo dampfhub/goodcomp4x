@@ -193,7 +193,10 @@ impl GameState {
                     .units
                     .iter()
                     .filter(|enemy| enemy.team != team)
-                    .filter(|enemy| unit.pos.distance(enemy.pos) <= unit.stats().attack_range)
+                    .filter(|enemy| {
+                        self.attack_target_legal(idx, enemy.pos, false)
+                            && unit.pos.distance(enemy.pos) <= unit.stats().attack_range
+                    })
                     .min_by_key(|enemy| (unit.pos.distance(enemy.pos), enemy.id))
                     .map(|enemy| enemy.pos);
                 self.units[idx].planned_attack = attack;
@@ -206,7 +209,10 @@ impl GameState {
                     .units
                     .iter()
                     .filter(|enemy| enemy.team != team)
-                    .filter(|enemy| unit.pos.distance(enemy.pos) <= unit.stats().attack_range)
+                    .filter(|enemy| {
+                        self.attack_target_legal(idx, enemy.pos, false)
+                            && unit.pos.distance(enemy.pos) <= unit.stats().attack_range
+                    })
                     .min_by_key(|enemy| (unit.pos.distance(enemy.pos), enemy.id))
                     .map(|enemy| enemy.pos);
                 self.units[idx].planned_attack = attack;
@@ -258,7 +264,7 @@ impl GameState {
                 self.units[idx].planned_move = Some(dest);
             }
             let ruins = self.ruin_at(target).is_some() && !self.is_occupied(target);
-            let can_attack = self.units[idx].can_attack();
+            let can_attack = self.attack_target_legal(idx, target, false);
             let unit = &mut self.units[idx];
             if can_attack && !ruins && dest != target && dest.distance(target) <= stats.attack_range
             {
@@ -357,5 +363,29 @@ impl GameState {
             }
         }
         distances
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::unit::{Unit, UnitType};
+
+    #[test]
+    fn gate_defense_never_orders_a_landing_craft_to_attack() {
+        let mut game = GameState::new();
+        game.units.clear();
+        game.cities = vec![City::new(0, Team::Red, Hex::new(0, 0))];
+        game.ruins.clear();
+        game.units.push(Unit::new(
+            90,
+            Hex::new(1, 0),
+            Team::Red,
+            UnitType::LandingCraft,
+        ));
+        game.units
+            .push(Unit::new(91, Hex::new(0, 1), Team::Blue, UnitType::Melee));
+        game.plan_ai_turn(Team::Red);
+        assert!(game.units[0].planned_attack.is_none());
     }
 }

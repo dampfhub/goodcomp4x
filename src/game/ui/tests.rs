@@ -1069,7 +1069,9 @@ fn hovering_an_enemy_city_or_barracks_out_of_sight_shows_no_live_panel() {
         );
         game.hovered_tile = Some(hex);
         let fogged = game.layout_with_hover(SCREEN, None).0.panels.len();
+        assert!(game.structure_inspect_panel(hex).is_none());
         game.fog_of_war = false;
+        assert!(game.structure_inspect_panel(hex).is_some());
         let clear = game.layout_with_hover(SCREEN, None).0.panels.len();
         game.fog_of_war = true;
         assert_eq!(clear, fogged + 1, "{hex:?}");
@@ -1085,6 +1087,7 @@ fn hovering_an_enemy_city_or_barracks_out_of_sight_shows_no_live_panel() {
     game.explore();
     game.units.clear();
     assert!(game.is_explored(red_pos) && !game.fog().sees(red_pos));
+    assert!(game.structure_inspect_panel(red_pos).is_none());
     game.hovered_tile = Some(red_pos);
     let fogged = game.layout_with_hover(SCREEN, None).0.panels.len();
     game.hovered_tile = None;

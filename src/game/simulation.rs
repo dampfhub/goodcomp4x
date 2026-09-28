@@ -282,6 +282,7 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: {hex:?} holds {teams:?}"
         );
     }
+    let mut all_worked_tiles = HashSet::new();
     for city in &game.cities {
         assert!(
             (1..=MAX_CITY_POPULATION).contains(&city.population),
@@ -296,6 +297,25 @@ fn check_invariants(game: &GameState, context: &str) {
             city.worked.len(),
             city.population
         );
+        for (index, &hex) in city.worked.iter().enumerate() {
+            assert!(
+                game.cities.iter().all(|other| other.pos != hex),
+                "{context}: city {} works a city center at {hex:?}",
+                city.id
+            );
+            assert!(
+                all_worked_tiles.insert(hex),
+                "{context}: worked tile claimed by multiple citizens"
+            );
+            if index > 0 {
+                assert_eq!(
+                    city.worked[0].distance(hex),
+                    1,
+                    "{context}: city {} worker is not adjacent to its manager",
+                    city.id
+                );
+            }
+        }
         assert!(
             (0.0..=CORE_HP).contains(&city.interior.core_hp),
             "{context}: city {} command post has {} HP",
@@ -317,28 +337,28 @@ fn check_invariants(game: &GameState, context: &str) {
                 fighter.pos.distance(Hex::new(0, 0)) <= 2,
                 "{context}: fighter outside interior"
             );
+            let source = game
+                .units
+                .iter()
+                .find(|unit| unit.id == fighter.source_id)
+                .unwrap_or_else(|| panic!("{context}: interior fighter lacks source"));
             assert!(
-                fighter.hp > 0.0 && fighter.hp <= fighter.unit_type.stats().max_hp,
+                fighter.hp > 0.0 && fighter.hp <= source.max_hp(),
                 "{context}: interior fighter has invalid HP"
             );
-            assert!(
-                game.units
-                    .iter()
-                    .any(|unit| unit.id == fighter.source_id && unit.interior_hp == fighter.hp),
+            assert_eq!(
+                source.interior_hp, fighter.hp,
                 "{context}: interior copy and source health differ"
             );
             assert!(
-                game.units.iter().any(|unit| unit.id == fighter.source_id
-                    && unit.team == fighter.team
-                    && unit.pos.distance(city.pos) == 1),
+                source.team == fighter.team && source.pos.distance(city.pos) == 1,
                 "{context}: interior fighter lacks adjacent source"
             );
         }
     }
     for (i, city) in game.cities.iter().enumerate() {
-        // A finished unit at the head of the queue is one waiting for an open hex, and the
-        // city banks no more work behind it (#54). A city doing a unit's work in a turn
-        // could have that much left over, so it isn't checked.
+        // A finished unit waits at exactly its cost while no safe spawn is open.
+        // One turn's work can legitimately cross that cost.
         let Some(&Build::Unit(unit)) = city.queue.first() else {
             continue;
         };
@@ -353,8 +373,6 @@ fn check_invariants(game: &GameState, context: &str) {
             city.id,
             unit.name()
         );
-        // A ship comes out on the water beside the Harbor, anything else on land beside
-        // the city.
         let naval = unit.unit_type().is_naval();
         let origin = if naval {
             city.placed_site(Building::Harbor).unwrap_or(city.pos)
@@ -369,7 +387,9 @@ fn check_invariants(game: &GameState, context: &str) {
                 } else {
                     game.grid.is_passable(hex) && !game.field_workers.iter().any(|w| w.pos == hex)
                 };
-                !open_ground || game.is_occupied(hex)
+                !open_ground
+                    || !game.spawn_clear_of_enemy_civilians(hex, city.team)
+                    || game.is_occupied(hex)
             }),
             "{context}: city {} holds a finished {} beside an open hex",
             city.id,
@@ -460,6 +480,24 @@ impl EconomyWatch {
             }
         }
     }
+}
+
+#[test]
+fn interior_hp_uses_the_source_unit_upgrade() {
+    let mut game = GameState::siege_scenario();
+    let fighter = &mut game.cities[1].interior.fighters[0];
+    fighter.training_upgrade = Some(Resource::Iron);
+    let source = game
+        .units
+        .iter_mut()
+        .find(|unit| unit.id == fighter.source_id)
+        .unwrap();
+    source.training_upgrade = Some(Resource::Iron);
+    source.hp = source.max_hp();
+    source.interior_hp = source.max_hp();
+    fighter.hp = source.max_hp();
+    assert!(fighter.hp > fighter.unit_type.stats().max_hp);
+    check_invariants(&game, "upgraded interior fighter");
 }
 
 #[test]

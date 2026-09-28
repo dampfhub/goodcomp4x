@@ -118,11 +118,20 @@ impl ColorTarget {
         })
     }
 
-    pub unsafe fn destroy(&self, device: &ash::Device) {
+    pub unsafe fn destroy(&mut self, device: &ash::Device) {
         unsafe {
-            device.destroy_image_view(self.view, None);
-            device.destroy_image(self.image, None);
-            device.free_memory(self.memory, None);
+            let view = std::mem::replace(&mut self.view, vk::ImageView::null());
+            if view != vk::ImageView::null() {
+                device.destroy_image_view(view, None);
+            }
+            let image = std::mem::replace(&mut self.image, vk::Image::null());
+            if image != vk::Image::null() {
+                device.destroy_image(image, None);
+            }
+            let memory = std::mem::replace(&mut self.memory, vk::DeviceMemory::null());
+            if memory != vk::DeviceMemory::null() {
+                device.free_memory(memory, None);
+            }
         }
     }
 }

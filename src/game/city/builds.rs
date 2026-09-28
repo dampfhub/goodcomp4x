@@ -955,9 +955,9 @@ impl GameState {
             };
             let Some(pos) = origin.neighbors().into_iter().find(|&h| {
                 if naval {
-                    self.is_open_naval_spawn(h, &spawn)
+                    self.is_open_naval_spawn(h, self.cities[i].team, &spawn)
                 } else {
-                    self.is_open_spawn(h, &spawn)
+                    self.is_open_spawn(h, self.cities[i].team, &spawn)
                 }
             }) else {
                 // The city holds the finished unit until a hex opens, and
@@ -989,7 +989,7 @@ impl GameState {
             let Some(pos) = barracks
                 .neighbors()
                 .into_iter()
-                .find(|&h| self.is_open_spawn(h, &spawn))
+                .find(|&h| self.is_open_spawn(h, self.cities[i].team, &spawn))
             else {
                 continue;
             };
@@ -1027,21 +1027,70 @@ impl GameState {
     fn is_open_naval_spawn(
         &self,
         hex: Hex,
+        team: Team,
         spawn: &[(Team, Hex, UnitType, Option<Resource>)],
     ) -> bool {
         self.grid.contains(hex)
             && matches!(self.grid.terrain(hex), Terrain::Coast | Terrain::Ocean)
             && !self.is_occupied(hex)
+            && self.spawn_clear_of_enemy_civilians(hex, team)
             && spawn.iter().all(|&(_, pos, _, _)| pos != hex)
     }
 
-    /// Whether a finished land unit can appear on `hex`: as a ship's, but on
-    /// open land, and not on a worker out on the map (it would share the
-    /// hex with an enemy's without capturing it).
-    fn is_open_spawn(&self, hex: Hex, spawn: &[(Team, Hex, UnitType, Option<Resource>)]) -> bool {
+    /// Land spawns avoid enemy centers and all field workers.
+    fn is_open_spawn(
+        &self,
+        hex: Hex,
+        team: Team,
+        spawn: &[(Team, Hex, UnitType, Option<Resource>)],
+    ) -> bool {
         self.grid.is_passable(hex)
             && !self.is_occupied(hex)
+            && self.spawn_clear_of_enemy_civilians(hex, team)
             && !self.field_workers.iter().any(|worker| worker.pos == hex)
             && spawn.iter().all(|&(_, pos, _, _)| pos != hex)
+    }
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::*;
+    use crate::game::workers::FieldWorker;
+
+    #[test]
+    fn spawns_reject_enemy_city_centers_and_uncaptured_workers() {
+        let mut game = GameState::city_scenario();
+        let red = game
+            .cities
+            .iter()
+            .position(|c| c.team == Team::Red)
+            .unwrap();
+        let blue = game
+            .cities
+            .iter()
+            .position(|c| c.team == Team::Blue)
+            .unwrap();
+        let red_center = game.cities[red].pos;
+        game.units.retain(|unit| unit.pos != red_center);
+        assert!(!game.is_open_spawn(red_center, Team::Blue, &[]));
+
+        let worker_pos = game.cities[blue]
+            .pos
+            .neighbors()
+            .into_iter()
+            .find(|&hex| game.grid.is_passable(hex) && !game.is_occupied(hex))
+            .unwrap();
+        game.field_workers.push(FieldWorker {
+            id: 1000,
+            team: Team::Red,
+            home: red,
+            base: red_center,
+            pos: worker_pos,
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
+        assert!(!game.is_open_spawn(worker_pos, Team::Blue, &[]));
+        assert!(!game.is_open_spawn(worker_pos, Team::Red, &[]));
     }
 }

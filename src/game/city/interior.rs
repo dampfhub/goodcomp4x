@@ -454,8 +454,8 @@ impl GameState {
                     worker.recalled = true;
                 }
             }
-            // A worker that changed sides may stand with a unit of its old
-            // side, now an enemy's: it's captured, as by a move.
+            // A worker changing sides may share its hex with an old-side unit;
+            // capture it immediately, as by a move.
             self.capture_workers();
             self.auto_assign_city(city);
         }
@@ -703,6 +703,53 @@ mod tests {
         assert!(game.cities[1].queue.is_empty());
         assert_eq!(game.field_workers[0].team, Team::Blue);
         assert_eq!(game.field_workers[0].home, 1);
+    }
+
+    #[test]
+    fn city_capture_resolves_a_stranded_worker_on_an_old_side_unit() {
+        let mut game = GameState::siege_scenario();
+        let worker_pos = game
+            .grid
+            .all_hexes()
+            .find(|&hex| {
+                game.grid.is_passable(hex)
+                    && hex.distance(game.cities[1].pos) >= 3
+                    && game.units.iter().all(|unit| unit.pos != hex)
+            })
+            .unwrap();
+        game.field_workers.push(crate::game::workers::FieldWorker {
+            id: 10_001,
+            team: Team::Red,
+            home: 1,
+            base: game.cities[1].pos,
+            pos: worker_pos,
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
+        game.units.push(crate::game::unit::Unit::new(
+            10_002,
+            worker_pos,
+            Team::Red,
+            UnitType::Melee,
+        ));
+        game.cities[1].interior.core_hp = 0.0;
+        let copy = game.cities[1]
+            .interior
+            .fighters
+            .iter_mut()
+            .find(|f| f.source_id == 0)
+            .unwrap();
+        copy.pos = Hex::new(-1, 0);
+        copy.planned_move = Some(CENTER);
+        game.resolve_one_interior(1);
+        assert_eq!(game.cities[1].team, Team::Blue);
+        assert!(
+            game.field_workers
+                .iter()
+                .all(|worker| { game.enemy_of_team_at(worker.pos, worker.team).is_none() })
+        );
+        assert!(game.field_workers.iter().all(|worker| worker.id != 10_001));
     }
 
     #[test]
