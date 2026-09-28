@@ -564,7 +564,9 @@ every turn end.
   counts once connected to its city), or anywhere on or next to a road (any road: roads belong to no one), so a line of roads carries the reach out as far
   as it goes. A wall or gate counts from the tile the worker stands on to build it. The AI's
   workers keep to the same reach. A job out of reach can't be queued, and one under way that
-  falls out of reach is abandoned.
+  falls out of reach is abandoned. The player-facing reach tint and job checks use
+  current sight or the last observed roads, sites, and structures; unseen enemy changes
+  take effect during resolution without revealing themselves while planning.
 - **Idle workers** (at home, with no job waiting in their city's list) wait for the player like
   units needing orders: the turn strip lists their city after production, and the turn moves to
   them after production and before units, opening the worker menu. Sleep (or Space in the menu)
