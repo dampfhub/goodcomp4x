@@ -50,20 +50,20 @@ impl Building {
     pub const PLACEABLE: [Self; 14] = Self::ALL;
     pub fn name(self) -> &'static str {
         match self {
-            Self::Barracks => "BARRACKS",
-            Self::Mill => "MILL",
-            Self::Workshop => "WORKSHOP",
-            Self::CanoeHouse => "CANOE HOUSE",
-            Self::Forge => "FORGE",
+            Self::Barracks => "GARRISON",
+            Self::Mill => "WINDMILL",
+            Self::Workshop => "TINKER SHOP",
+            Self::CanoeHouse => "BOATYARD",
+            Self::Forge => "SCRAP FORGE",
             Self::Stable => "STABLE",
-            Self::Watchpost => "WATCHPOST",
-            Self::FieldHospital => "FIELD HOSPITAL",
+            Self::Watchpost => "RADIO TOWER",
+            Self::FieldHospital => "CLINIC",
             Self::Cannery => "CANNERY",
             Self::WorkCamp => "WORK CAMP",
             Self::Smelter => "SMELTER",
-            Self::Railhead => "RAILHEAD",
-            Self::Harbor => "HARBOR",
-            Self::CoastalBattery => "COASTAL BATTERY",
+            Self::Railhead => "HANDCAR DEPOT",
+            Self::Harbor => "DOCKS",
+            Self::CoastalBattery => "HARPOON BATTERY",
         }
     }
     /// What queuing it takes from the side's stockpile (`economy.rs`).
@@ -120,19 +120,19 @@ impl Building {
     pub fn description(self) -> &'static str {
         match self {
             Self::Barracks => {
-                "TRAINS TROOPS TWICE AS FAST. ON OPEN LAND; ON HORSES OR IRON, ALSO CAVALRY OR ARMORED."
+                "TRAINS TROOPS TWICE AS FAST. ON OPEN LAND; ON HORSES OR WRECKS, ALSO OUTRIDERS OR RIOT GUARDS."
             }
             Self::Mill => "ADJACENT WORKED TILES DELIVER ALL THEIR FOOD.",
             Self::Workshop => "ADJACENT BUILDINGS TAKE HALF THE TURNS.",
             Self::CanoeHouse => "ON A RIVERBANK: THE RIVER CARRIES GOODS LIKE A ROAD.",
-            Self::Forge => "NEXT TO IRON AND A BARRACKS: TOUGHER ARMORED.",
-            Self::Stable => "NEXT TO HORSES AND A BARRACKS: FASTER CAVALRY.",
-            Self::Watchpost => "SEES 4 HEXES, 5 FROM HILLS.",
+            Self::Forge => "NEXT TO WRECKS AND A GARRISON: TOUGHER RIOT GUARDS.",
+            Self::Stable => "NEXT TO HORSES AND A GARRISON: FASTER OUTRIDERS.",
+            Self::Watchpost => "SEES 4 HEXES, 5 FROM RUBBLE.",
             Self::FieldHospital => "HEALS 2 NEARBY TROOPS A TURN.",
             Self::Cannery => "COLLECTS FOOD FROM 3 IMPROVEMENTS WITHIN 3 HEXES.",
             Self::WorkCamp => "NEARBY JOBS START FROM HERE.",
-            Self::Smelter => "COLLECTS METAL FROM 3 MINES WITHIN 3 HEXES.",
-            Self::Railhead => "TROOPS BY THE CITY REACH IT IN ONE TURN, ALONG A ROAD.",
+            Self::Smelter => "COLLECTS SCRAP FROM 3 SCRAP DIGS WITHIN 3 HEXES.",
+            Self::Railhead => "TROOPS BY THE ENCLAVE REACH IT IN ONE TURN, ALONG A ROAD.",
             Self::Harbor => "ON THE COAST: TRAINS SHIPS.",
             Self::CoastalBattery => "ON THE COAST: FIRES AT SHIPS WITHIN 2.",
         }
@@ -162,7 +162,7 @@ impl Build {
     pub fn name(self) -> &'static str {
         match self {
             Self::Unit(u) => u.name(),
-            Self::Worker => "WORKER",
+            Self::Worker => "SALVAGER",
             Self::Grow => "GROW",
             Self::Gather => "GATHER",
         }
@@ -216,14 +216,14 @@ impl BuildUnit {
     }
     pub fn name(self) -> &'static str {
         match self {
-            Self::Melee => "MELEE",
-            Self::Ranged => "RANGED",
-            Self::Cavalry => "CAVALRY",
-            Self::Siege => "SIEGE",
-            Self::Armored => "ARMORED",
-            Self::PatrolGalley => "PATROL GALLEY",
-            Self::LandingCraft => "LANDING CRAFT",
-            Self::BombardShip => "BOMBARD SHIP",
+            Self::Melee => "SCRAPPER",
+            Self::Ranged => "BOWMAN",
+            Self::Cavalry => "OUTRIDER",
+            Self::Siege => "TREBUCHET",
+            Self::Armored => "RIOT GUARD",
+            Self::PatrolGalley => "SKIFF",
+            Self::LandingCraft => "BARGE",
+            Self::BombardShip => "RUST HULK",
         }
     }
     /// What queuing it takes from the side's stockpile (`economy.rs`).
@@ -258,7 +258,7 @@ impl BuildUnit {
             Self::Ranged => "FIRES FROM 2 TILES",
             Self::Cavalry => "FAST FLANKER",
             Self::Siege => "LONG RANGE, SLOW",
-            Self::Armored => "HEAVY IRON INFANTRY",
+            Self::Armored => "HEAVY SCRAP-PLATED INFANTRY",
             Self::PatrolGalley => "FAST COASTAL FIGHTER; STRONG AGAINST SHIPS",
             Self::LandingCraft => "CARRIES UP TO FOUR LAND TROOPS",
             Self::BombardShip => "RANGE 3 SHORE AND SHIP BOMBARDMENT",
@@ -300,24 +300,24 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN AN ENCLAVE WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
             return;
         }
         if build.unit_type().is_naval() && !self.city_is_coastal(city) {
-            self.notice = "ONLY COASTAL CITIES CAN BUILD SHIPS".into();
+            self.notice = "ONLY COASTAL ENCLAVES CAN BUILD SHIPS".into();
             return;
         }
         if build.unit_type().is_naval() && self.cities[city].placed_site(Building::Harbor).is_none()
         {
-            self.notice = "BUILD A HARBOR BEFORE TRAINING SHIPS".into();
+            self.notice = "BUILD DOCKS BEFORE TRAINING SHIPS".into();
             return;
         }
         if let Some(resource) = build.required_resource() {
             self.notice = format!(
-                "{} TRAINS AT A BARRACKS ON {}",
+                "{} TRAINS AT A GARRISON ON {}",
                 build.name(),
                 resource.name()
             );
@@ -353,14 +353,14 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN AN ENCLAVE WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
             return;
         }
         if !self.can_grow(city) {
-            self.notice = format!("A CITY HOLDS AT MOST {MAX_CITY_POPULATION} CITIZENS");
+            self.notice = format!("AN ENCLAVE HOLDS AT MOST {MAX_CITY_POPULATION} CITIZENS");
             return;
         }
         self.queue_paid(city, Build::Grow);
@@ -380,7 +380,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN AN ENCLAVE WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
@@ -394,13 +394,13 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILDING".into();
+            self.notice = "OPEN AN ENCLAVE WITH C BEFORE CHOOSING A BUILDING".into();
             return;
         };
         if matches!(building, Building::Harbor | Building::CoastalBattery)
             && !self.city_is_coastal(city)
         {
-            self.notice = "ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS".into();
+            self.notice = "ONLY COASTAL ENCLAVES CAN BUILD NAVAL BUILDINGS".into();
             return;
         }
         let c = &self.cities[city];
@@ -408,7 +408,7 @@ impl GameState {
             return;
         }
         if c.built.contains(&building) {
-            self.notice = format!("{} ALREADY EXISTS IN THIS CITY", building.name());
+            self.notice = format!("{} ALREADY EXISTS IN THIS ENCLAVE", building.name());
             return;
         }
         // Placed on the map, and the city's workers build it there
@@ -422,7 +422,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN AN ENCLAVE WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
         if self.cities[city].team != PLAYER_TEAM {
@@ -449,12 +449,12 @@ impl GameState {
                     .into_iter()
                     .any(|kind| c.placed_site(kind) == Some(hex))
         }) {
-            return Some("SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+            return Some("SITE IS ALREADY CLAIMED BY AN ENCLAVE OR BUILDING");
         }
         if matches!(building, Building::Harbor | Building::CoastalBattery)
             && !self.city_is_coastal(city)
         {
-            return Some("NEEDS A CITY CENTER ON THE COAST");
+            return Some("NEEDS AN ENCLAVE CENTER ON THE COAST");
         }
         match building {
             Building::CanoeHouse
@@ -466,7 +466,7 @@ impl GameState {
                 Some("NEEDS A RIVERBANK TILE")
             }
             Building::Forge if !self.resource_near(hex, Resource::Iron) => {
-                Some("NEEDS IRON ON OR NEXT TO THE TILE")
+                Some("NEEDS WRECKS ON OR NEXT TO THE TILE")
             }
             Building::Stable if !self.resource_near(hex, Resource::Horses) => {
                 Some("NEEDS HORSES ON OR NEXT TO THE TILE")
@@ -477,7 +477,7 @@ impl GameState {
                         && matches!(self.grid.terrain(n), Terrain::Coast | Terrain::Ocean)
                 }) =>
             {
-                Some("NEEDS A TILE NEXT TO COAST OR OCEAN")
+                Some("NEEDS A TILE NEXT TO SHALLOWS OR DEEP WATER")
             }
             Building::Smelter
                 if !self.grid.tile(hex).hills
@@ -487,7 +487,7 @@ impl GameState {
                                 || self.grid.resource(n) == Some(Resource::Iron))
                     }) =>
             {
-                Some("NEEDS HILLS OR IRON ON OR NEXT TO THE TILE")
+                Some("NEEDS RUBBLE OR WRECKS ON OR NEXT TO THE TILE")
             }
             _ => None,
         }
@@ -562,7 +562,7 @@ impl GameState {
         }
         self.notice = match self.try_queue_barracks(city, build) {
             Ok(()) => format!(
-                "BARRACKS TRAINING {} - PAID {} - {}",
+                "GARRISON TRAINING {} - PAID {} - {}",
                 build.name(),
                 stock_icons(build.price()),
                 turns_icon(build.turns())
@@ -624,7 +624,7 @@ impl GameState {
         };
         if let Some(other) = other.filter(|&other| other < queue.len()) {
             queue.swap(index, other);
-            self.notice = "CITY QUEUE REORDERED".into();
+            self.notice = "ENCLAVE QUEUE REORDERED".into();
         }
     }
 
@@ -636,7 +636,7 @@ impl GameState {
             return;
         }
         let removed = self.take_queue_item(city, index);
-        self.notice = format!("REMOVED {} FROM CITY QUEUE - REFUNDED", removed.name());
+        self.notice = format!("REMOVED {} FROM ENCLAVE QUEUE - REFUNDED", removed.name());
     }
 
     #[cfg(test)]
@@ -652,7 +652,7 @@ impl GameState {
         };
         if let Some(other) = other.filter(|&other| other < queue.len()) {
             queue.swap(index, other);
-            self.notice = "BARRACKS QUEUE REORDERED".into();
+            self.notice = "GARRISON QUEUE REORDERED".into();
         }
     }
 
@@ -664,7 +664,7 @@ impl GameState {
             return;
         }
         let removed = self.take_barracks_item(city, index);
-        self.notice = format!("REMOVED {} FROM BARRACKS QUEUE - REFUNDED", removed.name());
+        self.notice = format!("REMOVED {} FROM GARRISON QUEUE - REFUNDED", removed.name());
     }
 
     /// Queue hotkeys operate on the city line currently being produced.
@@ -701,7 +701,8 @@ impl GameState {
                 let (team, id) = (c.team, c.id);
                 *self.stock_mut(team) += GATHER_YIELD;
                 if team == PLAYER_TEAM {
-                    self.notice = format!("CITY {} GATHERED {}", id + 1, stock_icons(GATHER_YIELD));
+                    self.notice =
+                        format!("ENCLAVE {} GATHERED {}", id + 1, stock_icons(GATHER_YIELD));
                 }
                 continue;
             }
@@ -712,7 +713,7 @@ impl GameState {
                 log::info!("{:?} city completed a worker", self.cities[i].team);
                 if self.cities[i].team == PLAYER_TEAM {
                     self.notice =
-                        "WORKER READY - PLACE ROADS, IMPROVEMENTS AND BUILDINGS FROM THE CITY"
+                        "SALVAGER READY - PLACE ROADS, IMPROVEMENTS AND BUILDINGS FROM THE ENCLAVE"
                             .into();
                 }
                 continue;
@@ -726,7 +727,7 @@ impl GameState {
                 c.population = (c.population + 1).min(MAX_CITY_POPULATION);
                 log::info!("{:?} city {} grew to {}", c.team, c.id + 1, c.population);
                 if c.team == PLAYER_TEAM {
-                    self.notice = format!("CITY {} GREW TO {}", c.id + 1, c.population);
+                    self.notice = format!("ENCLAVE {} GREW TO {}", c.id + 1, c.population);
                 }
                 continue;
             }

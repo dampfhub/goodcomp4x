@@ -68,7 +68,7 @@ impl Stock {
         [
             ("FOOD", self.food),
             ("WOOD", self.wood),
-            ("METAL", self.metal),
+            ("SCRAP", self.metal),
         ]
     }
 }
@@ -112,7 +112,7 @@ pub(in crate::game) fn grow_price(population: usize) -> Stock {
     Stock::whole(GROW_BASE + GROW_PER_CITIZEN * population as i32, 0, 0)
 }
 
-/// "3 WOOD AND 1 METAL": the nonzero parts of `stock`, in whole units.
+/// "3 WOOD AND 1 SCRAP": the nonzero parts of `stock`, in whole units.
 pub(in crate::game) fn stock_words(stock: Stock) -> String {
     let parts: Vec<String> = stock
         .parts()
@@ -168,7 +168,7 @@ impl GameState {
     /// mine (2) and a Quarry (3) dig out of the ground. The rest is wood.
     pub(in crate::game) fn metal_yield(&self, hex: Hex, production: i32) -> i32 {
         let hills = i32::from(self.grid.tile(hex).hills);
-        let mine = if self.sites.get(&hex).is_some_and(|s| s.label == "MINE") {
+        let mine = if self.sites.get(&hex).is_some_and(|s| s.label == "SCRAP DIG") {
             2
         } else {
             0
@@ -348,7 +348,7 @@ impl GameState {
                 log::info!("{team:?} city {} starves", self.cities[city].id + 1);
                 if team == crate::game::PLAYER_TEAM {
                     self.notice = format!(
-                        "CITY {} STARVES - NOT ENOUGH FOOD FOR EVERY CITIZEN",
+                        "ENCLAVE {} STARVES - NOT ENOUGH FOOD FOR EVERY CITIZEN",
                         self.cities[city].id + 1
                     );
                 }

@@ -959,7 +959,7 @@ fn the_tooltip_shows_an_unseen_hex_as_last_seen() {
         |game: &GameState| line_strings(game.tile_tooltip_lines(far).into_iter().map(|(_, l)| l));
     let before = read(&game);
     assert!(
-        before.iter().any(|s| s.contains("REACHES CITY")),
+        before.iter().any(|s| s.contains("REACHES ENCLAVE")),
         "{before:?}"
     );
 
@@ -972,7 +972,7 @@ fn the_tooltip_shows_an_unseen_hex_as_last_seen() {
             team: Team::Red,
             food: 9,
             production: 9,
-            label: "FARM",
+            label: "HOMESTEAD",
         },
     );
     assert_eq!(read(&game), before);
@@ -1131,7 +1131,7 @@ fn clicks_on_a_panel_do_not_reach_the_map() {
 fn end_turn_button_names_what_is_waiting() {
     // Production first, then units: the turn's order.
     assert_eq!(end_turn_label((3, 1)), "CHOOSE PRODUCTION");
-    assert_eq!(end_turn_label((0, 2)), "2 CITIES NEED PRODUCTION");
+    assert_eq!(end_turn_label((0, 2)), "2 ENCLAVES NEED PRODUCTION");
     assert_eq!(end_turn_label((3, 0)), "3 UNITS NEED ORDERS");
     assert_eq!(end_turn_label((1, 0)), "UNIT NEEDS ORDERS");
     assert_eq!(end_turn_label((0, 0)), "END TURN");
@@ -1423,9 +1423,9 @@ fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
         .collect();
     let tile = game.grid.tile(hex).name();
     let build = if game.grid.tile(hex).hills {
-        "MINE"
+        "SCRAP DIG"
     } else {
-        "FARM"
+        "HOMESTEAD"
     };
     assert_eq!(labels, [format!("{build} · {tile} · \u{E003}3")]);
 }
@@ -1906,8 +1906,8 @@ fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
     game.cities[0].built.push(Building::Barracks);
     game.open_barracks(0);
     let tray = panel_strings(|panel| game.barracks_tray(0, panel));
-    assert_shows(&tray, "CAVALRY: 3 OF 3 LEFT (1 HORSES DEPOSIT × 3)");
-    assert_shows(&tray, "ARMORED: LOCKED - PUT A BARRACKS ON IRON");
+    assert_shows(&tray, "OUTRIDER: 3 OF 3 LEFT (1 HORSES DEPOSIT × 3)");
+    assert_shows(&tray, "RIOT GUARD: LOCKED - PUT A GARRISON ON WRECKS");
     let cavalry = find_button(&game, Target::BarracksBuild(BuildUnit::Cavalry));
     assert_eq!(cavalry.state, ButtonState::Ready);
     let armored = find_button(&game, Target::BarracksBuild(BuildUnit::Armored));
@@ -1918,7 +1918,7 @@ fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
         .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
         .collect();
     assert!(
-        tooltip.contains("NEEDS IRON UNDER THE BARRACKS"),
+        tooltip.contains("NEEDS WRECKS UNDER THE GARRISON"),
         "{tooltip}"
     );
     // A Barracks trains at its own pace: a Melee's card shows its 2 turns.

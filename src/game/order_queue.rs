@@ -247,7 +247,7 @@ impl GameState {
             return false;
         }
         if self.empty_city_target(target, self.units[members[0]].team) {
-            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            self.notice = "ENCLAVE CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return false;
         }
         let len = self.plan_length(&members);

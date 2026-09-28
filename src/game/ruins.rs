@@ -39,7 +39,7 @@ impl RuinReward {
     /// What it gives, for the tile tooltip.
     pub fn description(self) -> String {
         match self {
-            RuinReward::Recruits => "A CAVALRY UNIT".into(),
+            RuinReward::Recruits => "AN OUTRIDER UNIT".into(),
             RuinReward::Supplies => format!("+{} FOR THE STOCKPILE", stock_words(SUPPLIES)),
             RuinReward::Harvest => format!("+{} FOR THE STOCKPILE", stock_words(HARVEST)),
         }
@@ -80,7 +80,7 @@ impl GameState {
         if remembered {
             let seen = self.memory.get(&hex).is_some_and(|seen| seen.ruin);
             return if seen {
-                vec!["RUINS, AS LAST SEEN".into()]
+                vec!["CACHE, AS LAST SEEN".into()]
             } else {
                 Vec::new()
             };
@@ -89,13 +89,13 @@ impl GameState {
             return Vec::new();
         };
         let mut notes = vec![format!(
-            "RUINS: HOLD {} WITH A MILITARY UNIT FOR {}",
+            "CACHE: HOLD {} WITH A MILITARY UNIT FOR {}",
             turns_icon(RUIN_HOLD_TURNS as i32),
             ruin.reward.description()
         )];
         if let Some(team) = ruin.holder {
             notes.push(
-                format!("{team:?} HAS HELD THEM {}/{RUIN_HOLD_TURNS}", ruin.held).to_uppercase(),
+                format!("{team:?} HAS HELD IT {}/{RUIN_HOLD_TURNS}", ruin.held).to_uppercase(),
             );
         }
         notes
@@ -188,7 +188,7 @@ impl GameState {
                         self.next_unit_id += 1;
                         self.units
                             .push(Unit::new(id, spot, team, UnitType::Cavalry));
-                        "A CAVALRY UNIT JOINS YOU".into()
+                        "AN OUTRIDER UNIT JOINS YOU".into()
                     }
                     None => "BUT THERE WAS NO ROOM FOR RECRUITS".into(),
                 }
@@ -200,9 +200,9 @@ impl GameState {
             ruin.pos.r
         );
         if team == PLAYER_TEAM {
-            self.notice = format!("RUINS CLAIMED - {what}");
+            self.notice = format!("CACHE LOOTED - {what}");
         } else if self.fog().sees(ruin.pos) {
-            self.notice = format!("{team:?} CLAIMED THE RUINS").to_uppercase();
+            self.notice = format!("{team:?} LOOTED THE CACHE").to_uppercase();
         }
     }
 }
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(game.units.len(), 2, "a cavalry unit joined");
         assert_eq!(game.units[1].unit_type, UnitType::Cavalry);
         assert_eq!(game.units[1].team, Team::Blue);
-        assert!(game.notice.starts_with("RUINS CLAIMED"), "{}", game.notice);
+        assert!(game.notice.starts_with("CACHE LOOTED"), "{}", game.notice);
     }
 
     #[test]
@@ -344,7 +344,7 @@ mod tests {
         put(&mut game, 1, ruin, Team::Red, UnitType::Melee);
         end_turns(&mut game, 1);
         let notes = game.ruin_notes(ruin, false);
-        assert_eq!(notes[1], "RED HAS HELD THEM 1/3");
+        assert_eq!(notes[1], "RED HAS HELD IT 1/3");
         assert!(game.ruin_notes(Hex::new(1, 0), false).is_empty());
         // Out of sight, only what was seen: nothing, before anyone looked.
         assert!(game.ruin_notes(ruin, true).is_empty());

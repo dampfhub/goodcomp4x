@@ -68,11 +68,11 @@ Its content, `settings_panel_content`, has a `Row::Heading` for each
 then the City Yields overlay control, Close (`Target::CloseSettings`), and Quit. A setting's `control` picks
 its widget: ImGui (`render_setting`) puts the name in a label column and
 beside it a checkbox (`Control::Toggle`), a slider showing `value_text`
-(`Control::Slider`), or a button per value with the current one gold
+(`Control::Slider`), or a button per value with the current one amber
 (`Control::Choice`; a combo box past `Control::MAX_BUTTONS` values), with
 the setting's description as the tooltip. Classic expands the two rows
 (`builder::classic_rows`, `settings_menu::classic_setting_rows`) into a
-gold heading line, the name, and compact buttons: one per value (OFF / ON
+amber heading line, the name, and compact buttons: one per value (OFF / ON
 for a switch), or < and > beside the value for a slider or long list.
 Every control acts through `Target::SetSetting(setting, value)`, which
 clamps to the range. A new setting therefore needs no UI code: add it in

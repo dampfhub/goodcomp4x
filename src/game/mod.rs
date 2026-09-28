@@ -373,7 +373,7 @@ impl GameState {
             .push(city::Build::Unit(city::BuildUnit::PatrolGalley));
         game.start_on_whole_map();
         game.notice =
-            "NAVAL TEST: SELECT TROOP THEN CLICK CRAFT TO BOARD; CRAFT THEN SHORE TO LAND".into();
+            "NAVAL TEST: SELECT TROOP THEN CLICK BARGE TO BOARD; BARGE THEN SHORE TO LAND".into();
         game
     }
 
@@ -462,18 +462,18 @@ impl GameState {
     /// ordinary unit type.
     fn unit_role(&self, unit: &Unit) -> &'static str {
         if self.settlers.contains(&unit.id) {
-            "SETTLER"
+            "CARAVAN"
         } else {
             match unit.unit_type {
-                UnitType::Melee => "MELEE",
-                UnitType::Ranged => "RANGED",
-                UnitType::Cavalry => "CAVALRY",
-                UnitType::Siege => "SIEGE",
-                UnitType::Scout => "SCOUT",
-                UnitType::Armored => "ARMORED",
-                UnitType::PatrolGalley => "PATROL GALLEY",
-                UnitType::LandingCraft => "LANDING CRAFT",
-                UnitType::BombardShip => "BOMBARD SHIP",
+                UnitType::Melee => "SCRAPPER",
+                UnitType::Ranged => "BOWMAN",
+                UnitType::Cavalry => "OUTRIDER",
+                UnitType::Siege => "TREBUCHET",
+                UnitType::Scout => "CYCLIST",
+                UnitType::Armored => "RIOT GUARD",
+                UnitType::PatrolGalley => "SKIFF",
+                UnitType::LandingCraft => "BARGE",
+                UnitType::BombardShip => "RUST HULK",
             }
         }
     }

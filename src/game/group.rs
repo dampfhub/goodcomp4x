@@ -116,7 +116,7 @@ impl GameState {
         if let Some(&first) = self.group.first()
             && self.empty_city_target(target, self.units[first].team)
         {
-            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            self.notice = "ENCLAVE CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return;
         }
         for &i in &self.group {

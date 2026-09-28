@@ -54,7 +54,7 @@ impl GameState {
         self.ui_click_mode = None;
         self.camera.focus_on(self.cities[i].pos.to_world());
         self.notice = if self.city_needs_build(i) {
-            format!("CHOOSE WHAT CITY {} BUILDS - 0-9", self.cities[i].id + 1)
+            format!("CHOOSE WHAT ENCLAVE {} BUILDS - 0-9", self.cities[i].id + 1)
         } else {
             "CLICK TILES TO ASSIGN - A AUTO ASSIGN - ESC OR SPACE TO EXIT".into()
         };
@@ -102,7 +102,7 @@ impl GameState {
             return true;
         }
         self.leave_city_view();
-        self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+        self.notice = "PLANNING - C ENCLAVE - SPACE HOLD OR END TURN".into();
         true
     }
 
@@ -123,7 +123,7 @@ impl GameState {
         self.ui_click_mode = None;
         self.camera
             .focus_on(self.cities[city].barracks.unwrap().to_world());
-        self.notice = "BARRACKS - QUEUE TROOPS OR CLICK CITY TO RETURN".into();
+        self.notice = "GARRISON - QUEUE TROOPS OR CLICK ENCLAVE TO RETURN".into();
     }
 
     pub fn open_selected_city_from_barracks(&mut self) {
@@ -141,7 +141,7 @@ impl GameState {
         // This keeps city assignment, Barracks management, and unit selection
         // on one consistent interaction model.
         if self.selected_barracks.is_some() {
-            self.notice = "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT".into();
+            self.notice = "GARRISON MENU - PRESS ESC OR SPACE TO EXIT".into();
             return true;
         }
         if self.selected_city.is_none() {

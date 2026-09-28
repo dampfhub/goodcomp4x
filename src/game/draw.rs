@@ -2565,7 +2565,7 @@ mod tests {
         assert!(!flat(&clouds));
         game.set_setting(crate::game::settings::Setting::FogStyle, 0);
         assert!(!game.settings.cloud_fog);
-        assert_eq!(game.notice, "FOG: SOLID GREY");
+        assert_eq!(game.notice, "DUST: SOLID GREY");
         let solid = game.build_vertices();
         assert_eq!(soft(&solid), 0, "no cloud puffs");
         assert!(flat(&solid));
@@ -2801,7 +2801,7 @@ mod tests {
         // A faded ring and its name, like any job waiting for a worker.
         assert!(count_color(&game.build_vertices(), PLANNED_JOB_COLOR) > before);
         let job = game.cities[0].worker_jobs[0];
-        assert_eq!(game.job_name(job), "BARRACKS");
+        assert_eq!(game.job_name(job), "GARRISON");
     }
 
     /// Every vertex as plain data, sorted: labels over a route map come out
@@ -3164,7 +3164,7 @@ mod tests {
         // Plains hills with a mine: a wood from the plains, the hill's and
         // the mine's metal.
         let mine = Hex::new(-2, 2);
-        assert_eq!(game.sites[&mine].label, "MINE");
+        assert_eq!(game.sites[&mine].label, "SCRAP DIG");
         let (food, wood, metal) = game.raw_yield(mine);
         assert_eq!((food, wood + metal), game.tile_yield(mine));
         assert_eq!(metal, 3);

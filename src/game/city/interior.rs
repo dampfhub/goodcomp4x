@@ -107,7 +107,7 @@ impl GameState {
         if let Some(city) = city {
             self.open_city_interior(city);
         } else {
-            self.notice = "HOVER A CITY OR SELECT A UNIT, THEN PRESS V".into();
+            self.notice = "HOVER AN ENCLAVE OR SELECT A UNIT, THEN PRESS V".into();
         }
     }
 
@@ -125,7 +125,8 @@ impl GameState {
         self.ui_click_mode = None;
         // Leave room for the command panel on the left and Debug on the right.
         self.camera = Camera::new(glam::Vec2::new(-1.35, 0.0), 6.0);
-        self.notice = "CITY INTERIOR: CLICK A BLUE TROOP, THEN A TILE OR ENEMY; ESC RETURNS".into();
+        self.notice =
+            "ENCLAVE INTERIOR: CLICK A BLUE TROOP, THEN A TILE OR ENEMY; ESC RETURNS".into();
     }
 
     pub(in crate::game) fn close_city_interior(&mut self) {
@@ -140,9 +141,9 @@ impl GameState {
         self.hovered_tile = None;
         self.hovered_city = None;
         self.notice = if self.selected_city.is_some() {
-            "CITY VIEW: CLICK THE CITY CENTER TO RE-ENTER THE INTERIOR".into()
+            "ENCLAVE VIEW: CLICK THE ENCLAVE CENTER TO RE-ENTER THE INTERIOR".into()
         } else {
-            "EXTERIOR MAP: HOVER THE CITY AND PRESS V TO RE-ENTER".into()
+            "EXTERIOR MAP: HOVER THE ENCLAVE AND PRESS V TO RE-ENTER".into()
         };
     }
 
@@ -201,7 +202,7 @@ impl GameState {
             fighter.planned_move = (fighter.planned_move != Some(tile)).then_some(tile);
             fighter.planned_attack = None;
             self.notice = if tile == CENTER && self.cities[city].interior.core_hp <= 0.0 {
-                "CAPTURE MOVE QUEUED - END TURN TO TAKE THE CITY"
+                "CAPTURE MOVE QUEUED - END TURN TO TAKE THE ENCLAVE"
             } else {
                 "INTERIOR MOVE QUEUED"
             }
@@ -431,7 +432,7 @@ impl GameState {
             city_ref.barracks_queue.clear();
             city_ref.barracks_progress = 0;
             city_ref.worker_jobs.clear();
-            self.notice = format!("CITY {} CAPTURED IN THE INTERIOR", city_ref.id + 1);
+            self.notice = format!("ENCLAVE {} CAPTURED IN THE INTERIOR", city_ref.id + 1);
             log::info!("{}: {team:?} captures its command post", city_ref.id + 1);
             for index in 0..self.field_workers.len() {
                 if self.field_workers[index].home != city {

@@ -138,9 +138,9 @@ impl GameState {
                     self.units[selected].planned_attack = None;
                     self.units[selected].guarding = false;
                     self.units[selected].holding = false;
-                    self.notice = "BOARDING LANDING CRAFT AFTER COMBAT".into();
+                    self.notice = "BOARDING BARGE AFTER COMBAT".into();
                 } else {
-                    self.notice = "LANDING CRAFT FULL (4 TROOPS)".into();
+                    self.notice = "BARGE FULL (4 TROOPS)".into();
                 }
                 return;
             }
@@ -659,11 +659,11 @@ impl GameState {
                 super::unit::UnitType::Ranged | super::unit::UnitType::Siege
             )
         {
-            self.notice = "ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS".into();
+            self.notice = "ONLY BOWMEN AND TREBUCHETS ON LAND CAN ATTACK SHIPS".into();
             return;
         }
         if self.empty_city_target(target, self.units[idx].team) {
-            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            self.notice = "ENCLAVE CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return;
         }
         if !self.attack_target_legal(idx, target, false) {

@@ -27,7 +27,10 @@ impl GameState {
         let interior = &city.interior;
         panel.text(
             TITLE,
-            vec![(format!("CITY {} INTERIOR", city.id + 1), city.team.color())],
+            vec![(
+                format!("ENCLAVE {} INTERIOR", city.id + 1),
+                city.team.color(),
+            )],
         );
         panel.text(
             BODY,
@@ -116,7 +119,7 @@ impl GameState {
             ButtonSpec {
                 target: Target::OpenInterior,
                 label: if city.team == crate::game::PLAYER_TEAM {
-                    "RETURN TO CITY"
+                    "RETURN TO ENCLAVE"
                 } else {
                     "LEAVE INTERIOR"
                 }
@@ -218,7 +221,7 @@ impl GameState {
             notes.push(format!("+{bonus:.0}% DEFENSE FROM TERRAIN"));
         }
         if unit.deployed {
-            notes.push("DEPLOYED".to_string());
+            notes.push("SET UP".to_string());
         }
         if unit.unit_type == crate::game::unit::UnitType::LandingCraft {
             notes.push(format!(
@@ -226,11 +229,11 @@ impl GameState {
                 unit.cargo.len()
             ));
         } else if !unit.is_naval() {
-            notes.push("CLICK AN ADJACENT LANDING CRAFT TO BOARD".to_string());
+            notes.push("CLICK AN ADJACENT BARGE TO BOARD".to_string());
         }
         if unit.lookout {
             notes.push(format!(
-                "LOOKOUT: +{} SIGHT",
+                "BINOCULARS: +{} SIGHT",
                 crate::game::fog::LOOKOUT_SIGHT
             ));
         }
@@ -307,7 +310,7 @@ impl GameState {
             armed: armed(ClickMode::Swap),
         });
         if settler {
-            buttons.push(ButtonSpec::plain(UnitAction::Settle, "FOUND CITY", "F"));
+            buttons.push(ButtonSpec::plain(UnitAction::Settle, "FOUND ENCLAVE", "F"));
         } else {
             let (name, _) = ability_text(unit);
             let label = match unit.ability_cooldown {
@@ -435,7 +438,7 @@ impl GameState {
         panel.text(
             TITLE,
             vec![
-                (format!("CITY {}", city.id + 1), city.team.color()),
+                (format!("ENCLAVE {}", city.id + 1), city.team.color()),
                 (
                     format!(
                         "   POPULATION {}/{}",
@@ -565,7 +568,9 @@ impl GameState {
         panel.text(
             SMALL,
             vec![(
-                format!("A BARRACKS TRAINS TROOPS {CITY_TRAINING_SLOWDOWN}× FASTER THAN THE CITY"),
+                format!(
+                    "A GARRISON TRAINS TROOPS {CITY_TRAINING_SLOWDOWN}× FASTER THAN THE ENCLAVE"
+                ),
                 DIM_TEXT,
             )],
         );
@@ -581,14 +586,14 @@ impl GameState {
             })
             .chain([card(
                 Target::BuildWorker,
-                "WORKER".into(),
+                "SALVAGER".into(),
                 Build::Worker,
                 city.queue.first() == Some(&Build::Worker),
             )])
             .collect();
         panel.buttons(vec![ButtonSpec {
             target: Target::OpenInterior,
-            label: "CITY INTERIOR".into(),
+            label: "ENCLAVE INTERIOR".into(),
             hint: "V".into(),
             state: ButtonState::Ready,
             armed: false,
@@ -662,7 +667,7 @@ impl GameState {
             panel.text(
                 SMALL,
                 vec![(
-                    "LIT: WHERE WORKERS REACH, 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD"
+                    "LIT: WHERE SALVAGERS REACH, 3 TILES FROM AN ENCLAVE OR WORK CAMP, OR NEXT TO A ROAD"
                         .into(),
                     DIM_TEXT,
                 )],
@@ -682,14 +687,14 @@ impl GameState {
         self.city_workers(i, panel);
         if city.barracks.is_some() {
             let training = match city.barracks_queue.first() {
-                Some(build) => format!("BARRACKS: TRAINING {}", build.name()),
-                None => "BARRACKS: IDLE - TRAIN TROOPS THERE".into(),
+                Some(build) => format!("GARRISON: TRAINING {}", build.name()),
+                None => "GARRISON: IDLE - TRAIN TROOPS THERE".into(),
             };
             panel.gap(GAP);
             panel.text(SMALL, vec![(training, GOLD_TEXT)]);
             panel.buttons(vec![ButtonSpec {
                 target: Target::OpenBarracks,
-                label: "SEE BARRACKS".into(),
+                label: "SEE GARRISON".into(),
                 hint: "CLICK".into(),
                 state: ButtonState::new(false, false),
                 armed: false,
@@ -704,7 +709,7 @@ impl GameState {
         let city = &self.cities[i];
         let out: Vec<_> = self.field_workers.iter().filter(|w| w.home == i).collect();
         let line = vec![(
-            format!("WORKERS: {} HOME, {} OUT", city.workers, out.len()),
+            format!("SALVAGERS: {} HOME, {} OUT", city.workers, out.len()),
             LABEL_TEXT,
         )];
         panel.text(SMALL, line);
@@ -750,7 +755,7 @@ impl GameState {
         panel.text(
             SMALL,
             vec![(
-                "PLACED, WAITING FOR A WORKER - DRAG TO REORDER".into(),
+                "PLACED, WAITING FOR A SALVAGER - DRAG TO REORDER".into(),
                 LABEL_TEXT,
             )],
         );
@@ -783,7 +788,10 @@ impl GameState {
         let stock = self.stock(city.team);
         panel.text(
             TITLE,
-            vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
+            vec![(
+                format!("ENCLAVE {} GARRISON", city.id + 1),
+                city.team.color(),
+            )],
         );
         let on = self
             .grid
@@ -792,7 +800,7 @@ impl GameState {
         panel.text(
             SMALL,
             vec![(
-                format!("ON {on} · TRAINS TROOPS TWICE AS FAST AS THE CITY"),
+                format!("ON {on} · TRAINS TROOPS TWICE AS FAST AS THE ENCLAVE"),
                 DIM_TEXT,
             )],
         );
@@ -816,7 +824,7 @@ impl GameState {
             let line = if self.barracks_deposits(i, resource).is_empty() {
                 (
                     format!(
-                        "{}: LOCKED - PUT A BARRACKS ON {}",
+                        "{}: LOCKED - PUT A GARRISON ON {}",
                         unit.name(),
                         resource.name()
                     ),
@@ -889,7 +897,7 @@ impl GameState {
         );
         panel.buttons(vec![ButtonSpec {
             target: Target::OpenCity,
-            label: "OPEN CITY".into(),
+            label: "OPEN ENCLAVE".into(),
             hint: "CLICK".into(),
             state: ButtonState::new(false, false),
             armed: false,
