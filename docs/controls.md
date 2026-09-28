@@ -106,8 +106,9 @@ plays out.
 | --- | --- |
 | C | Open a city needing a build (or your first city); from a barracks view, its city |
 | Left-click your city | Open its city view |
-| Click a tile in the city view | Assign a citizen there, or release one |
-| Click the manager (`M`), then a tile | Move the manager; workers follow where they can |
+| Click a tile in the city view | Assign a citizen there, or release one; where one of your units stands, click beside its token |
+| Click one of your units' tokens in the city or barracks view | Select the unit and close the view |
+| Click the manager (`M`), then a tile | Move the manager; workers follow where they can (once it's picked up, a click on a unit's token places it too) |
 | A | Auto-assign citizens by the city's labor focus |
 | Food / Wood / Metal / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
@@ -128,7 +129,7 @@ plays out.
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |
 | See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types, and how many Cavalry and Armored its deposits still allow) |
-| Click the city center while in city view | Enter that city's tactical interior map |
+| Click the city center while in city view (beside any unit's token) | Enter that city's tactical interior map |
 | V / City Interior button | Open the selected or hovered city's interior; press again to return |
 | Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |
 | Backspace in the interior | Clear the selected copy's orders |
@@ -137,8 +138,12 @@ plays out.
 | Space / Escape / click off the map | Close the city or barracks view |
 | Tab | Close the city or barracks view |
 
-While a city view is open, map clicks manage tiles and never select field units. Clicking the
-city center enters the interior map; its clicks control only the interior copies.
+While a city view is open, map clicks manage tiles, except a click on one of your units' tokens
+(its disc or hexagon as drawn, not the rest of its hex), which selects that unit and closes the
+view. The barracks view works the same way: a token click selects the unit, and any other map
+click leaves the view open. While something is being placed for the city's workers, or the
+manager is picked up, every click is theirs, token or not. Clicking the city center enters the
+interior map; its clicks control only the interior copies.
 
 ## Camera, game and testing
 
