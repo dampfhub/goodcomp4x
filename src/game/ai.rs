@@ -5,14 +5,16 @@
 //! units and workers count only in sight; cities, ruins and terrain as last
 //! seen; ground never seen as open.
 
+use std::cmp::Reverse;
 use std::collections::VecDeque;
 
 use super::GameState;
+use super::ability::{Ability, CHARGE_EXTRA_MOVE, DEPLOYED_EXTRA_RANGE};
 use super::city::{Build, BuildUnit, Building, City, Lane, Stock};
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, Sighting};
 use super::hex::Hex;
-use super::unit::{Team, UnitType};
+use super::unit::{Team, Unit, UnitType};
 use super::workers::{JobKind, WorkerJob};
 
 /// What an AI side knows as it plans its units: its fog, and what's worth
@@ -51,6 +53,34 @@ struct Flood {
 
 /// A hex a `Flood` hasn't reached.
 const NOT_FOUND: i32 = i32::MAX;
+
+/// Turns after which a hex its side has seen is worth a scout's look again.
+const SCOUT_STALE_TURNS: u32 = 10;
+
+/// How far from where it stands `enemy` could attack next turn: its move
+/// (and a Charge's extra hex), then its range (and a deployed siege
+/// engine's extra one). By its type, not its orders, which are its own
+/// side's. `None` for one that can't attack.
+fn threat_reach(enemy: &Unit) -> Option<i32> {
+    if enemy.unit_type == UnitType::LandingCraft {
+        return None;
+    }
+    let stats = enemy.unit_type.stats();
+    let extra = match Ability::of(enemy.unit_type) {
+        Ability::Charge => CHARGE_EXTRA_MOVE,
+        Ability::Deploy => DEPLOYED_EXTRA_RANGE,
+        _ => 0,
+    };
+    Some(stats.move_range + stats.attack_range + extra)
+}
+
+/// The hexes within `radius` of `center`, on the map or not.
+fn within(center: Hex, radius: i32) -> impl Iterator<Item = Hex> {
+    (-radius..=radius).flat_map(move |dq| {
+        ((-radius).max(-dq - radius)..=radius.min(-dq + radius))
+            .map(move |dr| Hex::new(center.q + dq, center.r + dr))
+    })
+}
 
 /// Units (scouts and settlers aside) the AI wants for each of its cities
 /// before it spends on growth.
@@ -239,9 +269,10 @@ impl GameState {
     /// unit going elsewhere than an enemy attacks any enemy in range of
     /// where it ends up. Units in a contested hex stay and fight. No
     /// coordination beyond not sending two units to the same hex, and no
-    /// retreating. It all goes by what the side knows (`side_fog`), never
-    /// the real board: an enemy out of sight isn't there, and ground never
-    /// seen is open.
+    /// retreating, but for scouts, which scout and keep out of harm's way
+    /// instead (`plan_ai_scout`). It all goes by what the side knows
+    /// (`side_fog`), never the real board: an enemy out of sight isn't
+    /// there, and ground never seen is open.
     pub(super) fn plan_ai_turn(&mut self, team: Team) {
         // The computer founds its first city immediately, before combat orders.
         if self.cities.iter().all(|c| c.team != team)
@@ -261,12 +292,20 @@ impl GameState {
         self.plan_ai_workers(team);
         let known = self.knowledge(fog);
         let mut floods: HashMap<Hex, Flood> = HashMap::default();
+        let mut watched = HashSet::default();
         for idx in 0..self.units.len() {
             if self.units[idx].team != team
-                || self.rival_of(idx).is_some()
                 || self.player_controlled_units.contains(&self.units[idx].id)
                 || self.settlers.contains(&self.units[idx].id)
             {
+                continue;
+            }
+            // A scout even slips out of a contested hex.
+            if self.units[idx].unit_type == UnitType::Scout {
+                self.plan_ai_scout(idx, &known, &mut floods, &mut watched);
+                continue;
+            }
+            if self.rival_of(idx).is_some() {
                 continue;
             }
             let pos = self.units[idx].pos;
@@ -478,15 +517,8 @@ impl GameState {
         let exploring =
             known.enemies.is_empty() && open_ruins.is_empty() && known.cities.is_empty();
         let mut unexplored = None;
-        // Search outward ring by ring, stopping at the first ring with a
-        // target. A city is as far as its gates, plus one.
-        let mut seen = vec![false; self.grid.cells()];
-        if let Some(i) = self.grid.index(unit.pos) {
-            seen[i] = true;
-        }
-        let mut ring = vec![unit.pos];
-        let mut last_ring: Vec<Hex> = Vec::new();
-        while !ring.is_empty() || !last_ring.is_empty() {
+        // A city is as far as its gates, plus one.
+        let found = self.search_rings(unit.pos, known, |ring, last_ring| {
             if let Some(hex) = lowest(&mut ring.iter().copied().filter(is_target)) {
                 return Some(hex);
             }
@@ -501,9 +533,35 @@ impl GameState {
             if unexplored.is_none() {
                 unexplored =
                     lowest(&mut ring.iter().copied().filter(|&h| !self.explored_by(h, fog)));
-                if exploring && unexplored.is_some() {
+                if exploring {
                     return unexplored;
                 }
+            }
+            None
+        });
+        found
+            .or(unexplored)
+            .or_else(|| nearest(&mut known.enemies.iter().copied()))
+    }
+
+    /// Searches outward from `start` ring by ring (each the hexes one more
+    /// step on foot away) over the ground as `known`'s side knows it,
+    /// handing `pick` each ring and the one before it until it picks a hex.
+    fn search_rings(
+        &self,
+        start: Hex,
+        known: &Knowledge,
+        mut pick: impl FnMut(&[Hex], &[Hex]) -> Option<Hex>,
+    ) -> Option<Hex> {
+        let mut seen = vec![false; self.grid.cells()];
+        if let Some(i) = self.grid.index(start) {
+            seen[i] = true;
+        }
+        let mut ring = vec![start];
+        let mut last_ring: Vec<Hex> = Vec::new();
+        while !ring.is_empty() || !last_ring.is_empty() {
+            if let Some(hex) = pick(&ring, &last_ring) {
+                return Some(hex);
             }
             let mut next = Vec::new();
             for &hex in &ring {
@@ -519,7 +577,193 @@ impl GameState {
             }
             last_ring = std::mem::replace(&mut ring, next);
         }
-        unexplored.or_else(|| nearest(&mut known.enemies.iter().copied()))
+        None
+    }
+
+    /// Scout `idx` of the AI gathers what its side knows and stays alive,
+    /// rather than fight. It never ends a move where an enemy in sight could
+    /// reach and attack it next turn (`threat_reach`) if it can help it;
+    /// hurt (under half health), it keeps a hex farther off still, and heads
+    /// home to its side's nearest city. Of the safe hexes it can reach it
+    /// takes, first, the nearest with an enemy worker alone (captured, since
+    /// a worker can't hit back) or ruins (held while safe); else the one
+    /// that brings the most into sight that its side has never seen or not
+    /// seen for a while (`scouting_value`; hills see farther), farthest from
+    /// its side's cities on a tie, so scouts fan out; with nothing new
+    /// within reach, it heads for the nearest ground that has
+    /// (`nearest_unscouted`). With no safe hex it's cornered: it takes the
+    /// least threatened, and fights back from there. `watched` is what the
+    /// side's scouts planned so far this turn will see, which the next one
+    /// doesn't count again.
+    fn plan_ai_scout(
+        &mut self,
+        idx: usize,
+        known: &Knowledge,
+        floods: &mut HashMap<Hex, Flood>,
+        watched: &mut HashSet<Hex>,
+    ) {
+        let unit = &self.units[idx];
+        let (team, pos) = (unit.team, unit.pos);
+        let fog = &known.fog;
+        let hurt = unit.hp < unit.max_hp() / 2.0;
+        let threats: Vec<(Hex, i32)> = self
+            .units
+            .iter()
+            .filter(|enemy| enemy.team != team && fog.sees(enemy.pos))
+            .filter_map(|enemy| Some((enemy.pos, threat_reach(enemy)? + i32::from(hurt))))
+            .collect();
+        let threatened = |hex: Hex| {
+            threats
+                .iter()
+                .filter(|&&(at, reach)| at.distance(hex) <= reach)
+                .count()
+        };
+        let claimed = |hex: Hex| {
+            self.units
+                .iter()
+                .any(|u| u.team == team && u.planned_move == Some(hex))
+        };
+        let mut reachable: Vec<Hex> = self
+            .known_reachable_for_domain(pos, unit.stats().move_range, team, fog, false)
+            .into_iter()
+            .filter(|&hex| hex == pos || !claimed(hex))
+            .collect();
+        reachable.sort_by_key(|h| (h.q, h.r));
+        let safe: Vec<Hex> = reachable
+            .iter()
+            .copied()
+            .filter(|&hex| threatened(hex) == 0)
+            .collect();
+        let homes: Vec<Hex> = self
+            .cities
+            .iter()
+            .filter(|c| c.team == team)
+            .map(|c| c.pos)
+            .collect();
+        let prey = |hex: Hex| {
+            let worker = known.enemies.contains(&hex) && self.enemy_of_team_at(hex, team).is_none();
+            let ruins = known.ruins.contains(&hex) && !known.enemies.contains(&hex);
+            worker || ruins
+        };
+
+        let mut attack = None;
+        let dest = if safe.is_empty() {
+            // Out of reach of as many as it can, as far as it can get.
+            let nearest_threat = |hex: Hex| {
+                threats
+                    .iter()
+                    .map(|&(at, _)| at.distance(hex))
+                    .min()
+                    .unwrap_or(i32::MAX)
+            };
+            let dest = reachable
+                .iter()
+                .copied()
+                .min_by_key(|&hex| {
+                    let far = Reverse(nearest_threat(hex));
+                    (threatened(hex), far, hex != pos, hex.q, hex.r)
+                })
+                .unwrap_or(pos);
+            // Cornered, with an enemy still beside it: it fights back.
+            if nearest_threat(dest) <= 1 {
+                attack = self.ai_attack_from(idx, dest, fog);
+            }
+            dest
+        } else if let Some(hex) = safe
+            .iter()
+            .copied()
+            .filter(|&hex| prey(hex))
+            .min_by_key(|&hex| (hex.distance(pos), hex.q, hex.r))
+        {
+            hex
+        } else if let Some(home) = homes
+            .iter()
+            .copied()
+            .filter(|_| hurt)
+            .min_by_key(|&c| (c.distance(pos), c.q, c.r))
+        {
+            self.step_toward(home, pos, &safe, known, floods)
+        } else {
+            let from_home = |hex: Hex| homes.iter().map(|&c| c.distance(hex)).min().unwrap_or(0);
+            let best = safe
+                .iter()
+                .copied()
+                .map(|hex| (self.scouting_value(hex, known, watched), hex))
+                .max_by_key(|&(value, hex)| (value, from_home(hex), Reverse((hex.q, hex.r))));
+            match best {
+                Some((value, hex)) if value > 0 => hex,
+                _ => match self.nearest_unscouted(pos, known, watched) {
+                    Some(goal) => self.step_toward(goal, pos, &safe, known, floods),
+                    // Nothing left to see: the nearest safe hex, which is
+                    // where it stands if that's safe.
+                    None => safe
+                        .iter()
+                        .copied()
+                        .min_by_key(|&hex| (hex.distance(pos), hex.q, hex.r))
+                        .unwrap_or(pos),
+                },
+            }
+        };
+        watched.extend(within(dest, self.sight_at(UnitType::Scout, dest)));
+        let unit = &mut self.units[idx];
+        unit.planned_move = (dest != pos).then_some(dest);
+        unit.planned_attack = attack;
+    }
+
+    /// How much a scout standing on `hex` would see that `known`'s side
+    /// wants seen (`unscouted`), and no other scout of its sees this turn
+    /// (`watched`). By range alone, mountains aside.
+    fn scouting_value(&self, hex: Hex, known: &Knowledge, watched: &HashSet<Hex>) -> u32 {
+        within(hex, self.sight_at(UnitType::Scout, hex))
+            .filter(|h| self.grid.contains(*h) && !watched.contains(h))
+            .map(|h| self.unscouted(h, known))
+            .sum()
+    }
+
+    /// How much `known`'s side wants `hex` seen: 2 if it never has been, 1 if
+    /// not for `SCOUT_STALE_TURNS`, else 0.
+    fn unscouted(&self, hex: Hex, known: &Knowledge) -> u32 {
+        match self.recalled(hex, &known.fog) {
+            None => 2,
+            Some(seen) => u32::from(self.turn.saturating_sub(seen.turn) >= SCOUT_STALE_TURNS),
+        }
+    }
+
+    /// The nearest ground on foot from `from` that `known`'s side wants seen
+    /// (`unscouted`) and no scout of its sees this turn, ties to the lowest
+    /// coordinates.
+    fn nearest_unscouted(
+        &self,
+        from: Hex,
+        known: &Knowledge,
+        watched: &HashSet<Hex>,
+    ) -> Option<Hex> {
+        self.search_rings(from, known, |ring, _| {
+            ring.iter()
+                .copied()
+                .filter(|h| !watched.contains(h) && self.unscouted(*h, known) > 0)
+                .min_by_key(|h| (h.q, h.r))
+        })
+    }
+
+    /// Of `options`, where a unit at `pos` gets nearest `goal` on foot
+    /// (`steps_to`), staying put on a tie, then by coordinates.
+    fn step_toward(
+        &self,
+        goal: Hex,
+        pos: Hex,
+        options: &[Hex],
+        known: &Knowledge,
+        floods: &mut HashMap<Hex, Flood>,
+    ) -> Hex {
+        let flood = floods.entry(goal).or_insert_with(|| self.flood_from(goal));
+        self.steps_to(flood, known, &options.iter().copied().collect());
+        let steps = |hex: Hex| self.grid.index(hex).map_or(NOT_FOUND, |i| flood.steps[i]);
+        options
+            .iter()
+            .copied()
+            .min_by_key(|&hex| (steps(hex), hex != pos, hex.q, hex.r))
+            .unwrap_or(pos)
     }
 
     /// Carries `flood` on until it has the steps on foot from each of
@@ -593,12 +837,18 @@ mod tests {
         game.plan_ai_turn(Team::Red);
         assert!(game.units[0].planned_attack.is_none());
     }
+
     /// A lone Red melee at the origin of open plains of radius 8, with no
     /// cities, ruins or memory.
     fn lone_red() -> GameState {
+        lone_red_unit(UnitType::Melee)
+    }
+
+    /// `lone_red`, with a unit of `unit_type`.
+    fn lone_red_unit(unit_type: UnitType) -> GameState {
         let mut game = GameState::new();
         game.grid = HexGrid::new(8, [(Hex::new(0, 0), Tile::default())]);
-        game.units = vec![Unit::new(1, Hex::new(0, 0), Team::Red, UnitType::Melee)];
+        game.units = vec![Unit::new(1, Hex::new(0, 0), Team::Red, unit_type)];
         game.cities.clear();
         game.ruins.clear();
         game
@@ -722,5 +972,112 @@ mod tests {
         let (mine, theirs) = (orders(&mut game), orders(&mut other));
         assert!(mine.0.iter().any(|(_, m, _)| m.is_some()), "the AI moves");
         assert_eq!(mine, theirs);
+    }
+
+    /// A lone Red scout at the origin, its side having seen the whole map.
+    fn red_scout() -> GameState {
+        let mut game = lone_red_unit(UnitType::Scout);
+        red_explores_the_rest(&mut game);
+        game
+    }
+
+    #[test]
+    fn a_scout_keeps_out_of_reach_of_an_enemy_it_sees() {
+        let mut game = red_scout();
+        // A Blue melee two hexes off could step in and hit it next turn.
+        // The AI's scouts used to go for it; now it's kept away from.
+        let blue = Hex::new(2, 0);
+        game.units
+            .push(Unit::new(2, blue, Team::Blue, UnitType::Melee));
+        let (dest, attack) = replan(&mut game);
+        let reach = threat_reach(&game.units[1]).unwrap();
+        assert_eq!(reach, 2);
+        assert!(dest.is_some_and(|d| d.distance(blue) > reach), "{dest:?}");
+        assert_eq!(attack, None);
+    }
+
+    #[test]
+    fn a_scout_heads_for_ground_its_side_has_never_seen() {
+        let mut game = red_scout();
+        // Nothing east of q = 4 has been seen.
+        Arc::make_mut(&mut game.side_memory[Team::Red.index()]).retain(|h, _| h.q < 5);
+        let (dest, _) = replan(&mut game);
+        assert!(dest.is_some_and(|d| d.q == 3), "{dest:?}");
+    }
+
+    #[test]
+    fn a_scout_looks_again_where_its_side_has_not_for_a_while() {
+        let mut game = red_scout();
+        // All seen, but the west long ago.
+        game.turn = 30;
+        let memory = Arc::make_mut(&mut game.side_memory[Team::Red.index()]);
+        for (hex, seen) in memory.iter_mut() {
+            seen.turn = if hex.q < -4 { 1 } else { 30 };
+        }
+        let (dest, _) = replan(&mut game);
+        assert!(dest.is_some_and(|d| d.q == -3), "{dest:?}");
+        // With everything freshly seen, there's nothing to go for.
+        for seen in Arc::make_mut(&mut game.side_memory[Team::Red.index()]).values_mut() {
+            seen.turn = 30;
+        }
+        assert_eq!(replan(&mut game), (None, None));
+    }
+
+    #[test]
+    fn a_scout_captures_a_lone_worker_but_attacks_no_troop() {
+        use crate::game::workers::FieldWorker;
+        let mut game = red_scout();
+        let at = Hex::new(2, 0);
+        game.field_workers.push(FieldWorker {
+            id: 5,
+            team: Team::Blue,
+            home: 0,
+            base: at,
+            pos: at,
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
+        // A worker can't hit back: the scout steps onto it.
+        assert_eq!(replan(&mut game), (Some(at), None));
+        // With a Blue troop guarding it, the scout keeps away.
+        game.units
+            .push(Unit::new(2, at, Team::Blue, UnitType::Melee));
+        let (dest, attack) = replan(&mut game);
+        assert!(dest.is_some_and(|d| d.distance(at) > 2), "{dest:?}");
+        assert_eq!(attack, None);
+    }
+
+    #[test]
+    fn a_cornered_scout_fights_back() {
+        // Mountains all around the scout but for one hex, where a Blue melee
+        // stands: nowhere to go.
+        let mut game = lone_red_unit(UnitType::Scout);
+        let blue = Hex::new(1, 0);
+        let walls = Hex::new(0, 0)
+            .neighbors()
+            .into_iter()
+            .filter(|&h| h != blue)
+            .map(|h| (h, Tile::MOUNTAINS));
+        game.grid = HexGrid::new(8, walls);
+        game.units
+            .push(Unit::new(2, blue, Team::Blue, UnitType::Melee));
+        assert_eq!(replan(&mut game), (None, Some(blue)));
+    }
+
+    #[test]
+    fn a_hurt_scout_heads_home() {
+        let mut game = red_scout();
+        let home = Hex::new(-6, 0);
+        game.cities = vec![City::new(0, Team::Red, home)];
+        // East has never been seen, but the scout is down to a third.
+        Arc::make_mut(&mut game.side_memory[Team::Red.index()]).retain(|h, _| h.q < 3);
+        game.units[0].hp = 20.0;
+        let (dest, _) = replan(&mut game);
+        assert!(dest.is_some_and(|d| d.distance(home) == 3), "{dest:?}");
+        // Well again, it's off east.
+        game.units[0].hp = game.units[0].max_hp();
+        let (dest, _) = replan(&mut game);
+        assert!(dest.is_some_and(|d| d.q > 0), "{dest:?}");
     }
 }

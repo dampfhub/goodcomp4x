@@ -29,7 +29,7 @@ use super::city::{BARRACKS_MAX_HP, Building, Routes};
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::{Hex, edge};
 use super::terrain::Terrain;
-use super::unit::{Team, Unit};
+use super::unit::{Team, Unit, UnitType};
 use super::workers::{
     FieldWorker, OUTPOST_SIGHT, Structure, StructureKind, WORKER_SIGHT, WorkerJob,
 };
@@ -108,6 +108,8 @@ pub(super) struct Sighting {
     /// What other sides' workers standing here were building: on the
     /// tile, or a wall or gate on one of its edges.
     pub construction: Vec<SeenJob>,
+    /// The turn it was seen on (`GameState::turn`): how stale it is.
+    pub turn: u32,
 }
 
 /// Another side's construction: a job one of its workers is at work on
@@ -196,13 +198,18 @@ impl GameState {
     /// How far `unit` sees: its type's sight, more from hills or after a
     /// turn on lookout.
     pub(super) fn sight(&self, unit: &Unit) -> i32 {
-        let hills = if self.grid.tile(unit.pos).hills {
+        let lookout = if unit.lookout { LOOKOUT_SIGHT } else { 0 };
+        self.sight_at(unit.unit_type, unit.pos) + lookout
+    }
+
+    /// How far a unit of `unit_type` standing on `hex` sees, lookout aside.
+    pub(super) fn sight_at(&self, unit_type: UnitType, hex: Hex) -> i32 {
+        let hills = if self.grid.tile(hex).hills {
             HILLS_SIGHT
         } else {
             0
         };
-        let lookout = if unit.lookout { LOOKOUT_SIGHT } else { 0 };
-        unit.unit_type.sight() + hills + lookout
+        unit_type.sight() + hills
     }
 
     /// Whether `from` can see `to`: no mountain stands on the line between
@@ -299,6 +306,7 @@ impl GameState {
                 population: 0,
             });
         Sighting {
+            turn: self.turn,
             city,
             barracks,
             site: self.sites.get(&hex).map(|s| (s.label, s.team)),

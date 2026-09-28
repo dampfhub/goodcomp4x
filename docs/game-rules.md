@@ -850,8 +850,25 @@ attacking if that brings it into range. Heading anywhere else than an enemy (rui
 unknown), it attacks any enemy in sight in range of where it ends up. Next to an enemy city it
 holds its ground there, its fighters going in through the gates (see City interiors). It skips hexes a
 teammate already claimed, and units in a contested hex stay and fight. It never uses abilities,
-never builds buildings, and ignores its civilians and any player-controlled AI unit; its scouts
-fight like any other unit. AI cities auto-assign citizens
+never builds buildings, and ignores its civilians and any player-controlled AI unit.
+An AI scout gathers what its side knows and stays alive, rather than fight:
+- It never ends its move where an enemy it sees could reach and attack it next turn (the enemy's
+  move and range by its type, a Cavalry's Charge and a deployed Siege's extra hex included), if
+  it can help it. Hurt (under half health), it keeps a hex farther off still and heads for its
+  side's nearest city.
+- Of the safe hexes it can reach, it takes the nearest with an enemy worker alone on it
+  (captured: a worker can't hit back) or ruins (which it holds while they stay safe).
+- Otherwise it takes the one that brings the most into its sight that its side has never seen
+  (counting double) or hasn't seen for 10 turns. Hills count, as they see farther. On a tie it
+  takes the one farthest from its side's cities, and a side's scouts don't count what another of
+  them already heads to see, so they fan out. With nothing like that within reach, it heads for
+  the nearest such ground.
+- With no safe hex it's cornered: it gets out of reach of as many enemies as it can, as far as
+  it can. Only if an enemy is still beside it does it attack, the nearest in range. It even
+  slips out of a contested hex.
+
+What a scout sees goes into its side's memory, which every AI decision plans on.
+AI cities auto-assign citizens
 at every end of planning. An AI queue gets one item when empty, and only one its side can pay for
 this turn, counting the turn's income and what its other queues start, so it's paid and started
 that turn; a queue whose items all wait anyway is emptied (they're unpaid, so nothing is lost)
@@ -870,8 +887,9 @@ deterministic.
 
 Known bugs link to their board item; the rest are design questions nobody has decided yet.
 
-- The AI never uses abilities or builds buildings or structures, its scouts just fight, and its
-  armies explore by walking to the nearest ground never seen, so they find their enemies slowly.
+- The AI never uses abilities (its scouts never go on lookout) or builds buildings or
+  structures, and its armies explore by walking to the nearest ground never seen, so without a
+  scout's findings they find their enemies slowly.
 - Forts' +50% defense is a placeholder; what forts should really give is undecided.
 - Structures can't be destroyed or captured, and a wall or gate can go on any edge next to explored
   ground.
