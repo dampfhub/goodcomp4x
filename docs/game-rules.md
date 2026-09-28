@@ -598,7 +598,9 @@ every turn end.
   with the turns left, like FARM [clock]2 (an improvement is named for what it becomes: farm, mine
   or lumber mill; a building by its name). The city panel names jobs the same way, with the tile:
   FARM · GRASSLAND · [clock]3. Placed jobs show on the map as faded gold rings (walls and gates as muted gold edges with
-  rounded ends). A job needs explored open ground within workers' reach, no city there, and no
+  rounded ends). A job keeps the work put into it when its worker leaves (see Progress below): on
+  the map its name then adds the turns of work left, like FORT [clock]2, and in the city panel
+  how much is done, like FORT · PLAINS · 2 OF [clock]4 DONE. A job needs explored open ground within workers' reach, no city there, and no
   other job on the tile, queued or under way: a tile takes one job at a time (walls and gates,
   on its edges, aside). Improvements and outposts or forts also can't go on a placed building or
   on another improvement, and an outpost or fort can't go on another one. A job dropped or
@@ -631,9 +633,9 @@ every turn end.
 
 - **Going out:** in the Workers step, each city sends an idle worker out for each job at the top
   of its list. A worker walks 1 hex a turn by the shortest way around impassable terrain,
-  walls, others' gates, enemy units and enemy cities. Once on the tile it works the listed turns
-  (starting the next turn), then takes the city's next job, or walks home when there is none. A
-  job that became impossible is dropped (with a notice); a worker that can't reach its job gives
+  walls, others' gates, enemy units and enemy cities. Once on the tile it works the listed turns,
+  less any work already in the job (starting the next turn), then takes the city's next job, or
+  walks home when there is none. A job that became impossible is dropped (with a notice); a worker that can't reach its job gives
   up and heads home.
 - **Danger:** out on the map a worker can be seen (your own see 1 hex around them). An enemy unit
   that moves onto its hex captures it: it joins the captor's nearest city (or is lost if the
@@ -643,6 +645,14 @@ every turn end.
 - **Recall:** workers otherwise follow their jobs on their own, so each of your workers out on
   the map has a Recall button in its city's panel. A recalled worker drops its job (back to the top of the city's list) and walks straight
   home at its usual 1 hex a turn in the Workers step, taking no new job on the way.
+- **Progress is kept:** the work put into a job stays with the job, not the worker. A worker
+  recalled, captured or killed partway through leaves its job on its city's list with the turns
+  of work it did, and whichever worker takes the job next (the same one or another) only works
+  the turns left. To put an urgent job first, recall the worker and drag that job to the top of
+  the list; the half-built one waits with its work. A job's turns left are counted from its
+  current work time, so a building beside a Workshop built meanwhile takes the halved time less
+  the work done (always at least one turn). Taking a partly built job off the list still refunds
+  its full price; the turns spent on it are lost.
 - **Structures** are never destroyed or captured yet. Units plan moves around the walls and gates
   they know of; a move whose way is blocked by one (say, one not seen when it was planned), with
   no way around within the unit's move, is turned back at resolution. The fog remembers them like

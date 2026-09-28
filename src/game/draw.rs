@@ -1381,7 +1381,8 @@ impl GameState {
     }
 
     /// The player's worker jobs: those under way (`push_jobs_under_way`),
-    /// and those queued, a faded ring on each tile, named.
+    /// and those queued, a faded ring on each tile, named. A job partly
+    /// built (a worker left it) adds the turns of work it has left.
     fn push_planned_jobs(&self, shares: &HashSet<Hex>, out: &mut Vec<Vertex>) {
         self.push_jobs_under_way(shares, out);
         let queued = self
@@ -1390,9 +1391,22 @@ impl GameState {
             .filter(|c| c.team == self.local_team)
             .flat_map(|c| &c.worker_jobs);
         for job in queued {
+            let left = (job.done > 0).then(|| {
+                let left = self.job_turns_left(self.local_team, *job);
+                format!(
+                    "{} {}",
+                    self.job_name(*job),
+                    crate::game::city::turns_icon(left as i32)
+                )
+            });
             if let Some(across) = job.across {
                 let (start, end) = edge_corners(job.hex, across);
                 push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, PLANNED_EDGE_COLOR, out);
+                if let Some(label) = left {
+                    let at = (start + end) / 2.0 + PLANNED_JOB_LABEL_OFFSET * 0.5;
+                    let height = PLANNED_JOB_LABEL_HEIGHT;
+                    font::push_text_centered(at, height, &label, PLANNED_JOB_COLOR, out);
+                }
                 continue;
             }
             let center = job.hex.to_world();
@@ -1408,7 +1422,7 @@ impl GameState {
             font::push_text_centered(
                 Self::job_label_at(job.hex, shares),
                 PLANNED_JOB_LABEL_HEIGHT,
-                self.job_name(*job),
+                left.as_deref().unwrap_or(self.job_name(*job)),
                 PLANNED_JOB_COLOR,
                 out,
             );
@@ -2740,6 +2754,7 @@ mod tests {
                 hex: a,
                 kind: crate::game::workers::JobKind::Wall,
                 across: Some(b),
+                done: 0,
             });
         let vertices = game.build_vertices();
         // A segment is two triangles; each round end is twelve more.

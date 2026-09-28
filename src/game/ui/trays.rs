@@ -758,14 +758,18 @@ impl GameState {
             .queue_drag
             .filter(|drag| drag.kind == QueueKind::Workers);
         for (index, job) in city.worker_jobs.iter().enumerate() {
+            let total = self.job_turns(city.team, *job);
+            // A job a worker left partway keeps its work: "2 OF 4 DONE".
+            let turns = if job.done > 0 {
+                let done = total.saturating_sub(self.job_turns_left(city.team, *job));
+                format!("{done} OF {} DONE", turns_text(total))
+            } else {
+                turns_text(total)
+            };
             panel.queue_item(QueueItemSpec {
                 kind: QueueKind::Workers,
                 index,
-                label: format!(
-                    "{} · {}",
-                    self.job_title(*job),
-                    turns_text(self.job_turns(city.team, *job))
-                ),
+                label: format!("{} · {turns}", self.job_title(*job)),
                 active: false,
                 dragging: drag.is_some_and(|drag| drag.source == index),
                 drop_target: drag

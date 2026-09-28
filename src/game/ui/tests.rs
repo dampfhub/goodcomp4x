@@ -1428,6 +1428,15 @@ fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
         "FARM"
     };
     assert_eq!(labels, [format!("{build} · {tile} · \u{E003}3")]);
+    // A job a worker left partway says how much of it is done.
+    game.cities[0].worker_jobs[0].done = 2;
+    let mut panel = PanelBuilder::default();
+    game.city_tray(0, &mut panel);
+    let row = panel.rows.into_iter().find_map(|row| match row {
+        Row::QueueItem(item) => Some(item.label),
+        _ => None,
+    });
+    assert_eq!(row, Some(format!("{build} · {tile} · 2 OF \u{E003}3 DONE")));
 }
 
 /// Where to click, in window pixels, on `key`'s chip in the turn strip.

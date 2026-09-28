@@ -32,7 +32,7 @@ use super::workers::WorkerJob;
 /// Bumped whenever a message or a plan changes shape, or the rules a turn
 /// plays out by, so mismatched builds refuse each other instead of
 /// desyncing.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -855,6 +855,40 @@ impl GameState {
                 return bad(format!("WORKER {}: WORK IT WASN'T GIVEN", worker.id));
             }
         }
+        // Work put into a job stays with it through planning (a recalled
+        // worker's job goes back on its city's list), or goes with the job
+        // taken off: planning never adds any, or copies it onto a second job.
+        let mut worked_jobs: Vec<WorkerJob> = start
+            .cities
+            .iter()
+            .filter(|c| c.team == team)
+            .flat_map(|c| c.worker_jobs.iter().copied())
+            .chain(
+                start
+                    .field_workers
+                    .iter()
+                    .filter(|w| w.team == team)
+                    .filter_map(|w| w.job),
+            )
+            .filter(|j| j.done > 0)
+            .collect();
+        let planned_jobs = plan.workers.iter().filter_map(|w| w.job).chain(
+            plan.cities
+                .iter()
+                .flat_map(|c| c.worker_jobs.iter().copied()),
+        );
+        for job in planned_jobs.filter(|j| j.done > 0) {
+            let Some(i) = worked_jobs
+                .iter()
+                .position(|w| w.fresh() == job.fresh() && w.done >= job.done)
+            else {
+                return bad(format!(
+                    "JOB AT ({}, {}): WORK IT DIDN'T DO",
+                    job.hex.q, job.hex.r
+                ));
+            };
+            worked_jobs.swap_remove(i);
+        }
         // Troops in a city's interior: its own, ordered within it.
         for fighter in &plan.fighters {
             let own = start.cities.iter().any(|c| {
@@ -1210,6 +1244,9 @@ impl GameState {
             c.worked.hash(&mut h);
             c.built.len().hash(&mut h);
             c.queue.len().hash(&mut h);
+            for j in &c.worker_jobs {
+                (j.hex, j.done).hash(&mut h);
+            }
             c.interior.core_hp.to_bits().hash(&mut h);
             for f in &c.interior.fighters {
                 (f.source_id, f.team, f.pos, f.hp.to_bits()).hash(&mut h);
@@ -1221,7 +1258,7 @@ impl GameState {
         let mut workers: Vec<_> = self.field_workers.iter().collect();
         workers.sort_by_key(|w| w.id);
         for w in workers {
-            (w.id, w.team, w.pos, w.work_left).hash(&mut h);
+            (w.id, w.team, w.pos, w.work_left, w.job.map(|j| j.done)).hash(&mut h);
         }
         let mut roads: Vec<_> = self.roads.iter().collect();
         roads.sort_by_key(|h| (h.q, h.r));
@@ -1423,6 +1460,74 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_keeps_a_jobs_work_but_never_adds_any() {
+        use super::super::JobKind;
+        use super::super::workers::FieldWorker;
+        let (mut host, mut guest) = pair();
+        // A guest worker two turns into a fort by its city, on both machines.
+        let city = guest
+            .cities
+            .iter()
+            .position(|c| c.team == GUEST_SEAT)
+            .unwrap();
+        let pos = guest.cities[city].pos;
+        let hex = pos
+            .neighbors()
+            .into_iter()
+            .find(|&h| guest.grid.is_passable(h))
+            .unwrap();
+        let worker = FieldWorker {
+            id: 9_000,
+            team: GUEST_SEAT,
+            home: city,
+            base: pos,
+            pos: hex,
+            job: Some(WorkerJob {
+                done: 2,
+                ..WorkerJob::on_tile(hex, JobKind::Fort)
+            }),
+            work_left: Some(2),
+            recalled: false,
+        };
+        guest.field_workers.push(worker.clone());
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        start.field_workers.push(worker);
+        let refused = |host: &mut GameState, plan: TeamPlan| {
+            host.receive(GUEST_SEAT, Message::Plan(plan))
+                .expect_err("refused")
+        };
+        // Recalled, its job goes back on the list with the work kept.
+        guest.recall_worker(9_000);
+        let recalled = guest.team_plan(GUEST_SEAT);
+        let c = recalled.cities.iter().position(|c| c.pos == pos).unwrap();
+        let listed = recalled.cities.iter().flat_map(|c| &c.worker_jobs);
+        assert_eq!(listed.map(|j| j.done).collect::<Vec<_>>(), [2]);
+        assert_eq!(host.check_plan(&recalled), Ok(()));
+        // More work than was done.
+        let mut plan = recalled.clone();
+        plan.cities[c].worker_jobs[0].done = 3;
+        let why = refused(&mut host, plan);
+        assert!(why.contains("WORK IT DIDN'T DO"), "{why}");
+        // The work copied: the worker keeps the job, and it's listed too.
+        let mut plan = recalled.clone();
+        let w = plan.workers.iter_mut().find(|w| w.id == 9_000).unwrap();
+        w.job = Some(WorkerJob {
+            done: 2,
+            ..WorkerJob::on_tile(hex, JobKind::Fort)
+        });
+        w.work_left = Some(2);
+        w.recalled = false;
+        let why = refused(&mut host, plan);
+        assert!(why.contains("WORK IT DIDN'T DO"), "{why}");
+        // Work on a job nobody worked.
+        let mut plan = recalled;
+        let job = &mut plan.cities[c].worker_jobs[0];
+        job.hex = pos.neighbors()[3];
+        let why = refused(&mut host, plan);
+        assert!(why.contains("WORK IT DIDN'T DO"), "{why}");
+    }
+
+    #[test]
     fn a_hostile_plan_is_refused_before_it_touches_the_game() {
         let (mut host, guest) = pair();
         let good = guest.team_plan(GUEST_SEAT);
@@ -1616,6 +1721,7 @@ mod tests {
                             across: kind
                                 .on_edge()
                                 .then(|| hex.neighbors()[rng.random_range(0..6)]),
+                            done: 0,
                         }
                     })
                     .collect();
