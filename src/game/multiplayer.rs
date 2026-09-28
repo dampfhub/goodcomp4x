@@ -32,7 +32,7 @@ use super::workers::WorkerJob;
 /// Bumped whenever a message or a plan changes shape, or the rules a turn
 /// plays out by, so mismatched builds refuse each other instead of
 /// desyncing.
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -131,6 +131,7 @@ pub struct UnitPlan {
     pub guarding: bool,
     pub queued: Vec<TurnOrder>,
     pub following_queue: bool,
+    pub waypoints: Vec<Hex>,
     pub planned_board: Option<u32>,
     pub planned_unload: Option<Hex>,
 }
@@ -875,8 +876,9 @@ impl GameState {
                 .flat_map(|o| [Some(o.from), o.move_to, o.attack])
                 .chain([unit.planned_move, unit.planned_attack, unit.planned_unload])
                 .flatten()
+                .chain(unit.waypoints.iter().copied())
                 .collect::<Vec<_>>();
-            if !short(unit.queued.len()) || !hexes_on_map(&orders) {
+            if !short(unit.queued.len()) || !short(unit.waypoints.len()) || !hexes_on_map(&orders) {
                 return bad(format!("UNIT {}'S ORDERS", unit.id));
             }
             if unit.planned_board.is_some_and(|ship| !own_unit(ship)) {
@@ -1276,6 +1278,7 @@ impl GameState {
                 holding: u.holding,
                 guarding: u.guarding,
                 queued: u.queued.clone(),
+                waypoints: u.waypoints.clone(),
                 following_queue: u.following_queue,
                 planned_board: u.planned_board,
                 planned_unload: u.planned_unload,
@@ -1385,6 +1388,7 @@ impl GameState {
             unit.holding = unit_plan.holding;
             unit.guarding = unit_plan.guarding;
             unit.queued = unit_plan.queued.clone();
+            unit.waypoints = unit_plan.waypoints.clone();
             unit.following_queue = unit_plan.following_queue;
             unit.planned_board = unit_plan.planned_board;
             unit.planned_unload = unit_plan.planned_unload;
@@ -3141,5 +3145,57 @@ mod tests {
         let (host, _) = pair();
         let plan = host.team_plan(HOST_SEAT);
         assert_eq!(roundtrip(&Message::Plan(plan.clone())), Message::Plan(plan));
+    }
+
+    #[test]
+    fn queues_planned_again_each_turn_keep_both_machines_in_step() {
+        let (mut host, mut guest) = pair();
+        // Each side Shift-queues a unit of its own to a hex far off in the
+        // fog; each turn its machine plans the queue again from what it
+        // knows, and that goes in its plan.
+        let mut queued = Vec::new();
+        for game in [&mut host, &mut guest] {
+            let team = game.local_team;
+            let unit = game
+                .units
+                .iter()
+                .position(|u| u.team == team && !game.settlers.contains(&u.id))
+                .unwrap();
+            let from = game.units[unit].pos;
+            let target = game
+                .grid
+                .all_hexes()
+                .filter(|&h| {
+                    game.grid.is_passable(h) && !game.is_explored(h) && from.distance(h) >= 6
+                })
+                .min_by_key(|&h| (from.distance(h), h.q, h.r))
+                .expect("somewhere far in the fog");
+            game.selected = Some(unit);
+            assert!(game.queue_move(target));
+            assert_eq!(game.units[unit].waypoints, vec![target]);
+            queued.push((game.units[unit].id, from, target));
+        }
+        for _ in 0..4 {
+            guest.submit_plan();
+            exchange(&mut host, &mut guest);
+            host.submit_plan();
+            exchange(&mut host, &mut guest);
+            play_out(&mut host);
+            play_out(&mut guest);
+            exchange(&mut host, &mut guest);
+            assert_eq!(host.checksum(), guest.checksum());
+            assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+            assert_eq!(guest.lockstep.as_ref().unwrap().dropped, None);
+        }
+        // Both queues went on toward where they were sent, on both machines.
+        for (id, from, target) in queued {
+            for game in [&host, &guest] {
+                let unit = game.units.iter().find(|u| u.id == id).unwrap();
+                assert!(
+                    unit.pos.distance(target) < from.distance(target),
+                    "{id} got no nearer {target:?}"
+                );
+            }
+        }
     }
 }

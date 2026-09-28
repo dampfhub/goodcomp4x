@@ -164,6 +164,9 @@ impl GameState {
             self.advance_queues();
             log::info!("=== turn {} resolved ===", self.turn);
             self.finish_lockstep_turn();
+            // Planning begins: the player's queues go on from what they now
+            // know. After the network turn's start snapshot, so it's planning.
+            self.replan_queues();
             self.select_next_or_end_turn(None);
         }
         self.start_transition(before, turn_over);
@@ -765,6 +768,8 @@ mod naval_tests {
         let before = g.units.len();
         g.complete_builds();
         assert_eq!(g.units.len(), before + 1);
+        // The ship plans on what the player knows: the coast in sight.
+        g.explore();
         let ship = g.units.last().unwrap();
         assert_eq!(ship.unit_type, UnitType::PatrolGalley);
         assert!(g.grid.terrain(ship.pos).is_water());
