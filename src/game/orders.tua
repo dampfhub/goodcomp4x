@@ -30,6 +30,16 @@ impl Eq for ClickMode {
 }
 
 impl GameState {
+    /// Deselects whatever is selected, a unit or a group, and disarms a tray action. Answers
+    /// whether anything was selected.
+    pub fn clear_selection(&mut self) -> bool {
+        let had = self.selected.is_some() || !self.group.is_empty();
+        self.selected = Option.None;
+        self.group.clear();
+        self.ui_click_mode = Option.None;
+        had
+    }
+
     /// M or the Move button: the next map click only moves.
     pub fn choose_move_action(&mut self) { self.toggle_ui_click_mode(ClickMode.Move, "MOVE: CLICK A GREEN HEX"); }
 

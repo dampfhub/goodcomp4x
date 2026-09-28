@@ -406,7 +406,7 @@ impl GameState {
             panel.text_owned(TextSize.Small, saved, fade(DIM_TEXT, true));
         }
         panel.gap(GAP);
-        let playback = if self.instant_playback { "PLAYBACK: ALL AT ONCE" } else { "PLAYBACK: STEP BY STEP" };
+        let playback = if self.settings.instant_playback { "PLAYBACK: ALL AT ONCE" } else { "PLAYBACK: STEP BY STEP" };
         panel.begin_buttons();
         panel.button(Target.TogglePlayback, playback, "F8", ButtonState.Ready, false);
         panel.end_buttons(true);

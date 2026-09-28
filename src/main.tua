@@ -35,6 +35,10 @@ use cli.Options;
 use cli.USAGE;
 use cli.parse;
 use screenshot.DEFAULT_SIZE;
+use persist.read;
+use persist.write;
+use game.settings.settings_from_text;
+use std.str.eq as str_eq;
 use screenshot.Screenshot;
 use screenshot.screenshot;
 use renderer.DrawBatch;
@@ -271,7 +275,10 @@ fn window_spec() -> WindowSpec {
     WindowSpec { x: screen.x + (screen.width - width) / 2, y: screen.y + (screen.height - height) / 2, width, height, hidden: false }
 }
 
-fn play(options: &Options) -> i32 can {Log, Clock, Fs} {
+/// The file the player's settings are kept in between sessions (`persist.tua`).
+const SETTINGS_FILE: str = "settings.txt";
+
+fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
     let mut rng = seed(Clock.now_nanos() as u64);
     let hidden = options.screenshot.is_some();
     let mut spec = window_spec();
@@ -296,6 +303,10 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs} {
     let icons = Icons { small: icon(WINDOW_ICON_SIZE), small_size: WINDOW_ICON_SIZE, big: icon(TASKBAR_ICON_SIZE), big_size: TASKBAR_ICON_SIZE };
     handle {
         let mut game = options.scenario.start();
+        // Everywhere but a screenshot keeps the player's settings between sessions.
+        let remember = !hidden;
+        let saved = if remember { read(SETTINGS_FILE) } else { Option.None };
+        if let &Option.Some(t) = &saved { let view = &t; game.set_settings(settings_from_text(view)); }
         let mut input = Input {
             cursor: Option.None,
             size: vec2(spec.width as f32, spec.height as f32),
@@ -317,6 +328,11 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs} {
                 resume
             }
         };
+        if remember {
+            let now = game.settings_text();
+            let unchanged = match &saved { &Option.Some(t) => str_eq(&t, &now), &Option.None => false };
+            if !unchanged { write(SETTINGS_FILE, &now); }
+        }
         let written = match &shot { &Option.Some(s) => s.is_written(), &Option.None => true };
         if rc == 0 && !written {
             error(fn() can {Out} { Out.put("the window closed before the screenshot was written"); });
@@ -337,9 +353,9 @@ fn main() -> i32 can {Env} {
         println(USAGE);
         return 0;
     }
-    with_env_level("HEX_LOG", Level.Info, fn() -> i32 can {Log} {
-        with_system_clock(fn() -> i32 can {Log, Clock} {
-            default_fs(fn() -> i32 can {Log, Clock, Fs} { play(&options) })
+    with_env_level("HEX_LOG", Level.Info, fn() -> i32 can {Log, Env} {
+        with_system_clock(fn() -> i32 can {Log, Clock, Env} {
+            default_fs(fn() -> i32 can {Log, Clock, Fs, Env} { play(&options) })
         })
     })
 }

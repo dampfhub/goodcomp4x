@@ -61,18 +61,19 @@ impl Scenario {
 
 impl GameState {
     /// F1-F3: starts `scenario` afresh (restarting it, if it's the current one), keeping the
-    /// savestate and debug settings.
+    /// savestate and the player's settings (and whether their menu is open).
     pub fn switch_scenario(&mut self, scenario: Scenario) can {Log} {
         let mut next = scenario.start();
         swap(&mut next.savestate, &mut self.savestate);
-        next.instant_playback = self.instant_playback;
+        next.settings = self.settings.copy();
+        next.settings_open = self.settings_open;
         *self = next;
     }
 
     /// F8: switches turn playback between one step at a time and all at once.
     pub fn toggle_instant_playback(&mut self) {
-        self.instant_playback = !self.instant_playback;
-        if self.instant_playback {
+        self.settings.instant_playback = !self.settings.instant_playback;
+        if self.settings.instant_playback {
             self.set_notice("TURNS NOW PLAY OUT ALL AT ONCE - F8 FOR STEP BY STEP");
         } else {
             self.set_notice("TURNS NOW PLAY OUT STEP BY STEP - F8 FOR ALL AT ONCE");
@@ -101,7 +102,8 @@ impl GameState {
         };
         let loaded = text(fn() can {Out} { Out.put("LOADED "); self.show_saved(); });
         if restored.scenario == self.scenario { restored.camera = self.camera; }
-        restored.instant_playback = self.instant_playback;
+        restored.settings = self.settings.copy();
+        restored.settings_open = self.settings_open;
         restored.notice = loaded;
         // The snapshot is kept: it moves into the restored game.
         swap(&mut restored.savestate, &mut self.savestate);
@@ -156,7 +158,9 @@ impl GameState {
             scenario: self.scenario,
             savestate: Option.None,
             effects: copy_vec(&self.effects),
-            instant_playback: self.instant_playback,
+            settings: self.settings.copy(),
+            settings_open: self.settings_open,
+            quit_requested: self.quit_requested,
             turn: self.turn,
             camera: self.camera,
             pending_steps,

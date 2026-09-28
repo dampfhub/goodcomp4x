@@ -1,0 +1,287 @@
+//! Player-adjustable options (`Settings`) and the settings menu that Escape opens. The menu has
+//! a row for every entry of `SETTINGS`, so adding a setting touches only this file:
+//!
+//! 1. a field in `Settings`, and its value in `default_settings`;
+//! 2. a `Setting` variant, listed in `SETTINGS` (under its heading);
+//! 3. its arms in `Setting.key` (its name in the saved file), `name`, `group`, `control`,
+//!    `description`, `range` and `value_text`, and in `Settings.get` and `Settings.set`.
+//!
+//! Every setting is an integer in its `range` (a switch is `0..=1`). Its `control` says how the
+//! menu changes it: a checkbox, a slider or a choice of named values. Game code reads the field
+//! directly (`self.settings.instant_playback`). Settings, and whether the menu is open, are kept
+//! across scenario switches and loads (`scenario.tua`), and the settings between sessions
+//! (`to_text`, `persist.tua`): they belong to the player, not to the game being played.
+
+use std.core.Eq;
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.str.Str;
+use std.str.eq as str_eq;
+use std.str.lines;
+use std.str.parse_i64;
+use std.str.to_owned;
+use std.str.push;
+use game.GameState;
+use game.text;
+use persist.key_and_values;
+
+/// The player's options. See the module comment for adding one.
+pub struct Settings {
+    /// Play a turn's steps all at once instead of one every `STEP_INTERVAL` (`turn.tua`). The
+    /// outcome is the same. F8 toggles it.
+    instant_playback: bool,
+    /// The most turns a unit's plan holds, this one included: Shift-clicks queue no turns past
+    /// it. A hex farther away is queued as far along the way as the limit allows.
+    max_queued_turns: i32,
+    /// Draw unexplored hexes under clouds rather than a flat grey.
+    cloud_fog: bool,
+    /// AI players in the next world (F4): 1 to 6, or 0 for 4 to 6 picked by the map's seed.
+    world_ai: i32,
+    /// Each side in the next world starts with its city already founded, rather than a
+    /// settler to found it with.
+    world_start_city: bool,
+}
+
+impl Eq for Settings {
+    fn eq(self, other: Settings) -> bool {
+        self.instant_playback == other.instant_playback
+            && self.max_queued_turns == other.max_queued_turns
+            && self.cloud_fog == other.cloud_fog
+            && self.world_ai == other.world_ai
+            && self.world_start_city == other.world_start_city
+    }
+}
+
+/// `Settings.world_ai` for 4 to 6 AI players, picked by the map's seed.
+pub const WORLD_AI_BY_SEED: i32 = 0;
+
+pub fn default_settings() -> Settings {
+    Settings { instant_playback: true, max_queued_turns: 6, cloud_fog: true, world_ai: WORLD_AI_BY_SEED, world_start_city: true }
+}
+
+/// One of the `Settings`, as the settings menu shows and changes it.
+pub enum Setting { TurnPlayback, MaxQueuedTurns, FogStyle, WorldAi, WorldStart }
+
+/// How the settings menu changes a `Setting`.
+pub enum Control {
+    /// On (1) or off (0): a checkbox.
+    Toggle,
+    /// A number anywhere in its range: a slider showing its value.
+    Slider,
+    /// One of a few named values (`value_text`): a button for each, or a drop-down list when
+    /// there are more than `MAX_BUTTONS`.
+    Choice,
+}
+
+/// The most choices shown side by side as buttons.
+pub const MAX_BUTTONS: i32 = 3;
+
+/// Every setting, in the order the menu lists them. Settings of one `group` are listed
+/// together, under its heading.
+pub const SETTINGS: [Setting; 5] = [Setting.TurnPlayback, Setting.MaxQueuedTurns, Setting.FogStyle, Setting.WorldAi, Setting.WorldStart];
+
+impl Setting {
+    /// Its name in the saved settings file (`to_text`). Old files use these, so a setting keeps
+    /// its key once it has one.
+    pub fn key(self) -> str {
+        match self {
+            Setting.TurnPlayback => "turn_playback",
+            Setting.MaxQueuedTurns => "queue_limit",
+            Setting.FogStyle => "fog",
+            Setting.WorldAi => "world_ai",
+            Setting.WorldStart => "world_start",
+        }
+    }
+
+    /// Its label in the menu.
+    pub fn name(self) -> str {
+        match self {
+            Setting.TurnPlayback => "INSTANT PLAYBACK",
+            Setting.MaxQueuedTurns => "QUEUE LIMIT",
+            Setting.FogStyle => "FOG",
+            Setting.WorldAi => "AI PLAYERS",
+            Setting.WorldStart => "START WITH",
+        }
+    }
+
+    /// The heading it's listed under in the menu.
+    pub fn group(self) -> str {
+        match self {
+            Setting.TurnPlayback | Setting.MaxQueuedTurns => "TURNS",
+            Setting.FogStyle => "MAP",
+            Setting.WorldAi | Setting.WorldStart => "NEXT WORLD (F4)",
+        }
+    }
+
+    /// How the menu changes it.
+    pub fn control(self) -> Control {
+        match self {
+            Setting.TurnPlayback => Control.Toggle,
+            Setting.MaxQueuedTurns => Control.Slider,
+            Setting.FogStyle | Setting.WorldAi | Setting.WorldStart => Control.Choice,
+        }
+    }
+
+    /// What it does, for its tooltip.
+    pub fn description(self) -> str {
+        match self {
+            Setting.TurnPlayback => "ON: A TURN PLAYS OUT ALL AT ONCE. OFF: ONE STEP AT A TIME. THE OUTCOME IS THE SAME. F8 SWITCHES IT TOO.",
+            Setting.MaxQueuedTurns => "THE MOST TURNS A UNIT CAN HAVE QUEUED, THIS ONE INCLUDED. SHIFT-CLICKING A HEX FARTHER AWAY QUEUES THE MOVE AS FAR AS THE LIMIT GOES.",
+            Setting.FogStyle => "HOW UNEXPLORED LAND IS HIDDEN: UNDER CLOUDS, OR A FLAT GREY.",
+            Setting.WorldAi => "HOW MANY AI PLAYERS THE NEXT WORLD (F4) HAS. THE MAP GROWS WITH THEM. BY MAP PICKS 4 TO 6 FROM THE MAP'S SEED.",
+            Setting.WorldStart => "WHETHER EVERY SIDE IN THE NEXT WORLD (F4) STARTS WITH ITS CITY, OR A SETTLER TO FOUND IT WITH.",
+        }
+    }
+
+    /// The values it can take, lowest and highest.
+    pub fn range(self) -> (i32, i32) {
+        match self {
+            Setting.TurnPlayback => (0, 1),
+            Setting.MaxQueuedTurns => (1, 20),
+            Setting.FogStyle => (0, 1),
+            Setting.WorldAi => (0, 6),
+            Setting.WorldStart => (0, 1),
+        }
+    }
+
+    /// How the menu shows `value`.
+    pub fn value_text(self, value: i32) -> Str {
+        match self {
+            Setting.TurnPlayback => to_owned(if value == 1 { "ON" } else { "OFF" }),
+            Setting.MaxQueuedTurns => {
+                if value == 1 { to_owned("1 TURN") } else { text(fn() can {Out} { show_i64(value as i64); Out.put(" TURNS"); }) }
+            }
+            Setting.FogStyle => to_owned(if value == 1 { "CLOUDS" } else { "SOLID GREY" }),
+            Setting.WorldAi => {
+                if value == WORLD_AI_BY_SEED { to_owned("4-6 BY MAP") } else { text(fn() can {Out} { show_i64(value as i64); }) }
+            }
+            Setting.WorldStart => to_owned(if value == 1 { "CITY" } else { "SETTLER" }),
+        }
+    }
+}
+
+fn flag(b: bool) -> i32 { if b { 1 } else { 0 } }
+
+impl Settings {
+    /// How many AI players a world from `seed` gets.
+    pub fn world_ai_for(&self, seed: u32) -> i32 {
+        if self.world_ai == WORLD_AI_BY_SEED { 4 + (seed % 3) as i32 } else { self.world_ai }
+    }
+
+    /// `setting`'s current value, within its `range`.
+    pub fn get(&self, setting: Setting) -> i32 {
+        match setting {
+            Setting.TurnPlayback => flag(self.instant_playback),
+            Setting.MaxQueuedTurns => self.max_queued_turns,
+            Setting.FogStyle => flag(self.cloud_fog),
+            Setting.WorldAi => self.world_ai,
+            Setting.WorldStart => flag(self.world_start_city),
+        }
+    }
+
+    /// Sets `setting` to `value`, which must be within its `range`.
+    fn set(&mut self, setting: Setting, value: i32) {
+        match setting {
+            Setting.TurnPlayback => { self.instant_playback = value == 1; }
+            Setting.MaxQueuedTurns => { self.max_queued_turns = value; }
+            Setting.FogStyle => { self.cloud_fog = value == 1; }
+            Setting.WorldAi => { self.world_ai = value; }
+            Setting.WorldStart => { self.world_start_city = value == 1; }
+        }
+    }
+
+    /// The settings as text to save between sessions (`persist.tua`): a line per setting, its
+    /// `key` and value.
+    pub fn to_text(&self) -> Str {
+        let mut out = to_owned("");
+        for i in 0..5 {
+            let setting = SETTINGS[i];
+            let value = self.get(setting);
+            let line = text(fn() can {Out} { Out.put(setting.key()); Out.put(" "); show_i64(value as i64); Out.put("\n"); });
+            push(&mut out, &line);
+        }
+        out
+    }
+
+    /// Sets `setting` to `value`, or the nearer end of its range if `value` is outside it.
+    /// Returns whether it changed.
+    pub fn change(&mut self, setting: Setting, value: i32) -> bool {
+        let (lo, hi) = setting.range();
+        let old = self.get(setting);
+        let new = if value < lo { lo } else if value > hi { hi } else { value };
+        self.set(setting, new);
+        new != old
+    }
+
+    /// A copy, for a savestate or a scenario switch.
+    pub fn copy(&self) -> Settings {
+        Settings {
+            instant_playback: self.instant_playback,
+            max_queued_turns: self.max_queued_turns,
+            cloud_fog: self.cloud_fog,
+            world_ai: self.world_ai,
+            world_start_city: self.world_start_city,
+        }
+    }
+}
+
+/// Settings read back from `to_text`'s text. Anything missing, unknown or out of its setting's
+/// range keeps its default, so an old file (or a damaged one) still loads.
+pub fn settings_from_text(content: &str) -> Settings {
+    let mut settings = default_settings();
+    for line in lines(content) {
+        let Option.Some(kv) = key_and_values(*line) else { continue; };
+        let mut found: Option[Setting] = Option.None;
+        let key = &kv.key;
+        for i in 0..5 { if str_eq(SETTINGS[i].key(), key) { found = Option.Some(SETTINGS[i]); } }
+        let Option.Some(setting) = found else { continue; };
+        if kv.values.is_empty() { continue; }
+        let first = &kv.values[0];
+        if let Option.Some(v) = parse_i64(first) {
+            let (lo, hi) = setting.range();
+            if v >= lo as i64 && v <= hi as i64 { settings.set(setting, v as i32); }
+        }
+    }
+    settings
+}
+
+impl GameState {
+    /// The player's settings as text to save (`Settings.to_text`).
+    pub fn settings_text(&self) -> Str { self.settings.to_text() }
+
+    /// Takes on the player's settings, e.g. saved in an earlier session.
+    pub fn set_settings(&mut self, settings: Settings) { self.settings = settings; }
+
+    pub fn close_settings(&mut self) { self.settings_open = false; }
+
+    /// Whether the settings menu's Quit button was clicked: the app then closes the window.
+    pub fn quit_requested(&self) -> bool { self.quit_requested }
+
+    /// A press of Escape. It closes one thing, in this order: the settings menu, then a city
+    /// view, then the selection. With nothing to close it opens the settings menu, which has
+    /// the Quit button.
+    pub fn press_escape(&mut self) {
+        if self.settings_open {
+            self.settings_open = false;
+        } else if self.exit_structure_menu() {
+        } else if !self.clear_selection() {
+            self.settings_open = true;
+        }
+    }
+
+    /// Closes the open city view, if one is. Answers whether one was.
+    fn exit_structure_menu(&mut self) -> bool {
+        if self.selected_city.is_none() { return false; }
+        self.leave_city_view();
+        true
+    }
+
+    /// The menu's control for `setting` asks for `value`; outside the range it goes to the
+    /// nearer end.
+    pub fn set_setting(&mut self, setting: Setting, value: i32) {
+        if self.settings.change(setting, value) {
+            let shown = setting.value_text(self.settings.get(setting));
+            self.notice = text(fn() can {Out} { Out.put(setting.name()); Out.put(": "); Out.put(&shown); });
+        }
+    }
+}

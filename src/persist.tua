@@ -1,0 +1,119 @@
+//! Keeping the player's settings between sessions: small text files in the game's config folder
+//! (`%APPDATA%\riskofcivlike`). Each file is written whole, through a temporary file and a
+//! rename, so a crash mid-write can't leave half of one. Reading a missing or unreadable file
+//! gives nothing, and the game starts with its defaults; a failed write is logged and otherwise
+//! ignored. What goes in each file is up to its owner: `Settings.to_text` (`settings.txt`).
+
+use std.env.Env;
+use std.env.var;
+use std.fmt.Out;
+use std.io.Fs;
+use std.io.c_path;
+use std.io.close;
+use std.io.create;
+use std.io.file_bytes;
+use std.io.make_dir;
+use std.io.read_file;
+use std.io.remove_file;
+use std.io.rename;
+use std.io.write_all;
+use std.str.Str;
+use std.str.from_utf8;
+use std.str.push;
+use std.str.split_ascii_whitespace;
+use std.str.starts_with;
+use std.str.to_owned;
+use log.Log;
+use log.warn;
+
+const APP: str = "riskofcivlike";
+
+/// The folder the files live in, if the environment names one.
+fn config_dir() -> Option[Str] can {Env} {
+    let name: [u8; 8] = [65, 80, 80, 68, 65, 84, 65, 0];
+    let mut value: [u8; 400] = [0; 400];
+    let n = var(&name, &mut value);
+    if n <= 0 { return Option.None; }
+    let mut bytes: Vec[u8] = Vec.new();
+    for i in 0..n { bytes.push(value[i]); }
+    let mut dir = to_owned(from_utf8(&bytes.buf));
+    push(&mut dir, "\\");
+    push(&mut dir, APP);
+    Option.Some(dir)
+}
+
+fn path_in(dir: &Str, name: &str) -> Str {
+    let mut path = to_owned(dir);
+    push(&mut path, "\\");
+    push(&mut path, name);
+    path
+}
+
+/// The contents of config file `name`, if it's there.
+pub fn read(name: &str) -> Option[Str] can {Env, Fs} {
+    let Option.Some(dir) = config_dir() else { return Option.None; };
+    let path = path_in(&dir, name);
+    let mut bytes = file_bytes();
+    match read_file(&path, &mut bytes) {
+        Result.Ok(_) => Option.Some(to_owned(from_utf8(&bytes.bytes))),
+        Result.Err(_) => Option.None,
+    }
+}
+
+/// Writes `contents` to the file at `path`. Answers whether it was written whole.
+fn write_whole(path: &Str, contents: &Str) -> bool can {Fs} {
+    let mut p: [u8; 520] = [0; 520];
+    if c_path(path, &mut p) < 0 { return false; }
+    match create(&p) {
+        Result.Ok(mut f) => {
+            let wrote = write_all(&mut f, &contents.buf);
+            let closed = close(f);
+            match (wrote, closed) { (Result.Ok(_), Result.Ok(_)) => true, _ => false }
+        }
+        Result.Err(_) => false,
+    }
+}
+
+/// Replaces config file `name` with `contents`.
+pub fn write(name: &str, contents: &Str) can {Env, Fs, Log} {
+    let Option.Some(dir) = config_dir() else { return; };
+    let path = path_in(&dir, name);
+    let mut tmp_name = to_owned(name);
+    push(&mut tmp_name, ".tmp");
+    let temporary = path_in(&dir, &tmp_name);
+    let mut d: [u8; 520] = [0; 520];
+    let mut t: [u8; 520] = [0; 520];
+    let mut p: [u8; 520] = [0; 520];
+    let _d = c_path(&dir, &mut d);
+    let _t = c_path(&temporary, &mut t);
+    let _p = c_path(&path, &mut p);
+    let _made = make_dir(&d);
+    let mut done = false;
+    if write_whole(&temporary, contents) {
+        // A rename onto an existing file fails on Windows, so the old one goes first.
+        let _removed = remove_file(&p);
+        done = match rename(&t, &p) { Result.Ok(_) => true, Result.Err(_) => false };
+    }
+    if !done {
+        // Some file systems (a sandbox's, say) won't rename across the layers they keep:
+        // write the file in place instead.
+        let _removed = remove_file(&t);
+        done = write_whole(&path, contents);
+    }
+    if !done { warn(fn() can {Out} { Out.put("couldn't save "); Out.put(&path); }); }
+}
+
+/// A line of saved text: its key and the words after it.
+pub struct KeyValues { key: Str, values: Vec[Str] }
+
+/// Splits a line of saved text into its key and the rest, skipping blank lines and `#`
+/// comments.
+pub fn key_and_values(line: &str) -> Option[KeyValues] {
+    let mut words: Vec[Str] = Vec.new();
+    for w in split_ascii_whitespace(line) { words.push(to_owned(*w)); }
+    if words.is_empty() { return Option.None; }
+    let first = &words[0];
+    if starts_with(first, "#") { return Option.None; }
+    let key = words.remove(0);
+    Option.Some(KeyValues { key, values: words })
+}

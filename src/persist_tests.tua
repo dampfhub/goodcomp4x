@@ -1,0 +1,23 @@
+//! Saved text's lines.
+
+use std.str.eq as str_eq;
+use std.test.assert;
+use persist.KeyValues;
+use persist.key_and_values;
+
+@test
+fn lines_split_into_a_key_and_values() {
+    let Option.Some(kv) = key_and_values("  window 2 10.5 -3 ") else { assert(false); return; };
+    let key = &kv.key;
+    assert(str_eq(key, "window"));
+    assert(kv.values.len() == 3);
+    let a = &kv.values[0];
+    let b = &kv.values[1];
+    let c = &kv.values[2];
+    assert(str_eq(a, "2") && str_eq(b, "10.5") && str_eq(c, "-3"));
+    assert(key_and_values("# a comment").is_none());
+    assert(key_and_values("   ").is_none());
+    let Option.Some(alone) = key_and_values("alone") else { assert(false); return; };
+    let k = &alone.key;
+    assert(str_eq(k, "alone") && alone.values.is_empty());
+}

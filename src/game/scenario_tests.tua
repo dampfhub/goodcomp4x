@@ -50,10 +50,13 @@ fn switching_to_the_current_scenario_restarts_it() {
 fn instant_playback_resolves_the_whole_turn_at_once() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.new();
+        // On by default.
+        assert(game.settings.instant_playback);
         game.toggle_instant_playback();
         game.switch_scenario(Scenario.Combat);
         // Kept across a scenario switch.
-        assert(game.instant_playback);
+        assert(!game.settings.instant_playback);
+        game.toggle_instant_playback();
 
         while !nothing_pending(&game) { game.hold_or_end_turn(); }
         game.hold_or_end_turn();
