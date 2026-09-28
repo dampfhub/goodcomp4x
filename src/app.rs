@@ -55,7 +55,7 @@ pub struct App {
     renderer: Option<Renderer>,
     window: Option<Window>,
     game: GameState,
-    /// A multiplayer game's connection (`net.rs`), pumped every frame.
+    /// A multiplayer game's connection (`net/`), pumped every frame.
     network: Option<Session>,
     imgui: Option<ImGuiContext>,
     imgui_platform: Option<WinitPlatform>,

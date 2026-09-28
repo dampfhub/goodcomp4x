@@ -2,11 +2,13 @@
 
 `main.rs` starts the logger, parses the command line (`cli.rs`: `--scenario`, `--seed`,
 `--screenshot`, `--size`, `--host`/`--port`, `--join`/`--code`), sets up a network game
-(`net.rs`: hosting listens; joining connects and receives the game before the window opens), and
+(`net/`: hosting listens; joining connects, runs the encrypted handshake and receives the game
+before the window opens), and
 runs the `winit` event loop; its exit code is `App::into_result`. `App` pumps the network
-session once a frame. Everything `net.rs` receives is untrusted: keep the frame limit, and add a
-check in `GameState::receive` / `check_plan` for anything new a message carries
-(`docs/multiplayer.md`, Security).
+session once a frame. Everything `net/` receives is untrusted: keep every message sealed
+(`net/secure.rs`) and the frame limit, and add a check in `GameState::receive` / `check_plan`
+for anything new a message carries, with a case in the randomized plan test
+(`docs/multiplayer.md`, Security). Don't hand-roll cryptography: use the RustCrypto crates.
 `app.rs` owns the window, the renderer and the `GameState`, turns input into `GameState` method
 calls, and builds each frame. `screenshot.rs` is screenshot mode. `persist.rs` keeps settings
 and layout between sessions (`docs/architecture.md`, Between sessions); screenshot mode skips it. `icon_art.rs` draws the

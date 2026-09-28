@@ -9,22 +9,26 @@
 //! (the simulation is deterministic), and a checksum of the result, compared
 //! after every turn, catches it if they ever don't.
 //!
-//! This module is the protocol and the game side of it; `src/net.rs` moves
-//! the messages.
+//! This module is the protocol and the game side of it; `src/net` moves
+//! the messages, encrypted.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
-use super::city::{Build, BuildUnit, City, LaborFocus, Stock, grow_price, in_interior};
+use super::city::{
+    Build, BuildUnit, Building, City, LaborFocus, MAX_CITY_POPULATION, Stock, grow_price,
+    in_interior,
+};
 use super::hex::Hex;
+use super::terrain::Resource;
 use super::unit::{Team, TurnOrder};
 use super::workers::WorkerJob;
 use super::{GameState, Scenario};
 
 /// Bumped whenever a message or a plan changes shape, so mismatched builds
 /// refuse each other instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -37,11 +41,12 @@ const CODE_LENGTH: usize = 6;
 pub const HOST_SEAT: Team = Team::Blue;
 pub const GUEST_SEAT: Team = Team::Red;
 
-/// What goes over the wire (`src/net.rs` frames and encodes it).
+/// What goes over the wire (`src/net` encodes, seals and frames it).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Message {
-    /// Guest to host, on connecting, with the join code the host shows.
-    Hello { version: u32, code: String },
+    /// Guest to host, first thing over the encrypted channel (which only
+    /// opens with the host's join code, `src/net/secure.rs`).
+    Hello { version: u32 },
     /// Host to guest: the game to build, the same on both machines.
     Welcome {
         version: u32,
@@ -134,6 +139,38 @@ pub struct FighterPlan {
     pub planned_attack: Option<Hex>,
 }
 
+/// What a side has paid for and not yet got: every item in its cities'
+/// queues and Barracks' queues and every job it has placed, at the price it
+/// paid (a Grow's depends on how many are queued ahead of it in its city).
+fn committed<'a>(
+    cities: impl Iterator<Item = (usize, &'a [Build], &'a [BuildUnit], &'a [WorkerJob])>,
+    field_jobs: impl Iterator<Item = WorkerJob>,
+) -> Stock {
+    let mut total = Stock::default();
+    for (population, queue, barracks, jobs) in cities {
+        let mut grows = 0;
+        for build in queue {
+            total += match build {
+                Build::Grow => {
+                    grows += 1;
+                    grow_price(population + grows - 1)
+                }
+                build => build.price(),
+            };
+        }
+        for unit in barracks {
+            total += unit.price();
+        }
+        for job in jobs {
+            total += job.kind.price();
+        }
+    }
+    for job in field_jobs {
+        total += job.kind.price();
+    }
+    total
+}
+
 /// A networked game's lockstep state (`GameState::lockstep`).
 #[derive(Clone)]
 pub(super) struct Lockstep {
@@ -147,13 +184,14 @@ pub(super) struct Lockstep {
     plans: Vec<TeamPlan>,
     /// Host: whether the guest has joined.
     pub peer_joined: bool,
-    /// Host: the code a guest must give to join (`host_game`).
+    /// Host: the code a guest must give to join (`host_game`): the key to
+    /// the encrypted channel.
     join_code: String,
     /// Host: its own checksums, by turn, until the guest's arrive.
     checksums: Vec<(u32, u64)>,
     /// A turn whose checksums didn't match, once one hasn't.
     pub desync: Option<u32>,
-    /// Messages for `src/net.rs` to send.
+    /// Messages for `src/net` to send.
     outbox: Vec<Message>,
 }
 
@@ -200,7 +238,7 @@ impl GameState {
 
     /// The host's reply to a guest's `Hello`: the game to build, or why not.
     pub fn welcome(&mut self, hello: &Message) -> Message {
-        let Message::Hello { version, code } = hello else {
+        let Message::Hello { version } = hello else {
             return Message::Refused("EXPECTED A HELLO".into());
         };
         if *version != PROTOCOL_VERSION {
@@ -213,9 +251,6 @@ impl GameState {
         };
         if lockstep.peer_joined {
             return Message::Refused("THE GAME IS FULL".into());
-        }
-        if !code.eq_ignore_ascii_case(&lockstep.join_code) {
-            return Message::Refused("WRONG JOIN CODE".into());
         }
         lockstep.peer_joined = true;
         let turn_start = lockstep.turn_start.as_ref().expect("planning");
@@ -308,7 +343,9 @@ impl GameState {
     /// play: whose plan it waits for, or that it's resolving.
     pub(super) fn resolving_label(&self) -> String {
         match self.lockstep.as_deref() {
-            Some(l) if l.role == Role::Host && !l.peer_joined => "WAITING TO JOIN".into(),
+            Some(l) if l.role == Role::Host && !l.peer_joined => {
+                format!("JOIN CODE {}", l.join_code)
+            }
             Some(l) if l.submitted => {
                 let other = self.humans.iter().find(|&&t| t != self.local_team);
                 format!("WAITING FOR {:?}", other.copied().unwrap_or(GUEST_SEAT)).to_uppercase()
@@ -502,6 +539,9 @@ impl GameState {
             if !steps_ok {
                 return bad(format!("UNIT {}'S ORDERS REACH TOO FAR", unit.id));
             }
+            if unit.ability_queued && !body.ability_queued && body.ability_cooldown > 0 {
+                return bad(format!("UNIT {}'S ABILITY ISN'T READY", unit.id));
+            }
         }
         // Cities: its own, or one a settler of its founded where it stood.
         let mut seen = std::collections::HashSet::new();
@@ -547,6 +587,74 @@ impl GameState {
             {
                 return bad(format!("CITY AT ({}, {})", city.pos.q, city.pos.r));
             }
+            let at = format!("CITY AT ({}, {})", city.pos.q, city.pos.r);
+            let before = start.cities.iter().find(|c| c.pos == city.pos);
+            let population = before.map_or(1, |c| c.population);
+            // Planning keeps a build's progress, or clears it by taking the
+            // build off: it never adds any.
+            let (progress, barracks_progress) =
+                before.map_or((0, 0), |c| (c.progress, c.barracks_progress));
+            if ![0, progress].contains(&city.progress)
+                || ![0, barracks_progress].contains(&city.barracks_progress)
+            {
+                return bad(format!("{at}: PROGRESS IT DIDN'T MAKE"));
+            }
+            // Its queue holds what a city trains: no Cavalry or Armored,
+            // ships only with a Harbor, no growing past the cap.
+            let harbor = before.is_some_and(|c| c.placed_site(Building::Harbor).is_some());
+            let trainable = |build: &Build| match build {
+                Build::Unit(unit) => {
+                    unit.required_resource().is_none() && (!unit.unit_type().is_naval() || harbor)
+                }
+                _ => true,
+            };
+            let grows = city.queue.iter().filter(|&&b| b == Build::Grow).count();
+            if !city.queue.iter().all(trainable) || population + grows > MAX_CITY_POPULATION {
+                return bad(format!("{at}: A BUILD IT CAN'T MAKE"));
+            }
+            let barracks = before.is_some_and(|c| c.barracks.is_some());
+            if !city.barracks_queue.is_empty()
+                && (!barracks || city.barracks_queue.iter().any(|u| u.unit_type().is_naval()))
+            {
+                return bad(format!("{at}: A BARRACKS BUILD IT CAN'T MAKE"));
+            }
+            // Its citizens work tiles in its reach (or ones they already
+            // worked), never a city or a building, no more than it has.
+            let routes = start.routes_from(team, city.pos);
+            let workable = |h: &Hex| {
+                (routes.costs.contains_key(h) || before.is_some_and(|c| c.worked.contains(h)))
+                    && !start.closed_to_citizens(*h)
+            };
+            if city.worked.len() > population.min(MAX_CITY_POPULATION)
+                || city.remembered_worked.len() > MAX_CITY_POPULATION
+                || !city.worked.iter().all(workable)
+            {
+                return bad(format!("{at}: TILES IT CAN'T WORK"));
+            }
+        }
+        // Cavalry and Armored: no more queued than its deposits allow, or
+        // at least no more than it had queued.
+        for resource in [Resource::Horses, Resource::Iron] {
+            let queued = |queues: &mut dyn Iterator<Item = &BuildUnit>| {
+                queues
+                    .filter(|u| u.required_resource() == Some(resource))
+                    .count()
+            };
+            let before = queued(
+                &mut start
+                    .cities
+                    .iter()
+                    .filter(|c| c.team == team)
+                    .flat_map(|c| &c.barracks_queue),
+            );
+            let now = queued(&mut plan.cities.iter().flat_map(|c| &c.barracks_queue));
+            let used = start.special_used(team, resource) - before + now;
+            if now > before && used > start.special_cap(team, resource) {
+                return bad(format!(
+                    "MORE {} TROOPS THAN ITS DEPOSITS ALLOW",
+                    resource.name()
+                ));
+            }
         }
         // Workers out on the map: its own, with jobs on the map.
         for worker in &plan.workers {
@@ -559,6 +667,21 @@ impl GameState {
                 .is_none_or(|j| on_map(j.hex) && j.across.is_none_or(on_map));
             if !own || !on_map(worker.base) || !job_on_map {
                 return bad(format!("WORKER {}", worker.id));
+            }
+            // Planning only recalls a worker: its job and work go, and it
+            // heads for its city. It can't be given work, or un-recalled.
+            let body = start
+                .field_workers
+                .iter()
+                .find(|w| w.id == worker.id)
+                .expect("own worker");
+            let home = start.cities.get(body.home).map(|c| c.pos);
+            if (worker.job.is_some() && worker.job != body.job)
+                || (worker.work_left.is_some() && worker.work_left != body.work_left)
+                || (body.recalled && !worker.recalled)
+                || (worker.base != body.base && Some(worker.base) != home)
+            {
+                return bad(format!("WORKER {}: WORK IT WASN'T GIVEN", worker.id));
             }
         }
         // Troops in a city's interior: its own, ordered within it.
@@ -578,40 +701,48 @@ impl GameState {
                 return bad(format!("TROOP {} INSIDE A CITY", fighter.source_id));
             }
         }
-        // The stockpile: never below nothing, nor above what the side had
-        // plus every refund its queues could give.
-        let mut most = start.stock(team);
-        for city in start.cities.iter().filter(|c| c.team == team) {
-            for (index, build) in city.queue.iter().enumerate() {
-                most += match build {
-                    Build::Grow => grow_price(city.population + index),
-                    build => build.price(),
-                };
-            }
-            for unit in &city.barracks_queue {
-                most += unit.price();
-            }
-            for job in &city.worker_jobs {
-                most += job.kind.price();
-            }
-        }
-        for job in start
-            .field_workers
-            .iter()
-            .filter(|w| w.team == team)
-            .filter_map(|w| w.job)
-        {
-            most += job.kind.price();
-        }
+        // Nothing comes free. Every price is paid when queued and refunded
+        // when taken off, so what the side holds plus everything it has
+        // queued and placed is worth exactly what it held and had queued
+        // when the turn began.
+        let population = |pos: Hex| {
+            start
+                .cities
+                .iter()
+                .find(|c| c.pos == pos)
+                .map_or(1, |c| c.population)
+        };
+        let before = start.stock(team)
+            + committed(
+                start.cities.iter().filter(|c| c.team == team).map(|c| {
+                    (
+                        c.population,
+                        &c.queue[..],
+                        &c.barracks_queue[..],
+                        &c.worker_jobs[..],
+                    )
+                }),
+                start
+                    .field_workers
+                    .iter()
+                    .filter(|w| w.team == team)
+                    .filter_map(|w| w.job),
+            );
+        let after = plan.stock
+            + committed(
+                plan.cities.iter().map(|c| {
+                    (
+                        population(c.pos),
+                        &c.queue[..],
+                        &c.barracks_queue[..],
+                        &c.worker_jobs[..],
+                    )
+                }),
+                plan.workers.iter().filter_map(|w| w.job),
+            );
         let stock = plan.stock;
-        if stock.food < 0
-            || stock.wood < 0
-            || stock.metal < 0
-            || stock.food > most.food
-            || stock.wood > most.wood
-            || stock.metal > most.metal
-        {
-            return bad("A STOCKPILE IT DIDN'T HAVE".into());
+        if stock.food < 0 || stock.wood < 0 || stock.metal < 0 || after != before {
+            return bad("SPENDING THAT DOESN'T ADD UP".into());
         }
         Ok(())
     }
@@ -946,11 +1077,10 @@ mod tests {
         (host, guest)
     }
 
-    /// A guest's hello to `host`, with its join code.
-    fn hello(host: &GameState) -> Message {
+    /// A guest's hello.
+    fn hello(_host: &GameState) -> Message {
         Message::Hello {
             version: PROTOCOL_VERSION,
-            code: host.join_code().unwrap().to_string(),
         }
     }
 
@@ -972,9 +1102,9 @@ mod tests {
         }
     }
 
-    /// `m` through the wire encoding and back, as `src/net.rs` sends it.
+    /// `m` through the wire encoding and back, as `src/net` sends it.
     fn roundtrip(m: &Message) -> Message {
-        bincode::deserialize(&bincode::serialize(m).unwrap()).unwrap()
+        postcard::from_bytes(&postcard::to_allocvec(m).unwrap()).unwrap()
     }
 
     /// Plays out a turn that's resolving.
@@ -998,24 +1128,12 @@ mod tests {
         let again = host.welcome(&hello(&host));
         assert!(matches!(again, Message::Refused(_)));
         let mut fresh = GameState::host_game();
-        let old = fresh.welcome(&Message::Hello {
-            version: 0,
-            code: fresh.join_code().unwrap().to_string(),
-        });
+        let old = fresh.welcome(&Message::Hello { version: 0 });
         assert!(GameState::join_game(&old).is_err());
-        // Without the host's join code, nobody joins.
-        let mut fresh = GameState::host_game();
-        let wrong = fresh.welcome(&Message::Hello {
-            version: PROTOCOL_VERSION,
-            code: "NOPE".into(),
-        });
-        assert_eq!(wrong, Message::Refused("WRONG JOIN CODE".into()));
-        let code = fresh.join_code().unwrap().to_lowercase();
-        let right = fresh.welcome(&Message::Hello {
-            version: PROTOCOL_VERSION,
-            code,
-        });
-        assert!(matches!(right, Message::Welcome { .. }), "any case");
+        // A join code: six letters and digits, none of them easily confused.
+        let code = GameState::host_game().join_code().unwrap().to_string();
+        assert_eq!(code.len(), CODE_LENGTH);
+        assert!(code.bytes().all(|b| CODE_LETTERS.contains(&b)), "{code}");
     }
 
     #[test]
@@ -1160,9 +1278,30 @@ mod tests {
             .unwrap()
             .pos;
         refused(&mut host, plan);
-        // Riches from nowhere.
+        // Riches from nowhere, and builds for free.
         let mut plan = good.clone();
         plan.stock = Stock::whole(1_000_000, 0, 0);
+        refused(&mut host, plan);
+        let mut plan = good.clone();
+        plan.cities[0].queue.push(Build::Unit(BuildUnit::Siege));
+        refused(&mut host, plan);
+        // Progress it didn't make, a troop a city can't train, and tiles
+        // out of its reach.
+        let mut plan = good.clone();
+        plan.cities[0].queue = vec![Build::Gather];
+        plan.cities[0].progress = 999;
+        refused(&mut host, plan);
+        let mut plan = good.clone();
+        plan.cities[0].queue.push(Build::Unit(BuildUnit::Cavalry));
+        plan.stock -= BuildUnit::Cavalry.price();
+        refused(&mut host, plan);
+        let mut plan = good.clone();
+        let far = host
+            .grid
+            .all_hexes()
+            .find(|&h| h.distance(plan.cities[0].pos) > 6)
+            .unwrap();
+        plan.cities[0].worked.push(far);
         refused(&mut host, plan);
         // A queue far longer than play makes.
         let mut plan = good.clone();
@@ -1191,6 +1330,141 @@ mod tests {
                 .is_err()
         );
         let _ = host.take_outbox();
+    }
+
+    /// Plans a hostile peer could send that pass every check never crash
+    /// either machine: thousands of random orders, builds, tiles and
+    /// jobs, each applied and resolved.
+    #[test]
+    fn no_plan_that_passes_the_checks_crashes_the_game() {
+        use rand::{RngExt, SeedableRng};
+        let (host, guest) = pair();
+        let good = guest.team_plan(GUEST_SEAT);
+        let start = host.lockstep.as_ref().unwrap().turn_start.clone().unwrap();
+        let hexes: Vec<Hex> = start.grid.all_hexes().collect();
+        let builds = [
+            Build::Unit(BuildUnit::Melee),
+            Build::Unit(BuildUnit::Ranged),
+            Build::Unit(BuildUnit::Siege),
+            Build::Unit(BuildUnit::PatrolGalley),
+            Build::Worker,
+            Build::Grow,
+            Build::Gather,
+        ];
+        let kinds = super::super::JobKind::ALL;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let (mut accepted, mut tried) = (0, 0);
+        while tried < 3000 {
+            tried += 1;
+            let mut plan = good.clone();
+            let near = |from: Hex, reach: i32, rng: &mut rand::rngs::StdRng| {
+                let close: Vec<Hex> = hexes
+                    .iter()
+                    .copied()
+                    .filter(|h| h.distance(from) <= reach)
+                    .collect();
+                close[rng.random_range(0..close.len())]
+            };
+            for unit in &mut plan.units {
+                let pos = start.units.iter().find(|u| u.id == unit.id).unwrap().pos;
+                if rng.random_bool(0.5) {
+                    unit.planned_move = Some(near(pos, 2, &mut rng));
+                }
+                if rng.random_bool(0.4) {
+                    unit.planned_attack = Some(near(unit.planned_move.unwrap_or(pos), 3, &mut rng));
+                }
+                if rng.random_bool(0.2) {
+                    unit.planned_unload = Some(near(pos, 2, &mut rng));
+                }
+                if rng.random_bool(0.2) {
+                    let own: Vec<u32> = good.units.iter().map(|u| u.id).collect();
+                    unit.planned_board = Some(own[rng.random_range(0..own.len())]);
+                }
+                if rng.random_bool(0.3) {
+                    let mut from = unit.planned_move.unwrap_or(pos);
+                    for _ in 0..rng.random_range(1..4) {
+                        let move_to = near(from, 2, &mut rng);
+                        unit.queued.push(TurnOrder {
+                            from,
+                            move_to: Some(move_to),
+                            attack: rng.random_bool(0.5).then(|| near(move_to, 2, &mut rng)),
+                        });
+                        from = move_to;
+                    }
+                }
+                unit.holding = rng.random_bool(0.2);
+                unit.guarding = rng.random_bool(0.2);
+                unit.following_queue = rng.random_bool(0.3);
+                unit.ability_queued = rng.random_bool(0.3);
+            }
+            for city in &mut plan.cities {
+                city.queue = (0..rng.random_range(0..4))
+                    .map(|_| builds[rng.random_range(0..builds.len())])
+                    .collect();
+                city.worked.reverse();
+                city.worker_jobs = (0..rng.random_range(0..4))
+                    .map(|_| {
+                        let hex = near(city.pos, 4, &mut rng);
+                        let kind = kinds[rng.random_range(0..kinds.len())];
+                        WorkerJob {
+                            hex,
+                            kind,
+                            across: kind
+                                .on_edge()
+                                .then(|| hex.neighbors()[rng.random_range(0..6)]),
+                        }
+                    })
+                    .collect();
+            }
+            // Keep the books balanced, so the plan gets through when the
+            // side can pay for it.
+            let population = |pos: Hex| {
+                start
+                    .cities
+                    .iter()
+                    .find(|c| c.pos == pos)
+                    .map_or(1, |c| c.population)
+            };
+            let spent = committed(
+                plan.cities.iter().map(|c| {
+                    (
+                        population(c.pos),
+                        &c.queue[..],
+                        &c.barracks_queue[..],
+                        &c.worker_jobs[..],
+                    )
+                }),
+                plan.workers.iter().filter_map(|w| w.job),
+            );
+            let had = good.stock
+                + committed(
+                    good.cities.iter().map(|c| {
+                        (
+                            population(c.pos),
+                            &c.queue[..],
+                            &c.barracks_queue[..],
+                            &c.worker_jobs[..],
+                        )
+                    }),
+                    good.workers.iter().filter_map(|w| w.job),
+                );
+            plan.stock = had - spent;
+            if host.check_plan(&plan).is_err() {
+                continue;
+            }
+            accepted += 1;
+            let mut game = (*start).clone();
+            game.apply_plan(&plan);
+            game.apply_plan(&host.team_plan(HOST_SEAT));
+            game.resolve_turn();
+            while game.is_resolving() {
+                game.update(1.0);
+            }
+        }
+        assert!(
+            accepted > 100,
+            "only {accepted} of {tried} plans got through"
+        );
     }
 
     #[test]

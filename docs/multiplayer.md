@@ -12,7 +12,7 @@ On the host:
 vulkan_engine --host            # listens on port 7777; --port N for another
 ```
 
-The top bar (and the log) shows a **join code**, like `HOSTING - JOIN CODE K7M2QX`. On the
+The End Turn button (and the log) shows a **join code**, like `JOIN CODE K7M2QX`, until someone joins. On the
 other machine:
 
 ```
@@ -46,42 +46,63 @@ the seat, scenario, RNG seed and debug toggles) or `Refused`, `Plan`, `Resolve`,
 
 ## Transport
 
-`src/net.rs`: TCP, each message a little-endian `u32` length and its bincode encoding. A reader
-thread per connection feeds a channel; the frame loop polls it (`Session::pump`) and never waits
-on the network. The guest connects and receives the game before its window opens.
+`src/net/`: TCP, each message encoded with postcard, sealed (below), and framed as a
+little-endian `u32` length and the sealed bytes. A reader thread per connection opens incoming
+messages onto a bounded channel; the frame loop polls it (`Session::pump`) and never waits on
+the network. The guest connects, runs the handshake and receives the game before its window
+opens; the host runs each join on its own thread.
 
 ## Security
 
-Opening a port means anyone who can reach it can send anything. What's in place:
+Opening a port means anyone who can reach it can send anything, and anyone on the network path
+can watch or change what's sent. What's in place:
 
-- **Nothing arriving is trusted.** A frame over 1 MiB, or one that doesn't decode (bincode with
-  the same limit, whatever lengths a message claims inside), drops the peer. Every message is
-  checked before it touches the game (`GameState::receive`): only the messages its role expects,
-  in order (nothing before `Hello`); a plan only for the sender's own side and this turn; every
-  unit, city, worker and interior troop it names existing and its side's; every hex on the map
-  (or inside the city's interior); moves and attacks within the unit's range; every list short
-  (`MAX_PLAN_LIST`); a stockpile no larger than the side had plus what its queues could refund. A
-  bad message drops the peer, and nothing of it reaches the game. The guest checks the host's
-  `Resolve` the same way, and the seat and scenario in its `Welcome`.
-- **Joining takes the join code**, six letters and digits (about a billion codes). The host takes
-  one guest; a connection that doesn't say hello within 10 seconds is dropped, and after 10
-  refused guests the host stops listening, so a code can't be guessed at.
-- **No panics from input**: the checks stop what would index out of range or leave the map, so a
-  hostile peer can't crash the other machine by what it sends. The tests throw garbage, huge
-  frames, early messages and hostile plans at it (`net.rs`, `multiplayer.rs`).
+- **Encrypted and authenticated by the join code** (`src/net/secure.rs`). Both ends first send
+  a magic number and their protocol version in the clear, so another program or build stops
+  there. Then they run **SPAKE2** (a password-authenticated key exchange, RustCrypto's `spake2`
+  on Ed25519) with the join code: both get the same strong key only if both used the same code,
+  and someone watching learns nothing to guess the code with offline, since every guess takes a
+  live join at the host. HKDF-SHA256 derives a key per direction, and every message is sealed
+  with **ChaCha20-Poly1305** under a nonce counting that direction's messages, so a message that's
+  read, changed, replayed, reordered or dropped in transit is either unreadable or fails to open,
+  which drops the connection. Keys are new every game (the exchange is ephemeral).
+- **Guessing the code doesn't work.** The code is six letters and digits (about a billion codes,
+  from the OS's random source). A wrong code shows when the guest's first sealed message won't
+  open; after 10 of those the host stops listening, so a guesser gets 10 tries in a billion.
+- **Joining can't be blocked by one machine.** The host runs up to 8 joins at once, at most 3 from
+  any one address, each on its own thread with 10 seconds to finish; a silent or garbage
+  connection holds up nobody, and one address can't fill every slot.
+- **Nothing arriving is trusted.** A frame over 1 MiB drops the peer before it's read, and so does
+  a message that doesn't open or doesn't decode. The incoming queue is bounded. Every message is
+  checked before it touches the game (`GameState::receive`): only the messages its role
+  expects; a plan only for the sender's own side and this turn; every unit, city, worker and
+  interior troop it names existing and its side's; every hex on the map (or inside the city's
+  interior); moves and attacks within the unit's range; an ability only when it's ready; every
+  list short (`MAX_PLAN_LIST`). The guest checks the host's `Resolve` the same way, and the
+  seat and scenario in its `Welcome`.
+- **Cheats the checks catch**: spending is accounted exactly (the stockpile plus everything
+  queued and placed must be worth what it was when the turn began, so nothing is free); build
+  progress can't be added, only kept or cleared; a city queues only what it can train (no Cavalry
+  or Armored, ships only with a Harbor, no growing past the cap), a Barracks no more Cavalry or
+  Armored than its deposits allow; citizens work only tiles in their city's reach, never a city
+  or a building; workers out on the map can only be recalled.
+- **No panics from input.** A randomized test throws thousands of hostile plans at the checks,
+  and applies and resolves every one that passes, without a crash; others throw garbage, huge
+  frames, early messages, wrong codes and floods of connections at the transport
+  (`src/net/`, `multiplayer.rs`).
 
-What isn't, yet:
+What's left, knowingly:
 
-- **No encryption or authentication beyond the code.** Anyone who can watch the traffic can read
-  it, and change it. Play on networks you trust (a LAN, or a VPN like Tailscale), and don't
-  forward the port to the internet.
-- **The host listens on every network interface** (0.0.0.0), so a LAN or a public address reaches
-  it; the OS firewall may ask the first time.
-- **Cheating isn't fully prevented.** The checks bound what a plan can do, but a modified client
-  could still, say, queue what it can't build yet, or plan on what its fog hides.
-- A client that connects and stays silent holds the host for up to 10 seconds at a time.
+- **The host listens on every network interface** (0.0.0.0), so a LAN (or, with the port
+  forwarded, the internet) reaches it; the OS firewall may ask the first time. With the join
+  code guarding the game that's safe to allow, but only forward the port if you need to.
+- **Some cheats are out of reach of any check**: a modified client can see through its own fog
+  (every machine holds the whole game in lockstep), and can plan anything a real player could.
+- **Many machines at once** could still fill the host's 8 join slots for a while; a real guest
+  can retry.
+- The join code shows in the host's log.
 
 ## Next
 
 More than two players (and AI sides beside them), other scenarios and worlds, a lobby in the game
-instead of command-line flags, rejoining after a drop, and encryption.
+instead of command-line flags, and rejoining after a drop.

@@ -236,4 +236,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     both, and each machine applies them to the turn's starting game and resolves it the same way,
     with a checksum after each turn to catch a desync. "The player" became the local side, and the
     AI plays the sides nobody does. Everything that arrives over the network is checked before it
-    touches the game, and a peer that sends anything malformed or hostile is dropped.
+    touches the game, and a peer that sends anything malformed or hostile is dropped. The link
+    is encrypted and authenticated by the join code (SPAKE2, then ChaCha20-Poly1305 per
+    direction), and plans are checked strictly enough to stop free builds, added progress and
+    other cheats a modified client could try.
