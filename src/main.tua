@@ -56,7 +56,6 @@ use game.font.atlas;
 use game.city.BUILDS;
 use game.orders.ClickMode;
 use game.scenario.Scenario;
-use game.ui.quit_prompt;
 use game.ui.selection_box;
 use game.ui.ui_projection;
 
@@ -72,10 +71,8 @@ const DEFAULT_HEIGHT: i32 = 900;
 const WINDOW_ICON_SIZE: i32 = 64;
 const TASKBAR_ICON_SIZE: i32 = 256;
 
-/// How long Escape must be held to quit, in nanoseconds.
-const QUIT_HOLD: i64 = 1000000000;
 
-/// Dragging the left button at least this many pixels pans the map instead of clicking.
+/// Dragging the left button at least this many pixels draws a selection box instead of clicking.
 const DRAG_THRESHOLD: f32 = 6.0;
 
 /// A left-button press waiting for its release: where it went down, the click mode the
@@ -89,12 +86,9 @@ struct Input {
     panning: bool,
     left_press: Option[Press],
     left_dragging: bool,
-    /// Where an Alt-drag selection box started, while the button is down.
+    /// Where a drag selection box started, while the button is down.
     box_start: Option[Vec2],
     mods: Modifiers,
-    /// When Escape was pressed (`Clock.now_nanos`), while it's held; the game quits once it's
-    /// been held for `QUIT_HOLD`.
-    quit_held_since: Option[i64],
     closed: bool,
 }
 
@@ -104,7 +98,6 @@ fn forget_gestures(input: &mut Input) {
     input.left_dragging = false;
     input.panning = false;
     input.cursor = Option.None;
-    input.quit_held_since = Option.None;
     input.box_start = Option.None;
 }
 
@@ -177,15 +170,15 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
         Event.KeyDown(key, repeat) => {
             if !repeat {
                 match key {
-                    // Holding Escape quits; see `on_frame`.
-                    Key.Escape => { input.quit_held_since = Option.Some(Clock.now_nanos()); }
+                    // Escape closes the settings menu, a view or the selection first; with
+                    // nothing to close it opens the settings menu, which has Quit.
+                    Key.Escape => game.press_escape(),
                     // F5: borderless fullscreen on the window's monitor, or back.
                     Key.Function(5) => { return WindowRequest.ToggleFullscreen; }
                     _ => on_key(game, key),
                 }
             }
         }
-        Event.KeyUp(key) => match key { Key.Escape => { input.quit_held_since = Option.None; } _ => {} },
         _ => {}
     }
     WindowRequest.Nothing
@@ -232,7 +225,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
 /// two batches. Answers whether to keep running: not once the window was closed, the
 /// screenshot written, or its time run out.
 fn on_frame(game: &mut GameState, input: &Input, shot: &mut Option[Screenshot], w: u32, h: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool can {Log, Rand, Clock} {
-    if input.closed { return false; }
+    if input.closed || game.quit_requested() { return false; }
     let shooting = shot.is_some();
     if let &mut Option.Some(s) = shot {
         let now = Clock.now_nanos();
@@ -253,11 +246,6 @@ fn on_frame(game: &mut GameState, input: &Input, shot: &mut Option[Screenshot], 
     for i in 0..world.len() { vertices.push(world[i]); }
     batches.push(DrawBatch { view_proj: game.camera.view_proj(size).to_cols(), first: 0, count: world.len() as u32 });
     let mut ui = game.build_ui(size, input.cursor);
-    if let Option.Some(since) = input.quit_held_since {
-        let progress = (Clock.now_nanos() - since) as f32 / QUIT_HOLD as f32;
-        if progress >= 1.0 { return false; }
-        quit_prompt(progress, size, &mut ui);
-    }
     if let Option.Some(start) = input.box_start {
         if let Option.Some(end) = input.cursor {
             if start.distance(end) >= DRAG_THRESHOLD { selection_box(start, end, size, &mut ui); }
@@ -323,7 +311,6 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
             left_dragging: false,
             box_start: Option.None,
             mods: Modifiers { shift: false, control: false, alt: false },
-            quit_held_since: Option.None,
             closed: false,
         };
         let rc = handle { run(TITLE, spec, &icons, &atlas, frames, validate) } with Scene {

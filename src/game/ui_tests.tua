@@ -17,7 +17,10 @@ use game.orders.ClickMode;
 use game.scenario.Scenario;
 use game.tests.find;
 use game.tests.sandbox;
+use game.settings.SETTINGS;
+use game.settings.Setting;
 use game.ui.ButtonState;
+use game.ui.steps_in_classic;
 use game.ui.TILE_TOOLTIP_DELAY;
 use game.ui.Target;
 use game.ui.UnitAction;
@@ -297,4 +300,128 @@ fn wrap_breaks_between_words() {
 fn line_is(lines: &Vec[Str], i: i32, want: str) -> bool {
     let line = &lines[i];
     str_eq(line, want)
+}
+
+/// The value each of `setting`'s menu buttons sets, and its state, in order.
+fn setting_buttons(game: &GameState, setting: Setting) -> Vec[(i32, ButtonState)] {
+    let layout = game.layout(screen());
+    let mut out: Vec[(i32, ButtonState)] = Vec.new();
+    for i in 0..layout.buttons.len() {
+        match layout.buttons[i].target {
+            Target.SetSetting(s, value) => { if s == setting { out.push((value, layout.buttons[i].state)); } }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn has_button(game: &GameState, target: Target) -> bool { game.layout(screen()).button_for(target).is_some() }
+
+@test
+fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let off = Target.SetSetting(Setting.TurnPlayback, 0);
+        let on = Target.SetSetting(Setting.TurnPlayback, 1);
+        // A unit selected, and a city with its queue open.
+        let unit = GameState.new();
+        let mut city = GameState.city_scenario();
+        city.select_city();
+        city.queue_selected_city_unit(BuildUnit.Melee);
+        let mut games: Vec[GameState] = Vec.new();
+        games.push(unit);
+        games.push(city);
+        while !games.is_empty() {
+            let Option.Some(mut game) = games.pop() else { break; };
+            assert(!has_button(&game, on));
+            game.settings_open = true;
+            let layout = game.layout(screen());
+            // The menu is placed last, centered, and every setting's buttons, Close and Quit
+            // take their own clicks there.
+            let menu = layout.panels[layout.panels.len() - 1];
+            let center = menu.min.add(menu.max).scale(0.5);
+            assert(center.distance(screen().scale(0.5)) <= 1.5);
+            for k in 0..5 { assert(setting_buttons(&game, SETTINGS[k]).len() >= 2); }
+            let targets = [Target.CloseSettings, Target.Quit, on, off];
+            for t in 0..4 {
+                let Option.Some(i) = layout.button_for(targets[t]) else { assert(false); return; };
+                let b = &layout.buttons[i];
+                let middle = b.min.add(b.max).scale(0.5);
+                let Option.Some(hit) = layout.button_at(middle) else { assert(false); return; };
+                assert(layout.buttons[hit].target == targets[t]);
+            }
+
+            // Instant playback is on by default: ON is gold; OFF switches it off and turns
+            // gold, and clicking it again changes nothing.
+            assert(game.settings.instant_playback);
+            let playback = setting_buttons(&game, Setting.TurnPlayback);
+            assert(playback.len() == 2 && playback[0].1 == ButtonState.Ready && playback[1].1 == ButtonState.Queued);
+            game.handle_click(button_cursor(&game, off), screen(), ClickMode.Normal);
+            assert(!game.settings.instant_playback);
+            let playback = setting_buttons(&game, Setting.TurnPlayback);
+            assert(playback[0].1 == ButtonState.Queued && playback[1].1 == ButtonState.Ready);
+            game.handle_click(button_cursor(&game, off), screen(), ClickMode.Normal);
+            assert(!game.settings.instant_playback);
+            game.handle_click(button_cursor(&game, on), screen(), ClickMode.Normal);
+            assert(game.settings.instant_playback);
+
+            game.handle_click(button_cursor(&game, Target.CloseSettings), screen(), ClickMode.Normal);
+            assert(!game.settings_open);
+            assert(!game.quit_requested());
+        }
+    });
+}
+
+@test
+fn the_classic_settings_menu_has_a_button_per_choice_and_steps_the_rest() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.settings_open = true;
+        for k in 0..5 {
+            let setting = SETTINGS[k];
+            let value = game.settings.get(setting);
+            let (low, high) = setting.range();
+            let buttons = setting_buttons(&game, setting);
+            if steps_in_classic(setting) {
+                // < and > set the values either side, faded at an end.
+                assert(buttons.len() == 2);
+                assert(buttons[0].0 == value - 1 && (buttons[0].1 == ButtonState.Disabled) == (value == low));
+                assert(buttons[1].0 == value + 1 && (buttons[1].1 == ButtonState.Disabled) == (value == high));
+            } else {
+                // A button per value, the current one gold.
+                assert(buttons.len() == high - low + 1);
+                for b in 0..buttons.len() {
+                    assert(buttons[b].0 == low + b);
+                    assert((buttons[b].1 == ButtonState.Queued) == (low + b == value));
+                }
+            }
+        }
+
+        // The queue limit steps with < and >, and stops at the top.
+        let limit = Setting.MaxQueuedTurns;
+        let up = Target.SetSetting(limit, game.settings.get(limit) + 1);
+        game.handle_click(button_cursor(&game, up), screen(), ClickMode.Normal);
+        assert(game.settings.max_queued_turns == 7);
+        game.set_setting(limit, 20);
+        // Spent at the top.
+        let at_top = setting_buttons(&game, limit);
+        assert(at_top[1].0 == 21 && at_top[1].1 == ButtonState.Disabled);
+        game.handle_click(button_cursor(&game, Target.SetSetting(limit, 21)), screen(), ClickMode.Normal);
+        assert(game.settings.max_queued_turns == 20);
+
+        // Fog picks its value by name.
+        game.handle_click(button_cursor(&game, Target.SetSetting(Setting.FogStyle, 0)), screen(), ClickMode.Normal);
+        assert(!game.settings.cloud_fog);
+    });
+}
+
+@test
+fn the_settings_menu_quit_button_asks_the_app_to_quit() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let _had = game.clear_selection();
+        game.press_escape();
+        assert(game.settings_open && !game.quit_requested());
+        game.handle_click(button_cursor(&game, Target.Quit), screen(), ClickMode.Normal);
+        assert(game.quit_requested());
+    });
 }

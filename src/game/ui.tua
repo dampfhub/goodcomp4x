@@ -30,6 +30,10 @@ use std.str.to_owned;
 use log.Log;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
+use game.settings.Control;
+use game.settings.MAX_BUTTONS;
+use game.settings.SETTINGS;
+use game.settings.Setting;
 use game.show_rounded;
 use game.text;
 use game.ability.Ability;
@@ -110,19 +114,6 @@ pub fn ui_projection(screen_size: Vec2) -> Mat4 {
     )
 }
 
-/// While Escape is held: a "hold to quit" prompt under the top bar with a bar filling toward
-/// `progress` = 1, when the game closes.
-pub fn quit_prompt(progress: f32, screen_size: Vec2, out: &mut Vec[MeshVertex]) {
-    let mut panel = panel_builder(false);
-    panel.text(TextSize.Body, "HOLD ESC TO QUIT", TEXT);
-    panel.bar(progress);
-    let size = panel.size();
-    let top_left = vec2((screen_size.x - size.x) / 2.0, screen_size.y - TOP_BAR_HEIGHT - MARGIN);
-    let mut layout = empty_layout();
-    panel.place_top_left(top_left, &mut layout);
-    layout.draw_shapes(out);
-}
-
 /// While Alt-dragging: the selection rectangle between `a` and `b` (window pixels, origin
 /// top-left), a translucent fill with a thin border.
 pub fn selection_box(a: Vec2, b: Vec2, screen_size: Vec2, out: &mut Vec[MeshVertex]) {
@@ -147,6 +138,10 @@ pub enum Target {
     SaveState,
     LoadState,
     TogglePlayback,
+    /// Settings menu: set a setting to a value, close the menu, or quit the game.
+    SetSetting(Setting, i32),
+    CloseSettings,
+    Quit,
 }
 
 impl Eq for Target {
@@ -157,6 +152,8 @@ impl Eq for Target {
             (Target.Scenario(a), Target.Scenario(b)) => a == b,
             (Target.ToggleYields, Target.ToggleYields) | (Target.EndTurn, Target.EndTurn) | (Target.SaveState, Target.SaveState)
                 | (Target.LoadState, Target.LoadState) | (Target.TogglePlayback, Target.TogglePlayback) => true,
+            (Target.SetSetting(a, x), Target.SetSetting(b, y)) => a == b && x == y,
+            (Target.CloseSettings, Target.CloseSettings) | (Target.Quit, Target.Quit) => true,
             _ => false,
         }
     }
@@ -214,13 +211,28 @@ pub struct TextShape { origin: Vec2, size: TextSize, spans: Vec[Span] }
 
 /// The UI for one frame. Panels also swallow clicks, so a click on the UI never falls through
 /// to the map.
-pub struct UiLayout { shapes: Vec[Shape], texts: Vec[TextShape], buttons: Vec[Button], panels: Vec[Rect] }
+pub struct UiLayout {
+    shapes: Vec[Shape],
+    texts: Vec[TextShape],
+    buttons: Vec[Button],
+    panels: Vec[Rect],
+    /// Where the settings menu's shapes and buttons start, while it's open: drawn over
+    /// everything else, and its buttons take clicks before any underneath.
+    overlay: Option[Overlay],
+}
 
-fn empty_layout() -> UiLayout { UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new() } }
+/// The first shape and the first button of the settings menu.
+pub struct Overlay { shapes: i32, buttons: i32 }
+
+fn empty_layout() -> UiLayout { UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new(), overlay: Option.None } }
 
 impl UiLayout {
-    fn button_at(&self, point: Vec2) -> Option[i32] {
-        for i in 0..self.buttons.len() {
+    pub fn button_at(&self, point: Vec2) -> Option[i32] {
+        let first = match self.overlay { Option.Some(o) => o.buttons, Option.None => self.buttons.len() };
+        for i in first..self.buttons.len() {
+            if self.buttons[i].contains(point) { return Option.Some(i); }
+        }
+        for i in 0..first {
             if self.buttons[i].contains(point) { return Option.Some(i); }
         }
         Option.None
@@ -349,6 +361,9 @@ impl GameState {
             Target.SaveState => self.save_state(),
             Target.LoadState => self.load_state(),
             Target.TogglePlayback => self.toggle_instant_playback(),
+            Target.SetSetting(setting, value) => self.set_setting(setting, value),
+            Target.CloseSettings => self.close_settings(),
+            Target.Quit => self.request_quit(),
         }
         true
     }
@@ -377,6 +392,7 @@ impl GameState {
         self.debug_panel(screen_size, &mut layout);
 
         let mut tray = panel_builder(false);
+        let mut shown = true;
         if let Option.Some(city) = self.selected_city {
             self.city_tray(city, &mut tray);
         } else if let Option.Some(idx) = self.selected {
@@ -386,10 +402,64 @@ impl GameState {
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         } else {
-            return layout;
+            shown = false;
         }
-        tray.place_bottom_left(vec2(MARGIN, MARGIN), &mut layout);
+        if shown { tray.place_bottom_left(vec2(MARGIN, MARGIN), &mut layout); }
+        self.place_settings(screen_size, &mut layout);
         layout
+    }
+
+    /// The settings menu, while it's open: centered on the screen and placed last, so it
+    /// draws over the other panels and its buttons take clicks before theirs.
+    fn place_settings(&self, screen_size: Vec2, layout: &mut UiLayout) {
+        if !self.settings_open { return; }
+        let panel = self.settings_panel();
+        let size = panel.size();
+        let top_left = vec2((screen_size.x - size.x) / 2.0, (screen_size.y + size.y) / 2.0);
+        layout.overlay = Option.Some(Overlay { shapes: layout.shapes.len(), buttons: layout.buttons.len() });
+        panel.place_top_left(top_left, layout);
+    }
+
+    /// The settings under a heading per group (`Setting.group`), then Close and Quit. Each
+    /// setting shows its name, and buttons that set it: one per value (the current one gold),
+    /// or < and > with the value between the name and them for a slider or a longer list.
+    fn settings_panel(&self) -> PanelBuilder {
+        let mut panel = panel_builder(false);
+        panel.text(TextSize.Title, "SETTINGS", TEXT);
+        let mut group = "";
+        for k in 0..5 {
+            let setting = SETTINGS[k];
+            let heading = setting.group();
+            if !str_eq(&heading, &group) {
+                group = heading;
+                panel.gap(GAP);
+                panel.text(TextSize.Small, group, LABEL_TEXT);
+            }
+            let value = self.settings.get(setting);
+            let (low, high) = setting.range();
+            panel.gap(GAP / 2.0);
+            panel.begin_line();
+            panel.span_owned(text(fn() can {Out} { Out.put(setting.name()); Out.put("  "); }), LABEL_TEXT);
+            if steps_in_classic(setting) { panel.span_owned(setting.value_text(value), GOLD_TEXT); }
+            panel.end_line(TextSize.Body);
+            panel.begin_buttons();
+            if steps_in_classic(setting) {
+                panel.button(Target.SetSetting(setting, value - 1), "<", "", button_state(false, value <= low), false);
+                panel.button(Target.SetSetting(setting, value + 1), ">", "", button_state(false, value >= high), false);
+            } else {
+                for to in low..=high {
+                    let label = setting.value_text(to);
+                    panel.button(Target.SetSetting(setting, to), &label, "", button_state(to == value, false), false);
+                }
+            }
+            panel.end_buttons(true);
+        }
+        panel.gap(GAP);
+        panel.begin_buttons();
+        panel.button(Target.CloseSettings, "CLOSE", "ESC", ButtonState.Ready, false);
+        panel.button(Target.Quit, "QUIT", "", ButtonState.Ready, false);
+        panel.end_buttons(true);
+        panel
     }
 
     /// Testing tools, top-left under the top bar and see-through so they don't read as game
@@ -865,6 +935,19 @@ impl GameState {
                 };
                 if self.savestate.is_none() { unavailable = Option.Some(to_owned("NOTHING SAVED YET")); }
             }
+            Target.SetSetting(setting, _) => {
+                title = to_owned(setting.name());
+                description = to_owned(setting.description());
+            }
+            Target.CloseSettings => {
+                title = to_owned("CLOSE");
+                shortcut = to_owned("ESC");
+                description = to_owned("CLOSES THE SETTINGS. THEY'RE KEPT FOR THE NEXT TIME THE GAME STARTS.");
+            }
+            Target.Quit => {
+                title = to_owned("QUIT");
+                description = to_owned("CLOSES THE GAME.");
+            }
             Target.TogglePlayback => {
                 title = to_owned("PLAYBACK");
                 shortcut = to_owned("F8");
@@ -1325,5 +1408,16 @@ fn ability_text(unit: &Unit) -> (str, str) {
         Ability.Deploy if unit.deployed => ("PACK UP", "SPEND A TURN PACKING UP TO MOVE AGAIN"),
         Ability.Deploy => ("DEPLOY", "SPEND A TURN SETTING UP, THEN +1 RANGE BUT CANNOT MOVE UNTIL PACKED UP"),
         Ability.Lookout => ("LOOKOUT", "NO MOVING THIS TURN, +2 SIGHT NEXT TURN"),
+    }
+}
+
+/// Whether the settings menu steps `setting` with < and > rather than showing a button for
+/// each value: a slider, or more choices than fit.
+pub fn steps_in_classic(setting: Setting) -> bool {
+    let (low, high) = setting.range();
+    match setting.control() {
+        Control.Toggle => false,
+        Control.Slider => true,
+        Control.Choice => high - low + 1 > MAX_BUTTONS,
     }
 }

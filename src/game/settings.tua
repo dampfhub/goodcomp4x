@@ -257,6 +257,9 @@ impl GameState {
     /// Whether the settings menu's Quit button was clicked: the app then closes the window.
     pub fn quit_requested(&self) -> bool { self.quit_requested }
 
+    /// The settings menu's Quit button.
+    pub fn request_quit(&mut self) { self.quit_requested = true; }
+
     /// A press of Escape. It closes one thing, in this order: the settings menu, then a city
     /// view, then the selection. With nothing to close it opens the settings menu, which has
     /// the Quit button.
