@@ -2349,6 +2349,7 @@ fn escape_or_a_right_click_on_the_map_stops_placing_in_both_presentations() {
             game.press_escape();
             assert_eq!(game.placing_job, None, "{kind:?}");
             assert_eq!(game.selected_city, Some(0), "Escape stops placing first");
+            assert_eq!(game.notice, format!("STOPPED PLACING {}", kind.name()));
 
             // A right-click on the map. ImGui keeps a click over one of its
             // windows (`want_capture_mouse`); classic passes every
@@ -2364,9 +2365,13 @@ fn escape_or_a_right_click_on_the_map_stops_placing_in_both_presentations() {
             } else {
                 open_map_tile(&game, |at| game.layout(SCREEN).covers(to_ui(at, SCREEN)))
             };
+            assert!(game.notice.starts_with("PLACING"), "{}", game.notice);
             game.handle_context_click(hex_cursor(&game, tile), SCREEN, false, false);
             assert_eq!(game.placing_job, None, "{kind:?}, imgui {imgui}");
             assert_eq!(game.selected_city, Some(0));
+            // The status bar says so, as after Escape, rather than still
+            // telling the player how to cancel.
+            assert_eq!(game.notice, format!("STOPPED PLACING {}", kind.name()));
             assert_eq!(placed_and_paid(&game), before, "{kind:?}");
         }
     }
