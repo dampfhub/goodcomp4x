@@ -117,6 +117,9 @@ The session is kept in text files in the config folder (`%APPDATA%\riskofcivlike
   presentation, the window's normal size and whether it's maximized (`SavedWindow` in
   `app.rs`), then `ImGuiLayoutState::to_text`: every panel slot's geometry, the boxes, and the
   Debug and Selection panels' placements the player chose.
+- `network.txt`: `NetMenu::to_text`, what the settings menu's Multiplayer page had typed (the
+  port, the host's address and the number of players; not the join code). Saved on hosting,
+  joining and quitting, and read into the first game's menu.
 - `imgui.ini`: ImGui's own settings (`save_ini_settings`), which hold the dock nodes and which
   panel is docked in which; panels no longer set `NO_SAVED_SETTINGS`. Loaded into the context
   before the first frame. A box's dockspace id comes from its window title, so panels saved in

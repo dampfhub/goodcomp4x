@@ -1,6 +1,7 @@
 //! `PanelBuilder`, the panel content primitive, and its text and button measuring.
 
 use super::action_icons::{self, CLASSIC_ICON_COLUMNS, ICON_BUTTON_SIZE};
+use super::network_menu::NetField;
 use super::settings_menu::classic_setting_rows;
 use super::{
     BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
@@ -107,6 +108,10 @@ pub(super) enum Row {
     /// `Setting::control` names: ImGui draws that widget, classic places
     /// the buttons `settings_menu::classic_setting_rows` lays out.
     Setting(Setting, i32),
+    /// A field the player types into (the Multiplayer section), with its
+    /// text and whether keys go into it: ImGui draws a text box, classic a
+    /// button that starts typing into it (`classic_rows`).
+    Field(NetField, String, bool),
 }
 
 #[derive(Clone)]
@@ -213,7 +218,9 @@ impl PanelBuilder {
                 let visible = buttons.len().clamp(1, BUILDING_LIST_VISIBLE);
                 visible as f32 * 30.0 + (visible + 1) as f32 * 4.0
             }
-            Row::Heading(_) | Row::Setting(..) => unreachable!("expanded by classic_rows"),
+            Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
+                unreachable!("expanded by classic_rows")
+            }
         }
     }
 
@@ -246,7 +253,9 @@ impl PanelBuilder {
                 chips.len() as f32 * ROSTER_CHIP
                     + chips.len().saturating_sub(1) as f32 * ROSTER_CHIP_GAP
             }
-            Row::Heading(_) | Row::Setting(..) => unreachable!("expanded by classic_rows"),
+            Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
+                unreachable!("expanded by classic_rows")
+            }
         }
     }
 
@@ -481,7 +490,9 @@ impl PanelBuilder {
                         layout.roster_chips.push((min, max, chip.key));
                     }
                 }
-                Row::Heading(_) | Row::Setting(..) => unreachable!("expanded by classic_rows"),
+                Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
+                    unreachable!("expanded by classic_rows")
+                }
             }
             top -= height;
         }
@@ -507,6 +518,33 @@ pub(super) fn classic_rows(rows: Vec<Row>) -> Vec<Row> {
                 for row in classic_setting_rows(setting, value) {
                     push(&mut out, row);
                 }
+            }
+            Row::Field(field, text, editing) => {
+                // The text, with a cursor while typing; a button to click
+                // to type.
+                let shown = match (text.is_empty(), editing) {
+                    (_, true) => format!("{text}_"),
+                    (true, false) => "-".into(),
+                    (false, false) => text,
+                };
+                push(&mut out, Row::Gap(GAP / 2.0));
+                push(
+                    &mut out,
+                    Row::Text(BODY, vec![(field.name().into(), LABEL_TEXT)]),
+                );
+                push(
+                    &mut out,
+                    Row::Buttons(
+                        vec![ButtonSpec {
+                            target: Target::EditNetField(field),
+                            label: shown,
+                            hint: String::new(),
+                            state: ButtonState::new(editing, false),
+                            armed: false,
+                        }],
+                        true,
+                    ),
+                );
             }
             row => push(&mut out, row),
         }

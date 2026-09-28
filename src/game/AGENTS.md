@@ -47,7 +47,7 @@ behavior.
 | `effects.rs` | attack animations during playback |
 | `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
-| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling and drag to reorder; the turn strip of everything needing orders (cities, unit groups); the settings menu (a heading per group, a control per `Setting`) |
+| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs`, `ui/network_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling and drag to reorder; the turn strip of everything needing orders (cities, unit groups); the settings menu (a heading per group, a control per `Setting`) and its Multiplayer page (host, join, leave; typed fields) |
 | `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
 | `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
@@ -59,6 +59,9 @@ behavior.
   the AI plays the sides not in `self.humans` (`is_human`). A networked game seats each player
   on their own side (`multiplayer.rs`); anything a player's planning changes must be in their
   `TeamPlan` (`team_plan`, `apply_plan`, `check_plan`), or the other machine never learns of it.
+  Anything else a player's machine does (opening a view, looking inside a city) must not change
+  the game in a network game (`is_networked`): plans are checked and applied against the game
+  as the turn began, the same on every machine.
 
 - `units` holds living units only. Dead units are removed with `retain` at the end of an attack
   step, which shifts indices, so code that spans a removal uses unit `id`s, not indices.

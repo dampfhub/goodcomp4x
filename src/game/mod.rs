@@ -40,13 +40,15 @@ pub use camera::Camera;
 pub use city::{BuildUnit, Building};
 pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
-pub use multiplayer::{HOST_SEAT, MAX_PLAYERS, Message as NetMessage, PROTOCOL_VERSION};
+pub use multiplayer::{
+    DEFAULT_PORT, HOST_SEAT, MAX_PLAYERS, Message as NetMessage, PROTOCOL_VERSION,
+};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
 pub use settings::Settings;
 use terrain::Tile;
 use turn::Step;
-pub use ui::{ImGuiLayoutState, selection_box, ui_projection};
+pub use ui::{ImGuiLayoutState, NetMenu, NetRequest, selection_box, ui_projection};
 pub use unit::Team;
 use unit::{Unit, UnitType};
 use unit_icons::UnitIcon;
@@ -144,6 +146,9 @@ pub struct GameState {
     /// Whether the settings menu (Escape) is open. Kept across scenario
     /// switches and loads, like the rest of the UI.
     settings_open: bool,
+    /// The settings menu's Multiplayer section: what's typed, and what it
+    /// asks the app to do (`ui/network_menu.rs`). Kept like the menu.
+    net_menu: ui::NetMenu,
     /// The settings menu's Quit button was clicked; the app closes the window.
     quit_requested: bool,
     /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
@@ -269,6 +274,7 @@ impl GameState {
             effects: Vec::new(),
             settings: settings::Settings::default(),
             settings_open: false,
+            net_menu: ui::NetMenu::default(),
             quit_requested: false,
             fog_of_war: true,
             memory: fog::Memory::new(),

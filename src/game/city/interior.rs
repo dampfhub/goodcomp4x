@@ -115,7 +115,12 @@ impl GameState {
         if self.interior_view.is_none() {
             self.exterior_camera = Some(self.camera.clone());
         }
-        self.sync_city_interiors();
+        // Looking doesn't change the game: in a network game the troops
+        // stand inside from the turn's start (`begin_lockstep_turn`), on
+        // every machine at once.
+        if !self.is_networked() {
+            self.sync_city_interiors();
+        }
         self.interior_view = Some(city);
         self.interior_selected = None;
         self.selected_city = None;

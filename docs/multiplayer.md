@@ -6,29 +6,37 @@ is the first cut, built to test multiplayer features.
 
 ## Playing
 
-On the host:
+From the game: Escape opens the settings menu, and its **Multiplayer** button the page to host
+or join from (`src/game/ui/network_menu.rs`). To host, pick how many people play (you
+included, 2-7) and the port (7777 unless changed), then **Host Game**. To join, type the
+host's address (`HOST`, or `HOST:PORT` for another port than 7777) and the join code it
+shows, then **Join Game**; the page says how joining goes, or why it couldn't. The port,
+address and player count are kept for next time. In a network game the page shows your side
+and, on the host, the join code and the seats still open, and **Leave Game** leaves it for a
+new world of your own (the host leaving ends the game for everyone).
+
+The same from the command line:
 
 ```
 vulkan_engine --host --players 3    # 2-7 people, you included (2 unless given)
                                     # listens on port 7777; --port N for another
+vulkan_engine --join 192.168.1.20 --code K7M2QX    # HOST or HOST:PORT
 ```
 
 The world is made as the F4 world is, from the host's settings (AI Players, Start With), with
 at least a side for every player. The host plays Blue; guests take Red, Green and the sides
-after as they join. The End Turn button (and the log) shows a **join code** and how many are
-still to come, like `JOIN CODE K7M2QX - 2 TO COME`, until every seat is filled. On each other
-machine:
-
-```
-vulkan_engine --join 192.168.1.20 --code K7M2QX    # HOST or HOST:PORT
-```
+after as they join. The End Turn button (and the log) shows the **join code** and how many are
+still to come, like `JOIN CODE K7M2QX - 2 TO COME`, until every seat is filled. Guests need
+to reach the host's port: on a home network, forward it on the router and let the game through
+the host's firewall.
 
 Everyone plays their turn at once, as ever; the first turn waits until every seat is filled.
 Ending the turn sends your plan, and the End Turn button waits (the host's names who it's
 waiting for) until everyone has ended theirs; then the turn plays out on every machine. Nobody
-can join once the first turn has played. A guest who leaves before then frees their seat for
-someone else; one who leaves after hands their side to the AI, which plays it from the next
-turn on, and the rest play on. If the host leaves, the game can't go on. Debug actions that
+can join once the first turn has played. A guest who leaves before it starts to play out frees
+their seat for someone else (the turn waits for them); one who leaves after hands their side to
+the AI, which plays it from the next turn on, and the rest play on. If the host leaves, the
+game can't go on. A guest the host drops for a message it refused sees why. Debug actions that
 change the game on one machine only (F1-F4 and the scenario buttons, F6/F7, F9, PROD SPEEDUP,
 UNIT CAP) are off in a network game.
 
@@ -49,10 +57,21 @@ RNG seed when a guest joins. After every turn each guest sends a checksum of the
 leaves mid-game the host sends `SeatLeft` before the turn's `Resolve`, so every machine hands
 that side to the AI at the same point.
 
+Only planning may differ between machines, and only in what the plan carries. Anything else a
+player's machine does must leave the game alone, or the plans it makes stop matching the game
+the others apply them to. So in a network game, troops beside a city stand in its interior from
+the start of each turn, on every machine (`begin_lockstep_turn`), rather than when a player
+first looks inside, as in a game of one's own. (An early build added them on looking, and the
+host refused the orders a guest then gave them.) A slow test lets the AI play every seat for
+many turns, looking inside every city, and checks the host takes every plan and every machine
+plays the same game: `cargo test plans_the_ai_makes -- --ignored`.
+
 Messages (`Message`): `Hello` (guest, with the protocol version), `Welcome` (host: the seat,
 the human sides, the world's seed and settings, the RNG seed and debug toggles) or `Refused`,
-`Plan`, `Resolve`, `SeatLeft`, `Checksum`.
-`PROTOCOL_VERSION` changes whenever one changes shape, so mismatched builds refuse each other.
+`Plan`, `Resolve`, `SeatLeft`, `Checksum`. The host also sends `Refused`, with the reason,
+to a guest it drops for a bad message.
+`PROTOCOL_VERSION` changes whenever one changes shape, or the rules a turn plays out by, so
+mismatched builds refuse each other.
 
 ## Transport
 
@@ -120,5 +139,5 @@ What's left, knowingly:
 
 ## Next
 
-A lobby in the game instead of command-line flags, a turn timer, rejoining after a drop, and
+A lobby to wait in before the game, a turn timer, rejoining after a drop, and
 other scenarios.

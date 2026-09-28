@@ -244,3 +244,11 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     (`--host --players N`) and up to six guests share a generated world, each on their own side in
     join order, with the AI on the world's other sides. The first turn waits for every seat; a guest
     who leaves after it hands their side to the AI on every machine at once, and the rest play on.
+67. Multiplayer from the menu, and two fixes (`claude/multiplayer`, `multiplayer.md`): the
+    settings menu's Multiplayer page hosts or joins without command-line flags (joining connects
+    in the background, so the window keeps drawing). The first three-player test dropped both
+    guests: looking inside a city added the troops beside it to its interior on the looking
+    player's machine only, so the orders they then gave named troops the host didn't have, and
+    it refused their plans. In a network game those troops now stand inside from each turn's
+    start, on every machine. A guest leaving before the first turn plays out now frees their
+    seat, as it should have, and a dropped guest is told why.

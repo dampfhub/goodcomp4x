@@ -34,7 +34,7 @@ use crate::game::{GameState, HOST_SEAT, NetMessage, PROTOCOL_VERSION, Settings, 
 use secure::{Opener, Sealer, Side};
 
 /// The port `--host` listens on and `--join` connects to when none is given.
-pub const DEFAULT_PORT: u16 = 7777;
+pub use crate::game::DEFAULT_PORT;
 /// How long a join has, on either end, to connect, run the handshake and
 /// trade the hello and welcome.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -209,6 +209,12 @@ impl Session {
         Ok((Session::new(Some(listener), code, Vec::new()), game))
     }
 
+    /// The port a host listens on, until the game starts.
+    pub fn port(&self) -> Option<u16> {
+        let listener = self.listener.as_ref()?;
+        listener.local_addr().ok().map(|address| address.port())
+    }
+
     /// `--join`: connects to the host at `address` (`HOST:PORT`, or just
     /// `HOST` for `DEFAULT_PORT`) with the join code it shows, and builds
     /// the game it sends.
@@ -267,6 +273,11 @@ impl Session {
                 Ok(messages) => {
                     for message in messages {
                         if let Err(why) = game.receive(*team, message) {
+                            // Tell them why, so they see more than a
+                            // closed connection.
+                            if self.hosting {
+                                let _ = link.send(&NetMessage::Refused(why.clone()));
+                            }
                             dropped
                                 .push((*team, format!("{} sent a bad message: {why}", link.peer)));
                             break;
@@ -395,19 +406,9 @@ mod tests {
     use std::io::Write;
     use std::time::Instant;
 
-    impl Session {
-        /// The port a host listens on (`--host` with port 0 picks one).
-        fn port(&self) -> u16 {
-            self.listener
-                .as_ref()
-                .and_then(|l| l.local_addr().ok())
-                .map_or(0, |a| a.port())
-        }
-    }
-
     /// Joins `host` with `code` on a thread, pumping the host meanwhile.
     fn join(net: &mut Session, host: &mut GameState, code: &str) -> Result<(Session, GameState)> {
-        let address = format!("127.0.0.1:{}", net.port());
+        let address = format!("127.0.0.1:{}", net.port().unwrap());
         let code = code.to_string();
         let joining = thread::spawn(move || Session::join(&address, &code));
         let start = Instant::now();
@@ -528,7 +529,7 @@ mod tests {
     #[test]
     fn garbage_and_silence_hold_up_no_real_guest() {
         let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
-        let port = host_net.port();
+        let port = host_net.port().unwrap();
         let before = host.checksum();
         // A silent connection and one that sends garbage (from the same
         // address as the guest, within its limit): neither blocks the real
@@ -546,7 +547,7 @@ mod tests {
     #[test]
     fn one_address_can_hold_only_a_few_joins_at_once() {
         let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
-        let port = host_net.port();
+        let port = host_net.port().unwrap();
         let silent: Vec<TcpStream> = (0..MAX_HANDSHAKES_PER_ADDRESS + 2)
             .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
             .collect();

@@ -255,12 +255,18 @@ impl GameState {
     }
 
     /// Takes on the player's settings, e.g. saved in an earlier session.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
     pub fn set_settings(&mut self, settings: Settings) {
         self.settings = settings;
     }
 
     pub(super) fn close_settings(&mut self) {
         self.settings_open = false;
+        self.stop_typing();
+        self.close_multiplayer_page();
     }
 
     /// Whether the settings menu's Quit button was clicked: the app then
@@ -277,7 +283,7 @@ impl GameState {
     /// button.
     pub fn press_escape(&mut self) {
         if self.settings_open {
-            self.settings_open = false;
+            self.close_settings();
         } else if self.exit_structure_menu() {
         } else if !self.clear_selection() {
             self.settings_open = true;

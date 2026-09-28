@@ -29,9 +29,10 @@ use super::terrain::Resource;
 use super::unit::{Team, TurnOrder};
 use super::workers::WorkerJob;
 
-/// Bumped whenever a message or a plan changes shape, so mismatched builds
-/// refuse each other instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// Bumped whenever a message or a plan changes shape, or the rules a turn
+/// plays out by, so mismatched builds refuse each other instead of
+/// desyncing.
+pub const PROTOCOL_VERSION: u32 = 5;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -39,6 +40,11 @@ const MAX_PLAN_LIST: usize = 256;
 /// Letters a join code is made of: no 0/O or 1/I to confuse.
 const CODE_LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH: usize = 6;
+/// The most of a refusal's reason a guest shows.
+const MAX_REASON: usize = 120;
+
+/// The port a host listens on unless told another.
+pub const DEFAULT_PORT: u16 = 7777;
 
 /// The side the host plays; guests take the sides after it, in `Team::ALL`
 /// order, as they join.
@@ -208,6 +214,8 @@ pub(super) struct Lockstep {
     checksums: Vec<(u32, u64)>,
     /// A turn whose checksums didn't match, once one hasn't.
     pub desync: Option<u32>,
+    /// Guest: why the host dropped it, if it said.
+    dropped: Option<String>,
     /// Messages for `src/net` to send: from the host, to every guest; from
     /// a guest, to the host.
     outbox: Vec<Message>,
@@ -225,6 +233,7 @@ impl Lockstep {
             join_code: String::new(),
             checksums: Vec::new(),
             desync: None,
+            dropped: None,
             outbox: Vec::new(),
         }
     }
@@ -469,10 +478,14 @@ impl GameState {
         self.notice = "TOO MANY FAILED JOINS - NO LONGER LISTENING".into();
     }
 
-    /// A guest: the host is gone, and the game with it.
+    /// A guest: the host is gone, and the game with it (or it dropped this
+    /// guest, and said why).
     pub fn peer_lost(&mut self) {
-        self.notice =
-            format!("{HOST_SEAT:?} (THE HOST) LEFT - THE GAME CAN'T GO ON").to_uppercase();
+        let dropped = self.lockstep.as_ref().and_then(|l| l.dropped.clone());
+        self.notice = match dropped {
+            Some(why) => format!("THE HOST DROPPED YOU: {why}"),
+            None => format!("{HOST_SEAT:?} (THE HOST) LEFT - THE GAME CAN'T GO ON").to_uppercase(),
+        };
     }
 
     /// Host: `team`'s player is gone. Before the game starts, their seat
@@ -480,19 +493,21 @@ impl GameState {
     /// next turn on, on every machine (`Message::SeatLeft`), and the turn
     /// no longer waits for them.
     pub fn seat_left(&mut self, team: Team) {
-        let started = self.turn > 0 || self.open_seats().is_empty();
         let Some(lockstep) = self.lockstep.as_mut() else {
             return;
         };
         if lockstep.role != Role::Host || team == HOST_SEAT {
             return;
         }
+        // The first turn hasn't begun to play out: nothing of theirs is
+        // in the game yet, so someone else can take the seat.
+        let started = self.turn > 0 || lockstep.turn_start.is_none();
         lockstep.seated.retain(|&t| t != team);
+        lockstep.plans.retain(|p| p.team != team);
         if !started {
             self.notice = format!("{team:?} LEFT - WAITING FOR A PLAYER").to_uppercase();
             return;
         }
-        lockstep.plans.retain(|p| p.team != team);
         lockstep.outbox.push(Message::SeatLeft(team));
         self.humans.retain(|&t| t != team);
         self.notice = format!("{team:?} LEFT - THE AI PLAYS THEM NOW").to_uppercase();
@@ -509,6 +524,10 @@ impl GameState {
     /// Remembers the game as this turn's planning begins, for the plans to
     /// be applied to.
     fn begin_lockstep_turn(&mut self) {
+        // Troops beside a city stand in its interior from the start of the
+        // turn, the same on every machine, so a player can order them
+        // there without the game changing on their machine alone.
+        self.sync_city_interiors();
         let mut start = self.clone();
         start.lockstep = None;
         start.savestate = None;
@@ -584,6 +603,19 @@ impl GameState {
                 }
                 self.humans.retain(|&t| t != team);
                 self.notice = format!("{team:?} LEFT - THE AI PLAYS THEM NOW").to_uppercase();
+            }
+            (Role::Guest, Message::Refused(why)) => {
+                // The host is dropping this guest; the link closes next.
+                // Shown as it comes, so only what the fonts draw, and not
+                // much of it.
+                let why: String = why
+                    .chars()
+                    .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                    .take(MAX_REASON)
+                    .collect();
+                log::warn!("the host dropped us: {why}");
+                self.lockstep.as_mut().expect("networked").dropped = Some(why);
+                self.peer_lost();
             }
             (Role::Host, Message::Checksum { turn, value }) => {
                 let lockstep = self.lockstep.as_mut().expect("networked");
@@ -886,6 +918,9 @@ impl GameState {
 
     /// Host: once every human side's plan is in, sends them all and resolves.
     fn resolve_when_ready(&mut self) {
+        if !self.open_seats().is_empty() {
+            return;
+        }
         let humans = self.humans.clone();
         let Some(lockstep) = self.lockstep.as_mut() else {
             return;
@@ -940,6 +975,7 @@ impl GameState {
         std::mem::swap(&mut self.settings, &mut old.settings);
         std::mem::swap(&mut self.memory, &mut old.memory);
         self.settings_open = old.settings_open;
+        std::mem::swap(&mut self.net_menu, &mut old.net_menu);
         self.show_yields = old.show_yields;
         self.show_details = old.show_details;
         self.cloud_time = old.cloud_time;
@@ -1814,6 +1850,179 @@ mod tests {
             *world_ai = 0;
         }));
         assert_eq!(humans.len(), 2);
+    }
+
+    #[test]
+    fn looking_inside_a_city_and_ordering_a_troop_there_is_a_sound_plan() {
+        let (mut host, mut guests) = table(2);
+        // A Red troop beside a city stands in its interior from the turn's
+        // start, on every machine.
+        let (city, fighter) = {
+            let red = &guests[0];
+            red.cities
+                .iter()
+                .enumerate()
+                .find_map(|(i, c)| {
+                    let unit = red.units.iter().find(|u| {
+                        u.team == Team::Red
+                            && u.pos.distance(c.pos) == 1
+                            && !u.is_naval()
+                            && !red.settlers.contains(&u.id)
+                    })?;
+                    Some((i, unit.id))
+                })
+                .expect("a Red troop beside a city")
+        };
+        for game in std::iter::once(&host).chain(&guests) {
+            let inside = &game.cities[city].interior.fighters;
+            assert!(inside.iter().any(|f| f.source_id == fighter));
+        }
+        let before = host.checksum();
+        host.open_city_interior(city);
+        host.close_city_interior();
+        assert_eq!(host.checksum(), before, "looking changes nothing");
+        // Red looks inside and orders its troop to an open tile.
+        let red = &mut guests[0];
+        red.open_city_interior(city);
+        red.interior_click(
+            red.cities[city]
+                .interior
+                .fighters
+                .iter()
+                .find(|f| f.source_id == fighter)
+                .unwrap()
+                .pos,
+        );
+        let open = (-2..=2)
+            .flat_map(|q| (-2..=2).map(move |r| Hex::new(q, r)))
+            .filter(|&h| in_interior(h))
+            .find(|&h| {
+                h != Hex::new(0, 0)
+                    && !red.cities[city]
+                        .interior
+                        .fighters
+                        .iter()
+                        .any(|f| f.pos == h)
+                    && red.cities[city]
+                        .interior
+                        .fighters
+                        .iter()
+                        .find(|f| f.source_id == fighter)
+                        .is_some_and(|f| f.pos.distance(h) == 1)
+            })
+            .expect("an open tile");
+        red.interior_click(open);
+        red.close_city_interior();
+        assert!(
+            red.team_plan(Team::Red)
+                .fighters
+                .iter()
+                .any(|f| f.planned_move == Some(open))
+        );
+        // The host takes the plan, and every machine plays the same turn.
+        play_turn(&mut host, &mut guests);
+        for guest in &guests {
+            assert_eq!(guest.checksum(), host.checksum());
+        }
+        assert_eq!(host.turn, 1);
+    }
+
+    #[test]
+    fn a_seat_left_on_the_first_turn_waits_for_a_new_player() {
+        let (mut host, mut guests) = table(2);
+        // Green ends the first turn, then goes before it plays out.
+        guests[1].submit_plan();
+        exchange_all(&mut host, &mut guests);
+        let _green = guests.pop();
+        host.seat_left(Team::Green);
+        assert_eq!(host.open_seats(), [Team::Green]);
+        assert!(
+            host.humans.contains(&Team::Green),
+            "still a seat for a person"
+        );
+        guests[0].submit_plan();
+        host.submit_plan();
+        exchange_all(&mut host, &mut guests);
+        assert!(
+            !host.waiting_for_peers(),
+            "the host can't end the turn with a seat open"
+        );
+        assert_eq!(host.turn, 0, "the turn waits for Green's seat");
+        // Someone new takes it, and the turn plays out with their plan.
+        let (seat, welcome) = host.welcome(&hello(&host));
+        assert_eq!(seat, Some(Team::Green));
+        guests.push(GameState::join_game(&welcome).unwrap());
+        guests[1].submit_plan();
+        host.submit_plan();
+        exchange_all(&mut host, &mut guests);
+        play_out(&mut host);
+        for guest in &mut guests {
+            play_out(guest);
+        }
+        exchange_all(&mut host, &mut guests);
+        assert_eq!(host.turn, 1);
+        for guest in &guests {
+            assert_eq!(guest.checksum(), host.checksum());
+        }
+    }
+
+    #[test]
+    fn a_dropped_guest_says_why() {
+        let (_, mut guest) = pair();
+        guest
+            .receive(HOST_SEAT, Message::Refused("RED'S PLAN: UNIT 3".into()))
+            .unwrap();
+        guest.peer_lost();
+        assert_eq!(guest.notice, "THE HOST DROPPED YOU: RED'S PLAN: UNIT 3");
+        // Only so much of a reason, and only what the fonts draw.
+        let long = format!("\u{202e}\n{}", "X".repeat(500));
+        guest.receive(HOST_SEAT, Message::Refused(long)).unwrap();
+        assert_eq!(
+            guest.notice,
+            format!("THE HOST DROPPED YOU: {}", "X".repeat(MAX_REASON))
+        );
+    }
+
+    #[test]
+    #[ignore = "slow (20 s): cargo test plans_the_ai_makes -- --ignored"]
+    fn plans_the_ai_makes_for_a_player_pass_the_checks() {
+        // The AI plays every seat, as a player could: the host must take
+        // every plan, and every machine must play the same game. Players
+        // look inside their cities too, which must change nothing.
+        for _ in 0..4 {
+            let (mut host, mut guests) = table(2);
+            for _ in 0..40 {
+                for game in std::iter::once(&mut host).chain(guests.iter_mut()) {
+                    let team = game.local_team;
+                    for city in 0..game.cities.len() {
+                        if game.cities[city].team == team {
+                            game.open_city_interior(city);
+                            game.close_city_interior();
+                        }
+                    }
+                    game.plan_ai_turn(team);
+                    // The AI gives workers already out on the map new jobs,
+                    // which a player can't (`check_plan`): undo those.
+                    for w in &mut game.field_workers {
+                        if w.team == team {
+                            let start =
+                                game.lockstep.as_ref().unwrap().turn_start.as_ref().unwrap();
+                            let before = start.field_workers.iter().find(|b| b.id == w.id);
+                            if let Some(b) = before {
+                                w.job = b.job;
+                                w.work_left = b.work_left;
+                                w.base = b.base;
+                                w.recalled = b.recalled;
+                            }
+                        }
+                    }
+                }
+                play_turn(&mut host, &mut guests);
+                for guest in &guests {
+                    assert_eq!(guest.checksum(), host.checksum(), "turn {}", host.turn);
+                }
+            }
+        }
     }
 
     #[test]

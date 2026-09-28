@@ -2,7 +2,7 @@
 
 The shared UI content lives in `src/game/ui/`. The module is split into
 `mod.rs` (shared types and entry points), `builder.rs` (panel content),
-`trays.rs`, `panels.rs`, `queue.rs`, `roster.rs`, `settings_menu.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
+`trays.rs`, `panels.rs`, `queue.rs`, `roster.rs`, `settings_menu.rs`, `network_menu.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
 experimental ImGui presentation (`src/game/ui/imgui.rs`), and F11 switches
 between it and the classic layout. `src/game/AGENTS.md` points contributors
 here. Add new controls to the shared `PanelBuilder` content and route their
@@ -65,7 +65,13 @@ it as a layer of its own (`Layout::overlay`), after the other panels'
 buttons, so none shows through. ImGui draws it opaque for the same reason.
 Its content, `settings_panel_content`, has a `Row::Heading` for each
 `Setting::group` and a `Row::Setting` for every entry of `Setting::ALL`,
-then the City Yields overlay control, Close (`Target::CloseSettings`), and Quit. A setting's `control` picks
+then the City Yields overlay control, Multiplayer (`Target::OpenMultiplayer`), Close
+(`Target::CloseSettings`), and Quit. Multiplayer swaps the menu's content for its
+Multiplayer page (`network_menu.rs`, the same `SETTINGS` slot), so the menu is never taller
+than one page; its typed fields are `Row::Field`s, which ImGui draws as text boxes (edits come
+back as `Action::Text`) and classic as a button that starts typing into the field
+(`Target::EditNetField`; `App` then hands it keys until Enter, Tab or Escape). Its buttons
+leave a `NetRequest` that `App` carries out with `src/net`. A setting's `control` picks
 its widget: ImGui (`render_setting`) puts the name in a label column and
 beside it a checkbox (`Control::Toggle`), a slider showing `value_text`
 (`Control::Slider`), or a button per value with the current one gold

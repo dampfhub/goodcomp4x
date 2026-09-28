@@ -125,6 +125,7 @@ impl GameState {
         let savestate = self.savestate.take();
         let settings = std::mem::take(&mut self.settings);
         let (settings_open, fog_of_war) = (self.settings_open, self.fog_of_war);
+        let net_menu = std::mem::take(&mut self.net_menu);
         let production_speedup = self.production_speedup;
         let lifetime_special_cap = self.lifetime_special_cap;
         let mut rng = self.rng.clone();
@@ -133,6 +134,7 @@ impl GameState {
         self.savestate = savestate;
         self.settings = settings;
         self.settings_open = settings_open;
+        self.net_menu = net_menu;
         self.fog_of_war = fog_of_war;
         self.production_speedup = production_speedup;
         self.lifetime_special_cap = lifetime_special_cap;
@@ -183,6 +185,7 @@ impl GameState {
         }
         restored.settings = self.settings.clone();
         restored.settings_open = self.settings_open;
+        restored.net_menu = self.net_menu.clone();
         restored.fog_of_war = self.fog_of_war;
         restored.production_speedup = self.production_speedup;
         restored.lifetime_special_cap = self.lifetime_special_cap;

@@ -2,12 +2,13 @@
 //! Game rules and button actions remain shared with the classic UI.
 
 use ::imgui::{
-    Condition, DragDropFlags, FontId, ItemHoveredFlags, MouseButton as ImMouseButton, ProgressBar,
-    SliderFlags, StyleColor, StyleVar, Ui, WindowFlags,
+    Condition, DragDropFlags, FontId, InputTextFlags, ItemHoveredFlags,
+    MouseButton as ImMouseButton, ProgressBar, SliderFlags, StyleColor, StyleVar, Ui, WindowFlags,
 };
 
 use super::action_icons::{self, ICON_BUTTON_SIZE};
 use super::builder::{CatalogEntry, Row, icon_row, visible_button_hint};
+use super::network_menu::NetField;
 use super::text::end_turn_label;
 use super::*;
 use crate::game::map_icons;
@@ -15,6 +16,8 @@ use crate::game::settings::{Control, Setting};
 
 enum Action {
     Button(Option<PinnedPanel>, Target),
+    /// A typed field's new text.
+    Text(NetField, String),
     Reorder(Option<PinnedPanel>, QueueKind, usize, usize),
     CreateBox,
     ToggleLayoutLayer,
@@ -1438,7 +1441,7 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
                 // The text, the rule under it, and the spacing after each.
                 ui.calc_text_size("A")[1] + 2.0 * SPACING_Y + 1.0
             }
-            Row::Setting(..) => {
+            Row::Setting(..) | Row::Field(..) => {
                 let _font = ui.push_font(fonts[1]);
                 ui.calc_text_size("A")[1] + 2.0 * FRAME_PADDING_Y + SPACING_Y
             }
@@ -1461,6 +1464,7 @@ fn setting_label_width(ui: &Ui, panel: &PanelBuilder, font: FontId) -> f32 {
         .iter()
         .filter_map(|row| match row {
             Row::Setting(setting, _) => Some(ui.calc_text_size(setting.name())[0]),
+            Row::Field(field, ..) => Some(ui.calc_text_size(field.name())[0]),
             _ => None,
         })
         .fold(0.0, f32::max)
@@ -1567,6 +1571,30 @@ fn render_setting(
                 tooltip();
             }
         }
+    }
+}
+
+/// A typed field's row (the Multiplayer section): its name in the label
+/// column, then a text box across the rest; an edit is an `Action::Text`.
+fn render_field(ui: &Ui, field: NetField, text: &str, label_width: f32, actions: &mut Vec<Action>) {
+    let left = ui.cursor_pos()[0];
+    ui.align_text_to_frame_padding();
+    ui.text_colored([0.82, 0.84, 0.86, 1.0], field.name());
+    ui.same_line_with_pos(left + label_width);
+    ui.set_next_item_width(ui.content_region_avail()[0]);
+    let mut edited = text.to_string();
+    let flags = match field {
+        NetField::Port => InputTextFlags::CHARS_DECIMAL,
+        NetField::Code => InputTextFlags::CHARS_UPPERCASE | InputTextFlags::CHARS_NO_BLANK,
+        NetField::Address => InputTextFlags::CHARS_NO_BLANK,
+    };
+    if ui
+        .input_text(format!("##field-{field:?}"), &mut edited)
+        .flags(flags)
+        .build()
+        && edited != text
+    {
+        actions.push(Action::Text(field, edited));
     }
 }
 
@@ -2360,6 +2388,10 @@ impl GameState {
                     let _font = ui.push_font(fonts[1]);
                     render_setting(ui, *setting, *value, label_width, scope, actions);
                 }
+                Row::Field(field, text, _) => {
+                    let _font = ui.push_font(fonts[1]);
+                    render_field(ui, *field, text, label_width, actions);
+                }
                 Row::Text(px, line) => {
                     let font = match *px {
                         TITLE => fonts[2],
@@ -3064,6 +3096,7 @@ impl GameState {
                 Action::Reorder(None, kind, source, target) => {
                     self.reorder_queue(kind, source, target)
                 }
+                Action::Text(field, text) => self.set_net_field(field, &text),
                 Action::CreateBox => layout.create_box(viewport),
                 Action::ToggleLayoutLayer => layout.editing_outer = !layout.editing_outer,
                 Action::RemoveOuterBox(id) => layout.remove_outer_box(id),

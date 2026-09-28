@@ -1,3 +1,5 @@
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
@@ -16,7 +18,8 @@ use winit::window::{Fullscreen, Window, WindowId};
 use crate::cli::Options;
 use crate::game::Settings;
 use crate::game::{
-    ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, selection_box, ui_projection,
+    ClickMode, GameState, ImGuiLayoutState, NetMenu, NetRequest, Scenario, font_atlas,
+    selection_box, ui_projection,
 };
 use crate::icon;
 use crate::net::Session;
@@ -39,6 +42,9 @@ const WINDOW_SCREEN_FRACTION: f32 = 0.8;
 const SETTINGS_FILE: &str = "settings.txt";
 const LAYOUT_FILE: &str = "layout.txt";
 const IMGUI_FILE: &str = "imgui.ini";
+/// What the Multiplayer section last had typed in it (`NetMenu::to_text`),
+/// saved on hosting, joining and quitting.
+const NETWORK_FILE: &str = "network.txt";
 /// Window size when the monitor's size can't be found.
 const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1600, 900);
 
@@ -57,6 +63,9 @@ pub struct App {
     game: GameState,
     /// A multiplayer game's connection (`net/`), pumped every frame.
     network: Option<Session>,
+    /// A join the Multiplayer section started, connecting on its own
+    /// thread so the window keeps drawing.
+    joining: Option<Receiver<anyhow::Result<(Session, GameState)>>>,
     imgui: Option<ImGuiContext>,
     imgui_platform: Option<WinitPlatform>,
     imgui_fonts: Option<[FontId; 3]>,
@@ -167,12 +176,19 @@ impl App {
             None => options.scenario.new_game(&settings),
         });
         game.set_settings(settings);
+        if let Some(text) = load(NETWORK_FILE) {
+            game.set_net_menu(NetMenu::from_text(&text));
+        }
+        if let Some(port) = network.as_ref().and_then(Session::port) {
+            game.set_net_status(format!("HOSTING ON PORT {port}"), false);
+        }
         Self {
             renderer: None,
             window: None,
             saved_settings: game.settings_text(),
             game,
             network,
+            joining: None,
             imgui: None,
             imgui_platform: None,
             imgui_fonts: None,
@@ -221,6 +237,7 @@ impl App {
             return;
         }
         self.save_settings_if_changed();
+        self.save_net_menu();
         let mut layout = format!(
             "presentation {}\n",
             if self.use_imgui { "imgui" } else { "classic" }
@@ -236,6 +253,116 @@ impl App {
             let mut ini = String::new();
             imgui.save_ini_settings(&mut ini);
             persist::write(IMGUI_FILE, &ini);
+        }
+    }
+
+    /// Keeps what the Multiplayer section has typed for next time.
+    fn save_net_menu(&self) {
+        if self.remember {
+            persist::write(NETWORK_FILE, &self.game.net_menu().to_text());
+        }
+    }
+
+    /// Carries out what the settings menu's Multiplayer section asked for:
+    /// hosting a new world, starting a join, or leaving a network game.
+    fn handle_net_request(&mut self) {
+        let Some(request) = self.game.take_net_request() else {
+            return;
+        };
+        match request {
+            NetRequest::Host { port, players } => {
+                match Session::host(port, players, self.game.settings()) {
+                    Ok((session, game)) => {
+                        self.start_network_game(session, game);
+                        self.game
+                            .set_net_status(format!("HOSTING ON PORT {port}"), false);
+                    }
+                    Err(err) => {
+                        let status = format!("CAN'T HOST: {err:#}").to_uppercase();
+                        self.game.set_net_status(status, false);
+                    }
+                }
+            }
+            NetRequest::Join { address, code } => {
+                let (send, receive) = mpsc::channel();
+                self.game
+                    .set_net_status(format!("JOINING {address}..."), true);
+                thread::spawn(move || {
+                    let _ = send.send(Session::join(&address, &code));
+                });
+                self.joining = Some(receive);
+            }
+            NetRequest::Leave => {
+                self.network = None;
+                let mut game = Scenario::World.new_game(self.game.settings());
+                game.keep_menus_of(&self.game);
+                self.game = game;
+                self.game.set_net_status(String::new(), false);
+                self.game
+                    .set_ui_notice("LEFT THE NETWORK GAME - A NEW WORLD");
+            }
+        }
+    }
+
+    /// Takes the game a join brought back, once it has.
+    fn poll_join(&mut self) {
+        let Some(joining) = &self.joining else {
+            return;
+        };
+        let result = match joining.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("the join stopped")),
+        };
+        self.joining = None;
+        match result {
+            Ok((session, game)) => {
+                self.start_network_game(session, game);
+                self.game.set_net_status(String::new(), false);
+            }
+            Err(err) => {
+                let status = format!("CAN'T JOIN: {err:#}").to_uppercase();
+                self.game.set_net_status(status, false);
+            }
+        }
+    }
+
+    /// Plays `game` over `session` from now on, with the menus as they were.
+    fn start_network_game(&mut self, session: Session, mut game: GameState) {
+        game.keep_menus_of(&self.game);
+        self.game = game;
+        self.network = Some(session);
+        self.save_net_menu();
+    }
+
+    /// Whether keys go into a text field rather than to the game: ImGui's
+    /// text box has them, or classic is typing into a Multiplayer field.
+    fn typing(&self) -> bool {
+        if self.use_imgui {
+            self.imgui
+                .as_ref()
+                .is_some_and(|ctx| ctx.io().want_text_input)
+        } else {
+            self.game.net_field_editing().is_some()
+        }
+    }
+
+    /// A key pressed while typing: ImGui has it already; classic types it
+    /// into the field, and Enter, Tab or Escape ends typing.
+    fn type_key(&mut self, event: &KeyEvent) {
+        if self.use_imgui {
+            return;
+        }
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::Backspace) => self.game.net_field_backspace(),
+            PhysicalKey::Code(
+                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab | KeyCode::Escape,
+            ) => self.game.stop_typing(),
+            _ => {
+                if let Some(text) = &event.text {
+                    self.game.type_net_text(text);
+                }
+            }
         }
     }
 
@@ -284,6 +411,8 @@ impl App {
         let now = Instant::now();
         let dt = now - self.last_frame.unwrap_or(now);
         self.last_frame = Some(now);
+        self.handle_net_request();
+        self.poll_join();
         if let Some(network) = self.network.as_mut() {
             network.pump(&mut self.game);
         }
@@ -802,6 +931,12 @@ impl ApplicationHandler for App {
                 {
                     self.game.camera.zoom(steps);
                 }
+            }
+            // While typing into a text field, keys are the field's.
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && self.typing() =>
+            {
+                self.type_key(&event)
             }
             // Escape closes the settings menu, a view or the selection first;
             // with nothing to close it opens the settings menu.

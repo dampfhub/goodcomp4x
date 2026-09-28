@@ -37,6 +37,9 @@ impl GameState {
 
     /// The settings menu's content, shared by both presentations.
     pub(super) fn settings_panel_content(&self) -> PanelBuilder {
+        if self.net_menu.open {
+            return self.network_panel_content();
+        }
         let mut panel = PanelBuilder::default();
         panel.text(TITLE, vec![("SETTINGS".into(), TEXT)]);
         let mut group = None;
@@ -64,6 +67,13 @@ impl GameState {
         }]);
         panel.gap(GAP);
         panel.compact_buttons(vec![
+            ButtonSpec {
+                target: Target::OpenMultiplayer,
+                label: "MULTIPLAYER".into(),
+                hint: String::new(),
+                state: ButtonState::Ready,
+                armed: false,
+            },
             ButtonSpec {
                 target: Target::CloseSettings,
                 label: "CLOSE".into(),

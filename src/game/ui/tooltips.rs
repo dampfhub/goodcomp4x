@@ -571,6 +571,52 @@ impl GameState {
                     ("CLOSE SETTINGS".into(), "ESC".into(), String::new(), None)
                 }
                 Target::Quit => ("QUIT".into(), String::new(), String::new(), None),
+                Target::OpenMultiplayer => (
+                    "MULTIPLAYER".into(),
+                    String::new(),
+                    "HOST A GAME ON THE NETWORK, OR JOIN ONE.".into(),
+                    None,
+                ),
+                Target::CloseMultiplayer => (
+                    "BACK".into(),
+                    String::new(),
+                    "BACK TO THE SETTINGS.".into(),
+                    None,
+                ),
+                Target::NetPlayers(players) => (
+                    "PLAYERS".into(),
+                    players.to_string(),
+                    "HOW MANY PEOPLE PLAY, YOU INCLUDED. THE AI PLAYS THE OTHER SIDES.".into(),
+                    None,
+                ),
+                Target::EditNetField(field) => (
+                    field.name().into(),
+                    "CLICK".into(),
+                    "CLICK, THEN TYPE. ENTER WHEN DONE.".into(),
+                    None,
+                ),
+                Target::HostGame => (
+                    "HOST GAME".into(),
+                    String::new(),
+                    "STARTS A NEW WORLD FOR THIS MANY PLAYERS AND SHOWS THE JOIN CODE TO GIVE THEM. THEY NEED YOUR ADDRESS AND THE PORT OPEN.".into(),
+                    self.net_menu.busy.then(|| "JOINING A GAME".into()),
+                ),
+                Target::JoinGame => (
+                    "JOIN GAME".into(),
+                    String::new(),
+                    "JOINS THE GAME HOSTED AT THIS ADDRESS (HOST OR HOST:PORT) WITH THE CODE IT SHOWS.".into(),
+                    self.net_menu.busy.then(|| "ALREADY JOINING".into()),
+                ),
+                Target::LeaveGame => (
+                    "LEAVE GAME".into(),
+                    String::new(),
+                    if self.join_code().is_some() {
+                        "ENDS THE GAME FOR EVERYONE AND STARTS A NEW ONE OF YOUR OWN.".into()
+                    } else {
+                        "THE AI PLAYS YOUR SIDE; YOU START A NEW GAME OF YOUR OWN.".into()
+                    },
+                    None,
+                ),
                 Target::ToggleYields => (
                     "YIELDS".into(),
                     "Y".into(),
