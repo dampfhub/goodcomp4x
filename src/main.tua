@@ -1,10 +1,8 @@
 //! The entry point: a window, its input, and the frame loop. The game hears the window's
 //! events and draws itself each frame through the renderer's `Scene`.
 //!
-//! Arguments: a trailing number draws that many frames and exits (0, the default, runs until
-//! the window is closed); `--validate` runs under the Khronos validation layer and exits 83
-//! when it reported anything. The combat log prints at `info`, or at the level the
-//! environment variable `HEX_LOG` names.
+//! Arguments: `cli.tua` (`--help` lists them). The combat log prints at `info`, or at the level
+//! the environment variable `HEX_LOG` names.
 
 use std.linalg.Vec2;
 use std.linalg.vec2;
@@ -24,9 +22,19 @@ use win32.events.Button;
 use win32.events.Key;
 use win32.events.Modifiers;
 use win32.primary_monitor;
-use win32.cmdline.command_line;
-use win32.cmdline.has_flag;
-use win32.cmdline.trailing_number;
+use win32.cmdline.arguments_of;
+use std.io.Fs;
+use std.io.default_fs;
+use std.io.println;
+use std.str.Str;
+use std.str.to_owned;
+use std.fmt.show_i64;
+use cli.Options;
+use cli.USAGE;
+use cli.parse;
+use screenshot.DEFAULT_SIZE;
+use screenshot.Screenshot;
+use screenshot.screenshot;
 use renderer.DrawBatch;
 use renderer.Icons;
 use renderer.WindowRequest;
@@ -211,9 +219,20 @@ fn on_key(game: &mut GameState, key: Key) can {Log} {
 }
 
 /// Plays one frame: advances the game by `dt` seconds and lays out the world and the UI as
-/// two batches. Answers whether to keep running.
-fn on_frame(game: &mut GameState, input: &Input, w: u32, h: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool can {Log, Rand, Clock} {
+/// two batches. Answers whether to keep running: not once the window was closed, the
+/// screenshot written, or its time run out.
+fn on_frame(game: &mut GameState, input: &Input, shot: &mut Option[Screenshot], w: u32, h: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool can {Log, Rand, Clock} {
     if input.closed { return false; }
+    if let &mut Option.Some(s) = shot {
+        let now = Clock.now_nanos();
+        if s.is_written() { return false; }
+        if s.timed_out(now) {
+            let drawn = s.frames_drawn();
+            error(fn() can {Out} { Out.put("no screenshot after 20 s ("); show_i64(drawn as i64); Out.put(" frames drawn)"); });
+            return false;
+        }
+        s.after_frame(now);
+    }
     game.update(dt);
     let size = vec2(w as f32, h as f32);
     game.update_hover(input.cursor, size, dt);
@@ -241,16 +260,28 @@ fn on_frame(game: &mut GameState, input: &Input, w: u32, h: u32, dt: f32, vertic
 fn window_spec() -> WindowSpec {
     let screen = primary_monitor();
     if screen.width <= 0 || screen.height <= 0 {
-        return WindowSpec { x: 100, y: 100, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT };
+        return WindowSpec { x: 100, y: 100, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, hidden: false };
     }
     let width = (screen.width as f32 * WINDOW_SCREEN_FRACTION) as i32;
     let height = (screen.height as f32 * WINDOW_SCREEN_FRACTION) as i32;
-    WindowSpec { x: screen.x + (screen.width - width) / 2, y: screen.y + (screen.height - height) / 2, width, height }
+    WindowSpec { x: screen.x + (screen.width - width) / 2, y: screen.y + (screen.height - height) / 2, width, height, hidden: false }
 }
 
-fn play(frames: i32, validate: bool) -> i32 can {Log, Clock} {
+fn play(options: &Options) -> i32 can {Log, Clock, Fs} {
     let mut rng = seed(Clock.now_nanos() as u64);
-    let spec = window_spec();
+    let hidden = options.screenshot.is_some();
+    let mut spec = window_spec();
+    // Screenshots are the same size on any monitor.
+    let size = match options.size { Option.Some(s) => Option.Some(s), Option.None => if hidden { Option.Some(DEFAULT_SIZE) } else { Option.None } };
+    if let Option.Some((w, h)) = size {
+        spec.width = w as i32;
+        spec.height = h as i32;
+    }
+    spec.hidden = hidden;
+    let frames = options.frames;
+    let validate = options.validate;
+    let mut shot: Option[Screenshot] = Option.None;
+    if let &Option.Some(path) = &options.screenshot { shot = Option.Some(screenshot(to_owned(&path), Clock.now_nanos())); }
     let mut built: Option[Atlas] = Option.None;
     let failed = handle { built = Option.Some(atlas()); 0 } with FontError { fail(code) => { abort code } };
     let atlas = match built {
@@ -259,7 +290,7 @@ fn play(frames: i32, validate: bool) -> i32 can {Log, Clock} {
     };
     let icons = Icons { small: icon(WINDOW_ICON_SIZE), small_size: WINDOW_ICON_SIZE, big: icon(TASKBAR_ICON_SIZE), big_size: TASKBAR_ICON_SIZE };
     handle {
-        let mut game = GameState.city_scenario();
+        let mut game = options.scenario.start();
         let mut input = Input {
             cursor: Option.None,
             size: vec2(spec.width as f32, spec.height as f32),
@@ -271,21 +302,39 @@ fn play(frames: i32, validate: bool) -> i32 can {Log, Clock} {
             quit_held_since: Option.None,
             closed: false,
         };
-        handle { run(TITLE, spec, &icons, &atlas, frames, validate) } with Scene {
-            input(e) => { resume on_event(&mut game, &mut input, e) }
-            frame(w, h, dt, vertices, batches) => { resume on_frame(&mut game, &input, w, h, dt, vertices, batches) }
+        let rc = handle { run(TITLE, spec, &icons, &atlas, frames, validate) } with Scene {
+            // A screenshot shows the scenario as it starts, whatever the mouse and keyboard do.
+            input(e) => { resume if hidden { WindowRequest.Nothing } else { on_event(&mut game, &mut input, e) } }
+            frame(w, h, dt, vertices, batches) => { resume on_frame(&mut game, &input, &mut shot, w, h, dt, vertices, batches) }
+            capture() => { resume match &shot { &Option.Some(s) => s.capture_this_frame(), &Option.None => false } }
+            captured(w, h, rgba) => {
+                if let &mut Option.Some(s) = &mut shot { let _ok = s.captured(w, h, rgba); }
+                resume
+            }
+        };
+        let written = match &shot { &Option.Some(s) => s.is_written(), &Option.None => true };
+        if rc == 0 && !written {
+            error(fn() can {Out} { Out.put("the window closed before the screenshot was written"); });
+            1
+        } else {
+            rc
         }
     } with Rand { rand() => { resume rng.next() } }
 }
 
 fn main() -> i32 can {Env} {
-    let mut buf: [u8; 512] = [0; 512];
-    let mut len: i32 = 0;
-    command_line(&mut buf, &mut len);
-    let validate_flag: [u8; 8] = [118, 97, 108, 105, 100, 97, 116, 101];
-    let frames = trailing_number(&buf, len, 0);
-    let validate = has_flag(&buf, len, &validate_flag, 8);
+    let args = arguments_of();
+    let options = match parse(&args) {
+        Result.Ok(o) => o,
+        Result.Err(message) => { println(&message); return 2; }
+    };
+    if options.help {
+        println(USAGE);
+        return 0;
+    }
     with_env_level("HEX_LOG", Level.Info, fn() -> i32 can {Log} {
-        with_system_clock(fn() -> i32 can {Log, Clock} { play(frames, validate) })
+        with_system_clock(fn() -> i32 can {Log, Clock} {
+            default_fs(fn() -> i32 can {Log, Clock, Fs} { play(&options) })
+        })
     })
 }

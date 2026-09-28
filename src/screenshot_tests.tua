@@ -1,0 +1,23 @@
+//! Screenshot mode's PNG.
+
+use std.test.assert;
+use png.decode;
+use png.error.PngError;
+use screenshot.png_bytes;
+
+@test
+fn a_saved_png_reads_back_the_same() {
+    let mut rgba: Vec[u8] = Vec.new();
+    let pixels = [255, 0, 0, 255, 10, 20, 30, 255];
+    for i in 0..8 { rgba.push(pixels[i]); }
+    let Option.Some(file) = png_bytes(2, 1, &rgba) else { assert(false); return; };
+    // Color type 6, RGBA, in the header.
+    assert(file[25] == 6);
+    let same = handle {
+        let image = decode(&file.buf);
+        let mut ok = image.width == 2 && image.height == 1 && image.rgba.len() == 8;
+        for i in 0..8 { if ok && image.rgba[i] != pixels[i] { ok = false; } }
+        ok
+    } with PngError { fail(code) => { abort false } };
+    assert(same);
+}

@@ -1,0 +1,166 @@
+//! Command-line flags (`hex.exe --help` lists them).
+
+use std.str.Str;
+use std.str.eq as str_eq;
+use std.str.eq_ignore_ascii_case;
+use std.str.parse_u64;
+use std.str.split_once;
+use std.str.sub;
+use std.str.substring;
+use std.str.to_owned;
+use std.str.push;
+use std.str.len;
+use game.scenario.Scenario;
+use game.scenario.SCENARIOS;
+
+pub const USAGE: str = "Usage: hex [OPTIONS] [FRAMES]
+
+Options:
+  --scenario <NAME>    start in this scenario: combat, cities (the default),
+                       frontier, world (a new random map), siege, or naval
+  --seed <N>           generate the world scenario's map from seed N (the
+                       debug panel shows a map's seed), so it's the same
+                       map every run
+  --screenshot <FILE>  render the scenario in a hidden window, write one frame
+                       to FILE as a PNG, and exit
+  --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
+                       default to 1600x900)
+  --validate           run under the Khronos validation layer; exit 83 if it
+                       reports anything
+  -h, --help           print this and exit
+  FRAMES               draw this many frames and exit (0, the default, runs
+                       until the window is closed)";
+
+/// What the command line asked for.
+pub struct Options {
+    scenario: Scenario,
+    /// The world scenario's map seed, if given.
+    seed: Option[u32],
+    /// Screenshot mode: where to write the PNG.
+    screenshot: Option[Str],
+    /// Window size in physical pixels, if given.
+    size: Option[(u32, u32)],
+    help: bool,
+    /// Frames to draw before exiting, 0 for no limit.
+    frames: i32,
+    validate: bool,
+}
+
+pub fn default_options() -> Options {
+    Options { scenario: Scenario.Cities, seed: Option.None, screenshot: Option.None, size: Option.None, help: false, frames: 0, validate: false }
+}
+
+/// A refusal's text: `message`, then the usage.
+fn with_usage(message: Str) -> Str {
+    let mut out = message;
+    push(&mut out, "\n\n");
+    push(&mut out, USAGE);
+    out
+}
+
+fn text2(a: &str, b: &str) -> Str {
+    let mut out = to_owned(a);
+    push(&mut out, b);
+    out
+}
+
+fn text3(a: &str, b: &str, c: &str) -> Str {
+    let mut out = to_owned(a);
+    push(&mut out, b);
+    push(&mut out, c);
+    out
+}
+
+/// The scenario called `name` (its `name()` in any case, e.g. `cities`), as `--scenario`
+/// spells it.
+pub fn scenario_named(name: &str) -> Option[Scenario] {
+    for i in 0..3 {
+        if eq_ignore_ascii_case(SCENARIOS[i].name(), name) { return Option.Some(SCENARIOS[i]); }
+    }
+    Option.None
+}
+
+/// A whole number of at most `max`, all digits.
+fn number(text: &str, max: i64) -> Option[i64] {
+    if len(text) == 0 || len(text) > 10 { return Option.None; }
+    match parse_u64(text) {
+        Option.Some(n) => if n >= 0 && n <= max { Option.Some(n) } else { Option.None },
+        Option.None => Option.None,
+    }
+}
+
+/// `1280x720` as (1280, 720).
+fn parse_size(text: &str) -> Option[(u32, u32)] {
+    let split = match split_once(text, "x") {
+        Option.Some(sp) => Option.Some(sp),
+        Option.None => split_once(text, "X"),
+    };
+    // The separator's span: the width before it, the height after it.
+    let Option.Some(sp) = split else { return Option.None; };
+    let Option.Some(before) = substring(text, 0, sp.lo) else { return Option.None; };
+    let Option.Some(after) = substring(text, sp.hi, len(text)) else { return Option.None; };
+    let w_text = sub(text, before);
+    let h_text = sub(text, after);
+    match (number(w_text, 4294967295), number(h_text, 4294967295)) {
+        (Option.Some(w), Option.Some(h)) => if w > 0 && h > 0 { Option.Some((w as u32, h as u32)) } else { Option.None },
+        _ => Option.None,
+    }
+}
+
+/// Parses the arguments after the program name.
+pub fn parse(args: &Vec[Str]) -> Result[Options, Str] {
+    let mut options = default_options();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        let needs_value = str_eq(arg, "--scenario") || str_eq(arg, "--seed") || str_eq(arg, "--screenshot") || str_eq(arg, "--size");
+        if needs_value && i + 1 >= args.len() {
+            return Result.Err(with_usage(text2(arg, " needs a value")));
+        }
+        if str_eq(arg, "--scenario") {
+            let name = &args[i + 1];
+            match scenario_named(name) {
+                Option.Some(s) => { options.scenario = s; }
+                Option.None => {
+                    return Result.Err(text3("no scenario called \"", name, "\": try combat, cities, frontier, world, siege or naval"));
+                }
+            }
+            i = i + 2;
+        } else if str_eq(arg, "--seed") {
+            let seed = &args[i + 1];
+            match number(seed, 4294967295) {
+                Option.Some(n) => { options.seed = Option.Some(n as u32); }
+                Option.None => { return Result.Err(text3("--seed wants a whole number up to 4294967295, not \"", seed, "\"")); }
+            }
+            i = i + 2;
+        } else if str_eq(arg, "--screenshot") {
+            let path = &args[i + 1];
+            options.screenshot = Option.Some(to_owned(path));
+            i = i + 2;
+        } else if str_eq(arg, "--size") {
+            let size = &args[i + 1];
+            match parse_size(size) {
+                Option.Some(s) => { options.size = Option.Some(s); }
+                Option.None => { return Result.Err(text3("--size wants WIDTHxHEIGHT, like 1280x720, not \"", size, "\"")); }
+            }
+            i = i + 2;
+        } else if str_eq(arg, "-h") || str_eq(arg, "--help") {
+            options.help = true;
+            i = i + 1;
+        } else if str_eq(arg, "--validate") {
+            options.validate = true;
+            i = i + 1;
+        } else {
+            match number(arg, 999999) {
+                Option.Some(n) => { options.frames = n as i32; }
+                Option.None => { return Result.Err(with_usage(text3("unknown argument \"", arg, "\""))); }
+            }
+            i = i + 1;
+        }
+    }
+    // The world scenario is not in this build yet, so no scenario takes a seed.
+    if options.seed.is_some() {
+        return Result.Err(to_owned("--seed only applies to --scenario world"));
+    }
+    Result.Ok(options)
+}

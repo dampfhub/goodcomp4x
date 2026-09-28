@@ -50,7 +50,7 @@ impl Scenario {
         }
     }
 
-    fn start(self) -> GameState can {Log} {
+    pub fn start(self) -> GameState can {Log} {
         match self {
             Scenario.Combat => GameState.new(),
             Scenario.Cities => GameState.city_scenario(),

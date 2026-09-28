@@ -1,0 +1,99 @@
+//! Screenshot mode (`--screenshot out.png`): draw a few frames so the scene settles, read one
+//! back from the renderer, write it as a PNG, and quit. It lets someone (or an agent) without a
+//! view of the window check what a change looks like.
+
+use std.fmt.Out;
+use std.fmt.show_u64;
+use std.io.Fs;
+use std.io.c_path;
+use std.io.close;
+use std.io.create;
+use std.io.write_all;
+use std.str.Str;
+use log.Log;
+use log.info;
+use png.encode_rgba;
+use png.error.PngError;
+
+/// Window size for screenshots when `--size` isn't given, so they don't depend on the monitor.
+pub const DEFAULT_SIZE: (u32, u32) = (1600, 900);
+/// Frames drawn, and time passed, before the one captured: long enough for the swapchain to
+/// settle and a camera glide (`camera.tua`) to finish.
+const SETTLE_FRAMES: i32 = 5;
+const SETTLE_NANOS: i64 = 1000000000;
+/// Giving up: something kept frames from being drawn or read back.
+const TIMEOUT_NANOS: i64 = 20000000000;
+
+pub struct Screenshot {
+    path: Str,
+    /// When the app started (`Clock.now_nanos`), for the timeout.
+    started: i64,
+    /// When the first frame was drawn, for settling.
+    first_frame: Option[i64],
+    frames_drawn: i32,
+    requested: bool,
+    written: bool,
+}
+
+pub fn screenshot(path: Str, now: i64) -> Screenshot {
+    Screenshot { path, started: now, first_frame: Option.None, frames_drawn: 0, requested: false, written: false }
+}
+
+impl Screenshot {
+    pub fn is_written(&self) -> bool { self.written }
+
+    /// Whether the frame about to be drawn is the one to read back.
+    pub fn capture_this_frame(&self) -> bool { self.requested && !self.written }
+
+    /// Call after each frame is drawn: once the scene has settled, the next frame is captured.
+    pub fn after_frame(&mut self, now: i64) {
+        self.frames_drawn = self.frames_drawn + 1;
+        let first = match self.first_frame { Option.Some(t) => t, Option.None => now };
+        self.first_frame = Option.Some(first);
+        if !self.requested && self.frames_drawn >= SETTLE_FRAMES && now - first >= SETTLE_NANOS {
+            self.requested = true;
+        }
+    }
+
+    /// Writes the captured frame out. Answers whether it was written.
+    pub fn captured(&mut self, width: u32, height: u32, rgba: &Vec[u8]) -> bool can {Fs, Log} {
+        if !save_png(&self.path, width, height, rgba) { return false; }
+        self.written = true;
+        let path = &self.path;
+        info(fn() can {Out} {
+            Out.put("wrote a "); show_u64(width as u64); Out.put("x"); show_u64(height as u64);
+            Out.put(" screenshot to "); Out.put(path);
+        });
+        true
+    }
+
+    /// Whether it has taken too long, so a stuck run still exits.
+    pub fn timed_out(&self, now: i64) -> bool { now - self.started > TIMEOUT_NANOS }
+
+    pub fn frames_drawn(&self) -> i32 { self.frames_drawn }
+}
+
+/// `rgba` as the bytes of a PNG file, or nothing when the size and pixels disagree.
+pub fn png_bytes(width: u32, height: u32, rgba: &Vec[u8]) -> Option[Vec[u8]] {
+    let mut out: Vec[u8] = Vec.new();
+    let ok = handle {
+        out = encode_rgba(width as i32, height as i32, &rgba.buf);
+        true
+    } with PngError { fail(code) => { abort false } };
+    if ok { Option.Some(out) } else { Option.None }
+}
+
+fn save_png(path: &Str, width: u32, height: u32, rgba: &Vec[u8]) -> bool can {Fs} {
+    let Option.Some(bytes) = png_bytes(width, height, rgba) else { return false; };
+    let mut name: [u8; 520] = [0; 520];
+    let view = path;
+    let _n = c_path(view, &mut name);
+    match create(&name) {
+        Result.Ok(mut f) => {
+            let wrote = write_all(&mut f, &bytes.buf);
+            let _c = close(f);
+            match wrote { Result.Ok(_) => true, Result.Err(_) => false }
+        }
+        Result.Err(_) => false,
+    }
+}

@@ -47,6 +47,15 @@ use vulkan.hl.swapchain.PresentMode;
 use vulkan.hl.swapchain.destroy_swapchain;
 use vulkan.hl.swapchain.swapchain_width;
 use vulkan.hl.swapchain.swapchain_height;
+use vulkan.hl.swapchain.swapchain_format;
+use vulkan.hl.swapchain.swapchain_image;
+use vulkan.hl.readback.Readback;
+use vulkan.hl.readback.create_readback;
+use vulkan.hl.readback.create_readback_sized;
+use vulkan.hl.readback.destroy_readback;
+use vulkan.hl.readback.readback_fits;
+use vulkan.hl.readback.cmd_read_back;
+use vulkan.hl.readback.read_rgba;
 use vulkan.hl.memory.Allocator;
 use vulkan.hl.memory.create_allocator;
 use vulkan.hl.memory.destroy_allocator;
@@ -119,6 +128,7 @@ use vulkan.vk.VK_FORMAT_R8_UNORM;
 use vulkan.vk.VK_FORMAT_B8G8R8A8_SRGB;
 use vulkan.vk.VK_IMAGE_USAGE_SAMPLED_BIT;
 use vulkan.vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+use vulkan.vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 use vulkan.vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 use vulkan.vk.VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
 use vulkan.vk.VK_IMAGE_ASPECT_COLOR_BIT;
@@ -140,6 +150,7 @@ use log.info;
 use win32.Win32Error;
 use win32.Window;
 use win32.open_window_at;
+use win32.open_hidden_window;
 use win32.set_icons;
 use win32.toggle_fullscreen;
 use win32.client_size;
@@ -217,8 +228,8 @@ fn packed_levels(atlas: &Atlas) -> Vec[u8] {
 pub struct DrawBatch { view_proj: [[f32; 4]; 4], first: u32, count: u32 }
 
 /// Where the window opens: its outer top-left corner on the desktop and its client size, in
-/// pixels.
-pub struct WindowSpec { x: i32, y: i32, width: i32, height: i32 }
+/// pixels; a hidden one is never shown, and its frames are drawn to be read back.
+pub struct WindowSpec { x: i32, y: i32, width: i32, height: i32, hidden: bool }
 
 /// The window's icons: a small one for its title bar and a big one for the taskbar, each a
 /// square of RGBA pixels `size` a side.
@@ -235,9 +246,13 @@ pub enum WindowRequest {
 /// order they arrived, and answers what the window should do about it. `frame` fills
 /// `vertices` and `batches` for a frame whose target is `width` by `height` pixels, `dt`
 /// seconds after the previous one; both arrive empty. It answers whether to keep running.
+/// `capture`, asked of a hidden window's frame after `frame`, answers whether to read that
+/// frame back; `captured` hands over its pixels, RGBA from the top-left, once it is drawn.
 pub effect Scene {
     fn input(e: Event) -> WindowRequest;
     fn frame(width: u32, height: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool;
+    fn capture() -> bool;
+    fn captured(width: u32, height: u32, rgba: &Vec[u8]);
 }
 
 /// Waits for the next frame's turn, handing the window's input to the program as it arrives;
@@ -267,10 +282,10 @@ fn give_up_acquired(pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlig
 
 /// The per-run state the frame loop reads and reports: the frame budget (0 for none), the
 /// frames drawn, why the loop stopped (0 while running), and the pacer.
-struct Run { budget: i32, drawn: i32, stop: i32, pace: Pacer, vertices: Vec[MeshVertex], batches: Vec[DrawBatch] }
+struct Run { budget: i32, drawn: i32, stop: i32, pace: Pacer, vertices: Vec[MeshVertex], batches: Vec[DrawBatch], hidden: bool }
 
 /// Draws one frame through the ring and hands the idle ring back.
-fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
+fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], rb: &Readback, a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
     let dt = pace(run, win);
     let w = swapchain_width(sc);
     let h = swapchain_height(sc);
@@ -279,6 +294,7 @@ fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[B
     run.vertices.clear();
     run.batches.clear();
     if !Scene.frame(w, h, dt, &mut run.vertices, &mut run.batches) { run.stop = STOP_DONE; return ring; }
+    let capturing = run.hidden && readback_fits(rb, sc) && Scene.capture();
     let n = if (run.vertices.len() as u32) > MAX_VERTICES { MAX_VERTICES } else { run.vertices.len() as u32 };
     let acquired = acquire(pool, t, sc, ring);
     let code = frame_code(&acquired);
@@ -303,7 +319,8 @@ fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[B
                 cmd_draw(&mut draw, count, 1, batch.first, 0);
             }
         }
-        let rec2 = cmd_end_render_pass(draw);
+        let mut rec2 = cmd_end_render_pass(draw);
+        if capturing { cmd_read_back(&mut rec2, sc, &swapchain_image(sc, index), rb); }
         let exec = end(pool, rec2);
         cw = consume_executable(exec);
         0
@@ -314,16 +331,33 @@ fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[B
     let idle = present(q, sc, rendering);
     let pc = frame_code(&idle);
     if pc < 0 { run.stop = pc; return idle; }
+    if capturing {
+        // Waited for and read with the ring left idle; the read can fail, so the words of a
+        // failure are what the next frame sees as a stop.
+        let failed = capture_frame(a, rb, w, h);
+        if failed != 0 { run.stop = failed; return idle; }
+    }
     run.drawn = run.drawn + 1;
     if run.budget > 0 && run.drawn >= run.budget { run.stop = STOP_DONE; }
     idle
 }
 
+/// Waits for the device, reads the frame `rb` holds back and hands it to the program; a
+/// failure's code, or 0.
+fn capture_frame(a: &mut Allocator, rb: &Readback, w: u32, h: u32) -> i32 can {Gpu, Scene} {
+    handle {
+        device_wait_idle();
+        let rgba = read_rgba(a, rb);
+        Scene.captured(w, h, &rgba);
+        0
+    } with VkError { fail(e) => { abort e } }
+}
+
 /// Draws frames through the ring until one reports a reason to stop.
-fn draw_frames(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
+fn draw_frames(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], rb: &Readback, a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
     let mut r = ring;
     while run.stop == 0 {
-        r = draw_one(q, win, sc, pass, fbs, mesh, set, sb, a, pool, t, r, run);
+        r = draw_one(q, win, sc, pass, fbs, mesh, set, sb, rb, a, pool, t, r, run);
     }
     r
 }
@@ -350,8 +384,13 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Sur
     let rc = handle {
         let size = client_size(&*win);
         let pq = present_queue(pd, surface, &*q);
-        let sc = create_swapchain_with(pd, surface, &pq, size[0], size[1], 0, chain_options());
+        // Copyable, so a frame can be read back (a screenshot).
+        let sc = create_swapchain_with(pd, surface, &pq, size[0], size[1], VK_IMAGE_USAGE_TRANSFER_SRC_BIT, chain_options());
         defer { destroy_swapchain(sc); }
+        // Room for a frame of this generation when the window is hidden, and for one texel
+        // otherwise, since nothing reads a shown window's frames back.
+        let rb = if run.hidden { create_readback(a, &sc) } else { create_readback_sized(a, 1, 1, swapchain_format(&sc)) };
+        defer { destroy_readback(a, rb); }
         let target = create_image_multisampled(swapchain_width(&sc), swapchain_height(&sc), VK_FORMAT_B8G8R8A8_SRGB, target_usage(), VK_IMAGE_ASPECT_COLOR_BIT, samples);
         defer { destroy_image(target); }
         let target_al = alloc_for_image(a, &target, target_memory(pd, &target));
@@ -361,7 +400,7 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Sur
         let fbs = create_framebuffers_multisampled(&sc, pass, &target, &target_view);
         defer { destroy_framebuffers(fbs); }
         ring_live = false;
-        let r2 = draw_frames(q, win, &sc, pass, &fbs, mesh, set, sb, a, pool, t, frames_from_words(raw), run);
+        let r2 = draw_frames(q, win, &sc, pass, &fbs, mesh, set, sb, &rb, a, pool, t, frames_from_words(raw), run);
         raw = consume_frames(r2);
         ring_live = true;
         device_wait_idle();
@@ -379,11 +418,11 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, surface: &Sur
 
 fn run_on_device(family: u32, title: &str, spec: WindowSpec, icons: &Icons, atlas: &Atlas, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} {
     let (width, height) = (spec.width, spec.height);
-    let mut run = Run { budget: frames, drawn: 0, stop: 0, pace: pacer(TARGET_FPS), vertices: Vec.new(), batches: Vec.new() };
+    let mut run = Run { budget: frames, drawn: 0, stop: 0, pace: pacer(TARGET_FPS), vertices: Vec.new(), batches: Vec.new(), hidden: spec.hidden };
     let rc = handle { handle {
         let mut q = get_queue(family, 0);
         let pd = first_physical_device();
-        let mut win = open_window_at(title, spec.x, spec.y, width, height);
+        let mut win = if spec.hidden { open_hidden_window(title, width, height) } else { open_window_at(title, spec.x, spec.y, width, height) };
         defer { destroy_window(win); }
         set_icons(&mut win, &icons.small, icons.small_size, &icons.big, icons.big_size);
         let surface = create_surface(&win);

@@ -1,0 +1,58 @@
+//! The command line's flags.
+
+use std.str.Str;
+use std.str.to_owned;
+use std.str.eq as str_eq;
+use std.test.assert;
+use cli.Options;
+use cli.default_options;
+use cli.parse;
+use game.scenario.Scenario;
+
+fn args(list: &[str]) -> Vec[Str] {
+    let mut out: Vec[Str] = Vec.new();
+    for i in 0..list.len() { out.push(to_owned(list[i])); }
+    out
+}
+
+fn refused(list: &[str]) -> bool {
+    let a = args(list);
+    match parse(&a) { Result.Ok(_) => false, Result.Err(_) => true }
+}
+
+@test
+fn no_arguments_start_the_city_scenario() {
+    let none = args(&[]);
+    let Result.Ok(options) = parse(&none) else { assert(false); return; };
+    let d = default_options();
+    assert(options.scenario == d.scenario && options.seed.is_none() && options.screenshot.is_none() && options.size.is_none() && !options.help);
+    assert(d.scenario == Scenario.Cities);
+}
+
+@test
+fn the_screenshot_command_parses() {
+    let a = args(&["--screenshot", "out.png", "--scenario", "frontier", "--size", "1280x720"]);
+    let Result.Ok(options) = parse(&a) else { assert(false); return; };
+    let shot = match options.screenshot { Option.Some(p) => str_eq(&p, "out.png"), Option.None => false };
+    assert(shot);
+    assert(options.scenario == Scenario.Frontier);
+    let sized = match options.size { Option.Some((w, h)) => w == 1280 && h == 720, Option.None => false };
+    assert(sized);
+    assert(!options.help);
+    // OWED: `--seed 42 --scenario world` parses once the world scenario is in this build.
+}
+
+@test
+fn bad_arguments_are_errors() {
+    assert(refused(&["--scenario", "moon"]));
+    assert(refused(&["--screenshot"]));
+    assert(refused(&["--size", "1280"]));
+    assert(refused(&["--size", "0x720"]));
+    assert(refused(&["--frobnicate"]));
+    assert(refused(&["--scenario", "world", "--seed", "-1"]));
+    // The default scenario has no seed.
+    assert(refused(&["--seed", "42"]));
+    let help = args(&["--help"]);
+    let Result.Ok(options) = parse(&help) else { assert(false); return; };
+    assert(options.help);
+}

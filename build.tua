@@ -10,6 +10,7 @@
     Build.depend("deps/win32");
     Build.depend("deps/log");
     Build.depend("deps/font");
+    Build.depend("deps/png");
     Build.root("src");
     // The GLSL, a root holding no modules, so `Fs.read` resolves against it.
     Build.root("shaders");
