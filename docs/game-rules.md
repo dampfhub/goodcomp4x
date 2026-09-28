@@ -516,7 +516,8 @@ every turn end.
   unpaid, and the queue goes back to them as soon as it can pay. Queues pay in city order, each
   city's queue before its Barracks', so when several wait on one stockpile the first city's is
   paid first. Each item keeps its own work, which reordering carries with it; an unpaid item has
-  none. A waiting item's row is tinted red and says what it waits for ("WAITS" and the missing
+  none. A worked item moved out of the active slot shows SAVED on its queue row until it resumes.
+  A waiting item's row is tinted red and says what it waits for ("WAITS" and the missing
   resources), the city tray and hover panel name the first item's wait, and the city shows a
   badge over its tower on the map with the icon of each resource it lacks, whenever the first
   item of its queue or its Barracks' waits. What waits is judged on the stockpile as this turn's
