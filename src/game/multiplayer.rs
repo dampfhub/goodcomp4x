@@ -32,7 +32,7 @@ use super::workers::WorkerJob;
 /// Bumped whenever a message or a plan changes shape, or the rules a turn
 /// plays out by, so mismatched builds refuse each other instead of
 /// desyncing.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
