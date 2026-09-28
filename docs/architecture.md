@@ -80,8 +80,12 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    domain-aware reachability and the same unit order pipeline; Harbors spawn them onto water
    from the city queue. `resolve_city_interiors` (`city/interior.rs`) projects adjacent field troops,
    resolves their separate tactical orders and any command-post capture. Then `resolve_economy`
-   (`city/citizens.rs`) applies city income, including local Cannery and Smelter collection from
-   `city/logistics.rs`, growth and builds; each
+   (`city/citizens.rs`) adds every city's food, wood and metal (`income`, including local
+   Cannery and Smelter collection, `city/logistics.rs`) to its side's stockpile
+   (`GameState::stockpiles`, `city/economy.rs`), feeds the citizens from it, gives each queue a
+   turn's work (`work_rate`) and completes builds, growth included; builds were paid from the
+   stockpile when queued (`try_queue_build`), by the player's clicks or the AI's
+   `plan_ai_cities`; each
    unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,
    sets or clears Lookout, and clears its orders; `advance_queues` (`order_queue.rs`) gives each
    unit with a queue its next turn's orders, dropping queues that no longer fit; then selection

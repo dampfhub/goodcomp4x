@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::GameState;
+use super::city::turns_icon;
 use super::fog::Fog;
 use super::hex::Hex;
 use super::turn::{Phase, step_rank};
@@ -81,7 +82,7 @@ impl GameState {
                 self.units[i] = unit;
             }
             self.notice = if first >= limit {
-                format!("QUEUE FULL - {limit}-TURN LIMIT")
+                format!("QUEUE FULL - {} LIMIT", turns_icon(limit as i32))
             } else {
                 "CAN'T GET ANY CLOSER THERE".into()
             };
@@ -105,7 +106,7 @@ impl GameState {
         // how far it goes), and the notice stays short enough for the top
         // bar of a small window.
         self.notice = if cut_short {
-            format!("QUEUED UP TO THE {limit}-TURN LIMIT")
+            format!("QUEUED UP TO THE {} LIMIT", turns_icon(limit as i32))
         } else {
             queued_notice(first, length - first)
         };
@@ -278,7 +279,7 @@ impl GameState {
         }
         let limit = self.settings.max_queued_turns.max(1);
         if turn >= limit {
-            self.notice = format!("QUEUE FULL - {limit}-TURN LIMIT");
+            self.notice = format!("QUEUE FULL - {} LIMIT", turns_icon(limit as i32));
             return false;
         }
         if attackers.is_empty() {
@@ -494,7 +495,7 @@ fn queued_notice(first: usize, turns: usize) -> String {
     let last = first + turns;
     match (first, turns) {
         (0, 1) => "QUEUED FOR THIS TURN - SHIFT-CLICK AGAIN FOR THE NEXT".into(),
-        (0, _) => format!("QUEUED FOR THE NEXT {turns} TURNS"),
+        (0, _) => format!("QUEUED FOR THE NEXT {}", turns_icon(turns as i32)),
         (_, 1) => format!("QUEUED FOR TURN {last} FROM NOW"),
         _ => format!("QUEUED FOR TURNS {} TO {last} FROM NOW", first + 1),
     }
@@ -572,7 +573,7 @@ mod tests {
         // Six hexes: as many turns as a queue holds by default.
         let far = Hex::new(2, 0);
         assert!(g.queue_move(far));
-        assert_eq!(g.notice, "QUEUED FOR THE NEXT 6 TURNS", "no limit hit");
+        assert_eq!(g.notice, "QUEUED FOR THE NEXT \u{E003}6", "no limit hit");
         let unit = &g.units[0];
         assert_eq!(unit.plan_len(), unit.pos.distance(far) as usize);
         assert_eq!(unit.plan_end(), far);
@@ -601,10 +602,10 @@ mod tests {
         assert_eq!(g.units[0].plan_len(), 6);
         assert_eq!(g.units[0].plan_end(), Hex::new(2, 0), "along the way");
         assert!(moves(&g, 0).iter().all(Option::is_some), "every turn moves");
-        assert_eq!(g.notice, "QUEUED UP TO THE 6-TURN LIMIT");
+        assert_eq!(g.notice, "QUEUED UP TO THE \u{E003}6 LIMIT");
         assert!(!g.queue_move(far), "no more on another click");
         assert_eq!(g.units[0].plan_len(), 6);
-        assert_eq!(g.notice, "QUEUE FULL - 6-TURN LIMIT");
+        assert_eq!(g.notice, "QUEUE FULL - \u{E003}6 LIMIT");
         // An attack still fits into the last turn, but a second one would
         // need a turn of its own.
         g.units
@@ -613,7 +614,7 @@ mod tests {
         assert_eq!(g.units[0].plan_len(), 6);
         assert!(!g.queue_attack(Hex::new(3, 0)));
         assert_eq!(g.units[0].plan_len(), 6);
-        assert_eq!(g.notice, "QUEUE FULL - 6-TURN LIMIT");
+        assert_eq!(g.notice, "QUEUE FULL - \u{E003}6 LIMIT");
 
         // Each turn played frees a turn of the queue.
         g.units.pop();
@@ -649,7 +650,7 @@ mod tests {
         let far = Hex::new(4, 0);
         assert!(g.queue_move(far));
         assert_eq!(g.units[0].plan_len(), 3);
-        assert_eq!(g.notice, "QUEUED UP TO THE 3-TURN LIMIT");
+        assert_eq!(g.notice, "QUEUED UP TO THE \u{E003}3 LIMIT");
 
         // A higher limit lets the next click go the rest of the way.
         g.set_setting(Setting::MaxQueuedTurns, 25);
@@ -687,7 +688,7 @@ mod tests {
         g.set_selection(vec![0, 1]);
         let far = Hex::new(5, 0);
         assert!(g.queue_move(far));
-        assert_eq!(g.notice, "QUEUED UP TO THE 5-TURN LIMIT");
+        assert_eq!(g.notice, "QUEUED UP TO THE \u{E003}5 LIMIT");
         // The melee keeps its three turns and adds two; the ranged unit,
         // starting now, moves all five.
         for i in 0..2 {
@@ -700,7 +701,7 @@ mod tests {
         assert!(ranged.iter().all(Option::is_some), "{ranged:?}");
 
         assert!(!g.queue_move(far), "both queues are full");
-        assert_eq!(g.notice, "QUEUE FULL - 5-TURN LIMIT");
+        assert_eq!(g.notice, "QUEUE FULL - \u{E003}5 LIMIT");
     }
 
     #[test]

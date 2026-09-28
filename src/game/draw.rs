@@ -109,7 +109,7 @@ const CIVILIAN_TOKEN_SIZE: f32 = 0.95;
 /// terrain.
 const ICON_OUTLINE_COLOR: Color = [0.03, 0.03, 0.04, 1.0];
 const ICON_OUTLINE_WIDTH: f32 = 0.06;
-/// Tile yields: below the unit spot, food then production as die-face pips
+/// Tile yields: below the unit spot, food, wood then metal as die-face pips
 /// on a dark see-through pill.
 const YIELD_ROW_OFFSET: Vec2 = Vec2::new(0.0, -0.56);
 /// Distance between neighboring pips, across and up.
@@ -117,9 +117,11 @@ const YIELD_PIP_PITCH: Vec2 = Vec2::new(0.11, 0.15);
 const YIELD_ICON_SCALE: f32 = 0.8;
 /// How far a pip icon, at that scale, reaches from its center.
 const YIELD_ICON_HALF: Vec2 = Vec2::new(0.05, 0.076);
-/// Space between the food group and the production group.
+/// Space between neighboring groups (food, wood, metal).
 const YIELD_GROUP_GAP: f32 = 0.08;
 const YIELD_ROW_PADDING: Vec2 = Vec2::new(0.06, 0.035);
+/// The widest a yield pill may be, from its center, and stay inside the hex.
+const YIELD_ROW_MAX_HALF_WIDTH: f32 = 0.46;
 const YIELD_PIP_CORNER: f32 = 0.1;
 const YIELD_ROW_COLOR: Color = [0.005, 0.006, 0.007, 0.85];
 /// Past six, a yield is one icon and its amount.
@@ -401,7 +403,7 @@ impl GameState {
             }
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
             if unit.plans_later_turns() && self.is_player_controlled(idx) {
-                let text = format!("{}T", unit.plan_len());
+                let text = crate::game::city::turns_icon(unit.plan_len() as i32);
                 let at = center + QUEUE_TAG_OFFSET * scale;
                 push_turn_badge(
                     at,
@@ -1310,7 +1312,7 @@ impl GameState {
 
     /// The jobs the player's workers are out on: a solid ring on the tile (or
     /// the edge, for a wall or gate) named with the job and, once the worker
-    /// is there working, the turns of work left, like "IMPROVE 2T".
+    /// is there working, the turns of work left, like "IMPROVE" and the clock with 2.
     fn push_jobs_under_way(&self, out: &mut Vec<Vertex>) {
         let working = self
             .field_workers
@@ -1319,7 +1321,11 @@ impl GameState {
         for worker in working {
             let Some(job) = worker.job else { continue };
             let label = match worker.work_left.filter(|_| worker.pos == job.hex) {
-                Some(left) => format!("{} {left}T", self.job_name(job)),
+                Some(left) => format!(
+                    "{} {}",
+                    self.job_name(job),
+                    crate::game::city::turns_icon(left as i32)
+                ),
                 None => self.job_name(job).into(),
             };
             let at = match job.across {
@@ -1518,29 +1524,29 @@ impl GameState {
             if !in_reach && !self.show_details {
                 continue;
             }
-            let (food, production) = self.known_yield(hex, fog);
-            push_yield_row(hex.to_world() + YIELD_ROW_OFFSET, food, production, out);
+            let goods = self.known_yield(hex, fog);
+            push_yield_row(hex.to_world() + YIELD_ROW_OFFSET, goods, out);
         }
     }
 }
 
-/// A tile's yields on a dark pill: food then production, each laid out like
-/// the pips on a die, or as one icon and a number past six. Nothing for a
-/// tile yielding nothing.
-fn push_yield_row(center: Vec2, food: i32, production: i32, out: &mut Vec<Vertex>) {
-    let row = yield_row(food, production);
+/// A tile's yields on a dark pill: food, wood then metal (`raw_yield`),
+/// each laid out like the pips on a die, or as one icon and a number past
+/// six. Nothing for a tile yielding nothing.
+fn push_yield_row(center: Vec2, goods: (i32, i32, i32), out: &mut Vec<Vertex>) {
+    let row = yield_row(goods);
     if row.icons.is_empty() {
         return;
     }
     let pill = rounded_rect(center, row.half, YIELD_PIP_CORNER);
     mesh::polygon(&pill, YIELD_ROW_COLOR, out);
     for (icon, at) in row.icons {
-        map_icons::push_map_icon_scaled(center + at, icon, YIELD_ICON_SCALE, out);
+        map_icons::push_map_icon_scaled(center + at, icon, YIELD_ICON_SCALE * row.scale, out);
     }
     for (text, at) in row.labels {
         font::push_text_centered(
             center + at,
-            YIELD_DIGIT_HEIGHT,
+            YIELD_DIGIT_HEIGHT * row.scale,
             &text,
             YIELD_DIGIT_COLOR,
             out,
@@ -1557,6 +1563,8 @@ struct YieldRow {
     labels: Vec<(String, Vec2)>,
     /// How far the pill reaches each way.
     half: Vec2,
+    /// How much the row was shrunk to fit its hex (1 if it fit).
+    scale: f32,
 }
 
 /// Where the pips for 1 to 6 go, in pip pitches, top row first: a die's
@@ -1586,42 +1594,49 @@ fn pip_spots(amount: i32) -> &'static [(f32, f32)] {
     }
 }
 
-/// Lays out a tile's food and production groups side by side, centered.
-fn yield_row(food: i32, production: i32) -> YieldRow {
+/// Lays out a tile's food, wood and metal groups side by side, centered.
+fn yield_row((food, wood, metal): (i32, i32, i32)) -> YieldRow {
     let mut row = YieldRow {
         icons: Vec::new(),
         labels: Vec::new(),
         half: Vec2::ZERO,
+        scale: 1.0,
     };
     // Each group's contents around its own center, and its half extent.
-    let groups: Vec<YieldRow> = [(MapIcon::Food, food), (MapIcon::Production, production)]
-        .into_iter()
-        .filter(|&(_, amount)| amount > 0)
-        .map(|(icon, amount)| {
-            let spots = pip_spots(amount);
-            if spots.is_empty() {
-                // Past six: one icon, then the number.
-                let text = amount.to_string();
-                let width = font::world_text_width(&text, YIELD_DIGIT_HEIGHT);
-                let half_x = YIELD_ICON_HALF.x + (YIELD_NUMBER_GAP + width) / 2.0;
-                return YieldRow {
-                    icons: vec![(icon, Vec2::new(YIELD_ICON_HALF.x - half_x, 0.0))],
-                    labels: vec![(text, Vec2::new(half_x - width / 2.0, 0.0))],
-                    half: Vec2::new(half_x, YIELD_ICON_HALF.y),
-                };
-            }
-            let spots: Vec<Vec2> = spots
-                .iter()
-                .map(|&(x, y)| Vec2::new(x, y) * YIELD_PIP_PITCH)
-                .collect();
-            let reach = spots.iter().fold(Vec2::ZERO, |m, s| m.max(s.abs()));
-            YieldRow {
-                icons: spots.into_iter().map(|at| (icon, at)).collect(),
-                labels: Vec::new(),
-                half: reach + YIELD_ICON_HALF,
-            }
-        })
-        .collect();
+    let groups: Vec<YieldRow> = [
+        (MapIcon::Food, food),
+        (MapIcon::Wood, wood),
+        (MapIcon::Metal, metal),
+    ]
+    .into_iter()
+    .filter(|&(_, amount)| amount > 0)
+    .map(|(icon, amount)| {
+        let spots = pip_spots(amount);
+        if spots.is_empty() {
+            // Past six: one icon, then the number.
+            let text = amount.to_string();
+            let width = font::world_text_width(&text, YIELD_DIGIT_HEIGHT);
+            let half_x = YIELD_ICON_HALF.x + (YIELD_NUMBER_GAP + width) / 2.0;
+            return YieldRow {
+                icons: vec![(icon, Vec2::new(YIELD_ICON_HALF.x - half_x, 0.0))],
+                labels: vec![(text, Vec2::new(half_x - width / 2.0, 0.0))],
+                half: Vec2::new(half_x, YIELD_ICON_HALF.y),
+                scale: 1.0,
+            };
+        }
+        let spots: Vec<Vec2> = spots
+            .iter()
+            .map(|&(x, y)| Vec2::new(x, y) * YIELD_PIP_PITCH)
+            .collect();
+        let reach = spots.iter().fold(Vec2::ZERO, |m, s| m.max(s.abs()));
+        YieldRow {
+            icons: spots.into_iter().map(|at| (icon, at)).collect(),
+            labels: Vec::new(),
+            half: reach + YIELD_ICON_HALF,
+            scale: 1.0,
+        }
+    })
+    .collect();
     if groups.is_empty() {
         return row;
     }
@@ -1642,6 +1657,18 @@ fn yield_row(food: i32, production: i32) -> YieldRow {
         left += 2.0 * group.half.x + YIELD_GROUP_GAP;
     }
     row.half = Vec2::new(width / 2.0, row.half.y) + YIELD_ROW_PADDING;
+    // Three full groups would reach past the hex: shrink the whole row.
+    if row.half.x > YIELD_ROW_MAX_HALF_WIDTH {
+        let shrink = YIELD_ROW_MAX_HALF_WIDTH / row.half.x;
+        for (_, at) in &mut row.icons {
+            *at *= shrink;
+        }
+        for (_, at) in &mut row.labels {
+            *at *= shrink;
+        }
+        row.half *= shrink;
+        row.scale = shrink;
+    }
     row
 }
 
@@ -2622,7 +2649,7 @@ mod tests {
         let walking = solid(&game);
         assert!(walking > 0);
         assert_ne!(game.field_workers[0].pos, hex, "still walking");
-        // At work: "IMPROVE 3T", more glyphs than "IMPROVE".
+        // At work: the clock and 3 after "IMPROVE", more shapes.
         game.resolve_workers();
         assert_eq!(game.field_workers[0].work_left, Some(3));
         assert!(solid(&game) > walking);
@@ -2889,7 +2916,7 @@ mod tests {
         let pill_vertices = count_color(
             &{
                 let mut out = Vec::new();
-                push_yield_row(Vec2::ZERO, 2, 1, &mut out);
+                push_yield_row(Vec2::ZERO, (2, 1, 0), &mut out);
                 out
             },
             YIELD_ROW_COLOR,
@@ -2908,7 +2935,7 @@ mod tests {
             .grid
             .all_hexes()
             .filter(|&h| game.grid.terrain(h).is_workable() && game.is_explored(h))
-            .filter(|&h| game.known_yield(h, &fog) != (0, 0))
+            .filter(|&h| game.known_yield(h, &fog) != (0, 0, 0))
             .count();
         assert!(yielding > in_reach);
         assert_eq!(rows(&game), yielding, "a row on every tile that yields");
@@ -2917,7 +2944,7 @@ mod tests {
     #[test]
     fn yields_up_to_six_are_die_pips_and_more_are_a_number() {
         let pips = |amount: i32| -> Vec<Vec2> {
-            let row = yield_row(amount, 0);
+            let row = yield_row((amount, 0, 0));
             assert!(row.labels.is_empty(), "{amount} needs no number");
             row.icons.into_iter().map(|(_, at)| at).collect()
         };
@@ -2949,33 +2976,77 @@ mod tests {
         assert_eq!(rows(&six), 2);
         assert_eq!(six.iter().filter(|s| s.y > 0.0).count(), 3);
 
-        let seven = yield_row(7, 0);
+        let seven = yield_row((7, 0, 0));
         assert_eq!(seven.icons.len(), 1);
         assert_eq!(seven.labels[0].0, "7");
         assert!(
             seven.labels[0].1.x > seven.icons[0].1.x,
             "the number follows the icon"
         );
-        assert!(yield_row(0, 0).icons.is_empty());
+        assert!(yield_row((0, 0, 0)).icons.is_empty());
     }
 
     #[test]
-    fn a_yield_row_puts_food_left_of_production_and_stays_inside_the_hex() {
-        for (food, production) in [(2, 1), (6, 6), (12, 5), (3, 0), (0, 4)] {
-            let row = yield_row(food, production);
-            let food_x = row.icons.iter().filter(|(i, _)| *i == MapIcon::Food);
-            let production_x = row.icons.iter().filter(|(i, _)| *i == MapIcon::Production);
-            let rightmost_food = food_x.map(|(_, at)| at.x).fold(f32::MIN, f32::max);
-            let leftmost_production = production_x.map(|(_, at)| at.x).fold(f32::MAX, f32::min);
-            assert!(rightmost_food < leftmost_production, "{food}/{production}");
+    fn a_yield_row_puts_food_wood_and_metal_left_to_right_and_stays_inside_the_hex() {
+        for goods in [
+            (2, 1, 0),
+            (6, 2, 0),
+            (12, 1, 5),
+            (3, 0, 0),
+            (0, 1, 3),
+            (1, 2, 1),
+            (4, 1, 4),
+        ] {
+            let row = yield_row(goods);
+            let span = |icon: MapIcon| {
+                let xs: Vec<f32> = row
+                    .icons
+                    .iter()
+                    .filter(|(i, _)| *i == icon)
+                    .map(|(_, at)| at.x)
+                    .collect();
+                (
+                    xs.iter().copied().fold(f32::MAX, f32::min),
+                    xs.iter().copied().fold(f32::MIN, f32::max),
+                )
+            };
+            let (food, wood, metal) = (
+                span(MapIcon::Food),
+                span(MapIcon::Wood),
+                span(MapIcon::Metal),
+            );
+            assert!(food.1 < wood.0 && food.1 < metal.0, "{goods:?}");
+            assert!(wood.1 < metal.0, "{goods:?}");
+            let count = |icon| row.icons.iter().filter(|(i, _)| *i == icon).count();
+            assert_eq!(count(MapIcon::Wood), goods.1.clamp(0, 6) as usize);
             // The pill's corners stay inside the hex's fill.
             let corner = (YIELD_ROW_OFFSET - row.half).abs();
             let fill = HEX_SIZE * HEX_FILL_SCALE * 3f32.sqrt();
-            assert!(
-                3f32.sqrt() * corner.x + corner.y <= fill,
-                "{food}/{production}"
-            );
+            assert!(3f32.sqrt() * corner.x + corner.y <= fill, "{goods:?}");
         }
+    }
+
+    #[test]
+    fn yield_chips_split_production_into_wood_and_metal() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        // Plains hills with a mine: a wood from the plains, the hill's and
+        // the mine's metal.
+        let mine = Hex::new(-2, 2);
+        assert_eq!(game.sites[&mine].label, "MINE");
+        let (food, wood, metal) = game.raw_yield(mine);
+        assert_eq!((food, wood + metal), game.tile_yield(mine));
+        assert_eq!(metal, 3);
+        assert_eq!(wood, 1);
+        // The city center: 2 food and 1 wood, whatever its ground.
+        assert_eq!(game.raw_yield(game.cities[0].pos), (2, 1, 0));
+        // A farm: food only.
+        let farm = Hex::new(-4, 1);
+        let (_, wood, metal) = game.raw_yield(farm);
+        assert_eq!((wood, metal), (0, 0));
+        let row = yield_row(game.raw_yield(mine));
+        let metal_pips = row.icons.iter().filter(|(i, _)| *i == MapIcon::Metal);
+        assert_eq!(metal_pips.count(), 3);
     }
 
     #[test]

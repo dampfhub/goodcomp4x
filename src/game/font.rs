@@ -10,6 +10,7 @@ use std::sync::LazyLock;
 
 use glam::Vec2;
 
+use super::map_icons;
 use crate::renderer::{Atlas, Vertex};
 
 type Color = [f32; 4];
@@ -81,21 +82,49 @@ impl Face {
     /// Horizontal space `text` takes up.
     pub fn width(&self, text: &str) -> f32 {
         text.chars()
-            .filter_map(|ch| self.glyph(ch))
-            .map(|glyph| glyph.advance)
+            .map(|ch| {
+                if map_icons::inline_icon(ch).is_some() {
+                    self.icon_advance()
+                } else {
+                    self.glyph(ch).map_or(0.0, |glyph| glyph.advance)
+                }
+            })
             .sum()
     }
 
     /// Draws `text` at this face's own size in screen space, with its
-    /// baseline's left end at `origin`. Glyphs snap to whole pixels.
+    /// baseline's left end at `origin`. Glyphs snap to whole pixels. Icon
+    /// characters (`map_icons::inline_icon`) draw their icon, dimmed in dim
+    /// text.
     pub fn push(&self, origin: Vec2, text: &str, color: Color, out: &mut Vec<Vertex>) {
         let origin = origin.round();
         let mut pen = 0.0;
-        for glyph in text.chars().filter_map(|ch| self.glyph(ch)) {
+        let dim = color[..3].iter().all(|&c| c < 0.25);
+        for ch in text.chars() {
+            if map_icons::inline_icon(ch).is_some() {
+                let advance = self.icon_advance();
+                let center = origin + Vec2::new(pen + advance / 2.0, self.cap_height / 2.0);
+                map_icons::push_inline_icon(center, self.icon_height(), ch, dim, out);
+                pen += advance;
+                continue;
+            }
+            let Some(glyph) = self.glyph(ch) else {
+                continue;
+            };
             let min = Vec2::new((origin.x + pen).round(), origin.y) + glyph.offset;
             push_glyph_quad(min, min + glyph.size, glyph, color, out);
             pen += glyph.advance;
         }
+    }
+
+    /// How tall an inline icon draws: a little taller than capital letters.
+    pub fn icon_height(&self) -> f32 {
+        self.cap_height * 1.45
+    }
+
+    /// The room an inline icon takes in a line.
+    fn icon_advance(&self) -> f32 {
+        self.icon_height() * 1.05
     }
 
     /// Characters the font lacks draw as '?'.
@@ -123,13 +152,32 @@ pub fn world_text_width(text: &str, cap_height: f32) -> f32 {
     face.width(text) * cap_height / face.cap_height
 }
 
+/// How tall an inline icon draws in world text with capital letters
+/// `cap_height` tall, and the room it takes: in step with UI text
+/// (`Face::icon_height`).
+fn world_icon_height(cap_height: f32) -> f32 {
+    let face = &FONT.world;
+    face.icon_height() * cap_height / face.cap_height
+}
+
 /// Draws a line of world-space text with capital letters `cap_height` tall
 /// and its baseline's left end at `origin`.
 pub fn push_text(origin: Vec2, cap_height: f32, text: &str, color: Color, out: &mut Vec<Vertex>) {
     let face = &FONT.world;
     let scale = cap_height / face.cap_height;
     let mut pen = 0.0;
-    for glyph in text.chars().filter_map(|ch| face.glyph(ch)) {
+    for ch in text.chars() {
+        // Icon characters draw their icon, as in UI text.
+        if map_icons::inline_icon(ch).is_some() {
+            let advance = face.icon_advance();
+            let center = origin + Vec2::new(pen + advance / 2.0, face.cap_height / 2.0) * scale;
+            map_icons::push_inline_icon(center, world_icon_height(cap_height), ch, false, out);
+            pen += advance;
+            continue;
+        }
+        let Some(glyph) = face.glyph(ch) else {
+            continue;
+        };
         let min = origin + (Vec2::new(pen, 0.0) + glyph.offset) * scale;
         push_glyph_quad(min, min + glyph.size * scale, glyph, color, out);
         pen += glyph.advance;

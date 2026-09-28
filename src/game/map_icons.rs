@@ -49,6 +49,10 @@ const STONE: Color = [0.42, 0.40, 0.36, 1.0];
 const STONE_LIT: Color = [0.68, 0.65, 0.58, 1.0];
 const STONE_SHADE: Color = [0.20, 0.19, 0.17, 1.0];
 const LEAVES: Color = [0.06, 0.30, 0.05, 1.0];
+/// Metal on yield chips and in text: brighter than the Iron deposit's
+/// ingot so it reads small.
+const METAL: Color = [0.42, 0.46, 0.52, 1.0];
+const CLOCK_FACE: Color = [0.80, 0.80, 0.74, 1.0];
 const FRUIT: Color = [0.80, 0.08, 0.04, 1.0];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -65,10 +69,14 @@ pub(super) enum MapIcon {
     Fence,
     /// Lumber mill: three stacked logs, cut ends toward the viewer.
     Logs,
-    /// Food, on a yield chip: a small wheat stalk.
+    /// Food, on a yield chip and in text: a small wheat stalk.
     Food,
-    /// Production, on a yield chip: a hammer.
-    Production,
+    /// Wood, on a yield chip and in text: a leaning log.
+    Wood,
+    /// Metal, on a yield chip and in text: a small ingot.
+    Metal,
+    /// Turns, in text: a clock face.
+    Clock,
     /// Ruins: two broken columns on a slab.
     Ruins,
     /// Orchard: a fruit tree.
@@ -100,6 +108,48 @@ impl MapIcon {
             "PASTURE" => Some(Self::Fence),
             "LUMBER MILL" => Some(Self::Logs),
             _ => None,
+        }
+    }
+}
+
+/// Characters that stand for an icon in UI text: every text renderer (the
+/// classic font, `font::Face`, and ImGui's `rich_*` helpers) draws the
+/// icon in their place, the same pictures as the map's yield chips.
+pub(in crate::game) const FOOD_ICON: char = '\u{E000}';
+pub(in crate::game) const WOOD_ICON: char = '\u{E001}';
+pub(in crate::game) const METAL_ICON: char = '\u{E002}';
+pub(in crate::game) const TIME_ICON: char = '\u{E003}';
+
+/// The icon `ch` stands for in UI text, if it's one of the icon characters.
+pub(in crate::game) fn inline_icon(ch: char) -> Option<MapIcon> {
+    match ch {
+        FOOD_ICON => Some(MapIcon::Food),
+        WOOD_ICON => Some(MapIcon::Wood),
+        METAL_ICON => Some(MapIcon::Metal),
+        TIME_ICON => Some(MapIcon::Clock),
+        _ => None,
+    }
+}
+
+/// Draws the icon `ch` stands for in UI space (pixels, Y up), `height`
+/// pixels tall, centered on `center`. `dim` darkens it to sit in disabled
+/// text.
+pub(in crate::game) fn push_inline_icon(
+    center: Vec2,
+    height: f32,
+    ch: char,
+    dim: bool,
+    out: &mut Vec<Vertex>,
+) {
+    let Some(icon) = inline_icon(ch) else { return };
+    let start = out.len();
+    // The chip icons are laid out about 20 design units tall.
+    push_map_icon_scaled(center, icon, height * 5.0 / HEX_SIZE, out);
+    if dim {
+        for vertex in &mut out[start..] {
+            for channel in &mut vertex.color[..3] {
+                *channel *= 0.3;
+            }
         }
     }
 }
@@ -207,23 +257,35 @@ pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out:
                 pen.ring(&ellipse((x, y), 1.2, 2.2, 0.0), 1.2, GROWTH_RING);
             }
         }
+        // The small resource icons are flat, one color each, thinly edged,
+        // so they read at text size.
         MapIcon::Food => {
-            let stem = [(0.0, 7.0), (0.0, -4.0)];
-            pen.line(&stem, 3.8, OUTLINE);
-            pen.line(&stem, 1.6, WHEAT);
-            for y in [1.0, -3.5] {
+            // A wheat ear with no edge: a thin stem and well-spaced kernels,
+            // so the gaps between them survive at text size.
+            pen.line(&[(0.0, 9.5), (0.0, -1.0)], 1.0, WHEAT);
+            for y in [-0.5, -6.0] {
                 for side in [-1.0, 1.0] {
-                    let kernel = ellipse((2.2 * side, y), 1.9, 3.0, 30.0 * side);
-                    pen.shape(&kernel, WHEAT, 1.6);
+                    let kernel = ellipse((3.3 * side, y), 1.6, 2.4, 25.0 * side);
+                    pen.shape(&kernel, WHEAT, 0.0);
                 }
             }
-            pen.shape(&ellipse((0.0, -7.0), 1.9, 3.0, 0.0), WHEAT, 1.6);
+            pen.shape(&ellipse((0.0, -9.0), 1.6, 2.4, 0.0), WHEAT, 0.0);
         }
-        MapIcon::Production => {
-            let handle = [(-1.4, -3.0), (1.4, -3.0), (1.4, 9.0), (-1.4, 9.0)];
-            pen.shape(&turned(&handle, -40.0), WEATHERED_WOOD, 1.6);
-            let head = [(-5.5, -8.0), (5.5, -8.0), (5.5, -3.0), (-5.5, -3.0)];
-            pen.shape(&turned(&head, -40.0), STEEL_LIT, 1.6);
+        MapIcon::Wood => {
+            // A plain log, leaning right.
+            let log = [(-3.5, 6.0), (3.5, -6.0)];
+            pen.line(&log, 6.2, OUTLINE);
+            pen.line(&log, 4.0, FRESH_WOOD);
+        }
+        MapIcon::Metal => {
+            let bar = [(-8.5, 4.5), (-6.0, -3.5), (6.0, -3.5), (8.5, 4.5)];
+            pen.shape(&bar, METAL, 1.2);
+        }
+        MapIcon::Clock => {
+            // An open ring with two hands, all in one color.
+            pen.ring(&ellipse((0.0, 0.0), 7.5, 7.5, 0.0), 1.0, CLOCK_FACE);
+            pen.line(&[(0.0, 0.0), (0.0, -4.5)], 1.0, CLOCK_FACE);
+            pen.line(&[(0.0, 0.0), (3.5, 0.0)], 1.0, CLOCK_FACE);
         }
         MapIcon::Ruins => {
             pen.shape(
@@ -281,19 +343,6 @@ pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out:
             }
         }
     }
-}
-
-/// `points` turned by `degrees` about the icon's center (clockwise on
-/// screen, as SVG's `rotate` with Y down).
-fn turned(points: &[(f32, f32)], degrees: f32) -> Vec<(f32, f32)> {
-    let turn = Vec2::from_angle(degrees.to_radians());
-    points
-        .iter()
-        .map(|&(x, y)| {
-            let p = turn.rotate(Vec2::new(x, y));
-            (p.x, p.y)
-        })
-        .collect()
 }
 
 /// Points around an ellipse centered on `center`, turned by `degrees`

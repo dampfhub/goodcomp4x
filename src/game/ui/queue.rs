@@ -1,7 +1,7 @@
 //! Production queue panels (city and Barracks): scrolling, drag to reorder, X to remove.
 
 use super::builder::PanelBuilder;
-use super::text::{quantity, turns_at_rate};
+use super::text::turns_at_rate;
 use super::{
     LABEL_TEXT, LINE_GAP, PADDING, QUEUE_ITEM_HEIGHT, QueueDrag, QueueItemSpec, QueueKind, SMALL,
     contains, to_ui,
@@ -254,7 +254,7 @@ impl GameState {
         if city.barracks_queue.is_empty() {
             return;
         }
-        let production = self.barracks_income(i);
+        let rate = self.work_rate(self.barracks_income(i));
         let offset = self
             .barracks_queue_scroll
             .min(city.barracks_queue.len().saturating_sub(visible));
@@ -279,9 +279,9 @@ impl GameState {
             .take(visible)
         {
             let prefix = if index == 0 { "> " } else { "  " };
-            let remaining = build.cost()
+            let remaining = build.work()
                 - if index == 0 {
-                    city.barracks_production
+                    city.barracks_progress
                 } else {
                     0
                 };
@@ -292,10 +292,9 @@ impl GameState {
                 kind: QueueKind::Barracks,
                 index,
                 label: format!(
-                    "{prefix}{} | {} PROD | {} LEFT",
+                    "{prefix}{} | {} LEFT",
                     build.name(),
-                    quantity(build.cost()),
-                    turns_at_rate(remaining, production)
+                    turns_at_rate(remaining, rate)
                 ),
                 active: index == 0,
                 dragging: drag.is_some_and(|drag| drag.source == index),
@@ -313,7 +312,7 @@ impl GameState {
         if city.queue.is_empty() {
             return;
         }
-        let (_, production) = self.income(i);
+        let rate = self.work_rate(self.income(i).production());
         let offset = self
             .city_queue_scroll
             .min(city.queue.len().saturating_sub(visible));
@@ -334,18 +333,18 @@ impl GameState {
                 .take(visible)
             {
                 let prefix = if index == 0 { "> " } else { "  " };
-                let cost = self.city_build_cost(i, build);
-                let remaining = cost - if index == 0 { city.production } else { 0 };
+                let work = self.city_build_work(i, build);
+                let remaining = work - if index == 0 { city.progress } else { 0 };
                 let drag = self.queue_drag.filter(|drag| drag.kind == QueueKind::City);
+                let left = if remaining <= 0 {
+                    "READY".into()
+                } else {
+                    format!("{} LEFT", turns_at_rate(remaining, rate))
+                };
                 panel.queue_item(QueueItemSpec {
                     kind: QueueKind::City,
                     index,
-                    label: format!(
-                        "{prefix}{} | {} PROD | {} LEFT",
-                        build.name(),
-                        quantity(cost),
-                        turns_at_rate(remaining, production)
-                    ),
+                    label: format!("{prefix}{} | {left}", build.name()),
                     active: index == 0,
                     dragging: drag.is_some_and(|drag| drag.source == index),
                     drop_target: drag

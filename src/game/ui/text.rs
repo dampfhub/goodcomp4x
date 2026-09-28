@@ -1,8 +1,60 @@
 //! Formatting helpers for numbers, stats and descriptions shown in the UI.
 
-use super::{BOOSTED_TEXT, Color, LABEL_TEXT, Line, REDUCED_TEXT, TEXT};
+use super::{
+    BOOSTED_TEXT, Color, DIM_TEXT, FOOD_TEXT, LABEL_TEXT, Line, METAL_TEXT, REDUCED_TEXT, TEXT,
+    WOOD_TEXT,
+};
 use crate::game::ability::Ability;
+use crate::game::city::{Stock, resource_icon, stock_icons, turns_icon};
 use crate::game::unit::Unit;
+
+/// A price in short form for a build card's hint: each resource's icon and
+/// whole amount, zeros left out (`stock_icons`), or FREE.
+pub(super) fn price_hint(price: Stock) -> String {
+    let icons = stock_icons(price);
+    if icons.is_empty() {
+        "FREE".into()
+    } else {
+        icons
+    }
+}
+
+/// A build card's hint: its price and, after the clock icon, its turns.
+pub(super) fn cost_hint(price: Stock, turns: i32) -> String {
+    format!("{} {}", price_hint(price), turns_icon(turns))
+}
+
+/// Each resource's color.
+pub(super) fn resource_color(name: &str) -> Color {
+    match name {
+        "FOOD" => FOOD_TEXT,
+        "WOOD" => WOOD_TEXT,
+        _ => METAL_TEXT,
+    }
+}
+
+/// A stockpile with its change a turn, each resource's icon, amount and
+/// change: changes green, red or dim.
+pub(super) fn stock_spans(stock: Stock, change: Stock) -> Line {
+    let mut line = Vec::new();
+    for (i, ((name, amount), (_, delta))) in
+        stock.parts().into_iter().zip(change.parts()).enumerate()
+    {
+        let separator = if i == 0 { "" } else { "   " };
+        line.push((
+            format!("{separator}{}", resource_icon(name)),
+            resource_color(name),
+        ));
+        line.push((quantity(amount), TEXT));
+        let delta_color = match delta.signum() {
+            1 => BOOSTED_TEXT,
+            -1 => REDUCED_TEXT,
+            _ => DIM_TEXT,
+        };
+        line.push((format!(" {}", signed_quantity(delta)), delta_color));
+    }
+    line
+}
 
 /// "LABEL value" pairs on one line, labels dim and values in their own color.
 pub(super) fn stat_spans(stats: &[(&str, String, Color)]) -> Line {
@@ -47,7 +99,7 @@ pub(super) fn turns_at_rate(remaining: i32, per_turn: i32) -> String {
         return "—".into();
     }
     let turns = (remaining.max(1) + per_turn - 1) / per_turn;
-    format!("{turns}T")
+    turns_icon(turns)
 }
 
 /// The End Turn button's label: the next thing the turn is waiting on, in
@@ -91,10 +143,7 @@ pub(super) fn pending_text((units, cities, workers): (usize, usize, usize)) -> O
 }
 
 pub(super) fn turns_text(turns: u32) -> String {
-    match turns {
-        1 => "1 TURN".to_string(),
-        _ => format!("{turns} TURNS"),
-    }
+    crate::game::city::turns_icon(turns as i32)
 }
 
 /// Splits `text` into lines of at most `max_chars`, breaking between words.

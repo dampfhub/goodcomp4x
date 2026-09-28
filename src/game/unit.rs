@@ -20,6 +20,11 @@ pub enum Team {
 }
 
 impl Team {
+    /// Its place in `ALL`.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
     /// Every team, the player's first: the order AI teams plan their turns in
     /// and take the world's starts in.
     pub const ALL: [Team; 7] = [
@@ -149,6 +154,9 @@ pub struct Unit {
     pub interior_hp: f32,
     /// A Forge or Stable upgrade earned when this troop was trained.
     pub training_upgrade: Option<Resource>,
+    /// The deposit kind a Barracks drew on to train this Cavalry or Armored:
+    /// it counts against its side's cap for that resource (`city/barracks.rs`).
+    pub drawn_from: Option<Resource>,
     /// Orders queued for this turn. The attack targets a hex rather than a
     /// unit: whichever enemy stands there when it resolves gets hit.
     pub planned_move: Option<Hex>,
@@ -191,6 +199,7 @@ impl Unit {
             hp: unit_type.stats().max_hp,
             interior_hp: unit_type.stats().max_hp,
             training_upgrade: None,
+            drawn_from: None,
             planned_move: None,
             planned_attack: None,
             ability_queued: false,

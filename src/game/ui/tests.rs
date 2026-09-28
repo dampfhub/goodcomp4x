@@ -1,9 +1,10 @@
 use super::builder::{ButtonSpec, Row, classic_rows};
-use super::text::{end_turn_label, signed_quantity, wrap};
+use super::text::{end_turn_label, price_hint, quantity, signed_quantity, wrap};
 use super::*;
 
 use crate::game::PLAYER_TEAM;
-use crate::game::city::Build;
+use crate::game::city::{Build, Stock};
+use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 use crate::game::orders::ClickMode;
 use crate::game::unit::{Team, Unit, UnitType};
 
@@ -289,6 +290,7 @@ fn build_card_queues_its_unit() {
 #[test]
 fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
     let mut game = GameState::naval_scenario();
+    game.fund(Team::Blue);
     game.select_city();
     for build in [
         BuildUnit::PatrolGalley,
@@ -361,9 +363,12 @@ fn breached_post_panel_explicitly_prompts_occupation() {
     assert_shows(&home, "KEEP RED OFF THE CENTER TO PREVENT CAPTURE");
 }
 
-/// The city scenario with the player's city open and the camera settled on it.
+/// The Cities scenario with city 0 open, the camera settled on it and its
+/// side rich.
 fn city_view() -> GameState {
     let mut game = GameState::city_scenario();
+    // Enough in the stockpile for whatever a test queues.
+    game.fund(Team::Blue);
     game.select_city();
     game.update(10.0);
     game
@@ -375,6 +380,9 @@ fn invalid_stable_site_click_reports_horses_instead_of_open_land() {
     game.units.clear();
     game.fog_of_war = false;
     let city = game.selected_city.unwrap();
+    // Queued first, so the tile is found clear of the panels as they are
+    // when it's clicked.
+    game.queue_selected_city_building(Building::Stable);
     let site = game
         .grid
         .all_hexes()
@@ -390,7 +398,6 @@ fn invalid_stable_site_click_reports_horses_instead_of_open_land() {
                     == Some("NEEDS HORSES ON OR NEXT TO THE TILE")
         })
         .expect("visible open tile away from horses");
-    game.queue_selected_city_building(Building::Stable);
     game.handle_click(hex_cursor(&game, site), SCREEN, ClickMode::Normal);
     assert_eq!(game.notice, "STABLE NEEDS HORSES ON OR NEXT TO THE TILE");
     assert_eq!(game.site_placement(), Some((city, Building::Stable)));
@@ -495,7 +502,7 @@ fn a_building_finished_with_its_city_closed_picks_its_site_when_reopened() {
         .queue
         .push(Build::Building(Building::Barracks));
     assert!(game.exit_structure_menu());
-    game.cities[city].production = Building::Barracks.cost();
+    game.cities[city].progress = Building::Barracks.work();
     play_turn(&mut game);
     assert_eq!(
         game.cities[city].pending_building,
@@ -1140,42 +1147,120 @@ fn assert_shows(text: &[String], expected: &str) {
 }
 
 #[test]
-fn every_panel_shows_production_per_turn_in_displayed_units() {
+fn every_panel_shows_what_a_city_delivers_in_displayed_units() {
     let mut game = GameState::city_scenario();
-    // Nothing is left to see the barracks tile once the units are gone.
     game.fog_of_war = false;
     game.units.clear();
-    let manager = Hex::new(-1, 0);
-    game.cities[0].worked = vec![manager, Hex::new(-1, 1)];
-    game.cities[0].barracks = Some(manager);
-    let (_, city_income) = game.income(0);
-    let barracks_income = game.barracks_income(0);
+    let income = game.income(0);
     // Stored in quarters: a raw value would read four times too high.
-    assert!(city_income > 4 && barracks_income > 4);
-    let city_rate = signed_quantity(city_income);
-    let barracks_rate = signed_quantity(barracks_income);
+    assert!(income.food > 4 && income.wood > 4);
+    let short = price_hint(income);
+    assert!(short.contains(&format!("{FOOD_ICON}{}", quantity(income.food))));
 
     let tray = panel_strings(|panel| game.city_tray(0, panel));
-    assert_shows(&tray, &format!("{city_rate} PER TURN"));
+    assert_shows(
+        &tray,
+        &format!("{WOOD_ICON}{}", signed_quantity(income.wood)),
+    );
+    assert_shows(
+        &tray,
+        &format!("{FOOD_ICON}{}", signed_quantity(income.food)),
+    );
     let hover = panel_strings(|panel| game.structure_hover_panel(0, false, panel));
-    assert_shows(&hover, &format!("{city_rate} PROD/T"));
+    assert_shows(&hover, &format!("DELIVERS {short}"));
     let city_tooltip = line_strings(
         game.tile_tooltip_lines(game.cities[0].pos)
             .into_iter()
             .map(|(_, line)| line),
     );
-    assert_shows(&city_tooltip, &format!("{city_rate} PRODUCTION"));
+    assert_shows(&city_tooltip, &format!("DELIVERS {short}"));
+}
 
-    let barracks_tray = panel_strings(|panel| game.barracks_tray(0, panel));
-    assert_shows(&barracks_tray, &format!("{barracks_rate} PROD/T"));
-    let barracks_hover = panel_strings(|panel| game.structure_hover_panel(0, true, panel));
-    assert_shows(&barracks_hover, &format!("{barracks_rate} PROD/T"));
-    let barracks_tooltip = line_strings(
-        game.tile_tooltip_lines(manager)
-            .into_iter()
-            .map(|(_, line)| line),
+#[test]
+fn the_stockpile_shows_in_the_top_bar_with_its_change_a_turn() {
+    let mut game = GameState::city_scenario();
+    game.stockpiles[Team::Blue.index()] = Stock::whole(12, 7, 3);
+    let income = game.side_income(Team::Blue);
+    let food_change = income.food - game.upkeep(Team::Blue);
+    let text: String = game
+        .stockpile_line()
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect();
+    assert!(text.starts_with(&format!("{FOOD_ICON}12 ")), "{text}");
+    assert!(text.contains(&format!("{WOOD_ICON}7 ")), "{text}");
+    assert!(text.contains(&format!("{METAL_ICON}3 ")), "{text}");
+    assert!(
+        text.contains(&signed_quantity(food_change)),
+        "net food in {text}"
     );
-    assert_shows(&barracks_tooltip, &format!("{barracks_rate} PROD/T"));
+}
+
+/// The button for `target` in the classic layout.
+fn find_button(game: &GameState, target: Target) -> Button {
+    let layout = game.layout(SCREEN);
+    let button = layout.buttons.iter().find(|b| b.target == target);
+    let button = button.unwrap_or_else(|| panic!("{target:?} shown"));
+    Button {
+        target: button.target,
+        label: button.label.clone(),
+        hint: button.hint.clone(),
+        state: button.state,
+        armed: button.armed,
+        faded: button.faded,
+        min: button.min,
+        max: button.max,
+    }
+}
+
+#[test]
+fn build_cards_show_prices_and_dim_what_the_stockpile_cannot_pay() {
+    let mut game = GameState::city_scenario();
+    game.open_city(0);
+    let melee = find_button(&game, Target::Build(BuildUnit::Melee));
+    assert_eq!(melee.state, ButtonState::Ready);
+    let price = format!("{FOOD_ICON}2 {WOOD_ICON}6");
+    assert!(melee.hint.contains(&price), "{}", melee.hint);
+    // The city center takes twice a Barracks' turns.
+    assert!(
+        melee.hint.ends_with(&format!("{TIME_ICON}4")),
+        "{}",
+        melee.hint
+    );
+    let grow = find_button(&game, Target::Grow);
+    assert!(grow.label.starts_with("GROW TO 3"), "{}", grow.label);
+
+    game.stockpiles[Team::Blue.index()] = Stock::default();
+    for target in [
+        Target::Build(BuildUnit::Melee),
+        Target::BuildWorker,
+        Target::Grow,
+        Target::Building(Building::Granary),
+    ] {
+        // Buildings come after the units in the production list: scroll to
+        // them.
+        game.cities[0].building_scroll = if matches!(target, Target::Building(_)) {
+            5
+        } else {
+            0
+        };
+        let card = find_button(&game, target);
+        assert_eq!(card.state, ButtonState::Disabled, "{target:?}");
+        let tooltip: String = game
+            .tooltip_lines(&card)
+            .into_iter()
+            .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
+            .collect();
+        assert!(tooltip.contains("SHORT OF"), "{target:?}: {tooltip}");
+    }
+    game.cities[0].building_scroll = 0;
+    // A dimmed card takes no click.
+    game.handle_click(
+        button_cursor(&game, Target::Build(BuildUnit::Melee)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(game.cities[0].queue.is_empty());
 }
 
 #[test]
@@ -1554,7 +1639,7 @@ fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
     } else {
         "FARM"
     };
-    assert_eq!(labels, [format!("{build} · {tile} · 3T")]);
+    assert_eq!(labels, [format!("{build} · {tile} · \u{E003}3")]);
 }
 
 /// Where to click, in window pixels, on `key`'s chip in the turn strip.
@@ -2024,4 +2109,33 @@ fn the_settings_menu_shows_every_setting_under_its_heading() {
     assert!(!other.iter().any(|line| line.contains("ALREADY")));
     let past_the_end = tooltip(Target::SetSetting(Setting::MaxQueuedTurns, 0));
     assert_shows(&past_the_end, "ALREADY 6 TURNS");
+}
+
+#[test]
+fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
+    let mut game = city_view();
+    game.units.clear();
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    game.open_barracks(0);
+    let tray = panel_strings(|panel| game.barracks_tray(0, panel));
+    assert_shows(&tray, "CAVALRY: 3 OF 3 LEFT (1 HORSES DEPOSIT × 3)");
+    assert_shows(&tray, "ARMORED: LOCKED - PUT A BARRACKS ON IRON");
+    let cavalry = find_button(&game, Target::BarracksBuild(BuildUnit::Cavalry));
+    assert_eq!(cavalry.state, ButtonState::Ready);
+    let armored = find_button(&game, Target::BarracksBuild(BuildUnit::Armored));
+    assert_eq!(armored.state, ButtonState::Disabled);
+    let tooltip: String = game
+        .tooltip_lines(&armored)
+        .into_iter()
+        .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
+        .collect();
+    assert!(tooltip.contains("NEEDS THIS BARRACKS ON IRON"), "{tooltip}");
+    // A Barracks trains at its own pace: a Melee's card shows its 2 turns.
+    let melee = find_button(&game, Target::BarracksBuild(BuildUnit::Melee));
+    assert!(
+        melee.hint.ends_with(&format!("{TIME_ICON}2")),
+        "{}",
+        melee.hint
+    );
 }

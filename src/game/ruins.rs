@@ -6,27 +6,26 @@
 //! gone. The count pauses while the hex is contested or empty, and starts
 //! over when another side takes it. The rewards are a first pass.
 
-use super::city::City;
+use super::city::{Stock, stock_words, turns_icon};
 use super::hex::Hex;
 use super::unit::{Team, Unit, UnitType};
 use super::{GameState, PLAYER_TEAM};
 
 /// Turn ends a side must hold ruins through to claim them.
 pub const RUIN_HOLD_TURNS: u32 = 3;
-/// Production the Supplies reward adds to the nearest city, in quarters
-/// (half a melee unit).
-const SUPPLIES_PRODUCTION: i32 = 24;
-/// Food the Harvest reward adds to the nearest city, in quarters.
-const HARVEST_FOOD: i32 = 32;
+/// What the Supplies reward adds to the claimant's stockpile.
+const SUPPLIES: Stock = Stock::whole(0, 4, 2);
+/// What the Harvest reward adds to the claimant's stockpile.
+const HARVEST: Stock = Stock::whole(8, 0, 0);
 
 /// What claiming ruins gives.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RuinReward {
     /// A cavalry unit joins the claimant beside the ruins.
     Recruits,
-    /// Production for the claimant's city nearest the ruins.
+    /// Wood and metal for the claimant's stockpile.
     Supplies,
-    /// Food for the claimant's city nearest the ruins.
+    /// Food for the claimant's stockpile.
     Harvest,
 }
 
@@ -41,14 +40,8 @@ impl RuinReward {
     pub fn description(self) -> String {
         match self {
             RuinReward::Recruits => "A CAVALRY UNIT".into(),
-            RuinReward::Supplies => format!(
-                "+{} PRODUCTION IN THE NEAREST CITY",
-                super::city::amount(SUPPLIES_PRODUCTION)
-            ),
-            RuinReward::Harvest => format!(
-                "+{} FOOD IN THE NEAREST CITY",
-                super::city::amount(HARVEST_FOOD)
-            ),
+            RuinReward::Supplies => format!("+{} FOR THE STOCKPILE", stock_words(SUPPLIES)),
+            RuinReward::Harvest => format!("+{} FOR THE STOCKPILE", stock_words(HARVEST)),
         }
     }
 }
@@ -96,7 +89,8 @@ impl GameState {
             return Vec::new();
         };
         let mut notes = vec![format!(
-            "RUINS: HOLD {RUIN_HOLD_TURNS} TURNS WITH A MILITARY UNIT FOR {}",
+            "RUINS: HOLD {} WITH A MILITARY UNIT FOR {}",
+            turns_icon(RUIN_HOLD_TURNS as i32),
             ruin.reward.description()
         )];
         if let Some(team) = ruin.holder {
@@ -157,41 +151,27 @@ impl GameState {
         }
     }
 
-    /// Gives `ruin`'s holder its reward. A city reward goes to the side's
-    /// city nearest the ruins; a side without a city gets the Recruits
-    /// instead, and Recruits with no room beside the ruins give nothing.
+    /// Gives `ruin`'s holder its reward. Goods go to the side's stockpile;
+    /// a side without a city gets the Recruits instead, and Recruits with no
+    /// room beside the ruins give nothing.
     fn claim_ruin(&mut self, ruin: &Ruin) {
         let Some(team) = ruin.holder else { return };
-        let city = self
-            .cities
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.team == team)
-            .min_by_key(|(i, c)| (c.pos.distance(ruin.pos), *i))
-            .map(|(i, _)| i);
-        let reward = if city.is_none() {
-            RuinReward::Recruits
-        } else {
+        let reward = if self.cities.iter().any(|c| c.team == team) {
             ruin.reward
+        } else {
+            RuinReward::Recruits
         };
-        let what = match (reward, city) {
-            (RuinReward::Supplies, Some(city)) => {
-                self.cities[city].production += SUPPLIES_PRODUCTION;
-                format!(
-                    "+{} PRODUCTION IN {}",
-                    super::city::amount(SUPPLIES_PRODUCTION),
-                    city_name(&self.cities[city])
-                )
+        let what = match reward {
+            RuinReward::Supplies | RuinReward::Harvest => {
+                let goods = if reward == RuinReward::Supplies {
+                    SUPPLIES
+                } else {
+                    HARVEST
+                };
+                *self.stock_mut(team) += goods;
+                format!("+{} FOR THE STOCKPILE", stock_words(goods))
             }
-            (RuinReward::Harvest, Some(city)) => {
-                self.cities[city].food += HARVEST_FOOD;
-                format!(
-                    "+{} FOOD IN {}",
-                    super::city::amount(HARVEST_FOOD),
-                    city_name(&self.cities[city])
-                )
-            }
-            _ => {
+            RuinReward::Recruits => {
                 let spot = ruin
                     .pos
                     .neighbors()
@@ -223,13 +203,10 @@ impl GameState {
     }
 }
 
-fn city_name(city: &City) -> String {
-    format!("{:?} CITY {}", city.team, city.id + 1).to_uppercase()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::city::City;
 
     /// The combat scenario with no units, one ruin at the center and a city
     /// for each side far from it.
@@ -303,20 +280,19 @@ mod tests {
     }
 
     #[test]
-    fn city_rewards_go_to_the_nearest_city() {
-        for (reward, food, production) in [
-            (RuinReward::Supplies, 0, SUPPLIES_PRODUCTION),
-            (RuinReward::Harvest, HARVEST_FOOD, 0),
+    fn goods_rewards_go_to_the_claimants_stockpile() {
+        for (reward, goods) in [
+            (RuinReward::Supplies, SUPPLIES),
+            (RuinReward::Harvest, HARVEST),
         ] {
             let mut game = ruins_game(reward);
             game.cities.push(City::new(0, Team::Blue, Hex::new(-3, 0)));
-            game.cities.push(City::new(1, Team::Blue, Hex::new(2, 0)));
             put(&mut game, 1, Hex::new(0, 0), Team::Blue, UnitType::Melee);
+            let (blue, red) = (game.stock(Team::Blue), game.stock(Team::Red));
             end_turns(&mut game, RUIN_HOLD_TURNS);
             assert!(game.ruins.is_empty());
-            assert_eq!(game.cities[1].food, food, "{reward:?}");
-            assert_eq!(game.cities[1].production, production, "{reward:?}");
-            assert_eq!(game.cities[0].food, 0, "the farther city gets nothing");
+            assert_eq!(game.stock(Team::Blue), blue + goods, "{reward:?}");
+            assert_eq!(game.stock(Team::Red), red, "only the claimant gains");
         }
     }
 
@@ -326,7 +302,7 @@ mod tests {
         let ruin = Hex::new(0, 0);
         let notes = game.ruin_notes(ruin, false);
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("HOLD 3 TURNS"), "{notes:?}");
+        assert!(notes[0].contains("HOLD \u{E003}3 "), "{notes:?}");
         assert!(notes[0].contains("FOOD"), "{notes:?}");
         put(&mut game, 1, ruin, Team::Red, UnitType::Melee);
         end_turns(&mut game, 1);

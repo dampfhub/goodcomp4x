@@ -65,6 +65,20 @@ Rules: see docs/game-rules.md.";
 #[derive(Clone)]
 pub struct GameState {
     cities: Vec<city::City>,
+    /// Each side's food, wood and metal, indexed by `Team::index`
+    /// (`city/economy.rs`).
+    stockpiles: [city::Stock; Team::ALL.len()],
+    /// Debug setting: a city's production speeds its builds on top of the
+    /// fixed time (`work_rate`). Kept across scenario switches and loads.
+    production_speedup: bool,
+    /// Cavalry and Armored each side's Barracks have trained, by
+    /// `Resource::index`: what the cap counts under `lifetime_special_cap`
+    /// (`city/barracks.rs`).
+    special_trained: [[u32; 2]; Team::ALL.len()],
+    /// Debug setting: a deposit's cap counts every Cavalry or Armored ever
+    /// trained from it, not those alive. Kept across scenario switches and
+    /// loads.
+    lifetime_special_cap: bool,
     sites: std::collections::HashMap<Hex, city::Site>,
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
@@ -210,6 +224,10 @@ impl GameState {
 
         let mut game = Self {
             cities: Vec::new(),
+            stockpiles: [city::STARTING_STOCK; Team::ALL.len()],
+            production_speedup: false,
+            special_trained: [[0; 2]; Team::ALL.len()],
+            lifetime_special_cap: false,
             sites: std::collections::HashMap::new(),
             roads: HashSet::new(),
             selected_city: None,

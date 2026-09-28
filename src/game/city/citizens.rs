@@ -238,23 +238,6 @@ impl GameState {
         }
     }
 
-    pub(in crate::game) fn growth_status(&self, city: usize) -> (i32, i32, String) {
-        let c = &self.cities[city];
-        let threshold = (10 + 5 * c.population as i32) * 4;
-        let net = self.income(city).0 - c.population as i32 * 8;
-        let turns = if net > 0 {
-            ((threshold - c.food).max(0) + net - 1) / net
-        } else {
-            0
-        };
-        let label = if net > 0 {
-            format!("GROWTH IN {turns} TURNS")
-        } else {
-            "NO GROWTH: NEED FOOD".into()
-        };
-        ((c.food * 100 / threshold).clamp(0, 100), threshold, label)
-    }
-
     pub fn auto_assign_selected_city(&mut self) {
         if self.is_resolving() {
             return;
@@ -265,35 +248,37 @@ impl GameState {
         }
     }
 
+    /// The turn's economy (`economy.rs`): every city's goods go to its
+    /// side's stockpile, the citizens eat from it, each queue does a turn's
+    /// work, and finished builds complete.
     pub(in crate::game) fn resolve_economy(&mut self) {
+        self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
         let income: Vec<_> = (0..self.cities.len()).map(|i| self.income(i)).collect();
-        let barracks_income: Vec<_> = (0..self.cities.len())
-            .map(|i| self.barracks_income(i))
+        let rates: Vec<_> = (0..self.cities.len())
+            .map(|i| {
+                (
+                    self.work_rate(income[i].production()),
+                    self.work_rate(self.barracks_income(i)),
+                )
+            })
             .collect();
-        for ((city, (food, production)), barracks_production) in
-            self.cities.iter_mut().zip(income).zip(barracks_income)
-        {
-            city.food += food - city.population as i32 * 8;
-            if !city.queue.is_empty() {
-                // A manager at a Barracks directs the work group there, but
-                // does not stop the city itself benefiting from its labor.
-                city.production += production;
+        for (i, &goods) in income.iter().enumerate() {
+            let team = self.cities[i].team;
+            *self.stock_mut(team) += goods;
+        }
+        self.feed_citizens();
+        for (city, (rate, barracks_rate)) in self.cities.iter_mut().zip(rates) {
+            if city.queue.is_empty() {
+                city.progress = 0;
             } else {
-                city.production = 0;
+                city.progress += rate;
             }
-            if !city.barracks_queue.is_empty() && barracks_production > 0 {
-                city.barracks_production += barracks_production;
-            } else if city.barracks_queue.is_empty() {
-                city.barracks_production = 0;
-            }
-            let threshold = (10 + 5 * city.population as i32) * 4;
-            if city.food >= threshold && city.population < MAX_CITY_POPULATION {
-                city.food -= threshold;
-                city.population += 1;
-            }
-            if city.food < 0 {
-                city.population = city.population.saturating_sub(1).max(1);
-                city.food = 0;
+            // A Barracks trains whatever the manager does; with production
+            // speeding builds, the manager on it adds its group's work.
+            if city.barracks_queue.is_empty() {
+                city.barracks_progress = 0;
+            } else {
+                city.barracks_progress += barracks_rate;
             }
             city.worked
                 .truncate(city.population.min(MAX_CITY_POPULATION));
@@ -303,7 +288,6 @@ impl GameState {
         for i in 0..self.cities.len() {
             self.reconcile_citizens(i);
         }
-        self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
     }
 
     /// Each hospital treats two nearby survivors once per turn. Both health

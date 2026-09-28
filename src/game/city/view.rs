@@ -51,7 +51,7 @@ impl GameState {
         self.ui_click_mode = None;
         self.camera.focus_on(self.cities[i].pos.to_world());
         self.notice = if self.city_needs_build(i) {
-            format!("CHOOSE WHAT CITY {} BUILDS - 1-4", self.cities[i].id + 1)
+            format!("CHOOSE WHAT CITY {} BUILDS - 1-9", self.cities[i].id + 1)
         } else {
             "CLICK TILES TO ASSIGN - A AUTO ASSIGN - ESC OR SPACE TO EXIT".into()
         };
@@ -59,9 +59,11 @@ impl GameState {
 
     /// One of the player's cities with nothing queued to build. The turn
     /// waits for these, as it does for units without orders.
+    /// A player city with an empty queue holds up the turn, unless its side
+    /// can't afford anything it could start (`can_afford_a_build`).
     pub(in crate::game) fn city_needs_build(&self, i: usize) -> bool {
         let city = &self.cities[i];
-        city.team == PLAYER_TEAM && city.queue.is_empty()
+        city.team == PLAYER_TEAM && city.queue.is_empty() && self.can_afford_a_build(i)
     }
 
     pub(in crate::game) fn leave_city_view(&mut self) {
@@ -163,15 +165,14 @@ impl GameState {
                 self.cities[i].planned_sites.insert(building, hex);
                 self.placing_building = None;
                 if self.cities[i].pending_building == Some(building)
-                    && self.cities[i].production
-                        < self.city_build_cost(i, Build::Building(building))
+                    && self.cities[i].progress < self.city_build_work(i, Build::Building(building))
                 {
                     self.cities[i].pending_building = None;
                 }
                 self.notice = if self.cities[i].pending_building == Some(building)
                     || (self.cities[i].queue.first() == Some(&Build::Building(building))
-                        && self.cities[i].production
-                            >= self.city_build_cost(i, Build::Building(building)))
+                        && self.cities[i].progress
+                            >= self.city_build_work(i, Build::Building(building)))
                 {
                     format!(
                         "{} SITE SELECTED - CLICK CONFIRM IN THE CITY TRAY",
