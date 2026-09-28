@@ -102,8 +102,14 @@ pub(super) enum Row {
     /// A line of small text with a one-line button at the row's right end: a
     /// queue panel's title and its Clear button.
     TitleWithButton(Line, ButtonSpec),
-    /// A bounded, independently scrollable list within the city tray.
-    BuildingCatalog(usize, Vec<CatalogEntry>, usize),
+    /// A bounded, independently scrollable list within the city tray: the
+    /// city, its cards, the first card shown and how many cards show at once
+    /// in classic (`PanelBuilder::fit_height` can make that fewer).
+    BuildingCatalog(usize, Vec<CatalogEntry>, usize, usize),
+    /// Rows that scroll within the panel when it has to be shorter than
+    /// they are (classic): the city tray's workers and jobs. ImGui, whose
+    /// windows scroll, shows every one (`flat_rows`).
+    ScrollList(ScrollList),
     /// A row of unit tokens in the unit strip.
     Roster(Vec<RosterChip>),
     /// A heading over a group of rows, with a rule under it in ImGui.
@@ -122,6 +128,106 @@ pub(super) enum Row {
 pub(super) enum CatalogEntry {
     Heading(&'static str),
     Card(ButtonSpec),
+}
+
+/// A run of a panel's rows that scrolls, a whole row at a time, in a window
+/// of its own inside the panel, with a scrollbar beside it when the rows
+/// don't all fit. The window is as tall as the rows until
+/// `PanelBuilder::fit_height` gives it less room.
+#[derive(Clone)]
+pub(super) struct ScrollList {
+    /// Whose scroll position `offset` is (`GameState::set_queue_scroll`).
+    pub(super) kind: QueueKind,
+    /// A line of text, a row of buttons or a queue row each. A row of
+    /// buttons after another gets the gap `PanelBuilder::buttons` would give
+    /// it.
+    pub(super) entries: Vec<Row>,
+    /// The first entry shown (clamped to the last offset that fills the
+    /// window).
+    pub(super) offset: usize,
+    /// The window's height, when it's shorter than the entries.
+    pub(super) height: Option<f32>,
+}
+
+impl ScrollList {
+    /// Each entry's height, with the gap above it that it needs after the
+    /// entry before it.
+    fn pitches(&self) -> Vec<f32> {
+        let mut after_buttons = false;
+        self.entries
+            .iter()
+            .map(|entry| {
+                let buttons = matches!(entry, Row::Buttons(..));
+                let gap = if buttons && after_buttons { GAP } else { 0.0 };
+                after_buttons = buttons;
+                gap + PanelBuilder::row_height(entry)
+            })
+            .collect()
+    }
+
+    /// The height of entries `from..to` shown together: the first one's gap
+    /// above it is left out.
+    fn span(&self, pitches: &[f32], from: usize, to: usize) -> f32 {
+        let lead = pitches[from] - PanelBuilder::row_height(&self.entries[from]);
+        pitches[from..to].iter().sum::<f32>() - lead
+    }
+
+    /// The window's height: the entries', or less if it has less room.
+    fn window(&self) -> f32 {
+        let pitches = self.pitches();
+        let full = if pitches.is_empty() {
+            0.0
+        } else {
+            self.span(&pitches, 0, pitches.len())
+        };
+        self.height.map_or(full, |height| height.min(full))
+    }
+
+    /// The last offset that still fills the window, and the entries shown
+    /// from the current offset.
+    fn shown(&self) -> (usize, std::ops::Range<usize>) {
+        let pitches = self.pitches();
+        let count = pitches.len();
+        if count == 0 {
+            return (0, 0..0);
+        }
+        let window = self.window() + 0.5;
+        let max_offset = (0..count)
+            .find(|&from| self.span(&pitches, from, count) <= window)
+            .unwrap_or(count - 1);
+        let from = self.offset.min(max_offset);
+        let mut to = from + 1;
+        while to < count && self.span(&pitches, from, to + 1) <= window {
+            to += 1;
+        }
+        (max_offset, from..to)
+    }
+}
+
+/// Room a building catalogue card takes, with the space under it.
+const CATALOG_PITCH: f32 = 34.0;
+
+/// A row of buttons after another row of buttons in a scroll list: the gap
+/// between them, as ImGui gets it (`flat_rows`).
+static BUTTON_ROW_GAP: Row = Row::Gap(GAP);
+
+/// `rows` with each scroll list's entries in its place, as ImGui shows them:
+/// its windows scroll by themselves.
+pub(super) fn flat_rows(rows: &[Row]) -> Vec<&Row> {
+    fn push<'a>(out: &mut Vec<&'a Row>, row: &'a Row) {
+        if matches!(row, Row::Buttons(..)) && matches!(out.last(), Some(Row::Buttons(..))) {
+            out.push(&BUTTON_ROW_GAP);
+        }
+        out.push(row);
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        match row {
+            Row::ScrollList(list) => list.entries.iter().for_each(|entry| push(&mut out, entry)),
+            row => push(&mut out, row),
+        }
+    }
+    out
 }
 
 /// Reusable panel content primitive. Stacks rows top to bottom and measures
@@ -159,7 +265,59 @@ impl PanelBuilder {
         entries: Vec<CatalogEntry>,
         offset: usize,
     ) {
-        self.rows.push(Row::BuildingCatalog(city, entries, offset));
+        self.rows.push(Row::BuildingCatalog(
+            city,
+            entries,
+            offset,
+            BUILDING_LIST_VISIBLE,
+        ));
+    }
+
+    /// `entries` (each a line of text, a row of buttons or a queue row), in
+    /// a list that scrolls within the panel, from entry `offset`, when the
+    /// panel has less room than they need (`fit_height`).
+    pub(super) fn scroll_list(&mut self, kind: QueueKind, entries: Vec<Row>, offset: usize) {
+        if entries.is_empty() {
+            return;
+        }
+        self.rows.push(Row::ScrollList(ScrollList {
+            kind,
+            entries,
+            offset,
+            height: None,
+        }));
+    }
+
+    /// Makes the panel no taller than `height`, if it can, by showing less of
+    /// what scrolls within it: first its scroll lists, down to two rows'
+    /// room, then its building catalogue, down to two cards, then the
+    /// lists down to one row. Classic uses it before docking a panel that
+    /// may have grown past the screen (ImGui's windows scroll instead).
+    pub(super) fn fit_height(&mut self, height: f32) {
+        for (list_rows, catalog_cards) in [(2.0, BUILDING_LIST_VISIBLE), (2.0, 2), (1.0, 2)] {
+            for i in 0..self.rows.len() {
+                if !matches!(self.rows[i], Row::ScrollList(_) | Row::BuildingCatalog(..)) {
+                    continue;
+                }
+                let excess = self.size().y - height.round();
+                if excess <= 0.0 {
+                    return;
+                }
+                match &mut self.rows[i] {
+                    Row::ScrollList(list) => {
+                        let window = list.window();
+                        let floor = window.min(list_rows * QUEUE_ITEM_HEIGHT);
+                        list.height = Some((window - excess).max(floor));
+                    }
+                    Row::BuildingCatalog(_, entries, _, visible) => {
+                        let shown = entries.len().clamp(1, *visible);
+                        let shed = (excess / CATALOG_PITCH).ceil() as usize;
+                        *visible = shown.saturating_sub(shed).max(shown.min(catalog_cards));
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// A row of unit tokens, each clickable.
@@ -224,10 +382,11 @@ impl PanelBuilder {
             Row::Buttons(_, true) => END_TURN_HEIGHT,
             Row::TitleWithButton(..) => TITLE_ROW_HEIGHT,
             Row::Roster(_) => ROSTER_CHIP,
-            Row::BuildingCatalog(_, buttons, _) => {
-                let visible = buttons.len().clamp(1, BUILDING_LIST_VISIBLE);
+            Row::BuildingCatalog(_, buttons, _, visible) => {
+                let visible = buttons.len().clamp(1, *visible);
                 visible as f32 * 30.0 + (visible + 1) as f32 * 4.0
             }
+            Row::ScrollList(list) => list.window(),
             Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
                 unreachable!("expanded by classic_rows")
             }
@@ -255,7 +414,18 @@ impl PanelBuilder {
                     buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
                 }
             }
-            Row::BuildingCatalog(_, entries, _) => entries
+            Row::ScrollList(list) => {
+                let widest = list.entries.iter().map(Self::row_width).fold(0.0, f32::max);
+                let (max_offset, _) = list.shown();
+                // Room for the scrollbar once there's something to scroll.
+                widest
+                    + if max_offset > 0 {
+                        GAP + SCROLLBAR_WIDTH
+                    } else {
+                        0.0
+                    }
+            }
+            Row::BuildingCatalog(_, entries, ..) => entries
                 .iter()
                 .filter_map(|entry| match entry {
                     CatalogEntry::Card(button) => {
@@ -337,197 +507,277 @@ impl PanelBuilder {
         let mut top = max.y - PADDING;
         for row in classic_rows(self.rows) {
             let height = Self::row_height(&row);
-            match row {
-                Row::Text(px, line) => {
-                    // Center capital letters in the line, ignoring the gap.
-                    let middle = top - (height - LINE_GAP) / 2.0;
-                    push_text_row(layout, Vec2::new(left, middle), px, line);
-                }
-                Row::Gap(_) => {}
-                Row::TitleWithButton(line, spec) => {
-                    let middle = top - TITLE_BUTTON_HEIGHT / 2.0;
-                    push_text_row(layout, Vec2::new(left, middle), SMALL, line);
-                    let width = single_line_button_width(&spec.label, &spec.hint);
-                    let right = left + inner_width;
-                    layout.buttons.push(Button {
+            place_row(layout, row, Vec2::new(left, top), inner_width, self.faded);
+            top -= height;
+        }
+    }
+}
+
+/// Places one of a classic panel's rows (after `classic_rows`) with its top
+/// left corner at `top_left`, `inner_width` wide.
+fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, faded: bool) {
+    let (left, top) = (top_left.x, top_left.y);
+    let height = PanelBuilder::row_height(&row);
+    match row {
+        Row::Text(px, line) => {
+            // Center capital letters in the line, ignoring the gap.
+            let middle = top - (height - LINE_GAP) / 2.0;
+            push_text_row(layout, Vec2::new(left, middle), px, line);
+        }
+        Row::Gap(_) => {}
+        Row::TitleWithButton(line, spec) => {
+            let middle = top - TITLE_BUTTON_HEIGHT / 2.0;
+            push_text_row(layout, Vec2::new(left, middle), SMALL, line);
+            let width = single_line_button_width(&spec.label, &spec.hint);
+            let right = left + inner_width;
+            layout.buttons.push(Button {
+                target: spec.target,
+                label: spec.label,
+                hint: spec.hint,
+                state: spec.state,
+                armed: spec.armed,
+                faded,
+                min: Vec2::new(right - width, top - TITLE_BUTTON_HEIGHT).round(),
+                max: Vec2::new(right, top).round(),
+            });
+        }
+        Row::Bar(fraction) => layout.shapes.push(Shape::Bar {
+            min: Vec2::new(left, top - height),
+            max: Vec2::new(left + inner_width, top),
+            fraction,
+        }),
+        Row::QueueItem(item) => {
+            let min = Vec2::new(left, top - height + QUEUE_ITEM_GAP).round();
+            let max = Vec2::new(left + inner_width, top).round();
+            let body_max_x = max.x - QUEUE_REMOVE_WIDTH;
+            layout.shapes.push(Shape::QueueItem {
+                min,
+                max: Vec2::new(body_max_x, max.y),
+                label: item.label,
+                active: item.active,
+                waiting: item.waiting,
+                dragging: item.dragging,
+                drop_target: item.drop_target,
+                locked: item.locked,
+            });
+            layout.buttons.push(Button {
+                target: item.kind.remove_target(item.index),
+                label: "X".into(),
+                hint: String::new(),
+                state: ButtonState::Ready,
+                armed: false,
+                faded,
+                min: Vec2::new(body_max_x, min.y),
+                max,
+            });
+            layout.queue_items.push(QueueItemRegion {
+                kind: item.kind,
+                index: item.index,
+                min,
+                max,
+                body_max_x,
+                locked: item.locked,
+            });
+        }
+        Row::Buttons(buttons, compact) => {
+            let icons = icon_row(&buttons);
+            let width = if icons {
+                ICON_BUTTON_SIZE
+            } else {
+                button_width(&buttons, compact)
+            };
+            for (i, spec) in buttons.into_iter().enumerate() {
+                let (min, size) = if icons {
+                    let column = i % CLASSIC_ICON_COLUMNS;
+                    let row = i / CLASSIC_ICON_COLUMNS;
+                    (
+                        Vec2::new(
+                            left + column as f32 * (ICON_BUTTON_SIZE + GAP),
+                            top - ICON_BUTTON_SIZE - row as f32 * (ICON_BUTTON_SIZE + GAP),
+                        ),
+                        Vec2::splat(ICON_BUTTON_SIZE),
+                    )
+                } else {
+                    (
+                        Vec2::new(left + i as f32 * (width + GAP), top - height),
+                        Vec2::new(width, height),
+                    )
+                };
+                layout.buttons.push(Button {
+                    target: spec.target,
+                    label: spec.label,
+                    hint: spec.hint,
+                    state: spec.state,
+                    armed: spec.armed,
+                    faded,
+                    min: min.round(),
+                    max: (min + size).round(),
+                });
+            }
+        }
+        Row::ScrollList(list) => place_scroll_list(layout, list, top_left, inner_width, faded),
+        Row::BuildingCatalog(city, buttons, offset, visible) => {
+            let total = buttons.len();
+            let visible = total.min(visible);
+            let overflow = buttons.len() > visible;
+            let region_min = Vec2::new(left, top - height).round();
+            let region_max = Vec2::new(left + inner_width, top).round();
+            layout.shapes.push(Shape::Panel {
+                min: region_min,
+                max: region_max,
+                faded,
+            });
+            let list_width = inner_width - 8.0 - if overflow { SCROLLBAR_WIDTH + 4.0 } else { 0.0 };
+            let offset = offset.min(buttons.len().saturating_sub(visible));
+            for (index, entry) in buttons.into_iter().enumerate().skip(offset).take(visible) {
+                let y = region_max.y - 4.0 - (index - offset) as f32 * 34.0;
+                let max = Vec2::new(left + 4.0 + list_width, y).round();
+                let min = Vec2::new(left + 4.0, y - 30.0).round();
+                match entry {
+                    CatalogEntry::Card(spec) => layout.buttons.push(Button {
                         target: spec.target,
                         label: spec.label,
                         hint: spec.hint,
                         state: spec.state,
                         armed: spec.armed,
-                        faded: self.faded,
-                        min: Vec2::new(right - width, top - TITLE_BUTTON_HEIGHT).round(),
-                        max: Vec2::new(right, top).round(),
-                    });
-                }
-                Row::Bar(fraction) => layout.shapes.push(Shape::Bar {
-                    min: Vec2::new(left, top - height),
-                    max: Vec2::new(left + inner_width, top),
-                    fraction,
-                }),
-                Row::QueueItem(item) => {
-                    let min = Vec2::new(left, top - height + QUEUE_ITEM_GAP).round();
-                    let max = Vec2::new(left + inner_width, top).round();
-                    let body_max_x = max.x - QUEUE_REMOVE_WIDTH;
-                    layout.shapes.push(Shape::QueueItem {
-                        min,
-                        max: Vec2::new(body_max_x, max.y),
-                        label: item.label,
-                        active: item.active,
-                        waiting: item.waiting,
-                        dragging: item.dragging,
-                        drop_target: item.drop_target,
-                        locked: item.locked,
-                    });
-                    layout.buttons.push(Button {
-                        target: item.kind.remove_target(item.index),
-                        label: "X".into(),
-                        hint: String::new(),
-                        state: ButtonState::Ready,
-                        armed: false,
-                        faded: self.faded,
-                        min: Vec2::new(body_max_x, min.y),
-                        max,
-                    });
-                    layout.queue_items.push(QueueItemRegion {
-                        kind: item.kind,
-                        index: item.index,
+                        faded,
                         min,
                         max,
-                        body_max_x,
-                        locked: item.locked,
-                    });
-                }
-                Row::Buttons(buttons, compact) => {
-                    let icons = icon_row(&buttons);
-                    let width = if icons {
-                        ICON_BUTTON_SIZE
-                    } else {
-                        button_width(&buttons, compact)
-                    };
-                    for (i, spec) in buttons.into_iter().enumerate() {
-                        let (min, size) = if icons {
-                            let column = i % CLASSIC_ICON_COLUMNS;
-                            let row = i / CLASSIC_ICON_COLUMNS;
-                            (
-                                Vec2::new(
-                                    left + column as f32 * (ICON_BUTTON_SIZE + GAP),
-                                    top - ICON_BUTTON_SIZE - row as f32 * (ICON_BUTTON_SIZE + GAP),
-                                ),
-                                Vec2::splat(ICON_BUTTON_SIZE),
-                            )
-                        } else {
-                            (
-                                Vec2::new(left + i as f32 * (width + GAP), top - height),
-                                Vec2::new(width, height),
-                            )
-                        };
-                        layout.buttons.push(Button {
-                            target: spec.target,
-                            label: spec.label,
-                            hint: spec.hint,
-                            state: spec.state,
-                            armed: spec.armed,
-                            faded: self.faded,
-                            min: min.round(),
-                            max: (min + size).round(),
-                        });
-                    }
-                }
-                Row::BuildingCatalog(city, buttons, offset) => {
-                    let total = buttons.len();
-                    let visible = total.min(BUILDING_LIST_VISIBLE);
-                    let overflow = buttons.len() > visible;
-                    let region_min = Vec2::new(left, top - height).round();
-                    let region_max = Vec2::new(left + inner_width, top).round();
-                    layout.shapes.push(Shape::Panel {
-                        min: region_min,
-                        max: region_max,
-                        faded: self.faded,
-                    });
-                    let list_width =
-                        inner_width - 8.0 - if overflow { SCROLLBAR_WIDTH + 4.0 } else { 0.0 };
-                    let offset = offset.min(buttons.len().saturating_sub(visible));
-                    for (index, entry) in buttons.into_iter().enumerate().skip(offset).take(visible)
-                    {
-                        let y = region_max.y - 4.0 - (index - offset) as f32 * 34.0;
-                        let max = Vec2::new(left + 4.0 + list_width, y).round();
-                        let min = Vec2::new(left + 4.0, y - 30.0).round();
-                        match entry {
-                            CatalogEntry::Card(spec) => layout.buttons.push(Button {
-                                target: spec.target,
-                                label: spec.label,
-                                hint: spec.hint,
-                                state: spec.state,
-                                armed: spec.armed,
-                                faded: self.faded,
-                                min,
-                                max,
-                            }),
-                            CatalogEntry::Heading(label) => push_text_row(
-                                layout,
-                                Vec2::new(min.x + 4.0, (min.y + max.y) / 2.0),
-                                SMALL,
-                                vec![(label.into(), LABEL_TEXT)],
-                            ),
-                        }
-                    }
-                    if overflow {
-                        let track_min =
-                            Vec2::new(region_max.x - 4.0 - SCROLLBAR_WIDTH, region_min.y + 4.0);
-                        let track_max = Vec2::new(region_max.x - 4.0, region_max.y - 4.0);
-                        let track_height = track_max.y - track_min.y;
-                        let thumb_height = (track_height * visible as f32 / total as f32)
-                            .max(24.0)
-                            .min(track_height);
-                        let max_offset = total - visible;
-                        let travel = track_height - thumb_height;
-                        let thumb_top = track_max.y - travel * offset as f32 / max_offset as f32;
-                        layout.shapes.push(Shape::Scrollbar {
-                            track_min,
-                            track_max,
-                            thumb_min: Vec2::new(track_min.x, thumb_top - thumb_height),
-                            thumb_max: Vec2::new(track_max.x, thumb_top),
-                        });
-                        layout.building_scrollbars.push(BuildingScrollRegion {
-                            city,
-                            min: region_min,
-                            max: region_max,
-                            track_min,
-                            track_max,
-                            thumb_height,
-                            max_offset,
-                        });
-                    } else {
-                        layout.building_scrollbars.push(BuildingScrollRegion {
-                            city,
-                            min: region_min,
-                            max: region_max,
-                            track_min: region_min,
-                            track_max: region_min,
-                            thumb_height: 0.0,
-                            max_offset: 0,
-                        });
-                    }
-                }
-                Row::Roster(chips) => {
-                    for (i, chip) in chips.into_iter().enumerate() {
-                        let min = Vec2::new(
-                            left + i as f32 * (ROSTER_CHIP + ROSTER_CHIP_GAP),
-                            top - height,
-                        )
-                        .round();
-                        let max = min + Vec2::splat(ROSTER_CHIP);
-                        layout.shapes.push(Shape::UnitChip { min, max, chip });
-                        layout.roster_chips.push((min, max, chip.key));
-                    }
-                }
-                Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
-                    unreachable!("expanded by classic_rows")
+                    }),
+                    CatalogEntry::Heading(label) => push_text_row(
+                        layout,
+                        Vec2::new(min.x + 4.0, (min.y + max.y) / 2.0),
+                        SMALL,
+                        vec![(label.into(), LABEL_TEXT)],
+                    ),
                 }
             }
-            top -= height;
+            if overflow {
+                let track_min = Vec2::new(region_max.x - 4.0 - SCROLLBAR_WIDTH, region_min.y + 4.0);
+                let track_max = Vec2::new(region_max.x - 4.0, region_max.y - 4.0);
+                let track_height = track_max.y - track_min.y;
+                let thumb_height = (track_height * visible as f32 / total as f32)
+                    .max(24.0)
+                    .min(track_height);
+                let max_offset = total - visible;
+                let travel = track_height - thumb_height;
+                let thumb_top = track_max.y - travel * offset as f32 / max_offset as f32;
+                layout.shapes.push(Shape::Scrollbar {
+                    track_min,
+                    track_max,
+                    thumb_min: Vec2::new(track_min.x, thumb_top - thumb_height),
+                    thumb_max: Vec2::new(track_max.x, thumb_top),
+                });
+                layout.building_scrollbars.push(BuildingScrollRegion {
+                    city,
+                    min: region_min,
+                    max: region_max,
+                    track_min,
+                    track_max,
+                    thumb_height,
+                    max_offset,
+                });
+            } else {
+                layout.building_scrollbars.push(BuildingScrollRegion {
+                    city,
+                    min: region_min,
+                    max: region_max,
+                    track_min: region_min,
+                    track_max: region_min,
+                    thumb_height: 0.0,
+                    max_offset: 0,
+                });
+            }
         }
+        Row::Roster(chips) => {
+            for (i, chip) in chips.into_iter().enumerate() {
+                let min = Vec2::new(
+                    left + i as f32 * (ROSTER_CHIP + ROSTER_CHIP_GAP),
+                    top - height,
+                )
+                .round();
+                let max = min + Vec2::splat(ROSTER_CHIP);
+                layout.shapes.push(Shape::UnitChip { min, max, chip });
+                layout.roster_chips.push((min, max, chip.key));
+            }
+        }
+        Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
+            unreachable!("expanded by classic_rows")
+        }
+    }
+}
+
+/// Places the entries of `list` that its window shows, from its offset, and
+/// beside them, if they don't all show, a scrollbar: its wheel and drag
+/// regions scroll the list (`GameState::scroll_queue_at`).
+fn place_scroll_list(
+    layout: &mut Layout,
+    list: ScrollList,
+    top_left: Vec2,
+    inner_width: f32,
+    faded: bool,
+) {
+    let window = list.window();
+    let (max_offset, shown) = list.shown();
+    let overflow = max_offset > 0;
+    let width = inner_width - if overflow { GAP + SCROLLBAR_WIDTH } else { 0.0 };
+    let pitches = list.pitches();
+    let mut top = top_left.y;
+    for (index, entry) in list.entries.into_iter().enumerate() {
+        if !shown.contains(&index) {
+            continue;
+        }
+        let height = PanelBuilder::row_height(&entry);
+        // The first row shown needs no gap above it.
+        if index > shown.start {
+            top -= pitches[index] - height;
+        }
+        place_row(layout, entry, Vec2::new(top_left.x, top), width, faded);
+        top -= height;
+    }
+    if !overflow {
+        return;
+    }
+    let min = Vec2::new(top_left.x, top_left.y - window).round();
+    let max = Vec2::new(top_left.x + inner_width, top_left.y).round();
+    let track_min = Vec2::new(max.x - SCROLLBAR_WIDTH, min.y);
+    let track_max = max;
+    let height = track_max.y - track_min.y;
+    let thumb_height = (height * shown.len() as f32 / pitches.len() as f32)
+        .max(24.0)
+        .min(height);
+    let thumb_top = track_max.y - (height - thumb_height) * shown.start as f32 / max_offset as f32;
+    layout.shapes.push(Shape::Scrollbar {
+        track_min,
+        track_max,
+        thumb_min: Vec2::new(track_min.x, thumb_top - thumb_height),
+        thumb_max: Vec2::new(track_max.x, thumb_top),
+    });
+    layout.queue_scrollbars.push(QueueScrollRegion {
+        kind: list.kind,
+        panel_min: min,
+        panel_max: max,
+        track_min,
+        track_max,
+        thumb_height,
+        max_offset,
+    });
+}
+/// Whether `row` is a row of buttons, or a scroll list whose first (`first`)
+/// or last entry is: a row of buttons next to another needs a gap between
+/// them, their borders being drawn just outside them.
+fn buttons_at(row: &Row, first: bool) -> bool {
+    match row {
+        Row::Buttons(..) => true,
+        Row::ScrollList(list) => {
+            let edge = if first {
+                list.entries.first()
+            } else {
+                list.entries.last()
+            };
+            matches!(edge, Some(Row::Buttons(..)))
+        }
+        _ => false,
     }
 }
 
@@ -538,7 +788,7 @@ impl PanelBuilder {
 pub(super) fn classic_rows(rows: Vec<Row>) -> Vec<Row> {
     let mut out = Vec::with_capacity(rows.len());
     let push = |out: &mut Vec<Row>, row: Row| {
-        if matches!(row, Row::Buttons(..)) && matches!(out.last(), Some(Row::Buttons(..))) {
+        if buttons_at(&row, true) && out.last().is_some_and(|last| buttons_at(last, false)) {
             out.push(Row::Gap(GAP));
         }
         out.push(row);

@@ -28,6 +28,7 @@ mod settings;
 #[cfg(test)]
 mod simulation;
 mod terrain;
+mod transition;
 mod turn;
 mod ui;
 mod unit;
@@ -180,6 +181,10 @@ pub struct GameState {
     highlight_timer: f32,
     /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.rs`).
     cloud_time: f32,
+    /// The turn transition playing: units and workers gliding to where a
+    /// turn left them, and the new turn's cue (`transition.rs`).
+    /// Presentation only: a copy of the game starts without it.
+    transition: transition::Transition,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: HashSet<u32>,
     /// The turn strip's group whose units it lists one by one, while one of
@@ -293,6 +298,7 @@ impl GameState {
             recent_actors: Vec::new(),
             highlight_timer: 0.0,
             cloud_time: 0.0,
+            transition: transition::Transition::default(),
             settlers: HashSet::default(),
             ruins: Vec::new(),
             roster_open: None,

@@ -72,8 +72,11 @@ impl GameState {
         match kind {
             QueueKind::City => self.city_queue_scroll = offset,
             QueueKind::Barracks => self.barracks_queue_scroll = offset,
-            // Worker jobs are listed in full; they don't scroll.
-            QueueKind::Workers => {}
+            QueueKind::Workers => {
+                if let Some(city) = self.worker_list_city() {
+                    self.cities[city].worker_scroll = offset;
+                }
+            }
         }
     }
 
@@ -120,8 +123,12 @@ impl GameState {
         let current = match scroll.kind {
             QueueKind::City => self.city_queue_scroll,
             QueueKind::Barracks => self.barracks_queue_scroll,
-            QueueKind::Workers => 0,
-        };
+            QueueKind::Workers => self
+                .worker_list_city()
+                .map_or(0, |city| self.cities[city].worker_scroll),
+        }
+        // Kept past the end (by removing rows), it steps back from the end.
+        .min(scroll.max_offset);
         let delta = steps.abs().ceil() as usize;
         let next = if steps > 0.0 {
             current.saturating_sub(delta)

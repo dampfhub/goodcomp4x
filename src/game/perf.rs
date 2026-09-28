@@ -129,6 +129,9 @@ fn perf_report() {
         "plan_ai_turn (one side)",
         time(10, || game.clone().plan_ai_turn(Team::Red)),
     );
+    // No time has passed since the last turn: its transition is playing.
+    frame_report(&mut game, "turn 40, home, turn transition playing");
+    game.age_transition(1.0);
     frame_report(&mut game, "turn 40, home");
     game.camera.half_height = 30.0;
     frame_report(&mut game, "turn 40, zoomed all the way out");

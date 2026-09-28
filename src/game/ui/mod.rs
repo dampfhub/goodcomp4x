@@ -795,6 +795,9 @@ impl GameState {
             self.place_settings(screen_size, &mut layout);
             return layout;
         }
+        // A tray taller than the screen wouldn't dock at all: what scrolls
+        // in it (a city's workers and jobs, its catalogue) shows less.
+        tray.fit_height(layout.remaining_height(Zone::BottomLeft, tray.size().x));
         let tray_size = tray.size();
         layout.dock_panel(tray, Zone::BottomLeft);
         let queue_visible =

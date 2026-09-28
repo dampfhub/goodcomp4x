@@ -25,6 +25,8 @@ file holds.
   `layout()`, so scrollable or draggable content belongs in a persistent panel, not a hover
   panel. Placement order is priority: command panels first, then debug, then the turn strip.
   A button takes a click before a turn strip chip under it (the centered settings menu).
+  Rows that can grow without bound (a city's workers and jobs) go in a `scroll_list`, which
+  `fit_height` shortens until the tray fits, so a tray never outgrows a short screen.
 - Cursor-following tooltips and the selection box are overlays with their own anchors. The
   settings menu is the one panel placed outside the dock: centered, in both presentations.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05. ImGui

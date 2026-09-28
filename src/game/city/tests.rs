@@ -28,6 +28,164 @@ fn roads_improve_delivery_and_enemy_occupation_blocks_the_site() {
     assert!(!g.routes(0).costs.contains_key(&tile));
 }
 
+/// A lone Blue city on plain ground at the origin of a radius-6 map where
+/// every other hex is `tile(hex)`: no units, roads, sites or other cities.
+fn lone_city_on(tile: impl Fn(Hex) -> Tile) -> GameState {
+    use crate::game::hex::HexGrid;
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.roads.clear();
+    g.sites.clear();
+    let origin = Hex::new(0, 0);
+    g.cities = vec![City::new(0, Team::Blue, origin)];
+    let hexes: Vec<Hex> = HexGrid::new(6, [(origin, Tile::default())])
+        .all_hexes()
+        .collect();
+    g.grid = HexGrid::new(
+        6,
+        hexes.into_iter().map(|h| {
+            if h == origin {
+                (h, Tile::default())
+            } else {
+                (h, tile(h))
+            }
+        }),
+    );
+    g
+}
+
+/// #198: a tile's share depends on the hexes its goods travel, never on the
+/// terrain: every tile beside a city delivers 100%, forested hills, snow
+/// and marsh included.
+#[test]
+fn every_tile_beside_a_city_delivers_everything_whatever_its_terrain() {
+    use crate::game::terrain::{Feature, Terrain};
+    let rough = [
+        Tile {
+            terrain: Terrain::Plains,
+            hills: true,
+            feature: Some(Feature::Forest),
+        },
+        Tile {
+            terrain: Terrain::Grassland,
+            hills: true,
+            feature: None,
+        },
+        Tile {
+            terrain: Terrain::Snow,
+            hills: true,
+            feature: None,
+        },
+        Tile {
+            terrain: Terrain::Marsh,
+            hills: false,
+            feature: Some(Feature::Jungle),
+        },
+        Tile {
+            terrain: Terrain::Tundra,
+            hills: false,
+            feature: Some(Feature::Forest),
+        },
+        Terrain::Desert.into(),
+    ];
+    let around: Vec<Hex> = Hex::new(0, 0).neighbors().into_iter().collect();
+    let g = lone_city_on(|h| {
+        around
+            .iter()
+            .position(|&n| n == h)
+            .map_or(Tile::default(), |i| rough[i])
+    });
+    let routes = g.routes(0);
+    for (hex, tile) in around.iter().zip(rough) {
+        let cost = routes.costs[hex];
+        assert_eq!(
+            delivered_share(cost),
+            4,
+            "{} beside the city costs {cost}",
+            tile.name()
+        );
+    }
+
+    // The city's income agrees: all of a forested-hills tile's goods arrive.
+    let mut g = g;
+    let forested_hills = around[0];
+    g.cities[0].worked = vec![forested_hills];
+    let (food, wood, metal) = g.tile_goods(forested_hills);
+    assert!(wood + metal > 0);
+    assert_eq!(
+        g.income(0),
+        Stock {
+            food: 8 + food * 4,
+            wood: 4 + wood * 4,
+            metal: metal * 4,
+        }
+    );
+}
+
+/// #198: shares fall off by hexes travelled, 100/75/50/25% at one to four
+/// hexes, the same over rough ground as over open ground; five hexes out
+/// is beyond reach.
+#[test]
+fn shares_fall_off_by_hexes_travelled_not_terrain() {
+    use crate::game::terrain::{Feature, Terrain};
+    let forested_hills = Tile {
+        terrain: Terrain::Plains,
+        hills: true,
+        feature: Some(Feature::Forest),
+    };
+    for g in [
+        lone_city_on(|_| Tile::default()),
+        lone_city_on(|_| forested_hills),
+        lone_city_on(|_| Terrain::Marsh.into()),
+    ] {
+        let routes = g.routes(0);
+        let shares: Vec<Option<i32>> = (1..=5)
+            .map(|q| {
+                routes
+                    .costs
+                    .get(&Hex::new(q, 0))
+                    .map(|&cost| delivered_share(cost) * 25)
+            })
+            .collect();
+        assert_eq!(
+            shares,
+            [Some(100), Some(75), Some(50), Some(25), None],
+            "on {}",
+            g.grid.tile(Hex::new(1, 0)).name()
+        );
+    }
+}
+
+/// #198: a road step counts as half a hex, so a road extends a city's reach
+/// over any ground: two hexes out along a road deliver like one hex out.
+#[test]
+fn a_road_step_counts_as_half_a_hex() {
+    use crate::game::terrain::Terrain;
+    let mut g = lone_city_on(|_| Tile {
+        terrain: Terrain::Snow,
+        hills: true,
+        feature: None,
+    });
+    for q in 1..=4 {
+        g.roads.insert(Hex::new(q, 0));
+    }
+    let routes = g.routes(0);
+    let share = |q: i32, r: i32| {
+        routes
+            .costs
+            .get(&Hex::new(q, r))
+            .map(|&cost| delivered_share(cost) * 25)
+    };
+    // Along the road: half a hex a step.
+    assert_eq!(share(2, 0), Some(100));
+    assert_eq!(share(4, 0), Some(75));
+    // Off its end, one hex more, and the road reaches past four hexes.
+    assert_eq!(share(5, 0), Some(50));
+    assert_eq!(share(6, 0), Some(25));
+    // A tile beside the road: the road's steps, then one off-road hex.
+    assert_eq!(share(2, -1), Some(75));
+}
+
 #[test]
 fn canoe_house_turns_its_connected_river_into_a_transport_corridor() {
     let mut g = GameState::city_scenario();

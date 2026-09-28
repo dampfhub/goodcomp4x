@@ -1,6 +1,6 @@
 //! The bottom-left command tray: a unit, a group, a city or a Barracks.
 
-use super::builder::{ButtonSpec, CatalogEntry, PanelBuilder};
+use super::builder::{ButtonSpec, CatalogEntry, PanelBuilder, Row};
 use super::text::{
     ability_text, compare, cost_hint, quantity, resource_color, signed_quantity, stat_spans,
     turns_text,
@@ -726,7 +726,8 @@ impl GameState {
 
     /// The city's workers: how many are home and out, what those out are
     /// doing, and the jobs waiting for them, which can be dragged into a new
-    /// order or removed.
+    /// order or removed. All but the count are one list, which scrolls in
+    /// classic when the tray has too little room for it (`fit_height`).
     fn city_workers(&self, i: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let out: Vec<_> = self.field_workers.iter().filter(|w| w.home == i).collect();
@@ -739,19 +740,25 @@ impl GameState {
             LABEL_TEXT,
         )];
         panel.text(SMALL, line);
+        let button = |target, label| ButtonSpec {
+            target,
+            label,
+            hint: String::new(),
+            state: ButtonState::Ready,
+            armed: false,
+        };
+        let mut list = Vec::new();
         // Recalled workers stay home until released, one a click.
         if city.held_workers > 0 && city.team == self.local_team {
-            panel.compact_buttons(vec![ButtonSpec {
-                target: Target::ReleaseWorker,
-                label: if city.held_workers == 1 {
-                    "HELD AT HOME - RELEASE".into()
-                } else {
-                    "HELD AT HOME - RELEASE ONE".into()
-                },
-                hint: String::new(),
-                state: ButtonState::Ready,
-                armed: false,
-            }]);
+            let label = if city.held_workers == 1 {
+                "HELD AT HOME - RELEASE"
+            } else {
+                "HELD AT HOME - RELEASE ONE"
+            };
+            list.push(Row::Buttons(
+                vec![button(Target::ReleaseWorker, label.into())],
+                true,
+            ));
         }
         for worker in out {
             let doing = match (worker.job, worker.work_left) {
@@ -762,43 +769,21 @@ impl GameState {
                 (None, _) if worker.recalled => "RECALLED, WALKING HOME TO STAY".into(),
                 (None, _) => "WALKING HOME".into(),
             };
-            if worker.recalled {
-                panel.compact_buttons(vec![ButtonSpec {
-                    target: Target::ShowWorker(worker.id),
-                    label: doing,
-                    hint: String::new(),
-                    state: ButtonState::Ready,
-                    armed: false,
-                }]);
-                continue;
+            let mut buttons = vec![button(Target::ShowWorker(worker.id), doing)];
+            if !worker.recalled {
+                buttons.push(button(Target::RecallWorker(worker.id), "RECALL".into()));
             }
-            panel.compact_buttons(vec![
-                ButtonSpec {
-                    target: Target::ShowWorker(worker.id),
-                    label: doing,
-                    hint: String::new(),
-                    state: ButtonState::Ready,
-                    armed: false,
-                },
-                ButtonSpec {
-                    target: Target::RecallWorker(worker.id),
-                    label: "RECALL".into(),
-                    hint: String::new(),
-                    state: ButtonState::Ready,
-                    armed: false,
-                },
-            ]);
+            list.push(Row::Buttons(buttons, true));
         }
-        if city.worker_jobs.is_empty() {
-            return;
+        if !city.worker_jobs.is_empty() {
+            list.push(Row::Text(
+                SMALL,
+                vec![(
+                    "PLACED, WAITING FOR A WORKER - DRAG TO REORDER".into(),
+                    LABEL_TEXT,
+                )],
+            ));
         }
-        panel.text(
-            SMALL,
-            vec![(
-                "PLACED, WAITING FOR A WORKER - DRAG TO REORDER".into(),
-                LABEL_TEXT,
-            )],
-        );
         let drag = self
             .queue_drag
             .filter(|drag| drag.kind == QueueKind::Workers);
@@ -811,7 +796,7 @@ impl GameState {
             } else {
                 turns_text(total)
             };
-            panel.queue_item(QueueItemSpec {
+            list.push(Row::QueueItem(QueueItemSpec {
                 kind: QueueKind::Workers,
                 index,
                 label: format!("{} · {turns}", self.job_title(*job)),
@@ -821,8 +806,9 @@ impl GameState {
                 drop_target: drag
                     .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
                 locked: false,
-            });
+            }));
         }
+        panel.scroll_list(QueueKind::Workers, list, city.worker_scroll);
     }
 
     pub(super) fn barracks_tray(&self, i: usize, panel: &mut PanelBuilder) {

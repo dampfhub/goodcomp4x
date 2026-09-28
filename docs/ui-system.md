@@ -178,6 +178,15 @@ build and dock the scrollable panel. The city and Barracks queues demonstrate
 this. Their scrollbars and wheel hit regions are registered by the same panel
 placement. `dock_panel` returns `None` when a whole panel cannot fit anywhere
 inside the safe area; large content must choose a bounded or scrollable form.
+Within a panel, a list that grows goes in a `scroll_list` (`Row::ScrollList`:
+lines of text, rows of buttons and queue rows, scrolled a whole row at a time
+by a `QueueKind`'s scroll position). `layout()` calls `fit_height` with the
+room left before docking the tray, which shortens the tray's scroll lists (to
+two rows' room), then its catalogue (to two cards), then the lists (to one
+row) until it fits; the city tray's workers and jobs are one such list, so the
+tray stays on screen however many jobs are placed. The list registers its
+scrollbar and wheel region like a queue panel's. ImGui gets every entry in
+place of the list (`flat_rows`) and scrolls the whole window instead.
 `queue_item` registers its row body for drag reordering and a separate small X
 button for removal. A queue panel's title is a `title_with_button` row
 (`Row::TitleWithButton`): the text, and its Clear button (`Target::ClearCityQueue`,
@@ -193,4 +202,4 @@ Add a layout test when adding a new panel or zone behavior. Useful assertions
 are that panel rectangles do not overlap, buttons remain inside their panel,
 and the same target is clickable after the screen size or content changes.
 
-The city tray uses a shared `Row::BuildingCatalog` for unit and building production cards, separated by headings. ImGui renders it as a five-row child window with native scrolling; classic renders a five-row inset with wheel and draggable scrollbar. While the open city is placing a card's job on the map, a gold line over the catalogue, in place of the tile-assigning hint, says how to place it and to cancel, with a Cancel Placing button (`Target::CancelPlacing`) under it; the picked card is gold. City unit cards use the same pictograms in both presentations. The top-bar Menu button opens Settings without leaving a city view; the City Yields overlay toggle lives there.
+The city tray uses a shared `Row::BuildingCatalog` for unit and building production cards, separated by headings. ImGui renders it as a five-row child window with native scrolling; classic renders a five-row inset (fewer when `fit_height` needs the room) with wheel and draggable scrollbar. While the open city is placing a card's job on the map, a gold line over the catalogue, in place of the tile-assigning hint, says how to place it and to cancel, with a Cancel Placing button (`Target::CancelPlacing`) under it; the picked card is gold. City unit cards use the same pictograms in both presentations. The top-bar Menu button opens Settings without leaving a city view; the City Yields overlay toggle lives there.
