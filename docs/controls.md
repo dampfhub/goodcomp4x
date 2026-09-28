@@ -14,6 +14,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Right-click a hex in range | Attack it this turn: an enemy unit or barracks, or an empty hex someone may step into; empty city centers cannot be targeted |
 | Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued, until the unit's queue holds as many turns as the queue limit (settings menu) allows |
 | Shift-right-click a hex | Queue an attack on it: in the queue's last turn if that turn has none yet and it's in range, else in one more turn |
+| Shift-left-click a hex the unit plans to move to (a numbered stop of its queue, or a ghost) | Take that move off its plan, with every turn after it; the turns before stay (a hex it stops on twice loses the later move first) |
 | Ctrl-click an adjacent ally | Queue a swap |
 | M / X (or Move / Attack buttons) | Arm Move / Attack for the next map click (again to disarm) |
 | Right-click (armed) | Disarm the armed action |
@@ -32,6 +33,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Left-click a hex with a group | Each member moves as close to it as it can get |
 | Right-click a hex with a group | Every member in range attacks it (again to call it off) |
 | Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
+| Shift-left-click a member's planned stop with a group | Take that member's move there, and its later moves, off; it waits out those turns, so its queue stays as long as the others' |
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
 | Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
@@ -55,7 +57,9 @@ guards or follows a queue), and a city once it has a build. Like
 the other panels, hold Ctrl to drag, resize or dock it.
 
 Shift-clicks on a hex build an order queue over several turns (rules: `game-rules.md`, Order
-queues); a Shift-click on one of your own units adds it to the selection instead.
+queues); a Shift-click on one of your own units adds it to the selection instead. A
+Shift-click on a hex the selection plans to move to takes that move, and the turns after it, off
+the plan, so one wrong step doesn't mean queuing everything again.
 Selection stays on the unit while you queue; let go of it (Escape, Tab, or click another unit)
 when done. A queued unit doesn't hold up the turn, and any other order (a plain click or
 right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. While a
@@ -106,8 +110,9 @@ plays out.
 | --- | --- |
 | C | Open a city needing a build (or your first city); from a barracks view, its city |
 | Left-click your city | Open its city view |
-| Click a tile in the city view | Assign a citizen there, or release one |
-| Click the manager (`M`), then a tile | Move the manager; workers follow where they can |
+| Click a tile in the city view | Assign a citizen there, or release one; where one of your units stands, click beside its token |
+| Click one of your units' tokens in the city or barracks view | Select the unit and close the view |
+| Click the manager (`M`), then a tile | Move the manager; workers follow where they can (once it's picked up, a click on a unit's token places it too) |
 | A | Auto-assign citizens by the city's labor focus |
 | Food / Wood / Metal / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
@@ -128,7 +133,7 @@ plays out.
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |
 | See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types, and how many Cavalry and Armored its deposits still allow) |
-| Click the city center while in city view | Enter that city's tactical interior map |
+| Click the city center while in city view (beside any unit's token) | Enter that city's tactical interior map |
 | V / City Interior button | Open the selected or hovered city's interior; press again to return |
 | Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |
 | Backspace in the interior | Clear the selected copy's orders |
@@ -137,8 +142,12 @@ plays out.
 | Space / Escape / click off the map | Close the city or barracks view |
 | Tab | Close the city or barracks view |
 
-While a city view is open, map clicks manage tiles and never select field units. Clicking the
-city center enters the interior map; its clicks control only the interior copies.
+While a city view is open, map clicks manage tiles, except a click on one of your units' tokens
+(its disc or hexagon as drawn, not the rest of its hex), which selects that unit and closes the
+view. The barracks view works the same way: a token click selects the unit, and any other map
+click leaves the view open. While something is being placed for the city's workers, or the
+manager is picked up, every click is theirs, token or not. Clicking the city center enters the
+interior map; its clicks control only the interior copies.
 
 ## Camera, game and testing
 
@@ -277,8 +286,12 @@ them.
   disc. Settlers (a planted flag) are hollow hexagons.
 - Workers out on the map are small hollow hexagons with a shovel (tucked into a corner when a
   unit shares their hex), with a dotted line to the job they're walking to. A dark tag with a
-  shovel beside each of your cities counts its workers at home. Queued jobs are faded gold rings
-  with the job's name.
+  shovel beside each of your cities counts its workers at home. A job on a tile is a ring inside
+  the hex, open at the top where its name sits on a dark plate, nested inside a worked tile's
+  outline so both show: faded gold while queued, bright gold once a worker is out on it (with the
+  turns of work left once it's at work). Another side's construction you can see (its worker at
+  work there) is the same ring, or edge for a wall or gate, in that side's color and named, with
+  no turns left.
 - Structures: walls are stone bands along hex edges with posts in their owner's color; a gate is
   a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,
   a fort a ring of stakes around it. Queued walls and gates are muted gold edges with rounded ends,
@@ -294,8 +307,8 @@ them.
   are water (ships enter it, land units do not; cities can work it). Terrain defense and yields are in
   `game-rules.md`.
 - Fog of war: never-seen hexes are under clouds; hexes you've seen but can't see now are under a
-  grey veil and show the cities, improvements, roads and structures that were there when you
-  last looked, but no units or workers.
+  grey veil and show the cities, improvements, roads, structures and other sides' construction
+  that were there when you last looked, but no units or workers.
 - In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
   the manager; hovering the manager draws a dotted line along the way its goods travel to the
   city. Green grain and amber hammers show food and production, with the share that reaches the

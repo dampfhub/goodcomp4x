@@ -13,7 +13,7 @@ behavior.
 |---|---|
 | `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`, `naval_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
 | `orders.rs` | player input and order planning: `ClickMode`, click (move), right-click (attack), swap, ability toggle, hold, guard |
-| `order_queue.rs` | multi-turn order queues: Shift-click adds turns (`queue_move`, `queue_attack`, equal lengths for a group), `advance_queues` at each turn's end |
+| `order_queue.rs` | multi-turn order queues: Shift-click adds turns (`queue_move`, `queue_attack`, equal lengths for a group) or, on a planned stop, takes a move off (`unqueue_move`), `advance_queues` at each turn's end |
 | `group.rs` | multi-unit selection (drag a box, Shift-click adds, Ctrl-click removes) and group orders |
 | `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks), coastal battery fire and ship boarding |
 | `combat.rs` | damage formula, retaliation, combat log helpers |
@@ -30,7 +30,7 @@ behavior.
 | `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues, Harbor naval spawning, the rules of a building's site (`ai_site_issue`), resource support from Forge/Stable, prices and turns of every build, the Grow build, `complete_builds` (buildings with a site are built by workers, `workers.rs`) |
 | `city/founding.rs` | settlers founding cities |
 | `workers.rs` | workers: each city's pool and job list (everything the city places on the map, buildings with a site included: `JobKind`, placed from the open city's production list with `arm_worker_job`, paid when placed with `try_queue_job` and refunded if taken off or dropped), the Workshop speedup (`job_turns`), Work Camp bases, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
-| `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), stopping placing (`stop_placing`), the yields toggle, `end_planning` |
+| `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click_at`: a click on one of the player's unit tokens, hit as `draw.rs` draws it (`unit_token_contains`), selects the unit and closes the view; anywhere else is `city_click`), stopping placing (`stop_placing`), the yields toggle, `end_planning` |
 | `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture |
 | `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, and tiles, rivers, resources and specials in flat arrays over the shape's bounding box); `Tile` = ground + hills + feature, with yields, route cost, defense |

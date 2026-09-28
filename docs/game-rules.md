@@ -160,8 +160,15 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   moved elsewhere until it reopens (see Cities), so an enemy that ends a turn on a worked tile
   stays in sight. Only the tile itself is seen, not the hexes around it.
 - A mountain strictly between two hexes blocks sight; the mountain itself is visible.
+- Another side's construction shows where the player sees the tile its worker stands on while
+  at work there (arrived, with work left): the job's ring on the tile, or a wall or gate on its
+  edge, in that side's color and named (BARRACKS, FARM, WALL), but with no turns left, which
+  would give away its Workshop. Jobs it has queued or a worker is still walking to are its plans,
+  not something on the ground, and don't show.
 - Every frame, each hex in sight is recorded as last seen: cities, barracks (with their
-  health), improvements, roads and structures. Units and workers aren't remembered, since they
+  health), improvements, roads, structures and other sides' construction, so a building seen
+  going up stays on the map as last seen until the tile is seen again. Units and workers aren't
+  remembered, since they
   move: out of sight, the player knows of none anywhere. Planning goes around the walls and gates
   the player knows of. Remembered hexes out of sight draw that memory under a dark tint, keeping
   the terrain readable. Unexplored tiles lie under a dense cover of muted cumulus: soft-edged
@@ -176,7 +183,9 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
   A unit out of sight, even one seen there before, doesn't shrink the move range, and clicking
   its hex plans a move, which then meets it at resolution. A remembered enemy barracks can
-  still be attacked; an empty city center cannot.
+  still be attacked; an empty city center in sight cannot, but one out of sight can (nobody
+  there is known of, and refusing it would give away that nobody is), and the attack misses if
+  nobody is there when it comes.
 - What the map and panels show follows the same rule: yields, and which hexes a city's or
   barracks' goods reach (badges, delivery percentages, tooltip), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
@@ -198,7 +207,8 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   opens its view instead, even with a unit selected, so a left click can't move a unit onto that
   hex or select a unit standing there.
 - Right-click any hex in range to queue an attack on it, occupied or not (again to cancel),
-  except an empty city center. Units or workers standing on a city center remain attackable.
+  except an empty city center in sight. Units or workers standing on a city center remain
+  attackable.
   **Attacks target hexes:** whoever stands there when the attack resolves gets hit.
 - A unit can queue a move and an attack; the attack range is measured from the planned
   destination. Changing or cancelling the move drops an attack that is no longer in range.
@@ -258,7 +268,10 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   make it from there already attacks that turn, otherwise into a new turn spent standing still.
   Range counts from where the plan has the unit that turn, with its later-turn stats (no ability;
   a siege that sets up this turn is deployed). With nothing planned and no attack possible this
-  turn (a siege setting up), it goes in the next turn. Out of range, nothing is queued.
+  turn (a siege setting up), it goes in the next turn. Out of range, nothing is queued; on
+  water, only ships and ranged and siege land troops can attack (the notice says so). Like a
+  queued move, it goes by what the player knows: a hex out of sight, even one never seen, is
+  attacked as a seen one would be (see Fog of war).
 - **Groups:** a Shift-click with a group selected queues for every member, and afterwards
   their plans all have the same number of turns. For a move, each member continues from the end
   of its own plan: one with a shorter plan (say, just added to the selection) starts moving at
@@ -269,6 +282,16 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   plan: a member that had three turns queued, with a limit of 6, ends up with nine, and one
   that had none moves for six turns and then waits for it. An attack goes in at the end of the group's plans, which members
   with shorter plans reach by waiting.
+- **Taking a move off:** a Shift-left-click on a hex the selection plans to move onto (a
+  numbered stop of a queue, or a ghost, this turn's included) takes that move off instead of
+  queuing, with every turn after it (each turn starts where the one before ended, so the later
+  ones would start from the wrong hex); the turns before it stay. The turn keeps its attack if
+  it's still in range from where the unit then stands; a later turn left with nothing goes too.
+  If moves onto the hex come on several turns (or from several group members), the latest goes
+  first; a tie goes to the first member selected. In a group, the member waits out the turns it
+  lost, so its plan stays as long as the others'. A Shift-click on one of the player's units
+  still adds it to the selection, and anywhere else still queues (`unqueue_move`). A plan left
+  with nothing is no plan: the unit needs orders again.
 - Queuing never moves selection on, so a unit (or group) can be given several turns in a row.
 - **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
   turn and every turn it has queued orders for.
@@ -673,8 +696,10 @@ every turn end.
   cursor rests on a hex for 0.75 s, a tooltip shows terrain or city, yields, defense, site, road,
   which city works it, its delivery share to the open city, and units on it.
 - **City view:** C opens the first city needing a build (or your first city), and left-clicking
-  your city opens that one. While open, map clicks manage tiles and never select units; it closes
-  on Tab, Space, Escape, or a click off the map. A barracks view closes the same way; C switches
+  your city opens that one. While open, map clicks manage tiles, except a click on one of your
+  units' tokens, which selects the unit and closes the view (the rest of its hex still manages the
+  tile); it closes on Tab, Space, Escape, or a click off the map. A barracks view closes the same
+  way, and on a unit's token likewise; C switches
   it to its city. Worked tiles are outlined green (the manager's in gold; red if disrupted).
   Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
