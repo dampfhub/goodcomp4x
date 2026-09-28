@@ -85,6 +85,11 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    is cleared, every AI side plans (`plan_ai_turn` for each of `ai_teams`, `ai.rs`), and every
    step of `RESOLUTION_ORDER` is
    queued as a `Step::Units`, followed by `Step::Workers`.
+   In a network game `end_planning` sends the side's plan instead (`submit_plan`,
+   `docs/multiplayer.md`). While it waits for the others' plans, `is_resolving` refuses every
+   change to the plan, but looking (selecting, opening views) waits only for `is_playing_out`,
+   and the panels show the controls that would change the plan disabled
+   (`PanelBuilder::freeze_plan`).
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each unit step resolves one unit type's moves or attacks
    simultaneously; `effects.rs` animates attacks; `transition.rs` glides what moved; dead units are removed at the end of an attack

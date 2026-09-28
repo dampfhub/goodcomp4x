@@ -32,7 +32,10 @@ the host's firewall.
 
 Everyone plays their turn at once, as ever; the first turn waits until every seat is filled.
 Ending the turn sends your plan, and the End Turn button waits (the host's names who it's
-waiting for) until everyone has ended theirs; then the turn plays out on every machine. Nobody
+waiting for) until everyone has ended theirs; then the turn plays out on every machine. While
+you wait you can look around as you like: select units and cities, open city, Barracks and
+interior views, and read their panels and tooltips; everything that would change your orders
+is disabled, since they're sent. Nobody
 can join once the first turn has played. A guest who leaves before it starts to play out frees
 their seat for someone else (the turn waits for them); one who leaves after hands their side to
 the AI, which plays it from the next turn on, and the rest play on. If the host leaves, the

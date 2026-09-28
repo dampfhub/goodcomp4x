@@ -99,7 +99,13 @@ pub struct App {
     icon_refresh_at: Option<Instant>,
     cursor_pos: Option<Vec2>,
     panning: bool,
-    left_press: Option<(Vec2, ClickMode, bool)>,
+    /// A left press on the map, waiting for its release to be a click: where,
+    /// its modifiers, and whether the plan was out of the player's hands
+    /// (`is_resolving`) when it went down (`None`: a turn was playing out, so
+    /// no click). A release only clicks in the same phase, so a press while
+    /// a network game waits for the others' plans can't become an order in
+    /// the next turn's planning.
+    left_press: Option<(Vec2, ClickMode, Option<bool>)>,
     left_dragging: bool,
     /// The left button is down placing walls or gates on hex edges.
     painting_jobs: bool,
@@ -865,7 +871,8 @@ impl ApplicationHandler for App {
                         } else {
                             ClickMode::Normal
                         };
-                        self.left_press = Some((cursor, mode, !self.game.is_resolving()));
+                        let phase = (!self.game.is_playing_out()).then(|| self.game.is_resolving());
+                        self.left_press = Some((cursor, mode, phase));
                         self.left_dragging = self.panning;
                         // A drag from the map (not from a classic panel) selects
                         // the units inside its box.
@@ -907,9 +914,9 @@ impl ApplicationHandler for App {
                         self.left_dragging = false;
                         return;
                     }
-                    if let Some((origin, mode, may_click)) = self.left_press.take()
+                    if let Some((origin, mode, phase)) = self.left_press.take()
                         && !self.left_dragging
-                        && may_click
+                        && phase.is_some_and(|frozen| frozen == self.game.is_resolving())
                         && let Some(size) = self.screen_size()
                     {
                         if self.use_imgui {

@@ -550,6 +550,9 @@ impl GameState {
     }
 
     pub fn queue_selected_barracks_unit(&mut self, build: BuildUnit) {
+        if self.is_resolving() {
+            return;
+        }
         let Some(city) = self.selected_barracks.or(self.selected_city) else {
             return;
         };
@@ -616,6 +619,9 @@ impl GameState {
     }
 
     pub fn move_selected_city_queue_item(&mut self, index: usize, up: bool) {
+        if self.is_resolving() {
+            return;
+        }
         let Some(city) = self.selected_city else {
             return;
         };

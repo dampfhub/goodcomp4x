@@ -37,6 +37,39 @@ impl ButtonSpec {
     }
 }
 
+/// `PanelBuilder::freeze_plan` on `rows`, and on the rows of any scrolling
+/// list among them.
+fn freeze_rows(rows: &mut [Row]) {
+    let freeze = |spec: &mut ButtonSpec| {
+        if spec.target.changes_plan() {
+            spec.state = ButtonState::Disabled;
+            spec.armed = false;
+        }
+    };
+    for row in rows {
+        match row {
+            Row::Buttons(buttons, _) => buttons.iter_mut().for_each(freeze),
+            Row::TitleWithButton(_, button) => freeze(button),
+            Row::BuildingCatalog(_, entries, ..) => {
+                for entry in entries {
+                    if let CatalogEntry::Card(button) = entry {
+                        freeze(button);
+                    }
+                }
+            }
+            Row::ScrollList(list) => freeze_rows(&mut list.entries),
+            Row::QueueItem(item) => item.locked = true,
+            Row::Text(..)
+            | Row::Gap(_)
+            | Row::Bar(_)
+            | Row::Roster(_)
+            | Row::Heading(_)
+            | Row::Setting(..)
+            | Row::Field(..) => {}
+        }
+    }
+}
+
 /// Keep costs and work times on buttons, but show keyboard shortcuts only
 /// where `reveal_shortcut` asks (the Debug panel): elsewhere a button's key
 /// is in its tooltip, so hovering never changes a button's text.
@@ -360,6 +393,14 @@ impl PanelBuilder {
         self.rows.push(Row::Buttons(buttons, true));
     }
 
+    /// For a plan that can't change (a network game waiting for the others'):
+    /// every button that would change it shows disabled, and queue rows
+    /// lock (no dragging, no X). Both presentations call it on the panels
+    /// they show, so looking stays open and ordering doesn't.
+    pub(super) fn freeze_plan(&mut self) {
+        freeze_rows(&mut self.rows);
+    }
+
     /// Button borders are drawn just outside their rows, so a row of buttons
     /// right under another needs a gap to keep them from overlapping.
     fn space_button_rows(&mut self) {
@@ -563,7 +604,7 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 target: item.kind.remove_target(item.index),
                 label: "X".into(),
                 hint: String::new(),
-                state: ButtonState::Ready,
+                state: ButtonState::new(false, item.locked),
                 armed: false,
                 faded,
                 min: Vec2::new(body_max_x, min.y),

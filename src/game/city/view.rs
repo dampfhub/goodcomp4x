@@ -3,6 +3,7 @@
 use super::MAX_CITY_POPULATION;
 use crate::game::GameState;
 use crate::game::hex::Hex;
+use crate::game::multiplayer::WAITING_NOTICE;
 use glam::Vec2;
 
 impl GameState {
@@ -28,7 +29,7 @@ impl GameState {
     /// C: opens a city that needs something to build, or else the first of
     /// the player's cities.
     pub fn select_city(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let city = (0..self.cities.len())
@@ -54,7 +55,9 @@ impl GameState {
         self.group.clear();
         self.ui_click_mode = None;
         self.camera.focus_on(self.cities[i].pos.to_world());
-        self.notice = if self.city_needs_build(i) {
+        self.notice = if self.waiting_for_peers() {
+            WAITING_NOTICE.into()
+        } else if self.city_needs_build(i) {
             format!("CHOOSE WHAT CITY {} BUILDS - 0-9", self.cities[i].id + 1)
         } else {
             "CLICK TILES TO ASSIGN - A AUTO ASSIGN - ESC OR SPACE TO EXIT".into()
@@ -101,8 +104,18 @@ impl GameState {
             return true;
         }
         self.leave_city_view();
-        self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+        self.notice = self.planning_notice().into();
         true
+    }
+
+    /// What the top bar says once a view closes: how planning goes, or
+    /// (the plan sent) that it waits for the others.
+    fn planning_notice(&self) -> &'static str {
+        if self.waiting_for_peers() {
+            WAITING_NOTICE
+        } else {
+            "PLANNING - C CITY - SPACE HOLD OR END TURN"
+        }
     }
 
     /// The city tray's Cancel Placing button, and the first Escape while
@@ -135,7 +148,12 @@ impl GameState {
         self.ui_click_mode = None;
         self.camera
             .focus_on(self.cities[city].barracks.unwrap().to_world());
-        self.notice = "BARRACKS - QUEUE TROOPS OR CLICK CITY TO RETURN".into();
+        self.notice = if self.waiting_for_peers() {
+            WAITING_NOTICE
+        } else {
+            "BARRACKS - QUEUE TROOPS OR CLICK CITY TO RETURN"
+        }
+        .into();
     }
 
     pub fn open_selected_city_from_barracks(&mut self) {
@@ -160,7 +178,7 @@ impl GameState {
         {
             // Local view state only: nothing a network game's plan carries.
             self.set_selection(vec![unit]);
-            self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+            self.notice = self.planning_notice().into();
             return true;
         }
         self.city_click(hex)
@@ -211,6 +229,20 @@ impl GameState {
         let i = self.selected_city.unwrap();
         if hex == self.cities[i].pos {
             self.open_city_interior(i);
+            return true;
+        }
+        // The plan is sent: citizens stay where they are, but another of the
+        // player's cities can be looked at.
+        if self.is_resolving() {
+            if let Some(other) = self
+                .cities
+                .iter()
+                .position(|c| c.pos == hex && c.team == self.local_team)
+            {
+                self.open_city(other);
+            } else {
+                self.notice = WAITING_NOTICE.into();
+            }
             return true;
         }
         // City management owns map clicks off a unit's token, so citizens

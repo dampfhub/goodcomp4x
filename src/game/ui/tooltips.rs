@@ -21,6 +21,10 @@ use crate::game::workers::JobKind;
 use crate::renderer::Vertex;
 use glam::Vec2;
 
+/// Why a button that would change the plan is off while a network game
+/// waits for the others' plans.
+pub(super) const PLAN_SENT: &str = "YOUR ORDERS ARE SENT - WAITING FOR THE OTHERS";
+
 impl GameState {
     /// What queuing `build` in the open city (or Barracks, with
     /// `barracks`) costs from the stockpile, and how long it takes there:
@@ -655,6 +659,13 @@ impl GameState {
                     None,
                 ),
             };
+        // With the plan sent, this is why a button that would change it is
+        // off, whatever else might be.
+        let unavailable = if self.plan_frozen() && button.target.changes_plan() {
+            Some(PLAN_SENT.to_string())
+        } else {
+            unavailable
+        };
 
         let mut lines = vec![(
             BODY,

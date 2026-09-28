@@ -43,6 +43,10 @@ const CODE_LENGTH: usize = 6;
 /// The most of a refusal's reason a guest shows.
 const MAX_REASON: usize = 120;
 
+/// What the top bar says once this side's plan is sent, while it waits for
+/// the others'.
+pub(super) const WAITING_NOTICE: &str = "ORDERS SENT - WAITING FOR THE OTHERS";
+
 /// The port a host listens on unless told another.
 pub const DEFAULT_PORT: u16 = 7777;
 
@@ -445,10 +449,19 @@ impl GameState {
         self.lockstep.is_some()
     }
 
-    /// While this side has ended planning and waits for the others' plans:
-    /// input waits too (`is_resolving`).
+    /// While this side has ended planning and waits for the others' plans.
+    /// Its plan is sent, so nothing may change it (`is_resolving` refuses
+    /// every order), but the player may still look around: select units and
+    /// cities and open their views, which waits only for `is_playing_out`.
     pub(super) fn waiting_for_peers(&self) -> bool {
         self.lockstep.as_ref().is_some_and(|l| l.submitted)
+    }
+
+    /// While a turn plays out: every input waits, looking around included.
+    /// Anything that changes the plan waits for `is_resolving` instead, which
+    /// also holds while a network game waits for the others' plans.
+    pub fn is_playing_out(&self) -> bool {
+        !self.pending_steps.is_empty()
     }
 
     /// What the End Turn button says while the turn isn't this side's to
@@ -560,10 +573,16 @@ impl GameState {
             Role::Host => lockstep.plans.push(plan),
             Role::Guest => lockstep.outbox.push(Message::Plan(plan)),
         }
-        self.selected_city = None;
-        self.selected = None;
-        self.group.clear();
-        self.notice = "WAITING FOR THE OTHERS".into();
+        // The player may go on looking (the selection and open views stay),
+        // but nothing armed to change the plan outlives it.
+        self.ui_click_mode = None;
+        self.placing_job = None;
+        self.hovered_job = None;
+        self.moving_manager = None;
+        self.queue_drag = None;
+        self.queue_replace_armed = None;
+        self.disband_armed = None;
+        self.notice = WAITING_NOTICE.into();
         self.resolve_when_ready();
     }
 
@@ -992,6 +1011,11 @@ impl GameState {
             self.lockstep = Some(lockstep);
             return;
         };
+        // What was open while waiting belongs to the game being replaced;
+        // closing the interior gives the map's camera back.
+        self.leave_city_view();
+        self.selected = None;
+        self.group.clear();
         let mut next = *start;
         plans.sort_by_key(|p| p.team);
         for plan in &plans {
@@ -1429,6 +1453,202 @@ mod tests {
         }
         // A new turn's planning began on both.
         assert!(!host.waiting_for_peers() && !guest.waiting_for_peers());
+    }
+
+    /// The window a test clicks in.
+    const SCREEN: glam::Vec2 = glam::Vec2::new(1600.0, 900.0);
+
+    /// A left click on `hex` on the map, as `App` passes it on.
+    fn click(game: &mut GameState, hex: Hex, mode: super::super::ClickMode) {
+        let camera = &game.camera;
+        let offset = (hex.to_world() - camera.center) / camera.half_height;
+        let ndc = glam::Vec2::new(offset.x * SCREEN.y / SCREEN.x, -offset.y);
+        let cursor = (ndc + 1.0) / 2.0 * SCREEN;
+        game.handle_map_click(cursor, SCREEN, mode);
+    }
+
+    #[test]
+    fn waiting_for_the_others_a_player_looks_around_but_changes_nothing() {
+        use super::super::ClickMode;
+        let (mut host, mut guest) = pair();
+        let team = GUEST_SEAT;
+        let city = guest.cities.iter().position(|c| c.team == team).unwrap();
+        let city_pos = guest.cities[city].pos;
+        // A Barracks by its city (not on a tile a citizen works), on both
+        // machines, as an earlier turn would leave it.
+        let worked = guest.cities[city].worked.clone();
+        let barracks = city_pos
+            .neighbors()
+            .into_iter()
+            .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h) && !worked.contains(&h))
+            .unwrap();
+        for game in [&mut host, &mut guest] {
+            game.cities[city].barracks = Some(barracks);
+            game.finish_lockstep_turn();
+            let _ = game.take_outbox();
+        }
+        // What Red sees, as a frame would show it.
+        guest.update(0.0);
+        // The guest plans: a unit's move and a build, then ends its turn.
+        let units: Vec<usize> = (0..guest.units.len())
+            .filter(|&i| {
+                let u = &guest.units[i];
+                u.team == team && u.pos != city_pos && u.pos != barracks
+            })
+            .collect();
+        assert!(!units.is_empty(), "a unit of Red's out on the map");
+        let unit = units[0];
+        let pos = guest.units[unit].pos;
+        let open = |game: &GameState, around: Hex| {
+            around
+                .neighbors()
+                .into_iter()
+                .find(|&h| {
+                    game.grid.is_passable(h)
+                        && !game.is_occupied(h)
+                        && game
+                            .cities
+                            .iter()
+                            .all(|c| c.pos != h && c.barracks != Some(h))
+                })
+                .unwrap()
+        };
+        guest.units[unit].planned_move = Some(open(&guest, pos));
+        guest.open_city(city);
+        guest.queue_selected_city_unit(BuildUnit::Melee);
+        guest.end_planning();
+        assert!(guest.waiting_for_peers(), "{}", guest.notice);
+        let sent = guest.take_outbox();
+        let [Message::Plan(sent_plan)] = &sent[..] else {
+            panic!("{sent:?}")
+        };
+        let plan = guest.team_plan(team);
+        assert_eq!(&plan, sent_plan);
+        let checksum = guest.checksum();
+        let unchanged = |game: &GameState, what: &str| {
+            assert_eq!(game.team_plan(team), plan, "{what} changed the plan");
+            assert_eq!(game.checksum(), checksum, "{what} changed the game");
+            assert!(game.waiting_for_peers(), "{what}");
+        };
+
+        // A unit, selected by clicking it; a click elsewhere only lets go.
+        let away = open(&guest, pos);
+        guest.press_escape();
+        click(&mut guest, pos, ClickMode::Normal);
+        assert_eq!(guest.selected, Some(unit), "{}", guest.notice);
+        click(&mut guest, away, ClickMode::Normal);
+        assert_eq!(guest.selected, None);
+        unchanged(&guest, "a click on an open hex");
+        click(&mut guest, pos, ClickMode::Normal);
+        // Every order for it is refused.
+        guest.choose_move_action();
+        assert_eq!(guest.ui_click_mode, None);
+        click(&mut guest, away, ClickMode::Move);
+        guest.selected = Some(unit);
+        guest.toggle_selected_ability();
+        guest.hold_selected_unit();
+        guest.toggle_guard();
+        guest.disband_selected();
+        guest.disband_selected();
+        guest.found_city_selected();
+        guest.handle_right_click();
+        guest.hold_or_end_turn();
+        unchanged(&guest, "a unit's orders");
+        // Tab picks a unit, and a box picks every one in it.
+        guest.set_selection(Vec::new());
+        guest.select_next_unit();
+        assert!(guest.selected.is_some());
+        guest.camera.focus_on(pos.to_world());
+        guest.camera.update(10.0);
+        guest.select_in_box(glam::Vec2::ZERO, SCREEN, SCREEN, false);
+        assert!(guest.selection().contains(&unit));
+        unchanged(&guest, "selecting");
+
+        // Its city opens (C), and nothing in it changes.
+        guest.select_city();
+        assert_eq!(guest.selected_city, Some(city));
+        guest.queue_selected_city_unit(BuildUnit::Ranged);
+        guest.queue_selected_city_gather();
+        guest.queue_selected_city_growth();
+        guest.queue_selected_city_worker();
+        guest.queue_selected_city_building(Building::Mill);
+        guest.move_selected_city_queue_item(0, false);
+        guest.remove_selected_city_queue_item(0);
+        guest.clear_selected_city_queue();
+        guest.auto_assign_selected_city();
+        guest.set_selected_city_focus(LaborFocus::Metal);
+        guest.set_selected_city_focus(LaborFocus::Food);
+        guest.arm_worker_job(super::super::JobKind::Road);
+        assert_eq!(guest.placing_job, None);
+        guest.release_worker();
+        // Clicks on its tiles don't move citizens (or its manager, picked
+        // up from its tile).
+        let worked = guest.cities[city].worked.clone();
+        for &hex in worked.iter().chain(&city_pos.neighbors()) {
+            click(&mut guest, hex, ClickMode::Normal);
+            guest.open_city(city);
+        }
+        unchanged(&guest, "the city view");
+        assert_eq!(guest.selected_city, Some(city));
+
+        // The interior: a troop there can be picked, not ordered.
+        guest.open_city(city);
+        click(&mut guest, city_pos, ClickMode::Normal);
+        assert_eq!(guest.interior_view, Some(city), "{}", guest.notice);
+        let fighters: Vec<(u32, Hex)> = guest.cities[city]
+            .interior
+            .fighters
+            .iter()
+            .filter(|f| f.team == team)
+            .map(|f| (f.source_id, f.pos))
+            .collect();
+        if let Some(&(id, at)) = fighters.first() {
+            guest.interior_click(at);
+            assert_eq!(guest.interior_selected, Some(id));
+            for hex in at.neighbors() {
+                guest.interior_click(hex);
+                guest.interior_selected = Some(id);
+            }
+            guest.clear_selected_interior_orders();
+        }
+        guest.press_escape();
+        assert_eq!(guest.interior_view, None);
+        unchanged(&guest, "the interior");
+
+        // The Barracks, by clicking it.
+        guest.press_escape();
+        click(&mut guest, barracks, ClickMode::Normal);
+        assert_eq!(guest.selected_barracks, Some(city), "{}", guest.notice);
+        guest.queue_selected_barracks_unit(BuildUnit::Melee);
+        guest.clear_selected_barracks_queue();
+        unchanged(&guest, "the Barracks view");
+
+        // The host gets the plan as sent, and both machines play the same
+        // turn, the guest looking inside its city as it arrives.
+        guest.open_city(city);
+        let map_camera = (guest.camera.center, guest.camera.half_height);
+        guest.toggle_city_interior();
+        assert!(guest.interior_view.is_some());
+        for message in sent {
+            host.receive(GUEST_SEAT, roundtrip(&message)).unwrap();
+        }
+        assert_eq!(host.lockstep.as_ref().unwrap().plans, [plan]);
+        host.submit_plan();
+        exchange(&mut host, &mut guest);
+        assert_eq!(guest.interior_view, None, "views close as the turn plays");
+        assert!(guest.exterior_camera.is_none());
+        assert_eq!(
+            (guest.camera.center, guest.camera.half_height),
+            map_camera,
+            "the map's camera back"
+        );
+        play_out(&mut host);
+        play_out(&mut guest);
+        exchange(&mut host, &mut guest);
+        assert_eq!(host.turn, 1);
+        assert_eq!(host.checksum(), guest.checksum());
+        let queued = &guest.cities[city].queue;
+        assert_eq!(queued.len(), 1, "the one build sent");
     }
 
     #[test]
