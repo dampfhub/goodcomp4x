@@ -71,12 +71,16 @@ pub const CONTROLS_HELP: str = "Controls:
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
   1-4 queue city units: melee, ranged, cavalry, siege. F founds with a settler.
-  F1 combat, F2 cities, F3 settler frontier (again to restart). F6 saves a snapshot, F7 loads it, F8 plays turns all at once.
-  The faded DEBUG panel at the top-left has buttons for these.
+  F1 combat, F2 cities, F3 settler frontier, F4 world (again to restart). F6 saves a snapshot, F7 loads it,
+  F8 plays turns all at once, F10 lifts the fog of war.
+  The faded DEBUG panel at the top-left has buttons for these, and the naval scenario.
   Scroll to zoom, middle-drag to pan. Clicks act on release; dragging does not issue orders.
+  Hold Alt for extra map info: turn order and every tile's yields.
+  Escape closes the settings menu, a city view or the selection; with nothing open it opens
+  the settings menu, which has Quit.
   F5 toggles fullscreen.
 Turn order:
-  Each unit's blue number is when it moves and its red number when it attacks (1 = first).
+  Holding Alt, each unit's blue number is when it moves and its red number when it attacks (1 = first).
   Units of the same type act simultaneously; simultaneous attacks all land before anyone is removed.
   A swap happens when whichever of the two allies moves first acts.
 Abilities (button at the bottom of the screen, or Q, for the selected unit):
