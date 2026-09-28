@@ -748,7 +748,12 @@ impl GameState {
             for k in 0..6 {
                 if open.is_none() && self.grid.is_passable(around[k]) && !self.is_occupied(around[k]) { open = Option.Some(around[k]); }
             }
-            let Option.Some(pos) = open else { continue; };
+            let Option.Some(pos) = open else {
+                // The city holds the finished unit until a hex opens, and banks nothing more
+                // meanwhile: a bank would pay for the next units at once when one did.
+                self.cities[i].production = build.cost();
+                continue;
+            };
             self.cities[i].production = self.cities[i].production - build.cost();
             self.cities[i].queue = Option.None;
             spawn.push((self.cities[i].team, pos, build.unit_type()));

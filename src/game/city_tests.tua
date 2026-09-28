@@ -89,3 +89,39 @@ fn frontier_settler_founds_city_and_city_spends_production_on_unit() {
         assert(g.units[f].pos.distance(g.cities[0].pos) == 1);
     });
 }
+
+/// How many of Blue's units there are.
+fn blue_units(g: &GameState) -> i32 {
+    let mut n = 0;
+    for i in 0..g.units.len() { if g.units[i].team == Team.Blue { n = n + 1; } }
+    n
+}
+
+@test
+fn a_finished_unit_waiting_for_a_hex_banks_nothing_more() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        assert(g.cities[0].team == Team.Blue);
+        let cost = BuildUnit.Melee.cost();
+        g.cities[0].queue = Option.Some(BuildUnit.Melee);
+        g.cities[0].production = cost;
+        // Every hex around the city taken.
+        let around = g.cities[0].pos.neighbors();
+        for k in 0..6 { g.units.push(Unit.new(200 + k as u32, around[k], Team.Blue, UnitType.Melee)); }
+        let units = blue_units(&g);
+        for _turn in 0..3 {
+            g.resolve_economy();
+            // The unit waits, and the city holds just its cost.
+            assert(blue_units(&g) == units);
+            assert(g.cities[0].production == cost);
+        }
+        // A hex opens: the unit comes out, and nothing is left over to pay for the next.
+        let mut blocker = 0;
+        for i in 0..g.units.len() { if g.units[i].id == 205 { blocker = i; } }
+        let _gone = g.units.remove(blocker);
+        g.resolve_economy();
+        assert(blue_units(&g) == units);
+        assert(g.cities[0].production < cost);
+    });
+}
