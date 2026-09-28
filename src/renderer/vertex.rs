@@ -4,12 +4,22 @@ use ash::vk;
 /// negative `u` as full coverage instead of sampling the atlas.
 pub const SOLID_UV: [f32; 2] = [-1.0, -1.0];
 
+/// Texture coordinates for a soft disc drawn on a quad: `local` is the
+/// vertex's place on the disc, each coordinate from -1 to 1. The shader
+/// draws the disc solid out to almost half its radius, fading to
+/// transparent at the rim, and nothing outside it.
+pub fn soft_disc_uv(local: [f32; 2]) -> [f32; 2] {
+    [local[0] - 3.0, local[1]]
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Vertex {
     pub pos: [f32; 3],
     pub color: [f32; 4],
-    /// Where to sample the coverage atlas, or `SOLID_UV`.
+    /// Where to sample the atlas, or `SOLID_UV`. A `u` of 1 or more marks a
+    /// distance-field glyph, sampled at `u - 1`; a `u` of -2 or less, a
+    /// soft disc (`soft_disc_uv`).
     pub uv: [f32; 2],
 }
 

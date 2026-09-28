@@ -10,6 +10,7 @@ mod device;
 mod instance;
 mod msaa;
 mod pipeline;
+mod readback;
 mod swapchain;
 mod sync;
 mod texture;
@@ -18,19 +19,24 @@ mod vertex;
 use anyhow::Result;
 use ash::vk;
 use glam::Mat4;
+use imgui::{Context as ImGuiContext, DrawData};
+use imgui_rs_vulkan_renderer::{Options as ImGuiOptions, Renderer as ImGuiRenderer};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window;
 
 use device::QueueFamilyIndices;
 use msaa::ColorTarget;
+use readback::Readback;
 use swapchain::SwapchainData;
 use sync::{MAX_FRAMES_IN_FLIGHT, SyncObjects};
 use texture::Texture;
 
+pub use readback::Frame;
 pub use texture::Atlas;
-pub use vertex::{SOLID_UV, Vertex};
+pub use vertex::{SOLID_UV, Vertex, soft_disc_uv};
 
-/// Most vertices one frame can draw; anything past this is dropped with a warning.
+/// Vertices each frame slot's buffer starts with room for. A frame that needs
+/// more grows its buffer (see `write_vertices`).
 const VERTEX_BUFFER_CAPACITY: usize = 65_536;
 
 const CLEAR_COLOR: [f32; 4] = [0.06, 0.06, 0.08, 1.0];
@@ -74,12 +80,13 @@ pub struct Renderer {
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    imgui_renderer: Option<ImGuiRenderer>,
     framebuffers: Vec<vk::Framebuffer>,
     texture: Texture,
 
     /// One vertex buffer per frame in flight, so the CPU can fill one while
-    /// the GPU still reads another.
-    vertex_buffers: Vec<(vk::Buffer, vk::DeviceMemory)>,
+    /// the GPU still reads another, each with its capacity in vertices.
+    vertex_buffers: Vec<(vk::Buffer, vk::DeviceMemory, usize)>,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -91,12 +98,18 @@ pub struct Renderer {
 
     window_size: (u32, u32),
     framebuffer_resized: bool,
+
+    /// Set by `capture_next_frame`: the next frame drawn is also copied into
+    /// `readback`.
+    capture_requested: bool,
+    /// Where the last captured frame was copied, until `take_captured_frame`.
+    readback: Option<Readback>,
 }
 
 impl Renderer {
     /// # Safety
     /// `window` must outlive the returned renderer.
-    pub unsafe fn new(window: &Window, atlas: &Atlas) -> Result<Self> {
+    pub unsafe fn new(window: &Window, atlas: &Atlas, imgui: &mut ImGuiContext) -> Result<Self> {
         let display_handle = window.display_handle()?.as_raw();
         let window_handle = window.window_handle()?.as_raw();
         let window_size = window.inner_size().into();
@@ -160,6 +173,20 @@ impl Renderer {
         let render_pass = unsafe {
             pipeline::create_render_pass(&logical_device, swapchain_data.format, samples)
         }?;
+        let imgui_renderer = ImGuiRenderer::with_default_allocator(
+            &vk_instance,
+            physical_device,
+            logical_device.clone(),
+            graphics_queue,
+            command_pool,
+            render_pass,
+            imgui,
+            Some(ImGuiOptions {
+                in_flight_frames: MAX_FRAMES_IN_FLIGHT,
+                sample_count: samples,
+                ..ImGuiOptions::default()
+            }),
+        )?;
         let (pipeline_layout, gfx_pipeline) = unsafe {
             pipeline::create_graphics_pipeline(
                 &logical_device,
@@ -172,16 +199,13 @@ impl Renderer {
             create_framebuffers(&logical_device, render_pass, &swapchain_data, &color_target)
         }?;
 
-        let vertex_buffer_size = (VERTEX_BUFFER_CAPACITY * size_of::<Vertex>()) as vk::DeviceSize;
         let vertex_buffers = (0..MAX_FRAMES_IN_FLIGHT)
             .map(|_| unsafe {
-                buffer::create_buffer(
+                create_vertex_buffer(
                     &vk_instance,
                     &logical_device,
                     physical_device,
-                    vertex_buffer_size,
-                    vk::BufferUsageFlags::VERTEX_BUFFER,
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                    VERTEX_BUFFER_CAPACITY,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -210,6 +234,7 @@ impl Renderer {
             render_pass,
             pipeline_layout,
             pipeline: gfx_pipeline,
+            imgui_renderer: Some(imgui_renderer),
             framebuffers,
             texture,
             vertex_buffers,
@@ -220,6 +245,8 @@ impl Renderer {
             current_frame: 0,
             window_size,
             framebuffer_resized: false,
+            capture_requested: false,
+            readback: None,
         })
     }
 
@@ -236,8 +263,55 @@ impl Renderer {
         let _ = unsafe { self.device.device_wait_idle() };
     }
 
+    /// Asks for the next frame `draw_frame` draws to also be copied back to
+    /// the CPU; `take_captured_frame` returns it.
+    pub fn capture_next_frame(&mut self) {
+        self.capture_requested = true;
+    }
+
+    /// The frame captured since the last call (see `capture_next_frame`), or
+    /// `None` if none has been drawn yet. Waits for the GPU to finish it.
+    pub fn take_captured_frame(&mut self) -> Result<Option<Frame>> {
+        if self.capture_requested {
+            return Ok(None);
+        }
+        let Some(readback) = self.readback.take() else {
+            return Ok(None);
+        };
+        self.wait_idle();
+        let frame = unsafe { readback.read(&self.device) };
+        unsafe { readback.destroy(&self.device) };
+        frame.map(Some)
+    }
+
+    /// A fresh buffer for this frame's copy, sized for the current swapchain.
+    unsafe fn prepare_readback(&mut self) -> Result<()> {
+        if !self.swapchain.readable {
+            anyhow::bail!("this surface's swapchain images can't be copied from");
+        }
+        if let Some(old) = self.readback.take() {
+            // Its frame may still be in flight.
+            self.wait_idle();
+            unsafe { old.destroy(&self.device) };
+        }
+        self.readback = Some(unsafe {
+            Readback::new(
+                &self.instance,
+                &self.device,
+                self.physical_device,
+                self.swapchain.extent,
+                self.swapchain.format,
+            )
+        }?);
+        Ok(())
+    }
+
     /// Draws `batches` in order, each through its own view-projection matrix.
-    pub fn draw_frame(&mut self, batches: &[DrawBatch]) -> Result<()> {
+    pub fn draw_frame(
+        &mut self,
+        batches: &[DrawBatch],
+        imgui_data: Option<&DrawData>,
+    ) -> Result<()> {
         if self.window_size.0 == 0 || self.window_size.1 == 0 {
             return Ok(());
         }
@@ -247,6 +321,12 @@ impl Renderer {
         let fence = self.sync.in_flight[self.current_frame];
         unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }?;
         let ranges = unsafe { self.write_vertices(batches) }?;
+        // Before acquiring, so a failure here doesn't strand an acquired
+        // image. A swapchain rebuilt below makes it the wrong size, but then
+        // this frame isn't drawn and the next one prepares a fresh buffer.
+        if self.capture_requested {
+            unsafe { self.prepare_readback() }?;
+        }
 
         let image_available = self.sync.image_available[self.current_frame];
         let acquired = unsafe {
@@ -257,9 +337,13 @@ impl Renderer {
                 vk::Fence::null(),
             )
         };
-        let image_index = match acquired {
-            Ok((index, false)) => index as usize,
-            Ok((_, true)) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+        // A suboptimal image is still acquired, and `image_available` will be
+        // signaled, so it must be drawn and presented (which consumes that
+        // signal) before the swapchain is rebuilt. Out of date acquires
+        // nothing and signals nothing.
+        let (image_index, acquire_suboptimal) = match acquired {
+            Ok((index, suboptimal)) => (index as usize, suboptimal),
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 return unsafe { self.recreate_swapchain() };
             }
             Err(err) => return Err(err.into()),
@@ -276,12 +360,13 @@ impl Renderer {
         unsafe {
             self.device
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
-            self.record_command_buffer(command_buffer, image_index, &ranges)?;
+            self.record_command_buffer(command_buffer, image_index, &ranges, imgui_data)?;
         }
 
         let wait_semaphores = [image_available];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [self.sync.render_finished[self.current_frame]];
+        // Indexed by image, not frame: see `SwapchainData::render_finished`.
+        let signal_semaphores = [self.swapchain.render_finished[image_index]];
         let command_buffers = [command_buffer];
         let submit_info = vk::SubmitInfo::default()
             .wait_semaphores(&wait_semaphores)
@@ -293,6 +378,7 @@ impl Renderer {
             self.device
                 .queue_submit(self.graphics_queue, &[submit_info], fence)?;
         }
+        self.capture_requested = false;
 
         let swapchains = [self.swapchain.swapchain];
         let image_indices = [image_index as u32];
@@ -309,7 +395,7 @@ impl Renderer {
             Err(err) => return Err(err.into()),
         };
 
-        if suboptimal || self.framebuffer_resized {
+        if acquire_suboptimal || suboptimal || self.framebuffer_resized {
             self.framebuffer_resized = false;
             unsafe { self.recreate_swapchain() }?;
         }
@@ -320,17 +406,14 @@ impl Renderer {
 
     /// Packs every batch's vertices back to back into this frame slot's vertex
     /// buffer, returning where each batch landed.
+    /// Grows the buffer (to the next power of two) when the frame needs more
+    /// room; the caller has already waited on this slot's fence, so the GPU is
+    /// done with the old one.
     unsafe fn write_vertices(&mut self, batches: &[DrawBatch]) -> Result<Vec<DrawRange>> {
         let mut ranges = Vec::with_capacity(batches.len());
         let mut used = 0;
         for batch in batches {
-            let count = batch.vertices.len().min(VERTEX_BUFFER_CAPACITY - used);
-            if count < batch.vertices.len() {
-                log::warn!(
-                    "dropping {} vertices past buffer capacity",
-                    batch.vertices.len() - count
-                );
-            }
+            let count = batch.vertices.len();
             ranges.push(DrawRange {
                 view_proj: batch.view_proj,
                 first: used as u32,
@@ -342,7 +425,22 @@ impl Renderer {
             return Ok(ranges);
         }
 
-        let (_, memory) = self.vertex_buffers[self.current_frame];
+        let (buffer, memory, capacity) = self.vertex_buffers[self.current_frame];
+        if used > capacity {
+            let capacity = used.next_power_of_two();
+            log::info!("growing vertex buffer to {capacity} vertices");
+            unsafe {
+                self.device.destroy_buffer(buffer, None);
+                self.device.free_memory(memory, None);
+                self.vertex_buffers[self.current_frame] = create_vertex_buffer(
+                    &self.instance,
+                    &self.device,
+                    self.physical_device,
+                    capacity,
+                )?;
+            }
+        }
+        let (_, memory, _) = self.vertex_buffers[self.current_frame];
         let size = (used * size_of::<Vertex>()) as vk::DeviceSize;
         unsafe {
             let dst = self
@@ -359,10 +457,11 @@ impl Renderer {
     }
 
     unsafe fn record_command_buffer(
-        &self,
+        &mut self,
         command_buffer: vk::CommandBuffer,
         image_index: usize,
         ranges: &[DrawRange],
+        imgui_data: Option<&DrawData>,
     ) -> Result<()> {
         let extent = self.swapchain.extent;
         let full_area = vk::Rect2D {
@@ -427,7 +526,15 @@ impl Renderer {
                 );
                 device.cmd_draw(command_buffer, range.count, 1, range.first, 0);
             }
+            if let (Some(renderer), Some(data)) = (&mut self.imgui_renderer, imgui_data) {
+                renderer.cmd_draw(command_buffer, data)?;
+            }
             device.cmd_end_render_pass(command_buffer);
+            if self.capture_requested
+                && let Some(readback) = &self.readback
+            {
+                readback.record_copy(device, command_buffer, self.swapchain.images[image_index]);
+            }
             device.end_command_buffer(command_buffer)?;
         }
         Ok(())
@@ -439,6 +546,7 @@ impl Renderer {
         }
 
         self.wait_idle();
+        let old_render_pass = self.render_pass;
         unsafe {
             self.cleanup_swapchain();
             self.swapchain = swapchain::create_swapchain(
@@ -460,6 +568,10 @@ impl Renderer {
             )?;
             self.render_pass =
                 pipeline::create_render_pass(&self.device, self.swapchain.format, self.samples)?;
+            if let Some(renderer) = &mut self.imgui_renderer {
+                renderer.set_render_pass(self.render_pass)?;
+            }
+            self.device.destroy_render_pass(old_render_pass, None);
             (self.pipeline_layout, self.pipeline) = pipeline::create_graphics_pipeline(
                 &self.device,
                 self.render_pass,
@@ -490,7 +602,6 @@ impl Renderer {
             self.device.destroy_pipeline(self.pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
-            self.device.destroy_render_pass(self.render_pass, None);
             self.color_target.destroy(&self.device);
             self.swapchain.destroy(&self.device, &self.swapchain_loader);
         }
@@ -500,11 +611,16 @@ impl Renderer {
 impl Drop for Renderer {
     fn drop(&mut self) {
         self.wait_idle();
+        self.imgui_renderer.take();
         unsafe {
             self.cleanup_swapchain();
+            self.device.destroy_render_pass(self.render_pass, None);
             self.texture.destroy(&self.device);
             self.sync.destroy(&self.device);
-            for &(buffer, memory) in &self.vertex_buffers {
+            if let Some(readback) = self.readback.take() {
+                readback.destroy(&self.device);
+            }
+            for &(buffer, memory, _) in &self.vertex_buffers {
                 self.device.destroy_buffer(buffer, None);
                 self.device.free_memory(memory, None);
             }
@@ -567,8 +683,49 @@ unsafe fn create_command_buffers(
 
 fn mat4_to_bytes(m: &Mat4) -> [u8; 64] {
     let mut bytes = [0u8; 64];
-    for (chunk, value) in bytes.chunks_exact_mut(4).zip(m.to_cols_array()) {
-        chunk.copy_from_slice(&value.to_ne_bytes());
+    for (chunk, value) in bytes
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(m.to_cols_array())
+    {
+        *chunk = value.to_ne_bytes();
     }
     bytes
+}
+
+/// A host-visible vertex buffer with room for `capacity` vertices.
+unsafe fn create_vertex_buffer(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical_device: vk::PhysicalDevice,
+    capacity: usize,
+) -> Result<(vk::Buffer, vk::DeviceMemory, usize)> {
+    let size = (capacity * size_of::<Vertex>()) as vk::DeviceSize;
+    let (buffer, memory) = unsafe {
+        buffer::create_buffer(
+            instance,
+            device,
+            physical_device,
+            size,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+    }?;
+    Ok((buffer, memory, capacity))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mat4_bytes_are_the_columns_in_order() {
+        let m = Mat4::from_cols_array(&std::array::from_fn(|i| i as f32));
+        let bytes = mat4_to_bytes(&m);
+        for i in 0..16 {
+            let word: [u8; 4] = bytes[4 * i..4 * i + 4].try_into().unwrap();
+            assert_eq!(f32::from_ne_bytes(word), i as f32);
+        }
+    }
 }

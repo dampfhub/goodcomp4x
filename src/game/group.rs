@@ -1,8 +1,10 @@
-//! Ordering several units at once. Alt-drag a box (or Alt-click units) to
-//! select a group. Clicking a hex then sends every member toward it at its own
+//! Ordering several units at once. Drag a box on the map (or Shift-click
+//! units, or Shift-click them in the unit strip) to select a group, and
+//! Ctrl-click a member to take it back out. Clicking a hex then sends every member toward it at its own
 //! speed, each taking the free hex nearest the target that it can reach; the
-//! nearest members choose first. Clicking an enemy has every member in range
-//! attack it. Members that can't get any closer, or reach, stay as they are.
+//! nearest members choose first. Right-clicking a hex has every member in
+//! range attack it. Members that can't get any closer, or reach, stay as they
+//! are. Shift-clicks queue orders for later turns (`order_queue.rs`).
 
 use std::collections::HashSet;
 
@@ -13,45 +15,51 @@ use super::hex::Hex;
 use super::orders::ClickMode;
 
 impl GameState {
-    /// Alt-drag: selects the player's units drawn inside the rectangle
-    /// between `a` and `b` (window pixels, origin top-left).
-    pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2) {
-        if self.is_resolving() {
+    /// Left-drag: selects the player's units drawn inside the rectangle
+    /// between `a` and `b` (window pixels, origin top-left). With `add`
+    /// (Shift held), they join the current selection instead of replacing it.
+    pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2, add: bool) {
+        if self.is_resolving() || self.interior_view.is_some() {
             return;
         }
         let (min, max) = (a.min(b), a.max(b));
-        let inside = (0..self.units.len())
-            .filter(|&i| self.is_player_controlled(i))
-            .filter(|&i| {
-                let drawn_at = self
-                    .camera
-                    .world_to_screen(self.unit_layout(i).0, screen_size);
-                drawn_at.cmpge(min).all() && drawn_at.cmple(max).all()
-            })
-            .collect();
-        self.set_selection(inside);
-    }
-
-    /// Alt-click: adds the player's unit under the cursor to the selection,
-    /// or takes it out if it's already in.
-    pub fn toggle_in_selection(&mut self, cursor: Vec2, screen_size: Vec2) {
-        if self.is_resolving() {
-            return;
-        }
-        let Some(unit) = self
-            .hex_at_screen(cursor, screen_size)
-            .and_then(|hex| self.controlled_unit_at(hex))
-        else {
-            return;
-        };
-        let mut members = self.selection();
-        match members.iter().position(|&i| i == unit) {
-            Some(at) => {
-                members.remove(at);
+        let mut members = if add { self.selection() } else { Vec::new() };
+        for i in 0..self.units.len() {
+            let drawn_at = self
+                .camera
+                .world_to_screen(self.unit_layout(i).0, screen_size);
+            if self.is_player_controlled(i)
+                && drawn_at.cmpge(min).all()
+                && drawn_at.cmple(max).all()
+                && !members.contains(&i)
+            {
+                members.push(i);
             }
-            None => members.push(unit),
         }
         self.set_selection(members);
+    }
+
+    /// Shift-click (on the map or in the unit strip): adds unit `idx` to the
+    /// selection. Nothing selected, it's selected on its own.
+    pub(super) fn add_to_selection(&mut self, idx: usize) {
+        let mut members = self.selection();
+        if !members.contains(&idx) {
+            members.push(idx);
+        }
+        self.set_selection(members);
+    }
+
+    /// Ctrl-click with several units selected: takes unit `idx` out of the
+    /// selection, leaving an ordinary single selection once one is left.
+    /// Returns whether it was a member.
+    pub(super) fn remove_from_selection(&mut self, idx: usize) -> bool {
+        let mut members = self.selection();
+        let Some(at) = members.iter().position(|&i| i == idx) else {
+            return false;
+        };
+        members.remove(at);
+        self.set_selection(members);
+        true
     }
 
     /// Every selected unit: the group, or else the one selected unit.
@@ -65,6 +73,9 @@ impl GameState {
 
     /// Selects `units`: nothing, one unit as usual, or several as a group.
     pub(super) fn set_selection(&mut self, units: Vec<usize>) {
+        if !units.is_empty() {
+            self.worker_mode = false;
+        }
         self.ui_click_mode = None;
         if !units.is_empty() {
             self.leave_city_view();
@@ -78,27 +89,41 @@ impl GameState {
         }
     }
 
-    /// A map click with a group selected. In the normal mode an enemy's hex
-    /// is attacked and any other hex is moved toward; an armed Move or
-    /// Attack (or Shift) picks one. Swapping is for single units.
+    /// A map click with a group selected: left-click (or an armed Move)
+    /// moves toward the hex, right-click (or an armed Attack) attacks it, and
+    /// Shift adds either to every member's queue. Swapping is for single
+    /// units.
     pub(super) fn group_order(&mut self, hex: Hex, mode: ClickMode) {
-        let team = self.units[self.group[0]].team;
         match mode {
             ClickMode::Attack => self.group_attack(hex),
-            ClickMode::Move => self.group_move(hex),
-            ClickMode::Normal if self.enemy_of_team_at(hex, team).is_some() => {
-                self.group_attack(hex)
+            ClickMode::Move | ClickMode::Normal => self.group_move(hex),
+            ClickMode::QueueMove => {
+                self.queue_move(hex);
             }
-            ClickMode::Normal => self.group_move(hex),
+            ClickMode::QueueAttack => {
+                self.queue_attack(hex);
+            }
             ClickMode::Swap => {}
         }
     }
 
     /// Every member that can reach `target` from where it's heading attacks
-    /// it. Clicking a target all of them already attack calls it off.
+    /// it. Clicking a target all of them already attack calls it off. Being
+    /// a new order, it replaces every member's queue.
     fn group_attack(&mut self, target: Hex) {
-        if !self.grid.is_passable(target) {
+        // Land, or water (for ships): anything on the map but mountains.
+        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
+        if !(self.grid.is_passable(target) || water) {
             return;
+        }
+        if let Some(&first) = self.group.first()
+            && self.empty_city_target(target, self.units[first].team)
+        {
+            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            return;
+        }
+        for &i in &self.group {
+            self.units[i].cancel_queue();
         }
         let able: Vec<usize> = self
             .group
@@ -107,7 +132,6 @@ impl GameState {
             .filter(|&i| {
                 let unit = &self.units[i];
                 unit.can_attack()
-                    && !self.workers.contains(&unit.id)
                     && self.rival_of(i).is_none()
                     && unit.planned_pos().distance(target) <= unit.stats().attack_range
             })
@@ -120,6 +144,7 @@ impl GameState {
             let unit = &mut self.units[i];
             unit.planned_attack = (!already).then_some(target);
             unit.guarding = false;
+            unit.holding = false;
         }
     }
 
@@ -132,6 +157,7 @@ impl GameState {
         for &i in &members {
             self.cancel_swap(i);
             self.units[i].planned_move = None;
+            self.units[i].cancel_queue();
         }
         let team = self.units[members[0]].team;
         let mut claimed: HashSet<Hex> = self
@@ -142,11 +168,18 @@ impl GameState {
             .collect();
 
         members.sort_by_key(|&i| (self.units[i].pos.distance(target), i));
+        let fog = self.fog();
         for i in members {
             let start = self.units[i].pos;
             // Staying put wins ties, so nobody shuffles sideways for nothing.
             let best = self
-                .reachable_hexes(start, self.units[i].stats().move_range)
+                .known_reachable_for_domain(
+                    start,
+                    self.units[i].stats().move_range,
+                    self.units[i].team,
+                    &fog,
+                    self.units[i].is_naval(),
+                )
                 .into_iter()
                 .filter(|hex| *hex == start || !claimed.contains(hex))
                 .min_by_key(|hex| (hex.distance(target), hex.distance(start), hex.q, hex.r));
@@ -156,12 +189,21 @@ impl GameState {
                 unit.planned_move = Some(dest);
                 unit.drop_unreachable_attack();
                 unit.guarding = false;
+                unit.holding = false;
             }
         }
     }
 
-    /// Space or Hold with a group: every member holds, and selection moves on.
+    /// Space or Hold with a group: every member holds, and selection moves on;
+    /// if they all already hold, they all stop.
     pub(super) fn hold_group(&mut self) {
+        // Every member already holding: they all stop, and stay selected.
+        if self.group.iter().all(|&i| self.units[i].holding) {
+            for &i in &self.group {
+                self.units[i].holding = false;
+            }
+            return;
+        }
         for &i in &self.group {
             self.units[i].holding = true;
         }
@@ -175,6 +217,7 @@ impl GameState {
         let all_guarding = self.group.iter().all(|&i| self.units[i].guarding);
         for &i in &self.group {
             self.units[i].guarding = !all_guarding;
+            self.units[i].cancel_queue();
         }
         if !all_guarding {
             self.group.clear();
@@ -188,6 +231,7 @@ impl GameState {
             self.cancel_swap(i);
             self.units[i].clear_orders();
             self.units[i].guarding = false;
+            self.units[i].holding = false;
         }
     }
 }
@@ -208,7 +252,7 @@ mod tests {
     #[test]
     fn a_box_around_the_army_selects_it_as_a_group() {
         let mut game = GameState::new();
-        game.select_in_box(Vec2::ZERO, SCREEN / Vec2::new(2.0, 1.0), SCREEN);
+        game.select_in_box(Vec2::ZERO, SCREEN / Vec2::new(2.0, 1.0), SCREEN, false);
         let mut group = game.group.clone();
         group.sort();
         assert_eq!(
@@ -218,16 +262,56 @@ mod tests {
         );
         assert_eq!(game.selected, None);
 
-        // Alt-clicking members back out leaves an ordinary single selection.
+        // Ctrl-clicking members back out leaves an ordinary single selection.
         let units = blue(&game);
         for &i in &units[1..] {
             let cursor = game
                 .camera
                 .world_to_screen(game.units[i].pos.to_world(), SCREEN);
-            game.toggle_in_selection(cursor, SCREEN);
+            game.handle_map_click(cursor, SCREEN, ClickMode::Swap);
         }
         assert!(game.group.is_empty());
         assert_eq!(game.selected, Some(units[0]));
+
+        // Shift-clicking them adds them back, one at a time.
+        for &i in &units[1..] {
+            let cursor = game
+                .camera
+                .world_to_screen(game.units[i].pos.to_world(), SCREEN);
+            game.handle_map_click(cursor, SCREEN, ClickMode::QueueMove);
+        }
+        let mut group = game.group.clone();
+        group.sort();
+        assert_eq!(group, units);
+        assert!(
+            units.iter().all(|&i| !game.units[i].has_queue()),
+            "adding a unit queues nothing"
+        );
+    }
+
+    #[test]
+    fn a_shift_drag_adds_to_the_selection_and_a_plain_one_replaces_it() {
+        let mut game = GameState::new();
+        let units = blue(&game);
+        game.set_selection(vec![units[0]]);
+        // An empty corner of the screen adds nobody.
+        game.select_in_box(Vec2::ZERO, Vec2::splat(4.0), SCREEN, true);
+        assert_eq!(game.selection(), vec![units[0]]);
+        let around = |game: &GameState, i: usize| {
+            let at = game
+                .camera
+                .world_to_screen(game.units[i].pos.to_world(), SCREEN);
+            (at - Vec2::splat(5.0), at + Vec2::splat(5.0))
+        };
+        let (a, b) = around(&game, units[1]);
+        game.select_in_box(a, b, SCREEN, true);
+        assert_eq!(game.selection(), vec![units[0], units[1]]);
+        let (a, b) = around(&game, units[2]);
+        game.select_in_box(a, b, SCREEN, false);
+        assert_eq!(game.selection(), vec![units[2]]);
+        // A plain drag over nothing lets go of everything.
+        game.select_in_box(Vec2::ZERO, Vec2::splat(4.0), SCREEN, false);
+        assert!(game.selection().is_empty());
     }
 
     #[test]

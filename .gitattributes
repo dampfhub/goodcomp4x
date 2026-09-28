@@ -1,0 +1,10 @@
+# Text files are LF in the repo and in every checkout, Windows included, whatever
+# core.autocrlf says, so multi-line sed/perl edits match the way they do on Linux.
+* text=auto eol=lf
+
+# Binary: never converted or diffed as text.
+*.ttf binary
+*.otf binary
+*.png binary
+*.ico binary
+*.spv binary

@@ -1,0 +1,23 @@
+{
+  "repo": "dampfhub/goodcomp4x",
+  "projectOwner": "dampfhub",
+  "projectOwnerType": "user",
+  "projectNumber": 1,
+  "defaultBranch": "main",
+  "selectFields": {
+    "Status": ["Todo", "In Progress", "Done"],
+    "Area": ["COMBAT", "CITY", "AI", "UI", "RENDER", "MAP", "TOOLING", "DOCS"],
+    "Difficulty": ["S", "M", "L", "XL"],
+    "Risk": ["Low", "Medium", "High"]
+  },
+  "textFields": ["Acceptance", "Files"],
+  "requiredOnFile": ["Acceptance"],
+  "listColumns": ["Status", "Area", "Difficulty", "Risk"],
+  "labels": {
+    "enhancement": "New feature or request",
+    "bug": "Something isn't working",
+    "follow-up": "Work discovered while doing another item",
+    "question": "Further information is requested",
+    "documentation": "Improvements or additions to documentation"
+  }
+}

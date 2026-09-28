@@ -9,80 +9,58 @@ mod city;
 mod combat;
 mod draw;
 mod effects;
+mod fog;
 mod font;
 mod group;
 mod hex;
+mod map_icons;
+mod mapgen;
 mod mesh;
+mod order_queue;
 mod orders;
+mod ruins;
 mod scenario;
+mod settings;
+#[cfg(test)]
+mod simulation;
 mod terrain;
 mod turn;
 mod ui;
 mod unit;
+mod unit_icons;
+mod workers;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use glam::Vec2;
-use rand::rngs::ThreadRng;
+use rand::SeedableRng;
 
 pub use camera::Camera;
-pub use city::BuildUnit;
+pub use city::{BuildUnit, Building};
 pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
-use terrain::Terrain;
-use turn::Phase;
-pub use ui::{quit_prompt, selection_box, ui_projection};
+pub use settings::Settings;
+use terrain::Tile;
+use turn::Step;
+pub use ui::{ImGuiLayoutState, selection_box, ui_projection};
 use unit::{Team, Unit, UnitType};
+use unit_icons::UnitIcon;
+pub use workers::JobKind;
+
+/// The game's RNG: seedable, the same on every platform, and `Clone` so a
+/// savestate can hold it (rand 0.10's `StdRng` isn't).
+type GameRng = rand::rngs::Xoshiro256PlusPlus;
 
 const GRID_RADIUS: i32 = 3;
 const PLAYER_TEAM: Team = Team::Blue;
-const AI_TEAM: Team = Team::Red;
 
+/// Logged at startup. It only says where the controls are: `docs/controls.md`
+/// is their one description, so don't list keys here.
 const CONTROLS_HELP: &str = "\
-Controls:
-  Click a unit to select it.
-  Click a green hex to queue a move; click it again to cancel.
-  Click an enemy in range to queue an attack on it.
-  Shift-click any hex in range to attack that square instead: whoever stands there when the attack resolves gets hit.
-  A unit can queue a move and an attack; it attacks from its new hex.
-  Ctrl-click an adjacent ally to swap places with it.
-  Alt-drag a box (or Alt-click units) to select a group: clicking a hex sends each member as
-  close to it as it can get, and clicking an enemy has every member in range attack it.
-  Queued attacks are drawn as arrows from the attacker (or its ghost) to the target.
-  Units can't move through occupied hexes, and two allies can't head for the same hex.
-  Space holds the selected unit: it keeps any orders already queued and skips the rest.
-  G guards it instead: it stays put and is skipped every turn until given an order.
-  Ctrl-right-click clears the selected unit's orders (and a hold or guard).
-  Once a unit has queued a move and an attack (or can't do one of them), the next unit is
-  selected automatically and the camera glides to it. Tab looks at the next unit without
-  holding this one.
-  Once every unit has acted, held or is guarding and every city has a build queued, Space
-  ends the turn. Assigning citizens never holds the turn up.
-  C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
-  Rest the cursor on any hex for a moment to see what it is and yields.
-  1-4 queue city units: melee, ranged, cavalry, siege. F founds with a settler.
-  F1 combat, F2 cities, F3 settler frontier (again to restart). F6 saves a snapshot, F7 loads it, F8 plays turns all at once.
-  The faded DEBUG panel at the top-left has buttons for these.
-  Scroll to zoom, left-drag or middle-drag to pan. Clicks act on release; dragging does not issue orders.
-  F5 toggles fullscreen.
-Turn order:
-  Each unit's blue number is when it moves and its red number when it attacks (1 = first).
-  Units of the same type act simultaneously; simultaneous attacks all land before anyone is removed.
-  A swap happens when whichever of the two allies moves first acts.
-Abilities (button at the bottom of the screen, or Q, for the selected unit):
-  Melee - Shield Wall: +50% defense this turn, but no moving.
-  Ranged - Volley: the attack also hits enemies next to the target, all at 60% damage.
-  Cavalry - Charge: +1 move and +50% attack this turn.
-  Siege - Deploy: spend a turn setting up, then +1 range but no moving until packed up.
-  A gold ring marks a queued ability; a steel ring marks deployed siege.
-Contested hexes:
-  Two enemies moving onto the same hex both take it, turning it orange. Every turn they
-  fight there instead of attacking anything else, until one dies or moves out.
-Terrain:
-  Hills (small peaks): +25% defense for the unit standing there.
-  Mountains (large snowy peak): impassable.";
+Controls: see docs/controls.md (every key, mouse action and map symbol).
+Rules: see docs/game-rules.md.";
 
 #[derive(Clone)]
 pub struct GameState {
@@ -90,15 +68,43 @@ pub struct GameState {
     sites: std::collections::HashMap<Hex, city::Site>,
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
+    /// Barracks have their own production screen, separate from city labor.
+    selected_barracks: Option<usize>,
+    /// City interior currently being inspected and ordered.
+    interior_view: Option<usize>,
+    interior_selected: Option<u32>,
+    /// Preserve the exterior camera while the tactical city map is open.
+    exterior_camera: Option<Camera>,
+    /// City whose manager has been picked up and awaits a destination click.
+    moving_manager: Option<usize>,
+    /// City and building whose site is being chosen. Only live while that
+    /// city's view is open: read it through `site_placement`.
+    placing_building: Option<(usize, city::Building)>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
+    /// Whether Alt is held, showing extra map info: units' turn order and
+    /// every tile's yields.
+    show_details: bool,
     /// The map hex under the cursor (not over the UI), and how long the
     /// cursor has rested on it, for the tile tooltip.
     hovered_tile: Option<Hex>,
     hover_seconds: f32,
     ui_click_mode: Option<orders::ClickMode>,
-    inspected_tile: Option<Hex>,
+    /// The worker job armed in the worker menu (`workers.rs`): map clicks
+    /// and drags place it, on tiles or (a wall or gate) on hex edges, until
+    /// Escape or another pick.
+    placing_job: Option<workers::JobKind>,
+    /// The unit whose Disband was pressed once, waiting for a second press.
+    disband_armed: Option<u32>,
+    /// A plain click that would replace a selected unit's multi-turn queue,
+    /// waiting for the same click again (`orders::confirm_queue_replace`).
+    queue_replace_armed: Option<orders::QueueReplace>,
+    /// The edge under the cursor while placing one, highlighted.
+    hovered_job: Option<(Hex, Option<Hex>)>,
+    city_queue_scroll: usize,
+    barracks_queue_scroll: usize,
+    queue_drag: Option<ui::QueueDrag>,
     notice: String,
     grid: HexGrid,
     /// Living units only: a unit is removed the moment it dies.
@@ -108,27 +114,61 @@ pub struct GameState {
     /// Several units selected together (see `group.rs`), in place of
     /// `selected`; empty unless at least two are.
     group: Vec<usize>,
+    /// The seed of a generated map (the F4 world), shown in the debug panel.
+    map_seed: Option<u32>,
     /// Which test scenario this is, for restarting it.
     scenario: Scenario,
     /// A snapshot of the game saved for testing (F6), restored by F7.
     savestate: Option<Box<GameState>>,
     /// Attack animations playing out, with how many seconds each has run.
     effects: Vec<(effects::Effect, f32)>,
-    /// Debug setting (F8): play a turn's steps all at once instead of one
-    /// every `STEP_INTERVAL`. Kept across scenario switches and loads.
-    instant_playback: bool,
+    /// The player's options (`settings.rs`). Kept across scenario switches
+    /// and loads.
+    settings: settings::Settings,
+    /// Whether the settings menu (Escape) is open. Kept across scenario
+    /// switches and loads, like the rest of the UI.
+    settings_open: bool,
+    /// The settings menu's Quit button was clicked; the app closes the window.
+    quit_requested: bool,
+    /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
+    /// Kept across scenario switches and loads.
+    fog_of_war: bool,
+    /// Every hex the player's side has seen, as it last saw it.
+    memory: fog::Memory,
     turn: u32,
     pub camera: Camera,
-    rng: ThreadRng,
+    /// Damage rolls, and the F4 world's map seed. Seeded from entropy; tests
+    /// seed it (`seed_rng`) so a game replays exactly. Kept across scenario
+    /// switches (`scenario.rs`).
+    rng: GameRng,
     /// Steps of the turn currently playing out, drained one at a time by `update`.
-    pending_steps: VecDeque<(UnitType, Phase)>,
+    pending_steps: VecDeque<Step>,
     step_timer: f32,
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec<u32>,
     highlight_timer: f32,
+    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.rs`).
+    cloud_time: f32,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: HashSet<u32>,
-    workers: HashSet<u32>,
+    /// The turn strip's group whose units it lists one by one, while one of
+    /// them is selected (`ui/roster.rs`).
+    roster_open: Option<ui::RosterKey>,
+    /// Worker mode (W): reachable tiles are shown, and map clicks open tile
+    /// panels for jobs (`workers.rs`).
+    worker_mode: bool,
+    /// The city whose workers and jobs the worker menu lists.
+    worker_menu_city: Option<usize>,
+    /// Ruins not yet claimed (`ruins.rs`), in the order the map made them.
+    ruins: Vec<ruins::Ruin>,
+    /// Workers out on the map; the ones at home are counted by their city
+    /// (`workers.rs`).
+    field_workers: Vec<workers::FieldWorker>,
+    /// Outposts and forts built by workers, by tile.
+    structures: HashMap<Hex, workers::Structure>,
+    /// Walls and gates built by workers, by the edge they stand on
+    /// (`hex::edge`).
+    barriers: HashMap<(Hex, Hex), workers::Structure>,
     /// Frontier sandbox units that the player may command despite being Red.
     player_controlled_units: HashSet<u32>,
     next_unit_id: u32,
@@ -155,46 +195,73 @@ impl GameState {
         // Mountain ridges along the center column leave a three-hex pass
         // (with a hill in the middle) as the only way between the two sides.
         let terrain = [
-            (Hex::new(0, -3), Terrain::Mountains),
-            (Hex::new(0, -2), Terrain::Mountains),
-            (Hex::new(0, 2), Terrain::Mountains),
-            (Hex::new(0, 3), Terrain::Mountains),
-            (Hex::new(0, 0), Terrain::Hills),
-            (Hex::new(-2, 2), Terrain::Hills),
-            (Hex::new(2, -2), Terrain::Hills),
+            (Hex::new(0, -3), Tile::MOUNTAINS),
+            (Hex::new(0, -2), Tile::MOUNTAINS),
+            (Hex::new(0, 2), Tile::MOUNTAINS),
+            (Hex::new(0, 3), Tile::MOUNTAINS),
+            (Hex::new(0, 0), Tile::HILLS),
+            (Hex::new(-2, 2), Tile::HILLS),
+            (Hex::new(2, -2), Tile::HILLS),
         ];
 
-        log::info!("You control {PLAYER_TEAM:?}; {AI_TEAM:?} is AI-controlled.\n{CONTROLS_HELP}");
+        log::info!(
+            "You control {PLAYER_TEAM:?}; every other team is AI-controlled.\n{CONTROLS_HELP}"
+        );
 
         let mut game = Self {
             cities: Vec::new(),
             sites: std::collections::HashMap::new(),
             roads: HashSet::new(),
             selected_city: None,
+            selected_barracks: None,
+            interior_view: None,
+            interior_selected: None,
+            exterior_camera: None,
+            moving_manager: None,
+            placing_building: None,
             hovered_city: None,
             show_yields: true,
+            show_details: false,
             hovered_tile: None,
             hover_seconds: 0.0,
             ui_click_mode: None,
-            inspected_tile: None,
+            placing_job: None,
+            disband_armed: None,
+            queue_replace_armed: None,
+            hovered_job: None,
+            city_queue_scroll: 0,
+            barracks_queue_scroll: 0,
+            queue_drag: None,
             notice: String::new(),
             grid: HexGrid::new(GRID_RADIUS, terrain),
             units,
             selected: None,
             group: Vec::new(),
+            map_seed: None,
             scenario: Scenario::Combat,
             savestate: None,
             effects: Vec::new(),
-            instant_playback: false,
+            settings: settings::Settings::default(),
+            settings_open: false,
+            quit_requested: false,
+            fog_of_war: true,
+            memory: fog::Memory::new(),
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
-            rng: rand::rng(),
+            rng: GameRng::seed_from_u64(rand::random()),
             pending_steps: VecDeque::new(),
             step_timer: 0.0,
             recent_actors: Vec::new(),
             highlight_timer: 0.0,
+            cloud_time: 0.0,
             settlers: HashSet::new(),
-            workers: HashSet::new(),
+            ruins: Vec::new(),
+            roster_open: None,
+            worker_mode: false,
+            worker_menu_city: None,
+            field_workers: Vec::new(),
+            structures: HashMap::new(),
+            barriers: HashMap::new(),
             player_controlled_units: HashSet::new(),
             next_unit_id: 8,
         };
@@ -210,6 +277,99 @@ impl GameState {
         game
     }
 
+    /// A playable siege: Blue surrounds four gates with enough force to
+    /// breach the defended command post.
+    pub fn siege_scenario() -> Self {
+        let mut game = Self::city_scenario();
+        game.scenario = Scenario::Siege;
+        for (id, pos) in [
+            (0, Hex::new(3, 0)),
+            (1, Hex::new(3, 1)),
+            (4, Hex::new(5, 0)),
+            (5, Hex::new(4, -1)),
+        ] {
+            game.units
+                .iter_mut()
+                .find(|unit| unit.id == id)
+                .unwrap()
+                .pos = pos;
+        }
+        // Keep the practice battle at the gates. The Cities scenario's other
+        // troops would require unrelated orders and Red's roamers would
+        // arrive mid-siege, changing the intended four-on-two test.
+        game.units.retain(|unit| ![2, 3, 6, 7].contains(&unit.id));
+        for (pos, kind) in [
+            (Hex::new(5, -1), UnitType::Siege),
+            (Hex::new(4, 1), UnitType::Melee),
+        ] {
+            let id = game.next_unit_id;
+            game.next_unit_id += 1;
+            game.units.push(Unit::new(id, pos, Team::Blue, kind));
+        }
+        for city in &mut game.cities {
+            city.queue.push(city::Build::Unit(city::BuildUnit::Melee));
+        }
+        game.open_city_interior(1);
+        game.notice = "SIEGE: FIGHT ON BOTH MAPS (V) - BREACH POST, THEN OCCUPY IT".into();
+        game
+    }
+
+    /// A narrow strait between two coastal cities, with ships and shore
+    /// defenses already deployed for deterministic naval playtesting.
+    pub fn naval_scenario() -> Self {
+        let mut game = Self::city_scenario();
+        game.scenario = Scenario::Naval;
+        let water: Vec<_> = game
+            .grid
+            .all_hexes()
+            .filter(|hex| (-1..=1).contains(&hex.q))
+            .map(|hex| (hex, terrain::Terrain::Coast))
+            .collect();
+        game.grid = HexGrid::new(6, water);
+        game.roads.retain(|h| game.grid.is_passable(*h));
+        game.sites.retain(|h, _| game.grid.is_passable(*h));
+        // Place both city centers on the shoreline, not two tiles inland.
+        for (city, sign) in [(0, -1), (1, 1)] {
+            game.cities[city].pos = Hex::new(sign * 2, 0);
+            game.cities[city].worked.clear();
+            game.cities[city].remembered_worked.clear();
+        }
+        game.units.clear();
+        game.next_unit_id = 0;
+        for (team, sign) in [(Team::Blue, -1), (Team::Red, 1)] {
+            let city = if team == Team::Blue { 0 } else { 1 };
+            game.cities[city]
+                .extra_buildings
+                .insert(city::Building::Harbor, Hex::new(sign * 2, 1));
+            game.cities[city]
+                .extra_buildings
+                .insert(city::Building::CoastalBattery, Hex::new(sign * 2, -1));
+            game.cities[city]
+                .built
+                .extend([city::Building::Harbor, city::Building::CoastalBattery]);
+            for (pos, kind) in [
+                (Hex::new(sign * 3, 0), UnitType::Melee),
+                (Hex::new(sign, -sign), UnitType::LandingCraft),
+                (Hex::new(sign, sign), UnitType::PatrolGalley),
+                (Hex::new(0, sign * 2), UnitType::BombardShip),
+            ] {
+                let id = game.next_unit_id;
+                game.next_unit_id += 1;
+                game.units.push(Unit::new(id, pos, team, kind));
+            }
+        }
+        for city in 0..game.cities.len() {
+            game.auto_assign_city(city);
+        }
+        game.cities[0]
+            .queue
+            .push(city::Build::Unit(city::BuildUnit::PatrolGalley));
+        game.start_on_whole_map();
+        game.notice =
+            "NAVAL TEST: SELECT TROOP THEN CLICK CRAFT TO BOARD; CRAFT THEN SHORE TO LAND".into();
+        game
+    }
+
     /// Fresh economy match: each side begins with one settler and no city.
     pub fn frontier_scenario() -> Self {
         let mut game = Self::new();
@@ -217,6 +377,56 @@ impl GameState {
         game.units.clear();
         game.setup_frontier();
         game.start_on_whole_map();
+        game
+    }
+
+    /// A generated map (`mapgen.rs`) from `seed`, with the default settings.
+    #[cfg(test)]
+    pub fn world_scenario(seed: u32) -> Self {
+        Self::world_scenario_with(seed, &settings::Settings::default())
+    }
+
+    /// A world from `seed` with the player alone on it, with a settler
+    /// (first) and a scout: the AI sides' units and cities are taken away.
+    #[cfg(test)]
+    pub fn solo_world(seed: u32) -> Self {
+        let settings = settings::Settings {
+            world_start_city: false,
+            ..Default::default()
+        };
+        let mut game = Self::world_scenario_with(seed, &settings);
+        game.units.retain(|u| u.team == PLAYER_TEAM);
+        game.cities.retain(|c| c.team == PLAYER_TEAM);
+        game.selected = Some(0);
+        game
+    }
+
+    /// A generated map (`mapgen.rs`) from `seed` with the player and as many
+    /// AI sides as `settings` ask for (`setup_world`).
+    pub fn world_scenario_with(seed: u32, settings: &settings::Settings) -> Self {
+        let mut game = Self::new();
+        game.scenario = Scenario::World;
+        game.units.clear();
+        game.setup_world(seed, settings);
+        game.start_on_whole_map();
+        // The map is too big to take in at once: start on the player's city
+        // or settler.
+        let home = game
+            .cities
+            .iter()
+            .find(|c| c.team == PLAYER_TEAM)
+            .map(|c| c.pos)
+            .or_else(|| {
+                game.units
+                    .iter()
+                    .find(|u| u.team == PLAYER_TEAM && game.settlers.contains(&u.id))
+                    .map(|u| u.pos)
+            })
+            .unwrap_or(Hex::new(0, 0));
+        game.camera = Camera::new(home.to_world(), game.camera.half_height);
+        // What needs seeing to first, as every turn starts: the city's
+        // production, or else the settler.
+        game.select_next_or_end_turn(None);
         game
     }
 
@@ -241,26 +451,34 @@ impl GameState {
         self.units_at(hex).find(|&i| self.is_player_controlled(i))
     }
 
-    /// What the unit is, for display: settlers and workers are marked on
-    /// top of an ordinary unit type.
-    fn unit_role(&self, unit: &Unit) -> (&'static str, char) {
+    /// What the unit is, for display: settlers are marked on top of an
+    /// ordinary unit type.
+    fn unit_role(&self, unit: &Unit) -> &'static str {
         if self.settlers.contains(&unit.id) {
-            ("SETTLER", 'T')
-        } else if self.workers.contains(&unit.id) {
-            ("WORKER", 'W')
+            "SETTLER"
         } else {
-            let name = match unit.unit_type {
+            match unit.unit_type {
                 UnitType::Melee => "MELEE",
                 UnitType::Ranged => "RANGED",
                 UnitType::Cavalry => "CAVALRY",
                 UnitType::Siege => "SIEGE",
-            };
-            (name, unit.unit_type.letter())
+                UnitType::Scout => "SCOUT",
+                UnitType::Armored => "ARMORED",
+                UnitType::PatrolGalley => "PATROL GALLEY",
+                UnitType::LandingCraft => "LANDING CRAFT",
+                UnitType::BombardShip => "BOMBARD SHIP",
+            }
         }
     }
 
-    fn unit_letter(&self, unit: &Unit) -> char {
-        self.unit_role(unit).1
+    /// How to draw `unit`: its pictogram, and hollow if it's a civilian.
+    fn unit_look(&self, unit: &Unit) -> draw::UnitLook {
+        let (icon, civilian) = if self.settlers.contains(&unit.id) {
+            (UnitIcon::Flag, true)
+        } else {
+            (UnitIcon::of(unit.unit_type), false)
+        };
+        draw::UnitLook { icon, civilian }
     }
 
     fn is_occupied(&self, hex: Hex) -> bool {
@@ -273,6 +491,34 @@ impl GameState {
 
     fn enemy_of_team_at(&self, hex: Hex, team: Team) -> Option<usize> {
         self.units_at(hex).find(|&i| self.units[i].team != team)
+    }
+
+    fn enemy_barracks_at(&self, hex: Hex, team: Team) -> Option<usize> {
+        self.cities.iter().position(|city| {
+            city.team != team && city.barracks == Some(hex) && city.barracks_hp > 0.0
+        })
+    }
+
+    fn enemy_coastal_battery_at(&self, hex: Hex, team: Team) -> Option<usize> {
+        self.cities.iter().position(|city| {
+            city.team != team
+                && city.placed_site(city::Building::CoastalBattery) == Some(hex)
+                && city.coastal_battery_hp > 0.0
+        })
+    }
+
+    fn has_enemy_target_at(&self, hex: Hex, team: Team) -> bool {
+        self.enemy_of_team_at(hex, team).is_some()
+            || self.enemy_barracks_at(hex, team).is_some()
+            || self.enemy_coastal_battery_at(hex, team).is_some()
+    }
+
+    /// An empty city center is not an exterior attack target. Units and
+    /// workers standing there can still be attacked normally.
+    fn empty_city_target(&self, hex: Hex, team: Team) -> bool {
+        self.cities.iter().any(|city| city.pos == hex)
+            && self.enemy_of_team_at(hex, team).is_none()
+            && self.enemy_workers_at(hex, team).is_empty()
     }
 
     /// Whether two enemies are fighting over this hex.
@@ -298,10 +544,25 @@ impl GameState {
         })
     }
 
-    /// Hexes reachable from `start` in at most `move_range` steps without
-    /// passing through mountains or an occupied hex, so a line of units
-    /// blocks the way. Includes `start` itself.
-    fn reachable_hexes(&self, start: Hex, move_range: i32) -> HashSet<Hex> {
+    /// Hexes a unit of `team` can reach from `start` in at most `move_range`
+    /// steps without passing through mountains, walls, others' gates or an
+    /// occupied hex, so a line of units blocks the way. Includes `start`
+    /// itself. Workers don't block. This is the real board, as the AI sees
+    /// it; the player plans with `known_reachable_hexes` (`fog.rs`).
+    fn reachable_hexes(&self, start: Hex, move_range: i32, team: Team) -> HashSet<Hex> {
+        self.reachable_hexes_by(start, move_range, |from, to| {
+            self.can_step(from, to, team) && !self.is_occupied(to)
+        })
+    }
+
+    /// Like `reachable_hexes`, with `open` deciding whether a step from one
+    /// hex onto an adjacent one is possible.
+    fn reachable_hexes_by(
+        &self,
+        start: Hex,
+        move_range: i32,
+        open: impl Fn(Hex, Hex) -> bool,
+    ) -> HashSet<Hex> {
         let mut visited = HashSet::from([start]);
         let mut frontier = vec![start];
 
@@ -309,8 +570,7 @@ impl GameState {
             let mut next = Vec::new();
             for hex in frontier {
                 for neighbor in hex.neighbors() {
-                    let open = self.grid.is_passable(neighbor) && !self.is_occupied(neighbor);
-                    if open && visited.insert(neighbor) {
+                    if open(hex, neighbor) && visited.insert(neighbor) {
                         next.push(neighbor);
                     }
                 }
@@ -325,6 +585,8 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use terrain::Terrain;
+    use turn::Phase;
 
     /// The starting layout has exactly one unit of each type per team.
     fn find(game: &GameState, team: Team, unit_type: UnitType) -> usize {
@@ -332,6 +594,20 @@ mod tests {
             .iter()
             .position(|u| u.team == team && u.unit_type == unit_type)
             .unwrap()
+    }
+
+    /// The startup log sends players to the docs, so the files it names
+    /// must exist.
+    #[test]
+    fn controls_help_points_at_existing_docs() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for doc in ["docs/controls.md", "docs/game-rules.md"] {
+            assert!(
+                CONTROLS_HELP.contains(doc),
+                "CONTROLS_HELP should name {doc}"
+            );
+            assert!(root.join(doc).is_file(), "{doc} is missing");
+        }
     }
 
     #[test]
@@ -448,13 +724,14 @@ mod tests {
 
         let hill = Hex::new(1, 0);
         let plain = Hex::new(-1, 0);
-        let grid = HexGrid::new(GRID_RADIUS, [(hill, Terrain::Hills)]);
+        let grid = HexGrid::new(GRID_RADIUS, [(hill, Tile::HILLS)]);
 
         // Same seed on both sides so both attacks roll the same variance.
         let damage_taken_at = |pos: Hex| {
             let siege = Unit::new(0, Hex::new(0, 0), Team::Blue, UnitType::Siege);
             let defender = Unit::new(1, pos, Team::Red, UnitType::Melee);
-            combat::roll_damage(&siege, &defender, &grid, &mut StdRng::seed_from_u64(7))
+            let multiplier = grid.tile(pos).defense_multiplier();
+            combat::roll_damage(&siege, &defender, multiplier, &mut StdRng::seed_from_u64(7))
         };
 
         assert!(damage_taken_at(hill) < damage_taken_at(plain));
@@ -601,10 +878,12 @@ mod tests {
     #[test]
     fn order_badges_follow_the_resolution_order() {
         use turn::step_rank;
-        assert_eq!(step_rank(UnitType::Cavalry, Phase::Move), 1);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 4);
+        assert_eq!(step_rank(UnitType::Scout, Phase::Move), 1);
+        assert_eq!(step_rank(UnitType::Cavalry, Phase::Move), 2);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 5);
         assert_eq!(step_rank(UnitType::Ranged, Phase::Attack), 1);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 4);
+        assert_eq!(step_rank(UnitType::Scout, Phase::Attack), 2);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 5);
     }
 
     /// Selects `idx` and toggles its ability, as the button would.
@@ -791,7 +1070,7 @@ mod tests {
             !game.is_resolving(),
             "holding the last unit doesn't end the turn"
         );
-        assert_eq!(game.pending(), (0, 0));
+        assert_eq!(game.pending(), (0, 0, 0));
         game.hold_or_end_turn();
         assert!(game.is_resolving());
     }
@@ -804,7 +1083,7 @@ mod tests {
         game.toggle_guard();
         assert_ne!(game.selected, Some(melee), "guarding moves on");
 
-        while game.pending() != (0, 0) {
+        while game.pending() != (0, 0, 0) {
             game.hold_or_end_turn();
         }
         game.hold_or_end_turn();
@@ -868,7 +1147,8 @@ mod tests {
         let mut game = GameState::city_scenario();
         game.units.retain(|u| u.team != Team::Blue);
         game.selected = None;
-        assert_eq!(game.pending(), (0, 1));
+        // A city with nothing to build, and its worker idle at home.
+        assert_eq!(game.pending(), (0, 1, 1));
 
         // Space opens the city that needs a build instead of ending the turn.
         game.hold_or_end_turn();
@@ -876,8 +1156,132 @@ mod tests {
         assert_eq!(game.selected_city, Some(0));
 
         game.queue_selected_city_unit(city::BuildUnit::Melee);
-        assert_eq!(game.pending(), (0, 0));
+        assert_eq!(game.pending(), (0, 0, 1));
+        // Then the worker menu, where Space lets the worker sleep.
+        game.hold_or_end_turn();
+        assert!(game.worker_mode && !game.is_resolving());
+        game.hold_or_end_turn();
+        assert!(!game.worker_mode);
+        assert_eq!(game.pending(), (0, 0, 0));
         game.hold_or_end_turn();
         assert!(game.is_resolving());
+    }
+
+    #[test]
+    fn empty_city_center_rejects_exterior_attacks() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let target = game
+            .cities
+            .iter()
+            .position(|city| city.team == Team::Red)
+            .unwrap();
+        let pos = game.cities[target].pos;
+        game.units.push(Unit::new(
+            900,
+            pos.neighbors()[0],
+            Team::Blue,
+            UnitType::Ranged,
+        ));
+        game.try_queue_attack(0, pos);
+        assert_eq!(game.units[0].planned_attack, None);
+        assert!(!game.queue_attack(pos));
+        game.group.push(0);
+        game.group_order(pos, ClickMode::Attack);
+        assert_eq!(game.units[0].planned_attack, None);
+        game.group.clear();
+
+        // An old or externally supplied order cannot damage the city either.
+        game.units[0].planned_attack = Some(pos);
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert!(game.effects.iter().any(|(effect, _)| matches!(
+            effect,
+            effects::Effect::Shot {
+                outcome: effects::Outcome::Miss,
+                ..
+            }
+        )));
+        assert_eq!(game.units[0].hp, game.units[0].max_hp());
+    }
+
+    #[test]
+    fn unit_on_city_center_remains_attackable() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let city = game
+            .cities
+            .iter()
+            .find(|city| city.team == Team::Red)
+            .unwrap()
+            .pos;
+        game.units
+            .push(Unit::new(901, city, Team::Red, UnitType::Melee));
+        game.units.push(Unit::new(
+            902,
+            city.neighbors()[0],
+            Team::Blue,
+            UnitType::Ranged,
+        ));
+        game.try_queue_attack(1, city);
+        assert_eq!(game.units[1].planned_attack, Some(city));
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert!(game.units[0].hp < game.units[0].max_hp());
+    }
+
+    #[test]
+    fn hitting_an_empty_enemy_barracks_is_a_hit_not_a_miss() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let target = game
+            .cities
+            .iter()
+            .position(|city| city.team == Team::Red)
+            .unwrap();
+        let city = game.cities[target].pos;
+        let barracks = city.neighbors()[0];
+        game.cities[target].barracks = Some(barracks);
+        game.units.push(Unit::new(
+            902,
+            Hex::new(barracks.q, barracks.r + 2),
+            Team::Blue,
+            UnitType::Ranged,
+        ));
+        game.units[0].planned_attack = Some(barracks);
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        let shots: Vec<_> = game
+            .effects
+            .iter()
+            .filter_map(|(effect, _)| match effect {
+                effects::Effect::Shot { outcome, .. } => Some(*outcome),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shots, [effects::Outcome::Hit]);
+        assert!(game.cities[target].barracks_hp < city::BARRACKS_MAX_HP);
+    }
+
+    #[test]
+    fn barracks_is_tanky_but_does_not_return_fire() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        let target = game
+            .cities
+            .iter()
+            .position(|city| city.team == Team::Red)
+            .unwrap();
+        let barracks = game.cities[target].pos.neighbors()[0];
+        game.cities[target].barracks = Some(barracks);
+        game.units.push(Unit::new(
+            901,
+            barracks.neighbors()[0],
+            Team::Blue,
+            UnitType::Ranged,
+        ));
+        let barracks_hp = game.cities[target].barracks_hp;
+        let unit_hp = game.units[0].hp;
+        game.try_queue_attack(0, barracks);
+        game.resolve_step(UnitType::Ranged, Phase::Attack);
+        assert!(game.cities[target].barracks_hp < barracks_hp);
+        assert_eq!(game.units[0].hp, unit_hp);
     }
 }

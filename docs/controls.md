@@ -1,134 +1,284 @@
-# Playing the prototype
+# Controls
 
-Run `cargo run --release`. The city scenario opens by default. You control blue;
-red queues its orders when you end planning. There is no save system yet.
+Run `cargo run --release`. The city scenario opens by default. You control Blue; Red plans its
+orders when you end the turn. The key map in code is `App::window_event` in `src/app.rs`; the
+rules behind each action are in `game-rules.md`. This file is the only description of the
+controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just points here.
+
+## Units
 
 | Control | Action |
 | --- | --- |
-| Left-click friendly unit | Select it |
-| Click green tile | Queue movement; repeat to cancel |
-| Click enemy in range | Queue attack |
-| Shift-click tile in range | Attack that tile, even if currently empty |
-| Ctrl-click adjacent ally | Queue a swap |
-| Alt-drag a box | Select every one of your units inside it as a group |
-| Alt-click a unit | Add it to, or remove it from, the selection |
-| Click a hex with a group | Each member moves as close to it as it can get |
-| Click an enemy with a group | Every member in range attacks it (again to call it off) |
-| Right-click map | Queue move to an open hex, or attack an enemy; with Move/Attack/Swap armed, disarm it instead |
-| Ctrl-right-click | Clear selected unit's orders, hold and guard |
-| Q / ability button | Toggle ability |
-| Space / Hold button | Hold unit for this turn, keeping queued orders, then select next |
-| G / Guard button | Guard: the unit stays put and is skipped every turn until given an order (G again unguards) |
-| Space with nothing left to do / End Turn button | End the turn, once every unit has orders, holds or guards and every city has a build |
-| Tab | Browse units without holding; leave city view |
-| Wheel | Zoom |
-| Left drag / middle drag | Pan the map |
-| C / click your city center | Open city view |
-| Click tile in city view | Assign citizen, or release an assigned citizen |
-| A in city view | Auto-assign citizens, balancing food and production |
-| Y / Yields button in city view | Show or hide tile yields around the city |
-| Rest the cursor on a hex | After 0.75s, a tooltip shows its terrain, yields, and what's on it |
-| Hold Escape for 1s | Quit the game (a prompt shows while it's held) |
-| F1 | Start the original combat scenario (again to restart it) |
-| F2 | Start the city scenario (again to restart it) |
-| F3 | Start the frontier scenario, a settler each (again to restart it) |
-| F6 | Save a snapshot of the whole game (testing savestate) |
-| F7 | Load the snapshot; it's kept, so it can be loaded again |
-| F8 | Toggle turn playback: step by step, or every step at once (same outcome) |
+| Left-click your unit | Select it |
+| Left-click a green hex | Move there this turn; click again to cancel |
+| Right-click a hex in range | Attack it this turn: an enemy unit or barracks, or an empty hex someone may step into; empty city centers cannot be targeted |
+| Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued, until the unit's queue holds as many turns as the queue limit (settings menu) allows |
+| Shift-right-click a hex | Queue an attack on it: in the queue's last turn if that turn has none yet and it's in range, else in one more turn |
+| Ctrl-click an adjacent ally | Queue a swap |
+| M / X (or Move / Attack buttons) | Arm Move / Attack for the next map click (again to disarm) |
+| Right-click (armed) | Disarm the armed action |
+| Ctrl-right-click | Clear the selected unit's orders, queue, hold and guard |
+| Q / ability button | Toggle the unit's ability (what each does: `game-rules.md`, Abilities) |
+| Space / Hold button | Hold the unit this turn, keeping queued orders, and move on to what's next; on a unit already holding, stop holding (it's back in the turn order). Any new order also ends a hold |
+| Clear Orders button | Clear the selected unit's (or group's) orders, queue, hold and guard, like Ctrl-right-click |
+| G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
+| Delete / Disband button, twice | Remove the selected unit for good (the first press asks to confirm) |
+| Tab | Look at the next unit without holding this one; leave the city or barracks view |
+| Left-drag a box on the map | Select every one of your units inside it (two or more become a group) |
+| Shift-left-drag a box | Add the units inside it to the selection |
+| Shift-click one of your units | Add it to the selection |
+| Ctrl-click a unit in the group | Take it out of the group (with one unit selected, Ctrl-click swaps instead) |
+| Hold Alt | Show extra map info: each unit's turn order, and every explored tile's yields |
+| Left-click a hex with a group | Each member moves as close to it as it can get |
+| Right-click a hex with a group | Every member in range attacks it (again to call it off) |
+| Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
+| Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
+| Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
+| Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
+| F / Found City button | Found a city with the selected settler |
+| Escape | Let go of the selected unit or group |
 
-The faded DEBUG panel at the top-left has buttons for F1-F3 and F6-F8; the
-current scenario is gold. The savestate lives only until the game closes and
-survives switching scenarios; loading it returns to its scenario.
+A unit can queue a move and an attack; it attacks from the hex it moves to. Units can't move
+through occupied hexes, and two allies can't head for the same hex. Once the selected unit has a
+move and an attack queued (or can't do one of them), the game moves on to what needs you next,
+in the turn strip's order: a city with nothing to build opens first, then the next unit
+needing orders (settlers before the military) is selected and the camera glides to it. A turn,
+and a new world, start the same way. A unit you select by clicking stays selected.
+
+The turn strip ("need orders"; a panel that starts at the bottom of the screen, centered or as
+near the middle as the other panels allow) shows a chip for everything you still have to see to
+this turn, civilian tasks first: each city with nothing to build (its tower), each city with
+workers idle at home (a shovel, with how many; it opens the worker menu), your settlers, and
+then your military units needing orders. Units are grouped by kind, one chip per kind with a count; a group of several
+that you select lists its units one by one on a second row, to pick from or take out. Selected
+units, and the open city, are framed; a unit leaves the strip once it has its orders (or holds,
+guards or follows a queue), and a city once it has a build. Like
+the other panels, hold Ctrl to drag, resize or dock it.
+
+Shift-clicks on a hex build an order queue over several turns (rules: `game-rules.md`, Order
+queues); a Shift-click on one of your own units adds it to the selection instead.
+Selection stays on the unit while you queue; let go of it (Escape, Tab, or click another unit)
+when done. A queued unit doesn't hold up the turn, and any other order (a plain click or
+right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. While a
+unit or group with a queue past this turn is selected, a plain click or right-click on the map
+only warns ("CLICK AGAIN TO REPLACE ITS QUEUE") and outlines the hex in orange; the same click
+again replaces the queue, so selecting a unit to look at its plan and clicking away can't wipe
+it. Buttons and keys (Clear Orders, Guard, the ability) act at once. A plan
+reaching past this turn shows as turn numbers only while it is selected or the cursor is on it;
+otherwise a small `NT` tag beside it (`3T`: 3 turns) counts the turns of orders left. A plan of
+this turn alone shows like plain orders (ghost and arrow). To cancel a unit's queued orders,
+use Clear Orders (in the unit or group panel) or Ctrl-right-click, or just give it another
+order.
+
+## Workers
+
+Workers live in their city and go out to do the jobs you queue (rules: `game-rules.md`,
+Workers).
+
+| Control | Action |
+| --- | --- |
+The worker menu is the only way to give workers orders.
+
+| Control | Action |
+| --- | --- |
+| W, the Workers chip in the turn strip, or Worker Jobs (city view) | Open the worker menu: tiles your workers can reach (3 from a city or connected Work Camp, or next to a road) are lit and the rest dimmed. W, Escape, Done, or selecting a unit or city closes it |
+| Road / Improve / Wall / Gate / Outpost / Fort (worker menu), or R / I | Pick that job to place (again to put it down); R and I open the menu with roads or improvements picked |
+| Click or drag over tiles (a tile job picked) | Place the job on each tile (a ring under the cursor shows where, red where it can't go), for the nearest city |
+| Click or drag along hex edges (a wall or gate picked) | Place one on each edge the cursor touches (highlighted under the cursor) |
+| Escape or right-click (a job picked) | Put the job down, leaving the menu open |
+| City buttons (worker menu, with several cities) | List that city's workers and jobs |
+| Click a worker job (worker menu) | Show it on the map |
+| Drag a worker job onto another (worker menu) | Reorder the city's worker jobs |
+| Click a worker job's X (worker menu) | Remove the job |
+| Click a worker's row (worker menu) | Show the worker on the map |
+| Recall beside a worker's row (worker menu) | Send that worker straight home; its job goes back on top of the list |
+| Sleep / Space (worker menu) | That city's idle workers rest this turn, and the turn moves on |
+| 8 / Worker button (city view) | Build a worker for the city |
+
+## Turn
+
+| Control | Action |
+| --- | --- |
+| Space with nothing left to do | End the turn |
+| End Turn button | Hold every unfinished unit, then end the turn (or open a city that still needs a build) |
+
+The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE
+PRODUCTION") and turns gold, reading END TURN, once nothing is. Clicks are ignored while a turn
+plays out.
+
+## Cities
+
+| Control | Action |
+| --- | --- |
+| C | Open a city needing a build (or your first city); from a barracks view, its city |
+| Left-click your city | Open its city view |
+| Click a tile in the city view | Assign a citizen there, or release one |
+| Click the manager (`M`), then a tile | Move the manager; workers follow where they can |
+| A | Auto-assign citizens by the city's labor focus |
+| Food / Production / Balanced buttons | Set the labor focus (and re-assign) |
+| Y / Yields button | Show or hide tile yields around the open city |
+| 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron) |
+| 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
+| Scroll inside BUILDINGS in the city tray | Browse building cards without paging; Harbor and Coastal Battery appear only in cities whose center touches the sea |
+| Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
+| Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers) |
+| Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
+| Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
+| 8 | Queue a worker |
+| Click a tile after queuing a placed building | Choose its site |
+| Escape while choosing a site | Cancel it: the building comes back out of the queue (the city stays open) |
+| Its card (or key) while a finished building has no site | Resume choosing the site |
+| Click a planned site's map badge | Move that site |
+| Confirm button | Place a finished building on its site |
+| Drag a queue row onto another | Reorder the queue |
+| Click a row's X | Remove it (removing the item in progress loses its production) |
+| Wheel over a long queue, or drag its scrollbar | Scroll the queue |
+| Backspace | Remove the item being built |
+| PageDown | Swap the first two queue items |
+| See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types) |
+| Click the city center while in city view | Enter that city's tactical interior map |
+| V / City Interior button | Open the selected or hovered city's interior; press again to return |
+| Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |
+| Backspace in the interior | Clear the selected copy's orders |
+| Escape / V / Return to City in the interior | Return to the city view |
+| Open City (in the barracks view) | Go back to the city view |
+| Space / Escape / click off the map | Close the city or barracks view |
+| Tab | Close the city or barracks view |
+
+While a city view is open, map clicks manage tiles and never select field units. Clicking the
+city center enters the interior map; its clicks control only the interior copies.
+
+## Camera, game and testing
+
+| Control | Action |
+| --- | --- |
+| Wheel | Zoom (except over a scrollable queue) |
+| Middle-drag | Pan (a left-drag draws a selection box instead) |
+| Rest the cursor on a hex | After 0.75 s, a tooltip: terrain, yields, site, road, who works it, units |
+| Hover a unit | Its stats, in a box at the top-right |
+| Hover a city or barracks | Its production and current build (plus city growth or barracks HP), at the bottom-left |
 | F5 | Toggle borderless fullscreen |
-| F, with a selected settler | Found a city |
-| 1 / 2 / 3 / 4 in city view | Queue melee / ranged / cavalry / siege |
-| M / X | Arm Move / Attack for the next map click (press again to disarm) |
+| Escape with nothing open | Open the settings menu (below), which has the Quit button; Escape again, or its Close button, closes it |
+| F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
+| F4 | Start a newly generated world, for you and the AI sides the AI Players setting asks for; every press makes a new map |
+| F12 | Start a siege at Red's city with its interior open |
+| NAVAL in the Debug panel | Start the coastal naval test scenario |
+| F6 | Save a snapshot of the whole game (in memory only) |
+| F7 | Load the snapshot; it is kept, so it can be loaded again |
+| F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome); also in the settings menu |
+| F9 | Pay for the open city's or barracks' current build at once (debug; a building still needs its site and Confirm) |
+| F10 | Toggle fog of war (on by default) |
+| F11 | Switch between the ImGui and classic UI presentations |
+| Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
+| Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
-A unit can queue a move and attack together. Attacks target tiles, and the
-different unit types move and fire at different steps. Orders resolve only
-when the turn ends. Space holds the selected unit if it still needs orders, and
-moves on to whatever's next: another unit, then any of your cities with nothing
-queued to build. Once nothing is left, Space ends the turn. Moving citizens
-never holds the turn up.
+The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10; the current scenario is
+gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
+order.
 
-Left clicks take effect when released. Moving at least 6 pixels while holding
-the left button pans instead, without selecting a tile or issuing an order.
+## Settings menu
 
-Abilities: melee Shield Wall improves defense but prevents movement; ranged
-Volley deals reduced splash damage; cavalry Charge improves movement and attack;
-siege Deploy spends a turn setting up for longer range, with Q again to pack up.
+Escape opens the settings menu once there's nothing else for it to close. Each press closes one
+thing, in this order: the settings menu itself, a city interior, a site being chosen, a city or
+barracks view, a worker job being placed, the worker menu, then the selection. The menu opens
+in the middle of the screen, over the map; in the ImGui presentation, hold Ctrl to drag,
+resize or dock it like the other panels. The game carries on while it's open.
 
-Your queued attacks show as orange arrows from the attacker (or its ghost) to
-the target; the AI's don't. As the turn plays out, each attack's arrow shoots
-to its target: a burst means it hit, a grey MISS that the hex was empty, and
-OUT OF RANGE that the target moved away first. Damage numbers rise from every
-unit hurt, attackers taking retaliation included.
+The settings are grouped under headings (Turns, Map, Next World), each with its name on the
+left and its control beside it; hover over either for what the setting does.
 
-Cities appear as team-colored H squares. F/M/P label preplaced farms, mines,
-and pastures; brown lines are dirt roads. Hover over a city or select it to see
-green outlines around its worked tiles; red outlines mark disrupted assignments.
-With a city open and yields shown (Y or the Yields button toggles them; on by
-default), small green grain and amber hammer icons show raw food and production
-with numeric counts, including zero, and percentages show delivery efficiency.
-Icons are limited to that city's reachable and worked tiles. The percentages
-assume current unit positions; combat can change the final harvest.
+| Control | Action |
+| --- | --- |
+| Checkbox | Switch an on/off setting |
+| Slider | Drag or click to pick a number; the slider shows the value |
+| Buttons side by side | Pick one of a few named values; the current one is gold |
+| Drop-down list | Pick one of a longer list of values |
+| Close button, or Escape | Close the menu |
+| Quit button | Close the game |
 
-Rest the cursor on any hex for a moment for a tooltip: its terrain (or city),
-yields, defense bonus, site and road, which city works it, what share reaches
-the open city, and the units on it.
+The classic presentation (F11) has no sliders, checkboxes or lists: an on/off setting there
+is a pair of OFF / ON buttons, and a slider or list is a < / > pair beside its value (faded at
+that end of the range).
 
-Each population works one tile and consumes 2 food per turn. The center adds
-2 food and 1 production automatically. Excess food grows population; shortages
-consume reserves and eventually reduce population. New citizens need assignments
-(press A or select tiles). Production accumulates in a store in this first slice.
+| Setting | Control | Values |
+| --- | --- | --- |
+| Instant playback (Turns) | Checkbox | On (the default): a turn plays out all at once; off: step by step. The same switch as F8 |
+| Queue limit (Turns) | Slider | 1 to 20 turns (6 by default): the most turns a unit can have queued, this turn included. A Shift-click toward a hex farther away queues the move as far as the limit goes, and once a queue is full, Shift-clicks add nothing to it until turns are played |
+| Fog (Map) | Buttons | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
+| AI players (Next World) | Drop-down list | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |
+| Start with (Next World) | Buttons | City (the default) or settler: what every side in the next world (F4) starts with, beside its scout |
 
-Enemy occupation blocks transport through that hex. Roads lower transport cost,
-and goods reroute when possible. Opposing improvements and already assigned tiles
-cannot be claimed through the city panel. Both cities use the same economy rules.
-Each tile's goods travel its cheapest logistics path. Routes use total
-terrain/road cost, never straight-line distance, and cannot pass through an
-enemy or contested hex.
+Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
+and loads (F7).
 
-In the city view, clicking one of your units selects it and closes the view;
-so does clicking the city again or clicking off the map.
+Settings are also kept between sessions, saved as soon as one changes. On quitting, the game
+also saves the window's size (and whether it's maximized), the UI presentation (F11), and the
+ImGui panels as you arranged them: where each is, its size, which are docked or collapsed, and
+the boxes. The next session opens the same way. They're kept in `%APPDATA%\riskofcivlike`
+(`~/.config/riskofcivlike` elsewhere); delete that folder to start over from the defaults.
+Screenshot mode (`--screenshot`) ignores it.
 
-The city tray has a green growth meter. Its fill shows food progress toward the
-next population; its label shows turns remaining. When population grows, the
-city automatically adds its best reachable unclaimed tile. If conflict cuts off
-a worked tile, that citizen is reassigned at the end of the turn; your other
-manual assignments remain intact.
+## Command line
 
-This is the economic experiment, not yet the full design: city defense/capture,
-site capture, road construction, build queues, science, strategic resources, and
-luxuries are not implemented. City centers currently remain economic markers;
-enemy occupation can interrupt external gathering but cannot capture them.
+Flags go after `--`, e.g. `cargo run --release -- --scenario world --seed 42`; `--help` lists
+them.
 
-In the frontier scenario, settlers use a `T` marker. Found your city with F,
-open it with C, then choose a unit with 1–4. Production accumulates at the end
-of each turn and a finished unit appears on an open adjacent hex. If every
-adjacent hex is occupied, the city keeps the completed build until one opens.
-Both sides also begin with a warrior. The red starting warrior is player
-controlled in this scenario, so you can move either warrior to test route cuts,
-contests, and city labor without fighting the AI for input.
+| Flag | Effect |
+| --- | --- |
+| `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier`, `world`, `siege` (F12), or `naval` |
+| `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
+| `--size <W>x<H>` | Open the window at this size in pixels |
+| `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
 
-The top bar shows the turn, the latest notice, and on the right a button naming
-what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION"); click
-it to jump there. Once nothing is waiting it turns gold and reads END TURN.
+## Reading the map
 
-Cities and units share one command tray in the bottom-left. Select a unit to
-see its stats (boosted values green, reduced ones red) and a row of buttons:
-Move, Attack, Swap, then its ability (or Found City for settlers, Build Road
-and Improve for workers), and Hold. Each button shows its shortcut. Move,
-Attack and Swap arm the next map click; the armed button has a bright border,
-and pressing it again or right-clicking disarms it. A queued order
-turns its button gold, and a button the unit can't use right now is dimmed.
-Hover any button for a tooltip explaining it. Hover any unit on the map (either
-team) to see its stats in a box at the top-left.
-
-Workers are marked `W`. Move one onto a tile, then choose Build Road or Improve
-Tile. Roads lower logistics cost; plains become farms and hills become mines.
-These worker actions complete immediately in this first version.
-
-Select a city to see its population, food and production, what it's building,
-its growth meter, and four build cards. Hover a card to see what the unit does
-and costs; click it or press its number to queue it. The queued build is gold.
+- Holding Alt shows blue and red numbers on each unit: its move and attack ranks in the turn
+  order.
+- Tile yields sit below the unit spot: wheat stalks for food, then hammers for production, one
+  per point laid out like a die's pips (3 a triangle, 4 a square, 5 a square with one in the
+  middle, 6 two rows of three); past 6, one icon and the number. The open city shows them on the tiles it reaches (Y hides them);
+  holding Alt shows them on every explored tile that can be worked.
+- Your queued attacks are orange arrows from the attacker (or its ghost) to the target; the AI's
+  are hidden. During playback each arrow shoots to its target: a burst is a hit, grey MISS a hex
+  with no enemy unit, worker or barracks (an empty city center cannot be targeted), OUT OF RANGE a
+  target that moved away. Damage numbers rise from every unit hurt.
+- A unit whose order queue reaches past this turn (one queued for this turn only shows the
+  usual ghost and arrow): while it is selected (alone or in a group) or under the cursor, a
+  line in team color runs from it along its moves, with each turn's number (1 is this turn) in
+  a dark disc on the hex it moves to, ending in its faded ghost where the plan leaves it (the
+  last number just under the ghost), and an orange-rimmed number on each queued attack's arrow.
+  Each unit's plan is its own: where several units stop on one hex, their numbers fan out
+  around it instead of merging, and a hex or arrow one unit uses on several turns lists them
+  ("2,3"). Otherwise only an `NT` tag at the unit's lower left shows (`3T`: 3 turns of orders
+  left).
+- Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Orange hex:
+  contested.
+- Units are tokens in team color with a pictogram of what they are: sword (melee), bow
+  (ranged), horse head (cavalry), catapult (siege), spyglass (scout), shield (armored), sailboat (Patrol Galley), cargo boat (Landing Craft), gunship (Bombard Ship) on a
+  disc. Settlers (a planted flag) are hollow hexagons.
+- Workers out on the map are small hollow hexagons with a shovel (tucked into a corner when a
+  unit shares their hex), with a dotted line to the job they're walking to. A dark tag with a
+  shovel beside each of your cities counts its workers at home. Queued jobs are faded gold rings
+  with the job's name.
+- Structures: walls are stone bands along hex edges with posts in their owner's color; a gate is
+  a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,
+  a fort a ring of stakes around it. Queued walls and gates are muted gold edges with rounded ends,
+  so a run of them reads as one line.
+- Cities are crenellated towers showing their population, with a gold G disc once they have a
+  granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
+  a Workshop a blue diamond marked W. Other buildings have colored letter badges. While you choose or move a site, a translucent diamond with
+  the building's letter previews it. Improvements are small icons in a hex's top-left corner: a
+  wheat stalk (farm), an ore cart (mine), a fence (pasture), stacked logs (lumber mill).
+  Resources are icons in the top-right corner: a horse's head (Horses), an ingot (Iron). Brown
+  lines are dirt roads, and blue lines between hexes are rivers.
+- Terrain: two small peaks are hills, pines forest, round canopies jungle; dunes, grass tufts and
+  reeds mark desert, tundra and marsh. A large snowy peak is a mountain (impassable) and waves
+  are water (ships enter it, land units do not; cities can work it). Terrain defense and yields are in
+  `game-rules.md`.
+- Fog of war: never-seen hexes are under clouds; hexes you've seen but can't see now are under a
+  grey veil and show the cities, improvements, roads and structures that were there when you
+  last looked, but no units or workers.
+- In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
+  the manager; hovering the manager draws a dotted line along the way its goods travel to the
+  city. Green grain and amber hammers show food and production, with the share that reaches the
+  city.

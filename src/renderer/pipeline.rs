@@ -48,13 +48,23 @@ pub unsafe fn create_render_pass(
         .color_attachments(&color_refs)
         .resolve_attachments(&resolve_refs)];
 
-    // Don't write to the swapchain image until presentation has released it.
-    let dependencies = [vk::SubpassDependency::default()
-        .src_subpass(vk::SUBPASS_EXTERNAL)
-        .dst_subpass(0)
-        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)];
+    let dependencies = [
+        // Don't write to the swapchain image until presentation has released it.
+        vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE),
+        // Let a copy after the pass read the resolved image (`readback.rs`).
+        vk::SubpassDependency::default()
+            .src_subpass(0)
+            .dst_subpass(vk::SUBPASS_EXTERNAL)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags::TRANSFER)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ),
+    ];
 
     let create_info = vk::RenderPassCreateInfo::default()
         .attachments(&attachments)
@@ -163,8 +173,10 @@ unsafe fn create_shader_module(device: &ash::Device, spirv: &[u8]) -> Result<vk:
         "SPIR-V length must be a multiple of 4 bytes"
     );
     let code: Vec<u32> = spirv
-        .chunks_exact(4)
-        .map(|word| u32::from_ne_bytes(word.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&word| u32::from_ne_bytes(word))
         .collect();
 
     let create_info = vk::ShaderModuleCreateInfo::default().code(&code);

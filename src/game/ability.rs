@@ -20,6 +20,9 @@ pub enum Ability {
     /// Siege spends a whole turn setting up (or packing up) instead of moving
     /// or attacking. While set up it has +1 range but can't move.
     Deploy,
+    /// Scout stays put for the turn, watching: through the next turn it sees
+    /// two hexes farther.
+    Lookout,
 }
 
 impl Ability {
@@ -29,6 +32,11 @@ impl Ability {
             UnitType::Ranged => Ability::Volley,
             UnitType::Cavalry => Ability::Charge,
             UnitType::Siege => Ability::Deploy,
+            UnitType::Scout => Ability::Lookout,
+            UnitType::Armored => Ability::ShieldWall,
+            UnitType::PatrolGalley | UnitType::LandingCraft | UnitType::BombardShip => {
+                Ability::Lookout
+            }
         }
     }
 
@@ -37,7 +45,7 @@ impl Ability {
         match self {
             Ability::ShieldWall => 1,
             Ability::Volley | Ability::Charge => 2,
-            Ability::Deploy => 0,
+            Ability::Deploy | Ability::Lookout => 0,
         }
     }
 }

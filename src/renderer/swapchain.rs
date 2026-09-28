@@ -2,13 +2,23 @@ use anyhow::Result;
 use ash::vk;
 
 use super::device::{self, QueueFamilyIndices};
+use super::sync;
 
 pub struct SwapchainData {
     pub swapchain: vk::SwapchainKHR,
     pub images: Vec<vk::Image>,
     pub image_views: Vec<vk::ImageView>,
+    /// One per image: signaled when rendering to that image finishes, and
+    /// waited on by its present. Per image rather than per frame in flight
+    /// because no fence covers a present's wait: the only sign it is done is
+    /// the same image being acquired again, so only then is its semaphore
+    /// safe to signal again. Destroyed after the swapchain, which releases
+    /// any it still holds.
+    pub render_finished: Vec<vk::Semaphore>,
     pub format: vk::Format,
     pub extent: vk::Extent2D,
+    /// Whether the images can be copied from (`TRANSFER_SRC`), for readback.
+    pub readable: bool,
 }
 
 pub unsafe fn create_swapchain(
@@ -33,6 +43,16 @@ pub unsafe fn create_swapchain(
         image_count = image_count.min(caps.max_image_count);
     }
 
+    // Copyable too, where the surface allows it, so a frame can be read back
+    // (`readback.rs`).
+    let readable = caps
+        .supported_usage_flags
+        .contains(vk::ImageUsageFlags::TRANSFER_SRC);
+    let mut usage = vk::ImageUsageFlags::COLOR_ATTACHMENT;
+    if readable {
+        usage |= vk::ImageUsageFlags::TRANSFER_SRC;
+    }
+
     let queue_families = indices.unique_families();
     let sharing_mode = if queue_families.len() > 1 {
         vk::SharingMode::CONCURRENT
@@ -47,7 +67,7 @@ pub unsafe fn create_swapchain(
         .image_color_space(surface_format.color_space)
         .image_extent(extent)
         .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_usage(usage)
         .image_sharing_mode(sharing_mode)
         .queue_family_indices(&queue_families)
         .pre_transform(caps.current_transform)
@@ -58,13 +78,16 @@ pub unsafe fn create_swapchain(
     let swapchain = unsafe { swapchain_loader.create_swapchain(&create_info, None) }?;
     let images = unsafe { swapchain_loader.get_swapchain_images(swapchain) }?;
     let image_views = unsafe { create_image_views(device, &images, surface_format.format) }?;
+    let render_finished = unsafe { sync::create_semaphores(device, images.len()) }?;
 
     Ok(SwapchainData {
         swapchain,
         images,
         image_views,
+        render_finished,
         format: surface_format.format,
         extent,
+        readable,
     })
 }
 
@@ -79,6 +102,9 @@ impl SwapchainData {
                 device.destroy_image_view(view, None);
             }
             swapchain_loader.destroy_swapchain(self.swapchain, None);
+            for semaphore in self.render_finished.drain(..) {
+                device.destroy_semaphore(semaphore, None);
+            }
         }
     }
 }
