@@ -529,7 +529,7 @@ impl GameState {
         }
         let shown = match self.hovered_city { Option.Some(i) => Option.Some(i), Option.None => self.selected_city };
         if let Option.Some(i) = shown {
-            let routes = self.routes(i);
+            let routes = self.known_routes(i, &fog);
             if self.yields_city() == Option.Some(i) {
                 for r in 0..routes.costs.len() {
                     let Option.Some(h) = routes.costs.key_at(r) else { continue; };
@@ -577,7 +577,7 @@ impl GameState {
             if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
             if !self.grid.terrain(hex).is_workable() || !self.is_explored(hex) { continue; }
             let in_reach = match city {
-                Option.Some(c) => self.routes(c).costs.has(hex) || self.cities[c].worked.contains(hex),
+                Option.Some(c) => self.known_routes(c, &fog).costs.has(hex) || self.cities[c].worked.contains(hex),
                 Option.None => false,
             };
             if !in_reach && !self.show_details { continue; }

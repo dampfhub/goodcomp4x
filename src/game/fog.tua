@@ -18,6 +18,8 @@ use game.PLAYER_TEAM;
 use game.Step;
 use game.reachable_by;
 use game.text;
+use game.city.RouteBoard;
+use game.city.Routes;
 use game.city.SiteKind;
 use game.hex.Hex;
 use game.terrain.Terrain;
@@ -177,6 +179,23 @@ impl GameState {
         }
     }
 
+    /// City `index`'s delivery routes as the player knows the board: what the yield badges,
+    /// tooltips and city panel show. Income still follows the real routes (`routes`).
+    pub fn known_routes(&self, index: i32, fog: &Fog) -> Routes {
+        let team = self.cities[index].team;
+        handle { self.routes_by(index) } with RouteBoard {
+            blocked(hex) => {
+                // Out of sight, the memory (none for a hex never seen); in sight, the board.
+                resume if fog.sees(hex) {
+                    self.enemy_of_team_at(hex, team).is_some() || self.known_enemy_city_at(hex, team, fog)
+                } else {
+                    self.known_enemy_city_at(hex, team, fog)
+                }
+            }
+            road(hex) => { resume self.known_road(hex, fog) || self.known_city_team(hex, fog).is_some() }
+        }
+    }
+
     /// Whether the player knows of a road on `hex`: in sight, or as last seen.
     pub fn known_road(&self, hex: Hex, fog: &Fog) -> bool {
         if fog.sees(hex) { return self.roads.contains(hex); }
@@ -202,7 +221,7 @@ impl GameState {
     }
 
     /// Whether the player knows of a city of another side on `hex`: in sight, or as last seen.
-    fn known_enemy_city_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
+    pub fn known_enemy_city_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
         if fog.sees(hex) {
             for c in 0..self.cities.len() { if self.cities[c].pos == hex && self.cities[c].team != team { return true; } }
             return false;

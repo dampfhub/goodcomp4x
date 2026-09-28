@@ -385,3 +385,55 @@ fn the_widest_view_of_a_world_fits_the_vertex_buffer() {
         assert(game.build_vertices().len() as u32 <= MAX_VERTICES);
     });
 }
+
+/// The cities scenario with no units, the player's city open, and one of its route hexes out
+/// of the city's sight but explored (a scout looked and left). Answers the game, the city and
+/// that hex.
+fn remembered_route_hex() -> (GameState, i32, Hex) can {Log, Assert} {
+    let mut game = GameState.city_scenario();
+    game.units.clear();
+    game.selected = Option.None;
+    let mut city = 0;
+    for c in 0..game.cities.len() { if game.cities[c].team == PLAYER_TEAM { city = c; } }
+    game.selected_city = Option.Some(city);
+    let fog = game.fog();
+    let routes = game.routes(city);
+    let mut far = Hex.new(0, 0);
+    let mut found = false;
+    for k in 0..routes.costs.len() {
+        let Option.Some(h) = routes.costs.key_at(k) else { continue; };
+        if fog.sees(h) || !game.grid.terrain(h).is_workable() { continue; }
+        if !found || h.q < far.q || (h.q == far.q && h.r < far.r) { far = h; found = true; }
+    }
+    check_found(found);
+    game.units.push(Unit.new(50, far, PLAYER_TEAM, UnitType.Scout));
+    game.explore();
+    game.units.clear();
+    check_found(!game.fog().sees(far) && game.is_explored(far));
+    (game, city, far)
+}
+
+@test
+fn unseen_enemies_do_not_cut_the_routes_the_player_is_shown() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, city, far) = remembered_route_hex();
+        game.units.push(Unit.new(51, far, Team.Red, UnitType.Melee));
+        // Goods really are cut, but the player is shown the route as last seen.
+        assert(!game.routes(city).costs.has(far));
+        let fog = game.fog();
+        assert(game.known_routes(city, &fog).costs.has(far));
+    });
+}
+
+@test
+fn yield_badges_do_not_react_to_what_happens_out_of_sight() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, city, far) = remembered_route_hex();
+        assert(game.show_yields && game.yields_city() == Option.Some(city));
+        let before = game.build_vertices().len();
+        game.units.push(Unit.new(51, far, Team.Red, UnitType.Melee));
+        assert(game.build_vertices().len() == before);
+        let _old = game.sites.insert(far, Site { team: Team.Red, food: 9, production: 9, kind: SiteKind.Farm });
+        assert(game.build_vertices().len() == before);
+    });
+}

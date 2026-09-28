@@ -125,6 +125,13 @@ pub struct Site { team: Team, food: i32, production: i32, kind: SiteKind }
 /// A city's logistics reach: every hex its goods can come from, with the cheapest route's cost.
 pub struct Routes { costs: Map[Hex, i32] }
 
+/// What a route search asks of the board: whether goods can't cross a hex, and whether a road
+/// (or a city) carries them cheaply there.
+pub effect RouteBoard {
+    fn blocked(hex: Hex) -> bool;
+    fn road(hex: Hex) -> bool;
+}
+
 /// Quarters of a tile's yield that reach the city along a route of `cost`.
 pub fn delivered_share(cost: i32) -> i32 {
     if cost <= 2 { 4 } else if cost <= 4 { 3 } else if cost <= 6 { 2 } else if cost <= 8 { 1 } else { 0 }
@@ -402,9 +409,19 @@ impl GameState {
     /// between unsettled hexes go to the smaller `(q, r)`, so the answer never depends on
     /// iteration order.
     pub fn routes(&self, index: i32) -> Routes {
+        let team = self.cities[index].team;
+        handle { self.routes_by(index) } with RouteBoard {
+            blocked(hex) => { resume self.enemy_of_team_at(hex, team).is_some() || self.enemy_city_at(hex, team) }
+            road(hex) => { resume self.is_road_hex(hex) }
+        }
+    }
+
+    /// `routes` over the board `RouteBoard` describes: the real one for the economy, or what
+    /// the player knows of it for what's shown to them (`known_routes`).
+    fn routes_by(&self, index: i32) -> Routes can {RouteBoard} {
         let city = &self.cities[index];
         let mut result = Routes { costs: Map.new() };
-        if self.enemy_of_team_at(city.pos, city.team).is_some() { return result; }
+        if RouteBoard.blocked(city.pos) { return result; }
         result.costs.insert(city.pos, 0);
         let mut visited: Set[Hex] = Set.new();
         loop {
@@ -424,10 +441,8 @@ impl GameState {
             let around = hex.neighbors();
             for k in 0..6 {
                 let n = around[k];
-                if !self.grid.is_passable(n) || self.enemy_of_team_at(n, city.team).is_some() || self.enemy_city_at(n, city.team) {
-                    continue;
-                }
-                let step = if self.is_road_hex(n) { 1 } else { self.grid.tile(n).route_cost() };
+                if !self.grid.is_passable(n) || RouteBoard.blocked(n) { continue; }
+                let step = if RouteBoard.road(n) { 1 } else { self.grid.tile(n).route_cost() };
                 let total = cost + step;
                 let shorter = match result.costs.get(n) { Option.None => true, Option.Some(old) => total < old };
                 if total <= 8 && shorter { result.costs.insert(n, total); }

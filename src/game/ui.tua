@@ -731,8 +731,9 @@ impl GameState {
         panel.bar(growth_percent as f32 / 100.0);
 
         if let Option.Some(hex) = self.inspected_tile {
-            let (tile_food, tile_production) = self.tile_yield(hex);
-            let share = match self.routes(i).costs.get(hex) { Option.Some(cost) => delivered_share(cost), Option.None => 0 };
+            let fog = self.fog();
+            let (tile_food, tile_production) = self.known_yield(hex, &fog);
+            let share = match self.known_routes(i, &fog).costs.get(hex) { Option.Some(cost) => delivered_share(cost), Option.None => 0 };
             panel.gap(GAP);
             panel.text_owned(TextSize.Small, text(fn() can {Out} {
                 Out.put("SELECTED TILE: "); show_i64(tile_food as i64); Out.put(" FOOD, "); show_i64(tile_production as i64);
@@ -813,7 +814,8 @@ impl GameState {
         if let Option.Some(open) = self.selected_city {
             if self.cities[open].pos != hex {
                 let id = self.cities[open].id;
-                let note = match self.routes(open).costs.get(hex) {
+                let fog = self.fog();
+                let note = match self.known_routes(open, &fog).costs.get(hex) {
                     Option.Some(cost) => text(fn() can {Out} { show_i64((delivered_share(cost) * 25) as i64); Out.put("% REACHES CITY "); show_u64((id + 1) as u64); }),
                     Option.None => text(fn() can {Out} { Out.put("OUT OF CITY "); show_u64((id + 1) as u64); Out.put("'S REACH"); }),
                 };
