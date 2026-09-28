@@ -639,17 +639,8 @@ impl GameState {
             return;
         }
         self.placing_job = Some(kind);
-        self.notice = if kind.on_edge() {
-            format!(
-                "CLICK OR DRAG ALONG HEX EDGES TO PLACE {}S - ESC TO STOP",
-                kind.name()
-            )
-        } else {
-            format!(
-                "CLICK OR DRAG OVER LIT TILES TO PLACE {}S - ESC TO STOP",
-                kind.name()
-            )
-        };
+        // Short, to fit the status bar; the city panel says how to place it.
+        self.notice = format!("PLACING {} - RIGHT-CLICK OR ESC TO CANCEL", kind.name());
     }
 
     /// With a job armed: where a map point would place it, as the tile the

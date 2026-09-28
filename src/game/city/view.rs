@@ -84,7 +84,7 @@ impl GameState {
     /// Escape and Space dismiss city or building management without issuing a
     /// unit order or opening the settings menu. While something is being
     /// placed for the city's workers, the first press only stops that and
-    /// keeps the city open.
+    /// keeps the city open (`stop_placing`).
     pub fn exit_structure_menu(&mut self) -> bool {
         if self.interior_view.is_some() {
             self.close_city_interior();
@@ -96,13 +96,24 @@ impl GameState {
         {
             return false;
         }
-        if let Some(kind) = self.placing_job.take() {
-            self.hovered_job = None;
-            self.notice = format!("STOPPED PLACING {}", kind.name());
+        if self.stop_placing() {
             return true;
         }
         self.leave_city_view();
         self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+        true
+    }
+
+    /// The city tray's Cancel Placing button, and the first Escape while
+    /// placing: stops placing what the open city was placing for its
+    /// workers, with nothing placed or paid. Returns whether anything was
+    /// being placed.
+    pub(in crate::game) fn stop_placing(&mut self) -> bool {
+        let Some(kind) = self.placing_job.take() else {
+            return false;
+        };
+        self.hovered_job = None;
+        self.notice = format!("STOPPED PLACING {}", kind.name());
         true
     }
 

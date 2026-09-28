@@ -484,6 +484,12 @@ impl GameState {
                     self.selected_city
                         .and_then(|city| self.job_kind_unavailable(city, kind)),
                 ),
+                Target::CancelPlacing => (
+                    "CANCEL PLACING".into(),
+                    "ESC · RIGHT-CLICK".into(),
+                    "STOPS PLACING, LEAVING THE CITY OPEN. NOTHING IS PLACED OR PAID.".into(),
+                    None,
+                ),
                 Target::Focus(focus) => (
                     format!("{} FOCUS", focus.name()),
                     "AUTO".into(),

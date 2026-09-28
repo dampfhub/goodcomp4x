@@ -81,7 +81,7 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | Click or drag over tiles (a tile job picked) | Place it on each tile, paying its price (a ring under the cursor shows where, red where it can't go) |
 | Click a lit tile (a building picked) | Place the building's site; a worker walks out and builds it |
 | Click or drag along hex edges (a wall or gate picked) | Place one on each edge the cursor touches (highlighted under the cursor) |
-| Escape or right-click (something picked) | Stop placing, leaving the city open |
+| Escape, right-click on the map, or Cancel Placing (city panel, while something is picked) | Stop placing, leaving the city open; nothing more is placed or paid (the picked card is gold, and clicking it again stops too) |
 | Click a placed job (city panel) | Show it on the map |
 | Drag a placed job onto another (city panel) | Reorder the city's jobs |
 | Click a placed job's X (city panel) | Take it off, refunding its price |

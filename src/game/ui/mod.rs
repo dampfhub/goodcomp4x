@@ -186,6 +186,9 @@ enum Target {
     /// workers build (a road, improvement or structure): arms it for
     /// placing on the map.
     WorkerJob(JobKind),
+    /// Shown while the open city is placing something: stops placing it
+    /// (like Escape or a right-click on the map), with nothing placed.
+    CancelPlacing,
     /// The X on one of the open city's worker jobs.
     WorkerJobRemove(usize),
     /// Sends the worker with this id straight home.
@@ -657,6 +660,9 @@ impl GameState {
             Target::Grow => self.queue_selected_city_growth(),
             Target::Gather => self.queue_selected_city_gather(),
             Target::WorkerJob(kind) => self.arm_worker_job(kind),
+            Target::CancelPlacing => {
+                self.stop_placing();
+            }
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
             Target::RecallWorker(id) => self.recall_worker(id),
             Target::ShowWorker(id) => self.show_worker(id),
