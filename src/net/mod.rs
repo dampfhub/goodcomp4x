@@ -181,6 +181,12 @@ pub struct Session {
     links: Vec<(Team, Link)>,
 }
 
+/// Where a host listens: every interface, so players on other machines can
+/// reach it. Tests listen on loopback only: each build of the tests is a new
+/// executable, and Windows Firewall asks about every new one that listens on
+/// the network, but never about loopback.
+const LISTEN_ADDRESS: &str = if cfg!(test) { "127.0.0.1" } else { "0.0.0.0" };
+
 impl Session {
     fn new(listener: Option<TcpListener>, code: String, links: Vec<(Team, Link)>) -> Self {
         Session {
@@ -197,7 +203,7 @@ impl Session {
     /// `--host`: listens on `port` and starts a new world for `players`
     /// people (the AI playing the rest, as `settings` ask).
     pub fn host(port: u16, players: usize, settings: &Settings) -> Result<(Session, GameState)> {
-        let listener = TcpListener::bind(("0.0.0.0", port))
+        let listener = TcpListener::bind((LISTEN_ADDRESS, port))
             .with_context(|| format!("can't listen on port {port}"))?;
         listener.set_nonblocking(true)?;
         let game = GameState::host_game(players, settings);
