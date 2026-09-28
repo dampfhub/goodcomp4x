@@ -115,7 +115,8 @@ can watch or change what's sent. What's in place:
   seat and scenario in its `Welcome`.
 - **Cheats the checks catch**: spending is accounted exactly (the stockpile plus everything
   queued and placed must be worth what it was when the turn began, so nothing is free); build
-  progress can't be added, only kept or cleared; a city queues only what it can train (no Cavalry
+  progress, and the work kept on a worker job, can't be added (or copied onto another job), only
+  kept or cleared; a city queues only what it can train (no Cavalry
   or Armored, ships only with a Harbor, no growing past the cap), a Barracks no more Cavalry or
   Armored than its deposits allow; citizens work only tiles in their city's reach, never a city
   or a building; workers out on the map can only be recalled.

@@ -157,6 +157,10 @@ pub(crate) struct WorkerJob {
     pub kind: JobKind,
     /// For a wall or gate, the hex across the edge it goes on.
     pub across: Option<Hex>,
+    /// Turns of work already put into it. It stays with the job when its
+    /// worker leaves (recalled, captured or killed), so whichever worker
+    /// takes it next only does the rest.
+    pub done: u32,
 }
 
 impl WorkerJob {
@@ -165,7 +169,14 @@ impl WorkerJob {
             hex,
             kind,
             across: None,
+            done: 0,
         }
+    }
+
+    /// The same job with no work put into it: what it is and where, which
+    /// tells two jobs apart.
+    pub fn fresh(self) -> Self {
+        Self { done: 0, ..self }
     }
 
     /// Whether two jobs would build on the same place: the same tile, or
@@ -204,7 +215,8 @@ pub(super) struct FieldWorker {
     pub pos: Hex,
     /// What it's out to do; `None` while it walks home.
     pub job: Option<WorkerJob>,
-    /// Turns of work left, once it stands on the job's tile.
+    /// Turns of work left, once it stands on the job's tile. Each turn of
+    /// work also adds to its job's `done`, which the job keeps if it leaves.
     pub work_left: Option<u32>,
     /// Sent home by the player: it takes no job until it gets there.
     pub recalled: bool,
@@ -569,6 +581,12 @@ impl GameState {
         }
     }
 
+    /// Turns of work `job` still takes once a worker stands on it: what's
+    /// left of `job_turns` after the work already put in, and at least one.
+    pub(super) fn job_turns_left(&self, team: Team, job: WorkerJob) -> u32 {
+        self.job_turns(team, job).saturating_sub(job.done).max(1)
+    }
+
     /// Why the open city `city` can't place `kind` anywhere right now: no
     /// worker to build it, a building it has or has placed already, or the
     /// price.
@@ -710,6 +728,7 @@ impl GameState {
             hex,
             kind,
             across: Some(across),
+            done: 0,
         };
         if self.job_taken(self.local_team, job) {
             return false;
@@ -848,8 +867,9 @@ impl GameState {
     }
 
     /// A Recall button: sends one of the player's workers out on the map
-    /// straight home, out of danger. Its job goes back to the top of its
-    /// city's list, and it takes no new one on the way.
+    /// straight home, out of danger. Its job, with the work already put into
+    /// it, goes back to the top of its city's list, and it takes no new one
+    /// on the way.
     pub fn recall_worker(&mut self, id: u32) {
         if self.is_resolving() {
             return;
@@ -980,7 +1000,11 @@ impl GameState {
                 return (true, false);
             }
             if left > 1 {
-                self.field_workers[w].work_left = Some(left - 1);
+                let worker = &mut self.field_workers[w];
+                worker.work_left = Some(left - 1);
+                if let Some(job) = &mut worker.job {
+                    job.done += 1;
+                }
                 return (true, false);
             }
             let Some(home) = self.home_of(&worker) else {
@@ -1028,7 +1052,7 @@ impl GameState {
         match worker.job {
             Some(job) => {
                 let team = worker.team;
-                self.field_workers[w].work_left = Some(self.job_turns(team, job));
+                self.field_workers[w].work_left = Some(self.job_turns_left(team, job));
                 (true, false)
             }
             None => (true, true),
@@ -1129,7 +1153,8 @@ impl GameState {
     }
 
     /// A worker taken off the map with a job in hand leaves that job at the
-    /// front of its city's queue, for the next worker to try.
+    /// front of its city's queue, for the next worker to try. The job keeps
+    /// the work already put into it (`WorkerJob::done`).
     fn return_job(&mut self, worker: &FieldWorker) {
         if let Some(job) = worker.job
             && self.cities[worker.home].team == worker.team
@@ -1562,6 +1587,79 @@ mod tests {
         assert!(!game.structures.contains_key(&first));
     }
 
+    /// Blue's worker two turns into a four-turn fort next to its city,
+    /// with no other job listed. Returns the fort's tile.
+    fn fort_half_built(game: &mut GameState) -> Hex {
+        let hex = bare_tile(game, 1);
+        queue(game, hex, JobKind::Fort);
+        // Out and there in a turn, then two turns of work.
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].pos, hex);
+        assert_eq!(game.field_workers[0].work_left, Some(4));
+        game.resolve_workers();
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].work_left, Some(2));
+        assert_eq!(game.field_workers[0].job.map(|j| j.done), Some(2));
+        hex
+    }
+
+    #[test]
+    fn a_recalled_worker_leaves_its_work_on_the_job_and_picks_it_up_again() {
+        let mut game = cities();
+        let hex = fort_half_built(&mut game);
+        game.recall_worker(game.field_workers[0].id);
+        let job = game.cities[0].worker_jobs[0];
+        assert_eq!((job.hex, job.done), (hex, 2), "the work stays on the job");
+        assert_eq!(game.job_turns_left(PLAYER_TEAM, job), 2);
+        // Home the next turn, out and back there the turn after.
+        game.resolve_workers();
+        assert_eq!(game.cities[0].workers, 1);
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].pos, hex);
+        assert_eq!(game.field_workers[0].work_left, Some(2), "only the rest");
+        game.resolve_workers();
+        assert!(!game.structures.contains_key(&hex));
+        game.resolve_workers();
+        assert_eq!(game.structures[&hex].kind, StructureKind::Fort);
+    }
+
+    #[test]
+    fn another_worker_finishes_a_job_whose_worker_was_killed() {
+        let mut game = cities();
+        game.cities[0].workers = 2;
+        let hex = fort_half_built(&mut game);
+        assert_eq!(game.cities[0].workers, 1, "one stayed home");
+        let id = game.field_workers[0].id;
+        game.kill_workers(&[id]);
+        assert_eq!(game.cities[0].worker_jobs[0].done, 2);
+        // The other goes out, and does only the two turns left.
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].pos, hex);
+        assert_ne!(game.field_workers[0].id, id);
+        assert_eq!(game.field_workers[0].work_left, Some(2));
+        game.resolve_workers();
+        game.resolve_workers();
+        assert_eq!(game.structures[&hex].kind, StructureKind::Fort);
+    }
+
+    #[test]
+    fn a_captured_workers_job_keeps_its_work() {
+        let (mut game, hex, red) = worker_beside_enemy();
+        game.units[red].planned_move = Some(hex);
+        game.resolve_step(UnitType::Melee, Phase::Move);
+        assert!(game.field_workers.is_empty(), "captured");
+        let job = game.cities[0].worker_jobs[0];
+        assert_eq!((job.hex, job.done), (hex, 1));
+        // Blue's worker at home takes it on; the Red melee must move off
+        // the tile first, or it would capture that one too.
+        game.units.remove(red);
+        for _ in 0..2 {
+            game.resolve_workers();
+        }
+        assert_eq!(game.field_workers[0].pos, hex);
+        assert_eq!(game.field_workers[0].work_left, Some(3), "three of four");
+    }
+
     #[test]
     fn workers_act_after_every_unit() {
         let mut game = cities();
@@ -1587,7 +1685,11 @@ mod tests {
             home: 0,
             base: game.cities[0].pos,
             pos: hex,
-            job: Some(WorkerJob::on_tile(hex, JobKind::Fort)),
+            // A turn into the fort's four.
+            job: Some(WorkerJob {
+                done: 1,
+                ..WorkerJob::on_tile(hex, JobKind::Fort)
+            }),
             work_left: Some(3),
             recalled: false,
         });

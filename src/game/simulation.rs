@@ -268,6 +268,19 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: a worker's home city is another side's"
         );
     }
+    // Work kept on a job is short of finishing it: the last turn of work
+    // finishes it.
+    let jobs = game.cities.iter().flat_map(|c| &c.worker_jobs);
+    for job in jobs.chain(game.field_workers.iter().filter_map(|w| w.job.as_ref())) {
+        assert!(
+            job.done < job.kind.turns(),
+            "{context}: a {} at {:?} has {} turns of work in it, of {}",
+            job.kind.name(),
+            job.hex,
+            job.done,
+            job.kind.turns()
+        );
+    }
     for hex in game.structures.keys() {
         assert!(
             game.cities.iter().all(|c| c.pos != *hex),
