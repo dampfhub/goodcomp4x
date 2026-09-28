@@ -150,7 +150,7 @@ window; their rows share the same reorder and remove game actions as classic.
 The classic layout uses reusable placement code in `src/game/ui/dock.rs`.
 
 `PanelBuilder` is the content primitive. Add rows with `text`, `bar`, `gap`,
-`buttons`, `compact_buttons`, `queue_item`, `heading`, or `setting`; `size()` measures the finished panel. A
+`buttons`, `compact_buttons`, `queue_item`, `title_with_button`, `heading`, or `setting`; `size()` measures the finished panel. A
 `Layout` owns shapes, buttons, panel hit boxes, scroll regions, and a `Dock`.
 `Layout::dock_panel(panel, Zone::BottomLeft)` places the measured panel and
 registers its render and hit-test geometry together. Available zones are
@@ -179,7 +179,9 @@ this. Their scrollbars and wheel hit regions are registered by the same panel
 placement. `dock_panel` returns `None` when a whole panel cannot fit anywhere
 inside the safe area; large content must choose a bounded or scrollable form.
 `queue_item` registers its row body for drag reordering and a separate small X
-button for removal. Route row dragging through `GameState::start_queue_drag_at`,
+button for removal. A queue panel's title is a `title_with_button` row
+(`Row::TitleWithButton`): the text, and its Clear button (`Target::ClearCityQueue`,
+`Target::ClearBarracksQueue`) at the right end of the same line, so it costs no queue row. Route row dragging through `GameState::start_queue_drag_at`,
 `update_queue_drag_at`, and `finish_queue_drag_at`, so the city and Barracks
 queues share the same hit-testing behavior.
 

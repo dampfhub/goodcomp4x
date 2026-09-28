@@ -8,7 +8,8 @@ use super::{
     BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GOLD_TEXT, GROWTH_BAR_HEIGHT,
     LABEL_TEXT, LINE_GAP, Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT,
     QUEUE_REMOVE_WIDTH, QueueItemRegion, QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP,
-    ROSTER_CHIP_GAP, RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
+    ROSTER_CHIP_GAP, RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, TITLE_BUTTON_HEIGHT,
+    TITLE_ROW_HEIGHT, Target, UnitAction,
 };
 use crate::game::font::{self, Face};
 use crate::game::settings::Setting;
@@ -98,6 +99,9 @@ pub(super) enum Row {
     QueueItem(QueueItemSpec),
     /// Buttons of equal width; compact ones are one line, label then hint.
     Buttons(Vec<ButtonSpec>, bool),
+    /// A line of small text with a one-line button at the row's right end: a
+    /// queue panel's title and its Clear button.
+    TitleWithButton(Line, ButtonSpec),
     /// A bounded, independently scrollable list within the city tray.
     BuildingCatalog(usize, Vec<CatalogEntry>, usize),
     /// A row of unit tokens in the unit strip.
@@ -173,6 +177,11 @@ impl PanelBuilder {
         self.rows.push(Row::Setting(setting, value));
     }
 
+    /// A line of small text with `button` at the right end of the same row.
+    pub(super) fn title_with_button(&mut self, line: Line, button: ButtonSpec) {
+        self.rows.push(Row::TitleWithButton(line, button));
+    }
+
     /// A row of equally wide buttons.
     pub(super) fn buttons(&mut self, buttons: Vec<ButtonSpec>) {
         self.space_button_rows();
@@ -213,6 +222,7 @@ impl PanelBuilder {
             }
             Row::Buttons(_, false) => BUTTON_HEIGHT,
             Row::Buttons(_, true) => END_TURN_HEIGHT,
+            Row::TitleWithButton(..) => TITLE_ROW_HEIGHT,
             Row::Roster(_) => ROSTER_CHIP,
             Row::BuildingCatalog(_, buttons, _) => {
                 let visible = buttons.len().clamp(1, BUILDING_LIST_VISIBLE);
@@ -228,6 +238,11 @@ impl PanelBuilder {
         match row {
             Row::Text(px, line) => line_width(font::ui(*px), line),
             Row::Gap(_) | Row::Bar(_) => 0.0,
+            Row::TitleWithButton(line, button) => {
+                line_width(font::ui(SMALL), line)
+                    + GAP
+                    + single_line_button_width(&button.label, &button.hint)
+            }
             Row::QueueItem(item) => {
                 font::ui(SMALL).width(&item.label) + 2.0 * BUTTON_PADDING + QUEUE_REMOVE_WIDTH
             }
@@ -329,6 +344,22 @@ impl PanelBuilder {
                     push_text_row(layout, Vec2::new(left, middle), px, line);
                 }
                 Row::Gap(_) => {}
+                Row::TitleWithButton(line, spec) => {
+                    let middle = top - TITLE_BUTTON_HEIGHT / 2.0;
+                    push_text_row(layout, Vec2::new(left, middle), SMALL, line);
+                    let width = single_line_button_width(&spec.label, &spec.hint);
+                    let right = left + inner_width;
+                    layout.buttons.push(Button {
+                        target: spec.target,
+                        label: spec.label,
+                        hint: spec.hint,
+                        state: spec.state,
+                        armed: spec.armed,
+                        faded: self.faded,
+                        min: Vec2::new(right - width, top - TITLE_BUTTON_HEIGHT).round(),
+                        max: Vec2::new(right, top).round(),
+                    });
+                }
                 Row::Bar(fraction) => layout.shapes.push(Shape::Bar {
                     min: Vec2::new(left, top - height),
                     max: Vec2::new(left + inner_width, top),

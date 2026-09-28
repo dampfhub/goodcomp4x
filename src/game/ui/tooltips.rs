@@ -419,6 +419,14 @@ impl GameState {
                     "REFUNDED. WORK DONE ON IT IS LOST.".into(),
                     None,
                 ),
+                Target::ClearCityQueue | Target::ClearBarracksQueue => (
+                    "CLEAR QUEUE".into(),
+                    "CLICK".into(),
+                    "TAKES EVERY ITEM OFF, EACH REFUNDED AS ITS X WOULD. WORK DONE ON THE FIRST IS LOST."
+                        .into(),
+                    self.is_resolving()
+                        .then(|| "NOT WHILE THE TURN PLAYS OUT".into()),
+                ),
                 Target::WorkerJobRemove(_) => {
                     ("REMOVE".into(), "CLICK".into(), "REFUNDED.".into(), None)
                 }

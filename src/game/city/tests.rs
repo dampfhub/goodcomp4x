@@ -1308,3 +1308,147 @@ fn a_finished_troop_does_not_appear_on_a_worker() {
     );
     assert_eq!(g.cities[0].queue.len(), 1, "the troop waits");
 }
+
+/// City 0 of the Cities scenario, open, with a mixed queue bought at its
+/// prices (Grows priced by how many are ahead) and work done on its head,
+/// and a Barracks with troops queued and work done on the first.
+fn city_with_full_queues() -> GameState {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.fund(Team::Blue);
+    g.cities[0].barracks = Some(Hex::new(-2, 0));
+    g.selected_city = Some(0);
+    g.queue_selected_city_unit(BuildUnit::Melee);
+    g.queue_selected_city_growth();
+    g.queue_selected_city_worker();
+    g.queue_selected_city_growth();
+    g.queue_selected_city_gather();
+    g.cities[0].progress = 1;
+    for build in [BuildUnit::Ranged, BuildUnit::Melee, BuildUnit::Siege] {
+        g.queue_selected_barracks_unit(build);
+    }
+    g.cities[0].barracks_progress = 1;
+    assert_eq!(g.cities[0].queue.len(), 5);
+    assert_eq!(g.cities[0].barracks_queue.len(), 3);
+    g
+}
+
+#[test]
+fn clearing_a_queue_refunds_it_as_taking_each_item_off_would() {
+    let start = city_with_full_queues();
+
+    // The city queue: its X from the head down, from the tail up, or
+    // Clear, all end on the same stockpile.
+    let mut from_head = start.clone();
+    while !from_head.cities[0].queue.is_empty() {
+        from_head.remove_selected_city_queue_item(0);
+    }
+    let mut from_tail = start.clone();
+    while let Some(last) = from_tail.cities[0].queue.len().checked_sub(1) {
+        from_tail.remove_selected_city_queue_item(last);
+    }
+    let mut cleared = start.clone();
+    cleared.clear_selected_city_queue();
+    assert!(cleared.cities[0].queue.is_empty());
+    assert_eq!(cleared.cities[0].progress, 0, "the head's work is lost");
+    assert_eq!(cleared.stock(Team::Blue), from_head.stock(Team::Blue));
+    assert_eq!(cleared.stock(Team::Blue), from_tail.stock(Team::Blue));
+    assert!(cleared.stock(Team::Blue).food > start.stock(Team::Blue).food);
+    assert_eq!(cleared.notice, "CLEARED THE CITY QUEUE - 5 REFUNDED");
+    assert_eq!(
+        cleared.cities[0].barracks_queue, start.cities[0].barracks_queue,
+        "the Barracks keeps its own"
+    );
+
+    // The Barracks queue, from its own view.
+    let mut one_by_one = start.clone();
+    one_by_one.open_barracks(0);
+    while !one_by_one.cities[0].barracks_queue.is_empty() {
+        one_by_one.remove_selected_barracks_queue_item(0);
+    }
+    let mut cleared = start.clone();
+    cleared.open_barracks(0);
+    cleared.clear_selected_barracks_queue();
+    assert!(cleared.cities[0].barracks_queue.is_empty());
+    assert_eq!(cleared.cities[0].barracks_progress, 0);
+    assert_eq!(cleared.stock(Team::Blue), one_by_one.stock(Team::Blue));
+    assert_eq!(cleared.cities[0].queue, start.cities[0].queue);
+
+    // Clearing an empty queue does nothing, and says nothing.
+    cleared.notice.clear();
+    cleared.clear_selected_barracks_queue();
+    assert_eq!(cleared.notice, "");
+}
+
+#[test]
+fn no_queue_changes_while_a_turn_plays_out() {
+    let mut g = city_with_full_queues();
+    g.resolve_turn();
+    assert!(g.is_resolving());
+    let (queue, barracks, stock) = (
+        g.cities[0].queue.clone(),
+        g.cities[0].barracks_queue.clone(),
+        g.stock(Team::Blue),
+    );
+    g.selected_city = Some(0);
+    g.clear_selected_city_queue();
+    g.remove_selected_city_queue_item(0);
+    g.remove_selected_city_queue_head();
+    g.clear_selected_barracks_queue();
+    g.remove_selected_barracks_queue_item(0);
+    assert_eq!(g.cities[0].queue, queue);
+    assert_eq!(g.cities[0].barracks_queue, barracks);
+    assert_eq!(g.stock(Team::Blue), stock);
+}
+
+#[test]
+fn a_cleared_queue_makes_a_plan_that_passes_the_checks() {
+    use crate::game::{NetMessage, PROTOCOL_VERSION, Settings};
+    let mut host = GameState::host_game(2, &Settings::default());
+    let (seat, welcome) = host.welcome(&NetMessage::Hello {
+        version: PROTOCOL_VERSION,
+    });
+    let seat = seat.expect("seated");
+    let mut guest = GameState::join_game(&welcome).expect("joins");
+    let city = guest.cities.iter().position(|c| c.team == seat).unwrap();
+    // The same queues on both machines as a turn's planning begins, as an
+    // earlier turn would leave them: the city's, with work done on its
+    // head, and its Barracks'.
+    for game in [&mut host, &mut guest] {
+        let c = &mut game.cities[city];
+        c.barracks = Some(c.pos.neighbors()[0]);
+        c.queue = vec![
+            Build::Unit(BuildUnit::Melee),
+            Build::Grow,
+            Build::Worker,
+            Build::Grow,
+        ];
+        c.progress = 1;
+        c.barracks_queue = vec![BuildUnit::Ranged, BuildUnit::Melee];
+        c.barracks_progress = 1;
+        game.finish_lockstep_turn();
+    }
+    let untouched = guest.team_plan(seat);
+
+    guest.open_city(city);
+    guest.clear_selected_city_queue();
+    guest.open_barracks(city);
+    guest.clear_selected_barracks_queue();
+    let plan = guest.team_plan(seat);
+    let c = plan.cities.iter().find(|c| c.pos == guest.cities[city].pos);
+    let c = c.expect("its city");
+    assert!(c.queue.is_empty() && c.barracks_queue.is_empty());
+    assert_eq!((c.progress, c.barracks_progress), (0, 0));
+    assert!(plan.stock.food > untouched.stock.food, "refunded");
+
+    // Emptied without the refund, the checks would catch it.
+    let mut unpaid = plan.clone();
+    unpaid.stock = untouched.stock;
+    assert!(
+        host.clone()
+            .receive(seat, NetMessage::Plan(unpaid))
+            .is_err()
+    );
+    host.receive(seat, NetMessage::Plan(plan))
+        .expect("a cleared queue is a sound plan");
+}

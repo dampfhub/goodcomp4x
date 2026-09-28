@@ -1,18 +1,18 @@
-//! Production queue panels (city and Barracks): scrolling, drag to reorder, X to remove.
+//! Production queue panels (city and Barracks): scrolling, drag to reorder, X to remove, Clear
+//! to empty.
 
-use super::builder::PanelBuilder;
+use super::builder::{ButtonSpec, PanelBuilder};
 use super::text::turns_at_rate;
 use super::{
-    LABEL_TEXT, LINE_GAP, PADDING, QUEUE_ITEM_HEIGHT, QueueDrag, QueueItemSpec, QueueKind, SMALL,
-    contains, to_ui,
+    ButtonState, LABEL_TEXT, PADDING, QUEUE_ITEM_HEIGHT, QueueDrag, QueueItemSpec, QueueKind,
+    TITLE_ROW_HEIGHT, Target, contains, to_ui,
 };
 use crate::game::GameState;
-use crate::game::font;
 use glam::Vec2;
 
 pub(super) fn queue_items_that_fit(available_height: f32) -> usize {
-    let text_row = font::ui(SMALL).line_height + LINE_GAP;
-    let fixed = 2.0 * PADDING + text_row;
+    // The title, with the Clear button at its end (`queue_title`).
+    let fixed = 2.0 * PADDING + TITLE_ROW_HEIGHT;
     let item = QUEUE_ITEM_HEIGHT;
     let mut visible = 1;
     while (fixed + (visible + 1) as f32 * item).round() <= available_height.round() {
@@ -245,6 +245,22 @@ impl GameState {
         self.queue_drag = None;
     }
 
+    /// A queue panel's title, with its Clear button (`clear`) at the end of
+    /// the line: every item off, refunded. Dimmed while a turn plays out,
+    /// when the queue can't change.
+    fn queue_title(&self, title: &str, clear: Target, panel: &mut PanelBuilder) {
+        panel.title_with_button(
+            vec![(title.into(), LABEL_TEXT)],
+            ButtonSpec {
+                target: clear,
+                label: "CLEAR".into(),
+                hint: String::new(),
+                state: ButtonState::new(false, self.is_resolving()),
+                armed: false,
+            },
+        );
+    }
+
     pub(super) fn barracks_queue_panel(&self, i: usize, visible: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if city.barracks_queue.is_empty() {
@@ -262,9 +278,10 @@ impl GameState {
                 visible,
             ));
         }
-        panel.text(
-            SMALL,
-            vec![("BARRACKS QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
+        self.queue_title(
+            "BARRACKS QUEUE - DRAG TO REORDER",
+            Target::ClearBarracksQueue,
+            panel,
         );
         for (index, build) in city
             .barracks_queue
@@ -316,9 +333,10 @@ impl GameState {
             panel.scrollbar = Some((QueueKind::City, offset, city.queue.len(), visible));
         }
         if !city.queue.is_empty() {
-            panel.text(
-                SMALL,
-                vec![("CITY QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
+            self.queue_title(
+                "CITY QUEUE - DRAG TO REORDER",
+                Target::ClearCityQueue,
+                panel,
             );
             for (index, build) in city
                 .queue
