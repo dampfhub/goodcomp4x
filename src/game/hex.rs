@@ -9,7 +9,7 @@ pub const HEX_SIZE: f32 = 1.0;
 
 /// Flat-top hex in axial coordinates. The math follows
 /// <https://www.redblobgames.com/grids/hexagons/>.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Hex {
     pub q: i32,
     pub r: i32,

@@ -10,7 +10,7 @@ use crate::game::hex::Hex;
 use crate::game::terrain::{Resource, Terrain};
 use crate::game::unit::{Team, Unit, UnitType};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Building {
     Barracks,
     Mill,
@@ -139,7 +139,7 @@ impl Building {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Build {
     Unit(BuildUnit),
     /// A worker for the city's pool (`workers.rs`).
@@ -189,7 +189,7 @@ impl Build {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum BuildUnit {
     Melee,
     Ranged,
@@ -584,6 +584,9 @@ impl GameState {
 
     /// Completes only the active queue in the currently open structure.
     pub fn debug_complete_current_production(&mut self) {
+        if self.refuses_debug() {
+            return;
+        }
         if self.is_resolving() {
             return;
         }

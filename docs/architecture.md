@@ -22,7 +22,8 @@ AGENTS.md            agent instructions for the whole repo (nested ones under sr
 README.md            what this is and how to run it
 Cargo.toml, build.rs crate manifest (rust-version 1.92); build.rs compiles shaders/ with glslc
 src/main.rs          logger, command line, event loop
-src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size)
+src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size, --host/--join)
+src/net.rs           a network game's TCP link: framed, size-limited messages (docs/multiplayer.md)
 src/app.rs           App: window, input -> GameState calls, frame pacing (165 FPS), F5 fullscreen
 src/screenshot.rs    screenshot mode: settle, read a frame back, write a PNG, quit
 src/icon.rs          window/taskbar icon (pixels from src/icon_art.rs)

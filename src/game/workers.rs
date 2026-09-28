@@ -36,7 +36,7 @@ pub(super) const WORKER_SIGHT: i32 = 1;
 /// placeholder until forts get their real role.
 pub(super) const FORT_DEFENSE: f32 = 1.5;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum JobKind {
     Road,
     Improve,
@@ -149,8 +149,8 @@ impl Structure {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct WorkerJob {
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct WorkerJob {
     /// Where the worker stands to do it.
     pub hex: Hex,
     pub kind: JobKind,

@@ -30,10 +30,12 @@ pub use builds::{Build, BuildUnit, Building};
 pub(in crate::game) use builds::{GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, WORKER_SHORTCUT};
 pub use economy::Stock;
 pub(in crate::game) use economy::{
-    FOOD_PER_CITIZEN, STARTING_STOCK, resource_icon, stock_icons, stock_words, turns_icon,
+    FOOD_PER_CITIZEN, STARTING_STOCK, grow_price, resource_icon, stock_icons, stock_words,
+    turns_icon,
 };
 pub(super) use interior::CORE_HP;
 pub(super) use interior::Interior;
+pub(in crate::game) use interior::in_bounds as in_interior;
 pub(super) use logistics::{Routes, delivered_share};
 
 /// Camera zoom the city scenarios start at: most of the radius-six map in view.
@@ -43,7 +45,7 @@ pub(super) const MAX_CITY_POPULATION: usize = 7;
 pub(super) const BARRACKS_MAX_HP: f32 = 220.0;
 pub(super) const BARRACKS_DEFENSE: f32 = 25.0;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum LaborFocus {
     Food,
     Wood,

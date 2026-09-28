@@ -1,7 +1,12 @@
 # src/
 
 `main.rs` starts the logger, parses the command line (`cli.rs`: `--scenario`, `--seed`,
-`--screenshot`, `--size`) and runs the `winit` event loop; its exit code is `App::into_result`.
+`--screenshot`, `--size`, `--host`/`--port`, `--join`/`--code`), sets up a network game
+(`net.rs`: hosting listens; joining connects and receives the game before the window opens), and
+runs the `winit` event loop; its exit code is `App::into_result`. `App` pumps the network
+session once a frame. Everything `net.rs` receives is untrusted: keep the frame limit, and add a
+check in `GameState::receive` / `check_plan` for anything new a message carries
+(`docs/multiplayer.md`, Security).
 `app.rs` owns the window, the renderer and the `GameState`, turns input into `GameState` method
 calls, and builds each frame. `screenshot.rs` is screenshot mode. `persist.rs` keeps settings
 and layout between sessions (`docs/architecture.md`, Between sessions); screenshot mode skips it. `icon_art.rs` draws the

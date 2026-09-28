@@ -236,6 +236,12 @@ impl GameState {
             self.open_city(i);
             return;
         }
+        // A networked game resolves once every side's plan is in
+        // (`multiplayer.rs`).
+        if self.is_networked() {
+            self.submit_plan();
+            return;
+        }
         for i in 0..self.cities.len() {
             if !self.is_human(self.cities[i].team) {
                 self.auto_assign_city(i);

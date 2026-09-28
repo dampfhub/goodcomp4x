@@ -230,3 +230,10 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     picking tiles by what they deliver of each; its buttons are a wheat ear, a log, an ingot and a
     balance. ImGui draws every small silhouette (toolbar icons, the production list's unit
     pictograms, text icons) unfeathered, so they're crisp instead of fuzzy and seamed.
+65. Multiplayer, first cut (`claude/multiplayer`, `multiplayer.md`): two players over the
+    network, host (`--host`) as Blue and guest (`--join` with the host's join code) as Red, on the
+    Cities scenario. Lockstep: each side's turn plan goes to the host, which sends every plan to
+    both, and each machine applies them to the turn's starting game and resolves it the same way,
+    with a checksum after each turn to catch a desync. "The player" became the local side, and the
+    AI plays the sides nobody does. Everything that arrives over the network is checked before it
+    touches the game, and a peer that sends anything malformed or hostile is dropped.

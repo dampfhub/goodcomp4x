@@ -2739,7 +2739,7 @@ impl GameState {
                 }
                 ui.set_cursor_pos([(viewport.x - end_width).max(8.0), 7.0]);
                 let label = if self.is_resolving() {
-                    "RESOLVING".into()
+                    self.resolving_label()
                 } else {
                     end_turn_label(pending)
                 };

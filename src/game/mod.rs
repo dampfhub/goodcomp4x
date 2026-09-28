@@ -16,6 +16,7 @@ mod hex;
 mod map_icons;
 mod mapgen;
 mod mesh;
+mod multiplayer;
 mod order_queue;
 mod orders;
 mod ruins;
@@ -39,6 +40,7 @@ pub use camera::Camera;
 pub use city::{BuildUnit, Building};
 pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
+pub use multiplayer::{Message as NetMessage, PROTOCOL_VERSION};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
 pub use settings::Settings;
@@ -154,6 +156,11 @@ pub struct GameState {
     /// seed it (`seed_rng`) so a game replays exactly. Kept across scenario
     /// switches (`scenario.rs`).
     rng: GameRng,
+    /// The seed the RNG last took (`reseed`): a networked game's host sends
+    /// it, so both machines roll the same dice.
+    rng_seed: u64,
+    /// A networked game's lockstep state (`multiplayer.rs`); `None` alone.
+    lockstep: Option<Box<multiplayer::Lockstep>>,
     /// Steps of the turn currently playing out, drained one at a time by `update`.
     pending_steps: VecDeque<Step>,
     step_timer: f32,
@@ -267,6 +274,8 @@ impl GameState {
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
             rng: GameRng::seed_from_u64(rand::random()),
+            rng_seed: 0,
+            lockstep: None,
             pending_steps: VecDeque::new(),
             step_timer: 0.0,
             recent_actors: Vec::new(),

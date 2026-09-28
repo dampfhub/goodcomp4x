@@ -115,6 +115,9 @@ impl GameState {
     /// Debug panel: switches the Cavalry and Armored cap between counting
     /// those alive and those ever trained.
     pub fn toggle_lifetime_special_cap(&mut self) {
+        if self.refuses_debug() {
+            return;
+        }
         self.lifetime_special_cap = !self.lifetime_special_cap;
         self.notice = if self.lifetime_special_cap {
             "CAVALRY AND ARMORED CAP COUNTS EVERY ONE EVER TRAINED".into()

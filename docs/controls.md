@@ -223,6 +223,9 @@ them.
 | `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
 | `--size <W>x<H>` | Open the window at this size in pixels |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
+| `--host` | Host a two-player network game (the Cities scenario; you're Blue) and show its join code (`multiplayer.md`) |
+| `--port <n>` | With `--host`: listen on port `n` (7777 unless given) |
+| `--join <address> --code <code>` | Join a hosted game at `HOST` or `HOST:PORT` with the join code it shows; you're Red |
 
 ## Reading the map
 

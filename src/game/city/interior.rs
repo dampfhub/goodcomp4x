@@ -49,7 +49,7 @@ impl InteriorFighter {
     }
 }
 
-pub(super) fn in_bounds(hex: Hex) -> bool {
+pub(in crate::game) fn in_bounds(hex: Hex) -> bool {
     hex.distance(CENTER) <= 2
 }
 

@@ -10,7 +10,7 @@ use super::settings::Settings;
 use super::{GameRng, GameState};
 
 /// The test scenarios F1-F4 switch between.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Scenario {
     /// The original small combat map.
     Combat,
@@ -96,7 +96,22 @@ impl GameState {
     /// the same game.
     #[cfg(test)]
     pub(super) fn seed_rng(&mut self, seed: u64) {
+        self.reseed(seed);
+    }
+
+    /// Seeds the RNG with `seed`, remembering it (`rng_seed`).
+    pub(super) fn reseed(&mut self, seed: u64) {
         self.rng = rand::SeedableRng::seed_from_u64(seed);
+        self.rng_seed = seed;
+    }
+
+    /// Whether a debug action that changes the game on this machine alone is
+    /// off, as it is in a networked game (it would desync it); says so.
+    pub(super) fn refuses_debug(&mut self) -> bool {
+        if self.is_networked() {
+            self.notice = "NOT IN A NETWORK GAME".into();
+        }
+        self.is_networked()
     }
 
     /// F1-F4: starts `scenario` afresh (restarting it, if it's the current
@@ -104,6 +119,9 @@ impl GameState {
     /// player's settings (and whether their menu is open), the debug settings
     /// and the RNG (so a seeded game stays reproducible).
     pub fn switch_scenario(&mut self, scenario: Scenario) {
+        if self.refuses_debug() {
+            return;
+        }
         let savestate = self.savestate.take();
         let settings = std::mem::take(&mut self.settings);
         let (settings_open, fog_of_war) = (self.settings_open, self.fog_of_war);
@@ -132,6 +150,9 @@ impl GameState {
 
     /// F6: saves a snapshot of the whole game, replacing any earlier one.
     pub fn save_state(&mut self) {
+        if self.refuses_debug() {
+            return;
+        }
         if self.is_resolving() {
             self.notice = "CAN'T SAVE WHILE A TURN PLAYS OUT".into();
             return;
@@ -149,6 +170,9 @@ impl GameState {
     /// F7: restores the saved snapshot, keeping it to load again. The camera
     /// stays where it is, unless the snapshot is from another scenario.
     pub fn load_state(&mut self) {
+        if self.refuses_debug() {
+            return;
+        }
         let Some(saved) = self.savestate.take() else {
             self.notice = "NOTHING SAVED YET - F6 SAVES".into();
             return;

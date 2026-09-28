@@ -19,6 +19,7 @@ use crate::game::{
     ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, selection_box, ui_projection,
 };
 use crate::icon;
+use crate::net::Session;
 use crate::persist;
 use crate::renderer::{DrawBatch, Renderer};
 use crate::screenshot::{self, Screenshot};
@@ -54,6 +55,8 @@ pub struct App {
     renderer: Option<Renderer>,
     window: Option<Window>,
     game: GameState,
+    /// A multiplayer game's connection (`net.rs`), pumped every frame.
+    network: Option<Session>,
     imgui: Option<ImGuiContext>,
     imgui_platform: Option<WinitPlatform>,
     imgui_fonts: Option<[FontId; 3]>,
@@ -137,7 +140,7 @@ impl SavedWindow {
 }
 
 impl App {
-    pub fn new(options: Options) -> Self {
+    pub fn new(options: Options, network: Option<(Session, GameState)>) -> Self {
         let screenshot = options.screenshot.map(Screenshot::new);
         let remember = screenshot.is_none();
         let load = |name| if remember { persist::read(name) } else { None };
@@ -150,16 +153,21 @@ impl App {
             .or(screenshot.as_ref().map(|_| screenshot::DEFAULT_SIZE))
             .map(|(width, height)| PhysicalSize::new(width, height))
             .or(saved.size);
-        let mut game = match options.seed {
+        let (network, game) = match network {
+            Some((session, game)) => (Some(session), Some(game)),
+            None => (None, None),
+        };
+        let mut game = game.unwrap_or_else(|| match options.seed {
             Some(seed) => GameState::world_scenario_with(seed, &settings),
             None => options.scenario.new_game(&settings),
-        };
+        });
         game.set_settings(settings);
         Self {
             renderer: None,
             window: None,
             saved_settings: game.settings_text(),
             game,
+            network,
             imgui: None,
             imgui_platform: None,
             imgui_fonts: None,
@@ -271,6 +279,9 @@ impl App {
         let now = Instant::now();
         let dt = now - self.last_frame.unwrap_or(now);
         self.last_frame = Some(now);
+        if let Some(network) = self.network.as_mut() {
+            network.pump(&mut self.game);
+        }
         self.game.update(dt.as_secs_f32());
         // A screenshot shows the clouds still, so the same arguments give the
         // same image.

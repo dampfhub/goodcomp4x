@@ -196,7 +196,7 @@ impl GameState {
         let left_end = turn_end + 2.0 * GAP + stockpile_width;
 
         let label = if self.is_resolving() {
-            "RESOLVING".to_string()
+            self.resolving_label()
         } else {
             end_turn_label(pending)
         };
