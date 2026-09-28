@@ -65,7 +65,7 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **Goods:** a tile's food is food; its production splits into **metal**, what's dug out of the
   ground (+1 for hills, +2 for a mine, +3 for a Quarry, never more than the tile's production),
   and **wood**, the rest (plains, tundra and desert ground, forest, jungle, lumber mills,
-  pastures). The map's yield pips (wheat, a log, an ingot) and the tile tooltip show food,
+  pastures). The map's yield pips (a tin can, a log, a gear) and the tile tooltip show food,
   wood and metal.
 - **Resources:** Horses and Iron give no yield. Only a Barracks on them trains Cavalry or
   Armored, 3 per deposit (see Barracks); an adjacent Stable or Forge on or beside the matching
@@ -505,7 +505,7 @@ every turn end.
   3; Mill, Canoe House and Watchpost 0/10/0, 3; Workshop 0/10/4, 4; Forge 0/6/8, 4; Stable
   2/12/0, 4; Field Hospital 4/10/4, 4; Cannery 0/12/4, 4; Work Camp 2/10/2, 3; Smelter 0/8/8, 4;
   Railhead 0/12/12, 5; Harbor 0/14/0, 4; Coastal Battery 0/8/10, 4. Cards, tooltips, queue rows
-  and notices show a price as each resource's icon and amount (the map's wheat, log and ingot)
+  and notices show a price as each resource's icon and amount (the map's tin can, log and gear)
   and the turns after a clock icon. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue
   Cavalry or Armored), 5-7 pick a Barracks, Mill or Workshop to place, 8 a Worker, 9 a Grow
   and 0 a Gather. The rest are in the city's scrollable production list. One of each building per
@@ -678,7 +678,7 @@ every turn end.
   it to its city. Worked tiles are outlined green (the manager's in gold; red if disrupted).
   Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
-  food (wheat), wood (a log) and metal (an ingot) with delivery percentages. Alt shows every
+  food (a tin can), wood (a log) and metal (a gear) with delivery percentages. Alt shows every
   explored tile's yields, and while something is being placed with yields off, the open city's
   delivery percentages too. A tile a building stands
   on shows neither (a city center keeps its yields); a job's name on a tile showing a percentage
