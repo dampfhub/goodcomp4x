@@ -55,6 +55,31 @@ struct DrawRange {
     count: u32,
 }
 
+/// The imgui backend rotates meshes only for non-empty draw data. Track its
+/// next mesh independently from the Vulkan frame slot, which rotates on every
+/// submitted frame (including classic-UI frames with no ImGui vertices).
+#[derive(Default)]
+struct ImGuiSlotUsage {
+    next_slot: usize,
+    last_frame: [Option<usize>; MAX_FRAMES_IN_FLIGHT],
+}
+
+impl ImGuiSlotUsage {
+    fn fence_to_wait(&self, frame: usize, nonempty: bool) -> Option<usize> {
+        nonempty
+            .then_some(self.last_frame[self.next_slot])
+            .flatten()
+            .filter(|&last_frame| last_frame != frame)
+    }
+
+    fn record(&mut self, frame: usize, nonempty: bool) {
+        if nonempty {
+            self.last_frame[self.next_slot] = Some(frame);
+            self.next_slot = (self.next_slot + 1) % MAX_FRAMES_IN_FLIGHT;
+        }
+    }
+}
+
 pub struct Renderer {
     _entry: ash::Entry,
     instance: ash::Instance,
@@ -95,6 +120,7 @@ pub struct Renderer {
     /// The in-flight fence last used with each swapchain image.
     images_in_flight: Vec<vk::Fence>,
     current_frame: usize,
+    imgui_slots: ImGuiSlotUsage,
 
     window_size: (u32, u32),
     framebuffer_resized: bool,
@@ -243,6 +269,7 @@ impl Renderer {
             sync,
             images_in_flight,
             current_frame: 0,
+            imgui_slots: ImGuiSlotUsage::default(),
             window_size,
             framebuffer_resized: false,
             capture_requested: false,
@@ -320,6 +347,17 @@ impl Renderer {
         // vertex buffer and command buffer from last time around.
         let fence = self.sync.in_flight[self.current_frame];
         unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }?;
+        let imgui_nonempty = self.imgui_renderer.is_some()
+            && imgui_data.is_some_and(|data| data.total_vtx_count > 0);
+        if let Some(other_frame) = self
+            .imgui_slots
+            .fence_to_wait(self.current_frame, imgui_nonempty)
+        {
+            unsafe {
+                self.device
+                    .wait_for_fences(&[self.sync.in_flight[other_frame]], true, u64::MAX)
+            }?;
+        }
         let ranges = unsafe { self.write_vertices(batches) }?;
         // Before acquiring, so a failure here doesn't strand an acquired
         // image. A swapchain rebuilt below makes it the wrong size, but then
@@ -362,6 +400,7 @@ impl Renderer {
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
             self.record_command_buffer(command_buffer, image_index, &ranges, imgui_data)?;
         }
+        self.imgui_slots.record(self.current_frame, imgui_nonempty);
 
         let wait_semaphores = [image_available];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -718,6 +757,21 @@ unsafe fn create_vertex_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imgui_mesh_slot_waits_for_the_other_frame_after_odd_empty_frames() {
+        let mut slots = ImGuiSlotUsage::default();
+        assert_eq!(slots.fence_to_wait(0, true), None);
+        slots.record(0, true);
+        assert_eq!(slots.fence_to_wait(1, true), None);
+        slots.record(1, true);
+        assert_eq!(slots.fence_to_wait(0, false), None);
+        slots.record(0, false);
+        // Renderer frame 0 ran without ImGui, while ImGui's next mesh stayed 0.
+        assert_eq!(slots.fence_to_wait(1, true), Some(0));
+        slots.record(1, true);
+        assert_eq!(slots.fence_to_wait(0, true), Some(1));
+    }
 
     #[test]
     fn mat4_bytes_are_the_columns_in_order() {
