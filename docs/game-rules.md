@@ -94,24 +94,45 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **World generation** (`mapgen.rs`): a rectangle whose area grows in proportion
   to the number of sides (about 61 hexes wide by 36 tall per two and a half sides, so about 93 by
   57 for six; never smaller than for three), generated from a `u32` seed
-  with its own RNG, so a seed and side count always rebuild the same map (the seed shows in the
-  debug panel; there is no way to type one in). A Pangea: 42-52% sea, one continent plus islets of
-  at most 12 hexes, mountain ranges and hills by noise, lakes, rivers running downhill to water,
-  climate by latitude and moisture, forest on wetter grassland, plains and tundra, jungle on about
-  three quarters of marsh.
+  with its own RNG, so a seed and side count always rebuild the same map, on every machine (the
+  seed shows in the debug panel; `--seed N` on the command line picks one). A Pangea: 42-52%
+  sea, one continent plus islets of at most 12 hexes, built in stages:
+  - **Mountains** are 2.5-4% of the land, in ranges: long chains one hex wide where plates of
+    crust meet (the map is split among a dozen or more warped plates, and about half their
+    borders rise). A range stays a hex back from the shore, breaks off where it runs low, and
+    has an open hex (a pass, on hills) about one in ten; a lone peak or two may stand apart.
+    Mountains never wall land off: if a range cuts off a stretch of open land, the mountains on
+    the shortest way out become hills.
+  - **Hills** are 12-17% of the land: foothills beside about half of the mountain hexes' open
+    neighbors, the rest in rolling uplands, more often well inland.
+  - **Lakes:** small bodies of water cut off from the map's edge, plus a few lakes of one to three
+    hexes well inland.
+  - **Rivers** run along hex edges, always down to the lowest next corner (the ground rises with
+    the steps to the sea, and more under hills and mountains). Each rises at a lake (at most one
+    river leaves a lake) or in the mountains and their foothills, and ends at the sea, in a lake,
+    or where it joins another river: rivers merge but never split, never run back into the lake
+    they left (directly or through other rivers and lakes), and are at most about half the map's
+    width long. About one per 90 hexes of land.
+  - **Climate:** colder toward the top and bottom of the map and beside mountains; wetter by
+    fresh water and the sea, drier far inland. Snow, tundra, desert, marsh, grassland or plains
+    follow; forest grows on wetter grassland, plains and tundra, and jungle on most marsh, both
+    in patches.
   - **Sides:** the player (Blue) and 4-6 AI sides, picked by the seed, or as many as the AI Players
     setting (Next World) says (1-6). Each takes a start in `Team::ALL` order (Red, Green, Gold, Purple, Teal,
     Orange), Blue on any of them.
   - **Starts** are on the largest continent, on flat land that is not snow, desert or marsh, with
     open ground and hills next door, scored on nearby yields and fresh water. The set is
     scattered and then evened out: each start about as far from its nearest neighbor as the land
-    allows when shared out evenly (some closer, some farther), with about equally good land.
+    allows when shared out evenly (some closer, some farther), with about equally good land, and
+    the nearest neighbors about as far on foot too, around the ranges (the farthest at most 1.6
+    times the closest, where some tried set allows it). Every start can walk to every other.
   - **Units:** each side starts with its city already founded (with a worker at home) or with a
     settler, as the Start With setting (Next World) says, and a scout on the neighboring hills. The camera
     starts on Blue's city or settler.
   - **Horses and Iron:** one of each within two to four hexes of every start (farther only if
-    there's no room), nearer it than any other start: horses on open flat ground, iron on hills
-    or under mountains where there are some.
+    there's no room), nearer it than any other start, on the best ground for it nearby: horses on
+    open flat grassland or plains, else open tundra; iron on foothills (hills beside mountains),
+    else other hills or ground under mountains.
   - **Ruins and special tiles** go on contested ground: a hex about equally far on foot from the
     two starts nearest it (ruins within a step or so, special tiles within three), well away
     from every start, off the map's edge and reachable from every start. That keeps them out of
