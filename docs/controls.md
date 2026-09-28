@@ -209,6 +209,7 @@ that end of the range).
 | Setting | Control | Values |
 | --- | --- | --- |
 | Instant playback (Turns) | Checkbox | On (the default): a turn plays out all at once; off: step by step. The same switch as F8 |
+| Turn transition (Turns) | Checkbox | On (the default): as a turn resolves, each unit and worker you could see that moved glides from its old hex to its new one (about a third of a second; with step-by-step playback, as each step plays), and as the next turn begins the map dims for a moment and the turn number in the top bar flashes gold. Only how it looks: input never waits for it. Off: everything snaps into place |
 | Queue limit (Turns) | Slider | 1 to 20 turns (6 by default): the most turns a unit can have queued, this turn included. A Shift-click toward a hex farther away queues the move as far as the limit goes, and once a queue is full, Shift-clicks add nothing to it until turns are played |
 | Fog (Map) | Buttons | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
 | AI players (Next World) | Drop-down list | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |

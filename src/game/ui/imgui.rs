@@ -2786,7 +2786,8 @@ impl GameState {
             .size([viewport.x, STATUS_HEIGHT], Condition::Always)
             .build(|| {
                 let end_width = 220.0;
-                ui.text(format!("TURN {turn}"));
+                let turn_color = self.turn_number_color(ui.style_color(StyleColor::Text));
+                rich_text(ui, &format!("TURN {turn}"), turn_color);
                 // The player's stockpile, then the notice in what's left.
                 let mut stockpile_width = 0.0;
                 for (text, color) in &stockpile {
