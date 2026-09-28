@@ -18,7 +18,7 @@ pub const USAGE: str = "Usage: hex [OPTIONS] [FRAMES]
 
 Options:
   --scenario <NAME>    start in this scenario: combat, cities (the default),
-                       frontier, world (a new random map), siege, or naval
+                       frontier, world (a new random map), or naval
   --seed <N>           generate the world scenario's map from seed N (the
                        debug panel shows a map's seed), so it's the same
                        map every run
@@ -123,7 +123,7 @@ pub fn parse(args: &Vec[Str]) -> Result[Options, Str] {
             match scenario_named(name) {
                 Option.Some(s) => { options.scenario = s; }
                 Option.None => {
-                    return Result.Err(text3("no scenario called \"", name, "\": try combat, cities, frontier, world, siege or naval"));
+                    return Result.Err(text3("no scenario called \"", name, "\": try combat, cities, frontier, world or naval"));
                 }
             }
             i = i + 2;
