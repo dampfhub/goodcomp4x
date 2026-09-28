@@ -215,10 +215,6 @@ impl GameState {
         };
         match kind {
             QueueKind::City => {
-                if self.cities[city].pending_building.is_some() && (source == 0 || target == 0) {
-                    self.notice = "CONFIRM OR REMOVE THE READY BUILDING FIRST".into();
-                    return;
-                }
                 let queue = &mut self.cities[city].queue;
                 if source < queue.len() && target < queue.len() {
                     let item = queue.remove(source);
@@ -349,7 +345,7 @@ impl GameState {
                     dragging: drag.is_some_and(|drag| drag.source == index),
                     drop_target: drag
                         .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
-                    locked: index == 0 && city.pending_building.is_some(),
+                    locked: false,
                 });
             }
         }

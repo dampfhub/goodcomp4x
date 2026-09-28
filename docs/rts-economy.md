@@ -58,8 +58,9 @@ more citizens and everything else that eats it (troops, workers).
   pay for a Melee, Ranged, Worker or Grow; a broke side isn't forced to pick something it can't
   buy.
 - **AI** (`plan_ai_cities`): a city with an empty queue buys one build or waits: a Worker if it
-  has none; then a Barracks, sited on a Horses or Iron deposit within 3 hexes when there is one
-  (`ai_barracks_site`) and placed with no Confirm; then Grow. Until it has a Barracks it trains
+  has none; then Grow. With a worker it places a Barracks for its workers to build, sited on a
+  Horses or Iron deposit within 3 hexes when there is one (`ai_barracks_site`) and paid when
+  placed. Until it has a Barracks it trains
   Melee itself (slowly) while the side has fewer than 2 units per city. An idle AI Barracks
   trains Cavalry or Armored when its cap and stockpile allow, else Melee, or Ranged for every two
   Melee. The AI pays through the same `try_queue_build` as the
@@ -212,3 +213,17 @@ Averages per side over seeds 0-7 (`economy_report`), fixed time, cap counting th
   and it should grow more when food piles up, to test the late game properly.
 - **Refunds:** full refunds make the queue a free bank; RTS games often refund in full, but a
   partial refund for an item in progress is worth trying if players park resources in queues.
+
+## Round 3: workers build what a city places
+
+Worker jobs and buildings with a site became one thing: everything a city puts on the map
+(roads, improvements, walls, gates, outposts, forts, and its buildings with a site) is placed
+from its production list, needs a worker, is paid from the stockpile when placed (refunded if
+taken off or dropped), and is built by a worker walking out to it within workers' reach. Prices
+for the works: Road 0/2/0, Improve 0/4/0, Wall 0/3/0, Gate 0/3/2, Outpost 0/6/0, Fort 0/8/4.
+The city queue keeps units, workers, Grow and the Granary. The worker menu, its Sleep, and idle
+workers holding up the turn are gone.
+
+Open questions: whether the works' prices are right (roads at 2 wood each make long roads a real
+cost); whether a building should take several workers, or go faster with more; and whether the
+city queue and the workers now compete enough for the stockpile.

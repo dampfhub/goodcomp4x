@@ -282,17 +282,15 @@ impl GameState {
     }
 
     /// A press of Escape. It closes one thing, in this order: the settings
-    /// menu, then a city view, interior or site being chosen
-    /// (`exit_structure_menu`), then a worker job being placed, then the
-    /// worker menu, then the selection (`clear_selection`).
+    /// menu, then something being placed from a city, then a city view or
+    /// interior (`exit_structure_menu`), then the selection
+    /// (`clear_selection`).
     /// With nothing to close it opens the settings menu, which has the Quit
     /// button.
     pub fn press_escape(&mut self) {
         if self.settings_open {
             self.settings_open = false;
         } else if self.exit_structure_menu() {
-        } else if self.worker_mode && self.placing_job.is_none() {
-            self.set_worker_mode(false);
         } else if !self.clear_selection() {
             self.settings_open = true;
         }

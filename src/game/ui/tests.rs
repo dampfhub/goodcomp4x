@@ -102,7 +102,9 @@ fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
             .iter()
             .any(|button| button.target == Target::Building(Building::Railhead))
     );
-    assert!(game.scroll_buildings_at(cursor, SCREEN, -20.0));
+    // Past the units, most of the way down the buildings (the works
+    // follow them).
+    assert!(game.scroll_buildings_at(cursor, SCREEN, -16.0));
     let scrolled = game.layout(SCREEN);
     let card = scrolled
         .buttons
@@ -380,71 +382,83 @@ fn invalid_stable_site_click_reports_horses_instead_of_open_land() {
     game.units.clear();
     game.fog_of_war = false;
     let city = game.selected_city.unwrap();
-    // Queued first, so the tile is found clear of the panels as they are
+    // Picked first, so the tile is found clear of the panels as they are
     // when it's clicked.
     game.queue_selected_city_building(Building::Stable);
-    let site = game
-        .grid
-        .all_hexes()
+    let site = visible_sites(&game, city, 1)
+        .into_iter()
+        .chain(
+            game.grid
+                .all_hexes()
+                .filter(|&hex| visible_in_reach(&game, city, hex)),
+        )
         .find(|&hex| {
-            let cursor = hex_cursor(&game, hex);
-            cursor.x > 0.0
-                && cursor.x < SCREEN.x
-                && cursor.y > 0.0
-                && cursor.y < SCREEN.y
-                && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
-                && game.site_available(city, Building::Barracks, hex)
-                && game.site_issue(city, Building::Stable, hex)
+            game.site_available(city, Building::Barracks, hex)
+                && game.ai_site_issue(city, Building::Stable, hex)
                     == Some("NEEDS HORSES ON OR NEXT TO THE TILE")
         })
-        .expect("visible open tile away from horses");
+        .expect("visible open tile in reach away from horses");
     game.handle_click(hex_cursor(&game, site), SCREEN, ClickMode::Normal);
-    assert_eq!(game.notice, "STABLE NEEDS HORSES ON OR NEXT TO THE TILE");
-    assert_eq!(game.site_placement(), Some((city, Building::Stable)));
+    assert_eq!(game.notice, "NEEDS HORSES ON OR NEXT TO THE TILE");
+    assert_eq!(game.placing_job, Some(JobKind::Build(Building::Stable)));
+    assert!(game.cities[city].worker_jobs.is_empty());
+}
+
+/// Whether `hex` is on screen, clear of the panels, and in city `city`'s
+/// workers' reach: somewhere a click would place a building.
+fn visible_in_reach(game: &GameState, city: usize, hex: Hex) -> bool {
+    let cursor = hex_cursor(game, hex);
+    (0.0..SCREEN.x).contains(&cursor.x)
+        && (0.0..SCREEN.y).contains(&cursor.y)
+        && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
+        && game.in_worker_reach(game.cities[city].team, hex)
+}
+
+/// Up to `count` tiles a Barracks could go on where a click would place it.
+fn visible_sites(game: &GameState, city: usize, count: usize) -> Vec<Hex> {
+    let mut sites: Vec<Hex> = game
+        .grid
+        .all_hexes()
+        .filter(|&hex| {
+            game.site_available(city, Building::Barracks, hex) && visible_in_reach(game, city, hex)
+        })
+        .collect();
+    sites.sort_by_key(|h| (h.q, h.r));
+    sites.truncate(count);
+    sites
 }
 
 #[test]
-fn barracks_map_click_locks_site_and_exits_placement() {
+fn a_building_card_then_a_map_click_places_it_for_the_workers() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
     let button = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(button, SCREEN, ClickMode::Normal);
-    assert_eq!(game.placing_building, Some((city, Building::Barracks)));
+    assert_eq!(game.placing_job, Some(JobKind::Build(Building::Barracks)));
 
-    // Use visible map tiles so this exercises UI hit testing as well as
-    // city placement, rather than calling city_click directly.
-    let sites: Vec<_> = (-8..=8)
-        .flat_map(|q| (-8..=8).map(move |r| Hex::new(q, r)))
-        .filter(|&hex| {
-            let cursor = hex_cursor(&game, hex);
-            game.site_available(city, Building::Barracks, hex)
-                && (0.0..SCREEN.x).contains(&cursor.x)
-                && (0.0..SCREEN.y).contains(&cursor.y)
-                && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
-        })
-        .take(2)
-        .collect();
+    // Visible map tiles, so this exercises UI hit testing as well as
+    // placing, rather than calling place_job_at directly.
+    let sites = visible_sites(&game, city, 2);
     assert_eq!(sites.len(), 2);
     game.handle_click(hex_cursor(&game, sites[0]), SCREEN, ClickMode::Normal);
-    assert_eq!(game.placing_building, None);
-    assert_eq!(
+    assert_eq!(game.placing_job, None, "one of each: done placing");
+    let placed = |game: &GameState| {
         game.cities[city]
-            .planned_sites
-            .get(&Building::Barracks)
-            .copied(),
-        Some(sites[0])
-    );
+            .worker_jobs
+            .iter()
+            .filter(|j| j.kind == JobKind::Build(Building::Barracks))
+            .map(|j| j.hex)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(placed(&game), vec![sites[0]]);
     game.update_hover(Some(hex_cursor(&game, sites[1])), SCREEN, 0.1);
     game.handle_click(hex_cursor(&game, sites[1]), SCREEN, ClickMode::Normal);
     assert_eq!(
-        game.cities[city]
-            .planned_sites
-            .get(&Building::Barracks)
-            .copied(),
-        Some(sites[0])
+        placed(&game),
+        vec![sites[0]],
+        "a later click doesn't move it"
     );
-    assert_eq!(game.placing_building, None);
 }
 
 /// The state of `building`'s card in the open city's tray.
@@ -468,165 +482,90 @@ fn play_turn(game: &mut GameState) {
 }
 
 #[test]
-fn ending_the_turn_while_choosing_a_site_leaves_no_preview_on_the_map() {
-    // #51: End Turn closed the city but kept its site placement, so the
-    // preview followed the cursor with no city open.
+fn ending_the_turn_while_placing_a_building_stops_placing_it() {
+    // #51: End Turn closed the city but kept placing, so the preview
+    // followed the cursor with no city open.
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
-    // Something else to build, so the city isn't left empty-handed.
+    // Something to build, so the city isn't left empty-handed.
     game.queue_selected_city_worker();
     let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
-    assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
+    assert!(game.placing_job.is_some());
     play_turn(&mut game);
     assert_eq!(game.selected_city, None);
-    assert_eq!(game.site_placement(), None);
-    assert_eq!(game.placing_building, None);
-    assert!(
-        !game.cities[city]
-            .queue
-            .contains(&Build::Building(Building::Barracks)),
-        "a Barracks with no site is taken back out of the queue"
-    );
+    assert_eq!(game.placing_job, None);
+    assert!(!game.building_job_queued(city, Building::Barracks));
 }
 
 #[test]
-fn a_building_finished_with_its_city_closed_picks_its_site_when_reopened() {
+fn a_building_card_shows_placing_then_placed_until_taken_off() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
-    // A Barracks queued with no site and not being placed (the queue of a
-    // save from before sites were required, say).
-    game.cities[city]
-        .queue
-        .push(Build::Building(Building::Barracks));
-    assert!(game.exit_structure_menu());
-    game.cities[city].progress = Building::Barracks.work();
-    play_turn(&mut game);
-    assert_eq!(
-        game.cities[city].pending_building,
-        Some(Building::Barracks),
-        "paid for, the Barracks waits for a site"
-    );
-    // #51: finishing it during the turn started placement with no city open.
-    assert_eq!(game.placing_building, None);
-    assert_eq!(game.site_placement(), None);
-
-    // Opening the city resumes choosing the site, and the card isn't dead.
-    game.open_city(city);
-    game.update(10.0);
-    assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
-    assert_ne!(
-        building_card(&mut game, Building::Barracks),
-        ButtonState::Disabled
-    );
-    let site = Hex::new(-2, 0);
-    assert!(game.site_available(city, Building::Barracks, site));
-    game.city_click(site);
-    game.confirm_building(Building::Barracks);
-    assert_eq!(game.cities[city].barracks, Some(site));
-}
-
-#[test]
-fn escape_while_choosing_a_site_cancels_the_building() {
-    // #52, and after it: clicking the Barracks card and pressing Escape
-    // left the Barracks queued with no site, its card highlighted.
-    let mut game = city_view();
-    game.units.clear();
-    let city = game.selected_city.unwrap();
-    let barracks_queued = |game: &GameState| {
-        game.cities[city]
-            .queue
-            .contains(&Build::Building(Building::Barracks))
-    };
     assert_eq!(
         building_card(&mut game, Building::Barracks),
         ButtonState::Ready
     );
     let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
-    assert!(barracks_queued(&game));
-
-    // The first Escape only cancels choosing the site, and the Barracks.
-    assert!(game.exit_structure_menu());
-    assert_eq!(game.selected_city, Some(city), "the city stays open");
-    assert_eq!(game.site_placement(), None);
-    assert!(!barracks_queued(&game));
     assert_eq!(
         building_card(&mut game, Building::Barracks),
-        ButtonState::Ready
+        ButtonState::Queued,
+        "gold while being placed"
     );
 
-    // End Turn mid-placement cancels it, and the city, left with nothing to
-    // build, asks for something instead of ending the turn.
-    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
-    game.handle_click(card, SCREEN, ClickMode::Normal);
-    game.end_planning();
-    assert!(!game.is_resolving());
+    // The first Escape only stops placing; the city stays open, and
+    // nothing was paid.
+    let stock = game.stock(PLAYER_TEAM);
+    assert!(game.exit_structure_menu());
     assert_eq!(game.selected_city, Some(city));
-    assert!(!barracks_queued(&game));
-
-    // Closing the city mid-placement cancels it too.
-    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
-    game.handle_click(card, SCREEN, ClickMode::Normal);
-    game.leave_city_view();
-    game.open_city(city);
-    game.update(10.0);
-    assert!(!barracks_queued(&game));
-    assert_eq!(game.site_placement(), None);
+    assert_eq!(game.placing_job, None);
+    assert_eq!(game.stock(PLAYER_TEAM), stock);
     assert_eq!(
         building_card(&mut game, Building::Barracks),
         ButtonState::Ready
     );
 
-    // With its site chosen, the card is spent until the Barracks is removed.
-    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
-    game.handle_click(card, SCREEN, ClickMode::Normal);
-    game.city_click(Hex::new(-2, 0));
+    // Placed, the card stays gold until the job is taken off the list.
+    game.queue_selected_city_building(Building::Barracks);
+    assert!(game.place_job_at(Hex::new(-2, 0), None));
     assert!(game.exit_structure_menu());
-    assert_eq!(game.selected_city, None, "nothing to cancel: Escape closes");
-    assert!(
-        barracks_queued(&game),
-        "a Barracks with a site stays queued"
-    );
+    assert_eq!(game.selected_city, None, "nothing to stop: Escape closes");
     game.open_city(city);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Queued
+    );
+    game.remove_worker_job(0);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
+    // With no worker, nothing can be placed: the card is dimmed.
+    game.cities[city].workers = 0;
     assert_eq!(
         building_card(&mut game, Building::Barracks),
         ButtonState::Disabled
     );
-    let at = game.cities[city]
-        .queue
-        .iter()
-        .position(|&b| b == Build::Building(Building::Barracks))
-        .unwrap();
-    game.remove_selected_city_queue_item(at);
-    assert_eq!(
-        building_card(&mut game, Building::Barracks),
-        ButtonState::Ready
-    );
 }
 
 #[test]
-fn opening_another_view_drops_the_site_placement() {
+fn opening_another_view_stops_placing() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
     game.cities[city].barracks = Some(Hex::new(-2, 0));
     game.queue_selected_city_building(Building::Mill);
-    assert_eq!(game.site_placement(), Some((city, Building::Mill)));
+    assert_eq!(game.placing_job, Some(JobKind::Build(Building::Mill)));
     game.open_barracks(city);
-    assert_eq!(game.site_placement(), None);
-    assert_eq!(game.placing_building, None);
-    assert!(
-        !game.cities[city]
-            .queue
-            .contains(&Build::Building(Building::Mill))
-    );
+    assert_eq!(game.placing_job, None);
+    assert!(game.cities[city].worker_jobs.is_empty());
 }
 
 #[test]
-fn mill_and_workshop_cards_use_shared_placement_controls() {
+fn mill_and_workshop_cards_are_placed_the_same_way() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
@@ -636,71 +575,17 @@ fn mill_and_workshop_cards_use_shared_placement_controls() {
     ] {
         let card = catalog_cursor(&mut game, Target::Building(building));
         game.handle_click(card, SCREEN, ClickMode::Normal);
-        assert_eq!(game.placing_building, Some((city, building)));
-        game.city_click(site);
-        assert_eq!(game.cities[city].planned_sites.get(&building), Some(&site));
-        let layout = game.layout(SCREEN);
+        assert_eq!(game.placing_job, Some(JobKind::Build(building)));
+        assert!(game.place_job_at(site, None));
         assert!(
-            !layout
-                .buttons
-                .iter()
-                .any(|b| b.target == Target::ConfirmBuilding(building))
+            game.cities[city]
+                .worker_jobs
+                .contains(&crate::game::workers::WorkerJob::on_tile(
+                    site,
+                    JobKind::Build(building)
+                ))
         );
     }
-}
-
-#[test]
-fn planned_building_badge_can_move_without_stealing_citizen_clicks() {
-    let mut game = city_view();
-    game.units.clear();
-    let city = game.selected_city.unwrap();
-    let worked = game.cities[city].worked[0];
-    game.queue_selected_city_building(Building::Mill);
-    game.city_click(worked);
-    let edge = game
-        .camera
-        .world_to_screen(worked.to_world() + Vec2::new(0.5, 0.0), SCREEN);
-    game.handle_click(edge, SCREEN, ClickMode::Normal);
-    assert_eq!(game.moving_manager, Some(city));
-    game.moving_manager = None;
-    game.handle_click(hex_cursor(&game, worked), SCREEN, ClickMode::Normal);
-    assert_eq!(game.placing_building, Some((city, Building::Mill)));
-    let revised = Hex::new(-2, 0);
-    game.handle_click(hex_cursor(&game, revised), SCREEN, ClickMode::Normal);
-    assert_eq!(
-        game.cities[city].planned_sites.get(&Building::Mill),
-        Some(&revised)
-    );
-}
-
-#[test]
-fn debug_completion_reveals_confirm_only_when_ready() {
-    let mut game = city_view();
-    let city = game.selected_city.unwrap();
-    game.queue_selected_city_building(Building::Workshop);
-    game.city_click(Hex::new(-2, 0));
-    assert!(
-        !game
-            .layout(SCREEN)
-            .buttons
-            .iter()
-            .any(|b| b.target == Target::ConfirmBuilding(Building::Workshop))
-    );
-    game.handle_click(
-        button_cursor(&game, Target::CompleteProduction),
-        SCREEN,
-        ClickMode::Normal,
-    );
-    assert_eq!(game.cities[city].pending_building, Some(Building::Workshop));
-    let confirm = Target::ConfirmBuilding(Building::Workshop);
-    assert!(
-        game.layout(SCREEN)
-            .buttons
-            .iter()
-            .any(|b| b.target == confirm && b.state == ButtonState::Ready)
-    );
-    game.handle_click(button_cursor(&game, confirm), SCREEN, ClickMode::Normal);
-    assert_eq!(game.cities[city].workshop, Some(Hex::new(-2, 0)));
 }
 
 #[test]
@@ -816,39 +701,6 @@ fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
     assert!(!game.start_queue_drag_at(x, SCREEN));
     game.handle_click(x, SCREEN, ClickMode::Normal);
     assert_eq!(game.cities[city].queue.len(), 2);
-}
-
-#[test]
-fn ready_city_building_cannot_be_dragged_out_of_first_place() {
-    let mut game = city_view();
-    let city = game.selected_city.unwrap();
-    game.cities[city].queue = vec![
-        Build::Building(Building::Workshop),
-        Build::Unit(BuildUnit::Melee),
-    ];
-    game.cities[city].pending_building = Some(Building::Workshop);
-    let layout = game.layout(SCREEN);
-    let cursor = |index| {
-        let row = layout
-            .queue_items
-            .iter()
-            .find(|row| row.index == index)
-            .unwrap();
-        to_ui(
-            Vec2::new(
-                (row.min.x + row.body_max_x) / 2.0,
-                (row.min.y + row.max.y) / 2.0,
-            ),
-            SCREEN,
-        )
-    };
-    assert!(!game.start_queue_drag_at(cursor(0), SCREEN));
-    assert!(game.start_queue_drag_at(cursor(1), SCREEN));
-    game.finish_queue_drag_at(cursor(0), SCREEN);
-    assert_eq!(
-        game.cities[city].queue[0],
-        Build::Building(Building::Workshop)
-    );
 }
 
 #[test]
@@ -1274,14 +1126,12 @@ fn clicks_on_a_panel_do_not_reach_the_map() {
 
 #[test]
 fn end_turn_button_names_what_is_waiting() {
-    // Production first, then idle workers, then units: the turn's order.
-    assert_eq!(end_turn_label((3, 1, 2)), "CHOOSE PRODUCTION");
-    assert_eq!(end_turn_label((0, 2, 0)), "2 CITIES NEED PRODUCTION");
-    assert_eq!(end_turn_label((3, 0, 1)), "WORKER NEEDS A JOB");
-    assert_eq!(end_turn_label((3, 0, 2)), "2 WORKERS NEED JOBS");
-    assert_eq!(end_turn_label((3, 0, 0)), "3 UNITS NEED ORDERS");
-    assert_eq!(end_turn_label((1, 0, 0)), "UNIT NEEDS ORDERS");
-    assert_eq!(end_turn_label((0, 0, 0)), "END TURN");
+    // Production first, then units: the turn's order.
+    assert_eq!(end_turn_label((3, 1)), "CHOOSE PRODUCTION");
+    assert_eq!(end_turn_label((0, 2)), "2 CITIES NEED PRODUCTION");
+    assert_eq!(end_turn_label((3, 0)), "3 UNITS NEED ORDERS");
+    assert_eq!(end_turn_label((1, 0)), "UNIT NEEDS ORDERS");
+    assert_eq!(end_turn_label((0, 0)), "END TURN");
 
     let game = GameState::new();
     let layout = game.layout(SCREEN);
@@ -1296,7 +1146,8 @@ fn wrap_breaks_between_words() {
 }
 
 /// An empty tile near Blue's city in the Cities scenario, with nothing
-/// selected, so a click on it opens its tile panel.
+/// selected. `open_city_zero` opens the city to place things for its
+/// workers.
 fn empty_tile_near_blue_city() -> (GameState, Hex) {
     let mut game = GameState::city_scenario();
     game.explore();
@@ -1313,47 +1164,53 @@ fn empty_tile_near_blue_city() -> (GameState, Hex) {
     (game, hex)
 }
 
+/// Opens Blue's city, where its workers' jobs are placed from, with the
+/// camera settled on it.
+fn open_city_zero(game: &mut GameState) {
+    game.open_city(0);
+    game.camera.update(10.0);
+}
+
+/// The state of the production card for `target` in the open city.
+fn card_state(game: &mut GameState, target: Target) -> ButtonState {
+    catalog_cursor(game, target);
+    game.layout(SCREEN)
+        .buttons
+        .iter()
+        .find(|b| b.target == target)
+        .expect("card shown")
+        .state
+}
+
 #[test]
-fn the_worker_menu_places_a_picked_job_on_the_map() {
+fn a_work_card_in_the_city_places_it_on_the_map() {
     let (mut game, hex) = empty_tile_near_blue_city();
-    game.toggle_worker_mode();
-    let layout = game.layout(SCREEN);
+    open_city_zero(&mut game);
     for kind in JobKind::ALL {
-        let button = layout
-            .buttons
-            .iter()
-            .find(|b| b.target == Target::WorkerJob(kind))
-            .expect("every job has a button");
-        assert!(
-            layout
-                .panels
-                .iter()
-                .any(|&(min, max)| contains(min, max, button.min) && contains(min, max, button.max)),
-            "{kind:?} sits inside its panel"
-        );
+        catalog_cursor(&mut game, Target::WorkerJob(kind));
     }
-    // With nothing picked, a map click places nothing. (The map clicks go
-    // straight to the map: the menu's panel may cover the tile.)
-    game.handle_map_click(hex_cursor(&game, hex), SCREEN, ClickMode::Normal);
-    assert!(game.cities[0].worker_jobs.is_empty());
     let road = Target::WorkerJob(JobKind::Road);
-    game.handle_click(button_cursor(&game, road), SCREEN, ClickMode::Normal);
+    let card = catalog_cursor(&mut game, road);
+    game.handle_click(card, SCREEN, ClickMode::Normal);
     assert_eq!(game.placing_job, Some(JobKind::Road));
-    let armed = |game: &GameState| {
-        game.layout(SCREEN)
-            .buttons
-            .iter()
-            .find(|b| b.target == road)
-            .is_some_and(|b| b.armed)
-    };
-    assert!(armed(&game), "the button shows it's picked");
+    assert_eq!(
+        card_state(&mut game, road),
+        ButtonState::Queued,
+        "the card shows it's picked"
+    );
+    // (The map click goes straight to the map: a panel may cover the tile.)
     game.handle_map_click(hex_cursor(&game, hex), SCREEN, ClickMode::Normal);
     assert_eq!(game.cities[0].worker_jobs.len(), 1);
     assert_eq!(game.cities[0].worker_jobs[0].hex, hex);
     assert_eq!(game.cities[0].worker_jobs[0].kind, JobKind::Road);
-    assert!(armed(&game), "still picked, for the next one");
+    assert_eq!(
+        game.placing_job,
+        Some(JobKind::Road),
+        "still picked, for the next one"
+    );
     // Picking it again puts it down.
-    game.handle_click(button_cursor(&game, road), SCREEN, ClickMode::Normal);
+    let card = catalog_cursor(&mut game, road);
+    game.handle_click(card, SCREEN, ClickMode::Normal);
     assert_eq!(game.placing_job, None);
 }
 
@@ -1368,26 +1225,19 @@ fn a_plain_click_on_an_empty_tile_opens_nothing() {
             .buttons
             .iter()
             .any(|b| matches!(b.target, Target::WorkerJob(_))),
-        "workers take orders from the worker menu only"
+        "what workers build is placed from its city"
     );
 }
 
 #[test]
 fn a_wall_is_placed_by_dragging_along_hex_edges() {
     let (mut game, hex) = empty_tile_near_blue_city();
-    game.toggle_worker_mode();
+    open_city_zero(&mut game);
     let wall = Target::WorkerJob(JobKind::Wall);
-    game.handle_click(button_cursor(&game, wall), SCREEN, ClickMode::Normal);
+    let card = catalog_cursor(&mut game, wall);
+    game.handle_click(card, SCREEN, ClickMode::Normal);
     assert_eq!(game.placing_job, Some(JobKind::Wall));
-    let armed = game
-        .layout(SCREEN)
-        .buttons
-        .into_iter()
-        .find(|b| b.target == wall);
-    assert!(
-        armed.is_some_and(|b| b.armed),
-        "the button shows it's armed"
-    );
+    assert_eq!(card_state(&mut game, wall), ButtonState::Queued);
 
     // Drag across the midpoints of three of the hex's edges, as the mouse
     // would pass over them.
@@ -1415,19 +1265,21 @@ fn a_wall_is_placed_by_dragging_along_hex_edges() {
     }
 
     // A press on the panel itself doesn't place anything through it.
-    assert!(!game.paint_job_at(button_cursor(&game, wall), SCREEN, true));
+    let card = catalog_cursor(&mut game, wall);
+    assert!(!game.paint_job_at(card, SCREEN, true));
 
-    // Escape stops placing but leaves the worker menu open.
+    // Escape stops placing but leaves the city open.
     game.press_escape();
     assert_eq!(game.placing_job, None);
-    assert!(game.worker_mode);
+    assert_eq!(game.selected_city, Some(0));
     let n = sides[0];
     assert!(!game.paint_job_at(edge_cursor(&game, n), SCREEN, false));
 }
 
 #[test]
-fn a_worker_out_can_be_recalled_from_the_worker_menu() {
+fn a_worker_out_can_be_recalled_from_the_city_panel() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     game.placing_job = Some(JobKind::Fort);
     assert!(game.place_job_at(hex, None));
     game.placing_job = None;
@@ -1437,7 +1289,6 @@ fn a_worker_out_can_be_recalled_from_the_worker_menu() {
     let id = game.field_workers[0].id;
     assert_eq!(game.field_workers[0].pos, hex);
 
-    game.toggle_worker_mode();
     let recall = Target::RecallWorker(id);
     game.handle_click(button_cursor(&game, recall), SCREEN, ClickMode::Normal);
     assert!(game.field_workers[0].recalled);
@@ -1474,32 +1325,20 @@ fn the_disband_button_asks_then_removes_the_unit() {
 }
 
 #[test]
-fn the_worker_menu_lists_its_citys_jobs_and_removes_them() {
+fn the_city_panel_lists_its_jobs_and_removes_them() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     place_road_and_fort(&mut game, hex);
-    game.toggle_worker_mode();
+    let before = game.stock(PLAYER_TEAM);
     let remove = Target::WorkerJobRemove(0);
     game.handle_click(button_cursor(&game, remove), SCREEN, ClickMode::Normal);
     let jobs = &game.cities[0].worker_jobs;
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].kind, JobKind::Fort);
-
-    // The city panel still builds workers, and sends you to the menu.
-    game.toggle_worker_mode();
-    game.select_city();
+    assert_eq!(game.stock(PLAYER_TEAM), before + JobKind::Road.price());
+    // The panel builds workers too.
     game.queue_selected_city_worker();
     assert_eq!(game.cities[0].queue.last(), Some(&Build::Worker));
-    let layout = game.layout(SCREEN);
-    for target in [Target::BuildWorker, Target::WorkerMode] {
-        assert!(
-            layout.buttons.iter().any(|b| b.target == target),
-            "{target:?}"
-        );
-    }
-    assert!(
-        !layout.buttons.iter().any(|b| b.target == remove),
-        "the city panel no longer lists jobs"
-    );
 }
 
 /// A road on `hex` and a fort next door (a tile takes one job at a time).
@@ -1519,70 +1358,18 @@ fn place_road_and_fort(game: &mut GameState, hex: Hex) {
 #[test]
 fn worker_jobs_reorder_by_dragging() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     place_road_and_fort(&mut game, hex);
-    game.toggle_worker_mode();
     game.reorder_queue(QueueKind::Workers, 1, 0);
     let kinds: Vec<_> = game.cities[0].worker_jobs.iter().map(|j| j.kind).collect();
     assert_eq!(kinds, [JobKind::Fort, JobKind::Road]);
 }
 
 #[test]
-fn the_city_panel_opens_the_worker_menu_and_done_closes_it() {
-    let mut game = GameState::city_scenario();
-    game.select_city();
-    game.handle_click(
-        button_cursor(&game, Target::WorkerMode),
-        SCREEN,
-        ClickMode::Normal,
-    );
-    assert!(game.worker_mode);
-    assert_eq!(game.selected_city, None);
-    let text = panel_strings(|panel| game.worker_menu(panel));
-    assert_shows(&text, "WORKERS");
-    assert_shows(&text, "3 TILES FROM A CITY");
-    game.handle_click(
-        button_cursor(&game, Target::WorkerMode),
-        SCREEN,
-        ClickMode::Normal,
-    );
-    assert!(!game.worker_mode);
-}
-
-#[test]
-fn idle_workers_wait_in_the_turn_order_until_they_get_a_job_or_sleep() {
-    let mut game = GameState::city_scenario();
-    game.explore();
-    let city = game.cities[0].id;
-    let workers = RosterKey::Workers(city);
-    assert!(roster_keys(&game).contains(&workers), "idle at home");
-    assert_eq!(game.pending().2, 1);
-    // Its chip opens the worker menu on its city.
-    game.handle_click(roster_cursor(&game, workers), SCREEN, ClickMode::Normal);
-    assert!(game.worker_mode);
-    assert_eq!(game.worker_menu_city, Some(0));
-    // Sleep rests them for the turn, and the menu closes.
-    game.handle_click(
-        button_cursor(&game, Target::SleepWorkers),
-        SCREEN,
-        ClickMode::Normal,
-    );
-    assert!(game.cities[0].workers_resting);
-    assert!(!game.worker_mode);
-    assert_eq!(game.pending().2, 0);
-    assert!(!roster_keys(&game).contains(&workers));
-    // A job does the same.
-    game.cities[0].workers_resting = false;
-    let hex = empty_tile_near_blue_city().1;
-    game.placing_job = Some(JobKind::Road);
-    assert!(game.place_job_at(hex, None));
-    assert_eq!(game.pending().2, 0);
-}
-
-#[test]
 fn clicking_a_worker_job_or_a_worker_shows_it_on_the_map() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     place_road_and_fort(&mut game, hex);
-    game.toggle_worker_mode();
     // A click on the road's row, not a drag, takes the camera to it.
     let layout = game.layout(SCREEN);
     let row = layout
@@ -1602,10 +1389,8 @@ fn clicking_a_worker_job_or_a_worker_shows_it_on_the_map() {
     assert_eq!(kinds, [JobKind::Road, JobKind::Fort], "nothing reordered");
 
     // A worker's row takes the camera to the worker.
-    game.toggle_worker_mode();
     game.resolve_workers();
     let worker = game.field_workers[0].clone();
-    game.toggle_worker_mode();
     game.handle_click(
         button_cursor(&game, Target::ShowWorker(worker.id)),
         SCREEN,
@@ -1619,12 +1404,12 @@ fn clicking_a_worker_job_or_a_worker_shows_it_on_the_map() {
 #[test]
 fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     game.placing_job = Some(JobKind::Improve);
     assert!(game.place_job_at(hex, None));
     game.placing_job = None;
-    game.toggle_worker_mode();
     let mut panel = PanelBuilder::default();
-    game.worker_menu(&mut panel);
+    game.city_tray(0, &mut panel);
     let labels: Vec<String> = panel
         .rows
         .into_iter()
@@ -1672,8 +1457,8 @@ fn roster_keys(game: &GameState) -> Vec<RosterKey> {
 
 #[test]
 fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
-    // The Cities scenario: Blue's city has nothing queued and a worker idle
-    // at home, and one unit of each military kind.
+    // The Cities scenario: Blue's city has nothing queued, and one unit of
+    // each military kind. Its worker idle at home waits for nothing.
     let mut game = GameState::city_scenario();
     let city = game
         .cities
@@ -1683,8 +1468,7 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
         .id;
     let keys = roster_keys(&game);
     assert_eq!(keys[0], RosterKey::Production(city), "{keys:?}");
-    assert_eq!(keys[1], RosterKey::Workers(city), "{keys:?}");
-    let groups: Vec<UnitType> = keys[2..]
+    let groups: Vec<UnitType> = keys[1..]
         .iter()
         .map(|key| match key {
             RosterKey::Group(unit_type, false) => *unit_type,
@@ -1708,7 +1492,7 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
     let settler = game.units[last].id;
     game.settlers.insert(settler);
     let unit_type = game.units[last].unit_type;
-    assert_eq!(roster_keys(&game)[2], RosterKey::Group(unit_type, true));
+    assert_eq!(roster_keys(&game)[1], RosterKey::Group(unit_type, true));
 
     // The production chip opens the city, and is framed while it's open.
     game.handle_click(

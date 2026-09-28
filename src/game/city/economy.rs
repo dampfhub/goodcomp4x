@@ -246,7 +246,6 @@ impl GameState {
         let removed = c.queue.remove(index);
         if index == 0 {
             c.progress = 0;
-            c.pending_building = None;
         }
         removed
     }
@@ -319,8 +318,8 @@ impl GameState {
         }
     }
 
-    /// Turns until the head of `city`'s queue is done at this turn's rate:
-    /// 0 for a building waiting to be confirmed, `None` with nothing queued.
+    /// Turns until the head of `city`'s queue is done at this turn's rate,
+    /// `None` with nothing queued.
     pub(in crate::game) fn turns_left(&self, city: usize) -> Option<i32> {
         let c = &self.cities[city];
         let build = *c.queue.first()?;

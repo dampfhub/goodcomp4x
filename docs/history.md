@@ -211,3 +211,10 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     never-seen ones no longer darken twice at their shared corners. Buttons no longer show their
     hotkey on hover (it's in the tooltip), so hovering never moves their text. With production
     speeding builds, the manager beside the Barracks (not on it) speeds its training.
+61. Workers build what a city places (`claude/city-builds-by-workers`, `rts-economy.md`): the
+    worker menu is gone. A city's production list has WORKS (road, improve, wall, gate, outpost,
+    fort) beside its units and buildings; picking one, or a building with a site, places it on the
+    map within workers' reach, paid then and refunded if taken off, and a worker from the city
+    walks out and builds it. A city needs a worker to place anything. Buildings with a site no
+    longer go through the city queue, a site, and Confirm, and a Workshop halves a neighbor's
+    work. Idle workers no longer hold up the turn, and the AI's Barracks is built the same way.

@@ -91,9 +91,6 @@ pub struct GameState {
     exterior_camera: Option<Camera>,
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option<usize>,
-    /// City and building whose site is being chosen. Only live while that
-    /// city's view is open: read it through `site_placement`.
-    placing_building: Option<(usize, city::Building)>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
@@ -105,9 +102,9 @@ pub struct GameState {
     hovered_tile: Option<Hex>,
     hover_seconds: f32,
     ui_click_mode: Option<orders::ClickMode>,
-    /// The worker job armed in the worker menu (`workers.rs`): map clicks
-    /// and drags place it, on tiles or (a wall or gate) on hex edges, until
-    /// Escape or another pick.
+    /// What the open city is placing for its workers to build (`workers.rs`):
+    /// map clicks and drags place it, on tiles or (a wall or gate) on hex
+    /// edges, until Escape, another pick or leaving the city.
     placing_job: Option<workers::JobKind>,
     /// The unit whose Disband was pressed once, waiting for a second press.
     disband_armed: Option<u32>,
@@ -168,11 +165,6 @@ pub struct GameState {
     /// The turn strip's group whose units it lists one by one, while one of
     /// them is selected (`ui/roster.rs`).
     roster_open: Option<ui::RosterKey>,
-    /// Worker mode (W): reachable tiles are shown, and map clicks open tile
-    /// panels for jobs (`workers.rs`).
-    worker_mode: bool,
-    /// The city whose workers and jobs the worker menu lists.
-    worker_menu_city: Option<usize>,
     /// Ruins not yet claimed (`ruins.rs`), in the order the map made them.
     ruins: Vec<ruins::Ruin>,
     /// Workers out on the map; the ones at home are counted by their city
@@ -236,7 +228,6 @@ impl GameState {
             interior_selected: None,
             exterior_camera: None,
             moving_manager: None,
-            placing_building: None,
             hovered_city: None,
             show_yields: true,
             show_details: false,
@@ -275,8 +266,6 @@ impl GameState {
             settlers: HashSet::new(),
             ruins: Vec::new(),
             roster_open: None,
-            worker_mode: false,
-            worker_menu_city: None,
             field_workers: Vec::new(),
             structures: HashMap::new(),
             barriers: HashMap::new(),
@@ -1088,7 +1077,7 @@ mod tests {
             !game.is_resolving(),
             "holding the last unit doesn't end the turn"
         );
-        assert_eq!(game.pending(), (0, 0, 0));
+        assert_eq!(game.pending(), (0, 0));
         game.hold_or_end_turn();
         assert!(game.is_resolving());
     }
@@ -1101,7 +1090,7 @@ mod tests {
         game.toggle_guard();
         assert_ne!(game.selected, Some(melee), "guarding moves on");
 
-        while game.pending() != (0, 0, 0) {
+        while game.pending() != (0, 0) {
             game.hold_or_end_turn();
         }
         game.hold_or_end_turn();
@@ -1165,8 +1154,9 @@ mod tests {
         let mut game = GameState::city_scenario();
         game.units.retain(|u| u.team != Team::Blue);
         game.selected = None;
-        // A city with nothing to build, and its worker idle at home.
-        assert_eq!(game.pending(), (0, 1, 1));
+        // A city with nothing to build; its worker idle at home doesn't
+        // hold the turn up.
+        assert_eq!(game.pending(), (0, 1));
 
         // Space opens the city that needs a build instead of ending the turn.
         game.hold_or_end_turn();
@@ -1174,13 +1164,9 @@ mod tests {
         assert_eq!(game.selected_city, Some(0));
 
         game.queue_selected_city_unit(city::BuildUnit::Melee);
-        assert_eq!(game.pending(), (0, 0, 1));
-        // Then the worker menu, where Space lets the worker sleep.
+        assert_eq!(game.pending(), (0, 0));
+        // Space closes the city, and then ends the turn.
         game.hold_or_end_turn();
-        assert!(game.worker_mode && !game.is_resolving());
-        game.hold_or_end_turn();
-        assert!(!game.worker_mode);
-        assert_eq!(game.pending(), (0, 0, 0));
         game.hold_or_end_turn();
         assert!(game.is_resolving());
     }

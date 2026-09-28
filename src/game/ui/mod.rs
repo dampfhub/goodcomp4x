@@ -176,20 +176,15 @@ enum Target {
     BuildWorker,
     /// One more citizen for the open city, bought with food.
     Grow,
-    /// A job on the inspected tile, for the city whose workers would do it.
+    /// A card in the open city's production list for something its
+    /// workers build (a road, improvement or structure): arms it for
+    /// placing on the map.
     WorkerJob(JobKind),
-    /// Worker mode on or off (W): the city panel's Worker Jobs, and Done in
-    /// worker mode's panel.
-    WorkerMode,
-    /// The worker menu: list city `usize`'s workers and jobs.
-    WorkerCity(usize),
-    /// The worker menu's Sleep: its city's idle workers rest this turn.
-    SleepWorkers,
     /// The X on one of the open city's worker jobs.
     WorkerJobRemove(usize),
     /// Sends the worker with this id straight home.
     RecallWorker(u32),
-    /// A worker's row in the worker menu: the camera goes to it.
+    /// A worker's row in the city panel: the camera goes to it.
     ShowWorker(u32),
     /// A click on a queue row (not a drag): for a worker job, the camera
     /// goes to it.
@@ -201,7 +196,6 @@ enum Target {
     RosterAdd(RosterKey),
     RosterRemove(RosterKey),
     Focus(LaborFocus),
-    ConfirmBuilding(Building),
     EndTurn,
     /// Debug panel: scenario pages, the savestate, playback pacing and fog.
     Scenario(Scenario),
@@ -637,9 +631,6 @@ impl GameState {
             Target::BuildWorker => self.queue_selected_city_worker(),
             Target::Grow => self.queue_selected_city_growth(),
             Target::WorkerJob(kind) => self.arm_worker_job(kind),
-            Target::WorkerMode => self.toggle_worker_mode(),
-            Target::WorkerCity(city) => self.worker_menu_city = Some(city),
-            Target::SleepWorkers => self.sleep_workers(),
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
             Target::RecallWorker(id) => self.recall_worker(id),
             Target::ShowWorker(id) => self.show_worker(id),
@@ -660,7 +651,6 @@ impl GameState {
             Target::CityQueueRemove(index) => self.remove_selected_city_queue_item(index),
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
             Target::Focus(focus) => self.set_selected_city_focus(focus),
-            Target::ConfirmBuilding(building) => self.confirm_building(building),
             Target::EndTurn => self.end_planning(),
             Target::Scenario(scenario) => self.switch_scenario(scenario),
             Target::SaveState => self.save_state(),
@@ -745,8 +735,6 @@ impl GameState {
             tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
-        } else if self.worker_mode {
-            self.worker_menu(&mut tray);
         } else {
             self.debug_panel(&mut layout);
             self.dock_roster(&mut layout);

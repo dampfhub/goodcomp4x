@@ -2,6 +2,7 @@ use super::barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 use super::economy::{WORK_PER_TURN, grow_price};
 use super::*;
 use crate::game::map_icons::WOOD_ICON;
+use crate::game::workers::{JobKind, WorkerJob};
 
 #[test]
 fn roads_improve_delivery_and_enemy_occupation_blocks_the_site() {
@@ -450,7 +451,7 @@ fn granary_is_unique_and_adds_two_food_per_turn() {
     g.cities[0].worked.clear();
     assert_eq!(g.income(0).food, 8);
     g.cities[0].queue = vec![Build::Building(Building::Granary)];
-    g.cities[0].progress = Building::Granary.work();
+    g.cities[0].progress = Build::Building(Building::Granary).work();
     g.complete_builds();
     assert!(g.cities[0].built.contains(&Building::Granary));
     assert_eq!(g.income(0).food, 16);
@@ -518,56 +519,49 @@ fn end_turn_holds_unfinished_player_units() {
 }
 
 #[test]
-fn barracks_site_can_be_chosen_before_completion_and_needs_confirmation() {
+fn a_barracks_is_placed_for_a_worker_who_walks_out_and_builds_it() {
     let mut g = GameState::city_scenario();
     g.units.clear();
-    g.selected_city = Some(0);
-    g.queue_selected_city_building(Building::Barracks);
+    g.explore();
     let site = Hex::new(-2, 0);
-    assert!(g.grid.is_passable(site));
-    g.city_click(site);
+    let before = g.stock(Team::Blue);
+    assert!(place_building(&mut g, Building::Barracks, site));
+    let job = WorkerJob::on_tile(site, JobKind::Build(Building::Barracks));
+    assert_eq!(g.cities[0].worker_jobs, vec![job]);
     assert_eq!(
-        g.cities[0].planned_sites.get(&Building::Barracks).copied(),
-        Some(site)
+        g.placing_job, None,
+        "one of each: placed, it's done placing"
     );
-    assert_eq!(
-        g.placing_building, None,
-        "choosing a site exits Barracks placement mode"
+    assert_eq!(g.stock(Team::Blue), before - Building::Barracks.price());
+    assert!(
+        g.cities[0].queue.is_empty(),
+        "the city queue isn't involved"
     );
-    let normal_city_click = Hex::new(-1, 0);
-    g.city_click(normal_city_click);
-    assert_ne!(
-        g.cities[0].planned_sites.get(&Building::Barracks).copied(),
-        Some(normal_city_click),
-        "a later city click must not move the planned Barracks"
-    );
-    g.cities[0].progress = Building::Barracks.work();
-    g.complete_builds();
-    assert_eq!(g.cities[0].pending_building, Some(Building::Barracks));
-    assert!(g.cities[0].barracks.is_none());
-    g.confirm_building(Building::Barracks);
+    // A second can't be placed while this one waits.
+    g.queue_selected_city_building(Building::Barracks);
+    assert_eq!(g.placing_job, None);
+    assert_eq!(g.notice, "BARRACKS IS ALREADY PLACED FOR THIS CITY");
+    build_all(&mut g);
     assert_eq!(g.cities[0].barracks, Some(site));
+    assert!(g.cities[0].built.contains(&Building::Barracks));
 }
 
 #[test]
 fn a_barracks_may_stand_on_an_unworked_tile_as_its_card_says() {
     let mut g = GameState::city_scenario();
     g.units.clear();
-    g.selected_city = Some(0);
+    g.explore();
+    let city = g.cities[0].pos;
     let unworked = g
         .grid
         .all_hexes()
         .find(|&h| {
-            !g.cities.iter().any(|c| c.worked.contains(&h))
+            h.distance(city) <= 3
+                && !g.cities.iter().any(|c| c.worked.contains(&h))
                 && g.site_available(0, Building::Barracks, h)
         })
-        .expect("an open, unworked land tile");
-    g.queue_selected_city_building(Building::Barracks);
-    g.city_click(unworked);
-    assert_eq!(
-        g.cities[0].planned_sites.get(&Building::Barracks),
-        Some(&unworked)
-    );
+        .expect("an open, unworked land tile in reach");
+    assert!(place_building(&mut g, Building::Barracks, unworked));
     let card = Building::Barracks.description();
     assert!(!card.contains("WORKED TILE"), "{card}");
     assert!(card.contains("OPEN LAND"), "{card}");
@@ -598,20 +592,10 @@ fn a_destroyed_barracks_can_be_rebuilt() {
     assert_eq!(g.selected_barracks, None, "its view closes with it");
 
     g.units.clear();
-    g.selected_city = Some(0);
-    g.queue_selected_city_building(Building::Barracks);
-    assert_eq!(
-        g.cities[0].queue.last(),
-        Some(&Build::Building(Building::Barracks))
-    );
+    g.explore();
     let site = Hex::new(-1, 0);
-    g.city_click(site);
-    g.cities[0]
-        .queue
-        .retain(|&b| b == Build::Building(Building::Barracks));
-    g.cities[0].progress = Building::Barracks.work();
-    g.complete_builds();
-    g.confirm_building(Building::Barracks);
+    assert!(place_building(&mut g, Building::Barracks, site));
+    build_all(&mut g);
     assert_eq!(g.cities[0].barracks, Some(site));
     assert_eq!(g.cities[0].barracks_hp, BARRACKS_MAX_HP);
 }
@@ -646,62 +630,29 @@ fn city_queue_completes_in_order_and_can_be_reordered_or_removed() {
 }
 
 #[test]
-fn removing_a_queued_barracks_clears_its_placement_preview() {
+fn a_placed_building_taken_off_the_list_is_refunded() {
     let mut g = GameState::city_scenario();
-    g.selected_city = Some(0);
-    g.queue_selected_city_building(Building::Barracks);
-    g.city_click(Hex::new(-2, 0));
+    g.explore();
+    let before = g.stock(Team::Blue);
+    assert!(place_building(&mut g, Building::Barracks, Hex::new(-2, 0)));
+    g.remove_worker_job(0);
+    assert!(g.cities[0].worker_jobs.is_empty());
+    assert_eq!(g.stock(Team::Blue), before);
     assert!(
-        g.cities[0]
-            .planned_sites
-            .get(&Building::Barracks)
-            .copied()
-            .is_some()
+        place_building(&mut g, Building::Barracks, Hex::new(-2, 0)),
+        "placeable again"
     );
-    g.remove_selected_city_queue_item(0);
-    assert!(
-        g.cities[0]
-            .planned_sites
-            .get(&Building::Barracks)
-            .copied()
-            .is_none()
-    );
-    assert_eq!(g.placing_building, None);
 }
 
 #[test]
-fn queued_barracks_opens_site_selection_behind_another_build() {
+fn placing_a_building_leaves_the_city_queue_alone() {
     let mut g = GameState::city_scenario();
     g.fund(Team::Blue);
+    g.explore();
     g.selected_city = Some(0);
     g.queue_selected_city_unit(BuildUnit::Melee);
-    g.queue_selected_city_building(Building::Barracks);
-    assert_eq!(g.placing_building, Some((0, Building::Barracks)));
-    let site = Hex::new(-2, 0);
-    g.city_click(site);
-    assert_eq!(
-        g.cities[0].planned_sites.get(&Building::Barracks).copied(),
-        Some(site)
-    );
-    assert_eq!(g.placing_building, None);
-}
-
-#[test]
-fn planned_barracks_site_can_change_before_final_confirmation() {
-    let mut g = GameState::city_scenario();
-    g.selected_city = Some(0);
-    g.queue_selected_city_building(Building::Barracks);
-    let original = Hex::new(-2, 0);
-    let revised = Hex::new(-1, 0);
-    g.city_click(original);
-    g.change_selected_building_site(Building::Barracks);
-    assert_eq!(g.placing_building, Some((0, Building::Barracks)));
-    g.city_click(revised);
-    assert_eq!(
-        g.cities[0].planned_sites.get(&Building::Barracks).copied(),
-        Some(revised)
-    );
-    assert!(g.cities[0].barracks.is_none());
+    assert!(place_building(&mut g, Building::Barracks, Hex::new(-2, 0)));
+    assert_eq!(g.cities[0].queue, vec![Build::Unit(BuildUnit::Melee)]);
 }
 
 #[test]
@@ -738,86 +689,37 @@ fn mill_restores_food_delivery_only_within_city_reach() {
 }
 
 #[test]
-fn workshop_allows_early_confirmation_of_adjacent_buildings() {
+fn a_workshop_halves_an_adjacent_buildings_work() {
     let mut g = GameState::city_scenario();
     g.units.clear();
-    g.selected_city = Some(0);
     let workshop = Hex::new(-2, 0);
     let barracks = Hex::new(-1, 0);
     assert!(g.site_available(0, Building::Workshop, workshop));
     assert!(g.site_available(0, Building::Barracks, barracks));
     g.cities[0].workshop = Some(workshop);
-    g.queue_selected_city_building(Building::Barracks);
-    g.city_click(barracks);
-    assert_eq!(
-        g.city_build_work(0, Build::Building(Building::Barracks)),
-        Building::Barracks.work() / 2
-    );
-    g.cities[0].progress = Building::Barracks.work() / 2 - 1;
-    g.confirm_building(Building::Barracks);
-    assert_eq!(g.cities[0].barracks, None);
-    g.cities[0].progress += 1;
-    g.confirm_building(Building::Barracks);
-    assert_eq!(g.cities[0].barracks, Some(barracks));
-    assert!(g.cities[0].queue.is_empty());
-    assert_eq!(g.cities[0].progress, 0);
-}
-
-#[test]
-fn moving_a_half_built_site_away_from_workshop_resumes_construction() {
-    let mut g = GameState::city_scenario();
-    g.units.clear();
-    g.selected_city = Some(0);
-    let workshop = Hex::new(-2, 0);
-    let adjacent = Hex::new(-1, 0);
-    let distant = g
-        .grid
-        .all_hexes()
-        .find(|&hex| hex.distance(workshop) > 1 && g.site_available(0, Building::Barracks, hex))
-        .expect("open site outside workshop reach");
-    g.cities[0].workshop = Some(workshop);
-    g.queue_selected_city_building(Building::Barracks);
-    g.city_click(adjacent);
-    let half = Building::Barracks.work() / 2;
-    g.cities[0].progress = half;
-    g.complete_builds();
-    assert_eq!(g.cities[0].pending_building, Some(Building::Barracks));
-    assert_eq!(
-        g.cities[0].queue.first(),
-        Some(&Build::Building(Building::Barracks))
-    );
-    g.change_selected_building_site(Building::Barracks);
-    g.city_click(distant);
-    assert_eq!(g.cities[0].pending_building, None);
-    assert_eq!(g.cities[0].progress, half);
-    assert_eq!(
-        g.city_build_work(0, Build::Building(Building::Barracks)),
-        Building::Barracks.work()
-    );
-    g.confirm_building(Building::Barracks);
-    assert_eq!(g.cities[0].barracks, None);
-    assert_eq!(
-        g.cities[0].queue.first(),
-        Some(&Build::Building(Building::Barracks))
-    );
-    g.cities[0].progress = Building::Barracks.work();
-    g.complete_builds();
-    assert_eq!(g.cities[0].pending_building, Some(Building::Barracks));
-    g.confirm_building(Building::Barracks);
-    assert_eq!(g.cities[0].barracks, Some(distant));
-    assert!(g.cities[0].queue.is_empty());
+    let beside = WorkerJob::on_tile(barracks, JobKind::Build(Building::Barracks));
+    let far = WorkerJob::on_tile(Hex::new(-4, 2), JobKind::Build(Building::Barracks));
+    assert_eq!(g.job_turns(Team::Blue, beside), 2, "3 turns, halved up");
+    assert_eq!(g.job_turns(Team::Blue, far), 3);
+    // Roads and the like aren't buildings: a Workshop doesn't hurry them.
+    let road = WorkerJob::on_tile(barracks, JobKind::Road);
+    assert_eq!(g.job_turns(Team::Blue, road), JobKind::Road.turns());
 }
 
 #[test]
 fn placed_buildings_cannot_share_a_site() {
     let mut g = GameState::city_scenario();
-    g.selected_city = Some(0);
+    g.explore();
     let site = Hex::new(-2, 0);
     g.cities[0].mill = Some(site);
-    g.queue_selected_city_building(Building::Workshop);
-    g.city_click(site);
-    assert!(!g.cities[0].planned_sites.contains_key(&Building::Workshop));
-    assert_eq!(g.placing_building, Some((0, Building::Workshop)));
+    assert!(!place_building(&mut g, Building::Workshop, site));
+    assert!(g.cities[0].worker_jobs.is_empty());
+    assert_eq!(g.notice, "SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+    assert_eq!(
+        g.placing_job,
+        Some(JobKind::Build(Building::Workshop)),
+        "still placing, for another tile"
+    );
 }
 
 #[test]
@@ -825,12 +727,11 @@ fn debug_completion_only_finishes_the_selected_production_lane() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.selected_city = Some(0);
-    g.queue_selected_city_building(Building::Mill);
-    g.city_click(Hex::new(-2, 0));
+    g.cities[0].queue = vec![Build::Building(Building::Granary)];
     g.cities[1].queue = vec![Build::Building(Building::Granary)];
-    g.cities[1].progress = Building::Granary.work();
+    g.cities[1].progress = Build::Building(Building::Granary).work();
     g.debug_complete_current_production();
-    assert_eq!(g.cities[0].pending_building, Some(Building::Mill));
+    assert!(g.cities[0].built.contains(&Building::Granary));
     assert_eq!(g.cities[1].queue, vec![Build::Building(Building::Granary)]);
     assert!(!g.cities[1].built.contains(&Building::Granary));
 
@@ -845,7 +746,6 @@ fn debug_completion_only_finishes_the_selected_production_lane() {
             .iter()
             .any(|u| u.team == PLAYER_TEAM && u.unit_type == UnitType::Melee)
     );
-    assert_eq!(g.cities[0].pending_building, Some(Building::Mill));
 }
 
 #[test]
@@ -974,15 +874,21 @@ fn the_ai_puts_its_barracks_on_a_deposit_and_trains_there() {
     g.fund(Team::Red);
     g.plan_ai_turn(Team::Red);
     let red = 1;
-    let site = g.cities[red].planned_sites[&Building::Barracks];
+    // Its workers build it, placed and paid like the player's.
+    let job = g.cities[red]
+        .worker_jobs
+        .iter()
+        .find(|j| j.kind == JobKind::Build(Building::Barracks))
+        .copied()
+        .expect("a Barracks placed for its workers");
+    let site = job.hex;
     assert!(g.grid.resource(site).is_some(), "{site:?} is no deposit");
-    assert_eq!(
-        g.cities[red].queue,
-        vec![Build::Building(Building::Barracks)]
-    );
-    // Once built, it goes up on its site with no Confirm, and trains.
-    g.cities[red].progress = g.city_build_work(red, Build::Building(Building::Barracks));
-    g.complete_builds();
+    for _ in 0..30 {
+        if g.cities[red].barracks.is_some() {
+            break;
+        }
+        g.resolve_workers();
+    }
     assert_eq!(g.cities[red].barracks, Some(site));
     g.plan_ai_turn(Team::Red);
     let special = g.cities[red].barracks_queue.first().copied();
@@ -1201,7 +1107,11 @@ fn coastal_construction_requires_the_city_center_to_touch_the_sea() {
     assert!(!inland.city_is_coastal(0));
     for building in [Building::Harbor, Building::CoastalBattery] {
         inland.queue_selected_city_building(building);
-        assert!(!inland.cities[0].queue.contains(&Build::Building(building)));
+        assert_eq!(inland.placing_job, None);
+        assert_eq!(
+            inland.notice,
+            "ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS"
+        );
         assert!(!inland.site_available(0, building, Hex::new(-2, 1)));
     }
     inland.cities[0]
@@ -1240,44 +1150,64 @@ fn rejected_building_sites_name_the_requirement_and_keep_placement_active() {
     ] {
         let mut game = GameState::city_scenario();
         game.fund(Team::Blue);
-        game.fog_of_war = false;
-        game.selected_city = Some(0);
+        game.explore();
+        let city = game.cities[0].pos;
         let site = game
             .grid
             .all_hexes()
             .find(|&hex| {
-                game.site_available(0, Building::Barracks, hex)
-                    && game.site_issue(0, building, hex) == Some(reason)
+                hex.distance(city) <= 3
+                    && game.site_available(0, Building::Barracks, hex)
+                    && game.ai_site_issue(0, building, hex) == Some(reason)
             })
-            .expect("open land lacking this building's required feature");
-        game.queue_selected_city_building(building);
-        game.city_click(site);
-        assert_eq!(game.notice, format!("{} {reason}", building.name()));
-        assert_eq!(game.site_placement(), Some((0, building)));
-        assert!(!game.cities[0].planned_sites.contains_key(&building));
+            .expect("open land in reach lacking this building's required feature");
+        assert!(!place_building(&mut game, building, site));
+        assert_eq!(game.notice, reason);
+        assert_eq!(game.placing_job, Some(JobKind::Build(building)));
+        assert!(game.cities[0].worker_jobs.is_empty());
     }
 }
 
 #[test]
-fn final_confirmation_explains_a_site_that_lost_its_required_feature() {
+fn a_building_whose_site_went_bad_is_dropped_and_refunded() {
     let mut game = GameState::city_scenario();
-    game.fog_of_war = false;
-    game.selected_city = Some(0);
-    let site = game
-        .grid
-        .all_hexes()
-        .find(|&hex| {
-            game.site_available(0, Building::Barracks, hex)
-                && game.site_issue(0, Building::Stable, hex)
-                    == Some("NEEDS HORSES ON OR NEXT TO THE TILE")
-        })
-        .unwrap();
-    game.cities[0].planned_sites.insert(Building::Stable, site);
-    game.confirm_building(Building::Stable);
-    assert_eq!(
-        game.notice,
-        "STABLE SITE INVALID: NEEDS HORSES ON OR NEXT TO THE TILE"
-    );
+    game.units.clear();
+    game.explore();
+    let site = Hex::new(-2, 0);
+    let before = game.stock(Team::Blue);
+    assert!(place_building(&mut game, Building::Barracks, site));
+    // Something else goes up there before the worker leaves.
+    game.cities[0].mill = Some(site);
+    game.resolve_workers();
+    assert!(game.cities[0].worker_jobs.is_empty());
+    assert_eq!(game.cities[0].barracks, None);
+    assert_eq!(game.stock(Team::Blue), before);
+    assert!(game.notice.contains("DROPPED, REFUNDED"), "{}", game.notice);
+}
+
+/// Places `building` for city 0's workers at `site`, as the player does:
+/// its card in the open city, then a click on the tile. Returns whether it
+/// was placed.
+fn place_building(g: &mut GameState, building: Building, site: Hex) -> bool {
+    g.selected_city = Some(0);
+    g.queue_selected_city_building(building);
+    g.place_job_at(site, None)
+}
+
+/// Plays city 0's workers' part of turns until nothing it placed is left
+/// waiting or under way.
+fn build_all(g: &mut GameState) {
+    for _ in 0..30 {
+        let busy = !g.cities[0].worker_jobs.is_empty()
+            || g.field_workers
+                .iter()
+                .any(|w| w.home == 0 && w.job.is_some());
+        if !busy {
+            return;
+        }
+        g.resolve_workers();
+    }
+    panic!("city 0's workers never finished");
 }
 
 /// A finished troop never appears on a worker out on the map: it would share

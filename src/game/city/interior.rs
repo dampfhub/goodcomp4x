@@ -428,8 +428,6 @@ impl GameState {
             city_ref.interior.core_hp = CORE_HP;
             city_ref.queue.clear();
             city_ref.progress = 0;
-            city_ref.pending_building = None;
-            city_ref.planned_sites.clear();
             city_ref.barracks_queue.clear();
             city_ref.barracks_progress = 0;
             city_ref.worker_jobs.clear();

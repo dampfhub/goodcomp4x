@@ -837,7 +837,6 @@ impl ApplicationHandler for App {
                     KeyCode::KeyX => self.game.choose_attack_action(),
                     KeyCode::KeyR => self.game.arm_worker_job(crate::game::JobKind::Road),
                     KeyCode::KeyI => self.game.arm_worker_job(crate::game::JobKind::Improve),
-                    KeyCode::KeyW => self.game.toggle_worker_mode(),
                     KeyCode::KeyF => self.game.found_city_selected(),
                     KeyCode::Digit1 => self
                         .game

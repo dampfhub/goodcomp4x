@@ -94,7 +94,8 @@ const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
 const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
 const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
 const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
-/// Worker mode's tint over tiles the player's workers can reach...
+/// While something is being placed for a city's workers, the tint over tiles
+/// they can reach...
 const WORKER_REACH_TINT: Color = [0.95, 0.78, 0.42, 0.16];
 /// ...and over the explored tiles they can't.
 const OUT_OF_REACH_TINT: Color = [0.0, 0.0, 0.0, 0.45];
@@ -378,9 +379,9 @@ impl GameState {
 
         self.push_city_map(&fog, &mut out);
         self.push_fog(&fog, &mut out);
-        // Worker mode: the tiles the player's workers can reach are lit, and
-        // the rest dimmed, so the reach stands out.
-        if self.worker_mode {
+        // Placing something for a city's workers: the tiles they can reach
+        // are lit, and the rest dimmed, so the reach stands out.
+        if self.placing_job.is_some() {
             let bases = self.worker_bases(PLAYER_TEAM);
             for hex in self.grid.all_hexes().filter(|&h| self.is_explored(h)) {
                 let reach = self.grid.is_passable(hex) && self.in_reach_of(&bases, hex);
@@ -1224,47 +1225,6 @@ impl GameState {
                 if building == super::city::Building::CoastalBattery {
                     push_health_bar(hex.to_world(), city.coastal_battery_hp / 150.0, 0.62, out);
                 }
-            }
-        }
-        // Planned sites stay visible until confirmation. An active placement
-        // also follows the map hover before a site has been selected.
-        for (i, city) in self.cities.iter().enumerate() {
-            if city.team != PLAYER_TEAM {
-                continue;
-            }
-            for building in super::city::Building::PLACEABLE {
-                let planned = city.planned_sites.get(&building).copied();
-                let preview = if self.site_placement() == Some((i, building)) {
-                    self.hovered_tile
-                        .filter(|&h| self.site_available(i, building, h))
-                        .or(planned)
-                } else {
-                    planned
-                };
-                let Some(hex) = preview else {
-                    continue;
-                };
-                let (badge, mut color) = building_badge(building);
-                let is_hovered = self.hovered_tile == Some(hex);
-                color[3] = if is_hovered { 0.95 } else { 0.55 };
-                mesh::polygon_outline(
-                    hex.to_world(),
-                    WORKED_OUTLINE_RADIUS,
-                    0.09,
-                    6,
-                    0.0,
-                    color,
-                    out,
-                );
-                mesh::regular_polygon(
-                    hex.to_world(),
-                    0.31,
-                    4,
-                    FRAC_PI_4,
-                    [color[0], color[1], color[2], 0.48],
-                    out,
-                );
-                font::push_glyph(hex.to_world(), 0.30, badge, [0.08, 0.05, 0.03, 0.65], out);
             }
         }
         for (hex, city) in &view.cities {
@@ -2684,11 +2644,12 @@ mod tests {
     }
 
     #[test]
-    fn worker_mode_tints_the_tiles_in_reach() {
+    fn placing_for_workers_tints_the_tiles_in_reach() {
         let mut game = GameState::city_scenario();
         game.explore();
+        game.open_city(0);
         assert_eq!(count_color(&game.build_vertices(), WORKER_REACH_TINT), 0);
-        game.toggle_worker_mode();
+        game.arm_worker_job(crate::game::workers::JobKind::Road);
         let tinted = count_color(&game.build_vertices(), WORKER_REACH_TINT);
         let reachable = game
             .grid
@@ -2753,6 +2714,7 @@ mod tests {
     fn work_under_way_is_ringed_and_counts_its_turns_left() {
         let mut game = GameState::city_scenario();
         game.explore();
+        game.open_city(0);
         let city = game.cities[0].pos;
         // Two hexes out: a turn walking, then at work.
         let hex = game
@@ -2843,33 +2805,22 @@ mod tests {
     }
 
     #[test]
-    fn a_site_preview_follows_the_cursor_only_in_its_open_city() {
+    fn a_building_placed_for_workers_shows_its_name_on_its_tile() {
         let mut game = GameState::city_scenario();
         game.units.clear();
         game.selected = None;
         game.explore();
-        let city = game
-            .cities
-            .iter()
-            .position(|c| c.team == PLAYER_TEAM)
-            .unwrap();
-        let building = crate::game::city::Building::Barracks;
-        let site = game
-            .grid
-            .all_hexes()
-            .find(|&h| game.site_available(city, building, h))
-            .expect("an open site");
-        game.hovered_tile = Some(site);
-        let without = |game: &GameState| {
-            let mut plain = game.clone();
-            plain.placing_building = None;
-            scene(&plain)
-        };
-        game.placing_building = Some((city, building));
-        game.selected_city = None;
-        assert_eq!(scene(&game), without(&game), "no city open: no preview");
-        game.selected_city = Some(city);
-        assert_ne!(scene(&game), without(&game), "its city open: a preview");
+        let site = Hex::new(-2, 0);
+        let barracks = crate::game::city::Building::Barracks;
+        let before = count_color(&game.build_vertices(), PLANNED_JOB_COLOR);
+        game.open_city(0);
+        game.queue_selected_city_building(barracks);
+        assert!(game.place_job_at(site, None));
+        game.leave_city_view();
+        // A faded ring and its name, like any job waiting for a worker.
+        assert!(count_color(&game.build_vertices(), PLANNED_JOB_COLOR) > before);
+        let job = game.cities[0].worker_jobs[0];
+        assert_eq!(game.job_name(job), "BARRACKS");
     }
 
     /// Every vertex as plain data, sorted: labels over a route map come out
@@ -3170,13 +3121,14 @@ mod tests {
     }
 
     #[test]
-    fn the_worker_menu_shows_yields_and_shares_with_yields_on_or_alt() {
+    fn placing_shows_the_citys_shares_with_yields_on_or_alt() {
         let mut game = GameState::city_scenario();
         game.units.clear();
         game.explore();
         game.show_yields = true;
-        game.toggle_worker_mode();
-        let city = game.worker_menu_city.unwrap();
+        game.open_city(0);
+        game.arm_worker_job(crate::game::workers::JobKind::Road);
+        let city = 0;
         assert_eq!(game.yields_city(), Some(city));
         assert_eq!(game.shares_city(), Some(city));
         let fog = game.fog();
@@ -3188,8 +3140,8 @@ mod tests {
         game.set_details(true);
         assert_eq!(game.shares_city(), Some(city));
         game.set_details(false);
-        game.toggle_worker_mode();
-        assert_eq!(game.shares_city(), None);
+        game.press_escape();
+        assert_eq!(game.shares_city(), None, "stopped placing");
     }
 
     #[test]

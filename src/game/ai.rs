@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use super::city::{Build, BuildUnit, Building, City};
 use super::hex::Hex;
 use super::unit::{Team, UnitType};
+use super::workers::{JobKind, WorkerJob};
 use super::{GameState, PLAYER_TEAM};
 
 /// Units (scouts and settlers aside) the AI wants for each of its cities
@@ -30,8 +31,9 @@ impl GameState {
     /// turn. The Barracks is the military building (`city/barracks.rs`): an
     /// idle one trains Cavalry or Armored when its deposits allow and the
     /// side can pay, else Melee, or Ranged for one in three. A city's own
-    /// queue trains a worker first if it has none left, then a Barracks
-    /// (sited by `ai_barracks_site`), then grows; a city without a Barracks
+    /// queue trains a worker first if it has none left; its workers then build
+    /// a Barracks (sited by `ai_barracks_site`, paid when placed), and the
+    /// queue grows; a city without a Barracks
     /// trains Melee itself, slowly, until the side has `AI_ARMY_PER_CITY`
     /// units per city, falling back on growth when it can't pay.
     fn plan_ai_cities(&mut self, team: Team) {
@@ -51,7 +53,7 @@ impl GameState {
             .filter(|&i| self.cities[i].team == team)
             .collect();
         for &city in &cities {
-            self.confirm_ai_building(city);
+            self.place_ai_barracks(city);
             if self.cities[city].barracks.is_some() && self.cities[city].barracks_queue.is_empty() {
                 let basic = if soldiers(self, Some(UnitType::Ranged)) * 2
                     < soldiers(self, Some(UnitType::Melee))
@@ -74,13 +76,8 @@ impl GameState {
                 continue;
             }
             let melee = Build::Unit(BuildUnit::Melee);
-            let barracks = Build::Building(Building::Barracks);
-            let has_barracks =
-                c.barracks.is_some() || c.planned_sites.contains_key(&Building::Barracks);
             let mut choices = if c.workers == 0 && self.workers_out(city) == 0 {
                 vec![Build::Worker]
-            } else if !has_barracks {
-                vec![barracks]
             } else {
                 Vec::new()
             };
@@ -93,22 +90,30 @@ impl GameState {
                 if build == Build::Grow && !self.can_grow(city) {
                     continue;
                 }
-                if build == barracks {
-                    let Some(site) = self.ai_barracks_site(city) else {
-                        continue;
-                    };
-                    if self.try_queue_build(city, build).is_ok() {
-                        self.cities[city]
-                            .planned_sites
-                            .insert(Building::Barracks, site);
-                        break;
-                    }
-                    continue;
-                }
                 if self.try_queue_build(city, build).is_ok() {
                     army += usize::from(build == melee);
                     break;
                 }
+            }
+        }
+    }
+
+    /// City `city` of the AI, with a worker and no Barracks built or placed,
+    /// places one for its workers to build (`ai_barracks_site`), if its
+    /// side can pay.
+    fn place_ai_barracks(&mut self, city: usize) {
+        let c = &self.cities[city];
+        if c.barracks.is_some()
+            || self.building_job_queued(city, Building::Barracks)
+            || !self.has_workers(city)
+        {
+            return;
+        }
+        if let Some(site) = self.ai_barracks_site(city) {
+            let job = WorkerJob::on_tile(site, JobKind::Build(Building::Barracks));
+            let team = self.cities[city].team;
+            if self.job_problem(city, job).is_none() && self.tile_job_at(team, site).is_none() {
+                let _ = self.try_queue_job(city, job);
             }
         }
     }

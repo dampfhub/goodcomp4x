@@ -47,8 +47,7 @@ and a new world, start the same way. A unit you select by clicking stays selecte
 
 The turn strip ("need orders"; a panel that starts at the bottom of the screen, centered or as
 near the middle as the other panels allow) shows a chip for everything you still have to see to
-this turn, civilian tasks first: each city with nothing to build (its tower), each city with
-workers idle at home (a shovel, with how many; it opens the worker menu), your settlers, and
+this turn, civilian tasks first: each city with nothing to build (its tower), your settlers, and
 then your military units needing orders. Units are grouped by kind, one chip per kind with a count; a group of several
 that you select lists its units one by one on a second row, to pick from or take out. Selected
 units, and the open city, are framed; a unit leaves the strip once it has its orders (or holds,
@@ -72,28 +71,23 @@ order.
 
 ## Workers
 
-Workers live in their city and go out to do the jobs you queue (rules: `game-rules.md`,
-Workers).
+Workers live in their city and go out to build what the city places on the map: roads,
+improvements, walls, gates, outposts and forts, and its buildings with a site (rules:
+`game-rules.md`, Workers). Everything is placed from the open city.
 
 | Control | Action |
 | --- | --- |
-The worker menu is the only way to give workers orders.
-
-| Control | Action |
-| --- | --- |
-| W, the Workers chip in the turn strip, or Worker Jobs (city view) | Open the worker menu: tiles your workers can reach (3 from a city or connected Work Camp, or next to a road) are lit and the rest dimmed. W, Escape, Done, or selecting a unit or city closes it |
-| Road / Improve / Wall / Gate / Outpost / Fort (worker menu), or R / I | Pick that job to place (again to put it down); R and I open the menu with roads or improvements picked |
-| Click or drag over tiles (a tile job picked) | Place the job on each tile (a ring under the cursor shows where, red where it can't go), for the nearest city |
+| A work (WORKS) or building card in the city's production list, or R / I | Pick it to place (again to put it down): tiles your workers can reach (3 from a city or connected Work Camp, or next to a road) are lit and the rest dimmed. A dimmed card has no worker to build it, or its price can't be paid; its tooltip says which |
+| Click or drag over tiles (a tile job picked) | Place it on each tile, paying its price (a ring under the cursor shows where, red where it can't go) |
+| Click a lit tile (a building picked) | Place the building's site; a worker walks out and builds it |
 | Click or drag along hex edges (a wall or gate picked) | Place one on each edge the cursor touches (highlighted under the cursor) |
-| Escape or right-click (a job picked) | Put the job down, leaving the menu open |
-| City buttons (worker menu, with several cities) | List that city's workers and jobs |
-| Click a worker job (worker menu) | Show it on the map |
-| Drag a worker job onto another (worker menu) | Reorder the city's worker jobs |
-| Click a worker job's X (worker menu) | Remove the job |
-| Click a worker's row (worker menu) | Show the worker on the map |
-| Recall beside a worker's row (worker menu) | Send that worker straight home; its job goes back on top of the list |
-| Sleep / Space (worker menu) | That city's idle workers rest this turn, and the turn moves on |
-| 8 / Worker button (city view) | Build a worker for the city |
+| Escape or right-click (something picked) | Stop placing, leaving the city open |
+| Click a placed job (city panel) | Show it on the map |
+| Drag a placed job onto another (city panel) | Reorder the city's jobs |
+| Click a placed job's X (city panel) | Take it off, refunding its price |
+| Click a worker's row (city panel) | Show the worker on the map |
+| Recall beside a worker's row (city panel) | Send that worker straight home; its job goes back on top of the list |
+| 8 / Worker card (city view) | Build a worker for the city |
 
 ## Turn
 
@@ -118,8 +112,8 @@ plays out.
 | Food / Production / Balanced buttons | Set the labor focus (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
-| 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
-| Scroll inside the city production list | Browse unit and building cards in one list; coastal cards appear only in eligible cities |
+| 4 / 5 / 6 / 7 | Queue a Granary; pick a Barracks / Mill / Workshop to place for the workers |
+| Scroll inside the city production list | Browse unit, building and work cards in one list; coastal cards appear only in eligible cities |
 | Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
 | Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers) |
 | Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
@@ -127,11 +121,6 @@ plays out.
 | 8 | Queue a worker |
 | 9 / Grow card | Queue one more citizen, paid in food (the city doesn't grow on its own) |
 | A dimmed build card | The stockpile can't pay for it, or (Cavalry, Armored) the barracks has no deposit or its cap is used up; its tooltip says why. Prices show as resource icons and amounts, turns after a clock |
-| Click a tile after queuing a placed building | Choose its site |
-| Escape while choosing a site | Cancel it: the building comes back out of the queue (the city stays open) |
-| Its card (or key) while a finished building has no site | Resume choosing the site |
-| Click a planned site's map badge | Move that site |
-| Confirm button | Place a finished building on its site |
 | Drag a queue row onto another | Reorder the queue |
 | Click a row's X | Remove it, refunding its price (removing the item in progress loses its progress) |
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
@@ -168,7 +157,7 @@ city center enters the interior map; its clicks control only the interior copies
 | F6 | Save a snapshot of the whole game (in memory only) |
 | F7 | Load the snapshot; it is kept, so it can be loaded again |
 | F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome); also in the settings menu |
-| F9 | Finish the open city's or barracks' current build at once (debug; a building still needs its site and Confirm) |
+| F9 | Finish the open city's or barracks' current build at once (debug) |
 | F10 | Toggle fog of war (on by default) |
 | F11 | Switch between the ImGui and classic UI presentations |
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
@@ -183,8 +172,8 @@ order.
 ## Settings menu
 
 Escape opens the settings menu once there's nothing else for it to close. Each press closes one
-thing, in this order: the settings menu itself, a city interior, a site being chosen, a city or
-barracks view, a worker job being placed, the worker menu, then the selection. The menu opens
+thing, in this order: the settings menu itself, a city interior, something being placed for a
+city's workers, a city or barracks view, then the selection. The menu opens
 in the middle of the screen, over the map; in the ImGui presentation, hold Ctrl to drag,
 resize or dock it like the other panels. The game carries on while it's open.
 
@@ -270,8 +259,8 @@ them.
   so a run of them reads as one line.
 - Cities are crenellated towers showing their population, with a gold G disc once they have a
   granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
-  a Workshop a blue diamond marked W. Other buildings have colored letter badges. While you choose or move a site, a translucent diamond with
-  the building's letter previews it. Improvements are small icons in a hex's top-left corner: a
+  a Workshop a blue diamond marked W. Other buildings have colored letter badges. A building placed for the workers shows as a faded
+  gold ring named with it until a worker builds it. Improvements are small icons in a hex's top-left corner: a
   wheat stalk (farm), an ore cart (mine), a fence (pasture), stacked logs (lumber mill).
   Resources are icons in the top-right corner: a horse's head (Horses), an ingot (Iron). Brown
   lines are dirt roads, and blue lines between hexes are rivers.

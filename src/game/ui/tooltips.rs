@@ -199,16 +199,6 @@ impl GameState {
                 _ => {}
             }
         }
-        if let Some(open) = self.selected_city
-            && let Some(building) = Building::PLACEABLE
-                .into_iter()
-                .find(|building| self.cities[open].planned_sites.get(building) == Some(&hex))
-        {
-            notes.push(format!(
-                "{} PLANNED: CLICK CENTER BADGE TO MOVE",
-                building.name()
-            ));
-        }
         if tile.defense_multiplier() != 1.0 {
             let bonus = (tile.defense_multiplier() - 1.0) * 100.0;
             notes.push(format!("+{bonus:.0}% DEFENSE FOR UNITS HERE"));
@@ -380,11 +370,22 @@ impl GameState {
                     building.name().into(),
                     if building.shortcut() == ' ' { "CITY BUILD MENU".into() } else { building.shortcut().to_string() },
                     format!(
-                        "{} {} ONE PER CITY.",
+                        "{} {} ONE PER CITY.{}",
                         building.description(),
-                        self.price_text(Build::Building(building), false)
+                        self.price_text(Build::Building(building), false),
+                        if building.is_placeable() {
+                            " PLACE IT ON THE MAP WITHIN YOUR WORKERS' REACH; A WORKER WALKS OUT AND BUILDS IT."
+                        } else {
+                            ""
+                        }
                     ),
-                    self.shortfall_text(Build::Building(building)),
+                    if building.is_placeable() {
+                        self.selected_city.and_then(|city| {
+                            self.job_kind_unavailable(city, JobKind::Build(building))
+                        })
+                    } else {
+                        self.shortfall_text(Build::Building(building))
+                    },
                 ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
@@ -485,23 +486,18 @@ impl GameState {
                         _ => "CLICK".into(),
                     },
                     format!(
-                        "{} {} TURN{} OF WORK ONCE A WORKER GETS THERE.",
+                        "{} COSTS {} · {} OF WORK ONCE A WORKER GETS THERE. PLACE IT ON THE MAP WITHIN YOUR WORKERS' REACH.",
                         kind.description(),
-                        kind.turns(),
-                        if kind.turns() == 1 { "" } else { "S" }
+                        stock_icons(kind.price()),
+                        turns_icon(kind.turns() as i32)
                     ),
-                    None,
+                    self.selected_city
+                        .and_then(|city| self.job_kind_unavailable(city, kind)),
                 ),
                 Target::Focus(focus) => (
                     format!("{} FOCUS", focus.name()),
                     "AUTO".into(),
                     "REASSIGNS CITY LABOR WITH THIS AS ITS DEFAULT PRIORITY.".into(),
-                    None,
-                ),
-                Target::ConfirmBuilding(building) => (
-                    format!("CONFIRM {}", building.name()),
-                    "CLICK".into(),
-                    "FINALIZES THE SELECTED BUILDING SITE.".into(),
                     None,
                 ),
                 Target::Scenario(scenario) => (
@@ -578,24 +574,6 @@ impl GameState {
                     "SETTINGS".into(),
                     String::new(),
                     "GAME OPTIONS AND CITY OVERLAYS.".into(),
-                    None,
-                ),
-                Target::WorkerMode => (
-                    "WORKERS".into(),
-                    "W".into(),
-                    "THE WORKER MENU: PICK A JOB, THEN PLACE IT ON THE MAP WHERE YOUR WORKERS REACH.".into(),
-                    None,
-                ),
-                Target::WorkerCity(city) => (
-                    format!("CITY {}", self.cities.get(city).map_or(0, |c| c.id + 1)),
-                    String::new(),
-                    "LIST THIS CITY'S WORKERS AND JOBS.".into(),
-                    None,
-                ),
-                Target::SleepWorkers => (
-                    "SLEEP".into(),
-                    "SPACE".into(),
-                    "THIS CITY'S IDLE WORKERS REST THIS TURN, AND THE TURN MOVES ON.".into(),
                     None,
                 ),
                 Target::CloseSettings => (

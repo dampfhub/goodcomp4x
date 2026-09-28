@@ -357,7 +357,7 @@ mod tests {
         );
         game.toggle_instant_playback();
 
-        while game.pending() != (0, 0, 0) {
+        while game.pending() != (0, 0) {
             game.hold_or_end_turn();
         }
         game.hold_or_end_turn();

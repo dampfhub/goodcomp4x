@@ -2783,8 +2783,6 @@ impl GameState {
             tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
-        } else if self.worker_mode {
-            self.worker_menu(&mut tray);
         }
         let selection_context = if selection_is_pinned {
             String::new()
@@ -2798,8 +2796,6 @@ impl GameState {
             format!("unit-{}", self.units[unit].id)
         } else if !self.group.is_empty() {
             "group".into()
-        } else if self.worker_mode {
-            "workers".into()
         } else {
             String::new()
         };
