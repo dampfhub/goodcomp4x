@@ -2577,11 +2577,12 @@ fn waiting_guest() -> GameState {
     guest.update(0.0);
     let team = guest.local_team;
     let city = guest.cities.iter().position(|c| c.team == team).unwrap();
+    let worked = guest.cities[city].worked.clone();
     let pos = guest.cities[city].pos;
     let site = pos
         .neighbors()
         .into_iter()
-        .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h))
+        .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h) && !worked.contains(&h))
         .unwrap();
     guest.cities[city].barracks = Some(site);
     guest.cities[city].barracks_queue = vec![BuildUnit::Melee];

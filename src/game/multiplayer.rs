@@ -1474,12 +1474,13 @@ mod tests {
         let team = GUEST_SEAT;
         let city = guest.cities.iter().position(|c| c.team == team).unwrap();
         let city_pos = guest.cities[city].pos;
-        // A Barracks by its city, on both machines, as an earlier turn would
-        // leave it.
+        // A Barracks by its city (not on a tile a citizen works), on both
+        // machines, as an earlier turn would leave it.
+        let worked = guest.cities[city].worked.clone();
         let barracks = city_pos
             .neighbors()
             .into_iter()
-            .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h))
+            .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h) && !worked.contains(&h))
             .unwrap();
         for game in [&mut host, &mut guest] {
             game.cities[city].barracks = Some(barracks);
