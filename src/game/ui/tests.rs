@@ -3,7 +3,7 @@ use super::text::{end_turn_label, price_hint, quantity, signed_quantity, wrap};
 use super::*;
 
 use crate::game::PLAYER_TEAM;
-use crate::game::city::{Build, Stock};
+use crate::game::city::{Build, Queued, Stock, stock_icons};
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 use crate::game::orders::ClickMode;
 use crate::game::unit::{Team, Unit, UnitType};
@@ -286,7 +286,10 @@ fn build_card_queues_its_unit() {
     let siege = Target::Build(BuildUnit::Siege);
     game.handle_click(button_cursor(&game, siege), SCREEN, ClickMode::Normal);
     let city = game.selected_city.unwrap();
-    assert_eq!(game.cities[city].queue, vec![Build::Unit(BuildUnit::Siege)]);
+    assert_eq!(
+        game.cities[city].queue,
+        [Queued::new(Build::Unit(BuildUnit::Siege))]
+    );
 }
 
 #[test]
@@ -308,7 +311,8 @@ fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
     assert!(
         game.cities[city]
             .queue
-            .contains(&Build::Unit(BuildUnit::LandingCraft))
+            .iter()
+            .any(|q| q.build == Build::Unit(BuildUnit::LandingCraft))
     );
 }
 
@@ -643,7 +647,7 @@ fn barracks_queue_uses_the_same_scroll_window() {
     let city = game.selected_city.unwrap();
     game.cities[city].barracks = Some(Hex::new(-2, 0));
     game.open_barracks(city);
-    game.cities[city].barracks_queue = vec![BuildUnit::Melee; 12];
+    game.cities[city].barracks_queue = vec![Queued::new(BuildUnit::Melee); 12];
     let layout = game.layout(SCREEN);
     let scroll = layout.queue_scrollbars.first().expect("barracks scrollbar");
     assert_eq!(scroll.kind, QueueKind::Barracks);
@@ -668,11 +672,9 @@ fn barracks_queue_uses_the_same_scroll_window() {
 fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
-    game.cities[city].queue = vec![
-        Build::Unit(BuildUnit::Melee),
-        Build::Unit(BuildUnit::Ranged),
-        Build::Unit(BuildUnit::Siege),
-    ];
+    game.cities[city].queue = [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
+        .map(|unit| Queued::new(Build::Unit(unit)))
+        .to_vec();
     let layout = game.layout(SCREEN);
     let row_cursor = |index| {
         let row = layout
@@ -694,7 +696,10 @@ fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
     game.update_queue_drag_at(to, SCREEN);
     assert_eq!(game.queue_drag.unwrap().target, Some(0));
     game.finish_queue_drag_at(to, SCREEN);
-    assert_eq!(game.cities[city].queue[0], Build::Unit(BuildUnit::Siege));
+    assert_eq!(
+        game.cities[city].queue[0].build,
+        Build::Unit(BuildUnit::Siege)
+    );
     assert!(game.queue_drag.is_none());
 
     let x = button_cursor(&game, Target::CityQueueRemove(1));
@@ -709,7 +714,10 @@ fn barracks_queue_rows_use_the_same_drag_and_remove_targets() {
     let city = game.selected_city.unwrap();
     game.cities[city].barracks = Some(Hex::new(-2, 0));
     game.open_barracks(city);
-    game.cities[city].barracks_queue = vec![BuildUnit::Melee, BuildUnit::Ranged];
+    game.cities[city].barracks_queue = vec![
+        Queued::new(BuildUnit::Melee),
+        Queued::new(BuildUnit::Ranged),
+    ];
     let layout = game.layout(SCREEN);
     let cursor = |index| {
         let row = layout
@@ -727,11 +735,14 @@ fn barracks_queue_rows_use_the_same_drag_and_remove_targets() {
     };
     assert!(game.start_queue_drag_at(cursor(1), SCREEN));
     game.finish_queue_drag_at(cursor(0), SCREEN);
-    assert_eq!(game.cities[city].barracks_queue[0], BuildUnit::Ranged);
+    assert_eq!(game.cities[city].barracks_queue[0].build, BuildUnit::Ranged);
     let x = button_cursor(&game, Target::BarracksQueueRemove(1));
     assert!(!game.start_queue_drag_at(x, SCREEN));
     game.handle_click(x, SCREEN, ClickMode::Normal);
-    assert_eq!(game.cities[city].barracks_queue, vec![BuildUnit::Ranged]);
+    assert_eq!(
+        game.cities[city].barracks_queue,
+        [Queued::new(BuildUnit::Ranged)]
+    );
 }
 
 #[test]
@@ -1074,7 +1085,7 @@ fn find_button(game: &GameState, target: Target) -> Button {
 }
 
 #[test]
-fn build_cards_show_prices_and_dim_what_the_stockpile_cannot_pay() {
+fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
     let mut game = GameState::city_scenario();
     game.open_city(0);
     let melee = find_button(&game, Target::Build(BuildUnit::Melee));
@@ -1091,36 +1102,60 @@ fn build_cards_show_prices_and_dim_what_the_stockpile_cannot_pay() {
     assert!(grow.label.starts_with("GROW TO 3"), "{}", grow.label);
 
     game.stockpiles[Team::Blue.index()] = Stock::default();
-    for target in [
-        Target::Build(BuildUnit::Melee),
-        Target::BuildWorker,
-        Target::Grow,
-        Target::Building(Building::Barracks),
-    ] {
-        // Buildings come after the units in the production list: scroll to
-        // them.
-        game.cities[0].building_scroll = if matches!(target, Target::Building(_)) {
-            5
-        } else {
-            0
-        };
-        let card = find_button(&game, target);
-        assert_eq!(card.state, ButtonState::Disabled, "{target:?}");
-        let tooltip: String = game
-            .tooltip_lines(&card)
+    let tooltip = |game: &GameState, card: &Button| -> String {
+        game.tooltip_lines(card)
             .into_iter()
             .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
-            .collect();
-        assert!(tooltip.contains("SHORT OF"), "{target:?}: {tooltip}");
+            .collect()
+    };
+    // A queue's cards can be queued whatever the stockpile holds; the
+    // tooltip says what it's short of this turn, and that it'll wait.
+    for target in [Target::Build(BuildUnit::Melee), Target::Grow] {
+        let card = find_button(&game, target);
+        assert_eq!(card.state, ButtonState::Ready, "{target:?}");
+        let text = tooltip(&game, &card);
+        assert!(
+            text.contains("SHORT OF") && text.contains("WAITS"),
+            "{target:?}: {text}"
+        );
     }
+    // A building is still paid when placed: its card is dimmed.
+    game.cities[0].building_scroll = 5;
+    let card = find_button(&game, Target::Building(Building::Barracks));
+    assert_eq!(card.state, ButtonState::Disabled);
+    assert!(tooltip(&game, &card).contains("SHORT OF"));
     game.cities[0].building_scroll = 0;
-    // A dimmed card takes no click.
+
+    // Clicked, the card queues its unit, unpaid, and the row says what it
+    // waits for.
     game.handle_click(
         button_cursor(&game, Target::Build(BuildUnit::Melee)),
         SCREEN,
         ClickMode::Normal,
     );
-    assert!(game.cities[0].queue.is_empty());
+    assert_eq!(
+        game.cities[0].queue,
+        [Queued::new(Build::Unit(BuildUnit::Melee))]
+    );
+    assert_eq!(game.stock(Team::Blue), Stock::default());
+    let short = game
+        .expected_stock(Team::Blue)
+        .shortfall(BuildUnit::Melee.price());
+    let layout = game.layout(SCREEN);
+    let row = layout
+        .shapes
+        .iter()
+        .find_map(|shape| match shape {
+            Shape::QueueItem { label, waiting, .. } => Some((label.clone(), *waiting)),
+            _ => None,
+        })
+        .expect("the queue's row");
+    assert!(row.1, "tinted as waiting");
+    assert!(
+        row.0.contains(&format!("WAITS {}", stock_icons(short))),
+        "{}",
+        row.0
+    );
 }
 
 #[test]
@@ -1376,7 +1411,10 @@ fn the_city_panel_lists_its_jobs_and_removes_them() {
     assert_eq!(game.stock(PLAYER_TEAM), before + JobKind::Road.price());
     // The panel builds workers too.
     game.queue_selected_city_worker();
-    assert_eq!(game.cities[0].queue.last(), Some(&Build::Worker));
+    assert_eq!(
+        game.cities[0].queue.last(),
+        Some(&Queued::new(Build::Worker))
+    );
 }
 
 /// A road on `hex` and a fort next door (a tile takes one job at a time).
@@ -1553,7 +1591,9 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
     assert!(roster(&game)[0].1 && !roster(&game)[1].1 && !roster(&game)[2].1);
 
     // Once it has a build, it leaves the strip.
-    game.cities[open].queue.push(Build::Unit(BuildUnit::Melee));
+    game.cities[open]
+        .queue
+        .push(Queued::new(Build::Unit(BuildUnit::Melee)));
     let keys = roster_keys(&game);
     assert!(
         !keys.iter().any(|k| matches!(k, RosterKey::Production(_))),
@@ -2314,6 +2354,48 @@ fn placing_shows_a_cancel_button_that_stops_it_with_nothing_placed() {
 }
 
 #[test]
+fn imgui_queues_a_build_the_side_cannot_pay_for_and_shows_it_waiting() {
+    let mut game = city_view();
+    game.stockpiles[Team::Blue.index()] = Stock::default();
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::Build(BuildUnit::Siege));
+    let city = game.selected_city.unwrap();
+    assert_eq!(
+        game.cities[city].queue,
+        [Queued::new(Build::Unit(BuildUnit::Siege))]
+    );
+    assert!(game.notice.contains("WAITS FOR"), "{}", game.notice);
+    // The queue's row is drawn, from the shared content that marks it
+    // waiting; the tray says what the city waits for.
+    screen.settle(&mut game);
+    assert!(
+        screen
+            .button(Target::QueueItem(QueueKind::City, 0))
+            .is_some()
+    );
+    let mut queue = PanelBuilder::default();
+    game.city_queue_panel(city, usize::MAX, &mut queue);
+    let waiting: Vec<bool> = queue
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::QueueItem(item) => Some(item.waiting),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(waiting, [true]);
+    let mut tray = PanelBuilder::default();
+    game.city_tray(city, &mut tray);
+    let text = line_strings(tray.rows.iter().filter_map(|row| match row {
+        Row::Text(_, line) => Some(line.clone()),
+        _ => None,
+    }))
+    .join(" ");
+    assert!(text.contains("SIEGE WAITS FOR"), "{text}");
+    assert!(text.contains("NOTHING IT CAN PAY FOR"), "{text}");
+}
+
+#[test]
 fn the_imgui_cancel_button_stops_placing() {
     let mut game = city_view();
     let before = placed_and_paid(&game);
@@ -2449,7 +2531,10 @@ fn each_queue_panel_has_a_clear_button_that_refunds_everything() {
     }
     game.queue_selected_city_growth();
     game.queue_selected_city_growth();
-    game.cities[city].progress = 1;
+    // As turns' economies would leave it: the head paid for and under way,
+    // and a Grow paid for.
+    game.cities[city].queue[0] = Queued::worked(Build::Unit(BuildUnit::Melee), 1);
+    game.cities[city].queue[6].paid = true;
     let mut one_by_one = game.clone();
     while !one_by_one.cities[city].queue.is_empty() {
         one_by_one.remove_selected_city_queue_item(0);
@@ -2520,6 +2605,7 @@ fn each_queue_panel_has_a_clear_button_that_refunds_everything() {
     for build in [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege] {
         game.queue_selected_barracks_unit(build);
     }
+    game.cities[city].barracks_queue[0].paid = true;
     let mut one_by_one = game.clone();
     while !one_by_one.cities[city].barracks_queue.is_empty() {
         one_by_one.remove_selected_barracks_queue_item(0);
@@ -2599,7 +2685,7 @@ fn waiting_guest() -> GameState {
         .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h) && !worked.contains(&h))
         .unwrap();
     guest.cities[city].barracks = Some(site);
-    guest.cities[city].barracks_queue = vec![BuildUnit::Melee];
+    guest.cities[city].barracks_queue = vec![Queued::new(BuildUnit::Melee)];
     guest.fund(team);
     guest.open_city(city);
     guest.queue_selected_city_gather();
@@ -2725,6 +2811,50 @@ fn waiting_for_the_others_the_imgui_panels_show_but_change_nothing() {
         }
     }
     assert!(game.waiting_for_peers());
+}
+
+#[test]
+fn the_waiting_button_takes_the_turn_back_in_both_presentations() {
+    let mut game = waiting_guest();
+    let _sent = game.take_outbox();
+    let mut screen = ImGuiScreen::new();
+    for imgui in [false, true] {
+        // Classic: it names the wait, and offers to take the turn back.
+        let button = find_button(&game, Target::EndTurn);
+        assert_eq!(button.label, "WAITING FOR THE OTHERS");
+        assert_eq!(button.hint, "TAKE BACK");
+        assert_eq!(button.state, ButtonState::Ready);
+        let tip = line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l));
+        assert!(tip[0].starts_with("TAKE BACK END TURN"), "{tip:?}");
+        if imgui {
+            screen.click(&mut game, Target::EndTurn);
+        } else {
+            game.handle_click(
+                button_cursor(&game, Target::EndTurn),
+                SCREEN,
+                ClickMode::Normal,
+            );
+        }
+        assert!(!game.waiting_for_peers(), "{}", game.notice);
+        assert!(matches!(
+            &game.take_outbox()[..],
+            [crate::game::NetMessage::Withdraw { turn: 1 }]
+        ));
+        // The orders can change again: a Melee, and the turn ended again.
+        let team = game.local_team;
+        let city = game.cities.iter().position(|c| c.team == team).unwrap();
+        game.open_city(city);
+        let melee = find_button(&game, Target::Build(BuildUnit::Melee));
+        assert_ne!(melee.state, ButtonState::Disabled);
+        game.activate_target(Target::Build(BuildUnit::Melee));
+        game.activate_target(Target::EndTurn);
+        assert!(game.waiting_for_peers(), "{}", game.notice);
+        assert!(matches!(
+            &game.take_outbox()[..],
+            [crate::game::NetMessage::Plan(plan)]
+                if plan.cities[0].queue.iter().any(|q| q.build == Build::Unit(BuildUnit::Melee))
+        ));
+    }
 }
 
 /// City 0 open with `jobs` roads placed and waiting and `out` workers out
@@ -3020,4 +3150,26 @@ fn waiting_for_the_others_the_city_workers_list_changes_nothing() {
         assert_eq!(game.team_plan(team), plan, "{target:?}");
     }
     assert!(game.waiting_for_peers());
+}
+
+#[test]
+fn a_frozen_plan_locks_a_waiting_queue_row_like_any_other() {
+    let mut game = city_view();
+    game.stockpiles[Team::Blue.index()] = Stock::default();
+    let city = game.selected_city.unwrap();
+    game.queue_build(city, Build::Unit(BuildUnit::Siege));
+    game.queue_build(city, Build::Gather);
+    let mut panel = PanelBuilder::default();
+    game.city_queue_panel(city, usize::MAX, &mut panel);
+    // Waiting for the others' plans, nothing in the queue can change.
+    panel.freeze_plan();
+    let rows: Vec<(bool, bool)> = panel
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::QueueItem(item) => Some((item.waiting, item.locked)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows, [(true, true), (false, true)]);
 }

@@ -92,16 +92,6 @@ pub(super) fn signed_quantity(quarters: i32) -> String {
     format!("{sign}{}", quantity(quarters))
 }
 
-/// Turns required to finish a queue item at the delivery-adjusted rate shown
-/// in its structure panel. Completion is resolved on the next economy tick.
-pub(super) fn turns_at_rate(remaining: i32, per_turn: i32) -> String {
-    if per_turn <= 0 {
-        return "—".into();
-    }
-    let turns = (remaining.max(1) + per_turn - 1) / per_turn;
-    turns_icon(turns)
-}
-
 /// The End Turn button's label: the next thing the turn is waiting on, in
 /// the turn strip's order (production, then units, as that's what clicking
 /// selects first), or "END TURN" once nothing is.

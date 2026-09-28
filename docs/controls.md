@@ -101,6 +101,7 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | --- | --- |
 | Space with nothing left to do | End the turn |
 | End Turn button | Hold every unfinished unit, then end the turn (or open a city that still needs a build) |
+| End Turn button while it waits (network game: WAITING FOR ..., TAKE BACK) | Take the turn back, to change your orders and end it again; too late once the host has every plan |
 
 The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE
 PRODUCTION") and turns gold, reading END TURN, once nothing is. Clicks are ignored while a turn
@@ -121,7 +122,7 @@ orders shows disabled.
 | A | Auto-assign citizens by the city's labor focus |
 | Food / Wood / Metal / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
-| 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
+| 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile when work on it starts (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
 | 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |
 | Scroll inside the city production list | Browse unit, building and work cards in one list; coastal cards appear only in eligible cities |
 | Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
@@ -129,14 +130,15 @@ orders shows disabled.
 | Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
-| 9 / Grow card | Queue one more citizen, paid in food (the city doesn't grow on its own) |
+| 9 / Grow card | Queue one more citizen, paid in food when work on it starts (the city doesn't grow on its own) |
 | 0 / Gather card | Spend a turn gathering: free, and 2 food, 2 wood and 1 metal come in when it's done |
-| A dimmed build card | The stockpile can't pay for it, or (Cavalry, Armored) the barracks has no deposit or its cap is used up; its tooltip says why. Prices show as resource icons and amounts, turns after a clock |
+| A build card the stockpile can't pay for yet | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the city shows a badge over its tower with the missing resources' icons. Prices show as resource icons and amounts, turns after a clock |
+| A dimmed build card | It can't be queued: (Cavalry, Armored) the barracks has no deposit or its cap is used up, or (Grow) the city is full; its tooltip says why |
 | Drag a queue row onto another | Reorder the queue |
-| Click a row's X | Remove it, refunding its price (removing the item in progress loses its progress) |
-| Clear (beside a queue's title, city or barracks) | Empty that queue: every item comes off, refunded as its X would refund it (the item in progress loses its progress) |
+| Click a row's X | Remove it, refunding its price if it was paid for (work on it started); its work is lost |
+| Clear (beside a queue's title, city or barracks) | Empty that queue: every item comes off, refunded as its X would refund it (their work is lost) |
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
-| Backspace | Remove the item being built |
+| Backspace | Remove the first item in the queue |
 | PageDown | Swap the first two queue items |
 | See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types, and how many Cavalry and Armored its deposits still allow) |
 | Click the city center while in city view (beside any unit's token) | Enter that city's tactical interior map |

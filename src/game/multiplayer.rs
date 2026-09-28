@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::GameState;
 use super::camera::Camera;
 use super::city::{
-    Build, BuildUnit, Building, City, LaborFocus, MAX_CITY_POPULATION, Stock, grow_price,
+    Build, BuildUnit, Building, City, LaborFocus, MAX_CITY_POPULATION, Queued, Stock, grow_price,
     in_interior,
 };
 use super::hex::Hex;
@@ -32,7 +32,7 @@ use super::workers::WorkerJob;
 /// Bumped whenever a message or a plan changes shape, or the rules a turn
 /// plays out by, so mismatched builds refuse each other instead of
 /// desyncing.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 10;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -45,7 +45,7 @@ const MAX_REASON: usize = 120;
 
 /// What the top bar says once this side's plan is sent, while it waits for
 /// the others'.
-pub(super) const WAITING_NOTICE: &str = "ORDERS SENT - WAITING FOR THE OTHERS";
+pub(super) const WAITING_NOTICE: &str = "ORDERS SENT - THE WAITING BUTTON TAKES THEM BACK";
 
 /// The port a host listens on unless told another.
 pub const DEFAULT_PORT: u16 = 7777;
@@ -88,6 +88,13 @@ pub enum Message {
     Checksum { turn: u32, value: u64 },
     /// Host to guest: refused (a different protocol version, or a full game).
     Refused(String),
+    /// Guest to host: its player took back ending `turn` (the one being
+    /// planned), to change its orders and send a new `Plan`. The host drops
+    /// the plan it has from that side and waits for the new one, unless it
+    /// has already resolved the turn: then the withdrawal (and the plan
+    /// sent after it) came too late and changes nothing, and the turn plays
+    /// out with the plan the host had.
+    Withdraw { turn: u32 },
 }
 
 /// Which end of the connection this game is.
@@ -135,10 +142,9 @@ pub struct CityPlan {
     /// The settler that founded it this turn, for a city new since the turn
     /// began.
     pub founded_by: Option<u32>,
-    pub queue: Vec<Build>,
-    pub progress: i32,
-    pub barracks_queue: Vec<BuildUnit>,
-    pub barracks_progress: i32,
+    /// Each item with whether it's paid for and its work (`Queued`).
+    pub queue: Vec<Queued<Build>>,
+    pub barracks_queue: Vec<Queued<BuildUnit>>,
     pub worked: Vec<Hex>,
     pub remembered_worked: Vec<Hex>,
     pub focus: LaborFocus,
@@ -166,18 +172,49 @@ pub struct FighterPlan {
     pub planned_attack: Option<Hex>,
 }
 
-/// What a side has paid for and not yet got: every item in its cities'
+/// Whether a planned queue, `now`, could come of a city's queue as the turn
+/// began, `before`, by planning alone: every unpaid item has no work, and
+/// every paid item is one of `before`'s paid items, each at most once, with
+/// the same build and work. Planning adds, removes and reorders items; only
+/// the turn's economy pays for them or works on them.
+fn keeps_what_was_paid<B: PartialEq>(before: &[Queued<B>], now: &[Queued<B>]) -> bool {
+    let mut paid: Vec<&Queued<B>> = before.iter().filter(|q| q.paid).collect();
+    now.iter().all(|item| {
+        if !item.paid {
+            return item.progress == 0;
+        }
+        match paid.iter().position(|was| *was == item) {
+            Some(i) => {
+                paid.swap_remove(i);
+                true
+            }
+            None => false,
+        }
+    })
+}
+
+/// A city's queues and jobs as `committed` reads them: its population, its
+/// queue, its Barracks' queue and its placed jobs.
+type CityBooks<'a> = (
+    usize,
+    &'a [Queued<Build>],
+    &'a [Queued<BuildUnit>],
+    &'a [WorkerJob],
+);
+
+/// What a side has paid for and not yet got: every paid item in its cities'
 /// queues and Barracks' queues and every job it has placed, at the price it
-/// paid (a Grow's depends on how many are queued ahead of it in its city).
+/// paid. Its city's paid Grows were priced a citizen apart, from its
+/// population up (`GameState::item_price`). Unpaid items cost nothing yet.
 fn committed<'a>(
-    cities: impl Iterator<Item = (usize, &'a [Build], &'a [BuildUnit], &'a [WorkerJob])>,
+    cities: impl Iterator<Item = CityBooks<'a>>,
     field_jobs: impl Iterator<Item = WorkerJob>,
 ) -> Stock {
     let mut total = Stock::default();
     for (population, queue, barracks, jobs) in cities {
         let mut grows = 0;
-        for build in queue {
-            total += match build {
+        for item in queue.iter().filter(|q| q.paid) {
+            total += match item.build {
                 Build::Grow => {
                     grows += 1;
                     grow_price(population + grows - 1)
@@ -185,8 +222,8 @@ fn committed<'a>(
                 build => build.price(),
             };
         }
-        for unit in barracks {
-            total += unit.price();
+        for item in barracks.iter().filter(|q| q.paid) {
+            total += item.build.price();
         }
         for job in jobs {
             total += job.kind.price();
@@ -207,8 +244,19 @@ pub(super) struct Lockstep {
     turn_start: Option<Box<GameState>>,
     /// Whether this side's player has ended planning this turn.
     submitted: bool,
-    /// Host: the plans in for this turn.
+    /// Host: the plans in for this turn, one a side at most.
     plans: Vec<TeamPlan>,
+    /// Host: the turn it last resolved, and for each guest that hasn't yet
+    /// sent its checksum for it, whether the latest plan it sent for it
+    /// stands (not taken back). A guest that takes its turn back just as
+    /// the host resolves it doesn't know it's too late until the `Resolve`
+    /// arrives, so its `Withdraw`, and a `Plan` it sends again, may still
+    /// come, alternately; they came too late and change nothing (`late`).
+    late: (u32, Vec<(Team, bool)>),
+    /// Guest: the plans it has sent for this turn (one, or more if its
+    /// player took the turn back): the host's `Resolve` must carry one of
+    /// them for its side.
+    sent: Vec<TeamPlan>,
     /// Host: the human sides with a player (its own, and each guest's).
     seated: Vec<Team>,
     /// Host: the world's settings, for guests to build the same one.
@@ -235,6 +283,8 @@ impl Lockstep {
             turn_start: None,
             submitted: false,
             plans: Vec::new(),
+            late: (0, Vec::new()),
+            sent: Vec::new(),
             seated: Vec::new(),
             world: (0, false),
             join_code: String::new(),
@@ -439,6 +489,21 @@ impl GameState {
         &self.notice
     }
 
+    /// Host: whether `team`'s plan for this turn is in.
+    #[cfg(test)]
+    pub fn has_plan_from(&self, team: Team) -> bool {
+        let plans = self.lockstep.as_ref().map(|l| &l.plans[..]);
+        plans.is_some_and(|plans| plans.iter().any(|p| p.team == team))
+    }
+
+    /// How many of `unit` `team`'s cities have queued.
+    #[cfg(test)]
+    pub fn units_queued(&self, team: Team, unit: BuildUnit) -> usize {
+        let queued = self.cities.iter().filter(|c| c.team == team);
+        let builds = queued.flat_map(|c| &c.queue);
+        builds.filter(|q| q.build == Build::Unit(unit)).count()
+    }
+
     /// Whether the first turn has resolved: after it, nobody can join.
     pub fn has_started(&self) -> bool {
         self.turn > 0
@@ -489,6 +554,19 @@ impl GameState {
         }
     }
 
+    /// Whether messages from the other machines may be handed to `receive`
+    /// now. A host takes none while a turn plays out: a guest that played
+    /// it out sooner may already send its plan for the next, which can
+    /// only be checked against the next turn's start, so it waits (`src/net`
+    /// leaves it in the queue) until the host's planning begins. A guest
+    /// always takes the host's: the next `Resolve` can't come before the
+    /// guest's own plan.
+    pub fn takes_messages(&self) -> bool {
+        self.lockstep
+            .as_ref()
+            .is_none_or(|l| l.role == Role::Guest || l.turn_start.is_some())
+    }
+
     /// The host turned away too many players and stopped listening.
     pub fn stop_listening(&mut self) {
         self.notice = "TOO MANY FAILED JOINS - NO LONGER LISTENING".into();
@@ -520,6 +598,7 @@ impl GameState {
         let started = self.turn > 0 || lockstep.turn_start.is_none();
         lockstep.seated.retain(|&t| t != team);
         lockstep.plans.retain(|p| p.team != team);
+        lockstep.late.1.retain(|&(t, _)| t != team);
         if !started {
             self.notice = format!("{team:?} LEFT - WAITING FOR A PLAYER").to_uppercase();
             return;
@@ -552,6 +631,7 @@ impl GameState {
             lockstep.turn_start = Some(Box::new(start));
             lockstep.submitted = false;
             lockstep.plans.clear();
+            lockstep.sent.clear();
         }
     }
 
@@ -571,7 +651,10 @@ impl GameState {
         lockstep.submitted = true;
         match lockstep.role {
             Role::Host => lockstep.plans.push(plan),
-            Role::Guest => lockstep.outbox.push(Message::Plan(plan)),
+            Role::Guest => {
+                lockstep.sent.push(plan.clone());
+                lockstep.outbox.push(Message::Plan(plan));
+            }
         }
         // The player may go on looking (the selection and open views stay),
         // but nothing armed to change the plan outlives it.
@@ -596,17 +679,41 @@ impl GameState {
         };
         match (role, message) {
             (Role::Host, Message::Plan(plan)) => {
-                if plan.team != from || !self.is_human(from) {
+                if plan.team != from || from == HOST_SEAT || !self.is_human(from) {
                     return Err(format!("A PLAN FOR {:?}, NOT ITS OWN SIDE", plan.team));
+                }
+                if self.came_too_late(from, plan.turn, true)? {
+                    return Ok(());
+                }
+                let lockstep = self.lockstep.as_ref().expect("networked");
+                if lockstep.plans.iter().any(|p| p.team == from) {
+                    return Err(format!("A SECOND PLAN FOR TURN {}", plan.turn));
                 }
                 self.check_plan(&plan)?;
                 let lockstep = self.lockstep.as_mut().expect("networked");
-                lockstep.plans.retain(|p| p.team != plan.team);
                 lockstep.plans.push(plan);
                 self.resolve_when_ready();
             }
+            (Role::Host, Message::Withdraw { turn }) => {
+                if from == HOST_SEAT || !self.is_human(from) {
+                    return Err(format!("{from:?} HAS NO TURN TO TAKE BACK"));
+                }
+                if self.came_too_late(from, turn, false)? {
+                    return Ok(());
+                }
+                if self.planning_turn() != Some(turn) {
+                    return Err(format!("TOOK BACK TURN {turn}"));
+                }
+                let lockstep = self.lockstep.as_mut().expect("networked");
+                let Some(at) = lockstep.plans.iter().position(|p| p.team == from) else {
+                    return Err(format!("TOOK BACK TURN {turn} WITHOUT ENDING IT"));
+                };
+                lockstep.plans.remove(at);
+                self.notice = format!("{from:?} IS CHANGING THEIR ORDERS").to_uppercase();
+            }
             (Role::Guest, Message::Resolve(plans)) => {
-                // One plan for each human side, each one sound.
+                // One plan for each human side, each one sound, and this
+                // side's one it sent.
                 let mut teams: Vec<Team> = plans.iter().map(|p| p.team).collect();
                 teams.sort();
                 let mut humans = self.humans.clone();
@@ -614,10 +721,21 @@ impl GameState {
                 if teams != humans {
                     return Err(format!("A TURN'S PLANS FOR {teams:?}"));
                 }
+                let lockstep = self.lockstep.as_ref().expect("networked");
+                let own = plans.iter().find(|p| p.team == self.local_team);
+                if !own.is_some_and(|p| lockstep.sent.contains(p)) {
+                    return Err("A TURN WITH ORDERS WE NEVER SENT".into());
+                }
+                // Taken back, but too late: the host had them all, with
+                // orders this side has since changed (or is changing).
+                let too_late = !lockstep.submitted || lockstep.sent.last() != own;
                 for plan in &plans {
                     self.check_plan(plan)?;
                 }
                 self.resolve_with_plans(plans);
+                if too_late {
+                    self.notice = "TOO LATE TO CHANGE - THE TURN PLAYS OUT AS SENT".into();
+                }
             }
             (Role::Guest, Message::SeatLeft(team)) => {
                 if team == self.local_team || team == HOST_SEAT || !self.is_human(team) {
@@ -641,6 +759,10 @@ impl GameState {
             }
             (Role::Host, Message::Checksum { turn, value }) => {
                 let lockstep = self.lockstep.as_mut().expect("networked");
+                // It has played the turn out: nothing more comes for it.
+                if lockstep.late.0 == turn {
+                    lockstep.late.1.retain(|&(t, _)| t != from);
+                }
                 if let Some(&(_, own)) = lockstep.checksums.iter().find(|&&(t, _)| t == turn)
                     && own != value
                     && lockstep.desync.is_none()
@@ -653,6 +775,56 @@ impl GameState {
             (_, other) => return Err(format!("UNEXPECTED MESSAGE: {other:?}")),
         }
         Ok(())
+    }
+
+    /// The turn whose planning is under way (the one the plans are for),
+    /// unless one is playing out.
+    fn planning_turn(&self) -> Option<u32> {
+        let start = self.lockstep.as_ref()?.turn_start.as_deref()?;
+        Some(start.turn + 1)
+    }
+
+    /// Host: whether a `Plan` (`plan`) or `Withdraw` from guest `from` for
+    /// `turn` is for the turn it has just resolved, sent before the
+    /// `Resolve` reached them: taken back too late, it changes nothing.
+    /// Such messages come only in the order a player makes them, a
+    /// withdrawal first (the turn resolved with their plan in), and stop
+    /// once their checksum for the turn arrives; anything else is refused.
+    fn came_too_late(&mut self, from: Team, turn: u32, plan: bool) -> Result<bool, String> {
+        let lockstep = self.lockstep.as_mut().expect("networked");
+        let (resolved, guests) = &mut lockstep.late;
+        let Some((_, standing)) = guests.iter_mut().find(|(t, _)| *t == from) else {
+            return Ok(false);
+        };
+        if turn != *resolved {
+            return Ok(false);
+        }
+        if *standing == plan {
+            return Err(if plan {
+                format!("A SECOND PLAN FOR TURN {turn}")
+            } else {
+                format!("TOOK BACK TURN {turn} WITHOUT ENDING IT")
+            });
+        }
+        *standing = plan;
+        Ok(true)
+    }
+
+    /// Take back End Turn, while this side's plan waits for the others':
+    /// the player can change their orders and end the turn again. On a
+    /// guest the host is told (`Withdraw`), and if it already had every
+    /// plan the turn plays out with the one sent; the host drops its own.
+    pub fn take_back_turn(&mut self) {
+        let (team, turn) = (self.local_team, self.turn + 1);
+        let Some(lockstep) = self.lockstep.as_mut().filter(|l| l.submitted) else {
+            return;
+        };
+        lockstep.submitted = false;
+        match lockstep.role {
+            Role::Host => lockstep.plans.retain(|p| p.team != team),
+            Role::Guest => lockstep.outbox.push(Message::Withdraw { turn }),
+        }
+        self.notice = "TURN TAKEN BACK - CHANGE YOUR ORDERS, THEN END IT AGAIN".into();
     }
 
     /// Why `plan` can't be applied to this turn's game, if it can't: it's
@@ -783,14 +955,18 @@ impl GameState {
             let at = format!("CITY AT ({}, {})", city.pos.q, city.pos.r);
             let before = start.cities.iter().find(|c| c.pos == city.pos);
             let population = before.map_or(1, |c| c.population);
-            // Planning keeps a build's progress, or clears it by taking the
-            // build off: it never adds any.
-            let (progress, barracks_progress) =
-                before.map_or((0, 0), |c| (c.progress, c.barracks_progress));
-            if ![0, progress].contains(&city.progress)
-                || ![0, barracks_progress].contains(&city.barracks_progress)
+            // Planning pays for nothing and works on nothing: that happens as
+            // the turn plays out (`work_queues`). What it queues is unpaid,
+            // with no work, and every paid item it keeps is one this city
+            // had paid for, with the work it had. It never adds work or
+            // marks an item paid.
+            let (queue, barracks_queue) = before.map_or((&[][..], &[][..]), |c| {
+                (&c.queue[..], &c.barracks_queue[..])
+            });
+            if !keeps_what_was_paid(queue, &city.queue)
+                || !keeps_what_was_paid(barracks_queue, &city.barracks_queue)
             {
-                return bad(format!("{at}: PROGRESS IT DIDN'T MAKE"));
+                return bad(format!("{at}: PAYMENT OR PROGRESS IT DIDN'T MAKE"));
             }
             // Planning releases held workers; only coming home recalled
             // holds one, as the turn plays out.
@@ -800,19 +976,23 @@ impl GameState {
             // Its queue holds what a city trains: no Cavalry or Armored,
             // ships only with a Harbor, no growing past the cap.
             let harbor = before.is_some_and(|c| c.placed_site(Building::Harbor).is_some());
-            let trainable = |build: &Build| match build {
+            let trainable = |item: &Queued<Build>| match item.build {
                 Build::Unit(unit) => {
                     unit.required_resource().is_none() && (!unit.unit_type().is_naval() || harbor)
                 }
                 _ => true,
             };
-            let grows = city.queue.iter().filter(|&&b| b == Build::Grow).count();
+            let grows = city.queue.iter().filter(|q| q.build == Build::Grow).count();
             if !city.queue.iter().all(trainable) || population + grows > MAX_CITY_POPULATION {
                 return bad(format!("{at}: A BUILD IT CAN'T MAKE"));
             }
             let barracks = before.is_some_and(|c| c.barracks.is_some());
             if !city.barracks_queue.is_empty()
-                && (!barracks || city.barracks_queue.iter().any(|u| u.unit_type().is_naval()))
+                && (!barracks
+                    || city
+                        .barracks_queue
+                        .iter()
+                        .any(|q| q.build.unit_type().is_naval()))
             {
                 return bad(format!("{at}: A BARRACKS BUILD IT CAN'T MAKE"));
             }
@@ -833,9 +1013,9 @@ impl GameState {
         // Cavalry and Armored: no more queued than its deposits allow, or
         // at least no more than it had queued.
         for resource in [Resource::Horses, Resource::Iron] {
-            let queued = |queues: &mut dyn Iterator<Item = &BuildUnit>| {
+            let queued = |queues: &mut dyn Iterator<Item = &Queued<BuildUnit>>| {
                 queues
-                    .filter(|u| u.required_resource() == Some(resource))
+                    .filter(|q| q.build.required_resource() == Some(resource))
                     .count()
             };
             let before = queued(
@@ -933,10 +1113,11 @@ impl GameState {
                 return bad(format!("TROOP {} INSIDE A CITY", fighter.source_id));
             }
         }
-        // Nothing comes free. Every price is paid when queued and refunded
-        // when taken off, so what the side holds plus everything it has
-        // queued and placed is worth exactly what it held and had queued
-        // when the turn began.
+        // Nothing comes free. Planning pays for no queued item (the check
+        // above), placing a job pays its price, and taking a paid item or a
+        // job off refunds what was paid, so what the side holds plus every
+        // paid item and placed job is worth exactly what it held and had
+        // paid for when the turn began. Unpaid items count for nothing.
         let population = |pos: Hex| {
             start
                 .cities
@@ -997,6 +1178,10 @@ impl GameState {
         }
         let plans = std::mem::take(&mut lockstep.plans);
         lockstep.outbox.push(Message::Resolve(plans.clone()));
+        // Every guest's plan stands in it, whatever they send before the
+        // `Resolve` reaches them (`came_too_late`).
+        let guests = humans.iter().filter(|&&t| t != HOST_SEAT);
+        lockstep.late = (self.turn + 1, guests.map(|&t| (t, true)).collect());
         self.resolve_with_plans(plans);
     }
 
@@ -1117,9 +1302,7 @@ impl GameState {
                     pos: c.pos,
                     founded_by,
                     queue: c.queue.clone(),
-                    progress: c.progress,
                     barracks_queue: c.barracks_queue.clone(),
-                    barracks_progress: c.barracks_progress,
                     worked: c.worked.clone(),
                     remembered_worked: c.remembered_worked.clone(),
                     focus: c.focus,
@@ -1221,9 +1404,7 @@ impl GameState {
                 continue;
             }
             city.queue = city_plan.queue.clone();
-            city.progress = city_plan.progress;
             city.barracks_queue = city_plan.barracks_queue.clone();
-            city.barracks_progress = city_plan.barracks_progress;
             city.worked = city_plan.worked.clone();
             city.remembered_worked = city_plan.remembered_worked.clone();
             city.focus = city_plan.focus;
@@ -1273,9 +1454,15 @@ impl GameState {
             (u.ability_cooldown, u.deployed, u.cargo.len()).hash(&mut h);
         }
         for c in &self.cities {
-            (c.id, c.team, c.pos, c.population, c.progress, c.workers).hash(&mut h);
+            (c.id, c.team, c.pos, c.population, c.workers).hash(&mut h);
             c.held_workers.hash(&mut h);
-            (c.barracks, c.barracks_hp.to_bits(), c.barracks_progress).hash(&mut h);
+            (c.barracks, c.barracks_hp.to_bits()).hash(&mut h);
+            for q in &c.queue {
+                (q.paid, q.progress).hash(&mut h);
+            }
+            for q in &c.barracks_queue {
+                (q.paid, q.progress).hash(&mut h);
+            }
             c.worked.hash(&mut h);
             c.built.len().hash(&mut h);
             c.queue.len().hash(&mut h);
@@ -1651,6 +1838,347 @@ mod tests {
         assert_eq!(queued.len(), 1, "the one build sent");
     }
 
+    /// `team`'s first city, by index.
+    fn city_of(game: &GameState, team: Team) -> usize {
+        game.cities.iter().position(|c| c.team == team).unwrap()
+    }
+
+    /// Ends `game`'s turn with `build` queued in its first city.
+    fn end_turn_building(game: &mut GameState, build: Option<BuildUnit>) {
+        let city = city_of(game, game.local_team);
+        game.open_city(city);
+        match build {
+            Some(unit) => game.queue_selected_city_unit(unit),
+            None => game.queue_selected_city_gather(),
+        }
+        game.end_planning();
+        // Waiting for the others, or resolving if it was the last.
+        assert!(game.is_resolving(), "{}", game.notice);
+    }
+
+    #[test]
+    fn a_guest_takes_back_its_turn_and_its_new_orders_play_out_everywhere() {
+        let (mut host, mut guests) = table(2);
+        let red = Team::Red;
+        // Red ends its turn, gathering.
+        end_turn_building(&mut guests[0], None);
+        exchange_all(&mut host, &mut guests);
+        assert!(host.has_plan_from(red));
+        // It takes the turn back: the host lets go of its plan and waits.
+        guests[0].take_back_turn();
+        assert!(!guests[0].waiting_for_peers() && !guests[0].is_resolving());
+        exchange_all(&mut host, &mut guests);
+        assert!(!host.has_plan_from(red));
+        assert_eq!(host.notice, "RED IS CHANGING THEIR ORDERS");
+        // Its player queues a Melee too and ends the turn again.
+        end_turn_building(&mut guests[0], Some(BuildUnit::Melee));
+        exchange_all(&mut host, &mut guests);
+        assert!(host.has_plan_from(red));
+        // Green and the host end theirs, and the turn plays out with Red's
+        // new orders on every machine.
+        guests[1].submit_plan();
+        host.submit_plan();
+        exchange_all(&mut host, &mut guests);
+        play_out(&mut host);
+        for guest in &mut guests {
+            play_out(guest);
+        }
+        exchange_all(&mut host, &mut guests);
+        for game in std::iter::once(&host).chain(&guests) {
+            assert_eq!(game.turn, 1);
+            assert_eq!(game.checksum(), host.checksum());
+            assert_eq!(
+                game.units_queued(red, BuildUnit::Melee),
+                1,
+                "the new orders"
+            );
+        }
+        assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+    }
+
+    #[test]
+    fn the_host_takes_back_its_own_turn() {
+        let (mut host, mut guest) = pair();
+        end_turn_building(&mut host, None);
+        assert!(host.has_plan_from(HOST_SEAT));
+        host.take_back_turn();
+        assert!(!host.waiting_for_peers() && !host.has_plan_from(HOST_SEAT));
+        // The guest's plan alone doesn't resolve the turn now.
+        end_turn_building(&mut guest, None);
+        exchange(&mut host, &mut guest);
+        assert!(!host.is_playing_out(), "waiting for the host's plan");
+        end_turn_building(&mut host, Some(BuildUnit::Melee));
+        exchange(&mut host, &mut guest);
+        play_out(&mut host);
+        play_out(&mut guest);
+        exchange(&mut host, &mut guest);
+        assert_eq!(host.turn, 1);
+        assert_eq!(host.checksum(), guest.checksum());
+        assert_eq!(guest.units_queued(HOST_SEAT, BuildUnit::Melee), 1);
+    }
+
+    #[test]
+    fn a_take_back_after_the_host_resolved_changes_nothing() {
+        let (mut host, mut guest) = pair();
+        end_turn_building(&mut guest, None);
+        for m in guest.take_outbox() {
+            host.receive(GUEST_SEAT, roundtrip(&m)).unwrap();
+        }
+        // The host ends its turn: it has every plan, and resolves.
+        host.submit_plan();
+        assert!(host.is_playing_out());
+        // Red, before the `Resolve` reaches it, takes its turn back and ends
+        // it again with a Melee queued.
+        guest.take_back_turn();
+        end_turn_building(&mut guest, Some(BuildUnit::Melee));
+        let late = guest.take_outbox();
+        assert!(matches!(
+            &late[..],
+            [Message::Withdraw { turn: 1 }, Message::Plan(_)]
+        ));
+        // They wait while the host plays the turn out (`takes_messages`),
+        // then come too late to change anything, but aren't hostile.
+        assert!(!host.takes_messages());
+        play_out(&mut host);
+        assert!(host.takes_messages());
+        let resolved = host.checksum();
+        for m in late {
+            host.receive(GUEST_SEAT, roundtrip(&m))
+                .expect("too late, not hostile");
+        }
+        assert_eq!(host.checksum(), resolved);
+        assert!(!host.has_plan_from(GUEST_SEAT), "nothing for the next turn");
+        // Red plays the turn out as the host resolved it, with its first
+        // orders, and says so.
+        exchange(&mut host, &mut guest);
+        assert_eq!(
+            guest.notice,
+            "TOO LATE TO CHANGE - THE TURN PLAYS OUT AS SENT"
+        );
+        play_out(&mut guest);
+        exchange(&mut host, &mut guest);
+        assert_eq!(host.turn, 1);
+        assert_eq!(host.checksum(), guest.checksum());
+        assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+        for game in [&host, &guest] {
+            assert_eq!(game.units_queued(GUEST_SEAT, BuildUnit::Melee), 0);
+        }
+        // Its checksum is in: nothing more comes for that turn.
+        let why = host
+            .receive(GUEST_SEAT, Message::Withdraw { turn: 1 })
+            .expect_err("refused");
+        assert!(why.contains("TOOK BACK TURN 1"), "{why}");
+    }
+
+    #[test]
+    fn a_take_back_or_plan_out_of_turn_is_refused() {
+        let (host, guest) = pair();
+        let plan = guest.team_plan(GUEST_SEAT);
+        let withdraw = |turn| Message::Withdraw { turn };
+        let refused =
+            |host: &mut GameState, m: Message| host.receive(GUEST_SEAT, m).expect_err("refused");
+        let with_plan = || {
+            let mut host = host.clone();
+            host.receive(GUEST_SEAT, Message::Plan(plan.clone()))
+                .unwrap();
+            host
+        };
+        // Nothing to take back.
+        let why = refused(&mut host.clone(), withdraw(1));
+        assert!(why.contains("WITHOUT ENDING IT"), "{why}");
+        // A second plan without taking the first back: two plans from one
+        // side never stand at once.
+        let why = refused(&mut with_plan(), Message::Plan(plan.clone()));
+        assert!(why.contains("A SECOND PLAN"), "{why}");
+        // Taking back another turn, or the same one twice.
+        refused(&mut with_plan(), withdraw(0));
+        refused(&mut with_plan(), withdraw(2));
+        let mut again = with_plan();
+        again.receive(GUEST_SEAT, withdraw(1)).unwrap();
+        assert!(!again.has_plan_from(GUEST_SEAT));
+        refused(&mut again, withdraw(1));
+        // Taken back, a new plan comes in as the first did.
+        let mut again = with_plan();
+        again.receive(GUEST_SEAT, withdraw(1)).unwrap();
+        again
+            .receive(GUEST_SEAT, Message::Plan(plan.clone()))
+            .unwrap();
+        assert_eq!(
+            again.lockstep.as_ref().unwrap().plans,
+            std::slice::from_ref(&plan)
+        );
+        // A host's message only goes one way.
+        let mut red = guest.clone();
+        assert!(red.receive(HOST_SEAT, withdraw(1)).is_err());
+        // After the resolve, too late: a plan sent again must follow a
+        // take-back, and a take-back a plan.
+        let mut resolved = with_plan();
+        resolved.submit_plan();
+        play_out(&mut resolved);
+        let why = refused(&mut resolved.clone(), Message::Plan(plan.clone()));
+        assert!(why.contains("A SECOND PLAN"), "{why}");
+        let mut late = resolved.clone();
+        late.receive(GUEST_SEAT, withdraw(1)).unwrap();
+        refused(&mut late, withdraw(1));
+        let mut late = resolved.clone();
+        late.receive(GUEST_SEAT, withdraw(1)).unwrap();
+        late.receive(GUEST_SEAT, Message::Plan(plan.clone()))
+            .unwrap();
+        refused(&mut late, Message::Plan(plan.clone()));
+        // And a take-back for the turn now being planned, with nothing sent.
+        refused(&mut resolved, withdraw(2));
+    }
+
+    #[test]
+    fn a_guest_refuses_a_turn_with_orders_it_never_sent() {
+        let (mut host, mut guest) = pair();
+        end_turn_building(&mut guest, None);
+        let sent = guest.team_plan(GUEST_SEAT);
+        let own = host.team_plan(HOST_SEAT);
+        // Its orders changed on the way, though they'd pass the checks.
+        let mut changed = sent.clone();
+        changed.units[0].holding = !changed.units[0].holding;
+        assert_eq!(host.check_plan(&changed), Ok(()));
+        let before = guest.checksum();
+        let why = guest
+            .receive(HOST_SEAT, Message::Resolve(vec![own.clone(), changed]))
+            .expect_err("refused");
+        assert!(why.contains("NEVER SENT"), "{why}");
+        assert_eq!(guest.checksum(), before);
+        assert!(guest.waiting_for_peers());
+        // Its own go through.
+        guest
+            .receive(HOST_SEAT, Message::Resolve(vec![own, sent]))
+            .unwrap();
+        assert!(guest.is_playing_out());
+        let _ = host.take_outbox();
+    }
+
+    /// However a host and a guest interleave ending turns, taking them back
+    /// and their messages, every honest message is taken and every machine
+    /// plays the same turn; and whatever a hostile guest sends among them,
+    /// the host never holds two plans from one side, nor panics.
+    #[test]
+    fn no_order_of_ending_and_taking_back_turns_confuses_the_host() {
+        use rand::{RngExt, SeedableRng};
+        let (host, guest) = pair();
+        let unit = guest
+            .units
+            .iter()
+            .position(|u| u.team == GUEST_SEAT)
+            .unwrap();
+        let near: Vec<Option<Hex>> = std::iter::once(None)
+            .chain(guest.units[unit].pos.neighbors().map(Some))
+            .collect();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+        for trial in 0..300 {
+            let hostile = trial % 2 == 1;
+            let (mut host, mut guest) = (host.clone(), guest.clone());
+            // What's on its way: to the host, and to the guest.
+            let (mut up, mut down) = (Vec::new(), Vec::new());
+            let mut refused = false;
+            let mut log = Vec::new();
+            for _ in 0..rng.random_range(4..16) {
+                let event = rng.random_range(0..8);
+                log.push(event);
+                match event {
+                    0 if !guest.is_resolving() => {
+                        guest.units[unit].planned_move = near[rng.random_range(0..near.len())];
+                        guest.submit_plan();
+                    }
+                    1 => guest.take_back_turn(),
+                    2 if !host.is_resolving() => host.submit_plan(),
+                    3 => host.take_back_turn(),
+                    4 | 5 if host.takes_messages() && !up.is_empty() => {
+                        let m: Message = up.remove(0);
+                        match host.receive(GUEST_SEAT, roundtrip(&m)) {
+                            // After a forged message, the honest ones may not fit.
+                            Err(_) if hostile => refused = true,
+                            Err(why) => panic!("trial {trial}: an honest {m:?} refused: {why}"),
+                            Ok(()) => {}
+                        }
+                    }
+                    6 if !down.is_empty() => {
+                        let m: Message = down.remove(0);
+                        let taken = guest.receive(HOST_SEAT, roundtrip(&m));
+                        assert!(hostile || taken.is_ok(), "trial {trial}: {taken:?}");
+                    }
+                    7 if hostile => {
+                        let forged = match rng.random_range(0..3) {
+                            0 => Message::Withdraw {
+                                turn: rng.random_range(0..3),
+                            },
+                            1 => Message::Plan(TeamPlan {
+                                turn: rng.random_range(0..3),
+                                ..guest.team_plan(GUEST_SEAT)
+                            }),
+                            _ => Message::Checksum {
+                                turn: rng.random_range(0..3),
+                                value: 0,
+                            },
+                        };
+                        if host.receive(GUEST_SEAT, forged).is_err() {
+                            refused = true;
+                        }
+                    }
+                    _ => {}
+                }
+                up.extend(guest.take_outbox());
+                down.extend(host.take_outbox());
+                let plans = &host.lockstep.as_ref().unwrap().plans;
+                let mut teams: Vec<Team> = plans.iter().map(|p| p.team).collect();
+                teams.dedup();
+                assert_eq!(teams.len(), plans.len(), "trial {trial}: one plan a side");
+                if refused {
+                    // The host drops a guest it refuses a message from.
+                    break;
+                }
+                if host.is_playing_out() {
+                    play_out(&mut host);
+                }
+            }
+            if hostile {
+                continue;
+            }
+            // Whatever's left arrives, and whoever hasn't ended the turn
+            // does, until it has played out everywhere.
+            for _ in 0..8 {
+                let played = |g: &GameState| g.turn == 1 && !g.is_playing_out();
+                if played(&host) && played(&guest) {
+                    break;
+                }
+                if !guest.is_resolving() && guest.turn == 0 {
+                    guest.submit_plan();
+                }
+                if !host.is_resolving() && host.turn == 0 {
+                    host.submit_plan();
+                }
+                up.extend(guest.take_outbox());
+                down.extend(host.take_outbox());
+                for m in up.drain(..) {
+                    // As `src/net` hands them over: once the host is planning.
+                    play_out(&mut host);
+                    if let Err(why) = host.receive(GUEST_SEAT, roundtrip(&m)) {
+                        panic!("trial {trial}: an honest {m:?} refused: {why}");
+                    }
+                }
+                down.extend(host.take_outbox());
+                for m in down.drain(..) {
+                    guest.receive(HOST_SEAT, roundtrip(&m)).unwrap();
+                }
+                play_out(&mut guest);
+                play_out(&mut host);
+            }
+            up.extend(guest.take_outbox());
+            for m in up.drain(..) {
+                host.receive(GUEST_SEAT, roundtrip(&m)).unwrap();
+            }
+            assert_eq!((host.turn, guest.turn), (1, 1), "trial {trial}");
+            assert_eq!(host.checksum(), guest.checksum(), "trial {trial}: {log:?}");
+            assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+        }
+    }
+
     #[test]
     fn a_disbanded_unit_is_gone_on_both_machines() {
         let (mut host, mut guest) = pair();
@@ -1758,6 +2286,196 @@ mod tests {
         assert!(why.contains("WORK IT DIDN'T DO"), "{why}");
     }
 
+    /// The guest's city with queues part paid for and under way, as earlier
+    /// turns' economies leave them, the same on both machines as this
+    /// turn's planning begins; and the city's index.
+    fn paid_queues(host: &mut GameState, guest: &mut GameState) -> usize {
+        let city = guest
+            .cities
+            .iter()
+            .position(|c| c.team == GUEST_SEAT)
+            .unwrap();
+        // Beside the city, on no tile its citizens work.
+        let c = &guest.cities[city];
+        let barracks = c
+            .pos
+            .neighbors()
+            .into_iter()
+            .find(|h| guest.grid.is_passable(*h) && !c.worked.contains(h))
+            .unwrap();
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        for c in [&mut guest.cities[city], &mut start.cities[city]] {
+            c.barracks = Some(barracks);
+            c.queue = vec![
+                Queued::worked(Build::Unit(BuildUnit::Melee), 4),
+                Queued::prepaid(Build::Grow),
+                Queued::new(Build::Worker),
+                Queued::prepaid(Build::Grow),
+                Queued::new(Build::Unit(BuildUnit::Siege)),
+            ];
+            c.barracks_queue = vec![
+                Queued::new(BuildUnit::Ranged),
+                Queued::worked(BuildUnit::Melee, 2),
+            ];
+        }
+        city
+    }
+
+    #[test]
+    fn planning_keeps_what_was_paid_and_pays_for_nothing() {
+        let (mut host, mut guest) = pair();
+        let city = paid_queues(&mut host, &mut guest);
+        let good = guest.team_plan(GUEST_SEAT);
+        assert_eq!(host.check_plan(&good), Ok(()));
+        let c = good
+            .cities
+            .iter()
+            .position(|c| c.pos == guest.cities[city].pos)
+            .unwrap();
+        let refused = |host: &GameState, plan: &TeamPlan| {
+            let why = host.check_plan(plan).expect_err("refused");
+            assert!(
+                why.contains("PAYMENT OR PROGRESS") || why.contains("SPENDING"),
+                "{why}"
+            );
+        };
+        // Paying as it queues: the Siege marked paid, with or without its
+        // price off the stockpile.
+        let mut plan = good.clone();
+        plan.cities[c].queue[4].paid = true;
+        refused(&host, &plan);
+        plan.stock -= BuildUnit::Siege.price();
+        refused(&host, &plan);
+        // Work it didn't do, on a paid item or an unpaid one.
+        let mut plan = good.clone();
+        plan.cities[c].queue[0].progress += 4;
+        refused(&host, &plan);
+        let mut plan = good.clone();
+        plan.cities[c].barracks_queue[0].progress = 1;
+        refused(&host, &plan);
+        // A paid item kept but unpaid, keeping its work.
+        let mut plan = good.clone();
+        plan.cities[c].queue[0].paid = false;
+        refused(&host, &plan);
+        // A paid item copied.
+        let mut plan = good.clone();
+        let copy = plan.cities[c].queue[1];
+        plan.cities[c].queue.push(copy);
+        refused(&host, &plan);
+        // A refund for an unpaid item taken off.
+        let mut plan = good.clone();
+        plan.cities[c].queue.remove(2);
+        plan.stock += Build::Worker.price();
+        refused(&host, &plan);
+
+        // Taken off paid, the Melee refunds its price, and a paid Grow the
+        // dearer Grow's: the checks take both, and nothing more.
+        guest.open_city(city);
+        guest.remove_selected_city_queue_item(0);
+        guest.remove_selected_city_queue_item(0);
+        let plan = guest.team_plan(GUEST_SEAT);
+        assert_eq!(host.check_plan(&plan), Ok(()));
+        let population = guest.cities[city].population;
+        assert_eq!(
+            plan.stock,
+            good.stock + BuildUnit::Melee.price() + grow_price(population + 1)
+        );
+        let mut greedy = plan.clone();
+        greedy.stock.food += 1;
+        refused(&host, &greedy);
+    }
+
+    /// Whatever the player does to its queues, the plan passes; and any
+    /// tampering with what's paid, the work done or the stockpile on top of
+    /// that is refused.
+    #[test]
+    fn no_plan_pays_early_or_gets_a_build_for_free() {
+        use rand::{RngExt, SeedableRng};
+        let (mut host, mut guest) = pair();
+        let city = paid_queues(&mut host, &mut guest);
+        guest.fund(GUEST_SEAT);
+        host.lockstep
+            .as_mut()
+            .unwrap()
+            .turn_start
+            .as_mut()
+            .unwrap()
+            .fund(GUEST_SEAT);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+        for round in 0..400 {
+            let mut game = guest.clone();
+            game.open_city(city);
+            for _ in 0..rng.random_range(0..8) {
+                let len = game.cities[city].queue.len();
+                let troops = game.cities[city].barracks_queue.len();
+                match rng.random_range(0..9) {
+                    0 => game.queue_selected_city_unit(BuildUnit::Melee),
+                    1 => game.queue_selected_city_growth(),
+                    2 => game.queue_selected_city_worker(),
+                    3 => game.queue_selected_city_gather(),
+                    4 => game.queue_selected_barracks_unit(BuildUnit::Siege),
+                    5 if len > 0 => game.remove_selected_city_queue_item(rng.random_range(0..len)),
+                    6 if troops > 0 => {
+                        game.remove_selected_barracks_queue_item(rng.random_range(0..troops))
+                    }
+                    7 if len > 1 => {
+                        game.move_selected_city_queue_item(rng.random_range(1..len), true)
+                    }
+                    8 => game.clear_selected_city_queue(),
+                    _ => {}
+                }
+            }
+            let plan = game.team_plan(GUEST_SEAT);
+            assert_eq!(host.check_plan(&plan), Ok(()), "round {round}");
+            let c = plan
+                .cities
+                .iter()
+                .position(|c| c.pos == game.cities[city].pos)
+                .unwrap();
+            let mut tampered = plan.clone();
+            let queue = &mut tampered.cities[c].queue;
+            let unpaid: Vec<usize> = (0..queue.len()).filter(|&i| !queue[i].paid).collect();
+            let paid: Vec<usize> = (0..queue.len()).filter(|&i| queue[i].paid).collect();
+            match rng.random_range(0..5) {
+                0 if !unpaid.is_empty() => {
+                    let i = unpaid[rng.random_range(0..unpaid.len())];
+                    queue[i].paid = true;
+                    if rng.random_bool(0.5) {
+                        let price = queue[i].build.price();
+                        tampered.stock -= price;
+                    }
+                }
+                1 if !queue.is_empty() => {
+                    let i = rng.random_range(0..queue.len());
+                    queue[i].progress += rng.random_range(1..8);
+                }
+                2 if !paid.is_empty() => {
+                    let copy = queue[paid[rng.random_range(0..paid.len())]];
+                    queue.push(copy);
+                }
+                3 if !paid.is_empty() => {
+                    // Unpaid, but no refund for it.
+                    let i = paid[rng.random_range(0..paid.len())];
+                    queue[i].paid = false;
+                    queue[i].progress = 0;
+                }
+                _ => {
+                    let mut coin = Stock::default();
+                    match rng.random_range(0..3) {
+                        0 => coin.food = 1,
+                        1 => coin.wood = 1,
+                        _ => coin.metal = 1,
+                    }
+                    tampered.stock += coin;
+                }
+            }
+            assert!(
+                host.check_plan(&tampered).is_err(),
+                "round {round}: {tampered:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_plan_releases_held_workers_but_never_holds_more() {
         let (mut host, mut guest) = pair();
@@ -1856,18 +2574,29 @@ mod tests {
         let mut plan = good.clone();
         plan.stock = Stock::whole(1_000_000, 0, 0);
         refused(&mut host, plan);
+        // A build marked paid that it never paid for, and one paid for as
+        // it's queued: only the turn's economy pays, as work starts.
         let mut plan = good.clone();
-        plan.cities[0].queue.push(Build::Unit(BuildUnit::Siege));
+        plan.cities[0]
+            .queue
+            .push(Queued::prepaid(Build::Unit(BuildUnit::Siege)));
+        refused(&mut host, plan.clone());
+        plan.stock -= BuildUnit::Siege.price();
         refused(&mut host, plan);
         // Progress it didn't make, a troop a city can't train, and tiles
         // out of its reach.
         let mut plan = good.clone();
-        plan.cities[0].queue = vec![Build::Gather];
-        plan.cities[0].progress = 999;
+        plan.cities[0].queue = vec![Queued {
+            progress: 999,
+            ..Queued::new(Build::Gather)
+        }];
+        refused(&mut host, plan.clone());
+        plan.cities[0].queue[0].paid = true;
         refused(&mut host, plan);
         let mut plan = good.clone();
-        plan.cities[0].queue.push(Build::Unit(BuildUnit::Cavalry));
-        plan.stock -= BuildUnit::Cavalry.price();
+        plan.cities[0]
+            .queue
+            .push(Queued::new(Build::Unit(BuildUnit::Cavalry)));
         refused(&mut host, plan);
         let mut plan = good.clone();
         let far = host
@@ -1879,7 +2608,7 @@ mod tests {
         refused(&mut host, plan);
         // A queue far longer than play makes.
         let mut plan = good.clone();
-        plan.cities[0].queue = vec![Build::Gather; MAX_PLAN_LIST + 1];
+        plan.cities[0].queue = vec![Queued::new(Build::Gather); MAX_PLAN_LIST + 1];
         refused(&mut host, plan);
         // The wrong turn.
         let mut plan = good.clone();
@@ -1978,7 +2707,11 @@ mod tests {
             }
             for city in &mut plan.cities {
                 city.queue = (0..rng.random_range(0..4))
-                    .map(|_| builds[rng.random_range(0..builds.len())])
+                    .map(|_| Queued {
+                        build: builds[rng.random_range(0..builds.len())],
+                        paid: rng.random_bool(0.1),
+                        progress: if rng.random_bool(0.1) { 4 } else { 0 },
+                    })
                     .collect();
                 city.worked.reverse();
                 city.worker_jobs = (0..rng.random_range(0..4))

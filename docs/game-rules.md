@@ -502,22 +502,38 @@ every turn end.
 - **Food and upkeep:** each citizen eats 2 food a turn from the stockpile, so one city's farms can
   feed another. If the stockpile can't feed all of a side's citizens, its food empties and the
   side's largest city (the first on ties) loses a citizen (never below 1).
-- **Growth** is bought: Grow (9, or the city tray's Grow card) queues one more citizen for
-  5 + 5 × population food (counting the Grows already queued ahead of it), taking 2 turns in
-  the city queue like any build. Nothing grows by itself, and no Grow goes past the cap of 7.
-- **Paying and the queue:** a build is paid in full from the stockpile when it is queued; a card
-  the side can't afford is dimmed, and its tooltip (or the notice, for a key) says what the side
-  is short of. Taking an item out of a queue (its X, Backspace, or a building dropped for want of
-  a site) refunds its full price (a Grow refunds the dearest queued Grow's). A captured city's
-  queues and a destroyed Barracks' queue are lost, unrefunded. Each build then takes a fixed
-  number of turns at the head of its queue: the queue's progress gains a turn's work each
-  economy, and resets to 0 on an empty queue, when the first item is queued, and when the head
-  is removed. Reordering keeps the progress, so it moves to the new head. Drag a row to reorder, click its X to remove;
-  Backspace removes the head and PageDown swaps the first two. A city finishes at most one item
-  a turn. A finished unit appears on an open neighboring hex (not one another unit is appearing on
-  that turn). With no hex open, the city holds the unit until one opens, and banks no work for the
-  rest of the queue meanwhile. A player city with an empty queue holds up the turn, since it can
-  always Gather.
+- **Growth** is bought: Grow (9, or the city tray's Grow card) queues one more citizen, paid in
+  food when work on it starts: 5 + 5 × (population + the Grows already paid for in that city),
+  so a Grow queued behind another costs a citizen more by the time its turn comes. It takes 2
+  turns in the city queue like any build. Nothing grows by itself, and no Grow goes past the
+  cap of 7, counting every Grow queued.
+- **Paying and the queue:** anything can be queued, whatever the stockpile holds (the other
+  limits stay: a Harbor for ships, a deposit for Cavalry and Armored, the population cap for
+  Grow, a Barracks for its troops). A build is paid in full from the stockpile when work on it
+  starts, not when it is queued. At each turn's economy, after income and upkeep, every queue
+  works the first item in it that is already paid for or that the stockpile can pay for then,
+  paying for it if it isn't; items before it that the stockpile can't pay for **wait** in place,
+  unpaid, and the queue goes back to them as soon as it can pay. Queues pay in city order, each
+  city's queue before its Barracks', so when several wait on one stockpile the first city's is
+  paid first. Each item keeps its own work, which reordering carries with it; an unpaid item has
+  none. A waiting item's row is tinted red and says what it waits for ("WAITS" and the missing
+  resources), the city tray and hover panel name the first item's wait, and the city shows a
+  badge over its tower on the map with the icon of each resource it lacks, whenever the first
+  item of its queue or its Barracks' waits. What waits is judged on the stockpile as this turn's
+  economy will find it: what's there now, plus the turn's income, less the citizens' food, and
+  less what the queues ahead start. A card's tooltip (or the notice, for a key) says what the
+  side is short of this turn, but the card is never dimmed for it. Taking an item out of a queue
+  (its X, Backspace, or Clear) refunds its full price if it was paid for (a paid Grow refunds the
+  dearest paid Grow's) and nothing if it wasn't; its work is lost either way. A captured city's
+  queues and a destroyed Barracks' queue are lost, paid items unrefunded. Each build takes a
+  fixed number of turns of work: a turn's work each economy it's worked, never past what it
+  needs. Drag a row to reorder, click its X to remove; Backspace removes the head and PageDown
+  swaps the first two. A city finishes at most one item a turn. A finished unit appears on an
+  open neighboring hex (not one another unit is appearing on that turn). With no hex open, the
+  city holds the unit until one opens, and banks no work for the rest of the queue meanwhile. A
+  player city with an empty queue holds up the turn, since it can always Gather; one whose
+  items all wait doesn't. Buildings and works placed for workers are still paid when placed
+  (see Workers).
 - **Gather** (0, or its card beside Grow): free, one turn; when it's done, the side's stockpile
   gets 2 food, 2 wood and 1 metal. A city that can't pay for anything, or has nothing it wants,
   gathers instead of standing idle.
@@ -547,7 +563,8 @@ every turn end.
     for a Canoe House) and keeps it picked. One placed can't be placed again until it's done or
     taken off the city's job list (refunded).
   - **Barracks** (`city/barracks.rs`): the side's military building. Its own view and queue
-    (Melee, Ranged, Cavalry, Siege, Armored), paid from the stockpile like the city's, training
+    (Melee, Ranged, Cavalry, Siege, Armored), paid from the stockpile like the city's (when work
+    on an item starts; one it can't pay for waits), training
     twice as fast as a city center, wherever the city's manager is (with production speeding
     builds, the manager beside the barracks adds its worked tiles' production, times their delivery
     share from the barracks). Only a Barracks trains Cavalry and Armored, and only one drawing
@@ -556,9 +573,8 @@ every turn end.
     a lost one can be replaced (the Debug panel's UNIT CAP: EVER counts every one ever trained
     instead, so a deposit runs out). A deposit an enemy unit stands on counts for nothing while
     it's there. The barracks panel shows each deposit kind's troops left, or why they're locked,
-    and a locked or unaffordable card is dimmed with the reason in its tooltip. Troops from the
-    ruins don't count. A unit appears next to the barracks (never on a worker out on the map),
-    and the progress resets after each.
+    and a locked card is dimmed with the reason in its tooltip. Troops from the ruins don't
+    count. A unit appears next to the barracks (never on a worker out on the map).
   - **Mill:** worked tiles adjacent to it deliver all their food, if they can reach the city.
   - **Workshop:** a building placed on a site adjacent to one of its side's workshops takes its
     worker half the turns (rounded up; its price is unchanged).
@@ -602,7 +618,8 @@ every turn end.
     as the rail corridor rather than adding separate track jobs.
 - **Worker** (8; 4 food, 2 wood, 2 turns): adds a worker to the city's pool (see Workers).
 - Economy runs once per turn, after the workers' step: income into the stockpile, upkeep, a
-  turn's work on each queue, then finished builds.
+  turn's work on each queue (paying for the item it starts, see Paying and the queue), then
+  finished builds.
 
 ## Workers (`workers.rs`)
 
@@ -702,8 +719,8 @@ every turn end.
   TURN.
 - **Command tray** (bottom-left): with a city open, it shows population, what the city delivers
   and its citizens eat, the current build and its turns left, labor focus buttons, the Grow card
-  (9), unit cards (1-3) and the Worker card (8), each with its price and turns and dimmed when the
-  stockpile can't pay, the Yields button,
+  (9), unit cards (1-3) and the Worker card (8), each with its price and turns (never dimmed for
+  the price: what the stockpile can't pay for yet waits in the queue), the Yields button,
   the production list (units, buildings not yet built, and works for its workers, each with its
   price and turns), what the barracks is training with See Barracks, and its workers and placed
   jobs; the queue docks above it. With a barracks open, what it stands on, each deposit
@@ -714,7 +731,7 @@ every turn end.
   queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows
   a structure panel at the bottom-left instead (barracks HP; a city's population and what it delivers;
-  the current build and its turns left). Hovering a city also outlines its worked tiles, without yield badges. After the
+  the build worked and its turns left, and what the first item waits for, if it waits). Hovering a city also outlines its worked tiles, without yield badges. After the
   cursor rests on a hex for 0.75 s, a tooltip shows terrain or city, yields, defense, site, road,
   which city works it, its delivery share to the open city, and units on it.
 - **City view:** C opens the first city needing a build (or your first city), and left-clicking
@@ -747,8 +764,10 @@ remaining walk, attacking if that brings it into range. It skips hexes a teammat
 claimed, and units in a contested hex stay and fight. It never uses abilities, never attacks
 cities, never builds buildings, ignores the fog, and ignores its civilians and any
 player-controlled AI unit; its scouts fight like any other unit. AI cities auto-assign citizens
-at every end of planning. AI queues buy from their side's stockpile, or wait a turn if it
-can't pay. An AI city with an empty queue trains a worker first when it has none. With a worker,
+at every end of planning. An AI queue gets one item when empty, and only one its side can pay for
+this turn, counting the turn's income and what its other queues start, so it's paid and started
+that turn; a queue whose items all wait anyway is emptied (they're unpaid, so nothing is lost)
+and planned again. An AI city with an empty queue trains a worker first when it has none. With a worker,
 it places a Barracks for its workers to build, paid like the player's: on a Horses or Iron
 deposit within 3 hexes (a kind it has none of first), else on the nearest open unworked tile
 within 2. Its queue otherwise grows the city. A city without a Barracks trains Melee itself,

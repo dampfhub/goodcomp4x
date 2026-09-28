@@ -1,8 +1,12 @@
 use super::barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 use super::economy::{WORK_PER_TURN, grow_price};
 use super::*;
-use crate::game::map_icons::WOOD_ICON;
 use crate::game::workers::{JobKind, WorkerJob};
+
+/// The builds in a queue, in order.
+fn builds<B: Copy>(queue: &[Queued<B>]) -> Vec<B> {
+    queue.iter().map(|q| q.build).collect()
+}
 
 #[test]
 fn roads_improve_delivery_and_enemy_occupation_blocks_the_site() {
@@ -224,8 +228,10 @@ fn forge_and_stable_unlock_and_upgrade_troops_at_an_off_resource_barracks() {
     g.cities[0].extra_buildings.insert(Building::Forge, iron);
     assert!(g.barracks_can_train(0, BuildUnit::Cavalry));
     assert!(g.barracks_can_train(0, BuildUnit::Armored));
-    g.cities[0].barracks_queue = vec![BuildUnit::Cavalry];
-    g.cities[0].barracks_progress = BuildUnit::Cavalry.work();
+    g.cities[0].barracks_queue = vec![Queued::worked(
+        BuildUnit::Cavalry,
+        BuildUnit::Cavalry.work(),
+    )];
     g.complete_builds();
     let cavalry = g
         .units
@@ -235,8 +241,10 @@ fn forge_and_stable_unlock_and_upgrade_troops_at_an_off_resource_barracks() {
     assert_eq!(cavalry.training_upgrade, Some(Resource::Horses));
     assert_eq!(cavalry.stats().move_range, 3);
     g.units.clear();
-    g.cities[0].barracks_queue = vec![BuildUnit::Armored];
-    g.cities[0].barracks_progress = BuildUnit::Armored.work();
+    g.cities[0].barracks_queue = vec![Queued::worked(
+        BuildUnit::Armored,
+        BuildUnit::Armored.work(),
+    )];
     g.complete_builds();
     let armored = g
         .units
@@ -400,54 +408,250 @@ fn economy_ticks_once_into_the_stockpile_and_preserves_quarters() {
     // stockpile could pay for something.
     g.end_planning();
     assert!(!g.is_resolving());
-    g.cities[0].queue = vec![Build::Unit(BuildUnit::Siege)];
+    g.queue_build(0, Build::Unit(BuildUnit::Siege));
     let before = g.stock(Team::Blue);
     let upkeep = g.upkeep(Team::Blue);
     g.end_planning();
     g.update(1.0);
-    assert_eq!(g.cities[0].progress, WORK_PER_TURN, "one turn of work");
+    assert_eq!(
+        g.cities[0].queue[0].progress, WORK_PER_TURN,
+        "one turn of work"
+    );
+    // Income in, upkeep out, and the Siege paid for as work on it starts.
+    let price = BuildUnit::Siege.price();
     assert_eq!(
         g.stock(Team::Blue),
         Stock {
-            food: before.food + 12 - upkeep,
-            wood: before.wood + 6,
-            metal: before.metal
+            food: before.food + 12 - upkeep - price.food,
+            wood: before.wood + 6 - price.wood,
+            metal: before.metal - price.metal
         }
     );
     g.update(10.0);
-    assert_eq!(g.cities[0].progress, WORK_PER_TURN, "the economy ran once");
+    assert_eq!(
+        g.cities[0].queue[0].progress, WORK_PER_TURN,
+        "the economy ran once"
+    );
 }
 
 #[test]
-fn builds_are_paid_when_queued_refunded_when_removed_and_refused_when_short() {
+fn builds_are_paid_when_work_starts_and_refunded_only_if_paid() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.selected_city = Some(0);
     let start = g.stock(Team::Blue);
     g.queue_selected_city_unit(BuildUnit::Melee);
-    assert_eq!(g.cities[0].queue, vec![Build::Unit(BuildUnit::Melee)]);
-    assert_eq!(g.stock(Team::Blue), start - BuildUnit::Melee.price());
-    assert_eq!(g.stock(Team::Red), start, "only the buyer pays");
+    assert_eq!(builds(&g.cities[0].queue), [Build::Unit(BuildUnit::Melee)]);
+    assert!(!g.cities[0].queue[0].paid);
+    assert_eq!(g.stock(Team::Blue), start, "nothing is paid while queued");
+    // Taken off unpaid, it refunds nothing.
     g.remove_selected_city_queue_item(0);
-    assert_eq!(g.stock(Team::Blue), start, "a full refund");
+    assert_eq!(g.stock(Team::Blue), start);
+    assert!(g.notice.contains("NOTHING TO REFUND"), "{}", g.notice);
 
-    // Short of wood: nothing is queued or spent, and the notice says why.
-    g.stockpiles[Team::Blue.index()] = Stock::whole(20, 1, 0);
+    // The turn's economy pays for it as work on it starts, from the
+    // stockpile with the turn's income in and the citizens fed.
     g.queue_selected_city_unit(BuildUnit::Melee);
-    assert!(g.cities[0].queue.is_empty());
-    assert_eq!(g.stock(Team::Blue), Stock::whole(20, 1, 0));
+    let expected = g.expected_stock(Team::Blue);
+    let red = g.expected_stock(Team::Red);
+    g.resolve_economy();
+    assert!(g.cities[0].queue[0].paid);
+    assert_eq!(g.cities[0].queue[0].progress, WORK_PER_TURN);
+    assert_eq!(g.stock(Team::Blue), expected - BuildUnit::Melee.price());
+    assert_eq!(g.stock(Team::Red), red, "only the buyer pays");
+    // Taken off paid, it refunds its price; its work is lost.
+    g.remove_selected_city_queue_item(0);
+    assert_eq!(g.stock(Team::Blue), expected);
+    assert!(g.notice.ends_with("- REFUNDED"), "{}", g.notice);
+
+    // Short of wood, it's queued all the same, and waits unpaid; the notice
+    // says what for.
+    g.stockpiles[Team::Blue.index()] = Stock::whole(20, 0, 0);
+    g.queue_selected_city_unit(BuildUnit::Melee);
+    let short = g
+        .expected_stock(Team::Blue)
+        .shortfall(BuildUnit::Melee.price());
+    assert!(short.wood > 0 && short.food == 0);
     assert!(
-        g.notice.contains(&format!("SHORT OF {WOOD_ICON}5")),
+        g.notice
+            .contains(&format!("WAITS FOR {}", stock_icons(short))),
         "{}",
         g.notice
     );
+    let expected = g.expected_stock(Team::Blue);
+    g.resolve_economy();
+    assert_eq!(
+        g.cities[0].queue[0],
+        Queued::new(Build::Unit(BuildUnit::Melee))
+    );
+    assert_eq!(g.stock(Team::Blue), expected, "nothing spent");
+
     // Broke, a city still has something to do: gather, for free.
+    g.cities[0].queue.clear();
     g.stockpiles[Team::Blue.index()] = Stock::default();
     assert!(g.city_needs_build(0));
     g.queue_selected_city_gather();
-    assert_eq!(g.cities[0].queue, vec![Build::Gather]);
+    assert_eq!(builds(&g.cities[0].queue), [Build::Gather]);
     assert_eq!(g.stock(Team::Blue), Stock::default());
     assert!(!g.city_needs_build(0));
+}
+
+#[test]
+fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.selected_city = Some(0);
+    // Wood for a Melee but no metal for the Siege ahead of it.
+    g.stockpiles[Team::Blue.index()] = Stock::whole(20, 20, 0);
+    let siege = Build::Unit(BuildUnit::Siege);
+    let melee = Build::Unit(BuildUnit::Melee);
+    g.queue_selected_city_unit(BuildUnit::Siege);
+    assert!(g.notice.contains("WAITS FOR"), "{}", g.notice);
+    g.queue_selected_city_unit(BuildUnit::Melee);
+    let forecast = g.forecast(Team::Blue);
+    let lane = forecast.lane(0, Lane::City).unwrap();
+    assert_eq!(lane.worked, Some(1), "the forecast skips to the Melee");
+    let short = g.waiting_items(lane);
+    assert_eq!(short.len(), 1);
+    assert_eq!(short[0].0, 0);
+    assert!(short[0].1.metal > 0, "the Siege waits for metal");
+    assert_eq!(g.city_waits_for(&forecast, 0), Some(short[0].1));
+
+    let expected = g.expected_stock(Team::Blue);
+    g.resolve_economy();
+    assert_eq!(g.cities[0].queue[0], Queued::new(siege), "it waits, unpaid");
+    assert_eq!(g.cities[0].queue[1], Queued::worked(melee, WORK_PER_TURN));
+    assert_eq!(g.stock(Team::Blue), expected - BuildUnit::Melee.price());
+
+    // Metal arrives: the Siege, first in the queue, is paid for and worked
+    // the next turn, and the Melee keeps the work it had.
+    g.stockpiles[Team::Blue.index()].metal += BuildUnit::Siege.price().metal;
+    let expected = g.expected_stock(Team::Blue);
+    g.resolve_economy();
+    assert_eq!(g.cities[0].queue[0], Queued::worked(siege, WORK_PER_TURN));
+    assert_eq!(g.cities[0].queue[1], Queued::worked(melee, WORK_PER_TURN));
+    assert_eq!(g.stock(Team::Blue), expected - BuildUnit::Siege.price());
+    assert_eq!(g.city_waits_for(&g.forecast(Team::Blue), 0), None);
+}
+
+#[test]
+fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.cities.push(City::new(2, Team::Blue, Hex::new(-2, -3)));
+    let other = g.cities.len() - 1;
+    // Nothing comes in, and enough wood for one Melee: city 0 pays first,
+    // its city queue before its Barracks', and the others wait.
+    for c in [0, other] {
+        g.cities[c].worked.clear();
+        g.cities[c].population = 1;
+    }
+    let melee = Build::Unit(BuildUnit::Melee);
+    g.cities[0].barracks = Some(Hex::new(-3, 1));
+    g.queue_barracks(0, BuildUnit::Melee);
+    g.queue_build(0, melee);
+    g.queue_build(other, melee);
+    let income = g.side_income(Team::Blue);
+    g.stockpiles[Team::Blue.index()] = Stock {
+        food: 80,
+        wood: BuildUnit::Melee.price().wood - income.wood,
+        metal: 0,
+    };
+    let forecast = g.forecast(Team::Blue);
+    assert_eq!(forecast.lane(0, Lane::City).unwrap().worked, Some(0));
+    assert_eq!(forecast.lane(0, Lane::Barracks).unwrap().worked, None);
+    assert_eq!(forecast.lane(other, Lane::City).unwrap().worked, None);
+    assert!(
+        g.city_waits_for(&forecast, 0).is_some(),
+        "its Barracks waits"
+    );
+    assert!(g.city_waits_for(&forecast, other).is_some());
+
+    g.resolve_economy();
+    assert!(g.cities[0].queue[0].paid);
+    assert!(!g.cities[0].barracks_queue[0].paid);
+    assert!(!g.cities[other].queue[0].paid);
+    assert_eq!(g.stock(Team::Blue).wood, 0);
+
+    // With wood for one more, the Barracks, next in order, pays.
+    g.stockpiles[Team::Blue.index()].wood = BuildUnit::Melee.price().wood - income.wood;
+    g.resolve_economy();
+    assert!(g.cities[0].barracks_queue[0].paid);
+    assert!(!g.cities[other].queue[0].paid, "still waiting");
+}
+
+#[test]
+fn the_forecast_is_what_the_economy_then_does() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.cities[0].barracks = Some(Hex::new(-3, 1));
+    let builds = [
+        Build::Unit(BuildUnit::Siege),
+        Build::Grow,
+        Build::Worker,
+        Build::Unit(BuildUnit::Melee),
+    ];
+    // Nothing here finishes in one turn, so every item stays where it was.
+    let troops = [BuildUnit::Ranged, BuildUnit::Siege, BuildUnit::Melee];
+    for seed in 0..40_usize {
+        let mut game = g.clone();
+        for k in 0..(seed % 4 + 1) {
+            game.queue_build(0, builds[(seed * 7 + k * 3) % builds.len()]);
+            game.queue_barracks(0, troops[(seed + k) % troops.len()]);
+        }
+        let wood = (seed % 5) as i32 * 3;
+        game.stockpiles[Team::Blue.index()] = Stock::whole(10, wood, (seed % 3) as i32 * 2);
+        let forecast = game.forecast(Team::Blue);
+        let before = (
+            game.cities[0].queue.clone(),
+            game.cities[0].barracks_queue.clone(),
+        );
+        game.resolve_economy();
+        for lane in [Lane::City, Lane::Barracks] {
+            let predicted = forecast.lane(0, lane).unwrap();
+            let len = match lane {
+                Lane::City => before.0.len(),
+                Lane::Barracks => before.1.len(),
+            };
+            for index in 0..len {
+                let paid = match lane {
+                    Lane::City => game.cities[0].queue.get(index).map(|q| q.paid),
+                    Lane::Barracks => game.cities[0].barracks_queue.get(index).map(|q| q.paid),
+                };
+                // The item worked is paid for (or finished and gone); the
+                // ones ahead of it wait unpaid.
+                if Some(index) == predicted.worked {
+                    assert_ne!(paid, Some(false), "seed {seed} {lane:?} {index}");
+                } else if predicted.worked.is_none_or(|worked| index < worked) {
+                    assert_eq!(paid, Some(false), "seed {seed} {lane:?} {index}");
+                }
+            }
+        }
+        assert!(game.stock(Team::Blue).wood >= 0 && game.stock(Team::Blue).metal >= 0);
+    }
+}
+
+#[test]
+fn the_ai_queues_only_what_it_can_pay_for_this_turn_and_never_waits() {
+    let mut g = GameState::city_scenario();
+    let red = g.cities.iter().position(|c| c.team == Team::Red).unwrap();
+    // Broke, with a Siege it can't pay for waiting at the head: the AI
+    // takes it off (unpaid, so it costs nothing) and plans again.
+    g.stockpiles[Team::Red.index()] = Stock::default();
+    g.cities[red].queue = vec![Queued::new(Build::Unit(BuildUnit::Siege))];
+    g.plan_ai_turn(Team::Red);
+    let forecast = g.forecast(Team::Red);
+    for lane in [Lane::City, Lane::Barracks] {
+        let lane = forecast.lane(red, lane).unwrap();
+        assert!(g.lane_len(red, lane.lane) <= 1, "one item a queue");
+        assert!(g.waiting_items(lane).is_empty(), "{:?} waits", lane.lane);
+    }
+    assert_eq!(g.cities[red].queue.len(), 1, "it found something to do");
+    assert_eq!(g.stock(Team::Red), Stock::default(), "nothing paid yet");
+    // Planning again adds nothing to a queue that's busy.
+    let queue = g.cities[red].queue.clone();
+    g.plan_ai_turn(Team::Red);
+    assert_eq!(g.cities[red].queue, queue);
 }
 
 #[test]
@@ -455,7 +659,7 @@ fn a_build_takes_its_fixed_turns_whatever_the_city_produces() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     let siege = Build::Unit(BuildUnit::Siege);
-    g.cities[0].queue = vec![siege];
+    g.cities[0].queue = vec![Queued::prepaid(siege)];
     // A city center trains troops at half a Barracks' pace.
     assert_eq!(
         g.city_build_turns(0, siege),
@@ -477,20 +681,23 @@ fn production_speeds_builds_when_the_variant_is_on() {
     g.production_speedup = true;
     let production = g.income(0).production();
     assert!(production > 0);
-    g.cities[0].queue = vec![Build::Unit(BuildUnit::Siege)];
+    g.cities[0].queue = vec![Queued::prepaid(Build::Unit(BuildUnit::Siege))];
     g.resolve_economy();
-    assert_eq!(g.cities[0].progress, WORK_PER_TURN + production / 4);
+    assert_eq!(
+        g.cities[0].queue[0].progress,
+        WORK_PER_TURN + production / 4
+    );
     g.production_speedup = false;
     g.resolve_economy();
     assert_eq!(
-        g.cities[0].progress,
+        g.cities[0].queue[0].progress,
         2 * WORK_PER_TURN + production / 4,
         "off, a turn does its fixed work"
     );
 }
 
 #[test]
-fn growth_is_bought_with_food_and_takes_its_turns() {
+fn growth_is_bought_with_food_when_it_starts_and_takes_its_turns() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.selected_city = Some(0);
@@ -498,19 +705,20 @@ fn growth_is_bought_with_food_and_takes_its_turns() {
     g.stockpiles[Team::Blue.index()].food = 1000;
     g.queue_selected_city_growth();
     g.queue_selected_city_growth();
-    // The second Grow is priced for the bigger city the first makes.
-    assert_eq!(
-        g.stock(Team::Blue).food,
-        1000 - grow_price(population).food - grow_price(population + 1).food
-    );
-    // Removing either refunds the dearer price: the one left grows the
-    // city from its size now.
-    g.remove_selected_city_queue_item(0);
-    assert_eq!(g.stock(Team::Blue).food, 1000 - grow_price(population).food);
-    for _ in 0..Build::Grow.turns() {
-        assert_eq!(g.cities[0].population, population, "not grown yet");
-        g.resolve_economy();
-    }
+    assert_eq!(g.stock(Team::Blue).food, 1000, "nothing paid while queued");
+    // A third would be priced for the bigger city the two ahead make.
+    assert_eq!(g.queue_price(0, Build::Grow), grow_price(population + 2));
+    // The first is paid as work on it starts, at the population now.
+    let food = g.expected_stock(Team::Blue).food;
+    g.resolve_economy();
+    assert!(g.cities[0].queue[0].paid && !g.cities[0].queue[1].paid);
+    assert_eq!(g.stock(Team::Blue).food, food - grow_price(population).food);
+    // The second, unpaid, refunds nothing taken off.
+    let food = g.stock(Team::Blue).food;
+    g.remove_selected_city_queue_item(1);
+    assert_eq!(g.stock(Team::Blue).food, food);
+    assert_eq!(g.cities[0].population, population, "not grown yet");
+    g.resolve_economy();
     assert_eq!(g.cities[0].population, population + 1);
     assert_eq!(
         g.cities[0].worked.len(),
@@ -521,10 +729,46 @@ fn growth_is_bought_with_food_and_takes_its_turns() {
     // No Grow past the cap, counting those queued.
     g.cities[0].population = MAX_CITY_POPULATION - 1;
     g.queue_selected_city_growth();
-    assert_eq!(g.cities[0].queue, vec![Build::Grow]);
+    assert_eq!(builds(&g.cities[0].queue), [Build::Grow]);
     g.queue_selected_city_growth();
-    assert_eq!(g.cities[0].queue, vec![Build::Grow], "full");
+    assert_eq!(builds(&g.cities[0].queue), [Build::Grow], "full");
     assert!(!g.can_grow(0));
+}
+
+#[test]
+fn a_grow_is_priced_when_paid_a_citizen_up_for_each_grow_already_paid() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.selected_city = Some(0);
+    let population = g.cities[0].population;
+    g.stockpiles[Team::Blue.index()].food = 1000;
+    // A Grow under way, and one dragged ahead of it: the city works the
+    // unpaid one first, and pays for it as the second citizen coming.
+    g.cities[0].queue = vec![
+        Queued::worked(Build::Grow, WORK_PER_TURN),
+        Queued::new(Build::Grow),
+    ];
+    g.move_selected_city_queue_item(1, true);
+    let food = g.expected_stock(Team::Blue).food;
+    g.resolve_economy();
+    assert!(g.cities[0].queue.iter().all(|q| q.paid));
+    assert_eq!(g.cities[0].queue[0].progress, WORK_PER_TURN);
+    assert_eq!(
+        g.cities[0].queue[1].progress, WORK_PER_TURN,
+        "the other keeps its work"
+    );
+    assert_eq!(
+        g.stock(Team::Blue).food,
+        food - grow_price(population + 1).food
+    );
+    // Either taken off refunds the dearer price, leaving the other paid for
+    // the population now.
+    let food = g.stock(Team::Blue).food;
+    g.remove_selected_city_queue_item(1);
+    assert_eq!(
+        g.stock(Team::Blue).food,
+        food + grow_price(population + 1).food
+    );
 }
 
 #[test]
@@ -596,7 +840,10 @@ fn frontier_settler_founds_city_and_city_spends_production_on_unit() {
     assert_eq!(g.cities.len(), 1);
     assert_eq!(g.settlers.len(), 1, "the opposing settler remains");
     g.queue_selected_city_unit(BuildUnit::Melee);
-    g.cities[0].progress = g.city_build_work(0, Build::Unit(BuildUnit::Melee));
+    g.cities[0].queue[0] = Queued::worked(
+        Build::Unit(BuildUnit::Melee),
+        g.city_build_work(0, Build::Unit(BuildUnit::Melee)),
+    );
     g.complete_builds();
     assert!(g.cities[0].queue.is_empty());
     let finished = g.units.last().unwrap();
@@ -614,7 +861,7 @@ fn gathering_is_free_and_fills_the_stockpile_in_a_turn() {
     g.queue_selected_city_gather();
     assert_eq!(g.stock(Team::Blue), start, "free");
     assert_eq!(g.city_build_turns(0, Build::Gather), 1);
-    g.cities[0].progress = Build::Gather.work();
+    g.cities[0].queue[0] = Queued::worked(Build::Gather, Build::Gather.work());
     g.complete_builds();
     assert!(g.cities[0].queue.is_empty());
     assert_eq!(g.stock(Team::Blue), start + GATHER_YIELD);
@@ -629,12 +876,12 @@ fn barracks_trains_whatever_the_manager_does_and_faster_than_the_city() {
     g.cities[0].worked = vec![manager, worker];
     g.cities[0].remembered_worked = g.cities[0].worked.clone();
     g.cities[0].barracks = Some(manager);
-    g.cities[0].barracks_queue = vec![BuildUnit::Siege];
-    g.cities[0].queue = vec![Build::Unit(BuildUnit::Siege)];
+    g.cities[0].barracks_queue = vec![Queued::prepaid(BuildUnit::Siege)];
+    g.cities[0].queue = vec![Queued::prepaid(Build::Unit(BuildUnit::Siege))];
     g.resolve_economy();
-    assert_eq!(g.cities[0].barracks_progress, WORK_PER_TURN);
+    assert_eq!(g.cities[0].barracks_queue[0].progress, WORK_PER_TURN);
     assert_eq!(
-        g.cities[0].progress, WORK_PER_TURN,
+        g.cities[0].queue[0].progress, WORK_PER_TURN,
         "the city and Barracks both work"
     );
     assert_eq!(
@@ -647,8 +894,8 @@ fn barracks_trains_whatever_the_manager_does_and_faster_than_the_city() {
     g.cities[0].worked.swap(0, 1);
     g.cities[0].remembered_worked = g.cities[0].worked.clone();
     g.resolve_economy();
-    assert_eq!(g.cities[0].barracks_progress, 2 * WORK_PER_TURN);
-    g.cities[0].barracks_progress = WORK_PER_TURN;
+    assert_eq!(g.cities[0].barracks_queue[0].progress, 2 * WORK_PER_TURN);
+    g.cities[0].barracks_queue[0].progress = WORK_PER_TURN;
 
     // With production speeding builds, the Barracks adds what's delivered
     // to it, with its own delivery falloff.
@@ -659,7 +906,7 @@ fn barracks_trains_whatever_the_manager_does_and_faster_than_the_city() {
     assert!(barracks_income > 0);
     g.resolve_economy();
     assert_eq!(
-        g.cities[0].barracks_progress,
+        g.cities[0].barracks_queue[0].progress,
         2 * WORK_PER_TURN + barracks_income / 4
     );
 }
@@ -736,7 +983,7 @@ fn a_destroyed_barracks_can_be_rebuilt() {
     g.cities[0].barracks = Some(old_site);
     g.cities[0].built.push(Building::Barracks);
     g.cities[0].barracks_hp = 1.0;
-    g.cities[0].barracks_queue = vec![BuildUnit::Melee];
+    g.cities[0].barracks_queue = vec![Queued::prepaid(BuildUnit::Melee)];
     g.open_barracks(0);
     g.units.push(Unit::new(
         901,
@@ -769,17 +1016,20 @@ fn city_queue_completes_in_order_and_can_be_reordered_or_removed() {
     g.queue_selected_city_unit(BuildUnit::Melee);
     g.queue_selected_city_unit(BuildUnit::Ranged);
     assert_eq!(
-        g.cities[0].queue,
-        vec![
+        builds(&g.cities[0].queue),
+        [
             Build::Unit(BuildUnit::Melee),
             Build::Unit(BuildUnit::Ranged)
         ]
     );
     g.move_selected_city_queue_item(1, true);
-    assert_eq!(g.cities[0].queue[0], Build::Unit(BuildUnit::Ranged));
+    assert_eq!(g.cities[0].queue[0].build, Build::Unit(BuildUnit::Ranged));
     g.remove_selected_city_queue_item(1);
-    assert_eq!(g.cities[0].queue, vec![Build::Unit(BuildUnit::Ranged)]);
-    g.cities[0].progress = g.city_build_work(0, Build::Unit(BuildUnit::Ranged));
+    assert_eq!(builds(&g.cities[0].queue), [Build::Unit(BuildUnit::Ranged)]);
+    g.cities[0].queue[0] = Queued::worked(
+        Build::Unit(BuildUnit::Ranged),
+        g.city_build_work(0, Build::Unit(BuildUnit::Ranged)),
+    );
     g.complete_builds();
     assert!(g.cities[0].queue.is_empty());
     assert!(
@@ -812,7 +1062,7 @@ fn placing_a_building_leaves_the_city_queue_alone() {
     g.selected_city = Some(0);
     g.queue_selected_city_unit(BuildUnit::Melee);
     assert!(place_building(&mut g, Building::Barracks, Hex::new(-2, 0)));
-    assert_eq!(g.cities[0].queue, vec![Build::Unit(BuildUnit::Melee)]);
+    assert_eq!(builds(&g.cities[0].queue), [Build::Unit(BuildUnit::Melee)]);
 }
 
 #[test]
@@ -887,9 +1137,8 @@ fn debug_completion_only_finishes_the_selected_production_lane() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.selected_city = Some(0);
-    g.cities[0].queue = vec![Build::Gather];
-    g.cities[1].queue = vec![Build::Gather, Build::Gather];
-    g.cities[1].progress = 0;
+    g.cities[0].queue = vec![Queued::new(Build::Gather)];
+    g.cities[1].queue = vec![Queued::new(Build::Gather); 2];
     g.debug_complete_current_production();
     assert!(g.cities[0].queue.is_empty());
     assert_eq!(
@@ -901,7 +1150,7 @@ fn debug_completion_only_finishes_the_selected_production_lane() {
     g.cities[0].barracks = Some(Hex::new(-1, 0));
     g.selected_city = None;
     g.selected_barracks = Some(0);
-    g.cities[0].barracks_queue = vec![BuildUnit::Melee];
+    g.cities[0].barracks_queue = vec![Queued::new(BuildUnit::Melee)];
     g.debug_complete_current_production();
     assert!(g.cities[0].barracks_queue.is_empty());
     assert!(
@@ -923,10 +1172,10 @@ fn barracks_queue_is_independent_and_completes_in_order() {
     g.queue_selected_barracks_unit(BuildUnit::Melee);
     g.queue_selected_barracks_unit(BuildUnit::Ranged);
     g.move_selected_barracks_queue_item(1, true);
-    assert_eq!(g.cities[0].barracks_queue[0], BuildUnit::Ranged);
-    g.cities[0].barracks_progress = BuildUnit::Ranged.work();
+    assert_eq!(g.cities[0].barracks_queue[0].build, BuildUnit::Ranged);
+    g.cities[0].barracks_queue[0] = Queued::worked(BuildUnit::Ranged, BuildUnit::Ranged.work());
     g.complete_builds();
-    assert_eq!(g.cities[0].barracks_queue, vec![BuildUnit::Melee]);
+    assert_eq!(builds(&g.cities[0].barracks_queue), [BuildUnit::Melee]);
     assert!(
         g.units
             .iter()
@@ -942,7 +1191,7 @@ fn resource_units_require_a_barracks_on_the_matching_resource() {
     assert!(g.barracks_can_train(0, BuildUnit::Cavalry));
     assert!(!g.barracks_can_train(0, BuildUnit::Armored));
     g.queue_selected_barracks_unit(BuildUnit::Cavalry);
-    assert_eq!(g.cities[0].barracks_queue, vec![BuildUnit::Cavalry]);
+    assert_eq!(builds(&g.cities[0].barracks_queue), [BuildUnit::Cavalry]);
     g.cities[0].barracks = Some(Hex::new(-2, 1));
     assert!(g.barracks_can_train(0, BuildUnit::Armored));
     assert!(!g.barracks_can_train(0, BuildUnit::Cavalry));
@@ -963,8 +1212,8 @@ fn horse_barracks() -> GameState {
 /// Finishes the Barracks' queue, a troop a call, each walking off so the
 /// next has room.
 fn train_all(g: &mut GameState) {
-    while let Some(&build) = g.cities[0].barracks_queue.first() {
-        g.cities[0].barracks_progress = build.work();
+    while let Some(build) = g.cities[0].barracks_queue.first().map(|q| q.build) {
+        g.cities[0].barracks_queue[0] = Queued::worked(build, build.work());
         g.complete_builds();
         for unit in &mut g.units {
             unit.pos = Hex::new(unit.pos.q, 6 - unit.id as i32 % 4);
@@ -1054,7 +1303,7 @@ fn the_ai_puts_its_barracks_on_a_deposit_and_trains_there() {
     }
     assert_eq!(g.cities[red].barracks, Some(site));
     g.plan_ai_turn(Team::Red);
-    let special = g.cities[red].barracks_queue.first().copied();
+    let special = g.cities[red].barracks_queue.first().map(|q| q.build);
     assert!(
         special.is_some_and(|b| b.required_resource() == g.grid.resource(site)),
         "{special:?}"
@@ -1187,8 +1436,7 @@ fn a_queue_of_units_completes_at_the_rate_production_allows() {
     g.units.clear();
     g.roads.clear();
     g.cities[0].worked = vec![Hex::new(-3, 0)];
-    g.cities[0].queue = vec![Build::Unit(BuildUnit::Melee); 6];
-    g.cities[0].progress = 0;
+    g.cities[0].queue = vec![Queued::prepaid(Build::Unit(BuildUnit::Melee)); 6];
     let cost = g.city_build_work(0, Build::Unit(BuildUnit::Melee));
 
     // Open hexes: the first unit takes several turns, as its cost allows.
@@ -1212,9 +1460,9 @@ fn a_queue_of_units_completes_at_the_rate_production_allows() {
     }
     assert!(turns > 1, "a unit finished in {turns} turn");
     assert_eq!(
-        g.cities[0].progress,
-        earned - cost,
-        "the leftover carries over"
+        (earned - cost, g.cities[0].queue[0].progress),
+        (0, 0),
+        "no work was left over, and the next unit starts from nothing"
     );
 
     // Every open hex beside the city is taken: the next unit waits in the city.
@@ -1238,9 +1486,10 @@ fn a_queue_of_units_completes_at_the_rate_production_allows() {
         assert_eq!(finished, 0, "no hex is open");
     }
     assert_eq!(
-        g.cities[0].progress, cost,
-        "the waiting unit is paid for, and nothing more is banked"
+        g.cities[0].queue[0].progress, cost,
+        "the waiting unit is finished, and nothing more is banked"
     );
+    assert!(g.cities[0].queue[1..].iter().all(|q| q.progress == 0));
 
     // A hex opens: the waiting unit comes out, and each after it takes its cost again.
     g.units.retain(|u| u.team != Team::Blue);
@@ -1285,15 +1534,16 @@ fn a_city_and_its_barracks_never_finish_units_onto_one_hex() {
                 .push(Unit::new(1000 + n as u32, hex, Team::Blue, UnitType::Melee));
         }
     }
-    g.cities[0].queue = vec![Build::Unit(BuildUnit::Melee)];
-    g.cities[0].progress = g.city_build_work(0, Build::Unit(BuildUnit::Melee));
-    g.cities[0].barracks_queue = vec![BuildUnit::Ranged];
-    g.cities[0].barracks_progress = BuildUnit::Ranged.work();
+    g.cities[0].queue = vec![Queued::worked(
+        Build::Unit(BuildUnit::Melee),
+        g.city_build_work(0, Build::Unit(BuildUnit::Melee)),
+    )];
+    g.cities[0].barracks_queue = vec![Queued::worked(BuildUnit::Ranged, BuildUnit::Ranged.work())];
     g.complete_builds();
     assert_eq!(g.units_at(open).count(), 1, "one unit on the open hex");
     assert_eq!(
-        g.cities[0].barracks_queue,
-        vec![BuildUnit::Ranged],
+        builds(&g.cities[0].barracks_queue),
+        [BuildUnit::Ranged],
         "the barracks waits for a hex"
     );
 }
@@ -1320,7 +1570,8 @@ fn coastal_construction_requires_the_city_center_to_touch_the_sea() {
     assert!(
         !inland.cities[0]
             .queue
-            .contains(&Build::Unit(BuildUnit::PatrolGalley))
+            .iter()
+            .any(|q| q.build == Build::Unit(BuildUnit::PatrolGalley))
     );
 
     let mut coastal = GameState::naval_scenario();
@@ -1332,7 +1583,8 @@ fn coastal_construction_requires_the_city_center_to_touch_the_sea() {
     assert!(
         coastal.cities[0]
             .queue
-            .contains(&Build::Unit(BuildUnit::LandingCraft))
+            .iter()
+            .any(|q| q.build == Build::Unit(BuildUnit::LandingCraft))
     );
 }
 
@@ -1456,8 +1708,10 @@ fn a_finished_troop_does_not_appear_on_a_worker() {
         work_left: None,
         recalled: false,
     });
-    g.cities[0].queue = vec![Build::Unit(BuildUnit::Melee)];
-    g.cities[0].progress = g.city_build_work(0, Build::Unit(BuildUnit::Melee));
+    g.cities[0].queue = vec![Queued::worked(
+        Build::Unit(BuildUnit::Melee),
+        g.city_build_work(0, Build::Unit(BuildUnit::Melee)),
+    )];
     g.complete_builds();
     assert_eq!(
         g.units_at(open[0]).count(),
@@ -1467,9 +1721,9 @@ fn a_finished_troop_does_not_appear_on_a_worker() {
     assert_eq!(g.cities[0].queue.len(), 1, "the troop waits");
 }
 
-/// City 0 of the Cities scenario, open, with a mixed queue bought at its
-/// prices (Grows priced by how many are ahead) and work done on its head,
-/// and a Barracks with troops queued and work done on the first.
+/// City 0 of the Cities scenario, open, with a mixed queue, some of it paid
+/// for (as the turns' economies would have), with work done on its head,
+/// and a Barracks with troops queued, the first paid for and under way.
 fn city_with_full_queues() -> GameState {
     let mut g = GameState::city_scenario();
     g.units.clear();
@@ -1481,11 +1735,15 @@ fn city_with_full_queues() -> GameState {
     g.queue_selected_city_worker();
     g.queue_selected_city_growth();
     g.queue_selected_city_gather();
-    g.cities[0].progress = 1;
+    // Paid for: the Melee under way and both Grows.
+    for (index, progress) in [(0, 1), (1, 0), (3, 0)] {
+        let item = &mut g.cities[0].queue[index];
+        *item = Queued::worked(item.build, progress);
+    }
     for build in [BuildUnit::Ranged, BuildUnit::Melee, BuildUnit::Siege] {
         g.queue_selected_barracks_unit(build);
     }
-    g.cities[0].barracks_progress = 1;
+    g.cities[0].barracks_queue[0] = Queued::worked(BuildUnit::Ranged, 1);
     assert_eq!(g.cities[0].queue.len(), 5);
     assert_eq!(g.cities[0].barracks_queue.len(), 3);
     g
@@ -1508,11 +1766,13 @@ fn clearing_a_queue_refunds_it_as_taking_each_item_off_would() {
     let mut cleared = start.clone();
     cleared.clear_selected_city_queue();
     assert!(cleared.cities[0].queue.is_empty());
-    assert_eq!(cleared.cities[0].progress, 0, "the head's work is lost");
     assert_eq!(cleared.stock(Team::Blue), from_head.stock(Team::Blue));
     assert_eq!(cleared.stock(Team::Blue), from_tail.stock(Team::Blue));
     assert!(cleared.stock(Team::Blue).food > start.stock(Team::Blue).food);
-    assert_eq!(cleared.notice, "CLEARED THE CITY QUEUE - 5 REFUNDED");
+    assert_eq!(
+        cleared.notice,
+        "CLEARED THE CITY QUEUE - 3 PAID OF 5 REFUNDED"
+    );
     assert_eq!(
         cleared.cities[0].barracks_queue, start.cities[0].barracks_queue,
         "the Barracks keeps its own"
@@ -1528,7 +1788,6 @@ fn clearing_a_queue_refunds_it_as_taking_each_item_off_would() {
     cleared.open_barracks(0);
     cleared.clear_selected_barracks_queue();
     assert!(cleared.cities[0].barracks_queue.is_empty());
-    assert_eq!(cleared.cities[0].barracks_progress, 0);
     assert_eq!(cleared.stock(Team::Blue), one_by_one.stock(Team::Blue));
     assert_eq!(cleared.cities[0].queue, start.cities[0].queue);
 
@@ -1570,20 +1829,29 @@ fn a_cleared_queue_makes_a_plan_that_passes_the_checks() {
     let mut guest = GameState::join_game(&welcome).expect("joins");
     let city = guest.cities.iter().position(|c| c.team == seat).unwrap();
     // The same queues on both machines as a turn's planning begins, as an
-    // earlier turn would leave them: the city's, with work done on its
-    // head, and its Barracks'.
+    // earlier turn would leave them: the city's, some paid for and work done
+    // on its head, and its Barracks'.
+    // The Barracks beside it on no tile its citizens work, or the plan
+    // would be refused for those tiles (the world is new every run).
+    let c = &guest.cities[city];
+    let barracks = c
+        .pos
+        .neighbors()
+        .into_iter()
+        .find(|h| guest.grid.is_passable(*h) && !c.worked.contains(h));
     for game in [&mut host, &mut guest] {
         let c = &mut game.cities[city];
-        c.barracks = Some(c.pos.neighbors()[0]);
+        c.barracks = barracks;
         c.queue = vec![
-            Build::Unit(BuildUnit::Melee),
-            Build::Grow,
-            Build::Worker,
-            Build::Grow,
+            Queued::worked(Build::Unit(BuildUnit::Melee), 1),
+            Queued::prepaid(Build::Grow),
+            Queued::new(Build::Worker),
+            Queued::prepaid(Build::Grow),
         ];
-        c.progress = 1;
-        c.barracks_queue = vec![BuildUnit::Ranged, BuildUnit::Melee];
-        c.barracks_progress = 1;
+        c.barracks_queue = vec![
+            Queued::worked(BuildUnit::Ranged, 1),
+            Queued::new(BuildUnit::Melee),
+        ];
         game.finish_lockstep_turn();
     }
     let untouched = guest.team_plan(seat);
@@ -1596,7 +1864,6 @@ fn a_cleared_queue_makes_a_plan_that_passes_the_checks() {
     let c = plan.cities.iter().find(|c| c.pos == guest.cities[city].pos);
     let c = c.expect("its city");
     assert!(c.queue.is_empty() && c.barracks_queue.is_empty());
-    assert_eq!((c.progress, c.barracks_progress), (0, 0));
     assert!(plan.stock.food > untouched.stock.food, "refunded");
 
     // Emptied without the refund, the checks would catch it.

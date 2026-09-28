@@ -25,7 +25,7 @@ behavior.
 | `city/logistics.rs` | roads and Canoe House river corridors, logistics routes (`routes_from_by`), `delivered_share`, tile yields, Mill food share, Cannery/Smelter collection, city income (as food, wood and metal) and Barracks income |
 | `city/rail.rs` | Railhead road connectivity and long-range transfer eligibility; city center is the origin terminal |
 | `city/citizens.rs` | citizens: labor focus, the manager and its workers, auto-assignment and reconciling blocked tiles, `resolve_economy` (the turn's economy), Field Hospital healing |
-| `city/economy.rs` | the stockpile experiment (`docs/rts-economy.md`): `Stock` (food, wood, metal), each side's stockpile, paying for builds when queued and refunding them (`try_queue_build`, `take_queue_item`), growth prices, the wood/metal split of production (`metal_yield`), feeding citizens, a queue's work a turn (`work_rate`) and the production-speedup toggle; the icon forms of prices and turns (`stock_icons`, `turns_icon`) |
+| `city/economy.rs` | the stockpile experiment (`docs/rts-economy.md`): `Stock` (food, wood, metal), each side's stockpile, queue items (`Queued`: the build, whether it's paid, its work), queueing unpaid and refunding what was paid (`queue_build`, `take_queue_item`), paying for the item each queue starts and working it (`work_queues`) and what it will do as things stand (`forecast`, `waiting_items`, `city_waits_for`), growth prices, the wood/metal split of production (`metal_yield`), feeding citizens, a queue's work a turn (`work_rate`) and the production-speedup toggle; the icon forms of prices and turns (`stock_icons`, `turns_icon`) |
 | `city/barracks.rs` | the Barracks as the military building: a city center's slower training (`CITY_TRAINING_SLOWDOWN`), the Horses and Iron deposits a Barracks draws on, the Cavalry and Armored cap (`UNITS_PER_DEPOSIT`, `special_cap`, `special_used`, alive or lifetime) and why a troop is locked (`barracks_lock`) |
 | `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues (clearing one takes each item off through `take_queue_item` / `take_barracks_item`), Harbor naval spawning, the rules of a building's site (`ai_site_issue`), resource support from Forge/Stable, prices and turns of every build, the Grow build, `complete_builds` (buildings with a site are built by workers, `workers.rs`) |
 | `city/founding.rs` | settlers founding cities |
@@ -50,7 +50,7 @@ behavior.
 | `transition.rs` | the turn transition, presentation only: what moved glides from where it was drawn, and the new turn's cue (the map dims a moment, the turn number flashes); the Turn Transition setting turns it off |
 | `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
-| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs`, `ui/network_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling, drag to reorder and a Clear button; the turn strip of everything needing orders (cities, unit groups); the settings menu (a heading per group, a control per `Setting`) and its Multiplayer page (host, join, leave; typed fields) |
+| `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs`, `ui/network_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling, drag to reorder and a Clear button, and each row's turns left or what it waits for (`queue_status`); the turn strip of everything needing orders (cities, unit groups); the settings menu (a heading per group, a control per `Setting`) and its Multiplayer page (host, join, leave; typed fields) |
 | `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
 | `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
@@ -88,10 +88,16 @@ behavior.
   edges (`barriers`, keyed by `hex::edge`), so passability is per step: anything that walks
   (units, workers, the AI's distances) or routes goods checks `can_step` / `can_cross`, and the
   player's planning checks what they know (`known_can_cross`, `fog.rs`).
-- Builds are paid when queued: add to a city or Barracks queue only through `try_queue_build` /
-  `try_queue_barracks`, and take items out through `take_queue_item` / `take_barracks_item`,
-  which refund them (`city/economy.rs`). Pushing to `queue` directly is for tests and scenario
-  setup; it skips the price. `simulation.rs` checks that no stockpile goes negative.
+- Builds are paid when work on them starts: add to a city or Barracks queue through
+  `queue_build` / `queue_barracks` (an unpaid item with no work), take items out through
+  `take_queue_item` / `take_barracks_item`, which refund only a paid item, and pay only in
+  `work_queues`, as the turn's economy starts an item (`city/economy.rs`). Payment is in city
+  order, then each city's queue before its Barracks', so it's the same on every machine;
+  `forecast` plays the same choices out without changing anything, for the UI and the AI. A
+  paid item (`Queued::prepaid`) pushed directly is for tests and scenario setup; it skips the
+  price. `simulation.rs` checks that no stockpile goes negative, that an unpaid item has no
+  work, and that no item has more work than it needs. In a network game planning can't pay:
+  `check_plan` refuses a plan with a paid item or work the turn didn't start with.
 - **Screen-space UI: read `ui/AGENTS.md` and `docs/ui-system.md` first.** Its rules (shared
   `PanelBuilder` content for both presentations, every new ImGui panel draggable and dockable,
   classic docking by zone) live there.

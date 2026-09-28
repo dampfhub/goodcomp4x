@@ -2681,6 +2681,9 @@ impl GameState {
                         StyleColor::Button,
                         if item.active {
                             [0.26, 0.24, 0.15, 1.0]
+                        } else if item.waiting {
+                            // Waits for the stockpile: a dull red.
+                            [0.24, 0.10, 0.08, 1.0]
                         } else {
                             [0.11, 0.14, 0.16, 1.0]
                         },
@@ -2857,13 +2860,19 @@ impl GameState {
                 } else {
                     end_turn_label(pending)
                 };
-                let _disabled = ui.begin_disabled(self.is_resolving());
+                // Waiting for the others' plans, it takes this side's back.
+                let _disabled = ui.begin_disabled(self.is_playing_out());
                 let end_size = [end_width - 15.0, 29.0];
                 if ui.button_with_size(format!("{label}###EndTurn"), end_size) {
                     actions.push(Action::Button(None, Target::EndTurn));
                 }
+                note_drawn_button(ui, Target::EndTurn);
                 if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                    ui.tooltip_text("Space: End turn or select what still needs orders");
+                    ui.tooltip_text(if self.waiting_for_peers() {
+                        "Click: take back End Turn and change your orders"
+                    } else {
+                        "Space: End turn or select what still needs orders"
+                    });
                 }
             });
 

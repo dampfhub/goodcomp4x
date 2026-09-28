@@ -285,8 +285,9 @@ impl GameState {
     }
 
     /// The turn's economy (`economy.rs`): every city's goods go to its
-    /// side's stockpile, the citizens eat from it, each queue does a turn's
-    /// work, and finished builds complete.
+    /// side's stockpile, the citizens eat from it, each queue pays for the
+    /// item it starts and does a turn's work (`work_queues`), and finished
+    /// builds complete.
     pub(in crate::game) fn resolve_economy(&mut self) {
         self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
         let income: Vec<_> = (0..self.cities.len()).map(|i| self.income(i)).collect();
@@ -303,22 +304,14 @@ impl GameState {
             *self.stock_mut(team) += goods;
         }
         self.feed_citizens();
-        for (city, (rate, barracks_rate)) in self.cities.iter_mut().zip(rates) {
-            if city.queue.is_empty() {
-                city.progress = 0;
-            } else {
-                city.progress += rate;
-            }
-            // A Barracks trains whatever the manager does; with production
-            // speeding builds, the manager on it adds its group's work.
-            if city.barracks_queue.is_empty() {
-                city.barracks_progress = 0;
-            } else {
-                city.barracks_progress += barracks_rate;
-            }
+        for city in &mut self.cities {
             city.worked
                 .truncate(city.population.min(MAX_CITY_POPULATION));
         }
+        // Each queue pays for what it starts and works it. A Barracks trains
+        // whatever the manager does; with production speeding builds, the
+        // manager on it adds its group's work.
+        self.work_queues(&rates);
         self.complete_builds();
         self.heal_at_hospitals();
         for i in 0..self.cities.len() {

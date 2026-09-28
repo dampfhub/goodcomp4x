@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use super::GameState;
-use super::city::{Build, BuildUnit, Building, City};
+use super::city::{Build, BuildUnit, Building, City, Lane, Stock};
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::unit::{Team, UnitType};
@@ -27,16 +27,20 @@ impl GameState {
             .collect()
     }
 
-    /// What `team`'s cities and Barracks start, paid from the side's
-    /// stockpile (`city/economy.rs`); what the side can't pay for waits a
-    /// turn. The Barracks is the military building (`city/barracks.rs`): an
-    /// idle one trains Cavalry or Armored when its deposits allow and the
-    /// side can pay, else Melee, or Ranged for one in three. A city's own
-    /// queue trains a worker first if it has none left; its workers then build
-    /// a Barracks (sited by `ai_barracks_site`, paid when placed), and the
-    /// queue grows; a city without a Barracks
-    /// trains Melee itself, slowly, until the side has `AI_ARMY_PER_CITY`
-    /// units per city, falling back on growth, and gathering when it can't pay for anything.
+    /// What `team`'s cities and Barracks queue: one item in each empty
+    /// queue, and only what the side can pay for this turn, with what its
+    /// other queues start (`forecast`'s `spare`), so everything it queues is
+    /// paid and started this turn. A queue whose items all wait for the
+    /// stockpile (the income it counted on didn't come) is emptied, which
+    /// costs nothing, as they're unpaid, and planned again. The Barracks is
+    /// the military building (`city/barracks.rs`): an idle one trains
+    /// Cavalry or Armored when its deposits allow and the side can pay, else
+    /// Melee, or Ranged for one in three. A city's own queue trains a worker
+    /// first if it has none left; its workers then build a Barracks (sited
+    /// by `ai_barracks_site`, paid when placed), and the queue grows; a city
+    /// without a Barracks trains Melee itself, slowly, until the side has
+    /// `AI_ARMY_PER_CITY` units per city, falling back on growth, and
+    /// gathering when it can't pay for anything.
     fn plan_ai_cities(&mut self, team: Team) {
         let soldiers = |game: &GameState, kind: Option<UnitType>| {
             game.units
@@ -53,8 +57,29 @@ impl GameState {
         let cities: Vec<usize> = (0..self.cities.len())
             .filter(|&i| self.cities[i].team == team)
             .collect();
+        let forecast = self.forecast(team);
+        for lane in &forecast.lanes {
+            if lane.worked.is_some() {
+                continue;
+            }
+            while let Some(last) = self.lane_len(lane.city, lane.lane).checked_sub(1) {
+                match lane.lane {
+                    Lane::City => {
+                        self.take_queue_item(lane.city, last);
+                    }
+                    Lane::Barracks => {
+                        self.take_barracks_item(lane.city, last);
+                    }
+                }
+            }
+        }
+        // Emptying queues of unpaid items leaves what they start unchanged.
+        let mut spare = forecast.spare;
         for &city in &cities {
+            let stock = self.stock(team);
             self.place_ai_barracks(city);
+            // A job is paid when placed.
+            spare -= stock - self.stock(team);
             if self.cities[city].barracks.is_some() && self.cities[city].barracks_queue.is_empty() {
                 let basic = if soldiers(self, Some(UnitType::Ranged)) * 2
                     < soldiers(self, Some(UnitType::Melee))
@@ -64,9 +89,9 @@ impl GameState {
                     BuildUnit::Melee
                 };
                 for build in [BuildUnit::Cavalry, BuildUnit::Armored, basic] {
-                    if self.barracks_lock(city, build).is_none()
-                        && self.try_queue_barracks(city, build).is_ok()
-                    {
+                    if self.barracks_lock(city, build).is_none() && spare.covers(build.price()) {
+                        self.queue_barracks(city, build);
+                        spare -= build.price();
                         army += 1;
                         break;
                     }
@@ -93,7 +118,12 @@ impl GameState {
                 if build == Build::Grow && !self.can_grow(city) {
                     continue;
                 }
-                if self.try_queue_build(city, build).is_ok() {
+                let price = self.queue_price(city, build);
+                // A free Gather fits even when the Barracks job took more
+                // than was spare.
+                if price == Stock::default() || spare.covers(price) {
+                    self.queue_build(city, build);
+                    spare -= price;
                     army += usize::from(build == melee);
                     break;
                 }

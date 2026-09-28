@@ -596,6 +596,7 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 max: Vec2::new(body_max_x, max.y),
                 label: item.label,
                 active: item.active,
+                waiting: item.waiting,
                 dragging: item.dragging,
                 drop_target: item.drop_target,
                 locked: item.locked,

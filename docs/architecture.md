@@ -89,7 +89,8 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    `docs/multiplayer.md`). While it waits for the others' plans, `is_resolving` refuses every
    change to the plan, but looking (selecting, opening views) waits only for `is_playing_out`,
    and the panels show the controls that would change the plan disabled
-   (`PanelBuilder::freeze_plan`).
+   (`PanelBuilder::freeze_plan`). The End Turn button then takes the plan back
+   (`take_back_turn`) until the host resolves the turn.
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each unit step resolves one unit type's moves or attacks
    simultaneously; `effects.rs` animates attacks; `transition.rs` glides what moved; dead units are removed at the end of an attack
@@ -105,10 +106,11 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    resolves their separate tactical orders and any command-post capture. Then `resolve_economy`
    (`city/citizens.rs`) adds every city's food, wood and metal (`income`, including local
    Cannery and Smelter collection, `city/logistics.rs`) to its side's stockpile
-   (`GameState::stockpiles`, `city/economy.rs`), feeds the citizens from it, gives each queue a
-   turn's work (`work_rate`) and completes builds, growth included; builds were paid from the
-   stockpile when queued (`try_queue_build`), by the player's clicks or the AI's
-   `plan_ai_cities`; each
+   (`GameState::stockpiles`, `city/economy.rs`), feeds the citizens from it, has each queue pay
+   for the item it starts and gives it a turn's work (`work_queues`: the first item paid for or
+   affordable, city by city in order, each city's queue before its Barracks'; `work_rate`) and
+   completes builds, growth included; builds were queued unpaid (`queue_build`), by the
+   player's clicks or the AI's `plan_ai_cities`; each
    unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,
    sets or clears Lookout, and clears its orders; `advance_queues` (`order_queue.rs`) gives each
    unit with a queue its next turn's orders, dropping queues that no longer fit; then selection

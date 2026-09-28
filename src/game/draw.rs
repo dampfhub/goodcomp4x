@@ -4,6 +4,7 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 use glam::Vec2;
 
+use super::city::{Stock, resource_icon};
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, SeenBuilding, SeenJob};
 use super::hex::{HEX_SIZE, Hex, HexGrid, edge, edge_corners};
@@ -179,6 +180,13 @@ const JOB_LABEL_UNDER_SHARE: Vec2 = Vec2::new(0.0, 0.40);
 const WORKER_TAG_MIN: Vec2 = Vec2::new(-0.78, -0.58);
 const WORKER_TAG_MAX: Vec2 = Vec2::new(-0.3, -0.32);
 const WORKER_TAG_COLOR: Color = [0.03, 0.03, 0.04, 0.92];
+/// A city waiting for the stockpile (`waiting_badge`): a tag over its tower,
+/// from this height up, an icon for each resource it lacks.
+const WAITING_TAG_BOTTOM: f32 = 0.44;
+const WAITING_TAG_HEIGHT: f32 = 0.3;
+const WAITING_ICON_PITCH: f32 = 0.21;
+const WAITING_ICON_HEIGHT: f32 = 0.21;
+const WAITING_TAG_RIM: Color = [0.98, 0.30, 0.20, 1.0];
 /// Structures workers build.
 const STONE_COLOR: Color = [0.24, 0.23, 0.21, 1.0];
 /// How thick a wall or gate is along its hex edge.
@@ -1338,6 +1346,24 @@ impl GameState {
         for city in self.cities.iter().filter(|c| c.team == self.local_team) {
             push_worker_count(city.pos.to_world(), city.workers, out);
         }
+        // The player's cities that wait for the stockpile: the first item of
+        // a queue can't be paid for this turn (`city_waits_for`).
+        let shown: Vec<usize> = (0..self.cities.len())
+            .filter(|&i| {
+                let city = &self.cities[i];
+                city.team == self.local_team
+                    && self.may_show(city.pos)
+                    && !(city.queue.is_empty() && city.barracks_queue.is_empty())
+            })
+            .collect();
+        if !shown.is_empty() {
+            let forecast = self.forecast(self.local_team);
+            for i in shown {
+                if let Some(short) = self.city_waits_for(&forecast, i) {
+                    push_waiting_badge(self.cities[i].pos.to_world(), short, out);
+                }
+            }
+        }
     }
 
     /// Each tile's delivery share to `shares_city` (the percentage atop
@@ -2385,6 +2411,34 @@ fn push_worker_count(city: Vec2, count: u32, out: &mut Vec<Vertex>) {
     );
 }
 
+/// What a city waiting for the stockpile lacks (`city_waits_for`): a dark
+/// tag over its tower, rimmed in red, with the icon of each resource it's
+/// short of (`map_icons`), food, wood then metal.
+fn push_waiting_badge(city: Vec2, short: Stock, out: &mut Vec<Vertex>) {
+    let icons: Vec<MapIcon> = short
+        .parts()
+        .into_iter()
+        .filter(|&(_, amount)| amount > 0)
+        .filter_map(|(name, _)| map_icons::inline_icon(resource_icon(name)))
+        .collect();
+    if icons.is_empty() {
+        return;
+    }
+    let width = WAITING_TAG_HEIGHT - WAITING_ICON_PITCH + icons.len() as f32 * WAITING_ICON_PITCH;
+    let min = city + Vec2::new(-width / 2.0, WAITING_TAG_BOTTOM);
+    let max = min + Vec2::new(width, WAITING_TAG_HEIGHT);
+    let edge = Vec2::splat(ICON_OUTLINE_WIDTH / 2.0);
+    mesh::quad(min - edge, max + edge, WAITING_TAG_RIM, out);
+    mesh::quad(min, max, WORKER_TAG_COLOR, out);
+    let middle = (min.y + max.y) / 2.0;
+    let first = min.x + WAITING_TAG_HEIGHT / 2.0;
+    for (k, icon) in icons.into_iter().enumerate() {
+        let center = Vec2::new(first + k as f32 * WAITING_ICON_PITCH, middle);
+        // The icons are laid out about a fifth of a hex tall.
+        map_icons::push_map_icon_scaled(center, icon, WAITING_ICON_HEIGHT * 5.0 / HEX_SIZE, out);
+    }
+}
+
 /// A wall or gate along the edge between `a` and `b`: a band of stone with
 /// mortar joints and posts in its team's color at both ends; a gate's middle
 /// is a door in the team's color.
@@ -3188,6 +3242,36 @@ mod tests {
         assert!(count_color(&game.build_vertices(), PLANNED_JOB_COLOR) > before);
         let job = game.cities[0].worker_jobs[0];
         assert_eq!(game.job_name(job), "BARRACKS");
+    }
+
+    #[test]
+    fn a_city_waiting_for_the_stockpile_shows_what_it_lacks_over_its_tower() {
+        use crate::game::city::{Build, BuildUnit, Queued};
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.selected = None;
+        let rim = |game: &GameState| count_color(&game.build_vertices(), WAITING_TAG_RIM);
+        assert_eq!(rim(&game), 0, "nothing queued");
+        // Broke: a Melee at the head of the queue waits for wood.
+        game.stockpiles[Team::Blue.index()] = Stock::default();
+        game.cities[0].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
+        let forecast = game.forecast(Team::Blue);
+        let short = game.city_waits_for(&forecast, 0).expect("it waits");
+        assert!(short.wood > 0, "{short:?}");
+        assert!(rim(&game) > 0, "the badge shows");
+        let one = rim(&game);
+        // A Gather behind it doesn't stop it waiting: the head still does.
+        game.cities[0].queue.push(Queued::new(Build::Gather));
+        assert_eq!(rim(&game), one);
+        // Paid for, the head no longer waits.
+        game.cities[0].queue[0].paid = true;
+        assert_eq!(rim(&game), 0);
+        // Another side's waiting city shows nothing: its stockpile isn't
+        // the player's to see.
+        game.stockpiles[Team::Red.index()] = Stock::default();
+        game.cities[1].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
+        game.explore();
+        assert_eq!(rim(&game), 0);
     }
 
     /// Every vertex as plain data, sorted: labels over a route map come out

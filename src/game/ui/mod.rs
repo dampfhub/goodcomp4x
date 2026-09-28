@@ -390,6 +390,7 @@ enum Shape {
         max: Vec2,
         label: String,
         active: bool,
+        waiting: bool,
         dragging: bool,
         drop_target: bool,
         locked: bool,
@@ -455,6 +456,8 @@ struct QueueItemSpec {
     index: usize,
     label: String,
     active: bool,
+    /// Its item waits for the stockpile (`waiting_items`): tinted.
+    waiting: bool,
     dragging: bool,
     drop_target: bool,
     /// Can't be dragged or taken off: shown dim, its X disabled (a plan
@@ -763,6 +766,9 @@ impl GameState {
             Target::ClearCityQueue => self.clear_selected_city_queue(),
             Target::ClearBarracksQueue => self.clear_selected_barracks_queue(),
             Target::Focus(focus) => self.set_selected_city_focus(focus),
+            // While a network game waits for the others' plans, End Turn
+            // takes this side's back.
+            Target::EndTurn if self.waiting_for_peers() => self.take_back_turn(),
             Target::EndTurn => self.end_planning(),
             Target::Scenario(scenario) => self.switch_scenario(scenario),
             Target::SaveState => self.save_state(),

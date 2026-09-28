@@ -6,10 +6,10 @@ use super::paint::fade;
 use super::text::{end_turn_label, price_hint, stock_spans};
 use super::{
     BODY, Button, ButtonState, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, Line,
-    MARGIN, NOTICE_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
+    MARGIN, NOTICE_TEXT, REDUCED_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
 };
 use crate::game::GameState;
-use crate::game::city::{MAX_CITY_POPULATION, Stock, turns_icon};
+use crate::game::city::{Lane, MAX_CITY_POPULATION, Stock, turns_icon};
 use crate::game::font;
 use crate::game::scenario::Scenario;
 use glam::Vec2;
@@ -207,15 +207,23 @@ impl GameState {
         } else {
             end_turn_label(pending)
         };
-        let hint = "SPACE".to_string();
+        // While waiting for the others, a click takes the turn back.
+        let hint = if self.waiting_for_peers() {
+            "TAKE BACK"
+        } else {
+            "SPACE"
+        }
+        .to_string();
         let width = single_line_button_width(&label, &hint);
         let button_min = Vec2::new(size.x - MARGIN - width, middle - END_TURN_HEIGHT / 2.0);
         let end_turn = Button {
             target: Target::EndTurn,
             label,
             hint,
-            state: if self.is_resolving() {
+            state: if self.is_playing_out() {
                 ButtonState::Disabled
+            } else if self.waiting_for_peers() {
+                ButtonState::Ready
             } else {
                 ButtonState::new(pending == (0, 0), false)
             },
@@ -253,17 +261,24 @@ impl GameState {
         layout.buttons.push(end_turn);
     }
 
+    /// A queue's line in the hover panel: the item worked (`worked_item`)
+    /// and its turns left, or why there's none.
+    fn hover_queue_text(&self, worked: Option<(&str, i32, f32)>, empty: bool) -> String {
+        match worked {
+            Some((name, turns, _)) => format!("{name} · {} LEFT", turns_icon(turns)),
+            None if empty => "EMPTY".into(),
+            None => "NOTHING IT CAN PAY FOR".into(),
+        }
+    }
+
     /// A hovered city or Barracks: population and what the city delivers,
     /// or the Barracks' health, and what either is building.
     pub(super) fn structure_hover_panel(&self, i: usize, barracks: bool, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if barracks {
-            let queue = match (city.barracks_queue.first(), self.barracks_turns_left(i)) {
-                (Some(build), Some(turns)) => {
-                    format!("{} · {} LEFT", build.name(), turns_icon(turns))
-                }
-                _ => "EMPTY".into(),
-            };
+            let status = self.queue_status(i, Lane::Barracks);
+            let worked = self.worked_item(i, Lane::Barracks, &status);
+            let queue = self.hover_queue_text(worked, city.barracks_queue.is_empty());
             panel.text(
                 TITLE,
                 vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
@@ -280,16 +295,16 @@ impl GameState {
                 )],
             );
             panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
-            if let Some(build) = city.barracks_queue.first() {
-                panel.bar((city.barracks_progress as f32 / build.work() as f32).clamp(0.0, 1.0));
+            if let Some((_, _, done)) = worked {
+                panel.bar(done);
+            }
+            if let Some(waiting) = self.head_waiting_text(i, Lane::Barracks, &status) {
+                panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
             }
         } else {
-            let queue = match (city.queue.first(), self.turns_left(i)) {
-                (Some(build), Some(turns)) => {
-                    format!("{} · {} LEFT", build.name(), turns_icon(turns))
-                }
-                _ => "EMPTY".into(),
-            };
+            let status = self.queue_status(i, Lane::City);
+            let worked = self.worked_item(i, Lane::City, &status);
+            let queue = self.hover_queue_text(worked, city.queue.is_empty());
             panel.text(
                 TITLE,
                 vec![(format!("CITY {}", city.id + 1), city.team.color())],
@@ -306,10 +321,11 @@ impl GameState {
                 )],
             );
             panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
-            if let Some(build) = city.queue.first() {
-                panel.bar(
-                    (city.progress as f32 / self.city_build_work(i, *build) as f32).clamp(0.0, 1.0),
-                );
+            if let Some((_, _, done)) = worked {
+                panel.bar(done);
+            }
+            if let Some(waiting) = self.head_waiting_text(i, Lane::City, &status) {
+                panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
             }
         }
     }

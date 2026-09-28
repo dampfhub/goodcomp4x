@@ -1953,7 +1953,10 @@ mod tests {
         let mut game = cities();
         game.selected_city = Some(0);
         game.queue_selected_city_worker();
-        assert_eq!(game.cities[0].queue, [Build::Worker]);
+        assert_eq!(
+            game.cities[0].queue,
+            [crate::game::city::Queued::new(Build::Worker)]
+        );
         game.debug_complete_current_production();
         assert_eq!(game.cities[0].workers, 2);
         assert!(game.cities[0].queue.is_empty());
