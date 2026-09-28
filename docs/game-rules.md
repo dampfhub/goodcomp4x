@@ -271,7 +271,9 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   plan leaves the unit. Each turn the unit moves to the hex it can reach that turn that is the
   shortest walk from the clicked hex, going around the terrain, walls and gates the player knows
   of (a hex never seen counts as open; see Fog of war) and allies standing still with no orders
-  (the straight distance decides if there is no known way there; staying put wins ties). Turns are added
+  (the straight distance decides if there is no known way there; staying put wins ties). Of the
+  hexes as far along the way, it takes the one nearest the clicked hex as the crow flies, so of the
+  many equally short ways on hexes it keeps to the straightest. Turns are added
   until nobody can get any closer (a queue toward an enemy in sight stops next to it), but no
   unit's plan grows past the **queue limit** setting (6 turns by default, 1 to 20, this turn
   included; see `controls.md`, Settings menu). A hex farther away than that is queued as far

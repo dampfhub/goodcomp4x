@@ -107,9 +107,10 @@ impl GameState {
     /// it. Clicking a target all of them already attack calls it off. Being
     /// a new order, it replaces every member's queue.
     fn group_attack(&mut self, target: Hex) {
-        // Land, or water (for ships): anything on the map but mountains.
-        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
-        if !(self.grid.is_passable(target) || water) {
+        // Land, or water (for ships): anything on the map but mountains, as
+        // the player knows it (a hex never seen may be attacked).
+        let water = self.is_explored(target) && self.grid.terrain(target).is_water();
+        if !(self.known_passable(target, false) || water) {
             return;
         }
         let fog = self.fog();
