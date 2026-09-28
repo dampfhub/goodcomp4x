@@ -32,7 +32,7 @@ use super::workers::WorkerJob;
 /// Bumped whenever a message or a plan changes shape, or the rules a turn
 /// plays out by, so mismatched builds refuse each other instead of
 /// desyncing.
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -1446,8 +1446,9 @@ impl GameState {
 
     /// A fingerprint of the game's state, the same on every machine that
     /// resolved the same turns the same way: units, cities, the stockpiles,
-    /// workers and what's built on the map. Views (camera, fog memory,
-    /// panels) aren't in it.
+    /// workers, what's built on the map and how much of it each side's own
+    /// memory holds (`side_fog`, which the AI plans on). Views (camera, the
+    /// player's fog memory, panels) aren't in it.
     pub fn checksum(&self) -> u64 {
         let mut h = DefaultHasher::new();
         self.turn.hash(&mut h);
@@ -1503,6 +1504,9 @@ impl GameState {
             .collect();
         structures.sort_by_key(|(hex, ..)| (hex.q, hex.r));
         structures.hash(&mut h);
+        for memory in &self.side_memory {
+            memory.len().hash(&mut h);
+        }
         h.finish()
     }
 }

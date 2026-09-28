@@ -172,9 +172,16 @@ impl HexGrid {
         grid
     }
 
+    /// How many places the flat arrays have: the shape's bounding box. A
+    /// search over the grid can keep its own flags in an array this long,
+    /// by `index`.
+    pub fn cells(&self) -> usize {
+        self.tiles.len()
+    }
+
     /// Where `hex` is kept in the flat arrays, if inside the shape's
     /// bounding box.
-    fn index(&self, hex: Hex) -> Option<usize> {
+    pub fn index(&self, hex: Hex) -> Option<usize> {
         let (q, r) = (hex.q + self.q_max, hex.r + self.r_max);
         let (width, height) = (2 * self.q_max + 1, 2 * self.r_max + 1);
         ((0..width).contains(&q) && (0..height).contains(&r)).then(|| (q * height + r) as usize)

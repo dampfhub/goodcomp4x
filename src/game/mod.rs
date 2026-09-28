@@ -160,8 +160,13 @@ pub struct GameState {
     /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
     /// Kept across scenario switches and loads.
     fog_of_war: bool,
-    /// Every hex the player's side has seen, as it last saw it.
+    /// Every hex the player's side has seen, as it last saw it: this
+    /// machine's view, updated every frame (`fog.rs`).
     memory: fog::Memory,
+    /// Every hex each side (by `Team::index`) has seen, as it last saw
+    /// it, as of the latest turn the AI planned for it (`side_fog`): game
+    /// state, the same on every machine, which the AI plans on.
+    side_memory: [std::sync::Arc<fog::Memory>; Team::ALL.len()],
     turn: u32,
     pub camera: Camera,
     /// Damage rolls, and the F4 world's map seed. Seeded from entropy; tests
@@ -288,6 +293,7 @@ impl GameState {
             quit_requested: false,
             fog_of_war: true,
             memory: fog::Memory::default(),
+            side_memory: Default::default(),
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
             rng: GameRng::seed_from_u64(rand::random()),
@@ -615,8 +621,10 @@ impl GameState {
     /// Hexes a unit of `team` can reach from `start` in at most `move_range`
     /// steps without passing through mountains, walls, others' gates or an
     /// occupied hex, so a line of units blocks the way. Includes `start`
-    /// itself. Workers don't block. This is the real board, as the AI sees
-    /// it; the player plans with `known_reachable_hexes` (`fog.rs`).
+    /// itself. Workers don't block. This is the real board, for tests to
+    /// compare with: the player and the AI plan with `known_reachable_hexes`
+    /// (`fog.rs`).
+    #[cfg(test)]
     fn reachable_hexes(&self, start: Hex, move_range: i32, team: Team) -> HashSet<Hex> {
         self.reachable_hexes_by(start, move_range, |from, to| {
             self.can_step(from, to, team) && !self.is_occupied(to)

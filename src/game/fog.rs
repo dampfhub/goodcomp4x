@@ -1,6 +1,6 @@
-//! Fog of war for the player's side, in three layers:
-//! - in sight: hexes the player's units, cities, barracks, outposts and
-//!   workers out on the map see now, and the tiles the player's cities work,
+//! Fog of war, in three layers:
+//! - in sight: hexes a side's units, cities, barracks, outposts and
+//!   workers out on the map see now, and the tiles its cities work,
 //!   shown as they are;
 //! - remembered: hexes seen before but out of sight now, shown under a dark
 //!   tint as they were when last seen (`Sighting`): cities, barracks,
@@ -9,7 +9,20 @@
 //!   sight, none is known to be anywhere;
 //! - unexplored: never seen, covered by clouds (`push_cloud_banks`, `draw.rs`).
 //!
-//! A debug setting (F10) turns the fog off. The AI ignores it.
+//! Every side sees and remembers by the same rules, in one of two memories:
+//! - the player's (`fog()`, `GameState::memory`): this machine's view of
+//!   its side, updated every frame (`explore`), and a debug setting (F10)
+//!   turns the fog off for it;
+//! - each side's own (`side_fog`, `GameState::side_memory`): game state, the
+//!   same on every machine, brought up to date only as the AI plans that
+//!   side's turn, and untouched by F10 or by which side this machine plays.
+//!   The AI plans on it and nothing else, so it plays under the same fog as
+//!   the player.
+//!
+//! A `Fog` says which memory it recalls from, so every `known_*` query below
+//! answers for either.
+
+use std::sync::Arc;
 
 use super::GameState;
 use super::city::{BARRACKS_MAX_HP, Building, Routes};
@@ -33,12 +46,23 @@ pub(super) const LOOKOUT_SIGHT: i32 = 2;
 /// passes (see `Hex::line_between`).
 const SIGHT_NUDGE: f32 = 1e-4;
 
-/// What the player can see this frame.
+/// What one side can see now, and where it recalls what it saw before.
 pub(super) struct Fog {
     /// Hexes in sight, or `None` with the fog turned off.
     visible: Option<HashSet<Hex>>,
-    /// Whose sight it is: the local side's, whose own units always show.
+    /// Whose sight it is: the side whose own units always show.
     team: Team,
+    /// Which memory holds the hexes out of sight.
+    recall: Recall,
+}
+
+/// Where a `Fog` recalls hexes out of sight from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Recall {
+    /// The player's memory at this machine (`GameState::memory`).
+    Player,
+    /// The side's own memory in the game state (`GameState::side_memory`).
+    Side,
 }
 
 impl Fog {
@@ -55,6 +79,11 @@ impl Fog {
     /// Whether to show a worker out on the map, by the same rule.
     pub fn shows_worker(&self, worker: &FieldWorker) -> bool {
         worker.team == self.team || self.sees(worker.pos)
+    }
+
+    /// Whose sight it is.
+    pub fn team(&self) -> Team {
+        self.team
     }
 }
 
@@ -104,10 +133,33 @@ pub(super) struct SeenBuilding {
 }
 
 impl GameState {
+    /// What the player sees this frame, recalling from the player's memory.
     pub(super) fn fog(&self) -> Fog {
         Fog {
             visible: self.fog_of_war.then(|| self.visible_hexes()),
             team: self.local_team,
+            recall: Recall::Player,
+        }
+    }
+
+    /// What `team` sees now, recalling from its own memory, which this
+    /// first brings up to date with everything in sight. It depends on
+    /// nothing but the game (not on F10, nor on the side this machine
+    /// plays), so every machine builds the same one. The AI plans each
+    /// side's turn on it.
+    pub(super) fn side_fog(&mut self, team: Team) -> Fog {
+        let visible = self.side_sight(team);
+        let sightings: Vec<(Hex, Sighting)> = visible
+            .iter()
+            .map(|&hex| (hex, self.sighting(hex, team)))
+            .collect();
+        // Shared with any copy of the game (a savestate, a network turn's
+        // start) until it changes.
+        Arc::make_mut(&mut self.side_memory[team.index()]).extend(sightings);
+        Fog {
+            visible: Some(visible),
+            team,
+            recall: Recall::Side,
         }
     }
 
@@ -116,9 +168,28 @@ impl GameState {
         !self.fog_of_war || self.memory.contains_key(&hex)
     }
 
-    /// How `hex` looked when last seen, if it ever was.
+    /// How `hex` looked when the player last saw it, if they ever did.
     pub(super) fn remembered(&self, hex: Hex) -> Option<&Sighting> {
         self.memory.get(&hex)
+    }
+
+    /// The memory `fog` recalls from.
+    pub(super) fn memory_of(&self, fog: &Fog) -> &Memory {
+        match fog.recall {
+            Recall::Player => &self.memory,
+            Recall::Side => &self.side_memory[fog.team.index()],
+        }
+    }
+
+    /// How `hex` looked when `fog`'s side last saw it, if it ever did.
+    pub(super) fn recalled(&self, hex: Hex, fog: &Fog) -> Option<&Sighting> {
+        self.memory_of(fog).get(&hex)
+    }
+
+    /// Whether `fog`'s side knows `hex`: in sight now (always, with the fog
+    /// off), or seen before.
+    pub(super) fn explored_by(&self, hex: Hex, fog: &Fog) -> bool {
+        fog.sees(hex) || self.memory_of(fog).contains_key(&hex)
     }
 
     /// How far `unit` sees: its type's sight, more from hills or after a
@@ -143,13 +214,25 @@ impl GameState {
         })
     }
 
-    /// Every hex the player's units, cities and barracks can see now, and
-    /// every tile a player's city works, whatever the range or mountains: an
-    /// enemy standing on one of the player's tiles is always seen. That
-    /// includes a tile the city was working until a cut route took its
-    /// citizen off it (`remembered_worked`), so an enemy that ends a turn on
-    /// a worked tile doesn't vanish when the city reassigns the citizen.
+    /// Every hex the player's side sees now (`sight_of`), with what the
+    /// units the player commands of another side (the Frontier sandbox's) see.
     fn visible_hexes(&self) -> HashSet<Hex> {
+        self.sight_of(self.local_team, |idx| self.is_player_controlled(idx))
+    }
+
+    /// Every hex `team` sees now (`sight_of`), from its own units.
+    fn side_sight(&self, team: Team) -> HashSet<Hex> {
+        self.sight_of(team, |idx| self.units[idx].team == team)
+    }
+
+    /// Every hex seen now by the units `looks` picks and by `team`'s
+    /// cities, barracks, watchposts, outposts and workers, and every tile a
+    /// city of `team` works, whatever the range or mountains: an enemy
+    /// standing on one of a side's tiles is always seen. That includes a
+    /// tile the city was working until a cut route took its citizen off it
+    /// (`remembered_worked`), so an enemy that ends a turn on a worked tile
+    /// doesn't vanish when the city reassigns the citizen.
+    fn sight_of(&self, team: Team, looks: impl Fn(usize) -> bool) -> HashSet<Hex> {
         let mut seen = HashSet::default();
         let mut look = |from: Hex, range: i32| {
             for dq in -range..=range {
@@ -162,11 +245,11 @@ impl GameState {
             }
         };
         for (idx, unit) in self.units.iter().enumerate() {
-            if self.is_player_controlled(idx) {
+            if looks(idx) {
                 look(unit.pos, self.sight(unit));
             }
         }
-        for city in self.cities.iter().filter(|c| c.team == self.local_team) {
+        for city in self.cities.iter().filter(|c| c.team == team) {
             look(city.pos, CITY_SIGHT);
             if let Some(barracks) = city.barracks {
                 look(barracks, BARRACKS_SIGHT);
@@ -179,25 +262,21 @@ impl GameState {
             }
         }
         for (&hex, structure) in &self.structures {
-            if structure.team == self.local_team && structure.kind == StructureKind::Outpost {
+            if structure.team == team && structure.kind == StructureKind::Outpost {
                 look(hex, OUTPOST_SIGHT);
             }
         }
-        for worker in self
-            .field_workers
-            .iter()
-            .filter(|w| w.team == self.local_team)
-        {
+        for worker in self.field_workers.iter().filter(|w| w.team == team) {
             look(worker.pos, WORKER_SIGHT);
         }
-        for city in self.cities.iter().filter(|c| c.team == self.local_team) {
+        for city in self.cities.iter().filter(|c| c.team == team) {
             seen.extend(city.worked.iter().chain(&city.remembered_worked).copied());
         }
         seen
     }
 
-    /// `hex` as it is right now, for the memory.
-    fn sighting(&self, hex: Hex) -> Sighting {
+    /// `hex` as it is right now, for `viewer`'s memory.
+    fn sighting(&self, hex: Hex, viewer: Team) -> Sighting {
         let city = self
             .cities
             .iter()
@@ -235,15 +314,19 @@ impl GameState {
                 .field_workers
                 .iter()
                 .filter(|w| w.pos == hex)
-                .filter_map(|w| self.others_construction(w))
+                .filter_map(|w| self.others_construction(w, viewer))
                 .collect(),
         }
     }
 
     /// The job `worker` is at work on, if it belongs to another side than
-    /// the player's: what the player may see of it.
-    pub(super) fn others_construction(&self, worker: &FieldWorker) -> Option<SeenJob> {
-        if worker.team == self.local_team || worker.recalled || worker.work_left.is_none() {
+    /// `viewer`: what `viewer` may see of it.
+    pub(super) fn others_construction(
+        &self,
+        worker: &FieldWorker,
+        viewer: Team,
+    ) -> Option<SeenJob> {
+        if worker.team == viewer || worker.recalled || worker.work_left.is_none() {
             return None;
         }
         let job = worker.job.filter(|job| job.hex == worker.pos)?;
@@ -255,8 +338,9 @@ impl GameState {
     }
 
     // What the player knows: a hex in sight as it is, one out of sight as last
-    // seen. Planning and drawing for the player go through these, so nothing
-    // out of sight gives away what's really there. The AI uses the real board.
+    // seen. Planning and drawing for the player, and the AI's planning, go
+    // through these, so nothing out of sight gives away what's really there.
+    // "The player" below is whichever side `fog` is for.
 
     /// Whether the player knows of a unit on `hex`: only in sight, since
     /// units aren't remembered.
@@ -270,7 +354,7 @@ impl GameState {
         if fog.sees(hex) {
             return self.has_enemy_target_at(hex, team);
         }
-        self.remembered(hex)
+        self.recalled(hex, fog)
             .is_some_and(|seen| seen.barracks.is_some_and(|barracks| barracks.team != team))
     }
 
@@ -284,7 +368,7 @@ impl GameState {
 
     /// A tile's food, wood and metal as the player knows them.
     pub(super) fn known_yield(&self, hex: Hex, fog: &Fog) -> (i32, i32, i32) {
-        match self.remembered(hex) {
+        match self.recalled(hex, fog) {
             Some(seen) if !fog.sees(hex) => seen.yields,
             _ => self.raw_yield(hex),
         }
@@ -294,9 +378,9 @@ impl GameState {
     /// entering it: on the map, and never seen (the player can't know what's
     /// there), or seen to be land a unit can walk (for a ship, water). Terrain
     /// never changes, so a hex seen once is known for good.
-    pub(super) fn known_passable(&self, hex: Hex, naval: bool) -> bool {
+    pub(super) fn known_passable(&self, hex: Hex, naval: bool, fog: &Fog) -> bool {
         self.grid.contains(hex)
-            && (!self.is_explored(hex)
+            && (!self.explored_by(hex, fog)
                 || if naval {
                     self.grid.terrain(hex).is_water()
                 } else {
@@ -326,10 +410,7 @@ impl GameState {
         naval: bool,
     ) -> HashSet<Hex> {
         let mut reachable = self.reachable_hexes_by(start, move_range, |from, to| {
-            self.known_passable(to, naval)
-                && !self.known_enemy_city_at(to, team, fog)
-                && self.known_can_cross(from, to, team, fog)
-                && !self.known_occupied(to, fog)
+            self.known_step(from, to, team, fog, naval) && !self.known_occupied(to, fog)
         });
         if move_range > 0 && !naval {
             for city in self.cities.iter().filter(|city| city.team == team) {
@@ -344,14 +425,34 @@ impl GameState {
         reachable
     }
 
-    fn known_enemy_city_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
+    /// `can_step` as the player knows the board: whether a unit of `team`
+    /// (a ship, if `naval`) may step from `from` onto the adjacent `to`,
+    /// going by the terrain, enemy city centers, walls and gates the player
+    /// knows of. Units aside, as they'll have moved by the time anyone
+    /// gets there.
+    pub(super) fn known_step(
+        &self,
+        from: Hex,
+        to: Hex,
+        team: Team,
+        fog: &Fog,
+        naval: bool,
+    ) -> bool {
+        self.known_passable(to, naval, fog)
+            && !self.known_enemy_city_at(to, team, fog)
+            && self.known_can_cross(from, to, team, fog)
+    }
+
+    /// Whether the player knows of a city of another side than `team` on
+    /// `hex`: in sight, or remembered there.
+    pub(super) fn known_enemy_city_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
         if fog.sees(hex) {
             return self
                 .cities
                 .iter()
                 .any(|city| city.pos == hex && city.team != team);
         }
-        self.remembered(hex)
+        self.recalled(hex, fog)
             .is_some_and(|seen| seen.city.is_some_and(|city| city.team != team))
     }
 
@@ -363,7 +464,7 @@ impl GameState {
             return self.barriers.get(&edge(a, b)).copied();
         }
         let remembered = |from: Hex, across: Hex| {
-            self.remembered(from).and_then(|seen| {
+            self.recalled(from, fog).and_then(|seen| {
                 seen.barriers
                     .iter()
                     .find(|&&(n, _)| n == across)
@@ -390,7 +491,7 @@ impl GameState {
     /// `routes_from` as the player knows the board.
     pub(super) fn known_routes_from(&self, team: Team, origin: Hex, fog: &Fog) -> Routes {
         // Out of sight, the memory (none for a hex never seen); in sight, the board.
-        let memory = |hex: Hex| (!fog.sees(hex)).then(|| self.remembered(hex));
+        let memory = |hex: Hex| (!fog.sees(hex)).then(|| self.recalled(hex, fog));
         let river_banks = self.navigable_river_banks(team);
         self.routes_from_by(
             origin,
@@ -419,7 +520,7 @@ impl GameState {
             return;
         }
         for hex in self.visible_hexes() {
-            let sighting = self.sighting(hex);
+            let sighting = self.sighting(hex, self.local_team);
             self.memory.insert(hex, sighting);
         }
     }
@@ -436,7 +537,7 @@ impl GameState {
     }
 }
 
-/// The player's memory of the map: every hex ever seen, as last seen.
+/// A side's memory of the map: every hex ever seen, as last seen.
 pub(super) type Memory = HashMap<Hex, Sighting>;
 
 #[cfg(test)]
@@ -809,6 +910,25 @@ pub(super) mod tests {
         assert_eq!(game.known_yield(hidden, &fog), seen);
         let near = Hex::new(0, 1);
         assert_eq!(game.known_yield(near, &fog), game.raw_yield(near));
+    }
+
+    #[test]
+    fn a_side_sees_by_the_players_rules_whatever_this_machine_shows() {
+        let mut game = GameState::world_scenario(1);
+        let side = game.side_fog(game.local_team);
+        assert_eq!(game.fog().visible, side.visible);
+        // What the side has seen is its memory now, and only that.
+        let memory = &game.side_memory[game.local_team.index()];
+        assert_eq!(memory.len(), side.visible.as_ref().unwrap().len());
+        // F10 lifts the player's fog, not a side's.
+        game.toggle_fog();
+        assert!(game.fog().visible.is_none());
+        assert_eq!(game.side_fog(game.local_team).visible, side.visible);
+        // Nor does the side this machine plays count: every side's is its own.
+        let red = game.side_fog(Team::Red);
+        game.local_team = Team::Red;
+        assert_eq!(game.side_fog(Team::Red).visible, red.visible);
+        assert_ne!(red.visible, side.visible);
     }
 
     #[test]

@@ -365,7 +365,7 @@ impl GameState {
             for neighbor in hex.neighbors() {
                 if !steps.contains_key(&neighbor)
                     && !parked.contains(&neighbor)
-                    && self.known_passable(neighbor, naval)
+                    && self.known_passable(neighbor, naval, fog)
                     && self.known_can_cross(neighbor, hex, team, fog)
                 {
                     steps.insert(neighbor, next);
@@ -387,14 +387,14 @@ impl GameState {
         let members = self.selection();
         // As the player knows it: a hex never seen may be attacked, whatever
         // is really there.
-        let water = self.is_explored(target) && self.grid.terrain(target).is_water();
+        let fog = self.fog();
+        let water = self.explored_by(target, &fog) && self.grid.terrain(target).is_water();
         if members.is_empty()
             || self.is_resolving()
-            || !(self.known_passable(target, false) || water)
+            || !(self.known_passable(target, false, &fog) || water)
         {
             return false;
         }
-        let fog = self.fog();
         if self.known_empty_city_target(target, self.units[members[0]].team, &fog) {
             self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return false;
@@ -547,7 +547,7 @@ impl GameState {
         naval: bool,
     ) -> HashSet<Hex> {
         self.reachable_hexes_by(start, move_range, |from, to| {
-            self.known_passable(to, naval) && self.known_can_cross(from, to, team, fog)
+            self.known_passable(to, naval, fog) && self.known_can_cross(from, to, team, fog)
         })
     }
 

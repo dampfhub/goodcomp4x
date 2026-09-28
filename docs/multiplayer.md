@@ -57,8 +57,10 @@ sends them all to every guest (`Resolve`). Each machine applies them, in side or
 the game as it stood when the turn's planning began (`turn_start`), keeps its own view (camera,
 fog memory, settings), and resolves the turn. The same plans on the same game resolve the same
 way: the simulation is deterministic, and the host sends the world's seed and settings and the
-RNG seed when a guest joins. After every turn each guest sends a checksum of the game
-(`GameState::checksum`); a mismatch shows DESYNC WITH RED AFTER TURN N on the host. When a guest
+RNG seed when a guest joins. The AI sides plan on what each has seen (`side_fog`, `fog.rs`),
+which is part of the game, never of a machine's own view, so every machine plans them alike.
+After every turn each guest sends a checksum of the game
+(`GameState::checksum`, which covers how much each side remembers); a mismatch shows DESYNC WITH RED AFTER TURN N on the host. When a guest
 leaves mid-game the host sends `SeatLeft` before the turn's `Resolve`, so every machine hands
 that side to the AI at the same point.
 
