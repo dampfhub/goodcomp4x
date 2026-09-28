@@ -139,6 +139,7 @@ impl GameState {
         }
 
         if !self.is_resolving() {
+            self.resolve_transport();
             self.resolve_ruins();
             self.resolve_economy();
             for i in 0..self.units.len() {
@@ -154,6 +155,57 @@ impl GameState {
             info(fn() can {Out} { Out.put("=== turn "); show_u64(turn as u64); Out.put(" resolved ==="); });
             self.select_next_or_end_turn(Option.None);
         }
+    }
+
+    /// After combat: each landing craft told to unload puts its first passenger on the open
+    /// shore hex it was given, then each troop told to board a friendly landing craft beside
+    /// it, with room for it (four at most), goes aboard. A ship sunk this turn is gone, so
+    /// nobody boards or leaves it.
+    pub fn resolve_transport(&mut self) {
+        // Troops leaving their craft, in the order they land.
+        let mut landed: Vec[Unit] = Vec.new();
+        for s in 0..self.units.len() {
+            let Option.Some(dest) = self.units[s].planned_unload else { continue; };
+            self.units[s].planned_unload = Option.None;
+            let ship = &self.units[s];
+            let fits = ship.unit_type == UnitType.LandingCraft
+                && ship.pos.distance(dest) == 1
+                && self.grid.is_passable(dest)
+                && !self.is_occupied(dest)
+                && self.city_at(dest).is_none();
+            if !fits || self.units[s].cargo.is_empty() { continue; }
+            let mut passenger = self.units[s].cargo.remove(0);
+            passenger.pos = dest;
+            passenger.clear_orders();
+            landed.push(passenger);
+        }
+        push_in_order(&mut landed, &mut self.units);
+        // Last first, so boarding (which takes the troop out of the list) leaves the indices
+        // still to visit where they were.
+        let mut i = self.units.len();
+        while i > 0 {
+            i = i - 1;
+            let Option.Some(ship_id) = self.units[i].planned_board else { continue; };
+            self.units[i].planned_board = Option.None;
+            let Option.Some(ship) = self.index_of_unit(ship_id) else { continue; };
+            let fits = self.units[ship].unit_type == UnitType.LandingCraft
+                && self.units[ship].team == self.units[i].team
+                && self.units[ship].pos.distance(self.units[i].pos) == 1
+                && self.units[ship].cargo.len() < 4;
+            if !fits { continue; }
+            let mut boarding: Vec[Unit] = Vec.new();
+            let mut passenger = self.units.remove(i);
+            passenger.clear_orders();
+            boarding.push(passenger);
+            let Option.Some(ship) = self.index_of_unit(ship_id) else { continue; };
+            push_in_order(&mut boarding, &mut self.units[ship].cargo);
+        }
+    }
+
+    /// Where the unit with `id` is in the list.
+    fn index_of_unit(&self, id: u32) -> Option[i32] {
+        for i in 0..self.units.len() { if self.units[i].id == id { return Option.Some(i); } }
+        Option.None
     }
 
     /// Resolves one step, returning the ids of the units that acted in it.
@@ -426,4 +478,11 @@ impl GameState {
         for k in 0..attackers.len() { self.units[attackers[k]].planned_attack = Option.None; }
         handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume u.is_alive() } }
     }
+}
+
+/// Moves every unit of `from` onto the end of `to`, first first.
+fn push_in_order(from: &mut Vec[Unit], to: &mut Vec[Unit]) {
+    let mut reversed: Vec[Unit] = Vec.new();
+    while let Option.Some(u) = from.pop() { reversed.push(u); }
+    while let Option.Some(u) = reversed.pop() { to.push(u); }
 }

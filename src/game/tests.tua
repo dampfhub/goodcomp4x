@@ -21,6 +21,7 @@ use game.hex.Hex;
 use game.hex.HexGrid;
 use game.terrain.HILLS;
 use game.terrain.Terrain;
+use game.terrain.Tile;
 use game.turn.Phase;
 use game.turn.step_rank;
 use game.unit.Team;
@@ -631,5 +632,47 @@ fn effects_play_out_and_are_dropped() {
         assert(shown.len() > quiet.len());
         game.age_effects(10.0);
         assert(game.effects.is_empty());
+    });
+}
+
+/// A landing craft at `ship` and Blue melee troops at `troops`, each told to board it.
+fn board(game: &mut GameState, ship: u32, troops: &[(u32, Hex)]) {
+    for k in 0..troops.len() {
+        let (id, pos) = troops[k];
+        let mut troop = Unit.new(id, pos, Team.Blue, UnitType.Melee);
+        troop.planned_board = Option.Some(ship);
+        game.units.push(troop);
+    }
+}
+
+@test
+fn landing_craft_carries_four_troops_and_lands_one_on_open_shore() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.new();
+        // Water west of the origin, land beyond it.
+        g.grid = HexGrid.new(4, &[(Hex.new(-1, 0), Tile.of(Terrain.Coast)), (Hex.new(-1, 2), Tile.of(Terrain.Coast))]);
+        g.units.clear();
+        let ship = 90;
+        g.units.push(Unit.new(ship, Hex.new(-1, 0), Team.Blue, UnitType.LandingCraft));
+        board(&mut g, ship, &[(91, Hex.new(-2, 0)), (92, Hex.new(-2, 1))]);
+        g.resolve_transport();
+        assert(g.units[0].cargo.len() == 2);
+        g.units[0].pos = Hex.new(-1, 2);
+        board(&mut g, ship, &[(93, Hex.new(-2, 2)), (94, Hex.new(-2, 3))]);
+        g.resolve_transport();
+        assert(g.units.len() == 1);
+        assert(g.units[0].cargo.len() == 4);
+        // Full: a fifth stays ashore.
+        g.units[0].pos = Hex.new(-1, 0);
+        board(&mut g, ship, &[(95, Hex.new(-2, 0))]);
+        g.resolve_transport();
+        assert(g.units[0].cargo.len() == 4);
+        assert(g.units.len() == 2);
+        // The first aboard lands first.
+        g.units[0].planned_unload = Option.Some(Hex.new(-2, 1));
+        g.resolve_transport();
+        assert(g.units[0].cargo.len() == 3);
+        assert(g.units[2].id == 92);
+        assert(g.units[2].pos == Hex.new(-2, 1));
     });
 }

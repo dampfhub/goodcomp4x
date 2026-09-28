@@ -124,6 +124,15 @@ impl GameState {
 
         if self.city_click(hex) { return; }
 
+        // A selected land troop boards a friendly landing craft; a selected craft lands its
+        // first passenger on adjacent open ground. Both orders resolve after combat, so a ship
+        // sunk this turn cannot unload.
+        if mode == ClickMode.Normal {
+            if let Option.Some(selected) = self.selected {
+                if self.transport_click(selected, hex) { return; }
+            }
+        }
+
         let ally = self.controlled_unit_at(hex);
         // Shift-clicking one of your units adds it to the selection, and Ctrl-clicking a member
         // of a group takes it out (with one unit selected, Ctrl-click still swaps).
@@ -187,6 +196,44 @@ impl GameState {
             (ClickMode.QueueMove, _) => { let _queued = self.queue_move(hex); }
             (ClickMode.QueueAttack, _) => { let _queued = self.queue_attack(hex); }
         }
+    }
+
+    /// A plain click on `hex` with unit `selected` selected, if it's a boarding or landing
+    /// order: answers whether it was.
+    fn transport_click(&mut self, selected: i32, hex: Hex) -> bool {
+        if let Option.Some(craft) = self.controlled_unit_at(hex) {
+            let boards = self.units[craft].unit_type == UnitType.LandingCraft
+                && !self.units[selected].is_naval()
+                && self.units[selected].team == self.units[craft].team
+                && self.units[selected].pos.distance(hex) == 1;
+            if boards {
+                let id = self.units[craft].id;
+                let mut reserved = 0;
+                for i in 0..self.units.len() { if self.units[i].planned_board == Option.Some(id) { reserved = reserved + 1; } }
+                if self.units[craft].cargo.len() + reserved < 4 {
+                    let unit = &mut self.units[selected];
+                    unit.planned_board = Option.Some(id);
+                    unit.planned_move = Option.None;
+                    unit.planned_attack = Option.None;
+                    unit.guarding = false;
+                    unit.holding = false;
+                    self.set_notice("BOARDING LANDING CRAFT AFTER COMBAT");
+                } else {
+                    self.set_notice("LANDING CRAFT FULL (4 TROOPS)");
+                }
+                return true;
+            }
+        }
+        let lands = self.units[selected].unit_type == UnitType.LandingCraft
+            && !self.grid.terrain(hex).is_water()
+            && self.grid.is_passable(hex)
+            && self.units[selected].pos.distance(hex) == 1;
+        if !lands { return false; }
+        if !self.units[selected].cargo.is_empty() && !self.is_occupied(hex) && self.city_at(hex).is_none() {
+            self.units[selected].planned_unload = Option.Some(hex);
+            self.set_notice("LANDING FIRST PASSENGER AFTER COMBAT");
+        }
+        true
     }
 
     /// Whether a plain order on `hex` (an attack if `attack`) may go ahead for the selection.
