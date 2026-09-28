@@ -7,7 +7,7 @@ use ::imgui::{
 };
 
 use super::action_icons::{self, ICON_BUTTON_SIZE};
-use super::builder::{ButtonSpec, CatalogEntry, Row, icon_row, visible_button_hint};
+use super::builder::{ButtonSpec, CatalogEntry, Row, flat_rows, icon_row, visible_button_hint};
 use super::network_menu::NetField;
 use super::text::end_turn_label;
 use super::*;
@@ -1402,7 +1402,7 @@ fn panel_content_height(cursor_y: f32, padding_y: f32, title_height: Option<f32>
 fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32) -> f32 {
     let inner = (width - 45.0).max(100.0);
     let mut height = 26.0; // border and padding
-    for row in &panel.rows {
+    for row in flat_rows(&panel.rows) {
         height += match row {
             Row::Text(px, line) => {
                 let font = match *px {
@@ -1435,8 +1435,11 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
             }
             Row::QueueItem(_) => 37.0,
             Row::TitleWithButton(..) => ui.frame_height_with_spacing(),
-            Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 5) as f32 * 34.0) + 18.0,
+            Row::BuildingCatalog(_, buttons, ..) => {
+                (buttons.len().clamp(1, 5) as f32 * 34.0) + 18.0
+            }
             Row::Roster(_) => ROSTER_CHIP + 6.0,
+            Row::ScrollList(_) => unreachable!("flattened by flat_rows"),
             Row::Heading(_) => {
                 let _font = ui.push_font(fonts[0]);
                 // The text, the rule under it, and the spacing after each.
@@ -2440,7 +2443,7 @@ impl GameState {
             panel
         };
         let label_width = setting_label_width(ui, panel, fonts[1]);
-        for row in &panel.rows {
+        for row in flat_rows(&panel.rows) {
             match row {
                 Row::Heading(text) => {
                     let _font = ui.push_font(fonts[0]);
@@ -2466,6 +2469,7 @@ impl GameState {
                     text_line(ui, line);
                 }
                 Row::Gap(height) => ui.dummy([0.0, height.max(0.0)]),
+                Row::ScrollList(_) => unreachable!("flattened by flat_rows"),
                 Row::Roster(chips) => {
                     let io = ui.io();
                     let mode = if io.key_shift {
@@ -2604,7 +2608,7 @@ impl GameState {
                     note_drawn_button(ui, spec.target);
                     self.button_tooltip(ui, spec);
                 }
-                Row::BuildingCatalog(city, buttons, _) => {
+                Row::BuildingCatalog(city, buttons, ..) => {
                     let height = buttons.len().clamp(1, 5) as f32 * 34.0 + 18.0;
                     ui.child_window(format!("##building-catalog-{city}-{scope:?}"))
                         .size([0.0, height])
@@ -2696,6 +2700,7 @@ impl GameState {
                             Target::QueueItem(item.kind, item.index),
                         ));
                     }
+                    note_drawn_button(ui, Target::QueueItem(item.kind, item.index));
                     drop(_background);
                     drop(_align);
                     if !item.locked && !self.is_resolving() {
@@ -2796,7 +2801,8 @@ impl GameState {
             .size([viewport.x, STATUS_HEIGHT], Condition::Always)
             .build(|| {
                 let end_width = 220.0;
-                ui.text(format!("TURN {turn}"));
+                let turn_color = self.turn_number_color(ui.style_color(StyleColor::Text));
+                rich_text(ui, &format!("TURN {turn}"), turn_color);
                 // The player's stockpile, then the notice in what's left.
                 let mut stockpile_width = 0.0;
                 for (text, color) in &stockpile {

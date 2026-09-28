@@ -78,6 +78,11 @@ without roads. Dirt roads on all three route hexes cost 1.5 and deliver 3.
 Stone roads cost 0.75 and deliver the full 4. If a raider blocks that road,
 recalculate using the best alternate path: delivery drops or stops.
 
+As built (`docs/game-rules.md`, Cities, Logistics), terrain does not weigh routes: an off-road
+step counts one hex whatever its ground, and a step onto a dirt road half a hex. A tile beside a
+city always delivers 100%, since players read the share as distance; the bands are the ones
+above, in hexes. Stone roads are not built, and rail (the Railhead) carries troops, not goods.
+
 Use fixed-point arithmetic and preserve fractional output in city stores.
 Do not round each tile's harvest down independently. Scale iron and horse
 extraction with the same delivery rate if stockpiles are used.

@@ -1,4 +1,4 @@
-use super::builder::{ButtonSpec, Row, classic_rows};
+use super::builder::{ButtonSpec, Row, classic_rows, flat_rows};
 use super::text::{end_turn_label, price_hint, quantity, signed_quantity, wrap};
 use super::*;
 
@@ -1448,11 +1448,10 @@ fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
     game.placing_job = None;
     let mut panel = PanelBuilder::default();
     game.city_tray(0, &mut panel);
-    let labels: Vec<String> = panel
-        .rows
+    let labels: Vec<String> = flat_rows(&panel.rows)
         .into_iter()
         .filter_map(|row| match row {
-            Row::QueueItem(item) => Some(item.label),
+            Row::QueueItem(item) => Some(item.label.clone()),
             _ => None,
         })
         .collect();
@@ -1467,10 +1466,12 @@ fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
     game.cities[0].worker_jobs[0].done = 2;
     let mut panel = PanelBuilder::default();
     game.city_tray(0, &mut panel);
-    let row = panel.rows.into_iter().find_map(|row| match row {
-        Row::QueueItem(item) => Some(item.label),
-        _ => None,
-    });
+    let row = flat_rows(&panel.rows)
+        .into_iter()
+        .find_map(|row| match row {
+            Row::QueueItem(item) => Some(item.label.clone()),
+            _ => None,
+        });
     assert_eq!(row, Some(format!("{build} · {tile} · 2 OF \u{E003}3 DONE")));
 }
 
@@ -2119,16 +2120,23 @@ struct ImGuiScreen {
     context: ::imgui::Context,
     fonts: [::imgui::FontId; 3],
     layout: ImGuiLayoutState,
+    /// The window's size.
+    size: Vec2,
     /// Last, to drop after the context.
     _one: std::sync::MutexGuard<'static, ()>,
 }
 
 impl ImGuiScreen {
     fn new() -> Self {
+        Self::with_size(SCREEN)
+    }
+
+    /// The same, in a window of `size`.
+    fn with_size(size: Vec2) -> Self {
         let one = imgui::one_context_at_a_time();
         let mut context = ::imgui::Context::create();
         context.set_ini_filename(None);
-        context.io_mut().display_size = SCREEN.to_array();
+        context.io_mut().display_size = size.to_array();
         context
             .io_mut()
             .config_flags
@@ -2141,6 +2149,7 @@ impl ImGuiScreen {
             context,
             fonts: [font; 3],
             layout: ImGuiLayoutState::default(),
+            size,
             _one: one,
         }
     }
@@ -2155,7 +2164,7 @@ impl ImGuiScreen {
         io.add_mouse_button_event(::imgui::MouseButton::Left, down);
         imgui::DRAWN_BUTTONS.with_borrow_mut(Vec::clear);
         let ui = self.context.frame();
-        game.draw_imgui(ui, SCREEN, mouse, &self.fonts, &mut self.layout);
+        game.draw_imgui(ui, self.size, mouse, &self.fonts, &mut self.layout);
         self.context.render();
     }
 
@@ -2349,6 +2358,7 @@ fn escape_or_a_right_click_on_the_map_stops_placing_in_both_presentations() {
             game.press_escape();
             assert_eq!(game.placing_job, None, "{kind:?}");
             assert_eq!(game.selected_city, Some(0), "Escape stops placing first");
+            assert_eq!(game.notice, format!("STOPPED PLACING {}", kind.name()));
 
             // A right-click on the map. ImGui keeps a click over one of its
             // windows (`want_capture_mouse`); classic passes every
@@ -2364,9 +2374,13 @@ fn escape_or_a_right_click_on_the_map_stops_placing_in_both_presentations() {
             } else {
                 open_map_tile(&game, |at| game.layout(SCREEN).covers(to_ui(at, SCREEN)))
             };
+            assert!(game.notice.starts_with("PLACING"), "{}", game.notice);
             game.handle_context_click(hex_cursor(&game, tile), SCREEN, false, false);
             assert_eq!(game.placing_job, None, "{kind:?}, imgui {imgui}");
             assert_eq!(game.selected_city, Some(0));
+            // The status bar says so, as after Escape, rather than still
+            // telling the player how to cancel.
+            assert_eq!(game.notice, format!("STOPPED PLACING {}", kind.name()));
             assert_eq!(placed_and_paid(&game), before, "{kind:?}");
         }
     }
@@ -2577,11 +2591,12 @@ fn waiting_guest() -> GameState {
     guest.update(0.0);
     let team = guest.local_team;
     let city = guest.cities.iter().position(|c| c.team == team).unwrap();
+    let worked = guest.cities[city].worked.clone();
     let pos = guest.cities[city].pos;
     let site = pos
         .neighbors()
         .into_iter()
-        .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h))
+        .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h) && !worked.contains(&h))
         .unwrap();
     guest.cities[city].barracks = Some(site);
     guest.cities[city].barracks_queue = vec![BuildUnit::Melee];
@@ -2753,4 +2768,299 @@ fn the_waiting_button_takes_the_turn_back_in_both_presentations() {
             [crate::game::NetMessage::Plan(plan)] if plan.cities[0].queue.contains(&Build::Unit(BuildUnit::Melee))
         ));
     }
+}
+
+/// City 0 open with `jobs` roads placed and waiting and `out` workers out
+/// on others, its side rich: a tray with a long list of workers and jobs.
+fn crowded_city(jobs: usize, out: u32) -> GameState {
+    let (mut game, _) = empty_tile_near_blue_city();
+    game.fund(Team::Blue);
+    open_city_zero(&mut game);
+    game.cities[0].workers = out;
+    let city = game.cities[0].pos;
+    let mut tiles: Vec<Hex> = game
+        .grid
+        .all_hexes()
+        .filter(|h| (1..=4).contains(&h.distance(city)))
+        .collect();
+    tiles.sort_by_key(|h| (h.distance(city), h.q, h.r));
+    game.placing_job = Some(JobKind::Road);
+    for hex in tiles {
+        if game.cities[0].worker_jobs.len() == out as usize + jobs {
+            break;
+        }
+        if game.job_unavailable(hex, JobKind::Road).is_none() {
+            assert!(game.place_job_at(hex, None));
+        }
+    }
+    game.placing_job = None;
+    // The workers take the first jobs; the rest wait.
+    game.resolve_workers();
+    assert_eq!(game.field_workers.len(), out as usize);
+    assert_eq!(game.cities[0].worker_jobs.len(), jobs);
+    game
+}
+
+/// The classic layout's panel holding the button for `target`.
+fn panel_with(layout: &Layout, target: Target) -> Option<Rect> {
+    let button = layout.buttons.iter().find(|b| b.target == target)?;
+    layout
+        .panels
+        .iter()
+        .find(|&&(min, max)| contains(min, max, button.min) && contains(min, max, button.max))
+        .map(|&(min, max)| Rect { min, max })
+}
+
+/// Whether `target`'s button is in the panel `tray` and a click on its
+/// middle lands on it.
+fn clickable_in(layout: &Layout, tray: Rect, target: Target) -> bool {
+    panel_with(layout, target).is_some_and(|panel| panel.min == tray.min)
+        && layout
+            .buttons
+            .iter()
+            .find(|b| b.target == target)
+            .is_some_and(|b| {
+                layout.button_at((b.min + b.max) / 2.0).map(|b| b.target) == Some(target)
+            })
+}
+
+/// The worker jobs whose rows the classic layout shows, by index.
+fn job_rows(layout: &Layout) -> Vec<usize> {
+    layout
+        .queue_items
+        .iter()
+        .filter(|item| item.kind == QueueKind::Workers)
+        .map(|item| item.index)
+        .collect()
+}
+
+/// The classic layout's scroll region for the open city's workers and jobs.
+fn worker_list(layout: &Layout) -> Option<&QueueScrollRegion> {
+    layout
+        .queue_scrollbars
+        .iter()
+        .find(|s| s.kind == QueueKind::Workers)
+}
+
+/// `button_cursor` on a window of size `screen`.
+fn button_cursor_at(game: &GameState, target: Target, screen: Vec2) -> Vec2 {
+    let layout = game.layout(screen);
+    let button = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == target)
+        .expect("button shown");
+    to_ui((button.min + button.max) / 2.0, screen)
+}
+
+#[test]
+fn a_crowded_city_tray_stays_docked_with_its_list_scrolling_inside_it() {
+    for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        for placing in [false, true] {
+            let mut game = crowded_city(10, 4);
+            if placing {
+                game.arm_worker_job(JobKind::Road);
+                assert_eq!(game.placing_job, Some(JobKind::Road));
+            }
+            let at = format!("{screen}, placing {placing}");
+            let layout = game.layout(screen);
+            let tray = panel_with(&layout, Target::OpenInterior)
+                .unwrap_or_else(|| panic!("the city tray docks at {at}"));
+            assert!(tray.min.cmpge(Vec2::splat(MARGIN)).all(), "{at}");
+            assert!(tray.max.y <= screen.y - TOP_BAR_HEIGHT, "{at}");
+            for &(min, max) in &layout.panels {
+                let other = Rect { min, max };
+                assert!(
+                    min == tray.min || !tray.overlaps(other, 0.0),
+                    "{at}: {other:?} over the tray"
+                );
+            }
+            // Its buttons, catalogue included, are inside it and clickable.
+            for target in [
+                Target::Build(BuildUnit::Melee),
+                Target::Focus(LaborFocus::Balanced),
+                Target::OpenInterior,
+            ] {
+                assert!(clickable_in(&layout, tray, target), "{target:?} at {at}");
+            }
+            assert_eq!(
+                clickable_in(&layout, tray, Target::CancelPlacing),
+                placing,
+                "{at}"
+            );
+            let catalog = layout.building_scrollbars.first().expect("the catalogue");
+            assert!(contains(tray.min, tray.max, catalog.min), "{at}");
+            assert!(contains(tray.min, tray.max, catalog.max), "{at}");
+
+            // The workers and jobs scroll in a window of their own, with
+            // rows that click and drag as the full list's do.
+            let list = worker_list(&layout).unwrap_or_else(|| panic!("a scrollbar at {at}"));
+            assert!(contains(tray.min, tray.max, list.panel_min), "{at}");
+            assert!(contains(tray.min, tray.max, list.panel_max), "{at}");
+            let worker = game.field_workers[0].id;
+            assert!(
+                clickable_in(&layout, tray, Target::RecallWorker(worker)),
+                "{at}"
+            );
+            let shown = job_rows(&layout);
+            assert!(shown.len() < 10, "{at}: {shown:?}");
+
+            // Scrolled to the end: the last job, and its X removes it.
+            let wheel = to_ui((list.panel_min + list.panel_max) / 2.0, screen);
+            assert!(game.scroll_queue_at(wheel, screen, -100.0));
+            let layout = game.layout(screen);
+            assert_eq!(job_rows(&layout).last(), Some(&9), "{at}");
+            assert!(
+                !layout
+                    .buttons
+                    .iter()
+                    .any(|b| b.target == Target::RecallWorker(worker))
+            );
+            assert!(
+                clickable_in(&layout, tray, Target::WorkerJobRemove(9)),
+                "{at}"
+            );
+            let row = layout
+                .queue_items
+                .iter()
+                .find(|item| item.kind == QueueKind::Workers && item.index == 9)
+                .unwrap();
+            assert!(contains(list.panel_min, list.panel_max, row.min), "{at}");
+            assert!(row.max.x < list.track_min.x, "{at}: clear of the scrollbar");
+            let remove = button_cursor_at(&game, Target::WorkerJobRemove(9), screen);
+            game.handle_click(remove, screen, ClickMode::Normal);
+            assert_eq!(game.cities[0].worker_jobs.len(), 9, "{at}");
+
+            // Its scrollbar drags back to the top.
+            let layout = game.layout(screen);
+            let list = worker_list(&layout).unwrap();
+            let top = to_ui(Vec2::new(list.track_min.x + 1.0, list.track_max.y), screen);
+            assert!(game.drag_queue_scrollbar_at(top, screen, false));
+            assert_eq!(game.cities[0].worker_scroll, 0, "{at}");
+            let layout = game.layout(screen);
+            assert!(
+                clickable_in(&layout, tray, Target::RecallWorker(worker)),
+                "{at}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_tray_with_room_shows_its_whole_list_and_catalogue() {
+    let game = crowded_city(2, 1);
+    let layout = game.layout(SCREEN);
+    assert_eq!(job_rows(&layout), [0, 1]);
+    assert!(worker_list(&layout).is_none(), "nothing to scroll");
+    let catalog = layout.building_scrollbars.first().unwrap();
+    let cards = layout
+        .buttons
+        .iter()
+        .filter(|b| contains(catalog.min, catalog.max, b.min))
+        .count();
+    // Its heading, then cards.
+    assert_eq!(cards, BUILDING_LIST_VISIBLE - 1);
+}
+
+#[test]
+fn the_wheel_steps_back_from_the_end_of_a_list_left_scrolled_past_it() {
+    let mut game = crowded_city(10, 4);
+    // As if rows were taken off after scrolling to the end.
+    game.cities[0].worker_scroll = 100;
+    let layout = game.layout(SCREEN);
+    let list = worker_list(&layout).unwrap();
+    let last = list.max_offset;
+    assert_eq!(job_rows(&layout).last(), Some(&9));
+    let wheel = to_ui((list.panel_min + list.panel_max) / 2.0, SCREEN);
+    assert!(game.scroll_queue_at(wheel, SCREEN, 1.0));
+    assert_eq!(game.cities[0].worker_scroll, last - 1);
+}
+
+#[test]
+fn a_crowded_imgui_city_panel_scrolls_to_every_row() {
+    let on_screen = |at: Vec2, size: Vec2| at.cmpge(Vec2::ZERO).all() && at.cmple(size).all();
+    for size in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        let mut game = crowded_city(10, 4);
+        game.arm_worker_job(JobKind::Road);
+        let mut screen = ImGuiScreen::with_size(size);
+        screen.settle(&mut game);
+        // The top of the panel shows: how to stop placing, and the cards.
+        for target in [Target::CancelPlacing, Target::Build(BuildUnit::Melee)] {
+            let at = screen.button(target).expect("drawn");
+            assert!(on_screen(at, size), "{target:?} at {at} in {size}");
+        }
+        // Its window scrolls (the wheel over it, clear of the catalogue)
+        // down to the last job, whose X removes it.
+        let over = screen.button(Target::OpenInterior).unwrap();
+        for _ in 0..5 {
+            screen.context.io_mut().add_mouse_wheel_event([0.0, -5.0]);
+            screen.frame(&mut game, Some(over), false);
+        }
+        screen.settle(&mut game);
+        let last = screen.button(Target::WorkerJobRemove(9)).unwrap();
+        assert!(on_screen(last, size), "{last} in {size}");
+        screen.click(&mut game, Target::WorkerJobRemove(9));
+        assert_eq!(game.cities[0].worker_jobs.len(), 9, "{size}");
+    }
+}
+
+#[test]
+fn waiting_for_the_others_the_city_workers_list_changes_nothing() {
+    use crate::game::workers::{FieldWorker, WorkerJob};
+    let mut game = waiting_guest();
+    let team = game.local_team;
+    let city = game.cities.iter().position(|c| c.team == team).unwrap();
+    let pos = game.cities[city].pos;
+    // A worker held at home, one out on a road, and a road waiting: the
+    // city tray's scrolling list of workers and jobs has every kind of row.
+    let [out, waiting] = [pos.neighbors()[0], pos.neighbors()[3]];
+    game.cities[city].held_workers = 1;
+    game.cities[city].workers = game.cities[city].workers.max(1);
+    game.field_workers.push(FieldWorker {
+        id: 9_000,
+        team,
+        home: city,
+        base: pos,
+        pos: out,
+        job: Some(WorkerJob::on_tile(out, JobKind::Road)),
+        work_left: Some(2),
+        recalled: false,
+    });
+    game.cities[city]
+        .worker_jobs
+        .push(WorkerJob::on_tile(waiting, JobKind::Road));
+    let plan = game.team_plan(team);
+    game.open_city(city);
+    let changing = [
+        Target::ReleaseWorker,
+        Target::RecallWorker(9_000),
+        Target::WorkerJobRemove(0),
+    ];
+    // Classic: shown, disabled, and a click does nothing; the camera can
+    // still go to the worker.
+    for target in changing {
+        // The list may scroll: the job's row is its last.
+        game.cities[city].worker_scroll = if target == Target::WorkerJobRemove(0) {
+            99
+        } else {
+            0
+        };
+        assert_eq!(
+            find_button(&game, target).state,
+            ButtonState::Disabled,
+            "{target:?}"
+        );
+        game.handle_click(button_cursor(&game, target), SCREEN, ClickMode::Normal);
+        assert_eq!(game.team_plan(team), plan, "{target:?}");
+    }
+    game.cities[city].worker_scroll = 0;
+    let show = find_button(&game, Target::ShowWorker(9_000));
+    assert_ne!(show.state, ButtonState::Disabled);
+    // ImGui: the same.
+    let mut screen = ImGuiScreen::new();
+    for target in changing {
+        screen.click(&mut game, target);
+        assert_eq!(game.team_plan(team), plan, "{target:?}");
+    }
+    assert!(game.waiting_for_peers());
 }
