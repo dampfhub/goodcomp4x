@@ -728,15 +728,32 @@ fn ai_against_ai_combat_ends_with_fewer_units() {
     });
 }
 
+/// Scouts' mean turns alive (of `TURNS`, for each side's first scout) and the mean share of the
+/// map their sides have seen by the end, for which the AI's scouts (`plan_ai_scout`) must
+/// beat what they did when they fought like any troop: 24 turns, and 11% of the map (seeds
+/// 0 to 15). Scouts that keep out of reach and go where their side hasn't seen live nearly to
+/// the end (38 turns) and see half as much again (16%).
+const SCOUT_MIN_LIFE: f64 = 30.0;
+const SCOUT_MIN_SEEN: f64 = 0.12;
+
 #[test]
 fn ai_sides_find_each_other_through_the_fog() {
     // Anti-vacuity: the AI plans only on what its side has seen (`ai.rs`), so it must find its
     // enemies itself, exploring and heading for the cities it has seen. A world game still
-    // comes to blows: some troop dies (a settler founding a city isn't one).
+    // comes to blows: some troop dies (a settler founding a city isn't one). Its scouts live
+    // long and see far (`SCOUT_MIN_LIFE`, `SCOUT_MIN_SEEN`).
+    let scouts = std::sync::Mutex::new(Vec::new());
     for_every_game(&[Scenario::World], &seeds(), |scenario, seed| {
         let mut game = start(scenario, seed);
+        let first_scouts: Vec<(u32, Team)> = game
+            .units
+            .iter()
+            .filter(|u| u.unit_type == super::unit::UnitType::Scout)
+            .map(|u| (u.id, u.team))
+            .collect();
+        let mut lived: HashMap<u32, u32> = HashMap::default();
         let mut troops: HashSet<u32> = HashSet::default();
-        for _ in 0..TURNS {
+        for turn in 1..=TURNS {
             troops.extend(
                 game.units
                     .iter()
@@ -744,6 +761,11 @@ fn ai_sides_find_each_other_through_the_fog() {
                     .map(|u| u.id),
             );
             play_turn(&mut game);
+            for &(id, _) in &first_scouts {
+                if game.units.iter().any(|u| u.id == id) {
+                    lived.insert(id, turn);
+                }
+            }
         }
         let died = troops
             .iter()
@@ -753,7 +775,32 @@ fn ai_sides_find_each_other_through_the_fog() {
             died > 0,
             "seed {seed}: nobody died in {TURNS} turns of a world"
         );
+        let map = game.grid.all_hexes().count() as f64;
+        scouts
+            .lock()
+            .unwrap()
+            .extend(first_scouts.iter().map(|&(id, team)| {
+                let life = lived.get(&id).copied().unwrap_or(0) as f64;
+                (life, game.side_memory[team.index()].len() as f64 / map)
+            }));
     });
+    let scouts = scouts.into_inner().unwrap();
+    assert!(
+        !scouts.is_empty(),
+        "every world starts each side with a scout"
+    );
+    let count = scouts.len() as f64;
+    let life = scouts.iter().map(|s| s.0).sum::<f64>() / count;
+    let seen = scouts.iter().map(|s| s.1).sum::<f64>() / count;
+    assert!(
+        life >= SCOUT_MIN_LIFE,
+        "scouts lived {life:.1} turns on average"
+    );
+    assert!(
+        seen >= SCOUT_MIN_SEEN,
+        "sides with a scout saw {:.1}% of the map on average",
+        seen * 100.0
+    );
 }
 
 /// What a replay must reproduce: the map, every unit and every city.
