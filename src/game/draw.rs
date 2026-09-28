@@ -171,6 +171,9 @@ const JOB_LABEL_PLATE_COLOR: Color = [0.01, 0.01, 0.012, 0.8];
 /// hex's center, and its capital height.
 const SHARE_LABEL_OFFSET: Vec2 = Vec2::new(-0.3, 0.52);
 const SHARE_LABEL_HEIGHT: f32 = 0.18;
+const SHARE_LABEL_COLOR: Color = [0.65, 0.85, 0.65, 1.0];
+/// A road's dot and the segments joining it to its neighbors.
+const ROAD_COLOR: Color = [0.65, 0.45, 0.24, 1.0];
 /// A job's name on a tile showing its delivery share: just under the share.
 const JOB_LABEL_UNDER_SHARE: Vec2 = Vec2::new(0.0, 0.40);
 const WORKER_TAG_MIN: Vec2 = Vec2::new(-0.78, -0.58);
@@ -1180,9 +1183,8 @@ impl GameState {
     /// show what was there when last seen.
     fn push_city_map(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         let view = self.map_view(fog);
-        let shares = self.push_delivery_shares(fog, out);
         for &h in &view.roads {
-            mesh::regular_polygon(h.to_world(), 0.12, 8, 0.0, [0.65, 0.45, 0.24, 1.0], out);
+            mesh::regular_polygon(h.to_world(), 0.12, 8, 0.0, ROAD_COLOR, out);
         }
         // Road segments join roads to each other and to cities, even though a
         // city center is drawn as its larger marker.
@@ -1191,16 +1193,12 @@ impl GameState {
             for n in h.neighbors() {
                 let city = !view.roads.contains(&n);
                 if joins(n) && (city || (h.q, h.r) < (n.q, n.r)) {
-                    mesh::segment(
-                        h.to_world(),
-                        n.to_world(),
-                        0.09,
-                        [0.65, 0.45, 0.24, 1.0],
-                        out,
-                    );
+                    mesh::segment(h.to_world(), n.to_world(), 0.09, ROAD_COLOR, out);
                 }
             }
         }
+        // After the roads, which run through where a share sits (#215).
+        let shares = self.push_delivery_shares(fog, out);
         if let Some(i) = self
             .hovered_city
             .or(self.selected_city)
@@ -1367,7 +1365,7 @@ impl GameState {
                 h.to_world() + SHARE_LABEL_OFFSET,
                 SHARE_LABEL_HEIGHT,
                 &label,
-                [0.65, 0.85, 0.65, 1.0],
+                SHARE_LABEL_COLOR,
                 out,
             );
             labeled.insert(*h);
@@ -2841,7 +2839,7 @@ mod tests {
         game.explore();
         game.select_city();
         let city = game.selected_city.unwrap();
-        let label = [0.65, 0.85, 0.65, 1.0];
+        let label = SHARE_LABEL_COLOR;
         let seen = count_color(&game.build_vertices(), label);
         assert!(seen > 0, "labels on the explored tiles");
         // Forget an explored tile the known routes reach: its label goes.
@@ -2857,6 +2855,53 @@ mod tests {
         assert!(!game.is_explored(forgotten));
         let fewer = count_color(&game.build_vertices(), label);
         assert!(fewer < seen, "{fewer} vs {seen}");
+    }
+
+    /// #215: a road through a tile runs where its share label sits, so the
+    /// label is drawn after the road, whole on top of it.
+    #[test]
+    fn a_share_label_is_drawn_over_a_road_through_its_tile() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.explore();
+        game.open_city(0);
+        // A road through a tile beside the city, on to the hex above it.
+        let center = game.cities[0].pos;
+        let tile = Hex::new(center.q + 1, center.r);
+        let above = Hex::new(tile.q, tile.r + 1);
+        game.roads.extend([tile, above]);
+        let fog = game.fog();
+        let mut out = Vec::new();
+        game.push_city_map(&fog, &mut out);
+
+        // The label's box, and the triangles of each color that touch it.
+        let cost = game.known_routes(0, &fog).costs[&tile];
+        let text = format!("{}%", super::super::city::delivered_share(cost) * 25);
+        let min = tile.to_world() + SHARE_LABEL_OFFSET;
+        let size = Vec2::new(
+            font::world_text_width(&text, SHARE_LABEL_HEIGHT),
+            SHARE_LABEL_HEIGHT,
+        );
+        let max = min + size;
+        let touches = |t: &[Vertex; 3]| {
+            let at = |v: &Vertex| Vec2::new(v.pos[0], v.pos[1]);
+            let lo = t.iter().fold(Vec2::MAX, |m, v| m.min(at(v)));
+            let hi = t.iter().fold(Vec2::MIN, |m, v| m.max(at(v)));
+            lo.x < max.x && hi.x > min.x && lo.y < max.y && hi.y > min.y
+        };
+        let triangles = out.as_chunks::<3>().0;
+        let indices = |color: Color| -> Vec<usize> {
+            (0..triangles.len())
+                .filter(|&i| triangles[i][0].color == color && touches(&triangles[i]))
+                .collect()
+        };
+        let (road, label) = (indices(ROAD_COLOR), indices(SHARE_LABEL_COLOR));
+        assert!(!road.is_empty(), "the road runs through the label");
+        assert!(!label.is_empty(), "the tile shows its share");
+        assert!(
+            road.iter().max() < label.iter().min(),
+            "the road's triangles {road:?} come before the label's {label:?}"
+        );
     }
 
     #[test]
