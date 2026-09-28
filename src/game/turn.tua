@@ -127,8 +127,8 @@ impl GameState {
         if !self.is_resolving() {
             self.resolve_economy();
             for i in 0..self.units.len() {
-                let unit = self.units[i];
-                if unit.ability_queued && unit.ability() == Ability.Deploy {
+                if self.units[i].ability_queued && self.units[i].ability() == Ability.Deploy {
+                    let unit = &self.units[i];
                     let state = if unit.deployed { "packed up" } else { "set up" };
                     info(fn() can {Out} { unit.show(); Out.put(" has "); Out.put(state); });
                 }
@@ -222,7 +222,8 @@ impl GameState {
         let mut swaps: Vec[(i32, i32)] = Vec.new();
         for a in 0..n {
             for b in a + 1..n {
-                let (unit_a, unit_b) = (self.units[movers[a]], self.units[movers[b]]);
+                let unit_a = &self.units[movers[a]];
+                let unit_b = &self.units[movers[b]];
                 if dests[a] != unit_b.pos || dests[b] != unit_a.pos { continue; }
                 if unit_a.team == unit_b.team {
                     swaps.push((a, b));
@@ -241,7 +242,8 @@ impl GameState {
             for m in 0..n {
                 if !moving[m] { continue; }
                 if let Option.Some(occupant) = self.staying_occupant(dests[m], movers, &moving) {
-                    let (who, holder) = (self.units[movers[m]], self.units[occupant]);
+                    let who = &self.units[movers[m]];
+                    let holder = &self.units[occupant];
                     info(fn() can {Out} { who.show(); Out.put(" move blocked: "); holder.show(); Out.put(" holds the hex"); });
                     moving[m] = false;
                     changed = true;
@@ -253,20 +255,22 @@ impl GameState {
         for s in 0..swaps.len() {
             let (a, b) = swaps[s];
             if moving[a] && moving[b] {
-                let (ua, ub) = (self.units[movers[a]], self.units[movers[b]]);
+                let ua = &self.units[movers[a]];
+                let ub = &self.units[movers[b]];
                 info(fn() can {Out} { ua.show(); Out.put(" and "); ub.show(); Out.put(" swap places"); });
             }
         }
         for m in 0..n {
             if moving[m] && self.rival_of(movers[m]).is_some() {
-                let unit = self.units[movers[m]];
+                let unit = &self.units[movers[m]];
                 info(fn() can {Out} { unit.show(); Out.put(" withdraws from the contested hex at "); unit.pos.show(); });
             }
         }
         for c in 0..contests.len() {
             let (a, b, dest) = contests[c];
             if moving[a] && moving[b] {
-                let (ua, ub) = (self.units[movers[a]], self.units[movers[b]]);
+                let ua = &self.units[movers[a]];
+                let ub = &self.units[movers[b]];
                 info(fn() can {Out} { ua.show(); Out.put(" and "); ub.show(); Out.put(" clash at "); dest.show(); Out.put("; the hex is contested"); });
             }
         }
@@ -302,7 +306,7 @@ impl GameState {
         let mut shots: Vec[Effect] = Vec.new();
         for k in 0..attackers.len() {
             let a = attackers[k];
-            let attacker = self.units[a];
+            let attacker = &self.units[a];
             let from = self.unit_layout(a).0;
             if let Option.Some(rival) = self.rival_of(a) {
                 if attacker.planned_attack.is_some() {
@@ -357,30 +361,31 @@ impl GameState {
                 }
             }
             if reverse.is_some() && d < a { continue; }
-            let (attacker, defender) = (self.units[a], self.units[d]);
-            let hit = engagement.damage_scale * roll_damage(&attacker, &defender, self.grid.tile(defender.pos).defense_multiplier());
+            let attacker = &self.units[a];
+            let defender = &self.units[d];
+            let hit = engagement.damage_scale * roll_damage(attacker, defender, self.grid.tile(defender.pos).defense_multiplier());
             damage[d] = damage[d] + hit;
             let verb = if engagement.damage_scale < 1.0 { "volleys" } else { "hits" };
 
             let retaliation_scale = match reverse {
                 Option.Some(scale) => Option.Some(scale),
-                Option.None if draws_retaliation(&attacker) && defender.hp > hit => Option.Some(1.0),
+                Option.None if draws_retaliation(attacker) && defender.hp > hit => Option.Some(1.0),
                 Option.None => Option.None,
             };
             let grid = &self.grid;
             if let Option.Some(back_scale) = retaliation_scale {
-                let back = back_scale * roll_damage(&defender, &attacker, grid.tile(attacker.pos).defense_multiplier());
+                let back = back_scale * roll_damage(defender, attacker, grid.tile(attacker.pos).defense_multiplier());
                 damage[a] = damage[a] + back;
                 let verb = if reverse.is_some() { "trades blows with" } else { verb };
                 info(fn() can {Out} {
-                    attacker.show(); show_note(&attacker, grid, false); Out.put(" "); Out.put(verb); Out.put(" ");
-                    defender.show(); show_note(&defender, grid, false); Out.put(" for "); show_f64_fixed(hit as f64, 0);
+                    attacker.show(); show_note(attacker, grid, false); Out.put(" "); Out.put(verb); Out.put(" ");
+                    defender.show(); show_note(defender, grid, false); Out.put(" for "); show_f64_fixed(hit as f64, 0);
                     Out.put(", taking "); show_f64_fixed(back as f64, 0); Out.put(" back");
                 });
             } else {
                 info(fn() can {Out} {
-                    attacker.show(); show_note(&attacker, grid, false); Out.put(" "); Out.put(verb); Out.put(" ");
-                    defender.show(); show_note(&defender, grid, false); Out.put(" for "); show_f64_fixed(hit as f64, 0);
+                    attacker.show(); show_note(attacker, grid, false); Out.put(" "); Out.put(verb); Out.put(" ");
+                    defender.show(); show_note(defender, grid, false); Out.put(" for "); show_f64_fixed(hit as f64, 0);
                 });
             }
         }
@@ -397,8 +402,8 @@ impl GameState {
             if damage[i] > 0.0 {
                 let hp = self.units[i].hp - damage[i];
                 self.units[i].hp = if hp > 0.0 { hp } else { 0.0 };
-                let unit = self.units[i];
-                info(fn() can {Out} { Out.put("  "); unit.show(); Out.put(": "); show_hp(&unit); });
+                let unit = &self.units[i];
+                info(fn() can {Out} { Out.put("  "); unit.show(); Out.put(": "); show_hp(unit); });
             }
         }
         // The attacks have happened, so their planned arrows give way to the animations.

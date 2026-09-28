@@ -31,7 +31,7 @@ impl GameState {
             if skip { continue; }
             let Option.Some(target) = self.nearest_enemy_pos(idx) else { continue; };
 
-            let unit = self.units[idx];
+            let unit = &self.units[idx];
             let stats = unit.stats();
             let dest = if unit.pos.distance(target) <= stats.attack_range {
                 unit.pos
@@ -67,11 +67,11 @@ impl GameState {
             if settler.is_none() && self.units[i].team == team && self.settlers.contains(self.units[i].id) { settler = Option.Some(i); }
         }
         let Option.Some(i) = settler else { return; };
-        let unit = self.units[i];
-        self.remove_unit(unit.id);
-        self.settlers.remove(unit.id);
+        let (unit_id, unit_pos) = (self.units[i].id, self.units[i].pos);
+        self.remove_unit(unit_id);
+        self.settlers.remove(unit_id);
         let id = self.cities.len() as u32;
-        self.cities.push(City { id, team, pos: unit.pos, population: 1, food: 0, production: 0, worked: Vec.new(), queue: Option.Some(BuildUnit.Melee) });
+        self.cities.push(City { id, team, pos: unit_pos, population: 1, food: 0, production: 0, worked: Vec.new(), queue: Option.Some(BuildUnit.Melee) });
         self.auto_assign_city(self.cities.len() - 1);
     }
 
@@ -86,11 +86,11 @@ impl GameState {
     /// Position of the enemy closest on foot, routing around terrain; ties go to the enemy
     /// listed first.
     fn nearest_enemy_pos(&self, idx: i32) -> Option[Hex] {
-        let unit = self.units[idx];
+        let unit = &self.units[idx];
         let from_unit = self.walking_distances(unit.pos);
         let mut best: Option[(i32, Hex)] = Option.None;
         for i in 0..self.units.len() {
-            let other = self.units[i];
+            let other = &self.units[i];
             if other.team == unit.team { continue; }
             let d = steps_to(&from_unit, other.pos);
             let better = match best { Option.None => true, Option.Some((bd, _)) => d < bd };

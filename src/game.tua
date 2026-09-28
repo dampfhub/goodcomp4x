@@ -255,6 +255,11 @@ impl GameState {
                 UnitType.Ranged => "RANGED",
                 UnitType.Cavalry => "CAVALRY",
                 UnitType.Siege => "SIEGE",
+                UnitType.Scout => "SCOUT",
+                UnitType.Armored => "ARMORED",
+                UnitType.PatrolGalley => "PATROL GALLEY",
+                UnitType.LandingCraft => "LANDING CRAFT",
+                UnitType.BombardShip => "BOMBARD SHIP",
             };
             (name, unit.unit_type.letter())
         }
@@ -302,11 +307,11 @@ impl GameState {
     /// The ally this unit is swapping places with: the two are queued to move into each
     /// other's hexes.
     fn swap_partner(&self, idx: i32) -> Option[i32] {
-        let unit = self.units[idx];
+        let unit = &self.units[idx];
         let dest = unit.planned_move?;
         let mut i = 0;
         while i < self.units.len() {
-            let other = self.units[i];
+            let other = &self.units[i];
             if other.pos == dest && other.team == unit.team && other.planned_move == Option.Some(unit.pos) {
                 return Option.Some(i);
             }

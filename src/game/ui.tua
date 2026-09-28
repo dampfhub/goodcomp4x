@@ -463,12 +463,12 @@ impl GameState {
     /// A unit's name, stats as they stand this turn, and anything notable about it. Stats
     /// boosted above their base value are green, reduced red.
     fn unit_info(&self, idx: i32, panel: &mut PanelBuilder) {
-        let unit = self.units[idx];
+        let unit = &self.units[idx];
         let base = unit.unit_type.stats();
         let stats = unit.stats();
         let tile = self.grid.tile(unit.pos);
         let defense = stats.defense * tile.defense_multiplier();
-        let (role, _) = self.unit_role(&unit);
+        let (role, _) = self.unit_role(unit);
 
         let title = text(fn() can {Out} { Out.put(unit.team.name()); Out.put(" "); Out.put(role); });
         panel.text_owned(TextSize.Title, title, unit.team.color());
@@ -480,7 +480,7 @@ impl GameState {
         panel.stat("DEFENSE", text(fn() can {Out} { show_rounded(defense); }), compare(defense, base.defense));
         panel.end_line(TextSize.Body);
 
-        let (ability_name, _) = ability_text(&unit);
+        let (ability_name, _) = ability_text(unit);
         panel.begin_line();
         panel.stat("RANGE", text(fn() can {Out} { show_i64(stats.attack_range as i64); }), compare(stats.attack_range as f32, base.attack_range as f32));
         panel.stat("MOVE", text(fn() can {Out} { show_i64(stats.move_range as i64); }), compare(stats.move_range as f32, base.move_range as f32));
@@ -530,7 +530,7 @@ impl GameState {
     /// The selected unit's order buttons: what it can do depends on whether it's a fighter, a
     /// settler or a worker.
     fn unit_buttons(&self, idx: i32, panel: &mut PanelBuilder) {
-        let unit = self.units[idx];
+        let unit = &self.units[idx];
         let can_move = unit.stats().move_range > 0;
         let locked = self.rival_of(idx).is_some();
         let swapping = self.swap_partner(idx).is_some();
@@ -549,7 +549,7 @@ impl GameState {
             panel.button(Target.Unit(UnitAction.Road), "BUILD ROAD", "R", ButtonState.Ready, false);
             panel.button(Target.Unit(UnitAction.Improve), "IMPROVE", "I", ButtonState.Ready, false);
         } else {
-            let (name, _) = ability_text(&unit);
+            let (name, _) = ability_text(unit);
             let cooldown = unit.ability_cooldown;
             let label = if cooldown == 0 {
                 to_owned(name)
@@ -748,8 +748,8 @@ impl GameState {
         if !here.is_empty() {
             let names = text(fn() can {Out} {
                 for k in 0..here.len() {
-                    let unit = self.units[here[k]];
-                    let (role, _) = self.unit_role(&unit);
+                    let unit = &self.units[here[k]];
+                    let (role, _) = self.unit_role(unit);
                     if k > 0 { Out.put(", "); }
                     Out.put(unit.team.name());
                     Out.put(" ");
@@ -887,7 +887,7 @@ impl GameState {
     }
 
     fn unit_action_text(&self, action: UnitAction, idx: i32, title: &mut Str, shortcut: &mut Str, description: &mut Str, unavailable: &mut Option[Str]) {
-        let unit = self.units[idx];
+        let unit = &self.units[idx];
         let can_move = unit.stats().move_range > 0;
         let locked = self.rival_of(idx).is_some();
         match action {
@@ -918,7 +918,7 @@ impl GameState {
                 }
             }
             UnitAction.Ability => {
-                let (name, what) = ability_text(&unit);
+                let (name, what) = ability_text(unit);
                 let cooldown = unit.ability().cooldown();
                 *title = to_owned(name);
                 *shortcut = to_owned("Q");
@@ -1314,5 +1314,6 @@ fn ability_text(unit: &Unit) -> (str, str) {
         Ability.Charge => ("CHARGE", "+1 MOVE AND +50% ATTACK THIS TURN"),
         Ability.Deploy if unit.deployed => ("PACK UP", "SPEND A TURN PACKING UP TO MOVE AGAIN"),
         Ability.Deploy => ("DEPLOY", "SPEND A TURN SETTING UP, THEN +1 RANGE BUT CANNOT MOVE UNTIL PACKED UP"),
+        Ability.Lookout => ("LOOKOUT", "NO MOVING THIS TURN, +2 SIGHT NEXT TURN"),
     }
 }

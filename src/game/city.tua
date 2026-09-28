@@ -278,21 +278,21 @@ impl GameState {
             self.set_notice("SELECT YOUR SETTLER FIRST");
             return;
         };
-        let unit = self.units[index];
-        if unit.team != PLAYER_TEAM || !self.settlers.contains(unit.id) {
+        let (unit_id, unit_team, unit_pos) = (self.units[index].id, self.units[index].team, self.units[index].pos);
+        if unit_team != PLAYER_TEAM || !self.settlers.contains(unit_id) {
             self.set_notice("ONLY A SETTLER CAN FOUND A CITY");
             return;
         }
         for i in 0..self.cities.len() {
-            if self.cities[i].pos.distance(unit.pos) < 3 {
+            if self.cities[i].pos.distance(unit_pos) < 3 {
                 self.set_notice("TOO CLOSE TO ANOTHER CITY");
                 return;
             }
         }
         let id = self.cities.len() as u32;
-        self.cities.push(City { id, team: unit.team, pos: unit.pos, population: 1, food: 0, production: 0, worked: Vec.new(), queue: Option.None });
-        self.settlers.remove(unit.id);
-        self.remove_unit(unit.id);
+        self.cities.push(City { id, team: unit_team, pos: unit_pos, population: 1, food: 0, production: 0, worked: Vec.new(), queue: Option.None });
+        self.settlers.remove(unit_id);
+        self.remove_unit(unit_id);
         self.selected = Option.None;
         let city = self.cities.len() - 1;
         self.auto_assign_city(city);
@@ -308,25 +308,25 @@ impl GameState {
     /// R or the Build Road button: a road on the selected worker's hex.
     pub fn build_worker_road_selected(&mut self) {
         let Option.Some(i) = self.selected else { return; };
-        let unit = self.units[i];
-        if !self.workers.contains(unit.id) {
+        let (unit_id, unit_pos) = (self.units[i].id, self.units[i].pos);
+        if !self.workers.contains(unit_id) {
             self.set_notice("ONLY A WORKER BUILDS ROADS");
             return;
         }
-        self.roads.insert(unit.pos);
+        self.roads.insert(unit_pos);
         self.set_notice("DIRT ROAD BUILT - IT LOWERS LOGISTICS COST");
     }
 
     /// I or the Improve button: a mine on hills, else a farm, on the selected worker's hex.
     pub fn improve_worker_tile_selected(&mut self) {
         let Option.Some(i) = self.selected else { return; };
-        let unit = self.units[i];
-        if !self.workers.contains(unit.id) {
+        let (unit_id, unit_pos, unit_team) = (self.units[i].id, self.units[i].pos, self.units[i].team);
+        if !self.workers.contains(unit_id) {
             self.set_notice("ONLY A WORKER IMPROVES TILES");
             return;
         }
-        let (food, production, kind) = if self.grid.tile(unit.pos).hills { (1, 4, SiteKind.Mine) } else { (4, 0, SiteKind.Farm) };
-        self.sites.insert(unit.pos, Site { team: unit.team, food, production, kind });
+        let (food, production, kind) = if self.grid.tile(unit_pos).hills { (1, 4, SiteKind.Mine) } else { (4, 0, SiteKind.Farm) };
+        self.sites.insert(unit_pos, Site { team: unit_team, food, production, kind });
         self.notice = text(fn() can {Out} { Out.put(kind.name()); Out.put(" BUILT"); });
     }
 

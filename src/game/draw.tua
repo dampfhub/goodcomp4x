@@ -162,7 +162,7 @@ impl GameState {
 
         let selection = match self.selected {
             Option.Some(idx) => {
-                let unit = self.units[idx];
+                let unit = &self.units[idx];
                 let stats = unit.stats();
                 // A green hex means clicking moves there, which isn't true while an attack or
                 // swap is armed.
@@ -194,16 +194,16 @@ impl GameState {
         self.push_order_markers(&mut out);
 
         for idx in 0..self.units.len() {
-            let unit = self.units[idx];
+            let unit = &self.units[idx];
             let (center, scale) = self.unit_layout(idx);
             let (icon_scale, color) = if self.recent_actors.contains(unit.id) {
                 (scale * ACTED_SCALE, brighten(unit.team.color()))
             } else {
                 (scale, unit.team.color())
             };
-            push_status_rings(center, &unit, scale, &mut out);
-            push_unit_icon(center, &unit, self.unit_letter(&unit), icon_scale, color, &mut out);
-            push_order_badges(center, &unit, scale, &mut out);
+            push_status_rings(center, unit, scale, &mut out);
+            push_unit_icon(center, unit, self.unit_letter(unit), icon_scale, color, &mut out);
+            push_order_badges(center, unit, scale, &mut out);
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
         }
 
@@ -234,10 +234,10 @@ impl GameState {
             let total = self.count_moving_to(n, &swapping, hex);
             let mut k = 0;
             for i in 0..n {
-                let unit = self.units[i];
+                let unit = &self.units[i];
                 if !swapping[i] && unit.planned_move == Option.Some(hex) {
                     let pos = fan_position(hex.to_world(), k, total, GHOST_FAN_RADIUS);
-                    push_unit_icon(pos, &unit, self.unit_letter(&unit), 1.0, with_alpha(unit.team.color(), GHOST_ALPHA), out);
+                    push_unit_icon(pos, unit, self.unit_letter(unit), 1.0, with_alpha(unit.team.color(), GHOST_ALPHA), out);
                     let _old = ghosts.insert(unit.id as i64, pos);
                     k = k + 1;
                 }
@@ -255,7 +255,7 @@ impl GameState {
 
         // Only the player's own attacks: the AI's plans aren't theirs to see.
         for idx in 0..n {
-            let unit = self.units[idx];
+            let unit = &self.units[idx];
             let Option.Some(target) = unit.planned_attack else { continue; };
             if !self.is_player_controlled(idx) { continue; }
             // Swapping units attack from their partner's hex.
@@ -279,7 +279,7 @@ impl GameState {
     /// Where to draw a unit and at what scale: full size in the middle of its hex, or half size
     /// and offset when it shares a contested hex.
     pub fn unit_layout(&self, idx: i32) -> (Vec2, f32) {
-        let unit = self.units[idx];
+        let unit = &self.units[idx];
         let center = unit.pos.to_world();
         if self.rival_of(idx).is_none() { return (center, 1.0); }
         let offset_y = if unit.team == Team.Blue { CONTESTED_OFFSET_Y } else { -CONTESTED_OFFSET_Y };

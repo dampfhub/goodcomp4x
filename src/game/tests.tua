@@ -206,7 +206,7 @@ fn enemies_moving_onto_the_same_hex_contest_it_and_fight() {
         game.resolve_step(UnitType.Cavalry, Phase.Attack);
         let mut i = 0;
         while i < game.units.len() {
-            let u = game.units[i];
+            let u = &game.units[i];
             assert(u.unit_type != UnitType.Cavalry || u.hp < u.max_hp());
             i = i + 1;
         }
@@ -397,7 +397,7 @@ fn siege_spends_a_turn_deploying_then_gains_range() {
         toggle_ability(&mut game, siege);
         assert(!game.units[siege].can_attack());
         game.units[siege].end_turn();
-        let unit = game.units[siege];
+        let unit = &game.units[siege];
         assert(unit.deployed && unit.can_attack());
         assert(unit.stats().attack_range == UnitType.Siege.stats().attack_range + 1);
         assert(unit.stats().move_range == 0);

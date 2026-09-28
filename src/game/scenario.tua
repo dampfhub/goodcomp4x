@@ -150,7 +150,7 @@ impl GameState {
             hover_seconds: self.hover_seconds,
             notice: copy_str(&self.notice),
             grid: self.grid.snapshot(),
-            units: copy_vec(&self.units),
+            units: copy_units(&self.units),
             selected: self.selected,
             group: copy_vec(&self.group),
             scenario: self.scenario,
@@ -169,6 +169,12 @@ impl GameState {
             next_unit_id: self.next_unit_id,
         }
     }
+}
+
+fn copy_units(units: &Vec[Unit]) -> Vec[Unit] {
+    let mut out: Vec[Unit] = Vec.new();
+    for i in 0..units.len() { out.push(units[i].snapshot()); }
+    out
 }
 
 fn copy_vec[T](v: &Vec[T]) -> Vec[T] {

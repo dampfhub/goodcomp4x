@@ -41,7 +41,7 @@ pub fn show_note(unit: &Unit, grid: &HexGrid, in_fort: bool) can {Out} {
         match unit.ability() {
             Ability.ShieldWall => { any = note(any, "shield wall"); }
             Ability.Charge => { any = note(any, "charging"); }
-            Ability.Volley | Ability.Deploy => {}
+            Ability.Volley | Ability.Deploy | Ability.Lookout => {}
         }
     }
     if any { Out.put(")"); }

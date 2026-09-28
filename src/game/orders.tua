@@ -259,7 +259,7 @@ impl GameState {
     /// it does (or holds, or guards). A unit locked in a contested hex already has its fight,
     /// so it's done.
     pub fn needs_orders(&self, idx: i32) -> bool {
-        let unit = self.units[idx];
+        let unit = &self.units[idx];
         if unit.holding || unit.guarding || self.rival_of(idx).is_some() { return false; }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
         let may_attack = unit.planned_attack.is_none() && unit.can_attack() && !self.workers.contains(unit.id);
@@ -317,11 +317,11 @@ impl GameState {
     /// Toggles a move to `dest`, if there's a path to it within range and no other friendly
     /// unit is already heading there.
     pub fn try_queue_move(&mut self, idx: i32, dest: Hex) {
-        let unit = self.units[idx];
+        let unit = &self.units[idx];
         let reachable = self.reachable_hexes(unit.pos, unit.stats().move_range);
         let mut claimed_by_ally = false;
         for i in 0..self.units.len() {
-            let u = self.units[i];
+            let u = &self.units[i];
             if u.team == unit.team && u.id != unit.id && u.planned_move == Option.Some(dest) { claimed_by_ally = true; }
         }
         if !reachable.contains(dest) || claimed_by_ally { return; }
@@ -351,10 +351,11 @@ impl GameState {
     /// hex, when whichever of the two moves first acts. Replaces any moves either had queued.
     /// Both units must be free to move.
     pub fn try_queue_swap(&mut self, idx: i32, ally: i32) {
-        let (unit, other) = (self.units[idx], self.units[ally]);
+        let (unit_pos, unit_team) = (self.units[idx].pos, self.units[idx].team);
+        let (other_pos, other_team) = (self.units[ally].pos, self.units[ally].team);
         let allowed = idx != ally
-            && unit.team == other.team
-            && unit.pos.distance(other.pos) == 1
+            && unit_team == other_team
+            && unit_pos.distance(other_pos) == 1
             && self.free_to_move(idx)
             && self.free_to_move(ally);
         if !allowed { return; }
@@ -363,8 +364,8 @@ impl GameState {
         self.cancel_swap(idx);
         self.cancel_swap(ally);
         if !already_swapping {
-            self.units[idx].planned_move = Option.Some(other.pos);
-            self.units[ally].planned_move = Option.Some(unit.pos);
+            self.units[idx].planned_move = Option.Some(other_pos);
+            self.units[ally].planned_move = Option.Some(unit_pos);
         }
         for i in each(&[idx, ally]) {
             self.units[*i].drop_unreachable_attack();
@@ -387,12 +388,12 @@ impl GameState {
     /// After a unit's abilities change what it can do, drops any queued move or attack it can
     /// no longer carry out.
     fn drop_orders_now_impossible(&mut self, idx: i32) {
-        let unit = self.units[idx];
-        let move_range = unit.stats().move_range;
-        let move_still_possible = match (unit.planned_move, self.swap_partner(idx)) {
+        let (planned_move, pos) = (self.units[idx].planned_move, self.units[idx].pos);
+        let move_range = self.units[idx].stats().move_range;
+        let move_still_possible = match (planned_move, self.swap_partner(idx)) {
             (Option.None, _) => true,
             (Option.Some(_), Option.Some(_)) => move_range > 0,
-            (Option.Some(dest), Option.None) => self.reachable_hexes(unit.pos, move_range).contains(dest),
+            (Option.Some(dest), Option.None) => self.reachable_hexes(pos, move_range).contains(dest),
         };
         if !move_still_possible {
             self.cancel_swap(idx);

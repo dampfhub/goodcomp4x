@@ -90,7 +90,7 @@ impl GameState {
         let mut able: Vec[i32] = Vec.new();
         for m in 0..self.group.len() {
             let i = self.group[m];
-            let unit = self.units[i];
+            let unit = &self.units[i];
             let reaches = unit.can_attack()
                 && !self.workers.contains(unit.id)
                 && self.rival_of(i).is_none()
