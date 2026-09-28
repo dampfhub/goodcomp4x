@@ -12,6 +12,10 @@ file holds.
   classic views show the same thing and do the same thing. A new kind of row is a `Row` variant
   that `builder.rs` places (classic) and `imgui.rs` measures (`measure_panel`) and renders
   (`render_imgui_panel`).
+- **A button that changes the plan** (an order, a build, a citizen, a worker) has its `Target`
+  in `Target::changes_plan` (`mod.rs`), so both presentations show it disabled while a network
+  game waits for the others' plans (`PanelBuilder::freeze_plan`); the method it calls refuses
+  while `is_resolving`.
 - **Every new ImGui panel is draggable and dockable.** Give it a slot: a constant and an entry in
   `SLOT_TITLES` (`imgui.rs`), a zone in `ImGuiLayoutState::plan`, a measured size in
   `draw_imgui`, and a `render_imgui_window` call. That makes it movable, resizable, dockable

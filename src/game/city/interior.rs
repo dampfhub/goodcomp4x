@@ -3,6 +3,7 @@
 
 use crate::game::fast_hash::HashSet;
 use crate::game::hex::Hex;
+use crate::game::multiplayer::WAITING_NOTICE;
 use crate::game::terrain::Resource;
 use crate::game::unit::{Team, UnitStats, UnitType, apply_training_upgrade};
 use crate::game::{Camera, GameState, combat};
@@ -57,7 +58,13 @@ impl GameState {
         self.interior_view.is_some()
     }
 
+    /// Backspace or the Clear Orders button inside a city: the selected
+    /// troop's interior orders go. Not once the turn is out of the player's
+    /// hands (playing out, or a network game's plan sent).
     pub fn clear_selected_interior_orders(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
         let (Some(city), Some(source)) = (self.interior_view, self.interior_selected) else {
             return;
         };
@@ -76,7 +83,7 @@ impl GameState {
     /// V opens the city under the pointer, the selected city, or the closest
     /// city to the selected field unit. The interior is a separate order view.
     pub fn toggle_city_interior(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if self.interior_view.is_some() {
@@ -129,7 +136,12 @@ impl GameState {
         self.ui_click_mode = None;
         // Leave room for the command panel on the left and Debug on the right.
         self.camera = Camera::new(glam::Vec2::new(-1.35, 0.0), 6.0);
-        self.notice = "CITY INTERIOR: CLICK A BLUE TROOP, THEN A TILE OR ENEMY; ESC RETURNS".into();
+        self.notice = if self.waiting_for_peers() {
+            WAITING_NOTICE
+        } else {
+            "CITY INTERIOR: CLICK A BLUE TROOP, THEN A TILE OR ENEMY; ESC RETURNS"
+        }
+        .into();
     }
 
     pub(in crate::game) fn close_city_interior(&mut self) {
@@ -151,12 +163,14 @@ impl GameState {
     }
 
     /// Clicking a tile in the interior view selects a copy or gives it an
-    /// independent tactical order. The source field unit is unchanged.
+    /// independent tactical order. The source field unit is unchanged. With
+    /// the plan sent (a network game waiting for the others'), it only
+    /// selects.
     pub(in crate::game) fn interior_click(&mut self, tile: Hex) {
         let Some(city) = self.interior_view else {
             return;
         };
-        if self.is_resolving() || !in_bounds(tile) {
+        if self.is_playing_out() || !in_bounds(tile) {
             return;
         }
         let interior = &self.cities[city].interior;
@@ -164,6 +178,10 @@ impl GameState {
         if let Some(fighter) = clicked.filter(|f| f.team == self.local_team) {
             self.interior_selected =
                 (self.interior_selected != Some(fighter.source_id)).then_some(fighter.source_id);
+            return;
+        }
+        if self.is_resolving() {
+            self.interior_selected = None;
             return;
         }
         let Some(source) = self.interior_selected else {

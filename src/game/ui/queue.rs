@@ -210,7 +210,7 @@ impl GameState {
     }
 
     pub(super) fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {
-        if source == target {
+        if source == target || self.is_resolving() {
             return;
         }
         let city = match kind {

@@ -2431,6 +2431,17 @@ impl GameState {
         scope: Option<PinnedPanel>,
         actions: &mut Vec<Action>,
     ) {
+        // With the plan sent, what would change it shows disabled, as the
+        // classic panels do (`Layout::dock_panel`).
+        let frozen;
+        let panel = if self.plan_frozen() {
+            let mut copy = panel.clone();
+            copy.freeze_plan();
+            frozen = copy;
+            &frozen
+        } else {
+            panel
+        };
         let label_width = setting_label_width(ui, panel, fonts[1]);
         for row in flat_rows(&panel.rows) {
             match row {
@@ -2726,10 +2737,12 @@ impl GameState {
                     ui.same_line();
                     let _remove_color =
                         ui.push_style_color(StyleColor::Button, [0.23, 0.13, 0.13, 1.0]);
+                    let _disabled = ui.begin_disabled(item.locked);
+                    let remove = item.kind.remove_target(item.index);
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
-                        actions.push(Action::Button(scope, item.kind.remove_target(item.index)));
+                        actions.push(Action::Button(scope, remove));
                     }
-                    note_drawn_button(ui, item.kind.remove_target(item.index));
+                    note_drawn_button(ui, remove);
                 }
             }
         }
@@ -2780,11 +2793,7 @@ impl GameState {
             .pinned_geometry
             .retain(|pin, _| layout.pinned.contains(pin));
         let pending = self.pending();
-        let turn = if self.is_resolving() {
-            self.turn
-        } else {
-            self.turn + 1
-        };
+        let turn = self.shown_turn();
         let mut stockpile = self.stockpile_line();
         if let Some((first, _)) = stockpile.first_mut() {
             first.insert_str(0, "   ");
@@ -2851,13 +2860,19 @@ impl GameState {
                 } else {
                     end_turn_label(pending)
                 };
-                let _disabled = ui.begin_disabled(self.is_resolving());
+                // Waiting for the others' plans, it takes this side's back.
+                let _disabled = ui.begin_disabled(self.is_playing_out());
                 let end_size = [end_width - 15.0, 29.0];
                 if ui.button_with_size(format!("{label}###EndTurn"), end_size) {
                     actions.push(Action::Button(None, Target::EndTurn));
                 }
+                note_drawn_button(ui, Target::EndTurn);
                 if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                    ui.tooltip_text("Space: End turn or select what still needs orders");
+                    ui.tooltip_text(if self.waiting_for_peers() {
+                        "Click: take back End Turn and change your orders"
+                    } else {
+                        "Space: End turn or select what still needs orders"
+                    });
                 }
             });
 

@@ -21,6 +21,10 @@ use crate::game::workers::JobKind;
 use crate::renderer::Vertex;
 use glam::Vec2;
 
+/// Why a button that would change the plan is off while a network game
+/// waits for the others' plans.
+pub(super) const PLAN_SENT: &str = "YOUR ORDERS ARE SENT - THE WAITING BUTTON TAKES THEM BACK";
+
 impl GameState {
     /// What `build` queued in the open city (or Barracks, with `barracks`)
     /// costs from the stockpile when work on it starts, and how long it
@@ -663,6 +667,14 @@ impl GameState {
                     "TILE YIELDS AND DELIVERY SHARES.".into(),
                     None,
                 ),
+                Target::EndTurn if self.waiting_for_peers() => (
+                    "TAKE BACK END TURN".into(),
+                    "CLICK".into(),
+                    "YOUR ORDERS ARE SENT. TAKE THEM BACK TO CHANGE THEM, THEN END THE TURN AGAIN: \
+                     UNTIL EVERYONE HAS ENDED IT."
+                        .into(),
+                    None,
+                ),
                 Target::EndTurn => (
                     "END TURN".into(),
                     "SPACE".into(),
@@ -674,6 +686,13 @@ impl GameState {
                     None,
                 ),
             };
+        // With the plan sent, this is why a button that would change it is
+        // off, whatever else might be.
+        let unavailable = if self.plan_frozen() && button.target.changes_plan() {
+            Some(PLAN_SENT.to_string())
+        } else {
+            unavailable
+        };
 
         let mut lines = vec![(
             BODY,

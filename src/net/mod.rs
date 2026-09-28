@@ -110,16 +110,14 @@ impl Link {
         send_sealed(&mut self.writer, &mut self.sealer, message)
     }
 
-    /// The messages that have arrived, or why the connection is gone.
-    fn poll(&mut self) -> Result<Vec<NetMessage>> {
-        let mut messages = Vec::new();
-        loop {
-            match self.incoming.try_recv() {
-                Ok(Ok(message)) => messages.push(message),
-                Ok(Err(error)) => return Err(anyhow!(error)),
-                Err(TryRecvError::Empty) => return Ok(messages),
-                Err(TryRecvError::Disconnected) => bail!("the connection closed"),
-            }
+    /// The next message that has arrived, if one has, or why the
+    /// connection is gone.
+    fn next(&mut self) -> Result<Option<NetMessage>> {
+        match self.incoming.try_recv() {
+            Ok(Ok(message)) => Ok(Some(message)),
+            Ok(Err(error)) => Err(anyhow!(error)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => bail!("the connection closed"),
         }
     }
 }
@@ -275,22 +273,26 @@ impl Session {
         self.finish_joins(game);
         let mut dropped = Vec::new();
         for (team, link) in &mut self.links {
-            match link.poll() {
-                Ok(messages) => {
-                    for message in messages {
-                        if let Err(why) = game.receive(*team, message) {
-                            // Tell them why, so they see more than a
-                            // closed connection.
-                            if self.hosting {
-                                let _ = link.send(&NetMessage::Refused(why.clone()));
-                            }
-                            dropped
-                                .push((*team, format!("{} sent a bad message: {why}", link.peer)));
-                            break;
-                        }
+            // A host takes nothing while a turn plays out: it waits in the
+            // queue until the next turn's planning (`takes_messages`).
+            while game.takes_messages() {
+                let message = match link.next() {
+                    Ok(Some(message)) => message,
+                    Ok(None) => break,
+                    Err(error) => {
+                        dropped.push((*team, format!("{error:#}")));
+                        break;
                     }
+                };
+                if let Err(why) = game.receive(*team, message) {
+                    // Tell them why, so they see more than a closed
+                    // connection.
+                    if self.hosting {
+                        let _ = link.send(&NetMessage::Refused(why.clone()));
+                    }
+                    dropped.push((*team, format!("{} sent a bad message: {why}", link.peer)));
+                    break;
                 }
-                Err(error) => dropped.push((*team, format!("{error:#}"))),
             }
         }
         for (team, why) in dropped {
@@ -409,6 +411,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::BuildUnit;
     use std::io::Write;
     use std::time::Instant;
 
@@ -649,5 +652,105 @@ mod tests {
             guest.notice(),
             "BLUE (THE HOST) LEFT - THE GAME CAN'T GO ON"
         );
+    }
+
+    /// Pumps `game`'s session a few times, without playing anything out,
+    /// for what's on its way to arrive.
+    fn settle(games: &mut [(&mut Session, &mut GameState)]) {
+        for _ in 0..50 {
+            for (net, game) in games.iter_mut() {
+                net.pump(game);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Ends `game`'s turn with `build` queued in a city (a Gather if none).
+    fn end_turn_building(game: &mut GameState, build: Option<BuildUnit>) {
+        game.select_city();
+        match build {
+            Some(unit) => game.queue_selected_city_unit(unit),
+            None => game.queue_selected_city_gather(),
+        }
+        game.end_planning();
+        assert!(game.is_resolving(), "{}", game.notice());
+    }
+
+    #[test]
+    fn a_guest_takes_back_its_turn_over_the_network_and_its_new_orders_play_out() {
+        let settings = Settings {
+            world_ai: 3,
+            ..Settings::default()
+        };
+        let (mut host_net, mut host) = Session::host(0, 3, &settings).expect("listens");
+        let code = host.join_code().unwrap().to_string();
+        let (mut red_net, mut red) = join(&mut host_net, &mut host, &code).expect("Red joins");
+        let (mut green_net, mut green) =
+            join(&mut host_net, &mut host, &code).expect("Green joins");
+        // Red ends its turn, and the host has its plan.
+        end_turn_building(&mut red, None);
+        let mut games = [(&mut host_net, &mut host), (&mut red_net, &mut red)];
+        pump_all_until(&mut games, |g| g[0].has_plan_from(Team::Red));
+        // Red takes it back: the host lets go of the plan.
+        red.take_back_turn();
+        assert!(!red.is_resolving());
+        let mut games = [(&mut host_net, &mut host), (&mut red_net, &mut red)];
+        pump_all_until(&mut games, |g| !g[0].has_plan_from(Team::Red));
+        assert_eq!(host.notice(), "RED IS CHANGING THEIR ORDERS");
+        // Red queues a Melee and ends its turn again; Green and the host end
+        // theirs, and the turn plays out with Red's new orders everywhere.
+        end_turn_building(&mut red, Some(BuildUnit::Melee));
+        end_turn_building(&mut green, None);
+        end_turn_building(&mut host, None);
+        let mut games = [
+            (&mut host_net, &mut host),
+            (&mut red_net, &mut red),
+            (&mut green_net, &mut green),
+        ];
+        pump_all_until(&mut games, |g| {
+            g.iter().all(|g| g.turn() == 1 && !g.is_resolving())
+        });
+        settle(&mut games);
+        for game in [&host, &red, &green] {
+            assert_eq!(game.checksum(), host.checksum());
+            assert_eq!(game.units_queued(Team::Red, BuildUnit::Melee), 1);
+        }
+        assert!(!host.notice().contains("DESYNC"), "{}", host.notice());
+        assert_eq!(host_net.links.len(), 2, "nobody dropped");
+    }
+
+    #[test]
+    fn a_guest_that_plays_the_turn_out_first_may_send_its_next_plan() {
+        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
+        let code = host.join_code().unwrap().to_string();
+        let (mut guest_net, mut guest) = join(&mut host_net, &mut host, &code).expect("joins");
+        end_turn_building(&mut guest, None);
+        end_turn_building(&mut host, None);
+        // The guest plays the turn out at once; the host is slower, and
+        // still playing it out when the guest's next plan arrives.
+        let start = Instant::now();
+        while guest.turn() != 1 || guest.is_resolving() {
+            assert!(start.elapsed() < Duration::from_secs(20), "timed out");
+            host_net.pump(&mut host);
+            guest_net.pump(&mut guest);
+            guest.update(10.0);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(host.is_playing_out());
+        end_turn_building(&mut guest, None);
+        settle(&mut [(&mut host_net, &mut host), (&mut guest_net, &mut guest)]);
+        assert_eq!(host_net.links.len(), 1, "{}", host.notice());
+        // Once the host has played it out too, the plan is in, and the next
+        // turn plays out the same on both.
+        let mut games = [(&mut host_net, &mut host), (&mut guest_net, &mut guest)];
+        pump_all_until(&mut games, |g| g[0].has_plan_from(Team::Red));
+        end_turn_building(&mut host, None);
+        let mut games = [(&mut host_net, &mut host), (&mut guest_net, &mut guest)];
+        pump_all_until(&mut games, |g| {
+            g.iter().all(|g| g.turn() == 2 && !g.is_resolving())
+        });
+        settle(&mut games);
+        assert_eq!(host.checksum(), guest.checksum());
+        assert!(!host.notice().contains("DESYNC"), "{}", host.notice());
     }
 }

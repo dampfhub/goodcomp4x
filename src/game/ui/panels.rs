@@ -159,6 +159,17 @@ impl GameState {
         stock_spans(self.stock(self.local_team), change)
     }
 
+    /// The turn the top bar names: the one playing out, or the one being
+    /// planned (still being planned while a network game waits for the
+    /// others' plans, before it has begun to play out).
+    pub(super) fn shown_turn(&self) -> u32 {
+        if self.is_playing_out() {
+            self.turn
+        } else {
+            self.turn + 1
+        }
+    }
+
     /// Turn number and the stockpile on the left, the latest notice in the
     /// middle, and on the right the End Turn button, which names whatever the turn is still
     /// waiting on (clicking it selects that).
@@ -168,11 +179,7 @@ impl GameState {
         let middle = min.y + TOP_BAR_HEIGHT / 2.0;
 
         let pending = self.pending();
-        let turn = if self.is_resolving() {
-            self.turn
-        } else {
-            self.turn + 1
-        };
+        let turn = self.shown_turn();
         let turn_text = format!("TURN {turn}");
         let turn_end = MARGIN + font::ui(TITLE).width(&turn_text);
         push_text_row(
@@ -200,15 +207,23 @@ impl GameState {
         } else {
             end_turn_label(pending)
         };
-        let hint = "SPACE".to_string();
+        // While waiting for the others, a click takes the turn back.
+        let hint = if self.waiting_for_peers() {
+            "TAKE BACK"
+        } else {
+            "SPACE"
+        }
+        .to_string();
         let width = single_line_button_width(&label, &hint);
         let button_min = Vec2::new(size.x - MARGIN - width, middle - END_TURN_HEIGHT / 2.0);
         let end_turn = Button {
             target: Target::EndTurn,
             label,
             hint,
-            state: if self.is_resolving() {
+            state: if self.is_playing_out() {
                 ButtonState::Disabled
+            } else if self.waiting_for_peers() {
+                ButtonState::Ready
             } else {
                 ButtonState::new(pending == (0, 0), false)
             },
