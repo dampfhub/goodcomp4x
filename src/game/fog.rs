@@ -12,12 +12,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::GameState;
 use super::city::{BARRACKS_MAX_HP, Building, Routes};
 use super::hex::{Hex, edge};
 use super::terrain::Terrain;
 use super::unit::{Team, Unit};
 use super::workers::{FieldWorker, OUTPOST_SIGHT, Structure, StructureKind, WORKER_SIGHT};
-use super::{GameState, PLAYER_TEAM};
 
 /// How far a city sees, and a barracks.
 const CITY_SIGHT: i32 = 3;
@@ -35,6 +35,8 @@ const SIGHT_NUDGE: f32 = 1e-4;
 pub(super) struct Fog {
     /// Hexes in sight, or `None` with the fog turned off.
     visible: Option<HashSet<Hex>>,
+    /// Whose sight it is: the local side's, whose own units always show.
+    team: Team,
 }
 
 impl Fog {
@@ -43,14 +45,14 @@ impl Fog {
         self.visible.as_ref().is_none_or(|v| v.contains(&hex))
     }
 
-    /// Whether to show `unit`: the player's own always, others in sight.
+    /// Whether to show `unit`: the local side's own always, others in sight.
     pub fn shows(&self, unit: &Unit) -> bool {
-        unit.team == PLAYER_TEAM || self.sees(unit.pos)
+        unit.team == self.team || self.sees(unit.pos)
     }
 
     /// Whether to show a worker out on the map, by the same rule.
     pub fn shows_worker(&self, worker: &FieldWorker) -> bool {
-        worker.team == PLAYER_TEAM || self.sees(worker.pos)
+        worker.team == self.team || self.sees(worker.pos)
     }
 }
 
@@ -89,6 +91,7 @@ impl GameState {
     pub(super) fn fog(&self) -> Fog {
         Fog {
             visible: self.fog_of_war.then(|| self.visible_hexes()),
+            team: self.local_team,
         }
     }
 
@@ -147,7 +150,7 @@ impl GameState {
                 look(unit.pos, self.sight(unit));
             }
         }
-        for city in self.cities.iter().filter(|c| c.team == PLAYER_TEAM) {
+        for city in self.cities.iter().filter(|c| c.team == self.local_team) {
             look(city.pos, CITY_SIGHT);
             if let Some(barracks) = city.barracks {
                 look(barracks, BARRACKS_SIGHT);
@@ -160,14 +163,18 @@ impl GameState {
             }
         }
         for (&hex, structure) in &self.structures {
-            if structure.team == PLAYER_TEAM && structure.kind == StructureKind::Outpost {
+            if structure.team == self.local_team && structure.kind == StructureKind::Outpost {
                 look(hex, OUTPOST_SIGHT);
             }
         }
-        for worker in self.field_workers.iter().filter(|w| w.team == PLAYER_TEAM) {
+        for worker in self
+            .field_workers
+            .iter()
+            .filter(|w| w.team == self.local_team)
+        {
             look(worker.pos, WORKER_SIGHT);
         }
-        for city in self.cities.iter().filter(|c| c.team == PLAYER_TEAM) {
+        for city in self.cities.iter().filter(|c| c.team == self.local_team) {
             seen.extend(city.worked.iter().chain(&city.remembered_worked).copied());
         }
         seen
@@ -379,6 +386,7 @@ pub(super) type Memory = HashMap<Hex, Sighting>;
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+    use crate::game::PLAYER_TEAM;
     use crate::game::city::Site;
     use crate::game::hex::HexGrid;
     use crate::game::orders::ClickMode;

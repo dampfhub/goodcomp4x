@@ -8,10 +8,10 @@ use super::{
     BODY, Button, ButtonState, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, Line,
     MARGIN, NOTICE_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
 };
+use crate::game::GameState;
 use crate::game::city::{MAX_CITY_POPULATION, Stock, turns_icon};
 use crate::game::font;
 use crate::game::scenario::Scenario;
-use crate::game::{GameState, PLAYER_TEAM};
 use glam::Vec2;
 
 impl GameState {
@@ -151,12 +151,12 @@ impl GameState {
     /// The player's stockpile and its change a turn (every city's delivery,
     /// less the citizens' food), for the top bar in both presentations.
     pub(super) fn stockpile_line(&self) -> Line {
-        let income = self.side_income(PLAYER_TEAM);
+        let income = self.side_income(self.local_team);
         let change = Stock {
-            food: income.food - self.upkeep(PLAYER_TEAM),
+            food: income.food - self.upkeep(self.local_team),
             ..income
         };
-        stock_spans(self.stock(PLAYER_TEAM), change)
+        stock_spans(self.stock(self.local_team), change)
     }
 
     /// Turn number and the stockpile on the left, the latest notice in the

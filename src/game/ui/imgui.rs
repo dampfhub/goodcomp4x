@@ -10,7 +10,6 @@ use super::action_icons::{self, ICON_BUTTON_SIZE};
 use super::builder::{CatalogEntry, Row, icon_row, visible_button_hint};
 use super::text::end_turn_label;
 use super::*;
-use crate::game::PLAYER_TEAM;
 use crate::game::map_icons;
 use crate::game::settings::{Control, Setting};
 
@@ -2024,7 +2023,7 @@ impl GameState {
         }
         self.cities.iter().position(|city| {
             city.id == pin.city_id
-                && city.team == PLAYER_TEAM
+                && city.team == self.local_team
                 && (matches!(pin.kind, PinnedKind::City | PinnedKind::CityQueue)
                     || city.barracks.is_some())
         })
@@ -2035,7 +2034,7 @@ impl GameState {
             .then(|| {
                 self.units
                     .iter()
-                    .position(|unit| unit.id == pin.city_id && unit.team == PLAYER_TEAM)
+                    .position(|unit| unit.id == pin.city_id && unit.team == self.local_team)
             })
             .flatten()
     }
@@ -2142,7 +2141,7 @@ impl GameState {
                     .filter_map(|id| {
                         self.units
                             .iter()
-                            .position(|u| u.id == *id && u.team == PLAYER_TEAM)
+                            .position(|u| u.id == *id && u.team == self.local_team)
                     })
                     .collect();
                 if members.is_empty() {
@@ -2661,7 +2660,7 @@ impl GameState {
                     .any(|member| {
                         self.units
                             .iter()
-                            .any(|unit| unit.id == *member && unit.team == PLAYER_TEAM)
+                            .any(|unit| unit.id == *member && unit.team == self.local_team)
                     })
                     .then_some(*id)
             })
@@ -3040,7 +3039,7 @@ impl GameState {
                             .filter_map(|id| {
                                 self.units
                                     .iter()
-                                    .position(|u| u.id == *id && u.team == PLAYER_TEAM)
+                                    .position(|u| u.id == *id && u.team == self.local_team)
                             })
                             .collect();
                         if !members.is_empty() {
@@ -3076,6 +3075,7 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::PLAYER_TEAM;
 
     #[test]
     fn hover_text_keeps_the_same_imgui_button_id() {

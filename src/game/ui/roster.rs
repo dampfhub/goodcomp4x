@@ -14,8 +14,8 @@
 use super::builder::PanelBuilder;
 use super::dock::Zone;
 use super::{ChipIcon, LABEL_TEXT, Layout, ROSTER_CHIP_GAP, ROSTER_PER_ROW, RosterChip, SMALL};
+use crate::game::GameState;
 use crate::game::unit::UnitType;
-use crate::game::{GameState, PLAYER_TEAM};
 
 /// What a chip in the turn strip stands for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,14 +109,14 @@ impl GameState {
             RosterKey::Production(id) => RosterChip {
                 key: task.key,
                 icon: ChipIcon::City,
-                color: PLAYER_TEAM.color(),
+                color: self.local_team.color(),
                 selected: open_city(id),
                 count: 1,
             },
             RosterKey::Group(..) | RosterKey::Unit(_) => RosterChip {
                 key: task.key,
                 icon: self.group_icon(&task.units),
-                color: PLAYER_TEAM.color(),
+                color: self.local_team.color(),
                 selected: task.units.iter().any(|i| selection.contains(i)),
                 count: task.units.len(),
             },

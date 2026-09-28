@@ -6,10 +6,10 @@
 //! gone. The count pauses while the hex is contested or empty, and starts
 //! over when another side takes it. The rewards are a first pass.
 
+use super::GameState;
 use super::city::{Stock, stock_words, turns_icon};
 use super::hex::Hex;
 use super::unit::{Team, Unit, UnitType};
-use super::{GameState, PLAYER_TEAM};
 
 /// Turn ends a side must hold ruins through to claim them.
 pub const RUIN_HOLD_TURNS: u32 = 3;
@@ -199,7 +199,7 @@ impl GameState {
             ruin.pos.q,
             ruin.pos.r
         );
-        if team == PLAYER_TEAM {
+        if team == self.local_team {
             self.notice = format!("RUINS CLAIMED - {what}");
         } else if self.fog().sees(ruin.pos) {
             self.notice = format!("{team:?} CLAIMED THE RUINS").to_uppercase();

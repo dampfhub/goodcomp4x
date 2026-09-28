@@ -4,11 +4,11 @@
 use super::MAX_CITY_POPULATION;
 use super::barracks::CITY_TRAINING_SLOWDOWN;
 use super::economy::{Stock, WORK_PER_TURN, stock_icons, turns_icon};
+use crate::game::GameState;
 use crate::game::JobKind;
 use crate::game::hex::Hex;
 use crate::game::terrain::{Resource, Terrain};
 use crate::game::unit::{Team, Unit, UnitType};
-use crate::game::{GameState, PLAYER_TEAM};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Building {
@@ -303,7 +303,7 @@ impl GameState {
             self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
-        if self.cities[city].team != PLAYER_TEAM {
+        if self.cities[city].team != self.local_team {
             return;
         }
         if build.unit_type().is_naval() && !self.city_is_coastal(city) {
@@ -356,7 +356,7 @@ impl GameState {
             self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
-        if self.cities[city].team != PLAYER_TEAM {
+        if self.cities[city].team != self.local_team {
             return;
         }
         if !self.can_grow(city) {
@@ -383,7 +383,7 @@ impl GameState {
             self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
-        if self.cities[city].team != PLAYER_TEAM {
+        if self.cities[city].team != self.local_team {
             return;
         }
         self.queue_paid(city, Build::Worker);
@@ -404,7 +404,7 @@ impl GameState {
             return;
         }
         let c = &self.cities[city];
-        if c.team != PLAYER_TEAM {
+        if c.team != self.local_team {
             return;
         }
         if c.built.contains(&building) {
@@ -425,7 +425,7 @@ impl GameState {
             self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
             return;
         };
-        if self.cities[city].team != PLAYER_TEAM {
+        if self.cities[city].team != self.local_team {
             return;
         }
         self.queue_paid(city, Build::Gather);
@@ -553,7 +553,7 @@ impl GameState {
         let Some(city) = self.selected_barracks.or(self.selected_city) else {
             return;
         };
-        if self.cities[city].team != PLAYER_TEAM || self.cities[city].barracks.is_none() {
+        if self.cities[city].team != self.local_team || self.cities[city].barracks.is_none() {
             return;
         }
         if let Some(reason) = self.barracks_lock(city, build) {
@@ -700,7 +700,7 @@ impl GameState {
                 c.queue.remove(0);
                 let (team, id) = (c.team, c.id);
                 *self.stock_mut(team) += GATHER_YIELD;
-                if team == PLAYER_TEAM {
+                if team == self.local_team {
                     self.notice = format!("CITY {} GATHERED {}", id + 1, stock_icons(GATHER_YIELD));
                 }
                 continue;
@@ -710,7 +710,7 @@ impl GameState {
                 self.cities[i].queue.remove(0);
                 self.cities[i].workers += 1;
                 log::info!("{:?} city completed a worker", self.cities[i].team);
-                if self.cities[i].team == PLAYER_TEAM {
+                if self.cities[i].team == self.local_team {
                     self.notice =
                         "WORKER READY - PLACE ROADS, IMPROVEMENTS AND BUILDINGS FROM THE CITY"
                             .into();
@@ -725,7 +725,7 @@ impl GameState {
                 // before the cap was reached could.
                 c.population = (c.population + 1).min(MAX_CITY_POPULATION);
                 log::info!("{:?} city {} grew to {}", c.team, c.id + 1, c.population);
-                if c.team == PLAYER_TEAM {
+                if c.team == self.local_team {
                     self.notice = format!("CITY {} GREW TO {}", c.id + 1, c.population);
                 }
                 continue;

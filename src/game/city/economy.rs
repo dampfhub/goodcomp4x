@@ -346,7 +346,7 @@ impl GameState {
             if let Some(city) = largest {
                 self.cities[city].population -= 1;
                 log::info!("{team:?} city {} starves", self.cities[city].id + 1);
-                if team == crate::game::PLAYER_TEAM {
+                if team == self.local_team {
                     self.notice = format!(
                         "CITY {} STARVES - NOT ENOUGH FOOD FOR EVERY CITIZEN",
                         self.cities[city].id + 1

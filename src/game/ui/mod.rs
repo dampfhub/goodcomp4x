@@ -568,7 +568,7 @@ impl GameState {
     /// Shared visibility-filtered structure inspection for both UI presentations.
     fn structure_inspect_panel(&self, hex: Hex) -> Option<PanelBuilder> {
         let fog = self.fog();
-        let known = |city: &super::city::City| city.team == super::PLAYER_TEAM || fog.sees(hex);
+        let known = |city: &super::city::City| city.team == self.local_team || fog.sees(hex);
         let (city, barracks) = self.cities.iter().enumerate().find_map(|(idx, city)| {
             (known(city) && city.pos == hex)
                 .then_some((idx, false))

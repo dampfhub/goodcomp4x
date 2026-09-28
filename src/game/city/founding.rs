@@ -1,6 +1,6 @@
 //! Settlers: founding cities. Workers live with their cities (`workers.rs`).
 use super::City;
-use crate::game::{GameState, PLAYER_TEAM};
+use crate::game::GameState;
 
 impl GameState {
     pub fn found_city_selected(&mut self) {
@@ -12,7 +12,7 @@ impl GameState {
             return;
         };
         let unit = &self.units[index];
-        if unit.team != PLAYER_TEAM || !self.settlers.contains(&unit.id) {
+        if unit.team != self.local_team || !self.settlers.contains(&unit.id) {
             self.notice = "ONLY A SETTLER CAN FOUND A CITY".into();
             return;
         }

@@ -18,11 +18,11 @@ use std::collections::{HashMap, VecDeque};
 
 use glam::Vec2;
 
+use super::GameState;
 use super::city::{Building, Site, Stock, stock_icons};
 use super::hex::{Hex, edge};
 use super::terrain::Terrain;
 use super::unit::{Team, Unit};
-use super::{GameState, PLAYER_TEAM};
 
 /// Hexes a worker walks per turn.
 pub(super) const WORKER_MOVE: usize = 1;
@@ -268,7 +268,7 @@ impl GameState {
     /// open city. Everything a worker builds is placed from its city.
     pub(super) fn job_city(&self) -> Option<usize> {
         self.selected_city
-            .filter(|&city| self.cities[city].team == PLAYER_TEAM)
+            .filter(|&city| self.cities[city].team == self.local_team)
     }
 
     /// What `job` builds, as the player reads it: an improvement by its kind
@@ -411,7 +411,7 @@ impl GameState {
             .cities
             .iter()
             .enumerate()
-            .filter(|(_, city)| city.team == PLAYER_TEAM)
+            .filter(|(_, city)| city.team == self.local_team)
             .flat_map(|(i, city)| {
                 let camp = city
                     .placed_site(crate::game::city::Building::WorkCamp)
@@ -460,7 +460,7 @@ impl GameState {
                 || self
                     .cities
                     .iter()
-                    .any(|c| c.team == PLAYER_TEAM && c.pos == hex)
+                    .any(|c| c.team == self.local_team && c.pos == hex)
         };
         if city {
             return Some("A CITY STANDS HERE");
@@ -468,7 +468,7 @@ impl GameState {
         let building = self
             .cities
             .iter()
-            .filter(|c| visible || c.team == PLAYER_TEAM)
+            .filter(|c| visible || c.team == self.local_team)
             .any(|c| {
                 crate::game::city::Building::PLACEABLE
                     .into_iter()
@@ -510,7 +510,7 @@ impl GameState {
             JobKind::Road => None,
             JobKind::Improve if building => Some("A BUILDING STANDS HERE"),
             JobKind::Improve => match site {
-                Some(owner) if owner != PLAYER_TEAM => Some("THIS TILE BELONGS TO THE ENEMY"),
+                Some(owner) if owner != self.local_team => Some("THIS TILE BELONGS TO THE ENEMY"),
                 Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
                 None if self.improvement(hex).is_none() => Some("NOTHING GROWS ON SNOW"),
                 None => None,
@@ -674,7 +674,7 @@ impl GameState {
         if let Some(across) = across {
             return self.queue_barrier_at(hex, across);
         }
-        if self.job_taken(PLAYER_TEAM, WorkerJob::on_tile(hex, kind)) {
+        if self.job_taken(self.local_team, WorkerJob::on_tile(hex, kind)) {
             return false;
         }
         if let Some(reason) = self.job_unavailable(hex, kind) {
@@ -710,7 +710,7 @@ impl GameState {
             kind,
             across: Some(across),
         };
-        if self.job_taken(PLAYER_TEAM, job) {
+        if self.job_taken(self.local_team, job) {
             return false;
         }
         if let Some(problem) = self.known_job_problem(city, job) {
@@ -765,11 +765,11 @@ impl GameState {
             Some("WORKERS CAN'T WORK AN UNEXPLORED TILE".into())
         } else if let Some(problem) = self.known_job_problem(city, job) {
             Some(problem.into())
-        } else if self.job_taken(PLAYER_TEAM, job) {
+        } else if self.job_taken(self.local_team, job) {
             Some(format!("{} IS QUEUED HERE ALREADY", kind.name()))
         } else {
             // A tile takes one job at a time.
-            self.tile_job_at(PLAYER_TEAM, hex)
+            self.tile_job_at(self.local_team, hex)
                 .map(|other| format!("{} IS QUEUED HERE - ONE JOB AT A TIME", other.name()))
         }
     }
@@ -840,7 +840,7 @@ impl GameState {
         if let Some(worker) = self
             .field_workers
             .iter()
-            .find(|w| w.id == id && w.team == PLAYER_TEAM)
+            .find(|w| w.id == id && w.team == self.local_team)
         {
             self.camera.focus_on(worker.pos.to_world());
         }
@@ -856,7 +856,7 @@ impl GameState {
         let Some(w) = self
             .field_workers
             .iter()
-            .position(|w| w.id == id && w.team == PLAYER_TEAM)
+            .position(|w| w.id == id && w.team == self.local_team)
         else {
             return;
         };
@@ -880,7 +880,7 @@ impl GameState {
                 return Some(job);
             };
             self.refund_job(team, job);
-            if team == PLAYER_TEAM {
+            if team == self.local_team {
                 self.notice = format!("{} DROPPED, REFUNDED: {problem}", job.kind.name());
             }
         }
@@ -971,7 +971,7 @@ impl GameState {
             };
             if let Some(problem) = problem {
                 self.refund_job(worker.team, job);
-                if worker.team == PLAYER_TEAM {
+                if worker.team == self.local_team {
                     self.notice = format!("{} ABANDONED, REFUNDED: {problem}", job.kind.name());
                 }
                 self.field_workers[w].job = None;
@@ -1005,7 +1005,7 @@ impl GameState {
         let Some(path) = self.worker_path(worker.team, worker.pos, target) else {
             if let Some(job) = worker.job {
                 self.refund_job(worker.team, job);
-                if worker.team == PLAYER_TEAM {
+                if worker.team == self.local_team {
                     self.notice = format!(
                         "A WORKER CAN'T REACH ITS {} - IT'S COMING HOME, REFUNDED",
                         self.job_title(job)
@@ -1122,7 +1122,7 @@ impl GameState {
             hex.q,
             hex.r
         );
-        if team == PLAYER_TEAM {
+        if team == self.local_team {
             self.notice = format!("WORKERS FINISHED: {}", self.job_title(job));
         }
     }
@@ -1161,9 +1161,9 @@ impl GameState {
             if let Some(city) = self.nearest_city(captor_team, worker.pos) {
                 self.cities[city].workers += 1;
             }
-            if worker.team == PLAYER_TEAM {
+            if worker.team == self.local_team {
                 self.notice = "AN ENEMY CAPTURED ONE OF YOUR WORKERS".into();
-            } else if captor_team == PLAYER_TEAM {
+            } else if captor_team == self.local_team {
                 self.notice = "WORKER CAPTURED - IT JOINS YOUR NEAREST CITY".into();
             }
         }
@@ -1192,7 +1192,7 @@ impl GameState {
                 worker.pos.q,
                 worker.pos.r
             );
-            if worker.team == PLAYER_TEAM {
+            if worker.team == self.local_team {
                 self.notice = "ONE OF YOUR WORKERS WAS KILLED".into();
             }
         }
@@ -1229,6 +1229,7 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::PLAYER_TEAM;
     use crate::game::city::Build;
     use crate::game::turn::{Phase, Step};
     use crate::game::unit::UnitType;

@@ -54,6 +54,8 @@ pub use workers::JobKind;
 type GameRng = rand::rngs::Xoshiro256PlusPlus;
 
 const GRID_RADIUS: i32 = 3;
+/// The side a single-player game gives the player, and the local side
+/// until a multiplayer game says otherwise (`GameState::local_team`).
 const PLAYER_TEAM: Team = Team::Blue;
 
 /// Logged at startup. It only says where the controls are: `docs/controls.md`
@@ -177,6 +179,13 @@ pub struct GameState {
     barriers: HashMap<(Hex, Hex), workers::Structure>,
     /// Frontier sandbox units that the player may command despite being Red.
     player_controlled_units: HashSet<u32>,
+    /// The side played at this machine: whose orders the input gives, whose
+    /// fog, stockpile and notices show. Blue, unless a multiplayer game
+    /// seats this player elsewhere (`multiplayer.rs`).
+    local_team: Team,
+    /// The sides people play, here or across the network; the AI plays
+    /// the rest (`ai_teams`).
+    humans: Vec<Team>,
     next_unit_id: u32,
 }
 
@@ -270,6 +279,8 @@ impl GameState {
             structures: HashMap::new(),
             barriers: HashMap::new(),
             player_controlled_units: HashSet::new(),
+            local_team: PLAYER_TEAM,
+            humans: vec![PLAYER_TEAM],
             next_unit_id: 8,
         };
         game.select_next_or_end_turn(None);
@@ -449,8 +460,14 @@ impl GameState {
         (0..self.units.len()).filter(move |&i| self.units[i].pos == hex)
     }
 
+    /// Whether people play `team` (here or across the network) rather than
+    /// the AI.
+    pub(super) fn is_human(&self, team: Team) -> bool {
+        self.humans.contains(&team)
+    }
+
     fn is_player_controlled(&self, idx: usize) -> bool {
-        self.units[idx].team == PLAYER_TEAM
+        self.units[idx].team == self.local_team
             || self.player_controlled_units.contains(&self.units[idx].id)
     }
 
