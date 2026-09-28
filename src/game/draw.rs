@@ -206,6 +206,13 @@ const DEPLOYED_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.18;
 const GUARD_OUTLINE_COLOR: Color = [0.92, 0.94, 0.98, 1.0];
 const GUARD_OUTLINE_RADIUS: f32 = UNIT_ICON_RADIUS * 1.5;
 const GUARD_OUTLINE_WIDTH: f32 = 0.05;
+/// A red reticle around a unit on alert: a ring outside any status rings,
+/// with four ticks on the diagonals (clear of the turn-order badges and the
+/// health bar).
+const ALERT_COLOR: Color = [0.96, 0.26, 0.16, 1.0];
+const ALERT_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.45;
+const ALERT_TICK_SPAN: (f32, f32) = (UNIT_ICON_RADIUS * 1.2, UNIT_ICON_RADIUS * 1.95);
+const ALERT_WIDTH: f32 = 0.05;
 
 /// The two units sharing a contested hex are drawn at this scale, stacked
 /// vertically with Blue on top.
@@ -2576,9 +2583,35 @@ fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
     );
 }
 
+/// The reticle of a unit on alert (`Unit::alert`): a red ring with a tick on
+/// each diagonal, unlike Guard's white hex.
+fn push_alert_reticle(center: Vec2, scale: f32, out: &mut Vec<Vertex>) {
+    mesh::polygon_outline(
+        center,
+        ALERT_RING_RADIUS * scale,
+        ALERT_WIDTH * scale,
+        32,
+        0.0,
+        ALERT_COLOR,
+        out,
+    );
+    let (inner, outer) = ALERT_TICK_SPAN;
+    for degrees in [45.0_f32, 135.0, 225.0, 315.0] {
+        let direction = Vec2::from_angle(degrees.to_radians());
+        mesh::segment(
+            center + direction * inner * scale,
+            center + direction * outer * scale,
+            ALERT_WIDTH * 1.4 * scale,
+            ALERT_COLOR,
+            out,
+        );
+    }
+}
+
 /// Status rings behind the icon. They're filled discs, so only the rim shows
 /// once the icon is drawn on top; the larger one goes first so both stay visible.
-/// A guarding unit also gets a hex outline around everything.
+/// A guarding unit also gets a hex outline around everything, and a unit on
+/// alert a red reticle.
 fn push_status_rings(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec<Vertex>) {
     if unit.guarding {
         mesh::polygon_outline(
@@ -2590,6 +2623,9 @@ fn push_status_rings(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec<Vertex
             GUARD_OUTLINE_COLOR,
             out,
         );
+    }
+    if unit.alert {
+        push_alert_reticle(center, scale, out);
     }
     if unit.ability_queued {
         mesh::regular_polygon(

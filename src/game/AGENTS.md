@@ -12,10 +12,10 @@ behavior.
 | Module | Concern |
 |---|---|
 | `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`, `naval_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
-| `orders.rs` | player input and order planning: `ClickMode`, click (move), right-click (attack), swap, ability toggle, hold, guard |
+| `orders.rs` | player input and order planning: `ClickMode`, click (move), right-click (attack), swap, ability toggle, hold, guard, alert (`toggle_alert`, `can_go_on_alert`) |
 | `order_queue.rs` | multi-turn order queues: Shift-click adds turns (`queue_move`, `queue_attack`, equal lengths for a group) or, on a planned stop, takes a move off (`unqueue_move`), `advance_queues` at each turn's end (real board only), and `replan_queues` as the player's planning begins (steered queues planned again toward their `waypoints` on what the player knows) |
 | `group.rs` | multi-unit selection (drag a box, Shift-click adds, Ctrl-click removes) and group orders |
-| `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks), coastal battery fire and ship boarding |
+| `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks, and units on alert firing: `alert_target`), coastal battery fire and ship boarding |
 | `combat.rs` | damage formula, retaliation, combat log helpers |
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
@@ -36,12 +36,13 @@ behavior.
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, and tiles, rivers, resources and specials in flat arrays over the shape's bounding box); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `fast_hash.rs` | the `HashMap` and `HashSet` the game uses: std's, with a fast fixed hasher (rustc's) for its small keys |
 | `perf.rs` | tests only: `perf_report` (ignored; run with `--release -- --ignored --nocapture`) times a frame's and a turn's stages on a busy world |
-| `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map): terrain, balanced starts for any number of sides, horses and iron by each start, and special tiles and ruins on contested ground |
+| `mapgen.rs`, `mapgen/` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map, on every machine), a function per stage (its module comment lists them): land and sea, mountain ranges, hills, lakes, passes, rivers, climate; then balanced starts for any number of sides, horses and iron by each start, and special tiles and ruins on contested ground. `mapgen/tests.rs` holds its tests (a golden hash pins two seeds' maps); `mapgen/preview.rs` (tests only) draws whole maps as PNGs and measures many (`map_previews`, `map_stats`, run by hand) |
 | `ruins.rs` | ruins: holding them for `RUIN_HOLD_TURNS` claims a reward (`resolve_ruins`, at each turn's end before the economy) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes (this machine's view), each side's own memory (`side_fog`, game state, which the AI plans on), and the `known_*` queries that answer for either (`Fog` says which) |
 | `scenario.rs` | scenarios (F1-F4, F12, Debug Naval), savestate (F6/F7), instant playback (F8) |
 | `settings.rs` | the player's options (`Settings`, one field each, and `Setting`, how the menu lists and changes them: heading, control, range), Escape (`press_escape`) and the settings menu's open state; its module comment says how to add a setting |
 | `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues) in every scenario, board invariants checked each turn, same seed replays the same game |
+| `simulation/economy.rs` | tests only: `economy_report` (ignored; run with `--release -- --ignored --nocapture`) measures the economy's tempo over many seeds (units by type and turn, growth, stockpiles, fights, build times, spread; its `REPORT_*` knobs are in its module comment, its numbers in `docs/rts-economy.md`) |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
 | `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
 | `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |

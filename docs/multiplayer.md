@@ -77,7 +77,8 @@ Messages (`Message`): `Hello` (guest, with the protocol version), `Welcome` (hos
 the human sides, the world's seed and settings, the RNG seed and debug toggles) or `Refused`,
 `Plan`, `Resolve`, `SeatLeft`, `Checksum`, `Withdraw` (guest: its player took back ending the
 turn). The host also sends `Refused`, with the reason, to a guest it drops for a bad message.
-`PROTOCOL_VERSION` changes whenever one changes shape, or the rules a turn plays out by, so
+`PROTOCOL_VERSION` changes whenever one changes shape, or the rules a turn plays out by, or the
+map a seed generates (`mapgen.rs`: each machine builds the world from the seed), so
 mismatched builds refuse each other.
 
 Taking a turn back (`take_back_turn`): a guest sends `Withdraw { turn }` and plans on; the host
@@ -130,7 +131,8 @@ can watch or change what's sent. What's in place:
   this turn; for a turn already resolved, a late `Withdraw` and `Plan` only alternately (a
   `Withdraw` first) until that guest's checksum for it, and never changing anything; every
   unit, city, worker and interior troop a plan names existing and its side's; every hex on the
-  map (or inside the city's interior); moves and attacks within the unit's range; an ability
+  map (or inside the city's interior); moves and attacks within the unit's range; the alert
+  stance only on a troop that can take it (not a settler, scout or ship; siege set up); an ability
   only when it's ready; every list short (`MAX_PLAN_LIST`). The guest checks the host's
   `Resolve` the same way, and that it carries a plan the guest sent for its own side, and the
   seat and scenario in its `Welcome`.

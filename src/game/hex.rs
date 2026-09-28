@@ -55,6 +55,14 @@ impl Hex {
         (dq.abs() + dr.abs() + (dq + dr).abs()) / 2
     }
 
+    /// How far apart the two centers are in a straight line, as a number
+    /// that orders exactly: the squared distance over 3 (in hex steps).
+    pub fn straight_distance_sq(self, other: Hex) -> i32 {
+        let dq = self.q - other.q;
+        let dr = self.r - other.r;
+        dq * dq + dr * dr + dq * dr
+    }
+
     pub fn neighbors(self) -> [Hex; 6] {
         Self::DIRECTIONS.map(|(dq, dr)| Hex::new(self.q + dq, self.r + dr))
     }
@@ -276,6 +284,14 @@ impl HexGrid {
 
     pub fn resource(&self, hex: Hex) -> Option<Resource> {
         self.index(hex).and_then(|i| self.resources[i])
+    }
+
+    /// Replaces the tile at `hex` (tests only).
+    #[cfg(test)]
+    pub fn set_tile(&mut self, hex: Hex, tile: impl Into<Tile>) {
+        if let Some(i) = self.index(hex) {
+            self.tiles[i] = tile.into();
+        }
     }
 
     pub fn set_resource(&mut self, hex: Hex, resource: Resource) {

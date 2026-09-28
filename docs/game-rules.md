@@ -94,24 +94,45 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **World generation** (`mapgen.rs`): a rectangle whose area grows in proportion
   to the number of sides (about 61 hexes wide by 36 tall per two and a half sides, so about 93 by
   57 for six; never smaller than for three), generated from a `u32` seed
-  with its own RNG, so a seed and side count always rebuild the same map (the seed shows in the
-  debug panel; there is no way to type one in). A Pangea: 42-52% sea, one continent plus islets of
-  at most 12 hexes, mountain ranges and hills by noise, lakes, rivers running downhill to water,
-  climate by latitude and moisture, forest on wetter grassland, plains and tundra, jungle on about
-  three quarters of marsh.
+  with its own RNG, so a seed and side count always rebuild the same map, on every machine (the
+  seed shows in the debug panel; `--seed N` on the command line picks one). A Pangea: 42-52%
+  sea, one continent plus islets of at most 12 hexes, built in stages:
+  - **Mountains** are 2.5-4% of the land, in ranges: long chains one hex wide where plates of
+    crust meet (the map is split among a dozen or more warped plates, and about half their
+    borders rise). A range stays a hex back from the shore, breaks off where it runs low, and
+    has an open hex (a pass, on hills) about one in ten; a lone peak or two may stand apart.
+    Mountains never wall land off: if a range cuts off a stretch of open land, the mountains on
+    the shortest way out become hills.
+  - **Hills** are 12-17% of the land: foothills beside about half of the mountain hexes' open
+    neighbors, the rest in rolling uplands, more often well inland.
+  - **Lakes:** small bodies of water cut off from the map's edge, plus a few lakes of one to three
+    hexes well inland.
+  - **Rivers** run along hex edges, always down to the lowest next corner (the ground rises with
+    the steps to the sea, and more under hills and mountains). Each rises at a lake (at most one
+    river leaves a lake) or in the mountains and their foothills, and ends at the sea, in a lake,
+    or where it joins another river: rivers merge but never split, never run back into the lake
+    they left (directly or through other rivers and lakes), and are at most about half the map's
+    width long. About one per 90 hexes of land.
+  - **Climate:** colder toward the top and bottom of the map and beside mountains; wetter by
+    fresh water and the sea, drier far inland. Snow, tundra, desert, marsh, grassland or plains
+    follow; forest grows on wetter grassland, plains and tundra, and jungle on most marsh, both
+    in patches.
   - **Sides:** the player (Blue) and 4-6 AI sides, picked by the seed, or as many as the AI Players
     setting (Next World) says (1-6). Each takes a start in `Team::ALL` order (Red, Green, Gold, Purple, Teal,
     Orange), Blue on any of them.
   - **Starts** are on the largest continent, on flat land that is not snow, desert or marsh, with
     open ground and hills next door, scored on nearby yields and fresh water. The set is
     scattered and then evened out: each start about as far from its nearest neighbor as the land
-    allows when shared out evenly (some closer, some farther), with about equally good land.
+    allows when shared out evenly (some closer, some farther), with about equally good land, and
+    the nearest neighbors about as far on foot too, around the ranges (the farthest at most 1.6
+    times the closest, where some tried set allows it). Every start can walk to every other.
   - **Units:** each side starts with its city already founded (with a worker at home) or with a
     settler, as the Start With setting (Next World) says, and a scout on the neighboring hills. The camera
     starts on Blue's city or settler.
   - **Horses and Iron:** one of each within two to four hexes of every start (farther only if
-    there's no room), nearer it than any other start: horses on open flat ground, iron on hills
-    or under mountains where there are some.
+    there's no room), nearer it than any other start, on the best ground for it nearby: horses on
+    open flat grassland or plains, else open tundra; iron on foothills (hills beside mountains),
+    else other hills or ground under mountains.
   - **Ruins and special tiles** go on contested ground: a hex about equally far on foot from the
     two starts nearest it (ruins within a step or so, special tiles within three), well away
     from every start, off the map's edge and reachable from every start. That keeps them out of
@@ -223,7 +244,8 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - M and X (or the Move and Attack buttons) arm the next map click as a move or attack; with one
   armed, a right-click disarms it.
 - Ctrl-click an adjacent ally to swap places (see Swaps).
-- Ctrl-right-click clears the selected unit's orders, including its queue, a hold or a guard.
+- Ctrl-right-click clears the selected unit's orders, including its queue, a hold, a guard or
+  an alert.
 - Shift-left-click and Shift-right-click queue orders for later turns (see Order queues).
 - Q (or the ability button) toggles the selected unit's ability.
 - **Hold:** Space holds the selected unit if it still needs orders: it keeps what it has queued
@@ -235,9 +257,21 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - **Guard:** G toggles `Unit::guarding`, like holding but lasting across turns, so the unit never
   comes back up in the turn order. Queuing any move, attack or swap wakes it, as do G and
   Ctrl-right-click. Guarding units get a white hex outline.
+- **Alert:** E (or the Alert button) toggles `Unit::alert`, a stance of its own beside Guard:
+  the unit drops this turn's move and attack and its queue, stays put, is skipped in the turn
+  order every turn, and costs nothing to keep. Each turn, in its own type's attack step, it
+  attacks an enemy in its attack range (see Turn resolution). Any other order ends it: a move,
+  attack, swap, queued turn, group move or attack, its ability, Guard, E again or
+  Ctrl-right-click; Hold keeps it, and going on alert ends a guard. Melee, cavalry, armored and
+  ranged troops can go on alert, and siege once set up (or setting up this turn: set it up with
+  Q, then E; packing it up ends the alert). Scouts, ships and settlers can't ("ONLY MELEE,
+  CAVALRY, ARMORED, RANGED AND SET-UP SIEGE CAN GO ON ALERT"). With a group, every member that
+  can goes on alert, or all come off it if they all already are. Units on alert wear a red
+  reticle: a ring with four diagonal ticks. The AI never puts a unit on alert; one it plans
+  orders for (a side whose player left) comes off alert as the turn resolves.
 - **Selection flow:** the first unit needing orders is selected at the start of each turn, and
   once the selected unit is done the next one is selected automatically. "Done" (`needs_orders`)
-  means holding, guarding or following an order queue, or having a move queued (or unable to
+  means holding, guarding, on alert or following an order queue, or having a move queued (or unable to
   move) and an attack queued (or unable to attack). Enemies in range don't matter, since hex attacks are always possible. A unit
   in a contested hex is always done. Selecting a unit by clicking never auto-advances, so a
   finished unit can be reselected to edit. Tab looks at the next unit without holding the current
@@ -262,7 +296,9 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   plan leaves the unit. Each turn the unit moves to the hex it can reach that turn that is the
   shortest walk from the clicked hex, going around the terrain, walls and gates the player knows
   of (a hex never seen counts as open; see Fog of war) and allies standing still with no orders
-  (the straight distance decides if there is no known way there; staying put wins ties). Turns are added
+  (the straight distance decides if there is no known way there; staying put wins ties). Of the
+  hexes as far along the way, it takes the one nearest the clicked hex as the crow flies, so of the
+  many equally short ways on hexes it keeps to the straightest. Turns are added
   until nobody can get any closer (a queue toward an enemy in sight stops next to it), but no
   unit's plan grows past the **queue limit** setting (6 turns by default, 1 to 20, this turn
   included; see `controls.md`, Settings menu). A hex farther away than that is queued as far
@@ -305,8 +341,9 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
   turn and every turn it has queued orders for.
 - **Cancelling:** any other order to the unit (a plain move or attack, a group move or attack, a
-  swap, its ability, Guard, Ctrl-right-click) drops its queue. Hold keeps it. This turn's orders
-  stay, so the unit needs orders again unless the new order completes them. A map click that
+  swap, its ability, Guard, Alert, Ctrl-right-click) drops its queue. Hold keeps it. This turn's
+  orders stay (but for Alert, which drops them too), so the unit needs orders again unless the
+  new order completes them. A map click that
   would replace a queue reaching past this turn (a plain move, attack or swap, for a unit or a
   group) needs the same click twice: the first only warns and outlines the hex, and any other
   click, a new selection or the turn ending forgets it (`confirm_queue_replace`).
@@ -360,6 +397,20 @@ Everyone in a step acts simultaneously:
   applied at the end, so a unit killed this step still gets its attack off. Two units attacking
   each other in the same step make one exchange of blows, not two attacks that each draw
   retaliation.
+- **Alert fire:** a unit on alert (see Orders) acts in its own type's attack step, like a
+  planned attack, at an enemy unit within its attack range as the step starts. So it hits
+  whatever ended an earlier move step in range, this turn or a turn before, and one that comes
+  in range only after its step (a siege moving in at step 9, say, against melee on alert) is
+  fired on the next turn, if it's still there. The target is the nearest enemy unit, then the
+  weakest (fewest HP), then the lowest hex (q, then r). It is chosen on the real board, fog or
+  not, the same on every machine of a network game. It is only ever a unit: never a city or an
+  empty city center, a barracks, a Coastal Battery or a worker (a unit standing on a city
+  center is fired at, as a planned attack would hit it), and a ship only by a troop that can
+  hit ships (ranged, siege). The attack is an ordinary one: melee draws retaliation, a unit
+  locked in a contested hex fights its rival instead, and a siege setting up can't fire that
+  turn. As the turn starts to resolve, a unit on alert with any other order for the turn (the
+  AI's, for a side whose player left) or no longer able to be on alert (a siege packing up)
+  comes off it.
 - Each mover's order is spent when its step runs, whether it got through or not.
 - After the last unit and worker step: Coastal Batteries fire, then landing craft unload and
   board their passengers; city interior battles and city economy (income, growth, builds) follow.
@@ -409,7 +460,8 @@ Everyone in a step acts simultaneously:
   target they all already attack calls it off.
 - Either drops every member's order queue. Shift-clicks queue turns for the whole group instead
   (see Order queues).
-- Space/Hold holds every member, G guards them all (or unguards if all are), Ctrl-right-click
+- Space/Hold holds every member, G guards them all (or unguards if all are), E puts every
+  member that can on alert (or takes them off it if all are), Ctrl-right-click
   clears their orders, clicking one member selects just it.
 - The group is cleared when a turn resolves.
 
@@ -752,7 +804,9 @@ every turn end.
   jobs; the queue docks above it. With a barracks open, what it stands on, each deposit
   kind's Cavalry or Armored left (or why none), its five train cards and Open City, queue above. With a unit selected: stats (boosted values green, reduced
   red), notes, and buttons Move, Attack, Swap, then its ability (or Found City), then Hold,
-  Guard and Disband (press twice: the first press asks to confirm). Move, Attack and Swap arm the next map click only (a held modifier overrides it);
+  Guard, Alert (troops that can go on alert only; a siege not set up shows it dimmed), Clear
+  Orders and Disband (press twice: the first press asks to confirm). The classic tray lays the
+  icons out five to a row. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
   pressing the button again or right-clicking disarms. The armed button has a bright border, a
   queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows

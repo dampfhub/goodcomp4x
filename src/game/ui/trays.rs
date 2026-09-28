@@ -260,6 +260,9 @@ impl GameState {
             if unit.guarding {
                 orders.push("GUARD");
             }
+            if unit.alert {
+                orders.push("ALERT");
+            }
             if !orders.is_empty() {
                 notes.push(format!("ORDERS: {}", orders.join(", ")));
             }
@@ -336,6 +339,17 @@ impl GameState {
             state: ButtonState::new(unit.guarding, false),
             armed: false,
         });
+        // Only for troops that could ever go on alert; a siege not set up
+        // shows it unavailable.
+        if !settler && unit.unit_type.takes_alert() {
+            buttons.push(ButtonSpec {
+                target: Target::Unit(UnitAction::Alert),
+                label: "ALERT".into(),
+                hint: "E".into(),
+                state: ButtonState::new(unit.alert, !unit.alert && !self.can_go_on_alert(idx)),
+                armed: false,
+            });
+        }
         buttons.push(ButtonSpec {
             target: Target::Unit(UnitAction::ClearOrders),
             label: "CLEAR ORDERS".into(),
@@ -393,6 +407,13 @@ impl GameState {
         let armed = |mode| self.group == group && self.ui_click_mode == Some(mode);
         let all_guarding = group.iter().all(|&i| self.units[i].guarding);
         let any_orders = group.iter().any(|&i| self.units[i].has_orders());
+        // Alert acts on the members that can go on alert (or are on it).
+        let alert_able: Vec<usize> = group
+            .iter()
+            .copied()
+            .filter(|&i| self.units[i].alert || self.can_go_on_alert(i))
+            .collect();
+        let all_alert = !alert_able.is_empty() && alert_able.iter().all(|&i| self.units[i].alert);
         panel.action_toolbar(vec![
             ButtonSpec {
                 target: Target::Unit(UnitAction::Move),
@@ -414,6 +435,13 @@ impl GameState {
                 label: "GUARD".into(),
                 hint: "G".into(),
                 state: ButtonState::new(all_guarding, false),
+                armed: false,
+            },
+            ButtonSpec {
+                target: Target::Unit(UnitAction::Alert),
+                label: "ALERT".into(),
+                hint: "E".into(),
+                state: ButtonState::new(all_alert, alert_able.is_empty()),
                 armed: false,
             },
             ButtonSpec {

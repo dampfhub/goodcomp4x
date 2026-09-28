@@ -186,10 +186,11 @@ impl GameState {
         self.memory_of(fog).get(&hex)
     }
 
-    /// Whether `fog`'s side knows `hex`: in sight now (always, with the fog
-    /// off), or seen before.
+    /// `is_explored` for `fog`'s side: whether it has seen `hex` (always,
+    /// with the fog off). Its memory holds what's in sight too, as seen
+    /// when it was last brought up to date (`explore`, `side_fog`).
     pub(super) fn explored_by(&self, hex: Hex, fog: &Fog) -> bool {
-        fog.sees(hex) || self.memory_of(fog).contains_key(&hex)
+        fog.visible.is_none() || self.memory_of(fog).contains_key(&hex)
     }
 
     /// How far `unit` sees: its type's sight, more from hills or after a
@@ -409,13 +410,29 @@ impl GameState {
         fog: &Fog,
         naval: bool,
     ) -> HashSet<Hex> {
+        self.known_reachable_past(start, move_range, team, fog, naval, |hex| {
+            self.known_occupied(hex, fog)
+        })
+    }
+
+    /// `known_reachable_for_domain`, with `blocked` saying which hexes
+    /// the units on them close.
+    pub(super) fn known_reachable_past(
+        &self,
+        start: Hex,
+        move_range: i32,
+        team: Team,
+        fog: &Fog,
+        naval: bool,
+        blocked: impl Fn(Hex) -> bool,
+    ) -> HashSet<Hex> {
         let mut reachable = self.reachable_hexes_by(start, move_range, |from, to| {
-            self.known_step(from, to, team, fog, naval) && !self.known_occupied(to, fog)
+            self.known_step(from, to, team, fog, naval) && !blocked(to)
         });
         if move_range > 0 && !naval {
             for city in self.cities.iter().filter(|city| city.team == team) {
                 if let Some(dest) = city.placed_site(Building::Railhead)
-                    && !self.known_occupied(dest, fog)
+                    && !blocked(dest)
                     && self.rail_transfer_available(start, dest, team, Some(fog))
                 {
                     reachable.insert(dest);

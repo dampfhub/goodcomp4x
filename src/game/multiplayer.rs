@@ -30,9 +30,10 @@ use super::unit::{Team, TurnOrder};
 use super::workers::WorkerJob;
 
 /// Bumped whenever a message or a plan changes shape, or the rules a turn
-/// plays out by, so mismatched builds refuse each other instead of
-/// desyncing.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// plays out by, or the map a seed generates (every machine builds the world
+/// from its seed, `mapgen.rs`), so mismatched builds refuse each other
+/// instead of desyncing.
+pub const PROTOCOL_VERSION: u32 = 14;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -129,6 +130,8 @@ pub struct UnitPlan {
     pub ability_queued: bool,
     pub holding: bool,
     pub guarding: bool,
+    /// On alert (`Unit::alert`): only for its own troops that can be.
+    pub alert: bool,
     pub queued: Vec<TurnOrder>,
     pub following_queue: bool,
     pub waypoints: Vec<Hex>,
@@ -909,6 +912,16 @@ impl GameState {
             if unit.ability_queued && !body.ability_queued && body.ability_cooldown > 0 {
                 return bad(format!("UNIT {}'S ABILITY ISN'T READY", unit.id));
             }
+            // On alert only a troop that can be (`can_go_on_alert`), with
+            // the plan's ability (a siege setting up may): never a settler,
+            // a scout or a ship.
+            if unit.alert {
+                let mut planned = body.clone();
+                planned.ability_queued = unit.ability_queued;
+                if !planned.alert_capable() || start.settlers.contains(&unit.id) {
+                    return bad(format!("UNIT {} CAN'T GO ON ALERT", unit.id));
+                }
+            }
         }
         // Cities: its own, or one a settler of its founded where it stood.
         let mut seen = std::collections::HashSet::new();
@@ -1277,6 +1290,7 @@ impl GameState {
                 ability_queued: u.ability_queued,
                 holding: u.holding,
                 guarding: u.guarding,
+                alert: u.alert,
                 queued: u.queued.clone(),
                 waypoints: u.waypoints.clone(),
                 following_queue: u.following_queue,
@@ -1387,6 +1401,7 @@ impl GameState {
             unit.ability_queued = unit_plan.ability_queued;
             unit.holding = unit_plan.holding;
             unit.guarding = unit_plan.guarding;
+            unit.alert = unit_plan.alert;
             unit.queued = unit_plan.queued.clone();
             unit.waypoints = unit_plan.waypoints.clone();
             unit.following_queue = unit_plan.following_queue;
@@ -1457,6 +1472,7 @@ impl GameState {
         for u in units {
             (u.id, u.team, u.pos, u.hp.to_bits(), u.interior_hp.to_bits()).hash(&mut h);
             (u.ability_cooldown, u.deployed, u.cargo.len()).hash(&mut h);
+            u.alert.hash(&mut h);
         }
         for c in &self.cities {
             (c.id, c.team, c.pos, c.population, c.workers).hash(&mut h);
@@ -1743,6 +1759,7 @@ mod tests {
         guest.toggle_selected_ability();
         guest.hold_selected_unit();
         guest.toggle_guard();
+        guest.toggle_alert();
         guest.disband_selected();
         guest.disband_selected();
         guest.found_city_selected();
@@ -2710,6 +2727,7 @@ mod tests {
                 }
                 unit.holding = rng.random_bool(0.2);
                 unit.guarding = rng.random_bool(0.2);
+                unit.alert = rng.random_bool(0.1);
                 unit.following_queue = rng.random_bool(0.3);
                 unit.ability_queued = rng.random_bool(0.3);
             }
@@ -3142,6 +3160,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_alert_goes_in_the_plan_only_for_its_own_troops_that_can() {
+        use super::super::unit::{Unit, UnitType};
+        let (mut host, mut guest) = pair();
+        // A melee troop of the guest's, on both machines, from the turn's
+        // start.
+        let scout = guest
+            .units
+            .iter()
+            .position(|u| u.team == GUEST_SEAT && u.unit_type == UnitType::Scout)
+            .unwrap();
+        let open = guest.units[scout]
+            .pos
+            .neighbors()
+            .into_iter()
+            .find(|&h| {
+                guest.grid.is_passable(h)
+                    && !guest.is_occupied(h)
+                    && guest.cities.iter().all(|c| c.pos != h)
+            })
+            .unwrap();
+        let id = guest.next_unit_id;
+        for game in [&mut host, &mut guest] {
+            game.units
+                .push(Unit::new(id, open, GUEST_SEAT, UnitType::Melee));
+            game.next_unit_id += 1;
+            game.begin_lockstep_turn();
+        }
+        let melee = guest.units.len() - 1;
+        guest.set_selection(vec![melee]);
+        guest.toggle_alert();
+        assert!(guest.units[melee].alert);
+        let plan = guest.team_plan(GUEST_SEAT);
+        assert!(plan.units.iter().any(|u| u.id == id && u.alert));
+        assert_eq!(
+            roundtrip(&Message::Plan(plan.clone())),
+            Message::Plan(plan.clone())
+        );
+        assert_eq!(host.check_plan(&plan), Ok(()));
+        let mut applied = host.clone();
+        applied.apply_plan(&plan);
+        assert!(applied.units.iter().any(|u| u.id == id && u.alert));
+
+        let alert_on = |plan: &TeamPlan, unit: u32| {
+            let mut plan = plan.clone();
+            plan.units.iter_mut().find(|u| u.id == unit).unwrap().alert = true;
+            plan
+        };
+        // Not a scout.
+        let why = host
+            .check_plan(&alert_on(&plan, guest.units[scout].id))
+            .unwrap_err();
+        assert!(why.contains("CAN'T GO ON ALERT"), "{why}");
+        // Not a unit of another side's.
+        let mut foreign = plan.clone();
+        let mut stolen = host.team_plan(HOST_SEAT).units[0].clone();
+        stolen.alert = true;
+        foreign.units.push(stolen);
+        assert!(host.check_plan(&foreign).is_err());
+        // Not a settler, though it's a melee body.
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        start.settlers.insert(id);
+        let why = host.check_plan(&plan).unwrap_err();
+        assert!(why.contains("CAN'T GO ON ALERT"), "{why}");
     }
 
     #[test]

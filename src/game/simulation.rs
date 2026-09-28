@@ -6,16 +6,21 @@
 //! `SIM_SEED=<seed> cargo test simulation`. `SIM_SEEDS=<n>` plays seeds `0..n` instead of
 //! `DEFAULT_SEEDS`, to hunt for failures. `SIM_SPEEDUP=1` plays them with production speeding
 //! builds (the stockpile economy's variant, `docs/rts-economy.md`), `SIM_LIFETIME_CAP=1` with
-//! the Cavalry and Armored cap counting every one ever trained, and `economy_report`
-//! (ignored by default) prints how the stockpiles flow.
+//! the Cavalry and Armored cap counting every one ever trained. `economy_report` (in
+//! `economy.rs`, ignored by default) measures how the stockpile economy runs, and says how to
+//! run it.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+
+mod economy;
 
 use super::city::{Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, Queued};
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
+use super::settings::Settings;
 use super::terrain::{Resource, Terrain};
 use super::unit::Team;
 use super::{GameState, PLAYER_TEAM};
@@ -46,8 +51,15 @@ fn env_number(name: &str) -> Option<u64> {
 /// production speeding builds if `SIM_SPEEDUP` is set to a number above 0, and the Cavalry
 /// and Armored cap counting every one ever trained if `SIM_LIFETIME_CAP` is.
 fn start(scenario: Scenario, seed: u64) -> GameState {
+    start_with(scenario, seed, |_| {})
+}
+
+/// Like `start`, with `settings` changing the options the scenario starts with first (a
+/// world's AI sides, say).
+fn start_with(scenario: Scenario, seed: u64, settings: impl FnOnce(&mut Settings)) -> GameState {
     let mut game = GameState::new();
     game.settings.instant_playback = true;
+    settings(&mut game.settings);
     game.production_speedup = env_number("SIM_SPEEDUP").is_some_and(|n| n > 0);
     game.lifetime_special_cap = env_number("SIM_LIFETIME_CAP").is_some_and(|n| n > 0);
     game.seed_rng(seed);
@@ -111,6 +123,46 @@ fn play_queued_turn(game: &mut GameState) -> usize {
     game.resolve_turn();
     game.update(0.0);
     game.units.iter().filter(|u| u.following_queue).count()
+}
+
+/// Like `play_turn`, but the player's troops with even ids go on alert (`go_on_alert`, as
+/// the Alert button does) whenever they can, in place of what the AI planned for them, and
+/// stay on it; the AI plans the rest. Checks that every unit on alert as the turn resolves
+/// stays put and stays on alert, and returns how many of them had an enemy in range then.
+fn play_alert_turn(game: &mut GameState, context: &str) -> usize {
+    game.selected = None;
+    game.group.clear();
+    game.plan_ai_turn(PLAYER_TEAM);
+    for idx in 0..game.units.len() {
+        let unit = &game.units[idx];
+        if unit.team != PLAYER_TEAM || unit.id % 2 == 1 {
+            continue;
+        }
+        if game.can_go_on_alert(idx) {
+            game.go_on_alert(idx);
+        } else {
+            // A siege the AI packs up: its order ends the alert.
+            game.units[idx].alert = false;
+        }
+    }
+    let on_alert: Vec<(u32, Hex)> = game
+        .units
+        .iter()
+        .filter(|u| u.alert)
+        .map(|u| (u.id, u.pos))
+        .collect();
+    let ready = (0..game.units.len())
+        .filter(|&i| game.alert_target(i).is_some())
+        .count();
+    game.resolve_turn();
+    game.update(0.0);
+    for (id, pos) in on_alert {
+        if let Some(unit) = game.units.iter().find(|u| u.id == id) {
+            assert_eq!(unit.pos, pos, "{context}: {unit} moved while on alert");
+            assert!(unit.alert, "{context}: {unit} came off alert by itself");
+        }
+    }
+    ready
 }
 
 /// Prints how to replay a game if it panics, whether from a failed check or inside the game.
@@ -237,6 +289,11 @@ fn check_invariants(game: &GameState, context: &str) {
         assert!(
             !unit.has_queue() || game.is_player_controlled(idx),
             "{context}: {unit} follows a queue but isn't the player's"
+        );
+        // On alert only a troop that can be, with no other order.
+        assert!(
+            !unit.alert || (game.can_go_on_alert(idx) && !unit.has_turn_orders()),
+            "{context}: {unit} is on alert but can't be"
         );
     }
     for worker in &game.field_workers {
@@ -629,6 +686,26 @@ fn queued_orders_against_the_ai_keep_the_board_consistent() {
 }
 
 #[test]
+fn troops_on_alert_against_the_ai_keep_the_board_consistent() {
+    let ready = AtomicUsize::new(0);
+    for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
+        let mut game = start(scenario, seed);
+        let name = format!("{} seed {seed}", scenario.name());
+        for turn in 1..=TURNS {
+            let context = format!("{name} alert turn {turn}");
+            ready.fetch_add(play_alert_turn(&mut game, &context), Ordering::Relaxed);
+            assert!(!game.is_resolving(), "{context}: the turn did not finish");
+            check_invariants(&game, &context);
+        }
+    });
+    // Anti-vacuity: units on alert did have enemies to fire at.
+    assert!(
+        ready.into_inner() > 0,
+        "no unit on alert ever had an enemy in range"
+    );
+}
+
+#[test]
 fn ai_against_ai_combat_ends_with_fewer_units() {
     // Anti-vacuity: the combat scenario must actually fight, or the invariant test above
     // would pass on a game where nothing happens.
@@ -725,72 +802,4 @@ fn the_same_seed_replays_the_same_game() {
         fingerprint(Scenario::Combat, 2, 2),
         "two seeds played the same combat"
     );
-}
-
-/// Not a check: prints how the stockpile economy flows in AI-vs-AI games of the Cities and
-/// World scenarios (`docs/rts-economy.md`). Every `REPORT_EVERY` turns, one line per side with
-/// cities: its stockpile (whole units), total population, cities, army (units other than
-/// scouts and settlers) and units trained so far. Run it with
-/// `cargo test economy_report -- --ignored --nocapture`; `SIM_SEED`/`SIM_SEEDS` pick the
-/// seeds as for the other simulations, and `SIM_SPEEDUP=1` turns on production speeding builds.
-#[test]
-#[ignore = "a report to read, not a check"]
-fn economy_report() {
-    const REPORT_EVERY: u32 = 5;
-    let speedup = env_number("SIM_SPEEDUP").is_some_and(|n| n > 0);
-    for scenario in [Scenario::Cities, Scenario::World] {
-        for seed in seeds() {
-            let mut game = start(scenario, seed);
-            let mut seen: HashSet<u32> = game.units.iter().map(|u| u.id).collect();
-            let mut trained: HashMap<Team, usize> = HashMap::default();
-            println!(
-                "{} seed {seed}{}",
-                scenario.name(),
-                if speedup {
-                    " (production speeds builds)"
-                } else {
-                    ""
-                }
-            );
-            for turn in 1..=TURNS {
-                play_turn(&mut game);
-                for unit in &game.units {
-                    if seen.insert(unit.id) && !game.settlers.contains(&unit.id) {
-                        *trained.entry(unit.team).or_default() += 1;
-                    }
-                }
-                if turn % REPORT_EVERY != 0 {
-                    continue;
-                }
-                for team in Team::ALL {
-                    let cities: Vec<_> = game.cities.iter().filter(|c| c.team == team).collect();
-                    if cities.is_empty() {
-                        continue;
-                    }
-                    let stock = game.stock(team);
-                    let army = game
-                        .units
-                        .iter()
-                        .filter(|u| {
-                            u.team == team
-                                && u.unit_type != super::unit::UnitType::Scout
-                                && !game.settlers.contains(&u.id)
-                        })
-                        .count();
-                    println!(
-                        "  turn {turn:2} {team:?}: food {:3} wood {:3} metal {:3} | pop {:2} in {} cities | army {:2} | trained {:2} | special {:2} | barracks {}",
-                        stock.food / 4,
-                        stock.wood / 4,
-                        stock.metal / 4,
-                        cities.iter().map(|c| c.population).sum::<usize>(),
-                        cities.len(),
-                        army,
-                        trained.get(&team).copied().unwrap_or(0),
-                        game.special_trained[team.index()].iter().sum::<u32>(),
-                        cities.iter().filter(|c| c.barracks.is_some()).count()
-                    );
-                }
-            }
-        }
-    }
 }
