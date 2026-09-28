@@ -32,7 +32,9 @@ behavior.
 | `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click`), the yields toggle, `end_planning` |
 | `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture |
 | `city/tests.rs` | the city tests |
-| `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, tiles, rivers, resources); `Tile` = ground + hills + feature, with yields, route cost, defense |
+| `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, and tiles, rivers, resources and specials in flat arrays over the shape's bounding box); `Tile` = ground + hills + feature, with yields, route cost, defense |
+| `fast_hash.rs` | the `HashMap` and `HashSet` the game uses: std's, with a fast fixed hasher (rustc's) for its small keys |
+| `perf.rs` | tests only: `perf_report` (ignored; run with `--release -- --ignored --nocapture`) times a frame's and a turn's stages on a busy world |
 | `mapgen.rs` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map): terrain, balanced starts for any number of sides, horses and iron by each start, and special tiles and ruins on contested ground |
 | `ruins.rs` | ruins: holding them for `RUIN_HOLD_TURNS` claims a reward (`resolve_ruins`, at each turn's end before the economy) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
@@ -54,6 +56,8 @@ behavior.
 
 ## Invariants
 
+- Hash maps and sets come from `fast_hash` (`HashMap::default()`, not `new()`), not
+  `std::collections`: the default SipHash was a large share of frame and turn time.
 - `units` holds living units only. Dead units are removed with `retain` at the end of an attack
   step, which shifts indices, so code that spans a removal uses unit `id`s, not indices.
   `selected` and `group` are cleared before a turn resolves for the same reason.

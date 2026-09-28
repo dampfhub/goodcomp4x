@@ -32,10 +32,13 @@ fn canoe_house_turns_its_connected_river_into_a_transport_corridor() {
     let bank = Hex::new(-3, 0);
     let middle = Hex::new(-2, 0);
     let destination = Hex::new(-1, 0);
-    g.grid = g.grid.clone().with_rivers(std::collections::HashSet::from([
-        crate::game::hex::edge(bank, middle),
-        crate::game::hex::edge(middle, destination),
-    ]));
+    g.grid = g
+        .grid
+        .clone()
+        .with_rivers(crate::game::fast_hash::HashSet::from_iter([
+            crate::game::hex::edge(bank, middle),
+            crate::game::hex::edge(middle, destination),
+        ]));
     let before = g.routes(0).costs[&destination];
     assert!(g.site_available(0, Building::CanoeHouse, bank));
     assert!(!g.site_available(0, Building::CanoeHouse, Hex::new(-4, 1)));

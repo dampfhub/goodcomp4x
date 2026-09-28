@@ -33,10 +33,11 @@
 //!     two starts are about as far on foot, well away from both, so no side
 //!     has them to itself.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use glam::Vec2;
 
+use super::fast_hash::{HashMap, HashSet};
 use super::hex::{Hex, HexGrid, Shape, edge};
 use super::terrain::{Feature, Resource, Special, Terrain, Tile};
 
@@ -327,7 +328,7 @@ fn carve_rivers(
 
     // Sources: corners beside hills or mountains, away from water.
     let mut sources: Vec<Corner> = Vec::new();
-    let mut seen: HashSet<Corner> = HashSet::new();
+    let mut seen: HashSet<Corner> = HashSet::default();
     for &h in hexes {
         if !high(&tiles[&h]) {
             continue;
@@ -341,8 +342,8 @@ fn carve_rivers(
         }
     }
 
-    let mut rivers = HashSet::new();
-    let mut river_corners: HashSet<Corner> = HashSet::new();
+    let mut rivers = HashSet::default();
+    let mut river_corners: HashSet<Corner> = HashSet::default();
     let mut used_sources: Vec<Hex> = Vec::new();
     let mut tries = 0;
     while used_sources.len() < wanted && !sources.is_empty() && tries < 120 {
@@ -353,7 +354,7 @@ fn carve_rivers(
         }
         let mut path = vec![start];
         let mut edges = Vec::new();
-        let mut visited: HashSet<Corner> = HashSet::from([start]);
+        let mut visited: HashSet<Corner> = HashSet::from_iter([start]);
         let mut current = start;
         let mut ends_in_lake = true;
         for _ in 0..50 {
@@ -608,7 +609,7 @@ fn within(center: Hex, radius: i32) -> impl Iterator<Item = Hex> {
 
 /// Steps on foot from `origin` to every passable hex it connects to.
 fn walking_distances(grid: &HexGrid, origin: Hex) -> HashMap<Hex, i32> {
-    let mut distances = HashMap::from([(origin, 0)]);
+    let mut distances = HashMap::from_iter([(origin, 0)]);
     let mut queue = VecDeque::from([origin]);
     while let Some(hex) = queue.pop_front() {
         let next = distances[&hex] + 1;
@@ -789,7 +790,7 @@ fn start_score(grid: &HexGrid, site: Hex) -> i32 {
 /// Connected groups of hexes matching `keep`.
 fn components(hexes: &[Hex], keep: impl Fn(Hex) -> bool) -> Vec<Vec<Hex>> {
     let members: HashSet<Hex> = hexes.iter().copied().filter(|h| keep(*h)).collect();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut groups = Vec::new();
     for &h in hexes {
         if !members.contains(&h) || !seen.insert(h) {
@@ -1124,8 +1125,8 @@ mod tests {
 
     #[test]
     fn maps_mix_every_kind_of_tile() {
-        let mut grounds = HashSet::new();
-        let mut hilly_grounds = HashSet::new();
+        let mut grounds = HashSet::default();
+        let mut hilly_grounds = HashSet::default();
         let (mut water, mut hexes) = (0, 0);
         for seed in 0..10 {
             let map = generate(seed, 4);

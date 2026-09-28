@@ -1,9 +1,9 @@
 //! Logistics: delivery routes from a city or a placed building, how much of a
 //! worked tile's yield each route delivers, and the resulting income.
-use std::collections::{HashMap, HashSet};
 
 use super::{Building, Stock};
 use crate::game::GameState;
+use crate::game::fast_hash::{HashMap, HashSet};
 use crate::game::hex::Hex;
 use crate::game::unit::Team;
 
@@ -118,14 +118,14 @@ impl GameState {
         road: impl Fn(Hex, Hex) -> bool,
     ) -> Routes {
         let mut result = Routes {
-            costs: HashMap::new(),
-            toward_origin: HashMap::new(),
+            costs: HashMap::default(),
+            toward_origin: HashMap::default(),
         };
         if blocked(origin) {
             return result;
         }
         result.costs.insert(origin, 0);
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         loop {
             let next = result
                 .costs

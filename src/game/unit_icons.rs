@@ -5,6 +5,7 @@
 
 use glam::Vec2;
 
+use super::fast_hash::HashMap;
 use super::mesh;
 use super::unit::UnitType;
 use crate::renderer::Vertex;
@@ -16,7 +17,7 @@ const DESIGN_RADIUS: f32 = 42.0;
 /// Sides of the polygons that stand in for circles.
 const CIRCLE_SIDES: u32 = 16;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum UnitIcon {
     /// Melee: an upright sword.
     Sword,
@@ -56,6 +57,8 @@ impl UnitIcon {
 }
 
 /// Draws `icon` in `color` centered on a token of `radius` at `center`.
+/// Each pictogram's triangles are worked out once (`build_pictogram`),
+/// then placed.
 pub(super) fn push_pictogram(
     center: Vec2,
     radius: f32,
@@ -63,11 +66,26 @@ pub(super) fn push_pictogram(
     color: Color,
     out: &mut Vec<Vertex>,
 ) {
+    thread_local! {
+        static MESHES: std::cell::RefCell<HashMap<UnitIcon, Vec<Vertex>>> = Default::default();
+    }
+    MESHES.with_borrow_mut(|meshes| {
+        let shape = meshes.entry(icon).or_insert_with(|| {
+            let mut shape = Vec::new();
+            build_pictogram(icon, &mut shape);
+            shape
+        });
+        mesh::place(shape, center, radius / DESIGN_RADIUS, Some(color), out);
+    });
+}
+
+/// `icon`'s triangles on a token of `DESIGN_RADIUS` at the origin.
+fn build_pictogram(icon: UnitIcon, out: &mut Vec<Vertex>) {
     let mut pen = Pen {
-        center,
-        scale: radius / DESIGN_RADIUS,
+        center: Vec2::ZERO,
+        scale: 1.0,
         turn: Vec2::X,
-        color,
+        color: [1.0; 4],
         out,
     };
     match icon {

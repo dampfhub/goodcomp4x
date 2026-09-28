@@ -8,6 +8,7 @@
 
 use glam::Vec2;
 
+use super::fast_hash::HashMap;
 use super::hex::HEX_SIZE;
 use super::mesh;
 use super::terrain::{Resource, Special};
@@ -55,7 +56,7 @@ const METAL: Color = [0.42, 0.46, 0.52, 1.0];
 const CLOCK_FACE: Color = [0.80, 0.80, 0.74, 1.0];
 const FRUIT: Color = [0.80, 0.08, 0.04, 1.0];
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum MapIcon {
     /// Horses: a horse's head, facing right.
     HorseHead,
@@ -159,11 +160,27 @@ pub(super) fn push_map_icon(center: Vec2, icon: MapIcon, out: &mut Vec<Vertex>) 
     push_map_icon_scaled(center, icon, 1.0, out);
 }
 
-/// Draws `icon` centered on `center`, `scale` times its usual size.
+/// Draws `icon` centered on `center`, `scale` times its usual size. Each
+/// icon's triangles are worked out once (`build_map_icon`), then placed.
 pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec<Vertex>) {
+    thread_local! {
+        static MESHES: std::cell::RefCell<HashMap<MapIcon, Vec<Vertex>>> = Default::default();
+    }
+    MESHES.with_borrow_mut(|meshes| {
+        let shape = meshes.entry(icon).or_insert_with(|| {
+            let mut shape = Vec::new();
+            build_map_icon(icon, &mut shape);
+            shape
+        });
+        mesh::place(shape, center, scale, None, out);
+    });
+}
+
+/// `icon`'s triangles, centered on the origin at its usual size.
+fn build_map_icon(icon: MapIcon, out: &mut Vec<Vertex>) {
     let mut pen = Pen {
-        center,
-        scale: scale * HEX_SIZE / DESIGN_HEX_RADIUS,
+        center: Vec2::ZERO,
+        scale: HEX_SIZE / DESIGN_HEX_RADIUS,
         out,
     };
     match icon {

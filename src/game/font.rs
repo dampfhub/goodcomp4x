@@ -5,11 +5,11 @@
 //! world text scales one set of signed distance fields, which keep a sharp
 //! outline at any zoom, with mipmaps for when it's drawn small.
 
-use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use glam::Vec2;
 
+use super::fast_hash::HashMap;
 use super::map_icons;
 use crate::renderer::{Atlas, Vertex};
 

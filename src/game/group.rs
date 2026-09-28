@@ -6,11 +6,10 @@
 //! range attack it. Members that can't get any closer, or reach, stay as they
 //! are. Shift-clicks queue orders for later turns (`order_queue.rs`).
 
-use std::collections::HashSet;
-
 use glam::Vec2;
 
 use super::GameState;
+use super::fast_hash::HashSet;
 use super::hex::Hex;
 use super::orders::ClickMode;
 
