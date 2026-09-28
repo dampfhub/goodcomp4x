@@ -446,15 +446,16 @@ impl GameState {
         };
 
         // The notice sits centered in the space left between the two.
-        if !self.notice.is_empty() {
-            let notice = &self.notice;
+        let shown = self.shown_notice();
+        if !shown.is_empty() {
+            let notice = &shown;
             let width = ui(TextSize.Body).width(notice);
             let (from, to) = (left_end + 2.0 * GAP, end_turn.min.x - 2.0 * GAP);
             let centered = (from + to - width) / 2.0;
             let left = if centered > from { centered } else { from };
             if left + width <= to {
                 let mut notice: Vec[Span] = Vec.new();
-                notice.push(Span { text: copy_str(&self.notice), color: NOTICE_TEXT });
+                notice.push(Span { text: copy_str(&shown), color: NOTICE_TEXT });
                 layout.text_row(vec2(left, middle), TextSize.Body, notice);
             }
         }

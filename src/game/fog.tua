@@ -15,6 +15,8 @@ use std.math.max;
 use std.math.min;
 use game.GameState;
 use game.PLAYER_TEAM;
+use game.Step;
+use game.reachable_by;
 use game.text;
 use game.city.SiteKind;
 use game.hex.Hex;
@@ -175,26 +177,20 @@ impl GameState {
         }
     }
 
-    /// The hexes a player-controlled unit of `team` at `start` can plan to reach, going around
-    /// the units the player knows of.
+    /// The hexes a player-controlled land unit of `team` at `start` can plan to reach, going
+    /// around the units the player knows of.
     pub fn known_reachable_hexes(&self, start: Hex, move_range: i32, team: Team, fog: &Fog) -> Set[Hex] {
-        let mut visited: Set[Hex] = Set.new();
-        let _new = visited.insert(start);
-        let mut frontier: Vec[Hex] = Vec.new();
-        frontier.push(start);
-        for _ in 0..move_range {
-            let mut next: Vec[Hex] = Vec.new();
-            for f in 0..frontier.len() {
-                let around = frontier[f].neighbors();
-                for k in 0..6 {
-                    let to = around[k];
-                    let open = self.grid.is_passable(to) && !self.known_enemy_city_at(to, team, fog) && !self.known_occupied(to, fog);
-                    if open && visited.insert(to) { next.push(to); }
-                }
+        self.known_reachable_for_domain(start, move_range, team, fog, false)
+    }
+
+    /// `known_reachable_hexes` over water for a ship (`naval`), over land otherwise.
+    pub fn known_reachable_for_domain(&self, start: Hex, move_range: i32, team: Team, fog: &Fog, naval: bool) -> Set[Hex] {
+        handle { reachable_by(start, move_range) } with Step {
+            open(_from, to) => {
+                let ground = if naval { self.grid.contains(to) && self.grid.terrain(to).is_water() } else { self.grid.is_passable(to) };
+                resume ground && !self.known_enemy_city_at(to, team, fog) && !self.known_occupied(to, fog)
             }
-            frontier = next;
         }
-        visited
     }
 
     /// Records everything in sight as the player's latest memory of it. Called every frame.

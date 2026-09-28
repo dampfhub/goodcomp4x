@@ -2,29 +2,63 @@
 
 use std.rand.Rand;
 use std.core.Eq;
+use std.fmt.Out;
 use std.linalg.Vec2;
 use std.iter.each;
+use std.str.Str;
+use std.str.to_owned;
 use log.Log;
+use log.info;
 use game.GameState;
+use game.text;
 use game.hex.Hex;
+use game.unit.UnitType;
 
-/// What a left-click on a hex should do, based on the modifier keys held or the action armed
-/// from the command tray.
+/// A click that would replace the selection's multi-turn queue, remembered until it's
+/// repeated: which hex, whether it was an attack, for which units, on which turn.
+pub struct QueueReplace {
+    hex: Hex,
+    attack: bool,
+    units: Vec[u32],
+    turn: u32,
+}
+
+impl QueueReplace {
+    fn same(&self, other: &QueueReplace) -> bool {
+        self.hex == other.hex && self.attack == other.attack && self.turn == other.turn && same_ids(&self.units, &other.units)
+    }
+}
+
+fn same_ids(a: &Vec[u32], b: &Vec[u32]) -> bool {
+    if a.len() != b.len() { return false; }
+    for i in 0..a.len() { if a[i] != b[i] { return false; } }
+    true
+}
+
+/// What a click on a hex should do, based on the button and the modifier keys held: left-click
+/// moves, right-click attacks, Shift adds to the order queue (`order_queue.tua`) instead.
 pub enum ClickMode {
-    /// Select a unit, or queue a move or attack for the selected one.
+    /// Left-click: select a unit, or move the selected one.
     Normal,
     /// Move only, chosen from the unit command tray.
     Move,
-    /// Attack the clicked hex, occupied or not.
+    /// Attack the clicked hex, occupied or not: right-click, or armed from the tray.
     Attack,
-    /// Swap places with the clicked adjacent ally.
+    /// Ctrl-left-click: swap places with the clicked adjacent ally, or with several units
+    /// selected, take the clicked one out of the selection.
     Swap,
+    /// Shift-left-click: add the turns moving to the hex to the queue, or on one of the
+    /// player's units, add it to the selection.
+    QueueMove,
+    /// Shift-right-click: add an attack on the hex to the queue.
+    QueueAttack,
 }
 
 impl Eq for ClickMode {
     fn eq(self, other: ClickMode) -> bool {
         match (self, other) {
             (ClickMode.Normal, ClickMode.Normal) | (ClickMode.Move, ClickMode.Move) | (ClickMode.Attack, ClickMode.Attack) | (ClickMode.Swap, ClickMode.Swap) => true,
+            (ClickMode.QueueMove, ClickMode.QueueMove) | (ClickMode.QueueAttack, ClickMode.QueueAttack) => true,
             _ => false,
         }
     }
@@ -61,14 +95,20 @@ impl GameState {
         }
     }
 
-    /// Left-click: selects one of the player's units, or queues an order for the selected one.
-    /// Clicking an already-queued order again cancels it. An action armed from the command
-    /// tray applies to this map click only, unless a modifier key picked `mode` itself. Once
-    /// the selected unit has nothing left to plan, selection moves on to the next unit that
-    /// does. Ignored while a turn is playing out.
+    /// Left-click: selects one of the player's units, or moves the selected one (Shift: adds to
+    /// its queue instead). Clicking an already-queued order again cancels it. An action armed
+    /// from the command tray applies to this map click only, unless a modifier key picked
+    /// `mode` itself. Once the selected unit has nothing left to plan, selection moves on to
+    /// the next unit that does. Ignored while a turn is playing out.
     pub fn handle_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) can {Log, Rand} {
         if self.is_resolving() { return; }
         if self.click_ui(cursor, screen_size) { return; }
+        self.handle_map_click(cursor, screen_size, mode);
+    }
+
+    /// A click on the map, once the UI has had its turn at it.
+    pub fn handle_map_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) can {Log, Rand} {
+        if self.is_resolving() { return; }
         let armed = self.ui_click_mode;
         self.ui_click_mode = Option.None;
         let mode = match (mode, armed) {
@@ -85,8 +125,25 @@ impl GameState {
         if self.city_click(hex) { return; }
 
         let ally = self.controlled_unit_at(hex);
-        // With a group selected, clicking one of your units picks just it; anything else is
-        // an order for the whole group.
+        // Shift-clicking one of your units adds it to the selection, and Ctrl-clicking a member
+        // of a group takes it out (with one unit selected, Ctrl-click still swaps).
+        if let Option.Some(a) = ally {
+            if mode == ClickMode.QueueMove {
+                self.add_to_selection(a);
+                return;
+            }
+            if mode == ClickMode.Swap && !self.group.is_empty() && self.remove_from_selection(a) { return; }
+        }
+        // A plain order that would replace a multi-turn queue needs the same click twice, so
+        // looking at a plan and clicking away can't ruin it.
+        let replaces_queue = match (mode, ally) {
+            (ClickMode.Normal, Option.None) | (ClickMode.Move, Option.None) | (ClickMode.Attack, _) => true,
+            (ClickMode.Swap, Option.Some(_)) => self.group.is_empty(),
+            _ => false,
+        };
+        if replaces_queue && !self.confirm_queue_replace(hex, mode == ClickMode.Attack) { return; }
+        // With a group selected, a plain click on one of your units picks just it; anything
+        // else is an order for the whole group.
         if !self.group.is_empty() {
             match (ally, mode) {
                 (Option.Some(a), ClickMode.Normal) => {
@@ -122,15 +179,62 @@ impl GameState {
             }
             (ClickMode.Move, _) => {}
             (ClickMode.Normal, Option.None) => {
-                let team = self.units[selected].team;
-                let fog = self.fog();
-                if self.known_enemy_target_at(hex, team, &fog) {
-                    self.try_queue_attack(selected, hex);
-                } else {
-                    self.try_queue_move(selected, hex);
-                }
+                self.queue_order_at(selected, hex);
                 self.advance_selection_if_done();
             }
+            // Queuing never moves selection on: the player keeps adding turns until they let
+            // go of the unit.
+            (ClickMode.QueueMove, _) => { let _queued = self.queue_move(hex); }
+            (ClickMode.QueueAttack, _) => { let _queued = self.queue_attack(hex); }
+        }
+    }
+
+    /// Whether a plain order on `hex` (an attack if `attack`) may go ahead for the selection.
+    /// If a selected unit follows a queue reaching past this turn, which the order would
+    /// replace, the first such click only warns and marks the hex; the same click again goes
+    /// through. Any other click leaves the queue alone.
+    pub fn confirm_queue_replace(&mut self, hex: Hex, attack: bool) -> bool {
+        let members = self.selection();
+        let mut queued = false;
+        let mut units: Vec[u32] = Vec.new();
+        for k in 0..members.len() {
+            if self.units[members[k]].plans_later_turns() { queued = true; }
+            units.push(self.units[members[k]].id);
+        }
+        let pending = QueueReplace { hex, attack, units, turn: self.turn };
+        let repeated = match &self.queue_replace_armed { &Option.Some(armed) => armed.same(&pending), &Option.None => false };
+        if !queued || repeated {
+            self.queue_replace_armed = Option.None;
+            return true;
+        }
+        // The warning shows through `shown_notice`, only while it applies.
+        self.queue_replace_armed = Option.Some(pending);
+        false
+    }
+
+    /// What the top bar says: the warning that a click is waiting to be repeated to replace a
+    /// queue, while one is, or else the latest notice.
+    pub fn shown_notice(&self) -> Str {
+        if self.queue_replace_hex().is_none() {
+            let notice: &Str = &self.notice;
+            return to_owned(notice);
+        }
+        if self.group.is_empty() {
+            text(fn() can {Out} { Out.put("CLICK AGAIN TO REPLACE ITS QUEUE"); })
+        } else {
+            text(fn() can {Out} { Out.put("CLICK AGAIN TO REPLACE THEIR QUEUES"); })
+        }
+    }
+
+    /// The hex a click is waiting to be repeated on to replace the selection's queue, while it
+    /// still applies (same selection, same turn).
+    pub fn queue_replace_hex(&self) -> Option[Hex] {
+        let members = self.selection();
+        let mut units: Vec[u32] = Vec.new();
+        for k in 0..members.len() { units.push(self.units[members[k]].id); }
+        match &self.queue_replace_armed {
+            &Option.Some(pending) => if same_ids(&pending.units, &units) && pending.turn == self.turn { Option.Some(pending.hex) } else { Option.None },
+            &Option.None => Option.None,
         }
     }
 
@@ -143,8 +247,9 @@ impl GameState {
             return;
         }
         let selected_needs_orders = match self.selected { Option.Some(i) => self.needs_orders(i), Option.None => false };
+        let selected_holding = match self.selected { Option.Some(i) => self.units[i].holding, Option.None => false };
         let (units, cities) = self.pending();
-        if selected_needs_orders || units != 0 || cities != 0 {
+        if selected_needs_orders || selected_holding || units != 0 || cities != 0 {
             self.hold_selected_unit();
         } else {
             self.end_planning();
@@ -152,14 +257,22 @@ impl GameState {
     }
 
     /// The Hold button: the selected unit holds, leaving any move or attack it hasn't queued
-    /// unused this turn, and selection moves on.
+    /// unused this turn, and selection moves on. On a unit already holding, it stops holding
+    /// instead and stays selected, back in the turn order.
     pub fn hold_selected_unit(&mut self) {
         if self.is_resolving() { return; }
         if !self.group.is_empty() {
             self.hold_group();
             return;
         }
-        if let Option.Some(idx) = self.selected { self.units[idx].holding = true; }
+        if let Option.Some(idx) = self.selected {
+            if self.units[idx].holding {
+                self.units[idx].holding = false;
+                self.set_notice("NO LONGER HOLDING - GIVE IT ORDERS");
+                return;
+            }
+            self.units[idx].holding = true;
+        }
         self.select_next_or_end_turn(self.selected);
     }
 
@@ -173,7 +286,36 @@ impl GameState {
         }
         let Option.Some(idx) = self.selected else { return; };
         self.units[idx].guarding = !self.units[idx].guarding;
+        self.units[idx].cancel_queue();
         if self.units[idx].guarding { self.select_next_or_end_turn(Option.Some(idx)); }
+    }
+
+    /// Delete or the Disband button: removes the selected unit for good. The first press only
+    /// arms it (the button asks to confirm); a second press on the same unit disbands it, and
+    /// selection moves on.
+    pub fn disband_selected(&mut self) can {Log} {
+        if self.is_resolving() { return; }
+        let Option.Some(idx) = self.selected else { return; };
+        if !self.is_player_controlled(idx) { return; }
+        let id = self.units[idx].id;
+        if self.disband_armed != Option.Some(id) {
+            self.disband_armed = Option.Some(id);
+            self.set_notice("PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS UNIT");
+            return;
+        }
+        self.disband_armed = Option.None;
+        let unit = self.units.remove(idx);
+        let _was = self.settlers.remove(unit.id);
+        let _was = self.workers.remove(unit.id);
+        let _was = self.player_controlled_units.remove(unit.id);
+        info(fn() can {Out} { unit.show(); Out.put(" disbanded"); });
+        let (role, _) = self.unit_role(&unit);
+        self.notice = text(fn() can {Out} { Out.put(role); Out.put(" DISBANDED"); });
+        // Indices after it shifted down, so nothing else stays selected.
+        self.selected = Option.None;
+        self.group.clear();
+        self.ui_click_mode = Option.None;
+        self.select_next_or_end_turn(if idx > 0 { Option.Some(idx - 1) } else { Option.None });
     }
 
     /// How many of the player's units still need orders, and how many of their cities still
@@ -274,11 +416,11 @@ impl GameState {
 
     /// Whether the unit still has something to plan: a move or an attack it could queue but
     /// hasn't. Any hex in range can be attacked, so a unit that can attack needs orders until
-    /// it does (or holds, or guards). A unit locked in a contested hex already has its fight,
-    /// so it's done.
+    /// it does (or holds, guards, or follows a queue built with Shift). A unit locked in a
+    /// contested hex already has its fight, so it's done.
     pub fn needs_orders(&self, idx: i32) -> bool {
         let unit = &self.units[idx];
-        if unit.holding || unit.guarding || self.rival_of(idx).is_some() { return false; }
+        if unit.holding || unit.guarding || unit.has_queue() || unit.planned_board.is_some() || self.rival_of(idx).is_some() { return false; }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
         let may_attack = unit.planned_attack.is_none() && unit.can_attack() && !self.workers.contains(unit.id);
         may_move || may_attack
@@ -299,10 +441,10 @@ impl GameState {
         }
     }
 
-    /// Context order: right-click moves to an open hex or attacks an enemy. Ctrl-right-click
-    /// keeps the explicit clear-orders behaviour. With an action armed, right-click just
-    /// disarms it.
-    pub fn handle_context_click(&mut self, cursor: Vec2, screen_size: Vec2, clear: bool) {
+    /// Right-click: the selected unit (or group) attacks the hex, occupied or not; with Shift
+    /// (`queue`), the attack is added to its order queue. Ctrl-right-click (`clear`) clears its
+    /// orders instead. With an action armed, right-click just disarms it.
+    pub fn handle_context_click(&mut self, cursor: Vec2, screen_size: Vec2, clear: bool, queue: bool) {
         if self.is_resolving() { return; }
         if self.ui_click_mode.is_some() {
             self.ui_click_mode = Option.None;
@@ -312,18 +454,31 @@ impl GameState {
             self.handle_right_click();
             return;
         }
-        if !self.group.is_empty() {
-            if let Option.Some(hex) = self.hex_at_screen(cursor, screen_size) { self.group_order(hex, ClickMode.Normal); }
-            return;
-        }
-        let Option.Some(selected) = self.selected else { return; };
         let Option.Some(hex) = self.hex_at_screen(cursor, screen_size) else { return; };
-        if self.enemy_of_team_at(hex, self.units[selected].team).is_some() {
-            self.try_queue_attack(selected, hex);
-        } else {
-            self.try_queue_move(selected, hex);
+        let mode = if queue { ClickMode.QueueAttack } else { ClickMode.Attack };
+        if !queue && !self.confirm_queue_replace(hex, true) { return; }
+        if !self.group.is_empty() {
+            self.group_order(hex, mode);
+        } else if let Option.Some(selected) = self.selected {
+            if queue {
+                let _queued = self.queue_attack(hex);
+            } else {
+                self.try_queue_attack(selected, hex);
+                self.advance_selection_if_done();
+            }
         }
-        self.advance_selection_if_done();
+    }
+
+    /// A plain left click on `hex` with a unit selected: moves there. An enemy the player knows
+    /// is there isn't a move, so they're reminded that right-click attacks; one out of sight
+    /// isn't known, so clicking its hex plans a move.
+    pub fn queue_order_at(&mut self, idx: i32, hex: Hex) {
+        let fog = self.fog();
+        if self.known_enemy_target_at(hex, self.units[idx].team, &fog) {
+            self.set_notice("RIGHT-CLICK TO ATTACK");
+        } else {
+            self.try_queue_move(idx, hex);
+        }
     }
 
     pub fn hex_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option[Hex] {
@@ -337,7 +492,7 @@ impl GameState {
     pub fn try_queue_move(&mut self, idx: i32, dest: Hex) {
         let unit = &self.units[idx];
         let fog = self.fog();
-        let reachable = self.known_reachable_hexes(unit.pos, unit.stats().move_range, unit.team, &fog);
+        let reachable = self.known_reachable_for_domain(unit.pos, unit.stats().move_range, unit.team, &fog, unit.is_naval());
         let mut claimed_by_ally = false;
         for i in 0..self.units.len() {
             let u = &self.units[i];
@@ -349,8 +504,10 @@ impl GameState {
         let unit = &mut self.units[idx];
         unit.planned_move = if unit.planned_move == Option.Some(dest) { Option.None } else { Option.Some(dest) };
         unit.drop_unreachable_attack();
-        // Any order wakes a guarding unit.
+        // Any order wakes a guarding unit, and replaces a queue.
         unit.guarding = false;
+        unit.holding = false;
+        unit.cancel_queue();
     }
 
     /// Toggles an attack on `target`, measured from the unit's planned position so
@@ -358,11 +515,19 @@ impl GameState {
     /// unit locked in a contested hex can only fight its rival there.
     pub fn try_queue_attack(&mut self, idx: i32, target: Hex) {
         let unable = !self.units[idx].can_attack() || self.workers.contains(self.units[idx].id) || self.rival_of(idx).is_some();
-        if unable || !self.grid.is_passable(target) { return; }
+        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
+        let shoots_ships = self.units[idx].unit_type == UnitType.Ranged || self.units[idx].unit_type == UnitType.Siege;
+        if water && !self.units[idx].is_naval() && !shoots_ships {
+            self.set_notice("ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS");
+            return;
+        }
+        if unable || !(self.grid.is_passable(target) || water) { return; }
         let unit = &mut self.units[idx];
         if unit.planned_pos().distance(target) <= unit.stats().attack_range {
             unit.planned_attack = if unit.planned_attack == Option.Some(target) { Option.None } else { Option.Some(target) };
             unit.guarding = false;
+            unit.holding = false;
+            unit.cancel_queue();
         }
     }
 
@@ -389,6 +554,8 @@ impl GameState {
         for i in each(&[idx, ally]) {
             self.units[*i].drop_unreachable_attack();
             self.units[*i].guarding = false;
+            self.units[*i].holding = false;
+            self.units[*i].cancel_queue();
         }
     }
 
@@ -400,6 +567,8 @@ impl GameState {
         let Option.Some(idx) = self.selected else { return; };
         if self.units[idx].ability_cooldown > 0 { return; }
         self.units[idx].ability_queued = !self.units[idx].ability_queued;
+        // The queue was planned with the unit's old stats.
+        self.units[idx].cancel_queue();
         self.drop_orders_now_impossible(idx);
         self.advance_selection_if_done();
     }

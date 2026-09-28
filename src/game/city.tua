@@ -666,19 +666,13 @@ impl GameState {
         true
     }
 
-    /// Space (once nothing needs orders) or the End Turn button: resolves the turn, unless a
-    /// unit still needs orders or a city needs something to build, in which case that's
-    /// selected instead.
+    /// Space (once nothing needs orders) or the End Turn button: resolves the turn. Units still
+    /// waiting for orders hold; a city that needs something to build is opened instead.
     pub fn end_planning(&mut self) can {Log} {
         if self.is_resolving() { return; }
+        // Units still waiting for orders hold.
         for i in 0..self.units.len() {
-            if self.is_player_controlled(i) && self.needs_orders(i) {
-                self.selected_city = Option.None;
-                self.selected = Option.Some(i);
-                self.camera.focus_on(self.units[i].pos.to_world());
-                self.set_notice("UNIT NEEDS ORDERS - SPACE TO HOLD");
-                return;
-            }
+            if self.is_player_controlled(i) && self.needs_orders(i) { self.units[i].holding = true; }
         }
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) {

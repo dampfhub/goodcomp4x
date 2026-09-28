@@ -139,13 +139,14 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
                         input.box_start = Option.Some(cursor);
                         return WindowRequest.Nothing;
                     }
-                    let mode = if input.mods.shift { ClickMode.Attack } else if input.mods.control { ClickMode.Swap } else { ClickMode.Normal };
+                    // Left-click moves; Shift adds the move to the queue.
+                    let mode = if input.mods.shift { ClickMode.QueueMove } else if input.mods.control { ClickMode.Swap } else { ClickMode.Normal };
                     input.left_press = Option.Some(Press { origin: cursor, mode, may_click: !game.is_resolving() });
                     input.left_dragging = input.panning;
                 }
             }
             Button.Right => {
-                if let Option.Some(cursor) = input.cursor { game.handle_context_click(cursor, input.size, input.mods.control); }
+                if let Option.Some(cursor) = input.cursor { game.handle_context_click(cursor, input.size, input.mods.control, input.mods.shift); }
             }
             Button.Middle => {
                 input.panning = true;
@@ -198,6 +199,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
     match key {
         Key.Space => game.hold_or_end_turn(),
         Key.Tab => game.select_next_unit(),
+        Key.Delete => game.disband_selected(),
         Key.Letter(c) => match c as char {
             'Q' => game.toggle_selected_ability(),
             'C' => game.select_city(),

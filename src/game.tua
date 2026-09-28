@@ -31,6 +31,7 @@ use game.hex.HexGrid;
 use game.terrain.HILLS;
 use game.terrain.MOUNTAINS;
 use game.orders.ClickMode;
+use game.orders.QueueReplace;
 use game.turn.Phase;
 use game.unit.IdSet;
 use game.unit.Team;
@@ -44,22 +45,26 @@ pub const AI_TEAM: Team = Team.Red;
 pub const CONTROLS_HELP: str = "Controls:
   Click a unit to select it.
   Click a green hex to queue a move; click it again to cancel.
-  Click an enemy in range to queue an attack on it.
-  Shift-click any hex in range to attack that square instead: whoever stands there when the attack resolves gets hit.
+  Right-click any hex in range to attack it: whoever stands there when the attack resolves gets hit.
   A unit can queue a move and an attack; it attacks from its new hex.
+  Shift-click queues moves over several turns, Shift-right-click an attack in a later turn;
+  any other order replaces the queue (a click on the map needs repeating to do it).
   Ctrl-click an adjacent ally to swap places with it.
-  Alt-drag a box (or Alt-click units) to select a group: clicking a hex sends each member as
-  close to it as it can get, and clicking an enemy has every member in range attack it.
+  Alt-drag a box (or Alt-click units) to select a group, Shift-click to add a unit and
+  Ctrl-click to take one out: clicking a hex sends each member as close to it as it can get,
+  and right-clicking has every member in range attack it.
+  Delete twice disbands the selected unit.
   Queued attacks are drawn as arrows from the attacker (or its ghost) to the target.
   Units can't move through occupied hexes, and two allies can't head for the same hex.
   Space holds the selected unit: it keeps any orders already queued and skips the rest.
+  Space again on a held unit puts it back in the turn order.
   G guards it instead: it stays put and is skipped every turn until given an order.
   Ctrl-right-click clears the selected unit's orders (and a hold or guard).
   Once a unit has queued a move and an attack (or can't do one of them), the next unit is
   selected automatically and the camera glides to it. Tab looks at the next unit without
   holding this one.
   Once every unit has acted, held or is guarding and every city has a build queued, Space
-  ends the turn. Assigning citizens never holds the turn up.
+  ends the turn; ending it early holds every unit still waiting for orders. Assigning citizens never holds the turn up.
   C selects your city. Click tiles to assign or release citizens. A auto-assigns. Y shows yields.
   Rest the cursor on any hex for a moment to see what it is and yields.
   1-4 queue city units: melee, ranged, cavalry, siege. F founds with a settler.
@@ -143,6 +148,11 @@ pub struct GameState {
     fog_of_war: bool,
     /// Every hex the player's side has seen, as it last saw it.
     memory: Map[Hex, Sighting],
+    /// A click that would replace the selection's queue, waiting to be repeated
+    /// (`confirm_queue_replace`).
+    queue_replace_armed: Option[QueueReplace],
+    /// The unit a first press of Disband armed, by id; a second press removes it.
+    disband_armed: Option[u32],
     /// Attack animations playing out.
     effects: Vec[Playing],
 }
@@ -221,6 +231,8 @@ impl GameState {
             ruins: Vec.new(),
             fog_of_war: true,
             memory: Map.new(),
+            queue_replace_armed: Option.None,
+            disband_armed: Option.None,
             effects: Vec.new(),
         };
         game.select_next_or_end_turn(Option.None);
@@ -394,6 +406,31 @@ impl GameState {
         }
         visited
     }
+}
+
+/// Whether a unit may step from a hex onto its neighbour, asked by `reachable_by`.
+pub effect Step { fn open(from: Hex, to: Hex) -> bool; }
+
+/// Hexes reachable from `start` in at most `move_range` steps, each step one `Step.open`
+/// allows. Includes `start`.
+pub fn reachable_by(start: Hex, move_range: i32) -> Set[Hex] can {Step} {
+    let mut visited: Set[Hex] = Set.new();
+    let _new = visited.insert(start);
+    let mut frontier: Vec[Hex] = Vec.new();
+    frontier.push(start);
+    for _ in 0..move_range {
+        let mut next: Vec[Hex] = Vec.new();
+        for f in 0..frontier.len() {
+            let from = frontier[f];
+            let around = from.neighbors();
+            for k in 0..6 {
+                let to = around[k];
+                if Step.open(from, to) && visited.insert(to) { next.push(to); }
+            }
+        }
+        frontier = next;
+    }
+    visited
 }
 
 /// `x` with no decimals, a half rounding to the even neighbour as Rust's `{:.0}` does.

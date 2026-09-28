@@ -1,0 +1,117 @@
+//! Holding and disbanding the selected unit.
+
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.hex.Hex;
+use game.tests.sandbox;
+use game.unit.Team;
+
+@test
+fn a_held_unit_can_be_unheld_or_given_orders_again() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.new();
+        g.fog_of_war = false;
+        let Option.Some(first) = g.selected else { assert(false); return; };
+        g.hold_selected_unit();
+        assert(g.units[first].holding);
+        // Holding moves on.
+        assert(g.selected != Option.Some(first));
+
+        // Hold again on the held unit puts it back in the turn order, and it stays selected.
+        g.selected = Option.Some(first);
+        g.hold_selected_unit();
+        assert(!g.units[first].holding);
+        assert(g.selected == Option.Some(first));
+        assert(g.needs_orders(first));
+
+        // Space does the same.
+        g.hold_selected_unit();
+        g.selected = Option.Some(first);
+        g.hold_or_end_turn();
+        assert(!g.units[first].holding);
+        assert(g.selected == Option.Some(first));
+
+        // A held unit given a move stops holding, so it stays selected for its attack instead
+        // of selection jumping to the next unit.
+        g.hold_selected_unit();
+        g.selected = Option.Some(first);
+        let pos = g.units[first].pos;
+        let dest = first_open(&g, first);
+        assert(dest != pos);
+        g.queue_order_at(first, dest);
+        g.advance_selection_if_done();
+        assert(!g.units[first].holding);
+        assert(g.units[first].planned_move == Option.Some(dest));
+        // Still needs its attack.
+        assert(g.selected == Option.Some(first));
+        let around = dest.neighbors();
+        let mut target = dest;
+        for k in 0..6 { if target == dest && around[k] != pos && g.grid.is_passable(around[k]) { target = around[k]; } }
+        g.try_queue_attack(first, target);
+        assert(g.units[first].planned_attack == Option.Some(target));
+    });
+}
+
+/// The reachable free hex for unit `idx` with the lowest `(q, r)`, or its own hex if none.
+fn first_open(g: &GameState, idx: i32) -> Hex {
+    let pos = g.units[idx].pos;
+    let reachable = g.known_reachable_hexes(pos, g.units[idx].stats().move_range, Team.Blue, &g.fog());
+    let mut best = pos;
+    for h in reachable.each() {
+        let hex = *h;
+        if hex == pos || g.is_occupied(hex) { continue; }
+        if best == pos || hex.q < best.q || (hex.q == best.q && hex.r < best.r) { best = hex; }
+    }
+    best
+}
+
+@test
+fn disbanding_takes_two_presses_and_moves_selection_on() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.new();
+        // The combat map starts with a unit selected.
+        let Option.Some(first) = g.selected else { assert(false); return; };
+        let id = g.units[first].id;
+        let count = g.units.len();
+
+        // The first press only asks.
+        g.disband_selected();
+        assert(g.units.len() == count);
+        assert(g.disband_armed == Option.Some(id));
+
+        // Arming one unit doesn't carry over to another.
+        let mut other = 0 - 1;
+        for i in 0..g.units.len() { if other < 0 && i != first && g.is_player_controlled(i) { other = i; } }
+        g.selected = Option.Some(other);
+        g.disband_selected();
+        assert(g.units.len() == count);
+        assert(g.disband_armed == Option.Some(g.units[other].id));
+
+        g.selected = Option.Some(first);
+        g.disband_selected();
+        g.disband_selected();
+        assert(g.units.len() == count - 1);
+        for i in 0..g.units.len() { assert(g.units[i].id != id); }
+        assert(g.disband_armed.is_none());
+        // Selection moves to the next unit.
+        let Option.Some(next) = g.selected else { assert(false); return; };
+        assert(g.is_player_controlled(next));
+    });
+}
+
+@test
+fn an_enemy_cannot_be_disbanded() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.new();
+        let mut enemy = 0 - 1;
+        for i in 0..g.units.len() { if enemy < 0 && !g.is_player_controlled(i) { enemy = i; } }
+        let count = g.units.len();
+        g.selected = Option.Some(enemy);
+        g.disband_selected();
+        g.disband_selected();
+        assert(g.units.len() == count);
+    });
+}

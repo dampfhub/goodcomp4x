@@ -186,6 +186,8 @@ impl GameState {
             ruins: copy_vec(&self.ruins),
             fog_of_war: self.fog_of_war,
             memory: copy_map(&self.memory),
+            queue_replace_armed: Option.None,
+            disband_armed: Option.None,
             settings_open: self.settings_open,
             quit_requested: self.quit_requested,
             turn: self.turn,

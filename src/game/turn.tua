@@ -149,6 +149,7 @@ impl GameState {
                 }
                 self.units[i].end_turn();
             }
+            self.advance_queues();
             let turn = self.turn;
             info(fn() can {Out} { Out.put("=== turn "); show_u64(turn as u64); Out.put(" resolved ==="); });
             self.select_next_or_end_turn(Option.None);

@@ -68,18 +68,32 @@ impl GameState {
         }
     }
 
-    /// A map click with a group selected. In the normal mode an enemy's hex is attacked and
-    /// any other hex is moved toward; an armed Move or Attack (or Shift) picks one. Swapping is
-    /// for single units.
+    /// Shift-click: adds the player's unit `idx` to the selection.
+    pub fn add_to_selection(&mut self, idx: i32) {
+        let mut members = self.selection();
+        if !members.contains(idx) { members.push(idx); }
+        self.set_selection(members);
+    }
+
+    /// Ctrl-click with several units selected: takes unit `idx` out of the selection, leaving
+    /// an ordinary single selection once one is left. Returns whether it was a member.
+    pub fn remove_from_selection(&mut self, idx: i32) -> bool {
+        let members = self.selection();
+        if !members.contains(idx) { return false; }
+        let mut rest: Vec[i32] = Vec.new();
+        for k in 0..members.len() { if members[k] != idx { rest.push(members[k]); } }
+        self.set_selection(rest);
+        true
+    }
+
+    /// A map click with a group selected: left-click moves toward the hex, right-click attacks
+    /// it, and with Shift either is added to the members' queues. Swapping is for single units.
     pub fn group_order(&mut self, hex: Hex, mode: ClickMode) {
-        let team = self.units[self.group[0]].team;
         match mode {
             ClickMode.Attack => self.group_attack(hex),
-            ClickMode.Move => self.group_move(hex),
-            ClickMode.Normal => {
-                let fog = self.fog();
-                if self.known_enemy_target_at(hex, team, &fog) { self.group_attack(hex); } else { self.group_move(hex); }
-            }
+            ClickMode.Move | ClickMode.Normal => self.group_move(hex),
+            ClickMode.QueueMove => { let _queued = self.queue_move(hex); }
+            ClickMode.QueueAttack => { let _queued = self.queue_attack(hex); }
             ClickMode.Swap => {}
         }
     }
@@ -87,7 +101,13 @@ impl GameState {
     /// Every member that can reach `target` from where it's heading attacks it. Clicking a
     /// target all of them already attack calls it off.
     fn group_attack(&mut self, target: Hex) {
-        if !self.grid.is_passable(target) { return; }
+        // Land, or water (for ships): anything on the map but mountains.
+        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
+        if !(self.grid.is_passable(target) || water) { return; }
+        for m in 0..self.group.len() {
+            let i = self.group[m];
+            self.units[i].cancel_queue();
+        }
         let mut able: Vec[i32] = Vec.new();
         for m in 0..self.group.len() {
             let i = self.group[m];
@@ -106,6 +126,7 @@ impl GameState {
             let i = able[k];
             self.units[i].planned_attack = if already { Option.None } else { Option.Some(target) };
             self.units[i].guarding = false;
+            self.units[i].holding = false;
         }
     }
 
@@ -117,6 +138,7 @@ impl GameState {
             let i = self.group[m];
             self.cancel_swap(i);
             self.units[i].planned_move = Option.None;
+            self.units[i].cancel_queue();
         }
         let team = self.units[self.group[0]].team;
         let mut claimed: Set[Hex] = Set.new();
@@ -141,7 +163,7 @@ impl GameState {
             let i = members[m].index;
             let start = self.units[i].pos;
             let fog = self.fog();
-            let reachable = self.known_reachable_hexes(start, self.units[i].stats().move_range, self.units[i].team, &fog);
+            let reachable = self.known_reachable_for_domain(start, self.units[i].stats().move_range, self.units[i].team, &fog, self.units[i].is_naval());
             // Staying put wins ties, so nobody shuffles sideways for nothing.
             let mut best: Option[Hex] = Option.None;
             for hex in reachable.each() {
@@ -159,13 +181,25 @@ impl GameState {
                     self.units[i].planned_move = Option.Some(dest);
                     self.units[i].drop_unreachable_attack();
                     self.units[i].guarding = false;
+                    self.units[i].holding = false;
                 }
             }
         }
     }
 
-    /// Space or Hold with a group: every member holds, and selection moves on.
+    /// Space or Hold with a group: every member holds, and selection moves on; if they all
+    /// already hold, they all stop.
     pub fn hold_group(&mut self) {
+        // Every member already holding: they all stop, and stay selected.
+        let mut all_holding = true;
+        for m in 0..self.group.len() { if !self.units[self.group[m]].holding { all_holding = false; } }
+        if all_holding {
+            for m in 0..self.group.len() {
+                let i = self.group[m];
+                self.units[i].holding = false;
+            }
+            return;
+        }
         for m in 0..self.group.len() {
             let i = self.group[m];
             self.units[i].holding = true;
@@ -184,6 +218,7 @@ impl GameState {
         for m in 0..self.group.len() {
             let i = self.group[m];
             self.units[i].guarding = !all_guarding;
+            self.units[i].cancel_queue();
         }
         if !all_guarding {
             self.group.clear();
@@ -198,6 +233,7 @@ impl GameState {
             self.cancel_swap(i);
             self.units[i].clear_orders();
             self.units[i].guarding = false;
+            self.units[i].holding = false;
         }
     }
 }
