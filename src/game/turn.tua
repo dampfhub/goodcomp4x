@@ -37,26 +37,38 @@ impl Show for Phase {
 }
 
 /// When each unit type moves and attacks within a turn:
+/// - Scouts move first, slipping away before anyone else acts, and poke in alongside the ranged
+///   volley.
 /// - Cavalry moves before anyone attacks, so it can't be caught mid-charge.
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-pub const RESOLUTION_ORDER: [(UnitType, Phase); 8] = [
+pub const RESOLUTION_ORDER: [(UnitType, Phase); 18] = [
+    (UnitType.Scout, Phase.Move),
     (UnitType.Cavalry, Phase.Move),
     (UnitType.Melee, Phase.Move),
     (UnitType.Ranged, Phase.Attack),
+    (UnitType.Scout, Phase.Attack),
     (UnitType.Cavalry, Phase.Attack),
     (UnitType.Melee, Phase.Attack),
     (UnitType.Ranged, Phase.Move),
     (UnitType.Siege, Phase.Move),
     (UnitType.Siege, Phase.Attack),
+    (UnitType.Armored, Phase.Move),
+    (UnitType.Armored, Phase.Attack),
+    (UnitType.PatrolGalley, Phase.Move),
+    (UnitType.LandingCraft, Phase.Move),
+    (UnitType.BombardShip, Phase.Move),
+    (UnitType.PatrolGalley, Phase.Attack),
+    (UnitType.LandingCraft, Phase.Attack),
+    (UnitType.BombardShip, Phase.Attack),
 ];
 
 /// Where `unit_type` falls (1 = first) among all the steps of `phase`. Every unit type has a
 /// move and an attack step, which a test checks, so the `0` after the loop is never reached.
 pub fn step_rank(unit_type: UnitType, phase: Phase) -> u32 {
     let mut rank = 0;
-    for i in 0..8 {
+    for i in 0..18 {
         let (t, p) = RESOLUTION_ORDER[i];
         if p == phase {
             rank = rank + 1;
@@ -89,7 +101,7 @@ impl GameState {
         self.group.clear();
 
         self.plan_ai_turn(AI_TEAM);
-        for i in 0..8 { self.pending_steps.push_back(RESOLUTION_ORDER[i]); }
+        for i in 0..18 { self.pending_steps.push_back(RESOLUTION_ORDER[i]); }
 
         // Pause before the first step so the last order placed can be seen.
         self.step_timer = STEP_INTERVAL;
