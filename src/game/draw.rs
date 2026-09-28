@@ -378,11 +378,11 @@ impl GameState {
         self.push_city_map(&fog, &mut out);
         self.push_fog(&fog, &mut out);
         // Placing something for a city's workers: the tiles they can reach
-        // are lit, and the rest dimmed, so the reach stands out.
+        // (as the player knows the board) are lit, and the rest dimmed, so
+        // the reach stands out.
         if self.placing_job.is_some() {
-            let bases = self.worker_bases(PLAYER_TEAM);
             for hex in self.grid.all_hexes().filter(|&h| self.is_explored(h)) {
-                let reach = self.grid.is_passable(hex) && self.in_reach_of(&bases, hex);
+                let reach = self.grid.is_passable(hex) && self.known_worker_reach(hex);
                 let tint = if reach {
                     WORKER_REACH_TINT
                 } else {
@@ -2638,9 +2638,7 @@ mod tests {
             .grid
             .all_hexes()
             .filter(|&h| {
-                game.is_explored(h)
-                    && game.grid.is_passable(h)
-                    && game.in_worker_reach(PLAYER_TEAM, h)
+                game.is_explored(h) && game.grid.is_passable(h) && game.known_worker_reach(h)
             })
             .count();
         assert!(reachable > 0);

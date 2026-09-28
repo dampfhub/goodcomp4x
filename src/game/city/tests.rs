@@ -1248,6 +1248,27 @@ fn build_all(g: &mut GameState) {
     panic!("city 0's workers never finished");
 }
 
+#[test]
+fn reconciliation_never_assigns_a_citizen_to_a_city_center() {
+    let mut game = GameState::city_scenario();
+    let city = 0;
+    let center = game.cities[city].pos;
+    let manager = center.neighbors()[0];
+    game.cities[city].population = 7;
+    game.cities[city].worked = vec![manager, center];
+    game.cities[city].remembered_worked = vec![manager, center];
+    game.reconcile_citizens(city);
+    assert!(!game.cities[city].worked.contains(&center));
+    assert!(!game.may_be_manager(city, center));
+    assert!(
+        game.cities[city]
+            .worked
+            .iter()
+            .skip(1)
+            .all(|h| h.distance(manager) == 1)
+    );
+}
+
 /// A finished troop never appears on a worker out on the map: it would share
 /// the hex with an enemy's without capturing it.
 #[test]

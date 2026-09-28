@@ -555,32 +555,28 @@ impl GameState {
             self.unit_info(idx, &mut panel);
             layout.dock_panel(panel, Zone::TopRight);
         }
-        // A structure's live panel is only for one the player can see now:
-        // their own, or one in sight.
-        let fog = self.fog();
-        let known =
-            |city: &super::city::City, hex: Hex| city.team == super::PLAYER_TEAM || fog.sees(hex);
-        if !over_ui && let Some(hex) = self.hovered_tile {
-            if let Some(city) = self
-                .cities
-                .iter()
-                .position(|city| city.pos == hex && known(city, hex))
-            {
-                let mut panel = PanelBuilder::default();
-                self.structure_hover_panel(city, false, &mut panel);
-                layout.dock_panel(panel, Zone::BottomLeft);
-            } else if let Some(city) = self
-                .cities
-                .iter()
-                .position(|city| city.barracks == Some(hex) && known(city, hex))
-            {
-                let mut panel = PanelBuilder::default();
-                self.structure_hover_panel(city, true, &mut panel);
-                layout.dock_panel(panel, Zone::BottomLeft);
-            }
+        if !over_ui
+            && let Some(hex) = self.hovered_tile
+            && let Some(panel) = self.structure_inspect_panel(hex)
+        {
+            layout.dock_panel(panel, Zone::BottomLeft);
         }
 
         (layout, over_ui)
+    }
+
+    /// Shared visibility-filtered structure inspection for both UI presentations.
+    fn structure_inspect_panel(&self, hex: Hex) -> Option<PanelBuilder> {
+        let fog = self.fog();
+        let known = |city: &super::city::City| city.team == super::PLAYER_TEAM || fog.sees(hex);
+        let (city, barracks) = self.cities.iter().enumerate().find_map(|(idx, city)| {
+            (known(city) && city.pos == hex)
+                .then_some((idx, false))
+                .or_else(|| (known(city) && city.barracks == Some(hex)).then_some((idx, true)))
+        })?;
+        let mut panel = PanelBuilder::default();
+        self.structure_hover_panel(city, barracks, &mut panel);
+        Some(panel)
     }
 
     /// Handles a click on the UI, returning whether it hit anything (in which

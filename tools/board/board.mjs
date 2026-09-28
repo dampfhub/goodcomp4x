@@ -211,7 +211,7 @@ function schema() {
        repositories(first:20){nodes{nameWithOwner}}
        fields(first:50){nodes{
          ... on ProjectV2Field{id name dataType}
-         ... on ProjectV2SingleSelectField{id name dataType options{id name}}
+         ... on ProjectV2SingleSelectField{id name dataType options{id name color description}}
        }}
      }}}`,
     { o: OWNER, n: projectNumber() },
@@ -895,10 +895,35 @@ function ghTry(args, label) {
   });
 }
 
+// Pure: the option list to send when adding `wanted` options to a single-select that has
+// `existing` ones. updateProjectV2Field replaces the whole list: an option sent with its id
+// keeps that id, so every item's value survives; one sent without an id is created; one left
+// out is deleted, clearing its values. So every existing option is sent with its id, color
+// and description, in config order, and any the config doesn't list follow unchanged.
+// Names match case-insensitively, as optionId() does.
+function mergeOptions(existing, wanted) {
+  const key = n => n.toLowerCase();
+  const byName = new Map(existing.map(o => [key(o.name), o]));
+  const listed = new Set(wanted.map(key));
+  const keep = o => ({ id: o.id, name: o.name, color: o.color, description: o.description ?? '' });
+  return [
+    ...wanted.map(n => byName.has(key(n)) ? keep(byName.get(key(n))) : { name: n, color: 'GRAY', description: '' }),
+    ...existing.filter(o => !listed.has(key(o.name))).map(keep),
+  ];
+}
+
+// Pure: `options` as a GraphQL input literal. Colors are enum values, so they go unquoted;
+// JSON string escaping is valid GraphQL string escaping.
+function optionsLiteral(options) {
+  return '[' + options.map(o =>
+    `{${o.id ? `id:${JSON.stringify(o.id)},` : ''}name:${JSON.stringify(o.name)},color:${o.color},description:${JSON.stringify(o.description)}}`,
+  ).join(',') + ']';
+}
+
 // Compares the live project and repo with the config. Without --apply it only reports.
-// With --apply it links the project to the repo, creates missing fields and labels; it
-// never deletes or renames anything, and it cannot add options to an existing
-// single-select (gh has no command for that), which it reports for a hand fix.
+// With --apply it links the project to the repo, creates missing fields and labels, and adds
+// missing options to an existing single-select (keeping every existing option and its id, so
+// no item loses its value); it never deletes or renames anything.
 //
 // Project changes need access granted on the project itself: a public project is
 // readable by anyone, and write access to a linked repo grants nothing on the board.
@@ -934,7 +959,10 @@ function cmdSetup(flags) {
       console.log(`  MANUAL  field ${name} exists but is not a single-select`);
     } else {
       const missing = options.filter(o => !f.options.some(x => x.name.toLowerCase() === o.toLowerCase()));
-      if (missing.length) console.log(`  MANUAL  field ${name} lacks option(s): ${missing.join(', ')} (add them in the project's field settings)`);
+      if (missing.length) {
+        const query = `mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:${optionsLiteral(mergeOptions(f.options, options))}}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}`;
+        changes.push({ what: `add option(s) to ${name}: ${missing.join(', ')}`, project: true, args: graphqlArgs(query, { f: f.id }) });
+      }
     }
   }
   for (const name of TEXT_FIELDS) {
@@ -1015,6 +1043,18 @@ function cmdSelftest() {
   check('requiredOnFile must name a field', !!throws(() => normalizeConfig({ ...base, requiredOnFile: ['Nope'] })), true);
   check('a string project number is refused', !!throws(() => normalizeConfig({ ...base, projectNumber: '3' })), true);
   check('field flags are lowercase and dashed', flagOf('Roadmap IDs'), 'roadmap-ids');
+
+  const opt = (id, name, color = 'RED') => ({ id, name, color, description: 'd' });
+  check('mergeOptions keeps existing ids, colors and descriptions, in config order, adding the new',
+    mergeOptions([opt('1', 'A'), opt('2', 'C')], ['A', 'B', 'C']),
+    [opt('1', 'A'), { name: 'B', color: 'GRAY', description: '' }, opt('2', 'C')]);
+  check('mergeOptions never drops an option the config leaves out',
+    mergeOptions([opt('1', 'A'), opt('9', 'Old')], ['A']).map(o => o.id), ['1', '9']);
+  check('mergeOptions matches names case-insensitively',
+    mergeOptions([opt('1', 'Low')], ['low']).map(o => o.id), ['1']);
+  check('optionsLiteral quotes strings, not colors, and omits a missing id',
+    optionsLiteral([opt('1', 'A "x"'), { name: 'B', color: 'GRAY', description: '' }]),
+    '[{id:"1",name:"A \\"x\\"",color:RED,description:"d"},{name:"B",color:GRAY,description:""}]');
 
   check('parseArgs: a flag followed by a flag is boolean',
     parseArgs(['list', '--open', '--status', 'Todo']), { positional: ['list'], flags: { open: true, status: 'Todo' } });

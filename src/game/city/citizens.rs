@@ -176,9 +176,10 @@ impl GameState {
                     .filter(|&h| self.closed_to_citizens(h)),
             )
             .collect();
-        self.cities[city]
-            .worked
-            .retain(|h| routes.costs.contains_key(h) && !other_claims.contains(h));
+        let centers: HashSet<Hex> = self.cities.iter().map(|c| c.pos).collect();
+        self.cities[city].worked.retain(|h| {
+            routes.costs.contains_key(h) && !other_claims.contains(h) && !centers.contains(h)
+        });
         // The first remembered tile is the manager. Restore it to the first
         // slot before restoring workers, so an automatically promoted worker
         // never becomes a permanent manager after the original tile clears.
@@ -187,6 +188,7 @@ impl GameState {
         if let Some(manager) = remembered.first().copied()
             && routes.costs.contains_key(&manager)
             && !other_claims.contains(&manager)
+            && !centers.contains(&manager)
         {
             let worked = &mut self.cities[city].worked;
             if !worked.contains(&manager) && worked.len() >= capacity {
@@ -206,6 +208,7 @@ impl GameState {
         for h in remembered.iter().copied().skip(1) {
             if routes.costs.contains_key(&h)
                 && !other_claims.contains(&h)
+                && !centers.contains(&h)
                 && !self.cities[city].worked.contains(&h)
                 && self.may_assign(city, h)
             {
@@ -231,7 +234,11 @@ impl GameState {
         let mut candidates: Vec<_> = routes
             .costs
             .iter()
-            .filter(|(h, _)| !self.cities[city].worked.contains(h) && !other_claims.contains(h))
+            .filter(|(h, _)| {
+                !self.cities[city].worked.contains(h)
+                    && !other_claims.contains(h)
+                    && !centers.contains(h)
+            })
             .filter(|(h, _)| {
                 self.sites
                     .get(h)

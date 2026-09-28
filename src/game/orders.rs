@@ -626,12 +626,31 @@ impl GameState {
         unit.cancel_queue();
     }
 
+    /// Shared exterior attack rule for direct, group, queued, AI and
+    /// resolving orders. `later` ignores this turn's deploy and contest lock.
+    pub(super) fn attack_target_legal(&self, idx: usize, target: Hex, later: bool) -> bool {
+        let unit = &self.units[idx];
+        if unit.unit_type == super::unit::UnitType::LandingCraft
+            || (!later && (!unit.can_attack() || self.rival_of(idx).is_some()))
+            || !(self.grid.is_passable(target)
+                || (self.grid.contains(target) && self.grid.terrain(target).is_water()))
+            || self.empty_city_target(target, unit.team)
+        {
+            return false;
+        }
+        !self.grid.terrain(target).is_water()
+            || unit.is_naval()
+            || matches!(
+                unit.unit_type,
+                super::unit::UnitType::Ranged | super::unit::UnitType::Siege
+            )
+    }
+
     /// Toggles an attack on `target`, measured from the unit's planned
     /// position so move-then-attack works. Mountains can't be targeted since
     /// no one can stand there, and a unit locked in a contested hex can only
     /// fight its rival there.
     pub(super) fn try_queue_attack(&mut self, idx: usize, target: Hex) {
-        let unable = !self.units[idx].can_attack() || self.rival_of(idx).is_some();
         if self.grid.contains(target)
             && self.grid.terrain(target).is_water()
             && !self.units[idx].is_naval()
@@ -643,14 +662,11 @@ impl GameState {
             self.notice = "ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS".into();
             return;
         }
-        if unable
-            || !(self.grid.is_passable(target)
-                || (self.grid.contains(target) && self.grid.terrain(target).is_water()))
-        {
-            return;
-        }
         if self.empty_city_target(target, self.units[idx].team) {
             self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            return;
+        }
+        if !self.attack_target_legal(idx, target, false) {
             return;
         }
         let unit = &mut self.units[idx];

@@ -403,6 +403,124 @@ impl GameState {
         self.selected_city
     }
 
+    /// Player-facing reach uses the last observed roads. Turn resolution
+    /// continues to use `in_worker_reach` and the real board.
+    pub(super) fn known_worker_reach(&self, hex: Hex) -> bool {
+        let fog = self.fog();
+        let bases: Vec<_> = self
+            .cities
+            .iter()
+            .enumerate()
+            .filter(|(_, city)| city.team == PLAYER_TEAM)
+            .flat_map(|(i, city)| {
+                let camp = city
+                    .placed_site(crate::game::city::Building::WorkCamp)
+                    .filter(|&h| self.known_routes(i, &fog).costs.contains_key(&h));
+                std::iter::once(city.pos).chain(camp)
+            })
+            .collect();
+        bases.iter().any(|base| base.distance(hex) <= WORKER_REACH)
+            || std::iter::once(hex).chain(hex.neighbors()).any(|h| {
+                if fog.sees(h) {
+                    self.roads.contains(&h)
+                } else {
+                    self.remembered(h).is_some_and(|seen| seen.road)
+                }
+            })
+    }
+
+    /// Player-facing job check for city `home`: unseen mutable objects come
+    /// from memory, never from the live enemy board.
+    fn known_job_problem(&self, home: usize, job: WorkerJob) -> Option<&'static str> {
+        let hex = job.hex;
+        let fog = self.fog();
+        if !self.grid.contains(hex) || !self.grid.is_passable(hex) {
+            return Some("WORKERS CAN'T WORK THIS TERRAIN");
+        }
+        if !self.known_worker_reach(hex) {
+            return Some(
+                "OUT OF REACH: WORKERS GO 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD",
+            );
+        }
+        if let Some(across) = job.across {
+            return if hex.distance(across) != 1 || !self.grid.contains(across) {
+                Some("WALLS AND GATES GO BETWEEN TWO TILES ON THE MAP")
+            } else if self.known_barrier(hex, across, &fog).is_some() {
+                Some("A WALL OR GATE STANDS HERE")
+            } else {
+                None
+            };
+        }
+        let visible = fog.sees(hex);
+        let remembered = self.remembered(hex);
+        let city = if visible {
+            self.cities.iter().any(|c| c.pos == hex)
+        } else {
+            remembered.is_some_and(|seen| seen.city.is_some())
+                || self
+                    .cities
+                    .iter()
+                    .any(|c| c.team == PLAYER_TEAM && c.pos == hex)
+        };
+        if city {
+            return Some("A CITY STANDS HERE");
+        }
+        let building = self
+            .cities
+            .iter()
+            .filter(|c| visible || c.team == PLAYER_TEAM)
+            .any(|c| {
+                crate::game::city::Building::PLACEABLE
+                    .into_iter()
+                    .any(|b| c.placed_site(b) == Some(hex))
+            });
+        let road = if visible {
+            self.roads.contains(&hex)
+        } else {
+            remembered.is_some_and(|seen| seen.road)
+        };
+        let site = if visible {
+            self.sites.get(&hex).map(|site| site.team)
+        } else {
+            remembered.and_then(|seen| seen.site.map(|(_, team)| team))
+        };
+        let structure = if visible {
+            self.structures.contains_key(&hex)
+        } else {
+            remembered.is_some_and(|seen| seen.structure.is_some())
+        };
+        if let JobKind::Build(placed) = job.kind {
+            if self.cities[home].built.contains(&placed) {
+                return Some("THIS CITY HAS ONE ALREADY");
+            }
+            if building {
+                return Some("SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+            }
+            if structure {
+                return Some("A STRUCTURE STANDS HERE");
+            }
+            // The site's own rules, but not a claim the player can't see:
+            // that one drops the job (refunded) when a worker gets there.
+            return self
+                .ai_site_issue(home, placed, hex)
+                .filter(|&issue| issue != "SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+        }
+        match job.kind {
+            JobKind::Road if road => Some("THERE IS A ROAD HERE ALREADY"),
+            JobKind::Road => None,
+            JobKind::Improve if building => Some("A BUILDING STANDS HERE"),
+            JobKind::Improve => match site {
+                Some(owner) if owner != PLAYER_TEAM => Some("THIS TILE BELONGS TO THE ENEMY"),
+                Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
+                None if self.improvement(hex).is_none() => Some("NOTHING GROWS ON SNOW"),
+                None => None,
+            },
+            _ if building => Some("A BUILDING STANDS HERE"),
+            _ if structure => Some("A STRUCTURE STANDS HERE"),
+            _ => None,
+        }
+    }
+
     /// Whether city `city` has a worker, at home or out, to build what it
     /// places.
     pub(super) fn has_workers(&self, city: usize) -> bool {
@@ -595,7 +713,7 @@ impl GameState {
         if self.job_taken(PLAYER_TEAM, job) {
             return false;
         }
-        if let Some(problem) = self.job_problem(city, job) {
+        if let Some(problem) = self.known_job_problem(city, job) {
             self.notice = problem.into();
             return false;
         }
@@ -645,7 +763,7 @@ impl GameState {
             None
         } else if !self.is_explored(hex) {
             Some("WORKERS CAN'T WORK AN UNEXPLORED TILE".into())
-        } else if let Some(problem) = self.job_problem(city, job) {
+        } else if let Some(problem) = self.known_job_problem(city, job) {
             Some(problem.into())
         } else if self.job_taken(PLAYER_TEAM, job) {
             Some(format!("{} IS QUEUED HERE ALREADY", kind.name()))
@@ -1144,6 +1262,48 @@ mod tests {
         game.placing_job = Some(kind);
         game.place_job_at(hex, None);
         game.placing_job = None;
+    }
+
+    #[test]
+    fn hidden_enemy_road_and_farm_do_not_change_player_job_planning() {
+        use crate::game::city::Site;
+        use crate::game::unit::Unit;
+        let (mut game, _, far) = crate::game::fog::tests::remembered_route_hex();
+        let road = far
+            .neighbors()
+            .into_iter()
+            .find(|&h| game.grid.is_passable(h) && game.cities.iter().all(|c| c.pos != h))
+            .unwrap();
+        game.roads.insert(road);
+        game.units
+            .push(Unit::new(900, road, PLAYER_TEAM, UnitType::Scout));
+        game.explore();
+        game.units.clear();
+        assert!(!game.fog().sees(far));
+        assert!(game.known_worker_reach(far));
+        let before = game.job_unavailable(far, JobKind::Improve);
+        let reach_before: Vec<_> = game
+            .grid
+            .all_hexes()
+            .map(|h| (h, game.known_worker_reach(h)))
+            .collect();
+        game.roads.insert(far);
+        game.sites.insert(
+            far,
+            Site {
+                team: Team::Red,
+                food: 9,
+                production: 0,
+                label: "FARM",
+            },
+        );
+        assert_eq!(game.job_unavailable(far, JobKind::Improve), before);
+        let reach_after: Vec<_> = game
+            .grid
+            .all_hexes()
+            .map(|h| (h, game.known_worker_reach(h)))
+            .collect();
+        assert_eq!(reach_after, reach_before);
     }
 
     #[test]

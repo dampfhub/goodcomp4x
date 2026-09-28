@@ -146,7 +146,8 @@ to plan boarding. Select the craft and click adjacent empty land to plan landing
 passenger. Both happen after combat, so cargo sinks with its ship. A craft cannot attack.
 Patrol Galleys fight ships well but deal 35% damage to land troops; Bombard Ships attack from
 three hexes. Land melee troops cannot attack ships; Ranged deal 40% and Siege 60% damage to
-ships. Shore and ship attacks do not draw melee retaliation across the waterline.
+ships. These attack restrictions apply to direct, group, queued, AI and resolving orders.
+Shore and ship attacks do not draw melee retaliation across the waterline.
 
 ## Fog of war (`fog.rs`)
 
@@ -428,8 +429,9 @@ every turn end.
   a hostile interior fighter onto the center hex to capture the city. Capture changes ownership,
   restores the post and clears its production queue, building
   plans and worker jobs. Workers at home pass to the new owner. Field workers from that city
-  return to another friendly city if one exists; otherwise they pass to the new owner. The
-  exterior city remains non-attackable.
+  return to another friendly city if one exists; otherwise they pass to the new owner.
+  A worker sharing its hex with a new enemy is captured immediately after the ownership change.
+  The exterior city remains non-attackable.
   A breached post changes its map marker and city panel to show that it is open for occupation.
 - Red's interior fighters defend their own city's post by engaging intruders. When attacking an
   enemy city they head toward its post. Exterior Red defenders hold contested city gates and can
@@ -456,7 +458,8 @@ every turn end.
   routes, and an enemy on the city blocks them all. Routes are recalculated every time they're
   used.
 - **Manager and workers:** population is at most 7: the manager (the first worked tile, ringed in
-  gold and marked `M`, which must be land) plus up to six workers, each adjacent to the manager. To move the
+  gold and marked `M`, which must be land) plus up to six workers, each adjacent to the manager.
+  A worked tile belongs to only one city. To move the
   manager, click it to pick it up (its workers leave the map with it), then click its
   destination; workers keep their offsets where they can and are otherwise replaced by the best
   nearby tiles. Clicking the manager again puts it and its workers back.
@@ -556,8 +559,10 @@ every turn end.
     owned, unworked mines within 3 hexes using the same local-route and 100/75/50% distance
     rules as the Cannery, even beyond city delivery range. It feeds the city queue, not Barracks.
   - **Harbor:** only in a city whose center touches Coast or Ocean; placed on land next to sea water. It unlocks all three ships in the city queue and
-    spawns them onto an open neighboring water tile. Ships take their turns in the city queue; a finished one waits when every adjacent water tile
-    is occupied.
+    spawns them onto an open neighboring water tile. Ships take their turns in the city queue;
+    a finished one waits when every adjacent water tile is occupied.
+  - Finished units and ruin recruits never spawn onto an enemy city center or a field worker.
+    A finished build waits until a safe neighboring tile opens.
   - **Coastal Battery:** only in a city whose center touches Coast or Ocean; placed on land next to sea water. It automatically attacks the nearest
     hostile ship within 2 hexes after unit combat, dealing a 28-attack strike. It has 150 HP,
     can be bombarded and rebuilt if destroyed. Its health bar appears over its badge.
@@ -602,7 +607,10 @@ every turn end.
   counts once connected to its city), or anywhere on or next to a road (any road: roads belong to no one), so a line of roads carries the reach out as far
   as it goes. A wall or gate counts from the tile the worker stands on to build it. The AI's
   workers keep to the same reach. A job out of reach can't be queued, and one under way that
-  falls out of reach is abandoned.
+  falls out of reach is abandoned. The player-facing reach tint and job checks use
+  current sight or the last observed roads, sites, and structures; unseen enemy changes
+  take effect during resolution without revealing themselves while planning (a building placed
+  on a site an unseen building took is dropped, refunded, when its worker gets there).
 - **Idle workers** (at home, with no job in their city's list) wait there, and never hold up
   the turn.
 - **Walls and gates** stand on the edge between two hexes, not on a tile. Picked in the city's

@@ -2801,14 +2801,8 @@ impl GameState {
         let debug = self.debug_panel_content();
         let mut hover = PanelBuilder::default();
         if let Some(hex) = self.hovered_tile {
-            if let Some(city) = self.cities.iter().position(|city| city.pos == hex) {
-                self.structure_hover_panel(city, false, &mut hover);
-            } else if let Some(city) = self
-                .cities
-                .iter()
-                .position(|city| city.barracks == Some(hex))
-            {
-                self.structure_hover_panel(city, true, &mut hover);
+            if let Some(panel) = self.structure_inspect_panel(hex) {
+                hover = panel;
             } else if let Some(cursor) = cursor
                 && let Some(idx) = self.unit_at_screen(cursor, size)
                 && (Some(idx) != self.selected || self.selected_city.is_some())

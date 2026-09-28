@@ -87,8 +87,9 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 
 Work is tracked on https://github.com/users/dampfhub/projects/1 through
 `node tools/board/board.mjs` (no arguments prints usage; the `board` skill has the workflow).
-Claim an item before starting, keep its `Files` current, and run `fences` before working in
-parallel with another agent. Check `list --open` before filing something new.
+Pick unblocked work by Priority (`list --open --priority P0`, then P1). Claim an item before
+starting, keep its `Files` current, and run `fences` before working in parallel with another
+agent. Check `list --open` before filing something new.
 
 ## Commits and PRs
 

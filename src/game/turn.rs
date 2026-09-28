@@ -464,6 +464,9 @@ impl GameState {
         // Each attack's animation, played once the step's damage is known.
         let mut shots: Vec<Effect> = Vec::new();
         for &a in attackers {
+            if !self.units[a].can_attack() {
+                continue;
+            }
             let attacker = &self.units[a];
             let from = self.unit_layout(a).0;
             if let Some(rival) = self.rival_of(a) {
@@ -483,6 +486,17 @@ impl GameState {
             }
 
             let target = attacker.planned_attack.unwrap();
+            if self.empty_city_target(target, attacker.team) {
+                shots.push(Effect::Shot {
+                    from,
+                    to: target.to_world(),
+                    outcome: Outcome::Miss,
+                });
+                continue;
+            }
+            if !self.attack_target_legal(a, target, false) {
+                continue;
+            }
             let to = target.to_world();
             if attacker.pos.distance(target) > attacker.stats().attack_range {
                 log::info!("{attacker}'s attack canceled: target out of range after moves");
@@ -756,6 +770,21 @@ mod naval_tests {
                 .queue
                 .contains(&Build::Unit(BuildUnit::PatrolGalley))
         );
+    }
+
+    #[test]
+    fn resolution_skips_an_invalid_landing_craft_attack() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.cities.clear();
+        let mut craft = Unit::new(90, Hex::new(0, 0), Team::Blue, UnitType::LandingCraft);
+        craft.planned_attack = Some(Hex::new(1, 0));
+        game.units.push(craft);
+        game.units
+            .push(Unit::new(91, Hex::new(1, 0), Team::Red, UnitType::Melee));
+        let hp = game.units[1].hp;
+        game.resolve_attacks(&[0]);
+        assert_eq!(game.units[1].hp, hp);
     }
 
     #[test]
