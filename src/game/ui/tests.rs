@@ -1,4 +1,4 @@
-use super::builder::{ButtonSpec, Row};
+use super::builder::{ButtonSpec, Row, classic_rows};
 use super::text::{end_turn_label, signed_quantity, wrap};
 use super::*;
 
@@ -1709,11 +1709,22 @@ fn clear_orders_drops_a_groups_queues() {
     assert_eq!(clear.state, ButtonState::Disabled, "nothing left to clear");
 }
 
+/// The classic settings menu's buttons for `setting`, in order.
+fn setting_buttons(game: &GameState, setting: Setting) -> Vec<(i32, ButtonState)> {
+    game.layout(SCREEN)
+        .buttons
+        .iter()
+        .filter_map(|b| match b.target {
+            Target::SetSetting(s, to) if s == setting => Some((to, b.state)),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
-    let playback = Setting::TurnPlayback;
-    let down = Target::StepSetting(playback, -1);
-    let up = Target::StepSetting(playback, 1);
+    let off = Target::SetSetting(Setting::TurnPlayback, 0);
+    let on = Target::SetSetting(Setting::TurnPlayback, 1);
     // Nothing selected, a unit selected, and a city with its queue open.
     let mut plain = GameState::new();
     plain.clear_selection();
@@ -1722,7 +1733,7 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
     city.select_city();
     city.queue_selected_city_unit(BuildUnit::Melee);
     for mut game in [plain, unit, city] {
-        assert!(!game.layout(SCREEN).buttons.iter().any(|b| b.target == up));
+        assert!(!game.layout(SCREEN).buttons.iter().any(|b| b.target == on));
         game.settings_open = true;
         for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
             let layout = game.layout(screen);
@@ -1743,42 +1754,62 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
                     assert!(apart, "panels overlap at {screen}");
                 }
             }
-            let close = layout
+            // Every setting's buttons, Close and Quit are inside the menu,
+            // and a panel underneath never takes their clicks.
+            let menu_buttons: Vec<_> = layout
                 .buttons
                 .iter()
-                .find(|b| b.target == Target::CloseSettings)
-                .expect("Close shown");
-            assert!(contains(menu_rect.0, menu_rect.1, close.min));
-            for target in [down, up, Target::Quit] {
-                let button = layout.buttons.iter().find(|b| b.target == target).unwrap();
+                .filter(|b| {
+                    matches!(
+                        b.target,
+                        Target::SetSetting(..) | Target::CloseSettings | Target::Quit
+                    )
+                })
+                .collect();
+            for setting in Setting::ALL {
+                assert!(
+                    menu_buttons
+                        .iter()
+                        .any(|b| matches!(b.target, Target::SetSetting(s, _) if s == setting)),
+                    "{setting:?} has buttons"
+                );
+            }
+            for target in [Target::CloseSettings, Target::Quit] {
+                assert!(menu_buttons.iter().any(|b| b.target == target));
+            }
+            // The menu is drawn as a layer over everything else: its panel
+            // first, then only its own buttons.
+            let (shapes_at, buttons_at) = layout.overlay.expect("the menu is an overlay");
+            assert!(matches!(
+                layout.shapes[shapes_at],
+                Shape::Panel { min, max, .. } if (min, max) == menu_rect
+            ));
+            assert_eq!(layout.buttons.len() - buttons_at, menu_buttons.len());
+            for button in menu_buttons {
                 assert!(contains(menu_rect.0, menu_rect.1, button.min));
                 assert!(contains(menu_rect.0, menu_rect.1, button.max));
-                // A panel underneath never takes the menu's clicks.
                 let middle = (button.min + button.max) / 2.0;
-                assert_eq!(layout.button_at(middle).unwrap().target, target);
+                assert_eq!(layout.button_at(middle).unwrap().target, button.target);
             }
         }
 
-        // All at once by default: > is spent, < steps down, and then < is.
-        let state = |game: &GameState, target| {
-            game.layout(SCREEN)
-                .buttons
-                .iter()
-                .find(|b| b.target == target)
-                .unwrap()
-                .state
-        };
+        // Instant playback is on by default: ON is gold, OFF switches it
+        // off and turns gold, and clicking it again changes nothing.
         assert!(game.settings.instant_playback);
-        assert_eq!(state(&game, up), ButtonState::Disabled);
-        game.handle_click(button_cursor(&game, down), SCREEN, ClickMode::Normal);
-        assert!(!game.settings.instant_playback);
-        assert_eq!(state(&game, down), ButtonState::Disabled);
-        game.handle_click(button_cursor(&game, down), SCREEN, ClickMode::Normal);
-        assert!(
-            !game.settings.instant_playback,
-            "a spent button does nothing"
+        let playback = |game: &GameState| setting_buttons(game, Setting::TurnPlayback);
+        assert_eq!(
+            playback(&game),
+            [(0, ButtonState::Ready), (1, ButtonState::Queued)]
         );
-        game.handle_click(button_cursor(&game, up), SCREEN, ClickMode::Normal);
+        game.handle_click(button_cursor(&game, off), SCREEN, ClickMode::Normal);
+        assert!(!game.settings.instant_playback);
+        assert_eq!(
+            playback(&game),
+            [(0, ButtonState::Queued), (1, ButtonState::Ready)]
+        );
+        game.handle_click(button_cursor(&game, off), SCREEN, ClickMode::Normal);
+        assert!(!game.settings.instant_playback);
+        game.handle_click(button_cursor(&game, on), SCREEN, ClickMode::Normal);
         assert!(game.settings.instant_playback);
 
         let close = button_cursor(&game, Target::CloseSettings);
@@ -1786,6 +1817,54 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
         assert!(!game.settings_open);
         assert!(!game.quit_requested());
     }
+}
+
+#[test]
+fn the_classic_settings_menu_has_a_button_per_choice_and_steps_the_rest() {
+    let mut game = GameState::new();
+    game.settings_open = true;
+    for setting in Setting::ALL {
+        let value = game.settings.get(setting);
+        let range = setting.range();
+        let buttons = setting_buttons(&game, setting);
+        if settings_menu::steps_in_classic(setting) {
+            // < and > set the values either side, faded at an end.
+            let at = |end: i32| ButtonState::new(false, value == end);
+            assert_eq!(
+                buttons,
+                [
+                    (value - 1, at(*range.start())),
+                    (value + 1, at(*range.end()))
+                ],
+                "{setting:?}"
+            );
+        } else {
+            // A button per value, the current one gold.
+            let expected: Vec<_> = range
+                .map(|to| (to, ButtonState::new(to == value, false)))
+                .collect();
+            assert_eq!(buttons, expected, "{setting:?}");
+        }
+    }
+
+    // The queue limit steps with < and >, and stops at the top.
+    let limit = Setting::MaxQueuedTurns;
+    let up = |game: &GameState| Target::SetSetting(limit, game.settings.get(limit) + 1);
+    game.handle_click(button_cursor(&game, up(&game)), SCREEN, ClickMode::Normal);
+    assert_eq!(game.settings.max_queued_turns, 7);
+    game.set_setting(limit, 20);
+    assert_eq!(
+        setting_buttons(&game, limit)[1],
+        (21, ButtonState::Disabled),
+        "spent at the top"
+    );
+    game.handle_click(button_cursor(&game, up(&game)), SCREEN, ClickMode::Normal);
+    assert_eq!(game.settings.max_queued_turns, 20);
+
+    // Fog picks its value by name.
+    let grey = Target::SetSetting(Setting::FogStyle, 0);
+    game.handle_click(button_cursor(&game, grey), SCREEN, ClickMode::Normal);
+    assert!(!game.settings.cloud_fog);
 }
 
 #[test]
@@ -1800,14 +1879,37 @@ fn the_settings_menu_quit_button_asks_the_app_to_quit() {
 }
 
 #[test]
-fn the_settings_menu_shows_every_setting_and_its_value() {
+fn the_settings_menu_shows_every_setting_under_its_heading() {
     let game = GameState::new();
-    let text = panel_strings(|panel| *panel = game.settings_panel_content());
-    for setting in Setting::ALL {
-        let value = setting.value_text(game.settings.get(setting));
-        assert_shows(&text, setting.name());
-        assert_shows(&text, &value);
+    let panel = game.settings_panel_content();
+    // Each heading once, then its settings at their current values, in
+    // `Setting::ALL`'s order.
+    let mut heading = None;
+    let mut listed = Vec::new();
+    for row in &panel.rows {
+        match row {
+            Row::Heading(text) => heading = Some(text.clone()),
+            Row::Setting(setting, value) => {
+                assert_eq!(heading.as_deref(), Some(setting.group()), "{setting:?}");
+                assert_eq!(*value, game.settings.get(*setting));
+                listed.push(*setting);
+            }
+            _ => {}
+        }
     }
+    assert_eq!(listed, Setting::ALL);
+
+    // Classic shows the headings and names as text, and the value of
+    // anything it steps.
+    let text = panel_strings(|p| p.rows = classic_rows(panel.rows.clone()));
+    for setting in Setting::ALL {
+        assert_shows(&text, setting.group());
+        assert_shows(&text, setting.name());
+        if settings_menu::steps_in_classic(setting) {
+            assert_shows(&text, &setting.value_text(game.settings.get(setting)));
+        }
+    }
+
     let tooltip = |target| {
         let button = Button {
             target,
@@ -1821,9 +1923,12 @@ fn the_settings_menu_shows_every_setting_and_its_value() {
         };
         line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l))
     };
-    let spent = tooltip(Target::StepSetting(Setting::TurnPlayback, 1));
-    assert_shows(&spent, "TURN PLAYBACK");
-    assert_shows(&spent, "ALREADY ALL AT ONCE");
-    let open = tooltip(Target::StepSetting(Setting::TurnPlayback, -1));
-    assert!(!open.iter().any(|line| line.contains("ALREADY")));
+    let current = tooltip(Target::SetSetting(Setting::TurnPlayback, 1));
+    assert_shows(&current, "INSTANT PLAYBACK");
+    assert_shows(&current, "ALREADY ON");
+    let other = tooltip(Target::SetSetting(Setting::TurnPlayback, 0));
+    assert_shows(&other, "OFF");
+    assert!(!other.iter().any(|line| line.contains("ALREADY")));
+    let past_the_end = tooltip(Target::SetSetting(Setting::MaxQueuedTurns, 0));
+    assert_shows(&past_the_end, "ALREADY 6 TURNS");
 }

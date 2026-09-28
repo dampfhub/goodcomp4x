@@ -3,13 +3,14 @@
 
 use ::imgui::{
     Condition, DragDropFlags, FontId, ItemHoveredFlags, MouseButton as ImMouseButton, ProgressBar,
-    StyleColor, StyleVar, Ui, WindowFlags,
+    SliderFlags, StyleColor, StyleVar, Ui, WindowFlags,
 };
 
 use super::builder::Row;
 use super::text::end_turn_label;
 use super::*;
 use crate::game::PLAYER_TEAM;
+use crate::game::settings::{Control, Setting};
 
 enum Action {
     Button(Option<PinnedPanel>, Target),
@@ -117,6 +118,8 @@ const STATUS_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
     .union(WindowFlags::NO_SCROLL_WITH_MOUSE);
 /// Height of a progress bar row (`Row::Bar`).
 const BAR_HEIGHT: f32 = 12.0;
+/// The settings menu's width, before a narrow screen takes some off.
+const SETTINGS_WIDTH: f32 = 460.0;
 const COLLAPSED_HEIGHT: f32 = 30.0;
 const SLOT_COUNT: usize = 6;
 const SELECTION: usize = 0;
@@ -1423,9 +1426,141 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
             Row::QueueItem(_) => 37.0,
             Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 4) as f32 * 34.0) + 18.0,
             Row::Roster(_) => ROSTER_CHIP + 6.0,
+            Row::Heading(_) => {
+                let _font = ui.push_font(fonts[0]);
+                // The text, the rule under it, and the spacing after each.
+                ui.calc_text_size("A")[1] + 2.0 * SPACING_Y + 1.0
+            }
+            Row::Setting(..) => {
+                let _font = ui.push_font(fonts[1]);
+                ui.calc_text_size("A")[1] + 2.0 * FRAME_PADDING_Y + SPACING_Y
+            }
         };
     }
     height + 12.0
+}
+
+/// The style's vertical item spacing and frame padding (`app.rs`), as
+/// `measure_panel` counts them for the settings menu's rows.
+const SPACING_Y: f32 = 6.0;
+const FRAME_PADDING_Y: f32 = 6.0;
+
+/// The width of the settings menu's label column: its longest setting name,
+/// and a gap before the controls.
+fn setting_label_width(ui: &Ui, panel: &PanelBuilder, font: FontId) -> f32 {
+    let _font = ui.push_font(font);
+    panel
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Setting(setting, _) => Some(ui.calc_text_size(setting.name())[0]),
+            _ => None,
+        })
+        .fold(0.0, f32::max)
+        + 18.0
+}
+
+/// A setting's name and what it does, for the tooltip on its label and
+/// control.
+fn setting_tooltip(ui: &Ui, setting: Setting) {
+    ui.tooltip(|| {
+        ui.text_colored(TEXT, setting.name());
+        for line in super::text::wrap(setting.description(), TOOLTIP_WRAP) {
+            ui.text_colored([0.72, 0.75, 0.76, 1.0], line);
+        }
+    });
+}
+
+/// A setting's row in the settings menu: its name in the label column, then
+/// the control `Setting::control` names across the rest of the width. A
+/// change is a `Target::SetSetting` action.
+fn render_setting(
+    ui: &Ui,
+    setting: Setting,
+    value: i32,
+    label_width: f32,
+    scope: Option<PinnedPanel>,
+    actions: &mut Vec<Action>,
+) {
+    let range = setting.range();
+    let mut set = |to: i32| {
+        if to != value {
+            actions.push(Action::Button(scope, Target::SetSetting(setting, to)));
+        }
+    };
+    let tooltip = || {
+        if ui.is_item_hovered() {
+            setting_tooltip(ui, setting);
+        }
+    };
+    let left = ui.cursor_pos()[0];
+    ui.align_text_to_frame_padding();
+    ui.text_colored([0.82, 0.84, 0.86, 1.0], setting.name());
+    tooltip();
+    ui.same_line_with_pos(left + label_width);
+    let width = ui.content_region_avail()[0];
+    let id = format!("##setting-{setting:?}");
+    match setting.control() {
+        Control::Toggle => {
+            let mut on = value == 1;
+            if ui.checkbox(format!("{}{id}", setting.value_text(value)), &mut on) {
+                set(on as i32);
+            }
+            tooltip();
+        }
+        Control::Slider => {
+            let mut to = value;
+            ui.set_next_item_width(width);
+            // ImGui formats the value itself; the text has no %d, so it
+            // shows `value_text` as it is.
+            let shown = setting.value_text(value).replace('%', "%%");
+            if ui
+                .slider_config(&id, *range.start(), *range.end())
+                .display_format(shown)
+                .flags(SliderFlags::ALWAYS_CLAMP | SliderFlags::NO_INPUT)
+                .build(&mut to)
+            {
+                set(to);
+            }
+            tooltip();
+        }
+        Control::Choice if range.clone().count() > Control::MAX_BUTTONS => {
+            ui.set_next_item_width(width);
+            match ui.begin_combo(&id, setting.value_text(value)) {
+                Some(_combo) => {
+                    for to in range {
+                        let label = format!("{}{id}-{to}", setting.value_text(to));
+                        if ui.selectable_config(label).selected(to == value).build() {
+                            set(to);
+                        }
+                    }
+                }
+                None => tooltip(),
+            }
+        }
+        Control::Choice => {
+            let count = range.clone().count() as f32;
+            let spacing = ui.clone_style().item_spacing[0];
+            let each = ((width - spacing * (count - 1.0)) / count).floor();
+            for (index, to) in range.enumerate() {
+                if index != 0 {
+                    ui.same_line();
+                }
+                // The current choice is gold, like a queued build.
+                let _accent = (to == value).then(|| {
+                    (
+                        ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]),
+                        ui.push_style_color(StyleColor::ButtonHovered, [0.42, 0.37, 0.20, 1.0]),
+                    )
+                });
+                let label = format!("{}{id}-{to}", setting.value_text(to));
+                if ui.button_with_size(label, [each, 0.0]) {
+                    set(to);
+                }
+                tooltip();
+            }
+        }
+    }
 }
 
 /// How wide the unit strip's window wants to be: its widest row of tokens,
@@ -1956,6 +2091,11 @@ impl GameState {
         };
         let flags = panel_chrome(arranging, layout.windows[slot].collapsed);
         let mut window = ui.window(title).flags(flags);
+        if slot == SETTINGS {
+            // It opens over the other panels: keep their text from showing
+            // through its labels.
+            window = window.bg_alpha(1.0);
+        }
         // While ImGui is moving a panel or showing docking targets it owns the
         // geometry. Applying our automatic position here makes edge previews
         // oscillate between the two layout systems.
@@ -2003,8 +2143,18 @@ impl GameState {
         scope: Option<PinnedPanel>,
         actions: &mut Vec<Action>,
     ) {
+        let label_width = setting_label_width(ui, panel, fonts[1]);
         for row in &panel.rows {
             match row {
+                Row::Heading(text) => {
+                    let _font = ui.push_font(fonts[0]);
+                    ui.text_colored(GOLD_TEXT, text);
+                    ui.separator();
+                }
+                Row::Setting(setting, value) => {
+                    let _font = ui.push_font(fonts[1]);
+                    render_setting(ui, *setting, *value, label_width, scope, actions);
+                }
                 Row::Text(px, line) => {
                     let font = match *px {
                         TITLE => fonts[2],
@@ -2452,9 +2602,11 @@ impl GameState {
                 Vec2::new(width, measure_panel(ui, units, fonts, width).min(available))
             }),
             settings.as_ref().map(|settings| {
+                // Wide enough for a label column and a control beside it.
+                let width = SETTINGS_WIDTH.min(max_width);
                 Vec2::new(
-                    debug_width,
-                    measure_panel(ui, settings, fonts, debug_width).min(available),
+                    width,
+                    measure_panel(ui, settings, fonts, width).min(available),
                 )
             }),
         ];

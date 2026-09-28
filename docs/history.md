@@ -176,3 +176,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     a turn count, like FARM · GRASSLAND · 3T, instead of coordinates and "turns of work".
 55. Work Camps extend reach (`claude/work-camp-reach`): a Work Camp connected to its city is a
     base like the city itself: workers reach 3 tiles from it.
+56. Settings controls (`claude/settings-controls`): the settings menu gives each setting a
+    control that fits it instead of < > arrows: a checkbox for Instant Playback, a slider for
+    the queue limit, buttons for Fog and Start With, and a drop-down list for AI Players, under
+    Turns, Map and Next World headings, with tooltips. Classic (F11) shows the same as buttons.

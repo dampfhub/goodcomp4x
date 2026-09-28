@@ -20,7 +20,7 @@ load) holds a copy of the whole game in memory; it survives scenario switches, l
 snapshot (and the camera, within the same scenario), and saving is refused mid-turn. Loading
 doesn't restore the dice: combat rolls carry on from the current game, so a retry can go
 differently. Instant
-playback (F8, or Turn Playback in the settings menu; on by default) resolves every step of a
+playback (F8, or Instant Playback in the settings menu; on by default) resolves every step of a
 turn at once, in the same order, so outcomes don't change. Fog of war (F10) is on by default.
 Both settings, and every other player setting (`settings.rs`), survive switches and loads. The faded DEBUG panel (top-left) has buttons for all of these, shows a generated map's
 seed, and has COMPLETE PRODUCTION (F9), which pays for the open city's or barracks' current
@@ -90,15 +90,15 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   at most 12 hexes, mountain ranges and hills by noise, lakes, rivers running downhill to water,
   climate by latitude and moisture, forest on wetter grassland, plains and tundra, jungle on about
   three quarters of marsh.
-  - **Sides:** the player (Blue) and 4-6 AI sides, picked by the seed, or as many as the World AI
-    setting says (1-6). Each takes a start in `Team::ALL` order (Red, Green, Gold, Purple, Teal,
+  - **Sides:** the player (Blue) and 4-6 AI sides, picked by the seed, or as many as the AI Players
+    setting (Next World) says (1-6). Each takes a start in `Team::ALL` order (Red, Green, Gold, Purple, Teal,
     Orange), Blue on any of them.
   - **Starts** are on the largest continent, on flat land that is not snow, desert or marsh, with
     open ground and hills next door, scored on nearby yields and fresh water. The set is
     scattered and then evened out: each start about as far from its nearest neighbor as the land
     allows when shared out evenly (some closer, some farther), with about equally good land.
   - **Units:** each side starts with its city already founded (with a worker at home) or with a
-    settler, as the World Start setting says, and a scout on the neighboring hills. The camera
+    settler, as the Start With setting (Next World) says, and a scout on the neighboring hills. The camera
     starts on Blue's city or settler.
   - **Horses and Iron:** one of each within two to four hexes of every start (farther only if
     there's no room), nearer it than any other start: horses on open flat ground, iron on hills

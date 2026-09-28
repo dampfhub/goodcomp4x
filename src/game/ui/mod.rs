@@ -202,8 +202,9 @@ enum Target {
     CompleteProduction,
     TogglePlayback,
     ToggleFog,
-    /// Settings menu: step a setting down (-1) or up (+1) through its range.
-    StepSetting(Setting, i32),
+    /// Settings menu: set a setting to a value (the nearer end of its range
+    /// if outside it), from its checkbox, slider or choice.
+    SetSetting(Setting, i32),
     CloseSettings,
     /// Settings menu: close the game.
     Quit,
@@ -405,6 +406,10 @@ struct Layout {
     /// The unit strip's tokens and the unit id each one stands for.
     roster_chips: Vec<(Vec2, Vec2, RosterKey)>,
     dock: Option<Dock>,
+    /// Where the settings menu's shapes and buttons start, while it's open:
+    /// `build_ui` draws them after everything before them, buttons
+    /// included, so no other panel's buttons show through it.
+    overlay: Option<(usize, usize)>,
 }
 
 impl Layout {
@@ -477,7 +482,14 @@ impl GameState {
         let hovered = point.and_then(|p| layout.button_at(p)).map(|b| b.target);
 
         let mut out = Vec::new();
-        for shape in &layout.shapes {
+        // The settings menu (and anything placed after it) is a layer of
+        // its own over the rest.
+        let (shapes_split, buttons_split) = layout
+            .overlay
+            .unwrap_or((layout.shapes.len(), layout.buttons.len()));
+        let (under_shapes, over_shapes) = layout.shapes.split_at(shapes_split);
+        let (under_buttons, over_buttons) = layout.buttons.split_at(buttons_split);
+        for shape in under_shapes {
             draw_shape(shape, &mut out);
         }
         if let Some(&(min, max, _)) = point.and_then(|p| {
@@ -488,7 +500,13 @@ impl GameState {
         }) {
             draw_chip_hover(min, max, &mut out);
         }
-        for button in &layout.buttons {
+        for button in under_buttons {
+            draw_button(button, hovered == Some(button.target), &mut out);
+        }
+        for shape in over_shapes {
+            draw_shape(shape, &mut out);
+        }
+        for button in over_buttons {
             draw_button(button, hovered == Some(button.target), &mut out);
         }
         if let Some(button) = hovered.and_then(|t| layout.buttons.iter().find(|b| b.target == t)) {
@@ -635,7 +653,7 @@ impl GameState {
             Target::CompleteProduction => self.debug_complete_current_production(),
             Target::TogglePlayback => self.toggle_instant_playback(),
             Target::ToggleFog => self.toggle_fog(),
-            Target::StepSetting(setting, delta) => self.step_setting(setting, delta),
+            Target::SetSetting(setting, value) => self.set_setting(setting, value),
             Target::CloseSettings => self.close_settings(),
             Target::Quit => self.quit_requested = true,
         }
