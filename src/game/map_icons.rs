@@ -52,7 +52,6 @@ const LEAVES: Color = [0.06, 0.30, 0.05, 1.0];
 /// Metal on yield chips and in text: brighter than the Iron deposit's
 /// ingot so it reads small.
 const METAL: Color = [0.42, 0.46, 0.52, 1.0];
-const METAL_LIT: Color = [0.78, 0.82, 0.88, 1.0];
 const CLOCK_FACE: Color = [0.80, 0.80, 0.74, 1.0];
 const FRUIT: Color = [0.80, 0.08, 0.04, 1.0];
 
@@ -258,37 +257,30 @@ pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out:
                 pen.ring(&ellipse((x, y), 1.2, 2.2, 0.0), 1.2, GROWTH_RING);
             }
         }
+        // The small resource icons are flat, one color each, thinly edged,
+        // so they read at text size.
         MapIcon::Food => {
-            let stem = [(0.0, 7.0), (0.0, -4.0)];
-            pen.line(&stem, 3.8, OUTLINE);
-            pen.line(&stem, 1.6, WHEAT);
-            for y in [1.0, -3.5] {
-                for side in [-1.0, 1.0] {
-                    let kernel = ellipse((2.2 * side, y), 1.9, 3.0, 30.0 * side);
-                    pen.shape(&kernel, WHEAT, 1.6);
-                }
+            let stem = [(0.0, 7.0), (0.0, -2.0)];
+            pen.line(&stem, 3.2, OUTLINE);
+            pen.line(&stem, 1.4, WHEAT);
+            for side in [-1.0, 1.0] {
+                let kernel = ellipse((2.0 * side, -1.0), 1.8, 2.9, 30.0 * side);
+                pen.shape(&kernel, WHEAT, 1.2);
             }
-            pen.shape(&ellipse((0.0, -7.0), 1.9, 3.0, 0.0), WHEAT, 1.6);
+            pen.shape(&ellipse((0.0, -5.5), 1.8, 2.9, 0.0), WHEAT, 1.2);
         }
         MapIcon::Wood => {
-            // A log leaning right, its cut end at the top.
-            let lean = 30.0;
-            let body = [(-2.8, -6.5), (2.8, -6.5), (2.8, 7.5), (-2.8, 7.5)];
-            pen.shape(&turned(&body, lean), BARK, 1.6);
-            let (x, y) = turned(&[(0.0, -6.5)], lean)[0];
-            pen.shape(&ellipse((x, y), 2.8, 1.7, lean), FRESH_WOOD, 1.2);
-            pen.ring(&ellipse((x, y), 1.1, 0.6, lean), 0.7, GROWTH_RING);
+            // A plain log, leaning right.
+            let log = [(-3.5, 6.0), (3.5, -6.0)];
+            pen.line(&log, 6.2, OUTLINE);
+            pen.line(&log, 4.0, FRESH_WOOD);
         }
         MapIcon::Metal => {
-            let front = [(-9.5, 6.0), (-7.0, -0.5), (5.0, -0.5), (7.5, 6.0)];
-            pen.shape(&front, METAL, 1.6);
-            let top = [(-7.0, -0.5), (-4.5, -5.0), (7.5, -5.0), (5.0, -0.5)];
-            pen.shape(&top, METAL_LIT, 1.6);
-            let end = [(5.0, -0.5), (7.5, -5.0), (9.5, 1.5), (7.5, 6.0)];
-            pen.shape(&end, STEEL_SHADE, 1.6);
+            let bar = [(-8.5, 4.5), (-6.0, -3.5), (6.0, -3.5), (8.5, 4.5)];
+            pen.shape(&bar, METAL, 1.2);
         }
         MapIcon::Clock => {
-            pen.shape(&ellipse((0.0, 0.0), 7.5, 7.5, 0.0), CLOCK_FACE, 1.6);
+            pen.shape(&ellipse((0.0, 0.0), 7.5, 7.5, 0.0), CLOCK_FACE, 1.2);
             pen.line(&[(0.0, 0.5), (0.0, -5.0)], 1.5, OUTLINE);
             pen.line(&[(0.0, 0.5), (3.5, 2.0)], 1.5, OUTLINE);
         }
@@ -348,19 +340,6 @@ pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out:
             }
         }
     }
-}
-
-/// `points` turned by `degrees` about the icon's center (clockwise on
-/// screen, as SVG's `rotate` with Y down).
-fn turned(points: &[(f32, f32)], degrees: f32) -> Vec<(f32, f32)> {
-    let turn = Vec2::from_angle(degrees.to_radians());
-    points
-        .iter()
-        .map(|&(x, y)| {
-            let p = turn.rotate(Vec2::new(x, y));
-            (p.x, p.y)
-        })
-        .collect()
 }
 
 /// Points around an ellipse centered on `center`, turned by `degrees`
