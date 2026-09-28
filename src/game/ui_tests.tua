@@ -425,3 +425,31 @@ fn the_settings_menu_quit_button_asks_the_app_to_quit() {
         assert(game.quit_requested());
     });
 }
+
+@test
+fn clear_orders_and_disband_buttons_act_on_the_selection() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let Option.Some(first) = game.selected else { assert(false); return; };
+        let id = game.units[first].id;
+        // Nothing to clear yet.
+        let clear = Target.Unit(UnitAction.ClearOrders);
+        let layout = game.layout(screen());
+        let Option.Some(b) = layout.button_for(clear) else { assert(false); return; };
+        assert(layout.buttons[b].state == ButtonState.Disabled);
+        game.hold_selected_unit();
+        game.selected = Option.Some(first);
+        assert(game.units[first].holding);
+        game.handle_click(button_cursor(&game, clear), screen(), ClickMode.Normal);
+        assert(!game.units[first].holding);
+
+        // Disband asks first, then removes the unit.
+        let count = game.units.len();
+        let disband = Target.Unit(UnitAction.Disband);
+        game.handle_click(button_cursor(&game, disband), screen(), ClickMode.Normal);
+        assert(game.units.len() == count);
+        game.handle_click(button_cursor(&game, disband), screen(), ClickMode.Normal);
+        assert(game.units.len() == count - 1);
+        for i in 0..game.units.len() { assert(game.units[i].id != id); }
+    });
+}

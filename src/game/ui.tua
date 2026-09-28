@@ -161,7 +161,7 @@ impl Eq for Target {
 }
 
 /// An order for the selected unit.
-pub enum UnitAction { Move, Attack, Swap, Ability, Hold, Guard, Settle, Road, Improve }
+pub enum UnitAction { Move, Attack, Swap, Ability, Hold, Guard, Settle, Road, Improve, ClearOrders, Disband }
 
 pub enum ButtonState {
     Ready,
@@ -354,6 +354,8 @@ impl GameState {
                 UnitAction.Settle => self.found_city_selected(),
                 UnitAction.Road => self.build_worker_road_selected(),
                 UnitAction.Improve => self.improve_worker_tile_selected(),
+                UnitAction.ClearOrders => self.handle_right_click(),
+                UnitAction.Disband => self.disband_selected(),
             },
             Target.Build(build) => self.queue_selected_city_unit(build),
             Target.ToggleYields => self.toggle_yields(),
@@ -638,8 +640,15 @@ impl GameState {
             };
             panel.button(Target.Unit(UnitAction.Ability), &label, "Q", button_state(unit.ability_queued, cooldown > 0), false);
         }
+        panel.end_buttons(false);
+        // Standing orders on a row of their own, so the tray fits a small window.
+        panel.gap(GAP);
+        panel.begin_buttons();
         panel.button(Target.Unit(UnitAction.Hold), "HOLD", "SPACE", button_state(unit.holding, false), false);
         panel.button(Target.Unit(UnitAction.Guard), "GUARD", "G", button_state(unit.guarding, false), false);
+        panel.button(Target.Unit(UnitAction.ClearOrders), "CLEAR ORDERS", "CTRL-RMB", button_state(false, !unit.has_orders()), false);
+        let confirming = self.disband_armed == Option.Some(unit.id);
+        panel.button(Target.Unit(UnitAction.Disband), if confirming { "CONFIRM?" } else { "DISBAND" }, "DEL", ButtonState.Ready, confirming);
         panel.end_buttons(false);
     }
 
@@ -669,8 +678,9 @@ impl GameState {
         panel.text_owned(TextSize.Title, text(fn() can {Out} { show_i64(count as i64); Out.put(" UNITS SELECTED"); }), TEXT);
         panel.text_owned(TextSize.Body, group_summary(&kinds, &counts), DIM_TEXT);
         panel.text(TextSize.Small, "CLICK A HEX: EACH MOVES AS CLOSE TO IT AS IT CAN", LABEL_TEXT);
-        panel.text(TextSize.Small, "CLICK AN ENEMY: EVERY UNIT IN RANGE ATTACKS IT", LABEL_TEXT);
-        panel.text(TextSize.Small, "CLICK ONE UNIT TO SELECT JUST IT \u{b7} ALT-CLICK ADDS OR REMOVES", LABEL_TEXT);
+        panel.text(TextSize.Small, "RIGHT-CLICK A HEX: EVERY UNIT IN RANGE ATTACKS IT", LABEL_TEXT);
+        panel.text(TextSize.Small, "SHIFT: QUEUE THE MOVE OR ATTACK FOR LATER TURNS FOR ALL", LABEL_TEXT);
+        panel.text(TextSize.Small, "CLICK ONE UNIT TO SELECT JUST IT \u{b7} SHIFT-CLICK ADDS \u{b7} CTRL-CLICK REMOVES", LABEL_TEXT);
         panel.gap(GAP);
 
         let mut all_guarding = true;
@@ -682,6 +692,9 @@ impl GameState {
         panel.button(Target.Unit(UnitAction.Attack), "ATTACK", "X \u{b7} RMB", ButtonState.Ready, self.armed(ClickMode.Attack));
         panel.button(Target.Unit(UnitAction.Hold), "HOLD", "SPACE", ButtonState.Ready, false);
         panel.button(Target.Unit(UnitAction.Guard), "GUARD", "G", button_state(all_guarding, false), false);
+        let mut any_orders = false;
+        for m in 0..self.group.len() { if self.units[self.group[m]].has_orders() { any_orders = true; } }
+        panel.button(Target.Unit(UnitAction.ClearOrders), "CLEAR ORDERS", "CTRL-RMB", button_state(false, !any_orders), false);
         panel.end_buttons(false);
     }
 
@@ -1051,6 +1064,16 @@ impl GameState {
                 *title = to_owned("IMPROVE");
                 *shortcut = to_owned("I");
                 *description = to_owned("BUILDS A FARM OR MINE ON THIS WORKER'S HEX, RAISING WHAT IT YIELDS.");
+            }
+            UnitAction.ClearOrders => {
+                *title = to_owned("CLEAR ORDERS");
+                *shortcut = to_owned("CTRL-RIGHT-CLICK");
+                *description = to_owned("DROPS EVERY SELECTED UNIT'S ORDERS: MOVES, ATTACKS, QUEUED TURNS, HOLD AND GUARD.");
+            }
+            UnitAction.Disband => {
+                *title = to_owned("DISBAND");
+                *shortcut = to_owned("DEL");
+                *description = to_owned("REMOVES THIS UNIT FOR GOOD. PRESS TWICE: THE FIRST PRESS ASKS TO CONFIRM.");
             }
         }
     }
