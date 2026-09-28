@@ -91,6 +91,8 @@ pub(super) struct City {
     pub extra_buildings: HashMap<Building, Hex>,
     /// Scroll position in the city tray's building list.
     pub building_scroll: usize,
+    /// Scroll position in the city tray's list of workers and their jobs.
+    pub worker_scroll: usize,
     /// The Barracks' own queue, independent of the city's main queue; it
     /// advances only while the manager stands on the Barracks.
     pub barracks_queue: Vec<BuildUnit>,
@@ -128,6 +130,7 @@ impl City {
             workshop: None,
             extra_buildings: HashMap::default(),
             building_scroll: 0,
+            worker_scroll: 0,
             barracks_queue: Vec::new(),
             barracks_progress: 0,
             interior: Interior::default(),

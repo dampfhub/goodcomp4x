@@ -43,8 +43,9 @@ tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
 
 `App::window_event` on `RedrawRequested`:
 
-1. `game.update(dt)`: camera glide, effect ages, fog-of-war memory (`explore`), and, while a
-   turn is resolving, the next step (or every step, with instant playback).
+1. `game.update(dt)`: camera glide, effect and turn-transition ages, fog-of-war memory
+   (`explore`), and, while a turn is resolving, the next step (or every step, with instant
+   playback).
 2. `game.update_hover_imgui` or `game.update_hover`: which map hex the cursor rests on.
 3. `game.build_vertices_into(buffer)`: world geometry, drawn with `game.camera.view_proj(size)`.
 4. The default ImGui presentation builds dockable windows from shared panel content. F11
@@ -57,6 +58,14 @@ as much as building it). Per-hex layers draw only hexes the camera may show (`ma
 `draw.rs`); map icons and unit pictograms are triangulated once and then placed
 (`mesh::place`). ImGui retains window
 layout state so the player's panel positions survive view changes.
+The turn transition (`transition.rs`) is presentation only: as `update` resolves steps it
+notes where each unit and worker the player sees is drawn (`before_steps`), and afterwards
+anything that moved glides from that spot to its new one over `GLIDE_TIME` (`drawn_unit_layout`,
+`worker_glide`); a finished turn starts the cue, a moment's dimming of the map
+(`push_turn_dim`, under the units) and the turn number flashing gold in both presentations
+(`turn_number_color`). Resolution, hit tests and the lockstep read the real positions, a copy
+of the game (savestate, a network turn's start) starts settled, and with no time passing
+(screenshot mode's opening position, tests calling `update(0.0)`) nothing moves.
 
 `cargo test --release perf_report -- --ignored --nocapture` (`src/game/perf.rs`) times each
 stage of a frame and a turn on a busy six-AI world; run it before and after a change that might
@@ -83,7 +92,7 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    (`PanelBuilder::freeze_plan`).
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each unit step resolves one unit type's moves or attacks
-   simultaneously; `effects.rs` animates attacks; dead units are removed at the end of an attack
+   simultaneously; `effects.rs` animates attacks; `transition.rs` glides what moved; dead units are removed at the end of an attack
    step, and enemy workers caught by a move are captured. `city/rail.rs` checks road connectivity
    for one-turn transfers from a city ring to its remote Railhead; a blocked line fails at this
    step. The last step, `resolve_workers`
@@ -104,7 +113,7 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    sets or clears Lookout, and clears its orders; `advance_queues` (`order_queue.rs`) gives each
    unit with a queue its next turn's orders, dropping queues that no longer fit; then selection
    moves to the first unit needing orders, or else the first city needing a build
-   (`select_next_or_end_turn`).
+   (`select_next_or_end_turn`). Last, the turn cue starts (`start_transition`, see A frame).
 
 The rules each step applies are in `game-rules.md`.
 

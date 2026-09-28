@@ -42,25 +42,25 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 | Plains | 2 | 1 | the default for unlisted hexes |
 | Desert | 0 | 1 | |
 | Tundra | 1 | 1 | |
-| Snow | 0 | 0 | can't be improved; routes cost more |
-| Marsh | 1 | 0 | never hills; routes cost more |
+| Snow | 0 | 0 | can't be improved |
+| Marsh | 1 | 0 | never hills |
 | Mountains | 0 | 0 | impassable to units and routes; can't be worked or targeted |
 | Coast, Lake | 2 | 0 | water |
 | Ocean | 1 | 0 | water, away from the shore |
 
 | Modifier | Effect |
 |---|---|
-| Hills | +1 production, +25% defense, +1 route cost, +1 sight |
-| Forest | -1 food (not below 0), +1 production, +15% defense, +1 route cost |
-| Jungle (marsh only) | +1 food, +1 production, +15% defense, +1 route cost |
+| Hills | +1 production, +25% defense, +1 sight |
+| Forest | -1 food (not below 0), +1 production, +15% defense |
+| Jungle (marsh only) | +1 food, +1 production, +15% defense |
 
 - **Water:** land units cannot enter it. Patrol Galleys, Landing Craft and Bombard Ships move only on water; attacks may cross the shoreline. Cities can work it: a route may end on a water
   tile but never continues across one.
 - **Rivers** run along hex edges (World maps only). Land beside a river or a lake has fresh water:
   +1 food, on top of any improvement. A Canoe House makes the connected riverbank a transport
   corridor (see Buildings).
-- **Route cost** of entering a hex: 2 (3 on snow or marsh), +1 for hills, +1 for a feature; a road
-  or city hex costs 1.
+- **Terrain and goods:** terrain never slows goods. A delivery route counts only the hexes it
+  crosses, a road step as half a hex (see Cities, Logistics).
 - **Defense** bonuses apply to units only; barracks defense is fixed.
 - **Goods:** a tile's food is food; its production splits into **metal**, what's dug out of the
   ground (+1 for hills, +2 for a mine, +3 for a Quarry, never more than the tile's production),
@@ -476,9 +476,12 @@ every turn end.
   hills (+2 production), a lumber mill under forest or jungle (+1 production), otherwise a farm (+2
   food); snow can't be improved. The Cities scenario's preplaced farms (4/0), mines (0/4) and
   pastures (3/1) have fixed yields.
-- **Logistics:** each worked tile's goods travel its cheapest route to the city, summing the
-  route costs above; routes costing more than 8 don't exist. Delivery is 100% at cost 0-2, 75% at
-  3-4, 50% at 5-6, 25% at 7-8. Enemy units, contested hexes, enemy cities and mountains block
+- **Logistics:** each worked tile's goods travel its shortest route to the city, counted in hexes
+  moved: a step onto a road or a city hex, or along a Canoe House river, counts half a hex, and any
+  other step one hex, whatever its terrain. Delivery is 100% at up to 1 hex, 75% at up to 2, 50%
+  at up to 3 and 25% at up to 4; a tile farther than 4 is out of reach. So every tile beside a
+  city delivers 100%, and roads extend reach: a tile 2 hexes out along a road delivers like one
+  beside the city, and one 4 hexes out along it 75%. Enemy units, contested hexes, enemy cities and mountains block
   routes, and an enemy on the city blocks them all. Routes are recalculated every time they're
   used.
 - **Manager and workers:** population is at most 7: the manager (the first worked tile, ringed in
@@ -560,8 +563,9 @@ every turn end.
   - **Workshop:** a building placed on a site adjacent to one of its side's workshops takes its
     worker half the turns (rounded up; its price is unchanged).
   - **Canoe House:** must stand on a riverbank. Connected riverbank hexes act like roads for
-    friendly delivery routes (cost 1 between banks); walls, enemy occupation and the 8-cost
-    delivery limit still apply. This can bring several remote tiles into a city's reach at once.
+    friendly delivery routes (half a hex a step between banks); walls, enemy occupation and the
+    4-hex delivery limit still apply. This can bring several remote tiles into a city's reach at
+    once.
   - **Forge and Stable:** must stand on or adjacent to Iron or Horses respectively. If also
     adjacent to a Barracks, they give it the matching deposits on or beside them (and their
     cap), even when the Barracks is off the resource. Forge-trained Armored have +20% HP and +15% defense; Stable-trained Cavalry
@@ -648,7 +652,7 @@ every turn end.
 
   | Job | Work | Effect |
   |---|---|---|
-  | Road | 2 turns | a dirt road |
+  | Road | 2 turns | a dirt road: goods count a step onto it as half a hex (see Logistics) |
   | Improve | 3 turns | a mine, lumber mill or farm (see Yields) |
   | Wall | 2 turns | on an edge: no unit, worker or goods cross it, yours included |
   | Gate | 3 turns | on an edge: only your units, workers and goods cross it |

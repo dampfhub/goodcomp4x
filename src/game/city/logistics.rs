@@ -28,6 +28,16 @@ impl Routes {
     }
 }
 
+/// Route costs count half hexes: goods moving one hex cost `HEX_STEP`,
+/// whatever the terrain, and a road step (onto a road or a city, or along a
+/// Canoe House river) costs `ROAD_STEP`, half a hex.
+pub(in crate::game) const HEX_STEP: i32 = 2;
+pub(in crate::game) const ROAD_STEP: i32 = 1;
+/// The longest route: four hexes off-road.
+pub(in crate::game) const MAX_ROUTE_COST: i32 = 4 * HEX_STEP;
+
+/// The quarters of a tile's goods that reach the end of a route costing
+/// `cost`: all of them one hex away, 3/4 at two, 1/2 at three, 1/4 at four.
 pub(in crate::game) fn delivered_share(cost: i32) -> i32 {
     match cost {
         0..=2 => 4,
@@ -107,7 +117,7 @@ impl GameState {
 
     /// Like `routes_from`, with `blocked` deciding which hexes goods can't
     /// cross, `crossable` which hex edges they can (walls and others' gates
-    /// stop them) and `road` which carry them cheaply: the real board for the
+    /// stop them) and `road` which steps count as half a hex: the real board for the
     /// economy, or what the player knows of it for what's shown to them
     /// (`known_routes`).
     pub(in crate::game) fn routes_from_by(
@@ -147,13 +157,10 @@ impl GameState {
                 {
                     continue;
                 }
-                let step = if road(hex, n) {
-                    1
-                } else {
-                    self.grid.tile(n).route_cost()
-                };
+                // Only hexes travelled count, never the terrain they cross.
+                let step = if road(hex, n) { ROAD_STEP } else { HEX_STEP };
                 let total = cost + step;
-                if total <= 8 && result.costs.get(&n).is_none_or(|old| total < *old) {
+                if total <= MAX_ROUTE_COST && result.costs.get(&n).is_none_or(|old| total < *old) {
                     result.costs.insert(n, total);
                     result.toward_origin.insert(n, hex);
                 }

@@ -22,8 +22,8 @@ more citizens and everything else that eats it (troops, workers).
     center's 1 production is wood. A Smelter's output is metal.
 - **Stockpile:** one per side (`GameState::stockpiles`, indexed by team), not per city. Every
   city's delivered food, wood and metal is added at each turn's economy, after the workers' step.
-  Delivery shares (route falloff, Mill) apply as before. A side starts with 10 food, 10 wood and
-  4 metal.
+  Delivery shares apply as before (the falloff by hexes travelled, a road step counting half a
+  hex, and the Mill; `game-rules.md`, Logistics). A side starts with 10 food, 10 wood and 4 metal.
 - **Upkeep:** each citizen still eats 2 food a turn, now from the side's stockpile, so a farming
   city can feed a mining one. If the stockpile can't pay the whole side's upkeep, it empties and the
   side's largest city (lowest index on ties) loses a citizen (never below 1).
