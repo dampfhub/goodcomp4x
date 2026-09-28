@@ -367,6 +367,7 @@ impl GameState {
 
     /// R or the Build Road button: a road on the selected worker's hex.
     pub fn build_worker_road_selected(&mut self) {
+        if self.is_resolving() { return; }
         let Option.Some(i) = self.selected else { return; };
         let (unit_id, unit_pos) = (self.units[i].id, self.units[i].pos);
         if !self.workers.contains(unit_id) {
@@ -379,10 +380,16 @@ impl GameState {
 
     /// I or the Improve button: a mine on hills, else a farm, on the selected worker's hex.
     pub fn improve_worker_tile_selected(&mut self) {
+        if self.is_resolving() { return; }
         let Option.Some(i) = self.selected else { return; };
         let (unit_id, unit_pos, unit_team) = (self.units[i].id, self.units[i].pos, self.units[i].team);
         if !self.workers.contains(unit_id) {
             self.set_notice("ONLY A WORKER IMPROVES TILES");
+            return;
+        }
+        let enemy_site = match self.sites.get(unit_pos) { Option.Some(site) => site.team != unit_team, Option.None => false };
+        if enemy_site {
+            self.set_notice("THIS TILE BELONGS TO THE ENEMY - NO IMPROVEMENT POSSIBLE");
             return;
         }
         let (food, production, kind) = if self.grid.tile(unit_pos).hills { (1, 4, SiteKind.Mine) } else { (4, 0, SiteKind.Farm) };

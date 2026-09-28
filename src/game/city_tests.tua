@@ -6,6 +6,10 @@ use std.test.Assert;
 use std.rand.Rand;
 use log.Log;
 use game.GameState;
+use game.PLAYER_TEAM;
+use game.city.Site;
+use game.city.SiteKind;
+use game.turn.Phase;
 use game.city.BuildUnit;
 use game.hex.Hex;
 use game.tests.sandbox;
@@ -123,5 +127,63 @@ fn a_finished_unit_waiting_for_a_hex_banks_nothing_more() {
         g.resolve_economy();
         assert(blue_units(&g) == units);
         assert(g.cities[0].production < cost);
+    });
+}
+
+/// A land tile with no road, city or unit that a worker can improve.
+fn open_tile(g: &GameState) -> Hex {
+    let mut found = Hex.new(0, 0);
+    let mut any = false;
+    for hh in g.grid.hexes() {
+        let h = *hh;
+        if any || !g.grid.is_passable(h) || g.roads.contains(h) || g.city_at(h).is_some() { continue; }
+        let mut taken = false;
+        for i in 0..g.units.len() { if g.units[i].pos == h { taken = true; } }
+        if !taken { found = h; any = true; }
+    }
+    found
+}
+
+/// Selects the player's worker, moved to `at`.
+fn select_worker_at(g: &mut GameState, at: Hex) {
+    let mut worker = 0 - 1;
+    for i in 0..g.units.len() { if worker < 0 && g.units[i].team == PLAYER_TEAM && g.workers.contains(g.units[i].id) { worker = i; } }
+    g.units[worker].pos = at;
+    g.selected = Option.Some(worker);
+}
+
+@test
+fn worker_actions_wait_for_the_turn_to_finish_playing() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        let at = open_tile(&g);
+        let _old = g.sites.remove(at);
+        select_worker_at(&mut g, at);
+        g.pending_steps.push_back((UnitType.Melee, Phase.Move));
+        assert(g.is_resolving());
+        g.build_worker_road_selected();
+        g.improve_worker_tile_selected();
+        assert(!g.roads.contains(at));
+        assert(!g.sites.has(at));
+
+        let _step = g.pending_steps.pop_front();
+        g.build_worker_road_selected();
+        g.improve_worker_tile_selected();
+        assert(g.roads.contains(at));
+        let Option.Some(site) = g.sites.get(at) else { assert(false); return; };
+        assert(site.team == PLAYER_TEAM);
+    });
+}
+
+@test
+fn a_worker_cannot_improve_over_an_enemy_site() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        let at = open_tile(&g);
+        select_worker_at(&mut g, at);
+        let _old = g.sites.insert(at, Site { team: Team.Red, food: 3, production: 0, kind: SiteKind.Farm });
+        g.improve_worker_tile_selected();
+        let Option.Some(site) = g.sites.get(at) else { assert(false); return; };
+        assert(site.team == Team.Red && site.food == 3);
     });
 }
