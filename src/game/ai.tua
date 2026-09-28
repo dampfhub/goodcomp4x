@@ -8,6 +8,7 @@ use game.PLAYER_TEAM;
 use game.hex.Hex;
 use game.city.BuildUnit;
 use game.city.City;
+use game.city.LaborFocus;
 use game.unit.Team;
 use game.unit.TEAMS;
 
@@ -147,7 +148,7 @@ impl GameState {
         self.remove_unit(unit_id);
         self.settlers.remove(unit_id);
         let id = self.cities.len() as u32;
-        self.cities.push(City { id, team, pos: unit_pos, population: 1, food: 0, production: 0, worked: Vec.new(), queue: Option.Some(BuildUnit.Melee) });
+        self.cities.push(City { id, team, pos: unit_pos, population: 1, food: 0, production: 0, worked: Vec.new(), focus: LaborFocus.Balanced, queue: Option.Some(BuildUnit.Melee) });
         self.auto_assign_city(self.cities.len() - 1);
     }
 

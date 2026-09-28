@@ -3,6 +3,7 @@
 //! costs are in half hexes.
 
 use std.collections.Map;
+use std.core.Eq;
 use std.collections.Set;
 use std.core.Keep;
 use std.fmt.Out;
@@ -40,8 +41,32 @@ pub struct City {
     food: i32,
     production: i32,
     worked: Vec[Hex],
+    /// What auto-assignment puts citizens on first.
+    focus: LaborFocus,
     queue: Option[BuildUnit],
 }
+
+/// What a city's auto-assignment favours: food, production, or food while the city is short
+/// of it and production after.
+pub enum LaborFocus { Food, Production, Balanced }
+
+impl Eq for LaborFocus {
+    fn eq(self, other: LaborFocus) -> bool {
+        match (self, other) {
+            (LaborFocus.Food, LaborFocus.Food) | (LaborFocus.Production, LaborFocus.Production) | (LaborFocus.Balanced, LaborFocus.Balanced) => true,
+            _ => false,
+        }
+    }
+}
+
+impl LaborFocus {
+    pub fn name(self) -> str {
+        match self { LaborFocus.Food => "FOOD", LaborFocus.Production => "PRODUCTION", LaborFocus.Balanced => "BALANCED" }
+    }
+}
+
+/// Every focus, in the order the city tray shows them.
+pub const FOCUSES: [LaborFocus; 3] = [LaborFocus.Food, LaborFocus.Production, LaborFocus.Balanced];
 
 /// A unit a city can build.
 pub enum BuildUnit { Melee, Ranged, Cavalry, Siege }
@@ -226,7 +251,7 @@ impl GameState {
         for s in 0..2 {
             let (id, team, sign) = sides[s];
             let pos = Hex.new(sign * 4, 0);
-            self.cities.push(City { id, team, pos, population: 2, food: 32, production: 0, worked: Vec.new(), queue: Option.None });
+            self.cities.push(City { id, team, pos, population: 2, food: 32, production: 0, worked: Vec.new(), focus: LaborFocus.Balanced, queue: Option.None });
             for k in 0..4 {
                 let (q, r, food, production, kind) = sites[k];
                 self.sites.insert(Hex.new(sign * q, sign * r), Site { team, food, production, kind });
@@ -271,7 +296,7 @@ impl GameState {
                 let id = self.cities.len() as u32;
                 // The AI keeps training melee; the player's queue starts empty.
                 let queue = if team == PLAYER_TEAM { Option.None } else { Option.Some(BuildUnit.Melee) };
-                self.cities.push(City { id, team, pos: start, population: 1, food: 0, production: 0, worked: Vec.new(), queue });
+                self.cities.push(City { id, team, pos: start, population: 1, food: 0, production: 0, worked: Vec.new(), focus: LaborFocus.Balanced, queue });
                 self.auto_assign_city(self.cities.len() - 1);
             } else {
                 let id = self.next_unit_id;
@@ -350,7 +375,7 @@ impl GameState {
             }
         }
         let id = self.cities.len() as u32;
-        self.cities.push(City { id, team: unit_team, pos: unit_pos, population: 1, food: 0, production: 0, worked: Vec.new(), queue: Option.None });
+        self.cities.push(City { id, team: unit_team, pos: unit_pos, population: 1, food: 0, production: 0, worked: Vec.new(), focus: LaborFocus.Balanced, queue: Option.None });
         self.settlers.remove(unit_id);
         self.remove_unit(unit_id);
         self.selected = Option.None;
@@ -395,6 +420,14 @@ impl GameState {
         let (food, production, kind) = if self.grid.tile(unit_pos).hills { (1, 4, SiteKind.Mine) } else { (4, 0, SiteKind.Farm) };
         self.sites.insert(unit_pos, Site { team: unit_team, food, production, kind });
         self.notice = text(fn() can {Out} { Out.put(kind.name()); Out.put(" BUILT"); });
+    }
+
+    /// A labor focus button: the open city favours `focus` and reassigns its citizens.
+    pub fn set_selected_city_focus(&mut self, focus: LaborFocus) {
+        let Option.Some(city) = self.selected_city else { return; };
+        self.cities[city].focus = focus;
+        self.auto_assign_city(city);
+        self.notice = text(fn() can {Out} { Out.put("CITY FOCUS: "); Out.put(focus.name()); });
     }
 
     /// 1-4 or a build card: what the open city builds next.
@@ -545,7 +578,11 @@ impl GameState {
         let mut food = 8;
         while self.cities[index].worked.len() < self.cities[index].population && !tiles.is_empty() {
             let needs_food = food < self.cities[index].population * 8 + 4;
-            let at = best_candidate(&tiles, needs_food, 4);
+            let at = match self.cities[index].focus {
+                LaborFocus.Food => best_candidate(&tiles, true, 5),
+                LaborFocus.Production => best_candidate(&tiles, false, 5),
+                LaborFocus.Balanced => best_candidate(&tiles, needs_food, 4),
+            };
             let pick = tiles[at];
             remove_candidate(&mut tiles, at);
             self.cities[index].worked.push(pick.hex);

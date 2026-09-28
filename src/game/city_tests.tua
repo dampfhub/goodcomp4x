@@ -11,6 +11,7 @@ use game.city.Site;
 use game.city.SiteKind;
 use game.turn.Phase;
 use game.city.BuildUnit;
+use game.city.LaborFocus;
 use game.hex.Hex;
 use game.tests.sandbox;
 use game.unit.Team;
@@ -208,5 +209,24 @@ fn a_tile_never_seen_cannot_be_picked_or_worked() {
         let _ours = g.city_click(unseen);
         assert(g.inspected_tile.is_none());
         assert(g.cities[city].worked.len() == worked);
+    });
+}
+
+@test
+fn a_labor_focus_puts_citizens_on_food_or_production() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.select_city();
+        let Option.Some(city) = g.selected_city else { assert(false); return; };
+        g.cities[city].population = 3;
+        g.set_selected_city_focus(LaborFocus.Food);
+        let (food_first, production_low) = g.income(city);
+        g.set_selected_city_focus(LaborFocus.Production);
+        let (food_low, production_first) = g.income(city);
+        // Each focus gets at least as much of its own yield as the other, and they differ.
+        assert(food_first >= food_low && production_first >= production_low);
+        assert(food_first != food_low || production_first != production_low);
+        assert(g.cities[city].focus == LaborFocus.Production);
+        assert(g.cities[city].worked.len() == 3);
     });
 }

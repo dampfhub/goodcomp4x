@@ -30,6 +30,8 @@ use std.str.to_owned;
 use log.Log;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
+use game.city.FOCUSES;
+use game.city.LaborFocus;
 use game.settings.Control;
 use game.settings.MAX_BUTTONS;
 use game.settings.SETTINGS;
@@ -139,6 +141,8 @@ pub enum Target {
     SaveState,
     LoadState,
     TogglePlayback,
+    /// City tray: the open city's labor focus.
+    Focus(LaborFocus),
     /// Settings menu: set a setting to a value, close the menu, or quit the game.
     SetSetting(Setting, i32),
     CloseSettings,
@@ -155,6 +159,7 @@ impl Eq for Target {
                 | (Target.LoadState, Target.LoadState) | (Target.TogglePlayback, Target.TogglePlayback) => true,
             (Target.SetSetting(a, x), Target.SetSetting(b, y)) => a == b && x == y,
             (Target.CloseSettings, Target.CloseSettings) | (Target.Quit, Target.Quit) => true,
+            (Target.Focus(a), Target.Focus(b)) => a == b,
             _ => false,
         }
     }
@@ -366,6 +371,7 @@ impl GameState {
             Target.TogglePlayback => self.toggle_instant_playback(),
             Target.SetSetting(setting, value) => self.set_setting(setting, value),
             Target.CloseSettings => self.close_settings(),
+            Target.Focus(focus) => self.set_selected_city_focus(focus),
             Target.Quit => self.request_quit(),
         }
         true
@@ -735,6 +741,11 @@ impl GameState {
             Option.None => panel.stat("BUILDING", to_owned("NOTHING - CHOOSE BELOW"), DIM_TEXT),
         }
         panel.end_line(TextSize.Body);
+        let focus = self.cities[i].focus;
+        panel.text(TextSize.Small, "LABOR FOCUS", LABEL_TEXT);
+        panel.begin_buttons();
+        for k in 0..3 { panel.button(Target.Focus(FOCUSES[k]), FOCUSES[k].name(), "AUTO", button_state(FOCUSES[k] == focus, false), false); }
+        panel.end_buttons(true);
 
         panel.gap(GAP);
         let growth = match growth_turns {
@@ -955,6 +966,14 @@ impl GameState {
             Target.SetSetting(setting, _) => {
                 title = to_owned(setting.name());
                 description = to_owned(setting.description());
+            }
+            Target.Focus(focus) => {
+                title = text(fn() can {Out} { Out.put(focus.name()); Out.put(" FOCUS"); });
+                description = to_owned(match focus {
+                    LaborFocus.Food => "CITIZENS WORK THE TILES THAT FEED THE CITY MOST.",
+                    LaborFocus.Production => "CITIZENS WORK THE TILES THAT BUILD FASTEST.",
+                    LaborFocus.Balanced => "CITIZENS WORK FOR FOOD WHILE THE CITY IS SHORT OF IT, AND FOR PRODUCTION AFTER.",
+                });
             }
             Target.CloseSettings => {
                 title = to_owned("CLOSE");
