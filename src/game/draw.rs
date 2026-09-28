@@ -1,7 +1,7 @@
 //! Builds each frame's geometry from the game state.
 
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
+use std::f32::consts::{FRAC_PI_2, TAU};
 
 use glam::Vec2;
 
@@ -162,12 +162,8 @@ const JOB_LABEL_UNDER_SHARE: Vec2 = Vec2::new(0.0, 0.40);
 const WORKER_TAG_MIN: Vec2 = Vec2::new(-0.78, -0.58);
 const WORKER_TAG_MAX: Vec2 = Vec2::new(-0.3, -0.32);
 const WORKER_TAG_COLOR: Color = [0.03, 0.03, 0.04, 0.92];
-/// Structures workers build.
-const STONE_COLOR: Color = [0.24, 0.23, 0.21, 1.0];
 /// How thick a wall or gate is along its hex edge.
 const BARRIER_WIDTH: f32 = 0.16;
-const MORTAR_COLOR: Color = [0.09, 0.085, 0.08, 1.0];
-const WOOD_COLOR: Color = [0.40, 0.20, 0.07, 1.0];
 /// Icon growth while a unit is highlighted for having just acted.
 const ACTED_SCALE: f32 = 1.35;
 
@@ -1217,9 +1213,7 @@ impl GameState {
                 if city.team != PLAYER_TEAM && !fog.sees(hex) {
                     continue;
                 }
-                let (badge, color) = building_badge(building);
-                mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, color, out);
-                font::push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
+                map_icons::push_building(hex.to_world(), building, out);
                 if building == super::city::Building::CoastalBattery {
                     push_health_bar(hex.to_world(), city.coastal_battery_hp / 150.0, 0.62, out);
                 }
@@ -1493,25 +1487,6 @@ struct MapView {
     barriers: HashMap<(Hex, Hex), Structure>,
     cities: Vec<(Hex, SeenBuilding)>,
     barracks: Vec<(Hex, SeenBuilding)>,
-}
-
-fn building_badge(building: super::city::Building) -> (char, Color) {
-    match building {
-        super::city::Building::Barracks => ('B', [0.72, 0.35, 0.18, 1.0]),
-        super::city::Building::Mill => ('M', [0.35, 0.65, 0.28, 1.0]),
-        super::city::Building::Workshop => ('W', [0.38, 0.52, 0.82, 1.0]),
-        super::city::Building::CanoeHouse => ('C', [0.30, 0.65, 0.82, 1.0]),
-        super::city::Building::Forge => ('F', [0.82, 0.43, 0.22, 1.0]),
-        super::city::Building::Stable => ('S', [0.67, 0.49, 0.27, 1.0]),
-        super::city::Building::Watchpost => ('V', [0.78, 0.76, 0.35, 1.0]),
-        super::city::Building::FieldHospital => ('H', [0.80, 0.33, 0.36, 1.0]),
-        super::city::Building::Cannery => ('N', [0.44, 0.72, 0.47, 1.0]),
-        super::city::Building::WorkCamp => ('K', [0.67, 0.55, 0.36, 1.0]),
-        super::city::Building::Smelter => ('T', [0.82, 0.43, 0.29, 1.0]),
-        super::city::Building::Railhead => ('R', [0.47, 0.68, 0.79, 1.0]),
-        super::city::Building::Harbor => ('P', [0.34, 0.67, 0.90, 1.0]),
-        super::city::Building::CoastalBattery => ('D', [0.85, 0.57, 0.28, 1.0]),
-    }
 }
 
 /// Short dashes show where goods go without looking like a road.
@@ -2141,21 +2116,7 @@ fn push_unit_icon(center: Vec2, look: UnitLook, scale: f32, color: Color, out: &
     );
 }
 
-/// Axis-aligned rectangles in `color` with a dark border, the border drawn
-/// first under all of them so shapes built from several rectangles get one
-/// clean outline.
-fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec<Vertex>) {
-    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
-    let grow = Vec2::splat(ICON_OUTLINE_WIDTH);
-    for &(min, max) in rects {
-        mesh::quad(min - grow, max + grow, outline, out);
-    }
-    for &(min, max) in rects {
-        mesh::quad(min, max, color, out);
-    }
-}
-
-/// A city: a crenellated tower in its team's color with its population on
+/// A city: an enclave's tower in its team's color with its population on
 /// it.
 fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
     push_city_tower(pos, 1.0, city.team.color(), out);
@@ -2169,31 +2130,11 @@ fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
     );
 }
 
-/// A city's crenellated tower in `color`, `scale` times its size on the map
-/// (0.84 wide, 0.8 tall), in whatever space `pos` is in: the turn strip
-/// draws it too.
+/// A city's tower (an enclave's patched-up tower block, `map_icons.rs`) in
+/// `color`, `scale` times its size on the map (0.84 wide, 0.8 tall), in
+/// whatever space `pos` is in: the turn strip draws it too.
 pub(super) fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec<Vertex>) {
-    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
-        (
-            pos + Vec2::new(x0, y0) * scale,
-            pos + Vec2::new(x1, y1) * scale,
-        )
-    };
-    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
-    let grow = Vec2::splat(ICON_OUTLINE_WIDTH * scale);
-    let rects = [
-        rect(-0.42, -0.4, 0.42, 0.24),
-        // Three merlons along the top.
-        rect(-0.42, 0.24, -0.24, 0.4),
-        rect(-0.09, 0.24, 0.09, 0.4),
-        rect(0.24, 0.24, 0.42, 0.4),
-    ];
-    for &(min, max) in &rects {
-        mesh::quad(min - grow, max + grow, outline, out);
-    }
-    for &(min, max) in &rects {
-        mesh::quad(min, max, color, out);
-    }
+    map_icons::push_enclave(pos, scale, color, out);
 }
 
 /// How many workers a city has at home: a dark tag at the tower's lower
@@ -2221,141 +2162,29 @@ fn push_worker_count(city: Vec2, count: u32, out: &mut Vec<Vertex>) {
     );
 }
 
-/// A wall or gate along the edge between `a` and `b`: a band of stone with
-/// mortar joints and posts in its team's color at both ends; a gate's middle
-/// is a door in the team's color.
+/// A wall or gate along the edge between `a` and `b`, with posts in its
+/// team's color at both ends (a tyre wall or a bus gate, `map_icons.rs`).
 fn push_barrier(a: Hex, b: Hex, kind: StructureKind, team: Color, out: &mut Vec<Vertex>) {
     let (start, end) = edge_corners(a, b);
-    let along = |t: f32| start.lerp(end, t);
-    mesh::segment(
-        start,
-        end,
-        BARRIER_WIDTH + ICON_OUTLINE_WIDTH,
-        ICON_OUTLINE_COLOR,
-        out,
-    );
-    mesh::segment(start, end, BARRIER_WIDTH, STONE_COLOR, out);
-    let across = (end - start).perp().normalize_or_zero() * (BARRIER_WIDTH / 2.0);
-    if kind == StructureKind::Gate {
-        let door = [along(0.3), along(0.7)];
-        mesh::segment(
-            door[0],
-            door[1],
-            BARRIER_WIDTH + ICON_OUTLINE_WIDTH,
-            ICON_OUTLINE_COLOR,
-            out,
-        );
-        mesh::segment(door[0], door[1], BARRIER_WIDTH, team, out);
-        mesh::segment(
-            along(0.5) - across,
-            along(0.5) + across,
-            0.02,
-            ICON_OUTLINE_COLOR,
-            out,
-        );
-        for t in [0.15, 0.85] {
-            mesh::segment(
-                along(t) - across,
-                along(t) + across,
-                0.02,
-                MORTAR_COLOR,
-                out,
-            );
-        }
-    } else {
-        for t in [0.25, 0.5, 0.75] {
-            mesh::segment(
-                along(t) - across,
-                along(t) + across,
-                0.02,
-                MORTAR_COLOR,
-                out,
-            );
-        }
-    }
-    for p in [start, end] {
-        let half = Vec2::splat(BARRIER_WIDTH * 0.62);
-        let edge = Vec2::splat(ICON_OUTLINE_WIDTH / 2.0);
-        mesh::quad(p - half - edge, p + half + edge, ICON_OUTLINE_COLOR, out);
-        mesh::quad(p - half, p + half, team, out);
-    }
+    let gate = kind == StructureKind::Gate;
+    map_icons::push_barrier(start, end, BARRIER_WIDTH, gate, team, out);
 }
 
-/// A structure on a tile, in its team's color: an outpost (a watchtower) or
-/// a fort (a palisade of stakes).
+/// A structure on a tile, in its team's color: an outpost (a watchfire) or
+/// a fort (a sandbagged bunker ring), drawn in `map_icons.rs`.
 fn push_structure(center: Vec2, kind: StructureKind, team: Color, out: &mut Vec<Vertex>) {
-    let at = |x: f32, y: f32| center + Vec2::new(x, y);
     match kind {
         // Walls and gates stand on hex edges (`push_barrier`).
         StructureKind::Wall | StructureKind::Gate => {}
-        StructureKind::Outpost => {
-            for (foot, top) in [
-                ((-0.16, -0.36), (-0.09, 0.05)),
-                ((0.16, -0.36), (0.09, 0.05)),
-            ] {
-                let (foot, top) = (at(foot.0, foot.1), at(top.0, top.1));
-                mesh::segment(foot, top, 0.09, ICON_OUTLINE_COLOR, out);
-                mesh::segment(foot, top, 0.05, WOOD_COLOR, out);
-            }
-            push_outlined_rects(&[(at(-0.15, 0.03), at(0.15, 0.24))], WOOD_COLOR, out);
-            let roof = [at(-0.22, 0.24), at(0.22, 0.24), at(0.0, 0.44)];
-            mesh::polygon(
-                &[at(-0.27, 0.21), at(0.27, 0.21), at(0.0, 0.48)],
-                ICON_OUTLINE_COLOR,
-                out,
-            );
-            mesh::polygon(&roof, team, out);
-        }
-        StructureKind::Fort => {
-            // Stakes around the hex, points outward, over a ring in the
-            // team's color.
-            mesh::polygon_outline(center, 0.56, 0.05, 6, 0.0, team, out);
-            for i in 0..12 {
-                let out_dir = Vec2::from_angle(i as f32 * std::f32::consts::TAU / 12.0);
-                let side = out_dir.perp() * 0.06;
-                let base = center + out_dir * 0.56;
-                let tip = center + out_dir * 0.74;
-                mesh::polygon(
-                    &[
-                        base - side * 1.6 - out_dir * 0.03,
-                        base + side * 1.6 - out_dir * 0.03,
-                        tip + out_dir * 0.03,
-                    ],
-                    ICON_OUTLINE_COLOR,
-                    out,
-                );
-                mesh::polygon(&[base - side, base + side, tip], WOOD_COLOR, out);
-            }
-        }
+        StructureKind::Outpost => map_icons::push_watchfire(center, team, out),
+        StructureKind::Fort => map_icons::push_bunker(center, team, out),
     }
 }
 
-/// A barracks: a small house (walls and a pitched roof) in `color`, its
-/// team's, marked B.
+/// A barracks in `color`, its team's: a garrison's Quonset hut
+/// (`map_icons.rs`).
 fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
-    let alpha = color[3];
-    let outline = with_alpha(ICON_OUTLINE_COLOR, alpha);
-    let (eave, peak, half) = (0.1, 0.4, 0.38);
-    let roof = |grow: f32| {
-        (
-            pos + Vec2::new(-half - grow, eave - grow / 2.0),
-            pos + Vec2::new(half + grow, eave - grow / 2.0),
-            pos + Vec2::new(0.0, peak + grow),
-        )
-    };
-    let (a, b, c) = roof(ICON_OUTLINE_WIDTH * 1.6);
-    mesh::triangle(a, b, c, outline, out);
-    let walls = (pos + Vec2::new(-0.28, -0.32), pos + Vec2::new(0.28, eave));
-    push_outlined_rects(&[walls], color, out);
-    let (a, b, c) = roof(0.0);
-    mesh::triangle(a, b, c, color, out);
-    font::push_glyph(
-        pos + Vec2::new(0.0, -0.09),
-        0.26,
-        'B',
-        with_alpha(LABEL_COLOR, alpha),
-        out,
-    );
+    map_icons::push_garrison(pos, color, out);
 }
 
 /// Status rings behind the icon. They're filled discs, so only the rim shows

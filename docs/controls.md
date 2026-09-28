@@ -228,7 +228,7 @@ them.
 
 - Holding Alt shows blue and red numbers on each unit: its move and attack ranks in the turn
   order.
-- Tile yields sit below the unit spot: wheat stalks for food, logs for wood, then ingots for
+- Tile yields sit below the unit spot: tin cans for food, logs for wood, then gears for
   metal, one per point laid out like a die's pips (3 a triangle, 4 a square, 5 a square with one in the
   middle, 6 two rows of three); past 6, one icon and the number. The open city shows them on the tiles it reaches (Y hides them);
   holding Alt shows them on every explored tile that can be worked.
@@ -254,16 +254,25 @@ them.
   unit shares their hex), with a dotted line to the job they're walking to. A dark tag with a
   shovel beside each of your cities counts its workers at home. Queued jobs are faded gold rings
   with the job's name.
-- Structures: walls are stone bands along hex edges with posts in their owner's color; a gate is
-  a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,
-  a fort a ring of stakes around it. Queued walls and gates are muted gold edges with rounded ends,
-  so a run of them reads as one line.
-- Cities are crenellated towers showing their population, with HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
-  a Workshop a blue diamond marked W. Other buildings have colored letter badges. A building placed for the workers shows as a faded
-  gold ring named with it until a worker builds it. Improvements are small icons in a hex's top-left corner: a
-  wheat stalk (farm), an ore cart (mine), a fence (pasture), stacked logs (lumber mill).
-  Resources are icons in the top-right corner: a horse's head (Horses), an ingot (Iron). Brown
-  lines are dirt roads, and blue lines between hexes are rivers.
+- Structures: walls are tyre walls along hex edges (tyres stacked against sheet metal) with posts
+  in their owner's color; a gate is a school bus across the middle with a stripe of its owner's
+  color. An outpost is a watchfire (a fire in an oil drum on a platform in its owner's color) on
+  its tile, a fort a bunker: a ring of sandbags and concrete blocks around it. Queued walls and
+  gates are muted gold edges with rounded ends, so a run of them reads as one line.
+- Cities are patched-up tower blocks in their owner's color showing their population, with HP
+  bars; a barracks is a Quonset hut (the garrison) in its owner's color. Other buildings are
+  sheet-metal plates in their own color with a pictogram: a wind pump (Mill), a wrench and
+  hammer (Workshop), a boat on its stocks (Canoe House), an anvil (Forge), a horseshoe (Stable),
+  a lattice radio mast (Watchpost), a cross (Field Hospital), stacked tins (Cannery), a tarp
+  tent (Work Camp), a crucible pouring (Smelter), a handcar (Railhead), an anchor (Harbor), a
+  harpoon on its mount (Coastal Battery). A building placed for the workers shows as a faded
+  gold ring named with it until a worker builds it. Improvements are small icons in a hex's
+  top-left corner: crop rows by a shack (farm), a pick in a scrap heap (mine), two pallets
+  (pasture), a log on sawhorses with a pit saw (lumber mill). Resources are icons in the
+  top-right corner: a horse's head (Horses), a rusted car wreck (Iron). Special tiles and ruins
+  sit in the bottom-left corner: a gnarled fruit tree (Orchard), cinder blocks (Quarry), a
+  supply crate with a hazard band (ruins). Brown lines are dirt roads, and blue lines between
+  hexes are rivers.
 - Terrain: two small peaks are hills, pines forest, round canopies jungle; dunes, grass tufts and
   reeds mark desert, tundra and marsh. A large snowy peak is a mountain (impassable) and waves
   are water (ships enter it, land units do not; cities can work it). Terrain defense and yields are in

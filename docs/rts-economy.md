@@ -66,7 +66,7 @@ more citizens and everything else that eats it (troops, workers).
   Melee. The AI pays through the same `try_queue_build` as the
   player, so `simulation.rs` checks that no stockpile ever goes negative, and that cities both
   train troops and grow.
-- **UI:** food, wood, metal and turns have icons (wheat, a log, an ingot, a clock;
+- **UI:** food, wood, metal and turns have icons (a tin can, a log, a gear, a clock;
   `map_icons.rs`), drawn on the map's yield pips and inline in text: an icon character
   (`FOOD_ICON` and the rest) in any UI string draws as its icon, in the classic font
   (`font::Face`) and in ImGui (`rich_text`, `rich_button`). The top bar shows the stockpile by
