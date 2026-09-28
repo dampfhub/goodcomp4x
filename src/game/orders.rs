@@ -284,9 +284,7 @@ impl GameState {
     /// anything to let go of.
     pub fn clear_selection(&mut self) -> bool {
         // Something being placed for a city's workers stops first.
-        if let Some(kind) = self.placing_job.take() {
-            self.hovered_job = None;
-            self.notice = format!("STOPPED PLACING {}", kind.name());
+        if self.stop_placing() {
             return true;
         }
         let had = self.selected.is_some() || !self.group.is_empty();
@@ -544,8 +542,7 @@ impl GameState {
         if self.ui_click_mode.take().is_some() {
             return;
         }
-        if self.placing_job.take().is_some() {
-            self.hovered_job = None;
+        if self.stop_placing() {
             return;
         }
         if clear {

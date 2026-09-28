@@ -92,6 +92,7 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | Click a worker's row (city panel) | Show the worker on the map |
 | Recall beside a worker's row (city panel) | Send that worker straight home, where it stays (held) until released; its job, with the work already done on it, goes back on top of the list |
 | HELD AT HOME - RELEASE (city panel) | Let one held worker take jobs again: it goes out to the job at the top of the list at the end of the turn |
+| Wheel over the city panel's workers and jobs, or drag their scrollbar (classic, when the panel is short of room) | Scroll the list; the panel keeps its place on screen however many jobs are placed |
 | 8 / Worker card (city view) | Build a worker for the city |
 
 ## Turn
