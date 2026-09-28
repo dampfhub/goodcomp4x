@@ -222,6 +222,12 @@ impl Unit {
         self.unit_type.is_naval()
     }
 
+    /// Whether it may attack a water hex: ships, and ranged and siege land
+    /// troops firing at them from the shore.
+    pub fn attacks_water(&self) -> bool {
+        self.is_naval() || matches!(self.unit_type, UnitType::Ranged | UnitType::Siege)
+    }
+
     pub fn ability(&self) -> Ability {
         Ability::of(self.unit_type)
     }
@@ -333,6 +339,14 @@ impl Unit {
                 .get(n - 2)
                 .or(self.queued.last())
                 .map_or(self.planned_pos(), TurnOrder::end_pos),
+        }
+    }
+
+    /// The move planned for turn `turn` of the unit's plan (0 is this turn).
+    pub fn move_on_turn(&self, turn: usize) -> Option<Hex> {
+        match turn {
+            0 => self.planned_move,
+            n => self.queued.get(n - 1).and_then(|order| order.move_to),
         }
     }
 

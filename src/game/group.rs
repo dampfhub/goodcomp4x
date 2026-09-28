@@ -94,7 +94,7 @@ impl GameState {
             ClickMode::Attack => self.group_attack(hex),
             ClickMode::Move | ClickMode::Normal => self.group_move(hex),
             ClickMode::QueueMove => {
-                self.queue_move(hex);
+                self.queue_or_unqueue_move(hex);
             }
             ClickMode::QueueAttack => {
                 self.queue_attack(hex);
@@ -112,8 +112,9 @@ impl GameState {
         if !(self.grid.is_passable(target) || water) {
             return;
         }
+        let fog = self.fog();
         if let Some(&first) = self.group.first()
-            && self.empty_city_target(target, self.units[first].team)
+            && self.known_empty_city_target(target, self.units[first].team, &fog)
         {
             self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return;
@@ -127,7 +128,7 @@ impl GameState {
             .copied()
             .filter(|&i| {
                 let unit = &self.units[i];
-                self.attack_target_legal(i, target, false)
+                self.known_attack_target_legal(i, target, false, &fog)
                     && unit.planned_pos().distance(target) <= unit.stats().attack_range
             })
             .collect();
