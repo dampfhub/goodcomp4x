@@ -9,10 +9,11 @@
 use std::collections::{HashMap, HashSet};
 use std::thread;
 
-use super::city::{Build, CORE_HP, MAX_CITY_POPULATION};
+use super::city::{Build, BuildUnit, CORE_HP, MAX_CITY_POPULATION};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
+use super::terrain::Resource;
 use super::unit::Team;
 use super::{GameState, PLAYER_TEAM};
 
@@ -309,51 +310,81 @@ fn check_invariants(game: &GameState, context: &str) {
                 fighter.pos.distance(Hex::new(0, 0)) <= 2,
                 "{context}: fighter outside interior"
             );
+            let source = game
+                .units
+                .iter()
+                .find(|unit| unit.id == fighter.source_id)
+                .unwrap_or_else(|| panic!("{context}: interior fighter lacks source"));
             assert!(
-                fighter.hp > 0.0 && fighter.hp <= fighter.unit_type.stats().max_hp,
+                fighter.hp > 0.0 && fighter.hp <= source.max_hp(),
                 "{context}: interior fighter has invalid HP"
             );
-            assert!(
-                game.units
-                    .iter()
-                    .any(|unit| unit.id == fighter.source_id && unit.interior_hp == fighter.hp),
+            assert_eq!(
+                source.interior_hp, fighter.hp,
                 "{context}: interior copy and source health differ"
             );
             assert!(
-                game.units.iter().any(|unit| unit.id == fighter.source_id
-                    && unit.team == fighter.team
-                    && unit.pos.distance(city.pos) == 1),
+                source.team == fighter.team && source.pos.distance(city.pos) == 1,
                 "{context}: interior fighter lacks adjacent source"
             );
         }
     }
     for (i, city) in game.cities.iter().enumerate() {
-        // A paid-for unit at the head of the queue is one waiting for an open hex, and the
-        // city banks nothing more behind it (#54). A city earning a unit's cost in a turn
-        // could have that much left over, so it isn't checked.
+        // A previous item can finish this turn and leave production toward the next
+        // unit. That surplus is bounded by one turn's income; a blocked unit
+        // cannot keep banking production behind it on later turns (#54).
         let Some(&Build::Unit(unit)) = city.queue.first() else {
             continue;
         };
-        if city.production < unit.cost() || game.income(i).1 >= unit.cost() {
-            continue;
-        }
-        assert_eq!(
-            city.production,
-            unit.cost(),
+        let income = game.income(i).1.max(0);
+        assert!(
+            city.production <= unit.cost() + income,
             "{context}: city {} banked production behind a finished {}",
             city.id,
             unit.name()
         );
-        assert!(
-            city.pos
-                .neighbors()
-                .into_iter()
-                .all(|hex| !game.grid.is_passable(hex) || game.is_occupied(hex)),
-            "{context}: city {} holds a finished {} beside an open hex",
-            city.id,
-            unit.name()
-        );
     }
+}
+
+#[test]
+fn next_unit_may_inherit_one_turn_of_production_after_another_build_finishes() {
+    let mut game = GameState::city_scenario();
+    let city = 0;
+    let build = BuildUnit::Melee;
+    let income = game.income(city).1.max(0);
+    assert!(income > 0);
+    game.cities[city].queue = vec![Build::Unit(build)];
+    game.cities[city].production = build.cost() + income;
+    check_invariants(&game, "one turn carryover");
+}
+
+#[test]
+#[should_panic(expected = "banked production behind a finished")]
+fn repeated_production_banking_is_still_caught() {
+    let mut game = GameState::city_scenario();
+    let city = 0;
+    let build = BuildUnit::Melee;
+    game.cities[city].queue = vec![Build::Unit(build)];
+    game.cities[city].production = build.cost() + game.income(city).1.max(0) + 1;
+    check_invariants(&game, "over-banked");
+}
+
+#[test]
+fn interior_hp_uses_the_source_unit_upgrade() {
+    let mut game = GameState::siege_scenario();
+    let fighter = &mut game.cities[1].interior.fighters[0];
+    fighter.training_upgrade = Some(Resource::Iron);
+    let source = game
+        .units
+        .iter_mut()
+        .find(|unit| unit.id == fighter.source_id)
+        .unwrap();
+    source.training_upgrade = Some(Resource::Iron);
+    source.hp = source.max_hp();
+    source.interior_hp = source.max_hp();
+    fighter.hp = source.max_hp();
+    assert!(fighter.hp > fighter.unit_type.stats().max_hp);
+    check_invariants(&game, "upgraded interior fighter");
 }
 
 #[test]
