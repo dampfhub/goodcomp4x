@@ -1087,7 +1087,7 @@ fn build_cards_show_prices_and_dim_what_the_stockpile_cannot_pay() {
         Target::Build(BuildUnit::Melee),
         Target::BuildWorker,
         Target::Grow,
-        Target::Building(Building::Granary),
+        Target::Building(Building::Barracks),
     ] {
         // Buildings come after the units in the production list: scroll to
         // them.

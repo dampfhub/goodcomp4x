@@ -168,8 +168,6 @@ const STONE_COLOR: Color = [0.24, 0.23, 0.21, 1.0];
 const BARRIER_WIDTH: f32 = 0.16;
 const MORTAR_COLOR: Color = [0.09, 0.085, 0.08, 1.0];
 const WOOD_COLOR: Color = [0.40, 0.20, 0.07, 1.0];
-/// The granary marker beside a city.
-const GRANARY_COLOR: Color = [0.95, 0.72, 0.22, 1.0];
 /// Icon growth while a unit is highlighted for having just acted.
 const ACTED_SCALE: f32 = 1.35;
 
@@ -1448,7 +1446,6 @@ impl GameState {
                 id: city.id,
                 health,
                 population: city.population,
-                granary: city.built.contains(&super::city::Building::Granary),
             };
             if own || fog.sees(city.pos) {
                 view.cities.push((city.pos, seen(1.0)));
@@ -1514,7 +1511,6 @@ fn building_badge(building: super::city::Building) -> (char, Color) {
         super::city::Building::Railhead => ('R', [0.47, 0.68, 0.79, 1.0]),
         super::city::Building::Harbor => ('P', [0.34, 0.67, 0.90, 1.0]),
         super::city::Building::CoastalBattery => ('D', [0.85, 0.57, 0.28, 1.0]),
-        super::city::Building::Granary => unreachable!(),
     }
 }
 
@@ -2160,7 +2156,7 @@ fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec<Verte
 }
 
 /// A city: a crenellated tower in its team's color with its population on
-/// it, and a small gold granary beside it once it has one.
+/// it.
 fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
     push_city_tower(pos, 1.0, city.team.color(), out);
     // Centered in the tower's body, below the merlons.
@@ -2171,19 +2167,6 @@ fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
         LABEL_COLOR,
         out,
     );
-    if city.granary {
-        let at = pos + Vec2::new(0.46, -0.42);
-        mesh::regular_polygon(
-            at,
-            0.15 + ICON_OUTLINE_WIDTH,
-            16,
-            0.0,
-            ICON_OUTLINE_COLOR,
-            out,
-        );
-        mesh::regular_polygon(at, 0.15, 16, 0.0, GRANARY_COLOR, out);
-        font::push_glyph(at, 0.16, 'G', LABEL_COLOR, out);
-    }
 }
 
 /// A city's crenellated tower in `color`, `scale` times its size on the map

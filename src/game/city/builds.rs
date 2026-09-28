@@ -12,7 +12,6 @@ use crate::game::{GameState, PLAYER_TEAM};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Building {
-    Granary,
     Barracks,
     Mill,
     Workshop,
@@ -30,8 +29,7 @@ pub enum Building {
 }
 
 impl Building {
-    pub const ALL: [Self; 15] = [
-        Self::Granary,
+    pub const ALL: [Self; 14] = [
         Self::Barracks,
         Self::Mill,
         Self::Workshop,
@@ -47,25 +45,11 @@ impl Building {
         Self::Harbor,
         Self::CoastalBattery,
     ];
-    pub const PLACEABLE: [Self; 14] = [
-        Self::Barracks,
-        Self::Mill,
-        Self::Workshop,
-        Self::CanoeHouse,
-        Self::Forge,
-        Self::Stable,
-        Self::Watchpost,
-        Self::FieldHospital,
-        Self::Cannery,
-        Self::WorkCamp,
-        Self::Smelter,
-        Self::Railhead,
-        Self::Harbor,
-        Self::CoastalBattery,
-    ];
+    /// Every building stands on a site on the map, which the city's
+    /// workers build it on (`workers.rs`).
+    pub const PLACEABLE: [Self; 14] = Self::ALL;
     pub fn name(self) -> &'static str {
         match self {
-            Self::Granary => "GRANARY",
             Self::Barracks => "BARRACKS",
             Self::Mill => "MILL",
             Self::Workshop => "WORKSHOP",
@@ -85,7 +69,6 @@ impl Building {
     /// What queuing it takes from the side's stockpile (`economy.rs`).
     pub fn price(self) -> Stock {
         let (food, wood, metal) = match self {
-            Self::Granary => (0, 8, 0),
             Self::Barracks => (0, 10, 0),
             Self::Mill | Self::CanoeHouse | Self::Watchpost => (0, 10, 0),
             Self::Workshop => (0, 10, 4),
@@ -104,12 +87,7 @@ impl Building {
     /// Turns it takes at the head of the queue.
     pub fn turns(self) -> i32 {
         match self {
-            Self::Granary
-            | Self::Barracks
-            | Self::Mill
-            | Self::CanoeHouse
-            | Self::Watchpost
-            | Self::WorkCamp => 3,
+            Self::Barracks | Self::Mill | Self::CanoeHouse | Self::Watchpost | Self::WorkCamp => 3,
             Self::Workshop
             | Self::Forge
             | Self::Stable
@@ -123,7 +101,6 @@ impl Building {
     }
     pub fn shortcut(self) -> char {
         match self {
-            Self::Granary => '4',
             Self::Barracks => '5',
             Self::Mill => '6',
             Self::Workshop => '7',
@@ -142,7 +119,6 @@ impl Building {
     }
     pub fn description(self) -> &'static str {
         match self {
-            Self::Granary => "+2 FOOD A TURN.",
             Self::Barracks => {
                 "TRAINS TROOPS TWICE AS FAST. ON OPEN LAND; ON HORSES OR IRON, ALSO CAVALRY OR ARMORED."
             }
@@ -161,33 +137,34 @@ impl Building {
             Self::CoastalBattery => "ON THE COAST: FIRES AT SHIPS WITHIN 2.",
         }
     }
-
-    pub fn is_placeable(self) -> bool {
-        self != Self::Granary
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Build {
     Unit(BuildUnit),
-    Building(Building),
     /// A worker for the city's pool (`workers.rs`).
     Worker,
     /// One more citizen, bought with food (`economy::grow_price`).
     Grow,
+    /// The city spends a turn gathering: free, and `GATHER_YIELD` goes to
+    /// the stockpile when it's done. Something a city can always do.
+    Gather,
 }
 
-/// The Worker and Grow cards' keys.
+/// The Worker, Grow and Gather cards' keys.
 pub(in crate::game) const WORKER_SHORTCUT: char = '8';
 pub(in crate::game) const GROW_SHORTCUT: char = '9';
+pub(in crate::game) const GATHER_SHORTCUT: char = '0';
+/// What a turn of gathering (`Build::Gather`) brings in.
+pub(in crate::game) const GATHER_YIELD: Stock = Stock::whole(2, 2, 1);
 
 impl Build {
     pub fn name(self) -> &'static str {
         match self {
             Self::Unit(u) => u.name(),
-            Self::Building(b) => b.name(),
             Self::Worker => "WORKER",
             Self::Grow => "GROW",
+            Self::Gather => "GATHER",
         }
     }
     /// Its price, except a Grow's, which depends on the city
@@ -195,16 +172,15 @@ impl Build {
     pub fn price(self) -> Stock {
         match self {
             Self::Unit(u) => u.price(),
-            Self::Building(b) => b.price(),
             Self::Worker => Stock::whole(4, 2, 0),
-            Self::Grow => Stock::default(),
+            Self::Grow | Self::Gather => Stock::default(),
         }
     }
     pub fn turns(self) -> i32 {
         match self {
             Self::Unit(u) => u.turns(),
-            Self::Building(b) => b.turns(),
             Self::Worker | Self::Grow => 2,
+            Self::Gather => 1,
         }
     }
     /// Work it needs, in quarter turns.
@@ -435,17 +411,24 @@ impl GameState {
             self.notice = format!("{} ALREADY EXISTS IN THIS CITY", building.name());
             return;
         }
-        // A building with a site is placed on the map, and the city's
-        // workers build it there (`workers.rs`).
-        if building.is_placeable() {
-            self.arm_worker_job(JobKind::Build(building));
+        // Placed on the map, and the city's workers build it there
+        // (`workers.rs`).
+        self.arm_worker_job(JobKind::Build(building));
+    }
+
+    /// 0 or the Gather card: the open city spends a turn gathering.
+    pub fn queue_selected_city_gather(&mut self) {
+        if self.is_resolving() {
             return;
         }
-        if c.queue.contains(&Build::Building(building)) {
-            self.notice = format!("{} IS ALREADY QUEUED IN THIS CITY", building.name());
+        let Some(city) = self.selected_city else {
+            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            return;
+        };
+        if self.cities[city].team != PLAYER_TEAM {
             return;
         }
-        self.queue_paid(city, Build::Building(building));
+        self.queue_paid(city, Build::Gather);
     }
 
     /// The first reason `building` can't stand on `hex` for city `city`:
@@ -711,15 +694,14 @@ impl GameState {
             if self.cities[i].progress < self.city_build_work(i, build) {
                 continue;
             }
-            // Only buildings without a site come out of a city's queue; the
-            // rest are built by workers (`workers.rs`).
-            if let Build::Building(building) = build {
+            if build == Build::Gather {
                 let c = &mut self.cities[i];
-                c.progress = 0;
+                c.progress -= build.work();
                 c.queue.remove(0);
-                c.built.push(building);
-                if c.team == PLAYER_TEAM {
-                    self.notice = format!("{} COMPLETE", building.name());
+                let (team, id) = (c.team, c.id);
+                *self.stock_mut(team) += GATHER_YIELD;
+                if team == PLAYER_TEAM {
+                    self.notice = format!("CITY {} GATHERED {}", id + 1, stock_icons(GATHER_YIELD));
                 }
                 continue;
             }

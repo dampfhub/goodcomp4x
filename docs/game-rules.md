@@ -486,27 +486,29 @@ every turn end.
   Backspace removes the head and PageDown swaps the first two. A city finishes at most one item
   a turn. A finished unit appears on an open neighboring hex (not one another unit is appearing on
   that turn). With no hex open, the city holds the unit until one opens, and banks no work for the
-  rest of the queue meanwhile. A player city with an empty queue holds up the turn while its
-  side can pay for a Melee, Ranged, Worker or Grow.
+  rest of the queue meanwhile. A player city with an empty queue holds up the turn, since it can
+  always Gather.
+- **Gather** (0, or its card beside Grow): free, one turn; when it's done, the side's stockpile
+  gets 2 food, 2 wood and 1 metal. A city that can't pay for anything, or has nothing it wants,
+  gathers instead of standing idle.
 - **Production speeds builds** (the Debug panel's PROD SPEEDUP, off by default): a city's queue
   also gains a quarter turn of work a turn for each point of production (wood and metal) the city
   delivers, and a Barracks for each point delivered to it; the stockpile still gets those goods.
 - **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 2/6/0, 2; Ranged
   2/7/0, 2; Cavalry 3/4/3, 3; Siege 1/8/4, 3; Armored 3/2/7, 3; Patrol Galley 1/10/2, 3; Landing
-  Craft 1/12/2, 4; Bombard Ship 1/12/6, 4; Worker 4/2/0, 2; Grow as above, 2. A city center
+  Craft 1/12/2, 4; Bombard Ship 1/12/6, 4; Worker 4/2/0, 2; Grow as above, 2; Gather free, 1. A city center
   trains land troops at half a Barracks' pace (twice the turns: a Melee takes 4); ships, which
-  only a city with a Harbor builds, take their own turns. Granary 0/8/0, 3; Barracks 0/10/0,
+  only a city with a Harbor builds, take their own turns. Barracks 0/10/0,
   3; Mill, Canoe House and Watchpost 0/10/0, 3; Workshop 0/10/4, 4; Forge 0/6/8, 4; Stable
   2/12/0, 4; Field Hospital 4/10/4, 4; Cannery 0/12/4, 4; Work Camp 2/10/2, 3; Smelter 0/8/8, 4;
   Railhead 0/12/12, 5; Harbor 0/14/0, 4; Coastal Battery 0/8/10, 4. Cards, tooltips, queue rows
   and notices show a price as each resource's icon and amount (the map's wheat, log and ingot)
   and the turns after a clock icon. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue
-  Cavalry or Armored), 4 the Granary, 5-7 pick a Barracks, Mill or Workshop to place, 8 a Worker
-  and 9 a Grow. The rest are in the city's scrollable production list. One of each building per
+  Cavalry or Armored), 5-7 pick a Barracks, Mill or Workshop to place, 8 a Worker, 9 a Grow
+  and 0 a Gather. The rest are in the city's scrollable production list. One of each building per
   city.
 - **Buildings:**
-  - **Granary:** +2 food per turn. Completes when its turns are done.
-  - **All buildings except Granary** stand on a site, and the city's workers build them there
+  - **Every building** stands on a site, and the city's workers build them there
     like any other job (see Workers): its card picks it to place, a click on a lit tile within
     workers' reach places it (passable land you have explored, not a city, building or
     structure, and no other job on the tile), paying its price then, and a worker walks out

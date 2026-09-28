@@ -847,9 +847,6 @@ impl ApplicationHandler for App {
                     KeyCode::Digit3 => self
                         .game
                         .queue_selected_city_unit(crate::game::BuildUnit::Siege),
-                    KeyCode::Digit4 => self
-                        .game
-                        .queue_selected_city_building(crate::game::Building::Granary),
                     KeyCode::Digit5 => self
                         .game
                         .queue_selected_city_building(crate::game::Building::Barracks),
@@ -864,6 +861,7 @@ impl ApplicationHandler for App {
                     }
                     KeyCode::Digit8 => self.game.queue_selected_city_worker(),
                     KeyCode::Digit9 => self.game.queue_selected_city_growth(),
+                    KeyCode::Digit0 => self.game.queue_selected_city_gather(),
                     KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
                     KeyCode::Delete => self.game.disband_selected(),
                     KeyCode::PageDown => self.game.move_selected_city_queue_head(false),

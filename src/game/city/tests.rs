@@ -280,13 +280,13 @@ fn builds_are_paid_when_queued_refunded_when_removed_and_refused_when_short() {
         "{}",
         g.notice
     );
-    assert!(g.can_afford_a_build(0), "20 food still buys a Grow");
+    // Broke, a city still has something to do: gather, for free.
     g.stockpiles[Team::Blue.index()] = Stock::default();
-    assert!(!g.can_afford_a_build(0));
-    assert!(
-        !g.city_needs_build(0),
-        "nothing to buy doesn't hold the turn"
-    );
+    assert!(g.city_needs_build(0));
+    g.queue_selected_city_gather();
+    assert_eq!(g.cities[0].queue, vec![Build::Gather]);
+    assert_eq!(g.stock(Team::Blue), Stock::default());
+    assert!(!g.city_needs_build(0));
 }
 
 #[test]
@@ -445,19 +445,18 @@ fn frontier_settler_founds_city_and_city_spends_production_on_unit() {
 }
 
 #[test]
-fn granary_is_unique_and_adds_two_food_per_turn() {
+fn gathering_is_free_and_fills_the_stockpile_in_a_turn() {
     let mut g = GameState::city_scenario();
     g.units.clear();
-    g.cities[0].worked.clear();
-    assert_eq!(g.income(0).food, 8);
-    g.cities[0].queue = vec![Build::Building(Building::Granary)];
-    g.cities[0].progress = Build::Building(Building::Granary).work();
-    g.complete_builds();
-    assert!(g.cities[0].built.contains(&Building::Granary));
-    assert_eq!(g.income(0).food, 16);
     g.selected_city = Some(0);
-    g.queue_selected_city_building(Building::Granary);
+    let start = g.stock(Team::Blue);
+    g.queue_selected_city_gather();
+    assert_eq!(g.stock(Team::Blue), start, "free");
+    assert_eq!(g.city_build_turns(0, Build::Gather), 1);
+    g.cities[0].progress = Build::Gather.work();
+    g.complete_builds();
     assert!(g.cities[0].queue.is_empty());
+    assert_eq!(g.stock(Team::Blue), start + GATHER_YIELD);
 }
 
 #[test]
@@ -727,13 +726,16 @@ fn debug_completion_only_finishes_the_selected_production_lane() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.selected_city = Some(0);
-    g.cities[0].queue = vec![Build::Building(Building::Granary)];
-    g.cities[1].queue = vec![Build::Building(Building::Granary)];
-    g.cities[1].progress = Build::Building(Building::Granary).work();
+    g.cities[0].queue = vec![Build::Gather];
+    g.cities[1].queue = vec![Build::Gather, Build::Gather];
+    g.cities[1].progress = 0;
     g.debug_complete_current_production();
-    assert!(g.cities[0].built.contains(&Building::Granary));
-    assert_eq!(g.cities[1].queue, vec![Build::Building(Building::Granary)]);
-    assert!(!g.cities[1].built.contains(&Building::Granary));
+    assert!(g.cities[0].queue.is_empty());
+    assert_eq!(
+        g.cities[1].queue.len(),
+        2,
+        "the other city's lane is untouched"
+    );
 
     g.cities[0].barracks = Some(Hex::new(-1, 0));
     g.selected_city = None;

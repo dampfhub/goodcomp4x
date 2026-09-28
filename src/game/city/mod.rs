@@ -27,7 +27,7 @@ use super::{GameState, PLAYER_TEAM};
 
 pub(in crate::game) use barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 pub use builds::{Build, BuildUnit, Building};
-pub(in crate::game) use builds::{GROW_SHORTCUT, WORKER_SHORTCUT};
+pub(in crate::game) use builds::{GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, WORKER_SHORTCUT};
 pub use economy::Stock;
 pub(in crate::game) use economy::{
     FOOD_PER_CITIZEN, STARTING_STOCK, resource_icon, stock_icons, stock_words, turns_icon,
@@ -130,7 +130,6 @@ impl City {
 
     pub fn placed_site(&self, building: Building) -> Option<Hex> {
         match building {
-            Building::Granary => None,
             Building::Barracks => self.barracks,
             Building::Mill => self.mill,
             Building::Workshop => self.workshop,
@@ -140,7 +139,6 @@ impl City {
 
     pub(in crate::game) fn set_placed_site(&mut self, building: Building, site: Hex) {
         match building {
-            Building::Granary => unreachable!(),
             Building::Barracks => {
                 self.barracks = Some(site);
                 self.barracks_hp = BARRACKS_MAX_HP;

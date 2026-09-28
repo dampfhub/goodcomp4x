@@ -35,7 +35,7 @@ impl GameState {
     /// a Barracks (sited by `ai_barracks_site`, paid when placed), and the
     /// queue grows; a city without a Barracks
     /// trains Melee itself, slowly, until the side has `AI_ARMY_PER_CITY`
-    /// units per city, falling back on growth when it can't pay.
+    /// units per city, falling back on growth, and gathering when it can't pay for anything.
     fn plan_ai_cities(&mut self, team: Team) {
         let soldiers = |game: &GameState, kind: Option<UnitType>| {
             game.units
@@ -86,6 +86,8 @@ impl GameState {
             } else {
                 choices.push(Build::Grow);
             }
+            // With nothing it can pay for, it gathers.
+            choices.push(Build::Gather);
             for build in choices {
                 if build == Build::Grow && !self.can_grow(city) {
                     continue;

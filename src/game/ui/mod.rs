@@ -176,6 +176,8 @@ enum Target {
     BuildWorker,
     /// One more citizen for the open city, bought with food.
     Grow,
+    /// The open city spends a turn gathering.
+    Gather,
     /// A card in the open city's production list for something its
     /// workers build (a road, improvement or structure): arms it for
     /// placing on the map.
@@ -630,6 +632,7 @@ impl GameState {
             Target::RosterRemove(id) => self.roster_remove(id),
             Target::BuildWorker => self.queue_selected_city_worker(),
             Target::Grow => self.queue_selected_city_growth(),
+            Target::Gather => self.queue_selected_city_gather(),
             Target::WorkerJob(kind) => self.arm_worker_job(kind),
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
             Target::RecallWorker(id) => self.recall_worker(id),

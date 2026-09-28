@@ -221,3 +221,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
 62. Shorter tooltips (`claude/city-builds-by-workers`): every button, tile and setting tooltip says
     what the thing does, its price and turns, and why it's unavailable, and no more; building and
     work descriptions are cut to a line.
+63. Gather, and no Granary (`claude/city-builds-by-workers`): a city can always Gather, a free
+    one-turn build that brings in 2 food, 2 wood and 1 metal, so a broke city still has a move and
+    an empty queue always waits for one. The Granary, the last building built in the city queue,
+    is gone; every building is now placed for workers. The AI gathers when it can't pay.

@@ -112,7 +112,7 @@ plays out.
 | Food / Production / Balanced buttons | Set the labor focus (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
-| 4 / 5 / 6 / 7 | Queue a Granary; pick a Barracks / Mill / Workshop to place for the workers |
+| 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |
 | Scroll inside the city production list | Browse unit, building and work cards in one list; coastal cards appear only in eligible cities |
 | Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
 | Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers) |
@@ -120,6 +120,7 @@ plays out.
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
 | 9 / Grow card | Queue one more citizen, paid in food (the city doesn't grow on its own) |
+| 0 / Gather card | Spend a turn gathering: free, and 2 food, 2 wood and 1 metal come in when it's done |
 | A dimmed build card | The stockpile can't pay for it, or (Cavalry, Armored) the barracks has no deposit or its cap is used up; its tooltip says why. Prices show as resource icons and amounts, turns after a clock |
 | Drag a queue row onto another | Reorder the queue |
 | Click a row's X | Remove it, refunding its price (removing the item in progress loses its progress) |
@@ -257,8 +258,7 @@ them.
   a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,
   a fort a ring of stakes around it. Queued walls and gates are muted gold edges with rounded ends,
   so a run of them reads as one line.
-- Cities are crenellated towers showing their population, with a gold G disc once they have a
-  granary, and HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
+- Cities are crenellated towers showing their population, with HP bars; a barracks is a small house marked B, a Mill a green diamond marked M,
   a Workshop a blue diamond marked W. Other buildings have colored letter badges. A building placed for the workers shows as a faded
   gold ring named with it until a worker builds it. Improvements are small icons in a hex's top-left corner: a
   wheat stalk (farm), an ore cart (mine), a fence (pasture), stacked logs (lumber mill).

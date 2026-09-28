@@ -10,8 +10,9 @@ use super::{
     QueueKind, REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
 };
 use crate::game::city::{
-    Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, FOOD_PER_CITIZEN, GROW_SHORTCUT,
-    LaborFocus, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, resource_icon,
+    Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, FOOD_PER_CITIZEN, GATHER_SHORTCUT,
+    GATHER_YIELD, GROW_SHORTCUT, LaborFocus, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, resource_icon,
+    stock_icons, turns_icon,
 };
 use crate::game::orders::ClickMode;
 use crate::game::terrain::Resource;
@@ -537,7 +538,19 @@ impl GameState {
                 armed: false,
             }
         };
-        panel.compact_buttons(vec![grow]);
+        // Gathering is free: a city can always do it.
+        let gather = ButtonSpec {
+            target: Target::Gather,
+            label: "GATHER".into(),
+            hint: format!(
+                "{GATHER_SHORTCUT} · +{} {}",
+                stock_icons(GATHER_YIELD),
+                turns_icon(Build::Gather.turns())
+            ),
+            state: ButtonState::new(city.queue.first() == Some(&Build::Gather), false),
+            armed: false,
+        };
+        panel.compact_buttons(vec![grow, gather]);
 
         panel.gap(GAP);
         let builds: Vec<BuildUnit> =
@@ -601,23 +614,15 @@ impl GameState {
                     || self.city_is_coastal(i)
             })
             .map(|building| {
-                // A building with a site is placed for the workers to build:
-                // gold while placed (or being placed), dimmed while it can't
-                // be (`job_kind_unavailable`). The rest go in the queue.
-                let state = if building.is_placeable() {
-                    let kind = JobKind::Build(building);
-                    let placed = self.building_job_queued(i, building);
-                    ButtonState::new(
-                        placed || self.placing_job == Some(kind),
-                        !placed && self.job_kind_unavailable(i, kind).is_some(),
-                    )
-                } else {
-                    let queued = city.queue.contains(&Build::Building(building));
-                    ButtonState::new(
-                        city.queue.first() == Some(&Build::Building(building)),
-                        !queued && !stock.covers(building.price()),
-                    )
-                };
+                // Placed for the workers to build: gold while placed (or
+                // being placed), dimmed while it can't be
+                // (`job_kind_unavailable`).
+                let kind = JobKind::Build(building);
+                let placed = self.building_job_queued(i, building);
+                let state = ButtonState::new(
+                    placed || self.placing_job == Some(kind),
+                    !placed && self.job_kind_unavailable(i, kind).is_some(),
+                );
                 ButtonSpec {
                     target: Target::Building(building),
                     label: building.name().into(),

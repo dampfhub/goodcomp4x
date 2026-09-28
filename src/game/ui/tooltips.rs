@@ -9,8 +9,8 @@ use super::{
     UnitAction, WOOD_TEXT, contains,
 };
 use crate::game::city::{
-    Build, Building, GROW_SHORTCUT, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, WORKER_SHORTCUT,
-    delivered_share, stock_icons, turns_icon,
+    Build, Building, GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, MAX_CITY_POPULATION,
+    UNITS_PER_DEPOSIT, WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
 };
 use crate::game::hex::Hex;
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, WOOD_ICON};
@@ -369,17 +369,13 @@ impl GameState {
                         building.shortcut().to_string()
                     },
                     format!(
-                        "{} {}",
+                        "{} {} {}",
                         building.description(),
-                        self.price_text(Build::Building(building), false)
+                        stock_icons(building.price()),
+                        turns_icon(building.turns())
                     ),
-                    if building.is_placeable() {
-                        self.selected_city.and_then(|city| {
-                            self.job_kind_unavailable(city, JobKind::Build(building))
-                        })
-                    } else {
-                        self.shortfall_text(Build::Building(building))
-                    },
+                    self.selected_city
+                        .and_then(|city| self.job_kind_unavailable(city, JobKind::Build(building))),
                 ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
@@ -464,6 +460,15 @@ impl GameState {
                     GROW_SHORTCUT.to_string(),
                     format!("ONE MORE CITIZEN. {}", self.price_text(Build::Grow, false)),
                     self.shortfall_text(Build::Grow),
+                ),
+                Target::Gather => (
+                    "GATHER".into(),
+                    GATHER_SHORTCUT.to_string(),
+                    format!(
+                        "SPEND A TURN GATHERING: {}. FREE.",
+                        stock_icons(GATHER_YIELD)
+                    ),
+                    None,
                 ),
                 Target::WorkerJob(kind) => (
                     kind.name().into(),

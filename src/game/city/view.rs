@@ -54,7 +54,7 @@ impl GameState {
         self.ui_click_mode = None;
         self.camera.focus_on(self.cities[i].pos.to_world());
         self.notice = if self.city_needs_build(i) {
-            format!("CHOOSE WHAT CITY {} BUILDS - 1-9", self.cities[i].id + 1)
+            format!("CHOOSE WHAT CITY {} BUILDS - 0-9", self.cities[i].id + 1)
         } else {
             "CLICK TILES TO ASSIGN - A AUTO ASSIGN - ESC OR SPACE TO EXIT".into()
         };
@@ -62,11 +62,11 @@ impl GameState {
 
     /// One of the player's cities with nothing queued to build. The turn
     /// waits for these, as it does for units without orders.
-    /// A player city with an empty queue holds up the turn, unless its side
-    /// can't afford anything it could start (`can_afford_a_build`).
+    /// A player city with an empty queue holds up the turn: it can always
+    /// gather (`Build::Gather`), even when its side can't pay for anything.
     pub(in crate::game) fn city_needs_build(&self, i: usize) -> bool {
         let city = &self.cities[i];
-        city.team == PLAYER_TEAM && city.queue.is_empty() && self.can_afford_a_build(i)
+        city.team == PLAYER_TEAM && city.queue.is_empty()
     }
 
     pub(in crate::game) fn leave_city_view(&mut self) {
