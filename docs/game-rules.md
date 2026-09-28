@@ -523,6 +523,8 @@ every turn end.
   - **Harbor:** only in a city whose center touches Coast or Ocean; placed on land next to sea water. It unlocks all three ships in the city queue and
     spawns them onto an open neighboring water tile. Ship construction uses the city production
     pool; it waits at full cost when every adjacent water tile is occupied.
+  - Finished units and ruin recruits never spawn onto an enemy city center or an uncaptured
+    enemy field worker. A finished build waits until a safe neighboring tile opens.
   - **Coastal Battery:** only in a city whose center touches Coast or Ocean; placed on land next to sea water. It automatically attacks the nearest
     hostile ship within 2 hexes after unit combat, dealing a 28-attack strike. It has 150 HP,
     can be bombarded and rebuilt if destroyed. Its health bar appears over its badge.

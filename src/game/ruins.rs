@@ -197,7 +197,11 @@ impl GameState {
                     .neighbors()
                     .into_iter()
                     .chain([ruin.pos])
-                    .find(|&h| self.grid.is_passable(h) && !self.is_occupied(h));
+                    .find(|&h| {
+                        self.grid.is_passable(h)
+                            && !self.is_occupied(h)
+                            && self.spawn_clear_of_enemy_civilians(h, team)
+                    });
                 match spot {
                     Some(spot) => {
                         let id = self.next_unit_id;
@@ -249,6 +253,39 @@ mod tests {
         for _ in 0..turns {
             game.resolve_ruins();
         }
+    }
+
+    #[test]
+    fn recruits_skip_an_enemy_city_and_field_worker() {
+        let mut game = ruins_game(RuinReward::Recruits);
+        let ruin = game.ruins[0].pos;
+        let open: Vec<_> = ruin
+            .neighbors()
+            .into_iter()
+            .filter(|&hex| game.grid.is_passable(hex))
+            .collect();
+        assert!(open.len() >= 3);
+        game.cities.push(City::new(0, Team::Red, open[0]));
+        game.field_workers.push(crate::game::workers::FieldWorker {
+            id: 1000,
+            team: Team::Red,
+            home: 0,
+            base: open[0],
+            pos: open[1],
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
+        game.ruins[0].holder = Some(Team::Blue);
+        let reward = game.ruins[0].clone();
+        game.claim_ruin(&reward);
+        let recruit = game
+            .units
+            .iter()
+            .find(|unit| unit.team == Team::Blue)
+            .unwrap();
+        assert_ne!(recruit.pos, open[0]);
+        assert_ne!(recruit.pos, open[1]);
     }
 
     #[test]
