@@ -15,6 +15,8 @@ use game.text;
 use game.city.delivered_share;
 use game.font.push_glyph;
 use game.font.push_text;
+use game.font.world_text_width;
+use std.str.Str;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
 use game.mesh.Color;
@@ -133,8 +135,27 @@ const FOOD_COLOR: Color = [0.42, 0.96, 0.32, 1.0];
 const PRODUCTION_COLOR: Color = [1.0, 0.69, 0.22, 1.0];
 
 /// A queued move is drawn as a faded copy of the unit at its destination.
-const GHOST_ALPHA: f32 = 0.4;
+pub const GHOST_ALPHA: f32 = 0.4;
 const GHOST_FAN_RADIUS: f32 = HEX_SIZE * 0.3;
+
+/// A unit following a queue (Shift-click) shows its plan instead of a ghost, while selected or
+/// hovered: a line along its moves, each turn's number on the hex it moves to (and on each
+/// attack's arrow), all in pills rimmed in team color (orange for attacks). A small tag beside
+/// the unit says a queue is there, with the number of turns it has left.
+pub const QUEUE_LINE_WIDTH: f32 = 0.07;
+pub const QUEUE_LINE_ALPHA: f32 = 0.7;
+const QUEUE_DIGIT_HEIGHT: f32 = 0.2;
+const QUEUE_BADGE_HALF_HEIGHT: f32 = 0.18;
+const QUEUE_BADGE_PADDING: f32 = 0.09;
+const QUEUE_BADGE_RIM: f32 = 0.04;
+const QUEUE_TEXT_COLOR: Color = [0.95, 0.95, 0.95, 1.0];
+const QUEUE_TAG_OFFSET: Vec2 = Vec2 { x: -0.44, y: -0.4 };
+/// Where a plan's last number sits from its ghost: below it, clear of the pictogram.
+const QUEUE_END_BADGE_OFFSET: Vec2 = Vec2 { x: 0.0, y: -0.36 };
+/// The orange hex outline on a click waiting to be repeated to replace a queue.
+const QUEUE_REPLACE_OUTLINE_RADIUS: f32 = 0.9;
+const QUEUE_REPLACE_OUTLINE_WIDTH: f32 = 0.08;
+const QUEUE_TAG_SCALE: f32 = 0.7;
 
 /// A queued swap is drawn as a link between the two allies.
 const SWAP_LINK_WIDTH: f32 = 0.1;
@@ -142,7 +163,7 @@ const SWAP_LINK_ALPHA: f32 = 0.8;
 
 /// A queued attack is drawn as a curved arrow from the attacker (or its ghost, if it's
 /// moving first) to the hex it's attacking.
-const ATTACK_ARC_COLOR: Color = [1.00, 0.45, 0.30, 1.0];
+pub const ATTACK_ARC_COLOR: Color = [1.00, 0.45, 0.30, 1.0];
 const ATTACK_ARC_OUTLINE_COLOR: Color = [0.08, 0.03, 0.02, 1.0];
 const ATTACK_ARC_WIDTH: f32 = 0.07;
 const ATTACK_ARC_OUTLINE_WIDTH: f32 = 0.13;
@@ -221,7 +242,7 @@ impl GameState {
 
         self.push_city_map(&mut out);
         self.push_fog(&fog, view_min, view_max, &mut out);
-        self.push_order_markers(&mut out);
+        self.push_order_markers(&fog, &mut out);
 
         for idx in 0..self.units.len() {
             let unit = &self.units[idx];
@@ -236,6 +257,11 @@ impl GameState {
             push_unit_icon(center, unit, self.unit_letter(unit), icon_scale, color, &mut out);
             push_order_badges(center, unit, scale, &mut out);
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
+            if unit.plans_later_turns() && self.is_player_controlled(idx) {
+                let tag = text(fn() can {Out} { show_i64(unit.plan_len() as i64); Out.put("T"); });
+                let at = center.add(QUEUE_TAG_OFFSET.scale(scale));
+                push_turn_badge(at, &tag, QUEUE_TAG_SCALE * scale, unit.team.color(), &mut out);
+            }
         }
 
         self.push_tile_yields(&mut out);
@@ -245,11 +271,17 @@ impl GameState {
 
     /// Ghosts at queued move destinations, links between allies queued to swap, and arrows
     /// for the player's queued attacks. Ghosts of units sharing a destination are fanned out so
-    /// each order stays visible.
-    fn push_order_markers(&self, out: &mut Vec[MeshVertex]) {
+    /// each order stays visible. Units whose queue reaches past this turn show their numbered
+    /// plan instead, and only while selected or hovered; a queue of this turn alone draws like
+    /// plain orders.
+    fn push_order_markers(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
         let n = self.units.len();
+        // Units drawn with plain markers: not swapping, not planning later turns, and shown.
         let mut swapping: Vec[bool] = Vec.new();
-        for i in 0..n { swapping.push(self.swap_partner(i).is_some()); }
+        for i in 0..n {
+            let unit = &self.units[i];
+            swapping.push(self.swap_partner(i).is_some() || unit.plans_later_turns() || !fog.shows(unit));
+        }
 
         // Where each moving unit's ghost is drawn, for its attack arc. Groups by target hex in
         // first-seen order, so the layout is stable across frames.
@@ -288,13 +320,50 @@ impl GameState {
         for idx in 0..n {
             let unit = &self.units[idx];
             let Option.Some(target) = unit.planned_attack else { continue; };
-            if !self.is_player_controlled(idx) { continue; }
+            if !self.is_player_controlled(idx) || unit.plans_later_turns() { continue; }
             // Swapping units attack from their partner's hex.
             let from = match ghosts.get(unit.id as i64) {
                 Option.Some(ghost) => ghost,
                 Option.None => if unit.planned_move.is_some() { unit.planned_pos().to_world() } else { self.unit_layout(idx).0 },
             };
             push_attack_arc(from, target.to_world(), out);
+        }
+
+        let selection = self.selection();
+        let hovered = match self.hovered_tile { Option.Some(hex) => self.controlled_unit_at(hex), Option.None => Option.None };
+        let mut planning: Vec[i32] = Vec.new();
+        for i in 0..n {
+            if !(selection.contains(i) || hovered == Option.Some(i)) { continue; }
+            if self.units[i].plans_later_turns() && self.is_player_controlled(i) { planning.push(i); }
+        }
+        self.push_queue_plans(&planning, out);
+        // A click waiting to be repeated to replace the selection's queue.
+        if let Option.Some(hex) = self.queue_replace_hex() {
+            polygon_outline(hex.to_world(), HEX_SIZE * QUEUE_REPLACE_OUTLINE_RADIUS, QUEUE_REPLACE_OUTLINE_WIDTH, 6, 0.0, ATTACK_ARC_COLOR, out);
+        }
+    }
+
+    /// The plans of units `which` following a queue, each unit's on its own: a line from the
+    /// unit through each hex it moves to, numbered by turn (1 is this turn), ending in a faded
+    /// ghost of the unit where its plan leaves it; its attacks are arrows from where it stands
+    /// that turn, numbered at their middle. Where several units' plans stop on one hex, each
+    /// unit's stop is fanned out around it (as ghosts are), so a number never belongs to two
+    /// units. A hex or arrow one unit uses on several turns lists them ("2,4").
+    fn push_queue_plans(&self, which: &Vec[i32], out: &mut Vec[MeshVertex]) {
+        let plans = queue_plans(&self.units, which);
+        for k in 0..plans.lines.len() {
+            let line = plans.lines[k];
+            segment(line.from, line.to, QUEUE_LINE_WIDTH, line.color, out);
+        }
+        for k in 0..plans.ghosts.len() {
+            let ghost = plans.ghosts[k];
+            let unit = &self.units[ghost.unit];
+            push_unit_icon(ghost.at, unit, self.unit_letter(unit), 1.0, ghost.color, out);
+        }
+        for k in 0..plans.arrows.len() { push_arrow(&plans.arrows[k], ATTACK_ARC_COLOR, ATTACK_ARC_OUTLINE_COLOR, out); }
+        for k in 0..plans.badges.len() {
+            let badge = &plans.badges[k];
+            push_turn_badge(badge.at, &badge.text, 1.0, badge.rim, out);
         }
     }
 
@@ -630,6 +699,160 @@ impl GameState {
 fn fan_position(base: Vec2, index: i32, total: i32, radius: f32) -> Vec2 {
     if total <= 1 { return base; }
     base.add(vec2_from_angle(tau() as f32 * index as f32 / total as f32).scale(radius))
+}
+
+/// A straight line of a unit's plan, from one stop to the next.
+pub struct PlanLine { from: Vec2, to: Vec2, color: Color }
+
+/// A faded copy of unit `unit` where its plan ends.
+pub struct PlanGhost { at: Vec2, unit: i32, color: Color }
+
+/// A pill with turn numbers on it, rimmed in `rim`.
+pub struct Badge { at: Vec2, text: Str, rim: Color }
+
+/// What `push_queue_plans` draws, worked out first: the plan lines, the ghosts where plans
+/// end, the attack arrows, and the numbered badges (their text is the turn numbers, "2,4" for
+/// one unit using a hex on two turns).
+pub struct QueuePlans {
+    lines: Vec[PlanLine],
+    ghosts: Vec[PlanGhost],
+    arrows: Vec[Vec[Vec2]],
+    badges: Vec[Badge],
+}
+
+/// The units that stop on a hex, in the order they first do, to fan them apart.
+struct Visitors { hex: Hex, units: Vec[i32] }
+
+/// The turns a plan uses a hex (`at` = `to`) or an attack from `at` on `to`, in turn order.
+struct Turns { at: Hex, to: Hex, turns: Vec[i32] }
+
+/// Adds `turn` to the turns labeled at `(at, to)`, in first-seen order.
+fn add_label(labels: &mut Vec[Turns], at: Hex, to: Hex, turn: i32) {
+    for k in 0..labels.len() {
+        if labels[k].at == at && labels[k].to == to {
+            labels[k].turns.push(turn);
+            return;
+        }
+    }
+    let mut turns: Vec[i32] = Vec.new();
+    turns.push(turn);
+    labels.push(Turns { at, to, turns });
+}
+
+/// The turn numbers, without repeats, joined by commas.
+fn label(turns: &Vec[i32]) -> Str {
+    text(fn() can {Out} {
+        for k in 0..turns.len() {
+            if k > 0 && turns[k] == turns[k - 1] { continue; }
+            if k > 0 { Out.put(","); }
+            show_i64(turns[k] as i64);
+        }
+    })
+}
+
+/// Where unit `u` (of the planning units) stands on `hex` in its plan: fanned out among the
+/// units that stop there.
+fn spot(visitors: &Vec[Visitors], hex: Hex, u: i32) -> Vec2 {
+    for k in 0..visitors.len() {
+        if visitors[k].hex == hex {
+            let list = &visitors[k].units;
+            let mut slot = 0;
+            for s in 0..list.len() { if list[s] == u { slot = s; } }
+            return fan_position(hex.to_world(), slot, list.len(), GHOST_FAN_RADIUS);
+        }
+    }
+    hex.to_world()
+}
+
+/// The plans of units `which` (indices into `units`), each unit's on its own.
+pub fn queue_plans(units: &Vec[Unit], which: &Vec[i32]) -> QueuePlans {
+    let mut visitors: Vec[Visitors] = Vec.new();
+    for u in 0..which.len() {
+        let unit = &units[which[u]];
+        for turn in 0..unit.plan_len() {
+            let to = unit.pos_after(turn + 1);
+            if unit.pos_after(turn) == to { continue; }
+            let mut found = false;
+            for k in 0..visitors.len() {
+                if visitors[k].hex == to {
+                    found = true;
+                    if !visitors[k].units.contains(u) { visitors[k].units.push(u); }
+                }
+            }
+            if !found {
+                let mut list: Vec[i32] = Vec.new();
+                list.push(u);
+                visitors.push(Visitors { hex: to, units: list });
+            }
+        }
+    }
+
+    let mut plans = QueuePlans { lines: Vec.new(), ghosts: Vec.new(), arrows: Vec.new(), badges: Vec.new() };
+    for u in 0..which.len() {
+        let unit = &units[which[u]];
+        let color = unit.team.color();
+        let line = with_alpha(color, QUEUE_LINE_ALPHA);
+        let mut at = unit.pos.to_world();
+        let mut stops: Vec[Turns] = Vec.new();
+        let mut strikes: Vec[Turns] = Vec.new();
+        for turn in 0..unit.plan_len() {
+            let (from, to) = (unit.pos_after(turn), unit.pos_after(turn + 1));
+            if from != to {
+                let next = stand(&visitors, unit.pos, to, u);
+                plans.lines.push(PlanLine { from: at, to: next, color: line });
+                at = next;
+                add_label(&mut stops, to, to, turn + 1);
+            }
+            if let Option.Some(target) = unit.attack_on_turn(turn) { add_label(&mut strikes, to, target, turn + 1); }
+        }
+        let end = unit.plan_end();
+        if end != unit.pos {
+            plans.ghosts.push(PlanGhost { at: stand(&visitors, unit.pos, end, u), unit: which[u], color: with_alpha(color, GHOST_ALPHA) });
+        }
+        for k in 0..strikes.len() {
+            let points = attack_arc_points(stand(&visitors, unit.pos, strikes[k].at, u), strikes[k].to.to_world(), 1.0);
+            let middle = if points.is_empty() { strikes[k].to.to_world() } else { points[points.len() / 2] };
+            plans.badges.push(Badge { at: middle, text: label(&strikes[k].turns), rim: ATTACK_ARC_COLOR });
+            plans.arrows.push(points);
+        }
+        for k in 0..stops.len() {
+            let hex = stops[k].at;
+            // The number at the end sits under the ghost, not on it.
+            let offset = if hex == end { QUEUE_END_BADGE_OFFSET } else { vec2(0.0, 0.0) };
+            plans.badges.push(Badge { at: stand(&visitors, unit.pos, hex, u).add(offset), text: label(&stops[k].turns), rim: color });
+        }
+    }
+    plans
+}
+
+/// Where a unit standing on `pos` is drawn on `hex` of its plan: on its own hex as it stands,
+/// elsewhere at its `spot`.
+fn stand(visitors: &Vec[Visitors], pos: Hex, hex: Hex, u: i32) -> Vec2 {
+    if hex == pos { pos.to_world() } else { spot(visitors, hex, u) }
+}
+
+/// A dark pill rimmed in `rim` with `label` on it, centered on `center`.
+fn push_turn_badge(center: Vec2, label: &Str, scale: f32, rim: Color, out: &mut Vec[MeshVertex]) {
+    let height = QUEUE_DIGIT_HEIGHT * scale;
+    let radius = QUEUE_BADGE_HALF_HEIGHT * scale;
+    let width = world_text_width(label, height);
+    // How far the round ends' centers sit from the middle: none for a single digit, which makes
+    // the pill a disc.
+    let spread = width / 2.0 + QUEUE_BADGE_PADDING * scale - radius;
+    let reach = if spread > 0.0 { spread } else { 0.0 };
+    push_pill(center, reach, radius + QUEUE_BADGE_RIM * scale, rim, out);
+    push_pill(center, reach, radius, BADGE_BG_COLOR, out);
+    push_text(center.sub(vec2(width / 2.0, height / 2.0)), height, label, QUEUE_TEXT_COLOR, out);
+}
+
+/// A horizontal pill: discs of `radius` `reach` either side of `center`, joined by a band.
+fn push_pill(center: Vec2, reach: f32, radius: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    regular_polygon(center.sub(vec2(reach, 0.0)), radius, 20, 0.0, color, out);
+    regular_polygon(center.add(vec2(reach, 0.0)), radius, 20, 0.0, color, out);
+    if reach > 0.0 {
+        let half = vec2(reach, radius);
+        quad(center.sub(half), center.add(half), color, out);
+    }
 }
 
 /// A queued attack's arrow from `from` toward `to`.

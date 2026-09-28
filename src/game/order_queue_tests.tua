@@ -11,11 +11,19 @@ use std.test.Assert;
 use std.rand.Rand;
 use log.Log;
 use game.GameState;
+use game.draw.ATTACK_ARC_COLOR;
+use game.draw.GHOST_ALPHA;
+use game.draw.QUEUE_LINE_ALPHA;
+use game.draw.queue_plans;
+use game.hex.HEX_SIZE;
 use game.hex.Hex;
+use game.mesh.Color;
+use renderer.pipelines.MeshVertex;
 use game.orders.ClickMode;
 use game.settings.Setting;
 use game.tests.sandbox;
 use game.unit.Team;
+use game.unit.TurnOrder;
 use game.unit.Unit;
 use game.unit.UnitType;
 
@@ -600,5 +608,127 @@ fn a_deploying_siege_plans_its_queue_as_deployed() {
         assert(g.units[0].queued[0].attack == Option.Some(target));
         // Queuing keeps the ability.
         assert(g.units[0].ability_queued);
+    });
+}
+
+// Drawing a plan.
+
+fn faded(c: Color, a: f32) -> Color { [c[0], c[1], c[2], a] }
+
+fn count_color(vertices: &Vec[MeshVertex], color: Color) -> i32 {
+    let mut n = 0;
+    for k in 0..vertices.len() {
+        let c = vertices[k].color;
+        if c[0] == color[0] && c[1] == color[1] && c[2] == color[2] && c[3] == color[3] { n = n + 1; }
+    }
+    n
+}
+
+/// The combat map without fog and nothing hovered, its Blue melee selected.
+fn melee_selected() -> GameState can {Log} {
+    let mut game = GameState.new();
+    game.fog_of_war = false;
+    game.hovered_tile = Option.None;
+    for i in 0..game.units.len() {
+        if game.units[i].team == Team.Blue && game.units[i].unit_type == UnitType.Melee { game.selected = Option.Some(i); }
+    }
+    game
+}
+
+@test
+fn a_queue_shows_numbered_turns_only_while_selected_or_hovered() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = melee_selected();
+        let Option.Some(melee) = game.selected else { assert(false); return; };
+        let start = game.units[melee].pos;
+        let first = start.neighbors()[0];
+        let second = first.neighbors()[0];
+        assert(game.queue_move(first) && game.queue_move(second));
+        let line = faded(Team.Blue.color(), QUEUE_LINE_ALPHA);
+        let ghost = faded(Team.Blue.color(), GHOST_ALPHA);
+
+        // The path shows, with a ghost where the plan ends.
+        let selected = count_color(&game.build_vertices(), line);
+        assert(selected > 0);
+        assert(count_color(&game.build_vertices(), ghost) > 0);
+
+        // Hidden once let go of.
+        game.selected = Option.None;
+        assert(count_color(&game.build_vertices(), line) == 0);
+        assert(count_color(&game.build_vertices(), ghost) == 0);
+
+        game.hovered_tile = Option.Some(start);
+        assert(count_color(&game.build_vertices(), line) == selected);
+    });
+}
+
+@test
+fn two_units_passing_one_hex_get_their_own_numbers() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (shared, a_first, b_last) = (Hex.new(0, 0), Hex.new(-1, 0), Hex.new(1, 0));
+        // A reaches the shared hex on turn 2, B on turn 1 and moves on.
+        let mut units: Vec[Unit] = Vec.new();
+        units.push(Unit.new(1, Hex.new(-2, 0), Team.Blue, UnitType.Melee));
+        units[0].planned_move = Option.Some(a_first);
+        units[0].following_queue = true;
+        units[0].queued.push(TurnOrder { from: a_first, move_to: Option.Some(shared), attack: Option.None });
+        units.push(Unit.new(2, Hex.new(0, 2), Team.Blue, UnitType.Cavalry));
+        units[1].planned_move = Option.Some(shared);
+        units[1].following_queue = true;
+        units[1].queued.push(TurnOrder { from: shared, move_to: Option.Some(b_last), attack: Option.None });
+        let mut which: Vec[i32] = Vec.new();
+        which.push(0);
+        which.push(1);
+        let plans = queue_plans(&units, &which);
+
+        // No number shared by two units.
+        let mut near: Vec[Vec2] = Vec.new();
+        for k in 0..plans.badges.len() {
+            let badge = &plans.badges[k];
+            let t: &Str = &badge.text;
+            assert(!str_eq(t, "1,2"));
+            if badge.at.distance(shared.to_world()) < HEX_SIZE * 0.8 { near.push(badge.at); }
+        }
+        // Two numbers near the shared hex, fanned apart.
+        assert(near.len() == 2);
+        assert(near[0].distance(near[1]) > 0.0);
+        // Each plan ends in its own ghost.
+        assert(plans.ghosts.len() == 2);
+        assert(plans.ghosts[0].at.distance(plans.ghosts[1].at) > 0.0);
+    });
+}
+
+@test
+fn a_queue_of_this_turn_alone_draws_a_plain_ghost_and_arrow() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = melee_selected();
+        let Option.Some(melee) = game.selected else { assert(false); return; };
+        let first = game.units[melee].pos.neighbors()[0];
+        let target = first.neighbors()[0];
+        let line = faded(Team.Blue.color(), QUEUE_LINE_ALPHA);
+        let ghost = faded(Team.Blue.color(), GHOST_ALPHA);
+        let before = count_color(&game.build_vertices(), ATTACK_ARC_COLOR);
+
+        // Shift-clicks that only fill this turn: a move, then an attack from there. Nothing
+        // past this turn, so a ghost (not a numbered 1), no plan line, and the attack's plain
+        // arrow.
+        assert(game.queue_move(first) && game.queue_attack(target));
+        assert(game.units[melee].queued.is_empty());
+        assert(count_color(&game.build_vertices(), ghost) > 0);
+        assert(count_color(&game.build_vertices(), line) == 0);
+        assert(count_color(&game.build_vertices(), ATTACK_ARC_COLOR) > before);
+
+        // A second turn switches to the numbered plan.
+        let around = first.neighbors();
+        let mut next = first;
+        for k in 0..6 {
+            let h = around[k];
+            if next == first && game.grid.is_passable(h) && !game.is_occupied(h) { next = h; }
+        }
+        assert(next != first);
+        assert(game.queue_move(next));
+        assert(count_color(&game.build_vertices(), line) > 0);
+        // The ghost moves to the plan's end.
+        assert(count_color(&game.build_vertices(), ghost) > 0);
     });
 }
