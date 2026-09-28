@@ -38,7 +38,7 @@ behavior.
 | `perf.rs` | tests only: `perf_report` (ignored; run with `--release -- --ignored --nocapture`) times a frame's and a turn's stages on a busy world |
 | `mapgen.rs`, `mapgen/` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map, on every machine), a function per stage (its module comment lists them): land and sea, mountain ranges, hills, lakes, passes, rivers, climate; then balanced starts for any number of sides, horses and iron by each start, and special tiles and ruins on contested ground. `mapgen/tests.rs` holds its tests (a golden hash pins two seeds' maps); `mapgen/preview.rs` (tests only) draws whole maps as PNGs and measures many (`map_previews`, `map_stats`, run by hand) |
 | `ruins.rs` | ruins: holding them for `RUIN_HOLD_TURNS` claims a reward (`resolve_ruins`, at each turn's end before the economy) |
-| `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes |
+| `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes (this machine's view), each side's own memory (`side_fog`, game state, which the AI plans on), and the `known_*` queries that answer for either (`Fog` says which) |
 | `scenario.rs` | scenarios (F1-F4, F12, Debug Naval), savestate (F6/F7), instant playback (F8) |
 | `settings.rs` | the player's options (`Settings`, one field each, and `Setting`, how the menu lists and changes them: heading, control, range), Escape (`press_escape`) and the settings menu's open state; its module comment says how to add a setting |
 | `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues) in every scenario, board invariants checked each turn, same seed replays the same game |
@@ -87,8 +87,8 @@ behavior.
 - Workers aren't units: those at home are a count on their city, those out are
   `field_workers`, with their own ids. They never block a unit's move. Walls and gates sit on hex
   edges (`barriers`, keyed by `hex::edge`), so passability is per step: anything that walks
-  (units, workers, the AI's distances) or routes goods checks `can_step` / `can_cross`, and the
-  player's planning checks what they know (`known_can_cross`, `fog.rs`).
+  (units, workers) or routes goods checks `can_step` / `can_cross`, and planning, the
+  player's and the AI's, checks what the side knows (`known_step`, `known_can_cross`, `fog.rs`).
 - Builds are paid when work on them starts: add to a city or Barracks queue through
   `queue_build` / `queue_barracks` (an unpaid item with no work), take items out through
   `take_queue_item` / `take_barracks_item`, which refund only a paid item, and pay only in
@@ -116,6 +116,9 @@ behavior.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05.
 - `Camera::view_proj` builds an OpenGL orthographic projection and flips Y itself, because
   glam 0.33's `vulkan::orthographic` flips the Y scale but not the translation.
+- The AI plans only on what its side knows (`side_fog`, `fog.rs`), never the real board,
+  and never on anything of this machine's (`local_team`, `memory`, `fog_of_war`): a side's
+  memory is game state, the same on every machine and counted in `checksum`.
 - The AI must stay deterministic: ties break by hex coordinates. All randomness goes through
   `GameState.rng` (never `rand::random` or the thread RNG) and never depends on hash-map
   iteration order, so a seed replays the same game (`simulation.rs` checks this).

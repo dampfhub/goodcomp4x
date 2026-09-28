@@ -109,11 +109,11 @@ impl GameState {
     fn group_attack(&mut self, target: Hex) {
         // Land, or water (for ships): anything on the map but mountains, as
         // the player knows it (a hex never seen may be attacked).
-        let water = self.is_explored(target) && self.grid.terrain(target).is_water();
-        if !(self.known_passable(target, false) || water) {
+        let fog = self.fog();
+        let water = self.explored_by(target, &fog) && self.grid.terrain(target).is_water();
+        if !(self.known_passable(target, false, &fog) || water) {
             return;
         }
-        let fog = self.fog();
         if let Some(&first) = self.group.first()
             && self.known_empty_city_target(target, self.units[first].team, &fog)
         {

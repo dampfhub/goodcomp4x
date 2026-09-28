@@ -728,6 +728,34 @@ fn ai_against_ai_combat_ends_with_fewer_units() {
     });
 }
 
+#[test]
+fn ai_sides_find_each_other_through_the_fog() {
+    // Anti-vacuity: the AI plans only on what its side has seen (`ai.rs`), so it must find its
+    // enemies itself, exploring and heading for the cities it has seen. A world game still
+    // comes to blows: some troop dies (a settler founding a city isn't one).
+    for_every_game(&[Scenario::World], &seeds(), |scenario, seed| {
+        let mut game = start(scenario, seed);
+        let mut troops: HashSet<u32> = HashSet::default();
+        for _ in 0..TURNS {
+            troops.extend(
+                game.units
+                    .iter()
+                    .filter(|u| !game.settlers.contains(&u.id))
+                    .map(|u| u.id),
+            );
+            play_turn(&mut game);
+        }
+        let died = troops
+            .iter()
+            .filter(|&&id| game.units.iter().all(|u| u.id != id))
+            .count();
+        assert!(
+            died > 0,
+            "seed {seed}: nobody died in {TURNS} turns of a world"
+        );
+    });
+}
+
 /// What a replay must reproduce: the map, every unit and every city.
 #[derive(PartialEq, Debug)]
 struct Fingerprint {

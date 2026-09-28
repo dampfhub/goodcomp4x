@@ -219,7 +219,11 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   lost income, a red disrupted-tile ring, and the city view's "NO OPEN ROUTE WITHIN LOGISTICS
   BUDGET" notice, while the enemy itself stays hidden. That much is accepted as fair, like
   finding a tile pillaged.
-- The AI ignores the fog.
+- The AI plays under the same fog, by the same rules: each AI side sees what its units, cities,
+  barracks, watchposts, outposts and workers see, and remembers what it has seen, and plans on
+  that alone (see AI). A side's memory is part of the game, the same on every machine, updated as
+  the AI plans that side's turn; F10 and the side this machine plays don't touch it. A side the
+  AI takes over from a player who left starts remembering from then on.
 
 ## Orders (planning)
 
@@ -831,15 +835,23 @@ every turn end.
 ## AI (`ai.rs`)
 
 Every side but Blue is played by the AI, in `Team::ALL` order, and every side is at war with
-every other. Each AI unit picks the enemy unit or worker, or the unclaimed ruins no unit of its
-side holds or is heading for, nearest on foot (walking distance around terrain, walls and others'
-gates). It steps onto ruins it can reach, and then holds them until they're claimed, attacking
-enemies in range from there. It steps onto a worker it can reach this turn, capturing it; otherwise
-it attacks its target if already in range, or moves to the reachable hex with the shortest
-remaining walk, attacking if that brings it into range. It skips hexes a teammate already
-claimed, and units in a contested hex stay and fight. It never uses abilities, never attacks
-cities, never builds buildings, ignores the fog, and ignores its civilians and any
-player-controlled AI unit; its scouts fight like any other unit. AI cities auto-assign citizens
+every other. The AI plays under the fog (see Fog of war): it plans only on what its side sees and
+remembers, as the player does. An enemy unit or worker counts only while in sight; cities, ruins,
+walls and terrain count as last seen; ground never seen counts as open.
+Each AI unit picks, of the enemy units and workers in sight, the ruins its side knows of that no
+unit of its side holds or is heading for, and the enemy cities its side has seen, the one nearest
+on foot (walking distance around the terrain, walls and others' gates and cities it knows of; a
+city counts from its gates, and an enemy unit before a city as near). Knowing of none, it
+explores: it heads for the nearest ground its side has never seen. It steps onto ruins it can
+reach, and then holds them until they're claimed, attacking enemies in range from there. It steps
+onto a worker it can reach this turn, capturing it; otherwise it attacks its target if already in
+range, or moves to the reachable hex with the shortest remaining walk (staying put on a tie),
+attacking if that brings it into range. Heading anywhere else than an enemy (ruins, a city, the
+unknown), it attacks any enemy in sight in range of where it ends up. Next to an enemy city it
+holds its ground there, its fighters going in through the gates (see City interiors). It skips hexes a
+teammate already claimed, and units in a contested hex stay and fight. It never uses abilities,
+never builds buildings, and ignores its civilians and any player-controlled AI unit; its scouts
+fight like any other unit. AI cities auto-assign citizens
 at every end of planning. An AI queue gets one item when empty, and only one its side can pay for
 this turn, counting the turn's income and what its other queues start, so it's paid and started
 that turn; a queue whose items all wait anyway is emptied (they're unpaid, so nothing is lost)
@@ -858,8 +870,8 @@ deterministic.
 
 Known bugs link to their board item; the rest are design questions nobody has decided yet.
 
-- The AI never uses abilities, attacks cities or builds buildings or structures; it ignores the
-  fog, and its scouts just fight.
+- The AI never uses abilities or builds buildings or structures, its scouts just fight, and its
+  armies explore by walking to the nearest ground never seen, so they find their enemies slowly.
 - Forts' +50% defense is a placeholder; what forts should really give is undecided.
 - Structures can't be destroyed or captured, and a wall or gate can go on any edge next to explored
   ground.

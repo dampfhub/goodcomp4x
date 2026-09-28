@@ -1616,7 +1616,7 @@ impl GameState {
             self.field_workers
                 .iter()
                 .filter(|w| fog.sees(w.pos))
-                .filter_map(|w| self.others_construction(w)),
+                .filter_map(|w| self.others_construction(w, self.local_team)),
         );
         if !self.fog_of_war {
             return view;

@@ -48,7 +48,7 @@ impl GameState {
                             if fog.sees(to) {
                                 self.is_road_hex(to)
                             } else {
-                                self.remembered(to).is_some_and(|seen| {
+                                self.recalled(to, fog).is_some_and(|seen| {
                                     seen.road || seen.city.is_some_and(|c| c.team == team)
                                 })
                             }
@@ -77,7 +77,7 @@ impl GameState {
                                     .iter()
                                     .any(|city| city.pos == to && city.team != team)
                         } else {
-                            self.remembered(to)
+                            self.recalled(to, fog)
                                 .is_some_and(|seen| seen.city.is_some_and(|c| c.team != team))
                         }
                     },
