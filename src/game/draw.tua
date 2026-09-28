@@ -573,10 +573,16 @@ impl GameState {
             }
         }
         for c in 0..self.cities.len() {
-            let Option.Some(team) = self.known_city_team(self.cities[c].pos, &fog) else { continue; };
-            let pos = self.cities[c].pos.to_world();
-            quad(pos.sub(vec2(0.48, 0.48)), pos.add(vec2(0.48, 0.48)), team.color(), out);
-            push_glyph(pos, 0.5, 'H', LABEL_COLOR, out);
+            let hex = self.cities[c].pos;
+            let Option.Some(team) = self.known_city_team(hex, &fog) else { continue; };
+            // In sight, as it is; out of sight, as last seen.
+            let population = if fog.sees(hex) { self.cities[c].population } else {
+                match self.memory.get(hex) {
+                    Option.Some(seen) => match seen.city { Option.Some(city) => city.population, Option.None => self.cities[c].population },
+                    Option.None => self.cities[c].population,
+                }
+            };
+            push_city_marker(hex.to_world(), team, population, out);
         }
     }
 
@@ -1408,4 +1414,37 @@ fn push_soft_disc(center: Vec2, radii: Vec2, light: Color, dark: Color, out: &mu
     out.push(bl);
     out.push(tr);
     out.push(tl);
+}
+
+/// A city: a crenellated tower in its team's color with its population centered on its body.
+fn push_city_marker(pos: Vec2, team: Team, population: i32, out: &mut Vec[MeshVertex]) {
+    push_city_tower(pos, 1.0, team.color(), out);
+    let digits = text(fn() can {Out} { show_i64(population as i64); });
+    let height = 0.3;
+    let width = world_text_width(&digits, height);
+    // Centered in the tower's body, below the merlons.
+    let middle = pos.add(vec2(0.0, -0.08));
+    push_text(middle.sub(vec2(width / 2.0, height / 2.0)), height, &digits, LABEL_COLOR, out);
+}
+
+/// A city's crenellated tower in `color`, `scale` times its size on the map (0.84 wide, 0.8
+/// tall), each part edged in dark.
+fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
+    let grow = vec2(ICON_OUTLINE_WIDTH * scale, ICON_OUTLINE_WIDTH * scale);
+    // The body, then three merlons along the top.
+    let rects = [
+        (vec2(-0.42, -0.4), vec2(0.42, 0.24)),
+        (vec2(-0.42, 0.24), vec2(-0.24, 0.4)),
+        (vec2(-0.09, 0.24), vec2(0.09, 0.4)),
+        (vec2(0.24, 0.24), vec2(0.42, 0.4)),
+    ];
+    for k in 0..4 {
+        let (lo, hi) = rects[k];
+        quad(pos.add(lo.scale(scale)).sub(grow), pos.add(hi.scale(scale)).add(grow), outline, out);
+    }
+    for k in 0..4 {
+        let (lo, hi) = rects[k];
+        quad(pos.add(lo.scale(scale)), pos.add(hi.scale(scale)), color, out);
+    }
 }
