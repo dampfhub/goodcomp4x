@@ -99,6 +99,9 @@ pub(super) struct City {
     pub interior: Interior,
     /// Workers at home, safe and off the map (`workers.rs`).
     pub workers: u32,
+    /// Of `workers`, those the player recalled: they stay home, sent out to
+    /// no job, until released (`workers.rs`). Never more than `workers`.
+    pub held_workers: u32,
     /// What the city placed on the map, waiting for a worker, first to go
     /// first (`workers.rs`).
     pub worker_jobs: Vec<WorkerJob>,
@@ -129,6 +132,7 @@ impl City {
             barracks_progress: 0,
             interior: Interior::default(),
             workers: 1,
+            held_workers: 0,
             worker_jobs: Vec::new(),
         }
     }

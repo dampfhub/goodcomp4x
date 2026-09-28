@@ -218,7 +218,8 @@ pub(super) struct FieldWorker {
     /// Turns of work left, once it stands on the job's tile. Each turn of
     /// work also adds to its job's `done`, which the job keeps if it leaves.
     pub work_left: Option<u32>,
-    /// Sent home by the player: it takes no job until it gets there.
+    /// Sent home by the player: it takes no job until it gets there, and
+    /// there it's held (`City::held_workers`) until the player releases it.
     pub recalled: bool,
 }
 
@@ -869,7 +870,8 @@ impl GameState {
     /// A Recall button: sends one of the player's workers out on the map
     /// straight home, out of danger. Its job, with the work already put into
     /// it, goes back to the top of its city's list, and it takes no new one
-    /// on the way.
+    /// on the way. Home, it stays there, held, until released
+    /// (`release_worker`).
     pub fn recall_worker(&mut self, id: u32) {
         if self.is_resolving() {
             return;
@@ -888,7 +890,7 @@ impl GameState {
         worker.work_left = None;
         worker.recalled = true;
         worker.base = self.cities[worker.home].pos;
-        self.notice = "WORKER RECALLED - IT HEADS HOME; ITS JOB WAITS ON THE LIST".into();
+        self.notice = "WORKER RECALLED - IT HEADS HOME TO STAY; ITS JOB WAITS ON THE LIST".into();
     }
 
     /// Takes the first job in `city`'s queue its workers can still do,
@@ -940,7 +942,8 @@ impl GameState {
             }
         }
         for city in 0..self.cities.len() {
-            while self.cities[city].workers > 0 {
+            // Held workers stay home until released.
+            while self.cities[city].workers > self.cities[city].held_workers {
                 let Some(job) = self.take_job(city) else {
                     break;
                 };
@@ -973,9 +976,39 @@ impl GameState {
         }
         for w in home.into_iter().rev() {
             let worker = self.field_workers.remove(w);
-            self.cities[worker.home].workers += 1;
+            let city = &mut self.cities[worker.home];
+            city.workers += 1;
+            // Recalled, it stays home until the player releases it.
+            if worker.recalled {
+                city.held_workers += 1;
+            }
         }
         acted
+    }
+
+    /// The Release button in a city's panel: one of the open city's held
+    /// workers (recalled, and home) takes jobs again, going out in the
+    /// Workers step at the end of this turn.
+    pub fn release_worker(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(city) = self
+            .worker_list_city()
+            .filter(|&c| self.cities[c].team == self.local_team)
+        else {
+            return;
+        };
+        let c = &mut self.cities[city];
+        if c.held_workers == 0 {
+            return;
+        }
+        c.held_workers -= 1;
+        self.notice = if c.worker_jobs.is_empty() {
+            "WORKER RELEASED - IT TAKES THE NEXT JOB PLACED".into()
+        } else {
+            "WORKER RELEASED - IT TAKES THE NEXT JOB ON THE LIST".into()
+        };
     }
 
     /// One worker's turn. Returns whether it did anything, and whether it
@@ -1611,9 +1644,11 @@ mod tests {
         let job = game.cities[0].worker_jobs[0];
         assert_eq!((job.hex, job.done), (hex, 2), "the work stays on the job");
         assert_eq!(game.job_turns_left(PLAYER_TEAM, job), 2);
-        // Home the next turn, out and back there the turn after.
+        // Home the next turn and held there; released, out and back at
+        // the fort the turn after.
         game.resolve_workers();
         assert_eq!(game.cities[0].workers, 1);
+        game.release_worker();
         game.resolve_workers();
         assert_eq!(game.field_workers[0].pos, hex);
         assert_eq!(game.field_workers[0].work_left, Some(2), "only the rest");
@@ -1621,6 +1656,47 @@ mod tests {
         assert!(!game.structures.contains_key(&hex));
         game.resolve_workers();
         assert_eq!(game.structures[&hex].kind, StructureKind::Fort);
+    }
+
+    #[test]
+    fn a_recalled_worker_stays_home_until_released() {
+        let mut game = cities();
+        let hex = fort_half_built(&mut game);
+        game.recall_worker(game.field_workers[0].id);
+        game.resolve_workers();
+        assert!(game.field_workers.is_empty());
+        assert_eq!(
+            (game.cities[0].workers, game.cities[0].held_workers),
+            (1, 1)
+        );
+        // Held: it stays home however long its city's jobs wait.
+        for _ in 0..3 {
+            game.resolve_workers();
+            assert!(game.field_workers.is_empty());
+            assert_eq!(game.cities[0].worker_jobs.len(), 1);
+        }
+        // Another worker at home isn't held: it takes the job. Killed, it
+        // leaves the job back on the list.
+        game.cities[0].workers += 1;
+        game.resolve_workers();
+        assert_eq!(game.field_workers.len(), 1, "the other goes out");
+        assert_eq!(game.cities[0].held_workers, 1);
+        game.kill_workers(&[game.field_workers[0].id]);
+
+        // Released, it takes the job at the top of the list that turn.
+        game.release_worker();
+        assert_eq!(game.cities[0].held_workers, 0);
+        game.resolve_workers();
+        assert_eq!(game.cities[0].workers, 0);
+        assert_eq!(game.field_workers[0].job.map(|j| j.hex), Some(hex));
+        // Nothing left to release, and another side's city isn't the
+        // player's to release.
+        game.release_worker();
+        assert_eq!(game.cities[0].held_workers, 0);
+        game.cities[1].held_workers = 1;
+        game.selected_city = Some(1);
+        game.release_worker();
+        assert_eq!(game.cities[1].held_workers, 1);
     }
 
     #[test]

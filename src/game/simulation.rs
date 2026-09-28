@@ -268,6 +268,22 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: a worker's home city is another side's"
         );
     }
+    // Only workers at home are held, and only by a player: the AI never
+    // recalls one.
+    for city in &game.cities {
+        assert!(
+            city.held_workers <= city.workers,
+            "{context}: city {} holds {} of its {} workers at home",
+            city.id + 1,
+            city.held_workers,
+            city.workers
+        );
+        assert!(
+            city.held_workers == 0 || game.is_human(city.team),
+            "{context}: the AI's city {} holds workers",
+            city.id + 1
+        );
+    }
     // Work kept on a job is short of finishing it: the last turn of work
     // finishes it.
     let jobs = game.cities.iter().flat_map(|c| &c.worker_jobs);

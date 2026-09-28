@@ -703,18 +703,36 @@ impl GameState {
     fn city_workers(&self, i: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let out: Vec<_> = self.field_workers.iter().filter(|w| w.home == i).collect();
+        let held = match city.held_workers {
+            0 => String::new(),
+            n => format!(" ({n} HELD)"),
+        };
         let line = vec![(
-            format!("WORKERS: {} HOME, {} OUT", city.workers, out.len()),
+            format!("WORKERS: {} HOME{held}, {} OUT", city.workers, out.len()),
             LABEL_TEXT,
         )];
         panel.text(SMALL, line);
+        // Recalled workers stay home until released, one a click.
+        if city.held_workers > 0 && city.team == self.local_team {
+            panel.compact_buttons(vec![ButtonSpec {
+                target: Target::ReleaseWorker,
+                label: if city.held_workers == 1 {
+                    "HELD AT HOME - RELEASE".into()
+                } else {
+                    "HELD AT HOME - RELEASE ONE".into()
+                },
+                hint: String::new(),
+                state: ButtonState::Ready,
+                armed: false,
+            }]);
+        }
         for worker in out {
             let doing = match (worker.job, worker.work_left) {
                 (Some(job), Some(left)) => {
                     format!("{} · {}", self.job_title(job), turns_text(left))
                 }
                 (Some(job), None) => format!("TO {}", self.job_title(job)),
-                (None, _) if worker.recalled => "RECALLED, WALKING HOME".into(),
+                (None, _) if worker.recalled => "RECALLED, WALKING HOME TO STAY".into(),
                 (None, _) => "WALKING HOME".into(),
             };
             if worker.recalled {

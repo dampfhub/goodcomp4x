@@ -1285,7 +1285,7 @@ fn a_wall_is_placed_by_dragging_along_hex_edges() {
 }
 
 #[test]
-fn a_worker_out_can_be_recalled_from_the_city_panel() {
+fn a_worker_out_can_be_recalled_and_released_from_the_city_panel() {
     let (mut game, hex) = empty_tile_near_blue_city();
     open_city_zero(&mut game);
     game.placing_job = Some(JobKind::Fort);
@@ -1308,6 +1308,36 @@ fn a_worker_out_can_be_recalled_from_the_city_panel() {
             .any(|b| b.target == recall),
         "once recalled, there's nothing left to press"
     );
+
+    // Home, it's held there with a Release button in its city's panel.
+    let release = Target::ReleaseWorker;
+    let shown = |game: &GameState| {
+        game.layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == release)
+    };
+    game.resolve_workers();
+    assert!(!shown(&game), "still walking home");
+    game.resolve_workers();
+    assert!(game.field_workers.is_empty());
+    assert_eq!(game.cities[0].held_workers, 1);
+    let layout = game.layout(SCREEN);
+    let button = layout.buttons.iter().find(|b| b.target == release).unwrap();
+    assert_eq!(button.label, "HELD AT HOME - RELEASE");
+    assert!(
+        layout
+            .panels
+            .iter()
+            .any(|&(min, max)| contains(min, max, button.min) && contains(min, max, button.max))
+    );
+    game.resolve_workers();
+    assert!(game.field_workers.is_empty(), "held while its job waits");
+    game.handle_click(button_cursor(&game, release), SCREEN, ClickMode::Normal);
+    assert_eq!(game.cities[0].held_workers, 0);
+    assert!(!shown(&game), "released, nothing left to press");
+    game.resolve_workers();
+    assert_eq!(game.field_workers[0].job.map(|j| j.hex), Some(hex));
 }
 
 #[test]

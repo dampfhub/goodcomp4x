@@ -119,7 +119,8 @@ can watch or change what's sent. What's in place:
   kept or cleared; a city queues only what it can train (no Cavalry
   or Armored, ships only with a Harbor, no growing past the cap), a Barracks no more Cavalry or
   Armored than its deposits allow; citizens work only tiles in their city's reach, never a city
-  or a building; workers out on the map can only be recalled.
+  or a building; workers out on the map can only be recalled, and workers held at home only
+  released.
 - **No panics from input.** A randomized test throws thousands of hostile plans at the checks,
   and applies and resolves every one that passes, without a crash; others throw garbage, huge
   frames, early messages, wrong codes and floods of connections at the transport

@@ -32,7 +32,7 @@ use super::workers::WorkerJob;
 /// Bumped whenever a message or a plan changes shape, or the rules a turn
 /// plays out by, so mismatched builds refuse each other instead of
 /// desyncing.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -139,6 +139,9 @@ pub struct CityPlan {
     pub remembered_worked: Vec<Hex>,
     pub focus: LaborFocus,
     pub worker_jobs: Vec<WorkerJob>,
+    /// Of its workers at home, those held there (recalled, not yet
+    /// released).
+    pub held_workers: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -770,6 +773,11 @@ impl GameState {
             {
                 return bad(format!("{at}: PROGRESS IT DIDN'T MAKE"));
             }
+            // Planning releases held workers; only coming home recalled
+            // holds one, as the turn plays out.
+            if city.held_workers > before.map_or(0, |c| c.held_workers) {
+                return bad(format!("{at}: WORKERS IT DIDN'T HOLD"));
+            }
             // Its queue holds what a city trains: no Cavalry or Armored,
             // ships only with a Harbor, no growing past the cap.
             let harbor = before.is_some_and(|c| c.placed_site(Building::Harbor).is_some());
@@ -1092,6 +1100,7 @@ impl GameState {
                     remembered_worked: c.remembered_worked.clone(),
                     focus: c.focus,
                     worker_jobs: c.worker_jobs.clone(),
+                    held_workers: c.held_workers,
                 }
             })
             .collect();
@@ -1195,6 +1204,7 @@ impl GameState {
             city.remembered_worked = city_plan.remembered_worked.clone();
             city.focus = city_plan.focus;
             city.worker_jobs = city_plan.worker_jobs.clone();
+            city.held_workers = city_plan.held_workers;
         }
         for worker_plan in &plan.workers {
             let Some(worker) = self
@@ -1240,6 +1250,7 @@ impl GameState {
         }
         for c in &self.cities {
             (c.id, c.team, c.pos, c.population, c.progress, c.workers).hash(&mut h);
+            c.held_workers.hash(&mut h);
             (c.barracks, c.barracks_hp.to_bits(), c.barracks_progress).hash(&mut h);
             c.worked.hash(&mut h);
             c.built.len().hash(&mut h);
@@ -1525,6 +1536,45 @@ mod tests {
         job.hex = pos.neighbors()[3];
         let why = refused(&mut host, plan);
         assert!(why.contains("WORK IT DIDN'T DO"), "{why}");
+    }
+
+    #[test]
+    fn a_plan_releases_held_workers_but_never_holds_more() {
+        let (mut host, mut guest) = pair();
+        let city = guest
+            .cities
+            .iter()
+            .position(|c| c.team == GUEST_SEAT)
+            .unwrap();
+        // The guest's worker came home recalled: held, on both machines.
+        assert_eq!(guest.cities[city].workers, 1);
+        guest.cities[city].held_workers = 1;
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        start.cities[city].held_workers = 1;
+        let held = guest.team_plan(GUEST_SEAT);
+        assert_eq!(host.check_plan(&held), Ok(()));
+        guest.selected_city = Some(city);
+        guest.release_worker();
+        let released = guest.team_plan(GUEST_SEAT);
+        assert_eq!(host.check_plan(&released), Ok(()));
+        // Holding one more than came home.
+        let mut plan = held;
+        let c = plan
+            .cities
+            .iter()
+            .position(|c| c.held_workers == 1)
+            .unwrap();
+        plan.cities[c].held_workers = 2;
+        let why = host
+            .receive(GUEST_SEAT, Message::Plan(plan))
+            .expect_err("refused");
+        assert!(why.contains("WORKERS IT DIDN'T HOLD"), "{why}");
+        // The release carries to the host.
+        host.receive(GUEST_SEAT, Message::Plan(released.clone()))
+            .unwrap();
+        let mut applied = host.lockstep.as_ref().unwrap().turn_start.clone().unwrap();
+        applied.apply_plan(&released);
+        assert_eq!(applied.cities[city].held_workers, 0);
     }
 
     #[test]
