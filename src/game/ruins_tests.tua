@@ -1,0 +1,157 @@
+//! Ruins: holding them, claiming them, and what they give.
+
+use std.core.Keep;
+use std.str.Str;
+use std.str.eq as str_eq;
+use std.str.find;
+use std.str.starts_with;
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.city.City;
+use game.hex.Hex;
+use game.ruins.RUIN_HOLD_TURNS;
+use game.ruins.RuinReward;
+use game.ruins.ruin;
+use game.tests.sandbox;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+/// The combat scenario with no units and one ruin at the center.
+fn ruins_game(reward: RuinReward) -> GameState can {Log} {
+    let mut game = GameState.new();
+    game.units.clear();
+    game.selected = Option.None;
+    game.ruins.push(ruin(Hex.new(0, 0), reward));
+    game
+}
+
+fn put(game: &mut GameState, id: u32, hex: Hex, team: Team, unit_type: UnitType) {
+    game.units.push(Unit.new(id, hex, team, unit_type));
+}
+
+fn end_turns(game: &mut GameState, turns: u32) can {Log} {
+    for _t in 0..turns { game.resolve_ruins(); }
+}
+
+fn city(id: u32, team: Team, pos: Hex) -> City {
+    City { id, team, pos, population: 1, food: 0, production: 0, worked: Vec.new(), queue: Option.None }
+}
+
+fn has(line: &Str, part: &str) -> bool { find(line, part).is_some() }
+
+@test
+fn holding_ruins_for_three_turns_claims_them() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = ruins_game(RuinReward.Recruits);
+        put(&mut game, 1, Hex.new(0, 0), Team.Blue, UnitType.Scout);
+        end_turns(&mut game, RUIN_HOLD_TURNS - 1);
+        assert(game.ruins[0].held == RUIN_HOLD_TURNS - 1);
+        assert(game.units.len() == 1);
+        end_turns(&mut game, 1);
+        // Claimed and gone, and a cavalry unit joined.
+        assert(game.ruins.is_empty());
+        assert(game.units.len() == 2);
+        assert(game.units[1].unit_type == UnitType.Cavalry);
+        assert(game.units[1].team == Team.Blue);
+        let notice = &game.notice;
+        assert(starts_with(notice, "RUINS CLAIMED"));
+    });
+}
+
+@test
+fn a_contested_or_empty_ruin_pauses_and_a_new_holder_starts_over() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = ruins_game(RuinReward.Recruits);
+        let at = Hex.new(0, 0);
+        put(&mut game, 1, at, Team.Blue, UnitType.Melee);
+        end_turns(&mut game, 2);
+        assert(game.ruins[0].held == 2);
+
+        // Contested: the count pauses.
+        put(&mut game, 2, at, Team.Red, UnitType.Melee);
+        end_turns(&mut game, 3);
+        assert(game.ruins[0].holder == Option.Some(Team.Blue));
+        assert(game.ruins[0].held == 2);
+
+        // Red wins the hex: its count starts over.
+        handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team == Team.Red } }
+        end_turns(&mut game, 1);
+        assert(game.ruins[0].holder == Option.Some(Team.Red));
+        assert(game.ruins[0].held == 1);
+
+        // Left empty, the count holds.
+        game.units.clear();
+        end_turns(&mut game, 5);
+        assert(game.ruins[0].held == 1);
+        assert(game.ruins.len() == 1);
+    });
+}
+
+@test
+fn a_settler_does_not_hold_ruins() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = ruins_game(RuinReward.Recruits);
+        put(&mut game, 1, Hex.new(0, 0), Team.Blue, UnitType.Melee);
+        let _new = game.settlers.insert(1);
+        end_turns(&mut game, RUIN_HOLD_TURNS + 1);
+        assert(game.ruins[0].held == 0);
+    });
+}
+
+@test
+fn city_rewards_go_to_the_nearest_city() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let rewards: [RuinReward; 2] = [RuinReward.Supplies, RuinReward.Harvest];
+        let foods: [i32; 2] = [0, 32];
+        let productions: [i32; 2] = [24, 0];
+        for k in 0..2 {
+            let mut game = ruins_game(rewards[k]);
+            game.cities.push(city(0, Team.Blue, Hex.new(-3, 0)));
+            game.cities.push(city(1, Team.Blue, Hex.new(2, 0)));
+            put(&mut game, 1, Hex.new(0, 0), Team.Blue, UnitType.Melee);
+            end_turns(&mut game, RUIN_HOLD_TURNS);
+            assert(game.ruins.is_empty());
+            assert(game.cities[1].food == foods[k]);
+            assert(game.cities[1].production == productions[k]);
+            // The farther city gets nothing.
+            assert(game.cities[0].food == 0);
+        }
+    });
+}
+
+@test
+fn the_tooltip_tells_what_ruins_give_and_who_holds_them() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = ruins_game(RuinReward.Harvest);
+        let at = Hex.new(0, 0);
+        let notes = game.ruin_notes(at);
+        assert(notes.len() == 1);
+        assert(has(&notes[0], "HOLD 3 TURNS"));
+        assert(has(&notes[0], "FOOD"));
+        put(&mut game, 1, at, Team.Red, UnitType.Melee);
+        end_turns(&mut game, 1);
+        let held = game.ruin_notes(at);
+        let line = &held[1];
+        assert(str_eq(line, "RED HAS HELD THEM 1/3"));
+        assert(game.ruin_notes(Hex.new(1, 0)).is_empty());
+    });
+}
+
+@test
+fn a_side_without_a_city_gets_recruits() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = ruins_game(RuinReward.Supplies);
+        put(&mut game, 1, Hex.new(0, 0), Team.Red, UnitType.Scout);
+        end_turns(&mut game, RUIN_HOLD_TURNS);
+        assert(game.ruins.is_empty());
+        let mut recruited = false;
+        for i in 0..game.units.len() {
+            if game.units[i].team == Team.Red && game.units[i].unit_type == UnitType.Cavalry { recruited = true; }
+        }
+        assert(recruited);
+    });
+}

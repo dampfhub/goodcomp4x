@@ -1,59 +1,135 @@
-//! A deliberately minimal AI opponent.
+//! A deliberately minimal AI, playing every team but the player's.
 
 use std.collections.Deque;
 use std.collections.Map;
+use std.collections.Set;
 use game.GameState;
+use game.PLAYER_TEAM;
 use game.hex.Hex;
 use game.city.BuildUnit;
 use game.city.City;
 use game.unit.Team;
+use game.unit.TEAMS;
 
-/// The steps from a walk's origin to every hex it can reach.
-type Distances = Map[Hex, i32];
+/// A distance no reachable hex has.
+const UNREACHED: i32 = 2147483647;
 
-/// A walk's steps to `hex`, or a distance no reachable hex has.
-fn steps_to(distances: &Distances, hex: Hex) -> i32 { distances.get(hex).unwrap_or(2147483647) }
+/// Whether `(steps, hex)` sorts before `(best_steps, best)` by steps, then `q`, then `r`.
+fn closer(steps: i32, hex: Hex, best_steps: i32, best: Hex) -> bool {
+    if steps != best_steps { return steps < best_steps; }
+    if hex.q != best.q { return hex.q < best.q; }
+    hex.r < best.r
+}
 
 impl GameState {
-    /// Each unit closes on its nearest enemy: it attacks if already in range, otherwise moves
-    /// as close as it can and attacks if that brings it into range. Units in a contested hex
-    /// stay and fight. No coordination beyond not sending two units to the same hex, and no
-    /// retreating.
+    /// The teams the AI plays: every team but the player's that still has a unit or a city,
+    /// in `TEAMS` order.
+    pub fn ai_teams(&self) -> Vec[Team] {
+        let mut out: Vec[Team] = Vec.new();
+        for k in 0..7 {
+            let team = TEAMS[k];
+            if team == PLAYER_TEAM { continue; }
+            let mut present = false;
+            for i in 0..self.units.len() { if self.units[i].team == team { present = true; } }
+            for i in 0..self.cities.len() { if self.cities[i].team == team { present = true; } }
+            if present { out.push(team); }
+        }
+        out
+    }
+
+    /// Each unit closes on its nearest enemy, or on ruins nobody on its side holds
+    /// (`ruins.tua`) if those are nearer: it attacks if already in range, otherwise moves as
+    /// close as it can and attacks if that brings it into range; ruins it steps onto, and then
+    /// holds until they're claimed. Units in a contested hex stay and fight. No coordination
+    /// beyond not sending two units to the same hex, and no retreating.
     pub fn plan_ai_turn(&mut self, team: Team) {
         self.found_first_city(team);
         for idx in 0..self.units.len() {
             let id = self.units[idx].id;
-            let skip = self.units[idx].team != team
+            if self.units[idx].team != team
                 || self.rival_of(idx).is_some()
                 || self.player_controlled_units.contains(id)
                 || self.settlers.contains(id)
-                || self.workers.contains(id);
-            if skip { continue; }
-            let Option.Some(target) = self.nearest_enemy_pos(idx) else { continue; };
+                || self.workers.contains(id)
+            {
+                continue;
+            }
+            // A defender beside its city while enemies stand beside it too holds and fights; so
+            // does a unit holding ruins until they're claimed.
+            if self.gate_under_attack(idx) || self.ruin_at(self.units[idx].pos).is_some() {
+                self.units[idx].planned_attack = self.nearest_enemy_in_range(idx);
+                continue;
+            }
+            let Option.Some(target) = self.nearest_ai_target(idx) else { continue; };
 
             let unit = &self.units[idx];
             let stats = unit.stats();
-            let dest = if unit.pos.distance(target) <= stats.attack_range {
+            // Ruins are captured by moving onto them. Ships keep their water-only movement.
+            let capture = self.enemy_of_team_at(target, team).is_none();
+            let reachable = if unit.is_naval() { self.reachable_water(unit.pos, stats.move_range) } else { self.reachable_hexes(unit.pos, stats.move_range) };
+            let dest = if capture && reachable.contains(target) {
+                target
+            } else if !capture && unit.pos.distance(target) <= stats.attack_range {
                 unit.pos
             } else {
-                let to_target = self.walking_distances(target);
-                let reachable = self.reachable_hexes(unit.pos, stats.move_range);
+                let to_target = if unit.is_naval() { Map.new() } else { self.steps_to(target, &reachable) };
                 let mut best: Option[Hex] = Option.None;
-                for hex in reachable.each() {
-                    if self.claimed_by(team, *hex) { continue; }
-                    let better = match best {
-                        Option.None => true,
-                        Option.Some(b) => closer(steps_to(&to_target, *hex), *hex, steps_to(&to_target, b), b),
-                    };
-                    if better { best = Option.Some(*hex); }
+                let mut best_steps = UNREACHED;
+                for hh in reachable.each() {
+                    let hex = *hh;
+                    if self.claimed_by(team, hex) { continue; }
+                    let steps = if unit.is_naval() { hex.distance(target) } else { to_target.get(hex).unwrap_or(UNREACHED) };
+                    let better = match best { Option.None => true, Option.Some(b) => closer(steps, hex, best_steps, b) };
+                    if better {
+                        best = Option.Some(hex);
+                        best_steps = steps;
+                    }
                 }
                 best.unwrap_or(unit.pos)
             };
 
-            let unit = &mut self.units[idx];
-            if dest != unit.pos { unit.planned_move = Option.Some(dest); }
-            if dest.distance(target) <= stats.attack_range { unit.planned_attack = Option.Some(target); }
+            let pos = self.units[idx].pos;
+            if dest != pos { self.units[idx].planned_move = Option.Some(dest); }
+            let ruins = self.ruin_at(target).is_some() && !self.is_occupied(target);
+            let can_attack = self.units[idx].can_attack();
+            if can_attack && !ruins && dest != target && dest.distance(target) <= stats.attack_range {
+                self.units[idx].planned_attack = Option.Some(target);
+            }
         }
+    }
+
+    /// Whether unit `idx` stands beside one of its side's cities while an enemy stands beside it
+    /// too.
+    fn gate_under_attack(&self, idx: i32) -> bool {
+        let unit = &self.units[idx];
+        for c in 0..self.cities.len() {
+            let city = &self.cities[c];
+            if city.team != unit.team || unit.pos.distance(city.pos) != 1 { continue; }
+            for e in 0..self.units.len() {
+                if self.units[e].team != unit.team && self.units[e].pos.distance(city.pos) == 1 { return true; }
+            }
+        }
+        false
+    }
+
+    /// The enemy nearest unit `idx` within its attack range, lowest id first among equals.
+    fn nearest_enemy_in_range(&self, idx: i32) -> Option[Hex] {
+        let unit = &self.units[idx];
+        let range = unit.stats().attack_range;
+        let mut best: Option[i32] = Option.None;
+        for e in 0..self.units.len() {
+            let enemy = &self.units[e];
+            if enemy.team == unit.team || unit.pos.distance(enemy.pos) > range { continue; }
+            let better = match best {
+                Option.None => true,
+                Option.Some(b) => {
+                    let (d, bd) = (unit.pos.distance(enemy.pos), unit.pos.distance(self.units[b].pos));
+                    d < bd || (d == bd && enemy.id < self.units[b].id)
+                }
+            };
+            if better { best = Option.Some(e); }
+        }
+        match best { Option.Some(b) => Option.Some(self.units[b].pos), Option.None => Option.None }
     }
 
     /// With no city yet, `team` founds one where its first settler stands, before its combat
@@ -83,48 +159,106 @@ impl GameState {
         false
     }
 
-    /// Position of the enemy closest on foot, routing around terrain; ties go to the enemy
-    /// listed first.
-    fn nearest_enemy_pos(&self, idx: i32) -> Option[Hex] {
+    /// Where unit `idx` heads: the enemy unit, or the ruins no ally holds or is already heading
+    /// for, closest on foot (routing around terrain; ties go to the lowest coordinates). With
+    /// none reachable, the enemy nearest as the crow flies.
+    fn nearest_ai_target(&self, idx: i32) -> Option[Hex] {
         let unit = &self.units[idx];
-        let from_unit = self.walking_distances(unit.pos);
-        let mut best: Option[(i32, Hex)] = Option.None;
+        let team = unit.team;
+        let mut enemies: Set[Hex] = Set.new();
         for i in 0..self.units.len() {
-            let other = &self.units[i];
-            if other.team == unit.team { continue; }
-            let d = steps_to(&from_unit, other.pos);
-            let better = match best { Option.None => true, Option.Some((bd, _)) => d < bd };
-            if better { best = Option.Some((d, other.pos)); }
+            if self.units[i].team != team { let _new = enemies.insert(self.units[i].pos); }
         }
-        match best { Option.Some((_, pos)) => Option.Some(pos), Option.None => Option.None }
+        let mut nearest_enemy: Option[Hex] = Option.None;
+        for i in 0..self.units.len() {
+            let p = self.units[i].pos;
+            if self.units[i].team == team { continue; }
+            let better = match nearest_enemy { Option.None => true, Option.Some(b) => closer(unit.pos.distance(p), p, unit.pos.distance(b), b) };
+            if better { nearest_enemy = Option.Some(p); }
+        }
+        if unit.is_naval() { return nearest_enemy; }
+        let mut open_ruins: Set[Hex] = Set.new();
+        for r in 0..self.ruins.len() {
+            let pos = self.ruins[r].pos;
+            let mut taken = false;
+            for i in 0..self.units.len() {
+                let u = &self.units[i];
+                if u.team == team && (u.pos == pos || u.planned_move == Option.Some(pos)) { taken = true; }
+            }
+            if !taken { let _new = open_ruins.insert(pos); }
+        }
+        // Search outward ring by ring, stopping at the first ring with a target.
+        let mut seen: Set[Hex] = Set.new();
+        let _new = seen.insert(unit.pos);
+        let mut ring: Vec[Hex] = Vec.new();
+        ring.push(unit.pos);
+        while !ring.is_empty() {
+            let mut found: Option[Hex] = Option.None;
+            for k in 0..ring.len() {
+                let hex = ring[k];
+                if enemies.contains(hex) || open_ruins.contains(hex) {
+                    let better = match found { Option.None => true, Option.Some(b) => hex.q < b.q || (hex.q == b.q && hex.r < b.r) };
+                    if better { found = Option.Some(hex); }
+                }
+            }
+            if found.is_some() { return found; }
+            let mut next: Vec[Hex] = Vec.new();
+            for k in 0..ring.len() {
+                let around = ring[k].neighbors();
+                for n in 0..6 {
+                    if self.grid.is_passable(around[n]) && seen.insert(around[n]) { next.push(around[n]); }
+                }
+            }
+            ring = next;
+        }
+        nearest_enemy
     }
 
-    /// Steps from `origin` to every hex it can walk to, around impassable terrain but ignoring
-    /// units, since those will have moved by the time anyone gets there.
-    fn walking_distances(&self, origin: Hex) -> Distances {
-        let mut distances: Distances = Map.new();
-        distances.insert(origin, 0);
+    /// Steps on foot from each of `wanted` to `target`, around impassable terrain but ignoring
+    /// units, since those will have moved by the time anyone gets there. Searches outward from
+    /// `target` only until every one of `wanted` is found; any it can't reach are left out.
+    fn steps_to(&self, target: Hex, wanted: &Set[Hex]) -> Map[Hex, i32] {
+        let mut distances: Map[Hex, i32] = Map.new();
+        let _old = distances.insert(target, 0);
         let mut queue: Deque[Hex] = Deque.new();
-        queue.push_back(origin);
+        queue.push_back(target);
+        let mut left = wanted.len();
+        if wanted.contains(target) { left = left - 1; }
         while let Option.Some(hex) = queue.pop_front() {
-            let next_distance = steps_to(&distances, hex) + 1;
+            if left == 0 { break; }
+            let next_distance = distances.get(hex).unwrap_or(0) + 1;
             let around = hex.neighbors();
             for k in 0..6 {
                 let neighbor = around[k];
                 if self.grid.is_passable(neighbor) && !distances.has(neighbor) {
-                    distances.insert(neighbor, next_distance);
+                    let _old = distances.insert(neighbor, next_distance);
                     queue.push_back(neighbor);
+                    if wanted.contains(neighbor) { left = left - 1; }
                 }
             }
         }
         distances
     }
-}
 
-/// Whether `(steps, hex)` orders before `(best_steps, best)`: fewer steps, then the smaller
-/// `q`, then the smaller `r`, so the choice never depends on iteration order.
-fn closer(steps: i32, hex: Hex, best_steps: i32, best: Hex) -> bool {
-    if steps != best_steps { return steps < best_steps; }
-    if hex.q != best.q { return hex.q < best.q; }
-    hex.r < best.r
+    /// Water hexes a ship can reach from `start` in `move_range` steps, around land and occupied
+    /// hexes.
+    fn reachable_water(&self, start: Hex, move_range: i32) -> Set[Hex] {
+        let mut visited: Set[Hex] = Set.new();
+        let _new = visited.insert(start);
+        let mut frontier: Vec[Hex] = Vec.new();
+        frontier.push(start);
+        for _ in 0..move_range {
+            let mut next: Vec[Hex] = Vec.new();
+            for f in 0..frontier.len() {
+                let around = frontier[f].neighbors();
+                for k in 0..6 {
+                    let n = around[k];
+                    let open = self.grid.contains(n) && self.grid.terrain(n).is_water() && !self.is_occupied(n);
+                    if open && visited.insert(n) { next.push(n); }
+                }
+            }
+            frontier = next;
+        }
+        visited
+    }
 }

@@ -1,0 +1,198 @@
+//! Ruins: one-use tiles on contested ground (`mapgen.tua` places them about as far from the two
+//! nearest starts), there to give every side an early reason to fight. A side claims one by
+//! holding it with a military unit (anything but a settler, scouts included) at the end of
+//! `RUIN_HOLD_TURNS` turns, and gets its reward at once; the ruins are then gone. The count
+//! pauses while the hex is contested or empty, and starts over when another side takes it. The
+//! rewards are a first pass.
+
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.fmt.show_u64;
+use std.str.Str;
+use log.Log;
+use log.info;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.text;
+use game.city.City;
+use game.city.show_amount;
+use game.hex.Hex;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+/// Turn ends a side must hold ruins through to claim them.
+pub const RUIN_HOLD_TURNS: u32 = 3;
+/// Production the Supplies reward adds to the nearest city, in quarters (half a melee unit).
+const SUPPLIES_PRODUCTION: i32 = 24;
+/// Food the Harvest reward adds to the nearest city, in quarters.
+const HARVEST_FOOD: i32 = 32;
+
+/// What claiming ruins gives.
+pub enum RuinReward {
+    /// A cavalry unit joins the claimant beside the ruins.
+    Recruits,
+    /// Production for the claimant's city nearest the ruins.
+    Supplies,
+    /// Food for the claimant's city nearest the ruins.
+    Harvest,
+}
+
+pub const RUIN_REWARDS: [RuinReward; 3] = [RuinReward.Recruits, RuinReward.Supplies, RuinReward.Harvest];
+
+impl RuinReward {
+    /// What it gives, for the tile tooltip.
+    pub fn describe(self) can {Out} {
+        match self {
+            RuinReward.Recruits => Out.put("A CAVALRY UNIT"),
+            RuinReward.Supplies => { Out.put("+"); show_amount(SUPPLIES_PRODUCTION); Out.put(" PRODUCTION IN THE NEAREST CITY"); }
+            RuinReward.Harvest => { Out.put("+"); show_amount(HARVEST_FOOD); Out.put(" FOOD IN THE NEAREST CITY"); }
+        }
+    }
+}
+
+pub struct Ruin {
+    pos: Hex,
+    reward: RuinReward,
+    /// The side whose count is running, if any has held the ruins yet.
+    holder: Option[Team],
+    /// Turn ends `holder` has held the ruins through.
+    held: u32,
+}
+
+pub fn ruin(pos: Hex, reward: RuinReward) -> Ruin { Ruin { pos, reward, holder: Option.None, held: 0 } }
+
+/// Who holds a hex: nobody, one side alone, or several (contested).
+enum Holding { Empty, Held(Team), Contested }
+
+/// `Blue CITY 2`, as a notice names a city.
+fn show_city(city: &City) can {Out} {
+    Out.put(city.team.name()); Out.put(" CITY "); show_u64((city.id + 1) as u64);
+}
+
+impl GameState {
+    /// The index of the ruins on `hex`, if any are left.
+    pub fn ruin_at(&self, hex: Hex) -> Option[i32] {
+        for i in 0..self.ruins.len() { if self.ruins[i].pos == hex { return Option.Some(i); } }
+        Option.None
+    }
+
+    /// The tile tooltip's lines about ruins on `hex`: what they give, and who has held them
+    /// how long.
+    pub fn ruin_notes(&self, hex: Hex) -> Vec[Str] {
+        let mut notes: Vec[Str] = Vec.new();
+        let Option.Some(i) = self.ruin_at(hex) else { return notes; };
+        let reward = self.ruins[i].reward;
+        notes.push(text(fn() can {Out} {
+            Out.put("RUINS: HOLD "); show_u64(RUIN_HOLD_TURNS as u64); Out.put(" TURNS WITH A MILITARY UNIT FOR "); reward.describe();
+        }));
+        if let Option.Some(team) = self.ruins[i].holder {
+            let held = self.ruins[i].held;
+            notes.push(text(fn() can {Out} {
+                Out.put(team.name()); Out.put(" HAS HELD THEM "); show_u64(held as u64); Out.put("/"); show_u64(RUIN_HOLD_TURNS as u64);
+            }));
+        }
+        notes
+    }
+
+    /// The side holding `hex` with military units, alone: nobody if it's empty or held only by
+    /// a settler.
+    fn sole_holder(&self, hex: Hex) -> Holding {
+        let mut first: Option[Team] = Option.None;
+        let mut contested = false;
+        for i in 0..self.units.len() {
+            let u = &self.units[i];
+            if u.pos != hex || self.settlers.contains(u.id) { continue; }
+            match first {
+                Option.None => { first = Option.Some(u.team); }
+                Option.Some(t) => { if t != u.team { contested = true; } }
+            }
+        }
+        if contested { return Holding.Contested; }
+        match first { Option.Some(t) => Holding.Held(t), Option.None => Holding.Empty }
+    }
+
+    /// At the end of a turn: counts a turn for every ruins held by one side alone, starting over
+    /// for a side that has just taken them from another, and hands out the reward for any held
+    /// long enough. Contested or empty ruins keep their count.
+    pub fn resolve_ruins(&mut self) can {Log} {
+        let mut claimed: Vec[i32] = Vec.new();
+        for i in 0..self.ruins.len() {
+            let Holding.Held(team) = self.sole_holder(self.ruins[i].pos) else { continue; };
+            if self.ruins[i].holder == Option.Some(team) {
+                self.ruins[i].held = self.ruins[i].held + 1;
+            } else {
+                self.ruins[i].holder = Option.Some(team);
+                self.ruins[i].held = 1;
+            }
+            let (pos, held) = (self.ruins[i].pos, self.ruins[i].held);
+            info(fn() can {Out} {
+                team.show(); Out.put(" holds the ruins at ("); show_i64(pos.q as i64); Out.put(", "); show_i64(pos.r as i64);
+                Out.put("): "); show_u64(held as u64); Out.put("/"); show_u64(RUIN_HOLD_TURNS as u64);
+            });
+            if held >= RUIN_HOLD_TURNS { claimed.push(i); }
+        }
+        let mut k = claimed.len() - 1;
+        while k >= 0 {
+            let taken = self.ruins.remove(claimed[k]);
+            self.claim_ruin(&taken);
+            k = k - 1;
+        }
+    }
+
+    /// Gives `ruin`'s holder its reward. A city reward goes to the side's city nearest the
+    /// ruins; a side without a city gets the Recruits instead, and Recruits with no room beside
+    /// the ruins give nothing.
+    fn claim_ruin(&mut self, ruin: &Ruin) can {Log} {
+        let Option.Some(team) = ruin.holder else { return; };
+        let mut city: Option[i32] = Option.None;
+        for i in 0..self.cities.len() {
+            if self.cities[i].team != team { continue; }
+            let nearer = match city {
+                Option.None => true,
+                Option.Some(c) => self.cities[i].pos.distance(ruin.pos) < self.cities[c].pos.distance(ruin.pos),
+            };
+            if nearer { city = Option.Some(i); }
+        }
+        let reward = if city.is_none() { RuinReward.Recruits } else { ruin.reward };
+        let what = match (reward, city) {
+            (RuinReward.Supplies, Option.Some(c)) => {
+                self.cities[c].production = self.cities[c].production + SUPPLIES_PRODUCTION;
+                let named = &self.cities[c];
+                text(fn() can {Out} { Out.put("+"); show_amount(SUPPLIES_PRODUCTION); Out.put(" PRODUCTION IN "); show_city(named); })
+            }
+            (RuinReward.Harvest, Option.Some(c)) => {
+                self.cities[c].food = self.cities[c].food + HARVEST_FOOD;
+                let named = &self.cities[c];
+                text(fn() can {Out} { Out.put("+"); show_amount(HARVEST_FOOD); Out.put(" FOOD IN "); show_city(named); })
+            }
+            _ => {
+                let around = ruin.pos.neighbors();
+                let mut spot: Option[Hex] = Option.None;
+                for k in 0..7 {
+                    let h = if k < 6 { around[k] } else { ruin.pos };
+                    if spot.is_none() && self.grid.is_passable(h) && !self.is_occupied(h) { spot = Option.Some(h); }
+                }
+                match spot {
+                    Option.Some(s) => {
+                        let id = self.next_unit_id;
+                        self.next_unit_id = self.next_unit_id + 1;
+                        self.units.push(Unit.new(id, s, team, UnitType.Cavalry));
+                        text(fn() can {Out} { Out.put("A CAVALRY UNIT JOINS YOU"); })
+                    }
+                    Option.None => text(fn() can {Out} { Out.put("BUT THERE WAS NO ROOM FOR RECRUITS"); }),
+                }
+            }
+        };
+        let pos = ruin.pos;
+        let said = &what;
+        info(fn() can {Out} {
+            team.show(); Out.put(" claims the ruins at ("); show_i64(pos.q as i64); Out.put(", "); show_i64(pos.r as i64); Out.put("): "); Out.put(said);
+        });
+        if team == PLAYER_TEAM {
+            self.notice = text(fn() can {Out} { Out.put("RUINS CLAIMED - "); Out.put(said); });
+        } else {
+            self.notice = text(fn() can {Out} { Out.put(team.name()); Out.put(" CLAIMED THE RUINS"); });
+        }
+    }
+}

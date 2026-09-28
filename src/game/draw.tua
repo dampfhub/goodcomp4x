@@ -26,6 +26,7 @@ use game.mesh.regular_polygon;
 use game.mesh.segment;
 use game.orders.ClickMode;
 use game.terrain.Feature;
+use game.ruins.RUIN_HOLD_TURNS;
 use game.terrain.Terrain;
 use game.terrain.Tile;
 use game.hex.HexGrid;
@@ -58,6 +59,15 @@ const WAVE_COLOR: Color = [0.16, 0.32, 0.52, 1.0];
 const DEEP_WAVE_COLOR: Color = [0.05, 0.13, 0.28, 1.0];
 const RIVER_COLOR: Color = [0.12, 0.34, 0.70, 1.0];
 const RIVER_WIDTH: f32 = 0.16;
+/// The widest window a view is drawn in, width over height.
+const MAX_VIEW_ASPECT: f32 = 2.4;
+const SPECIAL_RIM_COLOR: Color = [0.95, 0.66, 0.12, 1.0];
+const RUIN_RIM_COLOR: Color = [0.62, 0.58, 0.50, 1.0];
+const LANDMARK_RIM_WIDTH: f32 = 0.05;
+/// Where the pips counting a ruin's hold start, from the hex's center, and their size.
+const RUIN_PIPS: Vec2 = Vec2 { x: -0.06, y: -0.7 };
+const RUIN_PIP_RADIUS: f32 = 0.05;
+const RUIN_PIP_GAP: f32 = 0.13;
 const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
 const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
 const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
@@ -180,13 +190,21 @@ impl GameState {
             Option.None => Option.None,
         };
 
+        // Only what the camera may show: a big map has far more hexes than a view, and more
+        // vertices than a frame draws.
+        let (view_min, view_max) = self.view_rect();
         for h in self.grid.hexes() {
             let hex = *h;
             let center = hex.to_world();
+            if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
             let fill = self.hex_fill(hex, &selection);
             regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
             regular_polygon(center, HEX_SIZE * 0.92, 6, 0.0, fill, &mut out);
             push_tile_symbols(center, self.grid.tile(hex), &mut out);
+            if self.grid.special(hex).is_some() {
+                polygon_outline(center, HEX_SIZE * 0.92 - LANDMARK_RIM_WIDTH / 2.0, LANDMARK_RIM_WIDTH, 6, 0.0, SPECIAL_RIM_COLOR, &mut out);
+            }
+            self.push_ruin(hex, &mut out);
         }
         push_rivers(&self.grid, &mut out);
 
@@ -412,6 +430,30 @@ impl GameState {
                 let digits = text(fn() can {Out} { show_i64(count as i64); });
                 push_text(p.add(vec2(0.11, -0.105)), 0.21, &digits, color, out);
             }
+        }
+    }
+}
+
+impl GameState {
+    /// The world rectangle a view may show: as tall as the camera sees and as wide as the widest
+    /// window it's drawn in (`MAX_VIEW_ASPECT`).
+    fn view_rect(&self) -> (Vec2, Vec2) {
+        let half = self.camera.half_height;
+        let reach = vec2(half * MAX_VIEW_ASPECT, half);
+        (self.camera.center.sub(reach), self.camera.center.add(reach))
+    }
+
+    /// Ruins on `hex`: a rim, and a pip for each turn their holder has held them, in its color.
+    fn push_ruin(&self, hex: Hex, out: &mut Vec[MeshVertex]) {
+        let Option.Some(i) = self.ruin_at(hex) else { return; };
+        let center = hex.to_world();
+        polygon_outline(center, HEX_SIZE * 0.92 - LANDMARK_RIM_WIDTH / 2.0, LANDMARK_RIM_WIDTH, 6, 0.0, RUIN_RIM_COLOR, out);
+        let color = match self.ruins[i].holder { Option.Some(t) => t.color(), Option.None => BORDER_COLOR };
+        for k in 0..RUIN_HOLD_TURNS {
+            let pip = center.add(RUIN_PIPS).add(vec2(k as f32 * RUIN_PIP_GAP, 0.0));
+            let fill = if k < self.ruins[i].held { color } else { BORDER_COLOR };
+            regular_polygon(pip, RUIN_PIP_RADIUS + 0.012, 6, 0.0, BORDER_COLOR, out);
+            regular_polygon(pip, RUIN_PIP_RADIUS, 6, 0.0, fill, out);
         }
     }
 }

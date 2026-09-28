@@ -38,6 +38,7 @@ use screenshot.DEFAULT_SIZE;
 use persist.read;
 use persist.write;
 use game.settings.settings_from_text;
+use game.settings.default_settings;
 use std.str.eq as str_eq;
 use screenshot.Screenshot;
 use screenshot.screenshot;
@@ -108,7 +109,7 @@ fn forget_gestures(input: &mut Input) {
 }
 
 /// Applies one window event to the game, answering what the window should do about it.
-fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest can {Log, Clock} {
+fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest can {Log, Clock, Rand} {
     match e {
         Event.CloseRequested => { input.closed = true; }
         Event.Resized(w, h) => { input.size = vec2(w as f32, h as f32); }
@@ -193,7 +194,7 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
 }
 
 /// A key going down, not repeating.
-fn on_key(game: &mut GameState, key: Key) can {Log} {
+fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
     match key {
         Key.Space => game.hold_or_end_turn(),
         Key.Tab => game.select_next_unit(),
@@ -214,6 +215,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log} {
             1 => game.switch_scenario(Scenario.Combat),
             2 => game.switch_scenario(Scenario.Cities),
             3 => game.switch_scenario(Scenario.Frontier),
+            4 => game.switch_scenario(Scenario.World),
             6 => game.save_state(),
             7 => game.load_state(),
             8 => game.toggle_instant_playback(),
@@ -302,7 +304,10 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
     if !claim_app_id(APP_USER_MODEL_ID) { warn(fn() can {Out} { Out.put("couldn't set the taskbar application id"); }); }
     let icons = Icons { small: icon(WINDOW_ICON_SIZE), small_size: WINDOW_ICON_SIZE, big: icon(TASKBAR_ICON_SIZE), big_size: TASKBAR_ICON_SIZE };
     handle {
-        let mut game = options.scenario.start();
+        let mut game = match options.seed {
+            Option.Some(s) => GameState.world_scenario_with(s, &default_settings()),
+            Option.None => options.scenario.start(&default_settings()),
+        };
         // Everywhere but a screenshot keeps the player's settings between sessions.
         let remember = !hidden;
         let saved = if remember { read(SETTINGS_FILE) } else { Option.None };

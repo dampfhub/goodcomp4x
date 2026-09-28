@@ -9,6 +9,14 @@ use game.hex.Hex;
 use game.scenario.Scenario;
 use game.tests.nothing_pending;
 use game.tests.sandbox;
+use game.PLAYER_TEAM;
+use game.scenario.SCENARIOS;
+use game.settings.default_settings;
+use game.unit.TEAMS;
+use game.unit.Team;
+use game.unit.UnitType;
+use cli.scenario_named;
+use std.str.to_ascii_lower;
 
 @test
 fn loading_restores_the_snapshot_and_keeps_it() {
@@ -64,5 +72,105 @@ fn instant_playback_resolves_the_whole_turn_at_once() {
         game.update(0.0);
         // Every step played in one update.
         assert(!game.is_resolving());
+    });
+}
+
+@test
+fn every_scenario_is_found_by_its_name_in_any_case() {
+    for i in 0..4 {
+        let scenario = SCENARIOS[i];
+        let name = scenario.name();
+        assert(scenario_named(name) == Option.Some(scenario));
+        let lower = to_ascii_lower(name);
+        let view = &lower;
+        assert(scenario_named(view) == Option.Some(scenario));
+    }
+    assert(scenario_named("city").is_none());
+    assert(scenario_named("").is_none());
+}
+
+@test
+fn the_world_starts_every_side_with_a_city_and_a_scout() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let seeds: [u32; 3] = [5, 6, 7];
+        for s in 0..3 {
+            let seed = seeds[s];
+            let game = GameState.world_scenario(seed);
+            assert(game.scenario == Scenario.World);
+            assert(game.map_seed == Option.Some(seed));
+            // 4 to 6 AI sides, by the seed, and the player.
+            let sides = 1 + 4 + (seed % 3) as i32;
+            assert(game.cities.len() == sides);
+            // A scout each.
+            assert(game.units.len() == sides);
+            assert(game.settlers.len() == 0);
+            for k in 0..sides {
+                let team = TEAMS[k];
+                let mut cities = 0;
+                for c in 0..game.cities.len() { if game.cities[c].team == team { cities = cities + 1; } }
+                assert(cities == 1);
+                let mut scout = false;
+                for u in 0..game.units.len() { if game.units[u].team == team && game.units[u].unit_type == UnitType.Scout { scout = true; } }
+                assert(scout);
+            }
+            assert(game.ai_teams().len() == sides - 1);
+            for u in 0..game.units.len() { assert(game.grid.is_passable(game.units[u].pos)); }
+            // Ruins to fight over.
+            assert(!game.ruins.is_empty());
+            // It opens on the city, which has nothing to build yet.
+            let Option.Some(open) = game.selected_city else { assert(false); return; };
+            assert(game.cities[open].team == PLAYER_TEAM);
+            assert(game.selected.is_none());
+            let mut by_city = false;
+            for u in 0..game.units.len() {
+                if game.units[u].team == PLAYER_TEAM && game.units[u].pos.distance(game.cities[open].pos) == 1 { by_city = true; }
+            }
+            assert(by_city);
+        }
+    });
+}
+
+@test
+fn the_world_can_start_with_settlers_and_a_chosen_number_of_ai() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut settings = default_settings();
+        settings.world_ai = 2;
+        settings.world_start_city = false;
+        let game = GameState.world_scenario_with(9, &settings);
+        assert(game.cities.is_empty());
+        // The player's and two AI settlers, and a scout each.
+        assert(game.settlers.len() == 3);
+        assert(game.units.len() == 6);
+        let Option.Some(selected) = game.selected else { assert(false); return; };
+        // The player's settler.
+        assert(game.settlers.contains(game.units[selected].id));
+        assert(game.units[selected].team == PLAYER_TEAM);
+    });
+}
+
+@test
+fn world_settings_carry_into_the_next_world() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.settings.world_ai = 1;
+        game.settings.world_start_city = false;
+        game.switch_scenario(Scenario.World);
+        assert(game.settlers.len() == 2);
+        let teams = game.ai_teams();
+        assert(teams.len() == 1 && teams[0] == Team.Red);
+    });
+}
+
+@test
+fn every_world_starts_its_scouts_on_hills() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        for seed in 0..6 {
+            let game = GameState.world_scenario(seed as u32);
+            for u in 0..game.units.len() {
+                let hills = game.grid.tile(game.units[u].pos).hills;
+                let scout = game.units[u].unit_type == UnitType.Scout;
+                assert(hills == scout);
+            }
+        }
     });
 }

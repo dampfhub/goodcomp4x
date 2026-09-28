@@ -4,6 +4,7 @@
 //! same situation.
 
 use std.collections.Deque;
+use std.core.Eq;
 use std.collections.Key;
 use std.collections.Map;
 use std.collections.Set;
@@ -19,6 +20,10 @@ use game.city.City;
 use game.hex.HexGrid;
 use game.turn.Phase;
 use game.unit.UnitType;
+use game.settings.Settings;
+use game.ruins.Ruin;
+use std.rand.Rand;
+use std.rand.draw;
 
 /// The test scenarios F1-F3 switch between.
 pub enum Scenario {
@@ -28,9 +33,15 @@ pub enum Scenario {
     Cities,
     /// A settler each and no cities yet.
     Frontier,
+    /// The player and 4-6 AI sides on a randomly generated map (`mapgen.tua`).
+    World,
 }
 
-pub const SCENARIOS: [Scenario; 3] = [Scenario.Combat, Scenario.Cities, Scenario.Frontier];
+pub const SCENARIOS: [Scenario; 4] = [Scenario.Combat, Scenario.Cities, Scenario.Frontier, Scenario.World];
+
+impl Eq for Scenario {
+    fn eq(self, other: Scenario) -> bool { self.index() == other.index() }
+}
 
 impl Scenario {
     pub fn name(self) -> str {
@@ -38,7 +49,13 @@ impl Scenario {
             Scenario.Combat => "COMBAT",
             Scenario.Cities => "CITIES",
             Scenario.Frontier => "FRONTIER",
+            Scenario.World => "WORLD",
         }
+    }
+
+    /// Its place in `SCENARIOS`.
+    pub fn index(self) -> i32 {
+        match self { Scenario.Combat => 0, Scenario.Cities => 1, Scenario.Frontier => 2, Scenario.World => 3 }
     }
 
     /// The function key that switches to it.
@@ -47,14 +64,18 @@ impl Scenario {
             Scenario.Combat => "F1",
             Scenario.Cities => "F2",
             Scenario.Frontier => "F3",
+            Scenario.World => "F4",
         }
     }
 
-    pub fn start(self) -> GameState can {Log} {
+    /// A fresh game of this scenario, drawing the world's map seed from `Rand` and building it
+    /// as `settings` say (`Settings.world_ai`, `Settings.world_start_city`).
+    pub fn start(self, settings: &Settings) -> GameState can {Log, Rand} {
         match self {
             Scenario.Combat => GameState.new(),
             Scenario.Cities => GameState.city_scenario(),
             Scenario.Frontier => GameState.frontier_scenario(),
+            Scenario.World => GameState.world_scenario_with(draw().shr(32) as u32, settings),
         }
     }
 }
@@ -62,8 +83,8 @@ impl Scenario {
 impl GameState {
     /// F1-F3: starts `scenario` afresh (restarting it, if it's the current one), keeping the
     /// savestate and the player's settings (and whether their menu is open).
-    pub fn switch_scenario(&mut self, scenario: Scenario) can {Log} {
-        let mut next = scenario.start();
+    pub fn switch_scenario(&mut self, scenario: Scenario) can {Log, Rand} {
+        let mut next = scenario.start(&self.settings);
         swap(&mut next.savestate, &mut self.savestate);
         next.settings = self.settings.copy();
         next.settings_open = self.settings_open;
@@ -159,6 +180,8 @@ impl GameState {
             savestate: Option.None,
             effects: copy_vec(&self.effects),
             settings: self.settings.copy(),
+            map_seed: self.map_seed,
+            ruins: copy_vec(&self.ruins),
             settings_open: self.settings_open,
             quit_requested: self.quit_requested,
             turn: self.turn,

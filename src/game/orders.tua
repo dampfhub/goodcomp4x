@@ -1,5 +1,6 @@
 //! Player input and order planning. Orders only take effect when the turn resolves.
 
+use std.rand.Rand;
 use std.core.Eq;
 use std.linalg.Vec2;
 use std.iter.each;
@@ -65,7 +66,7 @@ impl GameState {
     /// tray applies to this map click only, unless a modifier key picked `mode` itself. Once
     /// the selected unit has nothing left to plan, selection moves on to the next unit that
     /// does. Ignored while a turn is playing out.
-    pub fn handle_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) can {Log} {
+    pub fn handle_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) can {Log, Rand} {
         if self.is_resolving() { return; }
         if self.click_ui(cursor, screen_size) { return; }
         let armed = self.ui_click_mode;
@@ -212,15 +213,16 @@ impl GameState {
     /// that needs something to build; failing that, clears the selection and waits for the
     /// player to end the turn.
     pub fn select_next_or_end_turn(&mut self, after: Option[i32]) {
-        if let Option.Some(next) = self.next_unit_needing_orders(after) {
-            self.select_and_focus(Option.Some(next));
-            return;
-        }
+        // In the turn strip's order: production first, then the units.
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) {
                 self.open_city(i);
                 return;
             }
+        }
+        if let Option.Some(next) = self.next_unit_needing_orders(after) {
+            self.select_and_focus(Option.Some(next));
+            return;
         }
         self.selected = Option.None;
     }
@@ -238,17 +240,21 @@ impl GameState {
     }
 
     /// The first of the player's units after `after` (in unit order, wrapping around) that
-    /// still needs orders. Starts from the first unit if `after` is `None`.
+    /// still needs orders, a settler if any still does. Starts from the first unit if `after` is
+    /// `None`.
     pub fn next_unit_needing_orders(&self, after: Option[i32]) -> Option[i32] {
         let count = self.units.len();
         let start = match after { Option.Some(i) => i + 1, Option.None => 0 };
+        let mut first: Option[i32] = Option.None;
         for step in 0..count {
             let i = (start + step) % count;
             if after != Option.Some(i) && self.is_player_controlled(i) && self.needs_orders(i) {
-                return Option.Some(i);
+                // Civilians (settlers) come first, as in the turn strip.
+                if self.settlers.contains(self.units[i].id) { return Option.Some(i); }
+                if first.is_none() { first = Option.Some(i); }
             }
         }
-        Option.None
+        first
     }
 
     /// The first of the player's units after `after`, wrapping around, not `after` itself.

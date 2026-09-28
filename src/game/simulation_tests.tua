@@ -1,0 +1,152 @@
+//! Whole-game simulation tests: every team planned by the AI, every turn resolved through the
+//! same path the game uses, and the board's invariants checked after each turn. Every game is
+//! seeded (damage rolls and the F4 world's map), so a failure names its scenario and seed and
+//! replays exactly.
+
+use std.collections.Set;
+use std.rand.Rand;
+use std.rand.seed;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.ruins.RUIN_HOLD_TURNS;
+use game.scenario.SCENARIOS;
+use game.scenario.Scenario;
+use game.unit.TEAMS;
+
+const TURNS: u32 = 40;
+/// The seeds every run plays.
+const SEEDS: [u64; 3] = [1, 2, 3];
+
+/// Runs `body` with the combat log discarded and `Rand` drawing from `s`.
+fn seeded(s: u64, body: affine fn() can {Log, Rand, Assert}) can {Assert} {
+    let mut g = seed(s);
+    handle {
+        handle { body(); } with Rand { rand() => { resume g.next() } }
+    } with Log {
+        enabled(level) => { resume false }
+        record(level, text) => { resume }
+    }
+}
+
+/// A fresh game of `scenario`, playing every step at once.
+fn start(scenario: Scenario) -> GameState can {Log, Rand} {
+    let mut game = GameState.new();
+    game.settings.instant_playback = true;
+    game.switch_scenario(scenario);
+    game
+}
+
+/// Plans every team with the AI and resolves one turn, all steps at once.
+fn play_turn(game: &mut GameState) can {Log, Rand} {
+    game.selected = Option.None;
+    game.group.clear();
+    game.plan_ai_turn(PLAYER_TEAM);
+    // `resolve_turn` plans the AI teams itself.
+    game.resolve_turn();
+    game.update(0.0);
+}
+
+/// The board's invariants: ruins on land, unclaimed and counted by their holder; every unit
+/// with its own id and some of its hit points, standing where it can; one unit to a hex but
+/// for a contest of two enemies; a queue a chain of turns; cities populated and working no
+/// more tiles than their people.
+fn check_invariants(game: &GameState) can {Assert} {
+    for r in 0..game.ruins.len() {
+        let ruin = &game.ruins[r];
+        assert(game.grid.is_passable(ruin.pos));
+        // Held long enough, they'd have been claimed and gone.
+        assert(ruin.held < RUIN_HOLD_TURNS);
+        assert(ruin.holder.is_some() == (ruin.held > 0));
+    }
+    let mut ids: Set[i64] = Set.new();
+    for i in 0..game.units.len() {
+        let unit = &game.units[i];
+        assert(ids.insert(unit.id as i64));
+        assert(unit.hp > 0.0 && unit.hp <= unit.max_hp());
+        if unit.is_naval() {
+            assert(game.grid.contains(unit.pos) && game.grid.terrain(unit.pos).is_water());
+        } else {
+            assert(game.grid.is_passable(unit.pos));
+        }
+        assert(unit.cargo.len() <= 4);
+        // A queue is a chain: each queued turn starts where the one before it ends.
+        let mut from = unit.planned_pos();
+        for t in 0..unit.queued.len() {
+            assert(unit.queued[t].from == from);
+            from = unit.queued[t].end_pos();
+        }
+        let mut here = 0;
+        let mut enemies = false;
+        for j in 0..game.units.len() {
+            if game.units[j].pos == unit.pos {
+                here = here + 1;
+                if game.units[j].team != unit.team { enemies = true; }
+            }
+        }
+        // One unit per hex, except a contest: exactly two enemies.
+        assert(here == 1 || (here == 2 && enemies));
+    }
+    for c in 0..game.cities.len() {
+        let city = &game.cities[c];
+        assert(city.population >= 1);
+        assert(city.worked.len() <= city.population);
+    }
+}
+
+@test
+fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
+    for s in 0..4 {
+        for k in 0..3 {
+            seeded(SEEDS[k], fn() can {Log, Rand, Assert} {
+                let scenario = SCENARIOS[s];
+                let mut game = start(scenario);
+                check_invariants(&game);
+                let ruins_at_start = game.ruins.len();
+                for turn in 1..=TURNS {
+                    let ruins_before = game.ruins.len();
+                    play_turn(&mut game);
+                    // The turn finished resolving, and counted.
+                    assert(!game.is_resolving());
+                    assert(game.turn == turn);
+                    // No ruins appeared.
+                    assert(game.ruins.len() <= ruins_before);
+                    check_invariants(&game);
+                }
+                // Anti-vacuity: the AI goes for the world's ruins, and claims some.
+                if scenario == Scenario.World { assert(game.ruins.len() < ruins_at_start); }
+            });
+        }
+    }
+}
+
+@test
+fn a_crowded_world_of_settlers_keeps_the_board_consistent() {
+    // The most sides there are, each starting with a settler to found its city: the other way
+    // a world can start (`Settings.world_start_city`).
+    for k in 0..3 {
+        seeded(SEEDS[k], fn() can {Log, Rand, Assert} {
+            let mut game = GameState.new();
+            game.settings.instant_playback = true;
+            game.settings.world_ai = 6;
+            game.settings.world_start_city = false;
+            game.switch_scenario(Scenario.World);
+            assert(game.ai_teams().len() == 6);
+            check_invariants(&game);
+            for turn in 1..=TURNS {
+                play_turn(&mut game);
+                check_invariants(&game);
+                if turn == 1 {
+                    // Every side founded its city on its start.
+                    for t in 0..7 {
+                        let mut founded = false;
+                        for c in 0..game.cities.len() { if game.cities[c].team == TEAMS[t] { founded = true; } }
+                        assert(founded);
+                    }
+                }
+            }
+        });
+    }
+}

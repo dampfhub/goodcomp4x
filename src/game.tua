@@ -20,6 +20,8 @@ use game.city.City;
 use game.city.Site;
 use game.effects.Playing;
 use game.scenario.Scenario;
+use game.ruins.Ruin;
+use game.settings.default_settings as fresh_settings;
 use game.settings.Settings;
 use game.settings.default_settings;
 use game.hex.HEX_SIZE;
@@ -131,6 +133,10 @@ pub struct GameState {
     /// Frontier sandbox units that the player may command despite being Red.
     player_controlled_units: IdSet,
     next_unit_id: u32,
+    /// The seed of a generated map (the F4 world), shown in the debug panel.
+    map_seed: Option[u32],
+    /// Ruins not yet claimed (`ruins.tua`), in the order the map made them.
+    ruins: Vec[Ruin],
     /// Attack animations playing out.
     effects: Vec[Playing],
 }
@@ -205,6 +211,8 @@ impl GameState {
             workers: IdSet.new(),
             player_controlled_units: IdSet.new(),
             next_unit_id: 8,
+            map_seed: Option.None,
+            ruins: Vec.new(),
             effects: Vec.new(),
         };
         game.select_next_or_end_turn(Option.None);
@@ -221,6 +229,31 @@ impl GameState {
     }
 
     /// Fresh economy match: each side begins with one settler and no city.
+    /// A generated map (`mapgen.tua`) from `seed` with the player and as many AI sides as
+    /// `settings` ask for (`setup_world`).
+    pub fn world_scenario_with(seed: u32, settings: &Settings) -> GameState can {Log} {
+        let mut game = GameState.new();
+        game.scenario = Scenario.World;
+        game.units.clear();
+        game.setup_world(seed, settings);
+        game.start_on_whole_map();
+        // The map is too big to take in at once: start on the player's city or settler.
+        let mut home: Option[Hex] = Option.None;
+        for i in 0..game.cities.len() { if home.is_none() && game.cities[i].team == PLAYER_TEAM { home = Option.Some(game.cities[i].pos); } }
+        for i in 0..game.units.len() {
+            if home.is_none() && game.units[i].team == PLAYER_TEAM && game.settlers.contains(game.units[i].id) { home = Option.Some(game.units[i].pos); }
+        }
+        let at = home.unwrap_or(Hex.new(0, 0));
+        game.camera = Camera.new(at.to_world(), game.camera.half_height);
+        // What needs seeing to first, as every turn starts: the city's production, or else the
+        // settler.
+        game.select_next_or_end_turn(Option.None);
+        game
+    }
+
+    /// A generated map from `seed`, with the default settings.
+    pub fn world_scenario(seed: u32) -> GameState can {Log} { GameState.world_scenario_with(seed, &fresh_settings()) }
+
     pub fn frontier_scenario() -> GameState can {Log} {
         let mut game = GameState.new();
         game.scenario = Scenario.Frontier;

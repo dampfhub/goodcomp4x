@@ -39,7 +39,9 @@ fn the_screenshot_command_parses() {
     let sized = match options.size { Option.Some((w, h)) => w == 1280 && h == 720, Option.None => false };
     assert(sized);
     assert(!options.help);
-    // OWED: `--seed 42 --scenario world` parses once the world scenario is in this build.
+    let w = args(&["--seed", "42", "--scenario", "world"]);
+    let Result.Ok(world) = parse(&w) else { assert(false); return; };
+    assert(world.scenario == Scenario.World && world.seed == Option.Some(42));
 }
 
 @test

@@ -7,6 +7,7 @@
 //! UI geometry is in pixels with the origin at the window's bottom-left and Y pointing up, the
 //! same orientation as the world.
 
+use std.rand.Rand;
 use std.core.Eq;
 use std.fmt.Out;
 use std.fmt.show_i64;
@@ -316,7 +317,7 @@ impl GameState {
     /// Handles a click on the UI, returning whether it hit anything (in which case it shouldn't
     /// also count as a click on the map). `cursor` is in window pixels with the origin at the
     /// top-left.
-    pub fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2) -> bool can {Log} {
+    pub fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2) -> bool can {Log, Rand} {
         let point = to_ui(cursor, screen_size);
         let layout = self.layout(screen_size);
         let Option.Some(i) = layout.button_at(point) else { return layout.covers(point); };
@@ -391,7 +392,7 @@ impl GameState {
         let mut panel = panel_builder(true);
         panel.text(TextSize.Small, "DEBUG", fade(LABEL_TEXT, true));
         panel.begin_buttons();
-        for i in 0..3 {
+        for i in 0..4 {
             let scenario = SCENARIOS[i];
             panel.button(Target.Scenario(scenario), scenario.name(), scenario.key(), button_state(scenario == self.scenario, false), false);
         }
@@ -836,6 +837,7 @@ impl GameState {
                     Scenario.Combat => "THE ORIGINAL SMALL COMBAT MAP: FOUR UNITS A SIDE ACROSS A MOUNTAIN PASS.",
                     Scenario.Cities => "TWO CITIES WITH FARMS, MINES, ROADS AND ARMIES, TO TEST THE ECONOMY AND FIGHTING OVER IT.",
                     Scenario.Frontier => "A SETTLER AND A WARRIOR EACH AND NO CITIES YET. BOTH WARRIORS ARE YOURS TO MOVE.",
+                    Scenario.World => "A NEW RANDOM MAP WITH THE PLAYER AND 4 TO 6 AI SIDES, EACH WITH A CITY AND A SCOUT, AND RUINS BETWEEN THEM.",
                 };
                 description = text(fn() can {Out} { Out.put(what); Out.put(" STARTS IT FRESH, OR RESTARTS IT IF IT'S THE CURRENT ONE; THE SAVESTATE IS KEPT."); });
             }

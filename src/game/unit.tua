@@ -61,6 +61,10 @@ impl Team {
     }
 }
 
+impl Eq for Team {
+    fn eq(self, other: Team) -> bool { self.index() == other.index() }
+}
+
 /// `Blue`: the variant's name, as the combat log names a team.
 impl Show for Team {
     fn show(&self) can {Out} {

@@ -21,6 +21,13 @@ use game.terrain.MOUNTAINS;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
+use game.unit.TEAMS;
+use game.mapgen.generate;
+use game.mapgen.start_units;
+use game.ruins.ruin;
+use game.ruins.RUIN_REWARDS;
+use game.settings.Settings;
+use std.math.min;
 
 /// Camera zoom the city scenarios start at: most of the radius-six map in view.
 const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
@@ -227,6 +234,52 @@ impl GameState {
         }
         for i in 0..self.cities.len() { self.auto_assign_city(i); }
         self.notice = text(fn() can {Out} { Out.put("C CITY - SPACE HOLD OR END TURN - F1 COMBAT - F2 CITIES"); });
+    }
+
+    /// A generated world (`mapgen.tua`) from `seed`: a start for the player and each AI side,
+    /// each with its city (or a settler, as `settings` say) and a scout on the hills beside it,
+    /// and ruins between them.
+    pub fn setup_world(&mut self, seed: u32, settings: &Settings) {
+        let ai = min(settings.world_ai_for(seed), 6);
+        let map = generate(seed, 1 + ai);
+        self.grid = map.grid;
+        self.map_seed = Option.Some(seed);
+        self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
+        for i in 0..map.ruins.len() {
+            self.ruins.push(ruin(map.ruins[i], RUIN_REWARDS[((seed as i64 + i as i64) % 3) as i32]));
+        }
+        for k in 0..map.starts.len() {
+            if k >= 7 { break; }
+            let team = TEAMS[k];
+            let start = map.starts[k];
+            // The start comes with hills for the scout. Only the blank fallback map lacks them.
+            let around = start.neighbors();
+            let mut open: Vec[Hex] = Vec.new();
+            for n in 0..6 { if self.grid.is_passable(around[n]) { open.push(around[n]); } }
+            let scout = match start_units(&self.grid, start) {
+                Option.Some((_, s)) => s,
+                Option.None => if open.len() > 1 { open[1] } else { start },
+            };
+            if settings.world_start_city {
+                let id = self.cities.len() as u32;
+                // The AI keeps training melee; the player's queue starts empty.
+                let queue = if team == PLAYER_TEAM { Option.None } else { Option.Some(BuildUnit.Melee) };
+                self.cities.push(City { id, team, pos: start, population: 1, food: 0, production: 0, worked: Vec.new(), queue });
+                self.auto_assign_city(self.cities.len() - 1);
+            } else {
+                let id = self.next_unit_id;
+                self.next_unit_id = self.next_unit_id + 1;
+                self.units.push(Unit.new(id, start, team, UnitType.Melee));
+                let _new = self.settlers.insert(id);
+            }
+            let id = self.next_unit_id;
+            self.next_unit_id = self.next_unit_id + 1;
+            self.units.push(Unit.new(id, scout, team, UnitType.Scout));
+        }
+        let founding = if settings.world_start_city { "C OPENS YOUR CITY" } else { "F FOUNDS A CITY" };
+        self.notice = text(fn() can {Out} {
+            Out.put("WORLD SEED "); show_u64(seed as u64); Out.put(" - "); show_u64(ai as u64); Out.put(" AI - "); Out.put(founding); Out.put(" - F4 FOR A NEW MAP");
+        });
     }
 
     pub fn setup_frontier(&mut self) {
