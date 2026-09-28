@@ -18,11 +18,12 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Ctrl-click an adjacent ally | Queue a swap |
 | M / X (or Move / Attack buttons) | Arm Move / Attack for the next map click (again to disarm) |
 | Right-click (armed) | Disarm the armed action |
-| Ctrl-right-click | Clear the selected unit's orders, queue, hold and guard |
+| Ctrl-right-click | Clear the selected unit's orders, queue, hold, guard and alert |
 | Q / ability button | Toggle the unit's ability (what each does: `game-rules.md`, Abilities) |
 | Space / Hold button | Hold the unit this turn, keeping queued orders, and move on to what's next; on a unit already holding, stop holding (it's back in the turn order). Any new order also ends a hold |
-| Clear Orders button | Clear the selected unit's (or group's) orders, queue, hold and guard, like Ctrl-right-click |
+| Clear Orders button | Clear the selected unit's (or group's) orders, queue, hold, guard and alert, like Ctrl-right-click |
 | G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
+| E / Alert button | Alert: stay put, be skipped every turn, and in its attack step attack the nearest enemy in range, until given another order (E again takes it off). Melee, cavalry, armored, ranged, and siege once set up (Q first); with a group, every member that can |
 | Delete / Disband button, twice | Remove the selected unit for good (the first press asks to confirm) |
 | Tab | Look at the next unit without holding this one; leave the city or barracks view |
 | Left-drag a box on the map | Select every one of your units inside it (two or more become a group) |
@@ -34,7 +35,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Right-click a hex with a group | Every member in range attacks it (again to call it off) |
 | Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
 | Shift-left-click a member's planned stop with a group | Take that member's move there, and its later moves, off; it waits out those turns, so its queue stays as long as the others' |
-| Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
+| Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds, guards and alerts |
 | Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
 | F / Found City button | Found a city with the selected settler |
@@ -53,7 +54,7 @@ this turn, civilian tasks first: each city with nothing to build (its tower), yo
 then your military units needing orders. Units are grouped by kind, one chip per kind with a count; a group of several
 that you select lists its units one by one on a second row, to pick from or take out. Selected
 units, and the open city, are framed; a unit leaves the strip once it has its orders (or holds,
-guards or follows a queue), and a city once it has a build. Like
+guards, is on alert or follows a queue), and a city once it has a build. Like
 the other panels, hold Ctrl to drag, resize or dock it.
 
 Shift-clicks on a hex build an order queue over several turns (rules: `game-rules.md`, Order
@@ -62,11 +63,11 @@ Shift-click on a hex the selection plans to move to takes that move, and the tur
 the plan, so one wrong step doesn't mean queuing everything again.
 Selection stays on the unit while you queue; let go of it (Escape, Tab, or click another unit)
 when done. A queued unit doesn't hold up the turn, and any other order (a plain click or
-right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. While a
+right-click, swap, ability, guard, alert, Ctrl-right-click) cancels its queue; Hold keeps it. While a
 unit or group with a queue past this turn is selected, a plain click or right-click on the map
 only warns ("CLICK AGAIN TO REPLACE ITS QUEUE") and outlines the hex in orange; the same click
 again replaces the queue, so selecting a unit to look at its plan and clicking away can't wipe
-it. Buttons and keys (Clear Orders, Guard, the ability) act at once. A plan
+it. Buttons and keys (Clear Orders, Guard, Alert, the ability) act at once. A plan
 reaching past this turn shows as turn numbers only while it is selected or the cursor is on it;
 otherwise a small tag beside it, the clock and a number (clock 3: 3 turns), counts the turns of orders left. A plan of
 this turn alone shows like plain orders (ghost and arrow). To cancel a unit's queued orders,
@@ -288,7 +289,8 @@ them.
   around it instead of merging, and a hex or arrow one unit uses on several turns lists them
   ("2,3"). Otherwise only a clock tag at the unit's lower left shows (clock 3: 3 turns of orders
   left).
-- Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Orange hex:
+- Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Red ring
+  with four diagonal ticks (a reticle): on alert. Orange hex:
   contested.
 - Units are tokens in team color with a pictogram of what they are: sword (melee), bow
   (ranged), horse head (cavalry), catapult (siege), spyglass (scout), shield (armored), sailboat (Patrol Galley), cargo boat (Landing Craft), gunship (Bombard Ship) on a

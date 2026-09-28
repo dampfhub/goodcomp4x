@@ -26,8 +26,8 @@ fn action_toolbar_is_compact_and_every_icon_keeps_its_click_target() {
     let mut panel = PanelBuilder::default();
     panel.action_toolbar(game.unit_buttons(unit));
     assert!(
-        panel.size().x <= 240.0,
-        "icon toolbar should fit four columns"
+        panel.size().x <= 280.0,
+        "icon toolbar should fit five columns"
     );
     assert!(
         panel.size().y <= 175.0,
@@ -241,6 +241,69 @@ fn hold_button_holds_the_selected_unit() {
     game.handle_click(button_cursor(&game, hold), SCREEN, ClickMode::Normal);
     assert!(game.units[first].holding);
     assert_ne!(game.selected, Some(first));
+}
+
+#[test]
+fn alert_button_puts_the_selected_unit_on_alert_in_both_presentations() {
+    let alert = Target::Unit(UnitAction::Alert);
+    // Classic.
+    let mut game = GameState::new();
+    let first = game.selected.unwrap();
+    assert_eq!(game.units[first].unit_type, UnitType::Melee);
+    game.handle_click(button_cursor(&game, alert), SCREEN, ClickMode::Normal);
+    assert!(game.units[first].alert);
+    assert_ne!(game.selected, Some(first), "selection moves on");
+    // Reselected, it shows as on.
+    game.selected = Some(first);
+    let layout = game.layout(SCREEN);
+    let button = layout.buttons.iter().find(|b| b.target == alert).unwrap();
+    assert_eq!(button.state, ButtonState::Queued);
+    assert_eq!(
+        layout
+            .button_at((button.min + button.max) / 2.0)
+            .map(|b| b.target),
+        Some(alert)
+    );
+    // ImGui.
+    let mut game = GameState::new();
+    let first = game.selected.unwrap();
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, alert);
+    assert!(game.units[first].alert);
+}
+
+#[test]
+fn only_troops_that_can_go_on_alert_show_its_button() {
+    let mut game = GameState::city_scenario();
+    let targets = |game: &GameState, idx: usize| -> Vec<Target> {
+        game.unit_buttons(idx).iter().map(|b| b.target).collect()
+    };
+    let alert = Target::Unit(UnitAction::Alert);
+    let melee = game
+        .units
+        .iter()
+        .position(|u| u.team == PLAYER_TEAM && u.unit_type == UnitType::Melee)
+        .unwrap();
+    assert!(targets(&game, melee).contains(&alert));
+    game.units[melee].unit_type = UnitType::Scout;
+    assert!(!targets(&game, melee).contains(&alert));
+    // A siege shows it, unavailable until it's set up.
+    game.units[melee].unit_type = UnitType::Siege;
+    let state = |game: &GameState| {
+        game.unit_buttons(melee)
+            .into_iter()
+            .find(|b| b.target == alert)
+            .unwrap()
+            .state
+    };
+    assert_eq!(state(&game), ButtonState::Disabled);
+    game.units[melee].deployed = true;
+    assert_eq!(state(&game), ButtonState::Ready);
+    // A settler, never.
+    game.units[melee].unit_type = UnitType::Melee;
+    let id = game.units[melee].id;
+    game.settlers.insert(id);
+    assert!(!targets(&game, melee).contains(&alert));
 }
 
 #[test]

@@ -764,6 +764,20 @@ impl GameState {
                 "SKIP IT UNTIL IT'S GIVEN AN ORDER.".into(),
                 None,
             ),
+            UnitAction::Alert => (
+                "ALERT".into(),
+                "E",
+                "STAYS PUT AND ATTACKS THE NEAREST ENEMY IN RANGE EACH TURN, UNTIL IT'S GIVEN \
+                 AN ORDER."
+                    .into(),
+                if unit.alert || self.can_go_on_alert(idx) {
+                    None
+                } else if unit.unit_type == crate::game::unit::UnitType::Siege {
+                    Some("SET IT UP FIRST".into())
+                } else {
+                    Some("ONLY TROOPS THAT FIGHT ON LAND".into())
+                },
+            ),
             UnitAction::Disband => ("DISBAND".into(), "DEL", "REMOVES IT FOR GOOD.".into(), None),
             UnitAction::Settle => (
                 "FOUND CITY".into(),
