@@ -311,7 +311,8 @@ Its knobs are environment variables, listed in its module comment:
 - `REPORT_ARMY_FIRST=1`: a city queue that would only gather trains a Melee instead. This measures what the banked resources could buy.
 - `REPORT_GAME_LINES=1`.
 
-The numbers below are from `main` at 6f5c4c8, 60 turns, seeds 0-23 (24 games of each kind):
+The numbers below are from `main` at 6f5c4c8 (the same at 134305e), 60 turns, seeds 0-23 (24
+games of each kind):
 
 ```
 SIM_SEEDS=24 cargo test --release economy_report -- --ignored --nocapture
