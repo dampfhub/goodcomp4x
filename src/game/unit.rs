@@ -342,6 +342,14 @@ impl Unit {
         }
     }
 
+    /// The move planned for turn `turn` of the unit's plan (0 is this turn).
+    pub fn move_on_turn(&self, turn: usize) -> Option<Hex> {
+        match turn {
+            0 => self.planned_move,
+            n => self.queued.get(n - 1).and_then(|order| order.move_to),
+        }
+    }
+
     /// The attack planned for turn `turn` of the unit's plan (0 is this turn).
     pub fn attack_on_turn(&self, turn: usize) -> Option<Hex> {
         match turn {

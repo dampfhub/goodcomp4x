@@ -14,6 +14,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Right-click a hex in range | Attack it this turn: an enemy unit or barracks, or an empty hex someone may step into; empty city centers cannot be targeted |
 | Shift-left-click a hex | Queue every turn of moves it takes to get there (around obstacles), after anything already queued, until the unit's queue holds as many turns as the queue limit (settings menu) allows |
 | Shift-right-click a hex | Queue an attack on it: in the queue's last turn if that turn has none yet and it's in range, else in one more turn |
+| Shift-left-click a hex the unit plans to move to (a numbered stop of its queue, or a ghost) | Take that move off its plan, with every turn after it; the turns before stay (a hex it stops on twice loses the later move first) |
 | Ctrl-click an adjacent ally | Queue a swap |
 | M / X (or Move / Attack buttons) | Arm Move / Attack for the next map click (again to disarm) |
 | Right-click (armed) | Disarm the armed action |
@@ -32,6 +33,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Left-click a hex with a group | Each member moves as close to it as it can get |
 | Right-click a hex with a group | Every member in range attacks it (again to call it off) |
 | Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
+| Shift-left-click a member's planned stop with a group | Take that member's move there, and its later moves, off; it waits out those turns, so its queue stays as long as the others' |
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
 | Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
@@ -55,7 +57,9 @@ guards or follows a queue), and a city once it has a build. Like
 the other panels, hold Ctrl to drag, resize or dock it.
 
 Shift-clicks on a hex build an order queue over several turns (rules: `game-rules.md`, Order
-queues); a Shift-click on one of your own units adds it to the selection instead.
+queues); a Shift-click on one of your own units adds it to the selection instead. A
+Shift-click on a hex the selection plans to move to takes that move, and the turns after it, off
+the plan, so one wrong step doesn't mean queuing everything again.
 Selection stays on the unit while you queue; let go of it (Escape, Tab, or click another unit)
 when done. A queued unit doesn't hold up the turn, and any other order (a plain click or
 right-click, swap, ability, guard, Ctrl-right-click) cancels its queue; Hold keeps it. While a
