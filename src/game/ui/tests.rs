@@ -2112,3 +2112,293 @@ fn the_multiplayer_page_in_a_network_game_shows_the_code_and_leaves() {
     );
     assert_eq!(host.take_net_request(), Some(NetRequest::Leave));
 }
+
+/// The ImGui presentation without a window: a context with a font, and the
+/// layout it keeps from frame to frame, as `App` has them.
+struct ImGuiScreen {
+    context: ::imgui::Context,
+    fonts: [::imgui::FontId; 3],
+    layout: ImGuiLayoutState,
+    /// Last, to drop after the context.
+    _one: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ImGuiScreen {
+    fn new() -> Self {
+        let one = imgui::one_context_at_a_time();
+        let mut context = ::imgui::Context::create();
+        context.set_ini_filename(None);
+        context.io_mut().display_size = SCREEN.to_array();
+        context
+            .io_mut()
+            .config_flags
+            .insert(::imgui::ConfigFlags::DOCKING_ENABLE);
+        let font = context
+            .fonts()
+            .add_font(&[::imgui::FontSource::DefaultFontData { config: None }]);
+        context.fonts().build_rgba32_texture();
+        Self {
+            context,
+            fonts: [font; 3],
+            layout: ImGuiLayoutState::default(),
+            _one: one,
+        }
+    }
+
+    /// Draws a frame with the mouse at `mouse` (window pixels; `None`: off
+    /// the window) and its left button `down`, carrying out what the panels
+    /// were asked to do, as `App` does.
+    fn frame(&mut self, game: &mut GameState, mouse: Option<Vec2>, down: bool) {
+        let io = self.context.io_mut();
+        io.delta_time = 1.0 / 60.0;
+        io.add_mouse_pos_event(mouse.map_or([f32::MIN; 2], |m| m.to_array()));
+        io.add_mouse_button_event(::imgui::MouseButton::Left, down);
+        imgui::DRAWN_BUTTONS.with_borrow_mut(Vec::clear);
+        let ui = self.context.frame();
+        game.draw_imgui(ui, SCREEN, mouse, &self.fonts, &mut self.layout);
+        self.context.render();
+    }
+
+    /// A few frames with the mouse away, for the panels to settle where
+    /// the dock puts them.
+    fn settle(&mut self, game: &mut GameState) {
+        for _ in 0..4 {
+            self.frame(game, None, false);
+        }
+    }
+
+    /// The middle of the button ImGui drew for `target` last frame.
+    fn button(&self, target: Target) -> Option<Vec2> {
+        imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+            drawn
+                .iter()
+                .find(|(drawn, ..)| *drawn == target)
+                .map(|&(_, min, max)| (Vec2::from(min) + Vec2::from(max)) / 2.0)
+        })
+    }
+
+    /// Moves the mouse onto `target`'s button and clicks it. Panics if
+    /// ImGui doesn't show that button.
+    fn click(&mut self, game: &mut GameState, target: Target) {
+        self.settle(game);
+        let at = self
+            .button(target)
+            .unwrap_or_else(|| panic!("ImGui shows no {target:?} button"));
+        self.frame(game, Some(at), false);
+        self.frame(game, Some(at), true);
+        self.frame(game, Some(at), false);
+    }
+
+    /// Whether ImGui keeps a mouse press at `at` from the map (`App` then
+    /// doesn't pass it on).
+    fn captures_mouse_at(&mut self, game: &mut GameState, at: Vec2) -> bool {
+        self.frame(game, Some(at), false);
+        self.frame(game, Some(at), false);
+        self.context.io().want_capture_mouse
+    }
+}
+
+/// A map tile near the open city where a click lands on the map, not a
+/// panel: `covered` says whether a panel is at a point.
+fn open_map_tile(game: &GameState, mut covered: impl FnMut(Vec2) -> bool) -> Hex {
+    let city = game.cities[game.selected_city.expect("city view open")].pos;
+    let mut tiles: Vec<Hex> = game
+        .grid
+        .all_hexes()
+        .filter(|h| (2..=4).contains(&h.distance(city)))
+        .collect();
+    tiles.sort_by_key(|h| (h.distance(city), h.q, h.r));
+    tiles
+        .into_iter()
+        .find(|&h| {
+            let at = hex_cursor(game, h);
+            (0.0..SCREEN.x).contains(&at.x) && (0.0..SCREEN.y).contains(&at.y) && !covered(at)
+        })
+        .expect("an open tile on screen")
+}
+
+/// How many jobs the open city has placed for its workers, and what its
+/// side has in its stockpile: what stopping placing mustn't change.
+fn placed_and_paid(game: &GameState) -> (usize, Stock) {
+    let city = game.selected_city.expect("city view open");
+    (
+        game.cities[city].worker_jobs.len(),
+        game.stock(game.cities[city].team),
+    )
+}
+
+#[test]
+fn placing_shows_a_cancel_button_that_stops_it_with_nothing_placed() {
+    let mut game = city_view();
+    let before = placed_and_paid(&game);
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert_eq!(game.placing_job, Some(JobKind::Build(Building::Barracks)));
+    // The picked card is gold, and the tray says how to stop.
+    let layout = game.layout(SCREEN);
+    let armed = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::Building(Building::Barracks))
+        .expect("the picked card stays in view");
+    assert_eq!(armed.state, ButtonState::Queued);
+    let cancel = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::CancelPlacing)
+        .expect("a cancel button while placing");
+    assert_eq!(cancel.label, "CANCEL PLACING BARRACKS");
+    assert_eq!(
+        layout
+            .button_at((cancel.min + cancel.max) / 2.0)
+            .map(|b| b.target),
+        Some(Target::CancelPlacing)
+    );
+    let tray = layout
+        .panels
+        .iter()
+        .find(|panel| {
+            contains(panel.0, panel.1, cancel.min) && contains(panel.0, panel.1, cancel.max)
+        })
+        .expect("inside the city tray");
+    assert!(
+        contains(tray.0, tray.1, armed.min),
+        "the same panel as the card"
+    );
+    let text = panel_strings(|p| game.city_tray(0, p));
+    assert_shows(
+        &text,
+        "PLACING BARRACKS: CLICK A LIT TILE · RIGHT-CLICK OR ESC TO CANCEL",
+    );
+    // Map clicks place rather than assign, so that hint makes way.
+    assert!(
+        !text
+            .iter()
+            .any(|line| line.contains("CLICK MANAGER TO MOVE"))
+    );
+    assert!(
+        game.notice.contains("RIGHT-CLICK OR ESC TO CANCEL"),
+        "{}",
+        game.notice
+    );
+    assert!(!game.notice.contains("BARRACKSS"), "{}", game.notice);
+    let tooltip = line_strings(game.tooltip_lines(cancel).into_iter().map(|(_, l)| l)).join(" ");
+    assert!(tooltip.contains("NOTHING IS PLACED OR PAID"), "{tooltip}");
+
+    game.handle_click(
+        button_cursor(&game, Target::CancelPlacing),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(game.placing_job, None);
+    assert_eq!(game.selected_city, Some(0), "the city stays open");
+    assert_eq!(placed_and_paid(&game), before);
+    assert_eq!(game.notice, "STOPPED PLACING BARRACKS");
+    assert!(
+        !game
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::CancelPlacing),
+        "gone once nothing is being placed"
+    );
+}
+
+#[test]
+fn the_imgui_cancel_button_stops_placing() {
+    let mut game = city_view();
+    let before = placed_and_paid(&game);
+    let mut screen = ImGuiScreen::new();
+    for target in [
+        Target::WorkerJob(JobKind::Road),
+        Target::WorkerJob(JobKind::Wall),
+        Target::Building(Building::Mill),
+    ] {
+        game.activate_target(target);
+        assert!(game.placing_job.is_some(), "{target:?}");
+        screen.settle(&mut game);
+        let at = screen.button(Target::CancelPlacing).expect("shown");
+        assert!(
+            screen.captures_mouse_at(&mut game, at),
+            "a right-click there is ImGui's, not the map's"
+        );
+        screen.click(&mut game, Target::CancelPlacing);
+        assert_eq!(game.placing_job, None, "{target:?}");
+        assert_eq!(game.selected_city, Some(0));
+        assert_eq!(placed_and_paid(&game), before);
+        screen.settle(&mut game);
+        assert_eq!(screen.button(Target::CancelPlacing), None);
+    }
+}
+
+#[test]
+fn escape_or_a_right_click_on_the_map_stops_placing_in_both_presentations() {
+    let mut game = city_view();
+    let before = placed_and_paid(&game);
+    let mut screen = ImGuiScreen::new();
+    for imgui in [false, true] {
+        for kind in [
+            JobKind::Road,
+            JobKind::Gate,
+            JobKind::Build(Building::Barracks),
+        ] {
+            // Escape: `App` calls `press_escape` in either presentation
+            // (unless a text box has the keys, and none is open here).
+            game.arm_worker_job(kind);
+            assert_eq!(game.placing_job, Some(kind));
+            game.press_escape();
+            assert_eq!(game.placing_job, None, "{kind:?}");
+            assert_eq!(game.selected_city, Some(0), "Escape stops placing first");
+
+            // A right-click on the map. ImGui keeps a click over one of its
+            // windows (`want_capture_mouse`); classic passes every
+            // right-click to `handle_context_click`.
+            game.arm_worker_job(kind);
+            let tile = if imgui {
+                screen.settle(&mut game);
+                let mut looking = game.clone();
+                let tile = open_map_tile(&game, |at| screen.captures_mouse_at(&mut looking, at));
+                let at = hex_cursor(&game, tile);
+                assert!(!screen.captures_mouse_at(&mut game, at));
+                tile
+            } else {
+                open_map_tile(&game, |at| game.layout(SCREEN).covers(to_ui(at, SCREEN)))
+            };
+            game.handle_context_click(hex_cursor(&game, tile), SCREEN, false, false);
+            assert_eq!(game.placing_job, None, "{kind:?}, imgui {imgui}");
+            assert_eq!(game.selected_city, Some(0));
+            assert_eq!(placed_and_paid(&game), before, "{kind:?}");
+        }
+    }
+    // Escape again closes the city.
+    game.press_escape();
+    assert_eq!(game.selected_city, None);
+}
+
+#[test]
+fn escape_and_right_click_stop_placing_in_a_network_game() {
+    let mut host = GameState::host_game(2, &crate::game::Settings::default());
+    let (_, welcome) = host.welcome(&crate::game::NetMessage::Hello {
+        version: crate::game::PROTOCOL_VERSION,
+    });
+    let guest = GameState::join_game(&welcome).expect("joins");
+    for mut game in [host, guest] {
+        let team = game.local_team;
+        let city = game.cities.iter().position(|c| c.team == team).unwrap();
+        game.open_city(city);
+        game.update(10.0);
+        game.cities[city].workers = game.cities[city].workers.max(1);
+        game.fund(team);
+        let plan = game.team_plan(team);
+        game.arm_worker_job(JobKind::Road);
+        assert_eq!(game.placing_job, Some(JobKind::Road), "{}", game.notice);
+        game.press_escape();
+        assert_eq!(game.placing_job, None);
+        assert_eq!(game.selected_city, Some(city));
+        game.arm_worker_job(JobKind::Road);
+        let tile = open_map_tile(&game, |at| game.layout(SCREEN).covers(to_ui(at, SCREEN)));
+        game.handle_context_click(hex_cursor(&game, tile), SCREEN, false, false);
+        assert_eq!(game.placing_job, None);
+        assert_eq!(game.team_plan(team), plan, "nothing planned");
+    }
+}

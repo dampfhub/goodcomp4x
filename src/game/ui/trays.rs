@@ -594,13 +594,17 @@ impl GameState {
             armed: false,
         }]);
         panel.gap(GAP);
-        panel.text(
-            SMALL,
-            vec![(
-                "CLICK MANAGER TO MOVE · CLICK TILES TO ASSIGN · ESC OR SPACE TO EXIT".into(),
-                LABEL_TEXT,
-            )],
-        );
+        // While placing, map clicks and Escape are placing's: its own lines
+        // (below) take this one's place.
+        if self.placing_job.is_none() {
+            panel.text(
+                SMALL,
+                vec![(
+                    "CLICK MANAGER TO MOVE · CLICK TILES TO ASSIGN · ESC OR SPACE TO EXIT".into(),
+                    LABEL_TEXT,
+                )],
+            );
+        }
         let building_buttons: Vec<_> = Building::ALL
             .iter()
             .copied()
@@ -655,10 +659,22 @@ impl GameState {
             panel.text(
                 SMALL,
                 vec![(
-                    format!("PLACING {}: {how} · ESC TO STOP", kind.name()),
+                    format!(
+                        "PLACING {}: {how} · RIGHT-CLICK OR ESC TO CANCEL",
+                        kind.name()
+                    ),
                     GOLD_TEXT,
                 )],
             );
+            // Its armed card is gold too, and clicking it again also stops,
+            // but that's easy to miss: say it plainly.
+            panel.compact_buttons(vec![ButtonSpec {
+                target: Target::CancelPlacing,
+                label: format!("CANCEL PLACING {}", kind.name()),
+                hint: String::new(),
+                state: ButtonState::Ready,
+                armed: false,
+            }]);
             panel.text(
                 SMALL,
                 vec![(

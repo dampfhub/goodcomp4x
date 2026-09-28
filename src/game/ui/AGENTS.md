@@ -67,7 +67,12 @@ file holds.
 
 ## Verifying
 
-`tests.rs` covers layout and hit-testing without a window; `imgui.rs` has the dock-plan tests.
+`tests.rs` covers layout and hit-testing without a window, in both presentations: classic through
+`layout()` and `handle_click`, ImGui through `ImGuiScreen`, a headless ImGui context that draws
+the real panels and clicks a button where ImGui drew it (`imgui::DRAWN_BUTTONS`, filled by
+`note_drawn_button` for panel buttons and catalogue cards). `imgui` allows one context per process,
+so any test that makes one holds `imgui::one_context_at_a_time()`. `imgui.rs` has the dock-plan
+tests.
 After UI changes run `cargo build --release` and look at a screenshot
 (`cargo run -- --screenshot out.png --scenario cities`); screenshot mode shows ImGui, and the
 classic view needs a temporary `use_imgui: false` in `App::new` (revert it by editing the line,

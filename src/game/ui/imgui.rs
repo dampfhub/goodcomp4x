@@ -1813,6 +1813,34 @@ fn rich_text(ui: &Ui, text: &str, color: [f32; 4]) {
     draw_rich(ui, pos, text, color, false);
 }
 
+/// Tests only: `imgui` allows one context at a time in the whole process,
+/// so a test holds this while it has one.
+#[cfg(test)]
+pub(super) fn one_context_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A test that failed holding it leaves nothing behind to protect.
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Tests only: a button ImGui drew, and its screen rectangle's corners.
+#[cfg(test)]
+pub(super) type DrawnButton = (Target, [f32; 2], [f32; 2]);
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: each panel button ImGui drew this thread, so a test can
+    /// move the mouse onto one and click.
+    pub(super) static DRAWN_BUTTONS: std::cell::RefCell<Vec<DrawnButton>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Tests only: notes where the button for `target` just went.
+fn note_drawn_button(_ui: &Ui, _target: Target) {
+    #[cfg(test)]
+    DRAWN_BUTTONS
+        .with_borrow_mut(|drawn| drawn.push((_target, _ui.item_rect_min(), _ui.item_rect_max())));
+}
+
 /// A button whose lines may hold icons: ImGui's own button when they
 /// don't; otherwise a blank button with the lines drawn over it, centered,
 /// or from the left with `left` set.
@@ -2490,6 +2518,7 @@ impl GameState {
                         if rich_button(ui, &id, &lines, [width, height], false) {
                             actions.push(Action::Button(scope, spec.target));
                         }
+                        note_drawn_button(ui, spec.target);
                         if icons {
                             let icon = action_icons::for_button(spec.target, &spec.label)
                                 .expect("icon row");
@@ -2562,6 +2591,7 @@ impl GameState {
                                 if split_button(ui, &id, &left, hint, [width, 28.0]) {
                                     actions.push(Action::Button(scope, spec.target));
                                 }
+                                note_drawn_button(ui, spec.target);
                                 if let Some(icon) = action_icons::production_unit_icon(spec.target)
                                 {
                                     draw_production_icon(
@@ -3112,6 +3142,7 @@ mod tests {
 
     #[test]
     fn hover_text_keeps_the_same_imgui_button_id() {
+        let _one = one_context_at_a_time();
         let mut context = ::imgui::Context::create();
         context.io_mut().display_size = [640.0, 480.0];
         context.fonts().build_rgba32_texture();
