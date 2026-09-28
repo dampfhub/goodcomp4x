@@ -239,7 +239,7 @@ impl GameState {
 
     /// What hovering a chip says, for the ImGui tooltip.
     pub(super) fn roster_hint(&self, key: RosterKey) -> String {
-        let city_name = |id: u32| format!("CITY {}", id + 1);
+        let city_name = |id: u32| format!("ENCLAVE {}", id + 1);
         match key {
             RosterKey::Production(id) => {
                 format!("{} HAS NOTHING TO BUILD - CLICK: OPEN IT", city_name(id))

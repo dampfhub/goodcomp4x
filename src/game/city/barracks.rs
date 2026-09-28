@@ -97,11 +97,11 @@ impl GameState {
     /// Barracks, no deposit for it, or the side's cap is used up.
     pub(in crate::game) fn barracks_lock(&self, city: usize, build: BuildUnit) -> Option<String> {
         if self.cities[city].barracks.is_none() {
-            return Some("BUILD A BARRACKS FIRST".into());
+            return Some("BUILD A GARRISON FIRST".into());
         }
         let resource = build.required_resource()?;
         if self.barracks_deposits(city, resource).is_empty() {
-            return Some(format!("NEEDS {} UNDER THE BARRACKS", resource.name()));
+            return Some(format!("NEEDS {} UNDER THE GARRISON", resource.name()));
         }
         let team = self.cities[city].team;
         let cap = self.special_cap(team, resource);
@@ -117,9 +117,9 @@ impl GameState {
     pub fn toggle_lifetime_special_cap(&mut self) {
         self.lifetime_special_cap = !self.lifetime_special_cap;
         self.notice = if self.lifetime_special_cap {
-            "CAVALRY AND ARMORED CAP COUNTS EVERY ONE EVER TRAINED".into()
+            "OUTRIDER AND RIOT GUARD CAP COUNTS EVERY ONE EVER TRAINED".into()
         } else {
-            "CAVALRY AND ARMORED CAP COUNTS THOSE ALIVE".into()
+            "OUTRIDER AND RIOT GUARD CAP COUNTS THOSE ALIVE".into()
         };
     }
 }

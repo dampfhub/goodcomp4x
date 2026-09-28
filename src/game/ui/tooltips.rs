@@ -85,19 +85,19 @@ impl GameState {
             memory.and_then(|m| m.barracks.filter(|b| b.team != crate::game::PLAYER_TEAM));
         let title = match (city, barracks, seen_city, seen_barracks) {
             (Some(city), ..) => (
-                format!("{:?} CITY {}", city.team, city.id + 1).to_uppercase(),
+                format!("{:?} ENCLAVE {}", city.team, city.id + 1).to_uppercase(),
                 city.team.color(),
             ),
             (None, Some(city), ..) => (
-                format!("{:?} BARRACKS", city.team).to_uppercase(),
+                format!("{:?} GARRISON", city.team).to_uppercase(),
                 city.team.color(),
             ),
             (None, None, Some(seen), _) => (
-                format!("{:?} CITY {}", seen.team, seen.id + 1).to_uppercase(),
+                format!("{:?} ENCLAVE {}", seen.team, seen.id + 1).to_uppercase(),
                 seen.team.color(),
             ),
             (None, None, None, Some(seen)) => (
-                format!("{:?} BARRACKS", seen.team).to_uppercase(),
+                format!("{:?} GARRISON", seen.team).to_uppercase(),
                 seen.team.color(),
             ),
             (None, None, None, None) if placed.is_some() => {
@@ -171,19 +171,19 @@ impl GameState {
                     if self.routes(city_index).costs.contains_key(&hex) {
                         "CONNECTED"
                     } else {
-                        "CUT OFF FROM ITS CITY"
+                        "CUT OFF FROM ITS ENCLAVE"
                     }
                     .into(),
                 ),
                 Building::Smelter => notes.push(format!(
-                    "{} METAL A TURN",
+                    "{} SCRAP A TURN",
                     signed_quantity(self.smelter_income(city_index))
                 )),
                 Building::Railhead => notes.push(
                     if self.rail_connected(city_index, Some(&fog)) {
                         "RAIL LINK OPEN"
                     } else {
-                        "RAIL LINK CUT: NEEDS A ROAD TO THE CITY"
+                        "RAIL LINK CUT: NEEDS A ROAD TO THE ENCLAVE"
                     }
                     .into(),
                 ),
@@ -226,7 +226,7 @@ impl GameState {
             .filter(visible)
             .find(|c| c.worked.contains(&hex))
         {
-            notes.push(format!("WORKED BY CITY {}", worker.id + 1));
+            notes.push(format!("WORKED BY ENCLAVE {}", worker.id + 1));
         }
         if let Some(open) = self.selected_city
             && self.cities[open].pos != hex
@@ -237,17 +237,17 @@ impl GameState {
                     let (food, rest) =
                         (self.mill_food_share(open, hex, cost), delivered_share(cost));
                     notes.push(if food == rest {
-                        format!("{}% REACHES CITY {}", rest * 25, city.id + 1)
+                        format!("{}% REACHES ENCLAVE {}", rest * 25, city.id + 1)
                     } else {
                         format!(
-                            "FOOD {}%, REST {}% REACHES CITY {}",
+                            "FOOD {}%, REST {}% REACHES ENCLAVE {}",
                             food * 25,
                             rest * 25,
                             city.id + 1
                         )
                     })
                 }
-                None => notes.push(format!("OUT OF CITY {}'S REACH", city.id + 1)),
+                None => notes.push(format!("OUT OF ENCLAVE {}'S REACH", city.id + 1)),
             }
         }
         let describe =
@@ -364,7 +364,7 @@ impl GameState {
                 Target::Building(building) => (
                     building.name().into(),
                     if building.shortcut() == ' ' {
-                        "CITY BUILD MENU".into()
+                        "ENCLAVE BUILD MENU".into()
                     } else {
                         building.shortcut().to_string()
                     },
@@ -379,7 +379,7 @@ impl GameState {
                 ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
-                    "BARRACKS".into(),
+                    "GARRISON".into(),
                     format!(
                         "{}. {}{}",
                         build.description(),
@@ -392,21 +392,21 @@ impl GameState {
                         .or_else(|| self.shortfall_text(Build::Unit(build))),
                 ),
                 Target::OpenBarracks => (
-                    "SEE BARRACKS".into(),
+                    "SEE GARRISON".into(),
                     "CLICK".into(),
                     "ITS TRAINING AND QUEUE.".into(),
                     None,
                 ),
                 Target::OpenCity => (
-                    "OPEN CITY".into(),
+                    "OPEN ENCLAVE".into(),
                     "CLICK".into(),
-                    "BACK TO THE CITY.".into(),
+                    "BACK TO THE ENCLAVE.".into(),
                     None,
                 ),
                 Target::OpenInterior => (
-                    "CITY INTERIOR".into(),
+                    "ENCLAVE INTERIOR".into(),
                     "V".into(),
-                    "THE CITY'S TACTICAL MAP.".into(),
+                    "THE ENCLAVE'S TACTICAL MAP.".into(),
                     None,
                 ),
                 Target::InteriorClear => (
@@ -429,7 +429,7 @@ impl GameState {
                     return Vec::new();
                 }
                 Target::ShowWorker(_) => (
-                    "WORKER".into(),
+                    "SALVAGER".into(),
                     "CLICK".into(),
                     "SHOW IT ON THE MAP.".into(),
                     None,
@@ -447,10 +447,10 @@ impl GameState {
                     None,
                 ),
                 Target::BuildWorker => (
-                    "WORKER".into(),
+                    "SALVAGER".into(),
                     WORKER_SHORTCUT.to_string(),
                     format!(
-                        "BUILDS WHAT THE CITY PLACES. {}",
+                        "BUILDS WHAT THE ENCLAVE PLACES. {}",
                         self.price_text(Build::Worker, false)
                     ),
                     self.shortfall_text(Build::Worker),
@@ -496,12 +496,14 @@ impl GameState {
                     scenario.name().into(),
                     scenario.key().into(),
                     match scenario {
-                        Scenario::Combat => "FOUR UNITS A SIDE ACROSS A MOUNTAIN PASS.",
-                        Scenario::Cities => "TWO ESTABLISHED CITIES WITH ARMIES.",
-                        Scenario::Frontier => "A SETTLER AND A SCOUT EACH. BOTH SCOUTS ARE YOURS.",
+                        Scenario::Combat => "FOUR UNITS A SIDE THROUGH A DEAD CITY.",
+                        Scenario::Cities => "TWO ESTABLISHED ENCLAVES WITH ARMIES.",
+                        Scenario::Frontier => {
+                            "A CARAVAN AND A CYCLIST EACH. BOTH CYCLISTS ARE YOURS."
+                        }
                         Scenario::World => "A NEW RANDOM WORLD EVERY PRESS.",
-                        Scenario::Siege => "A FIGHT ALREADY INSIDE A CITY.",
-                        Scenario::Naval => "COASTAL CITIES, SHIPS AND BATTERIES.",
+                        Scenario::Siege => "A FIGHT ALREADY INSIDE AN ENCLAVE.",
+                        Scenario::Naval => "COASTAL ENCLAVES, SHIPS AND BATTERIES.",
                     }
                     .into(),
                     None,
@@ -533,15 +535,15 @@ impl GameState {
                     "STEP BY STEP OR ALL AT ONCE.".into(),
                     None,
                 ),
-                Target::ToggleFog => ("FOG OF WAR".into(), "F10".into(), String::new(), None),
+                Target::ToggleFog => ("DUST".into(), "F10".into(), String::new(), None),
                 Target::ToggleProductionSpeedup => (
                     "PRODUCTION SPEEDS BUILDS".into(),
                     "DEBUG".into(),
-                    "ON: A CITY'S WOOD AND METAL INCOME SPEEDS ITS QUEUE.".into(),
+                    "ON: AN ENCLAVE'S WOOD AND SCRAP INCOME SPEEDS ITS QUEUE.".into(),
                     None,
                 ),
                 Target::ToggleLifetimeCap => (
-                    "CAVALRY AND ARMORED CAP".into(),
+                    "OUTRIDER AND RIOT GUARD CAP".into(),
                     "DEBUG".into(),
                     format!(
                         "{UNITS_PER_DEPOSIT} PER DEPOSIT. ALIVE: COUNTS LIVING ONES. EVER: COUNTS ALL TRAINED."
@@ -663,9 +665,9 @@ impl GameState {
             ),
             UnitAction::Disband => ("DISBAND".into(), "DEL", "REMOVES IT FOR GOOD.".into(), None),
             UnitAction::Settle => (
-                "FOUND CITY".into(),
+                "FOUND ENCLAVE".into(),
                 "F",
-                "3 OR MORE HEXES FROM ANY CITY.".into(),
+                "3 OR MORE HEXES FROM ANY ENCLAVE.".into(),
                 None,
             ),
             UnitAction::ClearOrders => (

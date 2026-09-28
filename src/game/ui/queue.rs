@@ -199,7 +199,7 @@ impl GameState {
             (job.hex.to_world() + across.to_world()) / 2.0
         });
         self.camera.focus_on(spot);
-        self.notice = format!("{} - WAITING FOR A WORKER", self.job_title(job));
+        self.notice = format!("{} - WAITING FOR A SALVAGER", self.job_title(job));
     }
 
     pub(super) fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {
@@ -219,7 +219,7 @@ impl GameState {
                 if source < queue.len() && target < queue.len() {
                     let item = queue.remove(source);
                     queue.insert(target, item);
-                    self.notice = "CITY QUEUE REORDERED".into();
+                    self.notice = "ENCLAVE QUEUE REORDERED".into();
                 }
             }
             QueueKind::Barracks => {
@@ -227,7 +227,7 @@ impl GameState {
                 if source < queue.len() && target < queue.len() {
                     let item = queue.remove(source);
                     queue.insert(target, item);
-                    self.notice = "BARRACKS QUEUE REORDERED".into();
+                    self.notice = "GARRISON QUEUE REORDERED".into();
                 }
             }
             QueueKind::Workers => {
@@ -235,7 +235,7 @@ impl GameState {
                 if source < jobs.len() && target < jobs.len() {
                     let job = jobs.remove(source);
                     jobs.insert(target, job);
-                    self.notice = "WORKER JOBS REORDERED".into();
+                    self.notice = "SALVAGER JOBS REORDERED".into();
                 }
             }
         }
@@ -264,7 +264,7 @@ impl GameState {
         }
         panel.text(
             SMALL,
-            vec![("BARRACKS QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
+            vec![("GARRISON QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
         );
         for (index, build) in city
             .barracks_queue
@@ -318,7 +318,7 @@ impl GameState {
         if !city.queue.is_empty() {
             panel.text(
                 SMALL,
-                vec![("CITY QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
+                vec![("ENCLAVE QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
             );
             for (index, build) in city
                 .queue

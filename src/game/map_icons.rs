@@ -100,13 +100,14 @@ impl MapIcon {
         }
     }
 
-    /// An improvement's icon, by the label it's built with.
+    /// An improvement's icon, by the label it's built with (its After the Fall
+    /// name, or the original one some older test sites still carry).
     pub(super) fn improvement(label: &str) -> Option<Self> {
         match label {
-            "FARM" => Some(Self::Wheat),
-            "MINE" => Some(Self::OreCart),
-            "PASTURE" => Some(Self::Fence),
-            "LUMBER MILL" => Some(Self::Logs),
+            "HOMESTEAD" | "FARM" => Some(Self::Wheat),
+            "SCRAP DIG" | "MINE" => Some(Self::OreCart),
+            "CORRAL" | "PASTURE" => Some(Self::Fence),
+            "SAWPIT" | "LUMBER MILL" => Some(Self::Logs),
             _ => None,
         }
     }
@@ -451,7 +452,7 @@ mod tests {
 
     #[test]
     fn every_improvement_has_an_icon() {
-        for label in ["FARM", "MINE", "PASTURE", "LUMBER MILL"] {
+        for label in ["HOMESTEAD", "SCRAP DIG", "CORRAL", "SAWPIT"] {
             assert!(MapIcon::improvement(label).is_some(), "{label}");
         }
     }

@@ -101,7 +101,7 @@ fn remote_cannery_collects_food_beyond_city_reach_but_not_through_an_enemy() {
             team: Team::Blue,
             food: 16,
             production: 0,
-            label: "FARM",
+            label: "HOMESTEAD",
         },
     );
     let before = g.income(0).food;
@@ -131,7 +131,7 @@ fn remote_smelter_collects_unworked_mines_beyond_city_reach() {
             team: Team::Blue,
             food: 0,
             production: 16,
-            label: "MINE",
+            label: "SCRAP DIG",
         },
     );
     let before = g.income(0).production();
@@ -539,7 +539,7 @@ fn a_barracks_is_placed_for_a_worker_who_walks_out_and_builds_it() {
     // A second can't be placed while this one waits.
     g.queue_selected_city_building(Building::Barracks);
     assert_eq!(g.placing_job, None);
-    assert_eq!(g.notice, "BARRACKS IS ALREADY PLACED FOR THIS CITY");
+    assert_eq!(g.notice, "GARRISON IS ALREADY PLACED FOR THIS ENCLAVE");
     build_all(&mut g);
     assert_eq!(g.cities[0].barracks, Some(site));
     assert!(g.cities[0].built.contains(&Building::Barracks));
@@ -713,7 +713,10 @@ fn placed_buildings_cannot_share_a_site() {
     g.cities[0].mill = Some(site);
     assert!(!place_building(&mut g, Building::Workshop, site));
     assert!(g.cities[0].worker_jobs.is_empty());
-    assert_eq!(g.notice, "SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+    assert_eq!(
+        g.notice,
+        "SITE IS ALREADY CLAIMED BY AN ENCLAVE OR BUILDING"
+    );
     assert_eq!(
         g.placing_job,
         Some(JobKind::Build(Building::Workshop)),
@@ -849,7 +852,7 @@ fn a_horses_deposit_allows_three_cavalry_alive_at_once() {
     );
     // Armored stay locked: no Iron under or beside this Barracks.
     let reason = g.barracks_lock(0, BuildUnit::Armored).unwrap();
-    assert!(reason.contains("IRON"), "{reason}");
+    assert!(reason.contains("WRECKS"), "{reason}");
     // A basic troop never is.
     assert_eq!(g.barracks_lock(0, BuildUnit::Melee), None);
 }
@@ -1148,7 +1151,7 @@ fn coastal_construction_requires_the_city_center_to_touch_the_sea() {
         assert_eq!(inland.placing_job, None);
         assert_eq!(
             inland.notice,
-            "ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS"
+            "ONLY COASTAL ENCLAVES CAN BUILD NAVAL BUILDINGS"
         );
         assert!(!inland.site_available(0, building, Hex::new(-2, 1)));
     }
@@ -1179,11 +1182,11 @@ fn coastal_construction_requires_the_city_center_to_touch_the_sea() {
 fn rejected_building_sites_name_the_requirement_and_keep_placement_active() {
     for (building, reason) in [
         (Building::Stable, "NEEDS HORSES ON OR NEXT TO THE TILE"),
-        (Building::Forge, "NEEDS IRON ON OR NEXT TO THE TILE"),
+        (Building::Forge, "NEEDS WRECKS ON OR NEXT TO THE TILE"),
         (Building::CanoeHouse, "NEEDS A RIVERBANK TILE"),
         (
             Building::Smelter,
-            "NEEDS HILLS OR IRON ON OR NEXT TO THE TILE",
+            "NEEDS RUBBLE OR WRECKS ON OR NEXT TO THE TILE",
         ),
     ] {
         let mut game = GameState::city_scenario();

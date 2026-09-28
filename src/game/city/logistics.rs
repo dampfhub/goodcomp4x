@@ -234,7 +234,7 @@ impl GameState {
                 if site.team != c.team
                     || match building {
                         Building::Cannery => site.food <= 0,
-                        Building::Smelter => site.label != "MINE" || site.production <= 0,
+                        Building::Smelter => site.label != "SCRAP DIG" || site.production <= 0,
                         _ => unreachable!(),
                     }
                     || self.cities.iter().any(|other| other.worked.contains(&hex))

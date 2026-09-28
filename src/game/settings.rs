@@ -127,7 +127,7 @@ impl Setting {
         match self {
             Setting::TurnPlayback => "INSTANT PLAYBACK",
             Setting::MaxQueuedTurns => "QUEUE LIMIT",
-            Setting::FogStyle => "FOG",
+            Setting::FogStyle => "DUST",
             Setting::WorldAi => "AI PLAYERS",
             Setting::WorldStart => "START WITH",
         }
@@ -156,9 +156,9 @@ impl Setting {
         match self {
             Setting::TurnPlayback => "PLAY EACH TURN OUT AT ONCE (F8).",
             Setting::MaxQueuedTurns => "THE MOST TURNS A UNIT CAN QUEUE.",
-            Setting::FogStyle => "CLOUDS OR FLAT GREY OVER UNEXPLORED LAND.",
+            Setting::FogStyle => "DUST CLOUDS OR FLAT GREY OVER UNEXPLORED LAND.",
             Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4).",
-            Setting::WorldStart => "START THE NEXT WORLD (F4) WITH A CITY OR A SETTLER.",
+            Setting::WorldStart => "START THE NEXT WORLD (F4) WITH AN ENCLAVE OR A CARAVAN.",
         }
     }
 
@@ -182,7 +182,7 @@ impl Setting {
             Setting::FogStyle => if value == 1 { "CLOUDS" } else { "SOLID GREY" }.into(),
             Setting::WorldAi if value == WORLD_AI_BY_SEED as i32 => "4-6 BY MAP".into(),
             Setting::WorldAi => value.to_string(),
-            Setting::WorldStart => if value == 1 { "CITY" } else { "SETTLER" }.into(),
+            Setting::WorldStart => if value == 1 { "ENCLAVE" } else { "CARAVAN" }.into(),
         }
     }
 }

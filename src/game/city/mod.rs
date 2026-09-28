@@ -57,7 +57,7 @@ impl LaborFocus {
         match self {
             Self::Food => "FOOD",
             Self::Wood => "WOOD",
-            Self::Metal => "METAL",
+            Self::Metal => "SCRAP",
             Self::Balanced => "BALANCED",
         }
     }
@@ -197,10 +197,10 @@ impl GameState {
                 ..City::new(id, team, pos)
             });
             for (q, r, food, production, label) in [
-                (4, -1, 4, 0, "FARM"),
-                (3, 0, 4, 0, "FARM"),
-                (2, -2, 0, 4, "MINE"),
-                (4, 1, 3, 1, "PASTURE"),
+                (4, -1, 4, 0, "HOMESTEAD"),
+                (3, 0, 4, 0, "HOMESTEAD"),
+                (2, -2, 0, 4, "SCRAP DIG"),
+                (4, 1, 3, 1, "CORRAL"),
             ] {
                 self.sites.insert(
                     Hex::new(sign * q, sign * r),
@@ -219,7 +219,7 @@ impl GameState {
         for i in 0..self.cities.len() {
             self.auto_assign_city(i);
         }
-        self.notice = "C CITY - SPACE HOLD OR END TURN - F1 COMBAT - F2 CITIES".into();
+        self.notice = "C ENCLAVE - SPACE HOLD OR END TURN - F1 COMBAT - F2 CITIES".into();
     }
 
     pub(super) fn setup_frontier(&mut self) {
@@ -247,7 +247,7 @@ impl GameState {
                 self.player_controlled_units.insert(id);
             }
         }
-        self.notice = "F FOUND CITY - BOTH STARTING SCOUTS ARE YOURS TO TEST".into();
+        self.notice = "F FOUND ENCLAVE - BOTH STARTING CYCLISTS ARE YOURS TO TEST".into();
         self.selected = self.unit_of_team_at(Hex::new(-4, 0), PLAYER_TEAM);
     }
 
@@ -296,9 +296,9 @@ impl GameState {
             self.units.push(Unit::new(id, scout, team, UnitType::Scout));
         }
         let founding = if settings.world_start_city {
-            "C OPENS YOUR CITY"
+            "C OPENS YOUR ENCLAVE"
         } else {
-            "F FOUNDS A CITY"
+            "F FOUNDS AN ENCLAVE"
         };
         self.notice = format!("WORLD SEED {seed} - {ai} AI - {founding} - F4 FOR A NEW MAP");
     }

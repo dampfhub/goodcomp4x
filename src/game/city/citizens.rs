@@ -11,7 +11,7 @@ impl GameState {
         if let Some(city) = self.selected_city {
             self.cities[city].focus = focus;
             self.auto_assign_city(city);
-            self.notice = format!("CITY FOCUS: {}", focus.name());
+            self.notice = format!("ENCLAVE FOCUS: {}", focus.name());
         }
     }
 
@@ -95,7 +95,7 @@ impl GameState {
         self.cities[city].worked = relocated;
         self.cities[city].remembered_worked = self.cities[city].worked.clone();
         self.reconcile_citizens(city);
-        self.notice = "MANAGER MOVED - WORKERS FOLLOWED WHERE POSSIBLE".into();
+        self.notice = "MANAGER MOVED - SALVAGERS FOLLOWED WHERE POSSIBLE".into();
     }
 
     pub(in crate::game) fn auto_assign_city(&mut self, city: usize) {
@@ -284,7 +284,7 @@ impl GameState {
     /// side's stockpile, the citizens eat from it, each queue does a turn's
     /// work, and finished builds complete.
     pub(in crate::game) fn resolve_economy(&mut self) {
-        self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+        self.notice = "PLANNING - C ENCLAVE - SPACE HOLD OR END TURN".into();
         let income: Vec<_> = (0..self.cities.len()).map(|i| self.income(i)).collect();
         let rates: Vec<_> = (0..self.cities.len())
             .map(|i| {

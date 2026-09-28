@@ -49,13 +49,13 @@ impl GameState {
             panel.setting(setting, self.settings.get(setting));
         }
         panel.gap(GAP);
-        panel.text(BODY, vec![("CITY OVERLAYS".into(), LABEL_TEXT)]);
+        panel.text(BODY, vec![("ENCLAVE OVERLAYS".into(), LABEL_TEXT)]);
         panel.compact_buttons(vec![ButtonSpec {
             target: Target::ToggleYields,
             label: if self.show_yields {
-                "CITY YIELDS: ON"
+                "ENCLAVE YIELDS: ON"
             } else {
-                "CITY YIELDS: OFF"
+                "ENCLAVE YIELDS: OFF"
             }
             .into(),
             hint: "Y".into(),

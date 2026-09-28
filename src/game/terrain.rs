@@ -49,7 +49,7 @@ impl Resource {
     pub fn name(self) -> &'static str {
         match self {
             Self::Horses => "HORSES",
-            Self::Iron => "IRON",
+            Self::Iron => "WRECKS",
         }
     }
 }
@@ -71,8 +71,8 @@ impl Special {
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::Orchard => "ORCHARD",
-            Self::Quarry => "QUARRY",
+            Self::Orchard => "FERAL ORCHARD",
+            Self::Quarry => "RUBBLE PIT",
         }
     }
 
@@ -88,16 +88,16 @@ impl Special {
 impl Terrain {
     pub fn name(self) -> &'static str {
         match self {
-            Terrain::Grassland => "GRASSLAND",
-            Terrain::Plains => "PLAINS",
-            Terrain::Desert => "DESERT",
-            Terrain::Tundra => "TUNDRA",
-            Terrain::Snow => "SNOW",
-            Terrain::Marsh => "MARSH",
-            Terrain::Mountains => "MOUNTAINS",
-            Terrain::Coast => "COAST",
-            Terrain::Ocean => "OCEAN",
-            Terrain::Lake => "LAKE",
+            Terrain::Grassland => "OVERGROWTH",
+            Terrain::Plains => "SPRAWL",
+            Terrain::Desert => "WASTELAND",
+            Terrain::Tundra => "ASH FLATS",
+            Terrain::Snow => "DEAD ZONE",
+            Terrain::Marsh => "DROWNED TOWN",
+            Terrain::Mountains => "DEAD CITY",
+            Terrain::Coast => "SHALLOWS",
+            Terrain::Ocean => "DEEP WATER",
+            Terrain::Lake => "RESERVOIR",
         }
     }
 
@@ -143,8 +143,8 @@ pub enum Feature {
 impl Feature {
     pub fn name(self) -> &'static str {
         match self {
-            Feature::Forest => "FOREST",
-            Feature::Jungle => "JUNGLE",
+            Feature::Forest => "WILDWOOD",
+            Feature::Jungle => "KUDZU",
         }
     }
 }
@@ -185,11 +185,11 @@ impl Tile {
         feature: None,
     };
 
-    /// Like "DESERT HILLS" or "GRASSLAND HILLS + FOREST".
+    /// Like "WASTELAND RUBBLE" or "OVERGROWTH RUBBLE + WILDWOOD".
     pub fn name(self) -> String {
         let mut name = self.terrain.name().to_string();
         if self.hills {
-            name += " HILLS";
+            name += " RUBBLE";
         }
         if let Some(feature) = self.feature {
             name += " + ";
@@ -257,7 +257,7 @@ mod tests {
             feature: None,
         };
         assert_eq!(desert_hills.yields(), (0, 2));
-        assert_eq!(desert_hills.name(), "DESERT HILLS");
+        assert_eq!(desert_hills.name(), "WASTELAND RUBBLE");
         let forested_hills = Tile {
             terrain: Terrain::Plains,
             hills: true,
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(forested_hills.yields(), (1, 3));
         assert_eq!(forested_hills.route_cost(), 4);
         assert!((forested_hills.defense_multiplier() - 1.4).abs() < 1e-6);
-        assert_eq!(forested_hills.name(), "PLAINS HILLS + FOREST");
+        assert_eq!(forested_hills.name(), "SPRAWL RUBBLE + WILDWOOD");
         let jungle = Tile {
             terrain: Terrain::Marsh,
             hills: false,

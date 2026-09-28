@@ -5,6 +5,10 @@ orders when you end the turn. The key map in code is `App::window_event` in `src
 rules behind each action are in `game-rules.md`. This file is the only description of the
 controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just points here.
 
+The game shows its things by their After the Fall names (`apocalypse-theme.md`: an enclave for a
+city, a garrison for a barracks, salvagers for workers and so on). This file names buttons and
+settings as they read on screen, and otherwise uses the rules' own terms, like `game-rules.md`.
+
 ## Units
 
 | Control | Action |
@@ -35,7 +39,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds and guards |
 | Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
-| F / Found City button | Found a city with the selected settler |
+| F / Found Enclave button | Found a city with the selected settler |
 | Escape | Let go of the selected unit or group |
 
 A unit can queue a move and an attack; it attacks from the hex it moves to. Units can't move
@@ -87,7 +91,7 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | Click a placed job's X (city panel) | Take it off, refunding its price |
 | Click a worker's row (city panel) | Show the worker on the map |
 | Recall beside a worker's row (city panel) | Send that worker straight home; its job goes back on top of the list |
-| 8 / Worker card (city view) | Build a worker for the city |
+| 8 / Salvager card (city view) | Build a worker for the city |
 
 ## Turn
 
@@ -97,7 +101,7 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | End Turn button | Hold every unfinished unit, then end the turn (or open a city that still needs a build) |
 
 The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE
-PRODUCTION") and turns gold, reading END TURN, once nothing is. Clicks are ignored while a turn
+PRODUCTION") and turns amber, reading END TURN, once nothing is. Clicks are ignored while a turn
 plays out.
 
 ## Cities
@@ -109,8 +113,8 @@ plays out.
 | Click a tile in the city view | Assign a citizen there, or release one |
 | Click the manager (`M`), then a tile | Move the manager; workers follow where they can |
 | A | Auto-assign citizens by the city's labor focus |
-| Food / Wood / Metal / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
-| Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
+| Food / Wood / Scrap / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
+| Y / Menu > Enclave Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
 | 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |
 | Scroll inside the city production list | Browse unit, building and work cards in one list; coastal cards appear only in eligible cities |
@@ -127,13 +131,13 @@ plays out.
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |
-| See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types, and how many Cavalry and Armored its deposits still allow) |
+| See Garrison, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types, and how many Cavalry and Armored its deposits still allow) |
 | Click the city center while in city view | Enter that city's tactical interior map |
-| V / City Interior button | Open the selected or hovered city's interior; press again to return |
+| V / Enclave Interior button | Open the selected or hovered city's interior; press again to return |
 | Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |
 | Backspace in the interior | Clear the selected copy's orders |
-| Escape / V / Return to City in the interior | Return to the city view |
-| Open City (in the barracks view) | Go back to the city view |
+| Escape / V / Return to Enclave in the interior | Return to the city view |
+| Open Enclave (in the barracks view) | Go back to the city view |
 | Space / Escape / click off the map | Close the city or barracks view |
 | Tab | Close the city or barracks view |
 
@@ -159,15 +163,15 @@ city center enters the interior map; its clicks control only the interior copies
 | F7 | Load the snapshot; it is kept, so it can be loaded again |
 | F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome); also in the settings menu |
 | F9 | Finish the open city's or barracks' current build at once (debug) |
-| F10 | Toggle fog of war (on by default) |
+| F10 | Toggle fog of war, the dust (on by default) |
 | F11 | Switch between the ImGui and classic UI presentations |
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
-| Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
+| Ctrl+Shift+R in Enclave / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
 The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10 (F9 is FINISH
 BUILD), PROD SPEEDUP, which switches the stockpile economy's variant where a city's production
 speeds its builds, and UNIT CAP, which switches the Cavalry and Armored cap between counting
-those alive and every one ever trained (`rts-economy.md`); the current scenario is gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
+those alive and every one ever trained (`rts-economy.md`); the current scenario is amber, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
 order.
 
 ## Settings menu
@@ -185,7 +189,7 @@ left and its control beside it; hover over either for what the setting does.
 | --- | --- |
 | Checkbox | Switch an on/off setting |
 | Slider | Drag or click to pick a number; the slider shows the value |
-| Buttons side by side | Pick one of a few named values; the current one is gold |
+| Buttons side by side | Pick one of a few named values; the current one is amber |
 | Drop-down list | Pick one of a longer list of values |
 | Close button, or Escape | Close the menu |
 | Quit button | Close the game |
@@ -198,9 +202,9 @@ that end of the range).
 | --- | --- | --- |
 | Instant playback (Turns) | Checkbox | On (the default): a turn plays out all at once; off: step by step. The same switch as F8 |
 | Queue limit (Turns) | Slider | 1 to 20 turns (6 by default): the most turns a unit can have queued, this turn included. A Shift-click toward a hex farther away queues the move as far as the limit goes, and once a queue is full, Shift-clicks add nothing to it until turns are played |
-| Fog (Map) | Buttons | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
+| Dust (Map) | Buttons | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
 | AI players (Next World) | Drop-down list | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |
-| Start with (Next World) | Buttons | City (the default) or settler: what every side in the next world (F4) starts with, beside its scout |
+| Start with (Next World) | Buttons | Enclave (the default) or caravan: what every side in the next world (F4) starts with, beside its scout |
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).

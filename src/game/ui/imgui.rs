@@ -34,7 +34,7 @@ impl ViewScope {
     fn label(self) -> &'static str {
         match self {
             Self::Default => "DEFAULT",
-            Self::City => "CITY / BUILDING",
+            Self::City => "ENCLAVE / BUILDING",
             Self::Troop => "TROOP",
         }
     }
@@ -65,21 +65,23 @@ struct PinnedPanel {
 impl PinnedPanel {
     fn title(self) -> String {
         match self.kind {
-            PinnedKind::City => format!("City {}###PinnedCity-{}", self.city_id + 1, self.city_id),
+            PinnedKind::City => {
+                format!("Enclave {}###PinnedCity-{}", self.city_id + 1, self.city_id)
+            }
             PinnedKind::Barracks => format!(
-                "Barracks {}###PinnedBarracks-{}",
+                "Garrison {}###PinnedBarracks-{}",
                 self.city_id + 1,
                 self.city_id
             ),
             PinnedKind::Unit => format!("Unit {}###PinnedUnit-{}", self.city_id, self.city_id),
             PinnedKind::Group => format!("Group###PinnedGroup-{}", self.city_id),
             PinnedKind::CityQueue => format!(
-                "City {} Queue###PinnedCityQueue-{}",
+                "Enclave {} Queue###PinnedCityQueue-{}",
                 self.city_id + 1,
                 self.city_id
             ),
             PinnedKind::BarracksQueue => format!(
-                "Barracks {} Queue###PinnedBarracksQueue-{}",
+                "Garrison {} Queue###PinnedBarracksQueue-{}",
                 self.city_id + 1,
                 self.city_id
             ),
@@ -1474,7 +1476,7 @@ fn setting_tooltip(ui: &Ui, setting: Setting) {
     ui.tooltip(|| {
         ui.text_colored(TEXT, setting.name());
         for line in super::text::wrap(setting.description(), TOOLTIP_WRAP) {
-            ui.text_colored([0.72, 0.75, 0.76, 1.0], line);
+            ui.text_colored([0.70, 0.65, 0.56, 1.0], line);
         }
     });
 }
@@ -1503,7 +1505,7 @@ fn render_setting(
     };
     let left = ui.cursor_pos()[0];
     ui.align_text_to_frame_padding();
-    ui.text_colored([0.82, 0.84, 0.86, 1.0], setting.name());
+    ui.text_colored([0.80, 0.75, 0.64, 1.0], setting.name());
     tooltip();
     ui.same_line_with_pos(left + label_width);
     let width = ui.content_region_avail()[0];
@@ -1557,8 +1559,8 @@ fn render_setting(
                 // The current choice is gold, like a queued build.
                 let _accent = (to == value).then(|| {
                     (
-                        ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]),
-                        ui.push_style_color(StyleColor::ButtonHovered, [0.42, 0.37, 0.20, 1.0]),
+                        ui.push_style_color(StyleColor::Button, [0.45, 0.19, 0.012, 1.0]),
+                        ui.push_style_color(StyleColor::ButtonHovered, [0.56, 0.25, 0.02, 1.0]),
                     )
                 });
                 let label = format!("{}{id}-{to}", setting.value_text(to));
@@ -1703,9 +1705,9 @@ fn text_line(ui: &Ui, line: &Line) {
             ui.same_line_with_spacing(0.0, 0.0);
         }
         let readable = if *color == LABEL_TEXT {
-            [0.66, 0.70, 0.72, 1.0]
+            [0.62, 0.57, 0.49, 1.0]
         } else if *color == DIM_TEXT {
-            [0.72, 0.75, 0.76, 1.0]
+            [0.70, 0.65, 0.56, 1.0]
         } else {
             *color
         };
@@ -2430,10 +2432,10 @@ impl GameState {
                         }
                         let _accent = match spec.state {
                             ButtonState::Queued => Some(
-                                ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]),
+                                ui.push_style_color(StyleColor::Button, [0.45, 0.19, 0.012, 1.0]),
                             ),
                             _ if spec.armed => Some(
-                                ui.push_style_color(StyleColor::Button, [0.24, 0.32, 0.24, 1.0]),
+                                ui.push_style_color(StyleColor::Button, [0.20, 0.24, 0.10, 1.0]),
                             ),
                             _ => None,
                         };
@@ -2515,7 +2517,7 @@ impl GameState {
                                 let _accent = match spec.state {
                                     ButtonState::Queued => Some(ui.push_style_color(
                                         StyleColor::Button,
-                                        [0.34, 0.30, 0.17, 1.0],
+                                        [0.45, 0.19, 0.012, 1.0],
                                     )),
                                     _ => None,
                                 };
@@ -2568,9 +2570,9 @@ impl GameState {
                     let _background = ui.push_style_color(
                         StyleColor::Button,
                         if item.active {
-                            [0.26, 0.24, 0.15, 1.0]
+                            [0.34, 0.14, 0.01, 1.0]
                         } else {
-                            [0.11, 0.14, 0.16, 1.0]
+                            [0.075, 0.060, 0.045, 1.0]
                         },
                     );
                     if rich_button(
@@ -2620,7 +2622,7 @@ impl GameState {
                     }
                     ui.same_line();
                     let _remove_color =
-                        ui.push_style_color(StyleColor::Button, [0.23, 0.13, 0.13, 1.0]);
+                        ui.push_style_color(StyleColor::Button, [0.30, 0.07, 0.03, 1.0]);
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
                         actions.push(Action::Button(scope, item.kind.remove_target(item.index)));
                     }

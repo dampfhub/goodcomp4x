@@ -119,9 +119,9 @@ impl GameState {
             "PLAYBACK: STEP BY STEP"
         };
         let fog = if self.fog_of_war {
-            "FOG OF WAR: ON"
+            "DUST: ON"
         } else {
-            "FOG OF WAR: OFF"
+            "DUST: OFF"
         };
         panel.compact_buttons(vec![debug_button(
             Target::TogglePlayback,
@@ -259,7 +259,10 @@ impl GameState {
             };
             panel.text(
                 TITLE,
-                vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
+                vec![(
+                    format!("ENCLAVE {} GARRISON", city.id + 1),
+                    city.team.color(),
+                )],
             );
             panel.text(
                 SMALL,
@@ -285,7 +288,7 @@ impl GameState {
             };
             panel.text(
                 TITLE,
-                vec![(format!("CITY {}", city.id + 1), city.team.color())],
+                vec![(format!("ENCLAVE {}", city.id + 1), city.team.color())],
             );
             panel.text(
                 SMALL,

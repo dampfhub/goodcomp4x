@@ -108,14 +108,14 @@ pub(super) fn turns_at_rate(remaining: i32, per_turn: i32) -> String {
 pub(super) fn end_turn_label((units, cities): (usize, usize)) -> String {
     match (units, cities) {
         (_, 1) => "CHOOSE PRODUCTION".into(),
-        (_, cities) if cities > 1 => format!("{cities} CITIES NEED PRODUCTION"),
+        (_, cities) if cities > 1 => format!("{cities} ENCLAVES NEED PRODUCTION"),
         (0, _) => "END TURN".into(),
         (1, _) => "UNIT NEEDS ORDERS".into(),
         (units, _) => format!("{units} UNITS NEED ORDERS"),
     }
 }
 
-/// What the turn is waiting on, like "2 UNITS AND 1 CITY NEED ORDERS", from
+/// What the turn is waiting on, like "2 UNITS AND 1 ENCLAVE NEED ORDERS", from
 /// `GameState::pending`; `None` once nothing is.
 pub(super) fn pending_text((units, cities): (usize, usize)) -> Option<String> {
     let plural = |count: usize, one: &str, many: &str| {
@@ -127,7 +127,7 @@ pub(super) fn pending_text((units, cities): (usize, usize)) -> Option<String> {
         parts.push(plural(units, "UNIT", "UNITS"));
     }
     if cities > 0 {
-        parts.push(plural(cities, "CITY", "CITIES"));
+        parts.push(plural(cities, "ENCLAVE", "ENCLAVES"));
     }
     let verb = if units + cities == 1 { "NEEDS" } else { "NEED" };
     (!parts.is_empty()).then(|| format!("{} {verb} ORDERS", parts.join(" AND ")))
@@ -159,11 +159,14 @@ pub(super) fn wrap(text: &str, max_chars: usize) -> Vec<String> {
 /// The ability's name and a short description of what it does.
 pub(super) fn ability_text(unit: &Unit) -> (&'static str, &'static str) {
     match unit.ability() {
-        Ability::ShieldWall => ("SHIELD WALL", "+50% DEFENSE THIS TURN, NO MOVING"),
-        Ability::Volley => ("VOLLEY", "ALSO HITS ENEMIES NEXT TO THE TARGET, ALL AT 60%"),
-        Ability::Charge => ("CHARGE", "+1 MOVE AND +50% ATTACK THIS TURN"),
+        Ability::ShieldWall => ("BARRICADE", "+50% DEFENSE THIS TURN, NO MOVING"),
+        Ability::Volley => (
+            "ARROW RAIN",
+            "ALSO HITS ENEMIES NEXT TO THE TARGET, ALL AT 60%",
+        ),
+        Ability::Charge => ("RIDE DOWN", "+1 MOVE AND +50% ATTACK THIS TURN"),
         Ability::Deploy if unit.deployed => ("PACK UP", "A TURN PACKING UP, THEN IT CAN MOVE"),
-        Ability::Deploy => ("DEPLOY", "A TURN SETTING UP, THEN +1 RANGE BUT NO MOVING"),
-        Ability::Lookout => ("LOOKOUT", "NO MOVING THIS TURN, +2 SIGHT NEXT TURN"),
+        Ability::Deploy => ("SET UP", "A TURN SETTING UP, THEN +1 RANGE BUT NO MOVING"),
+        Ability::Lookout => ("BINOCULARS", "NO MOVING THIS TURN, +2 SIGHT NEXT TURN"),
     }
 }

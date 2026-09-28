@@ -366,9 +366,9 @@ impl GameState {
         self.fog_of_war = !self.fog_of_war;
         self.explore();
         self.notice = if self.fog_of_war {
-            "FOG OF WAR ON - F10 TO LIFT IT".into()
+            "DUST ON - F10 TO LIFT IT".into()
         } else {
-            "FOG OF WAR OFF - F10 TO BRING IT BACK".into()
+            "DUST OFF - F10 TO BRING IT BACK".into()
         };
     }
 }
@@ -689,7 +689,7 @@ pub(super) mod tests {
                 team: Team::Red,
                 food: 9,
                 production: 9,
-                label: "FARM",
+                label: "HOMESTEAD",
             },
         );
         let fog = game.fog();

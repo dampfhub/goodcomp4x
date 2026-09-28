@@ -62,10 +62,10 @@ impl JobKind {
         match self {
             Self::Road => "ROAD",
             Self::Improve => "IMPROVE",
-            Self::Wall => "WALL",
-            Self::Gate => "GATE",
-            Self::Outpost => "OUTPOST",
-            Self::Fort => "FORT",
+            Self::Wall => "TYRE WALL",
+            Self::Gate => "BUS GATE",
+            Self::Outpost => "WATCHFIRE",
+            Self::Fort => "BUNKER",
             Self::Build(building) => building.name(),
         }
     }
@@ -97,8 +97,8 @@ impl JobKind {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Road => "CHEAPER DELIVERY, AND WORKERS REACH ALONG IT.",
-            Self::Improve => "MINE ON HILLS, LUMBER MILL IN FOREST, ELSE A FARM.",
+            Self::Road => "CHEAPER DELIVERY, AND SALVAGERS REACH ALONG IT.",
+            Self::Improve => "SCRAP DIG ON RUBBLE, SAWPIT IN WILDWOOD, ELSE A HOMESTEAD.",
             Self::Wall => "ON AN EDGE: NOBODY CROSSES.",
             Self::Gate => "ON AN EDGE: ONLY YOUR SIDE CROSSES.",
             Self::Outpost => "SEES 2 HEXES AROUND IT.",
@@ -283,7 +283,7 @@ impl GameState {
     }
 
     /// A job as the city panel names it: what it builds, and the tile it's
-    /// on, like "FARM · GRASSLAND" or "MINE · PLAINS HILLS".
+    /// on, like "HOMESTEAD · OVERGROWTH" or "SCRAP DIG · SPRAWL RUBBLE".
     pub(super) fn job_title(&self, job: WorkerJob) -> String {
         format!(
             "{} · {}",
@@ -299,13 +299,13 @@ impl GameState {
         let tile = self.grid.tile(hex);
         let (food, production) = tile.yields();
         if tile.hills {
-            Some((food, production + 2, "MINE"))
+            Some((food, production + 2, "SCRAP DIG"))
         } else if tile.feature.is_some() {
-            Some((food, production + 1, "LUMBER MILL"))
+            Some((food, production + 1, "SAWPIT"))
         } else if tile.terrain == Terrain::Snow {
             None
         } else {
-            Some((food + 2, production, "FARM"))
+            Some((food + 2, production, "HOMESTEAD"))
         }
     }
 
@@ -314,28 +314,28 @@ impl GameState {
         let team = self.cities[city].team;
         let hex = job.hex;
         if !self.grid.contains(hex) || !self.grid.is_passable(hex) {
-            return Some("WORKERS CAN'T WORK THIS TERRAIN");
+            return Some("SALVAGERS CAN'T WORK THIS TERRAIN");
         }
         if !self.in_worker_reach(team, hex) {
             return Some(
-                "OUT OF REACH: WORKERS GO 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD",
+                "OUT OF REACH: SALVAGERS GO 3 TILES FROM AN ENCLAVE OR WORK CAMP, OR NEXT TO A ROAD",
             );
         }
         if let Some(across) = job.across {
             return if hex.distance(across) != 1 || !self.grid.contains(across) {
-                Some("WALLS AND GATES GO BETWEEN TWO TILES ON THE MAP")
+                Some("TYRE WALLS AND BUS GATES GO BETWEEN TWO TILES ON THE MAP")
             } else if self.barriers.contains_key(&edge(hex, across)) {
-                Some("A WALL OR GATE STANDS HERE")
+                Some("A TYRE WALL OR BUS GATE STANDS HERE")
             } else {
                 None
             };
         }
         if self.cities.iter().any(|c| c.pos == hex) {
-            return Some("A CITY STANDS HERE");
+            return Some("AN ENCLAVE STANDS HERE");
         }
         if let JobKind::Build(building) = job.kind {
             if self.cities[city].built.contains(&building) {
-                return Some("THIS CITY HAS ONE ALREADY");
+                return Some("THIS ENCLAVE HAS ONE ALREADY");
             }
             if self.structures.contains_key(&hex) {
                 return Some("A STRUCTURE STANDS HERE");
@@ -354,7 +354,7 @@ impl GameState {
             JobKind::Improve => match self.sites.get(&hex) {
                 Some(site) if site.team != team => Some("THIS TILE BELONGS TO THE ENEMY"),
                 Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
-                None if self.improvement(hex).is_none() => Some("NOTHING GROWS ON SNOW"),
+                None if self.improvement(hex).is_none() => Some("NOTHING GROWS IN THE DEAD ZONE"),
                 None => None,
             },
             _ if building => Some("A BUILDING STANDS HERE"),
@@ -435,18 +435,18 @@ impl GameState {
         let hex = job.hex;
         let fog = self.fog();
         if !self.grid.contains(hex) || !self.grid.is_passable(hex) {
-            return Some("WORKERS CAN'T WORK THIS TERRAIN");
+            return Some("SALVAGERS CAN'T WORK THIS TERRAIN");
         }
         if !self.known_worker_reach(hex) {
             return Some(
-                "OUT OF REACH: WORKERS GO 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD",
+                "OUT OF REACH: SALVAGERS GO 3 TILES FROM AN ENCLAVE OR WORK CAMP, OR NEXT TO A ROAD",
             );
         }
         if let Some(across) = job.across {
             return if hex.distance(across) != 1 || !self.grid.contains(across) {
-                Some("WALLS AND GATES GO BETWEEN TWO TILES ON THE MAP")
+                Some("TYRE WALLS AND BUS GATES GO BETWEEN TWO TILES ON THE MAP")
             } else if self.known_barrier(hex, across, &fog).is_some() {
-                Some("A WALL OR GATE STANDS HERE")
+                Some("A TYRE WALL OR BUS GATE STANDS HERE")
             } else {
                 None
             };
@@ -463,7 +463,7 @@ impl GameState {
                     .any(|c| c.team == PLAYER_TEAM && c.pos == hex)
         };
         if city {
-            return Some("A CITY STANDS HERE");
+            return Some("AN ENCLAVE STANDS HERE");
         }
         let building = self
             .cities
@@ -491,10 +491,10 @@ impl GameState {
         };
         if let JobKind::Build(placed) = job.kind {
             if self.cities[home].built.contains(&placed) {
-                return Some("THIS CITY HAS ONE ALREADY");
+                return Some("THIS ENCLAVE HAS ONE ALREADY");
             }
             if building {
-                return Some("SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+                return Some("SITE IS ALREADY CLAIMED BY AN ENCLAVE OR BUILDING");
             }
             if structure {
                 return Some("A STRUCTURE STANDS HERE");
@@ -503,7 +503,7 @@ impl GameState {
             // that one drops the job (refunded) when a worker gets there.
             return self
                 .ai_site_issue(home, placed, hex)
-                .filter(|&issue| issue != "SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+                .filter(|&issue| issue != "SITE IS ALREADY CLAIMED BY AN ENCLAVE OR BUILDING");
         }
         match job.kind {
             JobKind::Road if road => Some("THERE IS A ROAD HERE ALREADY"),
@@ -512,7 +512,7 @@ impl GameState {
             JobKind::Improve => match site {
                 Some(owner) if owner != PLAYER_TEAM => Some("THIS TILE BELONGS TO THE ENEMY"),
                 Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
-                None if self.improvement(hex).is_none() => Some("NOTHING GROWS ON SNOW"),
+                None if self.improvement(hex).is_none() => Some("NOTHING GROWS IN THE DEAD ZONE"),
                 None => None,
             },
             _ if building => Some("A BUILDING STANDS HERE"),
@@ -575,22 +575,25 @@ impl GameState {
         let c = &self.cities[city];
         if let JobKind::Build(building) = kind {
             if c.built.contains(&building) {
-                return Some(format!("{} ALREADY EXISTS IN THIS CITY", building.name()));
+                return Some(format!(
+                    "{} ALREADY EXISTS IN THIS ENCLAVE",
+                    building.name()
+                ));
             }
             if self.building_job_queued(city, building) {
                 return Some(format!(
-                    "{} IS ALREADY PLACED FOR THIS CITY",
+                    "{} IS ALREADY PLACED FOR THIS ENCLAVE",
                     building.name()
                 ));
             }
             if matches!(building, Building::Harbor | Building::CoastalBattery)
                 && !self.city_is_coastal(city)
             {
-                return Some("ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS".into());
+                return Some("ONLY COASTAL ENCLAVES CAN BUILD NAVAL BUILDINGS".into());
             }
         }
         if !self.has_workers(city) {
-            return Some("TRAIN A WORKER FIRST - WORKERS BUILD WHAT THE CITY PLACES".into());
+            return Some("TRAIN A SALVAGER FIRST - SALVAGERS BUILD WHAT THE ENCLAVE PLACES".into());
         }
         let stock = self.stock(c.team);
         (!stock.covers(kind.price())).then(|| {
@@ -624,7 +627,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.job_city() else {
-            self.notice = "OPEN A CITY FIRST - ITS WORKERS BUILD WHAT IT PLACES".into();
+            self.notice = "OPEN AN ENCLAVE FIRST - ITS SALVAGERS BUILD WHAT IT PLACES".into();
             return;
         };
         if self.placing_job == Some(kind) {
@@ -722,7 +725,7 @@ impl GameState {
             return false;
         }
         self.notice = format!(
-            "{} QUEUED FOR CITY {} - {} JOBS WAITING - ESC TO STOP",
+            "{} QUEUED FOR ENCLAVE {} - {} JOBS WAITING - ESC TO STOP",
             kind.name(),
             self.cities[city].id + 1,
             self.cities[city].worker_jobs.len()
@@ -755,14 +758,14 @@ impl GameState {
     pub(super) fn job_unavailable(&self, hex: Hex, kind: JobKind) -> Option<String> {
         let job = WorkerJob::on_tile(hex, kind);
         let Some(city) = self.job_city() else {
-            return Some("OPEN A CITY FIRST - ITS WORKERS BUILD WHAT IT PLACES".into());
+            return Some("OPEN AN ENCLAVE FIRST - ITS SALVAGERS BUILD WHAT IT PLACES".into());
         };
         if let Some(reason) = self.job_kind_unavailable(city, kind) {
             Some(reason)
         } else if kind.on_edge() {
             None
         } else if !self.is_explored(hex) {
-            Some("WORKERS CAN'T WORK AN UNEXPLORED TILE".into())
+            Some("SALVAGERS CAN'T WORK AN UNEXPLORED TILE".into())
         } else if let Some(problem) = self.known_job_problem(city, job) {
             Some(problem.into())
         } else if self.job_taken(PLAYER_TEAM, job) {
@@ -810,7 +813,7 @@ impl GameState {
         }
         let home = self.cities[city].workers;
         self.notice = format!(
-            "{} PLACED FOR CITY {} - {home} WORKER{} AT HOME",
+            "{} PLACED FOR ENCLAVE {} - {home} SALVAGER{} AT HOME",
             kind.name(),
             self.cities[city].id + 1,
             if home == 1 { "" } else { "S" }
@@ -829,7 +832,7 @@ impl GameState {
             let job = self.cities[city].worker_jobs.remove(index);
             self.refund_job(self.cities[city].team, job);
             self.notice = format!(
-                "REMOVED {} FROM THE WORKER JOBS - REFUNDED",
+                "REMOVED {} FROM THE SALVAGER JOBS - REFUNDED",
                 job.kind.name()
             );
         }
@@ -867,7 +870,7 @@ impl GameState {
         worker.work_left = None;
         worker.recalled = true;
         worker.base = self.cities[worker.home].pos;
-        self.notice = "WORKER RECALLED - IT HEADS HOME; ITS JOB WAITS ON THE LIST".into();
+        self.notice = "SALVAGER RECALLED - IT HEADS HOME; ITS JOB WAITS ON THE LIST".into();
     }
 
     /// Takes the first job in `city`'s queue its workers can still do,
@@ -967,7 +970,7 @@ impl GameState {
         {
             let problem = match self.home_of(&worker) {
                 Some(home) => self.job_problem(home, job),
-                None => Some("ITS SIDE HAS NO CITY LEFT"),
+                None => Some("ITS SIDE HAS NO ENCLAVE LEFT"),
             };
             if let Some(problem) = problem {
                 self.refund_job(worker.team, job);
@@ -1007,7 +1010,7 @@ impl GameState {
                 self.refund_job(worker.team, job);
                 if worker.team == PLAYER_TEAM {
                     self.notice = format!(
-                        "A WORKER CAN'T REACH ITS {} - IT'S COMING HOME, REFUNDED",
+                        "A SALVAGER CAN'T REACH ITS {} - IT'S COMING HOME, REFUNDED",
                         self.job_title(job)
                     );
                 }
@@ -1123,7 +1126,7 @@ impl GameState {
             hex.r
         );
         if team == PLAYER_TEAM {
-            self.notice = format!("WORKERS FINISHED: {}", self.job_title(job));
+            self.notice = format!("SALVAGERS FINISHED: {}", self.job_title(job));
         }
     }
 
@@ -1162,9 +1165,9 @@ impl GameState {
                 self.cities[city].workers += 1;
             }
             if worker.team == PLAYER_TEAM {
-                self.notice = "AN ENEMY CAPTURED ONE OF YOUR WORKERS".into();
+                self.notice = "AN ENEMY CAPTURED ONE OF YOUR SALVAGERS".into();
             } else if captor_team == PLAYER_TEAM {
-                self.notice = "WORKER CAPTURED - IT JOINS YOUR NEAREST CITY".into();
+                self.notice = "SALVAGER CAPTURED - IT JOINS YOUR NEAREST ENCLAVE".into();
             }
         }
     }
@@ -1193,7 +1196,7 @@ impl GameState {
                 worker.pos.r
             );
             if worker.team == PLAYER_TEAM {
-                self.notice = "ONE OF YOUR WORKERS WAS KILLED".into();
+                self.notice = "ONE OF YOUR SALVAGERS WAS KILLED".into();
             }
         }
     }
@@ -1294,7 +1297,7 @@ mod tests {
                 team: Team::Red,
                 food: 9,
                 production: 0,
-                label: "FARM",
+                label: "HOMESTEAD",
             },
         );
         assert_eq!(game.job_unavailable(far, JobKind::Improve), before);
@@ -1339,7 +1342,11 @@ mod tests {
         // No city open: nothing to place from.
         game.arm_worker_job(JobKind::Road);
         assert_eq!(game.placing_job, None);
-        assert!(game.notice.contains("OPEN A CITY FIRST"), "{}", game.notice);
+        assert!(
+            game.notice.contains("OPEN AN ENCLAVE FIRST"),
+            "{}",
+            game.notice
+        );
 
         // R picks roads in the open city; Escape puts them down, keeping
         // the city open.
@@ -1361,7 +1368,7 @@ mod tests {
         assert_eq!(game.placing_job, None);
         assert_eq!(
             game.notice,
-            "TRAIN A WORKER FIRST - WORKERS BUILD WHAT THE CITY PLACES"
+            "TRAIN A SALVAGER FIRST - SALVAGERS BUILD WHAT THE ENCLAVE PLACES"
         );
     }
 
@@ -1394,7 +1401,7 @@ mod tests {
         assert!(!game.is_explored(unseen));
         game.placing_job = Some(JobKind::Road);
         assert!(!game.place_job_at(unseen, None));
-        assert_eq!(game.notice, "WORKERS CAN'T WORK AN UNEXPLORED TILE");
+        assert_eq!(game.notice, "SALVAGERS CAN'T WORK AN UNEXPLORED TILE");
     }
 
     #[test]
@@ -1431,7 +1438,7 @@ mod tests {
         let city = game.cities[0].pos;
         queue(&mut game, city, JobKind::Fort);
         assert_eq!(game.cities[0].worker_jobs.len(), 1, "not on a city");
-        assert!(game.notice.contains("CITY"), "{}", game.notice);
+        assert!(game.notice.contains("ENCLAVE"), "{}", game.notice);
     }
 
     #[test]
@@ -1799,7 +1806,7 @@ mod tests {
                 team: Team::Red,
                 food: 3,
                 production: 0,
-                label: "FARM",
+                label: "HOMESTEAD",
             },
         );
         game.resolve_workers();

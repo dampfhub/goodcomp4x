@@ -100,33 +100,35 @@ const TILE_TOOLTIP_DELAY: f32 = 0.75;
 const TILE_TOOLTIP_OFFSET: Vec2 = Vec2::new(20.0, -20.0);
 
 // The swapchain is sRGB, so these linear colors display much lighter than
-// their values suggest.
-const BORDER_COLOR: Color = [0.30, 0.32, 0.38, 1.0];
-const ARMED_BORDER_COLOR: Color = [1.00, 0.92, 0.55, 1.0];
-const PANEL_BG: Color = [0.012, 0.014, 0.02, 0.94];
-const BUTTON_BG: Color = [0.03, 0.035, 0.05, 0.95];
-const BUTTON_HOVER_BG: Color = [0.08, 0.09, 0.13, 0.95];
-const QUEUED_BG: Color = [0.78, 0.64, 0.20, 0.95];
-const QUEUED_HOVER_BG: Color = [0.90, 0.76, 0.30, 0.95];
-const DISABLED_BG: Color = [0.02, 0.02, 0.025, 0.95];
-const BAR_BG: Color = [0.01, 0.02, 0.02, 1.0];
-const GROWTH_COLOR: Color = [0.30, 0.88, 0.35, 1.0];
-const TEXT: Color = [0.95, 0.95, 0.95, 1.0];
-const QUEUED_TEXT: Color = [0.08, 0.07, 0.04, 1.0];
-const QUEUED_HINT_TEXT: Color = [0.25, 0.20, 0.08, 1.0];
-const DISABLED_TEXT: Color = [0.18, 0.18, 0.20, 1.0];
-const DIM_TEXT: Color = [0.55, 0.55, 0.60, 1.0];
-const LABEL_TEXT: Color = [0.30, 0.32, 0.38, 1.0];
-const NOTICE_TEXT: Color = [0.95, 0.85, 0.55, 1.0];
-const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
-const BOOSTED_TEXT: Color = [0.55, 0.92, 0.50, 1.0];
-const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
+// their values suggest. After the Fall: panels are weathered, warm dark
+// sheet metal, text is bone, the accent (`GOLD_TEXT`, queued cards, the armed
+// border) is hazard amber and warnings are rust red.
+const BORDER_COLOR: Color = [0.30, 0.24, 0.18, 1.0];
+const ARMED_BORDER_COLOR: Color = [1.00, 0.62, 0.12, 1.0];
+const PANEL_BG: Color = [0.022, 0.017, 0.012, 0.94];
+const BUTTON_BG: Color = [0.045, 0.036, 0.026, 0.95];
+const BUTTON_HOVER_BG: Color = [0.10, 0.076, 0.050, 0.95];
+const QUEUED_BG: Color = [0.82, 0.42, 0.04, 0.95];
+const QUEUED_HOVER_BG: Color = [0.94, 0.52, 0.08, 0.95];
+const DISABLED_BG: Color = [0.024, 0.021, 0.018, 0.95];
+const BAR_BG: Color = [0.012, 0.010, 0.008, 1.0];
+const GROWTH_COLOR: Color = [0.32, 0.62, 0.14, 1.0];
+const TEXT: Color = [0.84, 0.78, 0.66, 1.0];
+const QUEUED_TEXT: Color = [0.05, 0.03, 0.01, 1.0];
+const QUEUED_HINT_TEXT: Color = [0.20, 0.11, 0.02, 1.0];
+const DISABLED_TEXT: Color = [0.18, 0.16, 0.14, 1.0];
+const DIM_TEXT: Color = [0.50, 0.46, 0.40, 1.0];
+const LABEL_TEXT: Color = [0.30, 0.26, 0.21, 1.0];
+const NOTICE_TEXT: Color = [0.95, 0.72, 0.38, 1.0];
+const GOLD_TEXT: Color = [1.00, 0.56, 0.08, 1.0];
+const BOOSTED_TEXT: Color = [0.50, 0.78, 0.32, 1.0];
+const REDUCED_TEXT: Color = [0.88, 0.28, 0.12, 1.0];
 /// The stockpile's resources, wherever they're named.
-const FOOD_TEXT: Color = [0.62, 0.90, 0.40, 1.0];
-const WOOD_TEXT: Color = [0.85, 0.62, 0.36, 1.0];
-const METAL_TEXT: Color = [0.62, 0.74, 0.92, 1.0];
-const SELECTION_BOX_FILL: Color = [0.30, 0.55, 0.95, 0.12];
-const SELECTION_BOX_EDGE: Color = [0.55, 0.75, 1.00, 0.9];
+const FOOD_TEXT: Color = [0.56, 0.80, 0.34, 1.0];
+const WOOD_TEXT: Color = [0.85, 0.58, 0.32, 1.0];
+const METAL_TEXT: Color = [0.60, 0.68, 0.78, 1.0];
+const SELECTION_BOX_FILL: Color = [1.00, 0.55, 0.08, 0.10];
+const SELECTION_BOX_EDGE: Color = [1.00, 0.66, 0.20, 0.9];
 const SELECTION_BOX_BORDER: f32 = 2.0;
 /// Opacity the debug panel is drawn at, so it doesn't read as game UI.
 const DEBUG_ALPHA: f32 = 0.55;
