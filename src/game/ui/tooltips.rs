@@ -403,6 +403,18 @@ impl GameState {
                 Target::RosterSelect(_) | Target::RosterAdd(_) | Target::RosterRemove(_) => {
                     return Vec::new();
                 }
+                Target::ShowWorker(_) => (
+                    "WORKER".into(),
+                    "CLICK".into(),
+                    "SHOW THIS WORKER ON THE MAP.".into(),
+                    None,
+                ),
+                Target::QueueItem(..) => (
+                    "QUEUED".into(),
+                    "CLICK · DRAG".into(),
+                    "CLICK TO SHOW IT ON THE MAP; DRAG TO REORDER.".into(),
+                    None,
+                ),
                 Target::RecallWorker(_) => (
                     "RECALL".into(),
                     "CLICK".into(),
@@ -432,8 +444,7 @@ impl GameState {
                         kind.turns(),
                         if kind.turns() == 1 { "" } else { "S" }
                     ),
-                    self.inspected_tile
-                        .and_then(|hex| self.job_unavailable(hex, kind)),
+                    None,
                 ),
                 Target::Focus(focus) => (
                     format!("{} FOCUS", focus.name()),
@@ -490,18 +501,45 @@ impl GameState {
                     None,
                 ),
                 Target::ToggleFog => ("FOG OF WAR".into(), "F10".into(), String::new(), None),
-                Target::StepSetting(setting, delta) => {
-                    let value = self.settings.get(setting);
-                    let next = value + delta;
+                Target::SetSetting(setting, value) => {
+                    let current = self.settings.get(setting);
+                    let valid = setting.range().contains(&value);
                     (
                         setting.name().into(),
-                        if delta < 0 { "<" } else { ">" }.into(),
+                        if valid {
+                            setting.value_text(value)
+                        } else {
+                            String::new()
+                        },
                         setting.description().into(),
-                        (!setting.range().contains(&next))
-                            .then(|| format!("ALREADY {}", setting.value_text(value))),
+                        (!valid || value == current)
+                            .then(|| format!("ALREADY {}", setting.value_text(current))),
                     )
                 }
-                Target::OpenSettings => ("SETTINGS".into(), String::new(), "GAME OPTIONS AND CITY OVERLAYS.".into(), None),
+                Target::OpenSettings => (
+                    "SETTINGS".into(),
+                    String::new(),
+                    "GAME OPTIONS AND CITY OVERLAYS.".into(),
+                    None,
+                ),
+                Target::WorkerMode => (
+                    "WORKERS".into(),
+                    "W".into(),
+                    "THE WORKER MENU: PICK A JOB, THEN PLACE IT ON THE MAP WHERE YOUR WORKERS REACH.".into(),
+                    None,
+                ),
+                Target::WorkerCity(city) => (
+                    format!("CITY {}", self.cities.get(city).map_or(0, |c| c.id + 1)),
+                    String::new(),
+                    "LIST THIS CITY'S WORKERS AND JOBS.".into(),
+                    None,
+                ),
+                Target::SleepWorkers => (
+                    "SLEEP".into(),
+                    "SPACE".into(),
+                    "THIS CITY'S IDLE WORKERS REST THIS TURN, AND THE TURN MOVES ON.".into(),
+                    None,
+                ),
                 Target::CloseSettings => (
                     "CLOSE SETTINGS".into(),
                     "ESC".into(),

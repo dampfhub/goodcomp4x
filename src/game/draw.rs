@@ -16,7 +16,7 @@ use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, Unit, UnitStats};
 use super::unit_icons::{self, UnitIcon};
-use super::workers::{Structure, StructureKind};
+use super::workers::{Structure, StructureKind, WorkerJob};
 use super::{GameState, PLAYER_TEAM, font, mesh};
 use crate::renderer::Vertex;
 
@@ -84,9 +84,13 @@ const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
 const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
 const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
 const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
-/// The ring just inside the tile the tile panel shows.
-const INSPECTED_TILE_COLOR: Color = [0.92, 0.92, 0.96, 1.0];
-const INSPECTED_TILE_WIDTH: f32 = 0.08;
+/// Worker mode's tint over tiles the player's workers can reach...
+const WORKER_REACH_TINT: Color = [0.95, 0.78, 0.42, 0.16];
+/// ...and over the explored tiles they can't.
+const OUT_OF_REACH_TINT: Color = [0.0, 0.0, 0.0, 0.45];
+/// A queued wall or gate: an opaque, muted gold, so where edges meet the
+/// rounded ends blend into one line instead of doubling up.
+const PLANNED_EDGE_COLOR: Color = [0.52, 0.42, 0.24, 1.0];
 const CONTESTED_COLOR: Color = [0.55, 0.32, 0.10, 1.0];
 const MOVE_RANGE_COLOR: Color = [0.24, 0.42, 0.26, 1.0];
 const ATTACK_RANGE_COLOR: Color = [0.45, 0.22, 0.22, 1.0];
@@ -130,6 +134,10 @@ const WORKER_BESIDE_SCALE: f32 = 0.45;
 const WORKER_BESIDE_UNIT: Vec2 = Vec2::new(0.45, -0.32);
 const PLANNED_JOB_COLOR: Color = [0.95, 0.78, 0.42, 0.75];
 const PLANNED_JOB_COLOR_SOLID: Color = [0.95, 0.78, 0.42, 1.0];
+/// A job a worker is out on, brighter than one still queued.
+const JOB_UNDER_WAY_COLOR: Color = [1.0, 0.88, 0.52, 1.0];
+/// The armed worker job's preview on a tile where it can't go.
+const BLOCKED_JOB_COLOR: Color = [0.90, 0.30, 0.25, 1.0];
 const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2::new(0.0, 0.6);
 const PLANNED_JOB_LABEL_HEIGHT: f32 = 0.12;
 const WORKER_TAG_MIN: Vec2 = Vec2::new(-0.78, -0.58);
@@ -352,17 +360,26 @@ impl GameState {
 
         self.push_city_map(&fog, &mut out);
         self.push_fog(&fog, &mut out);
-        // The tile the tile panel shows.
-        if let Some(hex) = self.inspected_tile.filter(|&h| self.grid.contains(h)) {
-            mesh::polygon_outline(
-                hex.to_world(),
-                HEX_SIZE * HEX_FILL_SCALE - INSPECTED_TILE_WIDTH / 2.0,
-                INSPECTED_TILE_WIDTH,
-                6,
-                0.0,
-                INSPECTED_TILE_COLOR,
-                &mut out,
-            );
+        // Worker mode: the tiles the player's workers can reach are lit, and
+        // the rest dimmed, so the reach stands out.
+        if self.worker_mode {
+            let bases = self.worker_bases(PLAYER_TEAM);
+            for hex in self.grid.all_hexes().filter(|&h| self.is_explored(h)) {
+                let reach = self.grid.is_passable(hex) && self.in_reach_of(&bases, hex);
+                let tint = if reach {
+                    WORKER_REACH_TINT
+                } else {
+                    OUT_OF_REACH_TINT
+                };
+                mesh::regular_polygon(
+                    hex.to_world(),
+                    HEX_SIZE * HEX_FILL_SCALE,
+                    6,
+                    0.0,
+                    tint,
+                    &mut out,
+                );
+            }
         }
         self.push_order_markers(&fog, &mut out);
 
@@ -641,6 +658,15 @@ impl GameState {
                 }
             }
         }
+    }
+}
+
+/// A line from `a` to `b` with round ends, so lines meeting at a point join
+/// smoothly.
+fn push_rounded_segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec<Vertex>) {
+    mesh::segment(a, b, width, color, out);
+    for end in [a, b] {
+        mesh::regular_polygon(end, width / 2.0, 12, 0.0, color, out);
     }
 }
 
@@ -1051,7 +1077,8 @@ impl GameState {
             let routes = self.routes(i);
             let known_routes = self.known_routes(i, fog);
             for (h, cost) in &known_routes.costs {
-                if self.yields_city() != Some(i) {
+                // Nothing is known of a tile never seen, delivery included.
+                if self.yields_city() != Some(i) || !self.is_explored(*h) {
                     continue;
                 }
                 let food_share = self.mill_food_share(i, *h, *cost);
@@ -1110,7 +1137,7 @@ impl GameState {
             && let Some(barracks) = self.cities[i].barracks
         {
             let routes = self.known_routes_from(self.cities[i].team, barracks, fog);
-            for (hex, cost) in &routes.costs {
+            for (hex, cost) in routes.costs.iter().filter(|(h, _)| self.is_explored(**h)) {
                 font::push_text(
                     hex.to_world() + Vec2::new(-0.3, 0.52),
                     0.18,
@@ -1136,9 +1163,33 @@ impl GameState {
         for (&(a, b), barrier) in &view.barriers {
             push_barrier(a, b, barrier.kind, barrier.team.color(), out);
         }
-        if let Some((a, b)) = self.hovered_edge {
-            let (start, end) = edge_corners(a, b);
-            mesh::segment(start, end, BARRIER_WIDTH, PLANNED_JOB_COLOR_SOLID, out);
+        // Where the armed worker job would go: an edge, or a ring on a tile,
+        // red where it can't.
+        if let (Some((hex, across)), Some(kind)) = (self.hovered_job, self.placing_job) {
+            match across {
+                Some(across) => {
+                    let (start, end) = edge_corners(hex, across);
+                    push_rounded_segment(start, end, BARRIER_WIDTH, PLANNED_JOB_COLOR_SOLID, out);
+                }
+                None => {
+                    let color = if self.job_unavailable(hex, kind).is_none()
+                        || self.job_taken(PLAYER_TEAM, WorkerJob::on_tile(hex, kind))
+                    {
+                        PLANNED_JOB_COLOR_SOLID
+                    } else {
+                        BLOCKED_JOB_COLOR
+                    };
+                    mesh::polygon_outline(
+                        hex.to_world(),
+                        WORKED_OUTLINE_RADIUS,
+                        0.07,
+                        6,
+                        0.0,
+                        color,
+                        out,
+                    );
+                }
+            }
         }
         for &(h, label) in &view.sites {
             let center = h.to_world() + IMPROVEMENT_SPOT;
@@ -1222,8 +1273,10 @@ impl GameState {
         }
     }
 
-    /// The player's queued worker jobs: a faded ring on each tile, named.
+    /// The player's worker jobs: those under way (`push_jobs_under_way`),
+    /// and those queued, a faded ring on each tile, named.
     fn push_planned_jobs(&self, out: &mut Vec<Vertex>) {
+        self.push_jobs_under_way(out);
         let queued = self
             .cities
             .iter()
@@ -1232,7 +1285,7 @@ impl GameState {
         for job in queued {
             if let Some(across) = job.across {
                 let (start, end) = edge_corners(job.hex, across);
-                mesh::segment(start, end, BARRIER_WIDTH * 0.6, PLANNED_JOB_COLOR, out);
+                push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, PLANNED_EDGE_COLOR, out);
                 continue;
             }
             let center = job.hex.to_world();
@@ -1248,8 +1301,52 @@ impl GameState {
             font::push_text_centered(
                 center + PLANNED_JOB_LABEL_OFFSET,
                 PLANNED_JOB_LABEL_HEIGHT,
-                job.kind.name(),
+                self.job_name(*job),
                 PLANNED_JOB_COLOR,
+                out,
+            );
+        }
+    }
+
+    /// The jobs the player's workers are out on: a solid ring on the tile (or
+    /// the edge, for a wall or gate) named with the job and, once the worker
+    /// is there working, the turns of work left, like "IMPROVE 2T".
+    fn push_jobs_under_way(&self, out: &mut Vec<Vertex>) {
+        let working = self
+            .field_workers
+            .iter()
+            .filter(|w| w.team == PLAYER_TEAM && !w.recalled);
+        for worker in working {
+            let Some(job) = worker.job else { continue };
+            let label = match worker.work_left.filter(|_| worker.pos == job.hex) {
+                Some(left) => format!("{} {left}T", self.job_name(job)),
+                None => self.job_name(job).into(),
+            };
+            let at = match job.across {
+                Some(across) => {
+                    let (start, end) = edge_corners(job.hex, across);
+                    push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, JOB_UNDER_WAY_COLOR, out);
+                    (start + end) / 2.0 + PLANNED_JOB_LABEL_OFFSET * 0.5
+                }
+                None => {
+                    let center = job.hex.to_world();
+                    mesh::polygon_outline(
+                        center,
+                        WORKED_OUTLINE_RADIUS,
+                        0.06,
+                        6,
+                        0.0,
+                        JOB_UNDER_WAY_COLOR,
+                        out,
+                    );
+                    center + PLANNED_JOB_LABEL_OFFSET
+                }
+            };
+            font::push_text_centered(
+                at,
+                PLANNED_JOB_LABEL_HEIGHT,
+                &label,
+                JOB_UNDER_WAY_COLOR,
                 out,
             );
         }
@@ -2371,7 +2468,7 @@ mod tests {
         let clouds = game.build_vertices();
         assert!(soft(&clouds) > 0);
         assert!(!flat(&clouds));
-        game.step_setting(crate::game::settings::Setting::FogStyle, -1);
+        game.set_setting(crate::game::settings::Setting::FogStyle, 0);
         assert!(!game.settings.cloud_fog);
         assert_eq!(game.notice, "FOG: SOLID GREY");
         let solid = game.build_vertices();
@@ -2435,12 +2532,100 @@ mod tests {
     }
 
     #[test]
-    fn the_inspected_tile_is_ringed() {
+    fn worker_mode_tints_the_tiles_in_reach() {
         let mut game = GameState::city_scenario();
-        game.clear_selection();
-        assert_eq!(count_color(&game.build_vertices(), INSPECTED_TILE_COLOR), 0);
-        game.inspected_tile = Some(Hex::new(0, 1));
-        assert!(count_color(&game.build_vertices(), INSPECTED_TILE_COLOR) > 0);
+        game.explore();
+        assert_eq!(count_color(&game.build_vertices(), WORKER_REACH_TINT), 0);
+        game.toggle_worker_mode();
+        let tinted = count_color(&game.build_vertices(), WORKER_REACH_TINT);
+        let reachable = game
+            .grid
+            .all_hexes()
+            .filter(|&h| {
+                game.is_explored(h)
+                    && game.grid.is_passable(h)
+                    && game.in_worker_reach(PLAYER_TEAM, h)
+            })
+            .count();
+        assert!(reachable > 0);
+        assert_eq!(
+            tinted % reachable,
+            0,
+            "the same fill on each reachable tile"
+        );
+        assert!(tinted > 0);
+    }
+
+    #[test]
+    fn queued_walls_are_drawn_with_round_ends() {
+        let mut game = GameState::city_scenario();
+        let city = game.cities[0].pos;
+        let (a, b) = (city.neighbors()[0], city.neighbors()[1]);
+        game.cities[0]
+            .worker_jobs
+            .push(crate::game::workers::WorkerJob {
+                hex: a,
+                kind: crate::game::workers::JobKind::Wall,
+                across: Some(b),
+            });
+        let vertices = game.build_vertices();
+        // A segment is two triangles; each round end is twelve more.
+        assert_eq!(count_color(&vertices, PLANNED_EDGE_COLOR), 6 + 2 * 12 * 3);
+    }
+
+    #[test]
+    fn delivery_labels_show_only_on_explored_tiles() {
+        let mut game = GameState::city_scenario();
+        game.explore();
+        game.select_city();
+        let city = game.selected_city.unwrap();
+        let label = [0.65, 0.85, 0.65, 1.0];
+        let seen = count_color(&game.build_vertices(), label);
+        assert!(seen > 0, "labels on the explored tiles");
+        // Forget an explored tile the known routes reach: its label goes.
+        let fog = game.fog();
+        let forgotten = game
+            .known_routes(city, &fog)
+            .costs
+            .keys()
+            .copied()
+            .find(|&h| h != game.cities[city].pos && game.is_explored(h))
+            .expect("an explored routed tile");
+        game.memory.remove(&forgotten);
+        assert!(!game.is_explored(forgotten));
+        let fewer = count_color(&game.build_vertices(), label);
+        assert!(fewer < seen, "{fewer} vs {seen}");
+    }
+
+    #[test]
+    fn work_under_way_is_ringed_and_counts_its_turns_left() {
+        let mut game = GameState::city_scenario();
+        game.explore();
+        let city = game.cities[0].pos;
+        // Two hexes out: a turn walking, then at work.
+        let hex = game
+            .grid
+            .all_hexes()
+            .filter(|&h| h.distance(city) == 2)
+            .find(|&h| {
+                game.job_unavailable(h, crate::game::workers::JobKind::Improve)
+                    .is_none()
+            })
+            .unwrap();
+        game.placing_job = Some(crate::game::workers::JobKind::Improve);
+        assert!(game.place_job_at(hex, None));
+        game.placing_job = None;
+        let solid = |game: &GameState| count_color(&game.build_vertices(), JOB_UNDER_WAY_COLOR);
+        assert_eq!(solid(&game), 0, "only queued, not under way");
+        // Out and walking there: its name in solid gold.
+        game.resolve_workers();
+        let walking = solid(&game);
+        assert!(walking > 0);
+        assert_ne!(game.field_workers[0].pos, hex, "still walking");
+        // At work: "IMPROVE 3T", more glyphs than "IMPROVE".
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].work_left, Some(3));
+        assert!(solid(&game) > walking);
     }
 
     /// The color of the last opaque triangle drawn over `point`.

@@ -3,14 +3,17 @@
 //! entry of `Setting::ALL`, so adding a setting touches only this file:
 //!
 //! 1. a field in `Settings`, and its value in `Settings::default`;
-//! 2. a `Setting` variant, listed in `Setting::ALL`;
+//! 2. a `Setting` variant, listed in `Setting::ALL` (under its heading);
 //! 3. its arms in `Setting::key` (its name in the saved file), `name`,
-//!    `description`, `range` and `value_text`,
+//!    `group`, `control`, `description`, `range` and `value_text`,
 //!    and in `Settings::get` and `Settings::set`.
 //!
-//! Every setting is an integer in its `range` (a switch is `0..=1`), which
-//! the menu's < and > buttons step through, so both UI presentations show and
-//! change it without further code. Game code reads the field directly
+//! Every setting is an integer in its `range` (a switch is `0..=1`). Its
+//! `control` says how the menu changes it: a checkbox, a slider or a choice
+//! of named values. The menu sets it with `Target::SetSetting`, so both UI
+//! presentations show and change it without further code (the classic one
+//! with buttons: OFF / ON, one per choice, or < > for a range). Game code
+//! reads the field directly
 //! (`self.settings.instant_playback`). Settings, and whether the menu is
 //! open, are kept across scenario switches and loads (`scenario.rs`), and the
 //! settings between sessions (`to_text`, saved by `app.rs`): they
@@ -79,8 +82,26 @@ pub enum Setting {
     WorldStart,
 }
 
+/// How the settings menu changes a `Setting`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Control {
+    /// On (1) or off (0): a checkbox.
+    Toggle,
+    /// A number anywhere in its range: a slider showing its value.
+    Slider,
+    /// One of a few named values (`value_text`): a button for each, or a
+    /// drop-down list when there are more than `Control::MAX_BUTTONS`.
+    Choice,
+}
+
+impl Control {
+    /// The most choices shown side by side as buttons.
+    pub const MAX_BUTTONS: usize = 3;
+}
+
 impl Setting {
-    /// Every setting, in the order the menu lists them.
+    /// Every setting, in the order the menu lists them. Settings of one
+    /// `group` are listed together, under its heading.
     pub const ALL: [Setting; 5] = [
         Setting::TurnPlayback,
         Setting::MaxQueuedTurns,
@@ -104,19 +125,37 @@ impl Setting {
     /// Its label in the menu.
     pub fn name(self) -> &'static str {
         match self {
-            Setting::TurnPlayback => "TURN PLAYBACK",
+            Setting::TurnPlayback => "INSTANT PLAYBACK",
             Setting::MaxQueuedTurns => "QUEUE LIMIT",
             Setting::FogStyle => "FOG",
-            Setting::WorldAi => "WORLD AI",
-            Setting::WorldStart => "WORLD START",
+            Setting::WorldAi => "AI PLAYERS",
+            Setting::WorldStart => "START WITH",
         }
     }
 
-    /// What it does, for the tooltip on its buttons.
+    /// The heading it's listed under in the menu.
+    pub fn group(self) -> &'static str {
+        match self {
+            Setting::TurnPlayback | Setting::MaxQueuedTurns => "TURNS",
+            Setting::FogStyle => "MAP",
+            Setting::WorldAi | Setting::WorldStart => "NEXT WORLD (F4)",
+        }
+    }
+
+    /// How the menu changes it.
+    pub fn control(self) -> Control {
+        match self {
+            Setting::TurnPlayback => Control::Toggle,
+            Setting::MaxQueuedTurns => Control::Slider,
+            Setting::FogStyle | Setting::WorldAi | Setting::WorldStart => Control::Choice,
+        }
+    }
+
+    /// What it does, for its tooltip.
     pub fn description(self) -> &'static str {
         match self {
             Setting::TurnPlayback => {
-                "WHETHER A TURN PLAYS OUT ALL AT ONCE OR ONE STEP AT A TIME. THE OUTCOME IS \
+                "ON: A TURN PLAYS OUT ALL AT ONCE. OFF: ONE STEP AT A TIME. THE OUTCOME IS \
                  THE SAME. F8 SWITCHES IT TOO."
             }
             Setting::MaxQueuedTurns => {
@@ -124,9 +163,13 @@ impl Setting {
                  FARTHER AWAY QUEUES THE MOVE AS FAR AS THE LIMIT GOES."
             }
             Setting::FogStyle => "HOW UNEXPLORED LAND IS HIDDEN: UNDER CLOUDS, OR A FLAT GREY.",
-            Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4). THE MAP GROWS WITH THEM.",
+            Setting::WorldAi => {
+                "HOW MANY AI PLAYERS THE NEXT WORLD (F4) HAS. THE MAP GROWS WITH THEM. BY MAP \
+                 PICKS 4 TO 6 FROM THE MAP'S SEED."
+            }
             Setting::WorldStart => {
-                "WHETHER EVERY SIDE IN THE NEXT WORLD (F4) STARTS WITH ITS CITY, OR A SETTLER."
+                "WHETHER EVERY SIDE IN THE NEXT WORLD (F4) STARTS WITH ITS CITY, OR A SETTLER \
+                 TO FOUND IT WITH."
             }
         }
     }
@@ -145,12 +188,7 @@ impl Setting {
     /// How the menu shows `value`.
     pub fn value_text(self, value: i32) -> String {
         match self {
-            Setting::TurnPlayback => if value == 1 {
-                "ALL AT ONCE"
-            } else {
-                "STEP BY STEP"
-            }
-            .into(),
+            Setting::TurnPlayback => if value == 1 { "ON" } else { "OFF" }.into(),
             Setting::MaxQueuedTurns if value == 1 => "1 TURN".into(),
             Setting::MaxQueuedTurns => format!("{value} TURNS"),
             Setting::FogStyle => if value == 1 { "CLOUDS" } else { "SOLID GREY" }.into(),
@@ -211,14 +249,12 @@ impl Settings {
         settings
     }
 
-    /// Moves `setting` by `delta` steps, stopping at the ends of its range.
-    /// Returns whether it changed.
-    pub fn step(&mut self, setting: Setting, delta: i32) -> bool {
+    /// Sets `setting` to `value`, or the nearer end of its range if `value`
+    /// is outside it. Returns whether it changed.
+    pub fn change(&mut self, setting: Setting, value: i32) -> bool {
         let range = setting.range();
         let old = self.get(setting);
-        let new = old
-            .saturating_add(delta)
-            .clamp(*range.start(), *range.end());
+        let new = value.clamp(*range.start(), *range.end());
         self.set(setting, new);
         new != old
     }
@@ -247,20 +283,25 @@ impl GameState {
 
     /// A press of Escape. It closes one thing, in this order: the settings
     /// menu, then a city view, interior or site being chosen
-    /// (`exit_structure_menu`), then wall or gate placement, the selection or
-    /// the tile panel (`clear_selection`). With nothing to close it opens the
-    /// settings menu, which has the Quit button.
+    /// (`exit_structure_menu`), then a worker job being placed, then the
+    /// worker menu, then the selection (`clear_selection`).
+    /// With nothing to close it opens the settings menu, which has the Quit
+    /// button.
     pub fn press_escape(&mut self) {
         if self.settings_open {
             self.settings_open = false;
-        } else if !self.exit_structure_menu() && !self.clear_selection() {
+        } else if self.exit_structure_menu() {
+        } else if self.worker_mode && self.placing_job.is_none() {
+            self.set_worker_mode(false);
+        } else if !self.clear_selection() {
             self.settings_open = true;
         }
     }
 
-    /// The menu's < (`delta` -1) and > (+1) buttons for `setting`.
-    pub(super) fn step_setting(&mut self, setting: Setting, delta: i32) {
-        if self.settings.step(setting, delta) {
+    /// The menu's control for `setting` asks for `value`
+    /// (`Target::SetSetting`); outside the range it goes to the nearer end.
+    pub(super) fn set_setting(&mut self, setting: Setting, value: i32) {
+        if self.settings.change(setting, value) {
             let value = self.settings.get(setting);
             self.notice = format!("{}: {}", setting.name(), setting.value_text(value));
         }
@@ -270,24 +311,52 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::hex::Hex;
     use crate::game::{PLAYER_TEAM, Scenario};
 
     #[test]
-    fn every_setting_starts_in_range_and_steps_within_it() {
+    fn every_setting_starts_in_range_and_changes_within_it() {
         let mut settings = Settings::default();
         for setting in Setting::ALL {
             let range = setting.range();
             assert!(range.contains(&settings.get(setting)), "{setting:?}");
-            // Step all the way down, then all the way up: each end holds.
-            while settings.step(setting, -1) {}
-            assert_eq!(settings.get(setting), *range.start(), "{setting:?}");
-            assert!(!settings.step(setting, -1));
-            while settings.step(setting, 1) {}
-            assert_eq!(settings.get(setting), *range.end(), "{setting:?}");
-            assert!(!settings.step(setting, 1));
-            for value in range {
+            // Every value in the range can be set and read back.
+            for value in range.clone() {
+                settings.change(setting, value);
+                assert_eq!(settings.get(setting), value, "{setting:?}");
                 assert!(!setting.value_text(value).is_empty());
+            }
+            // Past either end, it stops at that end.
+            assert!(!settings.change(setting, range.end() + 1));
+            assert_eq!(settings.get(setting), *range.end(), "{setting:?}");
+            assert!(settings.change(setting, range.start() - 1));
+            assert_eq!(settings.get(setting), *range.start(), "{setting:?}");
+            assert!(!settings.change(setting, i32::MIN));
+        }
+    }
+
+    #[test]
+    fn every_setting_has_a_control_that_fits_its_range() {
+        for setting in Setting::ALL {
+            let range = setting.range();
+            match setting.control() {
+                Control::Toggle => assert_eq!(range, 0..=1, "{setting:?}"),
+                Control::Slider => assert!(range.end() - range.start() >= 2, "{setting:?}"),
+                Control::Choice => {
+                    // Each choice reads differently.
+                    let names: Vec<_> = range.map(|v| setting.value_text(v)).collect();
+                    for (i, a) in names.iter().enumerate() {
+                        assert!(!names[i + 1..].contains(a), "{setting:?}: {a}");
+                    }
+                }
+            }
+            assert!(!setting.group().is_empty());
+        }
+        // A group's settings are listed together, so each heading shows once.
+        let mut seen: Vec<&str> = Vec::new();
+        for setting in Setting::ALL {
+            if seen.last() != Some(&setting.group()) {
+                assert!(!seen.contains(&setting.group()), "{setting:?} apart");
+                seen.push(setting.group());
             }
         }
     }
@@ -297,8 +366,9 @@ mod tests {
         let mut settings = Settings::default();
         for setting in Setting::ALL {
             // Every setting away from its default, one step.
-            if !settings.step(setting, 1) {
-                settings.step(setting, -1);
+            let value = settings.get(setting);
+            if !settings.change(setting, value + 1) {
+                settings.change(setting, value - 1);
             }
         }
         assert_ne!(settings, Settings::default());
@@ -330,9 +400,9 @@ mod tests {
     fn turn_playback_is_the_instant_playback_switch() {
         let mut game = GameState::new();
         assert!(game.settings.instant_playback, "on by default");
-        game.step_setting(Setting::TurnPlayback, -1);
+        game.set_setting(Setting::TurnPlayback, 0);
         assert!(!game.settings.instant_playback);
-        assert_eq!(game.notice, "TURN PLAYBACK: STEP BY STEP");
+        assert_eq!(game.notice, "INSTANT PLAYBACK: OFF");
         game.toggle_instant_playback();
         assert_eq!(game.settings.get(Setting::TurnPlayback), 1, "F8 agrees");
     }
@@ -340,15 +410,15 @@ mod tests {
     #[test]
     fn settings_survive_scenario_switches_and_loads() {
         let mut game = GameState::city_scenario();
-        game.step_setting(Setting::TurnPlayback, -1);
+        game.set_setting(Setting::TurnPlayback, 0);
         game.save_state();
-        game.step_setting(Setting::TurnPlayback, 1);
-        game.step_setting(Setting::TurnPlayback, -1);
+        game.set_setting(Setting::TurnPlayback, 1);
+        game.set_setting(Setting::TurnPlayback, 0);
         let changed = game.settings.clone();
         assert_ne!(changed, Settings::default());
         game.switch_scenario(Scenario::Combat);
         assert_eq!(game.settings, changed);
-        game.step_setting(Setting::TurnPlayback, 1);
+        game.set_setting(Setting::TurnPlayback, 1);
         let current = game.settings.clone();
         game.load_state();
         assert_eq!(game.settings, current, "a load keeps the current settings");
@@ -359,17 +429,16 @@ mod tests {
         let mut game = GameState::city_scenario();
         game.leave_city_view();
         game.clear_selection();
-        game.inspected_tile = Some(Hex::new(0, 0));
         game.select_city();
         assert!(game.selected_city.is_some());
 
-        // The city view closes first, then the tile panel.
+        // The city view closes first, then the selection.
         game.press_escape();
         assert_eq!(game.selected_city, None);
         assert!(!game.settings_open);
-        game.inspected_tile = Some(Hex::new(0, 0));
+        game.selected = Some(0);
         game.press_escape();
-        assert_eq!(game.inspected_tile, None);
+        assert_eq!(game.selected, None);
         assert!(!game.settings_open);
 
         // With nothing left, Escape opens the menu, and the next press

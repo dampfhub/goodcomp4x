@@ -122,6 +122,9 @@ or later work already did it: `git log --grep`, grep the tree) → `drop --reaso
   fields). `setup` prints which you have.
 - Project numbers are per owner. The wrapper matches both owner and number, and ignores items from
   other repos on a shared board.
+- After the repo is renamed or transferred, `list` and `fences` see none of its issues (they filter
+  by the config's `repo`) and print a warning naming the repos they did find; `setup` names the new
+  name. Update `repo` in `tools/board/config.json`.
 
 ## Speed
 

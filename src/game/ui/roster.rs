@@ -1,6 +1,7 @@
 //! The turn strip ("need orders"): a row of chips for everything the player
 //! still has to see to this turn, civilian tasks first, then military ones:
-//! cities with nothing to build, settlers, and then the military units.
+//! cities with nothing to build, cities with idle workers (opening the
+//! worker menu), settlers, and then the military units.
 //! Units needing orders are grouped by kind, one chip per kind with a count.
 //! Clicking a chip opens its city, or selects its units, and moves the
 //! camera there; Shift-click adds a
@@ -14,7 +15,9 @@
 use super::builder::PanelBuilder;
 use super::dock::Zone;
 use super::{ChipIcon, LABEL_TEXT, Layout, ROSTER_CHIP_GAP, ROSTER_PER_ROW, RosterChip, SMALL};
+use crate::game::draw::UnitLook;
 use crate::game::unit::UnitType;
+use crate::game::unit_icons::UnitIcon;
 use crate::game::{GameState, PLAYER_TEAM};
 
 /// What a chip in the turn strip stands for.
@@ -22,6 +25,8 @@ use crate::game::{GameState, PLAYER_TEAM};
 pub(in crate::game) enum RosterKey {
     /// A city with nothing to build, by its id.
     Production(u32),
+    /// A city with idle workers (`idle_workers`), by its id.
+    Workers(u32),
     /// The units of one kind that need orders: a unit type, and whether
     /// they're settlers (which use the melee body).
     Group(UnitType, bool),
@@ -70,6 +75,14 @@ impl GameState {
                 });
             }
         }
+        for (i, city) in self.cities.iter().enumerate() {
+            if self.idle_workers(i) > 0 {
+                tasks.push(RosterTask {
+                    key: RosterKey::Workers(city.id),
+                    units: Vec::new(),
+                });
+            }
+        }
         let mut groups: Vec<RosterTask> = Vec::new();
         for i in self.roster_units() {
             let unit = &self.units[i];
@@ -112,6 +125,21 @@ impl GameState {
                 color: PLAYER_TEAM.color(),
                 selected: open_city(id),
                 count: 1,
+            },
+            RosterKey::Workers(id) => RosterChip {
+                key: task.key,
+                icon: ChipIcon::Unit(UnitLook {
+                    icon: UnitIcon::Shovel,
+                    civilian: true,
+                }),
+                color: PLAYER_TEAM.color(),
+                selected: self.worker_mode
+                    && self
+                        .worker_menu_city
+                        .is_some_and(|i| self.cities[i].id == id),
+                count: self
+                    .city_index(id)
+                    .map_or(1, |i| self.idle_workers(i) as usize),
             },
             RosterKey::Group(..) | RosterKey::Unit(_) => RosterChip {
                 key: task.key,
@@ -185,7 +213,7 @@ impl GameState {
                 .into_iter()
                 .find(|t| t.key == key)
                 .map_or_else(Vec::new, |t| t.units),
-            RosterKey::Production(_) => Vec::new(),
+            RosterKey::Production(_) | RosterKey::Workers(_) => Vec::new(),
         }
     }
 
@@ -199,6 +227,12 @@ impl GameState {
             RosterKey::Production(id) => {
                 if let Some(city) = self.city_index(id) {
                     self.open_city(city);
+                }
+                return;
+            }
+            RosterKey::Workers(id) => {
+                if let Some(city) = self.city_index(id) {
+                    self.open_worker_menu(city);
                 }
                 return;
             }
@@ -244,6 +278,10 @@ impl GameState {
             RosterKey::Production(id) => {
                 format!("{} HAS NOTHING TO BUILD - CLICK: OPEN IT", city_name(id))
             }
+            RosterKey::Workers(id) => format!(
+                "IDLE WORKERS IN {} - CLICK: THE WORKER MENU, TO GIVE THEM JOBS OR LET THEM SLEEP",
+                city_name(id)
+            ),
             RosterKey::Group(..) => {
                 let units = self.roster_key_units(key);
                 let role = units

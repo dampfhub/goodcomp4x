@@ -91,17 +91,17 @@ pub struct GameState {
     hovered_tile: Option<Hex>,
     hover_seconds: f32,
     ui_click_mode: Option<orders::ClickMode>,
-    inspected_tile: Option<Hex>,
-    /// A wall or gate armed from the tile panel: map clicks and drags queue
-    /// it on the hex edges they touch, until Escape.
-    placing_barrier: Option<workers::JobKind>,
+    /// The worker job armed in the worker menu (`workers.rs`): map clicks
+    /// and drags place it, on tiles or (a wall or gate) on hex edges, until
+    /// Escape or another pick.
+    placing_job: Option<workers::JobKind>,
     /// The unit whose Disband was pressed once, waiting for a second press.
     disband_armed: Option<u32>,
     /// A plain click that would replace a selected unit's multi-turn queue,
     /// waiting for the same click again (`orders::confirm_queue_replace`).
     queue_replace_armed: Option<orders::QueueReplace>,
     /// The edge under the cursor while placing one, highlighted.
-    hovered_edge: Option<(Hex, Hex)>,
+    hovered_job: Option<(Hex, Option<Hex>)>,
     city_queue_scroll: usize,
     barracks_queue_scroll: usize,
     queue_drag: Option<ui::QueueDrag>,
@@ -154,6 +154,11 @@ pub struct GameState {
     /// The turn strip's group whose units it lists one by one, while one of
     /// them is selected (`ui/roster.rs`).
     roster_open: Option<ui::RosterKey>,
+    /// Worker mode (W): reachable tiles are shown, and map clicks open tile
+    /// panels for jobs (`workers.rs`).
+    worker_mode: bool,
+    /// The city whose workers and jobs the worker menu lists.
+    worker_menu_city: Option<usize>,
     /// Ruins not yet claimed (`ruins.rs`), in the order the map made them.
     ruins: Vec<ruins::Ruin>,
     /// Workers out on the map; the ones at home are counted by their city
@@ -220,11 +225,10 @@ impl GameState {
             hovered_tile: None,
             hover_seconds: 0.0,
             ui_click_mode: None,
-            inspected_tile: None,
-            placing_barrier: None,
+            placing_job: None,
             disband_armed: None,
             queue_replace_armed: None,
-            hovered_edge: None,
+            hovered_job: None,
             city_queue_scroll: 0,
             barracks_queue_scroll: 0,
             queue_drag: None,
@@ -253,6 +257,8 @@ impl GameState {
             settlers: HashSet::new(),
             ruins: Vec::new(),
             roster_open: None,
+            worker_mode: false,
+            worker_menu_city: None,
             field_workers: Vec::new(),
             structures: HashMap::new(),
             barriers: HashMap::new(),
@@ -1064,7 +1070,7 @@ mod tests {
             !game.is_resolving(),
             "holding the last unit doesn't end the turn"
         );
-        assert_eq!(game.pending(), (0, 0));
+        assert_eq!(game.pending(), (0, 0, 0));
         game.hold_or_end_turn();
         assert!(game.is_resolving());
     }
@@ -1077,7 +1083,7 @@ mod tests {
         game.toggle_guard();
         assert_ne!(game.selected, Some(melee), "guarding moves on");
 
-        while game.pending() != (0, 0) {
+        while game.pending() != (0, 0, 0) {
             game.hold_or_end_turn();
         }
         game.hold_or_end_turn();
@@ -1141,7 +1147,8 @@ mod tests {
         let mut game = GameState::city_scenario();
         game.units.retain(|u| u.team != Team::Blue);
         game.selected = None;
-        assert_eq!(game.pending(), (0, 1));
+        // A city with nothing to build, and its worker idle at home.
+        assert_eq!(game.pending(), (0, 1, 1));
 
         // Space opens the city that needs a build instead of ending the turn.
         game.hold_or_end_turn();
@@ -1149,7 +1156,13 @@ mod tests {
         assert_eq!(game.selected_city, Some(0));
 
         game.queue_selected_city_unit(city::BuildUnit::Melee);
-        assert_eq!(game.pending(), (0, 0));
+        assert_eq!(game.pending(), (0, 0, 1));
+        // Then the worker menu, where Space lets the worker sleep.
+        game.hold_or_end_turn();
+        assert!(game.worker_mode && !game.is_resolving());
+        game.hold_or_end_turn();
+        assert!(!game.worker_mode);
+        assert_eq!(game.pending(), (0, 0, 0));
         game.hold_or_end_turn();
         assert!(game.is_resolving());
     }

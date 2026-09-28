@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn the_limit_is_the_queue_limit_setting() {
         let mut g = open_field(&[UnitType::Melee]);
-        g.step_setting(Setting::MaxQueuedTurns, -3);
+        g.set_setting(Setting::MaxQueuedTurns, 3);
         assert_eq!(g.settings.max_queued_turns, 3);
         assert_eq!(g.notice, "QUEUE LIMIT: 3 TURNS");
         g.selected = Some(0);
@@ -652,8 +652,11 @@ mod tests {
         assert_eq!(g.notice, "QUEUED UP TO THE 3-TURN LIMIT");
 
         // A higher limit lets the next click go the rest of the way.
-        g.step_setting(Setting::MaxQueuedTurns, 20);
-        assert_eq!(g.settings.max_queued_turns, 20, "the top of its range");
+        g.set_setting(Setting::MaxQueuedTurns, 25);
+        assert_eq!(
+            g.settings.max_queued_turns, 20,
+            "past the top of its range stops there"
+        );
         assert!(g.queue_move(far));
         assert_eq!(g.units[0].plan_len(), 8);
         assert_eq!(g.units[0].plan_end(), far);
@@ -661,7 +664,7 @@ mod tests {
 
         // At the lowest, only this turn.
         let mut g = open_field(&[UnitType::Melee]);
-        g.step_setting(Setting::MaxQueuedTurns, -20);
+        g.set_setting(Setting::MaxQueuedTurns, 1);
         assert_eq!(g.settings.max_queued_turns, 1);
         g.selected = Some(0);
         assert!(g.queue_move(far));
@@ -815,7 +818,7 @@ mod tests {
         );
         g.selected = Some(1);
         g.hold_selected_unit();
-        assert_eq!(g.pending(), (0, 0));
+        assert_eq!(g.pending(), (0, 0, 0));
 
         // Next turn it follows the queue's second turn and still doesn't wait
         // for orders, while the unit that held does.

@@ -1,14 +1,16 @@
 //! `PanelBuilder`, the panel content primitive, and its text and button measuring.
 
 use super::action_icons::{self, CLASSIC_ICON_COLUMNS, ICON_BUTTON_SIZE};
+use super::settings_menu::classic_setting_rows;
 use super::{
     BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
-    BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GROWTH_BAR_HEIGHT, LABEL_TEXT,
-    LINE_GAP, Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT, QUEUE_REMOVE_WIDTH,
-    QueueItemRegion, QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP, ROSTER_CHIP_GAP,
-    RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
+    BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GOLD_TEXT, GROWTH_BAR_HEIGHT,
+    LABEL_TEXT, LINE_GAP, Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT,
+    QUEUE_REMOVE_WIDTH, QueueItemRegion, QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP,
+    ROSTER_CHIP_GAP, RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
 };
 use crate::game::font::{self, Face};
+use crate::game::settings::Setting;
 use glam::Vec2;
 
 /// A button before it's placed.
@@ -98,6 +100,12 @@ pub(super) enum Row {
     BuildingCatalog(usize, Vec<CatalogEntry>, usize),
     /// A row of unit tokens in the unit strip.
     Roster(Vec<RosterChip>),
+    /// A heading over a group of rows, with a rule under it in ImGui.
+    Heading(String),
+    /// A player setting at its current value, changed with the control its
+    /// `Setting::control` names: ImGui draws that widget, classic places
+    /// the buttons `settings_menu::classic_setting_rows` lays out.
+    Setting(Setting, i32),
 }
 
 #[derive(Clone)]
@@ -149,6 +157,16 @@ impl PanelBuilder {
         self.rows.push(Row::Roster(chips));
     }
 
+    /// A heading over the rows that follow.
+    pub(super) fn heading(&mut self, text: &str) {
+        self.rows.push(Row::Heading(text.into()));
+    }
+
+    /// A player setting's label and control, showing `value`.
+    pub(super) fn setting(&mut self, setting: Setting, value: i32) {
+        self.rows.push(Row::Setting(setting, value));
+    }
+
     /// A row of equally wide buttons.
     pub(super) fn buttons(&mut self, buttons: Vec<ButtonSpec>) {
         self.space_button_rows();
@@ -194,6 +212,7 @@ impl PanelBuilder {
                 let visible = buttons.len().clamp(1, BUILDING_LIST_VISIBLE);
                 visible as f32 * 30.0 + (visible + 1) as f32 * 4.0
             }
+            Row::Heading(_) | Row::Setting(..) => unreachable!("expanded by classic_rows"),
         }
     }
 
@@ -226,13 +245,15 @@ impl PanelBuilder {
                 chips.len() as f32 * ROSTER_CHIP
                     + chips.len().saturating_sub(1) as f32 * ROSTER_CHIP_GAP
             }
+            Row::Heading(_) | Row::Setting(..) => unreachable!("expanded by classic_rows"),
         }
     }
 
     /// The panel's size, padding included.
     pub(super) fn size(&self) -> Vec2 {
-        let width = self.rows.iter().map(Self::row_width).fold(0.0, f32::max);
-        let height: f32 = self.rows.iter().map(Self::row_height).sum();
+        let rows = classic_rows(self.rows.clone());
+        let width = rows.iter().map(Self::row_width).fold(0.0, f32::max);
+        let height: f32 = rows.iter().map(Self::row_height).sum();
         let scroll_extra = if self.scrollbar.is_some() {
             GAP + SCROLLBAR_WIDTH
         } else {
@@ -289,7 +310,7 @@ impl PanelBuilder {
             });
         }
         let mut top = max.y - PADDING;
-        for row in self.rows {
+        for row in classic_rows(self.rows) {
             let height = Self::row_height(&row);
             match row {
                 Row::Text(px, line) => {
@@ -459,10 +480,37 @@ impl PanelBuilder {
                         layout.roster_chips.push((min, max, chip.key));
                     }
                 }
+                Row::Heading(_) | Row::Setting(..) => unreachable!("expanded by classic_rows"),
             }
             top -= height;
         }
     }
+}
+
+/// `rows` as the classic presentation measures and places them: a heading
+/// becomes a line of gold text and a setting its label and buttons
+/// (`classic_setting_rows`). Rows of buttons that end up adjacent get a gap
+/// between them, as `PanelBuilder::buttons` would give them.
+pub(super) fn classic_rows(rows: Vec<Row>) -> Vec<Row> {
+    let mut out = Vec::with_capacity(rows.len());
+    let push = |out: &mut Vec<Row>, row: Row| {
+        if matches!(row, Row::Buttons(..)) && matches!(out.last(), Some(Row::Buttons(..))) {
+            out.push(Row::Gap(GAP));
+        }
+        out.push(row);
+    };
+    for row in rows {
+        match row {
+            Row::Heading(text) => push(&mut out, Row::Text(SMALL, vec![(text, GOLD_TEXT)])),
+            Row::Setting(setting, value) => {
+                for row in classic_setting_rows(setting, value) {
+                    push(&mut out, row);
+                }
+            }
+            row => push(&mut out, row),
+        }
+    }
+    out
 }
 
 /// Width every button in a row shares: enough for the widest one.

@@ -172,10 +172,22 @@ enum Target {
     BuildWorker,
     /// A job on the inspected tile, for the city whose workers would do it.
     WorkerJob(JobKind),
+    /// Worker mode on or off (W): the city panel's Worker Jobs, and Done in
+    /// worker mode's panel.
+    WorkerMode,
+    /// The worker menu: list city `usize`'s workers and jobs.
+    WorkerCity(usize),
+    /// The worker menu's Sleep: its city's idle workers rest this turn.
+    SleepWorkers,
     /// The X on one of the open city's worker jobs.
     WorkerJobRemove(usize),
     /// Sends the worker with this id straight home.
     RecallWorker(u32),
+    /// A worker's row in the worker menu: the camera goes to it.
+    ShowWorker(u32),
+    /// A click on a queue row (not a drag): for a worker job, the camera
+    /// goes to it.
+    QueueItem(QueueKind, usize),
     /// The unit strip, by unit id: click selects that unit and moves the
     /// camera to it, Shift-click adds it to the selection, and Ctrl-click
     /// takes it out.
@@ -192,8 +204,9 @@ enum Target {
     CompleteProduction,
     TogglePlayback,
     ToggleFog,
-    /// Settings menu: step a setting down (-1) or up (+1) through its range.
-    StepSetting(Setting, i32),
+    /// Settings menu: set a setting to a value (the nearer end of its range
+    /// if outside it), from its checkbox, slider or choice.
+    SetSetting(Setting, i32),
     CloseSettings,
     /// Settings menu: close the game.
     Quit,
@@ -395,6 +408,10 @@ struct Layout {
     /// The unit strip's tokens and the unit id each one stands for.
     roster_chips: Vec<(Vec2, Vec2, RosterKey)>,
     dock: Option<Dock>,
+    /// Where the settings menu's shapes and buttons start, while it's open:
+    /// `build_ui` draws them after everything before them, buttons
+    /// included, so no other panel's buttons show through it.
+    overlay: Option<(usize, usize)>,
 }
 
 impl Layout {
@@ -467,7 +484,14 @@ impl GameState {
         let hovered = point.and_then(|p| layout.button_at(p)).map(|b| b.target);
 
         let mut out = Vec::new();
-        for shape in &layout.shapes {
+        // The settings menu (and anything placed after it) is a layer of
+        // its own over the rest.
+        let (shapes_split, buttons_split) = layout
+            .overlay
+            .unwrap_or((layout.shapes.len(), layout.buttons.len()));
+        let (under_shapes, over_shapes) = layout.shapes.split_at(shapes_split);
+        let (under_buttons, over_buttons) = layout.buttons.split_at(buttons_split);
+        for shape in under_shapes {
             draw_shape(shape, &mut out);
         }
         if let Some(&(min, max, _)) = point.and_then(|p| {
@@ -478,7 +502,13 @@ impl GameState {
         }) {
             draw_chip_hover(min, max, &mut out);
         }
-        for button in &layout.buttons {
+        for button in under_buttons {
+            draw_button(button, hovered == Some(button.target), &mut out);
+        }
+        for shape in over_shapes {
+            draw_shape(shape, &mut out);
+        }
+        for button in over_buttons {
             draw_button(button, hovered == Some(button.target), &mut out);
         }
         if let Some(button) = hovered.and_then(|t| layout.buttons.iter().find(|b| b.target == t)) {
@@ -594,9 +624,14 @@ impl GameState {
             Target::RosterAdd(id) => self.roster_add(id),
             Target::RosterRemove(id) => self.roster_remove(id),
             Target::BuildWorker => self.queue_selected_city_worker(),
-            Target::WorkerJob(kind) => self.queue_worker_job(kind),
+            Target::WorkerJob(kind) => self.arm_worker_job(kind),
+            Target::WorkerMode => self.toggle_worker_mode(),
+            Target::WorkerCity(city) => self.worker_menu_city = Some(city),
+            Target::SleepWorkers => self.sleep_workers(),
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
             Target::RecallWorker(id) => self.recall_worker(id),
+            Target::ShowWorker(id) => self.show_worker(id),
+            Target::QueueItem(kind, index) => self.queue_item_clicked(kind, index),
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
             Target::OpenSettings => self.settings_open = true,
@@ -621,7 +656,7 @@ impl GameState {
             Target::CompleteProduction => self.debug_complete_current_production(),
             Target::TogglePlayback => self.toggle_instant_playback(),
             Target::ToggleFog => self.toggle_fog(),
-            Target::StepSetting(setting, delta) => self.step_setting(setting, delta),
+            Target::SetSetting(setting, value) => self.set_setting(setting, value),
             Target::CloseSettings => self.close_settings(),
             Target::Quit => self.quit_requested = true,
         }
@@ -672,27 +707,8 @@ impl GameState {
     /// With a wall or gate armed, the hex edge under `cursor` (over the map,
     /// not the UI), for its highlight.
     fn hover_edge(&mut self, cursor: Option<Vec2>, screen_size: Vec2) {
-        self.hovered_edge =
-            cursor.and_then(|c| self.barrier_edge_at(self.camera.screen_to_world(c, screen_size)));
-    }
-
-    /// With a wall or gate armed, queues it on the hex edge under `cursor`
-    /// (window pixels). Called on the press and for every cursor move while
-    /// the button is held, so a drag queues each edge it passes. Returns
-    /// whether the press belongs to edge placement: false over the classic
-    /// UI (`check_ui`) or with nothing armed.
-    pub fn paint_barrier_at(&mut self, cursor: Vec2, screen_size: Vec2, check_ui: bool) -> bool {
-        if self.placing_barrier.is_none() || self.is_resolving() {
-            return false;
-        }
-        if check_ui && self.layout(screen_size).covers(to_ui(cursor, screen_size)) {
-            return false;
-        }
-        let point = self.camera.screen_to_world(cursor, screen_size);
-        if let Some((a, b)) = self.barrier_edge_at(point) {
-            self.queue_barrier_at(a, b);
-        }
-        true
+        self.hovered_job =
+            cursor.and_then(|c| self.job_target_at(self.camera.screen_to_world(c, screen_size)));
     }
 
     pub fn set_ui_notice(&mut self, notice: &str) {
@@ -715,8 +731,8 @@ impl GameState {
             tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
-        } else if let Some(hex) = self.inspected_tile {
-            self.tile_tray(hex, &mut tray);
+        } else if self.worker_mode {
+            self.worker_menu(&mut tray);
         } else {
             self.debug_panel(&mut layout);
             self.dock_roster(&mut layout);

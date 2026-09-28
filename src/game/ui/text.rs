@@ -50,21 +50,24 @@ pub(super) fn turns_at_rate(remaining: i32, per_turn: i32) -> String {
     format!("{turns}T")
 }
 
-/// The End Turn button's label: the next thing the turn is waiting on (units
-/// first, as that's what clicking selects first), or "END TURN" once nothing is.
-pub(super) fn end_turn_label((units, cities): (usize, usize)) -> String {
-    match (units, cities) {
-        (1, _) => "UNIT NEEDS ORDERS".into(),
-        (0, 0) => "END TURN".into(),
-        (0, 1) => "CHOOSE PRODUCTION".into(),
-        (0, cities) => format!("{cities} CITIES NEED PRODUCTION"),
-        (units, _) => format!("{units} UNITS NEED ORDERS"),
+/// The End Turn button's label: the next thing the turn is waiting on, in
+/// the turn strip's order (production, idle workers, then units, as that's
+/// what clicking selects first), or "END TURN" once nothing is.
+pub(super) fn end_turn_label((units, cities, workers): (usize, usize, usize)) -> String {
+    match (units, cities, workers) {
+        (_, 1, _) => "CHOOSE PRODUCTION".into(),
+        (_, cities, _) if cities > 1 => format!("{cities} CITIES NEED PRODUCTION"),
+        (_, _, 1) => "WORKER NEEDS A JOB".into(),
+        (_, _, workers) if workers > 1 => format!("{workers} WORKERS NEED JOBS"),
+        (0, _, _) => "END TURN".into(),
+        (1, _, _) => "UNIT NEEDS ORDERS".into(),
+        (units, _, _) => format!("{units} UNITS NEED ORDERS"),
     }
 }
 
 /// What the turn is waiting on, like "2 UNITS AND 1 CITY NEED ORDERS", from
 /// `GameState::pending`; `None` once nothing is.
-pub(super) fn pending_text((units, cities): (usize, usize)) -> Option<String> {
+pub(super) fn pending_text((units, cities, workers): (usize, usize, usize)) -> Option<String> {
     let plural = |count: usize, one: &str, many: &str| {
         let word = if count == 1 { one } else { many };
         format!("{count} {word}")
@@ -76,7 +79,14 @@ pub(super) fn pending_text((units, cities): (usize, usize)) -> Option<String> {
     if cities > 0 {
         parts.push(plural(cities, "CITY", "CITIES"));
     }
-    let verb = if units + cities == 1 { "NEEDS" } else { "NEED" };
+    if workers > 0 {
+        parts.push(plural(workers, "WORKER", "WORKERS"));
+    }
+    let verb = if units + cities + workers == 1 {
+        "NEEDS"
+    } else {
+        "NEED"
+    };
     (!parts.is_empty()).then(|| format!("{} {verb} ORDERS", parts.join(" AND ")))
 }
 
