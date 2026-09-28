@@ -2562,3 +2562,152 @@ fn the_imgui_clear_buttons_empty_their_queues() {
     let stock = game.stock(Team::Blue);
     assert_eq!(stock, Stock::whole(999, 999, 999), "all refunded");
 }
+
+/// A guest in a network game who has ended the first turn and waits for
+/// the host's plan, with a Barracks by its city (something in its queue)
+/// and something queued in the city: every kind of view has something to
+/// show.
+fn waiting_guest() -> GameState {
+    use crate::game::{NetMessage, PROTOCOL_VERSION, Settings};
+    let mut host = GameState::host_game(2, &Settings::default());
+    let (_, welcome) = host.welcome(&NetMessage::Hello {
+        version: PROTOCOL_VERSION,
+    });
+    let mut guest = GameState::join_game(&welcome).expect("joins");
+    guest.update(0.0);
+    let team = guest.local_team;
+    let city = guest.cities.iter().position(|c| c.team == team).unwrap();
+    let pos = guest.cities[city].pos;
+    let site = pos
+        .neighbors()
+        .into_iter()
+        .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h))
+        .unwrap();
+    guest.cities[city].barracks = Some(site);
+    guest.cities[city].barracks_queue = vec![BuildUnit::Melee];
+    guest.fund(team);
+    guest.open_city(city);
+    guest.queue_selected_city_gather();
+    guest.queue_selected_city_unit(BuildUnit::Ranged);
+    guest.end_planning();
+    assert!(guest.waiting_for_peers(), "{}", guest.notice);
+    guest
+}
+
+/// Every view a waiting player can open: their city, its Barracks and
+/// interior, and one of their units.
+const WAITING_VIEWS: [&str; 4] = ["city", "barracks", "interior", "unit"];
+
+/// Opens `view` (one of `WAITING_VIEWS`) on the player's first city or
+/// unit, from nothing open.
+fn open_view(game: &mut GameState, view: &str) {
+    let team = game.local_team;
+    let city = game.cities.iter().position(|c| c.team == team).unwrap();
+    let unit = game.units.iter().position(|u| u.team == team).unwrap();
+    game.leave_city_view();
+    game.set_selection(Vec::new());
+    match view {
+        "city" => game.open_city(city),
+        "barracks" => game.open_barracks(city),
+        "interior" => game.open_city_interior(city),
+        _ => game.set_selection(vec![unit]),
+    }
+}
+
+#[test]
+fn waiting_for_the_others_the_classic_panels_show_but_change_nothing() {
+    let mut game = waiting_guest();
+    let team = game.local_team;
+    let plan = game.team_plan(team);
+    // The turn still being planned is the one named, not the last.
+    let top = game.layout(SCREEN);
+    let turn = top
+        .shapes
+        .iter()
+        .any(|s| matches!(s, Shape::Text { line, .. } if line.iter().any(|(t, _)| t == "TURN 1")));
+    assert!(turn, "the turn being planned");
+    for view in WAITING_VIEWS {
+        open_view(&mut game, view);
+        let layout = game.layout(SCREEN);
+        let changing: Vec<&Button> = layout
+            .buttons
+            .iter()
+            .filter(|b| b.target.changes_plan())
+            .collect();
+        assert!(!changing.is_empty(), "{view}: something to refuse");
+        for button in &changing {
+            let target = button.target;
+            assert_eq!(button.state, ButtonState::Disabled, "{view}: {target:?}");
+            let why = line_strings(game.tooltip_lines(button).into_iter().map(|(_, l)| l));
+            assert!(
+                why.join(" ").contains(tooltips::PLAN_SENT),
+                "{view}: {target:?} says why: {why:?}"
+            );
+        }
+        // Looking stays open.
+        let looking = |t: Target| {
+            matches!(
+                t,
+                Target::OpenInterior
+                    | Target::OpenBarracks
+                    | Target::OpenCity
+                    | Target::ToggleYields
+            )
+        };
+        for button in layout.buttons.iter().filter(|b| looking(b.target)) {
+            let target = button.target;
+            assert_ne!(button.state, ButtonState::Disabled, "{view}: {target:?}");
+        }
+        // Clicking every button, or dragging a queue row, changes nothing.
+        let targets: Vec<Target> = changing.iter().map(|b| b.target).collect();
+        for target in targets {
+            let at = button_cursor(&game, target);
+            game.handle_click(at, SCREEN, ClickMode::Normal);
+            assert_eq!(game.team_plan(team), plan, "{view}: {target:?}");
+        }
+        if let Some(row) = layout.queue_items.first() {
+            let body = (row.min + Vec2::new(row.body_max_x, row.max.y)) / 2.0;
+            let at = to_ui(body, SCREEN);
+            assert!(!game.start_queue_drag_at(at, SCREEN), "{view}: no dragging");
+        }
+    }
+    assert!(game.waiting_for_peers());
+}
+
+#[test]
+fn waiting_for_the_others_the_imgui_panels_show_but_change_nothing() {
+    let mut game = waiting_guest();
+    let team = game.local_team;
+    let plan = game.team_plan(team);
+    let mut screen = ImGuiScreen::new();
+    for view in WAITING_VIEWS {
+        open_view(&mut game, view);
+        screen.settle(&mut game);
+        let drawn: Vec<Target> = imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+            drawn
+                .iter()
+                .map(|&(target, ..)| target)
+                .filter(|t| t.changes_plan())
+                .collect()
+        });
+        assert!(!drawn.is_empty(), "{view}: something to refuse");
+        for target in drawn {
+            // Some of a long list scroll out of sight as others are tried.
+            screen.settle(&mut game);
+            if screen.button(target).is_none() {
+                continue;
+            }
+            screen.click(&mut game, target);
+            assert_eq!(game.team_plan(team), plan, "{view}: {target:?}");
+        }
+        // Looking stays open: the city's interior button still works. (A
+        // click on a card half scrolled out of the catalog can land on the
+        // button under it, which may have opened the Barracks.)
+        if view == "city" {
+            open_view(&mut game, view);
+            screen.click(&mut game, Target::OpenInterior);
+            assert!(game.interior_view.is_some());
+        }
+    }
+    assert!(game.waiting_for_peers());
+}

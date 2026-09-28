@@ -78,9 +78,10 @@ impl GameState {
     /// An action armed from the command tray applies to this map click only,
     /// unless a modifier key picked `mode` itself. Once the selected unit has
     /// nothing left to plan, selection moves on to the next unit that does.
-    /// Ignored while a turn is playing out.
+    /// Ignored while a turn is playing out; while a network game waits for
+    /// the others' plans, it only selects (`handle_map_click`).
     pub fn handle_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if self.click_ui(cursor, screen_size, mode) {
@@ -91,7 +92,7 @@ impl GameState {
 
     /// Map clicks after an external UI (such as ImGui) has handled its own hit testing.
     pub fn handle_map_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if self.interior_view.is_some() {
@@ -117,6 +118,12 @@ impl GameState {
 
         let point = self.camera.screen_to_world(cursor, screen_size);
         if self.city_click_at(hex, point) {
+            return;
+        }
+        // The plan is sent (a network game waiting for the others'): a
+        // click only picks what to look at.
+        if self.is_resolving() {
+            self.select_only(hex, mode);
             return;
         }
 
@@ -235,6 +242,19 @@ impl GameState {
             (ClickMode::QueueAttack, _) => {
                 self.queue_attack(hex);
             }
+        }
+    }
+
+    /// A map click on `hex` that changes nothing but the selection, while
+    /// the plan can't change: one of the player's units there is selected
+    /// (Shift adds it, Ctrl takes it out of a group); anywhere else lets go.
+    fn select_only(&mut self, hex: Hex, mode: ClickMode) {
+        match (mode, self.controlled_unit_at(hex)) {
+            (ClickMode::QueueMove, Some(ally)) => self.add_to_selection(ally),
+            (ClickMode::Swap, Some(ally)) if !self.group.is_empty() => {
+                self.remove_from_selection(ally);
+            }
+            (_, ally) => self.set_selection(ally.into_iter().collect()),
         }
     }
 
@@ -405,7 +425,7 @@ impl GameState {
     /// Tab: selects the next unit that still needs orders, or just the next
     /// unit if they all have them, without holding the current one.
     pub fn select_next_unit(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         self.leave_city_view();

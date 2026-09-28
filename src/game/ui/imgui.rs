@@ -2428,6 +2428,17 @@ impl GameState {
         scope: Option<PinnedPanel>,
         actions: &mut Vec<Action>,
     ) {
+        // With the plan sent, what would change it shows disabled, as the
+        // classic panels do (`Layout::dock_panel`).
+        let frozen;
+        let panel = if self.plan_frozen() {
+            let mut copy = panel.clone();
+            copy.freeze_plan();
+            frozen = copy;
+            &frozen
+        } else {
+            panel
+        };
         let label_width = setting_label_width(ui, panel, fonts[1]);
         for row in &panel.rows {
             match row {
@@ -2718,9 +2729,12 @@ impl GameState {
                     ui.same_line();
                     let _remove_color =
                         ui.push_style_color(StyleColor::Button, [0.23, 0.13, 0.13, 1.0]);
+                    let _disabled = ui.begin_disabled(item.locked);
+                    let remove = item.kind.remove_target(item.index);
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
-                        actions.push(Action::Button(scope, item.kind.remove_target(item.index)));
+                        actions.push(Action::Button(scope, remove));
                     }
+                    note_drawn_button(ui, remove);
                 }
             }
         }
@@ -2771,11 +2785,7 @@ impl GameState {
             .pinned_geometry
             .retain(|pin, _| layout.pinned.contains(pin));
         let pending = self.pending();
-        let turn = if self.is_resolving() {
-            self.turn
-        } else {
-            self.turn + 1
-        };
+        let turn = self.shown_turn();
         let mut stockpile = self.stockpile_line();
         if let Some((first, _)) = stockpile.first_mut() {
             first.insert_str(0, "   ");

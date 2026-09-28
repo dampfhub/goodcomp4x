@@ -7,7 +7,11 @@ use crate::game::fast_hash::HashSet;
 use crate::game::hex::Hex;
 
 impl GameState {
+    /// A focus button: the open city's citizens are reassigned to suit it.
     pub fn set_selected_city_focus(&mut self, focus: LaborFocus) {
+        if self.is_resolving() {
+            return;
+        }
         if let Some(city) = self.selected_city {
             self.cities[city].focus = focus;
             self.auto_assign_city(city);

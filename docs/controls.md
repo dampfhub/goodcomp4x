@@ -103,7 +103,10 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 
 The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE
 PRODUCTION") and turns gold, reading END TURN, once nothing is. Clicks are ignored while a turn
-plays out.
+plays out. In a network game, once you have ended the turn and wait for the others' plans,
+you can still look around: clicks and C, Tab and V select units and open city, Barracks and
+interior views (a click only selects, never orders), and every control that would change your
+orders shows disabled.
 
 ## Cities
 

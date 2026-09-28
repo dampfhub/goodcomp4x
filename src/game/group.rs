@@ -18,7 +18,7 @@ impl GameState {
     /// between `a` and `b` (window pixels, origin top-left). With `add`
     /// (Shift held), they join the current selection instead of replacing it.
     pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2, add: bool) {
-        if self.is_resolving() || self.interior_view.is_some() {
+        if self.is_playing_out() || self.interior_view.is_some() {
             return;
         }
         let (min, max) = (a.min(b), a.max(b));

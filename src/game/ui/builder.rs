@@ -202,6 +202,40 @@ impl PanelBuilder {
         self.rows.push(Row::Buttons(buttons, true));
     }
 
+    /// For a plan that can't change (a network game waiting for the others'):
+    /// every button that would change it shows disabled, and queue rows
+    /// lock (no dragging, no X). Both presentations call it on the panels
+    /// they show, so looking stays open and ordering doesn't.
+    pub(super) fn freeze_plan(&mut self) {
+        let freeze = |spec: &mut ButtonSpec| {
+            if spec.target.changes_plan() {
+                spec.state = ButtonState::Disabled;
+                spec.armed = false;
+            }
+        };
+        for row in &mut self.rows {
+            match row {
+                Row::Buttons(buttons, _) => buttons.iter_mut().for_each(freeze),
+                Row::TitleWithButton(_, button) => freeze(button),
+                Row::BuildingCatalog(_, entries, _) => {
+                    for entry in entries {
+                        if let CatalogEntry::Card(button) = entry {
+                            freeze(button);
+                        }
+                    }
+                }
+                Row::QueueItem(item) => item.locked = true,
+                Row::Text(..)
+                | Row::Gap(_)
+                | Row::Bar(_)
+                | Row::Roster(_)
+                | Row::Heading(_)
+                | Row::Setting(..)
+                | Row::Field(..) => {}
+            }
+        }
+    }
+
     /// Button borders are drawn just outside their rows, so a row of buttons
     /// right under another needs a gap to keep them from overlapping.
     fn space_button_rows(&mut self) {
@@ -382,7 +416,7 @@ impl PanelBuilder {
                         target: item.kind.remove_target(item.index),
                         label: "X".into(),
                         hint: String::new(),
-                        state: ButtonState::Ready,
+                        state: ButtonState::new(false, item.locked),
                         armed: false,
                         faded: self.faded,
                         min: Vec2::new(body_max_x, min.y),
