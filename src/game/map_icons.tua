@@ -1,0 +1,222 @@
+//! Map icons: small pictures of strategic resources and tile improvements, drawn straight on
+//! the tile in the hex's top corners, and of special tiles and ruins in its bottom-left corner.
+//! Each shape is edged in dark so it reads on any terrain. Shapes are laid out in the
+//! coordinates of the mockups they were designed in: a hex of radius 100 with Y pointing down,
+//! centered on the icon's spot.
+
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.linalg.vec2_from_angle;
+use std.math.Float;
+use std.math.pi;
+use std.math.tau;
+use renderer.pipelines.MeshVertex;
+use game.city.SiteKind;
+use game.hex.HEX_SIZE;
+use game.mesh.Color;
+use game.mesh.outline;
+use game.mesh.polygon;
+use game.mesh.polyline;
+use game.mesh.regular_polygon;
+use game.terrain.Resource;
+use game.terrain.Special;
+
+/// Hex radius the shapes are laid out on.
+const DESIGN_HEX_RADIUS: f32 = 100.0;
+/// Sides of the polygons that stand in for circles and ellipses.
+const ROUND_SIDES: i32 = 16;
+
+/// Where icons sit, from the hex's center: a resource in the top-right corner, an improvement
+/// in the top-left.
+pub const RESOURCE_SPOT: Vec2 = Vec2 { x: 0.5, y: 0.40 };
+pub const IMPROVEMENT_SPOT: Vec2 = Vec2 { x: -0.5, y: 0.42 };
+/// Where a special tile's or ruins' icon sits: the bottom-left corner, drawn `LANDMARK_SCALE`
+/// times the usual size so it can be spotted from afar.
+pub const LANDMARK_SPOT: Vec2 = Vec2 { x: -0.36, y: -0.5 };
+pub const LANDMARK_SCALE: f32 = 1.3;
+
+/// The edge around every shape, the same near-black as unit outlines.
+const OUTLINE: Color = [0.03, 0.03, 0.04, 1.0];
+// The mockups' colors, converted from sRGB to linear.
+const HORSE: Color = [0.32, 0.12, 0.032, 1.0];
+const MANE: Color = [0.042, 0.018, 0.006, 1.0];
+const STEEL: Color = [0.26, 0.28, 0.31, 1.0];
+const STEEL_LIT: Color = [0.55, 0.58, 0.63, 1.0];
+const STEEL_SHADE: Color = [0.14, 0.155, 0.18, 1.0];
+const WHEAT: Color = [0.87, 0.58, 0.08, 1.0];
+const ORE: Color = [0.10, 0.084, 0.08, 1.0];
+const CART: Color = [0.155, 0.068, 0.018, 1.0];
+const WHEEL: Color = [0.023, 0.023, 0.027, 1.0];
+const FRESH_WOOD: Color = [0.58, 0.28, 0.098, 1.0];
+const WEATHERED_WOOD: Color = [0.43, 0.195, 0.055, 1.0];
+const BARK: Color = [0.254, 0.102, 0.032, 1.0];
+const STONE: Color = [0.42, 0.40, 0.36, 1.0];
+const STONE_LIT: Color = [0.68, 0.65, 0.58, 1.0];
+const STONE_SHADE: Color = [0.20, 0.19, 0.17, 1.0];
+const LEAVES: Color = [0.06, 0.30, 0.05, 1.0];
+const FRUIT: Color = [0.80, 0.08, 0.04, 1.0];
+
+pub enum MapIcon {
+    /// Horses: a horse's head, facing right.
+    HorseHead,
+    /// Iron: an ingot, seen from above and to the left.
+    Ingot,
+    /// Farm: a single stalk of wheat.
+    Wheat,
+    /// Mine: a cart heaped with ore.
+    OreCart,
+    /// Pasture: a fence, two posts and two rails.
+    Fence,
+    /// Ruins: two broken columns on a slab.
+    Ruins,
+    /// Orchard: a fruit tree.
+    FruitTree,
+    /// Quarry: three cut stone blocks.
+    StoneBlocks,
+}
+
+impl MapIcon {
+    pub fn resource(resource: Resource) -> MapIcon {
+        match resource { Resource.Horses => MapIcon.HorseHead, Resource.Iron => MapIcon.Ingot }
+    }
+
+    pub fn special(special: Special) -> MapIcon {
+        match special { Special.Orchard => MapIcon.FruitTree, Special.Quarry => MapIcon.StoneBlocks }
+    }
+
+    pub fn improvement(kind: SiteKind) -> MapIcon {
+        match kind { SiteKind.Farm => MapIcon.Wheat, SiteKind.Mine => MapIcon.OreCart, SiteKind.Pasture => MapIcon.Fence }
+    }
+}
+
+/// Every map icon, and where it's drawn: `(icon, spot, scale)`.
+pub const MAP_ICONS: [MapIcon; 8] = [
+    MapIcon.HorseHead, MapIcon.Ingot, MapIcon.Wheat, MapIcon.OreCart, MapIcon.Fence,
+    MapIcon.Ruins, MapIcon.FruitTree, MapIcon.StoneBlocks,
+];
+
+/// Draws `icon` centered on `center`, `scale` times its usual size.
+pub fn push_map_icon(center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec[MeshVertex]) {
+    let pen = MapPen { center, scale: scale * HEX_SIZE / DESIGN_HEX_RADIUS };
+    match icon {
+        MapIcon.HorseHead => {
+            pen.shape(&points(&[vec2(-9.0, 15.0), vec2(-7.0, 1.0), vec2(-3.0, -9.0), vec2(0.0, -16.0), vec2(3.0, -10.0), vec2(13.0, -3.0), vec2(15.0, 3.0), vec2(10.0, 6.0), vec2(2.0, 2.0), vec2(4.0, 15.0)]), HORSE, 3.0, out);
+            pen.shape(&ellipse(vec2(4.0, -5.0), 1.5, 1.5, 0.0), OUTLINE, 0.0, out);
+            pen.line(&points(&[vec2(-3.0, -9.0), vec2(-9.0, -1.0), vec2(-10.0, 8.0)]), 3.0, MANE, out);
+        }
+        MapIcon.Ingot => {
+            pen.shape(&points(&[vec2(-15.0, 9.0), vec2(-10.0, -3.0), vec2(10.0, -3.0), vec2(15.0, 9.0)]), STEEL, 3.0, out);
+            pen.shape(&points(&[vec2(-10.0, -3.0), vec2(-6.0, -10.0), vec2(14.0, -10.0), vec2(10.0, -3.0)]), STEEL_LIT, 3.0, out);
+            pen.shape(&points(&[vec2(10.0, -3.0), vec2(14.0, -10.0), vec2(18.0, 2.0), vec2(15.0, 9.0)]), STEEL_SHADE, 3.0, out);
+        }
+        MapIcon.Wheat => {
+            let stem = points(&[vec2(0.0, 14.0), vec2(0.0, -8.0)]);
+            pen.line(&stem, 5.5, OUTLINE, out);
+            pen.line(&stem, 2.5, WHEAT, out);
+            // Pairs of kernels up the head, leaning outward, and one on top.
+            let rows = [1.0, -6.0, -13.0];
+            for r in 0..3 {
+                pen.shape(&ellipse(vec2(-3.5, rows[r]), 3.2, 5.0, -30.0), WHEAT, 2.5, out);
+                pen.shape(&ellipse(vec2(3.5, rows[r]), 3.2, 5.0, 30.0), WHEAT, 2.5, out);
+            }
+            pen.shape(&ellipse(vec2(0.0, -18.0), 3.2, 5.0, 0.0), WHEAT, 2.5, out);
+        }
+        MapIcon.OreCart => {
+            pen.shape(&points(&[vec2(-8.0, -4.0), vec2(-3.0, -12.0), vec2(3.0, -10.0), vec2(7.0, -14.0), vec2(11.0, -5.0)]), ORE, 3.0, out);
+            pen.shape(&points(&[vec2(-14.0, -5.0), vec2(14.0, -5.0), vec2(10.0, 8.0), vec2(-10.0, 8.0)]), CART, 3.0, out);
+            pen.shape(&ellipse(vec2(-6.0, 11.0), 3.5, 3.5, 0.0), WHEEL, 3.0, out);
+            pen.shape(&ellipse(vec2(6.0, 11.0), 3.5, 3.5, 0.0), WHEEL, 3.0, out);
+        }
+        MapIcon.Fence => {
+            let left_post = points(&[vec2(-10.0, 13.0), vec2(-10.0, -12.0)]);
+            let right_post = points(&[vec2(10.0, 13.0), vec2(10.0, -12.0)]);
+            let top_rail = points(&[vec2(-15.0, -6.0), vec2(15.0, -6.0)]);
+            let low_rail = points(&[vec2(-15.0, 4.0), vec2(15.0, 4.0)]);
+            pen.line(&left_post, 7.0, OUTLINE, out);
+            pen.line(&right_post, 7.0, OUTLINE, out);
+            pen.line(&top_rail, 7.0, OUTLINE, out);
+            pen.line(&low_rail, 7.0, OUTLINE, out);
+            pen.line(&top_rail, 3.5, WEATHERED_WOOD, out);
+            pen.line(&low_rail, 3.5, WEATHERED_WOOD, out);
+            pen.line(&left_post, 4.0, FRESH_WOOD, out);
+            pen.line(&right_post, 4.0, FRESH_WOOD, out);
+        }
+        MapIcon.Ruins => {
+            pen.shape(&points(&[vec2(-16.0, 8.0), vec2(16.0, 8.0), vec2(16.0, 13.0), vec2(-16.0, 13.0)]), STONE_SHADE, 2.5, out);
+            // A whole column with its capital, and a broken one.
+            pen.shape(&points(&[vec2(-12.0, -9.0), vec2(-5.0, -9.0), vec2(-5.0, 8.0), vec2(-12.0, 8.0)]), STONE, 2.5, out);
+            pen.shape(&points(&[vec2(-14.0, -13.0), vec2(-3.0, -13.0), vec2(-3.0, -9.0), vec2(-14.0, -9.0)]), STONE_LIT, 2.5, out);
+            pen.shape(&points(&[vec2(4.0, -2.0), vec2(7.0, 1.0), vec2(9.0, -4.0), vec2(11.0, -1.0), vec2(11.0, 8.0), vec2(4.0, 8.0)]), STONE, 2.5, out);
+        }
+        MapIcon.FruitTree => {
+            pen.shape(&points(&[vec2(-2.0, 2.0), vec2(2.0, 2.0), vec2(3.0, 13.0), vec2(-3.0, 13.0)]), BARK, 2.5, out);
+            pen.shape(&ellipse(vec2(0.0, -5.0), 13.0, 10.0, 0.0), LEAVES, 2.5, out);
+            let fruit = [vec2(-6.0, -6.0), vec2(5.0, -8.0), vec2(1.0, -1.0), vec2(7.0, -1.0)];
+            for k in 0..4 { pen.shape(&ellipse(fruit[k], 2.4, 2.4, 0.0), FRUIT, 1.2, out); }
+        }
+        MapIcon.StoneBlocks => {
+            let corners = [vec2(-14.0, 2.0), vec2(1.0, 2.0), vec2(-6.5, -9.0)];
+            for k in 0..3 {
+                let (x, y) = (corners[k].x, corners[k].y);
+                pen.shape(&points(&[vec2(x, y), vec2(x + 13.0, y), vec2(x + 13.0, y + 10.0), vec2(x, y + 10.0)]), STONE, 2.5, out);
+                pen.shape(&points(&[vec2(x, y), vec2(x + 13.0, y), vec2(x + 13.0, y + 3.0), vec2(x, y + 3.0)]), STONE_LIT, 0.0, out);
+            }
+        }
+    }
+}
+
+/// `list` as a `Vec`.
+fn points(list: &[Vec2]) -> Vec[Vec2] {
+    let mut out: Vec[Vec2] = Vec.new();
+    for i in 0..list.len() { out.push(list[i]); }
+    out
+}
+
+/// Points around an ellipse centered on `center`, turned by `degrees` (clockwise on screen, as
+/// SVG's `rotate` with Y down).
+fn ellipse(center: Vec2, rx: f32, ry: f32, degrees: f32) -> Vec[Vec2] {
+    let turn = vec2_from_angle(degrees * pi() as f32 / 180.0);
+    let mut out: Vec[Vec2] = Vec.new();
+    for i in 0..ROUND_SIDES {
+        let angle = tau() as f32 * i as f32 / ROUND_SIDES as f32;
+        let (x, y) = (rx * angle.cos(), ry * angle.sin());
+        out.push(vec2(center.x + x * turn.x - y * turn.y, center.y + x * turn.y + y * turn.x));
+    }
+    out
+}
+
+/// Draws shapes given in design coordinates, scaled onto the map.
+struct MapPen {
+    center: Vec2,
+    /// World units per design unit.
+    scale: f32,
+}
+
+impl MapPen {
+    fn at(&self, p: Vec2) -> Vec2 { self.center.add(vec2(p.x, -p.y).scale(self.scale)) }
+
+    fn world(&self, design: &Vec[Vec2]) -> Vec[Vec2] {
+        let mut out: Vec[Vec2] = Vec.new();
+        for i in 0..design.len() { out.push(self.at(design[i])); }
+        out
+    }
+
+    /// A filled outline, edged in dark `edge` wide (half of it outside).
+    fn shape(&self, design: &Vec[Vec2], fill: Color, edge: f32, out: &mut Vec[MeshVertex]) {
+        let corners = self.world(design);
+        if edge > 0.0 { outline(&corners, edge * self.scale, OUTLINE, out); }
+        polygon(&corners, fill, out);
+    }
+
+    /// A line through `design` with rounded ends.
+    fn line(&self, design: &Vec[Vec2], width: f32, color: Color, out: &mut Vec[MeshVertex]) {
+        let corners = self.world(design);
+        polyline(&corners, width * self.scale, color, out);
+        let n = corners.len();
+        if n > 0 {
+            let radius = width / 2.0 * self.scale;
+            regular_polygon(corners[0], radius, ROUND_SIDES as u32, 0.0, color, out);
+            regular_polygon(corners[n - 1], radius, ROUND_SIDES as u32, 0.0, color, out);
+        }
+    }
+}

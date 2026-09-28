@@ -165,6 +165,24 @@ impl GameState {
         self.raw_yield(hex)
     }
 
+    /// The improvement on `hex` as the player knows it: in sight, as it is; out of sight, as
+    /// last seen.
+    pub fn known_site_kind(&self, hex: Hex, fog: &Fog) -> Option[SiteKind] {
+        if fog.sees(hex) {
+            return match self.sites.get(hex) { Option.Some(site) => Option.Some(site.kind), Option.None => Option.None };
+        }
+        match self.memory.get(hex) {
+            Option.Some(seen) => match seen.site { Option.Some((kind, _)) => Option.Some(kind), Option.None => Option.None },
+            Option.None => Option.None,
+        }
+    }
+
+    /// Whether the player knows of unclaimed ruins on `hex`: in sight, or as last seen.
+    pub fn known_ruin(&self, hex: Hex, fog: &Fog) -> bool {
+        if fog.sees(hex) { return self.ruin_at(hex).is_some(); }
+        match self.memory.get(hex) { Option.Some(seen) => seen.ruin, Option.None => false }
+    }
+
     /// Whether the player knows of a city of another side on `hex`: in sight, or as last seen.
     fn known_enemy_city_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
         if fog.sees(hex) {

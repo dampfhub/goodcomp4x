@@ -45,6 +45,12 @@ use game.turn.step_rank;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit_icons.UnitIcon;
+use game.map_icons.IMPROVEMENT_SPOT;
+use game.map_icons.LANDMARK_SCALE;
+use game.map_icons.LANDMARK_SPOT;
+use game.map_icons.MapIcon;
+use game.map_icons.RESOURCE_SPOT;
+use game.map_icons.push_map_icon;
 use game.unit_icons.push_pictogram;
 use game.unit.UnitStats;
 
@@ -116,7 +122,7 @@ const LABEL_COLOR: Color = [0.05, 0.05, 0.05, 1.0];
 const HEALTH_BAR_BG_COLOR: Color = [0.08, 0.08, 0.08, 1.0];
 
 /// Sizes below are for a unit drawn at full scale, alone in its hex.
-const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.42;
+const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.36;
 /// Sides of the disc military units stand on.
 const TOKEN_SIDES: u32 = 32;
 /// Civilian hexagons, relative to the military disc.
@@ -279,10 +285,15 @@ impl GameState {
             regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
             regular_polygon(center, HEX_SIZE * 0.92, 6, 0.0, fill, &mut out);
             push_tile_symbols(center, self.grid.tile(hex), &mut out);
-            if self.grid.special(hex).is_some() {
+            // A resource in the top-right corner, an improvement (as the player knows it) in the
+            // top-left, a special tile or ruins in the bottom-left.
+            if let Option.Some(resource) = self.grid.resource(hex) { push_map_icon(center.add(RESOURCE_SPOT), MapIcon.resource(resource), 1.0, &mut out); }
+            if let Option.Some(kind) = self.known_site_kind(hex, &fog) { push_map_icon(center.add(IMPROVEMENT_SPOT), MapIcon.improvement(kind), 1.0, &mut out); }
+            if let Option.Some(special) = self.grid.special(hex) {
                 polygon_outline(center, HEX_SIZE * 0.92 - LANDMARK_RIM_WIDTH / 2.0, LANDMARK_RIM_WIDTH, 6, 0.0, SPECIAL_RIM_COLOR, &mut out);
+                push_map_icon(center.add(LANDMARK_SPOT), MapIcon.special(special), LANDMARK_SCALE, &mut out);
             }
-            self.push_ruin(hex, &mut out);
+            self.push_known_ruin(hex, &fog, &mut out);
         }
         self.push_rivers(&mut out);
 
@@ -516,11 +527,6 @@ impl GameState {
                 polygon_outline(center, WORKED_OUTLINE_RADIUS, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
             }
         }
-        for k in 0..self.sites.len() {
-            let Option.Some(h) = self.sites.key_at(k) else { continue; };
-            let Option.Some(site) = self.sites.val_at(k) else { continue; };
-            push_glyph(h.to_world().add(vec2(-0.55, 0.3)), 0.28, site.kind.letter(), site.team.color(), out);
-        }
         for c in 0..self.cities.len() {
             let pos = self.cities[c].pos.to_world();
             quad(pos.sub(vec2(0.48, 0.48)), pos.add(vec2(0.48, 0.48)), self.cities[c].team.color(), out);
@@ -587,11 +593,15 @@ impl GameState {
         (self.camera.center.sub(reach), self.camera.center.add(reach))
     }
 
-    /// Ruins on `hex`: a rim, and a pip for each turn their holder has held them, in its color.
-    fn push_ruin(&self, hex: Hex, out: &mut Vec[MeshVertex]) {
-        let Option.Some(i) = self.ruin_at(hex) else { return; };
+    /// Ruins on `hex` as the player knows them: in sight, with a pip for each turn their holder
+    /// has held them, in its color; out of sight, as last seen, without.
+    fn push_known_ruin(&self, hex: Hex, fog: &Fog, out: &mut Vec[MeshVertex]) {
+        if !self.known_ruin(hex, fog) { return; }
         let center = hex.to_world();
         polygon_outline(center, HEX_SIZE * 0.92 - LANDMARK_RIM_WIDTH / 2.0, LANDMARK_RIM_WIDTH, 6, 0.0, RUIN_RIM_COLOR, out);
+        push_map_icon(center.add(LANDMARK_SPOT), MapIcon.Ruins, LANDMARK_SCALE, out);
+        if !fog.sees(hex) { return; }
+        let Option.Some(i) = self.ruin_at(hex) else { return; };
         let color = match self.ruins[i].holder { Option.Some(t) => t.color(), Option.None => BORDER_COLOR };
         for k in 0..RUIN_HOLD_TURNS {
             let pip = center.add(RUIN_PIPS).add(vec2(k as f32 * RUIN_PIP_GAP, 0.0));

@@ -81,6 +81,21 @@ pub fn polyline(points: &Vec[Vec2], width: f32, color: Color, out: &mut Vec[Mesh
     }
 }
 
+/// Appends a band `width` thick centered on the closed outline through `points`: a polygon's
+/// edge, drawn before its fill so only the outer half shows, like an SVG stroke painted under
+/// the fill.
+pub fn outline(points: &Vec[Vec2], width: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    let n = points.len();
+    if n == 0 { return; }
+    // The closing edge goes both first and last, so every corner is a bend the ribbon miters;
+    // the open ends it leaves lie inside those corners.
+    let mut around: Vec[Vec2] = Vec.new();
+    around.push(points[n - 1]);
+    for i in 0..n { around.push(points[i]); }
+    around.push(points[0]);
+    polyline(&around, width, color, out);
+}
+
 /// The unit direction from point `i` to point `i + 1`, or zero where they coincide.
 fn direction(points: &Vec[Vec2], i: i32) -> Vec2 {
     let d = points[i + 1].sub(points[i]);

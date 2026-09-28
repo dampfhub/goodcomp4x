@@ -1,0 +1,47 @@
+//! Map icons.
+
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.test.assert;
+use std.test.Assert;
+use renderer.pipelines.MeshVertex;
+use game.hex.HEX_SIZE;
+use game.map_icons.IMPROVEMENT_SPOT;
+use game.map_icons.LANDMARK_SCALE;
+use game.map_icons.LANDMARK_SPOT;
+use game.map_icons.MAP_ICONS;
+use game.map_icons.MapIcon;
+use game.map_icons.RESOURCE_SPOT;
+use game.map_icons.push_map_icon;
+
+/// Whether `p` is inside the flat-top hexagon of `radius` around the origin.
+fn inside_hex(p: Vec2, radius: f32) -> bool {
+    let root3: f32 = 1.7320508;
+    let half_height = radius * root3 / 2.0;
+    let (ax, ay) = (if p.x < 0.0 { -p.x } else { p.x }, if p.y < 0.0 { -p.y } else { p.y });
+    ay <= half_height && root3 * ax + ay <= 2.0 * half_height
+}
+
+@test
+fn every_map_icon_stays_in_its_corner() {
+    // The unit token's reach: radius 0.36 plus half its outline.
+    let token = 0.39 * HEX_SIZE;
+    for k in 0..8 {
+        let icon = MAP_ICONS[k];
+        let (spot, scale) = match icon {
+            MapIcon.HorseHead | MapIcon.Ingot => (RESOURCE_SPOT, 1.0),
+            MapIcon.Ruins | MapIcon.FruitTree | MapIcon.StoneBlocks => (LANDMARK_SPOT, LANDMARK_SCALE),
+            _ => (IMPROVEMENT_SPOT, 1.0),
+        };
+        let mut out: Vec[MeshVertex] = Vec.new();
+        push_map_icon(spot, icon, scale, &mut out);
+        // Something is drawn, inside its hex, clear of the unit, and not sprawling.
+        assert(!out.is_empty());
+        for v in 0..out.len() {
+            let p = vec2(out[v].pos[0], out[v].pos[1]);
+            assert(inside_hex(p, HEX_SIZE));
+            assert(p.length() > token);
+            assert(p.distance(spot) < 0.25 * scale);
+        }
+    }
+}
