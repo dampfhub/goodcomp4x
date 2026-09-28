@@ -20,13 +20,27 @@ use crate::game::{
 };
 use crate::icon;
 use crate::persist;
-use crate::renderer::{DrawBatch, Renderer};
+use crate::renderer::{DrawBatch, Renderer, Vertex};
 use crate::screenshot::{self, Screenshot};
 
 /// Cap on the render loop's frame rate, so it doesn't load the GPU with
-/// frames the display can't show.
+/// frames the display can't show. Below it, frames come at the refresh rate
+/// of the monitor the window is on (`frame_duration`).
 const TARGET_FPS: u64 = 165;
 const FRAME_DURATION: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
+/// Never slower than this, whatever a monitor reports.
+const MIN_FPS: u32 = 30;
+
+/// The time between frames for `window`: its monitor's refresh rate, capped
+/// at `TARGET_FPS`.
+fn frame_duration(window: &Window) -> Duration {
+    let hertz = window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .map_or(TARGET_FPS as u32, |millihertz| millihertz.div_ceil(1000))
+        .clamp(MIN_FPS, TARGET_FPS as u32);
+    FRAME_DURATION.max(Duration::from_micros(1_000_000 / u64::from(hertz)))
+}
 const DRAG_THRESHOLD: f32 = 6.0;
 /// The window opens at this fraction of the primary monitor's size.
 const WINDOW_SCREEN_FRACTION: f32 = 0.8;
@@ -59,7 +73,14 @@ pub struct App {
     imgui_fonts: Option<[FontId; 3]>,
     imgui_layout: ImGuiLayoutState,
     use_imgui: bool,
+    /// The world's and the classic UI's vertices, kept between frames for
+    /// their memory (`redraw`).
+    world_vertices: Vec<Vertex>,
+    ui_vertices: Vec<Vertex>,
     last_frame: Option<Instant>,
+    /// The time between frames (`frame_duration`), found again when the
+    /// window moves, as it may have moved to another monitor.
+    frame_duration: Duration,
     minimized: bool,
     /// When to set the window's icons again (`ICON_REFRESH_DELAY` after it
     /// first shows), so the taskbar button picks them up.
@@ -164,9 +185,12 @@ impl App {
             imgui_platform: None,
             imgui_fonts: None,
             imgui_layout: ImGuiLayoutState::from_text(&layout),
+            world_vertices: Vec::new(),
+            ui_vertices: Vec::new(),
             use_imgui: saved.imgui,
 
             last_frame: None,
+            frame_duration: FRAME_DURATION,
             minimized: false,
             icon_refresh_at: None,
             cursor_pos: None,
@@ -300,12 +324,17 @@ impl App {
             self.game
                 .update_hover(self.cursor_pos, size, dt.as_secs_f32());
         }
-        let world = self.game.build_vertices();
-        let mut ui = if self.use_imgui {
-            Vec::new()
+        // The vertex buffers are kept from frame to frame: a scene is a few
+        // megabytes, and filling fresh memory each frame costs as much as
+        // building it.
+        let mut world = std::mem::take(&mut self.world_vertices);
+        self.game.build_vertices_into(&mut world);
+        let mut ui = std::mem::take(&mut self.ui_vertices);
+        if self.use_imgui {
+            ui.clear();
         } else {
-            self.game.build_ui(size, self.cursor_pos)
-        };
+            self.game.build_ui_into(size, self.cursor_pos, &mut ui);
+        }
         self.save_settings_if_changed();
         // The settings menu's Quit button.
         if self.game.quit_requested() {
@@ -358,6 +387,7 @@ impl App {
                 Some(shot) => shot.after_frame(renderer),
                 None => Ok(false),
             });
+        (self.world_vertices, self.ui_vertices) = (world, ui);
         match finished {
             Ok(false) => {}
             Ok(true) => {
@@ -516,6 +546,7 @@ impl ApplicationHandler for App {
                 return;
             }
         }
+        self.frame_duration = frame_duration(&window);
         self.window = Some(window);
         self.imgui = Some(imgui);
         self.imgui_platform = Some(imgui_platform);
@@ -547,6 +578,11 @@ impl ApplicationHandler for App {
                     renderer.wait_idle();
                 }
                 event_loop.exit();
+            }
+            WindowEvent::Moved(_) => {
+                if let Some(window) = &self.window {
+                    self.frame_duration = frame_duration(window);
+                }
             }
             WindowEvent::Resized(size) => {
                 self.minimized = size.width == 0 || size.height == 0;
@@ -909,7 +945,7 @@ impl ApplicationHandler for App {
 
         let next_frame_at = self
             .last_frame
-            .map_or_else(Instant::now, |t| t + FRAME_DURATION);
+            .map_or_else(Instant::now, |t| t + self.frame_duration);
         if Instant::now() >= next_frame_at {
             if self.screenshot.is_some() {
                 // A hidden window gets no redraw events, so draw right away.

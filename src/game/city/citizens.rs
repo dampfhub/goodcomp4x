@@ -1,9 +1,9 @@
 //! Citizens: labor focus, tile assignment (the manager and its workers),
 //! growth, and the end-of-turn economy tick.
-use std::collections::HashSet;
 
 use super::{Building, LaborFocus, MAX_CITY_POPULATION, delivered_share};
 use crate::game::GameState;
+use crate::game::fast_hash::HashSet;
 use crate::game::hex::Hex;
 
 impl GameState {
@@ -325,7 +325,7 @@ impl GameState {
     /// Each hospital treats two nearby survivors once per turn. Both health
     /// bars belong to the same unit, so a projected fighter benefits too.
     fn heal_at_hospitals(&mut self) {
-        let mut treated = std::collections::HashSet::new();
+        let mut treated = crate::game::fast_hash::HashSet::default();
         let hospitals: Vec<_> = self
             .cities
             .iter()

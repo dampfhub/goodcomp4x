@@ -1,8 +1,9 @@
 //! A deliberately minimal AI, playing every team but the player's.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use super::city::{Build, BuildUnit, Building, City};
+use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::unit::{Team, UnitType};
 use super::workers::{JobKind, WorkerJob};
@@ -320,7 +321,7 @@ impl GameState {
         }
         let is_target = |hex: &Hex| enemies.contains(hex) || open_ruins.contains(hex);
         // Search outward ring by ring, stopping at the first ring with a target.
-        let mut seen = HashSet::from([unit.pos]);
+        let mut seen = HashSet::from_iter([unit.pos]);
         let mut ring = vec![unit.pos];
         while !ring.is_empty() {
             if let Some(&hex) = ring
@@ -351,7 +352,7 @@ impl GameState {
     /// there. Searches outward from `target` only until every one of
     /// `wanted` is found; any it can't reach are left out.
     fn steps_to(&self, target: Hex, team: Team, wanted: &HashSet<Hex>) -> HashMap<Hex, i32> {
-        let mut distances = HashMap::from([(target, 0)]);
+        let mut distances = HashMap::from_iter([(target, 0)]);
         let mut queue = VecDeque::from([target]);
         let mut left = wanted.iter().filter(|hex| **hex != target).count();
         while let Some(hex) = queue.pop_front() {

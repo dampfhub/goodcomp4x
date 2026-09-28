@@ -23,7 +23,7 @@ README.md            what this is and how to run it
 Cargo.toml, build.rs crate manifest (rust-version 1.92); build.rs compiles shaders/ with glslc
 src/main.rs          logger, command line, event loop
 src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size)
-src/app.rs           App: window, input -> GameState calls, frame pacing (165 FPS), F5 fullscreen
+src/app.rs           App: window, input -> GameState calls, frame pacing (monitor rate, at most 165 FPS), F5 fullscreen
 src/screenshot.rs    screenshot mode: settle, read a frame back, write a PNG, quit
 src/icon.rs          window/taskbar icon (pixels from src/icon_art.rs)
 src/icon_art.rs      the icon drawn in code; build.rs also embeds it in the Windows exe
@@ -45,13 +45,21 @@ tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
 1. `game.update(dt)`: camera glide, effect ages, fog-of-war memory (`explore`), and, while a
    turn is resolving, the next step (or every step, with instant playback).
 2. `game.update_hover_imgui` or `game.update_hover`: which map hex the cursor rests on.
-3. `game.build_vertices()`: world geometry, drawn with `game.camera.view_proj(size)`.
+3. `game.build_vertices_into(buffer)`: world geometry, drawn with `game.camera.view_proj(size)`.
 4. The default ImGui presentation builds dockable windows from shared panel content. F11
-   selects the classic `game.build_ui(size, cursor)` presentation instead.
+   selects the classic `game.build_ui_into(size, cursor, buffer)` presentation instead.
 5. `renderer.draw_frame(&[world, optional classic UI], optional ImGui data)`.
 
-World and classic UI vertices are rebuilt from `GameState` each frame. ImGui retains window
+World and classic UI vertices are rebuilt from `GameState` each frame, into buffers `App`
+keeps between frames (a busy map is over 100k vertices, and filling fresh memory each frame cost
+as much as building it). Per-hex layers draw only hexes the camera may show (`may_show`,
+`draw.rs`); map icons and unit pictograms are triangulated once and then placed
+(`mesh::place`). ImGui retains window
 layout state so the player's panel positions survive view changes.
+
+`cargo test --release perf_report -- --ignored --nocapture` (`src/game/perf.rs`) times each
+stage of a frame and a turn on a busy six-AI world; run it before and after a change that might
+cost frame time.
 While a city interior is open, `build_vertices` draws its tactical grid and
 copies in place of the exterior world; the exterior camera is restored on exit.
 

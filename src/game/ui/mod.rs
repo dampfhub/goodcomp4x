@@ -485,12 +485,21 @@ fn roster_target(key: RosterKey, mode: ClickMode) -> Target {
 impl GameState {
     /// The UI as a triangle list in UI pixels. `cursor` is in window pixels
     /// with the origin at the top-left.
+    #[cfg(test)]
     pub fn build_ui(&self, screen_size: Vec2, cursor: Option<Vec2>) -> Vec<Vertex> {
+        let mut out = Vec::new();
+        self.build_ui_into(screen_size, cursor, &mut out);
+        out
+    }
+
+    /// `build_ui` into `out`, cleared first, reusing its memory from frame
+    /// to frame.
+    pub fn build_ui_into(&self, screen_size: Vec2, cursor: Option<Vec2>, out: &mut Vec<Vertex>) {
+        out.clear();
         let (layout, over_ui) = self.layout_with_hover(screen_size, cursor);
         let point = cursor.map(|c| to_ui(c, screen_size));
         let hovered = point.and_then(|p| layout.button_at(p)).map(|b| b.target);
 
-        let mut out = Vec::new();
         // The settings menu (and anything placed after it) is a layer of
         // its own over the rest.
         let (shapes_split, buttons_split) = layout
@@ -499,7 +508,7 @@ impl GameState {
         let (under_shapes, over_shapes) = layout.shapes.split_at(shapes_split);
         let (under_buttons, over_buttons) = layout.buttons.split_at(buttons_split);
         for shape in under_shapes {
-            draw_shape(shape, &mut out);
+            draw_shape(shape, out);
         }
         if let Some(&(min, max, _)) = point.and_then(|p| {
             layout
@@ -507,27 +516,26 @@ impl GameState {
                 .iter()
                 .find(|&&(min, max, _)| contains(min, max, p))
         }) {
-            draw_chip_hover(min, max, &mut out);
+            draw_chip_hover(min, max, out);
         }
         for button in under_buttons {
-            draw_button(button, hovered == Some(button.target), &mut out);
+            draw_button(button, hovered == Some(button.target), out);
         }
         for shape in over_shapes {
-            draw_shape(shape, &mut out);
+            draw_shape(shape, out);
         }
         for button in over_buttons {
-            draw_button(button, hovered == Some(button.target), &mut out);
+            draw_button(button, hovered == Some(button.target), out);
         }
         if let Some(button) = hovered.and_then(|t| layout.buttons.iter().find(|b| b.target == t)) {
-            self.draw_tooltip(button, &layout, screen_size, &mut out);
+            self.draw_tooltip(button, &layout, screen_size, out);
         }
         if let (Some(point), Some(hex)) = (point, self.hovered_tile)
             && self.hover_seconds >= TILE_TOOLTIP_DELAY
             && !over_ui
         {
-            self.draw_tile_tooltip(hex, point, screen_size, &mut out);
+            self.draw_tile_tooltip(hex, point, screen_size, out);
         }
-        out
     }
 
     /// Build persistent and hover panels through the same dock, so visible

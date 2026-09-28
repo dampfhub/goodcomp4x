@@ -10,9 +10,8 @@
 //!
 //! A debug setting (F10) turns the fog off. The AI ignores it.
 
-use std::collections::{HashMap, HashSet};
-
 use super::city::{BARRACKS_MAX_HP, Building, Routes};
+use super::fast_hash::{HashMap, HashSet};
 use super::hex::{Hex, edge};
 use super::terrain::Terrain;
 use super::unit::{Team, Unit};
@@ -131,7 +130,7 @@ impl GameState {
     /// citizen off it (`remembered_worked`), so an enemy that ends a turn on
     /// a worked tile doesn't vanish when the city reassigns the citizen.
     fn visible_hexes(&self) -> HashSet<Hex> {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut look = |from: Hex, range: i32| {
             for dq in -range..=range {
                 for dr in (-range).max(-dq - range)..=range.min(-dq + range) {

@@ -6,10 +6,11 @@
 //! (`advance_queues`). A unit following a queue doesn't hold up ending the
 //! turn, and any other order cancels its queue.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use super::GameState;
 use super::city::turns_icon;
+use super::fast_hash::{HashMap, HashSet};
 use super::fog::Fog;
 use super::hex::Hex;
 use super::turn::{Phase, step_rank};
@@ -211,7 +212,7 @@ impl GameState {
         fog: &Fog,
         naval: bool,
     ) -> HashMap<Hex, i32> {
-        let mut steps = HashMap::from([(target, 0)]);
+        let mut steps = HashMap::from_iter([(target, 0)]);
         let mut frontier = VecDeque::from([target]);
         while let Some(hex) = frontier.pop_front() {
             let next = steps[&hex] + 1;
