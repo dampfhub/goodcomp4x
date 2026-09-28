@@ -94,7 +94,7 @@ impl GameState {
             ClickMode::Attack => self.group_attack(hex),
             ClickMode::Move | ClickMode::Normal => self.group_move(hex),
             ClickMode::QueueMove => {
-                self.queue_move(hex);
+                self.queue_or_unqueue_move(hex);
             }
             ClickMode::QueueAttack => {
                 self.queue_attack(hex);

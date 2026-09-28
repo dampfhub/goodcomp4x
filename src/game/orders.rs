@@ -35,8 +35,9 @@ pub enum ClickMode {
     /// Ctrl-left-click: swap places with the clicked adjacent ally, or with
     /// several units selected, take the clicked one out of the selection.
     Swap,
-    /// Shift-left-click: add the turns moving to the hex to the queue, or on
-    /// one of the player's units, add it to the selection.
+    /// Shift-left-click: add the turns moving to the hex to the queue; on one
+    /// of the player's units, add it to the selection; on a move the
+    /// selection already plans (a queued stop, a ghost), take it off.
     QueueMove,
     /// Shift-right-click: add an attack on the hex to the queue.
     QueueAttack,
@@ -229,7 +230,7 @@ impl GameState {
             // Queuing never moves selection on: the player keeps adding
             // turns until they let go of the unit.
             (ClickMode::QueueMove, _) => {
-                self.queue_move(hex);
+                self.queue_or_unqueue_move(hex);
             }
             (ClickMode::QueueAttack, _) => {
                 self.queue_attack(hex);

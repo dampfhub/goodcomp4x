@@ -275,6 +275,16 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   plan: a member that had three turns queued, with a limit of 6, ends up with nine, and one
   that had none moves for six turns and then waits for it. An attack goes in at the end of the group's plans, which members
   with shorter plans reach by waiting.
+- **Taking a move off:** a Shift-left-click on a hex the selection plans to move onto (a
+  numbered stop of a queue, or a ghost, this turn's included) takes that move off instead of
+  queuing, with every turn after it (each turn starts where the one before ended, so the later
+  ones would start from the wrong hex); the turns before it stay. The turn keeps its attack if
+  it's still in range from where the unit then stands; a later turn left with nothing goes too.
+  If moves onto the hex come on several turns (or from several group members), the latest goes
+  first; a tie goes to the first member selected. In a group, the member waits out the turns it
+  lost, so its plan stays as long as the others'. A Shift-click on one of the player's units
+  still adds it to the selection, and anywhere else still queues (`unqueue_move`). A plan left
+  with nothing is no plan: the unit needs orders again.
 - Queuing never moves selection on, so a unit (or group) can be given several turns in a row.
 - **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
   turn and every turn it has queued orders for.
