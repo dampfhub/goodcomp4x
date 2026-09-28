@@ -8,14 +8,20 @@ use std.rand.Rand;
 use std.rand.unit;
 use game.ability.Ability;
 use game.hex.HexGrid;
-use game.terrain.Terrain;
 use game.unit.Unit;
 
-/// Damage `attacker` deals to `target` in one blow. The variance is one draw of `Rand`, so a
-/// seeded handler makes a blow reproducible.
-pub fn roll_damage(attacker: &Unit, target: &Unit, grid: &HexGrid) -> f32 can {Rand} {
-    let defense = target.stats().defense * grid.terrain(target.pos).defense_multiplier();
-    let base = 30.0 * ((attacker.stats().attack - defense) * 0.04).exp();
+/// Damage `attacker` deals to `target` in one blow, with `defense_multiplier` the terrain and
+/// fort bonus on the target. The variance is one draw of `Rand`, so a seeded handler makes a
+/// blow reproducible.
+pub fn roll_damage(attacker: &Unit, target: &Unit, defense_multiplier: f32) -> f32 can {Rand} {
+    let defense = target.stats().defense * defense_multiplier;
+    roll_damage_against(attacker.stats().attack, defense)
+}
+
+/// Damage for attacks involving a static structure. Its listed defense already includes its
+/// fortification, so terrain does not modify it again.
+pub fn roll_damage_against(attack: f32, defense: f32) -> f32 can {Rand} {
+    let base = 30.0 * ((attack - defense) * 0.04).exp();
     let variance = 0.8 + 0.4 * unit() as f32;
     clamp(base * variance, 1.0, 100.0)
 }
@@ -25,9 +31,11 @@ pub fn draws_retaliation(attacker: &Unit) -> bool { attacker.unit_type.stats().a
 
 /// Combat-relevant conditions on `unit`, like ` (on hills, shield wall)`, for combat log lines.
 /// Renders nothing when there are none.
-pub fn show_note(unit: &Unit, grid: &HexGrid) can {Out} {
+pub fn show_note(unit: &Unit, grid: &HexGrid, in_fort: bool) can {Out} {
     let mut any = false;
-    if grid.terrain(unit.pos) == Terrain.Hills { any = note(any, "on hills"); }
+    if in_fort { any = note(any, "in a fort"); }
+    if grid.tile(unit.pos).feature.is_some() { any = note(any, "under cover"); }
+    if grid.tile(unit.pos).hills { any = note(any, "on hills"); }
     if unit.deployed { any = note(any, "deployed"); }
     if unit.ability_queued {
         match unit.ability() {

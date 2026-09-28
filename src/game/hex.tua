@@ -1,5 +1,6 @@
-//! Flat-top hexes in axial coordinates, and the hexagon-shaped grid the map is. The math
-//! follows <https://www.redblobgames.com/grids/hexagons/>.
+//! Flat-top hexes in axial coordinates, and the grid the map is: its shape, tiles, rivers,
+//! resources and special tiles. The math follows
+//! <https://www.redblobgames.com/grids/hexagons/>.
 
 use std.collections.Key;
 use std.collections.Map;
@@ -13,7 +14,11 @@ use std.linalg.vec2;
 use std.math.Float;
 use std.math.max;
 use std.math.min;
+use std.collections.Set;
+use game.terrain.Resource;
+use game.terrain.Special;
 use game.terrain.Terrain;
+use game.terrain.Tile;
 
 /// Center-to-corner radius of a hex, in world units.
 pub const HEX_SIZE: f32 = 1.0;
@@ -49,7 +54,7 @@ impl Hex {
 
     /// Rounds fractional axial coordinates via cube coordinates (q + r + s = 0): round all
     /// three, then recompute whichever drifted most from the others.
-    fn round(q: f32, r: f32) -> Hex {
+    pub fn round(q: f32, r: f32) -> Hex {
         let s = -q - r;
         let mut rq = q.round();
         let mut rr = r.round();
@@ -79,6 +84,19 @@ impl Hex {
             Hex.new(self.q, self.r + 1),
         ]
     }
+
+    /// The hexes strictly between `self` and `other` along the straight line joining their
+    /// centers. Where the line runs exactly along an edge it could pass either side; `nudge` (a
+    /// small offset, positive or negative) picks one.
+    pub fn line_between(self, other: Hex, nudge: f32) can {View[Hex]} {
+        let steps = self.distance(other);
+        let (q0, r0) = (self.q as f32 + nudge, self.r as f32 + nudge);
+        let (dq, dr) = ((other.q - self.q) as f32, (other.r - self.r) as f32);
+        for i in 1..steps {
+            let t = i as f32 / steps as f32;
+            View.view(&Hex.round(q0 + dq * t, r0 + dr * t - 2.0 * nudge));
+        }
+    }
 }
 
 impl Eq for Hex {
@@ -90,37 +108,181 @@ impl Key for Hex {
     fn eq(self, other: Hex) -> bool { self.q == other.q && self.r == other.r }
 }
 
-/// A hexagon-shaped grid of hexes within `radius` of the origin. Hexes not listed in
-/// `terrain` are plains.
+/// The outline of a grid, centered on the origin.
+pub enum GridShape {
+    /// Every hex within the radius of the origin.
+    Hexagon(i32),
+    /// Columns `-cols..=cols` and rows reaching `rows` hexes above and below the middle
+    /// (`Rectangle(cols, rows)`), so the map is a rectangle wider than tall with a slightly ragged
+    /// top and bottom edge.
+    Rectangle(i32, i32),
+}
+
+/// The edge between two adjacent hexes, the same whichever way round they're given (`edge`):
+/// `a` sorts before `b` by `(q, r)`.
+pub struct Edge { a: Hex, b: Hex }
+
+impl Eq for Edge {
+    fn eq(self, other: Edge) -> bool { self.a == other.a && self.b == other.b }
+}
+
+impl Key for Edge {
+    fn hash(self) -> i64 { mix(mix(mix(mix(0, self.a.q as i64), self.a.r as i64), self.b.q as i64), self.b.r as i64) }
+    fn eq(self, other: Edge) -> bool { self.a == other.a && self.b == other.b }
+}
+
+/// The edge between two adjacent hexes, the same whichever way round they're given.
+pub fn edge(a: Hex, b: Hex) -> Edge {
+    if a.q < b.q || (a.q == b.q && a.r <= b.r) { Edge { a, b } } else { Edge { a: b, b: a } }
+}
+
+/// The two ends of the edge between adjacent hexes `a` and `b`. Each end is a corner shared
+/// with one of the two hexes next to both, which sits at the middle of the three centers.
+pub fn edge_corners(a: Hex, b: Hex) -> (Vec2, Vec2) {
+    let around = a.neighbors();
+    let mut corners: [Vec2; 2] = [vec2(0.0, 0.0), vec2(0.0, 0.0)];
+    let mut found = 0;
+    for i in 0..6 {
+        let c = around[i];
+        if c.distance(b) == 1 && found < 2 {
+            corners[found] = a.to_world().add(b.to_world()).add(c.to_world()).scale(1.0 / 3.0);
+            found = found + 1;
+        }
+    }
+    (corners[0], corners[1])
+}
+
+/// A grid of hexes in some `GridShape`. Hexes not listed in `tiles` are plains. Rivers run along
+/// the edges between hexes.
 pub struct HexGrid {
-    radius: i32,
-    terrain: Map[Hex, Terrain],
+    shape: GridShape,
+    tiles: Map[Hex, Tile],
+    /// Hex edges with a river (see `edge`).
+    rivers: Set[Edge],
+    /// Strategic resources on hexes.
+    resources: Map[Hex, Resource],
+    /// Special high-yield tiles (`Special`).
+    specials: Map[Hex, Special],
 }
 
 impl HexGrid {
-    pub fn new(radius: i32, terrain: &[(Hex, Terrain)]) -> HexGrid {
-        let mut grid = HexGrid { radius, terrain: Map.new() };
-        for i in 0..terrain.len() {
-            let (hex, kind) = terrain[i];
-            grid.terrain.insert(hex, kind);
+    /// A hexagon of `radius`.
+    pub fn new(radius: i32, tiles: &[(Hex, Tile)]) -> HexGrid {
+        HexGrid.shaped(GridShape.Hexagon(radius), tiles)
+    }
+
+    pub fn shaped(shape: GridShape, tiles: &[(Hex, Tile)]) -> HexGrid {
+        let mut map: Map[Hex, Tile] = Map.new();
+        for i in 0..tiles.len() {
+            let (hex, tile) = tiles[i];
+            let _old = map.insert(hex, tile);
+        }
+        HexGrid.from_tiles(shape, map)
+    }
+
+    /// A grid of `shape` with `tiles` (hexes left out are plains).
+    pub fn from_tiles(shape: GridShape, tiles: Map[Hex, Tile]) -> HexGrid {
+        HexGrid { shape, tiles, rivers: Set.new(), resources: Map.new(), specials: Map.new() }
+    }
+
+    /// A hexagon of `radius` with strategic resources placed on it.
+    pub fn with_resources(radius: i32, tiles: &[(Hex, Tile)], resources: &[(Hex, Resource)]) -> HexGrid {
+        let mut grid = HexGrid.new(radius, tiles);
+        for i in 0..resources.len() {
+            let (hex, resource) = resources[i];
+            let _old = grid.resources.insert(hex, resource);
         }
         grid
     }
 
-    pub fn contains(&self, hex: Hex) -> bool { hex.distance(Hex.new(0, 0)) <= self.radius }
+    pub fn set_rivers(&mut self, rivers: Set[Edge]) { self.rivers = rivers; }
 
-    pub fn terrain(&self, hex: Hex) -> Terrain { self.terrain.get(hex).unwrap_or(Terrain.Plains) }
+    pub fn shape(&self) -> GridShape { self.shape }
+
+    pub fn contains(&self, hex: Hex) -> bool { self.edge_distance(hex) >= 0 }
+
+    /// How many hexes in from the edge `hex` is: 0 on the outermost ring, negative off the
+    /// grid.
+    pub fn edge_distance(&self, hex: Hex) -> i32 {
+        match self.shape {
+            GridShape.Hexagon(radius) => radius - hex.distance(Hex.new(0, 0)),
+            GridShape.Rectangle(cols, rows) => {
+                // Doubled rows: 2r + q is even in even columns, odd in odd ones.
+                let row2 = 2 * hex.r + hex.q;
+                min(cols - hex.q.abs(), div_euclid(2 * rows - row2.abs(), 2))
+            }
+        }
+    }
+
+    /// The whole tile: ground, hills and feature.
+    pub fn tile(&self, hex: Hex) -> Tile { self.tiles.get(hex).unwrap_or(Tile.of(Terrain.Plains)) }
+
+    /// Just the ground, without hills or feature.
+    pub fn terrain(&self, hex: Hex) -> Terrain { self.tile(hex).terrain }
+
+    /// Every river edge.
+    pub fn rivers(&self) can {View[Edge]} {
+        for e in self.rivers.each() { View.view(e); }
+    }
+
+    pub fn has_river(&self, a: Hex, b: Hex) -> bool { self.rivers.contains(edge(a, b)) }
+
+    /// Land beside a river or a lake. Fresh water adds food.
+    pub fn has_fresh_water(&self, hex: Hex) -> bool {
+        if self.terrain(hex).is_water() { return false; }
+        let around = hex.neighbors();
+        for i in 0..6 {
+            let n = around[i];
+            if self.has_river(hex, n) || (self.contains(n) && self.terrain(n) == Terrain.Lake) { return true; }
+        }
+        false
+    }
+
+    pub fn resource(&self, hex: Hex) -> Option[Resource] { self.resources.get(hex) }
+
+    pub fn set_resource(&mut self, hex: Hex, resource: Resource) { let _old = self.resources.insert(hex, resource); }
+
+    pub fn special(&self, hex: Hex) -> Option[Special] { self.specials.get(hex) }
+
+    pub fn set_special(&mut self, hex: Hex, special: Special) { let _old = self.specials.insert(hex, special); }
 
     /// On the grid and not blocked by terrain (units aside).
     pub fn is_passable(&self, hex: Hex) -> bool { self.contains(hex) && self.terrain(hex).is_passable() }
 
     /// Every hex of the grid, column by column.
     pub fn hexes(&self) can {View[Hex]} {
-        let n = self.radius;
-        for q in -n..=n {
-            for r in max(-n, -q - n)..=min(n, -q + n) {
-                View.view(&Hex.new(q, r));
+        // The bounding box of either shape, filtered down to the shape.
+        let (q_max, r_max) = match self.shape {
+            GridShape.Hexagon(radius) => (radius, radius),
+            GridShape.Rectangle(cols, rows) => (cols, rows + cols / 2 + 1),
+        };
+        for q in -q_max..=q_max {
+            for r in -r_max..=r_max {
+                let h = Hex.new(q, r);
+                if self.contains(h) { View.view(&h); }
             }
         }
     }
+
+    /// A copy of the grid, for a savestate.
+    pub fn snapshot(&self) -> HexGrid {
+        let mut out = HexGrid.from_tiles(self.shape, Map.new());
+        for i in 0..self.tiles.len() {
+            if let (Option.Some(k), Option.Some(v)) = (self.tiles.key_at(i), self.tiles.val_at(i)) { let _old = out.tiles.insert(k, v); }
+        }
+        for e in self.rivers.each() { let _new = out.rivers.insert(*e); }
+        for i in 0..self.resources.len() {
+            if let (Option.Some(k), Option.Some(v)) = (self.resources.key_at(i), self.resources.val_at(i)) { let _old = out.resources.insert(k, v); }
+        }
+        for i in 0..self.specials.len() {
+            if let (Option.Some(k), Option.Some(v)) = (self.specials.key_at(i), self.specials.val_at(i)) { let _old = out.specials.insert(k, v); }
+        }
+        out
+    }
+}
+
+/// `a` divided by a positive `b`, rounded toward negative infinity.
+fn div_euclid(a: i32, b: i32) -> i32 {
+    let q = a / b;
+    if a % b < 0 { q - 1 } else { q }
 }

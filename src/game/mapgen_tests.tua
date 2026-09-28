@@ -1,0 +1,344 @@
+//! The world generator (`mapgen.tua`) and the tiles it lays (`terrain.tua`).
+
+use std.collections.Map;
+use std.linalg.vec2;
+use std.math.Float;
+use std.test.assert;
+use std.test.Assert;
+use game.hex.Edge;
+use game.hex.GridShape;
+use game.hex.Hex;
+use game.mapgen.GeneratedMap;
+use game.mapgen.MAX_ISLAND;
+use game.mapgen.components;
+use game.mapgen.distances_to_starts;
+use game.mapgen.generate;
+use game.mapgen.walking_distances;
+use game.mapgen.within;
+use game.mapgen.world_shape;
+use game.terrain.Feature;
+use game.terrain.Resource;
+use game.terrain.Terrain;
+use game.terrain.Tile;
+use std.collections.Set;
+use std.str.Str;
+use std.str.eq as str_eq;
+
+@test
+fn hills_and_features_modify_the_ground() {
+    let desert_hills = Tile { terrain: Terrain.Desert, hills: true, feature: Option.None };
+    assert(pair_is(desert_hills.yields(), 0, 2));
+    assert(named(desert_hills.name(), "DESERT HILLS"));
+    let forested_hills = Tile { terrain: Terrain.Plains, hills: true, feature: Option.Some(Feature.Forest) };
+    assert(pair_is(forested_hills.yields(), 1, 3));
+    assert(forested_hills.route_cost() == 4);
+    assert((forested_hills.defense_multiplier() - 1.4).abs() < 0.000001);
+    assert(named(forested_hills.name(), "PLAINS HILLS + FOREST"));
+    let jungle = Tile { terrain: Terrain.Marsh, hills: false, feature: Option.Some(Feature.Jungle) };
+    assert(pair_is(jungle.yields(), 2, 1));
+}
+
+fn named(name: Str, want: str) -> bool { str_eq(&name, want) }
+
+fn pair_is(p: (i32, i32), a: i32, b: i32) -> bool {
+    let (x, y) = p;
+    x == a && y == b
+}
+
+/// Whether two maps have the same tiles, resources, special tiles, rivers, starts and ruins.
+fn same_map(a: &GeneratedMap, b: &GeneratedMap) -> bool {
+    let mut same = a.starts.len() == b.starts.len() && a.ruins.len() == b.ruins.len();
+    for i in 0..a.starts.len() { if same && a.starts[i] != b.starts[i] { same = false; } }
+    for i in 0..a.ruins.len() { if same && a.ruins[i] != b.ruins[i] { same = false; } }
+    for hh in a.grid.hexes() {
+        let h = *hh;
+        if a.grid.tile(h) != b.grid.tile(h) || a.grid.resource(h) != b.grid.resource(h) || a.grid.special(h) != b.grid.special(h) {
+            same = false;
+        }
+    }
+    let mut rivers = 0;
+    for e in a.grid.rivers() {
+        rivers = rivers + 1;
+        if !b.grid.has_river((*e).a, (*e).b) { same = false; }
+    }
+    let mut others = 0;
+    for e in b.grid.rivers() { if (*e).a != (*e).b { others = others + 1; } }
+    same && rivers == others
+}
+
+/// Whether the tiles alone are the same.
+fn same_tiles(a: &GeneratedMap, b: &GeneratedMap) -> bool {
+    let mut same = true;
+    for hh in a.grid.hexes() {
+        if a.grid.tile(*hh) != b.grid.tile(*hh) { same = false; }
+    }
+    same
+}
+
+@test
+fn a_seed_always_builds_the_same_map() {
+    let a = generate(7, 5);
+    let b = generate(7, 5);
+    assert(same_map(&a, &b));
+    assert(!same_tiles(&a, &generate(8, 5)));
+}
+
+/// The spacing a map's starts aim for (see `pick_starts`).
+fn spacing(map: &GeneratedMap) -> f32 {
+    let (all, land) = hexes_and_land(map);
+    let masses = components(&all, &land);
+    let mut biggest = 0;
+    for m in 0..masses.len() { if masses[m].len() > biggest { biggest = masses[m].len(); } }
+    1.075 * (biggest as f32 / map.starts.len() as f32).sqrt()
+}
+
+/// Every hex of the map, and the passable ones.
+fn hexes_and_land(map: &GeneratedMap) -> (Vec[Hex], Set[Hex]) {
+    let mut all: Vec[Hex] = Vec.new();
+    let mut land = Set.new();
+    for hh in map.grid.hexes() {
+        all.push(*hh);
+        if map.grid.is_passable(*hh) { let _new = land.insert(*hh); }
+    }
+    (all, land)
+}
+
+@test
+fn every_side_gets_a_start_neither_crowded_nor_isolated() {
+    let side_counts: [i32; 3] = [2, 5, 7];
+    for s in 0..3 {
+        let sides = side_counts[s];
+        for seed in 0..8 {
+            let map = generate(seed as u32, sides);
+            assert(map.starts.len() == sides);
+            let (all, passable) = hexes_and_land(&map);
+            let masses = components(&all, &passable);
+            let mut home = 0;
+            for m in 0..masses.len() { if masses[m].contains(map.starts[0]) { home = m; } }
+            let spacing = spacing(&map);
+            for i in 0..sides {
+                let a = map.starts[i];
+                assert(map.grid.is_passable(a));
+                assert(masses[home].contains(a));
+                let mut nearest: f32 = 3.40282347e38;
+                for j in 0..sides {
+                    if j != i {
+                        let d = a.distance(map.starts[j]) as f32;
+                        if d < nearest { nearest = d; }
+                    }
+                }
+                if sides > 1 {
+                    let low = if 0.45 * spacing > 4.0 { 0.45 * spacing } else { 4.0 };
+                    assert(nearest >= low);
+                    assert(nearest <= 2.0 * spacing);
+                }
+            }
+        }
+    }
+}
+
+@test
+fn every_start_has_horses_and_iron_close_by() {
+    for seed in 0..8 {
+        let map = generate(seed as u32, 6);
+        for i in 0..map.starts.len() {
+            let start = map.starts[i];
+            let kinds: [Resource; 2] = [Resource.Horses, Resource.Iron];
+            for k in 0..2 {
+                let spot = own_resource(&map, i, kinds[k]);
+                assert(spot.is_some());
+                if let Option.Some(h) = spot {
+                    // Not under the city.
+                    assert(h.distance(start) >= 2);
+                    assert(map.grid.is_passable(h));
+                }
+            }
+        }
+    }
+}
+
+/// The first hex within 5 of start `i` holding `resource` and nearer it than any other start.
+fn own_resource(map: &GeneratedMap, i: i32, resource: Resource) -> Option[Hex] {
+    let start = map.starts[i];
+    let mut own: Option[Hex] = Option.None;
+    for hh in within(start, 5) {
+        let h = *hh;
+        let mut nearest = true;
+        for j in 0..map.starts.len() {
+            if j != i && !(h.distance(map.starts[j]) > h.distance(start)) { nearest = false; }
+        }
+        if own.is_none() && map.grid.resource(h) == Option.Some(resource) && nearest { own = Option.Some(h); }
+    }
+    own
+}
+
+/// Whether `hex` is contested ground: on land off the edge, reachable from every start, at
+/// least `near` from the nearest and about as far from the second (`slack`).
+fn contested(map: &GeneratedMap, distances: &Vec[Map[Hex, i32]], hex: Hex, near: i32, slack: i32) -> bool {
+    if !map.grid.is_passable(hex) || map.grid.edge_distance(hex) < 2 { return false; }
+    let found = distances_to_starts(distances, hex);
+    let Option.Some(steps) = found else { return false; };
+    steps[0] >= near && steps[1] - steps[0] <= slack + steps[0] / 8
+}
+
+@test
+fn ruins_and_special_tiles_lie_between_starts_and_near_none() {
+    let mut ruins = 0;
+    let mut specials = 0;
+    for seed in 0..8 {
+        let map = generate(seed as u32, 5);
+        let mut distances: Vec[Map[Hex, i32]] = Vec.new();
+        for i in 0..map.starts.len() { distances.push(walking_distances(&map.grid, map.starts[i])); }
+        let spacing = spacing(&map);
+        let ruin_near = if ((spacing * 0.35) as i32) > 5 { (spacing * 0.35) as i32 } else { 5 };
+        for r in 0..map.ruins.len() {
+            assert(contested(&map, &distances, map.ruins[r], ruin_near, 1));
+        }
+        let special_near = if ((spacing * 0.3) as i32) > 4 { (spacing * 0.3) as i32 } else { 4 };
+        let mut special_hexes: Vec[Hex] = Vec.new();
+        for hh in map.grid.hexes() {
+            if map.grid.special(*hh).is_some() { special_hexes.push(*hh); }
+        }
+        for k in 0..special_hexes.len() {
+            let h = special_hexes[k];
+            assert(contested(&map, &distances, h, special_near, 3));
+            for r in 0..map.ruins.len() { assert(map.ruins[r].distance(h) >= 3); }
+        }
+        specials = specials + special_hexes.len();
+        ruins = ruins + map.ruins.len();
+    }
+    // About one ruin and one special tile per side.
+    assert(ruins >= 16);
+    assert(specials >= 16);
+}
+
+fn area(sides: i32) -> i32 {
+    match world_shape(sides) {
+        GridShape.Rectangle(cols, rows) => cols * rows,
+        GridShape.Hexagon(radius) => radius * radius,
+    }
+}
+
+@test
+fn the_world_grows_with_the_players() {
+    // Three players' worth at least.
+    assert(area(1) == area(3));
+    assert(area(7) > area(5) && area(5) > area(4) && area(4) > area(3));
+    // Each side gets about as much room however many there are.
+    let per_side_6 = area(6) as f32 / 6.0;
+    let per_side_4 = area(4) as f32 / 4.0;
+    assert((per_side_6 / per_side_4 - 1.0).abs() < 0.1);
+    // Six sides get well over the base world.
+    assert(area(6) as f32 > 2.2 * (30 * 18) as f32);
+}
+
+@test
+fn the_land_is_one_continent_with_only_small_islands() {
+    for seed in 0..8 {
+        let map = generate(seed as u32, 4);
+        let mut all: Vec[Hex] = Vec.new();
+        let mut dry = Set.new();
+        for hh in map.grid.hexes() {
+            all.push(*hh);
+            if !map.grid.terrain(*hh).is_water() { let _new = dry.insert(*hh); }
+        }
+        let masses = components(&all, &dry);
+        let mut biggest = 0;
+        for m in 1..masses.len() { if masses[m].len() > masses[biggest].len() { biggest = m; } }
+        assert(masses[biggest].len() > 600);
+        for m in 0..masses.len() { if m != biggest { assert(masses[m].len() <= MAX_ISLAND); } }
+        for i in 0..map.starts.len() { assert(masses[biggest].contains(map.starts[i])); }
+    }
+}
+
+@test
+fn the_world_is_wider_than_tall() {
+    let map = generate(1, 4);
+    let mut extent = vec2(0.0, 0.0);
+    let mut count = 0;
+    for hh in map.grid.hexes() {
+        extent = extent.max((*hh).to_world().abs());
+        count = count + 1;
+    }
+    assert(extent.x > 1.3 * extent.y);
+    assert(count > 2000);
+}
+
+@test
+fn rivers_run_between_adjacent_land_hexes() {
+    let mut total = 0;
+    for seed in 0..8 {
+        let map = generate(seed as u32, 4);
+        let mut edges: Vec[Edge] = Vec.new();
+        for river in map.grid.rivers() { edges.push(*river); }
+        for k in 0..edges.len() {
+            let e = edges[k];
+            assert(e.a.distance(e.b) == 1);
+            assert(!map.grid.terrain(e.a).is_water() && !map.grid.terrain(e.b).is_water());
+            assert(map.grid.has_fresh_water(e.a) && map.grid.has_fresh_water(e.b));
+        }
+        total = total + edges.len();
+    }
+    // Rivers should be common.
+    assert(total > 30);
+}
+
+/// A slot per ground.
+fn kind_slot(terrain: Terrain) -> i32 {
+    match terrain {
+        Terrain.Grassland => 0,
+        Terrain.Plains => 1,
+        Terrain.Desert => 2,
+        Terrain.Tundra => 3,
+        Terrain.Snow => 4,
+        Terrain.Marsh => 5,
+        Terrain.Mountains => 6,
+        Terrain.Coast => 7,
+        Terrain.Ocean => 8,
+        Terrain.Lake => 9,
+    }
+}
+
+@test
+fn maps_mix_every_kind_of_tile() {
+    // A slot per ground, then forest, jungle and forested hills.
+    let mut grounds: [bool; 13] = [false, false, false, false, false, false, false, false, false, false, false, false, false];
+    let mut hilly: [bool; 10] = [false, false, false, false, false, false, false, false, false, false];
+    let mut water = 0;
+    let mut hexes = 0;
+    for seed in 0..10 {
+        let map = generate(seed as u32, 4);
+        let mut tiles: Vec[Tile] = Vec.new();
+        for hh in map.grid.hexes() { tiles.push(map.grid.tile(*hh)); }
+        for k in 0..tiles.len() {
+            let tile = tiles[k];
+            let slot = kind_slot(tile.terrain);
+            if tile.hills {
+                // Hills are land.
+                assert(tile.terrain.is_passable());
+                hilly[slot] = true;
+            }
+            match tile.feature {
+                Option.Some(Feature.Jungle) => {
+                    assert(tile.terrain == Terrain.Marsh);
+                    grounds[11] = true;
+                }
+                Option.Some(Feature.Forest) => {
+                    assert(tile.terrain == Terrain.Grassland || tile.terrain == Terrain.Plains || tile.terrain == Terrain.Tundra);
+                    grounds[10] = true;
+                    if tile.hills { grounds[12] = true; }
+                }
+                Option.None => {}
+            }
+            grounds[slot] = true;
+            if tile.terrain.is_water() { water = water + 1; }
+            hexes = hexes + 1;
+        }
+    }
+    // Every ground, forest, jungle and forested hills turn up in 10 maps.
+    for i in 0..13 { assert(grounds[i]); }
+    // So do grassland, plains, desert and tundra hills.
+    for i in 0..4 { assert(hilly[i]); }
+    let share = water as f32 / hexes as f32;
+    assert(share >= 0.35 && share < 0.65);
+}

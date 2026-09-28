@@ -1,26 +1,216 @@
-//! What a hex is made of.
+//! Tiles: a base terrain, optionally raised into hills and covered by a feature (forest or
+//! jungle). Together they set what a hex yields when worked, whether units can enter it, what
+//! it costs to carry goods through, and how it helps a unit defending on it. Yields are
+//! first-pass numbers, meant to be tuned.
 
+use std.core.Eq;
+use std.fmt.Show;
+use std.str.Str;
+use std.str.push;
+use std.str.to_owned;
+
+/// The ground a tile is made of.
 pub enum Terrain {
+    /// Lush, food-rich lowland.
+    Grassland,
     Plains,
-    /// High ground: units standing here defend better.
-    Hills,
+    /// Dry and poor, unless fresh water is next to it.
+    Desert,
+    /// Cold, thin land toward the poles.
+    Tundra,
+    /// Frozen waste: yields nothing.
+    Snow,
+    /// Wet, warm lowland; where jungle grows.
+    Marsh,
     /// Impassable: nothing can enter or path through.
     Mountains,
+    /// Shallow water along a shore. Ships can enter; cities can work it.
+    Coast,
+    /// Deep water, away from any shore.
+    Ocean,
+    /// Water enclosed by land. Gives fresh water to the land around it.
+    Lake,
+}
+
+/// Strategic resources unlock specialist units when a Barracks occupies the resource tile.
+pub enum Resource { Horses, Iron }
+
+impl Eq for Resource {
+    fn eq(self, other: Resource) -> bool {
+        match (self, other) { (Resource.Horses, Resource.Horses) | (Resource.Iron, Resource.Iron) => true, _ => false }
+    }
+}
+
+impl Resource {
+    pub fn name(self) -> str {
+        match self { Resource.Horses => "HORSES", Resource.Iron => "IRON" }
+    }
+}
+
+/// Rich land worth scouting for and fighting over: a tile that yields well beyond its terrain
+/// when a city works it. Placed by the world's map generator between the starts
+/// (`mapgen.tua`). The kinds and numbers are a first pass.
+pub enum Special {
+    /// Fruit trees: much more food.
+    Orchard,
+    /// Good stone near the surface: much more production.
+    Quarry,
+}
+
+/// Every kind of special tile.
+pub const SPECIALS: [Special; 2] = [Special.Orchard, Special.Quarry];
+
+impl Eq for Special {
+    fn eq(self, other: Special) -> bool {
+        match (self, other) { (Special.Orchard, Special.Orchard) | (Special.Quarry, Special.Quarry) => true, _ => false }
+    }
+}
+
+impl Special {
+    pub fn name(self) -> str {
+        match self { Special.Orchard => "ORCHARD", Special.Quarry => "QUARRY" }
+    }
+
+    /// Food and production it adds to the tile's own when worked.
+    pub fn bonus(self) -> (i32, i32) {
+        match self { Special.Orchard => (3, 0), Special.Quarry => (0, 3) }
+    }
 }
 
 impl Terrain {
     /// The terrain's name as the UI prints it.
     pub fn name(self) -> str {
-        match self { Terrain.Plains => "PLAINS", Terrain.Hills => "HILLS", Terrain.Mountains => "MOUNTAINS" }
+        match self {
+            Terrain.Grassland => "GRASSLAND",
+            Terrain.Plains => "PLAINS",
+            Terrain.Desert => "DESERT",
+            Terrain.Tundra => "TUNDRA",
+            Terrain.Snow => "SNOW",
+            Terrain.Marsh => "MARSH",
+            Terrain.Mountains => "MOUNTAINS",
+            Terrain.Coast => "COAST",
+            Terrain.Ocean => "OCEAN",
+            Terrain.Lake => "LAKE",
+        }
     }
 
-    pub fn is_passable(self) -> bool { self != Terrain.Mountains }
+    pub fn is_water(self) -> bool {
+        match self { Terrain.Coast | Terrain.Ocean | Terrain.Lake => true, _ => false }
+    }
 
-    /// Multiplier on the defense of a unit standing on this terrain.
-    pub fn defense_multiplier(self) -> f32 {
+    /// Whether units can enter it: land other than mountains.
+    pub fn is_passable(self) -> bool { self != Terrain.Mountains && !self.is_water() }
+
+    /// Whether a city can put a citizen on it: anything but mountains.
+    pub fn is_workable(self) -> bool { self != Terrain.Mountains }
+
+    /// Food and production of the bare ground.
+    fn yields(self) -> (i32, i32) {
         match self {
-            Terrain.Hills => 1.25,
-            Terrain.Plains | Terrain.Mountains => 1.0,
+            Terrain.Grassland => (3, 0),
+            Terrain.Plains => (2, 1),
+            Terrain.Desert => (0, 1),
+            Terrain.Tundra => (1, 1),
+            Terrain.Snow => (0, 0),
+            Terrain.Marsh => (1, 0),
+            Terrain.Mountains => (0, 0),
+            Terrain.Coast | Terrain.Lake => (2, 0),
+            Terrain.Ocean => (1, 0),
         }
+    }
+}
+
+/// Vegetation covering a tile.
+pub enum Feature {
+    /// Wood for production at some cost in food; cover for defenders.
+    Forest,
+    /// Dense growth on marsh: some food and wood, and cover.
+    Jungle,
+}
+
+impl Eq for Feature {
+    fn eq(self, other: Feature) -> bool {
+        match (self, other) { (Feature.Forest, Feature.Forest) | (Feature.Jungle, Feature.Jungle) => true, _ => false }
+    }
+}
+
+impl Feature {
+    pub fn name(self) -> str {
+        match self { Feature.Forest => "FOREST", Feature.Jungle => "JUNGLE" }
+    }
+}
+
+/// Everything about a hex's ground.
+pub struct Tile {
+    terrain: Terrain,
+    /// Raised ground: more production, better defense, harder hauling.
+    hills: bool,
+    feature: Option[Feature],
+}
+
+impl Eq for Tile {
+    fn eq(self, other: Tile) -> bool {
+        self.terrain == other.terrain && self.hills == other.hills && self.feature == other.feature
+    }
+}
+
+/// Defense bonus for standing on hills, and under forest or jungle.
+const HILLS_DEFENSE: f32 = 0.25;
+const COVER_DEFENSE: f32 = 0.15;
+
+/// Plains hills, for the hand-built scenarios.
+pub const HILLS: Tile = Tile { terrain: Terrain.Plains, hills: true, feature: Option.None };
+pub const MOUNTAINS: Tile = Tile { terrain: Terrain.Mountains, hills: false, feature: Option.None };
+
+impl Tile {
+    /// Bare ground: no hills, no feature.
+    pub fn of(terrain: Terrain) -> Tile { Tile { terrain, hills: false, feature: Option.None } }
+
+    /// Like `DESERT HILLS` or `GRASSLAND HILLS + FOREST`.
+    pub fn name(self) -> Str {
+        let mut name = to_owned(self.terrain.name());
+        if self.hills { push(&mut name, " HILLS"); }
+        if let Option.Some(feature) = self.feature {
+            push(&mut name, " + ");
+            push(&mut name, feature.name());
+        }
+        name
+    }
+
+    /// Food and production when worked, before fresh water or improvements: the ground's, with
+    /// hills adding production, forest trading a food for a production, and jungle adding one
+    /// of each.
+    pub fn yields(self) -> (i32, i32) {
+        let (mut food, mut production) = self.terrain.yields();
+        if self.hills { production = production + 1; }
+        match self.feature {
+            Option.Some(Feature.Forest) => {
+                food = if food > 1 { food - 1 } else { 0 };
+                production = production + 1;
+            }
+            Option.Some(Feature.Jungle) => {
+                food = food + 1;
+                production = production + 1;
+            }
+            Option.None => {}
+        }
+        (food, production)
+    }
+
+    /// Logistics cost of carrying goods into this hex off-road, in half-hex units (a road costs
+    /// 1): 2 on open ground, 3 on snow or marsh, and one more each for hills and forest or
+    /// jungle.
+    pub fn route_cost(self) -> i32 {
+        let ground = match self.terrain { Terrain.Snow | Terrain.Marsh => 3, _ => 2 };
+        ground + (if self.hills { 1 } else { 0 }) + (if self.feature.is_some() { 1 } else { 0 })
+    }
+
+    /// Multiplier on the defense of a unit standing here: +25% on hills and +15% under forest
+    /// or jungle, added together.
+    pub fn defense_multiplier(self) -> f32 {
+        let mut multiplier: f32 = 1.0;
+        if self.hills { multiplier = multiplier + HILLS_DEFENSE; }
+        if self.feature.is_some() { multiplier = multiplier + COVER_DEFENSE; }
+        multiplier
     }
 }

@@ -23,7 +23,8 @@ use game.scenario.Scenario;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
 use game.hex.HexGrid;
-use game.terrain.Terrain;
+use game.terrain.HILLS;
+use game.terrain.MOUNTAINS;
 use game.orders.ClickMode;
 use game.turn.Phase;
 use game.unit.IdSet;
@@ -147,13 +148,13 @@ impl GameState {
         // Mountain ridges along the center column leave a three-hex pass (with a hill in the
         // middle) as the only way between the two sides.
         let terrain = [
-            (Hex.new(0, -3), Terrain.Mountains),
-            (Hex.new(0, -2), Terrain.Mountains),
-            (Hex.new(0, 2), Terrain.Mountains),
-            (Hex.new(0, 3), Terrain.Mountains),
-            (Hex.new(0, 0), Terrain.Hills),
-            (Hex.new(-2, 2), Terrain.Hills),
-            (Hex.new(2, -2), Terrain.Hills),
+            (Hex.new(0, -3), MOUNTAINS),
+            (Hex.new(0, -2), MOUNTAINS),
+            (Hex.new(0, 2), MOUNTAINS),
+            (Hex.new(0, 3), MOUNTAINS),
+            (Hex.new(0, 0), HILLS),
+            (Hex.new(-2, 2), HILLS),
+            (Hex.new(2, -2), HILLS),
         ];
 
         info(fn() can {Out} {

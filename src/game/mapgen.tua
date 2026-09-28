@@ -1,0 +1,1049 @@
+//! Random maps for the world scenario (F4): a Pangea on a rectangular map wider than tall,
+//! sized for the number of players. Everything comes from one seed, so a seed always rebuilds
+//! the same map.
+//!
+//! The recipe:
+//! 1. Elevation: an oval dome filling most of the map, roughened by two layers of fractal
+//!    value noise into bays, peninsulas and inland seas. The lowest share of hexes (42-52%,
+//!    varying per map) becomes water.
+//! 2. One continent: the biggest landmass stays; other land sinks, unless it's a small island
+//!    of at most `MAX_ISLAND` hexes.
+//! 3. Relief: a ridged noise field mixed with elevation picks the most rugged land for
+//!    mountain ranges, and the next most rugged for hills. Hills are a modifier, so whatever
+//!    ground the climate gives them stays hilly.
+//! 4. Water bodies: small ones cut off from the map's edge become lakes, and a few more lakes
+//!    are dropped into low ground.
+//! 5. Rivers run along hex edges, starting beside high ground and always stepping to the
+//!    lowest neighboring corner, until they reach water, join another river, or get stuck
+//!    (where they end in a lake).
+//! 6. Climate: temperature falls toward the top and bottom of the map with noise on top;
+//!    moisture is noise plus a boost near rivers, lakes and the sea. Together they pick the
+//!    ground: snow, tundra, desert, marsh, grassland or plains.
+//! 7. Vegetation: forest grows on the wetter grassland, plains and tundra (hills included), in
+//!    patches from its own noise; jungle covers most marsh.
+//! 8. Starts: one hex per side on the continent (the largest stretch of passable land),
+//!    scattered and then evened out so each is about as far from its nearest neighbor as the
+//!    land allows if shared out evenly, with about as good food and production nearby as the
+//!    others.
+//! 9. Horses and iron: one of each within a few hexes of every start, nearer it than any other
+//!    start.
+//! 10. Contested ground: ruins, and special tiles that yield more, go where two starts are
+//!     about as far on foot, well away from both, so no side has them to itself.
+
+use std.collections.Deque;
+use std.collections.Key;
+use std.collections.Map;
+use std.collections.Set;
+use std.collections.mix;
+use std.core.Eq;
+use std.core.Keep;
+use std.core.Ordering;
+use std.iter.View;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.math.Float;
+use std.math.max;
+use std.math.min;
+use std.math.u64_to_f64;
+use std.mem.elements_mut;
+use std.sort.Compare;
+use std.sort.sort;
+use game.hex.Edge;
+use game.hex.GridShape;
+use game.hex.Hex;
+use game.hex.HexGrid;
+use game.hex.edge;
+use game.terrain.Feature;
+use game.terrain.HILLS;
+use game.terrain.MOUNTAINS;
+use game.terrain.Resource;
+use game.terrain.SPECIALS;
+use game.terrain.Terrain;
+use game.terrain.Tile;
+
+/// Sides the smallest world is sized for: fewer still get this much room.
+const MIN_WORLD_SIDES: i32 = 3;
+/// How many sides share the area of the base world (61 by about 36 hexes): each side gets
+/// `1 / SIDES_PER_BASE_WORLD` of it, so the map grows in proportion to the number of sides.
+const SIDES_PER_BASE_WORLD: f32 = 2.5;
+
+/// The world's size for `sides` players: the base 61 columns by about 36 rows for two and a
+/// half of them, growing in area with every side so each has about as much land (six get
+/// about 93 by 57).
+pub fn world_shape(sides: i32) -> GridShape {
+    let scale = (max(sides, MIN_WORLD_SIDES) as f32 / SIDES_PER_BASE_WORLD).sqrt();
+    GridShape.Rectangle((30.0 * scale).round() as i32, (18.0 * scale).round() as i32)
+}
+
+/// Land apart from the continent survives only as islands this small.
+pub const MAX_ISLAND: i32 = 12;
+
+/// Tries at scattering the starts; the most even spread wins.
+const START_TRIALS: i32 = 24;
+/// Swaps tried to even out each scattered set of starts.
+const START_SWAPS: i32 = 160;
+
+pub struct GeneratedMap {
+    grid: HexGrid,
+    /// One start per side, the player's first: about as far from its nearest neighbor as every
+    /// other start is from its own, and about as good. Each has horses and iron a few hexes
+    /// away.
+    starts: Vec[Hex],
+    /// Ruins to fight over, each about as far on foot from the two starts nearest it and close
+    /// to none.
+    ruins: Vec[Hex],
+}
+
+/// Builds a world map for `sides` players from `seed`.
+pub fn generate(seed: u32, sides: i32) -> GeneratedMap {
+    let sides = max(sides, 1);
+    let shape = world_shape(sides);
+    // A rare map has no good set of starts; try the next variant.
+    for attempt in 0..16 {
+        let mut rng = Rng { state: (seed as u64).shl(8).bit_or(attempt as u64) };
+        let mut grid = shape_world(shape, &mut rng);
+        // A let until a let-else's scrutinee call stops holding its argument loans.
+        let found = pick_starts(&grid, sides, &mut rng);
+        let Option.Some(picked) = found else { continue; };
+        let (starts, spacing) = picked;
+        place_start_resources(&mut grid, &starts, &mut rng);
+        let mut distances: Vec[Map[Hex, i32]] = Vec.new();
+        for i in 0..starts.len() { distances.push(walking_distances(&grid, starts[i])); }
+        let ruins = place_ruins(&grid, &starts, &distances, spacing, &mut rng);
+        place_specials(&mut grid, &starts, &distances, &ruins, spacing, &mut rng);
+        return GeneratedMap { grid, starts, ruins };
+    }
+    let mut starts: Vec[Hex] = Vec.new();
+    for i in 0..sides { starts.push(Hex.new(4 * i - 8, 0)); }
+    GeneratedMap { grid: HexGrid.shaped(shape, &[(Hex.new(0, 0), Tile.of(Terrain.Plains))]), starts, ruins: Vec.new() }
+}
+
+/// The value of `hex` in a map filled for every hex of the grid.
+fn at(values: &Map[Hex, f32], hex: Hex) -> f32 { values.get(hex).unwrap_or(0.0) }
+
+fn tile_at(tiles: &Map[Hex, Tile], hex: Hex) -> Tile { tiles.get(hex).unwrap_or(Tile.of(Terrain.Plains)) }
+
+fn set_tile(tiles: &mut Map[Hex, Tile], hex: Hex, tile: Tile) { let _old = tiles.insert(hex, tile); }
+
+/// `p / k`, component by component, as a division (not a multiplication by `1 / k`).
+fn div(p: Vec2, k: f32) -> Vec2 { vec2(p.x / k, p.y / k) }
+
+/// The terrain, relief, water, rivers, climate and vegetation of a new world (steps 1 to 7).
+fn shape_world(shape: GridShape, rng: &mut Rng) -> HexGrid {
+    let blank = HexGrid.shaped(shape, &[]);
+    let mut hexes: Vec[Hex] = Vec.new();
+    for h in blank.hexes() { hexes.push(*h); }
+    let mut extent = vec2(0.0, 0.0);
+    for i in 0..hexes.len() { extent = extent.max(hexes[i].to_world().abs()); }
+    let height_noise = Noise { seed: rng.next() };
+    let detail_noise = Noise { seed: rng.next() };
+    let ridge_noise = Noise { seed: rng.next() };
+    let heat_noise = Noise { seed: rng.next() };
+    let wet_noise = Noise { seed: rng.next() };
+    let growth_noise = Noise { seed: rng.next() };
+
+    // 1. Elevation: a dome over the middle of the map, so the land gathers into one mass, with
+    // noise carving its coast.
+    let mut elevation: Map[Hex, f32] = Map.new();
+    let mut heights: Vec[f32] = Vec.new();
+    for i in 0..hexes.len() {
+        let h = hexes[i];
+        let p = h.to_world();
+        let dome = 1.0 - p.div(extent).length();
+        let coast = height_noise.fbm(div(p, 9.0)) - 0.5;
+        let detail = detail_noise.fbm(div(p, 3.5)) - 0.5;
+        let e = dome + 0.7 * coast + 0.25 * detail;
+        let _old = elevation.insert(h, e);
+        heights.push(e);
+    }
+    let sea_level = quantile(&mut heights, 0.42 + 0.1 * rng.unit());
+    let mut tiles: Map[Hex, Tile] = Map.new();
+    for i in 0..hexes.len() {
+        let h = hexes[i];
+        let ground = if at(&elevation, h) < sea_level { Terrain.Ocean } else { Terrain.Plains };
+        set_tile(&mut tiles, h, Tile.of(ground));
+    }
+
+    // 2. One continent, plus at most a few small islands.
+    let masses = components(&hexes, &land_of(&hexes, &tiles));
+    let order = by_size_descending(&masses);
+    for k in 1..order.len() {
+        let m = order[k];
+        if masses[m].len() > MAX_ISLAND {
+            for j in 0..masses[m].len() { set_tile(&mut tiles, masses[m][j], Tile.of(Terrain.Ocean)); }
+        }
+    }
+    let mut land: Vec[Hex] = Vec.new();
+    for i in 0..hexes.len() {
+        if !tile_at(&tiles, hexes[i]).terrain.is_water() { land.push(hexes[i]); }
+    }
+
+    // 3. Relief: ridged noise draws lines of high ground, so mountains come in ranges rather
+    // than one lump at the highest point.
+    let mut values: Vec[f32] = Vec.new();
+    for i in 0..land.len() { values.push(at(&elevation, land[i])); }
+    let height_rank = ranks(&land, &values);
+    values.clear();
+    for i in 0..land.len() {
+        values.push(1.0 - (2.0 * ridge_noise.fbm(div(land[i].to_world(), 6.0)) - 1.0).abs());
+    }
+    let ridge_rank = ranks(&land, &values);
+    values.clear();
+    for i in 0..land.len() { values.push(0.4 * at(&height_rank, land[i]) + 0.6 * at(&ridge_rank, land[i])); }
+    let rugged = ranks(&land, &values);
+    let mountain_share = 0.04 + 0.03 * rng.unit();
+    let hill_share = 0.12 + 0.06 * rng.unit();
+    for i in 0..land.len() {
+        let h = land[i];
+        let r = at(&rugged, h);
+        if r > 1.0 - mountain_share {
+            set_tile(&mut tiles, h, MOUNTAINS);
+        } else if r > 1.0 - mountain_share - hill_share {
+            set_tile(&mut tiles, h, HILLS);
+        }
+    }
+
+    // 4. Small enclosed water bodies are lakes; so are a few dips in the land.
+    let lake = Tile.of(Terrain.Lake);
+    let mut water = Set.new();
+    for i in 0..hexes.len() {
+        if tile_at(&tiles, hexes[i]).terrain.is_water() { let _new = water.insert(hexes[i]); }
+    }
+    let bodies = components(&hexes, &water);
+    for b in 0..bodies.len() {
+        let mut rim = false;
+        for j in 0..bodies[b].len() { if blank.edge_distance(bodies[b][j]) == 0 { rim = true; } }
+        if bodies[b].len() <= 10 && !rim {
+            for j in 0..bodies[b].len() { set_tile(&mut tiles, bodies[b][j], lake); }
+        }
+    }
+    let plains = Tile.of(Terrain.Plains);
+    let mut lowland: Vec[Hex] = Vec.new();
+    for i in 0..land.len() {
+        let h = land[i];
+        if tile_at(&tiles, h) == plains && at(&height_rank, h) < 0.4 && blank.edge_distance(h) != 0 {
+            let around = h.neighbors();
+            let mut dry = true;
+            for k in 0..6 {
+                let n = around[k];
+                if !blank.contains(n) || tile_at(&tiles, n).terrain.is_water() { dry = false; }
+            }
+            if dry { lowland.push(h); }
+        }
+    }
+    let dips = rng.below(2 + land.len() / 300);
+    for _ in 0..dips {
+        if !lowland.is_empty() {
+            let pick = rng.below(lowland.len());
+            set_tile(&mut tiles, lowland[pick], lake);
+        }
+    }
+
+    // 5. Rivers.
+    let wanted = land.len() / 60 + rng.below(4);
+    let rivers = carve_rivers(&blank, wanted, &hexes, &elevation, &mut tiles, rng);
+
+    // What's left of the sea is coast next to land, open ocean beyond.
+    for i in 0..hexes.len() {
+        let h = hexes[i];
+        if tile_at(&tiles, h).terrain == Terrain.Ocean {
+            let around = h.neighbors();
+            let mut shore = false;
+            for k in 0..6 {
+                if blank.contains(around[k]) && !tile_at(&tiles, around[k]).terrain.is_water() { shore = true; }
+            }
+            if shore { set_tile(&mut tiles, h, Tile.of(Terrain.Coast)); }
+        }
+    }
+
+    // 6. Climate for all land but mountains, hills included.
+    let mut open: Vec[Hex] = Vec.new();
+    for i in 0..hexes.len() {
+        if tile_at(&tiles, hexes[i]).terrain == Terrain.Plains { open.push(hexes[i]); }
+    }
+    values.clear();
+    for i in 0..open.len() {
+        let w = open[i].to_world();
+        let latitude = 1.0 - w.y.abs() / extent.y;
+        values.push(0.6 * latitude + 0.4 * heat_noise.fbm(div(w, 5.0)));
+    }
+    let heat = ranks(&open, &values);
+    let mut grid = HexGrid.from_tiles(shape, copy_tiles(&tiles));
+    grid.set_rivers(copy_edges(&rivers));
+    values.clear();
+    for i in 0..open.len() {
+        let h = open[i];
+        let fresh: f32 = if grid.has_fresh_water(h) { 0.2 } else { 0.0 };
+        let around = h.neighbors();
+        let mut sea = false;
+        for k in 0..6 {
+            let n = around[k];
+            if blank.contains(n) {
+                let t = tile_at(&tiles, n).terrain;
+                if t == Terrain.Ocean || t == Terrain.Coast { sea = true; }
+            }
+        }
+        values.push(wet_noise.fbm(div(h.to_world(), 5.0)) + fresh + if sea { 0.1 } else { 0.0 });
+    }
+    let wet = ranks(&open, &values);
+    values.clear();
+    for i in 0..open.len() { values.push(growth_noise.fbm(div(open[i].to_world(), 3.0))); }
+    let growth = ranks(&open, &values);
+    for i in 0..open.len() {
+        let h = open[i];
+        let (t, w) = (at(&heat, h), at(&wet, h));
+        let mut tile = tile_at(&tiles, h);
+        tile.terrain = if t < 0.05 {
+            Terrain.Snow
+        } else if t < 0.17 {
+            Terrain.Tundra
+        } else if t > 0.6 && w < 0.28 {
+            Terrain.Desert
+        } else if t > 0.5 && w > 0.88 && !tile.hills {
+            Terrain.Marsh
+        } else if w > 0.56 {
+            Terrain.Grassland
+        } else {
+            Terrain.Plains
+        };
+
+        // 7. Vegetation.
+        tile.feature = match tile.terrain {
+            Terrain.Marsh => if rng.unit() < 0.75 { Option.Some(Feature.Jungle) } else { Option.None },
+            Terrain.Grassland | Terrain.Plains | Terrain.Tundra => {
+                if 0.6 * w + 0.4 * at(&growth, h) > 0.66 { Option.Some(Feature.Forest) } else { Option.None }
+            }
+            _ => Option.None,
+        };
+        set_tile(&mut tiles, h, tile);
+    }
+    let mut world = HexGrid.from_tiles(shape, tiles);
+    world.set_rivers(rivers);
+    world
+}
+
+/// The set of land hexes among `hexes`.
+fn land_of(hexes: &Vec[Hex], tiles: &Map[Hex, Tile]) -> Set[Hex] {
+    let mut out = Set.new();
+    for i in 0..hexes.len() {
+        if !tile_at(tiles, hexes[i]).terrain.is_water() { let _new = out.insert(hexes[i]); }
+    }
+    out
+}
+
+fn copy_tiles(tiles: &Map[Hex, Tile]) -> Map[Hex, Tile] {
+    let mut out: Map[Hex, Tile] = Map.new();
+    for i in 0..tiles.len() {
+        if let (Option.Some(k), Option.Some(v)) = (tiles.key_at(i), tiles.val_at(i)) { let _old = out.insert(k, v); }
+    }
+    out
+}
+
+fn copy_edges(edges: &Set[Edge]) -> Set[Edge] {
+    let mut out = Set.new();
+    for e in edges.each() { let _new = out.insert(*e); }
+    out
+}
+
+/// A group's size and index, for sorting.
+struct Sized { len: i32, index: i32 }
+
+/// The indices of `groups`, largest first; equal sizes keep their order (a stable sort).
+fn by_size_descending(groups: &Vec[Vec[Hex]]) -> Vec[i32] {
+    let mut sized: Vec[Sized] = Vec.new();
+    for i in 0..groups.len() { sized.push(Sized { len: groups[i].len(), index: i }); }
+    handle { with elements_mut(&mut sized.buf) { sort() }; } with Compare[Sized] {
+        cmp(a, b) => { resume if a.len != b.len { order(b.len, a.len) } else { order(a.index, b.index) } }
+    };
+    let mut out: Vec[i32] = Vec.new();
+    for i in 0..sized.len() { out.push(sized[i].index); }
+    out
+}
+
+fn order(a: i32, b: i32) -> Ordering {
+    if a < b { Ordering.Less } else if a > b { Ordering.Greater } else { Ordering.Equal }
+}
+
+/// A corner where three hexes meet, as those hexes in sorted order.
+struct Corner { a: Hex, b: Hex, c: Hex }
+
+impl Eq for Corner {
+    fn eq(self, other: Corner) -> bool { self.a == other.a && self.b == other.b && self.c == other.c }
+}
+
+impl Key for Corner {
+    fn hash(self) -> i64 {
+        mix(mix(mix(mix(mix(mix(0, self.a.q as i64), self.a.r as i64), self.b.q as i64), self.b.r as i64), self.c.q as i64), self.c.r as i64)
+    }
+    fn eq(self, other: Corner) -> bool { self.a == other.a && self.b == other.b && self.c == other.c }
+}
+
+impl Corner {
+    fn hexes(self) -> [Hex; 3] { [self.a, self.b, self.c] }
+}
+
+fn before(x: Hex, y: Hex) -> bool { x.q < y.q || (x.q == y.q && x.r < y.r) }
+
+fn corner(x: Hex, y: Hex, z: Hex) -> Corner {
+    let mut h = [x, y, z];
+    for i in 1..3 {
+        let mut j = i;
+        while j > 0 && before(h[j], h[j - 1]) {
+            let t = h[j];
+            h[j] = h[j - 1];
+            h[j - 1] = t;
+            j = j - 1;
+        }
+    }
+    Corner { a: h[0], b: h[1], c: h[2] }
+}
+
+/// The three corners one edge away from `c`, each with the edge between them.
+fn next_corners(c: Corner) -> [(Corner, Edge); 3] {
+    let hs = c.hexes();
+    let picks: [(i32, i32, i32); 3] = [(0, 1, 2), (1, 2, 0), (0, 2, 1)];
+    let mut out: [(Corner, Edge); 3] = [(c, edge(hs[0], hs[1])), (c, edge(hs[0], hs[1])), (c, edge(hs[0], hs[1]))];
+    for n in 0..3 {
+        let (i, j, k) = picks[n];
+        let (a, b, away) = (hs[i], hs[j], hs[k]);
+        // Two adjacent hexes share two neighbors: `away`, and the one across the edge from it.
+        let around = a.neighbors();
+        let mut across = away;
+        let mut found = false;
+        for m in 0..6 {
+            if !found && around[m] != away && around[m].distance(b) == 1 {
+                across = around[m];
+                found = true;
+            }
+        }
+        out[n] = (corner(a, b, across), edge(a, b));
+    }
+    out
+}
+
+/// A corner's height for water to run down: the mean of its three hexes' elevations,
+/// mountains and hills raised, and off the map lowest of all.
+fn corner_height(c: Corner, tiles: &Map[Hex, Tile], elevation: &Map[Hex, f32]) -> f32 {
+    let hs = c.hexes();
+    let mut sum: f32 = 0.0;
+    for i in 0..3 {
+        let h = hs[i];
+        sum = sum + match tiles.get(h) {
+            Option.Some(t) => {
+                if t.terrain == Terrain.Mountains { at(elevation, h) + 0.15 } else if t.hills { at(elevation, h) + 0.05 } else { at(elevation, h) }
+            }
+            Option.None => -1.0,
+        };
+    }
+    sum / 3.0
+}
+
+fn touches_water(c: Corner, blank: &HexGrid, tiles: &Map[Hex, Tile]) -> bool {
+    let hs = c.hexes();
+    for i in 0..3 {
+        if !blank.contains(hs[i]) || tile_at(tiles, hs[i]).terrain.is_water() { return true; }
+    }
+    false
+}
+
+/// Removes and answers `v[i]`, putting the last element in its place.
+fn swap_remove(v: &mut Vec[Corner], i: i32) -> Corner {
+    let out = v[i];
+    let last = v.len() - 1;
+    v[i] = v[last];
+    let mut k = 0;
+    handle { v.retain(); } with Keep[Corner] { keep(c) => { k = k + 1; resume k - 1 != last } }
+    out
+}
+
+fn carve_rivers(
+    blank: &HexGrid,
+    wanted: i32,
+    hexes: &Vec[Hex],
+    elevation: &Map[Hex, f32],
+    tiles: &mut Map[Hex, Tile],
+    rng: &mut Rng,
+) -> Set[Edge] {
+    // Sources: corners beside hills or mountains, away from water.
+    let mut sources: Vec[Corner] = Vec.new();
+    let mut seen: Set[Corner] = Set.new();
+    for i in 0..hexes.len() {
+        let h = hexes[i];
+        let t = tile_at(&*tiles, h);
+        if !(t.hills || t.terrain == Terrain.Mountains) { continue; }
+        let around = h.neighbors();
+        for k in 0..6 {
+            let c = corner(h, around[k], around[(k + 1) % 6]);
+            if !touches_water(c, blank, &*tiles) && seen.insert(c) { sources.push(c); }
+        }
+    }
+
+    let mut rivers: Set[Edge] = Set.new();
+    let mut river_corners: Set[Corner] = Set.new();
+    let mut used_sources: Vec[Hex] = Vec.new();
+    let mut tries = 0;
+    while used_sources.len() < wanted && !sources.is_empty() && tries < 120 {
+        tries = tries + 1;
+        let pick = rng.below(sources.len());
+        let start = swap_remove(&mut sources, pick);
+        let mut near_other = false;
+        for s in 0..used_sources.len() { if used_sources[s].distance(start.a) < 4 { near_other = true; } }
+        if near_other || river_corners.contains(start) { continue; }
+        let mut path: Vec[Corner] = Vec.new();
+        path.push(start);
+        let mut edges: Vec[Edge] = Vec.new();
+        let mut visited: Set[Corner] = Set.new();
+        let _new = visited.insert(start);
+        let mut current = start;
+        let mut ends_in_lake = true;
+        for _ in 0..50 {
+            if touches_water(current, blank, &*tiles) || river_corners.contains(current) {
+                ends_in_lake = false;
+                break;
+            }
+            let options = next_corners(current);
+            let mut next: Option[(Corner, Edge, f32)] = Option.None;
+            for n in 0..3 {
+                let (c, e) = options[n];
+                if visited.contains(c) { continue; }
+                let height = corner_height(c, &*tiles, elevation) + 0.03 * rng.unit();
+                // The first of equally low corners wins, as `min_by` has it.
+                let lower = match next { Option.None => true, Option.Some((_, _, best)) => total_less(height, best) };
+                if lower { next = Option.Some((c, e, height)); }
+            }
+            let Option.Some((c, e, _)) = next else { break; };
+            let _new = visited.insert(c);
+            path.push(c);
+            edges.push(e);
+            current = c;
+        }
+        if edges.len() < 3 { continue; }
+        if ends_in_lake {
+            // Stuck in a dip: pool the water in its lowest flat hex.
+            let hs = current.hexes();
+            let mut pool: Option[Hex] = Option.None;
+            for i in 0..3 {
+                let h = hs[i];
+                if blank.contains(h) && tile_at(&*tiles, h) == Tile.of(Terrain.Plains) {
+                    let lower = match pool { Option.None => true, Option.Some(p) => total_less(at(elevation, h), at(elevation, p)) };
+                    if lower { pool = Option.Some(h); }
+                }
+            }
+            match pool {
+                Option.Some(h) => set_tile(tiles, h, Tile.of(Terrain.Lake)),
+                Option.None => continue,
+            }
+        }
+        used_sources.push(start.a);
+        for i in 0..path.len() { let _new = river_corners.insert(path[i]); }
+        for i in 0..edges.len() { let _new = rivers.insert(edges[i]); }
+    }
+    // A river only runs between two land hexes.
+    let mut kept: Set[Edge] = Set.new();
+    for e in rivers.each() {
+        let r = *e;
+        if !tile_at(&*tiles, r.a).terrain.is_water() && !tile_at(&*tiles, r.b).terrain.is_water() { let _new = kept.insert(r); }
+    }
+    kept
+}
+
+/// Whether `a` orders before `b` by IEEE total order: as `<`, except that -0.0 is below 0.0.
+fn total_less(a: f32, b: f32) -> bool {
+    if a < b { return true; }
+    if a > b || a != 0.0 { return false; }
+    1.0 / a < 0.0 && 1.0 / b > 0.0
+}
+
+/// A candidate start and its score (`start_score`).
+struct StartCandidate { hex: Hex, score: i32 }
+
+/// One start per side on the continent (the largest stretch of passable land), with the
+/// spacing they aim for: the distance between neighbors if the land were shared out evenly.
+/// Each start is a `fair_start` on good ground. The set is scattered at random and then evened
+/// out (`start_cost`): every start about `spacing` from its nearest neighbor, some closer and
+/// some farther, and about as good as the others. The player's start, first, is any of them.
+fn pick_starts(grid: &HexGrid, sides: i32, rng: &mut Rng) -> Option[(Vec[Hex], f32)] {
+    let mut all: Vec[Hex] = Vec.new();
+    let mut passable = Set.new();
+    for h in grid.hexes() {
+        all.push(*h);
+        if grid.is_passable(*h) { let _new = passable.insert(*h); }
+    }
+    let masses = components(&all, &passable);
+    if masses.is_empty() { return Option.None; }
+    // The last of equally large landmasses, as `max_by_key` has it.
+    let mut biggest = 0;
+    for m in 1..masses.len() { if masses[m].len() >= masses[biggest].len() { biggest = m; } }
+    let mut candidates: Vec[StartCandidate] = Vec.new();
+    for j in 0..masses[biggest].len() {
+        let h = masses[biggest][j];
+        let ground = grid.terrain(h);
+        if grid.edge_distance(h) >= 2
+            && ground != Terrain.Snow && ground != Terrain.Desert && ground != Terrain.Marsh
+            && fair_start(grid, h)
+        {
+            candidates.push(StartCandidate { hex: h, score: start_score(grid, h) });
+        }
+    }
+    if candidates.len() < sides { return Option.None; }
+    // Hexes pack at about 0.87 d^2 of area per point d apart.
+    let spacing = 1.075 * (masses[biggest].len() as f32 / sides as f32).sqrt();
+    let tolerances: [f32; 3] = [0.75, 0.6, 0.45];
+    for t in 0..3 {
+        let min_gap = max((spacing * tolerances[t]) as i32, 4);
+        let mut best: Option[f32] = Option.None;
+        let mut best_set: Vec[i32] = Vec.new();
+        for _ in 0..START_TRIALS {
+            // A let until a let-else's scrutinee call stops holding its argument loans.
+            let scattered = scatter_starts(&candidates, sides, min_gap, rng);
+            let Option.Some(mut set) = scattered else { continue; };
+            let mut cost = start_cost(&candidates, &set, spacing);
+            for _ in 0..START_SWAPS {
+                let slot = rng.below(set.len());
+                let pick = rng.below(candidates.len());
+                let mut refused = set.contains(pick);
+                if !refused {
+                    for i in 0..set.len() {
+                        if i != slot && candidates[pick].hex.distance(candidates[set[i]].hex) < min_gap { refused = true; }
+                    }
+                }
+                if refused { continue; }
+                let old = set[slot];
+                set[slot] = pick;
+                let new_cost = start_cost(&candidates, &set, spacing);
+                if new_cost < cost { cost = new_cost; } else { set[slot] = old; }
+            }
+            let better = match best { Option.None => true, Option.Some(c) => cost < c };
+            if better {
+                best = Option.Some(cost);
+                best_set = set;
+            }
+        }
+        if best.is_some() {
+            let mut starts: Vec[Hex] = Vec.new();
+            for i in 0..best_set.len() { starts.push(candidates[best_set[i]].hex); }
+            handle { with elements_mut(&mut starts.buf) { sort() }; } with Compare[Hex] {
+                cmp(a, b) => { resume if a.q != b.q { order(a.q, b.q) } else { order(a.r, b.r) } }
+            };
+            let player = rng.below(starts.len());
+            starts.swap_at(0, player);
+            return Option.Some((starts, spacing));
+        }
+    }
+    Option.None
+}
+
+/// `sides` candidates taken in random order, each at least `min_gap` from those already taken,
+/// or `None` if they run out first.
+fn scatter_starts(candidates: &Vec[StartCandidate], sides: i32, min_gap: i32, rng: &mut Rng) -> Option[Vec[i32]] {
+    let mut order: Vec[i32] = Vec.new();
+    for i in 0..candidates.len() { order.push(i); }
+    let mut i = order.len() - 1;
+    while i >= 1 {
+        let j = rng.below(i + 1);
+        order.swap_at(i, j);
+        i = i - 1;
+    }
+    let mut set: Vec[i32] = Vec.new();
+    for k in 0..order.len() {
+        let c = order[k];
+        let mut clear = true;
+        for m in 0..set.len() {
+            if candidates[c].hex.distance(candidates[set[m]].hex) < min_gap { clear = false; }
+        }
+        if clear && set.len() < sides { set.push(c); }
+    }
+    if set.len() == sides { Option.Some(set) } else { Option.None }
+}
+
+/// How far a set of starts is from the ideal (lower is better): each start's distance to its
+/// nearest neighbor should be `spacing`, their scores equal, and higher.
+fn start_cost(candidates: &Vec[StartCandidate], set: &Vec[i32], spacing: f32) -> f32 {
+    let n = set.len();
+    let mut spread: f32 = 0.0;
+    if n >= 2 {
+        let mut sum: f32 = 0.0;
+        for i in 0..n {
+            let a = candidates[set[i]].hex;
+            let mut nearest = 0;
+            let mut any = false;
+            for j in 0..n {
+                if j != i {
+                    let d = a.distance(candidates[set[j]].hex);
+                    if !any || d < nearest { nearest = d; any = true; }
+                }
+            }
+            let off = (nearest as f32 - spacing) / spacing;
+            sum = sum + off * off;
+        }
+        spread = sum / n as f32;
+    }
+    let mut total: f32 = 0.0;
+    let mut low: f32 = 3.40282347e38;
+    let mut high: f32 = -3.40282347e38;
+    for i in 0..n {
+        let s = candidates[set[i]].score as f32;
+        total = total + s;
+        if s < low { low = s; }
+        if s > high { high = s; }
+    }
+    let mut mean = total / n as f32;
+    if mean < 1.0 { mean = 1.0; }
+    spread + 0.5 * (high - low) / mean - 0.1 * mean / 100.0
+}
+
+/// Horses and iron for every start, each within a few hexes of it and nearer it than any other
+/// start: horses on open flat ground, iron on hills or under mountains where there are some,
+/// anywhere open otherwise.
+fn place_start_resources(grid: &mut HexGrid, starts: &Vec[Hex], rng: &mut Rng) {
+    for i in 0..starts.len() {
+        let start = starts[i];
+        let mut taken: Vec[Hex] = Vec.new();
+        taken.push(start);
+        if let Option.Some((worker, scout)) = start_units(&*grid, start) {
+            taken.push(worker);
+            taken.push(scout);
+        }
+        let kinds: [Resource; 2] = [Resource.Horses, Resource.Iron];
+        let tries: [(i32, bool); 4] = [(3, true), (4, true), (3, false), (5, false)];
+        for k in 0..2 {
+            let resource = kinds[k];
+            let mut options: Vec[Hex] = Vec.new();
+            for t in 0..4 {
+                let (reach, strict) = tries[t];
+                if options.is_empty() { options = resource_spots(&*grid, starts, i, &taken, resource, reach, strict); }
+            }
+            if !options.is_empty() {
+                let pick = rng.below(options.len());
+                grid.set_resource(options[pick], resource);
+            }
+        }
+    }
+}
+
+/// Where `resource` may go for start `i`: within `reach` of it, at least two hexes out, on
+/// open ground nothing else holds and nearer it than any other start, and (if `strict`) on
+/// ground that suits it.
+fn resource_spots(grid: &HexGrid, starts: &Vec[Hex], i: i32, taken: &Vec[Hex], resource: Resource, reach: i32, strict: bool) -> Vec[Hex] {
+    let start = starts[i];
+    let mut options: Vec[Hex] = Vec.new();
+    for hh in within(start, reach) {
+        let h = *hh;
+        let mut own = true;
+        for j in 0..starts.len() {
+            if j != i && !(h.distance(starts[j]) > h.distance(start)) { own = false; }
+        }
+        let fits = match resource { Resource.Horses => horse_ground(grid, h), Resource.Iron => iron_ground(grid, h) };
+        if h.distance(start) >= 2 && grid.is_passable(h) && !taken.contains(h)
+            && grid.resource(h).is_none() && own && (!strict || fits)
+        {
+            options.push(h);
+        }
+    }
+    options
+}
+
+/// Open flat ground, for horses.
+fn horse_ground(grid: &HexGrid, hex: Hex) -> bool {
+    let tile = grid.tile(hex);
+    !tile.hills && tile.feature.is_none()
+        && (tile.terrain == Terrain.Grassland || tile.terrain == Terrain.Plains || tile.terrain == Terrain.Tundra)
+}
+
+/// Hills, or ground under mountains, for iron.
+fn iron_ground(grid: &HexGrid, hex: Hex) -> bool {
+    if grid.tile(hex).hills { return true; }
+    let around = hex.neighbors();
+    for i in 0..6 {
+        if grid.contains(around[i]) && grid.terrain(around[i]) == Terrain.Mountains { return true; }
+    }
+    false
+}
+
+/// Every hex within `radius` of `center`, on the map or not.
+pub fn within(center: Hex, radius: i32) can {View[Hex]} {
+    for dq in -radius..=radius {
+        for dr in max(-radius, -dq - radius)..=min(radius, -dq + radius) {
+            View.view(&Hex.new(center.q + dq, center.r + dr));
+        }
+    }
+}
+
+/// Steps on foot from `origin` to every passable hex it connects to.
+pub fn walking_distances(grid: &HexGrid, origin: Hex) -> Map[Hex, i32] {
+    let mut distances: Map[Hex, i32] = Map.new();
+    let _old = distances.insert(origin, 0);
+    let mut queue: Deque[Hex] = Deque.new();
+    queue.push_back(origin);
+    while let Option.Some(hex) = queue.pop_front() {
+        let next = distances.get(hex).unwrap_or(0) + 1;
+        let around = hex.neighbors();
+        for i in 0..6 {
+            let n = around[i];
+            if grid.is_passable(n) && !distances.has(n) {
+                let _old = distances.insert(n, next);
+                queue.push_back(n);
+            }
+        }
+    }
+    distances
+}
+
+/// A hex's walking distances to every start, nearest first, or `None` if some start can't
+/// walk there.
+pub fn distances_to_starts(distances: &Vec[Map[Hex, i32]], hex: Hex) -> Option[Vec[i32]] {
+    let mut steps: Vec[i32] = Vec.new();
+    for i in 0..distances.len() {
+        let Option.Some(d) = distances[i].get(hex) else { return Option.None; };
+        steps.push(d);
+    }
+    handle { with elements_mut(&mut steps.buf) { sort() }; } with Compare[i32] { cmp(a, b) => { resume order(a, b) } };
+    Option.Some(steps)
+}
+
+/// A hex and how uneven its distances to the starts are (`contested_hexes`).
+struct Spot { hex: Hex, uneven: i32 }
+
+/// Contested ground: hexes about as far on foot from the two starts nearest them (within
+/// `slack` steps, a little more farther out), at least `near` from any start and no farther than
+/// `far`, off the map's edge and free of anything else. Being as close to a second start is
+/// what keeps a hex out of a pocket only one side can reach. Each comes with how uneven it is,
+/// for sorting: less uneven is better, and a hex nearly as close to a third start is better
+/// still.
+fn contested_hexes(grid: &HexGrid, starts: &Vec[Hex], distances: &Vec[Map[Hex, i32]], near: i32, far: i32, slack: i32) -> Vec[Spot] {
+    let mut out: Vec[Spot] = Vec.new();
+    if starts.len() < 2 { return out; }
+    for hh in grid.hexes() {
+        let h = *hh;
+        if !(grid.is_passable(h) && grid.edge_distance(h) >= 2 && grid.resource(h).is_none()) { continue; }
+        let Option.Some(steps) = distances_to_starts(distances, h) else { continue; };
+        let (nearest, second) = (steps[0], steps[1]);
+        let uneven = second - nearest;
+        let third = if steps.len() > 2 { (steps[2] - nearest) / 3 } else { 0 };
+        if nearest >= near && nearest <= far && uneven <= slack + nearest / 8 {
+            out.push(Spot { hex: h, uneven: 2 * uneven + third });
+        }
+    }
+    out
+}
+
+/// Picks up to `wanted` of `options`, the most even first, in random order among equals, at
+/// least `gap` apart and from `avoid`.
+fn pick_spread(options: Vec[Spot], wanted: i32, gap: i32, avoid: &Vec[Hex], rng: &mut Rng) -> Vec[Hex] {
+    let mut options = options;
+    let mut i = options.len() - 1;
+    while i >= 1 {
+        let j = rng.below(i + 1);
+        options.swap_at(i, j);
+        i = i - 1;
+    }
+    handle { with elements_mut(&mut options.buf) { sort() }; } with Compare[Spot] { cmp(a, b) => { resume order(a.uneven, b.uneven) } };
+    let mut picked: Vec[Hex] = Vec.new();
+    for k in 0..options.len() {
+        if picked.len() == wanted { break; }
+        let hex = options[k].hex;
+        let mut clear = true;
+        for m in 0..picked.len() { if picked[m].distance(hex) < gap { clear = false; } }
+        for m in 0..avoid.len() { if avoid[m].distance(hex) < gap { clear = false; } }
+        if clear { picked.push(hex); }
+    }
+    picked
+}
+
+/// Ruins: about one per side, each nearly equidistant on foot from the two starts nearest it,
+/// well away from every start and from each other.
+fn place_ruins(grid: &HexGrid, starts: &Vec[Hex], distances: &Vec[Map[Hex, i32]], spacing: f32, rng: &mut Rng) -> Vec[Hex] {
+    let near = max((spacing * 0.35) as i32, 5);
+    let far = max((spacing * 0.9) as i32, near + 2);
+    let options = contested_hexes(grid, starts, distances, near, far, 1);
+    let wanted = starts.len() + rng.below(2);
+    let gap = max((spacing * 0.6) as i32, 4);
+    pick_spread(options, wanted, gap, starts, rng)
+}
+
+/// Special tiles (`Special`): about one per side, of every kind in turn, between the starts
+/// like the ruins but with more leeway, away from the ruins and each other.
+fn place_specials(grid: &mut HexGrid, starts: &Vec[Hex], distances: &Vec[Map[Hex, i32]], ruins: &Vec[Hex], spacing: f32, rng: &mut Rng) {
+    let near = max((spacing * 0.3) as i32, 4);
+    let far = max((spacing * 1.1) as i32, near + 2);
+    let all = contested_hexes(&*grid, starts, distances, near, far, 3);
+    let mut options: Vec[Spot] = Vec.new();
+    for i in 0..all.len() {
+        let mut clear = true;
+        for r in 0..ruins.len() { if ruins[r].distance(all[i].hex) < 3 { clear = false; } }
+        if clear { options.push(all[i]); }
+    }
+    let wanted = starts.len() + rng.below(2);
+    let gap = max((spacing * 0.5) as i32, 4);
+    let first = rng.below(2);
+    let picked = pick_spread(options, wanted, gap, starts, rng);
+    for i in 0..picked.len() {
+        grid.set_special(picked[i], SPECIALS[(first + i) % 2]);
+    }
+}
+
+/// Whether every side starting at `site` sees the same: the settler and worker on flat ground,
+/// the scout on hills (see `start_units`), with room around them.
+fn fair_start(grid: &HexGrid, site: Hex) -> bool {
+    let around = site.neighbors();
+    let mut open = 0;
+    for i in 0..6 { if grid.is_passable(around[i]) { open = open + 1; } }
+    !grid.tile(site).hills && open >= 4 && start_units(grid, site).is_some()
+}
+
+/// Where a side starting at `site` puts its worker (flat ground) and scout (hills), both next
+/// to the settler.
+pub fn start_units(grid: &HexGrid, site: Hex) -> Option[(Hex, Hex)] {
+    let around = site.neighbors();
+    let mut worker: Option[Hex] = Option.None;
+    let mut scout: Option[Hex] = Option.None;
+    for i in 0..6 {
+        let n = around[i];
+        if grid.is_passable(n) {
+            if worker.is_none() && !grid.tile(n).hills { worker = Option.Some(n); }
+            if scout.is_none() && grid.tile(n).hills { scout = Option.Some(n); }
+        }
+    }
+    match (worker, scout) {
+        (Option.Some(w), Option.Some(s)) => Option.Some((w, s)),
+        _ => Option.None,
+    }
+}
+
+/// How good a city site is: the yields within two hexes, fresh water, and a shore.
+fn start_score(grid: &HexGrid, site: Hex) -> i32 {
+    let mut score = 0;
+    for dq in -2..=2 {
+        for dr in max(-2, -dq - 2)..=min(2, -dq + 2) {
+            let h = Hex.new(site.q + dq, site.r + dr);
+            if !grid.contains(h) { continue; }
+            let (food, production) = grid.tile(h).yields();
+            let fresh = if grid.has_fresh_water(h) { 1 } else { 0 };
+            score = score + 3 * (food + fresh) + 2 * production;
+        }
+    }
+    if grid.has_fresh_water(site) { score = score + 6; }
+    score
+}
+
+/// Connected groups of `hexes` that are in `members`, each in the order a search from its
+/// first hex reaches them.
+pub fn components(hexes: &Vec[Hex], members: &Set[Hex]) -> Vec[Vec[Hex]] {
+    let mut seen: Set[Hex] = Set.new();
+    let mut groups: Vec[Vec[Hex]] = Vec.new();
+    for i in 0..hexes.len() {
+        let h = hexes[i];
+        if !members.contains(h) || !seen.insert(h) { continue; }
+        let mut group: Vec[Hex] = Vec.new();
+        group.push(h);
+        let mut queue: Deque[Hex] = Deque.new();
+        queue.push_back(h);
+        while let Option.Some(next) = queue.pop_front() {
+            let around = next.neighbors();
+            for k in 0..6 {
+                let n = around[k];
+                if members.contains(n) && seen.insert(n) {
+                    group.push(n);
+                    queue.push_back(n);
+                }
+            }
+        }
+        groups.push(group);
+    }
+    groups
+}
+
+/// A hex and its value, for ranking.
+struct Ranked { hex: Hex, value: f32 }
+
+/// Each hex's position in `values` order (`values[i]` is `hexes[i]`'s), from 0 (lowest) to 1
+/// (highest), so thresholds pick fixed shares of the map whatever the noise's spread.
+fn ranks(hexes: &Vec[Hex], values: &Vec[f32]) -> Map[Hex, f32] {
+    let mut sorted: Vec[Ranked] = Vec.new();
+    for i in 0..hexes.len() { sorted.push(Ranked { hex: hexes[i], value: values[i] }); }
+    handle { with elements_mut(&mut sorted.buf) { sort() }; } with Compare[Ranked] {
+        cmp(a, b) => {
+            resume if total_less(a.value, b.value) {
+                Ordering.Less
+            } else if total_less(b.value, a.value) {
+                Ordering.Greater
+            } else if a.hex.q != b.hex.q {
+                order(a.hex.q, b.hex.q)
+            } else {
+                order(a.hex.r, b.hex.r)
+            }
+        }
+    };
+    let last = (max(sorted.len(), 2) - 1) as f32;
+    let mut out: Map[Hex, f32] = Map.new();
+    for i in 0..sorted.len() { let _old = out.insert(sorted[i].hex, i as f32 / last); }
+    out
+}
+
+fn quantile(values: &mut Vec[f32], share: f32) -> f32 {
+    handle { with elements_mut(&mut values.buf) { sort() }; } with Compare[f32] {
+        cmp(a, b) => { resume if total_less(a, b) { Ordering.Less } else if total_less(b, a) { Ordering.Greater } else { Ordering.Equal } }
+    };
+    values[((values.len() - 1) as f32 * share) as i32]
+}
+
+/// SplitMix64: small, fast, and the same on every platform and version.
+struct Rng { state: u64 }
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.state = self.state + 0x9E3779B97F4A7C15;
+        splitmix(self.state)
+    }
+
+    /// Uniform in [0, 1).
+    fn unit(&mut self) -> f32 { u64_to_f64(self.next().shr(40)) as f32 / 16777216.0 }
+
+    /// Uniform in 0..n.
+    fn below(&mut self, n: i32) -> i32 { (self.next() % (n as u64)) as i32 }
+}
+
+fn splitmix(state: u64) -> u64 {
+    let mut z: u64 = state;
+    z = (z.bit_xor(z.shr(30))) * 0xBF58476D1CE4E5B9;
+    z = (z.bit_xor(z.shr(27))) * 0x94D049BB133111EB;
+    z.bit_xor(z.shr(31))
+}
+
+/// Smooth value noise with a few octaves, roughly in [0, 1].
+struct Noise { seed: u64 }
+
+impl Noise {
+    fn lattice(&self, x: i32, y: i32) -> f32 {
+        let cell = (x as i64 as u64).shl(32).bit_xor((y as i64 as u64).bit_and(0xFFFFFFFF));
+        let h = splitmix(self.seed.bit_xor(splitmix(cell)));
+        u64_to_f64(h.shr(40)) as f32 / 16777216.0
+    }
+
+    fn value(&self, p: Vec2) -> f32 {
+        let (x0, y0) = (p.x.floor(), p.y.floor());
+        let (fx, fy) = (p.x - x0, p.y - y0);
+        let (sx, sy) = (smooth(fx), smooth(fy));
+        let (x0, y0) = (x0 as i32, y0 as i32);
+        let top = lerp(self.lattice(x0, y0), self.lattice(x0 + 1, y0), sx);
+        let bottom = lerp(self.lattice(x0, y0 + 1), self.lattice(x0 + 1, y0 + 1), sx);
+        lerp(top, bottom, sy)
+    }
+
+    fn fbm(&self, p: Vec2) -> f32 {
+        let (mut sum, mut amplitude, mut total, mut frequency): (f32, f32, f32, f32) = (0.0, 1.0, 0.0, 1.0);
+        for octave in 0..4 {
+            // Offset each octave so their lattices don't line up.
+            let shift = octave as f32 * 17.3;
+            sum = sum + amplitude * self.value(vec2(p.x * frequency + shift, p.y * frequency + shift));
+            total = total + amplitude;
+            amplitude = amplitude * 0.5;
+            frequency = frequency * 2.0;
+        }
+        sum / total
+    }
+}
+
+fn smooth(t: f32) -> f32 { t * t * (3.0 - 2.0 * t) }
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }

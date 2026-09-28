@@ -466,8 +466,8 @@ impl GameState {
         let unit = self.units[idx];
         let base = unit.unit_type.stats();
         let stats = unit.stats();
-        let terrain = self.grid.terrain(unit.pos);
-        let defense = stats.defense * terrain.defense_multiplier();
+        let tile = self.grid.tile(unit.pos);
+        let defense = stats.defense * tile.defense_multiplier();
         let (role, _) = self.unit_role(&unit);
 
         let title = text(fn() can {Out} { Out.put(unit.team.name()); Out.put(" "); Out.put(role); });
@@ -496,9 +496,9 @@ impl GameState {
         }
         panel.end_line(TextSize.Body);
 
-        if terrain.defense_multiplier() != 1.0 {
-            let bonus = (terrain.defense_multiplier() - 1.0) * 100.0;
-            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("ON "); Out.put(terrain.name()); Out.put(": +"); show_rounded(bonus); Out.put("% DEFENSE"); }), DIM_TEXT);
+        if tile.defense_multiplier() != 1.0 {
+            let bonus = (tile.defense_multiplier() - 1.0) * 100.0;
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("+"); show_rounded(bonus); Out.put("% DEFENSE FROM TERRAIN"); }), DIM_TEXT);
         }
         if unit.deployed { panel.text(TextSize.Small, "DEPLOYED: +1 RANGE, CANNOT MOVE", DIM_TEXT); }
         if self.rival_of(idx).is_some() { panel.text(TextSize.Small, "CONTESTED: FIGHTING FOR THIS HEX", DIM_TEXT); }
@@ -680,14 +680,15 @@ impl GameState {
 
     /// Everything about a map hex: terrain, what it yields, and what's on it.
     fn tile_tooltip(&self, hex: Hex, panel: &mut PanelBuilder) {
-        let terrain = self.grid.terrain(hex);
+        let tile = self.grid.tile(hex);
+        let terrain = tile.terrain;
         let city = self.city_at(hex);
         match city {
             Option.Some(c) => {
                 let (team, id) = (self.cities[c].team, self.cities[c].id);
                 panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(team.name()); Out.put(" CITY "); show_u64((id + 1) as u64); }), team.color());
             }
-            Option.None => panel.text(TextSize.Body, terrain.name(), TEXT),
+            Option.None => panel.text_owned(TextSize.Body, tile.name(), TEXT),
         }
         if !terrain.is_passable() {
             panel.text(TextSize.Small, "IMPASSABLE", DIM_TEXT);
@@ -702,9 +703,22 @@ impl GameState {
         if city.is_some() {
             panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(terrain.name()); Out.put(" CITY CENTER"); }), DIM_TEXT);
         }
-        if terrain.defense_multiplier() != 1.0 {
-            let bonus = (terrain.defense_multiplier() - 1.0) * 100.0;
+        if tile.defense_multiplier() != 1.0 {
+            let bonus = (tile.defense_multiplier() - 1.0) * 100.0;
             panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("+"); show_rounded(bonus); Out.put("% DEFENSE FOR UNITS HERE"); }), DIM_TEXT);
+        }
+        if let Option.Some(resource) = self.grid.resource(hex) {
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(resource.name()); Out.put(" RESOURCE"); }), DIM_TEXT);
+        }
+        if let Option.Some(special) = self.grid.special(hex) {
+            let (food, production) = special.bonus();
+            panel.text_owned(TextSize.Small, text(fn() can {Out} {
+                Out.put(special.name());
+                Out.put(":");
+                if food > 0 { Out.put(" +"); show_i64(food as i64); Out.put(" FOOD"); }
+                if production > 0 { Out.put(" +"); show_i64(production as i64); Out.put(" PRODUCTION"); }
+                Out.put(" WHEN WORKED");
+            }), DIM_TEXT);
         }
         if let Option.Some(site) = self.sites.get(hex) {
             panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(site.team.name()); Out.put(" "); Out.put(site.kind.name()); }), DIM_TEXT);

@@ -19,6 +19,7 @@ use game.effects.Effect;
 use game.effects.Outcome;
 use game.hex.Hex;
 use game.hex.HexGrid;
+use game.terrain.HILLS;
 use game.terrain.Terrain;
 use game.turn.Phase;
 use game.turn.step_rank;
@@ -165,14 +166,14 @@ fn damage_taken_at(grid: &HexGrid, pos: Hex) -> f32 {
     let siege = Unit.new(0, Hex.new(0, 0), Team.Blue, UnitType.Siege);
     let defender = Unit.new(1, pos, Team.Red, UnitType.Melee);
     let mut g = seed(7);
-    handle { roll_damage(&siege, &defender, grid) } with Rand { rand() => { resume g.next() } }
+    handle { roll_damage(&siege, &defender, grid.tile(pos).defense_multiplier()) } with Rand { rand() => { resume g.next() } }
 }
 
 @test
 fn hills_reduce_damage_taken() {
     let hill = Hex.new(1, 0);
     let plain = Hex.new(-1, 0);
-    let grid = HexGrid.new(GRID_RADIUS, &[(hill, Terrain.Hills)]);
+    let grid = HexGrid.new(GRID_RADIUS, &[(hill, HILLS)]);
     assert(damage_taken_at(&grid, hill) < damage_taken_at(&grid, plain));
 }
 

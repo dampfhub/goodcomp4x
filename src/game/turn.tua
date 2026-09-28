@@ -358,7 +358,7 @@ impl GameState {
             }
             if reverse.is_some() && d < a { continue; }
             let (attacker, defender) = (self.units[a], self.units[d]);
-            let hit = engagement.damage_scale * roll_damage(&attacker, &defender, &self.grid);
+            let hit = engagement.damage_scale * roll_damage(&attacker, &defender, self.grid.tile(defender.pos).defense_multiplier());
             damage[d] = damage[d] + hit;
             let verb = if engagement.damage_scale < 1.0 { "volleys" } else { "hits" };
 
@@ -369,18 +369,18 @@ impl GameState {
             };
             let grid = &self.grid;
             if let Option.Some(back_scale) = retaliation_scale {
-                let back = back_scale * roll_damage(&defender, &attacker, grid);
+                let back = back_scale * roll_damage(&defender, &attacker, grid.tile(attacker.pos).defense_multiplier());
                 damage[a] = damage[a] + back;
                 let verb = if reverse.is_some() { "trades blows with" } else { verb };
                 info(fn() can {Out} {
-                    attacker.show(); show_note(&attacker, grid); Out.put(" "); Out.put(verb); Out.put(" ");
-                    defender.show(); show_note(&defender, grid); Out.put(" for "); show_f64_fixed(hit as f64, 0);
+                    attacker.show(); show_note(&attacker, grid, false); Out.put(" "); Out.put(verb); Out.put(" ");
+                    defender.show(); show_note(&defender, grid, false); Out.put(" for "); show_f64_fixed(hit as f64, 0);
                     Out.put(", taking "); show_f64_fixed(back as f64, 0); Out.put(" back");
                 });
             } else {
                 info(fn() can {Out} {
-                    attacker.show(); show_note(&attacker, grid); Out.put(" "); Out.put(verb); Out.put(" ");
-                    defender.show(); show_note(&defender, grid); Out.put(" for "); show_f64_fixed(hit as f64, 0);
+                    attacker.show(); show_note(&attacker, grid, false); Out.put(" "); Out.put(verb); Out.put(" ");
+                    defender.show(); show_note(&defender, grid, false); Out.put(" for "); show_f64_fixed(hit as f64, 0);
                 });
             }
         }

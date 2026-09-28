@@ -16,7 +16,8 @@ use game.PLAYER_TEAM;
 use game.text;
 use game.hex.Hex;
 use game.hex.HexGrid;
-use game.terrain.Terrain;
+use game.terrain.HILLS;
+use game.terrain.MOUNTAINS;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
@@ -188,15 +189,15 @@ impl GameState {
 
     pub fn setup_cities(&mut self) {
         let terrain = [
-            (Hex.new(-2, 2), Terrain.Hills),
-            (Hex.new(2, -2), Terrain.Hills),
-            (Hex.new(0, 0), Terrain.Hills),
-            (Hex.new(0, -4), Terrain.Mountains),
-            (Hex.new(0, -3), Terrain.Mountains),
-            (Hex.new(0, -2), Terrain.Mountains),
-            (Hex.new(0, 2), Terrain.Mountains),
-            (Hex.new(0, 3), Terrain.Mountains),
-            (Hex.new(0, 4), Terrain.Mountains),
+            (Hex.new(-2, 2), HILLS),
+            (Hex.new(2, -2), HILLS),
+            (Hex.new(0, 0), HILLS),
+            (Hex.new(0, -4), MOUNTAINS),
+            (Hex.new(0, -3), MOUNTAINS),
+            (Hex.new(0, -2), MOUNTAINS),
+            (Hex.new(0, 2), MOUNTAINS),
+            (Hex.new(0, 3), MOUNTAINS),
+            (Hex.new(0, 4), MOUNTAINS),
         ];
         self.grid = HexGrid.new(6, &terrain);
         self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
@@ -230,10 +231,10 @@ impl GameState {
 
     pub fn setup_frontier(&mut self) {
         let terrain = [
-            (Hex.new(-1, 2), Terrain.Hills),
-            (Hex.new(1, -2), Terrain.Hills),
-            (Hex.new(0, 3), Terrain.Mountains),
-            (Hex.new(0, -3), Terrain.Mountains),
+            (Hex.new(-1, 2), HILLS),
+            (Hex.new(1, -2), HILLS),
+            (Hex.new(0, 3), MOUNTAINS),
+            (Hex.new(0, -3), MOUNTAINS),
         ];
         self.grid = HexGrid.new(6, &terrain);
         self.camera.half_height = SCENARIO_VIEW_HALF_HEIGHT;
@@ -324,7 +325,7 @@ impl GameState {
             self.set_notice("ONLY A WORKER IMPROVES TILES");
             return;
         }
-        let (food, production, kind) = if self.grid.terrain(unit.pos) == Terrain.Hills { (1, 4, SiteKind.Mine) } else { (4, 0, SiteKind.Farm) };
+        let (food, production, kind) = if self.grid.tile(unit.pos).hills { (1, 4, SiteKind.Mine) } else { (4, 0, SiteKind.Farm) };
         self.sites.insert(unit.pos, Site { team: unit.team, food, production, kind });
         self.notice = text(fn() can {Out} { Out.put(kind.name()); Out.put(" BUILT"); });
     }
@@ -373,7 +374,7 @@ impl GameState {
                 if !self.grid.is_passable(n) || self.enemy_of_team_at(n, city.team).is_some() || self.enemy_city_at(n, city.team) {
                     continue;
                 }
-                let step = if self.is_road_hex(n) { 1 } else if self.grid.terrain(n) == Terrain.Hills { 3 } else { 2 };
+                let step = if self.is_road_hex(n) { 1 } else { self.grid.tile(n).route_cost() };
                 let total = cost + step;
                 let shorter = match result.costs.get(n) { Option.None => true, Option.Some(old) => total < old };
                 if total <= 8 && shorter { result.costs.insert(n, total); }
@@ -389,16 +390,19 @@ impl GameState {
         false
     }
 
-    /// What a tile yields when worked: its site's, or its terrain's.
+    /// What a worked tile produces: its site's yield or its terrain's, plus one food for fresh
+    /// water (a river or lake beside it) and a special tile's bonus.
     pub fn tile_yield(&self, hex: Hex) -> (i32, i32) {
-        match self.sites.get(hex) {
+        let (food, production) = match self.sites.get(hex) {
             Option.Some(s) => (s.food, s.production),
-            Option.None => match self.grid.terrain(hex) {
-                Terrain.Plains => (2, 1),
-                Terrain.Hills => (1, 2),
-                Terrain.Mountains => (0, 0),
-            },
-        }
+            Option.None => self.grid.tile(hex).yields(),
+        };
+        let (extra_food, extra_production) = match self.grid.special(hex) {
+            Option.Some(s) => s.bonus(),
+            Option.None => (0, 0),
+        };
+        let fresh = if self.grid.has_fresh_water(hex) { 1 } else { 0 };
+        (food + fresh + extra_food, production + extra_production)
     }
 
     /// Whether city `index` may put a citizen on `hex`: no city stands there or works it, and
