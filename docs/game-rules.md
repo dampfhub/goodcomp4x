@@ -219,7 +219,8 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - M and X (or the Move and Attack buttons) arm the next map click as a move or attack; with one
   armed, a right-click disarms it.
 - Ctrl-click an adjacent ally to swap places (see Swaps).
-- Ctrl-right-click clears the selected unit's orders, including its queue, a hold or a guard.
+- Ctrl-right-click clears the selected unit's orders, including its queue, a hold, a guard or
+  an alert.
 - Shift-left-click and Shift-right-click queue orders for later turns (see Order queues).
 - Q (or the ability button) toggles the selected unit's ability.
 - **Hold:** Space holds the selected unit if it still needs orders: it keeps what it has queued
@@ -231,9 +232,21 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - **Guard:** G toggles `Unit::guarding`, like holding but lasting across turns, so the unit never
   comes back up in the turn order. Queuing any move, attack or swap wakes it, as do G and
   Ctrl-right-click. Guarding units get a white hex outline.
+- **Alert:** E (or the Alert button) toggles `Unit::alert`, a stance of its own beside Guard:
+  the unit drops this turn's move and attack and its queue, stays put, is skipped in the turn
+  order every turn, and costs nothing to keep. Each turn, in its own type's attack step, it
+  attacks an enemy in its attack range (see Turn resolution). Any other order ends it: a move,
+  attack, swap, queued turn, group move or attack, its ability, Guard, E again or
+  Ctrl-right-click; Hold keeps it, and going on alert ends a guard. Melee, cavalry, armored and
+  ranged troops can go on alert, and siege once set up (or setting up this turn: set it up with
+  Q, then E; packing it up ends the alert). Scouts, ships and settlers can't ("ONLY MELEE,
+  CAVALRY, ARMORED, RANGED AND SET-UP SIEGE CAN GO ON ALERT"). With a group, every member that
+  can goes on alert, or all come off it if they all already are. Units on alert wear a red
+  reticle: a ring with four diagonal ticks. The AI never puts a unit on alert; one it plans
+  orders for (a side whose player left) comes off alert as the turn resolves.
 - **Selection flow:** the first unit needing orders is selected at the start of each turn, and
   once the selected unit is done the next one is selected automatically. "Done" (`needs_orders`)
-  means holding, guarding or following an order queue, or having a move queued (or unable to
+  means holding, guarding, on alert or following an order queue, or having a move queued (or unable to
   move) and an attack queued (or unable to attack). Enemies in range don't matter, since hex attacks are always possible. A unit
   in a contested hex is always done. Selecting a unit by clicking never auto-advances, so a
   finished unit can be reselected to edit. Tab looks at the next unit without holding the current
@@ -258,7 +271,9 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   plan leaves the unit. Each turn the unit moves to the hex it can reach that turn that is the
   shortest walk from the clicked hex, going around the terrain, walls and gates the player knows
   of (a hex never seen counts as open; see Fog of war) and allies standing still with no orders
-  (the straight distance decides if there is no known way there; staying put wins ties). Turns are added
+  (the straight distance decides if there is no known way there; staying put wins ties). Of the
+  hexes as far along the way, it takes the one nearest the clicked hex as the crow flies, so of the
+  many equally short ways on hexes it keeps to the straightest. Turns are added
   until nobody can get any closer (a queue toward an enemy in sight stops next to it), but no
   unit's plan grows past the **queue limit** setting (6 turns by default, 1 to 20, this turn
   included; see `controls.md`, Settings menu). A hex farther away than that is queued as far
@@ -301,8 +316,9 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
   turn and every turn it has queued orders for.
 - **Cancelling:** any other order to the unit (a plain move or attack, a group move or attack, a
-  swap, its ability, Guard, Ctrl-right-click) drops its queue. Hold keeps it. This turn's orders
-  stay, so the unit needs orders again unless the new order completes them. A map click that
+  swap, its ability, Guard, Alert, Ctrl-right-click) drops its queue. Hold keeps it. This turn's
+  orders stay (but for Alert, which drops them too), so the unit needs orders again unless the
+  new order completes them. A map click that
   would replace a queue reaching past this turn (a plain move, attack or swap, for a unit or a
   group) needs the same click twice: the first only warns and outlines the hex, and any other
   click, a new selection or the turn ending forgets it (`confirm_queue_replace`).
@@ -356,6 +372,20 @@ Everyone in a step acts simultaneously:
   applied at the end, so a unit killed this step still gets its attack off. Two units attacking
   each other in the same step make one exchange of blows, not two attacks that each draw
   retaliation.
+- **Alert fire:** a unit on alert (see Orders) acts in its own type's attack step, like a
+  planned attack, at an enemy unit within its attack range as the step starts. So it hits
+  whatever ended an earlier move step in range, this turn or a turn before, and one that comes
+  in range only after its step (a siege moving in at step 9, say, against melee on alert) is
+  fired on the next turn, if it's still there. The target is the nearest enemy unit, then the
+  weakest (fewest HP), then the lowest hex (q, then r). It is chosen on the real board, fog or
+  not, the same on every machine of a network game. It is only ever a unit: never a city or an
+  empty city center, a barracks, a Coastal Battery or a worker (a unit standing on a city
+  center is fired at, as a planned attack would hit it), and a ship only by a troop that can
+  hit ships (ranged, siege). The attack is an ordinary one: melee draws retaliation, a unit
+  locked in a contested hex fights its rival instead, and a siege setting up can't fire that
+  turn. As the turn starts to resolve, a unit on alert with any other order for the turn (the
+  AI's, for a side whose player left) or no longer able to be on alert (a siege packing up)
+  comes off it.
 - Each mover's order is spent when its step runs, whether it got through or not.
 - After the last unit and worker step: Coastal Batteries fire, then landing craft unload and
   board their passengers; city interior battles and city economy (income, growth, builds) follow.
@@ -405,7 +435,8 @@ Everyone in a step acts simultaneously:
   target they all already attack calls it off.
 - Either drops every member's order queue. Shift-clicks queue turns for the whole group instead
   (see Order queues).
-- Space/Hold holds every member, G guards them all (or unguards if all are), Ctrl-right-click
+- Space/Hold holds every member, G guards them all (or unguards if all are), E puts every
+  member that can on alert (or takes them off it if all are), Ctrl-right-click
   clears their orders, clicking one member selects just it.
 - The group is cleared when a turn resolves.
 
@@ -748,7 +779,9 @@ every turn end.
   jobs; the queue docks above it. With a barracks open, what it stands on, each deposit
   kind's Cavalry or Armored left (or why none), its five train cards and Open City, queue above. With a unit selected: stats (boosted values green, reduced
   red), notes, and buttons Move, Attack, Swap, then its ability (or Found City), then Hold,
-  Guard and Disband (press twice: the first press asks to confirm). Move, Attack and Swap arm the next map click only (a held modifier overrides it);
+  Guard, Alert (troops that can go on alert only; a siege not set up shows it dimmed), Clear
+  Orders and Disband (press twice: the first press asks to confirm). The classic tray lays the
+  icons out five to a row. Move, Attack and Swap arm the next map click only (a held modifier overrides it);
   pressing the button again or right-clicking disarms. The armed button has a bright border, a
   queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows

@@ -325,16 +325,32 @@ impl GameState {
         fog: &Fog,
         naval: bool,
     ) -> HashSet<Hex> {
+        self.known_reachable_past(start, move_range, team, fog, naval, |hex| {
+            self.known_occupied(hex, fog)
+        })
+    }
+
+    /// `known_reachable_for_domain`, with `blocked` saying which hexes
+    /// the units on them close.
+    pub(super) fn known_reachable_past(
+        &self,
+        start: Hex,
+        move_range: i32,
+        team: Team,
+        fog: &Fog,
+        naval: bool,
+        blocked: impl Fn(Hex) -> bool,
+    ) -> HashSet<Hex> {
         let mut reachable = self.reachable_hexes_by(start, move_range, |from, to| {
             self.known_passable(to, naval)
                 && !self.known_enemy_city_at(to, team, fog)
                 && self.known_can_cross(from, to, team, fog)
-                && !self.known_occupied(to, fog)
+                && !blocked(to)
         });
         if move_range > 0 && !naval {
             for city in self.cities.iter().filter(|city| city.team == team) {
                 if let Some(dest) = city.placed_site(Building::Railhead)
-                    && !self.known_occupied(dest, fog)
+                    && !blocked(dest)
                     && self.rail_transfer_available(start, dest, team, Some(fog))
                 {
                     reachable.insert(dest);

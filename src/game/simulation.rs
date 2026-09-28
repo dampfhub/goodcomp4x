@@ -10,6 +10,7 @@
 //! `economy.rs`, ignored by default) measures how the stockpile economy runs, and says how to
 //! run it.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 mod economy;
@@ -122,6 +123,46 @@ fn play_queued_turn(game: &mut GameState) -> usize {
     game.resolve_turn();
     game.update(0.0);
     game.units.iter().filter(|u| u.following_queue).count()
+}
+
+/// Like `play_turn`, but the player's troops with even ids go on alert (`go_on_alert`, as
+/// the Alert button does) whenever they can, in place of what the AI planned for them, and
+/// stay on it; the AI plans the rest. Checks that every unit on alert as the turn resolves
+/// stays put and stays on alert, and returns how many of them had an enemy in range then.
+fn play_alert_turn(game: &mut GameState, context: &str) -> usize {
+    game.selected = None;
+    game.group.clear();
+    game.plan_ai_turn(PLAYER_TEAM);
+    for idx in 0..game.units.len() {
+        let unit = &game.units[idx];
+        if unit.team != PLAYER_TEAM || unit.id % 2 == 1 {
+            continue;
+        }
+        if game.can_go_on_alert(idx) {
+            game.go_on_alert(idx);
+        } else {
+            // A siege the AI packs up: its order ends the alert.
+            game.units[idx].alert = false;
+        }
+    }
+    let on_alert: Vec<(u32, Hex)> = game
+        .units
+        .iter()
+        .filter(|u| u.alert)
+        .map(|u| (u.id, u.pos))
+        .collect();
+    let ready = (0..game.units.len())
+        .filter(|&i| game.alert_target(i).is_some())
+        .count();
+    game.resolve_turn();
+    game.update(0.0);
+    for (id, pos) in on_alert {
+        if let Some(unit) = game.units.iter().find(|u| u.id == id) {
+            assert_eq!(unit.pos, pos, "{context}: {unit} moved while on alert");
+            assert!(unit.alert, "{context}: {unit} came off alert by itself");
+        }
+    }
+    ready
 }
 
 /// Prints how to replay a game if it panics, whether from a failed check or inside the game.
@@ -248,6 +289,11 @@ fn check_invariants(game: &GameState, context: &str) {
         assert!(
             !unit.has_queue() || game.is_player_controlled(idx),
             "{context}: {unit} follows a queue but isn't the player's"
+        );
+        // On alert only a troop that can be, with no other order.
+        assert!(
+            !unit.alert || (game.can_go_on_alert(idx) && !unit.has_turn_orders()),
+            "{context}: {unit} is on alert but can't be"
         );
     }
     for worker in &game.field_workers {
@@ -637,6 +683,26 @@ fn queued_orders_against_the_ai_keep_the_board_consistent() {
         // Anti-vacuity: queues were actually carried from turn to turn.
         assert!(followed > 0, "{name}: no unit ever followed a queued turn");
     });
+}
+
+#[test]
+fn troops_on_alert_against_the_ai_keep_the_board_consistent() {
+    let ready = AtomicUsize::new(0);
+    for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
+        let mut game = start(scenario, seed);
+        let name = format!("{} seed {seed}", scenario.name());
+        for turn in 1..=TURNS {
+            let context = format!("{name} alert turn {turn}");
+            ready.fetch_add(play_alert_turn(&mut game, &context), Ordering::Relaxed);
+            assert!(!game.is_resolving(), "{context}: the turn did not finish");
+            check_invariants(&game, &context);
+        }
+    });
+    // Anti-vacuity: units on alert did have enemies to fire at.
+    assert!(
+        ready.into_inner() > 0,
+        "no unit on alert ever had an enemy in range"
+    );
 }
 
 #[test]

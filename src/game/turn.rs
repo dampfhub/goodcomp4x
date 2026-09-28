@@ -90,6 +90,7 @@ impl GameState {
         for team in self.ai_teams() {
             self.plan_ai_turn(team);
         }
+        self.end_broken_alerts();
         self.pending_steps.extend(
             RESOLUTION_ORDER
                 .into_iter()
@@ -284,10 +285,15 @@ impl GameState {
                 }
                 movers
             }
-            // Units in a contested hex fight whether or not they have orders.
+            // Units in a contested hex fight whether or not they have orders,
+            // and units on alert fire at an enemy in range.
             Phase::Attack => (0..self.units.len())
                 .filter(of_type)
-                .filter(|&i| self.units[i].planned_attack.is_some() || self.rival_of(i).is_some())
+                .filter(|&i| {
+                    self.units[i].planned_attack.is_some()
+                        || self.rival_of(i).is_some()
+                        || self.alert_target(i).is_some()
+                })
                 .collect(),
         };
         if actors.is_empty() {
@@ -301,6 +307,50 @@ impl GameState {
             Phase::Attack => self.resolve_attacks(&actors),
         }
         ids
+    }
+
+    /// Where unit `idx`, on alert, fires in its attack step: at an enemy
+    /// unit within its attack range as the step starts, on the real board
+    /// (the same on every machine, whatever each player sees). So it hits
+    /// whatever ended an earlier move step in range, this turn or before.
+    /// Only units, never a city, barracks, battery or worker, and only ones
+    /// it may attack (`attack_target_legal`: a ship only by a troop that
+    /// can hit ships). The nearest, then the weakest (fewest HP), then the
+    /// lowest (q, r). `None` if it isn't on alert, has an attack planned,
+    /// can't attack this step (locked in a contested hex, setting up) or
+    /// has nobody in range.
+    pub(super) fn alert_target(&self, idx: usize) -> Option<Hex> {
+        let unit = &self.units[idx];
+        if !unit.alert || unit.planned_attack.is_some() || !self.can_go_on_alert(idx) {
+            return None;
+        }
+        let range = unit.stats().attack_range;
+        self.units
+            .iter()
+            .filter(|other| other.team != unit.team && unit.pos.distance(other.pos) <= range)
+            .filter(|other| self.attack_target_legal(idx, other.pos, false))
+            .min_by(|a, b| {
+                unit.pos
+                    .distance(a.pos)
+                    .cmp(&unit.pos.distance(b.pos))
+                    .then(a.hp.total_cmp(&b.hp))
+                    .then((a.pos.q, a.pos.r, a.id).cmp(&(b.pos.q, b.pos.r, b.id)))
+            })
+            .map(|other| other.pos)
+    }
+
+    /// As the turn starts to resolve, ends the alert of any unit with
+    /// another order this turn (an alert unit stays put; the AI, playing a
+    /// side a player left, gives orders without knowing of alerts) or that
+    /// can no longer keep it (a siege packing up). The same on every
+    /// machine, like the rest of resolution.
+    fn end_broken_alerts(&mut self) {
+        for i in 0..self.units.len() {
+            if self.units[i].alert && (self.units[i].has_turn_orders() || !self.can_go_on_alert(i))
+            {
+                self.units[i].alert = false;
+            }
+        }
     }
 
     /// Moves `movers` simultaneously:
@@ -495,7 +545,20 @@ impl GameState {
                 continue;
             }
 
-            let target = attacker.planned_attack.unwrap();
+            let target = match attacker.planned_attack {
+                Some(target) => target,
+                None => {
+                    let Some(target) = self.alert_target(a) else {
+                        continue;
+                    };
+                    log::info!(
+                        "{attacker} is on alert and fires at ({}, {})",
+                        target.q,
+                        target.r
+                    );
+                    target
+                }
+            };
             if self.empty_city_target(target, attacker.team) {
                 shots.push(Effect::Shot {
                     from,
@@ -861,5 +924,187 @@ mod naval_tests {
         g.cities[1].coastal_battery_hp = 1.0;
         g.resolve_attacks(&[0]);
         assert_eq!(g.cities[1].placed_site(Building::CoastalBattery), None);
+    }
+}
+
+#[cfg(test)]
+mod alert_tests {
+    use super::*;
+    use crate::game::city::City;
+    use crate::game::unit::Team;
+
+    /// An open field with `units` on it, no cities, fog off, and both sides
+    /// planned by hand (no AI), each unit placed as given.
+    fn field(units: &[(Team, UnitType, Hex)]) -> GameState {
+        let mut game = GameState::city_scenario();
+        game.fog_of_war = false;
+        game.units.clear();
+        game.cities.clear();
+        game.field_workers.clear();
+        game.selected = None;
+        game.group.clear();
+        game.humans = vec![Team::Blue, Team::Red];
+        game.settings.instant_playback = true;
+        for (n, &(team, unit_type, pos)) in units.iter().enumerate() {
+            assert!(game.grid.is_passable(pos), "{pos:?}");
+            game.units
+                .push(Unit::new(100 + n as u32, pos, team, unit_type));
+        }
+        game
+    }
+
+    fn play_turn(game: &mut GameState) {
+        game.resolve_turn();
+        while game.is_resolving() {
+            game.update(1.0);
+        }
+    }
+
+    fn by_id(game: &GameState, id: u32) -> &Unit {
+        game.units.iter().find(|u| u.id == id).expect("alive")
+    }
+
+    #[test]
+    fn an_alert_unit_attacks_an_enemy_that_moves_into_range_and_stays_put() {
+        let mut game = field(&[
+            (Team::Blue, UnitType::Melee, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-2, 0)),
+        ]);
+        game.units[0].alert = true;
+        // Out of reach as planning ends: nothing to plan an attack on.
+        assert_eq!(game.alert_target(0), None);
+        game.units[1].planned_move = Some(Hex::new(-3, 0));
+        play_turn(&mut game);
+
+        let (blue, red) = (by_id(&game, 100), by_id(&game, 101));
+        assert_eq!(red.pos, Hex::new(-3, 0));
+        assert!(red.hp < red.max_hp(), "hit in the melee attack step");
+        assert!(blue.hp < blue.max_hp(), "a melee attack draws retaliation");
+        assert_eq!(blue.pos, Hex::new(-4, 0), "it stays put");
+        assert!(blue.alert, "still on alert next turn");
+
+        // And again the next turn, with the enemy still in range.
+        let red_hp = red.hp;
+        play_turn(&mut game);
+        assert!(by_id(&game, 101).hp < red_hp);
+    }
+
+    #[test]
+    fn without_alert_nothing_fires() {
+        let mut game = field(&[
+            (Team::Blue, UnitType::Ranged, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-3, 0)),
+        ]);
+        play_turn(&mut game);
+        assert_eq!(by_id(&game, 101).hp, by_id(&game, 101).max_hp());
+    }
+
+    #[test]
+    fn an_alert_unit_picks_the_nearest_then_the_weakest() {
+        let mut game = field(&[
+            (Team::Blue, UnitType::Ranged, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-2, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-3, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-4, 1)),
+        ]);
+        game.units[0].alert = true;
+        // The one two hexes off is the weakest, but the adjacent ones are
+        // nearer; of those, the weaker.
+        game.units[1].hp = 5.0;
+        game.units[2].hp = 60.0;
+        game.units[3].hp = 50.0;
+        assert_eq!(game.alert_target(0), Some(Hex::new(-4, 1)));
+        // A tie goes to the lower (q, r).
+        game.units[3].hp = 60.0;
+        assert_eq!(game.alert_target(0), Some(Hex::new(-4, 1)));
+        game.units.truncate(2);
+        assert_eq!(game.alert_target(0), Some(Hex::new(-2, 0)));
+        // Allies are never targets.
+        game.units[1].team = Team::Blue;
+        assert_eq!(game.alert_target(0), None);
+    }
+
+    #[test]
+    fn an_alert_unit_never_fires_at_a_city_or_its_barracks() {
+        let mut game = field(&[(Team::Blue, UnitType::Ranged, Hex::new(-4, 0))]);
+        let mut city = City::new(0, Team::Red, Hex::new(-3, 0));
+        city.barracks = Some(Hex::new(-4, 1));
+        game.cities.push(city);
+        game.units[0].alert = true;
+        assert_eq!(game.alert_target(0), None);
+        play_turn(&mut game);
+        assert_eq!(
+            game.cities[0].barracks_hp,
+            City::new(0, Team::Red, Hex::new(0, 0)).barracks_hp
+        );
+        assert_eq!(game.cities[0].pos, Hex::new(-3, 0));
+        // A unit standing on the city center is a unit, and is fired at.
+        game.units
+            .push(Unit::new(200, Hex::new(-3, 0), Team::Red, UnitType::Melee));
+        assert_eq!(game.alert_target(0), Some(Hex::new(-3, 0)));
+    }
+
+    #[test]
+    fn only_troops_that_can_hit_ships_fire_at_them() {
+        let mut game = GameState::naval_scenario();
+        game.units.clear();
+        game.humans = vec![Team::Blue, Team::Red];
+        let (land, water) = game
+            .grid
+            .all_hexes()
+            .filter(|&h| game.grid.is_passable(h))
+            .find_map(|h| {
+                h.neighbors()
+                    .into_iter()
+                    .find(|&n| game.grid.contains(n) && game.grid.terrain(n).is_water())
+                    .map(|w| (h, w))
+            })
+            .expect("a shore");
+        game.units
+            .push(Unit::new(1, land, Team::Blue, UnitType::Melee));
+        game.units
+            .push(Unit::new(2, water, Team::Red, UnitType::PatrolGalley));
+        game.units[0].alert = true;
+        assert_eq!(game.alert_target(0), None, "melee can't hit a ship");
+        game.units[0].unit_type = UnitType::Ranged;
+        assert_eq!(game.alert_target(0), Some(water));
+    }
+
+    #[test]
+    fn siege_on_alert_fires_only_once_set_up() {
+        let mut game = field(&[
+            (Team::Blue, UnitType::Siege, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-2, 0)),
+        ]);
+        game.units[0].alert = true;
+        assert_eq!(game.alert_target(0), None, "packed up");
+        // Setting up this turn: it may go on alert, but can't fire yet.
+        game.units[0].ability_queued = true;
+        assert!(game.can_go_on_alert(0));
+        assert_eq!(game.alert_target(0), None);
+        play_turn(&mut game);
+        let siege = by_id(&game, 100);
+        assert!(siege.deployed && siege.alert);
+        assert_eq!(by_id(&game, 101).hp, by_id(&game, 101).max_hp());
+        // Set up, with its extra range, it fires.
+        play_turn(&mut game);
+        assert!(by_id(&game, 101).hp < by_id(&game, 101).max_hp());
+    }
+
+    #[test]
+    fn an_alert_unit_given_another_order_moves_and_stops_being_alert() {
+        // What a player's machine never sends, but the AI (playing a side
+        // a player left) may plan: a move for a unit on alert.
+        let mut game = field(&[
+            (Team::Blue, UnitType::Melee, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-4, 2)),
+        ]);
+        game.units[0].alert = true;
+        game.units[0].planned_move = Some(Hex::new(-3, 0));
+        play_turn(&mut game);
+        let blue = by_id(&game, 100);
+        assert_eq!(blue.pos, Hex::new(-3, 0));
+        assert!(!blue.alert);
+        assert_eq!(by_id(&game, 101).hp, by_id(&game, 101).max_hp());
     }
 }
