@@ -164,7 +164,12 @@ impl GameState {
 
     pub(in crate::game) fn barracks_income(&self, city: usize) -> i32 {
         let c = &self.cities[city];
-        let Some(barracks) = c.barracks.filter(|tile| c.worked.first() == Some(tile)) else {
+        // The manager can't stand on the Barracks (no citizen works a
+        // building's tile): beside it will do.
+        let Some(barracks) = c
+            .barracks
+            .filter(|tile| c.worked.first().is_some_and(|m| m.distance(*tile) == 1))
+        else {
             return 0;
         };
         let routes = self.routes_from(c.team, barracks);

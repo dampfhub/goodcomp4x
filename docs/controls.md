@@ -28,7 +28,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Shift-left-drag a box | Add the units inside it to the selection |
 | Shift-click one of your units | Add it to the selection |
 | Ctrl-click a unit in the group | Take it out of the group (with one unit selected, Ctrl-click swaps instead) |
-| Hold Alt | Show extra map info: each unit's turn order, and every explored tile's yields |
+| Hold Alt | Show extra map info: each unit's turn order, and every explored tile's yields (in the worker menu with yields off, its city's delivery percentages too) |
 | Left-click a hex with a group | Each member moves as close to it as it can get |
 | Right-click a hex with a group | Every member in range attacks it (again to call it off) |
 | Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |

@@ -1002,6 +1002,41 @@ fn structure_menu_can_be_dismissed_without_selecting_a_unit() {
 }
 
 #[test]
+fn no_citizen_works_a_city_center_or_a_building_tile() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.explore();
+    let center = g.cities[0].pos;
+    // The manager beside both the city center and a Barracks.
+    let manager = center.neighbors()[0];
+    let barracks = *center
+        .neighbors()
+        .iter()
+        .find(|n| **n != manager && n.distance(manager) == 1)
+        .unwrap();
+    g.cities[0].barracks = Some(barracks);
+    g.cities[0].population = MAX_CITY_POPULATION;
+    g.cities[0].worked = vec![manager];
+    g.cities[0].remembered_worked = vec![manager, center, barracks];
+    g.reconcile_citizens(0);
+    let worked = &g.cities[0].worked;
+    assert_eq!(worked[0], manager);
+    assert!(!worked.contains(&center), "{worked:?}");
+    assert!(!worked.contains(&barracks), "{worked:?}");
+    assert!(worked.len() > 1, "the others found open tiles");
+    // Nor by hand, nor as the manager.
+    assert!(!g.may_assign(0, center) && !g.may_assign(0, barracks));
+    assert!(!g.may_be_manager(0, barracks));
+    g.open_city(0);
+    g.city_click(barracks);
+    assert!(!g.cities[0].worked.contains(&barracks));
+    assert_eq!(g.notice, "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT");
+    // A city center's yield comes in whoever works what.
+    g.cities[0].worked.clear();
+    assert_eq!(g.income(0).food, 8, "2 food from the center alone");
+}
+
+#[test]
 fn city_menu_keeps_barracks_clicks_in_manager_assignment_context() {
     let mut g = GameState::city_scenario();
     g.units.clear();
@@ -1016,7 +1051,10 @@ fn city_menu_keeps_barracks_clicks_in_manager_assignment_context() {
     assert_eq!(g.moving_manager, Some(0));
     g.city_click(barracks);
 
-    assert_eq!(g.cities[0].worked.first(), Some(&barracks));
+    // A building covers its tile: the manager can't go there, and the
+    // click stays with the city rather than opening the Barracks.
+    assert_eq!(g.cities[0].worked.first(), Some(&manager));
+    assert_eq!(g.moving_manager, Some(0));
     assert_eq!(g.selected_city, Some(0));
     assert_eq!(g.selected_barracks, None);
 }

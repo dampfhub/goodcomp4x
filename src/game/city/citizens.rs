@@ -2,7 +2,7 @@
 //! growth, and the end-of-turn economy tick.
 use std::collections::HashSet;
 
-use super::{LaborFocus, MAX_CITY_POPULATION, delivered_share};
+use super::{Building, LaborFocus, MAX_CITY_POPULATION, delivered_share};
 use crate::game::GameState;
 use crate::game::hex::Hex;
 
@@ -15,16 +15,26 @@ impl GameState {
         }
     }
 
+    /// Whether a city center or a placed building (any side's) stands on
+    /// `hex`. No citizen works such a tile: a city center yields on its own,
+    /// and a building covers the ground.
+    pub(in crate::game) fn closed_to_citizens(&self, hex: Hex) -> bool {
+        self.cities.iter().any(|c| {
+            c.pos == hex
+                || Building::PLACEABLE
+                    .iter()
+                    .any(|&building| c.placed_site(building) == Some(hex))
+        })
+    }
+
     pub(super) fn may_assign(&self, city: usize, hex: Hex) -> bool {
         let manager_can_reach = self.cities[city]
             .worked
             .first()
             .is_none_or(|manager| manager.distance(hex) == 1);
         manager_can_reach
-            && !self
-                .cities
-                .iter()
-                .any(|c| c.pos == hex || c.worked.contains(&hex))
+            && !self.closed_to_citizens(hex)
+            && !self.cities.iter().any(|c| c.worked.contains(&hex))
             && self
                 .sites
                 .get(&hex)
@@ -32,11 +42,12 @@ impl GameState {
     }
 
     pub(super) fn may_be_manager(&self, city: usize, hex: Hex) -> bool {
-        !self
-            .cities
-            .iter()
-            .enumerate()
-            .any(|(i, c)| i != city && (c.pos == hex || c.worked.contains(&hex)))
+        !self.closed_to_citizens(hex)
+            && !self
+                .cities
+                .iter()
+                .enumerate()
+                .any(|(i, c)| i != city && c.worked.contains(&hex))
             && self
                 .sites
                 .get(&hex)
@@ -72,7 +83,7 @@ impl GameState {
             );
             let legal = routes.costs.contains_key(&target)
                 && !other_claims.contains(&target)
-                && !self.cities.iter().any(|c| c.pos == target)
+                && !self.closed_to_citizens(target)
                 && self
                     .sites
                     .get(&target)
@@ -144,12 +155,21 @@ impl GameState {
     /// blocked tiles, then restores those choices once they are available.
     pub(super) fn reconcile_citizens(&mut self, city: usize) {
         let routes = self.routes(city);
+        // Tiles no citizen may take: another city's worked tiles, and city
+        // centers and placed buildings (`closed_to_citizens`).
         let other_claims: HashSet<Hex> = self
             .cities
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != city)
             .flat_map(|(_, c)| c.worked.iter().copied())
+            .chain(
+                routes
+                    .costs
+                    .keys()
+                    .copied()
+                    .filter(|&h| self.closed_to_citizens(h)),
+            )
             .collect();
         self.cities[city]
             .worked

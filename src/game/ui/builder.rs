@@ -35,8 +35,9 @@ impl ButtonSpec {
     }
 }
 
-/// Keep costs and work times on buttons, but reveal keyboard shortcuts only
-/// while the button is hovered. `hint` remains intact for help tooltips.
+/// Keep costs and work times on buttons, but show keyboard shortcuts only
+/// where `reveal_shortcut` asks (the Debug panel): elsewhere a button's key
+/// is in its tooltip, so hovering never changes a button's text.
 pub(super) fn visible_button_hint(hint: &str, reveal_shortcut: bool) -> &str {
     if reveal_shortcut {
         return hint;

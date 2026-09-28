@@ -1393,18 +1393,6 @@ fn scope_from_text(text: &str) -> Option<BoxScope> {
     }
 }
 
-/// Decide the label before submitting the ImGui button, without changing
-/// its fixed rectangle or relying on the previous frame's hovered item.
-fn next_button_hovered(ui: &Ui, size: [f32; 2]) -> bool {
-    let [x, y] = ui.cursor_screen_pos();
-    let [mouse_x, mouse_y] = ui.io().mouse_pos;
-    ui.is_window_hovered()
-        && mouse_x >= x
-        && mouse_x < x + size[0]
-        && mouse_y >= y
-        && mouse_y < y + size[1]
-}
-
 fn panel_content_height(cursor_y: f32, padding_y: f32, title_height: Option<f32>) -> f32 {
     cursor_y + padding_y - title_height.unwrap_or(0.0)
 }
@@ -2466,10 +2454,7 @@ impl GameState {
                         } else {
                             48.0
                         };
-                        let hint = visible_button_hint(
-                            &spec.hint,
-                            panel.faded || next_button_hovered(ui, [width, height]),
-                        );
+                        let hint = visible_button_hint(&spec.hint, panel.faded);
                         let lines = if icons {
                             vec![String::new()]
                         } else if hint.is_empty() {
@@ -2546,10 +2531,7 @@ impl GameState {
                                 let _disabled =
                                     ui.begin_disabled(spec.state == ButtonState::Disabled);
                                 let width = ui.content_region_avail()[0].max(80.0);
-                                let hint = visible_button_hint(
-                                    &spec.hint,
-                                    next_button_hovered(ui, [width, 28.0]),
-                                );
+                                let hint = visible_button_hint(&spec.hint, false);
                                 let has_icon =
                                     action_icons::production_unit_icon(spec.target).is_some();
                                 let prefix = if has_icon { "     " } else { "" };
@@ -2773,12 +2755,7 @@ impl GameState {
                 };
                 let _disabled = ui.begin_disabled(self.is_resolving());
                 let end_size = [end_width - 15.0, 29.0];
-                let end_label = if next_button_hovered(ui, end_size) {
-                    format!("{label}  [SPACE]")
-                } else {
-                    label
-                };
-                if ui.button_with_size(format!("{end_label}###EndTurn"), end_size) {
+                if ui.button_with_size(format!("{label}###EndTurn"), end_size) {
                     actions.push(Action::Button(None, Target::EndTurn));
                 }
                 if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {

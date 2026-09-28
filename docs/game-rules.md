@@ -445,8 +445,10 @@ every turn end.
 - **Founding:** F with a selected settler, at least 3 hexes from any other city; the new city
   starts at population 1, auto-assigns and opens. The AI founds a city in place, at the start of
   any resolution where it has a settler and no city, without the 3-hex rule.
-- **Yields:** the city center gives 2 food and 1 wood; each worked tile gives its food, wood and
-  metal (see Goods) times its delivery share. Improvements (built by workers, see Workers): a mine on
+- **Yields:** the city center gives 2 food and 1 wood on its own; each worked tile gives its
+  food, wood and metal (see Goods) times its delivery share. No citizen works a city center or a
+  tile a placed building stands on (`closed_to_citizens`): such a tile can't be assigned or take
+  the manager, and a citizen already there moves off. Improvements (built by workers, see Workers): a mine on
   hills (+2 production), a lumber mill under forest or jungle (+1 production), otherwise a farm (+2
   food); snow can't be improved. The Cities scenario's preplaced farms (4/0), mines (0/4) and
   pastures (3/1) have fixed yields.
@@ -457,8 +459,9 @@ every turn end.
   used.
 - **Manager and workers:** population is at most 7: the manager (the first worked tile, ringed in
   gold and marked `M`, which must be land) plus up to six workers, each adjacent to the manager. To move the
-  manager, click it to pick it up, then click its destination; workers keep their offsets where
-  they can and are otherwise replaced by the best nearby tiles.
+  manager, click it to pick it up (its workers leave the map with it), then click its
+  destination; workers keep their offsets where they can and are otherwise replaced by the best
+  nearby tiles. Clicking the manager again puts it and its workers back.
 - **Citizens:** click tiles to assign or release; A auto-assigns by the city's labor focus (Food,
   Production, or Balanced, which picks food tiles until the city's food income covers upkeep plus
   1, then production). Setting a focus
@@ -519,7 +522,7 @@ every turn end.
   - **Barracks** (`city/barracks.rs`): the side's military building. Its own view and queue
     (Melee, Ranged, Cavalry, Siege, Armored), paid from the stockpile like the city's, training
     twice as fast as a city center, wherever the city's manager is (with production speeding
-    builds, the manager on the barracks adds its worked tiles' production, times their delivery
+    builds, the manager beside the barracks adds its worked tiles' production, times their delivery
     share from the barracks). Only a Barracks trains Cavalry and Armored, and only one drawing
     on a deposit: Horses or Iron under it, or on or beside a Stable or Forge next to it. Each
     deposit a side's Barracks draw on allows 3 of that troop, counting those alive and queued, so
@@ -669,8 +672,11 @@ every turn end.
   it to its city. Worked tiles are outlined green (the manager's in gold; red if disrupted).
   Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
-  food (wheat), wood (a log) and metal (an ingot) with delivery percentages. Alt shows
-  every explored tile's yields.
+  food (wheat), wood (a log) and metal (an ingot) with delivery percentages, and so does the
+  worker menu's city while the worker menu is open. Alt shows every explored tile's yields, and in
+  the worker menu with yields off, its city's delivery percentages too. A tile a building stands
+  on shows neither (a city center keeps its yields); a job's name on a tile showing a percentage
+  sits just under it.
 - Escape closes the settings menu, or else an open city or barracks view, or else lets go of the
   selected unit or group (a worker job being placed, and then the worker menu, close first);
   with none of those open, it opens the

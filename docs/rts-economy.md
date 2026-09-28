@@ -185,9 +185,10 @@ Averages per side over seeds 0-7 (`economy_report`), fixed time, cap counting th
   toggle; 3 per deposit is a guess (World starts have one of each nearby).
 - **Metal income:** give the AI (and the Production labor focus) a reason to work hills and mines
   when it has a deposit to use, or make Iron itself yield metal.
-- **Barracks and the manager:** training no longer needs the manager on the Barracks; with
-  production speeding builds it still adds its work group's production. If the manager should
-  matter again, a manager bonus (say, a turn faster) is gentler than a pause.
+- **Barracks and the manager:** training no longer needs the manager at the Barracks, and no
+  citizen can stand on a building; with production speeding builds the manager beside it still adds
+  its work group's production. If the manager should matter again, a manager bonus (say, a turn
+  faster) is gentler than a pause.
 
 - **Keep the speedup, or add queues?** The numbers favor production speeding builds (or,
   equivalently, shorter fixed times) so the stockpile, not the clock, limits spending. The

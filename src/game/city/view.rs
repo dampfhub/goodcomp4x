@@ -10,9 +10,21 @@ impl GameState {
         self.show_yields = !self.show_yields;
     }
 
-    /// The open city, if its tile yields are being shown.
+    /// The city whose tile yields and delivery shares the map shows, while
+    /// yields are on (Y): the open city, or the worker menu's.
     pub(in crate::game) fn yields_city(&self) -> Option<usize> {
-        self.selected_city.filter(|_| self.show_yields)
+        self.selected_city
+            .or(self.worker_menu_city.filter(|_| self.worker_mode))
+            .filter(|_| self.show_yields)
+    }
+
+    /// The city whose delivery shares (the percentages) the map shows:
+    /// `yields_city`, or with yields off, the worker menu's while Alt is
+    /// held.
+    pub(in crate::game) fn shares_city(&self) -> Option<usize> {
+        self.yields_city().or(self
+            .worker_menu_city
+            .filter(|_| self.worker_mode && self.show_details))
     }
 
     /// C: opens a city that needs something to build, or else the first of
@@ -200,6 +212,8 @@ impl GameState {
             if self.cities[i].worked.first() == Some(&hex) {
                 self.moving_manager = None;
                 self.notice = "MANAGER MOVE CANCELLED".into();
+            } else if self.closed_to_citizens(hex) {
+                self.notice = "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT".into();
             } else if self.may_be_manager(i, hex) {
                 self.moving_manager = None;
                 self.move_manager(i, hex);
@@ -217,6 +231,8 @@ impl GameState {
             self.cities[i].worked.remove(at);
             self.cities[i].remembered_worked.retain(|h| *h != hex);
             self.notice = "CITIZEN UNASSIGNED".into();
+        } else if self.closed_to_citizens(hex) {
+            self.notice = "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT".into();
         } else if !self.may_assign(i, hex) {
             self.notice = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN ADJACENT TILE TO ASSIGN".into();
         } else if !self.routes(i).costs.contains_key(&hex) {

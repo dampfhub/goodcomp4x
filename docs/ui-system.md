@@ -14,8 +14,9 @@ the City / Building view scope.
 
 ImGui uses native windows, buttons, scrolling, drag/drop, hover tooltips, and
 input capture. It is drawn at the end of the existing Vulkan render pass.
-Action buttons in both presentations reveal keyboard shortcuts on hover while
-keeping costs and work times visible. Debug buttons keep their keys visible.
+Action buttons in both presentations show costs and work times but not their
+keyboard shortcuts, which are in their tooltips: hovering never changes a
+button's text. Debug buttons keep their keys visible.
 Unit orders and city labor focus use shared vector-icon toolbars; hovering an
 icon gives its action name, shortcut and explanation.
 `ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible

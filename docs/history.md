@@ -203,3 +203,11 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     flat, one color each, and ImGui draws them unfeathered so they stay crisp at text size. The city's
     building list shows each name on the left and its price flush right, so the prices line up
     (the key is in the tooltip).
+60. Map and citizen fixes (`claude/map-yield-fixes`): no citizen works a city center (its yield
+    comes on its own) or a placed building's tile, whose yields no longer show. A picked-up
+    manager takes its workers off the map until it's placed. The worker menu shows its city's
+    yields and delivery percentages with yields on, and the percentages with Alt otherwise; a
+    job's name moves under a tile's percentage instead of over it. Remembered hexes beside
+    never-seen ones no longer darken twice at their shared corners. Buttons no longer show their
+    hotkey on hover (it's in the tooltip), so hovering never moves their text. With production
+    speeding builds, the manager beside the Barracks (not on it) speeds its training.
