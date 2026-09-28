@@ -219,6 +219,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
             6 => game.save_state(),
             7 => game.load_state(),
             8 => game.toggle_instant_playback(),
+            10 => game.toggle_fog(),
             _ => {}
         },
         Key.Digit(d) => {

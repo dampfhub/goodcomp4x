@@ -122,7 +122,9 @@ impl GameState {
             }
             (ClickMode.Move, _) => {}
             (ClickMode.Normal, Option.None) => {
-                if self.is_occupied(hex) {
+                let team = self.units[selected].team;
+                let fog = self.fog();
+                if self.known_enemy_target_at(hex, team, &fog) {
                     self.try_queue_attack(selected, hex);
                 } else {
                     self.try_queue_move(selected, hex);
@@ -334,7 +336,8 @@ impl GameState {
     /// unit is already heading there.
     pub fn try_queue_move(&mut self, idx: i32, dest: Hex) {
         let unit = &self.units[idx];
-        let reachable = self.reachable_hexes(unit.pos, unit.stats().move_range);
+        let fog = self.fog();
+        let reachable = self.known_reachable_hexes(unit.pos, unit.stats().move_range, unit.team, &fog);
         let mut claimed_by_ally = false;
         for i in 0..self.units.len() {
             let u = &self.units[i];
@@ -409,7 +412,7 @@ impl GameState {
         let move_still_possible = match (planned_move, self.swap_partner(idx)) {
             (Option.None, _) => true,
             (Option.Some(_), Option.Some(_)) => move_range > 0,
-            (Option.Some(dest), Option.None) => self.reachable_hexes(pos, move_range).contains(dest),
+            (Option.Some(dest), Option.None) => self.known_reachable_hexes(pos, move_range, self.units[idx].team, &self.fog()).contains(dest),
         };
         if !move_still_possible {
             self.cancel_swap(idx);

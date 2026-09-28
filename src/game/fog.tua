@@ -1,0 +1,220 @@
+//! Fog of war for the player's side, in three layers:
+//! - in sight: hexes the player's units and cities see now, and the tiles the player's cities
+//!   work, shown as they are;
+//! - remembered: hexes seen before but out of sight now, shown under a dark tint as they were
+//!   when last seen (`Sighting`): cities, improvements and roads. Units move, so they aren't
+//!   remembered: out of sight, none is known to be anywhere;
+//! - unexplored: never seen, covered by fog.
+//!
+//! A debug setting (F10) turns the fog off. The AI ignores it.
+
+use std.collections.Map;
+use std.collections.Set;
+use std.fmt.Out;
+use std.math.max;
+use std.math.min;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.text;
+use game.city.SiteKind;
+use game.hex.Hex;
+use game.terrain.Terrain;
+use game.unit.Team;
+use game.unit.Unit;
+
+/// How far a city sees.
+pub const CITY_SIGHT: i32 = 3;
+/// Extra sight for a unit standing on hills.
+const HILLS_SIGHT: i32 = 1;
+/// Extra sight for a scout after a turn on lookout.
+pub const LOOKOUT_SIGHT: i32 = 2;
+/// How far a line of sight is shifted to settle which side of an edge it passes (see
+/// `Hex.line_between`).
+const SIGHT_NUDGE: f32 = 0.0001;
+
+/// What the player can see this frame.
+pub struct Fog {
+    /// Hexes in sight, or `None` with the fog turned off.
+    visible: Option[Set[Hex]],
+}
+
+impl Fog {
+    /// Whether `hex` is in sight (always, with the fog off).
+    pub fn sees(&self, hex: Hex) -> bool {
+        match &self.visible { &Option.Some(v) => v.contains(hex), &Option.None => true }
+    }
+
+    /// Whether to show `unit`: the player's own always, others in sight.
+    pub fn shows(&self, unit: &Unit) -> bool { unit.team == PLAYER_TEAM || self.sees(unit.pos) }
+}
+
+/// A city as the player last saw it.
+pub struct SeenCity {
+    team: Team,
+    /// The city's number, from 0.
+    id: u32,
+    population: i32,
+}
+
+/// A hex as the player last saw it. Only what can change is kept; the ground itself never does.
+/// Units aren't kept: a sighting of one says nothing about where it is now.
+pub struct Sighting {
+    city: Option[SeenCity],
+    /// An improvement's kind and owner.
+    site: Option[(SiteKind, Team)],
+    road: bool,
+    /// The tile's food and production, with any improvement or city.
+    yields: (i32, i32),
+    /// Unclaimed ruins (`ruins.tua`).
+    ruin: bool,
+}
+
+impl GameState {
+    pub fn fog(&self) -> Fog {
+        if self.fog_of_war { Fog { visible: Option.Some(self.visible_hexes()) } } else { Fog { visible: Option.None } }
+    }
+
+    /// Whether the player has ever seen `hex` (always, with the fog off).
+    pub fn is_explored(&self, hex: Hex) -> bool { !self.fog_of_war || self.memory.has(hex) }
+
+    /// How far `unit` sees: its type's sight, more from hills or after a turn on lookout.
+    pub fn sight(&self, unit: &Unit) -> i32 {
+        let hills = if self.grid.tile(unit.pos).hills { HILLS_SIGHT } else { 0 };
+        let lookout = if unit.lookout { LOOKOUT_SIGHT } else { 0 };
+        unit.unit_type.sight() + hills + lookout
+    }
+
+    /// Whether `from` can see `to`: no mountain stands on the line between them. A mountain
+    /// itself can be seen, just not past. Where the line runs along the edge between two hexes,
+    /// either side being clear will do.
+    pub fn in_line_of_sight(&self, from: Hex, to: Hex) -> bool {
+        self.clear_line(from, to, SIGHT_NUDGE) || self.clear_line(from, to, -SIGHT_NUDGE)
+    }
+
+    fn clear_line(&self, from: Hex, to: Hex, nudge: f32) -> bool {
+        let mut clear = true;
+        for h in from.line_between(to, nudge) {
+            if self.grid.terrain(*h) == Terrain.Mountains { clear = false; }
+        }
+        clear
+    }
+
+    /// Every hex within `range` of `from` that it can see, into `seen`.
+    fn look(&self, from: Hex, range: i32, seen: &mut Set[Hex]) {
+        for dq in -range..=range {
+            for dr in max(-range, -dq - range)..=min(range, -dq + range) {
+                let hex = Hex.new(from.q + dq, from.r + dr);
+                if self.grid.contains(hex) && self.in_line_of_sight(from, hex) { let _new = seen.insert(hex); }
+            }
+        }
+    }
+
+    /// Every hex the player's units and cities can see now, and every tile a player's city
+    /// works, whatever the range or mountains: an enemy standing on one of the player's tiles is
+    /// always seen.
+    pub fn visible_hexes(&self) -> Set[Hex] {
+        let mut seen: Set[Hex] = Set.new();
+        for idx in 0..self.units.len() {
+            if self.is_player_controlled(idx) {
+                let unit = &self.units[idx];
+                self.look(unit.pos, self.sight(unit), &mut seen);
+            }
+        }
+        for c in 0..self.cities.len() {
+            if self.cities[c].team == PLAYER_TEAM { self.look(self.cities[c].pos, CITY_SIGHT, &mut seen); }
+        }
+        for c in 0..self.cities.len() {
+            if self.cities[c].team == PLAYER_TEAM {
+                for w in 0..self.cities[c].worked.len() { let _new = seen.insert(self.cities[c].worked[w]); }
+            }
+        }
+        seen
+    }
+
+    /// `hex` as it is right now, for the memory.
+    fn sighting(&self, hex: Hex) -> Sighting {
+        let mut city: Option[SeenCity] = Option.None;
+        for c in 0..self.cities.len() {
+            let x = &self.cities[c];
+            if x.pos == hex { city = Option.Some(SeenCity { team: x.team, id: x.id, population: x.population }); }
+        }
+        let site = match self.sites.get(hex) { Option.Some(s) => Option.Some((s.kind, s.team)), Option.None => Option.None };
+        Sighting { city, site, road: self.roads.contains(hex), yields: self.raw_yield(hex), ruin: self.ruin_at(hex).is_some() }
+    }
+
+    // What the player knows: a hex in sight as it is, one out of sight as last seen. Planning and
+    // drawing for the player go through these, so nothing out of sight gives away what's really
+    // there. The AI uses the real board.
+
+    /// Whether the player knows of a unit on `hex`: only in sight, since units aren't
+    /// remembered.
+    pub fn known_occupied(&self, hex: Hex, fog: &Fog) -> bool { fog.sees(hex) && self.is_occupied(hex) }
+
+    /// Whether the player knows of an enemy on `hex` that `team` can attack: only one in sight.
+    pub fn known_enemy_target_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
+        fog.sees(hex) && self.enemy_of_team_at(hex, team).is_some()
+    }
+
+    /// A tile's food and production as the player knows them.
+    pub fn known_yield(&self, hex: Hex, fog: &Fog) -> (i32, i32) {
+        if !fog.sees(hex) {
+            if let Option.Some(seen) = self.memory.get(hex) { return seen.yields; }
+        }
+        self.raw_yield(hex)
+    }
+
+    /// Whether the player knows of a city of another side on `hex`: in sight, or as last seen.
+    fn known_enemy_city_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
+        if fog.sees(hex) {
+            for c in 0..self.cities.len() { if self.cities[c].pos == hex && self.cities[c].team != team { return true; } }
+            return false;
+        }
+        match self.memory.get(hex) {
+            Option.Some(seen) => match seen.city { Option.Some(c) => c.team != team, Option.None => false },
+            Option.None => false,
+        }
+    }
+
+    /// The hexes a player-controlled unit of `team` at `start` can plan to reach, going around
+    /// the units the player knows of.
+    pub fn known_reachable_hexes(&self, start: Hex, move_range: i32, team: Team, fog: &Fog) -> Set[Hex] {
+        let mut visited: Set[Hex] = Set.new();
+        let _new = visited.insert(start);
+        let mut frontier: Vec[Hex] = Vec.new();
+        frontier.push(start);
+        for _ in 0..move_range {
+            let mut next: Vec[Hex] = Vec.new();
+            for f in 0..frontier.len() {
+                let around = frontier[f].neighbors();
+                for k in 0..6 {
+                    let to = around[k];
+                    let open = self.grid.is_passable(to) && !self.known_enemy_city_at(to, team, fog) && !self.known_occupied(to, fog);
+                    if open && visited.insert(to) { next.push(to); }
+                }
+            }
+            frontier = next;
+        }
+        visited
+    }
+
+    /// Records everything in sight as the player's latest memory of it. Called every frame.
+    pub fn explore(&mut self) {
+        if !self.fog_of_war { return; }
+        let seen = self.visible_hexes();
+        for h in seen.each() {
+            let sighting = self.sighting(*h);
+            let _old = self.memory.insert(*h, sighting);
+        }
+    }
+
+    /// F10: turns the fog of war on or off.
+    pub fn toggle_fog(&mut self) {
+        self.fog_of_war = !self.fog_of_war;
+        self.explore();
+        self.notice = if self.fog_of_war {
+            text(fn() can {Out} { Out.put("FOG OF WAR ON - F10 TO LIFT IT"); })
+        } else {
+            text(fn() can {Out} { Out.put("FOG OF WAR OFF - F10 TO BRING IT BACK"); })
+        };
+    }
+}

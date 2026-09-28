@@ -21,6 +21,7 @@ use game.city.Site;
 use game.effects.Playing;
 use game.scenario.Scenario;
 use game.ruins.Ruin;
+use game.fog.Sighting;
 use game.settings.default_settings as fresh_settings;
 use game.settings.Settings;
 use game.settings.default_settings;
@@ -137,6 +138,11 @@ pub struct GameState {
     map_seed: Option[u32],
     /// Ruins not yet claimed (`ruins.tua`), in the order the map made them.
     ruins: Vec[Ruin],
+    /// Debug setting (F10): hide what the player's side can't see (`fog.tua`). Kept across
+    /// scenario switches and loads.
+    fog_of_war: bool,
+    /// Every hex the player's side has seen, as it last saw it.
+    memory: Map[Hex, Sighting],
     /// Attack animations playing out.
     effects: Vec[Playing],
 }
@@ -213,6 +219,8 @@ impl GameState {
             next_unit_id: 8,
             map_seed: Option.None,
             ruins: Vec.new(),
+            fog_of_war: true,
+            memory: Map.new(),
             effects: Vec.new(),
         };
         game.select_next_or_end_turn(Option.None);

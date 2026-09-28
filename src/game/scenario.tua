@@ -88,6 +88,7 @@ impl GameState {
         swap(&mut next.savestate, &mut self.savestate);
         next.settings = self.settings.copy();
         next.settings_open = self.settings_open;
+        next.fog_of_war = self.fog_of_war;
         *self = next;
     }
 
@@ -125,6 +126,7 @@ impl GameState {
         if restored.scenario == self.scenario { restored.camera = self.camera; }
         restored.settings = self.settings.copy();
         restored.settings_open = self.settings_open;
+        restored.fog_of_war = self.fog_of_war;
         restored.notice = loaded;
         // The snapshot is kept: it moves into the restored game.
         swap(&mut restored.savestate, &mut self.savestate);
@@ -182,6 +184,8 @@ impl GameState {
             settings: self.settings.copy(),
             map_seed: self.map_seed,
             ruins: copy_vec(&self.ruins),
+            fog_of_war: self.fog_of_war,
+            memory: copy_map(&self.memory),
             settings_open: self.settings_open,
             quit_requested: self.quit_requested,
             turn: self.turn,

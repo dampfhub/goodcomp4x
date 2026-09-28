@@ -77,7 +77,8 @@ impl GameState {
             ClickMode.Attack => self.group_attack(hex),
             ClickMode.Move => self.group_move(hex),
             ClickMode.Normal => {
-                if self.enemy_of_team_at(hex, team).is_some() { self.group_attack(hex); } else { self.group_move(hex); }
+                let fog = self.fog();
+                if self.known_enemy_target_at(hex, team, &fog) { self.group_attack(hex); } else { self.group_move(hex); }
             }
             ClickMode.Swap => {}
         }
@@ -139,7 +140,8 @@ impl GameState {
         for m in 0..members.len() {
             let i = members[m].index;
             let start = self.units[i].pos;
-            let reachable = self.reachable_hexes(start, self.units[i].stats().move_range);
+            let fog = self.fog();
+            let reachable = self.known_reachable_hexes(start, self.units[i].stats().move_range, self.units[i].team, &fog);
             // Staying put wins ties, so nobody shuffles sideways for nothing.
             let mut best: Option[Hex] = Option.None;
             for hex in reachable.each() {

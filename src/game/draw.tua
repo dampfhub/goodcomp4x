@@ -31,6 +31,7 @@ use game.terrain.Terrain;
 use game.terrain.Tile;
 use game.hex.HexGrid;
 use game.hex.Edge;
+use game.fog.Fog;
 use game.hex.edge_corners;
 use game.turn.Phase;
 use game.turn.step_rank;
@@ -62,6 +63,10 @@ const RIVER_WIDTH: f32 = 0.16;
 /// The widest window a view is drawn in, width over height.
 const MAX_VIEW_ASPECT: f32 = 2.4;
 const SPECIAL_RIM_COLOR: Color = [0.95, 0.66, 0.12, 1.0];
+/// Over hexes seen before but out of sight now.
+const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
+/// Never-seen hexes, as the Fog setting's solid grey draws them.
+const SOLID_FOG_COLOR: Color = [0.13, 0.135, 0.155, 1.0];
 const RUIN_RIM_COLOR: Color = [0.62, 0.58, 0.50, 1.0];
 const LANDMARK_RIM_WIDTH: f32 = 0.05;
 /// Where the pips counting a ruin's hold start, from the hex's center, and their size.
@@ -169,6 +174,7 @@ impl GameState {
     /// units.
     pub fn build_vertices(&self) -> Vec[MeshVertex] {
         let mut out: Vec[MeshVertex] = Vec.new();
+        let fog = self.fog();
 
         let selection = match self.selected {
             Option.Some(idx) => {
@@ -182,7 +188,7 @@ impl GameState {
                     planned_pos: unit.planned_pos(),
                     team: unit.team,
                     stats,
-                    reachable: if shows_moves { self.reachable_hexes(unit.pos, stats.move_range) } else { Set.new() },
+                    reachable: if shows_moves { self.known_reachable_hexes(unit.pos, stats.move_range, unit.team, &fog) } else { Set.new() },
                     locked: self.rival_of(idx).is_some(),
                     swapping: self.ui_click_mode == Option.Some(ClickMode.Swap),
                 })
@@ -197,7 +203,12 @@ impl GameState {
             let hex = *h;
             let center = hex.to_world();
             if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
-            let fill = self.hex_fill(hex, &selection);
+            // Never-seen hexes are fog, nothing of what's there.
+            if !self.is_explored(hex) {
+                regular_polygon(center, HEX_SIZE, 6, 0.0, SOLID_FOG_COLOR, &mut out);
+                continue;
+            }
+            let fill = self.hex_fill(hex, &selection, &fog);
             regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
             regular_polygon(center, HEX_SIZE * 0.92, 6, 0.0, fill, &mut out);
             push_tile_symbols(center, self.grid.tile(hex), &mut out);
@@ -206,13 +217,15 @@ impl GameState {
             }
             self.push_ruin(hex, &mut out);
         }
-        push_rivers(&self.grid, &mut out);
+        self.push_rivers(&mut out);
 
         self.push_city_map(&mut out);
+        self.push_fog(&fog, view_min, view_max, &mut out);
         self.push_order_markers(&mut out);
 
         for idx in 0..self.units.len() {
             let unit = &self.units[idx];
+            if !fog.shows(unit) { continue; }
             let (center, scale) = self.unit_layout(idx);
             let (icon_scale, color) = if self.recent_actors.contains(unit.id) {
                 (scale * ACTED_SCALE, brighten(unit.team.color()))
@@ -307,7 +320,7 @@ impl GameState {
     /// The terrain's color, unless the hex is selected, contested, or in the selected unit's
     /// move or attack range. Mountains are never highlighted since nothing can move to or stand
     /// on them.
-    fn hex_fill(&self, hex: Hex, selection: &Option[Selection]) -> Color {
+    fn hex_fill(&self, hex: Hex, selection: &Option[Selection], fog: &Fog) -> Color {
         let tile = self.grid.tile(hex);
         let base = tile_color(tile);
         if !tile.terrain.is_passable() { return base; }
@@ -327,8 +340,8 @@ impl GameState {
         }
 
         let in_attack_range = !sel.locked && sel.planned_pos.distance(hex) <= sel.stats.attack_range;
-        let has_enemy = self.enemy_of_team_at(hex, sel.team).is_some();
-        if self.is_occupied(hex) {
+        let has_enemy = self.known_enemy_target_at(hex, sel.team, fog);
+        if self.known_occupied(hex, fog) {
             return if has_enemy && in_attack_range { ATTACK_RANGE_COLOR } else { base };
         }
         if sel.reachable.contains(hex) {
@@ -371,6 +384,8 @@ impl GameState {
                 for r in 0..routes.costs.len() {
                     let Option.Some(h) = routes.costs.key_at(r) else { continue; };
                     let Option.Some(cost) = routes.costs.val_at(r) else { continue; };
+                    // Nothing shows in the fog.
+                    if !self.is_explored(h) { continue; }
                     let label = text(fn() can {Out} { show_i64((delivered_share(cost) * 25) as i64); Out.put("%"); });
                     push_text(h.to_world().add(vec2(-0.3, 0.52)), 0.18, &label, DELIVERY_TEXT_COLOR, out);
                 }
@@ -402,12 +417,14 @@ impl GameState {
     /// reach.
     fn push_tile_yields(&self, out: &mut Vec[MeshVertex]) {
         let Option.Some(city) = self.yields_city() else { return; };
+        let fog = self.fog();
         let routes = self.routes(city);
         for h in self.grid.hexes() {
             let hex = *h;
             if !self.grid.is_passable(hex) { continue; }
             if !routes.costs.has(hex) && !self.cities[city].worked.contains(hex) { continue; }
-            let (food, production) = self.raw_yield(hex);
+            if !self.is_explored(hex) { continue; }
+            let (food, production) = self.known_yield(hex, &fog);
             let center = hex.to_world().add(vec2(0.0, -0.49));
             quad(center.sub(vec2(0.52, 0.18)), center.add(vec2(0.52, 0.18)), YIELD_BADGE_COLOR, out);
             let badges = [(true, food, -0.37, FOOD_COLOR), (false, production, 0.14, PRODUCTION_COLOR)];
@@ -435,6 +452,18 @@ impl GameState {
 }
 
 impl GameState {
+    /// Darkens remembered hexes (explored, out of sight now) in the view: drawn over the map
+    /// and cities but under units and orders.
+    fn push_fog(&self, fog: &Fog, view_min: Vec2, view_max: Vec2, out: &mut Vec[MeshVertex]) {
+        if !self.fog_of_war { return; }
+        for h in self.grid.hexes() {
+            let hex = *h;
+            let center = hex.to_world();
+            if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
+            if self.is_explored(hex) && !fog.sees(hex) { regular_polygon(center, HEX_SIZE, 6, 0.0, REMEMBERED_TINT, out); }
+        }
+    }
+
     /// The world rectangle a view may show: as tall as the camera sees and as wide as the widest
     /// window it's drawn in (`MAX_VIEW_ASPECT`).
     fn view_rect(&self) -> (Vec2, Vec2) {
@@ -581,14 +610,18 @@ fn wave(at: Vec2, width: f32, color: Color, out: &mut Vec[MeshVertex]) {
     polyline(&points, width * 0.1, color, out);
 }
 
-/// Rivers along hex edges, with a round joint at each end so consecutive edges meet cleanly.
-fn push_rivers(grid: &HexGrid, out: &mut Vec[MeshVertex]) {
-    for river in grid.rivers() {
-        let e: Edge = *river;
-        let (start, end) = edge_corners(e.a, e.b);
-        segment(start, end, RIVER_WIDTH, RIVER_COLOR, out);
-        regular_polygon(start, RIVER_WIDTH / 2.0, 12, 0.0, RIVER_COLOR, out);
-        regular_polygon(end, RIVER_WIDTH / 2.0, 12, 0.0, RIVER_COLOR, out);
+impl GameState {
+    /// Rivers along explored hexes' edges, with a round joint at each end so consecutive edges
+    /// meet cleanly.
+    fn push_rivers(&self, out: &mut Vec[MeshVertex]) {
+        for river in self.grid.rivers() {
+            let e: Edge = *river;
+            if !self.is_explored(e.a) && !self.is_explored(e.b) { continue; }
+            let (start, end) = edge_corners(e.a, e.b);
+            segment(start, end, RIVER_WIDTH, RIVER_COLOR, out);
+            regular_polygon(start, RIVER_WIDTH / 2.0, 12, 0.0, RIVER_COLOR, out);
+            regular_polygon(end, RIVER_WIDTH / 2.0, 12, 0.0, RIVER_COLOR, out);
+        }
     }
 }
 

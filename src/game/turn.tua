@@ -111,6 +111,7 @@ impl GameState {
     /// Advances turn playback by `dt` seconds, playing the next step once `STEP_INTERVAL` has
     /// passed. Steps where nobody acts are skipped.
     pub fn update(&mut self, dt: f32) can {Log, Rand} {
+        self.explore();
         self.camera.update(dt);
         self.age_effects(dt);
         self.highlight_timer = self.highlight_timer - dt;

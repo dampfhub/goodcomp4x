@@ -1,0 +1,295 @@
+//! The fog of war: what the player sees, remembers and plans around.
+
+use std.core.Keep;
+use std.collections.Map;
+use std.str.find;
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.city.Site;
+use game.city.SiteKind;
+use game.hex.Hex;
+use game.hex.HexGrid;
+use game.orders.ClickMode;
+use game.settings.default_settings;
+use game.terrain.MOUNTAINS;
+use game.tests.sandbox;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+/// A world from `seed` with the player alone on it, with a settler (first) and a scout: the AI
+/// sides' units and cities are taken away.
+pub fn solo_world(seed: u32) -> GameState can {Log} {
+    let mut settings = default_settings();
+    settings.world_start_city = false;
+    let mut game = GameState.world_scenario_with(seed, &settings);
+    handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team == PLAYER_TEAM } }
+    game.selected = Option.Some(0);
+    game
+}
+
+/// Where unit `id` is in the list.
+fn index_of(game: &GameState, id: u32) -> i32 {
+    for i in 0..game.units.len() { if game.units[i].id == id { return i; } }
+    0 - 1
+}
+
+@test
+fn units_see_around_them_and_explored_hexes_stay_explored() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = solo_world(3);
+        game.explore();
+        let mut scout = 0 - 1;
+        for i in 0..game.units.len() { if game.units[i].team == Team.Blue && game.units[i].unit_type == UnitType.Scout { scout = i; } }
+        let start = game.units[scout].pos;
+        let sight = game.sight(&game.units[scout]);
+        // Scouts see farther.
+        assert(sight >= 3);
+        let far = Hex.new(start.q + sight, start.r);
+        let fog = game.fog();
+        assert(fog.sees(start) && game.is_explored(start));
+        assert(fog.sees(far) || !game.grid.contains(far));
+        let mut distant = start;
+        let mut found = false;
+        for hh in game.grid.hexes() {
+            let h = *hh;
+            if found { continue; }
+            let mut away = true;
+            for i in 0..game.units.len() { if game.units[i].team == Team.Blue && game.units[i].pos.distance(h) <= 8 { away = false; } }
+            if away { distant = h; found = true; }
+        }
+        assert(found);
+        assert(!fog.sees(distant) && !game.is_explored(distant));
+
+        // Every Blue unit leaves; what they saw stays explored but unseen.
+        for i in 0..game.units.len() { if game.units[i].team == Team.Blue { game.units[i].pos = distant; } }
+        game.explore();
+        assert(game.is_explored(start));
+        assert(!game.fog().sees(start));
+
+        game.toggle_fog();
+        assert(game.fog().sees(start) && game.is_explored(Hex.new(0, 0)));
+    });
+}
+
+/// A lone Blue cavalry at the origin with Charge queued (move 3, sight 3) and a mountain at
+/// (1, 0) hiding (2, 0), which is still three steps away around the mountain.
+fn behind_the_mountain() -> GameState can {Log, Assert} {
+    let mut game = GameState.frontier_scenario();
+    game.grid = HexGrid.new(6, &[(Hex.new(1, 0), MOUNTAINS)]);
+    game.units.clear();
+    game.cities.clear();
+    game.roads.clear();
+    game.memory = Map.new();
+    game.units.push(Unit.new(1, Hex.new(0, 0), Team.Blue, UnitType.Cavalry));
+    game.units[0].ability_queued = true;
+    let hidden = Hex.new(2, 0);
+    game.explore();
+    check_behind_the_mountain(&game, hidden);
+    game
+}
+
+fn check_behind_the_mountain(game: &GameState, hidden: Hex) can {Assert} {
+    assert(game.fog_of_war && !game.fog().sees(hidden));
+    assert(game.units[0].stats().move_range == 3);
+}
+
+const HIDDEN: Hex = Hex { q: 2, r: 0 };
+
+/// Walks unit `idx` next to `hex` to look at it, then back out of sight.
+fn glance_at(game: &mut GameState, idx: i32, hex: Hex) can {Assert} {
+    let home = game.units[idx].pos;
+    game.units[idx].pos = Hex.new(hex.q, hex.r - 1);
+    game.explore();
+    game.units[idx].pos = home;
+    game.explore();
+    assert(!game.fog().sees(hex) && game.is_explored(hex));
+}
+
+@test
+fn a_group_click_on_an_unseen_enemy_moves_there() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        game.units.push(Unit.new(2, Hex.new(-1, 0), Team.Blue, UnitType.Melee));
+        game.units.push(Unit.new(3, HIDDEN, Team.Red, UnitType.Melee));
+        assert(!game.fog().sees(HIDDEN));
+        game.group.push(0);
+        game.group.push(1);
+        game.group_order(HIDDEN, ClickMode.Normal);
+        assert(game.units[0].planned_move == Option.Some(HIDDEN));
+        for i in 0..game.units.len() { assert(game.units[i].planned_attack.is_none()); }
+    });
+}
+
+@test
+fn unseen_units_do_not_shape_the_move_range() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        let start = game.units[0].pos;
+        game.units.push(Unit.new(2, HIDDEN, Team.Red, UnitType.Melee));
+        let fog = game.fog();
+        assert(game.known_reachable_hexes(start, 3, Team.Blue, &fog).contains(HIDDEN));
+        assert(!game.known_occupied(HIDDEN, &fog));
+
+        // Having seen it there doesn't change that once it's out of sight.
+        glance_at(&mut game, 0, HIDDEN);
+        let fog = game.fog();
+        assert(game.known_reachable_hexes(start, 3, Team.Blue, &fog).contains(HIDDEN));
+    });
+}
+
+@test
+fn clicking_an_unseen_enemys_hex_plans_a_move_not_an_attack() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        game.units.push(Unit.new(2, HIDDEN, Team.Red, UnitType.Melee));
+        game.try_queue_move(0, HIDDEN);
+        assert(game.units[0].planned_move == Option.Some(HIDDEN));
+        assert(game.units[0].planned_attack.is_none());
+    });
+}
+
+@test
+fn an_enemy_seen_then_seen_elsewhere_leaves_no_ghost() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Red is seen at `HIDDEN`, then walks into sight next to Blue.
+        let mut game = behind_the_mountain();
+        game.units.push(Unit.new(2, HIDDEN, Team.Red, UnitType.Melee));
+        glance_at(&mut game, 0, HIDDEN);
+        let red = game.units.len() - 1;
+        game.units[red].pos = Hex.new(0, 1);
+        game.explore();
+        let fog = game.fog();
+        assert(fog.sees(Hex.new(0, 1)) && !fog.sees(HIDDEN));
+        assert(!game.known_occupied(HIDDEN, &fog));
+        assert(!game.known_enemy_target_at(HIDDEN, Team.Blue, &fog));
+    });
+}
+
+@test
+fn an_enemy_out_of_sight_is_not_a_target_even_if_seen_there() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        game.units.push(Unit.new(2, HIDDEN, Team.Red, UnitType.Melee));
+        glance_at(&mut game, 0, HIDDEN);
+        let fog = game.fog();
+        assert(!game.known_enemy_target_at(HIDDEN, Team.Blue, &fog));
+    });
+}
+
+@test
+fn yields_out_of_sight_are_as_last_seen() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        glance_at(&mut game, 0, HIDDEN);
+        let Option.Some(memory) = game.memory.get(HIDDEN) else { assert(false); return; };
+        let (seen_food, seen_production) = memory.yields;
+        // Red farms the hex while nobody's looking.
+        let _old = game.sites.insert(HIDDEN, Site { team: Team.Red, food: 9, production: 9, kind: SiteKind.Farm });
+        let fog = game.fog();
+        let (raw_food, raw_production) = game.raw_yield(HIDDEN);
+        assert(raw_food != seen_food || raw_production != seen_production);
+        let (known_food, known_production) = game.known_yield(HIDDEN, &fog);
+        assert(known_food == seen_food && known_production == seen_production);
+        let near = Hex.new(0, 1);
+        let (a, b) = game.known_yield(near, &fog);
+        let (c, d) = game.raw_yield(near);
+        assert(a == c && b == d);
+    });
+}
+
+@test
+fn the_fog_notice_names_its_key() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.world_scenario(3);
+        game.toggle_fog();
+        {
+            let first = &game.notice;
+            assert(find(first, "F10").is_some());
+        }
+        game.toggle_fog();
+        let second = &game.notice;
+        assert(find(second, "F10").is_some());
+    });
+}
+
+/// World 3 with the player alone, and a Red scout added far from Blue's units.
+fn world_with_a_distant_red_scout() -> GameState can {Log, Assert} {
+    let mut game = solo_world(3);
+    let mut far = Hex.new(0, 0);
+    let mut found = false;
+    for hh in game.grid.hexes() {
+        let h = *hh;
+        if found || !game.grid.is_passable(h) { continue; }
+        let mut away = true;
+        for i in 0..game.units.len() { if game.units[i].pos.distance(h) <= 10 { away = false; } }
+        if away { far = h; found = true; }
+    }
+    check_found(found);
+    game.units.push(Unit.new(100, far, Team.Red, UnitType.Scout));
+    game
+}
+
+fn check_found(found: bool) can {Assert} { assert(found); }
+
+@test
+fn enemies_out_of_sight_are_hidden() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let game = world_with_a_distant_red_scout();
+        let fog = game.fog();
+        let red = index_of(&game, 100);
+        // Red is far out of sight.
+        assert(!fog.shows(&game.units[red]));
+        let mut blue_shown = false;
+        for i in 0..game.units.len() { if game.units[i].team == Team.Blue && fog.shows(&game.units[i]) { blue_shown = true; } }
+        assert(blue_shown);
+    });
+}
+
+@test
+fn units_are_forgotten_once_out_of_sight() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = world_with_a_distant_red_scout();
+        let red = index_of(&game, 100);
+        let settler = game.units[0].pos;
+        let around = settler.neighbors();
+        let mut near = settler;
+        let mut found = false;
+        for k in 0..6 { if !found && game.grid.is_passable(around[k]) && !game.is_occupied(around[k]) { near = around[k]; found = true; } }
+        assert(found);
+        // The Red scout wanders into sight next to Blue's settler.
+        let red_start = game.units[red].pos;
+        game.units[red].pos = near;
+        game.explore();
+        assert(game.known_occupied(near, &game.fog()));
+
+        // Every Blue unit leaves, with the scout still standing there.
+        for i in 0..game.units.len() { if game.units[i].team == Team.Blue { game.units[i].pos = red_start; } }
+        game.explore();
+        let fog = game.fog();
+        assert(!fog.sees(near) && game.is_explored(near));
+        assert(!game.known_occupied(near, &fog));
+    });
+}
+
+@test
+fn mountains_block_sight_beyond_them() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.units.clear();
+        game.grid = HexGrid.new(4, &[(Hex.new(1, 0), MOUNTAINS)]);
+        game.units.push(Unit.new(0, Hex.new(0, 0), Team.Blue, UnitType.Scout));
+        let fog = game.fog();
+        // The mountain itself shows.
+        assert(fog.sees(Hex.new(1, 0)));
+        assert(!fog.sees(Hex.new(2, 0)) && !fog.sees(Hex.new(3, 0)));
+        // A line along the mountain's edge still passes on its clear side.
+        assert(fog.sees(Hex.new(2, -1)));
+        // Other directions are open.
+        assert(fog.sees(Hex.new(-3, 0)));
+    });
+}
