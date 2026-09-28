@@ -47,6 +47,7 @@ use game.mesh.Color;
 use game.mesh.quad;
 use game.orders.ClickMode;
 use game.scenario.SCENARIOS;
+use game.scenario.SCENARIO_COUNT;
 use game.scenario.Scenario;
 use game.unit.Unit;
 
@@ -469,7 +470,7 @@ impl GameState {
         let mut panel = panel_builder(true);
         panel.text(TextSize.Small, "DEBUG", fade(LABEL_TEXT, true));
         panel.begin_buttons();
-        for i in 0..4 {
+        for i in 0..SCENARIO_COUNT {
             let scenario = SCENARIOS[i];
             panel.button(Target.Scenario(scenario), scenario.name(), scenario.key(), button_state(scenario == self.scenario, false), false);
         }
@@ -918,6 +919,7 @@ impl GameState {
                     Scenario.Cities => "TWO CITIES WITH FARMS, MINES, ROADS AND ARMIES, TO TEST THE ECONOMY AND FIGHTING OVER IT.",
                     Scenario.Frontier => "A SETTLER AND A WARRIOR EACH AND NO CITIES YET. BOTH WARRIORS ARE YOURS TO MOVE.",
                     Scenario.World => "A NEW RANDOM MAP WITH THE PLAYER AND 4 TO 6 AI SIDES, EACH WITH A CITY AND A SCOUT, AND RUINS BETWEEN THEM.",
+                    Scenario.Naval => "A STRAIT BETWEEN TWO COASTAL CITIES, EACH SIDE WITH A TROOP ASHORE, A LANDING CRAFT, A PATROL GALLEY AND A BOMBARD SHIP.",
                 };
                 description = text(fn() can {Out} { Out.put(what); Out.put(" STARTS IT FRESH, OR RESTARTS IT IF IT'S THE CURRENT ONE; THE SAVESTATE IS KEPT."); });
             }

@@ -12,6 +12,7 @@ use std.str.push;
 use std.str.len;
 use game.scenario.Scenario;
 use game.scenario.SCENARIOS;
+use game.scenario.SCENARIO_COUNT;
 
 pub const USAGE: str = "Usage: hex [OPTIONS] [FRAMES]
 
@@ -74,7 +75,7 @@ fn text3(a: &str, b: &str, c: &str) -> Str {
 /// The scenario called `name` (its `name()` in any case, e.g. `cities`), as `--scenario`
 /// spells it.
 pub fn scenario_named(name: &str) -> Option[Scenario] {
-    for i in 0..4 {
+    for i in 0..SCENARIO_COUNT {
         if eq_ignore_ascii_case(SCENARIOS[i].name(), name) { return Option.Some(SCENARIOS[i]); }
     }
     Option.None

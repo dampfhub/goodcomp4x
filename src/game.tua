@@ -27,7 +27,10 @@ use game.settings.Settings;
 use game.settings.default_settings;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
+use game.hex.GridShape;
 use game.hex.HexGrid;
+use game.terrain.Terrain;
+use game.terrain.Tile;
 use game.terrain.HILLS;
 use game.terrain.MOUNTAINS;
 use game.orders.ClickMode;
@@ -251,6 +254,61 @@ impl GameState {
         game.scenario = Scenario.Cities;
         game.setup_cities();
         game.start_on_whole_map();
+        game
+    }
+
+    /// A narrow strait between two coastal cities, with ships already out, for naval
+    /// playtesting: each side has a troop ashore, a landing craft, a patrol galley and a
+    /// bombard ship.
+    pub fn naval_scenario() -> GameState can {Log} {
+        let mut game = GameState.city_scenario();
+        game.scenario = Scenario.Naval;
+        let mut tiles: Map[Hex, Tile] = Map.new();
+        for q in -1..=1 {
+            for r in -7..=7 {
+                let _old = tiles.insert(Hex.new(q, r), Tile.of(Terrain.Coast));
+            }
+        }
+        game.grid = HexGrid.from_tiles(GridShape.Hexagon(6), tiles);
+        let mut roads: Set[Hex] = Set.new();
+        for k in 0..game.roads.len() {
+            let Option.Some(h) = game.roads.key_at(k) else { continue; };
+            if game.grid.is_passable(h) { let _new = roads.insert(h); }
+        }
+        game.roads = roads;
+        let mut dry: Map[Hex, Site] = Map.new();
+        for k in 0..game.sites.len() {
+            let Option.Some(h) = game.sites.key_at(k) else { continue; };
+            let Option.Some(site) = game.sites.val_at(k) else { continue; };
+            if game.grid.is_passable(h) { let _old = dry.insert(h, site); }
+        }
+        game.sites = dry;
+        // Both city centers on the shoreline, not two tiles inland.
+        game.cities[0].pos = Hex.new(-2, 0);
+        game.cities[1].pos = Hex.new(2, 0);
+        game.cities[0].worked.clear();
+        game.cities[1].worked.clear();
+        game.units.clear();
+        game.next_unit_id = 0;
+        let sides = [(Team.Blue, -1), (Team.Red, 1)];
+        for t in 0..2 {
+            let (team, sign) = sides[t];
+            let layout = [
+                (Hex.new(sign * 3, 0), UnitType.Melee),
+                (Hex.new(sign, -sign), UnitType.LandingCraft),
+                (Hex.new(sign, sign), UnitType.PatrolGalley),
+                (Hex.new(0, sign * 2), UnitType.BombardShip),
+            ];
+            for k in 0..4 {
+                let (pos, kind) = layout[k];
+                let id = game.next_unit_id;
+                game.next_unit_id = id + 1;
+                game.units.push(Unit.new(id, pos, team, kind));
+            }
+        }
+        for c in 0..game.cities.len() { game.auto_assign_city(c); }
+        game.start_on_whole_map();
+        game.set_notice("NAVAL TEST: SELECT TROOP THEN CLICK CRAFT TO BOARD; CRAFT THEN SHORE TO LAND");
         game
     }
 

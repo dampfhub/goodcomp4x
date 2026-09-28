@@ -11,6 +11,7 @@ use game.tests.nothing_pending;
 use game.tests.sandbox;
 use game.PLAYER_TEAM;
 use game.scenario.SCENARIOS;
+use game.scenario.SCENARIO_COUNT;
 use game.settings.default_settings;
 use game.unit.TEAMS;
 use game.unit.Team;
@@ -77,7 +78,7 @@ fn instant_playback_resolves_the_whole_turn_at_once() {
 
 @test
 fn every_scenario_is_found_by_its_name_in_any_case() {
-    for i in 0..4 {
+    for i in 0..SCENARIO_COUNT {
         let scenario = SCENARIOS[i];
         let name = scenario.name();
         assert(scenario_named(name) == Option.Some(scenario));

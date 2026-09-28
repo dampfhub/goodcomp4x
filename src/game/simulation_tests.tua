@@ -13,6 +13,7 @@ use game.GameState;
 use game.PLAYER_TEAM;
 use game.ruins.RUIN_HOLD_TURNS;
 use game.scenario.SCENARIOS;
+use game.scenario.SCENARIO_COUNT;
 use game.scenario.Scenario;
 use game.hex.Hex;
 use game.unit.TEAMS;
@@ -100,7 +101,7 @@ fn check_invariants(game: &GameState) can {Assert} {
 
 @test
 fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
-    for s in 0..4 {
+    for s in 0..SCENARIO_COUNT {
         for k in 0..3 {
             seeded(SEEDS[k], fn() can {Log, Rand, Assert} {
                 let scenario = SCENARIOS[s];
@@ -211,7 +212,7 @@ fn play_queued_turn(game: &mut GameState) -> i32 can {Log, Rand} {
 
 @test
 fn queued_orders_against_the_ai_keep_the_board_consistent() {
-    for s in 0..4 {
+    for s in 0..SCENARIO_COUNT {
         for k in 0..3 {
             seeded(SEEDS[k], fn() can {Log, Rand, Assert} {
                 let mut game = start(SCENARIOS[s]);
@@ -222,8 +223,9 @@ fn queued_orders_against_the_ai_keep_the_board_consistent() {
                     assert(!game.is_resolving());
                     check_invariants(&game);
                 }
-                // Anti-vacuity: queues were actually carried from turn to turn.
-                assert(followed > 0);
+                // Anti-vacuity: queues were actually carried from turn to turn. Not across the
+                // naval strait, which every unit crosses to the enemy within one turn.
+                assert(followed > 0 || SCENARIOS[s] == Scenario.Naval);
             });
         }
     }
@@ -292,7 +294,7 @@ fn the_same_seed_replays_the_same_game() {
     quiet(fn() can {Log, Assert} {
         // One seed is enough to catch hidden nondeterminism (map iteration order deciding an
         // outcome, say).
-        for s in 0..4 {
+        for s in 0..SCENARIO_COUNT {
             assert(same(&replayed(SEEDS[0], SCENARIOS[s], 20), &replayed(SEEDS[0], SCENARIOS[s], 20)));
         }
         // Anti-vacuity: the seed does drive the rolls. The armies meet on turn 2 and are gone

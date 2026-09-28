@@ -35,9 +35,13 @@ pub enum Scenario {
     Frontier,
     /// The player and 4-6 AI sides on a randomly generated map (`mapgen.tua`).
     World,
+    /// A strait between two coastal cities, with ships already out.
+    Naval,
 }
 
-pub const SCENARIOS: [Scenario; 4] = [Scenario.Combat, Scenario.Cities, Scenario.Frontier, Scenario.World];
+/// How many scenarios there are.
+pub const SCENARIO_COUNT: i32 = 5;
+pub const SCENARIOS: [Scenario; 5] = [Scenario.Combat, Scenario.Cities, Scenario.Frontier, Scenario.World, Scenario.Naval];
 
 impl Eq for Scenario {
     fn eq(self, other: Scenario) -> bool { self.index() == other.index() }
@@ -50,12 +54,13 @@ impl Scenario {
             Scenario.Cities => "CITIES",
             Scenario.Frontier => "FRONTIER",
             Scenario.World => "WORLD",
+            Scenario.Naval => "NAVAL",
         }
     }
 
     /// Its place in `SCENARIOS`.
     pub fn index(self) -> i32 {
-        match self { Scenario.Combat => 0, Scenario.Cities => 1, Scenario.Frontier => 2, Scenario.World => 3 }
+        match self { Scenario.Combat => 0, Scenario.Cities => 1, Scenario.Frontier => 2, Scenario.World => 3, Scenario.Naval => 4 }
     }
 
     /// The function key that switches to it.
@@ -65,6 +70,7 @@ impl Scenario {
             Scenario.Cities => "F2",
             Scenario.Frontier => "F3",
             Scenario.World => "F4",
+            Scenario.Naval => "DEBUG",
         }
     }
 
@@ -76,6 +82,7 @@ impl Scenario {
             Scenario.Cities => GameState.city_scenario(),
             Scenario.Frontier => GameState.frontier_scenario(),
             Scenario.World => GameState.world_scenario_with(draw().shr(32) as u32, settings),
+            Scenario.Naval => GameState.naval_scenario(),
         }
     }
 }
