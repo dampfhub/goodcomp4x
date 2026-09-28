@@ -2402,3 +2402,163 @@ fn escape_and_right_click_stop_placing_in_a_network_game() {
         assert_eq!(game.team_plan(team), plan, "nothing planned");
     }
 }
+
+/// The classic layout's button for `target`, and the queue panel it's in:
+/// the panel (from `layout.panels`) holding the queue's rows.
+fn queue_panel_button(layout: &Layout, target: Target) -> (Rect, Rect) {
+    let button = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == target)
+        .unwrap_or_else(|| panic!("no {target:?} button"));
+    let row = layout.queue_items.first().expect("queue rows");
+    let &(min, max) = layout
+        .panels
+        .iter()
+        .find(|&&(min, max)| contains(min, max, row.min) && contains(min, max, row.max))
+        .expect("the queue panel");
+    (
+        Rect {
+            min: button.min,
+            max: button.max,
+        },
+        Rect { min, max },
+    )
+}
+
+#[test]
+fn each_queue_panel_has_a_clear_button_that_refunds_everything() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    for _ in 0..6 {
+        game.queue_selected_city_unit(BuildUnit::Melee);
+    }
+    game.queue_selected_city_growth();
+    game.queue_selected_city_growth();
+    game.cities[city].progress = 1;
+    let mut one_by_one = game.clone();
+    while !one_by_one.cities[city].queue.is_empty() {
+        one_by_one.remove_selected_city_queue_item(0);
+    }
+
+    // A long queue scrolls; its Clear button stays on the title's line,
+    // clear of the rows, their Xs and the scrollbar, wherever it's scrolled.
+    for scroll in [0, 3, 100] {
+        game.city_queue_scroll = scroll;
+        let layout = game.layout(SCREEN);
+        let (clear, panel) = queue_panel_button(&layout, Target::ClearCityQueue);
+        assert!(
+            contains(panel.min, panel.max, clear.min) && contains(panel.min, panel.max, clear.max)
+        );
+        let bar = layout.queue_scrollbars.first().expect("the queue scrolls");
+        assert!(!clear.overlaps(
+            Rect {
+                min: bar.track_min,
+                max: bar.track_max
+            },
+            0.0
+        ));
+        for row in &layout.queue_items {
+            assert!(!clear.overlaps(
+                Rect {
+                    min: row.min,
+                    max: row.max
+                },
+                0.0
+            ));
+        }
+        let middle = (clear.min + clear.max) / 2.0;
+        assert_eq!(
+            layout.button_at(middle).map(|b| b.target),
+            Some(Target::ClearCityQueue)
+        );
+        assert!(clear.max.y > layout.queue_items[0].max.y, "above the rows");
+    }
+    // Hover says what it does.
+    let tooltip = |game: &GameState, target| {
+        let layout = game.layout(SCREEN);
+        let button = layout.buttons.iter().find(|b| b.target == target).unwrap();
+        line_strings(game.tooltip_lines(button).into_iter().map(|(_, l)| l)).join(" ")
+    };
+    let text = tooltip(&game, Target::ClearCityQueue);
+    assert!(text.contains("EACH REFUNDED"), "{text}");
+
+    game.handle_click(
+        button_cursor(&game, Target::ClearCityQueue),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(game.cities[city].queue.is_empty());
+    assert_eq!(game.stock(Team::Blue), one_by_one.stock(Team::Blue));
+    assert_eq!(game.city_queue_scroll, 0);
+    assert!(
+        !game
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::ClearCityQueue),
+        "no queue, no panel"
+    );
+
+    // The Barracks queue, in its own view.
+    game.cities[city].barracks = Some(Hex::new(-2, 0));
+    game.open_barracks(city);
+    for build in [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege] {
+        game.queue_selected_barracks_unit(build);
+    }
+    let mut one_by_one = game.clone();
+    while !one_by_one.cities[city].barracks_queue.is_empty() {
+        one_by_one.remove_selected_barracks_queue_item(0);
+    }
+    let layout = game.layout(SCREEN);
+    let (clear, panel) = queue_panel_button(&layout, Target::ClearBarracksQueue);
+    assert!(contains(panel.min, panel.max, clear.min) && contains(panel.min, panel.max, clear.max));
+    game.handle_click(
+        button_cursor(&game, Target::ClearBarracksQueue),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(game.cities[city].barracks_queue.is_empty());
+    assert_eq!(game.stock(Team::Blue), one_by_one.stock(Team::Blue));
+}
+
+#[test]
+fn the_clear_button_is_dimmed_while_a_turn_plays_out() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.queue_selected_city_unit(BuildUnit::Melee);
+    game.resolve_turn();
+    assert!(game.is_resolving());
+    let layout = game.layout(SCREEN);
+    let clear = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::ClearCityQueue)
+        .expect("shown");
+    assert_eq!(clear.state, ButtonState::Disabled);
+    let why = line_strings(game.tooltip_lines(clear).into_iter().map(|(_, l)| l)).join(" ");
+    assert!(why.contains("NOT WHILE THE TURN PLAYS OUT"), "{why}");
+    game.activate_target(Target::ClearCityQueue);
+    assert_eq!(game.cities[city].queue.len(), 1);
+}
+
+#[test]
+fn the_imgui_clear_buttons_empty_their_queues() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    for _ in 0..4 {
+        game.queue_selected_city_unit(BuildUnit::Ranged);
+    }
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::ClearCityQueue);
+    assert!(game.cities[city].queue.is_empty());
+
+    game.cities[city].barracks = Some(Hex::new(-2, 0));
+    game.open_barracks(city);
+    game.queue_selected_barracks_unit(BuildUnit::Melee);
+    game.queue_selected_barracks_unit(BuildUnit::Melee);
+    screen.click(&mut game, Target::ClearBarracksQueue);
+    assert!(game.cities[city].barracks_queue.is_empty());
+    let stock = game.stock(Team::Blue);
+    assert_eq!(stock, Stock::whole(999, 999, 999), "all refunded");
+}

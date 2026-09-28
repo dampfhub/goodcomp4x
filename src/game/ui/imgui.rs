@@ -7,7 +7,7 @@ use ::imgui::{
 };
 
 use super::action_icons::{self, ICON_BUTTON_SIZE};
-use super::builder::{CatalogEntry, Row, icon_row, visible_button_hint};
+use super::builder::{ButtonSpec, CatalogEntry, Row, icon_row, visible_button_hint};
 use super::network_menu::NetField;
 use super::text::end_turn_label;
 use super::*;
@@ -1434,6 +1434,7 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
                 }
             }
             Row::QueueItem(_) => 37.0,
+            Row::TitleWithButton(..) => ui.frame_height_with_spacing(),
             Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 5) as f32 * 34.0) + 18.0,
             Row::Roster(_) => ROSTER_CHIP + 6.0,
             Row::Heading(_) => {
@@ -2396,6 +2397,29 @@ impl GameState {
         }
     }
 
+    /// The tooltip of the panel button just drawn, while it's hovered (dimmed
+    /// or not).
+    fn button_tooltip(&self, ui: &Ui, spec: &ButtonSpec) {
+        if !ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
+            return;
+        }
+        let tooltip = Button {
+            target: spec.target,
+            label: spec.label.clone(),
+            hint: spec.hint.clone(),
+            state: spec.state,
+            armed: spec.armed,
+            faded: false,
+            min: Vec2::ZERO,
+            max: Vec2::ZERO,
+        };
+        ui.tooltip(|| {
+            for (_, line) in self.tooltip_lines(&tooltip) {
+                text_line(ui, &line);
+            }
+        });
+    }
+
     fn render_imgui_panel(
         &self,
         ui: &Ui,
@@ -2538,24 +2562,36 @@ impl GameState {
                                 fonts[0],
                             );
                         }
-                        if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                            let tooltip = Button {
-                                target: spec.target,
-                                label: spec.label.clone(),
-                                hint: spec.hint.clone(),
-                                state: spec.state,
-                                armed: spec.armed,
-                                faded: false,
-                                min: Vec2::ZERO,
-                                max: Vec2::ZERO,
-                            };
-                            ui.tooltip(|| {
-                                for (_, line) in self.tooltip_lines(&tooltip) {
-                                    text_line(ui, &line);
-                                }
-                            });
-                        }
+                        self.button_tooltip(ui, spec);
                     }
+                }
+                Row::TitleWithButton(line, spec) => {
+                    ui.align_text_to_frame_padding();
+                    {
+                        let _font = ui.push_font(fonts[0]);
+                        text_line(ui, line);
+                    }
+                    let hint = visible_button_hint(&spec.hint, panel.faded);
+                    let label = if hint.is_empty() {
+                        spec.label.clone()
+                    } else {
+                        format!("{}  {hint}", spec.label)
+                    };
+                    let width = rich_width(ui, &label) + 2.0 * ui.clone_style().frame_padding[0];
+                    // At the right end of the title's line.
+                    ui.same_line();
+                    let room = ui.content_region_avail()[0] - width;
+                    if room > 0.0 {
+                        let [x, y] = ui.cursor_pos();
+                        ui.set_cursor_pos([x + room, y]);
+                    }
+                    let _disabled = ui.begin_disabled(spec.state == ButtonState::Disabled);
+                    let id = format!("{:?}", spec.target);
+                    if rich_button(ui, &id, &[label], [width, 0.0], false) {
+                        actions.push(Action::Button(scope, spec.target));
+                    }
+                    note_drawn_button(ui, spec.target);
+                    self.button_tooltip(ui, spec);
                 }
                 Row::BuildingCatalog(city, buttons, _) => {
                     let height = buttons.len().clamp(1, 5) as f32 * 34.0 + 18.0;

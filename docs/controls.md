@@ -130,6 +130,7 @@ plays out.
 | A dimmed build card | The stockpile can't pay for it, or (Cavalry, Armored) the barracks has no deposit or its cap is used up; its tooltip says why. Prices show as resource icons and amounts, turns after a clock |
 | Drag a queue row onto another | Reorder the queue |
 | Click a row's X | Remove it, refunding its price (removing the item in progress loses its progress) |
+| Clear (beside a queue's title, city or barracks) | Empty that queue: every item comes off, refunded as its X would refund it (the item in progress loses its progress) |
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
 | Backspace | Remove the item being built |
 | PageDown | Swap the first two queue items |

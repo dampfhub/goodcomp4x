@@ -88,6 +88,10 @@ const SCROLLBAR_WIDTH: f32 = 12.0;
 const QUEUE_ITEM_HEIGHT: f32 = 48.0;
 const QUEUE_ITEM_GAP: f32 = 4.0;
 const QUEUE_REMOVE_WIDTH: f32 = 34.0;
+/// A title with a button at its right end (a queue's title and its Clear
+/// button): the button's height, and the row's with the gap under it.
+const TITLE_BUTTON_HEIGHT: f32 = 30.0;
+const TITLE_ROW_HEIGHT: f32 = TITLE_BUTTON_HEIGHT + QUEUE_ITEM_GAP;
 /// A unit's square in the unit strip, and the space between squares.
 const ROSTER_CHIP: f32 = 44.0;
 const ROSTER_CHIP_GAP: f32 = 6.0;
@@ -176,6 +180,9 @@ enum Target {
     InteriorClear,
     CityQueueRemove(usize),
     BarracksQueueRemove(usize),
+    /// A queue panel's Clear button: every item off, each refunded.
+    ClearCityQueue,
+    ClearBarracksQueue,
     /// A worker for the open city's pool.
     BuildWorker,
     /// One more citizen for the open city, bought with food.
@@ -685,6 +692,8 @@ impl GameState {
             Target::InteriorClear => self.clear_selected_interior_orders(),
             Target::CityQueueRemove(index) => self.remove_selected_city_queue_item(index),
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
+            Target::ClearCityQueue => self.clear_selected_city_queue(),
+            Target::ClearBarracksQueue => self.clear_selected_barracks_queue(),
             Target::Focus(focus) => self.set_selected_city_focus(focus),
             Target::EndTurn => self.end_planning(),
             Target::Scenario(scenario) => self.switch_scenario(scenario),

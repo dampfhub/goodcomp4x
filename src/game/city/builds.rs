@@ -631,7 +631,13 @@ impl GameState {
         }
     }
 
+    /// A city queue row's X, or Backspace for the head: takes it off,
+    /// refunded. Not while a turn plays out (or, in a network game, waits
+    /// for the others' plans), like queueing.
     pub fn remove_selected_city_queue_item(&mut self, index: usize) {
+        if self.is_resolving() {
+            return;
+        }
         let Some(city) = self.selected_city else {
             return;
         };
@@ -640,6 +646,28 @@ impl GameState {
         }
         let removed = self.take_queue_item(city, index);
         self.notice = format!("REMOVED {} FROM CITY QUEUE - REFUNDED", removed.name());
+    }
+
+    /// The city queue's Clear button: takes every item off, each through
+    /// `take_queue_item` as its X would, so the stockpile ends as it would
+    /// after removing them one by one (Grows included: what one refunds
+    /// depends only on how many are queued, not on the order).
+    pub fn clear_selected_city_queue(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(city) = self.selected_city else {
+            return;
+        };
+        let count = self.cities[city].queue.len();
+        if count == 0 {
+            return;
+        }
+        while let Some(last) = self.cities[city].queue.len().checked_sub(1) {
+            self.take_queue_item(city, last);
+        }
+        self.city_queue_scroll = 0;
+        self.notice = format!("CLEARED THE CITY QUEUE - {count} REFUNDED");
     }
 
     #[cfg(test)]
@@ -659,7 +687,12 @@ impl GameState {
         }
     }
 
+    /// A Barracks queue row's X: takes it off, refunded. Not while a turn
+    /// plays out.
     pub fn remove_selected_barracks_queue_item(&mut self, index: usize) {
+        if self.is_resolving() {
+            return;
+        }
         let Some(city) = self.selected_barracks.or(self.selected_city) else {
             return;
         };
@@ -668,6 +701,26 @@ impl GameState {
         }
         let removed = self.take_barracks_item(city, index);
         self.notice = format!("REMOVED {} FROM BARRACKS QUEUE - REFUNDED", removed.name());
+    }
+
+    /// The Barracks queue's Clear button: takes every troop off, each
+    /// through `take_barracks_item` as its X would.
+    pub fn clear_selected_barracks_queue(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(city) = self.selected_barracks.or(self.selected_city) else {
+            return;
+        };
+        let count = self.cities[city].barracks_queue.len();
+        if count == 0 {
+            return;
+        }
+        while let Some(last) = self.cities[city].barracks_queue.len().checked_sub(1) {
+            self.take_barracks_item(city, last);
+        }
+        self.barracks_queue_scroll = 0;
+        self.notice = format!("CLEARED THE BARRACKS QUEUE - {count} REFUNDED");
     }
 
     /// Queue hotkeys operate on the city line currently being produced.
