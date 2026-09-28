@@ -75,7 +75,8 @@ Messages (`Message`): `Hello` (guest, with the protocol version), `Welcome` (hos
 the human sides, the world's seed and settings, the RNG seed and debug toggles) or `Refused`,
 `Plan`, `Resolve`, `SeatLeft`, `Checksum`, `Withdraw` (guest: its player took back ending the
 turn). The host also sends `Refused`, with the reason, to a guest it drops for a bad message.
-`PROTOCOL_VERSION` changes whenever one changes shape, or the rules a turn plays out by, so
+`PROTOCOL_VERSION` changes whenever one changes shape, or the rules a turn plays out by, or the
+map a seed generates (`mapgen.rs`: each machine builds the world from the seed), so
 mismatched builds refuse each other.
 
 Taking a turn back (`take_back_turn`): a guest sends `Withdraw { turn }` and plans on; the host
