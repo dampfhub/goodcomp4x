@@ -131,8 +131,7 @@ impl GameState {
             .copied()
             .filter(|&i| {
                 let unit = &self.units[i];
-                unit.can_attack()
-                    && self.rival_of(i).is_none()
+                self.attack_target_legal(i, target, false)
                     && unit.planned_pos().distance(target) <= unit.stats().attack_range
             })
             .collect();
@@ -337,6 +336,52 @@ mod tests {
             assert!(after <= before, "nobody ends up farther away");
         }
         assert!(!destinations.is_empty());
+    }
+
+    #[test]
+    fn melee_group_cannot_attack_a_ship() {
+        let mut game = GameState::naval_scenario();
+        game.units.clear();
+        game.cities.clear();
+        let target = game
+            .grid
+            .all_hexes()
+            .find(|&h| {
+                game.grid.terrain(h).is_water()
+                    && h.neighbors()
+                        .into_iter()
+                        .filter(|&n| game.grid.is_passable(n))
+                        .count()
+                        >= 2
+            })
+            .unwrap();
+        let land: Vec<_> = target
+            .neighbors()
+            .into_iter()
+            .filter(|&h| game.grid.is_passable(h))
+            .take(2)
+            .collect();
+        for (id, pos) in land.into_iter().enumerate() {
+            game.units.push(crate::game::unit::Unit::new(
+                id as u32,
+                pos,
+                Team::Blue,
+                UnitType::Melee,
+            ));
+        }
+        game.units.push(crate::game::unit::Unit::new(
+            9,
+            target,
+            Team::Red,
+            UnitType::PatrolGalley,
+        ));
+        game.set_selection(vec![0, 1]);
+        game.group_order(target, ClickMode::Attack);
+        assert!(
+            game.units[..2]
+                .iter()
+                .all(|unit| unit.planned_attack.is_none())
+        );
     }
 
     #[test]

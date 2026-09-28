@@ -137,7 +137,8 @@ to plan boarding. Select the craft and click adjacent empty land to plan landing
 passenger. Both happen after combat, so cargo sinks with its ship. A craft cannot attack.
 Patrol Galleys fight ships well but deal 35% damage to land troops; Bombard Ships attack from
 three hexes. Land melee troops cannot attack ships; Ranged deal 40% and Siege 60% damage to
-ships. Shore and ship attacks do not draw melee retaliation across the waterline.
+ships. These attack restrictions apply to direct, group, queued, AI and resolving orders.
+Shore and ship attacks do not draw melee retaliation across the waterline.
 
 ## Fog of war (`fog.rs`)
 

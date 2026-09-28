@@ -363,14 +363,7 @@ impl GameState {
     /// from where the plan has it standing then.
     fn can_attack_on_turn(&self, idx: usize, turn: usize, target: Hex) -> bool {
         let unit = &self.units[idx];
-        if self.grid.contains(target)
-            && self.grid.terrain(target).is_water()
-            && !unit.is_naval()
-            && !matches!(
-                unit.unit_type,
-                super::unit::UnitType::Ranged | super::unit::UnitType::Siege
-            )
-        {
+        if !self.attack_target_legal(idx, target, turn > 0) {
             return false;
         }
         let (able, range) = if turn == 0 {
@@ -541,6 +534,15 @@ mod tests {
 
     fn cursor(game: &GameState, hex: Hex) -> Vec2 {
         game.camera.world_to_screen(hex.to_world(), SCREEN)
+    }
+
+    #[test]
+    fn landing_craft_cannot_queue_an_attack() {
+        let mut game = open_field(&[UnitType::LandingCraft]);
+        game.selected = Some(0);
+        assert!(!game.queue_attack(Hex::new(-3, 0)));
+        assert!(game.units[0].planned_attack.is_none());
+        assert!(game.units[0].queued.is_empty());
     }
 
     #[test]
