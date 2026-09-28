@@ -1,8 +1,8 @@
 //! City and Barracks views: opening and leaving them, map clicks while one is
 //! open, and ending planning (which waits on cities with nothing to build).
 use super::MAX_CITY_POPULATION;
+use crate::game::GameState;
 use crate::game::hex::Hex;
-use crate::game::{GameState, PLAYER_TEAM};
 
 impl GameState {
     /// Y or the Yields button: shows or hides tile yields around the open city.
@@ -32,7 +32,7 @@ impl GameState {
         }
         let city = (0..self.cities.len())
             .find(|&i| self.city_needs_build(i))
-            .or_else(|| self.cities.iter().position(|c| c.team == PLAYER_TEAM));
+            .or_else(|| self.cities.iter().position(|c| c.team == self.local_team));
         if let Some(i) = city {
             self.open_city(i);
         }
@@ -66,7 +66,7 @@ impl GameState {
     /// gather (`Build::Gather`), even when its side can't pay for anything.
     pub(in crate::game) fn city_needs_build(&self, i: usize) -> bool {
         let city = &self.cities[i];
-        city.team == PLAYER_TEAM && city.queue.is_empty()
+        city.team == self.local_team && city.queue.is_empty()
     }
 
     pub(in crate::game) fn leave_city_view(&mut self) {
@@ -148,7 +148,7 @@ impl GameState {
             if let Some(i) = self
                 .cities
                 .iter()
-                .position(|c| c.barracks == Some(hex) && c.team == PLAYER_TEAM)
+                .position(|c| c.barracks == Some(hex) && c.team == self.local_team)
             {
                 self.open_barracks(i);
                 return true;
@@ -156,7 +156,7 @@ impl GameState {
             if let Some(i) = self
                 .cities
                 .iter()
-                .position(|c| c.pos == hex && c.team == PLAYER_TEAM)
+                .position(|c| c.pos == hex && c.team == self.local_team)
             {
                 self.open_city(i);
                 return true;
@@ -236,8 +236,14 @@ impl GameState {
             self.open_city(i);
             return;
         }
+        // A networked game resolves once every side's plan is in
+        // (`multiplayer.rs`).
+        if self.is_networked() {
+            self.submit_plan();
+            return;
+        }
         for i in 0..self.cities.len() {
-            if self.cities[i].team != PLAYER_TEAM {
+            if !self.is_human(self.cities[i].team) {
                 self.auto_assign_city(i);
             }
         }

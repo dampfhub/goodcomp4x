@@ -17,6 +17,7 @@ mod hex;
 mod map_icons;
 mod mapgen;
 mod mesh;
+mod multiplayer;
 mod order_queue;
 mod orders;
 #[cfg(test)]
@@ -44,13 +45,17 @@ pub use camera::Camera;
 pub use city::{BuildUnit, Building};
 pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
+pub use multiplayer::{
+    DEFAULT_PORT, HOST_SEAT, MAX_PLAYERS, Message as NetMessage, PROTOCOL_VERSION,
+};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
 pub use settings::Settings;
 use terrain::Tile;
 use turn::Step;
-pub use ui::{ImGuiLayoutState, selection_box, ui_projection};
-use unit::{Team, Unit, UnitType};
+pub use ui::{ImGuiLayoutState, NetMenu, NetRequest, selection_box, ui_projection};
+pub use unit::Team;
+use unit::{Unit, UnitType};
 use unit_icons::UnitIcon;
 pub use workers::JobKind;
 
@@ -59,6 +64,8 @@ pub use workers::JobKind;
 type GameRng = rand::rngs::Xoshiro256PlusPlus;
 
 const GRID_RADIUS: i32 = 3;
+/// The side a single-player game gives the player, and the local side
+/// until a multiplayer game says otherwise (`GameState::local_team`).
 const PLAYER_TEAM: Team = Team::Blue;
 
 /// Logged at startup. It only says where the controls are: `docs/controls.md`
@@ -144,6 +151,9 @@ pub struct GameState {
     /// Whether the settings menu (Escape) is open. Kept across scenario
     /// switches and loads, like the rest of the UI.
     settings_open: bool,
+    /// The settings menu's Multiplayer section: what's typed, and what it
+    /// asks the app to do (`ui/network_menu.rs`). Kept like the menu.
+    net_menu: ui::NetMenu,
     /// The settings menu's Quit button was clicked; the app closes the window.
     quit_requested: bool,
     /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
@@ -157,6 +167,11 @@ pub struct GameState {
     /// seed it (`seed_rng`) so a game replays exactly. Kept across scenario
     /// switches (`scenario.rs`).
     rng: GameRng,
+    /// The seed the RNG last took (`reseed`): a networked game's host sends
+    /// it, so both machines roll the same dice.
+    rng_seed: u64,
+    /// A networked game's lockstep state (`multiplayer.rs`); `None` alone.
+    lockstep: Option<Box<multiplayer::Lockstep>>,
     /// Steps of the turn currently playing out, drained one at a time by `update`.
     pending_steps: VecDeque<Step>,
     step_timer: f32,
@@ -182,6 +197,13 @@ pub struct GameState {
     barriers: HashMap<(Hex, Hex), workers::Structure>,
     /// Frontier sandbox units that the player may command despite being Red.
     player_controlled_units: HashSet<u32>,
+    /// The side played at this machine: whose orders the input gives, whose
+    /// fog, stockpile and notices show. Blue, unless a multiplayer game
+    /// seats this player elsewhere (`multiplayer.rs`).
+    local_team: Team,
+    /// The sides people play, here or across the network; the AI plays
+    /// the rest (`ai_teams`).
+    humans: Vec<Team>,
     next_unit_id: u32,
 }
 
@@ -257,12 +279,15 @@ impl GameState {
             effects: Vec::new(),
             settings: settings::Settings::default(),
             settings_open: false,
+            net_menu: ui::NetMenu::default(),
             quit_requested: false,
             fog_of_war: true,
             memory: fog::Memory::default(),
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
             rng: GameRng::seed_from_u64(rand::random()),
+            rng_seed: 0,
+            lockstep: None,
             pending_steps: VecDeque::new(),
             step_timer: 0.0,
             recent_actors: Vec::new(),
@@ -275,6 +300,8 @@ impl GameState {
             structures: HashMap::default(),
             barriers: HashMap::default(),
             player_controlled_units: HashSet::default(),
+            local_team: PLAYER_TEAM,
+            humans: vec![PLAYER_TEAM],
             next_unit_id: 8,
         };
         game.select_next_or_end_turn(None);
@@ -454,8 +481,14 @@ impl GameState {
         (0..self.units.len()).filter(move |&i| self.units[i].pos == hex)
     }
 
+    /// Whether people play `team` (here or across the network) rather than
+    /// the AI.
+    pub(super) fn is_human(&self, team: Team) -> bool {
+        self.humans.contains(&team)
+    }
+
     fn is_player_controlled(&self, idx: usize) -> bool {
-        self.units[idx].team == PLAYER_TEAM
+        self.units[idx].team == self.local_team
             || self.player_controlled_units.contains(&self.units[idx].id)
     }
 

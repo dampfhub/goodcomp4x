@@ -19,6 +19,14 @@ Options:
                        to FILE as a PNG, and exit
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
                        default to 1600x900)
+  --host               host a network game on a new world and wait for the
+                       other players to join; you play Blue
+  --players <N>        with --host: how many people play, you included (2-7,
+                       default 2); the AI plays the world's other sides
+  --port <N>           the port --host listens on (default 7777)
+  --join <ADDRESS>     join a hosted game at HOST or HOST:PORT; you get the
+                       next open side
+  --code <CODE>        the join code the host shows (needed with --join)
   -h, --help           print this and exit";
 
 /// What the command line asked for.
@@ -31,7 +39,18 @@ pub struct Options {
     pub screenshot: Option<PathBuf>,
     /// Window size in physical pixels, if given.
     pub size: Option<(u32, u32)>,
+    /// A multiplayer game to host or join.
+    pub network: Option<Network>,
     pub help: bool,
+}
+
+/// `--host` (with `--port`) or `--join`.
+#[derive(Debug, PartialEq)]
+pub enum Network {
+    /// The port, and how many people play.
+    Host(u16, usize),
+    /// The host's address, and its join code.
+    Join(String, String),
 }
 
 impl Default for Options {
@@ -41,6 +60,7 @@ impl Default for Options {
             seed: None,
             screenshot: None,
             size: None,
+            network: None,
             help: false,
         }
     }
@@ -50,6 +70,8 @@ impl Options {
     /// Parses the arguments after the program name.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self> {
         let mut options = Self::default();
+        let (mut host, mut port, mut join, mut code) = (false, None, None, None);
+        let mut players = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             let mut value = || {
@@ -76,12 +98,57 @@ impl Options {
                 }
                 "--screenshot" => options.screenshot = Some(value()?.into()),
                 "--size" => options.size = Some(parse_size(&value()?)?),
+                "--host" => host = true,
+                "--port" => {
+                    let text = value()?;
+                    port =
+                        Some(text.parse().with_context(|| {
+                            format!("--port wants a port number, not {text:?}")
+                        })?);
+                }
+                "--join" => join = Some(value()?),
+                "--players" => {
+                    let text = value()?;
+                    let count: usize = text
+                        .parse()
+                        .ok()
+                        .filter(|n| (2..=crate::game::MAX_PLAYERS).contains(n))
+                        .with_context(|| {
+                            format!(
+                                "--players wants 2 to {}, not {text:?}",
+                                crate::game::MAX_PLAYERS
+                            )
+                        })?;
+                    players = Some(count);
+                }
+                "--code" => code = Some(value()?),
                 "-h" | "--help" => options.help = true,
                 _ => bail!("unknown argument {arg:?}\n\n{USAGE}"),
             }
         }
         if options.seed.is_some() && options.scenario != Scenario::World {
             bail!("--seed only applies to --scenario world");
+        }
+        options.network = match (host, join) {
+            (true, Some(_)) => bail!("--host and --join can't go together"),
+            (true, None) if code.is_some() => bail!("--code only applies to --join"),
+            (true, None) => Some(Network::Host(
+                port.unwrap_or(crate::net::DEFAULT_PORT),
+                players.unwrap_or(2),
+            )),
+            (false, Some(address)) => {
+                let code = code.context("--join needs --code: the join code the host shows")?;
+                Some(Network::Join(address, code))
+            }
+            (false, None) if code.is_some() => bail!("--code only applies to --join"),
+            (false, None) if port.is_some() => bail!("--port only applies to --host"),
+            (false, None) => None,
+        };
+        if players.is_some() && !host {
+            bail!("--players only applies to --host");
+        }
+        if options.network.is_some() && options.screenshot.is_some() {
+            bail!("a screenshot can't be taken of a network game");
         }
         Ok(options)
     }
@@ -102,6 +169,37 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Options> {
         Options::parse(args.iter().map(|arg| arg.to_string()))
+    }
+
+    #[test]
+    fn host_and_join_take_a_port_and_a_code() {
+        assert_eq!(
+            parse(&["--host"]).unwrap().network,
+            Some(Network::Host(crate::net::DEFAULT_PORT, 2))
+        );
+        assert_eq!(
+            parse(&["--host", "--port", "9000"]).unwrap().network,
+            Some(Network::Host(9000, 2))
+        );
+        assert_eq!(
+            parse(&["--join", "10.0.0.2", "--code", "ABC123"])
+                .unwrap()
+                .network,
+            Some(Network::Join("10.0.0.2".into(), "ABC123".into()))
+        );
+        for bad in [
+            &["--join", "10.0.0.2"][..],
+            &["--host", "--join", "x", "--code", "y"],
+            &["--port", "9000"],
+            &["--host", "--code", "y"],
+            &["--host", "--port", "lots"],
+            &["--host", "--players", "1"],
+            &["--host", "--players", "8"],
+            &["--players", "3"],
+            &["--host", "--screenshot", "x.png"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

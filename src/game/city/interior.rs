@@ -5,7 +5,7 @@ use crate::game::fast_hash::HashSet;
 use crate::game::hex::Hex;
 use crate::game::terrain::Resource;
 use crate::game::unit::{Team, UnitStats, UnitType, apply_training_upgrade};
-use crate::game::{Camera, GameState, PLAYER_TEAM, combat};
+use crate::game::{Camera, GameState, combat};
 
 pub(in crate::game) const CORE_HP: f32 = 80.0;
 const CORE_DEFENSE: f32 = 18.0;
@@ -48,7 +48,7 @@ impl InteriorFighter {
     }
 }
 
-pub(super) fn in_bounds(hex: Hex) -> bool {
+pub(in crate::game) fn in_bounds(hex: Hex) -> bool {
     hex.distance(CENTER) <= 2
 }
 
@@ -65,7 +65,7 @@ impl GameState {
             .interior
             .fighters
             .iter_mut()
-            .find(|f| f.source_id == source && f.team == PLAYER_TEAM)
+            .find(|f| f.source_id == source && f.team == self.local_team)
         {
             fighter.planned_move = None;
             fighter.planned_attack = None;
@@ -90,7 +90,7 @@ impl GameState {
                 self.hovered_tile.and_then(|hex| {
                     self.cities
                         .iter()
-                        .position(|c| c.pos == hex && (c.team == PLAYER_TEAM || fog.sees(hex)))
+                        .position(|c| c.pos == hex && (c.team == self.local_team || fog.sees(hex)))
                 })
             })
             .or_else(|| {
@@ -98,7 +98,7 @@ impl GameState {
                     self.cities
                         .iter()
                         .enumerate()
-                        .filter(|(_, city)| city.team == PLAYER_TEAM || fog.sees(city.pos))
+                        .filter(|(_, city)| city.team == self.local_team || fog.sees(city.pos))
                         .min_by_key(|(_, city)| (city.pos.distance(self.units[unit].pos), city.id))
                         .map(|(i, _)| i)
                 })
@@ -114,7 +114,12 @@ impl GameState {
         if self.interior_view.is_none() {
             self.exterior_camera = Some(self.camera.clone());
         }
-        self.sync_city_interiors();
+        // Looking doesn't change the game: in a network game the troops
+        // stand inside from the turn's start (`begin_lockstep_turn`), on
+        // every machine at once.
+        if !self.is_networked() {
+            self.sync_city_interiors();
+        }
         self.interior_view = Some(city);
         self.interior_selected = None;
         self.selected_city = None;
@@ -135,7 +140,7 @@ impl GameState {
             self.camera = camera;
         }
         self.interior_selected = None;
-        self.selected_city = (self.cities[city].team == PLAYER_TEAM).then_some(city);
+        self.selected_city = (self.cities[city].team == self.local_team).then_some(city);
         self.hovered_tile = None;
         self.hovered_city = None;
         self.notice = if self.selected_city.is_some() {
@@ -156,7 +161,7 @@ impl GameState {
         }
         let interior = &self.cities[city].interior;
         let clicked = interior.fighters.iter().find(|f| f.pos == tile);
-        if let Some(fighter) = clicked.filter(|f| f.team == PLAYER_TEAM) {
+        if let Some(fighter) = clicked.filter(|f| f.team == self.local_team) {
             self.interior_selected =
                 (self.interior_selected != Some(fighter.source_id)).then_some(fighter.source_id);
             return;
@@ -170,9 +175,9 @@ impl GameState {
             return;
         };
         let from = fighter.planned_move.unwrap_or(fighter.pos);
-        let enemy = clicked.is_some_and(|f| f.team != PLAYER_TEAM);
+        let enemy = clicked.is_some_and(|f| f.team != self.local_team);
         let core = tile == CENTER
-            && self.cities[city].team != PLAYER_TEAM
+            && self.cities[city].team != self.local_team
             && self.cities[city].interior.core_hp > 0.0;
         if enemy || core {
             if from.distance(tile) <= fighter.stats().attack_range {
@@ -297,8 +302,9 @@ impl GameState {
         let owner = self.cities[city].team;
         let core_breached = self.cities[city].interior.core_hp <= 0.0;
         let snapshot = self.cities[city].interior.fighters.clone();
+        let humans = self.humans.clone();
         for fighter in &mut self.cities[city].interior.fighters {
-            if fighter.team == PLAYER_TEAM {
+            if humans.contains(&fighter.team) {
                 continue;
             }
             let target = if fighter.team != owner {
@@ -388,7 +394,7 @@ impl GameState {
         }
         interior.core_hp = (interior.core_hp - core_damage).max(0.0);
         if core_damage > 0.0 && interior.core_hp <= 0.0 {
-            self.notice = if owner == PLAYER_TEAM {
+            self.notice = if owner == self.local_team {
                 "YOUR POST BREACHED - KEEP RED OFF THE CENTER"
             } else {
                 "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE"

@@ -9,6 +9,7 @@ use super::{
     BODY, BOOSTED_TEXT, ButtonState, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, QueueItemSpec,
     QueueKind, REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
 };
+use crate::game::GameState;
 use crate::game::city::{
     Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, FOOD_PER_CITIZEN, GATHER_SHORTCUT,
     GATHER_YIELD, GROW_SHORTCUT, LaborFocus, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, resource_icon,
@@ -17,7 +18,6 @@ use crate::game::city::{
 use crate::game::orders::ClickMode;
 use crate::game::terrain::Resource;
 use crate::game::workers::JobKind;
-use crate::game::{GameState, PLAYER_TEAM};
 
 impl GameState {
     /// The tactical hex board inside a city. These fighters are independent
@@ -49,7 +49,7 @@ impl GameState {
             panel.text(
                 SMALL,
                 vec![(
-                    if city.team == PLAYER_TEAM {
+                    if city.team == self.local_team {
                         "KEEP RED OFF THE CENTER TO PREVENT CAPTURE"
                     } else {
                         "MOVE A BLUE TROOP ONTO THE POST TO CAPTURE"
@@ -62,7 +62,7 @@ impl GameState {
         let blue = interior
             .fighters
             .iter()
-            .filter(|f| f.team == crate::game::PLAYER_TEAM)
+            .filter(|f| f.team == self.local_team)
             .count();
         let red = interior.fighters.len() - blue;
         panel.text(
@@ -93,7 +93,7 @@ impl GameState {
             SMALL,
             vec![(
                 if interior.core_hp <= 0.0 {
-                    if city.team == PLAYER_TEAM {
+                    if city.team == self.local_team {
                         "POST OPEN: DEFEND THE CENTER"
                     } else {
                         "POST OPEN: CLICK A BLUE TROOP, THEN THE CENTER"
@@ -115,7 +115,7 @@ impl GameState {
             },
             ButtonSpec {
                 target: Target::OpenInterior,
-                label: if city.team == crate::game::PLAYER_TEAM {
+                label: if city.team == self.local_team {
                     "RETURN TO CITY"
                 } else {
                     "LEAVE INTERIOR"

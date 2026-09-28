@@ -3,7 +3,9 @@
 //! the fog and the routes are looked up thousands of times a frame and a
 //! turn. A fixed hasher also means the same inserts iterate in the same
 //! order on every run. Keys come from the game itself (hexes on the map,
-//! ids it hands out), so there's nothing for anyone to flood.
+//! ids it hands out), so there's nothing for anyone to flood; a set of keys
+//! straight off the network, before they're checked (`check_plan`), keeps
+//! std's hasher and its random keys.
 use std::hash::{BuildHasherDefault, Hasher};
 
 pub type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<FastHasher>>;

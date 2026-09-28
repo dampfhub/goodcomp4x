@@ -22,7 +22,8 @@ AGENTS.md            agent instructions for the whole repo (nested ones under sr
 README.md            what this is and how to run it
 Cargo.toml, build.rs crate manifest (rust-version 1.92); build.rs compiles shaders/ with glslc
 src/main.rs          logger, command line, event loop
-src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size)
+src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size, --host/--join)
+src/net/             a network game's link: TCP, sealed with a key from the join code (docs/multiplayer.md)
 src/app.rs           App: window, input -> GameState calls, frame pacing (monitor rate, at most 165 FPS), F5 fullscreen
 src/screenshot.rs    screenshot mode: settle, read a frame back, write a PNG, quit
 src/icon.rs          window/taskbar icon (pixels from src/icon_art.rs)
@@ -124,6 +125,9 @@ The session is kept in text files in the config folder (`%APPDATA%\riskofcivlike
   presentation, the window's normal size and whether it's maximized (`SavedWindow` in
   `app.rs`), then `ImGuiLayoutState::to_text`: every panel slot's geometry, the boxes, and the
   Debug and Selection panels' placements the player chose.
+- `network.txt`: `NetMenu::to_text`, what the settings menu's Multiplayer page had typed (the
+  port, the host's address and the number of players; not the join code). Saved on hosting,
+  joining and quitting, and read into the first game's menu.
 - `imgui.ini`: ImGui's own settings (`save_ini_settings`), which hold the dock nodes and which
   panel is docked in which; panels no longer set `NO_SAVED_SETTINGS`. Loaded into the context
   before the first frame. A box's dockspace id comes from its window title, so panels saved in

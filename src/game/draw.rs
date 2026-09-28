@@ -17,7 +17,7 @@ use super::turn::{Phase, step_rank};
 use super::unit::{Team, Unit, UnitStats};
 use super::unit_icons::{self, UnitIcon};
 use super::workers::{Structure, StructureKind, WorkerJob};
-use super::{GameState, PLAYER_TEAM, font, mesh};
+use super::{GameState, font, mesh};
 use crate::renderer::Vertex;
 
 type Color = [f32; 4];
@@ -542,8 +542,12 @@ impl GameState {
             );
             font::push_text_centered(
                 post + Vec2::new(0.0, -0.14),
-                if city.team == PLAYER_TEAM { 0.17 } else { 0.23 },
-                if city.team == PLAYER_TEAM {
+                if city.team == self.local_team {
+                    0.17
+                } else {
+                    0.23
+                },
+                if city.team == self.local_team {
                     "DEFEND"
                 } else {
                     "TAKE"
@@ -1161,7 +1165,7 @@ impl GameState {
         if let Some(i) = self
             .hovered_city
             .or(self.selected_city)
-            .filter(|&i| self.cities[i].team == PLAYER_TEAM || fog.sees(self.cities[i].pos))
+            .filter(|&i| self.cities[i].team == self.local_team || fog.sees(self.cities[i].pos))
         {
             // Delivery labels show routes as the player knows them; the
             // worked-tile rings below show whether goods really arrive.
@@ -1246,7 +1250,7 @@ impl GameState {
                 }
                 None => {
                     let color = if self.job_unavailable(hex, kind).is_none()
-                        || self.job_taken(PLAYER_TEAM, WorkerJob::on_tile(hex, kind))
+                        || self.job_taken(self.local_team, WorkerJob::on_tile(hex, kind))
                     {
                         PLANNED_JOB_COLOR_SOLID
                     } else {
@@ -1286,7 +1290,7 @@ impl GameState {
                 let Some(hex) = city.placed_site(building) else {
                     continue;
                 };
-                if city.team != PLAYER_TEAM && !fog.sees(hex) {
+                if city.team != self.local_team && !fog.sees(hex) {
                     continue;
                 }
                 let (badge, color) = building_badge(building);
@@ -1300,7 +1304,7 @@ impl GameState {
         for (hex, city) in &view.cities {
             push_city_marker(hex.to_world(), city, out);
         }
-        for city in self.cities.iter().filter(|c| c.team == PLAYER_TEAM) {
+        for city in self.cities.iter().filter(|c| c.team == self.local_team) {
             push_worker_count(city.pos.to_world(), city.workers, out);
         }
     }
@@ -1352,7 +1356,7 @@ impl GameState {
 
     fn known_building_at(&self, hex: Hex, fog: &Fog) -> bool {
         let own = self.cities.iter().any(|c| {
-            c.team == PLAYER_TEAM
+            c.team == self.local_team
                 && (c.pos == hex
                     || super::city::Building::PLACEABLE
                         .iter()
@@ -1383,7 +1387,7 @@ impl GameState {
         let queued = self
             .cities
             .iter()
-            .filter(|c| c.team == PLAYER_TEAM)
+            .filter(|c| c.team == self.local_team)
             .flat_map(|c| &c.worker_jobs);
         for job in queued {
             if let Some(across) = job.across {
@@ -1418,7 +1422,7 @@ impl GameState {
         let working = self
             .field_workers
             .iter()
-            .filter(|w| w.team == PLAYER_TEAM && !w.recalled);
+            .filter(|w| w.team == self.local_team && !w.recalled);
         for worker in working {
             let Some(job) = worker.job else { continue };
             let label = match worker.work_left.filter(|_| worker.pos == job.hex) {
@@ -1477,7 +1481,7 @@ impl GameState {
             } else {
                 (worker.pos.to_world(), WORKER_SCALE)
             };
-            if worker.team == PLAYER_TEAM
+            if worker.team == self.local_team
                 && let Some(job) = worker.job.filter(|job| job.hex != worker.pos)
             {
                 push_dotted_segment(center, job.hex.to_world(), 0.05, PLANNED_JOB_COLOR, out);
@@ -1512,7 +1516,7 @@ impl GameState {
                 .filter(|((a, b), _)| fog.sees(*a) || fog.sees(*b)),
         );
         for city in &self.cities {
-            let own = city.team == PLAYER_TEAM;
+            let own = city.team == self.local_team;
             let seen = |health| SeenBuilding {
                 team: city.team,
                 id: city.id,
@@ -1543,10 +1547,10 @@ impl GameState {
             for &(across, barrier) in seen.barriers.iter().filter(|(n, _)| !fog.sees(*n)) {
                 view.barriers.insert(edge(h, across), barrier);
             }
-            if let Some(city) = seen.city.filter(|c| c.team != PLAYER_TEAM) {
+            if let Some(city) = seen.city.filter(|c| c.team != self.local_team) {
                 view.cities.push((h, city));
             }
-            if let Some(barracks) = seen.barracks.filter(|b| b.team != PLAYER_TEAM) {
+            if let Some(barracks) = seen.barracks.filter(|b| b.team != self.local_team) {
                 view.barracks.push((h, barracks));
             }
         }
@@ -2514,6 +2518,7 @@ fn with_alpha([r, g, b, _]: Color, a: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::PLAYER_TEAM;
     use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
     use crate::game::unit::{Unit, UnitType};
 

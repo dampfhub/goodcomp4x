@@ -27,7 +27,7 @@ const GROW_PER_CITIZEN: i32 = 5;
 
 /// Food, wood and metal, in quarters: a side's stockpile, a price or an
 /// income.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Stock {
     pub food: i32,
     pub wood: i32,
@@ -285,6 +285,9 @@ impl GameState {
     /// Debug panel: switches between fixed build times and production
     /// speeding builds (`work_rate`).
     pub fn toggle_production_speedup(&mut self) {
+        if self.refuses_debug() {
+            return;
+        }
         self.production_speedup = !self.production_speedup;
         self.notice = if self.production_speedup {
             "PRODUCTION NOW SPEEDS BUILDS".into()
@@ -346,7 +349,7 @@ impl GameState {
             if let Some(city) = largest {
                 self.cities[city].population -= 1;
                 log::info!("{team:?} city {} starves", self.cities[city].id + 1);
-                if team == crate::game::PLAYER_TEAM {
+                if team == self.local_team {
                     self.notice = format!(
                         "CITY {} STARVES - NOT ENOUGH FOOD FOR EVERY CITIZEN",
                         self.cities[city].id + 1

@@ -230,3 +230,25 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     picking tiles by what they deliver of each; its buttons are a wheat ear, a log, an ingot and a
     balance. ImGui draws every small silhouette (toolbar icons, the production list's unit
     pictograms, text icons) unfeathered, so they're crisp instead of fuzzy and seamed.
+65. Multiplayer, first cut (`claude/multiplayer`, `multiplayer.md`): two players over the
+    network, host (`--host`) as Blue and guest (`--join` with the host's join code) as Red, on the
+    Cities scenario. Lockstep: each side's turn plan goes to the host, which sends every plan to
+    both, and each machine applies them to the turn's starting game and resolves it the same way,
+    with a checksum after each turn to catch a desync. "The player" became the local side, and the
+    AI plays the sides nobody does. Everything that arrives over the network is checked before it
+    touches the game, and a peer that sends anything malformed or hostile is dropped. The link
+    is encrypted and authenticated by the join code (SPAKE2, then ChaCha20-Poly1305 per
+    direction), and plans are checked strictly enough to stop free builds, added progress and
+    other cheats a modified client could try.
+66. Multiplayer on a world, for more (`claude/multiplayer`, `multiplayer.md`): a host
+    (`--host --players N`) and up to six guests share a generated world, each on their own side in
+    join order, with the AI on the world's other sides. The first turn waits for every seat; a guest
+    who leaves after it hands their side to the AI on every machine at once, and the rest play on.
+67. Multiplayer from the menu, and two fixes (`claude/multiplayer`, `multiplayer.md`): the
+    settings menu's Multiplayer page hosts or joins without command-line flags (joining connects
+    in the background, so the window keeps drawing). The first three-player test dropped both
+    guests: looking inside a city added the troops beside it to its interior on the looking
+    player's machine only, so the orders they then gave named troops the host didn't have, and
+    it refused their plans. In a network game those troops now stand inside from each turn's
+    start, on every machine. A guest leaving before the first turn plays out now frees their
+    seat, as it should have, and a dropped guest is told why.

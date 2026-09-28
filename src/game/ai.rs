@@ -2,12 +2,12 @@
 
 use std::collections::VecDeque;
 
+use super::GameState;
 use super::city::{Build, BuildUnit, Building, City};
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::unit::{Team, UnitType};
 use super::workers::{JobKind, WorkerJob};
-use super::{GameState, PLAYER_TEAM};
 
 /// Units (scouts and settlers aside) the AI wants for each of its cities
 /// before it spends on growth.
@@ -19,7 +19,7 @@ impl GameState {
     pub(super) fn ai_teams(&self) -> Vec<Team> {
         Team::ALL
             .into_iter()
-            .filter(|&team| team != PLAYER_TEAM)
+            .filter(|&team| !self.is_human(team))
             .filter(|&team| {
                 self.units.iter().any(|u| u.team == team)
                     || self.cities.iter().any(|c| c.team == team)

@@ -51,6 +51,7 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 |---|---|---|
 | `src/app.rs`, `src/main.rs` | window, input and key map, frame loop | `src/AGENTS.md` |
 | `src/cli.rs`, `src/screenshot.rs` | command-line flags; screenshot mode | `src/AGENTS.md` |
+| `src/net/` | a network game's link: TCP, encrypted and authenticated by the join code (`secure.rs`); everything arriving is untrusted | `docs/multiplayer.md` |
 | `src/renderer/` | general 2D Vulkan renderer; knows nothing about the game | `src/renderer/AGENTS.md` |
 | `src/game/` | all game state, rules, AI, drawing and UI | `src/game/AGENTS.md` |
 | `src/game/ui/` | screen-space UI, both presentations (ImGui and classic) | `src/game/ui/AGENTS.md` |

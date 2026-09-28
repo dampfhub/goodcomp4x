@@ -68,15 +68,17 @@ pub(super) fn step_rank(unit_type: UnitType, phase: Phase) -> u32 {
 }
 
 impl GameState {
+    /// Whether the turn is out of the player's hands: resolving, or (in a
+    /// networked game) waiting for the other player's plan. Input waits.
     pub fn is_resolving(&self) -> bool {
-        !self.pending_steps.is_empty()
+        !self.pending_steps.is_empty() || self.waiting_for_peers()
     }
 
     /// Plans every AI team's turn, then queues every step for `update` to
     /// play out.
     /// Called after the player explicitly ends planning.
     pub(super) fn resolve_turn(&mut self) {
-        if self.is_resolving() {
+        if !self.pending_steps.is_empty() {
             return;
         }
         self.turn += 1;
@@ -157,6 +159,7 @@ impl GameState {
             }
             self.advance_queues();
             log::info!("=== turn {} resolved ===", self.turn);
+            self.finish_lockstep_turn();
             self.select_next_or_end_turn(None);
         }
     }

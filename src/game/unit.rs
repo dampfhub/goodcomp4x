@@ -8,7 +8,9 @@ use super::terrain::Resource;
 
 /// A side. Blue is the player (`PLAYER_TEAM`); every other team is played
 /// by the AI, and every team is at war with every other.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Team {
     Blue,
     Red,
@@ -126,7 +128,7 @@ impl UnitType {
 }
 
 /// One later turn in a unit's order queue (Shift-click, `order_queue.rs`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TurnOrder {
     /// Where the unit should stand when this turn starts. If it isn't there
     /// (its earlier move was blocked, say), the rest of the queue is dropped.

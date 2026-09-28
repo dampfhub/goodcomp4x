@@ -1707,6 +1707,10 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
                 (center - screen / 2.0).abs().max_element() <= 1.0,
                 "{center}"
             );
+            assert!(
+                menu_rect.0.y >= 0.0 && menu_rect.1.y <= screen.y,
+                "the menu fits on a {screen} screen: {menu_rect:?}"
+            );
             for (i, &(a_min, a_max)) in docked.iter().enumerate() {
                 for &(b_min, b_max) in &docked[i + 1..] {
                     let apart = a_max.x <= b_min.x
@@ -1728,6 +1732,7 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
                             | Target::ToggleYields
                             | Target::CloseSettings
                             | Target::Quit
+                            | Target::OpenMultiplayer
                     )
                 })
                 .collect();
@@ -1739,7 +1744,7 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
                     "{setting:?} has buttons"
                 );
             }
-            for target in [Target::CloseSettings, Target::Quit] {
+            for target in [Target::OpenMultiplayer, Target::CloseSettings, Target::Quit] {
                 assert!(menu_buttons.iter().any(|b| b.target == target));
             }
             // The menu is drawn as a layer over everything else: its panel
@@ -1928,4 +1933,138 @@ fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
         "{}",
         melee.hint
     );
+}
+
+#[test]
+fn the_multiplayer_page_hosts_and_joins_from_the_menu() {
+    use super::network_menu::NetField;
+    let mut game = GameState::new();
+    game.clear_selection();
+    game.press_escape();
+    let click = |game: &mut GameState, target| {
+        game.handle_click(button_cursor(game, target), SCREEN, ClickMode::Normal)
+    };
+    click(&mut game, Target::OpenMultiplayer);
+    // The page takes the settings' place, fits the screen, and every button
+    // on it takes its own clicks.
+    let targets = [
+        Target::NetPlayers(3),
+        Target::EditNetField(NetField::Port),
+        Target::HostGame,
+        Target::EditNetField(NetField::Address),
+        Target::EditNetField(NetField::Code),
+        Target::JoinGame,
+        Target::CloseMultiplayer,
+        Target::CloseSettings,
+    ];
+    for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        let layout = game.layout(screen);
+        let &(min, max) = layout.panels.last().unwrap();
+        assert!(min.cmpge(Vec2::ZERO).all() && max.cmple(screen).all());
+        assert!(
+            !layout
+                .buttons
+                .iter()
+                .any(|b| matches!(b.target, Target::SetSetting(..)))
+        );
+        for target in targets {
+            let button = layout.buttons.iter().find(|b| b.target == target);
+            let button = button.unwrap_or_else(|| panic!("{target:?} shown"));
+            assert!(contains(min, max, button.min) && contains(min, max, button.max));
+            let middle = (button.min + button.max) / 2.0;
+            assert_eq!(layout.button_at(middle).unwrap().target, target);
+        }
+    }
+
+    // Two to seven players.
+    click(&mut game, Target::NetPlayers(3));
+    assert_eq!(game.net_menu.players, 3);
+    game.activate_target(Target::NetPlayers(99));
+    assert_eq!(game.net_menu.players, crate::game::MAX_PLAYERS);
+    game.activate_target(Target::NetPlayers(3));
+
+    // Joining wants an address and a code, typed in: a click on a field
+    // starts typing, and any other button ends it.
+    click(&mut game, Target::JoinGame);
+    assert_eq!(game.take_net_request(), None);
+    assert!(!game.net_menu.status.is_empty());
+    click(&mut game, Target::EditNetField(NetField::Address));
+    assert_eq!(game.net_field_editing(), Some(NetField::Address));
+    game.type_net_text("192.168.1.20:55741x");
+    game.net_field_backspace();
+    click(&mut game, Target::EditNetField(NetField::Code));
+    assert_eq!(game.net_field_editing(), Some(NetField::Code));
+    game.type_net_text("k7m 2qx");
+    click(&mut game, Target::JoinGame);
+    assert_eq!(game.net_field_editing(), None);
+    assert_eq!(
+        game.take_net_request(),
+        Some(NetRequest::Join {
+            address: "192.168.1.20:55741".into(),
+            code: "K7M2QX".into(),
+        })
+    );
+
+    // Hosting wants a port that is one.
+    game.set_net_field(NetField::Port, "");
+    click(&mut game, Target::EditNetField(NetField::Port));
+    game.type_net_text("port 0");
+    assert_eq!(game.net_menu.port, "0");
+    click(&mut game, Target::HostGame);
+    assert_eq!(game.take_net_request(), None);
+    game.set_net_field(NetField::Port, "55741");
+    click(&mut game, Target::HostGame);
+    assert_eq!(
+        game.take_net_request(),
+        Some(NetRequest::Host {
+            port: 55741,
+            players: 3
+        })
+    );
+
+    // What's typed stays through a new game; the menu opens on the
+    // settings again next time.
+    game.switch_scenario(Scenario::Cities);
+    assert_eq!(game.net_menu.address, "192.168.1.20:55741");
+    click(&mut game, Target::CloseMultiplayer);
+    assert!(game.settings_open && !game.net_menu.open);
+    click(&mut game, Target::OpenMultiplayer);
+    game.press_escape();
+    assert!(!game.settings_open && !game.net_menu.open);
+}
+
+#[test]
+fn the_multiplayer_page_in_a_network_game_shows_the_code_and_leaves() {
+    let mut host = GameState::host_game(3, &crate::game::Settings::default());
+    host.settings_open = true;
+    host.activate_target(Target::OpenMultiplayer);
+    let panel = host.settings_panel_content();
+    let text: String = panel
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Text(_, line) => Some(line.iter().map(|(s, _)| s.as_str()).collect::<String>()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let code = host.join_code().unwrap();
+    assert!(
+        text.contains(&format!("HOSTING AS BLUE - JOIN CODE {code}")),
+        "{text}"
+    );
+    assert!(text.contains("SEATS OPEN: RED, GREEN"), "{text}");
+    assert!(
+        !host
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::HostGame)
+    );
+    host.handle_click(
+        button_cursor(&host, Target::LeaveGame),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(host.take_net_request(), Some(NetRequest::Leave));
 }

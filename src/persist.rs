@@ -6,8 +6,9 @@
 //! file gives `None`, and the game starts with its defaults; a failed write
 //! is logged and otherwise ignored. What goes in each file is up to its
 //! owner: `Settings::to_text` (`settings.txt`), `ImGuiLayoutState::to_text`
-//! and the window's size (`layout.txt`), and ImGui's own docking data
-//! (`imgui.ini`).
+//! and the window's size (`layout.txt`), ImGui's own docking data
+//! (`imgui.ini`), and what the Multiplayer page had typed
+//! (`NetMenu::to_text`, `network.txt`).
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

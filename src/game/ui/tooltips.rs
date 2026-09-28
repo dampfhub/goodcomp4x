@@ -8,6 +8,7 @@ use super::{
     METAL_TEXT, REDUCED_TEXT, SMALL, TEXT, TILE_TOOLTIP_OFFSET, TOOLTIP_GAP, TOOLTIP_WRAP, Target,
     UnitAction, WOOD_TEXT, contains,
 };
+use crate::game::GameState;
 use crate::game::city::{
     Build, Building, GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, MAX_CITY_POPULATION,
     UNITS_PER_DEPOSIT, WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
@@ -17,7 +18,6 @@ use crate::game::map_icons::{FOOD_ICON, METAL_ICON, WOOD_ICON};
 use crate::game::scenario::Scenario;
 use crate::game::unit::Unit;
 use crate::game::workers::JobKind;
-use crate::game::{GameState, PLAYER_TEAM};
 use crate::renderer::Vertex;
 use glam::Vec2;
 
@@ -41,8 +41,8 @@ impl GameState {
         let Some(resource) = build.required_resource() else {
             return String::new();
         };
-        let cap = self.special_cap(PLAYER_TEAM, resource);
-        let left = cap.saturating_sub(self.special_used(PLAYER_TEAM, resource));
+        let cap = self.special_cap(self.local_team, resource);
+        let left = cap.saturating_sub(self.special_used(self.local_team, resource));
         format!(" · {left} OF {cap} LEFT")
     }
 
@@ -51,7 +51,7 @@ impl GameState {
     fn shortfall_text(&self, build: Build) -> Option<String> {
         let city = self.selected_city.or(self.selected_barracks)?;
         let short = self
-            .stock(PLAYER_TEAM)
+            .stock(self.local_team)
             .shortfall(self.queue_price(city, build));
         (short != Default::default()).then(|| format!("SHORT OF {}", stock_icons(short)))
     }
@@ -66,8 +66,7 @@ impl GameState {
         let memory = if seen_now { None } else { self.remembered(hex) };
         let tile = self.grid.tile(hex);
         let terrain = tile.terrain;
-        let visible =
-            |city: &&crate::game::city::City| seen_now || city.team == crate::game::PLAYER_TEAM;
+        let visible = |city: &&crate::game::city::City| seen_now || city.team == self.local_team;
         let city = self.cities.iter().filter(visible).find(|c| c.pos == hex);
         let barracks = self
             .cities
@@ -80,9 +79,8 @@ impl GameState {
                 .find(|&b| b != Building::Barracks && c.placed_site(b) == Some(hex))
                 .map(|b| (c, b))
         });
-        let seen_city = memory.and_then(|m| m.city.filter(|c| c.team != crate::game::PLAYER_TEAM));
-        let seen_barracks =
-            memory.and_then(|m| m.barracks.filter(|b| b.team != crate::game::PLAYER_TEAM));
+        let seen_city = memory.and_then(|m| m.city.filter(|c| c.team != self.local_team));
+        let seen_barracks = memory.and_then(|m| m.barracks.filter(|b| b.team != self.local_team));
         let title = match (city, barracks, seen_city, seen_barracks) {
             (Some(city), ..) => (
                 format!("{:?} CITY {}", city.team, city.id + 1).to_uppercase(),
@@ -573,6 +571,52 @@ impl GameState {
                     ("CLOSE SETTINGS".into(), "ESC".into(), String::new(), None)
                 }
                 Target::Quit => ("QUIT".into(), String::new(), String::new(), None),
+                Target::OpenMultiplayer => (
+                    "MULTIPLAYER".into(),
+                    String::new(),
+                    "HOST A GAME ON THE NETWORK, OR JOIN ONE.".into(),
+                    None,
+                ),
+                Target::CloseMultiplayer => (
+                    "BACK".into(),
+                    String::new(),
+                    "BACK TO THE SETTINGS.".into(),
+                    None,
+                ),
+                Target::NetPlayers(players) => (
+                    "PLAYERS".into(),
+                    players.to_string(),
+                    "HOW MANY PEOPLE PLAY, YOU INCLUDED. THE AI PLAYS THE OTHER SIDES.".into(),
+                    None,
+                ),
+                Target::EditNetField(field) => (
+                    field.name().into(),
+                    "CLICK".into(),
+                    "CLICK, THEN TYPE. ENTER WHEN DONE.".into(),
+                    None,
+                ),
+                Target::HostGame => (
+                    "HOST GAME".into(),
+                    String::new(),
+                    "STARTS A NEW WORLD FOR THIS MANY PLAYERS AND SHOWS THE JOIN CODE TO GIVE THEM. THEY NEED YOUR ADDRESS AND THE PORT OPEN.".into(),
+                    self.net_menu.busy.then(|| "JOINING A GAME".into()),
+                ),
+                Target::JoinGame => (
+                    "JOIN GAME".into(),
+                    String::new(),
+                    "JOINS THE GAME HOSTED AT THIS ADDRESS (HOST OR HOST:PORT) WITH THE CODE IT SHOWS.".into(),
+                    self.net_menu.busy.then(|| "ALREADY JOINING".into()),
+                ),
+                Target::LeaveGame => (
+                    "LEAVE GAME".into(),
+                    String::new(),
+                    if self.join_code().is_some() {
+                        "ENDS THE GAME FOR EVERYONE AND STARTS A NEW ONE OF YOUR OWN.".into()
+                    } else {
+                        "THE AI PLAYS YOUR SIDE; YOU START A NEW GAME OF YOUR OWN.".into()
+                    },
+                    None,
+                ),
                 Target::ToggleYields => (
                     "YIELDS".into(),
                     "Y".into(),

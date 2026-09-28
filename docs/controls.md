@@ -187,6 +187,7 @@ left and its control beside it; hover over either for what the setting does.
 | Slider | Drag or click to pick a number; the slider shows the value |
 | Buttons side by side | Pick one of a few named values; the current one is gold |
 | Drop-down list | Pick one of a longer list of values |
+| Multiplayer button | Host or join a network game (below) |
 | Close button, or Escape | Close the menu |
 | Quit button | Close the game |
 
@@ -204,6 +205,26 @@ that end of the range).
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).
+
+### Multiplayer
+
+The Multiplayer button turns the menu into the page for network games (`multiplayer.md`);
+Back returns to the settings, and the menu opens on the settings again next time.
+
+| Control | Action |
+| --- | --- |
+| Players < > | How many people to host for, you included: 2 to 7 (the AI plays the other sides) |
+| Port | The port to host on (7777 unless changed); guests must be able to reach it |
+| Host Game | Start a new world for that many players and show its join code |
+| Host address | The host to join: `HOST`, or `HOST:PORT` for another port than 7777 |
+| Join code | The code the host shows (letters come out upper case) |
+| Join Game | Join that game; the page says how it goes, or why it couldn't |
+| Leave Game (in a network game) | Leave it for a new world of your own; the host leaving ends it for everyone |
+
+In ImGui the fields are text boxes: click one and type. In the classic presentation a field is a
+button: click it and type (Backspace deletes), and Enter, Tab or Escape ends typing, as does any
+other button. While you type, keys go to the field, not the game. The port, address and number
+of players are kept between sessions (`network.txt`); the join code isn't.
 
 Settings are also kept between sessions, saved as soon as one changes. On quitting, the game
 also saves the window's size (and whether it's maximized), the UI presentation (F11), and the
@@ -223,6 +244,10 @@ them.
 | `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
 | `--size <W>x<H>` | Open the window at this size in pixels |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
+| `--host` | Host a network game on a new world (you're Blue, the AI plays the sides nobody does) and show its join code (`multiplayer.md`); the settings menu's Multiplayer page does the same |
+| `--players <n>` | With `--host`: how many people play, you included (2-7; 2 unless given) |
+| `--port <n>` | With `--host`: listen on port `n` (7777 unless given) |
+| `--join <address> --code <code>` | Join a hosted game at `HOST` or `HOST:PORT` with the join code it shows; you get the next open side |
 
 ## Reading the map
 

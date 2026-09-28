@@ -3,6 +3,7 @@ mod cli;
 mod game;
 mod icon;
 mod icon_art;
+mod net;
 mod persist;
 mod renderer;
 mod screenshot;
@@ -18,9 +19,18 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // A network game is set up before the window opens: joining waits for
+    // the host's game.
+    let network = match &options.network {
+        Some(cli::Network::Host(port, players)) => {
+            Some(net::Session::host(*port, *players, &app::saved_settings())?)
+        }
+        Some(cli::Network::Join(address, code)) => Some(net::Session::join(address, code)?),
+        None => None,
+    };
     icon::claim_taskbar_identity();
     let event_loop = EventLoop::new()?;
-    let mut app = app::App::new(options);
+    let mut app = app::App::new(options, network);
     event_loop.run_app(&mut app)?;
     app.into_result()
 }

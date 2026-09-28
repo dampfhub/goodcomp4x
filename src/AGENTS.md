@@ -1,9 +1,18 @@
 # src/
 
 `main.rs` starts the logger, parses the command line (`cli.rs`: `--scenario`, `--seed`,
-`--screenshot`, `--size`) and runs the `winit` event loop; its exit code is `App::into_result`.
+`--screenshot`, `--size`, `--host`/`--port`, `--join`/`--code`), sets up a network game
+(`net/`: hosting listens; joining connects, runs the encrypted handshake and receives the game
+before the window opens), and
+runs the `winit` event loop; its exit code is `App::into_result`. `App` pumps the network
+session once a frame. Everything `net/` receives is untrusted: keep every message sealed
+(`net/secure.rs`) and the frame limit, and add a check in `GameState::receive` / `check_plan`
+for anything new a message carries, with a case in the randomized plan test
+(`docs/multiplayer.md`, Security). Don't hand-roll cryptography: use the RustCrypto crates.
 `app.rs` owns the window, the renderer and the `GameState`, turns input into `GameState` method
-calls, and builds each frame. `screenshot.rs` is screenshot mode. `persist.rs` keeps settings
+calls, and builds each frame. It also carries out what the settings menu's Multiplayer page asks
+(`GameState::take_net_request`: host, join on a thread of its own, or leave), and while a text
+field has the keys (`App::typing`) they go to it, not the key map. `screenshot.rs` is screenshot mode. `persist.rs` keeps settings
 and layout between sessions (`docs/architecture.md`, Between sessions); screenshot mode skips it. `icon_art.rs` draws the
 game's icon in code (std only); `icon.rs` hands it to the window (title bar and taskbar), and
 `build.rs` includes `icon_art.rs` to embed it in the Windows executable as a `.res` the MSVC

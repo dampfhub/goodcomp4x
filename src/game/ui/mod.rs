@@ -17,6 +17,7 @@
 //! (unit, group, city and Barracks trays), `panels.rs` (top bar, debug panel,
 //! structure hover panel), `queue.rs` (queue panels, scrolling and dragging),
 //! `roster.rs` (the unit strip), `settings_menu.rs` (the settings menu),
+//! `network_menu.rs` (its Multiplayer section),
 //! `tooltips.rs`, `text.rs` (number and text
 //! formatting), `tests.rs`.
 
@@ -24,6 +25,9 @@ mod action_icons;
 mod builder;
 mod dock;
 mod imgui;
+mod network_menu;
+pub(in crate::game) use network_menu::NetField;
+pub use network_menu::{NetMenu, NetRequest};
 mod paint;
 mod panels;
 mod queue;
@@ -217,6 +221,17 @@ enum Target {
     CloseSettings,
     /// Settings menu: close the game.
     Quit,
+    /// Settings menu: the Multiplayer page, and back.
+    OpenMultiplayer,
+    CloseMultiplayer,
+    /// Multiplayer: how many people to host for.
+    NetPlayers(usize),
+    /// Multiplayer, classic: type into this field (again: stop).
+    EditNetField(NetField),
+    HostGame,
+    JoinGame,
+    /// Multiplayer: leave the network game.
+    LeaveGame,
 }
 
 /// An order for the selected unit.
@@ -576,7 +591,7 @@ impl GameState {
     /// Shared visibility-filtered structure inspection for both UI presentations.
     fn structure_inspect_panel(&self, hex: Hex) -> Option<PanelBuilder> {
         let fog = self.fog();
-        let known = |city: &super::city::City| city.team == super::PLAYER_TEAM || fog.sees(hex);
+        let known = |city: &super::city::City| city.team == self.local_team || fog.sees(hex);
         let (city, barracks) = self.cities.iter().enumerate().find_map(|(idx, city)| {
             (known(city) && city.pos == hex)
                 .then_some((idx, false))
@@ -619,6 +634,10 @@ impl GameState {
     }
 
     fn activate_target(&mut self, target: Target) {
+        // Any other button ends typing into a field.
+        if !matches!(target, Target::EditNetField(_)) {
+            self.stop_typing();
+        }
         match target {
             Target::Unit(action) => match action {
                 UnitAction::Move => self.choose_move_action(),
@@ -670,6 +689,13 @@ impl GameState {
             Target::SetSetting(setting, value) => self.set_setting(setting, value),
             Target::CloseSettings => self.close_settings(),
             Target::Quit => self.quit_requested = true,
+            Target::OpenMultiplayer
+            | Target::CloseMultiplayer
+            | Target::NetPlayers(_)
+            | Target::EditNetField(_)
+            | Target::HostGame
+            | Target::JoinGame
+            | Target::LeaveGame => self.activate_network_target(target),
         }
     }
 
