@@ -32,12 +32,7 @@ impl GameState {
             Some(city) if !barracks => self.city_build_turns(city, build),
             _ => build.turns(),
         };
-        format!(
-            "COSTS {} · {} {}.",
-            stock_icons(price),
-            turns_icon(turns),
-            if turns == 1 { "TURN" } else { "TURNS" }
-        )
+        format!("COSTS {} · {}.", stock_icons(price), turns_icon(turns))
     }
 
     /// For a troop that needs Horses or Iron, how many more its side may

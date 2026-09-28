@@ -403,7 +403,7 @@ impl GameState {
             }
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
             if unit.plans_later_turns() && self.is_player_controlled(idx) {
-                let text = format!("{}T", unit.plan_len());
+                let text = crate::game::city::turns_icon(unit.plan_len() as i32);
                 let at = center + QUEUE_TAG_OFFSET * scale;
                 push_turn_badge(
                     at,
@@ -1312,7 +1312,7 @@ impl GameState {
 
     /// The jobs the player's workers are out on: a solid ring on the tile (or
     /// the edge, for a wall or gate) named with the job and, once the worker
-    /// is there working, the turns of work left, like "IMPROVE 2T".
+    /// is there working, the turns of work left, like "IMPROVE" and the clock with 2.
     fn push_jobs_under_way(&self, out: &mut Vec<Vertex>) {
         let working = self
             .field_workers
@@ -1321,7 +1321,11 @@ impl GameState {
         for worker in working {
             let Some(job) = worker.job else { continue };
             let label = match worker.work_left.filter(|_| worker.pos == job.hex) {
-                Some(left) => format!("{} {left}T", self.job_name(job)),
+                Some(left) => format!(
+                    "{} {}",
+                    self.job_name(job),
+                    crate::game::city::turns_icon(left as i32)
+                ),
                 None => self.job_name(job).into(),
             };
             let at = match job.across {
@@ -2645,7 +2649,7 @@ mod tests {
         let walking = solid(&game);
         assert!(walking > 0);
         assert_ne!(game.field_workers[0].pos, hex, "still walking");
-        // At work: "IMPROVE 3T", more glyphs than "IMPROVE".
+        // At work: the clock and 3 after "IMPROVE", more shapes.
         game.resolve_workers();
         assert_eq!(game.field_workers[0].work_left, Some(3));
         assert!(solid(&game) > walking);

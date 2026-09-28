@@ -35,7 +35,9 @@ file holds.
 - **Icons in text.** Prices, stockpiles and turns use the icon characters of `map_icons.rs`
   (`stock_icons`, `turns_icon`, `cost_hint` in `text.rs`); both presentations draw them as the
   map's icons: classic in `font::Face`, ImGui through `rich_text` / `rich_button` (`imgui.rs`).
-  Render game text in ImGui with those, never `ui.text`, or an icon shows as `?`.
+  Render game text in ImGui with those, never `ui.text`, or an icon shows as `?`. A count of
+  turns is always the clock and the number (`turns_icon`, or `turns_text` in the UI), never
+  "N TURNS" or "NT"; world text (`font::push_text`) draws the icons too.
 - **New kind of turn task** (research, say): a `RosterKey` variant, its place in
   `roster_tasks` (civilian tasks before the unit groups), its chip in `roster_chip`, what a
   click does in `roster_select`, and its hint in `roster_hint` (`roster.rs`).

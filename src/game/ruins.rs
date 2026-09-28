@@ -6,7 +6,7 @@
 //! gone. The count pauses while the hex is contested or empty, and starts
 //! over when another side takes it. The rewards are a first pass.
 
-use super::city::{Stock, stock_words};
+use super::city::{Stock, stock_words, turns_icon};
 use super::hex::Hex;
 use super::unit::{Team, Unit, UnitType};
 use super::{GameState, PLAYER_TEAM};
@@ -89,7 +89,8 @@ impl GameState {
             return Vec::new();
         };
         let mut notes = vec![format!(
-            "RUINS: HOLD {RUIN_HOLD_TURNS} TURNS WITH A MILITARY UNIT FOR {}",
+            "RUINS: HOLD {} WITH A MILITARY UNIT FOR {}",
+            turns_icon(RUIN_HOLD_TURNS as i32),
             ruin.reward.description()
         )];
         if let Some(team) = ruin.holder {
@@ -301,7 +302,7 @@ mod tests {
         let ruin = Hex::new(0, 0);
         let notes = game.ruin_notes(ruin, false);
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("HOLD 3 TURNS"), "{notes:?}");
+        assert!(notes[0].contains("HOLD \u{E003}3 "), "{notes:?}");
         assert!(notes[0].contains("FOOD"), "{notes:?}");
         put(&mut game, 1, ruin, Team::Red, UnitType::Melee);
         end_turns(&mut game, 1);

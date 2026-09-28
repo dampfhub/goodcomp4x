@@ -1629,6 +1629,28 @@ fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) 
     clicked
 }
 
+/// A one-line button with `left` from its left edge and `right` flush
+/// with its right edge, so a list of them lines their right parts up (the
+/// building catalog's prices).
+fn split_button(ui: &Ui, id: &str, left: &str, right: &str, size: [f32; 2]) -> bool {
+    let clicked = ui.button_with_size(format!("##{id}"), size);
+    let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
+    let disabled = ui.clone_style().alpha < 1.0;
+    let color = ui.style_color(StyleColor::Text);
+    let color = [
+        color[0],
+        color[1],
+        color[2],
+        if disabled { 0.45 } else { 1.0 },
+    ];
+    let pad = (max[0] - min[0]) * 0.03;
+    let top = min[1] + (max[1] - min[1] - ui.text_line_height()) / 2.0;
+    draw_rich(ui, [min[0] + pad, top], left, color, disabled);
+    let right_x = max[0] - pad - rich_width(ui, right);
+    draw_rich(ui, [right_x, top], right, color, disabled);
+    clicked
+}
+
 fn draw_game_dockspace(ui: &Ui, viewport: Vec2) {
     let _padding = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
     ui.window("Game dockspace")
@@ -2256,10 +2278,9 @@ impl GameState {
                                 };
                                 let _disabled =
                                     ui.begin_disabled(spec.state == ButtonState::Disabled);
-                                let line = format!("{}  {}", spec.label, spec.hint);
                                 let width = ui.content_region_avail()[0].max(80.0);
                                 let id = format!("{:?}", spec.target);
-                                if rich_button(ui, &id, &[line], [width, 28.0], true) {
+                                if split_button(ui, &id, &spec.label, &spec.hint, [width, 28.0]) {
                                     actions.push(Action::Button(scope, spec.target));
                                 }
                                 if ui.is_item_hovered_with_flags(

@@ -622,11 +622,9 @@ impl GameState {
                 ButtonSpec {
                     target: Target::Building(building),
                     label: building.name().into(),
-                    hint: if building.shortcut() == ' ' {
-                        cost
-                    } else {
-                        format!("{} | {cost}", building.shortcut())
-                    },
+                    // The price alone, which the row lines up on the right;
+                    // the key is in the tooltip.
+                    hint: cost,
                     state: ButtonState::new(
                         city.queue.first() == Some(&Build::Building(building))
                             || self.needs_site(i, building)
@@ -718,7 +716,9 @@ impl GameState {
         panel.text(SMALL, line);
         for worker in out {
             let doing = match (worker.job, worker.work_left) {
-                (Some(job), Some(left)) => format!("{} · {left}T", self.job_title(job)),
+                (Some(job), Some(left)) => {
+                    format!("{} · {}", self.job_title(job), turns_text(left))
+                }
                 (Some(job), None) => format!("TO {}", self.job_title(job)),
                 (None, _) if worker.recalled => "RECALLED, WALKING HOME".into(),
                 (None, _) => "WALKING HOME".into(),
@@ -764,7 +764,11 @@ impl GameState {
             panel.queue_item(QueueItemSpec {
                 kind: QueueKind::Workers,
                 index,
-                label: format!("{} · {}T", self.job_title(*job), job.kind.turns()),
+                label: format!(
+                    "{} · {}",
+                    self.job_title(*job),
+                    turns_text(job.kind.turns())
+                ),
                 active: false,
                 dragging: drag.is_some_and(|drag| drag.source == index),
                 drop_target: drag
@@ -813,7 +817,7 @@ impl GameState {
                         ButtonSpec {
                             target: Target::WorkerJob(kind),
                             label: kind.name().into(),
-                            hint: format!("{key}{}T", kind.turns()),
+                            hint: format!("{key}{}", turns_text(kind.turns())),
                             state: ButtonState::Ready,
                             armed: self.placing_job == Some(kind),
                         }

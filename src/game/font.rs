@@ -152,13 +152,32 @@ pub fn world_text_width(text: &str, cap_height: f32) -> f32 {
     face.width(text) * cap_height / face.cap_height
 }
 
+/// How tall an inline icon draws in world text with capital letters
+/// `cap_height` tall, and the room it takes: in step with UI text
+/// (`Face::icon_height`).
+fn world_icon_height(cap_height: f32) -> f32 {
+    let face = &FONT.world;
+    face.icon_height() * cap_height / face.cap_height
+}
+
 /// Draws a line of world-space text with capital letters `cap_height` tall
 /// and its baseline's left end at `origin`.
 pub fn push_text(origin: Vec2, cap_height: f32, text: &str, color: Color, out: &mut Vec<Vertex>) {
     let face = &FONT.world;
     let scale = cap_height / face.cap_height;
     let mut pen = 0.0;
-    for glyph in text.chars().filter_map(|ch| face.glyph(ch)) {
+    for ch in text.chars() {
+        // Icon characters draw their icon, as in UI text.
+        if map_icons::inline_icon(ch).is_some() {
+            let advance = face.icon_advance();
+            let center = origin + Vec2::new(pen + advance / 2.0, face.cap_height / 2.0) * scale;
+            map_icons::push_inline_icon(center, world_icon_height(cap_height), ch, false, out);
+            pen += advance;
+            continue;
+        }
+        let Some(glyph) = face.glyph(ch) else {
+            continue;
+        };
         let min = origin + (Vec2::new(pen, 0.0) + glyph.offset) * scale;
         push_glyph_quad(min, min + glyph.size * scale, glyph, color, out);
         pen += glyph.advance;

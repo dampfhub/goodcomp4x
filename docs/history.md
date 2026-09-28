@@ -192,3 +192,9 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     3 per Horses or Iron deposit it draws on, counting those alive (a Debug toggle counts every
     one ever trained instead). The AI builds a Barracks, on a deposit when it can, and trains
     there.
+58. One mark for a count of turns (`claude/rts-economy`): every count of turns, in UI text and on
+    the map (a unit's queued-turns tag, work under way, worker jobs, build and training notices,
+    cooldowns, the order queue's limit, ruins), shows as the clock icon and a number instead of
+    "N TURNS" or "NT"; world text draws icon characters as UI text does. The text icons became
+    flat, one color each, and ImGui draws them unfeathered so they stay crisp at text size. The city's building list shows each name on the left and its price flush right, so the
+    prices line up (the key is in the tooltip).

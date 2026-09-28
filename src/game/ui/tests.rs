@@ -1541,7 +1541,7 @@ fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
     } else {
         "FARM"
     };
-    assert_eq!(labels, [format!("{build} · {tile} · 3T")]);
+    assert_eq!(labels, [format!("{build} · {tile} · \u{E003}3")]);
 }
 
 /// Where to click, in window pixels, on `key`'s chip in the turn strip.

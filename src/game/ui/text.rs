@@ -143,10 +143,7 @@ pub(super) fn pending_text((units, cities, workers): (usize, usize, usize)) -> O
 }
 
 pub(super) fn turns_text(turns: u32) -> String {
-    match turns {
-        1 => "1 TURN".to_string(),
-        _ => format!("{turns} TURNS"),
-    }
+    crate::game::city::turns_icon(turns as i32)
 }
 
 /// Splits `text` into lines of at most `max_chars`, breaking between words.

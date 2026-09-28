@@ -247,8 +247,8 @@ ships. Shore and ship attacks do not draw melee retaliation across the waterline
   until nobody can get any closer (a queue toward an enemy in sight stops next to it), but no
   unit's plan grows past the **queue limit** setting (6 turns by default, 1 to 20, this turn
   included; see `controls.md`, Settings menu). A hex farther away than that is queued as far
-  along the way as the limit allows, and the notice says so ("QUEUED UP TO THE 6-TURN LIMIT").
-  A full queue takes no more turns, moves or attacks ("QUEUE FULL - 6-TURN LIMIT"), except an
+  along the way as the limit allows, and the notice says so ("QUEUED UP TO THE [clock]6 LIMIT").
+  A full queue takes no more turns, moves or attacks ("QUEUE FULL - [clock]6 LIMIT"), except an
   attack that fits into its last turn; each turn played frees one. This turn's move plans around the
   units the player can see, like a plain move; later turns plan around terrain and known walls and gates only (units will have moved),
   and never end on an ally's planned hex for that turn, on a hex an enemy in sight stands on, or
@@ -373,8 +373,8 @@ Everyone in a step acts simultaneously:
 - A unit whose order queue reaches past this turn shows its whole plan only while it is
   selected or hovered: moves as a line with each turn's number, ending in the unit's ghost where
   the plan leaves it, and attacks as arrows numbered by turn. Each unit's plan is drawn on its
-  own; where several stop on one hex their numbers fan out rather than merge. Otherwise an `NT`
-  tag (`3T`) counts its turns of orders left. A queue of this turn alone draws like plain
+  own; where several stop on one hex their numbers fan out rather than merge. Otherwise a tag
+  with the clock and a number counts its turns of orders left. A queue of this turn alone draws like plain
   orders: a ghost and an attack arrow, no numbers.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
   "MISS" on a hex with no enemy unit, worker or barracks, or "OUT OF RANGE" if the target moved
@@ -587,9 +587,9 @@ every turn end.
   button per city when you have several, and has Sleep (below) and Done.
 - **Jobs:** a job goes to the nearest city, and waits in its worker list. A job a worker is out
   on shows as a bright gold ring (or edge) named with the job, and once the worker is at work
-  with the turns left, like FARM 2T (an improvement is named for what it becomes: farm, mine
+  with the turns left, like FARM [clock]2 (an improvement is named for what it becomes: farm, mine
   or lumber mill). The worker menu names jobs the same way, with the tile: FARM · GRASSLAND ·
-  3T. Queued jobs show on the map as faded gold rings (walls and gates as muted gold edges with
+  [clock]3. Queued jobs show on the map as faded gold rings (walls and gates as muted gold edges with
   rounded ends). A job needs explored open ground within workers' reach, no city there, and no
   other job on the tile, queued or under way: a tile takes one job at a time (walls and gates,
   on its edges, aside). Improvements and outposts or forts also can't go on a placed building or

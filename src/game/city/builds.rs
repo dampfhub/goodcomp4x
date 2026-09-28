@@ -3,7 +3,7 @@
 //! cost and how the stockpile pays for them is in `economy.rs`.
 use super::MAX_CITY_POPULATION;
 use super::barracks::CITY_TRAINING_SLOWDOWN;
-use super::economy::{Stock, WORK_PER_TURN, stock_icons};
+use super::economy::{Stock, WORK_PER_TURN, stock_icons, turns_icon};
 use crate::game::hex::Hex;
 use crate::game::terrain::{Resource, Terrain};
 use crate::game::unit::{Team, Unit, UnitType};
@@ -360,10 +360,10 @@ impl GameState {
         match self.try_queue_build(city, build) {
             Ok(()) => {
                 self.notice = format!(
-                    "QUEUED {} - PAID {} - {} TURNS",
+                    "QUEUED {} - PAID {} - {}",
                     build.name(),
                     stock_icons(price),
-                    self.city_build_turns(city, build)
+                    turns_icon(self.city_build_turns(city, build))
                 );
                 true
             }
@@ -721,10 +721,10 @@ impl GameState {
         }
         self.notice = match self.try_queue_barracks(city, build) {
             Ok(()) => format!(
-                "BARRACKS TRAINING {} - PAID {} - {} TURNS",
+                "BARRACKS TRAINING {} - PAID {} - {}",
                 build.name(),
                 stock_icons(build.price()),
-                build.turns()
+                turns_icon(build.turns())
             ),
             Err(short) => format!("{} - SHORT OF {}", build.name(), stock_icons(short)),
         };

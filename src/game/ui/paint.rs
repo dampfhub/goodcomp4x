@@ -1,12 +1,12 @@
 //! Turning laid-out shapes and buttons into vertices.
 
-use super::ChipIcon;
 use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
     BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,
     DISABLED_BG, DISABLED_TEXT, GAP, GOLD_TEXT, GROWTH_COLOR, LINE_GAP, PANEL_BG, QUEUED_BG,
     QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, ROSTER_TOKEN_SHARE, SMALL, Shape, TEXT,
 };
+use super::{ChipIcon, Target};
 use crate::game::draw::{push_city_tower, push_unit_token};
 use crate::game::font;
 use crate::game::mesh;
@@ -162,7 +162,25 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
     let (label_face, hint_face) = (font::ui(BODY), font::ui(SMALL));
     let center = (button.min + button.max) / 2.0;
     let height = button.max.y - button.min.y;
-    if height < BUTTON_HEIGHT {
+    if height < BUTTON_HEIGHT && matches!(button.target, Target::Building(_)) {
+        // A building catalog row: the name from the left, the price flush
+        // right, so the rows' prices line up.
+        let pad = GAP * 2.0;
+        let baseline = center.y - label_face.cap_height / 2.0;
+        label_face.push(
+            Vec2::new(button.min.x + pad, baseline),
+            &button.label,
+            text_color,
+            out,
+        );
+        let hint_left = button.max.x - pad - hint_face.width(&button.hint);
+        hint_face.push(
+            Vec2::new(hint_left, baseline),
+            &button.hint,
+            hint_color,
+            out,
+        );
+    } else if height < BUTTON_HEIGHT {
         // One line: the label, then the hint beside it.
         let gap = if button.hint.is_empty() { 0.0 } else { GAP };
         let width = label_face.width(&button.label) + gap + hint_face.width(&button.hint);

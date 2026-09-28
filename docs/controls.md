@@ -65,7 +65,7 @@ only warns ("CLICK AGAIN TO REPLACE ITS QUEUE") and outlines the hex in orange; 
 again replaces the queue, so selecting a unit to look at its plan and clicking away can't wipe
 it. Buttons and keys (Clear Orders, Guard, the ability) act at once. A plan
 reaching past this turn shows as turn numbers only while it is selected or the cursor is on it;
-otherwise a small `NT` tag beside it (`3T`: 3 turns) counts the turns of orders left. A plan of
+otherwise a small tag beside it, the clock and a number (clock 3: 3 turns), counts the turns of orders left. A plan of
 this turn alone shows like plain orders (ghost and arrow). To cancel a unit's queued orders,
 use Clear Orders (in the unit or group panel) or Ctrl-right-click, or just give it another
 order.
@@ -243,7 +243,7 @@ them.
   last number just under the ghost), and an orange-rimmed number on each queued attack's arrow.
   Each unit's plan is its own: where several units stop on one hex, their numbers fan out
   around it instead of merging, and a hex or arrow one unit uses on several turns lists them
-  ("2,3"). Otherwise only an `NT` tag at the unit's lower left shows (`3T`: 3 turns of orders
+  ("2,3"). Otherwise only a clock tag at the unit's lower left shows (clock 3: 3 turns of orders
   left).
 - Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Orange hex:
   contested.
