@@ -187,3 +187,26 @@ fn a_worker_cannot_improve_over_an_enemy_site() {
         assert(site.team == Team.Red && site.food == 3);
     });
 }
+
+@test
+fn a_tile_never_seen_cannot_be_picked_or_worked() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.explore();
+        g.select_city();
+        let Option.Some(city) = g.selected_city else { assert(false); return; };
+        // An unexplored hex the city's routes reach.
+        let routes = g.routes(city);
+        let mut unseen = Hex.new(0, 0);
+        let mut found = false;
+        for k in 0..routes.costs.len() {
+            let Option.Some(h) = routes.costs.key_at(k) else { continue; };
+            if !found && !g.is_explored(h) { unseen = h; found = true; }
+        }
+        assert(found);
+        let worked = g.cities[city].worked.len();
+        let _ours = g.city_click(unseen);
+        assert(g.inspected_tile.is_none());
+        assert(g.cities[city].worked.len() == worked);
+    });
+}

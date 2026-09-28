@@ -671,6 +671,12 @@ impl GameState {
             self.close_city();
             return true;
         }
+        // A tile never seen can't be picked or worked.
+        if !self.is_explored(hex) {
+            self.inspected_tile = Option.None;
+            self.set_notice("UNEXPLORED - SCOUT IT FIRST");
+            return true;
+        }
         self.inspected_tile = Option.Some(hex);
         if self.cities[i].worked.contains(hex) {
             handle { self.cities[i].worked.retain(); } with Keep[Hex] { keep(h) => { resume *h != hex } }
