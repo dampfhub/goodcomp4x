@@ -447,7 +447,8 @@ every turn end.
   routes, and an enemy on the city blocks them all. Routes are recalculated every time they're
   used.
 - **Manager and workers:** population is at most 7: the manager (the first worked tile, ringed in
-  gold and marked `M`, which must be land) plus up to six workers, each adjacent to the manager. To move the
+  gold and marked `M`, which must be land) plus up to six workers, each adjacent to the manager.
+  No citizen can work a city center, and a worked tile belongs to only one city. To move the
   manager, click it to pick it up, then click its destination; workers keep their offsets where
   they can and are otherwise replaced by the best nearby tiles.
 - **Citizens:** click tiles to assign or release; A auto-assigns by the city's labor focus (Food,

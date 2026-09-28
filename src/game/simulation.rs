@@ -275,6 +275,7 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: {hex:?} holds {teams:?}"
         );
     }
+    let mut all_worked_tiles = HashSet::new();
     for city in &game.cities {
         assert!(
             (1..=MAX_CITY_POPULATION).contains(&city.population),
@@ -289,6 +290,25 @@ fn check_invariants(game: &GameState, context: &str) {
             city.worked.len(),
             city.population
         );
+        for (index, &hex) in city.worked.iter().enumerate() {
+            assert!(
+                game.cities.iter().all(|other| other.pos != hex),
+                "{context}: city {} works a city center at {hex:?}",
+                city.id
+            );
+            assert!(
+                all_worked_tiles.insert(hex),
+                "{context}: worked tile claimed by multiple citizens"
+            );
+            if index > 0 {
+                assert_eq!(
+                    city.worked[0].distance(hex),
+                    1,
+                    "{context}: city {} worker is not adjacent to its manager",
+                    city.id
+                );
+            }
+        }
         assert!(
             (0.0..=CORE_HP).contains(&city.interior.core_hp),
             "{context}: city {} command post has {} HP",
