@@ -81,6 +81,20 @@ const MAX_VIEW_ASPECT: f32 = 2.4;
 const SPECIAL_RIM_COLOR: Color = [0.95, 0.66, 0.12, 1.0];
 /// Over hexes seen before but out of sight now.
 const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
+/// Each hex's fill as a share of its size; the rest is the border between hexes.
+const HEX_FILL_SCALE: f32 = 0.92;
+/// How far an explored hex's border reaches: past its own edge by as much as a neighbor's
+/// border reaches in, so facing a never-seen hex or the map's edge it is as wide as the whole
+/// gap between two hexes.
+const OUTER_BORDER_RADIUS: f32 = HEX_SIZE * (2.0 - HEX_FILL_SCALE);
+/// The line where remembered hexes meet hexes in sight: a light, cool grey like the cloud, so
+/// it can't be mistaken for the dark gaps between ordinary hexes.
+pub const FOG_EDGE_COLOR: Color = [0.24, 0.25, 0.28, 1.0];
+/// The fog edge fills the whole gap between two hexes' fills: each fill stops short of its
+/// hex's edge by (1 - HEX_FILL_SCALE) of the apothem, sqrt(3) / 2.
+const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.7320508;
+/// Along a river the fog edge widens to cover it whole, since a river is wider than the gap.
+const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
 /// Never-seen hexes, as the Fog setting's solid grey draws them.
 const SOLID_FOG_COLOR: Color = [0.13, 0.135, 0.155, 1.0];
 /// Distance between cloud banks, in world units (a hex is 1 from center to corner).
@@ -294,15 +308,22 @@ impl GameState {
             }
             if cloud { push_cloud_banks(&self.grid, self.cloud_time, view_min, view_max, &mut out); }
         }
+        // Never-seen hexes aren't drawn at all: the fog shows there. Every border first, each
+        // reaching across the whole gap: the fills drawn next cover what lies inside an explored
+        // neighbor, leaving a full-width border facing never-seen hexes and the map's edge.
         for h in self.grid.hexes() {
             let hex = *h;
             let center = hex.to_world();
             if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
-            // Never-seen hexes are fog, nothing of what's there.
+            if self.is_explored(hex) { regular_polygon(center, OUTER_BORDER_RADIUS, 6, 0.0, BORDER_COLOR, &mut out); }
+        }
+        for h in self.grid.hexes() {
+            let hex = *h;
+            let center = hex.to_world();
+            if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
             if !self.is_explored(hex) { continue; }
             let fill = self.hex_fill(hex, &selection, &fog);
-            regular_polygon(center, HEX_SIZE, 6, 0.0, BORDER_COLOR, &mut out);
-            regular_polygon(center, HEX_SIZE * 0.92, 6, 0.0, fill, &mut out);
+            regular_polygon(center, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
             push_tile_symbols(center, self.grid.tile(hex), &mut out);
             // A resource in the top-right corner, an improvement (as the player knows it) in the
             // top-left, a special tile or ruins in the bottom-left.
@@ -704,11 +725,48 @@ impl GameState {
     /// and cities but under units and orders.
     fn push_fog(&self, fog: &Fog, view_min: Vec2, view_max: Vec2, out: &mut Vec[MeshVertex]) {
         if !self.fog_of_war { return; }
+        let mut remembered: Vec[Hex] = Vec.new();
         for h in self.grid.hexes() {
             let hex = *h;
             let center = hex.to_world();
             if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
-            if self.is_explored(hex) && !fog.sees(hex) { regular_polygon(center, HEX_SIZE, 6, 0.0, REMEMBERED_TINT, out); }
+            if self.is_explored(hex) && !fog.sees(hex) { remembered.push(hex); }
+        }
+        for k in 0..remembered.len() {
+            let hex = remembered[k];
+            let center = hex.to_world();
+            regular_polygon(center, HEX_SIZE, 6, 0.0, REMEMBERED_TINT, out);
+            // Facing blank, the border reaches past the hex (see OUTER_BORDER_RADIUS); veil
+            // that outer half too, so the band is one shade.
+            let around = hex.neighbors();
+            for n in 0..6 {
+                let other = around[n];
+                if self.grid.contains(other) && self.is_explored(other) { continue; }
+                let (a, b) = edge_corners(hex, other);
+                let grow = OUTER_BORDER_RADIUS / HEX_SIZE;
+                let mut band: Vec[Vec2] = Vec.new();
+                band.push(a);
+                band.push(b);
+                band.push(center.add(b.sub(center).scale(grow)));
+                band.push(center.add(a.sub(center).scale(grow)));
+                polygon(&band, REMEMBERED_TINT, out);
+            }
+        }
+        // A light line where remembered hexes meet hexes in sight, wide enough to cover the
+        // gap, and a river whole.
+        for k in 0..remembered.len() {
+            let hex = remembered[k];
+            let around = hex.neighbors();
+            for n in 0..6 {
+                let other = around[n];
+                if !self.grid.contains(other) || !fog.sees(other) { continue; }
+                let (a, b) = edge_corners(hex, other);
+                let width = if self.grid.has_river(hex, other) { FOG_RIVER_EDGE_WIDTH } else { FOG_EDGE_WIDTH };
+                segment(a, b, width, FOG_EDGE_COLOR, out);
+                // Round the joints where edges meet at a corner.
+                regular_polygon(a, width / 2.0, 12, 0.0, FOG_EDGE_COLOR, out);
+                regular_polygon(b, width / 2.0, 12, 0.0, FOG_EDGE_COLOR, out);
+            }
         }
     }
 

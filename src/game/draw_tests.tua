@@ -8,6 +8,7 @@ use std.linalg.vec2;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.PLAYER_TEAM;
+use game.draw.FOG_EDGE_COLOR;
 use game.draw.MOVE_ORDER_COLOR;
 use game.draw.YIELD_ROW_COLOR;
 use game.draw.YIELD_ROW_OFFSET;
@@ -19,6 +20,7 @@ use game.map_icons.MapIcon;
 use game.mesh.Color;
 use game.tests.sandbox;
 use game.unit.Team;
+use game.unit.UnitType;
 
 fn count_color(vertices: &Vec[MeshVertex], color: Color) -> i32 {
     let mut n = 0;
@@ -165,5 +167,29 @@ fn a_city_and_its_roads_in_the_fog_are_not_drawn() {
         // With the fog lifted, there it is.
         game.toggle_fog();
         assert(count_color(&game.build_vertices(), Team.Red.color()) > 0);
+    });
+}
+
+@test
+fn a_light_line_marks_where_remembered_hexes_meet_hexes_in_sight() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.world_scenario(3);
+        game.explore();
+        // Everything explored is in sight, so there is no edge yet.
+        assert(count_color(&game.build_vertices(), FOG_EDGE_COLOR) == 0);
+        // Every Blue unit steps far away and back out of the city's sight lines: what they saw
+        // stays explored beside what the city still sees.
+        let mut scout = 0 - 1;
+        for i in 0..game.units.len() { if game.units[i].team == Team.Blue && game.units[i].unit_type == UnitType.Scout { scout = i; } }
+        assert(scout >= 0);
+        let start = game.units[scout].pos;
+        game.units[scout].pos = Hex.new(start.q + 4, start.r);
+        game.explore();
+        game.units[scout].pos = start;
+        game.explore();
+        assert(count_color(&game.build_vertices(), FOG_EDGE_COLOR) > 0);
+        // With the fog lifted, nothing is remembered.
+        game.toggle_fog();
+        assert(count_color(&game.build_vertices(), FOG_EDGE_COLOR) == 0);
     });
 }
