@@ -16,7 +16,7 @@ mod sync;
 mod texture;
 mod vertex;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ash::vk;
 use glam::Mat4;
 use imgui::{Context as ImGuiContext, DrawData};
@@ -168,8 +168,10 @@ impl Renderer {
                 surface,
                 queue_indices,
                 window_size,
+                vk::SwapchainKHR::null(),
             )
-        }?;
+        }?
+        .context("the initial surface has no drawable extent")?;
 
         let command_pool = unsafe { create_command_pool(&logical_device, queue_indices) }?;
         let texture = unsafe {
@@ -435,7 +437,6 @@ impl Renderer {
         };
 
         if acquire_suboptimal || suboptimal || self.framebuffer_resized {
-            self.framebuffer_resized = false;
             unsafe { self.recreate_swapchain() }?;
         }
 
@@ -585,10 +586,11 @@ impl Renderer {
         }
 
         self.wait_idle();
-        let old_render_pass = self.render_pass;
-        unsafe {
-            self.cleanup_swapchain();
-            self.swapchain = swapchain::create_swapchain(
+        // Create the replacement before retiring the old handle. A minimized
+        // surface may have a 0x0 current extent despite a nonzero cached
+        // window size; in that case keep the existing resources for restore.
+        let Some(next) = (unsafe {
+            swapchain::create_swapchain(
                 &self.device,
                 &self.swapchain_loader,
                 &self.surface_loader,
@@ -596,53 +598,108 @@ impl Renderer {
                 self.surface,
                 self.queue_indices,
                 self.window_size,
-            )?;
-            self.color_target = ColorTarget::new(
+                self.swapchain.swapchain,
+            )
+        })?
+        else {
+            return Ok(());
+        };
+        let format_changed = next.format != self.swapchain.format;
+        let next_samples = if format_changed {
+            unsafe { msaa::pick_samples(&self.instance, self.physical_device, next.format) }
+        } else {
+            self.samples
+        };
+        // This backend keeps its sample count in immutable options. Never
+        // make an incompatible ImGui pipeline if the surface's format changes
+        // its supported sample count.
+        if next_samples != self.samples {
+            let mut next = next;
+            unsafe { next.destroy(&self.device, &self.swapchain_loader) };
+            anyhow::bail!("the surface changed its MSAA sample count; restart the renderer");
+        }
+
+        unsafe { self.cleanup_swapchain() };
+        self.swapchain = next;
+        if format_changed {
+            unsafe { self.destroy_pipeline() };
+            let new_render_pass = unsafe {
+                pipeline::create_render_pass(&self.device, self.swapchain.format, next_samples)
+            }?;
+            if let Some(renderer) = &mut self.imgui_renderer
+                && let Err(err) = renderer.set_render_pass(new_render_pass)
+            {
+                unsafe { self.device.destroy_render_pass(new_render_pass, None) };
+                return Err(err.into());
+            }
+            let old_render_pass = std::mem::replace(&mut self.render_pass, new_render_pass);
+            if old_render_pass != vk::RenderPass::null() {
+                unsafe { self.device.destroy_render_pass(old_render_pass, None) };
+            }
+            (self.pipeline_layout, self.pipeline) = unsafe {
+                pipeline::create_graphics_pipeline(
+                    &self.device,
+                    self.render_pass,
+                    self.texture.set_layout,
+                    next_samples,
+                )
+            }?;
+            self.samples = next_samples;
+        }
+        self.color_target = unsafe {
+            ColorTarget::new(
                 &self.instance,
                 &self.device,
                 self.physical_device,
                 self.swapchain.format,
                 self.swapchain.extent,
                 self.samples,
-            )?;
-            self.render_pass =
-                pipeline::create_render_pass(&self.device, self.swapchain.format, self.samples)?;
-            if let Some(renderer) = &mut self.imgui_renderer {
-                renderer.set_render_pass(self.render_pass)?;
-            }
-            self.device.destroy_render_pass(old_render_pass, None);
-            (self.pipeline_layout, self.pipeline) = pipeline::create_graphics_pipeline(
-                &self.device,
-                self.render_pass,
-                self.texture.set_layout,
-                self.samples,
-            )?;
-            self.framebuffers = create_framebuffers(
+            )
+        }?;
+        self.framebuffers = unsafe {
+            create_framebuffers(
                 &self.device,
                 self.render_pass,
                 &self.swapchain,
                 &self.color_target,
-            )?;
-            self.command_buffers =
-                create_command_buffers(&self.device, self.command_pool, self.framebuffers.len())?;
-        }
+            )
+        }?;
+        self.command_buffers = unsafe {
+            create_command_buffers(&self.device, self.command_pool, self.framebuffers.len())
+        }?;
         self.images_in_flight = vec![vk::Fence::null(); self.swapchain.images.len()];
+        self.framebuffer_resized = false;
         Ok(())
     }
 
-    /// Destroys everything that depends on the swapchain's size or format.
+    /// Sized resources only: the render pass and pipelines stay valid when
+    /// the replacement surface keeps its format. Null/drain each destroyed
+    /// handle, since Drop also calls this after a failed recreation.
     unsafe fn cleanup_swapchain(&mut self) {
         unsafe {
             for framebuffer in self.framebuffers.drain(..) {
                 self.device.destroy_framebuffer(framebuffer, None);
             }
-            self.device
-                .free_command_buffers(self.command_pool, &self.command_buffers);
-            self.device.destroy_pipeline(self.pipeline, None);
-            self.device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
+            if !self.command_buffers.is_empty() {
+                self.device
+                    .free_command_buffers(self.command_pool, &self.command_buffers);
+                self.command_buffers.clear();
+            }
             self.color_target.destroy(&self.device);
             self.swapchain.destroy(&self.device, &self.swapchain_loader);
+        }
+    }
+
+    unsafe fn destroy_pipeline(&mut self) {
+        unsafe {
+            let pipeline = std::mem::replace(&mut self.pipeline, vk::Pipeline::null());
+            if pipeline != vk::Pipeline::null() {
+                self.device.destroy_pipeline(pipeline, None);
+            }
+            let layout = std::mem::replace(&mut self.pipeline_layout, vk::PipelineLayout::null());
+            if layout != vk::PipelineLayout::null() {
+                self.device.destroy_pipeline_layout(layout, None);
+            }
         }
     }
 }
@@ -653,7 +710,11 @@ impl Drop for Renderer {
         self.imgui_renderer.take();
         unsafe {
             self.cleanup_swapchain();
-            self.device.destroy_render_pass(self.render_pass, None);
+            self.destroy_pipeline();
+            let render_pass = std::mem::replace(&mut self.render_pass, vk::RenderPass::null());
+            if render_pass != vk::RenderPass::null() {
+                self.device.destroy_render_pass(render_pass, None);
+            }
             self.texture.destroy(&self.device);
             self.sync.destroy(&self.device);
             if let Some(readback) = self.readback.take() {

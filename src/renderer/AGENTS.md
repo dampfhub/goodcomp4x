@@ -57,6 +57,9 @@ needs no build change; using it needs a pipeline change here.
   signal again once its image is acquired again. Acquire semaphores and fences stay per frame.
   An acquire that returns suboptimal still signals its semaphore, so that frame is drawn and
   presented before the swapchain is rebuilt; only `ERROR_OUT_OF_DATE_KHR` skips the frame.
+- Swapchain recreation skips zero-size surfaces, creates the replacement before releasing the old
+  resources, and keeps the render pass/pipeline when the format is unchanged. Destroy methods
+  null or drain handles so teardown remains safe after a partial recreation failure.
 - MSAA uses the highest supported count from `PREFERRED_SAMPLES` (16, then 8), falling back to 4.
 - Validation runs only in debug builds (`cfg!(debug_assertions)`). Check `cargo run` output for
   validation errors after any change here.
