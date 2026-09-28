@@ -151,8 +151,22 @@ const PLANNED_JOB_COLOR_SOLID: Color = [0.95, 0.78, 0.42, 1.0];
 const JOB_UNDER_WAY_COLOR: Color = [1.0, 0.88, 0.52, 1.0];
 /// The armed worker job's preview on a tile where it can't go.
 const BLOCKED_JOB_COLOR: Color = [0.90, 0.30, 0.25, 1.0];
-const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2::new(0.0, 0.6);
+/// A job on a tile is a hexagon nested inside the worked-tile ring
+/// (`WORKED_OUTLINE_RADIUS`), so a worked tile with a job shows both, and
+/// clear of a guard's outline and a fort's ring inside it. It is open along
+/// its top side, where the job's name goes.
+const JOB_RING_RADIUS: f32 = HEX_SIZE * 0.70;
+/// Where the job ring's open top side runs: its apothem.
+const JOB_RING_TOP: f32 = JOB_RING_RADIUS * 0.866_025_4;
+const JOB_RING_WIDTH: f32 = 0.06;
+const PLANNED_JOB_RING_WIDTH: f32 = 0.05;
+/// A job's name sits in its ring's open top...
+const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2::new(0.0, JOB_RING_TOP);
 const PLANNED_JOB_LABEL_HEIGHT: f32 = 0.12;
+/// ...on a dark plate reaching past the text by this much, so it reads over
+/// the ring and any ground.
+const JOB_LABEL_PADDING: Vec2 = Vec2::new(0.05, 0.03);
+const JOB_LABEL_PLATE_COLOR: Color = [0.01, 0.01, 0.012, 0.8];
 /// A tile's delivery share, atop the hex: its baseline's left end from the
 /// hex's center, and its capital height.
 const SHARE_LABEL_OFFSET: Vec2 = Vec2::new(-0.3, 0.52);
@@ -199,7 +213,8 @@ const HEALTH_BAR_WIDTH: f32 = 0.9;
 const HEALTH_BAR_HEIGHT: f32 = 0.14;
 const HEALTH_BAR_OFFSET_Y: f32 = 0.78;
 
-/// Outline around each tile the hovered or selected city works.
+/// Outline around each tile the hovered or selected city works; a job on the
+/// tile nests inside it (`JOB_RING_RADIUS`).
 const WORKED_OUTLINE_RADIUS: f32 = HEX_SIZE * 0.84;
 const WORKED_OUTLINE_WIDTH: f32 = 0.06;
 const WORKED_OUTLINE_RIM_WIDTH: f32 = 0.10;
@@ -1280,15 +1295,7 @@ impl GameState {
                     } else {
                         BLOCKED_JOB_COLOR
                     };
-                    mesh::polygon_outline(
-                        hex.to_world(),
-                        WORKED_OUTLINE_RADIUS,
-                        0.07,
-                        6,
-                        0.0,
-                        color,
-                        out,
-                    );
+                    push_job_ring(hex, JOB_RING_WIDTH, color, out);
                 }
             }
         }
@@ -1419,19 +1426,9 @@ impl GameState {
                 push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, PLANNED_EDGE_COLOR, out);
                 continue;
             }
-            let center = job.hex.to_world();
-            mesh::polygon_outline(
-                center,
-                WORKED_OUTLINE_RADIUS,
-                0.05,
-                6,
-                0.0,
-                PLANNED_JOB_COLOR,
-                out,
-            );
-            font::push_text_centered(
+            push_job_ring(job.hex, PLANNED_JOB_RING_WIDTH, PLANNED_JOB_COLOR, out);
+            push_job_label(
                 Self::job_label_at(job.hex, shares),
-                PLANNED_JOB_LABEL_HEIGHT,
                 self.job_name(*job),
                 PLANNED_JOB_COLOR,
                 out,
@@ -1464,26 +1461,11 @@ impl GameState {
                     (start + end) / 2.0 + PLANNED_JOB_LABEL_OFFSET * 0.5
                 }
                 None => {
-                    let center = job.hex.to_world();
-                    mesh::polygon_outline(
-                        center,
-                        WORKED_OUTLINE_RADIUS,
-                        0.06,
-                        6,
-                        0.0,
-                        JOB_UNDER_WAY_COLOR,
-                        out,
-                    );
+                    push_job_ring(job.hex, JOB_RING_WIDTH, JOB_UNDER_WAY_COLOR, out);
                     Self::job_label_at(job.hex, shares)
                 }
             };
-            font::push_text_centered(
-                at,
-                PLANNED_JOB_LABEL_HEIGHT,
-                &label,
-                JOB_UNDER_WAY_COLOR,
-                out,
-            );
+            push_job_label(at, &label, JOB_UNDER_WAY_COLOR, out);
         }
     }
 
@@ -1593,6 +1575,27 @@ struct MapView {
     barriers: HashMap<(Hex, Hex), Structure>,
     cities: Vec<(Hex, SeenBuilding)>,
     barracks: Vec<(Hex, SeenBuilding)>,
+}
+
+/// A job's ring on `hex` (`JOB_RING_RADIUS`): five sides of a hexagon, open
+/// along the top where its name goes.
+fn push_job_ring(hex: Hex, width: f32, color: Color, out: &mut Vec<Vertex>) {
+    let center = hex.to_world();
+    // From the top left corner around to the top right one, the long way.
+    let corners: [Vec2; 6] = std::array::from_fn(|i| {
+        center + Vec2::from_angle((i + 2) as f32 * TAU / 6.0) * JOB_RING_RADIUS
+    });
+    mesh::polyline(&corners, width, color, out);
+}
+
+/// A job's name centered on `at`, on a dark plate.
+fn push_job_label(at: Vec2, text: &str, color: Color, out: &mut Vec<Vertex>) {
+    let height = PLANNED_JOB_LABEL_HEIGHT;
+    let radius = height / 2.0 + JOB_LABEL_PADDING.y;
+    let reach =
+        (font::world_text_width(text, height) / 2.0 + JOB_LABEL_PADDING.x - radius).max(0.0);
+    push_pill(at, reach, radius, JOB_LABEL_PLATE_COLOR, out);
+    font::push_text_centered(at, height, text, color, out);
 }
 
 fn building_badge(building: super::city::Building) -> (char, Color) {
@@ -2830,6 +2833,71 @@ mod tests {
         game.resolve_workers();
         assert_eq!(game.field_workers[0].work_left, Some(3));
         assert!(solid(&game) > walking);
+    }
+
+    #[test]
+    fn a_job_on_a_worked_tile_nests_inside_the_worked_ring() {
+        use crate::game::workers::{FieldWorker, JobKind};
+        let mut game = GameState::city_scenario();
+        game.explore();
+        game.open_city(0);
+        let (manager, worker) = (game.cities[0].worked[0], game.cities[0].worked[1]);
+        // A job under way on the manager's tile, one queued on the worker's.
+        let job = WorkerJob::on_tile(manager, JobKind::Improve);
+        game.field_workers.push(FieldWorker {
+            id: 900,
+            team: game.cities[0].team,
+            home: 0,
+            base: game.cities[0].pos,
+            pos: manager,
+            job: Some(job),
+            work_left: Some(2),
+            recalled: false,
+        });
+        game.cities[0]
+            .worker_jobs
+            .push(WorkerJob::on_tile(worker, JobKind::Road));
+        let fog = game.fog();
+        let mut out = Vec::new();
+        game.push_city_map(&fog, &mut out);
+
+        // Each ring's line, below the tile's center (clear of labels), shows
+        // its own color on top: the job's doesn't cover the worked ring's.
+        let manager_gold = [1.0, 0.78, 0.20, 1.0];
+        let below = |hex: Hex, radius: f32| hex.to_world() - Vec2::new(0.0, radius * 0.866);
+        assert_eq!(
+            top_color(&out, below(manager, WORKED_OUTLINE_RADIUS)),
+            Some(manager_gold)
+        );
+        assert_eq!(
+            top_color(&out, below(manager, JOB_RING_RADIUS)),
+            Some(JOB_UNDER_WAY_COLOR)
+        );
+
+        // The shapes' radii: every corner of a job's ring (solid, not its
+        // name's glyphs) lies inside the worked ring's dark rim, on both tiles.
+        let distances = |hex: Hex, color: Color| {
+            out.iter()
+                .filter(|v| v.color == color && v.uv == crate::renderer::SOLID_UV)
+                .map(|v| Vec2::new(v.pos[0], v.pos[1]).distance(hex.to_world()))
+                .filter(|&d| d < HEX_SIZE)
+                .collect::<Vec<f32>>()
+        };
+        let rim_inside = |hex: Hex| {
+            distances(hex, WORKED_OUTLINE_RIM_COLOR)
+                .into_iter()
+                .fold(f32::MAX, f32::min)
+        };
+        for (hex, color) in [(manager, JOB_UNDER_WAY_COLOR), (worker, PLANNED_JOB_COLOR)] {
+            let ring = distances(hex, color);
+            assert!(!ring.is_empty());
+            let outermost = ring.into_iter().fold(0.0, f32::max);
+            assert!(
+                outermost < rim_inside(hex),
+                "{outermost} vs {}",
+                rim_inside(hex)
+            );
+        }
     }
 
     /// The color of the last opaque triangle drawn over `point`.
