@@ -1093,6 +1093,30 @@ impl GameState {
         (center + Vec2::new(0.0, offset_y), CONTESTED_SCALE)
     }
 
+    /// Whether `point` (world space) is on unit `idx`'s token as
+    /// `build_vertices` draws it: at `unit_layout`'s center and scale (larger
+    /// while it's lit as having just acted), its disc or civilian hexagon
+    /// out to the edge of its dark outline. The city view uses it to tell a
+    /// click on a unit from a click on the tile under it.
+    pub(super) fn unit_token_contains(&self, idx: usize, point: Vec2) -> bool {
+        let unit = &self.units[idx];
+        let (center, mut scale) = self.unit_layout(idx);
+        if self.recent_actors.contains(&unit.id) {
+            scale *= ACTED_SCALE;
+        }
+        let (sides, rotation, size) = token_shape(self.unit_look(unit));
+        // As `mesh::polygon_outline` draws it: centered on the rim, its
+        // corners pushed out further than its edges.
+        let half_step = TAU / 2.0 / sides as f32;
+        let outer =
+            UNIT_ICON_RADIUS * scale * size + ICON_OUTLINE_WIDTH * scale / 2.0 / half_step.cos();
+        // Inside a regular polygon: within its apothem along the normal of
+        // the edge the point faces.
+        let offset = point - center;
+        let from_corner = (offset.to_angle() - rotation).rem_euclid(2.0 * half_step);
+        offset.length() * (from_corner - half_step).cos() <= outer * half_step.cos()
+    }
+
     /// The terrain's color, unless the hex is selected, contested, or in the
     /// selected unit's move or attack range. Mountains are never highlighted
     /// since nothing can move to or stand on them.
@@ -2181,16 +2205,22 @@ pub(super) fn push_unit_token(
     push_unit_icon(center, look, radius / UNIT_ICON_RADIUS, color, out);
 }
 
+/// A token's outline: its sides, rotation and size relative to a military
+/// unit's disc. Drawing and the city view's click test share it.
+fn token_shape(look: UnitLook) -> (u32, f32, f32) {
+    if look.civilian {
+        (6, FRAC_PI_2, CIVILIAN_TOKEN_SIZE)
+    } else {
+        (TOKEN_SIDES, 0.0, 1.0)
+    }
+}
+
 /// The unit's token in its team color with a dark outline, so it reads on
 /// any terrain, and its pictogram on top. Military units stand on a disc;
 /// civilians on a hollow pointy-top hexagon (a pale center inside a
 /// team-colored rim), unlike both the disc and the flat-top map hexes.
 fn push_unit_icon(center: Vec2, look: UnitLook, scale: f32, color: Color, out: &mut Vec<Vertex>) {
-    let (sides, rotation, size) = if look.civilian {
-        (6, FRAC_PI_2, CIVILIAN_TOKEN_SIZE)
-    } else {
-        (TOKEN_SIDES, 0.0, 1.0)
-    };
+    let (sides, rotation, size) = token_shape(look);
     let radius = UNIT_ICON_RADIUS * scale * size;
     let alpha = color[3];
     mesh::regular_polygon(center, radius, sides, rotation, color, out);

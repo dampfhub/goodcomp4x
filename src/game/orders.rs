@@ -110,7 +110,8 @@ impl GameState {
             return;
         };
 
-        if self.city_click(hex) {
+        let point = self.camera.screen_to_world(cursor, screen_size);
+        if self.city_click_at(hex, point) {
             return;
         }
 

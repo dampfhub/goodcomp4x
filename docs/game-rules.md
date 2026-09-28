@@ -673,8 +673,10 @@ every turn end.
   cursor rests on a hex for 0.75 s, a tooltip shows terrain or city, yields, defense, site, road,
   which city works it, its delivery share to the open city, and units on it.
 - **City view:** C opens the first city needing a build (or your first city), and left-clicking
-  your city opens that one. While open, map clicks manage tiles and never select units; it closes
-  on Tab, Space, Escape, or a click off the map. A barracks view closes the same way; C switches
+  your city opens that one. While open, map clicks manage tiles, except a click on one of your
+  units' tokens, which selects the unit and closes the view (the rest of its hex still manages the
+  tile); it closes on Tab, Space, Escape, or a click off the map. A barracks view closes the same
+  way, and on a unit's token likewise; C switches
   it to its city. Worked tiles are outlined green (the manager's in gold; red if disrupted).
   Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show

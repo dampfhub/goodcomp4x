@@ -816,7 +816,7 @@ fn docked_panel_buttons_share_the_rendered_hit_box() {
 }
 
 #[test]
-fn city_clicks_do_not_select_units_without_exiting_city_view() {
+fn city_view_clicks_select_a_unit_only_on_its_token() {
     let mut game = city_view();
     // One of the player's units drawn clear of the top bar and the tray.
     let unit = (0..game.units.len())
@@ -827,13 +827,18 @@ fn city_clicks_do_not_select_units_without_exiting_city_view() {
                 && (0.0..SCREEN.x).contains(&cursor.x)
         })
         .expect("a unit in view");
-    game.handle_click(
-        hex_cursor(&game, game.units[unit].pos),
-        SCREEN,
-        ClickMode::Normal,
-    );
+    let pos = game.units[unit].pos;
+    // Off the token, on its hex: the city keeps the click.
+    let off_token = game
+        .camera
+        .world_to_screen(pos.to_world() + Vec2::new(0.6, 0.0), SCREEN);
+    game.handle_click(off_token, SCREEN, ClickMode::Normal);
     assert!(game.selected_city.is_some());
     assert_ne!(game.selected, Some(unit));
+    // On the token (drawn in the middle of the hex): the unit.
+    game.handle_click(hex_cursor(&game, pos), SCREEN, ClickMode::Normal);
+    assert_eq!(game.selected_city, None);
+    assert_eq!(game.selected, Some(unit));
 }
 
 #[test]
