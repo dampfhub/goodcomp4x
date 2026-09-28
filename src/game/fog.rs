@@ -634,7 +634,13 @@ pub(super) mod tests {
         let fog = game.fog();
         assert!(fog.sees(worked) && !fog.sees(blocker));
         assert!(!fog.shows(&game.units[0]));
-        assert!(!game.routes(city).costs.contains_key(&worked));
+        // The goods detour south of the mountain, through the marsh at
+        // (2, 1) and (3, 1): two hexes off the road, so a quarter arrives.
+        assert_eq!(
+            game.routes(city).path_from(worked),
+            [(5, 0), (4, 0), (3, 1), (2, 1), (2, 0), (1, 0), (0, 0)].map(|(q, r)| Hex::new(q, r))
+        );
+        assert_eq!(game.routes(city).costs.get(&worked), Some(&8));
         assert!(
             game.income(city).food + game.income(city).production() < full.food + full.production(),
             "{:?} vs {full:?}",
