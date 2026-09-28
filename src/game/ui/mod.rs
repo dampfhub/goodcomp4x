@@ -188,8 +188,10 @@ enum Target {
     WorkerJob(JobKind),
     /// The X on one of the open city's worker jobs.
     WorkerJobRemove(usize),
-    /// Sends the worker with this id straight home.
+    /// Sends the worker with this id straight home, to stay until released.
     RecallWorker(u32),
+    /// Lets one of the open city's held (recalled) workers take jobs again.
+    ReleaseWorker,
     /// A worker's row in the city panel: the camera goes to it.
     ShowWorker(u32),
     /// A click on a queue row (not a drag): for a worker job, the camera
@@ -659,6 +661,7 @@ impl GameState {
             Target::WorkerJob(kind) => self.arm_worker_job(kind),
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
             Target::RecallWorker(id) => self.recall_worker(id),
+            Target::ReleaseWorker => self.release_worker(),
             Target::ShowWorker(id) => self.show_worker(id),
             Target::QueueItem(kind, index) => self.queue_item_clicked(kind, index),
             Target::Build(build) => self.queue_selected_city_unit(build),

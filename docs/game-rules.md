@@ -428,8 +428,9 @@ every turn end.
   per turn at attack 12. Damage follows the normal combat formula. Once its HP reaches zero, move
   a hostile interior fighter onto the center hex to capture the city. Capture changes ownership,
   restores the post and clears its production queue, building
-  plans and worker jobs. Workers at home pass to the new owner. Field workers from that city
-  return to another friendly city if one exists; otherwise they pass to the new owner.
+  plans and worker jobs. Workers at home pass to the new owner, none of them held (see Workers,
+  Recall). Field workers from that city return to another friendly city if one exists;
+  otherwise they pass to the new owner, free to take its jobs.
   A worker sharing its hex with a new enemy is captured immediately after the ownership change.
   The exterior city remains non-attackable.
   A breached post changes its map marker and city panel to show that it is open for occupation.
@@ -591,7 +592,8 @@ every turn end.
   over tiles, or along hex edges for walls and gates. A ring under the cursor shows where a tile
   job would go (red where it can't); a work stays picked for more until Escape, picking it again,
   or leaving the city, and a building is done once placed. The city panel lists its workers
-  (click one to show it on the map; Recall beside it) and its placed jobs (click to show on the
+  (click one to show it on the map; Recall beside it; Release for those held at home) and its
+  placed jobs (click to show on the
   map, drag to reorder, X to take one off for a refund).
 - **Jobs:** a job waits in its city's list. A job a worker is out
   on shows as a bright gold ring (or edge) named with the job, and once the worker is at work
@@ -613,8 +615,8 @@ every turn end.
   current sight or the last observed roads, sites, and structures; unseen enemy changes
   take effect during resolution without revealing themselves while planning (a building placed
   on a site an unseen building took is dropped, refunded, when its worker gets there).
-- **Idle workers** (at home, with no job in their city's list) wait there, and never hold up
-  the turn.
+- **Idle workers** (at home, with no job in their city's list, or held there after a Recall)
+  wait there, and never hold up the turn.
 - **Walls and gates** stand on the edge between two hexes, not on a tile. Picked in the city's
   production list, each click on the map places one on the hex edge nearest the cursor (highlighted), and
   dragging places one on every edge the cursor passes.
@@ -631,12 +633,12 @@ every turn end.
   | Fort | 4 turns | your units in it get +50% defense (a placeholder) |
   | A building | its turns (halved beside a Workshop) | the building, on its site |
 
-- **Going out:** in the Workers step, each city sends an idle worker out for each job at the top
-  of its list. A worker walks 1 hex a turn by the shortest way around impassable terrain,
-  walls, others' gates, enemy units and enemy cities. Once on the tile it works the listed turns,
-  less any work already in the job (starting the next turn), then takes the city's next job, or
-  walks home when there is none. A job that became impossible is dropped (with a notice); a worker that can't reach its job gives
-  up and heads home.
+- **Going out:** in the Workers step, each city sends an idle worker (not a held one) out for
+  each job at the top of its list. A worker walks 1 hex a turn by the shortest way around
+  impassable terrain, walls, others' gates, enemy units and enemy cities. Once on the tile it
+  works the listed turns, less any work already in the job (starting the next turn), then takes
+  the city's next job, or walks home when there is none. A job that became impossible is dropped
+  (with a notice); a worker that can't reach its job gives up and heads home.
 - **Danger:** out on the map a worker can be seen (your own see 1 hex around them). An enemy unit
   that moves onto its hex captures it: it joins the captor's nearest city (or is lost if the
   captor has none). An attack on its hex kills it when nothing else is there to hit. A unit
@@ -644,12 +646,18 @@ every turn end.
   A captured or killed worker's job goes back to the top of its city's list.
 - **Recall:** workers otherwise follow their jobs on their own, so each of your workers out on
   the map has a Recall button in its city's panel. A recalled worker drops its job (back to the top of the city's list) and walks straight
-  home at its usual 1 hex a turn in the Workers step, taking no new job on the way.
+  home at its usual 1 hex a turn in the Workers step, taking no new job on the way. Home, it
+  stays there, **held**, however many jobs its city lists, until you release it: the city panel
+  counts held workers (WORKERS: 1 HOME (1 HELD), 0 OUT) and offers HELD AT HOME - RELEASE, one
+  worker a click. A released worker goes out in that turn's Workers step to the job at the top of
+  the list. A held worker is still one of the city's workers at home (safe, and counted for
+  everything that counts them); the AI never holds workers, and a captured city's are not held.
 - **Progress is kept:** the work put into a job stays with the job, not the worker. A worker
   recalled, captured or killed partway through leaves its job on its city's list with the turns
   of work it did, and whichever worker takes the job next (the same one or another) only works
-  the turns left. To put an urgent job first, recall the worker and drag that job to the top of
-  the list; the half-built one waits with its work. A job's turns left are counted from its
+  the turns left. To put an urgent job first, recall the worker, drag that job to the top of the
+  list and release the worker once it's home (or let another worker take it); the half-built one
+  waits with its work. A job's turns left are counted from its
   current work time, so a building beside a Workshop built meanwhile takes the halved time less
   the work done (always at least one turn). Taking a partly built job off the list still refunds
   its full price; the turns spent on it are lost.

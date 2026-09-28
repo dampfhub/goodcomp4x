@@ -436,6 +436,8 @@ impl GameState {
             city_ref.barracks_queue.clear();
             city_ref.barracks_progress = 0;
             city_ref.worker_jobs.clear();
+            // Its workers at home serve the new owner, none of them held.
+            city_ref.held_workers = 0;
             self.notice = format!("CITY {} CAPTURED IN THE INTERIOR", city_ref.id + 1);
             log::info!("{}: {team:?} captures its command post", city_ref.id + 1);
             for index in 0..self.field_workers.len() {
@@ -448,13 +450,14 @@ impl GameState {
                     self.field_workers[index].home = new_home;
                 } else {
                     // Without a friendly city to return to, an outlying worker
-                    // follows the captured city's new owner.
+                    // follows the captured city's new owner. It isn't
+                    // recalled (held once home): it takes that city's jobs.
                     let worker = &mut self.field_workers[index];
                     worker.team = team;
                     worker.job = None;
                     worker.work_left = None;
                     worker.home = city;
-                    worker.recalled = true;
+                    worker.recalled = false;
                 }
             }
             // A worker changing sides may share its hex with an old-side unit;
@@ -689,6 +692,9 @@ mod tests {
             work_left: None,
             recalled: false,
         });
+        // Red held its worker at home.
+        assert_eq!(game.cities[1].workers, 1);
+        game.cities[1].held_workers = 1;
         game.cities[1].interior.core_hp = 0.0;
         game.resolve_one_interior(1);
         assert_eq!(game.cities[1].team, Team::Red);
@@ -706,6 +712,9 @@ mod tests {
         assert!(game.cities[1].queue.is_empty());
         assert_eq!(game.field_workers[0].team, Team::Blue);
         assert_eq!(game.field_workers[0].home, 1);
+        // Blue's now: nothing held, and the worker out free to take jobs.
+        assert_eq!(game.cities[1].held_workers, 0);
+        assert!(!game.field_workers[0].recalled);
     }
 
     #[test]

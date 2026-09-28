@@ -441,7 +441,14 @@ impl GameState {
                 Target::RecallWorker(_) => (
                     "RECALL".into(),
                     "CLICK".into(),
-                    "SENDS IT HOME. ITS JOB WAITS ON THE LIST.".into(),
+                    "SENDS IT HOME TO STAY UNTIL RELEASED. ITS JOB WAITS ON THE LIST.".into(),
+                    None,
+                ),
+                Target::ReleaseWorker => (
+                    "RELEASE".into(),
+                    "CLICK".into(),
+                    "A WORKER HELD AT HOME GOES BACK TO WORK: IT TAKES THE NEXT JOB ON THE LIST."
+                        .into(),
                     None,
                 ),
                 Target::BuildWorker => (
