@@ -501,7 +501,7 @@ impl GameState {
             });
         }
         unit.following_queue = true;
-        unit.guarding = false;
+        unit.wake();
         unit.holding = false;
     }
 
@@ -512,7 +512,7 @@ impl GameState {
             n => unit.queued[n - 1].attack = Some(target),
         }
         unit.following_queue = true;
-        unit.guarding = false;
+        unit.wake();
         unit.holding = false;
     }
 

@@ -128,7 +128,8 @@ can watch or change what's sent. What's in place:
   this turn; for a turn already resolved, a late `Withdraw` and `Plan` only alternately (a
   `Withdraw` first) until that guest's checksum for it, and never changing anything; every
   unit, city, worker and interior troop a plan names existing and its side's; every hex on the
-  map (or inside the city's interior); moves and attacks within the unit's range; an ability
+  map (or inside the city's interior); moves and attacks within the unit's range; the alert
+  stance only on a troop that can take it (not a settler, scout or ship; siege set up); an ability
   only when it's ready; every list short (`MAX_PLAN_LIST`). The guest checks the host's
   `Resolve` the same way, and that it carries a plan the guest sent for its own side, and the
   seat and scenario in its `Welcome`.

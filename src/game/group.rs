@@ -139,7 +139,7 @@ impl GameState {
         for i in able {
             let unit = &mut self.units[i];
             unit.planned_attack = (!already).then_some(target);
-            unit.guarding = false;
+            unit.wake();
             unit.holding = false;
         }
     }
@@ -184,7 +184,7 @@ impl GameState {
                 let unit = &mut self.units[i];
                 unit.planned_move = Some(dest);
                 unit.drop_unreachable_attack();
-                unit.guarding = false;
+                unit.wake();
                 unit.holding = false;
             }
         }
@@ -214,8 +214,39 @@ impl GameState {
         for &i in &self.group {
             self.units[i].guarding = !all_guarding;
             self.units[i].cancel_queue();
+            if !all_guarding {
+                self.units[i].alert = false;
+            }
         }
         if !all_guarding {
+            self.group.clear();
+            self.select_next_or_end_turn(None);
+        }
+    }
+
+    /// E or Alert with a group: every member that can goes on alert, or if
+    /// they all already are, they all come off it. Members that can't
+    /// (`can_go_on_alert`) are left as they were.
+    pub(super) fn toggle_group_alert(&mut self) {
+        let able: Vec<usize> = self
+            .group
+            .iter()
+            .copied()
+            .filter(|&i| self.units[i].alert || self.can_go_on_alert(i))
+            .collect();
+        if able.is_empty() {
+            self.notice = super::orders::ALERT_NOTICE.into();
+            return;
+        }
+        let all_alert = able.iter().all(|&i| self.units[i].alert);
+        for &i in &able {
+            if all_alert {
+                self.units[i].alert = false;
+            } else if self.can_go_on_alert(i) {
+                self.go_on_alert(i);
+            }
+        }
+        if !all_alert {
             self.group.clear();
             self.select_next_or_end_turn(None);
         }
@@ -226,7 +257,7 @@ impl GameState {
         for i in self.group.clone() {
             self.cancel_swap(i);
             self.units[i].clear_orders();
-            self.units[i].guarding = false;
+            self.units[i].wake();
             self.units[i].holding = false;
         }
     }
