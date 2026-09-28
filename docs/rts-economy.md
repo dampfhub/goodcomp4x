@@ -137,9 +137,9 @@ metal still reach the stockpile.
 
 ## What the simulations showed
 
-`cargo test economy_report -- --ignored --nocapture` prints each side's stockpile, population,
+`cargo test economy_report -- --ignored --nocapture` printed each side's stockpile, population,
 army and units trained every 5 turns of AI-vs-AI games (`SIM_SEEDS=8` for seeds 0-7,
-`SIM_SPEEDUP=1` for the variant). Averages per side over seeds 0-7, 40 turns (the AI builds
+`SIM_SPEEDUP=1` for the variant; since round 6 those lines need `REPORT_GAME_LINES=1`). Averages per side over seeds 0-7, 40 turns (the AI builds
 only Melee, Workers and Grows, never buildings):
 
 | | turn 10 | turn 20 | turn 30 | turn 40 |
@@ -292,3 +292,158 @@ doesn't come (a route cut during the turn), and whether a waiting item should ho
 are about the same (Cities 11.9 and 11.9, World 14.7 and 14.1); the AI spends a little sooner,
 since it counts the turn's income (Cities population 4.4 against 3.5 at turn 10), and World
 sides bank less metal (40 against 87 at turn 40).
+
+## Round 6: the economy's tempo (#239)
+
+A playtest found the game moving too fast. This round measures the tempo and changes no rule.
+
+`economy_report` (`src/game/simulation/economy.rs`) now measures, over many seeds:
+- units trained by type and turn, army size, population and when each growth step lands;
+- stockpiles, income, and where the resources go;
+- first contact, first fight, and deaths a turn;
+- build times in practice (queued, paid, worked, out), and what each queue did with its turns;
+- the spread between sides.
+
+Its knobs are environment variables, listed in its module comment:
+- `REPORT_TURNS`;
+- `REPORT_GAMES`: `cities`, `world`, or `world1` to `world6`;
+- `REPORT_JSON`;
+- `REPORT_ARMY_FIRST=1`: a city queue that would only gather trains a Melee instead. This measures what the banked resources could buy.
+- `REPORT_GAME_LINES=1`.
+
+The numbers below are from `main` at 6f5c4c8 (the same at 134305e), 60 turns, seeds 0-23 (24
+games of each kind):
+
+```
+SIM_SEEDS=24 cargo test --release economy_report -- --ignored --nocapture
+SIM_SEEDS=24 REPORT_ARMY_FIRST=1 cargo test --release economy_report -- --ignored --nocapture
+SIM_SEEDS=24 REPORT_TURNS=100 REPORT_GAMES=cities,world cargo test --release economy_report -- --ignored --nocapture
+```
+
+Per side, in the World with 4 to 6 AI sides. `world4`, `world5` and `world6` agree within a
+turn or two. "Army" is troops alive, scouts aside. "Trained" counts every troop the queues
+turned out.
+
+| | turn 10 | turn 20 | turn 30 | turn 40 | turn 60 |
+|---|---|---|---|---|---|
+| Population (one city) | 3.0 | 5.4 | 6.7 | 7.0 | 7.0 |
+| Army alive / trained | 2.1 / 2.0 | 5.4 / 5.9 | 6.7 / 10.1 | 6.7 / 14.2 | 7.1 / 22.3 |
+| The same, army first | 2.2 / 2.0 | 6.4 / 6.9 | 8.7 / 12.5 | 9.8 / 18.5 | 11.0 / 31.0 |
+| Stockpile food / wood / metal | 13 / 7 / 7 | 18 / 28 / 25 | 37 / 62 / 59 | 92 / 107 / 96 | 242 / 205 / 178 |
+| Income food / wood / metal a turn | 11 / 2.6 / 1.0 | 16 / 4.4 / 2.6 | 18 / 5.1 / 3.4 | 20 / 5.3 / 3.8 | 21 / 5.6 / 4.0 |
+| Food the citizens eat a turn | 6 | 11 | 13 | 14 | 14 |
+
+Events, median turn [10th-90th percentile]:
+
+| Event | World, 4 to 6 AI sides | World, 1 AI side | Cities |
+|---|---|---|---|
+| Barracks placed / built | 1 / 5 [5-6] | 1 / 5 | 1 / 5 |
+| First troop | 7 [6-7] | 7 | 8 |
+| Population 3 / 4 / 5 / 6 / 7 | 9 / 11 / 16 / 21 / 27 [21-36] | 9 / 11 / 14 / 18 / 24 | 3 / 6 / 10 / 15 / 20 |
+| Army of 5 / 10 | 17 / 31 (54% never reach 10) | 17 / 31 (46% never) | 11 / 26 (50% never) |
+| First contact (any unit within 3 hexes) | 4 | 6 | 1 |
+| First fight between troops (scouts aside) | 10 [7-11] | 21 [13-25] | 2 |
+| Deaths a turn per side after that | 0.31 | 0.35 | 0.07 |
+| A side's second city | only by capture: 7% of sides by turn 60 | never | the winner's, turn 18 |
+
+Where the turns and resources go, World with 4 to 6 AI sides:
+
+- **The Barracks trains 98% of its turns.** In practice every build takes its listed turns, with
+  no turns waiting for its price, because the AI only queues what it can pay for.
+  - Worker jobs take about 1.5 turns more than listed, as the worker walks out first.
+  - The Barracks takes 4.5 turns instead of 3, Improve 3.6 instead of 3, Road 2.4 instead of 2.
+- **The city queue gathers 72% of its turns.** Of those, 52% are at the population cap, where
+  Grow is no longer possible, and 20% are below it. It grows 20% of its turns and trains 7%.
+- **Gather becomes a side's second wood income once its city is full.** By turn 60 it has brought
+  86 food, 86 wood and 43 metal. Troops cost 115 wood over the same turns.
+- **Spending by turn 60, per side:**
+  - troops: 56 food, 115 wood, 43 metal;
+  - growth: 135 food, all of it by turn 40;
+  - the Barracks and works: about 40 wood.
+- **After turn 30 there is nothing left to buy.**
+  - Population is capped.
+  - There is no Settler build: a second city comes only by capture.
+  - The Barracks is one queue, at a build every 2-3 turns.
+
+  So the stockpile only grows: 600 food, 425 wood and 350 metal per side by turn 100. The army
+  stays at 7-8 alive, because output (about 0.4 troops a turn) matches losses (0.3 a turn).
+- **The spread between sides is small.** The side that trained most has 1.1-1.2 times the
+  mean. Army size spreads more, to 2 times the mean by turn 60, by who fights whom.
+- **Cities is decided early.**
+  - Each side starts with 4 troops, and they fight from turn 2.
+  - One city falls in every game, at turn 18 [14-20].
+  - After that, the winner's Barracks holds a finished unit for want of an open hex 60% of its
+    turns, because the AI has no enemy to walk to.
+
+  Cities numbers past turn 20 describe a lone winner.
+- **The variants:**
+  - `SIM_SPEEDUP=1` changes little now: 25 troops trained by turn 60 against 22. The AI's
+    manager is seldom beside its Barracks.
+  - `SIM_LIFETIME_CAP=1` trains more, 26. Once a side has its 3 Cavalry and 3 Armored, its
+    Barracks switch to Melee, which take 2 turns instead of 3.
+
+### Knobs tried
+
+Each knob was a local change: measured, then reverted. None is in the game. The runs used
+`SIM_SEEDS=24 REPORT_GAMES=cities,world1,world`, with and without `REPORT_ARMY_FIRST=1`.
+
+The table shows the World with 4 to 6 AI sides, per side:
+- **AI:** army at turns 20 / 60, troops trained by turn 60, population at turn 20, the turn the
+  city reaches 7 (and the share that never does), and the stockpile at turn 40;
+- **army first:** army at turns 20 / 60, and troops trained by turn 60.
+
+| Knob | AI: army 20 / 60 | trained | pop 20 | pop 7 (never) | stock 40 f / w / m | army first: army 20 / 60 | trained |
+|---|---|---|---|---|---|---|---|
+| none | 5.4 / 7.1 | 22.3 | 5.4 | 27 (1%) | 92 / 107 / 96 | 6.4 / 11.0 | 31.0 |
+| troop prices x1.5 | 5.0 / 6.8 | 21.8 | 5.4 | 28 (3%) | 89 / 75 / 86 | 5.2 / 10.0 | 26.9 |
+| troop prices x2 | 4.3 / 6.6 | 20.7 | 5.4 | 29 (2%) | 84 / 53 / 79 | 4.4 / 8.3 | 23.5 |
+| troop turns +1 | 3.9 / 4.3 | 15.5 | 5.4 | 28 (2%) | 96 / 124 / 95 | 4.3 / 7.2 | 21.8 |
+| troop turns x2 | 2.9 / 2.9 | 10.5 | 5.2 | 28 (1%) | 95 / 131 / 95 | 2.9 / 5.0 | 15.2 |
+| Barracks 20 wood, 5 turns | 1.8 / 6.5 | 15.9 | 5.5 | 28 (2%) | 99 / 108 / 110 | 2.4 / 10.9 | 23.8 |
+| Grow x2 (10 + 10 x pop) | 5.5 / 6.6 | 22.4 | 3.6 | 43 (8%) | 45 / 85 / 92 | 6.0 / 10.4 | 29.5 |
+| Grow 5 x pop squared | 5.4 / 6.9 | 22.3 | 4.0 | 55 (51%) | 65 / 95 / 95 | 6.5 / 10.6 | 30.3 |
+| Grow takes 4 turns | 5.0 / 6.7 | 21.7 | 4.6 | 31 (3%) | 81 / 78 / 82 | 5.3 / 10.8 | 28.7 |
+| citizens eat 3 food | 5.4 / 6.6 | 22.0 | 4.1 | 41 (39%) | 20 / 95 / 95 | 6.2 / 10.3 | 29.5 |
+| Gather 1 / 1 / 0 | 5.4 / 7.1 | 22.9 | 5.4 | 29 (2%) | 80 / 80 / 79 | 6.2 / 10.9 | 30.5 |
+| Gather gives nothing | 5.2 / 6.9 | 22.0 | 5.2 | 31 (3%) | 60 / 56 / 76 | 5.9 / 10.9 | 29.4 |
+| delivery shares 4, 2, 1, 0 quarters | 5.5 / 7.0 | 22.3 | 5.1 | 31 (3%) | 58 / 98 / 95 | 6.5 / 10.6 | 30.6 |
+| troops eat 0.5 food | 5.3 / 6.7 | 21.9 | 5.0 | 33 (14%) | 48 / 105 / 96 | 6.3 / 9.5 | 28.5 |
+| troops eat 1 food | 5.2 / 5.6 | 19.8 | 4.3 | 37 (43%) | 28 / 99 / 92 | 6.1 / 6.5 | 21.9 |
+| supply: 4 troops per city | 3.7 / 3.3 | 13.5 | 5.5 | 26 (1%) | 102 / 142 / 99 | 3.7 / 3.3 | 13.1 |
+| supply: 1 troop per citizen | 4.3 / 4.9 | 18.1 | 5.4 | 27 (2%) | 97 / 126 / 97 | 4.0 / 5.9 | 19.4 |
+| troop prices x1.5, turns +1 | 3.8 / 4.2 | 15.2 | 5.5 | 27 (3%) | 97 / 106 / 89 | 4.1 / 6.6 | 20.3 |
+| the above, Grow x2, Gather halved | 3.4 / 4.6 | 14.9 | 3.5 | 43 (20%) | 41 / 58 / 64 | 3.6 / 6.7 | 18.7 |
+| troops eat 1 food, supply 1 per citizen | 3.8 / 4.7 | 16.7 | 4.6 | 36 (18%) | 34 / 125 / 97 | 3.5 / 5.4 | 16.8 |
+
+What the knobs did:
+
+- **Troop prices barely matter while queue time is the limit.**
+  - Doubling them takes 7% off the AI's troops. The AI only waits 1-2 turns longer for its
+    first troop.
+  - A side spending everything on troops loses 25% at x2, because wood becomes its limit.
+- **Troop turns set the output directly.**
+  - +1 turn takes 30% off; x2 takes 53% off.
+  - Food, wood and metal pile up faster, with nothing to spend them on.
+- **The Barracks' price and turns move only the opening.**
+  - At 20 wood and 5 turns, the army at turn 20 falls from 5.4 to 1.8, then catches up by
+    turn 60.
+  - The first troop comes sooner, at turn 4: the AI can't afford the Barracks at once, so its
+    city trains a Melee first.
+- **Growth knobs move only growth.**
+  - Grow x2 puts full cities at turn 43.
+  - A squared price leaves half the cities short of 7 at turn 60.
+  - Troop output doesn't change, since troops and growth use different queues.
+- **Citizen food and delivery shares shrink the food surplus, which slows growth.** With
+  citizens at 3 food, 39% of cities never reach 7. Neither touches the army.
+- **Gather only trims the stockpile.** Half Gather or none takes 25-50 wood off by turn 40, with
+  no change to the tempo.
+- **Troop upkeep in food starves cities rather than armies, as the AI plays.**
+  - The AI doesn't plan for upkeep, so its largest city loses citizens. At 1 food a troop, 43%
+    of cities never reach 7.
+  - A side spending everything on troops ends with 6.5 instead of 11.
+- **A supply limit caps the army wherever it is set, and leaves the rest of the economy alone.**
+  - 4 per city holds the army at 3-4; 1 per citizen holds it at 5-6.
+  - The stockpile grows faster either way, so a cap needs a resource sink beside it.
+
+Open for the user to choose (#239): the target tempo, and which knobs to turn. The measurement
+code stays, so a retune can be checked against these tables.
