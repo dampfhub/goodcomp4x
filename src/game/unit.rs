@@ -184,6 +184,12 @@ pub struct Unit {
     /// This turn's orders came from a queue the player built with Shift, so
     /// the unit doesn't hold up ending the turn.
     pub following_queue: bool,
+    /// Where a queue built by Shift-clicks is going, in order: the hexes
+    /// clicked. Each turn the player's machine plans the queue again toward
+    /// them along the shortest way it knows (`replan_queues`), dropping each
+    /// once reached. Empty for a plan kept as it was built (one with a
+    /// queued attack).
+    pub waypoints: Vec<Hex>,
     /// Land units carried by a landing craft. Cargo is lost if it sinks.
     pub cargo: Vec<Unit>,
     /// Boarding and landing resolve with the rest of the turn.
@@ -212,6 +218,7 @@ impl Unit {
             lookout: false,
             queued: Vec::new(),
             following_queue: false,
+            waypoints: Vec::new(),
             cargo: Vec::new(),
             planned_board: None,
             planned_unload: None,
@@ -369,6 +376,7 @@ impl Unit {
     pub fn cancel_queue(&mut self) {
         self.queued.clear();
         self.following_queue = false;
+        self.waypoints.clear();
     }
 
     /// Clears every order: this turn's, the queue, and a hold.
@@ -397,8 +405,10 @@ impl Unit {
             self.ability_cooldown = self.ability_cooldown.saturating_sub(1);
         }
         let queued = std::mem::take(&mut self.queued);
+        let waypoints = std::mem::take(&mut self.waypoints);
         self.clear_orders();
         self.queued = queued;
+        self.waypoints = waypoints;
     }
 
     pub fn max_hp(&self) -> f32 {

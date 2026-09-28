@@ -778,6 +778,8 @@ mod tests {
         // (0, -3) and (0, -2), and the mountain itself can't be entered.
         game.units[cavalry].pos = Hex::new(-1, -2);
         assert_eq!(game.grid.terrain(Hex::new(0, -2)), Terrain::Mountains);
+        // Pathing goes by what the player knows: the mountains in sight.
+        game.explore();
 
         game.try_queue_move(cavalry, Hex::new(0, -2));
         assert_eq!(game.units[cavalry].planned_move, None);

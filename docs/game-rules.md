@@ -181,7 +181,11 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
   remembered hexes from memory.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
-  A unit out of sight, even one seen there before, doesn't shrink the move range, and clicking
+  Terrain seen once is known for good (it never changes); a hex never seen counts as open ground
+  for planning, whatever is really there, so a path planned into the fog goes straight through
+  it (the move highlight, plain moves, queued moves and queued attacks all go by this). A move
+  that turns out to run into terrain the player hadn't seen is turned back at resolution, as for
+  an unseen wall. A unit out of sight, even one seen there before, doesn't shrink the move range, and clicking
   its hex plans a move, which then meets it at resolution. A remembered enemy barracks can
   still be attacked; an empty city center in sight cannot, but one out of sight can (nobody
   there is known of, and refusing it would give away that nobody is), and the attack misses if
@@ -252,8 +256,9 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   turn's ordinary orders, later turns wait in its queue (`Unit::queued`).
 - **Shift-left-click** adds every turn it takes to get to the clicked hex, starting where the
   plan leaves the unit. Each turn the unit moves to the hex it can reach that turn that is the
-  shortest walk from the clicked hex, going around terrain and known walls and gates (the
-  straight distance decides if there is no way there; staying put wins ties). Turns are added
+  shortest walk from the clicked hex, going around the terrain, walls and gates the player knows
+  of (a hex never seen counts as open; see Fog of war) and allies standing still with no orders
+  (the straight distance decides if there is no known way there; staying put wins ties). Turns are added
   until nobody can get any closer (a queue toward an enemy in sight stops next to it), but no
   unit's plan grows past the **queue limit** setting (6 turns by default, 1 to 20, this turn
   included; see `controls.md`, Settings menu). A hex farther away than that is queued as far
@@ -302,11 +307,27 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   group) needs the same click twice: the first only warns and outlines the hex, and any other
   click, a new selection or the turn ending forgets it (`confirm_queue_replace`).
 - **Carrying over:** at the end of the turn, after each unit's `end_turn`, every unit with a
-  queue takes its next turn's orders (`advance_queues`). The whole queue is dropped, with a
-  notice ("MELEE STOPPED: ..."), and the unit needs orders, if the turn no longer fits: the unit
-  isn't where the queue expected (a move was blocked), it's in a contested hex, its way or
-  destination is blocked by terrain or a known wall, an enemy it can see or an ally stands on
-  the destination, or its target is out of range.
+  queue takes its next turn's orders (`advance_queues`). That runs as the turn resolves, on
+  every machine of a network game, so it goes by the real board only: the whole queue is
+  dropped, with a notice ("MELEE STOPPED: ..."), and the unit needs orders, if it's in a
+  contested hex, its target is out of range, or (for a queue kept as built, below) it isn't
+  where the queue expected.
+- **Going where it was sent:** a queue built by Shift-left-clicks alone remembers the hexes
+  clicked (`Unit::waypoints`). As each turn's planning begins, it's planned again from where the
+  unit stands, toward them in order, along the shortest way the player now knows
+  (`replan_queues`): terrain the fog revealed, walls seen, allies parked in the way. So a path
+  set through the fog follows what the fog reveals, a queue cut short by the queue limit keeps
+  going where it was sent, and a move turned back is tried again from where the unit stands. A
+  waypoint reached, or as near as the unit can get (an ally standing on it), is dropped; a
+  queue with none left is done, and the unit needs orders again. In a group, members sent to
+  the same hexes are planned together, in step. A queue whose next move runs into an enemy in
+  sight stops, with a notice. This planning happens on the player's own machine as their turn
+  begins, and goes in their plan like any other (in a network game, after the turn's start
+  snapshot), so every machine resolves the same turn.
+- **Kept as built:** a queued attack (Shift-right-click) makes the unit's plan fixed: it isn't
+  planned again, and it's dropped with a notice as the player's turn begins if its next move is
+  now known to be blocked by terrain or a wall, or an ally stands where it's going. Taking a
+  move off (above) leaves a steered queue going to where the cut plan ends.
 - The savestate (F6/F7) keeps queues, like every other order.
 
 ## Turn resolution (`turn.rs`)

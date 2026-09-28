@@ -290,8 +290,23 @@ impl GameState {
         }
     }
 
+    /// Whether the player knows of nothing on `hex` that stops a unit
+    /// entering it: on the map, and never seen (the player can't know what's
+    /// there), or seen to be land a unit can walk (for a ship, water). Terrain
+    /// never changes, so a hex seen once is known for good.
+    pub(super) fn known_passable(&self, hex: Hex, naval: bool) -> bool {
+        self.grid.contains(hex)
+            && (!self.is_explored(hex)
+                || if naval {
+                    self.grid.terrain(hex).is_water()
+                } else {
+                    self.can_enter(hex)
+                })
+    }
+
     /// The hexes a player-controlled unit of `team` at `start` can plan to
-    /// reach, going around the units, walls and gates the player knows of.
+    /// reach, going around the terrain, units, walls and gates the player
+    /// knows of.
     pub(super) fn known_reachable_hexes(
         &self,
         start: Hex,
@@ -311,11 +326,8 @@ impl GameState {
         naval: bool,
     ) -> HashSet<Hex> {
         let mut reachable = self.reachable_hexes_by(start, move_range, |from, to| {
-            (if naval {
-                self.grid.contains(to) && self.grid.terrain(to).is_water()
-            } else {
-                self.can_enter(to)
-            }) && !self.known_enemy_city_at(to, team, fog)
+            self.known_passable(to, naval)
+                && !self.known_enemy_city_at(to, team, fog)
                 && self.known_can_cross(from, to, team, fog)
                 && !self.known_occupied(to, fog)
         });
