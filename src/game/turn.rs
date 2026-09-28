@@ -107,6 +107,7 @@ impl GameState {
         self.explore();
         self.camera.update(dt);
         self.age_effects(dt);
+        self.age_transition(dt);
         self.highlight_timer -= dt;
         if self.highlight_timer <= 0.0 {
             self.recent_actors.clear();
@@ -125,6 +126,8 @@ impl GameState {
         if self.settings.instant_playback {
             self.recent_actors.clear();
         }
+        // Where everything is drawn now, for what moves to glide from.
+        let before = self.before_steps();
         while let Some(step) = self.pending_steps.pop_front() {
             let actors = match step {
                 Step::Units(unit_type, phase) => self.resolve_step(unit_type, phase),
@@ -142,7 +145,8 @@ impl GameState {
             }
         }
 
-        if !self.is_resolving() {
+        let turn_over = !self.is_resolving();
+        if turn_over {
             self.resolve_coastal_batteries();
             self.resolve_transport();
             self.resolve_city_interiors();
@@ -162,6 +166,7 @@ impl GameState {
             self.finish_lockstep_turn();
             self.select_next_or_end_turn(None);
         }
+        self.start_transition(before, turn_over);
     }
 
     /// Cargo remains the same logical unit, with its exterior and interior HP.

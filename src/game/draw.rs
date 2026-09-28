@@ -430,13 +430,14 @@ impl GameState {
                 );
             }
         }
+        self.push_turn_dim(&mut out);
         self.push_order_markers(&fog, &mut out);
 
         for (idx, unit) in self.units.iter().enumerate() {
             if !fog.shows(unit) {
                 continue;
             }
-            let (center, scale) = self.unit_layout(idx);
+            let (center, scale) = self.drawn_unit_layout(idx);
             let (icon_scale, color) = if self.recent_actors.contains(&unit.id) {
                 (scale * ACTED_SCALE, brighten(unit.team.color()))
             } else {
@@ -636,7 +637,7 @@ impl GameState {
     /// The world rectangle (min, max) the camera may show: its full height,
     /// and as wide as the widest window it's drawn in (`MAX_VIEW_ASPECT`),
     /// since the vertices are built without knowing the window's shape.
-    fn cloud_view(&self) -> (Vec2, Vec2) {
+    pub(super) fn cloud_view(&self) -> (Vec2, Vec2) {
         let half = self.camera.half_height;
         let reach = Vec2::new(half * MAX_VIEW_ASPECT, half);
         (self.camera.center - reach, self.camera.center + reach)
@@ -1529,6 +1530,7 @@ impl GameState {
             } else {
                 (worker.pos.to_world(), WORKER_SCALE)
             };
+            let center = center + self.worker_glide(worker);
             if worker.team == self.local_team
                 && let Some(job) = worker.job.filter(|job| job.hex != worker.pos)
             {

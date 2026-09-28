@@ -31,6 +31,10 @@ pub struct Settings {
     /// Play a turn's steps all at once instead of one every
     /// `STEP_INTERVAL` (`turn.rs`). The outcome is the same. F8 toggles it.
     pub instant_playback: bool,
+    /// As a turn resolves, units and workers glide to their new hexes and
+    /// the new turn is cued (`transition.rs`), rather than everything
+    /// snapping into place. Presentation only.
+    pub turn_transition: bool,
     /// The most turns a unit's plan holds, this one included: Shift-clicks
     /// (`order_queue.rs`) queue no turns past it. A hex farther away is
     /// queued as far along the way as the limit allows.
@@ -53,6 +57,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             instant_playback: true,
+            turn_transition: true,
             max_queued_turns: 6,
             cloud_fog: true,
             world_ai: WORLD_AI_BY_SEED,
@@ -76,6 +81,7 @@ impl Settings {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Setting {
     TurnPlayback,
+    TurnTransition,
     MaxQueuedTurns,
     FogStyle,
     WorldAi,
@@ -102,8 +108,9 @@ impl Control {
 impl Setting {
     /// Every setting, in the order the menu lists them. Settings of one
     /// `group` are listed together, under its heading.
-    pub const ALL: [Setting; 5] = [
+    pub const ALL: [Setting; 6] = [
         Setting::TurnPlayback,
+        Setting::TurnTransition,
         Setting::MaxQueuedTurns,
         Setting::FogStyle,
         Setting::WorldAi,
@@ -115,6 +122,7 @@ impl Setting {
     pub fn key(self) -> &'static str {
         match self {
             Setting::TurnPlayback => "turn_playback",
+            Setting::TurnTransition => "turn_transition",
             Setting::MaxQueuedTurns => "queue_limit",
             Setting::FogStyle => "fog",
             Setting::WorldAi => "world_ai",
@@ -126,6 +134,7 @@ impl Setting {
     pub fn name(self) -> &'static str {
         match self {
             Setting::TurnPlayback => "INSTANT PLAYBACK",
+            Setting::TurnTransition => "TURN TRANSITION",
             Setting::MaxQueuedTurns => "QUEUE LIMIT",
             Setting::FogStyle => "FOG",
             Setting::WorldAi => "AI PLAYERS",
@@ -136,7 +145,7 @@ impl Setting {
     /// The heading it's listed under in the menu.
     pub fn group(self) -> &'static str {
         match self {
-            Setting::TurnPlayback | Setting::MaxQueuedTurns => "TURNS",
+            Setting::TurnPlayback | Setting::TurnTransition | Setting::MaxQueuedTurns => "TURNS",
             Setting::FogStyle => "MAP",
             Setting::WorldAi | Setting::WorldStart => "NEXT WORLD (F4)",
         }
@@ -145,7 +154,7 @@ impl Setting {
     /// How the menu changes it.
     pub fn control(self) -> Control {
         match self {
-            Setting::TurnPlayback => Control::Toggle,
+            Setting::TurnPlayback | Setting::TurnTransition => Control::Toggle,
             Setting::MaxQueuedTurns => Control::Slider,
             Setting::FogStyle | Setting::WorldAi | Setting::WorldStart => Control::Choice,
         }
@@ -155,6 +164,9 @@ impl Setting {
     pub fn description(self) -> &'static str {
         match self {
             Setting::TurnPlayback => "PLAY EACH TURN OUT AT ONCE (F8).",
+            Setting::TurnTransition => {
+                "UNITS GLIDE TO THEIR NEW HEXES AND THE NEW TURN FLASHES AS A TURN RESOLVES."
+            }
             Setting::MaxQueuedTurns => "THE MOST TURNS A UNIT CAN QUEUE.",
             Setting::FogStyle => "CLOUDS OR FLAT GREY OVER UNEXPLORED LAND.",
             Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4).",
@@ -166,6 +178,7 @@ impl Setting {
     pub fn range(self) -> RangeInclusive<i32> {
         match self {
             Setting::TurnPlayback => 0..=1,
+            Setting::TurnTransition => 0..=1,
             Setting::MaxQueuedTurns => 1..=20,
             Setting::FogStyle => 0..=1,
             Setting::WorldAi => 0..=6,
@@ -176,7 +189,9 @@ impl Setting {
     /// How the menu shows `value`.
     pub fn value_text(self, value: i32) -> String {
         match self {
-            Setting::TurnPlayback => if value == 1 { "ON" } else { "OFF" }.into(),
+            Setting::TurnPlayback | Setting::TurnTransition => {
+                if value == 1 { "ON" } else { "OFF" }.into()
+            }
             Setting::MaxQueuedTurns if value == 1 => "1 TURN".into(),
             Setting::MaxQueuedTurns => format!("{value} TURNS"),
             Setting::FogStyle => if value == 1 { "CLOUDS" } else { "SOLID GREY" }.into(),
@@ -192,6 +207,7 @@ impl Settings {
     pub fn get(&self, setting: Setting) -> i32 {
         match setting {
             Setting::TurnPlayback => self.instant_playback as i32,
+            Setting::TurnTransition => self.turn_transition as i32,
             Setting::MaxQueuedTurns => self.max_queued_turns as i32,
             Setting::FogStyle => self.cloud_fog as i32,
             Setting::WorldAi => self.world_ai as i32,
@@ -203,6 +219,7 @@ impl Settings {
     fn set(&mut self, setting: Setting, value: i32) {
         match setting {
             Setting::TurnPlayback => self.instant_playback = value == 1,
+            Setting::TurnTransition => self.turn_transition = value == 1,
             Setting::MaxQueuedTurns => self.max_queued_turns = value as usize,
             Setting::FogStyle => self.cloud_fog = value == 1,
             Setting::WorldAi => self.world_ai = value as usize,

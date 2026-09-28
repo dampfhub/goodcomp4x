@@ -179,7 +179,7 @@ impl GameState {
             layout,
             Vec2::new(MARGIN, middle),
             TITLE,
-            vec![(turn_text, TEXT)],
+            vec![(turn_text, self.turn_number_color(TEXT))],
         );
         // The player's stockpile beside the turn number.
         let stockpile = self.stockpile_line();
