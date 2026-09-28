@@ -277,15 +277,22 @@ them.
   (pasture), a log on sawhorses with a pit saw (lumber mill). Resources are icons in the
   top-right corner: a horse's head (Horses), a rusted car wreck (Iron). Special tiles and ruins
   sit in the bottom-left corner: a gnarled fruit tree (Orchard), cinder blocks (Quarry), a
-  supply crate with a hazard band (ruins). Brown lines are dirt roads, and blue lines between
-  hexes are rivers.
-- Terrain: two small peaks are hills, pines forest, round canopies jungle; dunes, grass tufts and
-  reeds mark desert, tundra and marsh. A large snowy peak is a mountain (impassable) and waves
-  are water (ships enter it, land units do not; cities can work it). Terrain defense and yields are in
-  `game-rules.md`.
-- Fog of war: never-seen hexes are under clouds; hexes you've seen but can't see now are under a
-  grey veil and show the cities, improvements, roads and structures that were there when you
-  last looked, but no units or workers.
+  supply crate with a hazard band (ruins). Brown lines are dirt roads, and murky brown-green lines
+  with dark banks between hexes are rivers.
+- Terrain is the old world, reclaimed: overgrowth (grassland) is wild green over faint rows of
+  old fields; sprawl (plains) yellow-olive grass over a grid of old paving and a few grey slabs;
+  wasteland (desert) cracked rust-tan earth, now and then a bone or a tyre; ash flats (tundra)
+  grey-brown ash with dead stalks; the dead zone (snow) pale, sickly ground fused to cracked glass;
+  a drowned town (marsh) murky olive water with roofs and posts sticking out. Two mounds of
+  broken concrete and rebar are rubble (hills); dark trees, with a pylon or rooftop among them,
+  are wildwood (forest); a humped green blanket of vines is kudzu (jungle). A skyline of broken
+  towers is a dead city (a mountain: impassable). Water is grey-green shallows (coast) with an
+  oily sheen and the odd sunken car, dark slate deep water (ocean) and still reservoirs (lakes)
+  edged in concrete where they meet land (ships enter water, land units do not; cities can work
+  it). Terrain defense and yields are in `game-rules.md`.
+- Fog of war: never-seen hexes are under drifting brown-grey dust; hexes you've seen but can't
+  see now are under a dusty veil and show the cities, improvements, roads and structures that
+  were there when you last looked, but no units or workers.
 - In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
   the manager; hovering the manager draws a dotted line along the way its goods travel to the
   city. Green grain and amber hammers show food and production, with the share that reaches the
