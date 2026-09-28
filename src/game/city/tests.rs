@@ -1452,3 +1452,169 @@ fn a_cleared_queue_makes_a_plan_that_passes_the_checks() {
     host.receive(seat, NetMessage::Plan(plan))
         .expect("a cleared queue is a sound plan");
 }
+
+/// The window the city-view click tests click in.
+const CLICK_SCREEN: glam::Vec2 = glam::Vec2::new(1600.0, 900.0);
+
+/// City 0 open, a manager at (-2, 0), and one Blue melee unit, alone on the
+/// map, on (-1, 0): a tile the city may put its second citizen to work on.
+fn city_with_a_unit_on_a_workable_tile() -> (GameState, usize, Hex) {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.explore();
+    let tile = Hex::new(-1, 0);
+    g.cities[0].worked = vec![Hex::new(-2, 0)];
+    g.cities[0].remembered_worked = g.cities[0].worked.clone();
+    g.units
+        .push(Unit::new(900, tile, Team::Blue, UnitType::Melee));
+    g.open_city(0);
+    assert!(g.may_assign(0, tile) && g.routes(0).costs.contains_key(&tile));
+    (g, 0, tile)
+}
+
+/// A left click at world `point`, as the ImGui presentation passes a click
+/// on the map through (`handle_map_click`), or through the classic UI's
+/// panels first (`handle_click`).
+fn click_at(g: &mut GameState, point: glam::Vec2, classic: bool) {
+    let cursor = g.camera.world_to_screen(point, CLICK_SCREEN);
+    let mode = crate::game::orders::ClickMode::Normal;
+    if classic {
+        g.handle_click(cursor, CLICK_SCREEN, mode);
+    } else {
+        g.handle_map_click(cursor, CLICK_SCREEN, mode);
+    }
+}
+
+/// Off a full-size unit's token but on its hex (a flat-top hex reaches 1.0
+/// across and 0.87 up; the token about 0.39).
+const OFF_TOKEN: glam::Vec2 = glam::Vec2::new(0.6, 0.0);
+
+/// #203: with a city open, a click on one of your units' tokens selects the
+/// unit and closes the city, in both presentations.
+#[test]
+fn clicking_a_units_token_in_the_city_view_selects_it_and_closes_the_city() {
+    for classic in [false, true] {
+        let (mut g, unit, tile) = city_with_a_unit_on_a_workable_tile();
+        let worked = g.cities[0].worked.clone();
+        click_at(&mut g, tile.to_world(), classic);
+        assert_eq!(g.selected, Some(unit), "classic: {classic}");
+        assert_eq!(g.selected_city, None);
+        assert_eq!(g.cities[0].worked, worked, "no citizen moved");
+    }
+}
+
+/// #203: a click on the same hex off the token is still the city's: it puts
+/// a citizen to work there, and a second releases it.
+#[test]
+fn clicking_a_units_tile_off_its_token_still_assigns_a_citizen() {
+    for classic in [false, true] {
+        let (mut g, _, tile) = city_with_a_unit_on_a_workable_tile();
+        let point = tile.to_world() + OFF_TOKEN;
+        assert_eq!(Hex::from_world(point), tile);
+        click_at(&mut g, point, classic);
+        assert_eq!(g.selected, None, "classic: {classic}");
+        assert_eq!(g.selected_city, Some(0));
+        assert!(g.cities[0].worked.contains(&tile), "{}", g.notice);
+        click_at(&mut g, point, classic);
+        assert!(!g.cities[0].worked.contains(&tile));
+        assert_eq!(g.selected_city, Some(0));
+    }
+}
+
+/// #203: the same rule in the Barracks view: the token selects the unit and
+/// closes the Barracks; the rest of the hex leaves it open.
+#[test]
+fn clicking_a_units_token_in_the_barracks_view_selects_it_and_closes_it() {
+    let (mut g, unit, tile) = city_with_a_unit_on_a_workable_tile();
+    g.cities[0].barracks = Some(Hex::new(-3, 1));
+    g.open_barracks(0);
+    assert_eq!(g.selected_barracks, Some(0));
+    click_at(&mut g, tile.to_world() + OFF_TOKEN, false);
+    assert_eq!(g.selected_barracks, Some(0));
+    assert_eq!(g.selected, None);
+    assert_eq!(g.notice, "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT");
+    click_at(&mut g, tile.to_world(), false);
+    assert_eq!(g.selected, Some(unit));
+    assert_eq!(g.selected_barracks, None);
+    assert_eq!(g.selected_city, None);
+}
+
+/// #203: the token is hit as drawn. A military disc reaches about 0.39 from
+/// the hex center every way; a settler's pointy-top hexagon about 0.38 up
+/// to its corner but only 0.33 to its sides. In a contested hex the
+/// player's unit is drawn at half size above the center, the rival below.
+#[test]
+fn the_token_click_follows_the_drawn_token() {
+    let (mut g, unit, tile) = city_with_a_unit_on_a_workable_tile();
+    let center = tile.to_world();
+    for angle in (0..16).map(|i| i as f32 / 16.0 * std::f32::consts::TAU) {
+        let direction = glam::Vec2::from_angle(angle);
+        assert!(g.unit_token_contains(unit, center + direction * 0.37));
+        assert!(!g.unit_token_contains(unit, center + direction * 0.41));
+    }
+    let id = g.units[unit].id;
+    g.settlers.insert(id);
+    assert!(g.unit_token_contains(unit, center + glam::Vec2::new(0.0, 0.36)));
+    assert!(!g.unit_token_contains(unit, center + glam::Vec2::new(0.36, 0.0)));
+    g.settlers.clear();
+
+    // A Red unit on the same hex: the two share it as half-size tokens.
+    g.units
+        .push(Unit::new(901, tile, Team::Red, UnitType::Melee));
+    let (above, scale) = g.unit_layout(unit);
+    assert!(above.y > center.y && scale < 1.0);
+    click_at(&mut g, center, false);
+    assert_eq!(g.selected, None, "the center is between the two tokens");
+    assert_eq!(g.selected_city, Some(0));
+    click_at(&mut g, center + (center - above), false);
+    assert_eq!(g.selected, None, "the rival's token is not the player's");
+    assert_eq!(g.selected_city, Some(0));
+    click_at(&mut g, above, false);
+    assert_eq!(g.selected, Some(unit));
+    assert_eq!(g.selected_city, None);
+}
+
+/// #203: placing a worker job and moving the manager keep every map click,
+/// on a token or not; picking up the manager is a click off the token.
+#[test]
+fn placing_and_manager_clicks_are_not_taken_by_unit_tokens() {
+    // Placing a road: the click on the token places it.
+    let (mut g, _, tile) = city_with_a_unit_on_a_workable_tile();
+    g.fund(Team::Blue);
+    g.arm_worker_job(JobKind::Road);
+    assert_eq!(g.placing_job, Some(JobKind::Road));
+    click_at(&mut g, tile.to_world(), false);
+    assert_eq!(g.selected, None);
+    assert_eq!(g.selected_city, Some(0));
+    assert!(
+        g.cities[0]
+            .worker_jobs
+            .iter()
+            .any(|job| job.hex == tile && job.kind == JobKind::Road),
+        "{}",
+        g.notice
+    );
+
+    // The manager's tile, with a unit on it: off the token picks the
+    // manager up; then a click on a unit's token is where it goes.
+    let (mut g, _, tile) = city_with_a_unit_on_a_workable_tile();
+    let manager = g.cities[0].worked[0];
+    g.units
+        .push(Unit::new(902, manager, Team::Blue, UnitType::Melee));
+    click_at(&mut g, manager.to_world() + OFF_TOKEN, false);
+    assert_eq!(g.moving_manager, Some(0), "{}", g.notice);
+    assert_eq!(g.selected, None);
+    assert!(g.may_be_manager(0, tile));
+    click_at(&mut g, tile.to_world(), false);
+    assert_eq!(g.moving_manager, None);
+    assert_eq!(g.cities[0].worked.first(), Some(&tile), "{}", g.notice);
+    assert_eq!(g.selected, None);
+    assert_eq!(g.selected_city, Some(0));
+
+    // Inside the city, its own clicks.
+    let (mut g, _, tile) = city_with_a_unit_on_a_workable_tile();
+    g.open_city_interior(0);
+    assert!(g.city_click_at(tile, tile.to_world()));
+    assert_eq!(g.selected, None);
+    assert_eq!(g.interior_view, Some(0));
+}

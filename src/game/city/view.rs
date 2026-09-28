@@ -3,6 +3,7 @@
 use super::MAX_CITY_POPULATION;
 use crate::game::GameState;
 use crate::game::hex::Hex;
+use glam::Vec2;
 
 impl GameState {
     /// Y or the Yields button: shows or hides tile yields around the open city.
@@ -143,14 +144,47 @@ impl GameState {
         }
     }
 
+    /// A map click at `point` (world space) on `hex`. With a city or
+    /// Barracks view open, a click on one of the player's unit tokens (as
+    /// drawn: `unit_token_contains`) selects that unit and closes the view;
+    /// anywhere else on the hex it's the view's click (`city_click`), so a
+    /// citizen can still be put to work on a tile a unit stands on. Moving
+    /// the manager and placing worker jobs keep every click.
+    pub(in crate::game) fn city_click_at(&mut self, hex: Hex, point: Vec2) -> bool {
+        let view_open = self.selected_city.is_some() || self.selected_barracks.is_some();
+        if view_open
+            && self.interior_view.is_none()
+            && self.moving_manager.is_none()
+            && self.placing_job.is_none()
+            && let Some(unit) = self.unit_token_at(hex, point)
+        {
+            // Local view state only: nothing a network game's plan carries.
+            self.set_selection(vec![unit]);
+            self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+            return true;
+        }
+        self.city_click(hex)
+    }
+
+    /// One of the player's units on `hex` whose token, as drawn, is under
+    /// `point`.
+    fn unit_token_at(&self, hex: Hex, point: Vec2) -> Option<usize> {
+        let fog = self.fog();
+        self.units_at(hex).find(|&i| {
+            self.is_player_controlled(i)
+                && fog.shows(&self.units[i])
+                && self.unit_token_contains(i, point)
+        })
+    }
+
+    /// A click on `hex` while a view may be open, off any unit's token.
     pub(in crate::game) fn city_click(&mut self, hex: Hex) -> bool {
         if self.interior_view.is_some() {
             self.interior_click(hex);
             return true;
         }
-        // A structure menu owns all map clicks until its explicit exit action.
-        // This keeps city assignment, Barracks management, and unit selection
-        // on one consistent interaction model.
+        // A structure menu owns map clicks off a unit's token
+        // (`city_click_at`) until its explicit exit action.
         if self.selected_barracks.is_some() {
             self.notice = "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT".into();
             return true;
@@ -179,10 +213,9 @@ impl GameState {
             self.open_city_interior(i);
             return true;
         }
-        // City management owns map clicks. Dismiss it with Escape or Space
-        // before selecting units, so workers may be assigned onto a unit's
-        // tile without the unit stealing the click. A tile never seen can't
-        // be worked.
+        // City management owns map clicks off a unit's token, so citizens
+        // may be assigned onto a unit's tile. A tile never seen can't be
+        // worked.
         if !self.is_explored(hex) {
             self.notice = "UNEXPLORED - SCOUT IT FIRST".into();
             return true;

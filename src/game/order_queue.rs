@@ -1,8 +1,9 @@
 //! Order queues: Shift-click plans a unit's (or a group's) orders over
 //! several turns. Shift-left-click adds the turns it takes to walk to the
-//! clicked hex; Shift-right-click adds an attack on it. Turn 0 of a plan is the
-//! unit's ordinary `planned_move` and `planned_attack`; later turns wait in
-//! `Unit::queued`, and each turn's end moves the next one up
+//! clicked hex (or, on a hex the plan already moves to, takes that move and
+//! the turns after it off); Shift-right-click adds an attack on it. Turn 0 of
+//! a plan is the unit's ordinary `planned_move` and `planned_attack`; later
+//! turns wait in `Unit::queued`, and each turn's end moves the next one up
 //! (`advance_queues`). A unit following a queue doesn't hold up ending the
 //! turn, and any other order cancels its queue.
 
@@ -13,10 +14,96 @@ use super::city::turns_icon;
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::Fog;
 use super::hex::Hex;
+use super::orders::SHIPS_NOTICE;
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, TurnOrder, Unit};
 
 impl GameState {
+    /// Shift-left-click on a hex: on one of the selection's planned move
+    /// destinations (a stop of its queue, or this turn's ghost), takes that
+    /// move back off (`unqueue_move`); anywhere else, queues the way there
+    /// (`queue_move`). Returns whether any plan changed.
+    pub(super) fn queue_or_unqueue_move(&mut self, hex: Hex) -> bool {
+        self.unqueue_move(hex) || self.queue_move(hex)
+    }
+
+    /// Takes a planned move onto `hex` off the plan of the selected unit (or
+    /// group member) heading there, with every turn after it; the turns
+    /// before it stay. The turn itself keeps its attack if that's still in
+    /// range from where the unit then stands, and is dropped if it's left
+    /// with nothing (unless it's this turn). If several moves end on `hex`,
+    /// the latest goes: another click takes the one before it. In a group,
+    /// the member waits out the turns it lost, so its plan stays as long as
+    /// the others'. Returns whether a move was taken off.
+    pub(super) fn unqueue_move(&mut self, hex: Hex) -> bool {
+        let members = self.selection();
+        if self.is_resolving() {
+            return false;
+        }
+        // The latest turn onto `hex`; on a tie, the first in the selection.
+        let Some((turn, _, idx)) = members
+            .iter()
+            .enumerate()
+            .flat_map(|(n, &i)| {
+                let unit = &self.units[i];
+                (0..unit.plan_len())
+                    .filter(move |&t| unit.move_on_turn(t) == Some(hex))
+                    .map(move |t| (t, std::cmp::Reverse(n), i))
+            })
+            .max()
+        else {
+            return false;
+        };
+        let before = self.units[idx].plan_len();
+        let others = members
+            .iter()
+            .filter(|&&i| i != idx)
+            .copied()
+            .collect::<Vec<_>>();
+        self.cut_plan(idx, turn);
+        let length = self.plan_length(&others).min(before);
+        self.pad_plan(idx, length);
+        self.notice = if turn + 1 < before {
+            format!("TOOK THE MOVE OFF TURN {} AND ALL AFTER IT", turn + 1)
+        } else {
+            format!("TOOK THE MOVE OFF TURN {}", turn + 1)
+        };
+        true
+    }
+
+    /// Cuts unit `idx`'s plan back to before turn `turn`'s move: the turns
+    /// before stay, the move and every later turn go, and the turn's attack
+    /// stays if it's still in range without the move. A later turn left with
+    /// nothing is dropped too; a plan left with nothing at all is no plan.
+    fn cut_plan(&mut self, idx: usize, turn: usize) {
+        if turn == 0 {
+            // Half of a swap takes the other half with it.
+            self.cancel_swap(idx);
+        }
+        let unit = &mut self.units[idx];
+        unit.queued.truncate(turn);
+        if turn == 0 {
+            unit.planned_move = None;
+            unit.drop_unreachable_attack();
+            if unit.planned_attack.is_none() {
+                unit.following_queue = false;
+            }
+            return;
+        }
+        let range = unit.later_stats().attack_range;
+        let order = &mut unit.queued[turn - 1];
+        order.move_to = None;
+        if order
+            .attack
+            .is_some_and(|target| order.from.distance(target) > range)
+        {
+            order.attack = None;
+        }
+        if order.attack.is_none() {
+            unit.queued.pop();
+        }
+    }
+
     /// Shift-left-click: adds as many turns to the selection's plan as it
     /// takes to get to `target`, as long as no member's plan grows past
     /// `Settings::max_queued_turns` turns in all (this one included). Each
@@ -237,17 +324,17 @@ impl GameState {
     /// plan. It goes into the plan's last turn if nobody who could make it
     /// there attacks anything yet; otherwise into a new turn, which members
     /// out of range spend waiting, unless that would take the plan past
-    /// `Settings::max_queued_turns`. Returns whether anything was queued.
+    /// `Settings::max_queued_turns`. Like a queued move, it's planned on the
+    /// board as the player knows it, so a hex out of sight (never seen, even)
+    /// can be attacked as a seen one can. Returns whether anything was queued.
     pub(super) fn queue_attack(&mut self, target: Hex) -> bool {
         let members = self.selection();
-        if members.is_empty()
-            || self.is_resolving()
-            || !(self.grid.is_passable(target)
-                || (self.grid.contains(target) && self.grid.terrain(target).is_water()))
-        {
+        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
+        if members.is_empty() || self.is_resolving() || !(self.grid.is_passable(target) || water) {
             return false;
         }
-        if self.empty_city_target(target, self.units[members[0]].team) {
+        let fog = self.fog();
+        if self.known_empty_city_target(target, self.units[members[0]].team, &fog) {
             self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return false;
         }
@@ -256,7 +343,7 @@ impl GameState {
             let able: Vec<usize> = members
                 .iter()
                 .copied()
-                .filter(|&i| self.can_attack_on_turn(i, len - 1, target))
+                .filter(|&i| self.can_attack_on_turn(i, len - 1, target, &fog))
                 .collect();
             !able.is_empty()
                 && able
@@ -267,7 +354,7 @@ impl GameState {
             members
                 .iter()
                 .copied()
-                .filter(|&i| self.can_attack_on_turn(i, turn, target))
+                .filter(|&i| self.can_attack_on_turn(i, turn, target, &fog))
                 .collect()
         };
         let mut turn = if fill { len - 1 } else { len };
@@ -284,7 +371,11 @@ impl GameState {
             return false;
         }
         if attackers.is_empty() {
-            self.notice = "OUT OF RANGE THERE".into();
+            self.notice = if water && members.iter().all(|&i| !self.units[i].attacks_water()) {
+                SHIPS_NOTICE.into()
+            } else {
+                "OUT OF RANGE THERE".into()
+            };
             return false;
         }
         for &i in &members {
@@ -362,10 +453,10 @@ impl GameState {
     }
 
     /// Whether unit `idx` could attack `target` on turn `turn` of its plan,
-    /// from where the plan has it standing then.
-    fn can_attack_on_turn(&self, idx: usize, turn: usize, target: Hex) -> bool {
+    /// from where the plan has it standing then, as far as the player knows.
+    fn can_attack_on_turn(&self, idx: usize, turn: usize, target: Hex, fog: &Fog) -> bool {
         let unit = &self.units[idx];
-        if !self.attack_target_legal(idx, target, turn > 0) {
+        if !self.known_attack_target_legal(idx, target, turn > 0, fog) {
             return false;
         }
         let (able, range) = if turn == 0 {
@@ -1089,5 +1180,227 @@ mod tests {
         assert_eq!(g.units[0].planned_attack, None, "no attack while deploying");
         assert_eq!(g.units[0].queued[0].attack, Some(target));
         assert!(g.units[0].ability_queued, "queuing keeps the ability");
+    }
+
+    /// `open_field` with the fog of war on and nothing seen yet but what
+    /// the units see now.
+    fn fogged_field(types: &[UnitType]) -> GameState {
+        let mut game = open_field(types);
+        game.fog_of_war = true;
+        game.memory.clear();
+        game.explore();
+        game
+    }
+
+    #[test]
+    fn a_queued_attack_can_target_a_hex_in_the_fog() {
+        // Queued moves end at (-2, 0); the melee attacks next door from there.
+        let target = Hex::new(-1, 0);
+        let queue = |game: &mut GameState| {
+            game.selected = Some(0);
+            assert!(game.queue_move(Hex::new(-2, 0)));
+            assert!(game.queue_attack(target), "{}", game.notice);
+            game.units[0].queued.clone()
+        };
+        let mut seen = open_field(&[UnitType::Melee]);
+        let planned = queue(&mut seen);
+        assert_eq!(planned.last().unwrap().attack, Some(target));
+
+        // Never seen: the same plan, and it's carried out.
+        let mut unseen = fogged_field(&[UnitType::Melee]);
+        assert!(!unseen.fog().sees(target) && !unseen.is_explored(target));
+        assert_eq!(queue(&mut unseen), planned);
+        assert_eq!(unseen.notice, seen.notice);
+        // Seen once and out of sight now.
+        let mut remembered = fogged_field(&[UnitType::Melee]);
+        remembered.units[0].pos = Hex::new(-2, 0);
+        remembered.explore();
+        remembered.units[0].pos = Hex::new(-4, 0);
+        assert!(remembered.is_explored(target) && !remembered.fog().sees(target));
+        assert_eq!(queue(&mut remembered), planned);
+
+        // Only in range of where the queue ends, as for a seen hex.
+        let mut far = fogged_field(&[UnitType::Melee]);
+        far.selected = Some(0);
+        assert!(far.queue_move(Hex::new(-2, 0)));
+        assert!(!far.queue_attack(Hex::new(0, 0)));
+        assert_eq!(far.notice, "OUT OF RANGE THERE");
+    }
+
+    #[test]
+    fn a_queued_attack_into_the_fog_gives_nothing_away() {
+        use crate::game::city::City;
+        // A Red city center out of sight, where the melee's queue ends next
+        // door: whether anyone stands in it, the attack is queued the same.
+        let center = Hex::new(-1, 0);
+        let plan = |occupied: bool| {
+            let mut g = fogged_field(&[UnitType::Melee]);
+            g.cities.push(City::new(7, Team::Red, center));
+            if occupied {
+                g.units
+                    .push(Unit::new(200, center, Team::Red, UnitType::Melee));
+            }
+            assert!(!g.fog().sees(center));
+            g.selected = Some(0);
+            assert!(g.queue_move(Hex::new(-2, 0)));
+            (g.queue_attack(center), g.notice.clone())
+        };
+        let (queued, notice) = plan(false);
+        assert!(queued, "{notice}");
+        assert_eq!(plan(true), (queued, notice));
+
+        // In sight and empty, it's still refused, as the player can see.
+        let mut g = open_field(&[UnitType::Melee]);
+        g.cities.push(City::new(7, Team::Red, Hex::new(-3, 0)));
+        g.selected = Some(0);
+        assert!(!g.queue_attack(Hex::new(-3, 0)));
+        assert_eq!(
+            g.notice,
+            "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR"
+        );
+    }
+
+    #[test]
+    fn a_queued_attack_on_water_says_who_can_attack_ships() {
+        use crate::game::hex::HexGrid;
+        use crate::game::terrain::Terrain;
+        let lake = Hex::new(-3, 0);
+        for (unit_type, queued) in [(UnitType::Melee, false), (UnitType::Ranged, true)] {
+            let mut g = open_field(&[unit_type]);
+            g.grid = HexGrid::new(6, [(lake, Terrain::Lake)]);
+            g.selected = Some(0);
+            assert_eq!(g.queue_attack(lake), queued, "{unit_type:?}");
+            if !queued {
+                assert_eq!(g.notice, SHIPS_NOTICE);
+            }
+        }
+    }
+
+    /// Shift-clicks each of `hexes` on the map, as the player would.
+    fn shift_click(game: &mut GameState, hexes: &[Hex]) {
+        for &hex in hexes {
+            game.handle_map_click(cursor(game, hex), SCREEN, ClickMode::QueueMove);
+        }
+    }
+
+    #[test]
+    fn shift_clicking_a_queued_stop_takes_it_and_every_later_move_off() {
+        let mut g = open_field(&[UnitType::Melee]);
+        g.selected = Some(0);
+        let path = [
+            Hex::new(-3, 0),
+            Hex::new(-2, 0),
+            Hex::new(-1, 0),
+            Hex::new(0, 0),
+        ];
+        shift_click(&mut g, &path);
+        assert_eq!(moves(&g, 0), path.map(Some));
+
+        // A stop in the middle: the move there and everything after go.
+        shift_click(&mut g, &[path[1]]);
+        assert_eq!(moves(&g, 0), [Some(path[0])]);
+        assert_eq!(g.notice, "TOOK THE MOVE OFF TURN 2 AND ALL AFTER IT");
+        assert!(g.units[0].following_queue, "what's left is still its queue");
+        assert!(!g.needs_orders(0));
+        assert_eq!(g.selected, Some(0), "selection stays");
+
+        // Not a stop any more, so the same hex queues again, and so does a
+        // hex beside the stops.
+        shift_click(&mut g, &[path[1], Hex::new(-2, 1)]);
+        assert_eq!(
+            moves(&g, 0),
+            [Some(path[0]), Some(path[1]), Some(Hex::new(-2, 1))]
+        );
+
+        // The last stop: only it goes.
+        shift_click(&mut g, &[Hex::new(-2, 1)]);
+        assert_eq!(moves(&g, 0), [Some(path[0]), Some(path[1])]);
+        assert_eq!(g.notice, "TOOK THE MOVE OFF TURN 3");
+
+        // This turn's: nothing is left, and the unit wants orders again.
+        shift_click(&mut g, &[path[0]]);
+        assert!(!g.units[0].has_orders());
+        assert!(g.needs_orders(0));
+
+        // The ghost of a plain move goes the same way.
+        g.handle_map_click(cursor(&g, path[0]), SCREEN, ClickMode::Normal);
+        assert_eq!(g.units[0].planned_move, Some(path[0]));
+        g.selected = Some(0);
+        shift_click(&mut g, &[path[0]]);
+        assert_eq!(g.units[0].planned_move, None);
+    }
+
+    #[test]
+    fn a_hex_stopped_on_twice_loses_its_latest_move_first() {
+        let mut g = open_field(&[UnitType::Melee]);
+        g.selected = Some(0);
+        let (a, b) = (Hex::new(-3, 0), Hex::new(-2, 0));
+        assert!(g.queue_move(a) && g.queue_move(b) && g.queue_move(a));
+        assert_eq!(moves(&g, 0), [Some(a), Some(b), Some(a)]);
+        assert!(g.unqueue_move(a));
+        assert_eq!(moves(&g, 0), [Some(a), Some(b)]);
+        assert!(g.unqueue_move(a));
+        assert!(!g.units[0].has_queue());
+        assert!(!g.unqueue_move(a), "nothing heads there now");
+    }
+
+    #[test]
+    fn a_turns_attack_stays_if_still_in_range_without_its_move() {
+        let mut g = open_field(&[UnitType::Ranged]);
+        g.selected = Some(0);
+        let (a, b) = (Hex::new(-3, 0), Hex::new(-2, 0));
+        assert!(g.queue_move(a) && g.queue_move(b));
+        // Two hexes from `a`, one from `b`: in range either way.
+        let near = Hex::new(-1, 0);
+        assert!(g.queue_attack(near));
+        assert!(g.unqueue_move(b));
+        assert_eq!(
+            g.units[0].queued,
+            [TurnOrder {
+                from: a,
+                move_to: None,
+                attack: Some(near),
+            }]
+        );
+
+        // Out of range from `a`: the turn goes with its move.
+        assert!(g.queue_move(b));
+        let far = Hex::new(0, 0);
+        assert!(g.queue_attack(far));
+        assert!(g.unqueue_move(b));
+        assert_eq!(moves(&g, 0), [Some(a), None]);
+        assert_eq!(
+            g.units[0].attack_on_turn(1),
+            Some(near),
+            "earlier turns stay"
+        );
+    }
+
+    #[test]
+    fn a_group_member_waits_out_the_moves_taken_off_its_queue() {
+        let mut g = open_field(&[UnitType::Melee, UnitType::Melee]);
+        g.settings.max_queued_turns = 20;
+        g.set_selection(vec![0, 1]);
+        assert!(g.queue_move(Hex::new(2, 0)));
+        let length = g.units[0].plan_len();
+        assert!(length >= 4 && g.units[1].plan_len() == length);
+        let (first, second) = (moves(&g, 0), moves(&g, 1));
+        // A stop of the first member's that the second never moves onto.
+        let turn = (1..length - 1)
+            .find(|&t| first[t].is_some_and(|hex| !second.contains(&Some(hex))))
+            .expect("a stop of its own");
+        shift_click(&mut g, &[first[turn].unwrap()]);
+
+        let cut = moves(&g, 0);
+        assert_eq!(cut[..turn], first[..turn], "earlier moves stay");
+        assert!(cut[turn..].iter().all(Option::is_none), "{cut:?}");
+        assert_eq!(g.units[0].plan_len(), length, "as long as the other's");
+        assert_eq!(g.units[0].plan_end(), g.units[0].pos_after(turn));
+        assert_eq!(moves(&g, 1), second, "the other member's is untouched");
+        assert_eq!(g.group, [0, 1], "the group stays selected");
+
+        // Queuing on continues from where the cut plan ends, for both.
+        assert!(g.queue_move(Hex::new(3, 0)));
+        assert_eq!(g.units[0].plan_len(), g.units[1].plan_len());
     }
 }
