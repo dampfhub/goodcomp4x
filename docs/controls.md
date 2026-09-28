@@ -100,6 +100,7 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | --- | --- |
 | Space with nothing left to do | End the turn |
 | End Turn button | Hold every unfinished unit, then end the turn (or open a city that still needs a build) |
+| End Turn button while it waits (network game: WAITING FOR ..., TAKE BACK) | Take the turn back, to change your orders and end it again; too late once the host has every plan |
 
 The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE
 PRODUCTION") and turns gold, reading END TURN, once nothing is. Clicks are ignored while a turn

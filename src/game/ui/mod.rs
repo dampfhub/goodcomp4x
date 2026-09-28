@@ -763,6 +763,9 @@ impl GameState {
             Target::ClearCityQueue => self.clear_selected_city_queue(),
             Target::ClearBarracksQueue => self.clear_selected_barracks_queue(),
             Target::Focus(focus) => self.set_selected_city_focus(focus),
+            // While a network game waits for the others' plans, End Turn
+            // takes this side's back.
+            Target::EndTurn if self.waiting_for_peers() => self.take_back_turn(),
             Target::EndTurn => self.end_planning(),
             Target::Scenario(scenario) => self.switch_scenario(scenario),
             Target::SaveState => self.save_state(),

@@ -23,7 +23,7 @@ use glam::Vec2;
 
 /// Why a button that would change the plan is off while a network game
 /// waits for the others' plans.
-pub(super) const PLAN_SENT: &str = "YOUR ORDERS ARE SENT - WAITING FOR THE OTHERS";
+pub(super) const PLAN_SENT: &str = "YOUR ORDERS ARE SENT - THE WAITING BUTTON TAKES THEM BACK";
 
 impl GameState {
     /// What queuing `build` in the open city (or Barracks, with
@@ -646,6 +646,14 @@ impl GameState {
                     "YIELDS".into(),
                     "Y".into(),
                     "TILE YIELDS AND DELIVERY SHARES.".into(),
+                    None,
+                ),
+                Target::EndTurn if self.waiting_for_peers() => (
+                    "TAKE BACK END TURN".into(),
+                    "CLICK".into(),
+                    "YOUR ORDERS ARE SENT. TAKE THEM BACK TO CHANGE THEM, THEN END THE TURN AGAIN: \
+                     UNTIL EVERYONE HAS ENDED IT."
+                        .into(),
                     None,
                 ),
                 Target::EndTurn => (

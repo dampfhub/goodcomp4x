@@ -207,15 +207,23 @@ impl GameState {
         } else {
             end_turn_label(pending)
         };
-        let hint = "SPACE".to_string();
+        // While waiting for the others, a click takes the turn back.
+        let hint = if self.waiting_for_peers() {
+            "TAKE BACK"
+        } else {
+            "SPACE"
+        }
+        .to_string();
         let width = single_line_button_width(&label, &hint);
         let button_min = Vec2::new(size.x - MARGIN - width, middle - END_TURN_HEIGHT / 2.0);
         let end_turn = Button {
             target: Target::EndTurn,
             label,
             hint,
-            state: if self.is_resolving() {
+            state: if self.is_playing_out() {
                 ButtonState::Disabled
+            } else if self.waiting_for_peers() {
+                ButtonState::Ready
             } else {
                 ButtonState::new(pending == (0, 0), false)
             },

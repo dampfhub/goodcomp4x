@@ -2711,3 +2711,46 @@ fn waiting_for_the_others_the_imgui_panels_show_but_change_nothing() {
     }
     assert!(game.waiting_for_peers());
 }
+
+#[test]
+fn the_waiting_button_takes_the_turn_back_in_both_presentations() {
+    let mut game = waiting_guest();
+    let _sent = game.take_outbox();
+    let mut screen = ImGuiScreen::new();
+    for imgui in [false, true] {
+        // Classic: it names the wait, and offers to take the turn back.
+        let button = find_button(&game, Target::EndTurn);
+        assert_eq!(button.label, "WAITING FOR THE OTHERS");
+        assert_eq!(button.hint, "TAKE BACK");
+        assert_eq!(button.state, ButtonState::Ready);
+        let tip = line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l));
+        assert!(tip[0].starts_with("TAKE BACK END TURN"), "{tip:?}");
+        if imgui {
+            screen.click(&mut game, Target::EndTurn);
+        } else {
+            game.handle_click(
+                button_cursor(&game, Target::EndTurn),
+                SCREEN,
+                ClickMode::Normal,
+            );
+        }
+        assert!(!game.waiting_for_peers(), "{}", game.notice);
+        assert!(matches!(
+            &game.take_outbox()[..],
+            [crate::game::NetMessage::Withdraw { turn: 1 }]
+        ));
+        // The orders can change again: a Melee, and the turn ended again.
+        let team = game.local_team;
+        let city = game.cities.iter().position(|c| c.team == team).unwrap();
+        game.open_city(city);
+        let melee = find_button(&game, Target::Build(BuildUnit::Melee));
+        assert_ne!(melee.state, ButtonState::Disabled);
+        game.activate_target(Target::Build(BuildUnit::Melee));
+        game.activate_target(Target::EndTurn);
+        assert!(game.waiting_for_peers(), "{}", game.notice);
+        assert!(matches!(
+            &game.take_outbox()[..],
+            [crate::game::NetMessage::Plan(plan)] if plan.cities[0].queue.contains(&Build::Unit(BuildUnit::Melee))
+        ));
+    }
+}

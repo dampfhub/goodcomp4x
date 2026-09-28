@@ -35,8 +35,10 @@ Ending the turn sends your plan, and the End Turn button waits (the host's names
 waiting for) until everyone has ended theirs; then the turn plays out on every machine. While
 you wait you can look around as you like: select units and cities, open city, Barracks and
 interior views, and read their panels and tooltips; everything that would change your orders
-is disabled, since they're sent. Nobody
-can join once the first turn has played. A guest who leaves before it starts to play out frees
+is disabled, since they're sent. To change them, click the End Turn button while it waits (TAKE
+BACK): you plan on, and end the turn again. That works until the host has everyone's plan; a
+take-back that reaches it later is too late, and the turn plays out with the orders you sent
+(the top bar says so). Nobody can join once the first turn has played. A guest who leaves before it starts to play out frees
 their seat for someone else (the turn waits for them); one who leaves after hands their side to
 the AI, which plays it from the next turn on, and the rest play on. If the host leaves, the
 game can't go on. A guest the host drops for a message it refused sees why. Debug actions that
@@ -71,10 +73,17 @@ plays the same game: `cargo test plans_the_ai_makes -- --ignored`.
 
 Messages (`Message`): `Hello` (guest, with the protocol version), `Welcome` (host: the seat,
 the human sides, the world's seed and settings, the RNG seed and debug toggles) or `Refused`,
-`Plan`, `Resolve`, `SeatLeft`, `Checksum`. The host also sends `Refused`, with the reason,
-to a guest it drops for a bad message.
+`Plan`, `Resolve`, `SeatLeft`, `Checksum`, `Withdraw` (guest: its player took back ending the
+turn). The host also sends `Refused`, with the reason, to a guest it drops for a bad message.
 `PROTOCOL_VERSION` changes whenever one changes shape, or the rules a turn plays out by, so
 mismatched builds refuse each other.
+
+Taking a turn back (`take_back_turn`): a guest sends `Withdraw { turn }` and plans on; the host
+drops that side's plan and waits for its next `Plan`. The host takes its own back locally. The
+host alone decides the order of events: once it has every plan it resolves at once, so a
+`Withdraw` still on its way then has lost the race. The host ignores it, and the `Plan` the
+guest sends after it (`came_too_late`), and the guest, when the `Resolve` comes, plays the turn
+out with the plan the host had, as every machine does.
 
 ## Transport
 
@@ -82,7 +91,10 @@ mismatched builds refuse each other.
 little-endian `u32` length and the sealed bytes. A reader thread per connection opens incoming
 messages onto a bounded channel; the frame loop polls it (`Session::pump`) and never waits on
 the network. The guest connects, runs the handshake and receives the game before its window
-opens; the host runs each join on its own thread.
+opens; the host runs each join on its own thread. The host takes nothing from guests while a
+turn plays out (`GameState::takes_messages`): a guest that played it out sooner may already
+send its next plan, which waits in the queue until the host's next turn begins and there's a
+game to check it against.
 
 ## Security
 
@@ -111,10 +123,14 @@ can watch or change what's sent. What's in place:
 - **Nothing arriving is trusted.** A frame over 1 MiB drops the peer before it's read, and so does
   a message that doesn't open or doesn't decode. The incoming queue is bounded. Every message is
   checked before it touches the game (`GameState::receive`): only the messages its role
-  expects; a plan only for the sender's own side and this turn; every unit, city, worker and
-  interior troop it names existing and its side's; every hex on the map (or inside the city's
-  interior); moves and attacks within the unit's range; an ability only when it's ready; every
-  list short (`MAX_PLAN_LIST`). The guest checks the host's `Resolve` the same way, and the
+  expects, in order; a plan only for the sender's own side and this turn, and only one at a
+  time (a second needs a `Withdraw` between); a `Withdraw` only of a plan the host holds for
+  this turn; for a turn already resolved, a late `Withdraw` and `Plan` only alternately (a
+  `Withdraw` first) until that guest's checksum for it, and never changing anything; every
+  unit, city, worker and interior troop a plan names existing and its side's; every hex on the
+  map (or inside the city's interior); moves and attacks within the unit's range; an ability
+  only when it's ready; every list short (`MAX_PLAN_LIST`). The guest checks the host's
+  `Resolve` the same way, and that it carries a plan the guest sent for its own side, and the
   seat and scenario in its `Welcome`.
 - **Cheats the checks catch**: spending is accounted exactly (the stockpile plus everything
   queued and placed must be worth what it was when the turn began, so nothing is free); build
