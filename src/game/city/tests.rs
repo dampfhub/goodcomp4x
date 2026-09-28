@@ -1008,6 +1008,35 @@ fn a_destroyed_barracks_can_be_rebuilt() {
 }
 
 #[test]
+fn reordering_city_and_barracks_queues_keeps_work_with_each_build() {
+    let mut g = GameState::city_scenario();
+    g.selected_city = Some(0);
+    g.cities[0].queue = vec![
+        Queued::worked(Build::Unit(BuildUnit::Melee), WORK_PER_TURN),
+        Queued::new(Build::Unit(BuildUnit::Ranged)),
+    ];
+    g.move_selected_city_queue_head(false);
+    assert_eq!(g.cities[0].queue[0].build, Build::Unit(BuildUnit::Ranged));
+    assert_eq!(g.cities[0].queue[0].progress, 0);
+    assert_eq!(g.cities[0].queue[1].progress, WORK_PER_TURN);
+    g.move_selected_city_queue_item(1, true);
+    assert_eq!(g.cities[0].queue[0].build, Build::Unit(BuildUnit::Melee));
+    assert_eq!(g.cities[0].queue[0].progress, WORK_PER_TURN);
+
+    g.cities[0].barracks_queue = vec![
+        Queued::worked(BuildUnit::Melee, WORK_PER_TURN),
+        Queued::new(BuildUnit::Ranged),
+    ];
+    g.move_selected_barracks_queue_item(0, false);
+    assert_eq!(g.cities[0].barracks_queue[0].build, BuildUnit::Ranged);
+    assert_eq!(g.cities[0].barracks_queue[0].progress, 0);
+    assert_eq!(g.cities[0].barracks_queue[1].progress, WORK_PER_TURN);
+    g.move_selected_barracks_queue_item(1, true);
+    assert_eq!(g.cities[0].barracks_queue[0].build, BuildUnit::Melee);
+    assert_eq!(g.cities[0].barracks_queue[0].progress, WORK_PER_TURN);
+}
+
+#[test]
 fn city_queue_completes_in_order_and_can_be_reordered_or_removed() {
     let mut g = GameState::city_scenario();
     g.fund(Team::Blue);

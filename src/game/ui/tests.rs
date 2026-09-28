@@ -669,6 +669,54 @@ fn barracks_queue_uses_the_same_scroll_window() {
 }
 
 #[test]
+fn reordered_builds_show_saved_work_in_city_and_barracks_rows() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].queue = vec![
+        Queued::worked(Build::Unit(BuildUnit::Melee), 4),
+        Queued::new(Build::Unit(BuildUnit::Ranged)),
+    ];
+    game.reorder_queue(QueueKind::City, 0, 1);
+    let mut panel = PanelBuilder::default();
+    game.city_queue_panel(city, 2, &mut panel);
+    assert!(panel.rows.iter().any(|row| matches!(
+        row,
+        Row::QueueItem(item) if item.index == 1 && item.label.contains("SAVED")
+    )));
+    assert_eq!(game.cities[city].queue[1].progress, 4);
+    let mut layout = Layout::default();
+    panel.place_bottom_left(Vec2::ZERO, &mut layout);
+    assert!(
+        layout
+            .queue_items
+            .iter()
+            .any(|row| { row.kind == QueueKind::City && row.index == 1 })
+    );
+
+    game.cities[city].barracks = Some(Hex::new(-2, 0));
+    game.cities[city].barracks_queue = vec![
+        Queued::worked(BuildUnit::Melee, 4),
+        Queued::new(BuildUnit::Ranged),
+    ];
+    game.reorder_queue(QueueKind::Barracks, 0, 1);
+    let mut panel = PanelBuilder::default();
+    game.barracks_queue_panel(city, 2, &mut panel);
+    assert!(panel.rows.iter().any(|row| matches!(
+        row,
+        Row::QueueItem(item) if item.index == 1 && item.label.contains("SAVED")
+    )));
+    assert_eq!(game.cities[city].barracks_queue[1].progress, 4);
+    let mut layout = Layout::default();
+    panel.place_bottom_left(Vec2::ZERO, &mut layout);
+    assert!(
+        layout
+            .queue_items
+            .iter()
+            .any(|row| { row.kind == QueueKind::Barracks && row.index == 1 })
+    );
+}
+
+#[test]
 fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();

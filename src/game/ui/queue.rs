@@ -339,13 +339,17 @@ impl GameState {
         let active = status.worked == Some(index);
         let prefix = if active { "> " } else { "  " };
         let waits = status.waits(index);
-        let state = match waits {
+        let mut state = match waits {
             Some(short) => format!("WAITS {}", stock_icons(short)),
             None => match self.item_turns_left(city, lane, index) {
                 0 => "READY".into(),
                 turns => format!("{} LEFT", turns_icon(turns)),
             },
         };
+        let (_, progress, _) = self.lane_item(city, lane, index);
+        if !active && progress > 0 {
+            state.push_str(" · SAVED");
+        }
         QueueItemSpec {
             kind,
             index,

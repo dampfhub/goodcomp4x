@@ -134,7 +134,7 @@ orders shows disabled.
 | 0 / Gather card | Spend a turn gathering: free, and 2 food, 2 wood and 1 metal come in when it's done |
 | A build card the stockpile can't pay for yet | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the city shows a badge over its tower with the missing resources' icons. Prices show as resource icons and amounts, turns after a clock |
 | A dimmed build card | It can't be queued: (Cavalry, Armored) the barracks has no deposit or its cap is used up, or (Grow) the city is full; its tooltip says why |
-| Drag a queue row onto another | Reorder the queue |
+| Drag a queue row onto another | Reorder the queue; work stays with each build, and a paused build with work shows SAVED on its row |
 | Click a row's X | Remove it, refunding its price if it was paid for (work on it started); its work is lost |
 | Clear (beside a queue's title, city or barracks) | Empty that queue: every item comes off, refunded as its X would refund it (their work is lost) |
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
