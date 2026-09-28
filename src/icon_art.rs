@@ -1,23 +1,42 @@
-//! The game's icon, drawn in code rather than loaded from a file: a blue hex
-//! tile with a white triangle, like a melee unit on the map. `icon.rs` hands
-//! it to the window (title bar and taskbar), and `build.rs` includes this file
-//! to embed it in the Windows executable as well (`windows_res`), which is
-//! where Windows sometimes takes the taskbar icon from. So it uses nothing
-//! outside `std`.
+//! The game's icon, drawn in code rather than loaded from a file: a rusted
+//! stop-sign plate with an amber gear on it and a green sprout growing up
+//! out of the gear's hub, the salvage age's emblem. `icon.rs` hands it to the
+//! window (title bar and taskbar), and `build.rs` includes this file to embed
+//! it in the Windows executable as well (`windows_res`), which is where
+//! Windows sometimes takes the taskbar icon from. So it uses nothing outside
+//! `std`.
+
+use std::f32::consts::TAU;
 
 type Rgba = [u8; 4];
 
-/// Blue's team color as it appears on screen (after the sRGB swapchain's
-/// encoding), with a dark rim like the map's hex borders.
-const FILL: Rgba = [149, 196, 250, 255];
-const RIM: Rgba = [30, 30, 38, 255];
-const MARK: Rgba = [255, 255, 255, 255];
+/// Colors as they appear on screen: a dark iron rim, a rust plate, a hazard
+/// amber gear and a fresh green sprout.
+const RIM: Rgba = [38, 31, 27, 255];
+const PLATE: Rgba = [160, 70, 36, 255];
+const GEAR: Rgba = [244, 170, 38, 255];
+const SPROUT: Rgba = [170, 214, 92, 255];
 
-/// Radii, in the icon's [-1, 1] square, of the whole hex and its blue fill.
-const HEX_RADIUS: f32 = 0.98;
-const FILL_RADIUS: f32 = 0.80;
-/// The triangle's corners, pointing up.
-const TRIANGLE: [(f32, f32); 3] = [(0.0, 0.46), (-0.42, -0.30), (0.42, -0.30)];
+/// Apothems, in the icon's [-1, 1] square, of the whole octagon and its
+/// plate.
+const RIM_APOTHEM: f32 = 0.97;
+const PLATE_APOTHEM: f32 = 0.84;
+/// The gear: its center, the radii of its hub hole, its body and its teeth's
+/// tips, and its teeth's half width.
+const GEAR_CENTER: (f32, f32) = (0.0, -0.16);
+const GEAR_HOLE: f32 = 0.15;
+const GEAR_ROOT: f32 = 0.40;
+const GEAR_TIP: f32 = 0.53;
+const GEAR_TEETH: u32 = 8;
+const TOOTH_HALF_WIDTH: f32 = 0.1;
+/// The sprout: its stem's half width and top, and its two leaves as
+/// (center, half length, half width, tilt in degrees).
+const STEM_HALF_WIDTH: f32 = 0.045;
+const STEM_TOP: f32 = 0.5;
+const LEAVES: [((f32, f32), f32, f32, f32); 2] = [
+    ((-0.19, 0.5), 0.2, 0.09, -35.0),
+    ((0.19, 0.6), 0.2, 0.09, 35.0),
+];
 /// Samples per pixel along each axis, for smooth edges.
 const SUPERSAMPLE: u32 = 4;
 
@@ -60,32 +79,54 @@ fn pixel(x: u32, y: u32, size: u32) -> Rgba {
 }
 
 fn shape_at(p: (f32, f32)) -> Option<Rgba> {
-    if in_triangle(p) {
-        Some(MARK)
-    } else if in_hex(p, FILL_RADIUS) {
-        Some(FILL)
-    } else if in_hex(p, HEX_RADIUS) {
+    if in_sprout(p) {
+        Some(SPROUT)
+    } else if in_gear(p) {
+        Some(GEAR)
+    } else if in_octagon(p, PLATE_APOTHEM) {
+        Some(PLATE)
+    } else if in_octagon(p, RIM_APOTHEM) {
         Some(RIM)
     } else {
         None
     }
 }
 
-/// Inside a flat-topped hexagon centered on the origin.
-fn in_hex((x, y): (f32, f32), radius: f32) -> bool {
+/// Inside a regular octagon centered on the origin with flat sides at the
+/// top, bottom and sides, like a stop sign.
+fn in_octagon((x, y): (f32, f32), apothem: f32) -> bool {
     let (x, y) = (x.abs(), y.abs());
-    let sqrt3 = 3f32.sqrt();
-    y <= radius * sqrt3 / 2.0 && sqrt3 * x + y <= sqrt3 * radius
+    x <= apothem && y <= apothem && x + y <= apothem * 2f32.sqrt()
 }
 
-fn in_triangle(p: (f32, f32)) -> bool {
-    let [a, b, c] = TRIANGLE;
-    // Which side of the edge from `from` to `to` the point is on.
-    let side = |from: (f32, f32), to: (f32, f32)| {
-        (to.0 - from.0) * (p.1 - from.1) - (to.1 - from.1) * (p.0 - from.0)
-    };
-    let (ab, bc, ca) = (side(a, b), side(b, c), side(c, a));
-    (ab >= 0.0 && bc >= 0.0 && ca >= 0.0) || (ab <= 0.0 && bc <= 0.0 && ca <= 0.0)
+/// On the gear: its ring, or one of its teeth, which sit either side of the
+/// top so the sprout's stem rises between two of them.
+fn in_gear((x, y): (f32, f32)) -> bool {
+    let (dx, dy) = (x - GEAR_CENTER.0, y - GEAR_CENTER.1);
+    let r = (dx * dx + dy * dy).sqrt();
+    if !(GEAR_HOLE..=GEAR_TIP).contains(&r) {
+        return false;
+    }
+    if r <= GEAR_ROOT {
+        return true;
+    }
+    let pitch = TAU / GEAR_TEETH as f32;
+    let angle = dy.atan2(dx) - pitch / 2.0;
+    let off = (angle / pitch - (angle / pitch).round()).abs() * pitch;
+    off * r <= TOOTH_HALF_WIDTH
+}
+
+/// On the sprout: its stem, from the gear's hub up, or a leaf.
+fn in_sprout((x, y): (f32, f32)) -> bool {
+    if x.abs() <= STEM_HALF_WIDTH && y >= GEAR_CENTER.1 && y <= STEM_TOP {
+        return true;
+    }
+    LEAVES.iter().any(|&((cx, cy), length, width, tilt)| {
+        let (sin, cos) = tilt.to_radians().sin_cos();
+        let (dx, dy) = (x - cx, y - cy);
+        let (along, across) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+        (along / length).powi(2) + (across / width).powi(2) <= 1.0
+    })
 }
 
 /// Resource type ids in a Windows `.res` file.
@@ -187,9 +228,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn corners_are_transparent_and_the_center_is_the_mark() {
+    fn corners_are_transparent_and_the_emblem_is_drawn() {
         assert_eq!(pixel(0, 0, 32), [0; 4]);
-        assert_eq!(pixel(16, 16, 32), MARK);
+        // Left of the hub, on the gear's body.
+        assert_eq!(pixel(22, 37, 64), GEAR);
+        // The stem, above the hub.
+        assert_eq!(pixel(31, 20, 64), SPROUT);
+        // Low on the plate, below the gear.
+        assert_eq!(pixel(32, 55, 64), PLATE);
     }
 
     #[test]

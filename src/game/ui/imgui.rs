@@ -1602,19 +1602,9 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
     let mut vertices = Vec::new();
     let radius = (max[0] - min[0]) * ROSTER_TOKEN_SHARE / 2.0;
     super::paint::push_chip_icon(Vec2::ZERO, chip.icon, radius, chip.color, &mut vertices);
-    // The token is built Y-up around the origin; ImGui's Y points down.
+    // Unfeathered, like every small silhouette, so the pictogram is crisp.
     let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
-    let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
-    for triangle in vertices.as_chunks::<3>().0 {
-        draw.add_triangle(
-            at(&triangle[0]),
-            at(&triangle[1]),
-            at(&triangle[2]),
-            triangle[0].color,
-        )
-        .filled(true)
-        .build();
-    }
+    fill_shapes(&draw, center, &vertices);
     if chip.count > 1 {
         let text = chip.count.to_string();
         let size = ui.calc_text_size(&text);

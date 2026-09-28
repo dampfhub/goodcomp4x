@@ -109,7 +109,7 @@ plays out.
 | Click a tile in the city view | Assign a citizen there, or release one |
 | Click the manager (`M`), then a tile | Move the manager; workers follow where they can |
 | A | Auto-assign citizens by the city's labor focus |
-| Food / Wood / Metal / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
+| Food / Wood / Metal / Balanced buttons (tin can, log, gear, scale) | Set the labor focus (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
 | 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |
@@ -247,12 +247,14 @@ them.
   left).
 - Gold ring: queued ability. Steel ring: deployed siege. White hex outline: guarding. Orange hex:
   contested.
-- Units are tokens in team color with a pictogram of what they are: sword (melee), bow
-  (ranged), horse head (cavalry), catapult (siege), spyglass (scout), shield (armored), sailboat (Patrol Galley), cargo boat (Landing Craft), gunship (Bombard Ship) on a
-  disc. Settlers (a planted flag) are hollow hexagons.
-- Workers out on the map are small hollow hexagons with a shovel (tucked into a corner when a
-  unit shares their hex), with a dotted line to the job they're walking to. A dark tag with a
-  shovel beside each of your cities counts its workers at home. Queued jobs are faded gold rings
+- Units are tokens in team color with a pictogram of what they are: a stop-sign shield and
+  rebar spear (melee), a drawn compound bow (ranged), a rider on a horse (cavalry), a trebuchet
+  with a tyre in its sling (siege), a bicycle (scout), a riot helmet over a riot shield (armored),
+  a rowing boat (Patrol Galley), a flat barge (Landing Craft), a rusted hull with a catapult
+  (Bombard Ship) on a disc. Settlers (a handcart with a flag) are hollow hexagons.
+- Workers out on the map are small hollow hexagons with a hard hat and crowbar (tucked into a
+  corner when a unit shares their hex), with a dotted line to the job they're walking to. A dark
+  tag with a hard hat beside each of your cities counts its workers at home. Queued jobs are faded gold rings
   with the job's name.
 - Structures: walls are stone bands along hex edges with posts in their owner's color; a gate is
   a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,

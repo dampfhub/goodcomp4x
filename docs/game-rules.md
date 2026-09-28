@@ -122,18 +122,18 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 
 | Type | HP | Attack | Defense | Move | Range | Sight | Ability | Icon |
 |---|---|---|---|---|---|---|---|---|
-| Melee | 100 | 22 | 20 | 1 | 1 | 2 | Shield Wall | sword |
-| Ranged | 75 | 24 | 10 | 1 | 2 | 2 | Volley | bow and arrow |
-| Cavalry | 100 | 24 | 14 | 2 | 1 | 3 | Charge | horse head |
-| Siege | 65 | 32 | 6 | 1 | 2 | 2 | Deploy | catapult |
-| Scout | 60 | 8 | 10 | 3 | 1 | 3 | Lookout | spyglass |
-| Armored | 140 | 30 | 28 | 1 | 1 | 2 | Shield Wall | heater shield |
-| Patrol Galley | 115 | 23 | 17 | 3 | 1 | 3 | Lookout | sailboat |
-| Landing Craft | 125 | 8 | 15 | 2 | � | 2 | Lookout | cargo boat |
-| Bombard Ship | 105 | 30 | 12 | 2 | 3 | 2 | Lookout | gunship |
+| Melee | 100 | 22 | 20 | 1 | 1 | 2 | Shield Wall | stop-sign shield and rebar spear |
+| Ranged | 75 | 24 | 10 | 1 | 2 | 2 | Volley | compound bow, drawn |
+| Cavalry | 100 | 24 | 14 | 2 | 1 | 3 | Charge | rider on a galloping horse |
+| Siege | 65 | 32 | 6 | 1 | 2 | 2 | Deploy | trebuchet with a tyre in its sling |
+| Scout | 60 | 8 | 10 | 3 | 1 | 3 | Lookout | bicycle |
+| Armored | 140 | 30 | 28 | 1 | 1 | 2 | Shield Wall | riot helmet over a riot shield |
+| Patrol Galley | 115 | 23 | 17 | 3 | 1 | 3 | Lookout | rowing boat with oars out |
+| Landing Craft | 125 | 8 | 15 | 2 | � | 2 | Lookout | flat river barge |
+| Bombard Ship | 105 | 30 | 12 | 2 | 3 | 2 | Lookout | rusted hull with a catapult |
 
 `Unit::stats()` applies abilities and siege deployment on top of these; everything that asks
-what a unit can do goes through it. Settlers (a planted flag) are civilians with the Melee body,
+what a unit can do goes through it. Settlers (a handcart with a flag) are civilians with the Melee body,
 drawn as hollow hexagons with only a move badge; every other unit is a team-colored disc with its
 pictogram. Settlers can be ordered to attack, though no badge shows it. Workers aren't units:
 see Workers below. Cavalry and
