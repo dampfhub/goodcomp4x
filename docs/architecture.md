@@ -103,7 +103,7 @@ entry in that one file; both UI presentations pick it up (`docs/ui-system.md`). 
 ## Between sessions (`src/persist.rs`)
 
 The session is kept in text files in the config folder (`%APPDATA%\riskofcivlike`, or
-`$XDG_CONFIG_HOME` / `~/.config` `/riskofcivlike`), each written whole through a temporary file:
+`$XDG_CONFIG_HOME` / `~/.config` `/riskofcivlike`), each prepared in a process-specific temporary file and synced before replacement. If preparation fails, the previous file stays intact; an in-place write is used only when rename is unsupported:
 
 - `settings.txt`: `Settings::to_text`, a `key value` line per setting (`Setting::key`). `App`
   saves it whenever the text changes, and builds the first game with it (`Scenario::new_game`),
