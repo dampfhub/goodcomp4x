@@ -240,3 +240,7 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     is encrypted and authenticated by the join code (SPAKE2, then ChaCha20-Poly1305 per
     direction), and plans are checked strictly enough to stop free builds, added progress and
     other cheats a modified client could try.
+66. Multiplayer on a world, for more (`claude/multiplayer`, `multiplayer.md`): a host
+    (`--host --players N`) and up to six guests share a generated world, each on their own side in
+    join order, with the AI on the world's other sides. The first turn waits for every seat; a guest
+    who leaves after it hands their side to the AI on every machine at once, and the rest play on.

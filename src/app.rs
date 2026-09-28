@@ -139,6 +139,11 @@ impl SavedWindow {
     }
 }
 
+/// The settings saved from the last session, or the defaults.
+pub fn saved_settings() -> Settings {
+    persist::read(SETTINGS_FILE).map_or_else(Settings::default, |text| Settings::from_text(&text))
+}
+
 impl App {
     pub fn new(options: Options, network: Option<(Session, GameState)>) -> Self {
         let screenshot = options.screenshot.map(Screenshot::new);

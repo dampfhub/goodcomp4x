@@ -40,14 +40,15 @@ pub use camera::Camera;
 pub use city::{BuildUnit, Building};
 pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
-pub use multiplayer::{Message as NetMessage, PROTOCOL_VERSION};
+pub use multiplayer::{HOST_SEAT, MAX_PLAYERS, Message as NetMessage, PROTOCOL_VERSION};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
 pub use settings::Settings;
 use terrain::Tile;
 use turn::Step;
 pub use ui::{ImGuiLayoutState, selection_box, ui_projection};
-use unit::{Team, Unit, UnitType};
+pub use unit::Team;
+use unit::{Unit, UnitType};
 use unit_icons::UnitIcon;
 pub use workers::JobKind;
 

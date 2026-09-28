@@ -19,10 +19,13 @@ Options:
                        to FILE as a PNG, and exit
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
                        default to 1600x900)
-  --host               host a two-player game (the Cities scenario) and
-                       wait for a player to join; you play Blue
+  --host               host a network game on a new world and wait for the
+                       other players to join; you play Blue
+  --players <N>        with --host: how many people play, you included (2-7,
+                       default 2); the AI plays the world's other sides
   --port <N>           the port --host listens on (default 7777)
-  --join <ADDRESS>     join a hosted game at HOST or HOST:PORT; you play Red
+  --join <ADDRESS>     join a hosted game at HOST or HOST:PORT; you get the
+                       next open side
   --code <CODE>        the join code the host shows (needed with --join)
   -h, --help           print this and exit";
 
@@ -44,7 +47,8 @@ pub struct Options {
 /// `--host` (with `--port`) or `--join`.
 #[derive(Debug, PartialEq)]
 pub enum Network {
-    Host(u16),
+    /// The port, and how many people play.
+    Host(u16, usize),
     /// The host's address, and its join code.
     Join(String, String),
 }
@@ -67,6 +71,7 @@ impl Options {
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self> {
         let mut options = Self::default();
         let (mut host, mut port, mut join, mut code) = (false, None, None, None);
+        let mut players = None;
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             let mut value = || {
@@ -102,6 +107,20 @@ impl Options {
                         })?);
                 }
                 "--join" => join = Some(value()?),
+                "--players" => {
+                    let text = value()?;
+                    let count: usize = text
+                        .parse()
+                        .ok()
+                        .filter(|n| (2..=crate::game::MAX_PLAYERS).contains(n))
+                        .with_context(|| {
+                            format!(
+                                "--players wants 2 to {}, not {text:?}",
+                                crate::game::MAX_PLAYERS
+                            )
+                        })?;
+                    players = Some(count);
+                }
                 "--code" => code = Some(value()?),
                 "-h" | "--help" => options.help = true,
                 _ => bail!("unknown argument {arg:?}\n\n{USAGE}"),
@@ -113,7 +132,10 @@ impl Options {
         options.network = match (host, join) {
             (true, Some(_)) => bail!("--host and --join can't go together"),
             (true, None) if code.is_some() => bail!("--code only applies to --join"),
-            (true, None) => Some(Network::Host(port.unwrap_or(crate::net::DEFAULT_PORT))),
+            (true, None) => Some(Network::Host(
+                port.unwrap_or(crate::net::DEFAULT_PORT),
+                players.unwrap_or(2),
+            )),
             (false, Some(address)) => {
                 let code = code.context("--join needs --code: the join code the host shows")?;
                 Some(Network::Join(address, code))
@@ -122,6 +144,9 @@ impl Options {
             (false, None) if port.is_some() => bail!("--port only applies to --host"),
             (false, None) => None,
         };
+        if players.is_some() && !host {
+            bail!("--players only applies to --host");
+        }
         if options.network.is_some() && options.screenshot.is_some() {
             bail!("a screenshot can't be taken of a network game");
         }
@@ -150,11 +175,11 @@ mod tests {
     fn host_and_join_take_a_port_and_a_code() {
         assert_eq!(
             parse(&["--host"]).unwrap().network,
-            Some(Network::Host(crate::net::DEFAULT_PORT))
+            Some(Network::Host(crate::net::DEFAULT_PORT, 2))
         );
         assert_eq!(
             parse(&["--host", "--port", "9000"]).unwrap().network,
-            Some(Network::Host(9000))
+            Some(Network::Host(9000, 2))
         );
         assert_eq!(
             parse(&["--join", "10.0.0.2", "--code", "ABC123"])
@@ -168,6 +193,9 @@ mod tests {
             &["--port", "9000"],
             &["--host", "--code", "y"],
             &["--host", "--port", "lots"],
+            &["--host", "--players", "1"],
+            &["--host", "--players", "8"],
+            &["--players", "3"],
             &["--host", "--screenshot", "x.png"],
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");

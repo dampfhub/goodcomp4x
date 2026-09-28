@@ -1,29 +1,36 @@
 # Multiplayer
 
-Two people play one game over the network: one hosts, the other joins. This is the first cut,
-built to test multiplayer features; it plays the Cities scenario with the host as Blue and the
-guest as Red.
+Two to seven people play one game over the network: one hosts, the others join. They share a
+newly generated world, each on their own side, and the AI plays the world's other sides. This
+is the first cut, built to test multiplayer features.
 
 ## Playing
 
 On the host:
 
 ```
-vulkan_engine --host            # listens on port 7777; --port N for another
+vulkan_engine --host --players 3    # 2-7 people, you included (2 unless given)
+                                    # listens on port 7777; --port N for another
 ```
 
-The End Turn button (and the log) shows a **join code**, like `JOIN CODE K7M2QX`, until someone joins. On the
-other machine:
+The world is made as the F4 world is, from the host's settings (AI Players, Start With), with
+at least a side for every player. The host plays Blue; guests take Red, Green and the sides
+after as they join. The End Turn button (and the log) shows a **join code** and how many are
+still to come, like `JOIN CODE K7M2QX - 2 TO COME`, until every seat is filled. On each other
+machine:
 
 ```
 vulkan_engine --join 192.168.1.20 --code K7M2QX    # HOST or HOST:PORT
 ```
 
-Both play their turn at once, as ever. Ending the turn sends your plan; the End Turn button
-then reads WAITING FOR RED (or BLUE) until the other player ends theirs, and the turn plays out
-on both machines. If the other player leaves, the top bar says so and the game can't go on.
-Debug actions that change the game on one machine only (F1-F4 and the scenario buttons, F6/F7,
-F9, PROD SPEEDUP, UNIT CAP) are off in a network game.
+Everyone plays their turn at once, as ever; the first turn waits until every seat is filled.
+Ending the turn sends your plan, and the End Turn button waits (the host's names who it's
+waiting for) until everyone has ended theirs; then the turn plays out on every machine. Nobody
+can join once the first turn has played. A guest who leaves before then frees their seat for
+someone else; one who leaves after hands their side to the AI, which plays it from the next
+turn on, and the rest play on. If the host leaves, the game can't go on. Debug actions that
+change the game on one machine only (F1-F4 and the scenario buttons, F6/F7, F9, PROD SPEEDUP,
+UNIT CAP) are off in a network game.
 
 ## How it works: lockstep
 
@@ -33,15 +40,18 @@ player's planning stays on their machine until they end it. Then their side's **
 and focus, their placed jobs and recalled workers, their troops' orders inside city interiors,
 and their stockpile; a unit missing from it was disbanded, and a city new since the turn began
 was founded by the settler that stood there. Once the host has every human side's plan, it
-sends them all to the guest (`Resolve`). Each machine applies them, in side order, to a copy of
+sends them all to every guest (`Resolve`). Each machine applies them, in side order, to a copy of
 the game as it stood when the turn's planning began (`turn_start`), keeps its own view (camera,
 fog memory, settings), and resolves the turn. The same plans on the same game resolve the same
-way: the simulation is deterministic, and the host sends the RNG seed when the guest joins. After
-every turn the guest sends a checksum of the game (`GameState::checksum`); a mismatch shows
-DESYNC AFTER TURN N.
+way: the simulation is deterministic, and the host sends the world's seed and settings and the
+RNG seed when a guest joins. After every turn each guest sends a checksum of the game
+(`GameState::checksum`); a mismatch shows DESYNC WITH RED AFTER TURN N on the host. When a guest
+leaves mid-game the host sends `SeatLeft` before the turn's `Resolve`, so every machine hands
+that side to the AI at the same point.
 
-Messages (`Message`): `Hello` (guest, with the protocol version and join code), `Welcome` (host:
-the seat, scenario, RNG seed and debug toggles) or `Refused`, `Plan`, `Resolve`, `Checksum`.
+Messages (`Message`): `Hello` (guest, with the protocol version), `Welcome` (host: the seat,
+the human sides, the world's seed and settings, the RNG seed and debug toggles) or `Refused`,
+`Plan`, `Resolve`, `SeatLeft`, `Checksum`.
 `PROTOCOL_VERSION` changes whenever one changes shape, so mismatched builds refuse each other.
 
 ## Transport
@@ -72,6 +82,10 @@ can watch or change what's sent. What's in place:
 - **Joining can't be blocked by one machine.** The host runs up to 8 joins at once, at most 3 from
   any one address, each on its own thread with 10 seconds to finish; a silent or garbage
   connection holds up nobody, and one address can't fill every slot.
+- **Seats are the host's to give.** A guest's messages are tied to its seat: a plan for any other
+  side drops it. A guest checks the host's `Welcome` (the host first among the human sides, its
+  own seat among them, a world with a side for each) and every `SeatLeft` (only another guest,
+  and only once).
 - **Nothing arriving is trusted.** A frame over 1 MiB drops the peer before it's read, and so does
   a message that doesn't open or doesn't decode. The incoming queue is bounded. Every message is
   checked before it touches the game (`GameState::receive`): only the messages its role
@@ -100,9 +114,11 @@ What's left, knowingly:
   (every machine holds the whole game in lockstep), and can plan anything a real player could.
 - **Many machines at once** could still fill the host's 8 join slots for a while; a real guest
   can retry.
+- **A player who never ends their turn holds everyone up**: there's no turn timer yet, and the
+  host can't hand a connected player's side to the AI.
 - The join code shows in the host's log.
 
 ## Next
 
-More than two players (and AI sides beside them), other scenarios and worlds, a lobby in the game
-instead of command-line flags, and rejoining after a drop.
+A lobby in the game instead of command-line flags, a turn timer, rejoining after a drop, and
+other scenarios.

@@ -20,7 +20,7 @@ behavior.
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `ai.rs` | the AI, playing every side but the player's (`ai_teams`) |
-| `multiplayer.rs` | network play in lockstep (`docs/multiplayer.md`): the `Message`s, a side's `TeamPlan` (`team_plan`, `apply_plan`), hosting and joining (`host_game`, `welcome`, `join_game`), `receive` and `check_plan` (every message checked before it touches the game), `checksum` |
+| `multiplayer.rs` | network play in lockstep (`docs/multiplayer.md`): the `Message`s, a side's `TeamPlan` (`team_plan`, `apply_plan`), hosting a world and seating players (`host_game`, `welcome`, `join_game`, `open_seats`, `seat_left`), `receive` and `check_plan` (every message checked before it touches the game), `checksum` |
 | `city/mod.rs` | `City`, `Site`, `LaborFocus`, city tuning constants (barracks HP and defense, population cap), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
 | `city/logistics.rs` | roads and Canoe House river corridors, logistics routes (`routes_from_by`), `delivered_share`, tile yields, Mill food share, Cannery/Smelter collection, city income (as food, wood and metal) and Barracks income |
 | `city/rail.rs` | Railhead road connectivity and long-range transfer eligibility; city center is the origin terminal |

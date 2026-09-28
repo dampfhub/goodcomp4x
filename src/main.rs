@@ -22,7 +22,9 @@ fn main() -> anyhow::Result<()> {
     // A network game is set up before the window opens: joining waits for
     // the host's game.
     let network = match &options.network {
-        Some(cli::Network::Host(port)) => Some(net::Session::host(*port)?),
+        Some(cli::Network::Host(port, players)) => {
+            Some(net::Session::host(*port, *players, &app::saved_settings())?)
+        }
         Some(cli::Network::Join(address, code)) => Some(net::Session::join(address, code)?),
         None => None,
     };

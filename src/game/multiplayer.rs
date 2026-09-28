@@ -1,11 +1,12 @@
-//! Multiplayer in lockstep (`docs/multiplayer.md`). Every machine runs the
-//! whole game. Turns are simultaneous, so a player's planning stays on their
-//! own machine until they end it: then their side's *plan* (`TeamPlan`: its
-//! units' orders, its cities' queues and citizens, its placed jobs, its
-//! stockpile) goes to the host. Once the host has every human side's plan it
-//! sends them all to everyone, and each machine applies them, in side order,
-//! to the game as it stood when the turn's planning began (`turn_start`) and
-//! resolves the turn. The same plans on the same game resolve the same way
+//! Multiplayer in lockstep (`docs/multiplayer.md`). A host and up to six
+//! guests play a generated world, each on their own side, and the AI plays
+//! the rest. Every machine runs the whole game. Turns are simultaneous, so a
+//! player's planning stays on their own machine until they end it: then their
+//! side's *plan* (`TeamPlan`: its units' orders, its cities' queues and
+//! citizens, its placed jobs, its stockpile) goes to the host. Once the host
+//! has every human side's plan it sends them all to every guest, and each
+//! machine applies them, in side order, to the game as it stood when the
+//! turn's planning began (`turn_start`) and resolves the turn. The same plans on the same game resolve the same way
 //! (the simulation is deterministic), and a checksum of the result, compared
 //! after every turn, catches it if they ever don't.
 //!
@@ -16,19 +17,21 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 
+use super::GameState;
+use super::camera::Camera;
 use super::city::{
     Build, BuildUnit, Building, City, LaborFocus, MAX_CITY_POPULATION, Stock, grow_price,
     in_interior,
 };
 use super::hex::Hex;
+use super::settings::Settings;
 use super::terrain::Resource;
 use super::unit::{Team, TurnOrder};
 use super::workers::WorkerJob;
-use super::{GameState, Scenario};
 
 /// Bumped whenever a message or a plan changes shape, so mismatched builds
 /// refuse each other instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -37,9 +40,11 @@ const MAX_PLAN_LIST: usize = 256;
 const CODE_LETTERS: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH: usize = 6;
 
-/// The side the host plays, and the one the joining player gets.
+/// The side the host plays; guests take the sides after it, in `Team::ALL`
+/// order, as they join.
 pub const HOST_SEAT: Team = Team::Blue;
-pub const GUEST_SEAT: Team = Team::Red;
+/// The most players a game takes: every side a world can have.
+pub const MAX_PLAYERS: usize = Team::ALL.len();
 
 /// What goes over the wire (`src/net` encodes, seals and frames it).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -47,19 +52,28 @@ pub enum Message {
     /// Guest to host, first thing over the encrypted channel (which only
     /// opens with the host's join code, `src/net/secure.rs`).
     Hello { version: u32 },
-    /// Host to guest: the game to build, the same on both machines.
+    /// Host to guest: the game to build, the same on every machine: the
+    /// world (its map seed, and how many AI sides it has and whether they
+    /// start with a city), the human sides and the guest's seat among them.
     Welcome {
         version: u32,
         seat: Team,
-        scenario: Scenario,
+        humans: Vec<Team>,
+        map_seed: u32,
+        world_ai: usize,
+        world_start_city: bool,
         rng_seed: u64,
         production_speedup: bool,
         lifetime_special_cap: bool,
     },
     /// Guest to host: its side's plan for the turn.
     Plan(TeamPlan),
-    /// Host to guest: every human side's plan for the turn; resolve it.
+    /// Host to guests: every human side's plan for the turn; resolve it.
     Resolve(Vec<TeamPlan>),
+    /// Host to guests: this side's player left; the AI plays it from the
+    /// next turn on. Sent before the turn's `Resolve`, so every machine
+    /// changes hands at the same point.
+    SeatLeft(Team),
     /// Guest to host: the game's checksum after resolving `turn`.
     Checksum { turn: u32, value: u64 },
     /// Host to guest: refused (a different protocol version, or a full game).
@@ -182,16 +196,20 @@ pub(super) struct Lockstep {
     submitted: bool,
     /// Host: the plans in for this turn.
     plans: Vec<TeamPlan>,
-    /// Host: whether the guest has joined.
-    pub peer_joined: bool,
+    /// Host: the human sides with a player (its own, and each guest's).
+    seated: Vec<Team>,
+    /// Host: the world's settings, for guests to build the same one.
+    world: (usize, bool),
     /// Host: the code a guest must give to join (`host_game`): the key to
     /// the encrypted channel.
     join_code: String,
-    /// Host: its own checksums, by turn, until the guest's arrive.
+    /// Host: its own checksums of the last few turns, to compare each
+    /// guest's with.
     checksums: Vec<(u32, u64)>,
     /// A turn whose checksums didn't match, once one hasn't.
     pub desync: Option<u32>,
-    /// Messages for `src/net` to send.
+    /// Messages for `src/net` to send: from the host, to every guest; from
+    /// a guest, to the host.
     outbox: Vec<Message>,
 }
 
@@ -202,7 +220,8 @@ impl Lockstep {
             turn_start: None,
             submitted: false,
             plans: Vec::new(),
-            peer_joined: false,
+            seated: Vec::new(),
+            world: (0, false),
             join_code: String::new(),
             checksums: Vec::new(),
             desync: None,
@@ -211,19 +230,39 @@ impl Lockstep {
     }
 }
 
+/// The world a game's settings and player count make: its AI sides (never
+/// fewer than the players need) and how every side starts.
+fn world_settings(settings: &Settings, map_seed: u32, players: usize) -> Settings {
+    Settings {
+        world_ai: settings
+            .world_ai_for(map_seed)
+            .max(players.saturating_sub(1))
+            .min(MAX_PLAYERS - 1),
+        world_start_city: settings.world_start_city,
+        ..Settings::default()
+    }
+}
+
 impl GameState {
-    /// A game to host: the Cities scenario, the host playing Blue and the
-    /// guest who joins playing Red.
-    pub fn host_game() -> GameState {
-        let mut game = GameState::city_scenario();
-        let seed = rand::random();
-        game.seat_players(Role::Host, HOST_SEAT, seed);
+    /// A game to host: a new world for `players` people (2 to
+    /// `MAX_PLAYERS`), the host on Blue and each guest on the next side as
+    /// they join, with AI on the rest (as many as `settings` ask for, and
+    /// no fewer than the players need).
+    pub fn host_game(players: usize, settings: &Settings) -> GameState {
+        let players = players.clamp(2, MAX_PLAYERS);
+        let map_seed = rand::random();
+        let world = world_settings(settings, map_seed, players);
+        let mut game = GameState::world_scenario_with(map_seed, &world);
+        let humans = Team::ALL[..players].to_vec();
+        game.seat_players(Role::Host, HOST_SEAT, humans, rand::random());
         let code: String = (0..CODE_LENGTH)
             .map(|_| CODE_LETTERS[rand::random_range(0..CODE_LETTERS.len())] as char)
             .collect();
         game.notice = format!("HOSTING - JOIN CODE {code}");
         if let Some(lockstep) = game.lockstep.as_mut() {
             lockstep.join_code = code;
+            lockstep.seated = vec![HOST_SEAT];
+            lockstep.world = (world.world_ai, world.world_start_city);
         }
         game
     }
@@ -236,33 +275,62 @@ impl GameState {
             .map(|l| l.join_code.as_str())
     }
 
-    /// The host's reply to a guest's `Hello`: the game to build, or why not.
-    pub fn welcome(&mut self, hello: &Message) -> Message {
+    /// Host: the human sides still waiting for a player, in seating order.
+    pub fn open_seats(&self) -> Vec<Team> {
+        let Some(lockstep) = self.lockstep.as_deref().filter(|l| l.role == Role::Host) else {
+            return Vec::new();
+        };
+        self.humans
+            .iter()
+            .copied()
+            .filter(|t| !lockstep.seated.contains(t))
+            .collect()
+    }
+
+    /// The host's reply to a guest's `Hello`: the next open seat and the
+    /// game to build, or why not.
+    pub fn welcome(&mut self, hello: &Message) -> (Option<Team>, Message) {
+        let refuse = |why: &str| (None, Message::Refused(why.into()));
         let Message::Hello { version } = hello else {
-            return Message::Refused("EXPECTED A HELLO".into());
+            return refuse("EXPECTED A HELLO");
         };
         if *version != PROTOCOL_VERSION {
-            return Message::Refused(format!(
+            return refuse(&format!(
                 "VERSION MISMATCH: HOST {PROTOCOL_VERSION}, GUEST {version}"
             ));
         }
-        let Some(lockstep) = self.lockstep.as_mut() else {
-            return Message::Refused("NOT HOSTING".into());
+        let Some(&seat) = self.open_seats().first() else {
+            return refuse("THE GAME IS FULL");
         };
-        if lockstep.peer_joined {
-            return Message::Refused("THE GAME IS FULL".into());
+        // Joining is only before the first turn: a later guest couldn't
+        // rebuild the game from its seed.
+        if self.turn > 0 {
+            return refuse("THE GAME HAS STARTED");
         }
-        lockstep.peer_joined = true;
-        let turn_start = lockstep.turn_start.as_ref().expect("planning");
-        self.notice = format!("{GUEST_SEAT:?} JOINED").to_uppercase();
-        Message::Welcome {
+        let Some(lockstep) = self.lockstep.as_mut() else {
+            return refuse("NOT HOSTING");
+        };
+        lockstep.seated.push(seat);
+        let (world_ai, world_start_city) = lockstep.world;
+        let start = lockstep.turn_start.as_ref().expect("planning");
+        let welcome = Message::Welcome {
             version: PROTOCOL_VERSION,
-            seat: GUEST_SEAT,
-            scenario: turn_start.scenario,
+            seat,
+            humans: self.humans.clone(),
+            map_seed: start.map_seed.expect("a world"),
+            world_ai,
+            world_start_city,
             rng_seed: self.rng_seed,
-            production_speedup: turn_start.production_speedup,
-            lifetime_special_cap: turn_start.lifetime_special_cap,
-        }
+            production_speedup: start.production_speedup,
+            lifetime_special_cap: start.lifetime_special_cap,
+        };
+        let open = self.open_seats().len();
+        self.notice = if open == 0 {
+            format!("{seat:?} JOINED - EVERYONE'S HERE").to_uppercase()
+        } else {
+            format!("{seat:?} JOINED - {open} MORE TO COME").to_uppercase()
+        };
+        (Some(seat), welcome)
     }
 
     /// The guest's game, built from the host's `Welcome` the same way the
@@ -272,7 +340,10 @@ impl GameState {
             Message::Welcome {
                 version,
                 seat,
-                scenario,
+                humans,
+                map_seed,
+                world_ai,
+                world_start_city,
                 rng_seed,
                 production_speedup,
                 lifetime_special_cap,
@@ -282,16 +353,31 @@ impl GameState {
                         "VERSION MISMATCH: HOST {version}, GUEST {PROTOCOL_VERSION}"
                     ));
                 }
-                if *scenario != Scenario::Cities {
-                    return Err(format!("CAN'T JOIN A {} GAME YET", scenario.name()));
+                // The human sides: the host's first, each once, the guest's
+                // among them, all sides the world has.
+                let mut unique = humans.clone();
+                unique.sort();
+                unique.dedup();
+                if humans.len() < 2
+                    || humans.len() > MAX_PLAYERS
+                    || unique.len() != humans.len()
+                    || humans[0] != HOST_SEAT
+                    || *seat == HOST_SEAT
+                    || !humans.contains(seat)
+                    || *world_ai + 1 < humans.len()
+                    || *world_ai >= MAX_PLAYERS
+                {
+                    return Err("THE HOST OFFERED A GAME THAT DOESN'T ADD UP".into());
                 }
-                if *seat != GUEST_SEAT {
-                    return Err(format!("THE HOST OFFERED {seat:?}, NOT {GUEST_SEAT:?}"));
-                }
-                let mut game = GameState::city_scenario();
+                let world = Settings {
+                    world_ai: *world_ai,
+                    world_start_city: *world_start_city,
+                    ..Settings::default()
+                };
+                let mut game = GameState::world_scenario_with(*map_seed, &world);
                 game.production_speedup = *production_speedup;
                 game.lifetime_special_cap = *lifetime_special_cap;
-                game.seat_players(Role::Guest, *seat, *rng_seed);
+                game.seat_players(Role::Guest, *seat, humans.clone(), *rng_seed);
                 game.notice = format!("JOINED AS {seat:?}").to_uppercase();
                 Ok(game)
             }
@@ -300,11 +386,11 @@ impl GameState {
         }
     }
 
-    /// Makes this a networked game: both sides human, this one's player on
-    /// `seat`, the RNG seeded the same on both machines, and this turn's
-    /// planning begun.
-    fn seat_players(&mut self, role: Role, seat: Team, rng_seed: u64) {
-        self.humans = vec![HOST_SEAT, GUEST_SEAT];
+    /// Makes this a networked game: `humans` played by people, this one's
+    /// player on `seat`, the RNG seeded the same on every machine, and this
+    /// turn's planning begun, looking at this side's home.
+    fn seat_players(&mut self, role: Role, seat: Team, humans: Vec<Team>, rng_seed: u64) {
+        self.humans = humans;
         self.local_team = seat;
         // What this side has seen is its own: none of another side's view.
         self.memory.clear();
@@ -313,6 +399,15 @@ impl GameState {
         self.selected = None;
         self.selected_city = None;
         self.begin_lockstep_turn();
+        let home = self
+            .cities
+            .iter()
+            .find(|c| c.team == seat)
+            .map(|c| c.pos)
+            .or_else(|| self.units.iter().find(|u| u.team == seat).map(|u| u.pos));
+        if let Some(home) = home {
+            self.camera = Camera::new(home.to_world(), self.camera.half_height);
+        }
         self.select_next_or_end_turn(None);
     }
 
@@ -326,6 +421,11 @@ impl GameState {
     #[cfg(test)]
     pub fn notice(&self) -> &str {
         &self.notice
+    }
+
+    /// Whether the first turn has resolved: after it, nobody can join.
+    pub fn has_started(&self) -> bool {
+        self.turn > 0
     }
 
     /// Whether this is a networked game.
@@ -342,14 +442,24 @@ impl GameState {
     /// What the End Turn button says while the turn isn't this side's to
     /// play: whose plan it waits for, or that it's resolving.
     pub(super) fn resolving_label(&self) -> String {
+        let open = self.open_seats().len();
         match self.lockstep.as_deref() {
-            Some(l) if l.role == Role::Host && !l.peer_joined => {
-                format!("JOIN CODE {}", l.join_code)
+            Some(l) if l.role == Role::Host && open > 0 => {
+                format!("JOIN CODE {} - {open} TO COME", l.join_code)
             }
-            Some(l) if l.submitted => {
-                let other = self.humans.iter().find(|&&t| t != self.local_team);
-                format!("WAITING FOR {:?}", other.copied().unwrap_or(GUEST_SEAT)).to_uppercase()
-            }
+            Some(l) if l.submitted => match l.role {
+                // The host knows whose plans are in.
+                Role::Host => {
+                    let waiting: Vec<String> = self
+                        .humans
+                        .iter()
+                        .filter(|t| !l.plans.iter().any(|p| p.team == **t))
+                        .map(|t| format!("{t:?}").to_uppercase())
+                        .collect();
+                    format!("WAITING FOR {}", waiting.join(", "))
+                }
+                Role::Guest => "WAITING FOR THE OTHERS".into(),
+            },
             _ => "RESOLVING".into(),
         }
     }
@@ -359,15 +469,34 @@ impl GameState {
         self.notice = "TOO MANY FAILED JOINS - NO LONGER LISTENING".into();
     }
 
-    /// The connection to the other player is gone: the game can't go on,
-    /// and says so.
+    /// A guest: the host is gone, and the game with it.
     pub fn peer_lost(&mut self) {
-        let other = self.humans.iter().find(|&&t| t != self.local_team).copied();
-        self.notice = format!(
-            "{:?} LEFT - THE GAME CAN'T GO ON",
-            other.unwrap_or(GUEST_SEAT)
-        )
-        .to_uppercase();
+        self.notice =
+            format!("{HOST_SEAT:?} (THE HOST) LEFT - THE GAME CAN'T GO ON").to_uppercase();
+    }
+
+    /// Host: `team`'s player is gone. Before the game starts, their seat
+    /// opens again for someone else; after, the AI plays their side from the
+    /// next turn on, on every machine (`Message::SeatLeft`), and the turn
+    /// no longer waits for them.
+    pub fn seat_left(&mut self, team: Team) {
+        let started = self.turn > 0 || self.open_seats().is_empty();
+        let Some(lockstep) = self.lockstep.as_mut() else {
+            return;
+        };
+        if lockstep.role != Role::Host || team == HOST_SEAT {
+            return;
+        }
+        lockstep.seated.retain(|&t| t != team);
+        if !started {
+            self.notice = format!("{team:?} LEFT - WAITING FOR A PLAYER").to_uppercase();
+            return;
+        }
+        lockstep.plans.retain(|p| p.team != team);
+        lockstep.outbox.push(Message::SeatLeft(team));
+        self.humans.retain(|&t| t != team);
+        self.notice = format!("{team:?} LEFT - THE AI PLAYS THEM NOW").to_uppercase();
+        self.resolve_when_ready();
     }
 
     /// Takes the messages waiting to be sent.
@@ -396,12 +525,12 @@ impl GameState {
     /// for the guest's), and input waits for the turn.
     pub(super) fn submit_plan(&mut self) {
         let plan = self.team_plan(self.local_team);
-        let other = self.humans.iter().find(|&&t| t != self.local_team).copied();
+        let open = self.open_seats().len();
         let Some(lockstep) = self.lockstep.as_mut() else {
             return;
         };
-        if lockstep.role == Role::Host && !lockstep.peer_joined {
-            self.notice = "WAITING FOR A PLAYER TO JOIN".into();
+        if open > 0 {
+            self.notice = format!("WAITING FOR {open} MORE TO JOIN");
             return;
         }
         lockstep.submitted = true;
@@ -412,20 +541,21 @@ impl GameState {
         self.selected_city = None;
         self.selected = None;
         self.group.clear();
-        self.notice = format!("WAITING FOR {:?}", other.unwrap_or(GUEST_SEAT)).to_uppercase();
+        self.notice = "WAITING FOR THE OTHERS".into();
         self.resolve_when_ready();
     }
 
-    /// Handles a message from the other end. Everything that arrives is
-    /// checked before it touches the game; an `Err` says why the peer
-    /// should be dropped (a malformed or hostile message).
-    pub fn receive(&mut self, message: Message) -> Result<(), String> {
+    /// Handles a message from the player on `from` (a guest, on the host;
+    /// the host, on a guest). Everything that arrives is checked before it
+    /// touches the game; an `Err` says why the sender should be dropped (a
+    /// malformed or hostile message).
+    pub fn receive(&mut self, from: Team, message: Message) -> Result<(), String> {
         let Some(role) = self.lockstep.as_ref().map(|l| l.role) else {
             return Ok(());
         };
         match (role, message) {
             (Role::Host, Message::Plan(plan)) => {
-                if plan.team != GUEST_SEAT {
+                if plan.team != from || !self.is_human(from) {
                     return Err(format!("A PLAN FOR {:?}, NOT ITS OWN SIDE", plan.team));
                 }
                 self.check_plan(&plan)?;
@@ -448,15 +578,22 @@ impl GameState {
                 }
                 self.resolve_with_plans(plans);
             }
+            (Role::Guest, Message::SeatLeft(team)) => {
+                if team == self.local_team || team == HOST_SEAT || !self.is_human(team) {
+                    return Err(format!("{team:?} CAN'T LEAVE"));
+                }
+                self.humans.retain(|&t| t != team);
+                self.notice = format!("{team:?} LEFT - THE AI PLAYS THEM NOW").to_uppercase();
+            }
             (Role::Host, Message::Checksum { turn, value }) => {
                 let lockstep = self.lockstep.as_mut().expect("networked");
-                if let Some(at) = lockstep.checksums.iter().position(|&(t, _)| t == turn) {
-                    let (_, own) = lockstep.checksums.remove(at);
-                    if own != value && lockstep.desync.is_none() {
-                        lockstep.desync = Some(turn);
-                        log::error!("desync after turn {turn}: host {own:x}, guest {value:x}");
-                        self.notice = format!("DESYNC AFTER TURN {turn}");
-                    }
+                if let Some(&(_, own)) = lockstep.checksums.iter().find(|&&(t, _)| t == turn)
+                    && own != value
+                    && lockstep.desync.is_none()
+                {
+                    lockstep.desync = Some(turn);
+                    log::error!("desync after turn {turn}: host {own:x}, {from:?} {value:x}");
+                    self.notice = format!("DESYNC WITH {from:?} AFTER TURN {turn}").to_uppercase();
                 }
             }
             (_, other) => return Err(format!("UNEXPECTED MESSAGE: {other:?}")),
@@ -824,7 +961,11 @@ impl GameState {
         let turn = self.turn;
         if let Some(lockstep) = self.lockstep.as_mut() {
             match lockstep.role {
-                Role::Host => lockstep.checksums.push((turn, value)),
+                Role::Host => {
+                    lockstep.checksums.push((turn, value));
+                    // A guest's checksum arrives within a turn or two.
+                    lockstep.checksums.retain(|&(t, _)| t + 8 > turn);
+                }
                 Role::Guest => lockstep.outbox.push(Message::Checksum { turn, value }),
             }
         }
@@ -1069,10 +1210,23 @@ impl GameState {
 mod tests {
     use super::*;
 
-    /// A host and a guest, joined: two machines' games in one process.
+    /// The seat the first guest gets.
+    const GUEST_SEAT: Team = Team::Red;
+
+    /// A small world's settings: one AI side, cities to start.
+    fn small() -> Settings {
+        Settings {
+            world_ai: 1,
+            ..Settings::default()
+        }
+    }
+
+    /// A host and a guest, joined, on a two-side world: two machines' games
+    /// in one process.
     fn pair() -> (GameState, GameState) {
-        let mut host = GameState::host_game();
-        let welcome = host.welcome(&hello(&host));
+        let mut host = GameState::host_game(2, &small());
+        let (seat, welcome) = host.welcome(&hello(&host));
+        assert_eq!(seat, Some(GUEST_SEAT));
         let guest = GameState::join_game(&welcome).expect("joins");
         (host, guest)
     }
@@ -1094,10 +1248,13 @@ mod tests {
                 return;
             }
             for m in to_guest {
-                guest.receive(roundtrip(&m)).expect("a sound message");
+                guest
+                    .receive(HOST_SEAT, roundtrip(&m))
+                    .expect("a sound message");
             }
             for m in to_host {
-                host.receive(roundtrip(&m)).expect("a sound message");
+                host.receive(GUEST_SEAT, roundtrip(&m))
+                    .expect("a sound message");
             }
         }
     }
@@ -1115,8 +1272,10 @@ mod tests {
     }
 
     #[test]
-    fn a_guest_joins_on_red_with_the_hosts_game() {
+    fn a_guest_joins_on_red_with_the_hosts_world() {
         let (host, guest) = pair();
+        assert_eq!(host.scenario, super::super::Scenario::World);
+        assert_eq!(host.map_seed, guest.map_seed);
         assert_eq!(host.local_team, HOST_SEAT);
         assert_eq!(guest.local_team, GUEST_SEAT);
         assert_eq!(host.humans, guest.humans);
@@ -1126,12 +1285,13 @@ mod tests {
         // A second guest, or a different version, is refused.
         let mut host = host;
         let again = host.welcome(&hello(&host));
-        assert!(matches!(again, Message::Refused(_)));
-        let mut fresh = GameState::host_game();
-        let old = fresh.welcome(&Message::Hello { version: 0 });
+        assert!(matches!(again, (None, Message::Refused(_))));
+        let mut fresh = GameState::host_game(2, &small());
+        let (seat, old) = fresh.welcome(&Message::Hello { version: 0 });
+        assert_eq!(seat, None);
         assert!(GameState::join_game(&old).is_err());
         // A join code: six letters and digits, none of them easily confused.
-        let code = GameState::host_game().join_code().unwrap().to_string();
+        let code = fresh.join_code().unwrap().to_string();
         assert_eq!(code.len(), CODE_LENGTH);
         assert!(code.bytes().all(|b| CODE_LETTERS.contains(&b)), "{code}");
     }
@@ -1221,7 +1381,7 @@ mod tests {
         play_out(&mut guest);
         exchange(&mut host, &mut guest);
         assert_eq!(host.lockstep.as_ref().unwrap().desync, Some(1));
-        assert_eq!(host.notice, "DESYNC AFTER TURN 1");
+        assert_eq!(host.notice, "DESYNC WITH RED AFTER TURN 1");
     }
 
     #[test]
@@ -1230,7 +1390,8 @@ mod tests {
         let good = guest.team_plan(GUEST_SEAT);
         let before = host.checksum();
         let refused = |host: &mut GameState, plan: TeamPlan| {
-            host.receive(Message::Plan(plan)).expect_err("refused")
+            host.receive(GUEST_SEAT, Message::Plan(plan))
+                .expect_err("refused")
         };
         // Orders for the host's units.
         let mut plan = good.clone();
@@ -1314,7 +1475,8 @@ mod tests {
         // Nothing reached the game, and a sound plan still does.
         assert_eq!(host.checksum(), before);
         assert!(host.lockstep.as_ref().unwrap().plans.is_empty());
-        host.receive(Message::Plan(good)).expect("sound");
+        host.receive(GUEST_SEAT, Message::Plan(good))
+            .expect("sound");
     }
 
     #[test]
@@ -1322,11 +1484,15 @@ mod tests {
         let (mut host, mut guest) = pair();
         let plan = host.team_plan(HOST_SEAT);
         let before = guest.checksum();
-        assert!(guest.receive(Message::Resolve(vec![plan])).is_err());
+        assert!(
+            guest
+                .receive(HOST_SEAT, Message::Resolve(vec![plan]))
+                .is_err()
+        );
         assert_eq!(guest.checksum(), before);
         assert!(
             guest
-                .receive(Message::Plan(guest.team_plan(GUEST_SEAT)))
+                .receive(HOST_SEAT, Message::Plan(guest.team_plan(GUEST_SEAT)))
                 .is_err()
         );
         let _ = host.take_outbox();
@@ -1465,6 +1631,189 @@ mod tests {
             accepted > 100,
             "only {accepted} of {tried} plans got through"
         );
+    }
+
+    /// A host and `guests` guests on a world with AI sides besides.
+    fn table(guests: usize) -> (GameState, Vec<GameState>) {
+        let settings = Settings {
+            world_ai: guests + 2,
+            ..Settings::default()
+        };
+        let mut host = GameState::host_game(guests + 1, &settings);
+        let joined = (0..guests)
+            .map(|_| {
+                let (seat, welcome) = host.welcome(&hello(&host));
+                assert!(seat.is_some(), "{welcome:?}");
+                GameState::join_game(&welcome).expect("joins")
+            })
+            .collect();
+        (host, joined)
+    }
+
+    /// Delivers the host's messages to every guest and theirs to it, until
+    /// nobody has any.
+    fn exchange_all(host: &mut GameState, guests: &mut [GameState]) {
+        loop {
+            let to_guests = host.take_outbox();
+            let mut quiet = to_guests.is_empty();
+            for guest in guests.iter_mut() {
+                for m in &to_guests {
+                    guest
+                        .receive(HOST_SEAT, roundtrip(m))
+                        .expect("a sound message");
+                }
+                let from = guest.local_team;
+                for m in guest.take_outbox() {
+                    quiet = false;
+                    host.receive(from, roundtrip(&m)).expect("a sound message");
+                }
+            }
+            if quiet {
+                return;
+            }
+        }
+    }
+
+    /// Every game ends its turn and plays it out, the messages flowing.
+    fn play_turn(host: &mut GameState, guests: &mut [GameState]) {
+        for game in std::iter::once(&mut *host).chain(guests.iter_mut()) {
+            game.submit_plan();
+        }
+        exchange_all(host, guests);
+        play_out(host);
+        for guest in guests.iter_mut() {
+            play_out(guest);
+        }
+        exchange_all(host, guests);
+    }
+
+    #[test]
+    fn three_players_share_a_world_with_the_ai_on_the_rest() {
+        let (mut host, mut guests) = table(2);
+        let seats: Vec<Team> = guests.iter().map(|g| g.local_team).collect();
+        assert_eq!(seats, [Team::Red, Team::Green], "in side order");
+        assert_eq!(host.humans, [Team::Blue, Team::Red, Team::Green]);
+        assert!(!host.ai_teams().is_empty(), "the AI plays the rest");
+        assert_eq!(host.ai_teams(), guests[0].ai_teams());
+        // A fourth is turned away: the seats are full.
+        assert!(matches!(
+            host.welcome(&hello(&host)),
+            (None, Message::Refused(_))
+        ));
+        for guest in &guests {
+            assert_eq!(guest.checksum(), host.checksum());
+        }
+        for _ in 0..3 {
+            play_turn(&mut host, &mut guests);
+            for guest in &guests {
+                assert_eq!(guest.checksum(), host.checksum(), "turn {}", host.turn);
+            }
+        }
+        assert_eq!(host.turn, 3);
+        assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+        // Nobody joins a game under way.
+        assert!(host.has_started());
+    }
+
+    #[test]
+    fn the_host_waits_for_every_seat_before_the_first_turn() {
+        let settings = Settings {
+            world_ai: 3,
+            ..Settings::default()
+        };
+        let mut host = GameState::host_game(3, &settings);
+        let (_, welcome) = host.welcome(&hello(&host));
+        let _red = GameState::join_game(&welcome).unwrap();
+        assert_eq!(host.open_seats(), [Team::Green]);
+        host.submit_plan();
+        assert!(!host.waiting_for_peers(), "Green hasn't joined");
+        assert_eq!(
+            host.resolving_label(),
+            format!("JOIN CODE {} - 1 TO COME", host.join_code().unwrap())
+        );
+        // A guest who leaves before the start frees their seat.
+        host.seat_left(Team::Red);
+        assert_eq!(host.open_seats(), [Team::Red, Team::Green]);
+        assert_eq!(
+            host.humans,
+            [Team::Blue, Team::Red, Team::Green],
+            "still seats for people"
+        );
+    }
+
+    #[test]
+    fn a_guest_who_leaves_mid_game_hands_their_side_to_the_ai() {
+        let (mut host, mut guests) = table(2);
+        play_turn(&mut host, &mut guests);
+        // Green's player goes; Red is waiting on the turn.
+        let green = guests.pop().unwrap();
+        guests[0].submit_plan();
+        host.submit_plan();
+        exchange_all(&mut host, &mut guests);
+        assert!(host.waiting_for_peers(), "waiting for Green");
+        host.seat_left(green.local_team);
+        // The turn goes on without Green, on both machines left.
+        exchange_all(&mut host, &mut guests);
+        play_out(&mut host);
+        play_out(&mut guests[0]);
+        exchange_all(&mut host, &mut guests);
+        assert_eq!(host.turn, 2);
+        assert_eq!(guests[0].turn, 2);
+        assert!(!host.is_human(Team::Green) && !guests[0].is_human(Team::Green));
+        assert!(host.ai_teams().contains(&Team::Green));
+        assert_eq!(host.checksum(), guests[0].checksum());
+        // And the next turn too.
+        play_turn(&mut host, &mut guests);
+        assert_eq!(host.checksum(), guests[0].checksum());
+        assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+    }
+
+    #[test]
+    fn a_guest_refuses_a_seat_change_it_couldnt_have_had() {
+        let (_, mut guests) = table(2);
+        let red = &mut guests[0];
+        assert!(
+            red.receive(HOST_SEAT, Message::SeatLeft(Team::Red))
+                .is_err(),
+            "itself"
+        );
+        assert!(
+            red.receive(HOST_SEAT, Message::SeatLeft(Team::Blue))
+                .is_err(),
+            "the host"
+        );
+        let ai = red.ai_teams()[0];
+        assert!(
+            red.receive(HOST_SEAT, Message::SeatLeft(ai)).is_err(),
+            "an AI side"
+        );
+    }
+
+    #[test]
+    fn a_welcome_that_doesnt_add_up_is_refused() {
+        let mut host = GameState::host_game(2, &small());
+        let (_, welcome) = host.welcome(&hello(&host));
+        let Message::Welcome { humans, .. } = &welcome else {
+            panic!("{welcome:?}")
+        };
+        let tweak = |f: &dyn Fn(&mut Message)| {
+            let mut bad = welcome.clone();
+            f(&mut bad);
+            GameState::join_game(&bad).is_err()
+        };
+        assert!(tweak(&|m| if let Message::Welcome { seat, .. } = m {
+            *seat = HOST_SEAT;
+        }));
+        assert!(tweak(&|m| if let Message::Welcome { humans, .. } = m {
+            humans.push(Team::Red);
+        }));
+        assert!(tweak(&|m| if let Message::Welcome { world_ai, .. } = m {
+            *world_ai = 99;
+        }));
+        assert!(tweak(&|m| if let Message::Welcome { world_ai, .. } = m {
+            *world_ai = 0;
+        }));
+        assert_eq!(humans.len(), 2);
     }
 
     #[test]

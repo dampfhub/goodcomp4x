@@ -10,7 +10,9 @@
 //! replayed, out of order, or sealed under a wrong code), is too big, or
 //! doesn't decode drops the peer, and the game checks every message before
 //! using it (`GameState::receive`), dropping a peer that sends a malformed
-//! or hostile one. A host takes one guest. It runs up to
+//! or hostile one. A host takes a guest for each open seat until the game
+//! starts; a guest who leaves after that hands their side to the AI. It
+//! runs up to
 //! `MAX_HANDSHAKES` joins at once (`MAX_HANDSHAKES_PER_ADDRESS` from any one
 //! address), each on its own thread with `JOIN_TIMEOUT` to finish, so a
 //! silent connection holds up nobody; after `MAX_REFUSALS` joins with a
@@ -28,7 +30,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::game::{GameState, NetMessage, PROTOCOL_VERSION};
+use crate::game::{GameState, HOST_SEAT, NetMessage, PROTOCOL_VERSION, Settings, Team};
 use secure::{Opener, Sealer, Side};
 
 /// The port `--host` listens on and `--join` connects to when none is given.
@@ -162,7 +164,9 @@ fn host_join(mut stream: TcpStream, addr: SocketAddr, code: &str) -> Join {
 
 /// This machine's side of a multiplayer game.
 pub struct Session {
-    /// The host's listener, until a guest joins.
+    /// Whether this machine hosts.
+    hosting: bool,
+    /// The host's listener, until the game starts.
     listener: Option<TcpListener>,
     /// Host: the join code guests must give (the game shows it).
     code: String,
@@ -172,33 +176,37 @@ pub struct Session {
     joining: Arc<Mutex<HashMap<IpAddr, usize>>>,
     /// Host: joins refused for a wrong code (`MAX_REFUSALS`).
     refusals: u32,
-    link: Option<Link>,
-    /// Whether the connection was lost (reported once).
-    lost: bool,
+    /// The connections: on the host, each guest's, by their seat; on a
+    /// guest, the host's.
+    links: Vec<(Team, Link)>,
 }
 
 impl Session {
-    fn new(listener: Option<TcpListener>, code: String, link: Option<Link>) -> Self {
+    fn new(listener: Option<TcpListener>, code: String, links: Vec<(Team, Link)>) -> Self {
         Session {
+            hosting: listener.is_some(),
             listener,
             code,
             joins: mpsc::channel(),
             joining: Arc::new(Mutex::new(HashMap::new())),
             refusals: 0,
-            link,
-            lost: false,
+            links,
         }
     }
 
-    /// `--host`: listens on `port` for a guest, and starts the game.
-    pub fn host(port: u16) -> Result<(Session, GameState)> {
+    /// `--host`: listens on `port` and starts a new world for `players`
+    /// people (the AI playing the rest, as `settings` ask).
+    pub fn host(port: u16, players: usize, settings: &Settings) -> Result<(Session, GameState)> {
         let listener = TcpListener::bind(("0.0.0.0", port))
             .with_context(|| format!("can't listen on port {port}"))?;
         listener.set_nonblocking(true)?;
-        let game = GameState::host_game();
+        let game = GameState::host_game(players, settings);
         let code = game.join_code().unwrap_or_default().to_string();
-        log::info!("hosting on port {port}; waiting for a player to join with code {code}");
-        Ok((Session::new(Some(listener), code, None), game))
+        log::info!(
+            "hosting on port {port} for {} more players; they join with code {code}",
+            game.open_seats().len()
+        );
+        Ok((Session::new(Some(listener), code, Vec::new()), game))
     }
 
     /// `--join`: connects to the host at `address` (`HOST:PORT`, or just
@@ -237,39 +245,49 @@ impl Session {
         let game = GameState::join_game(&welcome).map_err(|reason| anyhow!("{reason}"))?;
         log::info!("joined the game at {addr}");
         let link = Link::new(stream, sealer, opener)?;
-        Ok((Session::new(None, String::new(), Some(link)), game))
+        Ok((
+            Session::new(None, String::new(), vec![(HOST_SEAT, link)]),
+            game,
+        ))
     }
 
-    /// Once a frame: starts joins (host), takes in the first guest whose
-    /// hello opens, hands arriving messages to the game, and sends the
-    /// game's outgoing ones.
+    /// Once a frame: starts joins (host), seats the guests whose hellos
+    /// open, hands arriving messages to the game, and sends the game's
+    /// outgoing ones (the host's to every guest).
     pub fn pump(&mut self, game: &mut GameState) {
+        // Nobody joins a game under way: a guest couldn't rebuild it.
+        if self.hosting && game.has_started() && self.listener.take().is_some() {
+            log::info!("the game has started: no longer listening");
+        }
         self.accept();
         self.finish_joins(game);
-        let Some(link) = self.link.as_mut() else {
-            return;
-        };
-        let incoming = match link.poll() {
-            Ok(messages) => messages,
-            Err(error) => {
-                self.disconnect(game, &format!("{error:#}"));
-                return;
-            }
-        };
-        for message in incoming {
-            if let Err(why) = game.receive(message) {
-                let why = format!("{} sent a bad message: {why}", link.peer);
-                self.disconnect(game, &why);
-                return;
+        let mut dropped = Vec::new();
+        for (team, link) in &mut self.links {
+            match link.poll() {
+                Ok(messages) => {
+                    for message in messages {
+                        if let Err(why) = game.receive(*team, message) {
+                            dropped
+                                .push((*team, format!("{} sent a bad message: {why}", link.peer)));
+                            break;
+                        }
+                    }
+                }
+                Err(error) => dropped.push((*team, format!("{error:#}"))),
             }
         }
+        for (team, why) in dropped {
+            self.drop_link(game, team, &why);
+        }
         for message in game.take_outbox() {
-            let Some(link) = self.link.as_mut() else {
-                return;
-            };
-            if let Err(error) = link.send(&message) {
-                self.disconnect(game, &format!("{error:#}"));
-                return;
+            let mut failed = Vec::new();
+            for (team, link) in &mut self.links {
+                if let Err(error) = link.send(&message) {
+                    failed.push((*team, format!("{error:#}")));
+                }
+            }
+            for (team, why) in failed {
+                self.drop_link(game, team, &why);
             }
         }
     }
@@ -318,29 +336,27 @@ impl Session {
         }
     }
 
-    /// Host: takes the first guest whose hello the game welcomes; turns the
-    /// rest away.
+    /// Host: seats each guest whose hello the game welcomes, in the next
+    /// open seat; turns the rest away.
     fn finish_joins(&mut self, game: &mut GameState) {
         while let Ok(join) = self.joins.1.try_recv() {
             match join {
                 Join::Ready(mut link, hello) => {
-                    if self.link.is_some() {
-                        let _ = link.send(&NetMessage::Refused("THE GAME IS FULL".into()));
-                        continue;
-                    }
-                    let reply = game.welcome(&hello);
-                    let refused = matches!(reply, NetMessage::Refused(_));
+                    let (seat, reply) = game.welcome(&hello);
                     if let Err(error) = link.send(&reply) {
                         log::warn!("welcoming {} failed: {error}", link.peer);
+                        if let Some(seat) = seat {
+                            game.seat_left(seat);
+                        }
                         continue;
                     }
-                    if refused {
-                        log::warn!("refused {}: {reply:?}", link.peer);
-                        continue;
+                    match seat {
+                        Some(seat) => {
+                            log::info!("{} joined as {seat:?}", link.peer);
+                            self.links.push((seat, link));
+                        }
+                        None => log::warn!("refused {}: {reply:?}", link.peer),
                     }
-                    log::info!("{} joined", link.peer);
-                    self.link = Some(link);
-                    self.listener = None;
                 }
                 Join::WrongCode(addr) => {
                     self.refusals += 1;
@@ -355,11 +371,19 @@ impl Session {
         }
     }
 
-    fn disconnect(&mut self, game: &mut GameState, why: &str) {
-        self.link = None;
-        if !self.lost {
-            self.lost = true;
-            log::warn!("the other player is gone: {why}");
+    /// Drops the connection to `team`'s player: on the host, their side
+    /// goes to the AI (or, before the game starts, their seat opens again);
+    /// on a guest, the host is gone and the game with it.
+    fn drop_link(&mut self, game: &mut GameState, team: Team, why: &str) {
+        let before = self.links.len();
+        self.links.retain(|(t, _)| *t != team);
+        if self.links.len() == before {
+            return;
+        }
+        log::warn!("{team:?}'s player is gone: {why}");
+        if self.hosting {
+            game.seat_left(team);
+        } else {
             game.peer_lost();
         }
     }
@@ -395,6 +419,35 @@ mod tests {
         joining.join().unwrap()
     }
 
+    /// A small world's settings: one AI side, cities to start.
+    fn small() -> Settings {
+        Settings {
+            world_ai: 1,
+            ..Settings::default()
+        }
+    }
+
+    /// Pumps every game's session and plays out its turn until `done`, or
+    /// panics after a while.
+    fn pump_all_until(
+        games: &mut [(&mut Session, &mut GameState)],
+        done: impl Fn(&[&GameState]) -> bool,
+    ) {
+        let start = Instant::now();
+        loop {
+            let states: Vec<&GameState> = games.iter().map(|(_, g)| &**g).collect();
+            if done(&states) {
+                return;
+            }
+            assert!(start.elapsed() < Duration::from_secs(30), "timed out");
+            for (net, game) in games.iter_mut() {
+                net.pump(game);
+                game.update(1.0);
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// Pumps the host until `done`, or panics after a few seconds.
     fn pump_host_until(net: &mut Session, game: &mut GameState, done: impl Fn(&Session) -> bool) {
         let start = Instant::now();
@@ -407,15 +460,15 @@ mod tests {
 
     #[test]
     fn a_turn_plays_out_over_an_encrypted_connection() {
-        let (mut host_net, mut host) = Session::host(0).expect("listens");
+        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
         let code = host.join_code().unwrap().to_string();
         let (mut guest_net, mut guest) =
             join(&mut host_net, &mut host, &code.to_lowercase()).expect("joins, in any case");
-        assert!(
-            host_net.listener.is_none(),
-            "one guest, then no more listening"
-        );
+        assert_eq!(host_net.links.len(), 1);
         assert_eq!(host.checksum(), guest.checksum());
+        // A second guest finds the game full.
+        let error = join(&mut host_net, &mut host, &code).err().expect("full");
+        assert!(format!("{error:#}").contains("FULL"), "{error:#}");
 
         // Each city has something to build, so End Turn sends the plan.
         for game in [&mut host, &mut guest] {
@@ -446,7 +499,7 @@ mod tests {
 
     #[test]
     fn a_wrong_code_is_turned_away_and_counted() {
-        let (mut host_net, mut host) = Session::host(0).expect("listens");
+        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
         let error = join(&mut host_net, &mut host, "WRONG1")
             .err()
             .expect("refused");
@@ -456,7 +509,7 @@ mod tests {
         );
         pump_host_until(&mut host_net, &mut host, |n| n.refusals == 1);
         assert!(host_net.listener.is_some(), "still listening");
-        assert!(host_net.link.is_none());
+        assert!(host_net.links.is_empty());
         // The right code still gets in.
         let code = host.join_code().unwrap().to_string();
         join(&mut host_net, &mut host, &code).expect("joins");
@@ -464,7 +517,7 @@ mod tests {
 
     #[test]
     fn too_many_wrong_codes_stop_the_host_listening() {
-        let (mut host_net, mut host) = Session::host(0).expect("listens");
+        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
         for _ in 0..MAX_REFUSALS {
             assert!(join(&mut host_net, &mut host, "NOPE00").is_err());
         }
@@ -474,7 +527,7 @@ mod tests {
 
     #[test]
     fn garbage_and_silence_hold_up_no_real_guest() {
-        let (mut host_net, mut host) = Session::host(0).expect("listens");
+        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
         let port = host_net.port();
         let before = host.checksum();
         // A silent connection and one that sends garbage (from the same
@@ -492,7 +545,7 @@ mod tests {
 
     #[test]
     fn one_address_can_hold_only_a_few_joins_at_once() {
-        let (mut host_net, mut host) = Session::host(0).expect("listens");
+        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
         let port = host_net.port();
         let silent: Vec<TcpStream> = (0..MAX_HANDSHAKES_PER_ADDRESS + 2)
             .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
@@ -514,8 +567,64 @@ mod tests {
     }
 
     #[test]
+    fn three_players_play_over_the_network_and_one_leaving_hands_over_to_the_ai() {
+        let settings = Settings {
+            world_ai: 3,
+            ..Settings::default()
+        };
+        let (mut host_net, mut host) = Session::host(0, 3, &settings).expect("listens");
+        let code = host.join_code().unwrap().to_string();
+        let (mut red_net, mut red) = join(&mut host_net, &mut host, &code).expect("Red joins");
+        let (mut green_net, mut green) =
+            join(&mut host_net, &mut host, &code).expect("Green joins");
+        assert_eq!(host.open_seats(), []);
+        let end_turn = |game: &mut GameState| {
+            game.select_city();
+            game.queue_selected_city_gather();
+            game.end_planning();
+        };
+        for game in [&mut host, &mut red, &mut green] {
+            end_turn(game);
+        }
+        {
+            let mut games = [
+                (&mut host_net, &mut host),
+                (&mut red_net, &mut red),
+                (&mut green_net, &mut green),
+            ];
+            pump_all_until(&mut games, |g| {
+                g.iter().all(|g| g.turn() == 1 && !g.is_resolving())
+            });
+        }
+        assert_eq!(host.checksum(), red.checksum());
+        assert_eq!(host.checksum(), green.checksum());
+        host_net.pump(&mut host);
+        assert!(host_net.listener.is_none(), "no joining a game under way");
+
+        // Green's player goes: the host hands Green to the AI, tells Red,
+        // and the next turn goes on without them.
+        drop(green_net);
+        let mut games = [(&mut host_net, &mut host)];
+        pump_all_until(&mut games, |g| g[0].notice().contains("GREEN LEFT"));
+        for game in [&mut host, &mut red] {
+            end_turn(game);
+        }
+        let mut games = [(&mut host_net, &mut host), (&mut red_net, &mut red)];
+        pump_all_until(&mut games, |g| {
+            g.iter().all(|g| g.turn() == 2 && !g.is_resolving())
+        });
+        for _ in 0..50 {
+            host_net.pump(&mut host);
+            red_net.pump(&mut red);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(host.checksum(), red.checksum());
+        assert!(!host.notice().contains("DESYNC"), "{}", host.notice());
+    }
+
+    #[test]
     fn a_host_that_is_gone_says_so() {
-        let (mut host_net, mut host) = Session::host(0).expect("listens");
+        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
         let code = host.join_code().unwrap().to_string();
         let (mut guest_net, mut guest) = join(&mut host_net, &mut host, &code).expect("joins");
         drop(host_net);
@@ -529,6 +638,9 @@ mod tests {
             guest_net.pump(&mut guest);
             thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(guest.notice(), "BLUE LEFT - THE GAME CAN'T GO ON");
+        assert_eq!(
+            guest.notice(),
+            "BLUE (THE HOST) LEFT - THE GAME CAN'T GO ON"
+        );
     }
 }
