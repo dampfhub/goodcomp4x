@@ -315,9 +315,11 @@ enum UnitAction {
     Ability,
     Hold,
     Guard,
+    /// Stay put and attack enemies that come in range (`toggle_alert`).
+    Alert,
     Settle,
     Disband,
-    /// Drops every order, queue, hold and guard (Ctrl-right-click).
+    /// Drops every order, queue, hold, guard and alert (Ctrl-right-click).
     ClearOrders,
 }
 
@@ -729,6 +731,7 @@ impl GameState {
                 UnitAction::Ability => self.toggle_selected_ability(),
                 UnitAction::Hold => self.hold_selected_unit(),
                 UnitAction::Guard => self.toggle_guard(),
+                UnitAction::Alert => self.toggle_alert(),
                 UnitAction::Settle => self.found_city_selected(),
                 UnitAction::Disband => self.disband_selected(),
                 UnitAction::ClearOrders => self.handle_right_click(),

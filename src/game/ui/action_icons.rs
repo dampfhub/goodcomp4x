@@ -9,7 +9,7 @@ use crate::game::unit_icons::{self, UnitIcon};
 use crate::renderer::Vertex;
 
 pub(super) const ICON_BUTTON_SIZE: f32 = 40.0;
-pub(super) const CLASSIC_ICON_COLUMNS: usize = 4;
+pub(super) const CLASSIC_ICON_COLUMNS: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ActionIcon {
@@ -23,6 +23,7 @@ pub(super) enum ActionIcon {
     Lookout,
     Hold,
     Guard,
+    Alert,
     Clear,
     Disband,
     Settle,
@@ -39,6 +40,7 @@ pub(super) fn for_button(target: Target, label: &str) -> Option<ActionIcon> {
         Target::Unit(UnitAction::Swap) => ActionIcon::Swap,
         Target::Unit(UnitAction::Hold) => ActionIcon::Hold,
         Target::Unit(UnitAction::Guard) => ActionIcon::Guard,
+        Target::Unit(UnitAction::Alert) => ActionIcon::Alert,
         Target::Unit(UnitAction::ClearOrders) => ActionIcon::Clear,
         Target::Unit(UnitAction::Disband) => ActionIcon::Disband,
         Target::Unit(UnitAction::Settle) => ActionIcon::Settle,
@@ -114,6 +116,19 @@ pub(super) fn push_icon(
         }
         ActionIcon::Guard => {
             unit_icons::push_pictogram(center, radius, UnitIcon::Shield, color, out)
+        }
+        // A sight's reticle, as alert units wear on the map (`draw.rs`).
+        ActionIcon::Alert => {
+            mesh::polygon_outline(center, 0.52 * radius, 0.13 * radius, 24, 0.0, color, out);
+            for (inner, outer) in [
+                ((0.0, 0.26), (0.0, 0.86)),
+                ((0.0, -0.26), (0.0, -0.86)),
+                ((0.26, 0.0), (0.86, 0.0)),
+                ((-0.26, 0.0), (-0.86, 0.0)),
+            ] {
+                line(out, inner, outer, 0.13);
+            }
+            mesh::regular_polygon(center, 0.1 * radius, 12, 0.0, color, out);
         }
         ActionIcon::Volley => unit_icons::push_pictogram(center, radius, UnitIcon::Bow, color, out),
         ActionIcon::Charge => {
@@ -249,6 +264,7 @@ mod tests {
             ActionIcon::Lookout,
             ActionIcon::Hold,
             ActionIcon::Guard,
+            ActionIcon::Alert,
             ActionIcon::Clear,
             ActionIcon::Disband,
             ActionIcon::Settle,

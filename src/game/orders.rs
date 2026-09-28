@@ -9,6 +9,10 @@ use super::hex::Hex;
 /// Why a land troop that isn't ranged or siege can't attack a water hex.
 pub(super) const SHIPS_NOTICE: &str = "ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS";
 
+/// Why a unit can't go on alert.
+pub(super) const ALERT_NOTICE: &str =
+    "ONLY MELEE, CAVALRY, ARMORED, RANGED AND SET-UP SIEGE CAN GO ON ALERT";
+
 /// A click that would replace the selection's multi-turn queue, remembered
 /// until it's repeated: which hex, whether it was an attack, for which
 /// units, on which turn.
@@ -149,7 +153,7 @@ impl GameState {
                     self.units[selected].planned_board = Some(id);
                     self.units[selected].planned_move = None;
                     self.units[selected].planned_attack = None;
-                    self.units[selected].guarding = false;
+                    self.units[selected].wake();
                     self.units[selected].holding = false;
                     self.notice = "BOARDING LANDING CRAFT AFTER COMBAT".into();
                 } else {
@@ -373,8 +377,60 @@ impl GameState {
         unit.guarding = !unit.guarding;
         unit.cancel_queue();
         if unit.guarding {
+            // Guard and Alert are two stances; one ends the other.
+            unit.alert = false;
             self.select_next_or_end_turn(Some(idx));
         }
+    }
+
+    /// E or the Alert button: the selected unit (or group) goes on alert. It
+    /// drops this turn's move and attack and its queue, stays put and is
+    /// skipped in the turn order every turn, and in its attack step attacks
+    /// an enemy in range (`alert_target`), until it's given another order,
+    /// or E takes it off alert. Only troops that can (`can_go_on_alert`).
+    pub fn toggle_alert(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        if !self.group.is_empty() {
+            self.toggle_group_alert();
+            return;
+        }
+        let Some(idx) = self.selected.filter(|&i| self.is_player_controlled(i)) else {
+            return;
+        };
+        if self.units[idx].alert {
+            self.units[idx].alert = false;
+            return;
+        }
+        if !self.can_go_on_alert(idx) {
+            self.notice = ALERT_NOTICE.into();
+            return;
+        }
+        self.go_on_alert(idx);
+        self.select_next_or_end_turn(Some(idx));
+    }
+
+    /// Whether unit `idx` can go on alert: a troop that fights on land
+    /// (`Unit::alert_capable`: siege only set up), not a settler.
+    pub(super) fn can_go_on_alert(&self, idx: usize) -> bool {
+        let unit = &self.units[idx];
+        unit.alert_capable() && !self.settlers.contains(&unit.id)
+    }
+
+    /// Puts unit `idx` on alert, dropping whatever else it had planned but
+    /// its ability (a siege setting up keeps setting up).
+    pub(super) fn go_on_alert(&mut self, idx: usize) {
+        self.cancel_swap(idx);
+        let unit = &mut self.units[idx];
+        unit.planned_move = None;
+        unit.planned_attack = None;
+        unit.planned_board = None;
+        unit.planned_unload = None;
+        unit.holding = false;
+        unit.guarding = false;
+        unit.cancel_queue();
+        unit.alert = true;
     }
 
     /// Delete or the Disband button: removes the selected unit for good. The
@@ -502,13 +558,14 @@ impl GameState {
 
     /// Whether the unit still has something to plan: a move or an attack it
     /// could queue but hasn't. Any hex in range can be attacked, so a unit
-    /// that can attack needs orders until it does (or holds, guards, or
-    /// follows a queue built with Shift). A unit locked in a contested hex
-    /// already has its fight, so it's done.
+    /// that can attack needs orders until it does (or holds, guards, is on
+    /// alert, or follows a queue built with Shift). A unit locked in a
+    /// contested hex already has its fight, so it's done.
     pub(super) fn needs_orders(&self, idx: usize) -> bool {
         let unit = &self.units[idx];
         if unit.holding
             || unit.guarding
+            || unit.alert
             || unit.has_queue()
             || unit.planned_board.is_some()
             || self.rival_of(idx).is_some()
@@ -521,7 +578,7 @@ impl GameState {
     }
 
     /// Ctrl-right-click: clears all of the selected unit's (or group's)
-    /// orders, including a hold or guard.
+    /// orders, including a hold, guard or alert.
     pub fn handle_right_click(&mut self) {
         if self.is_resolving() {
             return;
@@ -533,7 +590,7 @@ impl GameState {
         if let Some(selected) = self.selected {
             self.cancel_swap(selected);
             self.units[selected].clear_orders();
-            self.units[selected].guarding = false;
+            self.units[selected].wake();
         }
     }
 
@@ -643,8 +700,8 @@ impl GameState {
             Some(dest)
         };
         unit.drop_unreachable_attack();
-        // Any order wakes a guarding unit, and replaces a queue.
-        unit.guarding = false;
+        // Any order wakes a guarding (or alert) unit, and replaces a queue.
+        unit.wake();
         unit.holding = false;
         unit.cancel_queue();
     }
@@ -714,7 +771,7 @@ impl GameState {
             } else {
                 Some(target)
             };
-            unit.guarding = false;
+            unit.wake();
             unit.holding = false;
             unit.cancel_queue();
         }
@@ -746,7 +803,7 @@ impl GameState {
         }
         for i in [idx, ally] {
             self.units[i].drop_unreachable_attack();
-            self.units[i].guarding = false;
+            self.units[i].wake();
             self.units[i].holding = false;
             self.units[i].cancel_queue();
         }
@@ -765,6 +822,9 @@ impl GameState {
         unit.ability_queued = !unit.ability_queued;
         // The queue was planned with the unit's old stats.
         unit.cancel_queue();
+        // Like any other order, it ends an alert (a siege packing up
+        // couldn't keep one). Set up first, then go on alert.
+        unit.alert = false;
         self.drop_orders_now_impossible(idx);
         self.advance_selection_if_done();
     }
@@ -804,7 +864,7 @@ mod tests {
     use super::*;
     use crate::game::JobKind;
     use crate::game::city::Building;
-    use crate::game::unit::Team;
+    use crate::game::unit::{Team, Unit, UnitType};
 
     #[test]
     fn a_held_unit_can_be_unheld_or_given_orders_again() {
@@ -924,5 +984,130 @@ mod tests {
         g.select_next_unit();
         assert_eq!(g.selected_city, None);
         assert_eq!(g.placing_job, None);
+    }
+
+    /// Two Blue melee side by side on an open field, and a Red one off to
+    /// the east; no cities, fog off.
+    fn alert_field(first: UnitType) -> GameState {
+        let mut g = GameState::city_scenario();
+        g.fog_of_war = false;
+        g.units.clear();
+        g.cities.clear();
+        g.field_workers.clear();
+        g.group.clear();
+        for (id, pos, team, unit_type) in [
+            (100, Hex::new(-4, 0), Team::Blue, first),
+            (101, Hex::new(-4, 1), Team::Blue, UnitType::Melee),
+            (102, Hex::new(-1, 0), Team::Red, UnitType::Melee),
+        ] {
+            g.units.push(Unit::new(id, pos, team, unit_type));
+        }
+        g.selected = Some(0);
+        g
+    }
+
+    #[test]
+    fn alert_drops_this_turns_orders_and_lasts_until_taken_off() {
+        let mut g = alert_field(UnitType::Melee);
+        g.try_queue_move(0, Hex::new(-3, 0));
+        assert!(g.units[0].planned_move.is_some());
+        g.toggle_alert();
+        let unit = &g.units[0];
+        assert!(unit.alert && unit.planned_move.is_none(), "it stays put");
+        assert!(!g.needs_orders(0), "skipped in the turn order");
+        assert_ne!(g.selected, Some(0), "selection moves on");
+        // Hold keeps it (Space on a unit on alert shouldn't end it).
+        g.selected = Some(0);
+        g.hold_selected_unit();
+        assert!(g.units[0].alert);
+        // E again takes it off, and it stays selected, needing orders.
+        g.selected = Some(0);
+        g.units[0].holding = false;
+        g.toggle_alert();
+        assert!(!g.units[0].alert);
+        assert_eq!(g.selected, Some(0));
+        assert!(g.needs_orders(0));
+    }
+
+    #[test]
+    fn any_other_order_ends_an_alert() {
+        type Order = fn(&mut GameState);
+        let orders: [(&str, Order); 8] = [
+            ("move", |g| g.try_queue_move(0, Hex::new(-3, 0))),
+            ("attack", |g| g.try_queue_attack(0, Hex::new(-3, 0))),
+            ("swap", |g| g.try_queue_swap(0, 1)),
+            ("queued move", |g| {
+                assert!(g.queue_move(Hex::new(-2, 0)));
+            }),
+            ("guard", |g| g.toggle_guard()),
+            ("ability", |g| g.toggle_selected_ability()),
+            ("ctrl-right-click", |g| g.handle_right_click()),
+            ("group move", |g| {
+                g.set_selection(vec![0, 1]);
+                g.group_order(Hex::new(-2, 0), ClickMode::Normal);
+            }),
+        ];
+        for (name, order) in orders {
+            let mut g = alert_field(UnitType::Melee);
+            g.toggle_alert();
+            assert!(g.units[0].alert, "{name}");
+            g.selected = Some(0);
+            order(&mut g);
+            assert!(!g.units[0].alert, "{name} ends the alert");
+        }
+        // Guard and Alert: going on alert ends a guard too.
+        let mut g = alert_field(UnitType::Melee);
+        g.toggle_guard();
+        g.selected = Some(0);
+        g.toggle_alert();
+        assert!(g.units[0].alert && !g.units[0].guarding);
+    }
+
+    #[test]
+    fn only_troops_that_fight_on_land_go_on_alert() {
+        for unit_type in [UnitType::Melee, UnitType::Ranged, UnitType::Cavalry] {
+            let mut g = alert_field(unit_type);
+            g.toggle_alert();
+            assert!(g.units[0].alert, "{unit_type:?}");
+        }
+        for unit_type in [UnitType::Scout, UnitType::Siege] {
+            let mut g = alert_field(unit_type);
+            g.toggle_alert();
+            assert!(!g.units[0].alert, "{unit_type:?}");
+            assert_eq!(g.notice, ALERT_NOTICE);
+        }
+        // A settler (a melee body) can't.
+        let mut g = alert_field(UnitType::Melee);
+        g.settlers.insert(100);
+        g.toggle_alert();
+        assert!(!g.units[0].alert);
+        // Siege once set up, or setting up this turn, can.
+        let mut g = alert_field(UnitType::Siege);
+        g.toggle_selected_ability();
+        g.selected = Some(0);
+        g.toggle_alert();
+        assert!(g.units[0].alert && g.units[0].ability_queued);
+        let mut g = alert_field(UnitType::Siege);
+        g.units[0].deployed = true;
+        g.toggle_alert();
+        assert!(g.units[0].alert);
+        // An enemy selected by hand isn't put on alert.
+        let mut g = alert_field(UnitType::Melee);
+        g.selected = Some(2);
+        g.toggle_alert();
+        assert!(!g.units[2].alert);
+    }
+
+    #[test]
+    fn a_group_goes_on_alert_together_leaving_out_those_that_cannot() {
+        let mut g = alert_field(UnitType::Scout);
+        g.set_selection(vec![0, 1]);
+        g.toggle_alert();
+        assert!(!g.units[0].alert, "a scout can't");
+        assert!(g.units[1].alert);
+        assert!(g.group.is_empty(), "selection moves on");
+        g.set_selection(vec![0, 1]);
+        g.toggle_alert();
+        assert!(!g.units[1].alert, "all that could were: they come off it");
     }
 }

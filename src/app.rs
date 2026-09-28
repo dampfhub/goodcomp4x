@@ -1068,6 +1068,7 @@ impl ApplicationHandler for App {
                     KeyCode::F12 => self.game.switch_scenario(Scenario::Siege),
                     KeyCode::KeyY => self.game.toggle_yields(),
                     KeyCode::KeyG => self.game.toggle_guard(),
+                    KeyCode::KeyE => self.game.toggle_alert(),
                     KeyCode::F5 => self.toggle_fullscreen(),
                     KeyCode::F6 => self.game.save_state(),
                     KeyCode::F7 => self.game.load_state(),

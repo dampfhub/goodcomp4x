@@ -306,12 +306,17 @@ impl GameState {
             let unit = &self.units[i];
             let start = unit.pos_after(turn);
             let reachable = if turn == 0 {
-                self.known_reachable_for_domain(
+                // Only enemies in sight close hexes: an ally may be moving
+                // off (`claimed` and `vacated_too_late` keep out the hexes
+                // allies stay on or leave too late), so a column following
+                // its leader doesn't stop behind it every turn.
+                self.known_reachable_past(
                     start,
                     unit.stats().move_range,
                     team,
                     fog,
                     unit.is_naval(),
+                    |hex| fog.sees(hex) && self.enemy_of_team_at(hex, team).is_some(),
                 )
             } else {
                 self.planned_reachable(
@@ -334,10 +339,21 @@ impl GameState {
                 })
             };
             // Staying put wins ties, so nobody shuffles sideways for nothing.
+            // Of the hexes as far along the way, the one nearest the target
+            // as the crow flies: many ways are equally short on hexes, and
+            // this keeps to the straightest, not one direction then another.
             let best = reachable
                 .into_iter()
                 .filter(|&hex| hex == start || !(claimed.contains(&hex) || vacated_too_late(hex)))
-                .min_by_key(|&hex| (away(hex), hex.distance(start), hex.q, hex.r));
+                .min_by_key(|&hex| {
+                    (
+                        away(hex),
+                        hex.distance(start),
+                        hex.straight_distance_sq(target),
+                        hex.q,
+                        hex.r,
+                    )
+                });
             let dest = best.filter(|&dest| dest != start);
             claimed.insert(dest.unwrap_or(start));
             legs.push((i, dest));
@@ -501,7 +517,7 @@ impl GameState {
             });
         }
         unit.following_queue = true;
-        unit.guarding = false;
+        unit.wake();
         unit.holding = false;
     }
 
@@ -512,7 +528,7 @@ impl GameState {
             n => unit.queued[n - 1].attack = Some(target),
         }
         unit.following_queue = true;
-        unit.guarding = false;
+        unit.wake();
         unit.holding = false;
     }
 
@@ -1284,6 +1300,24 @@ mod tests {
     }
 
     #[test]
+    fn a_column_keeps_moving_behind_its_leader() {
+        // Two in a line, the second right behind the first: planned again
+        // each turn, the second follows into the hex the first leaves
+        // rather than waiting behind it.
+        let mut g = open_field(&[UnitType::Melee, UnitType::Melee]);
+        g.units[0].pos = Hex::new(-3, 0);
+        g.units[1].pos = Hex::new(-4, 0);
+        g.set_selection(vec![0, 1]);
+        assert!(g.queue_move(Hex::new(1, 0)));
+        for _ in 0..3 {
+            let before = g.units[1].pos;
+            play_turn(&mut g);
+            assert_ne!(g.units[1].pos, before, "the follower waited");
+            assert!(g.units[1].has_queue());
+        }
+    }
+
+    #[test]
     fn a_queue_goes_around_an_ally_in_its_way() {
         let mut g = open_field(&[UnitType::Melee]);
         g.selected = Some(0);
@@ -1650,6 +1684,78 @@ mod tests {
         (0..unit.plan_len())
             .filter_map(|turn| unit.move_on_turn(turn))
             .collect()
+    }
+
+    #[test]
+    fn a_queued_path_never_depends_on_what_is_really_in_the_fog() {
+        use crate::game::terrain::Terrain;
+        for seed in 0..12 {
+            let mut game = GameState::solo_world(seed);
+            game.fog_of_war = true;
+            game.explore();
+            let team = game.local_team;
+            let movers: Vec<usize> = (0..game.units.len())
+                .filter(|&i| game.units[i].team == team && !game.units[i].is_naval())
+                .collect();
+            let unseen: Vec<Hex> = game
+                .grid
+                .all_hexes()
+                .filter(|&h| !game.is_explored(h))
+                .collect();
+            for &i in &movers {
+                let from = game.units[i].pos;
+                let mut targets: Vec<Hex> = unseen
+                    .iter()
+                    .copied()
+                    .filter(|h| h.distance(from) >= 8)
+                    .collect();
+                targets.sort_by_key(|h| (h.q * 7 + h.r * 13).rem_euclid(97));
+                for &target in targets.iter().take(6) {
+                    let plan = |mut g: GameState| {
+                        g.settings.max_queued_turns = 12;
+                        g.selected = Some(i);
+                        g.group.clear();
+                        g.queue_move(target);
+                        (0..g.units[i].plan_len())
+                            .map(|t| g.units[i].move_on_turn(t))
+                            .collect::<Vec<_>>()
+                    };
+                    let real = plan(game.clone());
+                    for fill in [Terrain::Mountains, Terrain::Ocean, Terrain::Plains] {
+                        let mut other = game.clone();
+                        for &h in &unseen {
+                            other.grid.set_tile(h, fill);
+                        }
+                        assert_eq!(
+                            plan(other),
+                            real,
+                            "seed {seed}: unit {i} at {from:?} to {target:?} with the fog full of {fill:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_queued_path_through_open_fog_keeps_to_the_straight_line() {
+        let (start, target) = (Hex::new(-5, 2), Hex::new(5, -3));
+        let mut game = field_in_fog(start, false);
+        game.settings.max_queued_turns = 12;
+        assert!(game.queue_move(target));
+        assert_eq!(
+            game.units[0].plan_len() as i32,
+            (start.distance(target) + 1) / 2
+        );
+        // Every stop is within a hex of the line from start to target, not
+        // one direction first and then the other.
+        let (a, b) = (start.to_world(), target.to_world());
+        let step = start.to_world().distance(start.neighbors()[0].to_world());
+        for stop in stops(&game, 0) {
+            let p = stop.to_world();
+            let off = (b - a).perp_dot(p - a).abs() / (b - a).length();
+            assert!(off <= step, "{stop:?} is {off} off the line");
+        }
     }
 
     #[test]

@@ -118,6 +118,15 @@ impl UnitType {
         }
     }
 
+    /// Whether units of this type go on alert: the land troops that fight
+    /// (siege only once set up, `Unit::alert_capable`).
+    pub fn takes_alert(self) -> bool {
+        matches!(
+            self,
+            Self::Melee | Self::Cavalry | Self::Armored | Self::Ranged | Self::Siege
+        )
+    }
+
     /// How many hexes around it the unit sees through the fog of war.
     pub fn sight(self) -> i32 {
         match self {
@@ -175,6 +184,10 @@ pub struct Unit {
     /// Like `holding`, but lasting across turns: the unit stays put and is
     /// skipped in the turn order until it's given an order or unguarded.
     pub guarding: bool,
+    /// On alert: like `guarding` (it stays put and is skipped in the turn
+    /// order until it's given another order), but in its attack step it
+    /// attacks an enemy in range (`GameState::alert_target`, `turn.rs`).
+    pub alert: bool,
     /// Scout only: spent last turn on lookout, so it sees farther until the
     /// end of this one.
     pub lookout: bool,
@@ -215,6 +228,7 @@ impl Unit {
             deployed: false,
             holding: false,
             guarding: false,
+            alert: false,
             lookout: false,
             queued: Vec::new(),
             following_queue: false,
@@ -309,13 +323,41 @@ impl Unit {
     }
 
     /// Whether the unit has anything Clear Orders would drop: a move, an
-    /// attack, a queue, a hold or a guard.
+    /// attack, a queue, a hold, a guard or an alert.
     pub fn has_orders(&self) -> bool {
         self.has_queue()
             || self.planned_move.is_some()
             || self.planned_attack.is_some()
             || self.holding
             || self.guarding
+            || self.alert
+    }
+
+    /// Ends a guard or an alert: any order to the unit does.
+    pub fn wake(&mut self) {
+        self.guarding = false;
+        self.alert = false;
+    }
+
+    /// Whether its type can go on alert: the land troops that fight (melee,
+    /// cavalry, armored, ranged), and siege once set up (or setting up this
+    /// turn), not while packing up. Scouts and ships can't; nor can
+    /// settlers (`GameState::can_go_on_alert`).
+    pub fn alert_capable(&self) -> bool {
+        let deploying = self.ability_queued && self.ability() == Ability::Deploy;
+        self.unit_type.takes_alert()
+            && (self.unit_type != UnitType::Siege || self.deployed != deploying)
+    }
+
+    /// Whether the unit has an order this turn besides a stance: a move, an
+    /// attack, a queue, boarding or landing. An alert unit stays put, so
+    /// any of these ends its alert.
+    pub fn has_turn_orders(&self) -> bool {
+        self.has_queue()
+            || self.planned_move.is_some()
+            || self.planned_attack.is_some()
+            || self.planned_board.is_some()
+            || self.planned_unload.is_some()
     }
 
     /// Whether the unit's plan reaches past this turn, so the map shows it as
