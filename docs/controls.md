@@ -277,8 +277,10 @@ them.
   disc. Settlers (a planted flag) are hollow hexagons.
 - Workers out on the map are small hollow hexagons with a shovel (tucked into a corner when a
   unit shares their hex), with a dotted line to the job they're walking to. A dark tag with a
-  shovel beside each of your cities counts its workers at home. Queued jobs are faded gold rings
-  with the job's name.
+  shovel beside each of your cities counts its workers at home. A job on a tile is a ring inside
+  the hex, open at the top where its name sits on a dark plate, nested inside a worked tile's
+  outline so both show: faded gold while queued, bright gold once a worker is out on it (with the
+  turns of work left once it's at work).
 - Structures: walls are stone bands along hex edges with posts in their owner's color; a gate is
   a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,
   a fort a ring of stakes around it. Queued walls and gates are muted gold edges with rounded ends,
