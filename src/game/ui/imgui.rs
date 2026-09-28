@@ -1557,6 +1557,14 @@ fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
         let center = [x + size / 2.0, middle];
         // The icon is built Y-up around the origin; ImGui's Y points down.
         let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+        // ImGui feathers every filled triangle's edges by a pixel, the
+        // inner ones too, which swells a text-sized icon into a blob: draw
+        // its triangles unfeathered.
+        let list = unsafe { ::imgui::sys::igGetWindowDrawList() };
+        let flags = unsafe { (*list).Flags };
+        let feathered =
+            ::imgui::sys::ImDrawListFlags_AntiAliasedFill as ::imgui::sys::ImDrawListFlags;
+        unsafe { (*list).Flags = flags & !feathered };
         for triangle in vertices.as_chunks::<3>().0 {
             let mut fill = triangle[0].color;
             if dim {
@@ -1566,6 +1574,7 @@ fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
                 .filled(true)
                 .build();
         }
+        unsafe { (*list).Flags = flags };
         x += size;
     }
     flush(&mut run, &mut x);

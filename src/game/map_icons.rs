@@ -260,14 +260,16 @@ pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out:
         // The small resource icons are flat, one color each, thinly edged,
         // so they read at text size.
         MapIcon::Food => {
-            let stem = [(0.0, 7.0), (0.0, -2.0)];
-            pen.line(&stem, 3.2, OUTLINE);
-            pen.line(&stem, 1.4, WHEAT);
-            for side in [-1.0, 1.0] {
-                let kernel = ellipse((2.0 * side, -1.0), 1.8, 2.9, 30.0 * side);
-                pen.shape(&kernel, WHEAT, 1.2);
+            // A wheat ear with no edge: a thin stem and well-spaced kernels,
+            // so the gaps between them survive at text size.
+            pen.line(&[(0.0, 9.5), (0.0, -1.0)], 1.0, WHEAT);
+            for y in [-0.5, -6.0] {
+                for side in [-1.0, 1.0] {
+                    let kernel = ellipse((3.3 * side, y), 1.6, 2.4, 25.0 * side);
+                    pen.shape(&kernel, WHEAT, 0.0);
+                }
             }
-            pen.shape(&ellipse((0.0, -5.5), 1.8, 2.9, 0.0), WHEAT, 1.2);
+            pen.shape(&ellipse((0.0, -9.0), 1.6, 2.4, 0.0), WHEAT, 0.0);
         }
         MapIcon::Wood => {
             // A plain log, leaning right.
@@ -280,9 +282,10 @@ pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out:
             pen.shape(&bar, METAL, 1.2);
         }
         MapIcon::Clock => {
-            pen.shape(&ellipse((0.0, 0.0), 7.5, 7.5, 0.0), CLOCK_FACE, 1.2);
-            pen.line(&[(0.0, 0.5), (0.0, -5.0)], 1.5, OUTLINE);
-            pen.line(&[(0.0, 0.5), (3.5, 2.0)], 1.5, OUTLINE);
+            // An open ring with two hands, all in one color.
+            pen.ring(&ellipse((0.0, 0.0), 7.5, 7.5, 0.0), 1.0, CLOCK_FACE);
+            pen.line(&[(0.0, 0.0), (0.0, -4.5)], 1.0, CLOCK_FACE);
+            pen.line(&[(0.0, 0.0), (3.5, 0.0)], 1.0, CLOCK_FACE);
         }
         MapIcon::Ruins => {
             pen.shape(
