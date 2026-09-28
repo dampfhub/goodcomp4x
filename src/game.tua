@@ -97,6 +97,8 @@ pub struct GameState {
     hovered_city: Option[i32],
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
+    /// Whether Alt is held, showing extra map info: units' turn order and every tile's yields.
+    show_details: bool,
     /// The action a command-tray button (or M, X) armed for the next map click.
     ui_click_mode: Option[ClickMode],
     inspected_tile: Option[Hex],
@@ -205,6 +207,7 @@ impl GameState {
             selected_city: Option.None,
             hovered_city: Option.None,
             show_yields: true,
+            show_details: false,
             ui_click_mode: Option.None,
             inspected_tile: Option.None,
             hovered_tile: Option.None,

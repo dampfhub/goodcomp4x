@@ -127,7 +127,10 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
         }
         Event.Focused(focused) => { if !focused { forget_gestures(input); } }
         Event.CursorLeft => forget_gestures(input),
-        Event.ModifiersChanged(m) => { input.mods = m; }
+        Event.ModifiersChanged(m) => {
+            input.mods = m;
+            game.set_details(m.alt);
+        }
         Event.MouseDown(b) => match b {
             Button.Left => {
                 if let Option.Some(cursor) = input.cursor {

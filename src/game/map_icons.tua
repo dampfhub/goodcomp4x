@@ -1,5 +1,6 @@
 //! Map icons: small pictures of strategic resources and tile improvements, drawn straight on
-//! the tile in the hex's top corners, and of special tiles and ruins in its bottom-left corner.
+//! the tile in the hex's top corners, of special tiles and ruins in its bottom-left corner, and
+//! of food and production in the yield rows.
 //! Each shape is edged in dark so it reads on any terrain. Shapes are laid out in the
 //! coordinates of the mockups they were designed in: a hex of radius 100 with Y pointing down,
 //! centered on the icon's spot.
@@ -67,6 +68,10 @@ pub enum MapIcon {
     OreCart,
     /// Pasture: a fence, two posts and two rails.
     Fence,
+    /// Food, on a yield chip: a small wheat stalk.
+    Food,
+    /// Production, on a yield chip: a hammer.
+    Production,
     /// Ruins: two broken columns on a slab.
     Ruins,
     /// Orchard: a fruit tree.
@@ -141,6 +146,21 @@ pub fn push_map_icon(center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec[Mesh
             pen.line(&left_post, 4.0, FRESH_WOOD, out);
             pen.line(&right_post, 4.0, FRESH_WOOD, out);
         }
+        MapIcon.Food => {
+            let stem = points(&[vec2(0.0, 7.0), vec2(0.0, -4.0)]);
+            pen.line(&stem, 3.8, OUTLINE, out);
+            pen.line(&stem, 1.6, WHEAT, out);
+            let rows = [1.0, -3.5];
+            for r in 0..2 {
+                pen.shape(&ellipse(vec2(-2.2, rows[r]), 1.9, 3.0, -30.0), WHEAT, 1.6, out);
+                pen.shape(&ellipse(vec2(2.2, rows[r]), 1.9, 3.0, 30.0), WHEAT, 1.6, out);
+            }
+            pen.shape(&ellipse(vec2(0.0, -7.0), 1.9, 3.0, 0.0), WHEAT, 1.6, out);
+        }
+        MapIcon.Production => {
+            pen.shape(&turned(&[vec2(-1.4, -3.0), vec2(1.4, -3.0), vec2(1.4, 9.0), vec2(-1.4, 9.0)], -40.0), WEATHERED_WOOD, 1.6, out);
+            pen.shape(&turned(&[vec2(-5.5, -8.0), vec2(5.5, -8.0), vec2(5.5, -3.0), vec2(-5.5, -3.0)], -40.0), STEEL_LIT, 1.6, out);
+        }
         MapIcon.Ruins => {
             pen.shape(&points(&[vec2(-16.0, 8.0), vec2(16.0, 8.0), vec2(16.0, 13.0), vec2(-16.0, 13.0)]), STONE_SHADE, 2.5, out);
             // A whole column with its capital, and a broken one.
@@ -169,6 +189,18 @@ pub fn push_map_icon(center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec[Mesh
 fn points(list: &[Vec2]) -> Vec[Vec2] {
     let mut out: Vec[Vec2] = Vec.new();
     for i in 0..list.len() { out.push(list[i]); }
+    out
+}
+
+/// `list` turned by `degrees` about the icon's center (clockwise on screen, as SVG's `rotate`
+/// with Y down).
+fn turned(list: &[Vec2], degrees: f32) -> Vec[Vec2] {
+    let turn = vec2_from_angle(degrees * pi() as f32 / 180.0);
+    let mut out: Vec[Vec2] = Vec.new();
+    for i in 0..list.len() {
+        let p = list[i];
+        out.push(vec2(p.x * turn.x - p.y * turn.y, p.x * turn.y + p.y * turn.x));
+    }
     out
 }
 

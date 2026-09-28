@@ -169,6 +169,7 @@ impl GameState {
             selected_city: self.selected_city,
             hovered_city: self.hovered_city,
             show_yields: self.show_yields,
+            show_details: self.show_details,
             ui_click_mode: self.ui_click_mode,
             inspected_tile: self.inspected_tile,
             hovered_tile: self.hovered_tile,

@@ -1,0 +1,169 @@
+//! Extra map info while Alt is held, and tile yields as die pips.
+
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use std.linalg.vec2;
+use renderer.pipelines.MeshVertex;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.draw.MOVE_ORDER_COLOR;
+use game.draw.YIELD_ROW_COLOR;
+use game.draw.YIELD_ROW_OFFSET;
+use game.draw.push_yield_row;
+use game.draw.yield_row;
+use game.hex.HEX_SIZE;
+use game.hex.Hex;
+use game.map_icons.MapIcon;
+use game.mesh.Color;
+use game.tests.sandbox;
+use game.unit.Team;
+
+fn count_color(vertices: &Vec[MeshVertex], color: Color) -> i32 {
+    let mut n = 0;
+    for k in 0..vertices.len() {
+        let c = vertices[k].color;
+        if c[0] == color[0] && c[1] == color[1] && c[2] == color[2] && c[3] == color[3] { n = n + 1; }
+    }
+    n
+}
+
+@test
+fn turn_order_numbers_show_only_while_alt_is_held() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.world_scenario(3);
+        game.explore();
+        assert(count_color(&game.build_vertices(), MOVE_ORDER_COLOR) == 0);
+        game.set_details(true);
+        assert(count_color(&game.build_vertices(), MOVE_ORDER_COLOR) > 0);
+        game.set_details(false);
+        assert(count_color(&game.build_vertices(), MOVE_ORDER_COLOR) == 0);
+    });
+}
+
+/// How many yield rows `game` draws, each pill being the same outline whatever its width.
+fn rows(game: &GameState) -> i32 {
+    let mut one: Vec[MeshVertex] = Vec.new();
+    push_yield_row(vec2(0.0, 0.0), 2, 1, &mut one);
+    count_color(&game.build_vertices(), YIELD_ROW_COLOR) / count_color(&one, YIELD_ROW_COLOR)
+}
+
+@test
+fn alt_shows_yields_on_every_explored_tile_outside_the_city_view() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.explore();
+        // The whole map in view.
+        game.camera.zoom(-1000.0);
+        let mut city = 0;
+        for c in 0..game.cities.len() { if game.cities[c].team == PLAYER_TEAM { city = c; } }
+        // No yields without the city view or Alt.
+        game.selected_city = Option.None;
+        assert(rows(&game) == 0);
+        // The open city shows its tiles' yields.
+        game.selected_city = Option.Some(city);
+        let in_reach = rows(&game);
+        assert(in_reach > 0);
+        game.selected_city = Option.None;
+        game.set_details(true);
+        let fog = game.fog();
+        let mut yielding = 0;
+        for h in game.grid.hexes() {
+            let hex = *h;
+            if !game.grid.terrain(hex).is_workable() || !game.is_explored(hex) { continue; }
+            let (food, production) = game.known_yield(hex, &fog);
+            if food != 0 || production != 0 { yielding = yielding + 1; }
+        }
+        assert(yielding > in_reach);
+        // A row on every tile that yields.
+        assert(rows(&game) == yielding);
+    });
+}
+
+/// How many distinct heights the icons of `yield_row(amount, 0)` sit at.
+fn pip_rows(amount: i32) -> i32 {
+    let row = yield_row(amount, 0);
+    let mut n = 0;
+    for k in 0..row.icons.len() {
+        if k == 0 || row.icons[k].at.y != row.icons[k - 1].at.y { n = n + 1; }
+    }
+    n
+}
+
+fn abs(x: f32) -> f32 { if x < 0.0 { -x } else { x } }
+
+@test
+fn yields_up_to_six_are_die_pips_and_more_are_a_number() {
+    for amount in 1..=6 {
+        let row = yield_row(amount, 0);
+        // No number needed.
+        assert(row.labels.is_empty());
+        assert(row.icons.len() == amount);
+    }
+    // 2 side by side.
+    assert(pip_rows(2) == 1);
+    // 3: one on top, centered over two.
+    let three = yield_row(3, 0);
+    assert(pip_rows(3) == 2);
+    assert(abs(three.icons[0].at.x) < 0.00001 && three.icons[0].at.y > three.icons[1].at.y);
+    // 4: a square.
+    let four = yield_row(4, 0);
+    assert(pip_rows(4) == 2);
+    assert(abs(four.icons[0].at.x + four.icons[1].at.x) < 0.00001);
+    // 5: a square with one in the middle.
+    let five = yield_row(5, 0);
+    let mut middle = false;
+    for k in 0..5 { if five.icons[k].at.length() < 0.00001 { middle = true; } }
+    assert(middle);
+    // 6: two rows of three.
+    let six = yield_row(6, 0);
+    assert(pip_rows(6) == 2);
+    let mut top = 0;
+    for k in 0..6 { if six.icons[k].at.y > 0.0 { top = top + 1; } }
+    assert(top == 3);
+
+    // Past six, one icon and the number after it.
+    let seven = yield_row(7, 0);
+    assert(seven.icons.len() == 1);
+    assert(seven.labels[0].amount == 7);
+    assert(seven.labels[0].at.x > seven.icons[0].at.x);
+    assert(yield_row(0, 0).icons.is_empty());
+}
+
+@test
+fn a_yield_row_puts_food_left_of_production_and_stays_inside_the_hex() {
+    let cases = [(2, 1), (6, 6), (12, 5), (3, 0), (0, 4)];
+    for c in 0..5 {
+        let (food, production) = cases[c];
+        let row = yield_row(food, production);
+        let mut rightmost_food = -1000.0;
+        let mut leftmost_production = 1000.0;
+        for k in 0..row.icons.len() {
+            let x = row.icons[k].at.x;
+            if row.icons[k].icon == MapIcon.Food { if x > rightmost_food { rightmost_food = x; } } else if x < leftmost_production { leftmost_production = x; }
+        }
+        assert(rightmost_food < leftmost_production);
+        // The pill's corners stay inside the hex's fill.
+        let corner = vec2(abs(YIELD_ROW_OFFSET.x - row.half.x), abs(YIELD_ROW_OFFSET.y - row.half.y));
+        let root3: f32 = 1.7320508;
+        assert(root3 * corner.x + corner.y <= HEX_SIZE * 0.92 * root3);
+    }
+}
+
+@test
+fn a_city_and_its_roads_in_the_fog_are_not_drawn() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // The Red city starts far out of Blue's sight.
+        let mut game = GameState.city_scenario();
+        game.explore();
+        game.camera.zoom(-1000.0);
+        let mut red = 0 - 1;
+        for c in 0..game.cities.len() { if game.cities[c].team == Team.Red { red = c; } }
+        assert(red >= 0 && !game.is_explored(game.cities[red].pos));
+        assert(count_color(&game.build_vertices(), Team.Red.color()) == 0);
+        // With the fog lifted, there it is.
+        game.toggle_fog();
+        assert(count_color(&game.build_vertices(), Team.Red.color()) > 0);
+    });
+}
