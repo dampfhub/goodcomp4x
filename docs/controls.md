@@ -116,10 +116,10 @@ plays out.
 | Click the manager (`M`), then a tile | Move the manager; workers follow where they can |
 | A | Auto-assign citizens by the city's labor focus |
 | Food / Production / Balanced buttons | Set the labor focus (and re-assign) |
-| Y / Yields button | Show or hide tile yields around the open city |
+| Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege (Cavalry and Armored train at a barracks on Horses / Iron) |
 | 4 / 5 / 6 / 7 | Queue Granary / Barracks / Mill / Workshop |
-| Scroll inside BUILDINGS in the city tray | Browse building cards without paging; Harbor and Coastal Battery appear only in cities whose center touches the sea |
+| Scroll inside the city production list | Browse unit and building cards in one list; coastal cards appear only in eligible cities |
 | Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
 | Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers) |
 | Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |

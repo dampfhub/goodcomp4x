@@ -14,10 +14,14 @@ the City / Building view scope.
 
 ImGui uses native windows, buttons, scrolling, drag/drop, hover tooltips, and
 input capture. It is drawn at the end of the existing Vulkan render pass.
+Action buttons in both presentations reveal keyboard shortcuts on hover while
+keeping costs and work times visible. Debug buttons keep their keys visible.
+Unit orders and city labor focus use shared vector-icon toolbars; hovering an
+icon gives its action name, shortcut and explanation.
 `ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible
 windows without overlap. A window follows the dock as its content changes
 until the player drags its title bar or resize grip; moved windows reserve
-their space so other panels avoid them. The production queue and the city tray's building catalogue have bounded heights and scroll internally when their content grows.
+their space so other panels avoid them. The production queue and the city tray's production catalogue have bounded heights and scroll internally when their content grows.
 Hold Ctrl to show the title bars, collapse buttons, and resize grips for
 arranging panels. During normal play, expanded panels hide their title bars;
 collapsed panels keep a short title bar so they can be expanded again. While
@@ -60,7 +64,7 @@ it as a layer of its own (`Layout::overlay`), after the other panels'
 buttons, so none shows through. ImGui draws it opaque for the same reason.
 Its content, `settings_panel_content`, has a `Row::Heading` for each
 `Setting::group` and a `Row::Setting` for every entry of `Setting::ALL`,
-then Close (`Target::CloseSettings`) and Quit. A setting's `control` picks
+then the City Yields overlay control, Close (`Target::CloseSettings`), and Quit. A setting's `control` picks
 its widget: ImGui (`render_setting`) puts the name in a label column and
 beside it a checkbox (`Control::Toggle`), a slider showing `value_text`
 (`Control::Slider`), or a button per value with the current one gold
@@ -170,4 +174,4 @@ Add a layout test when adding a new panel or zone behavior. Useful assertions
 are that panel rectangles do not overlap, buttons remain inside their panel,
 and the same target is clickable after the screen size or content changes.
 
-The city tray uses a shared `Row::BuildingCatalog`: ImGui renders it as a four-row child window with native scrolling, while classic renders a compact two-row inset with wheel and draggable scrollbar. All building cards remain in one list; no page buttons are needed.
+The city tray uses a shared `Row::BuildingCatalog` for unit and building production cards, separated by headings. ImGui renders it as a five-row child window with native scrolling; classic renders a five-row inset with wheel and draggable scrollbar. City unit cards use the same pictograms in both presentations. The top-bar Menu button opens Settings without leaving a city view; the City Yields overlay toggle lives there.

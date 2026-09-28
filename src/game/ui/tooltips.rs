@@ -516,6 +516,12 @@ impl GameState {
                             .then(|| format!("ALREADY {}", setting.value_text(current))),
                     )
                 }
+                Target::OpenSettings => (
+                    "SETTINGS".into(),
+                    String::new(),
+                    "GAME OPTIONS AND CITY OVERLAYS.".into(),
+                    None,
+                ),
                 Target::WorkerMode => (
                     "WORKERS".into(),
                     "W".into(),

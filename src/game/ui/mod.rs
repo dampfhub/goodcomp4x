@@ -20,6 +20,7 @@
 //! `tooltips.rs`, `text.rs` (number and text
 //! formatting), `tests.rs`.
 
+mod action_icons;
 mod builder;
 mod dock;
 mod imgui;
@@ -49,7 +50,7 @@ use dock::{Dock, Rect, Zone};
 pub use imgui::ImGuiLayoutState;
 use paint::{draw_button, draw_chip_hover, draw_shape};
 
-const BUILDING_LIST_VISIBLE: usize = 2;
+const BUILDING_LIST_VISIBLE: usize = 5;
 use queue::queue_items_that_fit;
 
 type Color = [f32; 4];
@@ -158,6 +159,7 @@ enum Target {
     Unit(UnitAction),
     Build(BuildUnit),
     ToggleYields,
+    OpenSettings,
     Building(Building),
     BarracksBuild(BuildUnit),
     OpenBarracks,
@@ -632,6 +634,7 @@ impl GameState {
             Target::QueueItem(kind, index) => self.queue_item_clicked(kind, index),
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
+            Target::OpenSettings => self.settings_open = true,
             Target::Building(building) => self.queue_selected_city_building(building),
             Target::BarracksBuild(build) => self.queue_selected_barracks_unit(build),
             Target::OpenBarracks => {
@@ -725,8 +728,7 @@ impl GameState {
             self.barracks_tray(city, &mut tray);
         } else if let Some(idx) = self.selected {
             self.unit_info(idx, &mut tray);
-            tray.gap(GAP);
-            tray.buttons(self.unit_buttons(idx));
+            tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         } else if self.worker_mode {

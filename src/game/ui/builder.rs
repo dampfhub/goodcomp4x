@@ -1,12 +1,13 @@
 //! `PanelBuilder`, the panel content primitive, and its text and button measuring.
 
+use super::action_icons::{self, CLASSIC_ICON_COLUMNS, ICON_BUTTON_SIZE};
 use super::settings_menu::classic_setting_rows;
 use super::{
     BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
     BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GOLD_TEXT, GROWTH_BAR_HEIGHT,
-    LINE_GAP, Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT, QUEUE_REMOVE_WIDTH,
-    QueueItemRegion, QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP, ROSTER_CHIP_GAP,
-    RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
+    LABEL_TEXT, LINE_GAP, Layout, Line, PADDING, QUEUE_ITEM_GAP, QUEUE_ITEM_HEIGHT,
+    QUEUE_REMOVE_WIDTH, QueueItemRegion, QueueItemSpec, QueueKind, QueueScrollRegion, ROSTER_CHIP,
+    ROSTER_CHIP_GAP, RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, Target, UnitAction,
 };
 use crate::game::font::{self, Face};
 use crate::game::settings::Setting;
@@ -34,6 +35,59 @@ impl ButtonSpec {
     }
 }
 
+/// Keep costs and work times on buttons, but reveal keyboard shortcuts only
+/// while the button is hovered. `hint` remains intact for help tooltips.
+pub(super) fn visible_button_hint(hint: &str, reveal_shortcut: bool) -> &str {
+    if reveal_shortcut {
+        return hint;
+    }
+    for separator in [" · ", " | "] {
+        if let Some((prefix, rest)) = hint.split_once(separator)
+            && is_shortcut(prefix)
+        {
+            return if is_shortcut(rest) { "" } else { rest };
+        }
+    }
+    if is_shortcut(hint) || matches!(hint, "AUTO" | "CLICK") {
+        ""
+    } else {
+        hint
+    }
+}
+
+pub(super) fn icon_row(buttons: &[ButtonSpec]) -> bool {
+    !buttons.is_empty()
+        && buttons
+            .iter()
+            .all(|button| action_icons::for_button(button.target, &button.label).is_some())
+}
+
+fn is_shortcut(text: &str) -> bool {
+    let text = text.trim();
+    if let Some((first, second)) = text.split_once(" / ") {
+        return is_shortcut(first) && is_shortcut(second);
+    }
+    if let Some(rest) = text
+        .strip_prefix("CTRL-")
+        .or_else(|| text.strip_prefix("CTRL+"))
+    {
+        return is_shortcut(rest);
+    }
+    if let Some(rest) = text.strip_prefix("SHIFT+") {
+        return is_shortcut(rest);
+    }
+    matches!(
+        text,
+        "CTRL" | "SHIFT" | "ALT" | "SPACE" | "ESC" | "DEL" | "BACKSPACE" | "RMB"
+    ) || (text.len() == 1
+        && text
+            .bytes()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        || text
+            .strip_prefix('F')
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit()))
+}
+
 #[derive(Clone)]
 pub(super) enum Row {
     Text(u32, Line),
@@ -43,7 +97,7 @@ pub(super) enum Row {
     /// Buttons of equal width; compact ones are one line, label then hint.
     Buttons(Vec<ButtonSpec>, bool),
     /// A bounded, independently scrollable list within the city tray.
-    BuildingCatalog(usize, Vec<ButtonSpec>, usize),
+    BuildingCatalog(usize, Vec<CatalogEntry>, usize),
     /// A row of unit tokens in the unit strip.
     Roster(Vec<RosterChip>),
     /// A heading over a group of rows, with a rule under it in ImGui.
@@ -52,6 +106,12 @@ pub(super) enum Row {
     /// `Setting::control` names: ImGui draws that widget, classic places
     /// the buttons `settings_menu::classic_setting_rows` lays out.
     Setting(Setting, i32),
+}
+
+#[derive(Clone)]
+pub(super) enum CatalogEntry {
+    Heading(&'static str),
+    Card(ButtonSpec),
 }
 
 /// Reusable panel content primitive. Stacks rows top to bottom and measures
@@ -86,10 +146,10 @@ impl PanelBuilder {
     pub(super) fn building_catalog(
         &mut self,
         city: usize,
-        buttons: Vec<ButtonSpec>,
+        entries: Vec<CatalogEntry>,
         offset: usize,
     ) {
-        self.rows.push(Row::BuildingCatalog(city, buttons, offset));
+        self.rows.push(Row::BuildingCatalog(city, entries, offset));
     }
 
     /// A row of unit tokens, each clickable.
@@ -113,6 +173,14 @@ impl PanelBuilder {
         self.rows.push(Row::Buttons(buttons, false));
     }
 
+    /// A labeled order toolbar; pictograms and click targets stay shared
+    /// between the classic and ImGui presentations.
+    pub(super) fn action_toolbar(&mut self, buttons: Vec<ButtonSpec>) {
+        self.gap(GAP);
+        self.text(SMALL, vec![("ORDERS".into(), LABEL_TEXT)]);
+        self.buttons(buttons);
+    }
+
     /// A row of equally wide one-line buttons.
     pub(super) fn compact_buttons(&mut self, buttons: Vec<ButtonSpec>) {
         self.space_button_rows();
@@ -133,6 +201,10 @@ impl PanelBuilder {
             Row::Gap(height) => *height,
             Row::Bar(_) => GROWTH_BAR_HEIGHT,
             Row::QueueItem(_) => QUEUE_ITEM_HEIGHT,
+            Row::Buttons(buttons, _) if icon_row(buttons) => {
+                let rows = buttons.len().div_ceil(CLASSIC_ICON_COLUMNS);
+                rows as f32 * ICON_BUTTON_SIZE + rows.saturating_sub(1) as f32 * GAP
+            }
             Row::Buttons(_, false) => BUTTON_HEIGHT,
             Row::Buttons(_, true) => END_TURN_HEIGHT,
             Row::Roster(_) => ROSTER_CHIP,
@@ -152,12 +224,22 @@ impl PanelBuilder {
                 font::ui(SMALL).width(&item.label) + 2.0 * BUTTON_PADDING + QUEUE_REMOVE_WIDTH
             }
             Row::Buttons(buttons, compact) => {
-                let width = button_width(buttons, *compact);
-                buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
+                if icon_row(buttons) {
+                    let columns = buttons.len().min(CLASSIC_ICON_COLUMNS);
+                    columns as f32 * ICON_BUTTON_SIZE + columns.saturating_sub(1) as f32 * GAP
+                } else {
+                    let width = button_width(buttons, *compact);
+                    buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
+                }
             }
-            Row::BuildingCatalog(_, buttons, _) => buttons
+            Row::BuildingCatalog(_, entries, _) => entries
                 .iter()
-                .map(|button| single_line_button_width(&button.label, &button.hint))
+                .filter_map(|entry| match entry {
+                    CatalogEntry::Card(button) => {
+                        Some(single_line_button_width(&button.label, &button.hint))
+                    }
+                    CatalogEntry::Heading(_) => None,
+                })
                 .fold(320.0, f32::max),
             Row::Roster(chips) => {
                 chips.len() as f32 * ROSTER_CHIP
@@ -275,9 +357,29 @@ impl PanelBuilder {
                     });
                 }
                 Row::Buttons(buttons, compact) => {
-                    let width = button_width(&buttons, compact);
+                    let icons = icon_row(&buttons);
+                    let width = if icons {
+                        ICON_BUTTON_SIZE
+                    } else {
+                        button_width(&buttons, compact)
+                    };
                     for (i, spec) in buttons.into_iter().enumerate() {
-                        let min = Vec2::new(left + i as f32 * (width + GAP), top - height);
+                        let (min, size) = if icons {
+                            let column = i % CLASSIC_ICON_COLUMNS;
+                            let row = i / CLASSIC_ICON_COLUMNS;
+                            (
+                                Vec2::new(
+                                    left + column as f32 * (ICON_BUTTON_SIZE + GAP),
+                                    top - ICON_BUTTON_SIZE - row as f32 * (ICON_BUTTON_SIZE + GAP),
+                                ),
+                                Vec2::splat(ICON_BUTTON_SIZE),
+                            )
+                        } else {
+                            (
+                                Vec2::new(left + i as f32 * (width + GAP), top - height),
+                                Vec2::new(width, height),
+                            )
+                        };
                         layout.buttons.push(Button {
                             target: spec.target,
                             label: spec.label,
@@ -286,7 +388,7 @@ impl PanelBuilder {
                             armed: spec.armed,
                             faded: self.faded,
                             min: min.round(),
-                            max: (min + Vec2::new(width, height)).round(),
+                            max: (min + size).round(),
                         });
                     }
                 }
@@ -304,21 +406,29 @@ impl PanelBuilder {
                     let list_width =
                         inner_width - 8.0 - if overflow { SCROLLBAR_WIDTH + 4.0 } else { 0.0 };
                     let offset = offset.min(buttons.len().saturating_sub(visible));
-                    for (index, spec) in buttons.into_iter().enumerate().skip(offset).take(visible)
+                    for (index, entry) in buttons.into_iter().enumerate().skip(offset).take(visible)
                     {
                         let y = region_max.y - 4.0 - (index - offset) as f32 * 34.0;
                         let max = Vec2::new(left + 4.0 + list_width, y).round();
                         let min = Vec2::new(left + 4.0, y - 30.0).round();
-                        layout.buttons.push(Button {
-                            target: spec.target,
-                            label: spec.label,
-                            hint: spec.hint,
-                            state: spec.state,
-                            armed: spec.armed,
-                            faded: self.faded,
-                            min,
-                            max,
-                        });
+                        match entry {
+                            CatalogEntry::Card(spec) => layout.buttons.push(Button {
+                                target: spec.target,
+                                label: spec.label,
+                                hint: spec.hint,
+                                state: spec.state,
+                                armed: spec.armed,
+                                faded: self.faded,
+                                min,
+                                max,
+                            }),
+                            CatalogEntry::Heading(label) => push_text_row(
+                                layout,
+                                Vec2::new(min.x + 4.0, (min.y + max.y) / 2.0),
+                                SMALL,
+                                vec![(label.into(), LABEL_TEXT)],
+                            ),
+                        }
                     }
                     if overflow {
                         let track_min =
@@ -433,4 +543,28 @@ pub(super) fn push_text_row(layout: &mut Layout, left_middle: Vec2, px: u32, lin
 
 pub(super) fn line_width(face: &Face, line: &Line) -> f32 {
     line.iter().map(|(span, _)| face.width(span)).sum()
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::visible_button_hint;
+
+    #[test]
+    fn shortcuts_wait_for_hover_but_costs_and_work_times_stay_visible() {
+        for (hint, idle) in [
+            ("SPACE", ""),
+            ("V / ESC", ""),
+            ("CTRL-RMB", ""),
+            ("X · RMB", ""),
+            ("7 · 15 PROD", "15 PROD"),
+            ("8 | 20 PROD", "20 PROD"),
+            ("R · 2T", "2T"),
+            ("HORSES · 16", "HORSES · 16"),
+            ("3T", "3T"),
+            ("SEND IT HOME", "SEND IT HOME"),
+        ] {
+            assert_eq!(visible_button_hint(hint, false), idle, "{hint}");
+            assert_eq!(visible_button_hint(hint, true), hint, "{hint}");
+        }
+    }
 }
