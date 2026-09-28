@@ -3,7 +3,11 @@
 use glam::Vec2;
 
 use super::GameState;
+use super::fog::Fog;
 use super::hex::Hex;
+
+/// Why a land troop that isn't ranged or siege can't attack a water hex.
+pub(super) const SHIPS_NOTICE: &str = "ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS";
 
 /// A click that would replace the selection's multi-turn queue, remembered
 /// until it's repeated: which hex, whether it was an attack, for which
@@ -626,24 +630,42 @@ impl GameState {
         unit.cancel_queue();
     }
 
-    /// Shared exterior attack rule for direct, group, queued, AI and
-    /// resolving orders. `later` ignores this turn's deploy and contest lock.
+    /// Shared exterior attack rule for the AI's and resolving orders, on the
+    /// real board. `later` ignores this turn's deploy and contest lock.
     pub(super) fn attack_target_legal(&self, idx: usize, target: Hex, later: bool) -> bool {
+        self.attack_rule(idx, target, later)
+            && !self.empty_city_target(target, self.units[idx].team)
+    }
+
+    /// `attack_target_legal` as the player knows the board, for the orders
+    /// the player plans (direct, group and queued): a city center out of
+    /// sight may have someone standing in it, so it's never refused as
+    /// empty (`known_empty_city_target`), and whether it's accepted gives
+    /// nothing away. If it's empty when the attack comes, it misses.
+    pub(super) fn known_attack_target_legal(
+        &self,
+        idx: usize,
+        target: Hex,
+        later: bool,
+        fog: &Fog,
+    ) -> bool {
+        self.attack_rule(idx, target, later)
+            && !self.known_empty_city_target(target, self.units[idx].team, fog)
+    }
+
+    /// Everything in the attack rule but the empty city center: the unit can
+    /// attack (this turn, unless `later`), and the target is open ground, or
+    /// water for a ship or a ranged or siege land troop.
+    fn attack_rule(&self, idx: usize, target: Hex, later: bool) -> bool {
         let unit = &self.units[idx];
         if unit.unit_type == super::unit::UnitType::LandingCraft
             || (!later && (!unit.can_attack() || self.rival_of(idx).is_some()))
             || !(self.grid.is_passable(target)
                 || (self.grid.contains(target) && self.grid.terrain(target).is_water()))
-            || self.empty_city_target(target, unit.team)
         {
             return false;
         }
-        !self.grid.terrain(target).is_water()
-            || unit.is_naval()
-            || matches!(
-                unit.unit_type,
-                super::unit::UnitType::Ranged | super::unit::UnitType::Siege
-            )
+        !self.grid.terrain(target).is_water() || unit.attacks_water()
     }
 
     /// Toggles an attack on `target`, measured from the unit's planned
@@ -653,20 +675,17 @@ impl GameState {
     pub(super) fn try_queue_attack(&mut self, idx: usize, target: Hex) {
         if self.grid.contains(target)
             && self.grid.terrain(target).is_water()
-            && !self.units[idx].is_naval()
-            && !matches!(
-                self.units[idx].unit_type,
-                super::unit::UnitType::Ranged | super::unit::UnitType::Siege
-            )
+            && !self.units[idx].attacks_water()
         {
-            self.notice = "ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS".into();
+            self.notice = SHIPS_NOTICE.into();
             return;
         }
-        if self.empty_city_target(target, self.units[idx].team) {
+        let fog = self.fog();
+        if self.known_empty_city_target(target, self.units[idx].team, &fog) {
             self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return;
         }
-        if !self.attack_target_legal(idx, target, false) {
+        if !self.known_attack_target_legal(idx, target, false, &fog) {
             return;
         }
         let unit = &mut self.units[idx];

@@ -222,6 +222,12 @@ impl Unit {
         self.unit_type.is_naval()
     }
 
+    /// Whether it may attack a water hex: ships, and ranged and siege land
+    /// troops firing at them from the shore.
+    pub fn attacks_water(&self) -> bool {
+        self.is_naval() || matches!(self.unit_type, UnitType::Ranged | UnitType::Siege)
+    }
+
     pub fn ability(&self) -> Ability {
         Ability::of(self.unit_type)
     }
