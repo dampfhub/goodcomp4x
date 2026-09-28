@@ -4,8 +4,9 @@
 //!   shown as they are;
 //! - remembered: hexes seen before but out of sight now, shown under a dark
 //!   tint as they were when last seen (`Sighting`): cities, barracks,
-//!   improvements, roads and structures. Units and workers move, so they
-//!   aren't remembered: out of sight, none is known to be anywhere;
+//!   improvements, roads, structures, and other sides' construction
+//!   (`SeenJob`). Units and workers move, so they aren't remembered: out of
+//!   sight, none is known to be anywhere;
 //! - unexplored: never seen, covered by clouds (`push_cloud_banks`, `draw.rs`).
 //!
 //! A debug setting (F10) turns the fog off. The AI ignores it.
@@ -16,7 +17,9 @@ use super::fast_hash::{HashMap, HashSet};
 use super::hex::{Hex, edge};
 use super::terrain::Terrain;
 use super::unit::{Team, Unit};
-use super::workers::{FieldWorker, OUTPOST_SIGHT, Structure, StructureKind, WORKER_SIGHT};
+use super::workers::{
+    FieldWorker, OUTPOST_SIGHT, Structure, StructureKind, WORKER_SIGHT, WorkerJob,
+};
 
 /// How far a city sees, and a barracks.
 const CITY_SIGHT: i32 = 3;
@@ -73,6 +76,20 @@ pub(super) struct Sighting {
     pub yields: (i32, i32, i32),
     /// Unclaimed ruins (`ruins.rs`).
     pub ruin: bool,
+    /// What other sides' workers standing here were building: on the
+    /// tile, or a wall or gate on one of its edges.
+    pub construction: Vec<SeenJob>,
+}
+
+/// Another side's construction: a job one of its workers is at work on
+/// (standing at it, with work left). Only what's on the ground: not the jobs
+/// it has queued or is walking to, nor how long the work will take.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct SeenJob {
+    pub job: WorkerJob,
+    pub team: Team,
+    /// The job's name, like "BARRACKS" or "FARM" (`job_name`).
+    pub name: &'static str,
 }
 
 #[derive(Clone, Copy)]
@@ -214,7 +231,27 @@ impl GameState {
                 .collect(),
             yields: self.raw_yield(hex),
             ruin: self.ruin_at(hex).is_some(),
+            construction: self
+                .field_workers
+                .iter()
+                .filter(|w| w.pos == hex)
+                .filter_map(|w| self.others_construction(w))
+                .collect(),
         }
+    }
+
+    /// The job `worker` is at work on, if it belongs to another side than
+    /// the player's: what the player may see of it.
+    pub(super) fn others_construction(&self, worker: &FieldWorker) -> Option<SeenJob> {
+        if worker.team == self.local_team || worker.recalled || worker.work_left.is_none() {
+            return None;
+        }
+        let job = worker.job.filter(|job| job.hex == worker.pos)?;
+        Some(SeenJob {
+            job,
+            team: worker.team,
+            name: self.job_name(job),
+        })
     }
 
     // What the player knows: a hex in sight as it is, one out of sight as last
@@ -682,6 +719,48 @@ pub(super) mod tests {
         glance_at(&mut game, cavalry, hidden);
         let fog = game.fog();
         assert!(!game.known_enemy_target_at(hidden, Team::Blue, &fog));
+    }
+
+    #[test]
+    fn the_memory_keeps_other_sides_construction_but_not_their_plans() {
+        use crate::game::city::Building;
+        use crate::game::workers::{FieldWorker, JobKind};
+        let (mut game, cavalry, hidden) = behind_the_mountain();
+        let job = WorkerJob::on_tile(hidden, JobKind::Build(Building::Barracks));
+        let worker = |team: Team, work_left: Option<u32>| FieldWorker {
+            id: 7,
+            team,
+            home: 0,
+            base: hidden,
+            pos: hidden,
+            job: Some(job),
+            work_left,
+            recalled: false,
+        };
+        let construction = |game: &GameState| game.remembered(hidden).unwrap().construction.clone();
+        // Just arrived, not yet at work: nothing on the ground.
+        game.field_workers = vec![worker(Team::Red, None)];
+        glance_at(&mut game, cavalry, hidden);
+        assert!(construction(&game).is_empty());
+        // At work: remembered with its side and name, and nothing else.
+        game.field_workers = vec![worker(Team::Red, Some(3))];
+        glance_at(&mut game, cavalry, hidden);
+        let seen = SeenJob {
+            job,
+            team: Team::Red,
+            name: "BARRACKS",
+        };
+        assert_eq!(construction(&game), vec![seen]);
+        // Finished out of sight: still as last seen.
+        game.field_workers.clear();
+        game.explore();
+        assert_eq!(construction(&game), vec![seen]);
+        // The player's own jobs are drawn from the board, not remembered
+        // (and a worker of theirs sees its tile).
+        game.field_workers = vec![worker(PLAYER_TEAM, Some(3))];
+        game.explore();
+        assert!(game.fog().sees(hidden));
+        assert!(construction(&game).is_empty());
     }
 
     #[test]

@@ -280,7 +280,9 @@ them.
   shovel beside each of your cities counts its workers at home. A job on a tile is a ring inside
   the hex, open at the top where its name sits on a dark plate, nested inside a worked tile's
   outline so both show: faded gold while queued, bright gold once a worker is out on it (with the
-  turns of work left once it's at work).
+  turns of work left once it's at work). Another side's construction you can see (its worker at
+  work there) is the same ring, or edge for a wall or gate, in that side's color and named, with
+  no turns left.
 - Structures: walls are stone bands along hex edges with posts in their owner's color; a gate is
   a wall with a door in its owner's color in the middle. An outpost is a watchtower on its tile,
   a fort a ring of stakes around it. Queued walls and gates are muted gold edges with rounded ends,
@@ -296,8 +298,8 @@ them.
   are water (ships enter it, land units do not; cities can work it). Terrain defense and yields are in
   `game-rules.md`.
 - Fog of war: never-seen hexes are under clouds; hexes you've seen but can't see now are under a
-  grey veil and show the cities, improvements, roads and structures that were there when you
-  last looked, but no units or workers.
+  grey veil and show the cities, improvements, roads, structures and other sides' construction
+  that were there when you last looked, but no units or workers.
 - In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
   the manager; hovering the manager draws a dotted line along the way its goods travel to the
   city. Green grain and amber hammers show food and production, with the share that reaches the

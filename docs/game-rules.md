@@ -160,8 +160,15 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   moved elsewhere until it reopens (see Cities), so an enemy that ends a turn on a worked tile
   stays in sight. Only the tile itself is seen, not the hexes around it.
 - A mountain strictly between two hexes blocks sight; the mountain itself is visible.
+- Another side's construction shows where the player sees the tile its worker stands on while
+  at work there (arrived, with work left): the job's ring on the tile, or a wall or gate on its
+  edge, in that side's color and named (BARRACKS, FARM, WALL), but with no turns left, which
+  would give away its Workshop. Jobs it has queued or a worker is still walking to are its plans,
+  not something on the ground, and don't show.
 - Every frame, each hex in sight is recorded as last seen: cities, barracks (with their
-  health), improvements, roads and structures. Units and workers aren't remembered, since they
+  health), improvements, roads, structures and other sides' construction, so a building seen
+  going up stays on the map as last seen until the tile is seen again. Units and workers aren't
+  remembered, since they
   move: out of sight, the player knows of none anywhere. Planning goes around the walls and gates
   the player knows of. Remembered hexes out of sight draw that memory under a dark tint, keeping
   the terrain readable. Unexplored tiles lie under a dense cover of muted cumulus: soft-edged
