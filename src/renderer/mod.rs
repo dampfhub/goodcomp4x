@@ -360,6 +360,12 @@ impl Renderer {
                     .wait_for_fences(&[self.sync.in_flight[other_frame]], true, u64::MAX)
             }?;
         }
+        // A swapchain recreation that failed partway (`cleanup_swapchain`
+        // ran, the rest didn't) left nothing to draw with: try again rather
+        // than draw.
+        if self.command_buffers.is_empty() {
+            return unsafe { self.recreate_swapchain() };
+        }
         let ranges = unsafe { self.write_vertices(batches) }?;
         // Before acquiring, so a failure here doesn't strand an acquired
         // image. A swapchain rebuilt below makes it the wrong size, but then

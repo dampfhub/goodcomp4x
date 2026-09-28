@@ -267,6 +267,7 @@ impl App {
         if let Some(renderer) = &self.renderer {
             renderer.wait_idle();
         }
+        log::error!("{err:#}");
         self.failure.get_or_insert(err);
         event_loop.exit();
     }
@@ -288,7 +289,8 @@ impl App {
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
-        if self.minimized {
+        // Failed and on the way out: winit may ask for one more frame.
+        if self.minimized || self.failure.is_some() {
             return;
         }
 
