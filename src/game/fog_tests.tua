@@ -126,6 +126,17 @@ fn a_group_click_on_an_unseen_enemy_moves_there() {
 }
 
 @test
+fn a_move_toward_an_unseen_enemy_survives_an_order_check() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        game.units.push(Unit.new(2, HIDDEN, Team.Red, UnitType.Melee));
+        game.queue_order_at(0, HIDDEN);
+        game.drop_orders_now_impossible(0);
+        assert(game.units[0].planned_move == Option.Some(HIDDEN));
+    });
+}
+
+@test
 fn unseen_units_do_not_shape_the_move_range() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = behind_the_mountain();
