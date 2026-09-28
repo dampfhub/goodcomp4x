@@ -140,34 +140,6 @@ impl UnitType {
     pub fn sight(self) -> i32 {
         match self { UnitType.Scout | UnitType.Cavalry | UnitType.PatrolGalley => 3, _ => 2 }
     }
-
-    /// Side count of the placeholder icon polygon, until the pictograms are drawn.
-    pub fn icon_sides(self) -> u32 {
-        match self {
-            UnitType.Melee => 3,
-            UnitType.Ranged => 4,
-            UnitType.Cavalry => 5,
-            UnitType.Siege => 8,
-            UnitType.Scout => 6,
-            UnitType.Armored => 4,
-            UnitType.PatrolGalley | UnitType.LandingCraft | UnitType.BombardShip => 12,
-        }
-    }
-
-    /// The placeholder icon's letter, until the pictograms are drawn.
-    pub fn letter(self) -> char {
-        match self {
-            UnitType.Melee => 'M',
-            UnitType.Ranged => 'R',
-            UnitType.Cavalry => 'C',
-            UnitType.Siege => 'S',
-            UnitType.Scout => 'O',
-            UnitType.Armored => 'A',
-            UnitType.PatrolGalley => 'G',
-            UnitType.LandingCraft => 'L',
-            UnitType.BombardShip => 'B',
-        }
-    }
 }
 
 /// `Melee`: the variant's name, as the combat log names a unit type.

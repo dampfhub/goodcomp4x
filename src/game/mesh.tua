@@ -95,3 +95,48 @@ fn push_triangle(out: &mut Vec[MeshVertex], a: Vec2, b: Vec2, c: Vec2, color: Co
     out.push(MeshVertex { pos: [b.x, b.y, 0.0], color, uv: SOLID_UV });
     out.push(MeshVertex { pos: [c.x, c.y, 0.0], color, uv: SOLID_UV });
 }
+
+/// `a` x `b`: twice the signed area of the triangle from the origin to them.
+fn cross(a: Vec2, b: Vec2) -> f32 { a.x * b.y - a.y * b.x }
+
+/// Appends a filled simple polygon, convex or not, with its corners in either winding order.
+/// It's cut into triangles by clipping ears: repeatedly removing a corner that bulges outward
+/// with no other corner inside it.
+pub fn polygon(points: &Vec[Vec2], color: Color, out: &mut Vec[MeshVertex]) {
+    let count = points.len();
+    // Twice the signed area: which way the corners wind.
+    let mut winding = 0.0;
+    for i in 0..count { winding = winding + cross(points[i], points[(i + 1) % count]); }
+    let mut left: Vec[i32] = Vec.new();
+    for i in 0..count { left.push(i); }
+    while left.len() >= 3 {
+        let n = left.len();
+        let mut ear = 0 - 1;
+        for i in 0..n {
+            if ear >= 0 { break; }
+            let (a, b, c) = (points[left[(i + n - 1) % n]], points[left[i]], points[left[(i + 1) % n]]);
+            if cross(b.sub(a), c.sub(b)) * winding <= 0.0 { continue; }
+            let mut clear = true;
+            for k in 0..n {
+                let p = points[left[k]];
+                let corner = (p.x == a.x && p.y == a.y) || (p.x == b.x && p.y == b.y) || (p.x == c.x && p.y == c.y);
+                if !corner && inside_triangle(p, a, b, c) { clear = false; }
+            }
+            if clear { ear = i; }
+        }
+        // Only a degenerate outline (crossing itself, or all in a line) has no ear; stop with
+        // what's been cut so far.
+        if ear < 0 { break; }
+        let (a, b, c) = (points[left[(ear + n - 1) % n]], points[left[ear]], points[left[(ear + 1) % n]]);
+        push_triangle(out, a, b, c, color);
+        let _gone = left.remove(ear);
+    }
+}
+
+/// On or inside the triangle `a`, `b`, `c`, whichever way round it winds.
+fn inside_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
+    let s1 = cross(b.sub(a), p.sub(a));
+    let s2 = cross(c.sub(b), p.sub(b));
+    let s3 = cross(a.sub(c), p.sub(c));
+    (s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0) || (s1 <= 0.0 && s2 <= 0.0 && s3 <= 0.0)
+}

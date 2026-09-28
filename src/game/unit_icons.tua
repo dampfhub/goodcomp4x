@@ -1,0 +1,242 @@
+//! Unit pictograms: a small picture of what each unit is, built from a few rectangles,
+//! triangles, circles and lines and drawn dark on the unit's token. Shapes are laid out on a
+//! token of radius 42 with Y pointing down, the coordinates of the mockups they were designed
+//! in.
+
+use std.core.Eq;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.linalg.vec2_from_angle;
+use std.math.Float;
+use std.math.pi;
+use renderer.pipelines.MeshVertex;
+use game.mesh.Color;
+use game.mesh.polygon;
+use game.mesh.polyline;
+use game.mesh.regular_polygon;
+use game.mesh.segment;
+use game.unit.UnitType;
+
+/// Token radius the shapes are laid out on.
+const DESIGN_RADIUS: f32 = 42.0;
+/// Sides of the polygons that stand in for circles.
+const CIRCLE_SIDES: u32 = 16;
+
+pub enum UnitIcon {
+    /// Melee: an upright sword.
+    Sword,
+    /// Ranged: a bow with an arrow nocked, aimed up and to the right.
+    Bow,
+    /// Cavalry: a horse's head, facing right.
+    HorseHead,
+    /// Siege: a catapult on solid wheels.
+    Catapult,
+    /// Scout: a spyglass.
+    Spyglass,
+    /// Armored: a heater shield.
+    Shield,
+    Galley,
+    LandingCraft,
+    BombardShip,
+    /// Settler: a flag planted to found a city.
+    Flag,
+    /// Worker: a shovel.
+    Shovel,
+}
+
+impl Eq for UnitIcon {
+    fn eq(self, other: UnitIcon) -> bool { self.index() == other.index() }
+}
+
+impl UnitIcon {
+    pub fn of(unit_type: UnitType) -> UnitIcon {
+        match unit_type {
+            UnitType.Melee => UnitIcon.Sword,
+            UnitType.Ranged => UnitIcon.Bow,
+            UnitType.Cavalry => UnitIcon.HorseHead,
+            UnitType.Siege => UnitIcon.Catapult,
+            UnitType.Scout => UnitIcon.Spyglass,
+            UnitType.Armored => UnitIcon.Shield,
+            UnitType.PatrolGalley => UnitIcon.Galley,
+            UnitType.LandingCraft => UnitIcon.LandingCraft,
+            UnitType.BombardShip => UnitIcon.BombardShip,
+        }
+    }
+
+    fn index(self) -> i32 {
+        match self {
+            UnitIcon.Sword => 0, UnitIcon.Bow => 1, UnitIcon.HorseHead => 2, UnitIcon.Catapult => 3,
+            UnitIcon.Spyglass => 4, UnitIcon.Shield => 5, UnitIcon.Galley => 6, UnitIcon.LandingCraft => 7,
+            UnitIcon.BombardShip => 8, UnitIcon.Flag => 9, UnitIcon.Shovel => 10,
+        }
+    }
+}
+
+/// Every pictogram, in declaration order.
+pub const ICONS: [UnitIcon; 11] = [
+    UnitIcon.Sword, UnitIcon.Bow, UnitIcon.HorseHead, UnitIcon.Catapult, UnitIcon.Spyglass, UnitIcon.Shield,
+    UnitIcon.Galley, UnitIcon.LandingCraft, UnitIcon.BombardShip, UnitIcon.Flag, UnitIcon.Shovel,
+];
+
+/// Draws `icon` in `color` centered on a token of `radius` at `center`.
+pub fn push_pictogram(center: Vec2, radius: f32, icon: UnitIcon, color: Color, out: &mut Vec[MeshVertex]) {
+    let mut pen = Pen { center, scale: radius / DESIGN_RADIUS, turn: vec2(1.0, 0.0), color };
+    match icon {
+        UnitIcon.Sword => {
+            pen.polygon(&[vec2(-5.0, -22.0), vec2(0.0, -32.0), vec2(5.0, -22.0)], out);
+            pen.rect(-5.0, -22.0, 10.0, 32.0, out);
+            pen.rect(-15.0, 10.0, 30.0, 6.0, out);
+            pen.rect(-3.0, 16.0, 6.0, 10.0, out);
+            pen.circle(0.0, 29.0, 4.5, out);
+        }
+        UnitIcon.Bow => {
+            pen.turn(-45.0);
+            // The bow's limbs: an arc of radius 34 whose ends sit on the string.
+            let r: f32 = 34.0;
+            let cx = -6.0 - (r * r - 27.0 * 27.0).sqrt();
+            let reach = (27.0 / r).asin();
+            let mut limbs: Vec[Vec2] = Vec.new();
+            for i in 0..=12 {
+                let angle = -reach + 2.0 * reach * i as f32 / 12.0;
+                limbs.push(vec2(cx + r * angle.cos(), r * angle.sin()));
+            }
+            pen.curve(&limbs, 5.5, out);
+            pen.line(vec2(-6.0, -27.0), vec2(-6.0, 27.0), 2.0, out);
+            pen.line(vec2(-26.0, 0.0), vec2(19.0, 0.0), 3.5, out);
+            pen.polygon(&[vec2(18.0, -7.5), vec2(31.0, 0.0), vec2(18.0, 7.5)], out);
+            pen.polygon(&[vec2(-19.0, 0.0), vec2(-26.0, -7.0), vec2(-31.0, -7.0), vec2(-24.0, 0.0)], out);
+            pen.polygon(&[vec2(-19.0, 0.0), vec2(-24.0, 0.0), vec2(-31.0, 7.0), vec2(-26.0, 7.0)], out);
+        }
+        UnitIcon.HorseHead => pen.polygon(&[
+            vec2(-17.0, 29.0), vec2(17.0, 29.0), vec2(14.0, 19.0), vec2(3.0, 8.0), vec2(19.0, 5.0),
+            vec2(26.0, -3.0), vec2(22.0, -11.0), vec2(7.0, -21.0), vec2(4.0, -30.0), vec2(-1.0, -24.0),
+            vec2(-10.0, -26.0), vec2(-21.0, -14.0), vec2(-25.0, 4.0), vec2(-22.0, 19.0),
+        ], out),
+        UnitIcon.Catapult => {
+            pen.rect(-26.0, 11.0, 50.0, 7.0, out);
+            pen.line(vec2(16.0, 12.0), vec2(-17.0, -20.0), 5.0, out);
+            pen.rect(-5.0, -6.0, 7.0, 17.0, out);
+            pen.circle(-18.5, -21.5, 6.5, out);
+            pen.circle(-15.0, 22.0, 8.0, out);
+            pen.circle(14.0, 22.0, 8.0, out);
+        }
+        UnitIcon.Spyglass => {
+            pen.turn(-35.0);
+            // Eyepiece to lens, each section wider than the last.
+            pen.rect(-33.0, -4.0, 5.0, 8.0, out);
+            pen.rect(-28.0, -5.0, 16.0, 10.0, out);
+            pen.rect(-12.0, -6.5, 16.0, 13.0, out);
+            pen.rect(4.0, -8.0, 18.0, 16.0, out);
+            pen.rect(22.0, -10.0, 6.0, 20.0, out);
+        }
+        UnitIcon.Shield => {
+            let mut outline: Vec[Vec2] = Vec.new();
+            outline.push(vec2(-22.0, -26.0));
+            outline.push(vec2(22.0, -26.0));
+            outline.push(vec2(22.0, -4.0));
+            quadratic(vec2(22.0, -4.0), vec2(22.0, 18.0), vec2(0.0, 31.0), &mut outline);
+            quadratic(vec2(0.0, 31.0), vec2(-22.0, 18.0), vec2(-22.0, -4.0), &mut outline);
+            let _last = outline.pop();
+            pen.outline(&outline, out);
+        }
+        UnitIcon.Galley => {
+            pen.polygon(&[vec2(-30.0, 8.0), vec2(30.0, 8.0), vec2(21.0, 21.0), vec2(-21.0, 21.0)], out);
+            pen.rect(-2.0, -28.0, 4.0, 34.0, out);
+            pen.polygon(&[vec2(1.0, -25.0), vec2(21.0, 3.0), vec2(1.0, 3.0)], out);
+            pen.line(vec2(-22.0, 26.0), vec2(22.0, 26.0), 2.0, out);
+        }
+        UnitIcon.LandingCraft => {
+            pen.polygon(&[vec2(-29.0, 3.0), vec2(22.0, 3.0), vec2(30.0, 10.0), vec2(20.0, 22.0), vec2(-22.0, 22.0)], out);
+            pen.rect(-23.0, -3.0, 5.0, 7.0, out);
+            for k in 0..4 { pen.circle(-14.0 + 10.0 * k as f32, 7.0, 3.0, out); }
+            pen.line(vec2(22.0, 3.0), vec2(31.0, -3.0), 3.0, out);
+        }
+        UnitIcon.BombardShip => {
+            pen.polygon(&[vec2(-31.0, 9.0), vec2(31.0, 9.0), vec2(22.0, 23.0), vec2(-22.0, 23.0)], out);
+            pen.rect(-14.0, -1.0, 18.0, 10.0, out);
+            pen.circle(6.0, 0.0, 9.0, out);
+            pen.line(vec2(10.0, -5.0), vec2(26.0, -22.0), 5.0, out);
+        }
+        UnitIcon.Flag => {
+            pen.rect(-10.0, -20.0, 4.0, 34.0, out);
+            pen.polygon(&[vec2(-6.0, -20.0), vec2(16.0, -12.5), vec2(-6.0, -5.0)], out);
+            pen.rect(-17.0, 14.0, 18.0, 4.0, out);
+        }
+        UnitIcon.Shovel => {
+            pen.turn(-30.0);
+            pen.rect(-8.0, -21.0, 16.0, 4.0, out);
+            pen.rect(-2.0, -17.0, 4.0, 18.0, out);
+            pen.polygon(&[vec2(-8.0, 1.0), vec2(8.0, 1.0), vec2(8.0, 13.0), vec2(0.0, 21.0), vec2(-8.0, 13.0)], out);
+        }
+    }
+}
+
+/// Points along the quadratic Bezier curve from `a` to `b` bent toward `control`, excluding
+/// `a`, onto `points`.
+fn quadratic(a: Vec2, control: Vec2, b: Vec2, points: &mut Vec[Vec2]) {
+    let steps = 8;
+    for i in 1..=steps {
+        let t = i as f32 / steps as f32;
+        let (u, v, w) = ((1.0 - t) * (1.0 - t), 2.0 * (1.0 - t) * t, t * t);
+        points.push(vec2(u * a.x + v * control.x + w * b.x, u * a.y + v * control.y + w * b.y));
+    }
+}
+
+/// Draws shapes given in design coordinates, turned and scaled onto the token.
+struct Pen {
+    center: Vec2,
+    /// World units per design unit.
+    scale: f32,
+    /// The current turn as (cos, sin), applied before flipping Y up.
+    turn: Vec2,
+    color: Color,
+}
+
+impl Pen {
+    /// Turns everything drawn after by `degrees`, counterclockwise on screen when negative (as
+    /// SVG's `rotate` would with Y down).
+    fn turn(&mut self, degrees: f32) { self.turn = vec2_from_angle(degrees * pi() as f32 / 180.0); }
+
+    fn at(&self, p: Vec2) -> Vec2 {
+        let (cos, sin) = (self.turn.x, self.turn.y);
+        let turned = vec2(p.x * cos - p.y * sin, p.x * sin + p.y * cos);
+        self.center.add(vec2(turned.x, -turned.y).scale(self.scale))
+    }
+
+    fn polygon(&self, points: &[Vec2], out: &mut Vec[MeshVertex]) {
+        let mut world: Vec[Vec2] = Vec.new();
+        for i in 0..points.len() { world.push(self.at(points[i])); }
+        polygon(&world, self.color, out);
+    }
+
+    /// `polygon` for corners built at run time.
+    fn outline(&self, points: &Vec[Vec2], out: &mut Vec[MeshVertex]) {
+        let mut world: Vec[Vec2] = Vec.new();
+        for i in 0..points.len() { world.push(self.at(points[i])); }
+        polygon(&world, self.color, out);
+    }
+
+    fn rect(&self, x: f32, y: f32, width: f32, height: f32, out: &mut Vec[MeshVertex]) {
+        self.polygon(&[vec2(x, y), vec2(x + width, y), vec2(x + width, y + height), vec2(x, y + height)], out);
+    }
+
+    fn circle(&self, x: f32, y: f32, radius: f32, out: &mut Vec[MeshVertex]) {
+        regular_polygon(self.at(vec2(x, y)), radius * self.scale, CIRCLE_SIDES, 0.0, self.color, out);
+    }
+
+    fn line(&self, from: Vec2, to: Vec2, width: f32, out: &mut Vec[MeshVertex]) {
+        segment(self.at(from), self.at(to), width * self.scale, self.color, out);
+    }
+
+    /// A line through `points` with rounded ends.
+    fn curve(&self, points: &Vec[Vec2], width: f32, out: &mut Vec[MeshVertex]) {
+        let mut world: Vec[Vec2] = Vec.new();
+        for i in 0..points.len() { world.push(self.at(points[i])); }
+        polyline(&world, width * self.scale, self.color, out);
+        let n = points.len();
+        if n > 0 {
+            self.circle(points[0].x, points[0].y, width / 2.0, out);
+            self.circle(points[n - 1].x, points[n - 1].y, width / 2.0, out);
+        }
+    }
+}

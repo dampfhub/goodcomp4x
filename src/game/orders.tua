@@ -309,7 +309,7 @@ impl GameState {
         let _was = self.workers.remove(unit.id);
         let _was = self.player_controlled_units.remove(unit.id);
         info(fn() can {Out} { unit.show(); Out.put(" disbanded"); });
-        let (role, _) = self.unit_role(&unit);
+        let role = self.unit_role(&unit).name();
         self.notice = text(fn() can {Out} { Out.put(role); Out.put(" DISBANDED"); });
         // Indices after it shifted down, so nothing else stays selected.
         self.selected = Option.None;

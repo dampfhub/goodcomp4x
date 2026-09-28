@@ -477,7 +477,7 @@ impl GameState {
         let stats = unit.stats();
         let tile = self.grid.tile(unit.pos);
         let defense = stats.defense * tile.defense_multiplier();
-        let (role, _) = self.unit_role(unit);
+        let role = self.unit_role(unit).name();
 
         let title = text(fn() can {Out} { Out.put(unit.team.name()); Out.put(" "); Out.put(role); });
         panel.text_owned(TextSize.Title, title, unit.team.color());
@@ -549,7 +549,7 @@ impl GameState {
         panel.begin_buttons();
         panel.button(Target.Unit(UnitAction.Move), "MOVE", "M", button_state(unit.planned_move.is_some() && !swapping, !can_move), self.armed(ClickMode.Move));
         if !worker {
-            panel.button(Target.Unit(UnitAction.Attack), "ATTACK", "X \u{b7} SHIFT", button_state(unit.planned_attack.is_some(), !unit.can_attack() || locked), self.armed(ClickMode.Attack));
+            panel.button(Target.Unit(UnitAction.Attack), "ATTACK", "X \u{b7} RMB", button_state(unit.planned_attack.is_some(), !unit.can_attack() || locked), self.armed(ClickMode.Attack));
         }
         panel.button(Target.Unit(UnitAction.Swap), "SWAP", "CTRL", button_state(swapping, !can_move || locked), self.armed(ClickMode.Swap));
         if settler {
@@ -581,7 +581,7 @@ impl GameState {
         let mut kinds: Vec[str] = Vec.new();
         let mut counts: Vec[i32] = Vec.new();
         for m in 0..self.group.len() {
-            let (role, _) = self.unit_role(&self.units[self.group[m]]);
+            let role = self.unit_role(&self.units[self.group[m]]).name();
             let mut found = false;
             for k in 0..kinds.len() {
                 if str_eq(kinds[k], role) {
@@ -608,7 +608,7 @@ impl GameState {
         }
         panel.begin_buttons();
         panel.button(Target.Unit(UnitAction.Move), "MOVE", "M", ButtonState.Ready, self.armed(ClickMode.Move));
-        panel.button(Target.Unit(UnitAction.Attack), "ATTACK", "X \u{b7} SHIFT", ButtonState.Ready, self.armed(ClickMode.Attack));
+        panel.button(Target.Unit(UnitAction.Attack), "ATTACK", "X \u{b7} RMB", ButtonState.Ready, self.armed(ClickMode.Attack));
         panel.button(Target.Unit(UnitAction.Hold), "HOLD", "SPACE", ButtonState.Ready, false);
         panel.button(Target.Unit(UnitAction.Guard), "GUARD", "G", button_state(all_guarding, false), false);
         panel.end_buttons(false);
@@ -758,7 +758,7 @@ impl GameState {
             let names = text(fn() can {Out} {
                 for k in 0..here.len() {
                     let unit = &self.units[here[k]];
-                    let (role, _) = self.unit_role(unit);
+                    let role = self.unit_role(unit).name();
                     if k > 0 { Out.put(", "); }
                     Out.put(unit.team.name());
                     Out.put(" ");
@@ -903,14 +903,14 @@ impl GameState {
         match action {
             UnitAction.Move => {
                 *title = to_owned("MOVE");
-                *shortcut = to_owned("M");
-                *description = to_owned("THE NEXT CLICK ON A GREEN HEX MOVES THERE. WITHOUT PICKING AN ACTION, CLICKING A GREEN HEX MOVES AND CLICKING AN ENEMY ATTACKS. CLICK A QUEUED ORDER AGAIN TO CANCEL IT.");
+                *shortcut = to_owned("M OR CLICK");
+                *description = to_owned("NEXT CLICK ON A GREEN HEX MOVES THERE. CLICK IT AGAIN TO CANCEL. SHIFT-CLICK QUEUES A MOVE FOR ONE MORE TURN.");
                 if !can_move { *unavailable = Option.Some(to_owned("CANNOT MOVE THIS TURN")); }
             }
             UnitAction.Attack => {
                 *title = to_owned("ATTACK");
-                *shortcut = to_owned("X OR SHIFT-CLICK");
-                *description = to_owned("THE NEXT CLICK ATTACKS ANY HEX IN RANGE, OCCUPIED OR NOT: WHOEVER STANDS THERE WHEN THE ATTACK LANDS IS HIT. RANGE COUNTS FROM WHERE THE UNIT WILL BE AFTER ITS MOVE.");
+                *shortcut = to_owned("X OR RIGHT-CLICK");
+                *description = to_owned("NEXT CLICK ATTACKS A HEX IN RANGE, HITTING WHOEVER IS THERE WHEN IT LANDS. RANGE COUNTS FROM WHERE THE UNIT ENDS ITS MOVE. SHIFT-RIGHT-CLICK QUEUES AN ATTACK FOR A LATER TURN.");
                 if locked {
                     *unavailable = Option.Some(to_owned("LOCKED IN A CONTESTED HEX"));
                 } else if !unit.can_attack() {

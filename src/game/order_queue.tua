@@ -444,7 +444,7 @@ impl GameState {
                 {
                     let unit = &self.units[i];
                     info(fn() can {Out} { unit.show(); Out.put(" drops its queued orders: "); Out.put(reason); });
-                    let (role, _) = self.unit_role(unit);
+                    let role = self.unit_role(unit).name();
                     self.notice = text(fn() can {Out} { Out.put(role); Out.put(" STOPPED: "); Out.put(reason); });
                 }
                 self.units[i].clear_orders();

@@ -310,28 +310,9 @@ impl GameState {
 
     /// What the unit is, for display: settlers and workers are marked on top of an ordinary
     /// unit type.
-    pub fn unit_role(&self, unit: &Unit) -> (str, char) {
-        if self.settlers.contains(unit.id) {
-            ("SETTLER", 'T')
-        } else if self.workers.contains(unit.id) {
-            ("WORKER", 'W')
-        } else {
-            let name = match unit.unit_type {
-                UnitType.Melee => "MELEE",
-                UnitType.Ranged => "RANGED",
-                UnitType.Cavalry => "CAVALRY",
-                UnitType.Siege => "SIEGE",
-                UnitType.Scout => "SCOUT",
-                UnitType.Armored => "ARMORED",
-                UnitType.PatrolGalley => "PATROL GALLEY",
-                UnitType.LandingCraft => "LANDING CRAFT",
-                UnitType.BombardShip => "BOMBARD SHIP",
-            };
-            (name, unit.unit_type.letter())
-        }
+    pub fn unit_role(&self, unit: &Unit) -> Role {
+        if self.settlers.contains(unit.id) { Role.Settler } else if self.workers.contains(unit.id) { Role.Worker } else { Role.Troop(unit.unit_type) }
     }
-
-    pub fn unit_letter(&self, unit: &Unit) -> char { self.unit_role(unit).1 }
 
     fn is_occupied(&self, hex: Hex) -> bool { self.count_at(hex) > 0 }
 
@@ -437,6 +418,29 @@ pub fn reachable_by(start: Hex, move_range: i32) -> Set[Hex] can {Step} {
 }
 
 /// `x` with no decimals, a half rounding to the even neighbour as Rust's `{:.0}` does.
+/// What a unit is, for display (`GameState.unit_role`).
+pub enum Role { Settler, Worker, Troop(UnitType) }
+
+impl Role {
+    pub fn name(self) -> str {
+        match self {
+            Role.Settler => "SETTLER",
+            Role.Worker => "WORKER",
+            Role.Troop(t) => match t {
+                UnitType.Melee => "MELEE",
+                UnitType.Ranged => "RANGED",
+                UnitType.Cavalry => "CAVALRY",
+                UnitType.Siege => "SIEGE",
+                UnitType.Scout => "SCOUT",
+                UnitType.Armored => "ARMORED",
+                UnitType.PatrolGalley => "PATROL GALLEY",
+                UnitType.LandingCraft => "LANDING CRAFT",
+                UnitType.BombardShip => "BOMBARD SHIP",
+            },
+        }
+    }
+}
+
 pub fn show_rounded(x: f32) can {Out} {
     let floor = x.floor();
     let mut r = x.round();
