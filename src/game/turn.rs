@@ -819,6 +819,50 @@ impl Engagement {
 }
 
 #[cfg(test)]
+mod effect_tests {
+    use super::*;
+    use crate::game::unit::Team;
+
+    fn ai_fight(witness: bool) -> GameState {
+        let mut game = GameState::new();
+        game.units.clear();
+        let from = Hex::new(0, 0);
+        let to = Hex::new(1, 0);
+        let mut attacker = Unit::new(90, from, Team::Red, UnitType::Melee);
+        attacker.planned_attack = Some(to);
+        game.units.push(attacker);
+        game.units
+            .push(Unit::new(91, to, Team::Green, UnitType::Melee));
+        if witness {
+            game.units
+                .push(Unit::new(92, Hex::new(1, -1), Team::Blue, UnitType::Scout));
+        }
+        assert_eq!(game.fog().sees(from), witness);
+        assert_eq!(game.fog().sees(to), witness);
+        game.resolve_attacks(&[0]);
+        game
+    }
+
+    #[test]
+    fn ai_fights_only_play_effects_when_the_player_can_see_them() {
+        let hidden = ai_fight(false);
+        assert!(hidden.effects.is_empty());
+        let visible = ai_fight(true);
+        assert!(
+            visible
+                .effects
+                .iter()
+                .any(|(effect, _)| matches!(effect, Effect::Shot { .. }))
+        );
+        assert!(
+            visible
+                .effects
+                .iter()
+                .any(|(effect, _)| matches!(effect, Effect::Damage { .. }))
+        );
+    }
+}
+#[cfg(test)]
 mod naval_tests {
     use super::*;
     use crate::game::city::{Build, BuildUnit};

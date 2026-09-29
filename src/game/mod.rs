@@ -1318,6 +1318,8 @@ mod tests {
     fn hitting_an_empty_enemy_barracks_is_a_hit_not_a_miss() {
         let mut game = GameState::city_scenario();
         game.units.clear();
+        // This test checks the attack outcome, so keep its distant shot visible.
+        game.fog_of_war = false;
         let target = game
             .cities
             .iter()

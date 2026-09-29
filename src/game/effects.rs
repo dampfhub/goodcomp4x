@@ -7,6 +7,7 @@
 use glam::Vec2;
 
 use super::draw::{attack_arc_points, push_arrow};
+use super::hex::Hex;
 use super::{GameState, font, mesh};
 use crate::renderer::Vertex;
 
@@ -65,9 +66,18 @@ impl Effect {
 }
 
 impl GameState {
-    /// Starts `effect` playing.
+    /// Starts an effect only when the local player can see it.
     pub(super) fn play(&mut self, effect: Effect) {
-        self.effects.push((effect, 0.0));
+        let fog = self.fog();
+        let visible = match &effect {
+            Effect::Shot { from, to, .. } => {
+                fog.sees(Hex::from_world(*from)) && fog.sees(Hex::from_world(*to))
+            }
+            Effect::Damage { at, .. } => fog.sees(Hex::from_world(*at)),
+        };
+        if visible {
+            self.effects.push((effect, 0.0));
+        }
     }
 
     /// Moves every effect `dt` seconds on, dropping finished ones.
