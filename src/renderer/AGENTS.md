@@ -40,6 +40,13 @@ Shaders are GLSL in `/shaders`. `build.rs` compiles every `.vert`/`.frag`/... th
 `OUT_DIR/<name>.spv`, and `pipeline.rs` embeds them with `include_bytes!`. Adding a shader stage
 needs no build change; using it needs a pipeline change here.
 
+## Buffer memory
+
+Each frame slot keeps its vertex buffer mapped until growth or teardown. Writes wait
+for that slot's fence. Vertex memory prefers host-visible coherent device-local
+memory, falling back to host-visible coherent memory. Readback prefers host-cached
+memory and invalidates noncoherent mappings after the GPU finishes.
+
 ## Invariants and gotchas
 
 - Copy SPIR-V from `include_bytes!` into a `Vec<u32>` (`create_shader_module` does). The bytes
