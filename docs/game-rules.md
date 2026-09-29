@@ -307,7 +307,13 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   still waiting (a city needing a build, then a unit, settlers first, as the turn strip lists
   them) and ends the turn once nothing is. A unit done with its orders moves on the same way, and
   so does the start of every turn and of a new world. The End Turn button (`end_planning`) holds
-  every unfinished unit, opens a city if one still needs a build, and otherwise ends the turn.
+  every unfinished unit, opens a city if one still needs a build, and otherwise ends the turn,
+  closing the city or Barracks view (a city interior stays open) and letting go of the unit
+  selection and a manager being moved, in a network game as in a local one (there the player may
+  select and open views again while it waits for the others). Nothing armed while planning outlives the turn: an action armed for the next map
+  click (M, X, Swap), a Disband waiting to be confirmed or a click waiting to be repeated to
+  replace a queue. With nothing left to order, a unit done with its orders lets go of the
+  selection (and any armed action); it never ends the turn itself.
   Input, including UI clicks, is ignored while a turn plays out.
 
 ## Order queues (`order_queue.rs`)
@@ -521,9 +527,12 @@ every turn end.
 
 ## Combat (`combat.rs`)
 
-- Damage = `30 * e^((attack - defense) * 0.04) * random(0.8..1.2)`, clamped to 1..100. Defense
-  includes terrain and Shield Wall; attack includes Charge.
-- Melee attacks (base range 1) draw retaliation from a defender that survives the hit.
+- Damage = `30 * e^((attack - defense) * 0.04)`, clamped to 1..100, with no random spread: the
+  same fight always deals the same damage. Defense includes terrain and Shield Wall; attack
+  includes Charge. Volley (60%) and attacks across the waterline (above) scale the result.
+- Melee attacks (base range 1) draw retaliation from a defender that survives the hit (that
+  one hit, not the step's sum). Two units trading blows across the waterline each take the
+  other's shore-scaled damage.
 - **Cities** cannot be attacked on the exterior map; capture happens by breaching and occupying
   the command post inside. **Barracks** have 220 HP and 25 defense and are removed (with their queue) at 0 HP; the city
   can then build a new one, at full HP. A structure is hit only when the attack hits no enemy unit

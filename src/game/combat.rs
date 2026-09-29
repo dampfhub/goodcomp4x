@@ -1,35 +1,53 @@
 //! Civ-style combat math: damage grows exponentially with the gap between an
 //! attacker's attack and the target's defense (boosted by the terrain it
-//! stands on), with ±20% variance.
-
-use rand::RngExt;
+//! stands on). There is no random spread: the same fight always deals the
+//! same damage, so the attack preview (`draw.rs`) calls these same functions.
 
 use super::ability::Ability;
 use super::hex::HexGrid;
-use super::unit::Unit;
+use super::unit::{Unit, UnitType};
 
 /// Damage `attacker` deals to `target` in one blow, with `defense_multiplier`
 /// the terrain and fort bonus on the target (`GameState::defense_multiplier`).
-pub fn roll_damage(
-    attacker: &Unit,
-    target: &Unit,
-    defense_multiplier: f32,
-    rng: &mut impl RngExt,
-) -> f32 {
+pub fn damage(attacker: &Unit, target: &Unit, defense_multiplier: f32) -> f32 {
     let defense = target.stats().defense * defense_multiplier;
-    roll_damage_against(attacker.stats().attack, defense, rng)
+    damage_against(attacker.stats().attack, defense)
 }
 
-/// Damage for attacks involving a static structure. Its listed defense already
-/// includes its fortification, so terrain does not modify it again.
-pub fn roll_damage_against(attack: f32, defense: f32, rng: &mut impl RngExt) -> f32 {
-    let base = 30.0 * ((attack - defense) * 0.04).exp();
-    (base * rng.random_range(0.8..1.2)).clamp(1.0, 100.0)
+/// Damage an attack of `attack` deals in one blow against `defense`: the one
+/// formula every fight uses, units and structures alike. A structure's listed
+/// defense already includes its fortification, so terrain does not modify it
+/// again.
+pub fn damage_against(attack: f32, defense: f32) -> f32 {
+    (30.0 * ((attack - defense) * 0.04).exp()).clamp(1.0, 100.0)
+}
+
+/// The share of `attacker`'s damage that reaches `defender` across the
+/// waterline: land melee can't reach ships at all, and a galley's guns do
+/// little to troops ashore. 1 for a fight on one side of it.
+pub fn shore_scale(attacker: &Unit, defender: &Unit) -> f32 {
+    if !attacker.is_naval() && defender.is_naval() {
+        match attacker.unit_type {
+            UnitType::Ranged => 0.4,
+            UnitType::Siege => 0.6,
+            _ => 0.0,
+        }
+    } else if attacker.unit_type == UnitType::PatrolGalley && !defender.is_naval() {
+        0.35
+    } else {
+        1.0
+    }
 }
 
 /// Melee attacks draw retaliation from a surviving defender; ranged ones don't.
 pub fn draws_retaliation(attacker: &Unit) -> bool {
     attacker.unit_type.stats().attack_range == 1
+}
+
+/// Whether `defender`, hit by `attacker` for `hit`, strikes back: a melee
+/// attack it survives, with both on the same side of the waterline.
+pub fn retaliates(attacker: &Unit, defender: &Unit, hit: f32) -> bool {
+    draws_retaliation(attacker) && attacker.is_naval() == defender.is_naval() && defender.hp > hit
 }
 
 /// Combat-relevant conditions on `unit`, like " (on hills, shield wall)", for

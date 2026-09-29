@@ -495,9 +495,9 @@ impl GameState {
                 .find(|(_, other)| other.pos == target && other.team != fighter.team)
             {
                 let defense = defender.stats().defense;
-                damage[index] += combat::roll_damage_against(attack, defense, &mut self.rng);
+                damage[index] += combat::damage_against(attack, defense);
             } else if target == CENTER && fighter.team != owner && interior.core_hp > 0.0 {
-                core_damage += combat::roll_damage_against(attack, CORE_DEFENSE, &mut self.rng);
+                core_damage += combat::damage_against(attack, CORE_DEFENSE);
             }
         }
         if interior.core_hp > 0.0
@@ -507,8 +507,7 @@ impl GameState {
                 .filter(|(_, f)| f.team != owner && f.pos.distance(CENTER) <= CORE_ATTACK_RANGE)
                 .min_by_key(|(_, f)| f.source_id)
         {
-            damage[index] +=
-                combat::roll_damage_against(CORE_ATTACK, fighter.stats().defense, &mut self.rng);
+            damage[index] += combat::damage_against(CORE_ATTACK, fighter.stats().defense);
         }
         interior.core_hp = (interior.core_hp - core_damage).max(0.0);
         let breached = core_damage > 0.0 && interior.core_hp <= 0.0;

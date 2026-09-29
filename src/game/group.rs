@@ -206,7 +206,7 @@ impl GameState {
             self.units[i].holding = true;
         }
         self.group.clear();
-        self.select_next_or_end_turn(None);
+        self.select_next_needing_attention(None);
     }
 
     /// G or Guard with a group: every member guards, or if they all already
@@ -222,7 +222,7 @@ impl GameState {
         }
         if !all_guarding {
             self.group.clear();
-            self.select_next_or_end_turn(None);
+            self.select_next_needing_attention(None);
         }
     }
 
@@ -250,7 +250,7 @@ impl GameState {
         }
         if !all_alert {
             self.group.clear();
-            self.select_next_or_end_turn(None);
+            self.select_next_needing_attention(None);
         }
     }
 
