@@ -64,6 +64,14 @@ needs no build change; using it needs a pipeline change here.
 - Validation runs only in debug builds (`cfg!(debug_assertions)`). Check `cargo run` output for
   validation errors after any change here.
 
+## Device choices and atlas validation
+
+Prefer BGRA sRGB, then RGBA sRGB, and warn if the surface forces another format.
+Composite alpha uses a supported mode, preferring opaque. Atlas dimensions must be
+nonzero; mip chains stop at 1x1 and clamp each axis to at least one texel. Uploads
+align mip offsets to four bytes. These choices, extent clamping, batch offsets and
+sample selection are exercised by `cargo test renderer` without a GPU.
+
 ## Synchronization validation
 
 For shared-target and swapchain changes, enable synchronization validation in a debug

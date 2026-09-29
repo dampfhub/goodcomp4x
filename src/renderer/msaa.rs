@@ -35,6 +35,10 @@ pub unsafe fn pick_samples(
     };
     let supported = limits.framebuffer_color_sample_counts
         & image.map_or(vk::SampleCountFlags::TYPE_4, |p| p.sample_counts);
+    best_samples(supported)
+}
+
+fn best_samples(supported: vk::SampleCountFlags) -> vk::SampleCountFlags {
     PREFERRED_SAMPLES
         .into_iter()
         .find(|&count| supported.contains(count))
@@ -133,5 +137,18 @@ impl ColorTarget {
                 device.free_memory(memory, None);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sample_choice_prefers_the_highest_supported_multisample_count() {
+        use vk::SampleCountFlags as S;
+        assert_eq!(best_samples(S::TYPE_4), S::TYPE_4);
+        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_8), S::TYPE_8);
+        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_8 | S::TYPE_16), S::TYPE_16);
+        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_64), S::TYPE_4);
     }
 }
