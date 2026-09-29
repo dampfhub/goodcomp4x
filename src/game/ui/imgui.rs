@@ -2,8 +2,9 @@
 //! Game rules and button actions remain shared with the classic UI.
 
 use ::imgui::{
-    Condition, DragDropFlags, FontId, InputTextFlags, ItemHoveredFlags,
-    MouseButton as ImMouseButton, ProgressBar, SliderFlags, StyleColor, StyleVar, Ui, WindowFlags,
+    Condition, DragDropFlags, FontId, InputTextCallback, InputTextCallbackHandler, InputTextFlags,
+    ItemHoveredFlags, MouseButton as ImMouseButton, ProgressBar, SliderFlags, StyleColor, StyleVar,
+    TextCallbackData, Ui, WindowFlags,
 };
 
 use super::action_icons::{self, ICON_BUTTON_SIZE};
@@ -1625,13 +1626,35 @@ fn render_field(ui: &Ui, field: NetField, text: &str, label_width: f32, actions:
         NetField::Code => InputTextFlags::CHARS_UPPERCASE | InputTextFlags::CHARS_NO_BLANK,
         NetField::Address => InputTextFlags::CHARS_NO_BLANK,
     };
-    if ui
+    // `flags` replaces imgui-rs's own, so it keeps the one that lets the
+    // text outgrow the string it started as (without it, an empty box took
+    // seven characters). Ctrl+C, X, V and A work through the clipboard
+    // `App` gives the context; the box keeps what's typed or pasted as the
+    // field does.
+    let changed = ui
         .input_text(format!("##field-{field:?}"), &mut edited)
-        .flags(flags)
-        .build()
-        && edited != text
-    {
+        .flags(flags | InputTextFlags::CALLBACK_RESIZE)
+        .callback(InputTextCallback::EDIT, CleanField(field))
+        .build();
+    // The box is where classic's button to type into the field would be.
+    note_drawn_button(ui, Target::EditNetField(field));
+    if changed && edited != text {
         actions.push(Action::Text(field, edited));
+    }
+}
+
+/// Keeps a field's text box to what the field takes (`NetField::clean`)
+/// while it's being edited, so a long paste shows cut to the field's length
+/// rather than until the box lets go.
+struct CleanField(NetField);
+
+impl InputTextCallbackHandler for CleanField {
+    fn on_edit(&mut self, mut data: TextCallbackData) {
+        let clean = self.0.clean(data.str());
+        if clean != data.str() {
+            data.clear();
+            data.push_str(&clean);
+        }
     }
 }
 

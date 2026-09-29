@@ -25,6 +25,7 @@ src/main.rs          logger, command line, event loop
 src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size, --host/--join)
 src/net/             a network game's link: TCP, sealed with a key from the join code (docs/multiplayer.md)
 src/app.rs           App: window, input -> GameState calls, frame pacing (monitor rate, at most 165 FPS), F5 fullscreen
+src/clipboard.rs     system clipboard text (Win32 via windows-sys; a stub elsewhere), for App and ImGui
 src/screenshot.rs    screenshot mode: settle, read a frame back, write a PNG, quit
 src/icon.rs          window/taskbar icon (pixels from src/icon_art.rs)
 src/icon_art.rs      the icon drawn in code; build.rs also embeds it in the Windows exe

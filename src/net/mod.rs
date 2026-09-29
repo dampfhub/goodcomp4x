@@ -22,7 +22,7 @@ mod secure;
 
 use std::collections::HashMap;
 use std::io;
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -408,6 +408,22 @@ impl Session {
     }
 }
 
+/// This machine's address on its local network, for a host to show the
+/// players it waits for: the address of the interface a packet to the
+/// internet would leave by. Connecting a UDP socket only picks that route;
+/// it sends nothing, so nobody outside hears of it. `None` offline.
+pub fn lan_address() -> Option<IpAddr> {
+    let socket = UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    // TEST-NET-1 (RFC 5737), which nothing answers; nothing is sent to it.
+    socket.connect(("192.0.2.1", 9)).ok()?;
+    shown_lan_address(socket.local_addr().ok()?.ip())
+}
+
+/// `ip`, if it's an address another machine could reach this one at.
+fn shown_lan_address(ip: IpAddr) -> Option<IpAddr> {
+    (!ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast()).then_some(ip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +443,15 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         joining.join().unwrap()
+    }
+
+    #[test]
+    fn a_lan_address_is_one_another_machine_can_reach() {
+        let lan: IpAddr = "192.168.1.20".parse().unwrap();
+        assert_eq!(shown_lan_address(lan), Some(lan));
+        for ip in ["0.0.0.0", "127.0.0.1", "::1", "224.0.0.1"] {
+            assert_eq!(shown_lan_address(ip.parse().unwrap()), None, "{ip}");
+        }
     }
 
     /// A small world's settings: one AI side, cities to start.

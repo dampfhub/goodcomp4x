@@ -246,11 +246,17 @@ Back returns to the settings, and the menu opens on the settings again next time
 | Join code | The code the host shows (letters come out upper case) |
 | Join Game | Join that game; the page says how it goes, or why it couldn't |
 | Leave Game (in a network game) | Leave it for a new world of your own; the host leaving ends it for everyone |
+| COPY (hosting) | Beside the join code, and beside your address on the local network: put it on the clipboard (the top bar says `COPIED ...`) |
 
-In ImGui the fields are text boxes: click one and type. In the classic presentation a field is a
-button: click it and type (Backspace deletes), and Enter, Tab or Escape ends typing, as does any
-other button. While you type, keys go to the field, not the game. The port, address and number
-of players are kept between sessions (`network.txt`); the join code isn't.
+In ImGui the fields are text boxes: click one and type, and Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+A
+copy, cut, paste and select all. In the classic presentation a field is a button: click it and
+type (Backspace deletes), Ctrl+V pastes after what's there, Ctrl+C copies the field and Ctrl+X
+cuts it (copies it and empties it), and Enter, Tab or Escape ends typing, as does any other
+button. A paste loses the whitespace around it and whatever the field doesn't take, up to the
+field's length, so a copied `HOST:PORT` or join code pastes as it is. While you type, keys go
+to the field, not the game. The clipboard works on Windows only for now; elsewhere nothing
+pastes and COPY says there's no clipboard. The port, address and number of players are kept
+between sessions (`network.txt`); the join code isn't.
 
 Settings are also kept between sessions, saved as soon as one changes. On quitting, the game
 also saves the window's size (and whether it's maximized), the UI presentation (F11), and the

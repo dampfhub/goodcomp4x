@@ -2,19 +2,24 @@
 //! command-line flags (`docs/multiplayer.md`). Outside a network game it has
 //! the players and port to host with, the address and join code to join
 //! with, and a button for each; in one, who this machine plays and the join
-//! code, and a button to leave.
+//! code, and a button to leave; a host also sees its address on the local
+//! network, and the code and address each have a COPY button.
 //!
 //! The typed fields are `Row::Field`s: ImGui draws each as a text box
 //! (`render_field`, `imgui.rs`) whose edits come back as `set_net_field`;
 //! classic draws it as a button that starts typing into it
 //! (`Target::EditNetField`), after which `App` hands keys to
-//! `type_net_text` until Enter, Tab or Escape. The game only asks: Host,
-//! Join and Leave leave a `NetRequest` for `App` to carry out with
-//! `src/net`, which reports back through `set_net_status`.
+//! `type_net_text` until Enter, Tab or Escape, and Ctrl+V, Ctrl+C and
+//! Ctrl+X to `paste_net_text` and `copy_net_field`. The game only asks:
+//! Host, Join, Leave and COPY leave a `NetRequest` for `App` to carry out
+//! with `src/net` or the clipboard, and `App` reports back through
+//! `set_net_status` and `set_host_address`.
+
+use std::net::{IpAddr, SocketAddr};
 
 use super::builder::{ButtonSpec, PanelBuilder, Row};
 use super::text::wrap;
-use super::{BODY, ButtonState, GAP, GOLD_TEXT, LABEL_TEXT, TEXT, TITLE, Target};
+use super::{BODY, ButtonState, GAP, GOLD_TEXT, LABEL_TEXT, SMALL, TEXT, TITLE, Target};
 use crate::game::GameState;
 
 /// The characters a line of the status takes before it wraps.
@@ -51,7 +56,8 @@ impl NetField {
     }
 
     /// `text` as the field keeps it: characters it can hold, up to its
-    /// length. A join code is upper case; a port is digits.
+    /// length. A join code is upper case; a port is digits. Whitespace goes,
+    /// so a pasted code or address loses the spaces and line end around it.
     pub(super) fn clean(self, text: &str) -> String {
         text.chars()
             .filter(|c| match self {
@@ -77,6 +83,8 @@ pub enum NetRequest {
     Join { address: String, code: String },
     /// Leave the network game for a new game of one's own.
     Leave,
+    /// Put this text on the clipboard (a COPY button).
+    Copy(String),
 }
 
 /// The Multiplayer section's state: what's typed, and what's asked. It's
@@ -95,6 +103,9 @@ pub struct NetMenu {
     pub(super) status: String,
     /// A join is under way: nothing more until it ends.
     pub(super) busy: bool,
+    /// Hosting: the port this machine listens on, and its address on the
+    /// local network if `App` found one.
+    pub(super) host: Option<(u16, Option<IpAddr>)>,
     request: Option<NetRequest>,
 }
 
@@ -109,6 +120,7 @@ impl Default for NetMenu {
             editing: None,
             status: String::new(),
             busy: false,
+            host: None,
             request: None,
         }
     }
@@ -161,6 +173,13 @@ impl NetMenu {
             NetField::Code => &mut self.code,
         }
     }
+
+    /// Hosting: the address players on the local network join at
+    /// (`HOST:PORT`), if one was found.
+    fn host_address(&self) -> Option<String> {
+        let (port, ip) = self.host?;
+        Some(SocketAddr::new(ip?, port).to_string())
+    }
 }
 
 impl GameState {
@@ -212,16 +231,13 @@ impl GameState {
         };
         if self.is_networked() {
             let side = format!("{:?}", self.local_team).to_uppercase();
-            let line = match self.join_code() {
-                Some(code) => vec![
-                    ("HOSTING AS ".into(), LABEL_TEXT),
-                    (side, TEXT),
-                    (" - JOIN CODE ".into(), LABEL_TEXT),
-                    (code.into(), GOLD_TEXT),
-                ],
-                None => vec![("PLAYING AS ".into(), LABEL_TEXT), (side, TEXT)],
-            };
-            panel.text(BODY, line);
+            match self.join_code() {
+                Some(code) => {
+                    panel.text(BODY, vec![("HOSTING AS ".into(), LABEL_TEXT), (side, TEXT)]);
+                    self.host_rows(panel, code);
+                }
+                None => panel.text(BODY, vec![("PLAYING AS ".into(), LABEL_TEXT), (side, TEXT)]),
+            }
             let open = self.open_seats();
             if !open.is_empty() {
                 let waiting: Vec<String> = open
@@ -277,8 +293,50 @@ impl GameState {
         status(panel);
     }
 
+    /// Hosting: what the players need to join, each with a COPY button:
+    /// the join `code`, and this machine's address on the local network;
+    /// then what players over the internet need instead.
+    fn host_rows(&self, panel: &mut PanelBuilder, code: &str) {
+        let copy = |target| ButtonSpec {
+            target,
+            label: "COPY".into(),
+            hint: String::new(),
+            state: ButtonState::Ready,
+            armed: false,
+        };
+        panel.title_with_button(
+            vec![("JOIN CODE  ".into(), LABEL_TEXT), (code.into(), GOLD_TEXT)],
+            copy(Target::CopyJoinCode),
+        );
+        let Some((port, _)) = self.net_menu.host else {
+            return;
+        };
+        // Apart, so the two COPY buttons don't touch.
+        panel.gap(GAP / 2.0);
+        match self.net_menu.host_address() {
+            Some(address) => panel.title_with_button(
+                vec![("YOUR ADDRESS  ".into(), LABEL_TEXT), (address, GOLD_TEXT)],
+                copy(Target::CopyHostAddress),
+            ),
+            None => panel.text(
+                SMALL,
+                vec![(
+                    format!("NO LOCAL NETWORK ADDRESS FOUND - PORT {port}"),
+                    LABEL_TEXT,
+                )],
+            ),
+        }
+        let hint = format!(
+            "PLAYERS OVER THE INTERNET NEED YOUR PUBLIC IP, AND PORT {port} FORWARDED TO THIS PC"
+        );
+        for line in wrap(&hint, STATUS_WRAP) {
+            panel.text(SMALL, vec![(line, LABEL_TEXT)]);
+        }
+    }
+
     /// The Multiplayer section's buttons.
     pub(super) fn activate_network_target(&mut self, target: Target) {
+        let code = self.join_code().map(str::to_string);
         let menu = &mut self.net_menu;
         match target {
             Target::OpenMultiplayer => menu.open = true,
@@ -311,8 +369,11 @@ impl GameState {
             }
             Target::LeaveGame => {
                 menu.status.clear();
+                menu.host = None;
                 menu.request = Some(NetRequest::Leave);
             }
+            Target::CopyJoinCode => menu.request = code.map(NetRequest::Copy),
+            Target::CopyHostAddress => menu.request = menu.host_address().map(NetRequest::Copy),
             _ => {}
         }
     }
@@ -333,6 +394,32 @@ impl GameState {
             let joined = format!("{}{text}", self.net_menu.field(field));
             *self.net_menu.field_mut(field) = field.clean(&joined);
         }
+    }
+
+    /// Classic, Ctrl+V: `text` from the clipboard goes into the field being
+    /// typed into, after what's there, trimmed and cleaned as the field
+    /// keeps it (`NetField::clean`, which also cuts it to the field's
+    /// length).
+    pub fn paste_net_text(&mut self, text: &str) {
+        self.type_net_text(text.trim());
+    }
+
+    /// Classic, Ctrl+C: the text of the field being typed into, for `App`
+    /// to put on the clipboard; Ctrl+X (`cut`) empties the field too.
+    pub fn copy_net_field(&mut self, cut: bool) -> Option<String> {
+        let field = self.net_field_editing()?;
+        let text = self.net_menu.field_mut(field);
+        Some(if cut {
+            std::mem::take(text)
+        } else {
+            text.clone()
+        })
+    }
+
+    /// Hosting on `port`: this machine's address on the local network, if
+    /// `App` found one (`net::lan_address`), for the page to show.
+    pub fn set_host_address(&mut self, port: u16, lan: Option<IpAddr>) {
+        self.net_menu.host = Some((port, lan));
     }
 
     /// Classic: Backspace in the field being typed into.

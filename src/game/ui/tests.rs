@@ -2395,22 +2395,59 @@ fn the_multiplayer_page_in_a_network_game_shows_the_code_and_leaves() {
     let mut host = GameState::host_game(3, &crate::game::Settings::default());
     host.settings_open = true;
     host.activate_target(Target::OpenMultiplayer);
-    let panel = host.settings_panel_content();
-    let text: String = panel
-        .rows
-        .iter()
-        .filter_map(|row| match row {
-            Row::Text(_, line) => Some(line.iter().map(|(s, _)| s.as_str()).collect::<String>()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let code = host.join_code().unwrap();
+    host.set_host_address(55741, Some("192.168.1.20".parse().unwrap()));
+    let text = network_page_text(&host);
+    let code = host.join_code().unwrap().to_string();
+    assert!(text.contains("HOSTING AS BLUE"), "{text}");
+    assert!(text.contains(&format!("JOIN CODE  {code}")), "{text}");
+    assert!(text.contains("YOUR ADDRESS  192.168.1.20:55741"), "{text}");
+    assert!(text.contains("YOUR PUBLIC"), "{text}");
+    assert!(text.contains("PORT 55741 FORWARDED"), "{text}");
+    assert!(text.contains("SEATS OPEN: RED, GREEN"), "{text}");
+    // The code and the address each copy, and their buttons sit in the
+    // menu at either screen size.
+    for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        let layout = host.layout(screen);
+        let &(min, max) = layout.panels.last().unwrap();
+        assert!(min.cmpge(Vec2::ZERO).all() && max.cmple(screen).all());
+        for target in [Target::CopyJoinCode, Target::CopyHostAddress] {
+            let button = layout.buttons.iter().find(|b| b.target == target);
+            let button = button.unwrap_or_else(|| panic!("{target:?} shown"));
+            assert!(contains(min, max, button.min) && contains(min, max, button.max));
+            assert_eq!(layout.button_at(button.min + 1.0).unwrap().target, target);
+        }
+    }
+    for (target, copied) in [
+        (Target::CopyJoinCode, code.as_str()),
+        (Target::CopyHostAddress, "192.168.1.20:55741"),
+    ] {
+        host.handle_click(button_cursor(&host, target), SCREEN, ClickMode::Normal);
+        assert_eq!(
+            host.take_net_request(),
+            Some(NetRequest::Copy(copied.into()))
+        );
+    }
+    // With no address on a local network, the page says so, and there's
+    // nothing to copy but the code.
+    host.set_host_address(55741, None);
+    let text = network_page_text(&host);
     assert!(
-        text.contains(&format!("HOSTING AS BLUE - JOIN CODE {code}")),
+        text.contains("NO LOCAL NETWORK ADDRESS FOUND - PORT 55741"),
         "{text}"
     );
-    assert!(text.contains("SEATS OPEN: RED, GREEN"), "{text}");
+    let layout = host.layout(SCREEN);
+    assert!(
+        layout
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::CopyJoinCode)
+    );
+    assert!(
+        !layout
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::CopyHostAddress)
+    );
     assert!(
         !host
             .layout(SCREEN)
@@ -2424,6 +2461,134 @@ fn the_multiplayer_page_in_a_network_game_shows_the_code_and_leaves() {
         ClickMode::Normal,
     );
     assert_eq!(host.take_net_request(), Some(NetRequest::Leave));
+    assert_eq!(host.net_menu.host, None, "the next game isn't hosted yet");
+}
+
+/// The Multiplayer page's text, a row to a line.
+fn network_page_text(game: &GameState) -> String {
+    game.settings_panel_content()
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Text(_, line) | Row::TitleWithButton(line, _) => {
+                Some(line.iter().map(|(s, _)| s.as_str()).collect::<String>())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn classic_fields_paste_and_copy() {
+    use super::network_menu::NetField;
+    let mut game = GameState::new();
+    game.settings_open = true;
+    game.activate_target(Target::OpenMultiplayer);
+    // Nothing is typed into: a paste goes nowhere, and there's nothing to
+    // copy.
+    game.paste_net_text("K7M2QX");
+    assert_eq!(game.net_menu.code, "");
+    assert_eq!(game.copy_net_field(false), None);
+
+    // Whitespace around a code goes, and it's upper case.
+    game.activate_target(Target::EditNetField(NetField::Code));
+    game.paste_net_text("  k7m2qx\r\n");
+    assert_eq!(game.net_menu.code, "K7M2QX");
+    // A paste goes after what's there, no longer than the field takes.
+    game.paste_net_text("abcdefghijk");
+    assert_eq!(game.net_menu.code, "K7M2QXABCDEF");
+    assert_eq!(game.copy_net_field(false).as_deref(), Some("K7M2QXABCDEF"));
+    // Cutting copies and empties it.
+    assert_eq!(game.copy_net_field(true).as_deref(), Some("K7M2QXABCDEF"));
+    assert_eq!(game.net_menu.code, "");
+
+    // An address with its port, as the host copied it.
+    game.set_net_field(NetField::Address, "");
+    game.activate_target(Target::EditNetField(NetField::Address));
+    game.paste_net_text("\t192.168.1.20:55741 \n");
+    assert_eq!(game.net_menu.address, "192.168.1.20:55741");
+    let long = "a".repeat(100);
+    game.set_net_field(NetField::Address, "");
+    game.paste_net_text(&long);
+    assert_eq!(game.net_menu.address, long[..64]);
+
+    // A port takes digits only.
+    game.set_net_field(NetField::Port, "");
+    game.activate_target(Target::EditNetField(NetField::Port));
+    game.paste_net_text(" 55741\n");
+    assert_eq!(game.net_menu.port, "55741");
+    game.paste_net_text("9");
+    assert_eq!(game.net_menu.port, "55741", "five digits at most");
+}
+
+/// A clipboard for a headless ImGui context: the text it holds.
+struct TestClipboard(std::rc::Rc<std::cell::RefCell<String>>);
+
+impl ::imgui::ClipboardBackend for TestClipboard {
+    fn get(&mut self) -> Option<String> {
+        Some(self.0.borrow().clone())
+    }
+
+    fn set(&mut self, value: &str) {
+        *self.0.borrow_mut() = value.to_string();
+    }
+}
+
+#[test]
+fn imgui_fields_paste_copy_and_cut_through_the_clipboard() {
+    use super::network_menu::NetField;
+    use ::imgui::Key;
+    let mut game = GameState::new();
+    game.clear_selection();
+    game.press_escape();
+    game.activate_target(Target::OpenMultiplayer);
+    let mut screen = ImGuiScreen::new();
+    let clipboard = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    screen
+        .context
+        .set_clipboard_backend(TestClipboard(clipboard.clone()));
+
+    // A pasted code loses the whitespace and dash, and stops at the
+    // field's length, in the box as well as the menu.
+    *clipboard.borrow_mut() = "  k7m2qx-extra-long-code \n".into();
+    screen.click(&mut game, Target::EditNetField(NetField::Code));
+    screen.ctrl_key(&mut game, Key::V);
+    assert_eq!(game.net_menu.code, "K7M2QXEXTRAL");
+    // Select it all and copy it; cut it, and it's gone.
+    clipboard.borrow_mut().clear();
+    screen.ctrl_key(&mut game, Key::A);
+    screen.ctrl_key(&mut game, Key::C);
+    assert_eq!(*clipboard.borrow(), "K7M2QXEXTRAL");
+    clipboard.borrow_mut().clear();
+    screen.ctrl_key(&mut game, Key::A);
+    screen.ctrl_key(&mut game, Key::X);
+    assert_eq!(*clipboard.borrow(), "K7M2QXEXTRAL");
+    assert_eq!(game.net_menu.code, "");
+
+    // An address with its port, into an emptied box.
+    *clipboard.borrow_mut() = "\t203.0.113.9:55741\r\n".into();
+    screen.click(&mut game, Target::EditNetField(NetField::Address));
+    screen.ctrl_key(&mut game, Key::A);
+    screen.ctrl_key(&mut game, Key::V);
+    assert_eq!(game.net_menu.address, "203.0.113.9:55741");
+}
+
+#[test]
+fn imgui_copy_buttons_copy_the_code_and_address() {
+    let mut host = GameState::host_game(2, &crate::game::Settings::default());
+    host.settings_open = true;
+    host.activate_target(Target::OpenMultiplayer);
+    host.set_host_address(55741, Some("192.168.1.20".parse().unwrap()));
+    let code = host.join_code().unwrap().to_string();
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut host, Target::CopyJoinCode);
+    assert_eq!(host.take_net_request(), Some(NetRequest::Copy(code)));
+    screen.click(&mut host, Target::CopyHostAddress);
+    assert_eq!(
+        host.take_net_request(),
+        Some(NetRequest::Copy("192.168.1.20:55741".into()))
+    );
 }
 
 /// The ImGui presentation without a window: a context with a font, and the
@@ -2508,6 +2673,18 @@ impl ImGuiScreen {
         self.frame(game, Some(at), false);
         self.frame(game, Some(at), true);
         self.frame(game, Some(at), false);
+    }
+
+    /// Presses and lets go of Ctrl+`key`, a frame each, with the mouse
+    /// away: a shortcut for the text box that has the keys.
+    fn ctrl_key(&mut self, game: &mut GameState, key: ::imgui::Key) {
+        for down in [true, false] {
+            let io = self.context.io_mut();
+            io.add_key_event(::imgui::Key::ModCtrl, down);
+            io.add_key_event(::imgui::Key::LeftCtrl, down);
+            io.add_key_event(key, down);
+            self.frame(game, None, false);
+        }
     }
 
     /// Captures `game`'s selection panel in a new outer box, as dragging it
