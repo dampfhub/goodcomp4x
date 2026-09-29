@@ -259,6 +259,13 @@ ImGui gives each of its buttons a drag source and target (`render_buttons`).
 Cursor-following tooltips, button tooltips, and the selection box are
 overlays, so they use their own anchors (so is the centered settings menu). Ordinary status, control,
 hover, and debug panels belong in a `Zone`.
+Both presentations show the same tooltip text, from `subject_tooltip_lines`
+(`tooltips.rs`): on every panel button, a queue row and its X, a turn strip
+chip (`roster_tooltip`), End Turn and Menu. ImGui shows it on the hovered item
+(`show_tooltip`, `imgui.rs`); classic picks what's under the cursor, a button
+before a chip before a queue row (`classic_tooltip_at`), and shows no row's
+tooltip while a row is dragged. A new kind of hoverable thing gets its text
+there and a call in each presentation.
 
 Add a layout test when adding a new panel or zone behavior. Useful assertions
 are that panel rectangles do not overlap, buttons remain inside their panel,

@@ -6,8 +6,8 @@ use super::paint::draw_shape;
 use super::text::{ability_text, pending_text, price_hint, signed_quantity, turns_text, wrap};
 use super::{
     BODY, BORDER, Button, DIM_TEXT, FOOD_TEXT, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN,
-    METAL_TEXT, REDUCED_TEXT, SMALL, TEXT, TILE_TOOLTIP_OFFSET, TOOLTIP_GAP, TOOLTIP_WRAP, Target,
-    UnitAction, WOOD_TEXT, contains,
+    METAL_TEXT, QueueKind, REDUCED_TEXT, SMALL, TEXT, TILE_TOOLTIP_OFFSET, TOOLTIP_GAP,
+    TOOLTIP_WRAP, Target, UnitAction, WOOD_TEXT, contains,
 };
 use crate::game::GameState;
 use crate::game::city::{
@@ -22,6 +22,9 @@ use crate::game::unit::Unit;
 use crate::game::workers::JobKind;
 use crate::renderer::Vertex;
 use glam::Vec2;
+
+/// A tooltip's lines, each with its text size.
+pub(super) type TooltipLines = Vec<(u32, Line)>;
 
 /// Why a button that would change the plan is off while a network game
 /// waits for the others' plans.
@@ -387,33 +390,67 @@ impl GameState {
         }
     }
 
-    /// A panel explaining what `button` does, above it (or below, for the
-    /// top bar), kept inside the window.
+    /// The classic tooltip for what's under `point` in `layout`: a button's,
+    /// or else a turn strip chip's, or else a queue row's (not while a row is
+    /// dragged); with the rectangle it's for. `None` over nothing with one.
+    pub(super) fn classic_tooltip_at(
+        &self,
+        layout: &Layout,
+        point: Vec2,
+    ) -> Option<(TooltipLines, (Vec2, Vec2))> {
+        let (lines, rect) = if let Some(button) = layout.button_at(point) {
+            (self.tooltip_lines(button), (button.min, button.max))
+        } else if let Some(&(min, max, key)) = layout
+            .roster_chips
+            .iter()
+            .find(|&&(min, max, _)| contains(min, max, point))
+        {
+            let lines =
+                self.subject_tooltip_lines(Target::RosterSelect(key), "", self.selection_subject());
+            (lines, (min, max))
+        } else {
+            let row = layout.queue_items.iter().find(|row| {
+                row.kind != QueueKind::Priority
+                    && point.x < row.body_max_x
+                    && contains(row.min, row.max, point)
+            })?;
+            if self.queue_drag.is_some() {
+                return None;
+            }
+            let target = Target::QueueItem(row.kind, row.index);
+            let lines = self.subject_tooltip_lines(target, "", self.selection_subject());
+            (lines, (row.min, Vec2::new(row.body_max_x, row.max.y)))
+        };
+        (!lines.is_empty()).then_some((lines, rect))
+    }
+
+    /// A panel of `lines` explaining what's at `rect` (a button, chip or
+    /// row), above it (or below, for the top bar), kept inside the window.
     pub(super) fn draw_tooltip(
         &self,
-        button: &Button,
+        lines: Vec<(u32, Line)>,
+        (min, max): (Vec2, Vec2),
         layout: &Layout,
         screen_size: Vec2,
         out: &mut Vec<Vertex>,
     ) {
-        let lines = self.tooltip_lines(button);
         let mut panel = PanelBuilder::default();
         for (px, line) in lines {
             panel.text(px, line);
         }
         let size = panel.size();
-        let left = ((button.min.x + button.max.x - size.x) / 2.0)
+        let left = ((min.x + max.x - size.x) / 2.0)
             .clamp(MARGIN, (screen_size.x - MARGIN - size.x).max(MARGIN));
         // Clear of the panel the button sits in, so the tooltip doesn't hide
         // what the panel says: below panels at the top of the window (the top
         // bar, the debug panel), above those at the bottom (the tray).
-        let center = (button.min + button.max) / 2.0;
+        let center = (min + max) / 2.0;
         let (panel_min, panel_max) = layout
             .panels
             .iter()
             .copied()
             .find(|&(min, max)| contains(min, max, center))
-            .unwrap_or((button.min, button.max));
+            .unwrap_or((min, max));
         let near_top = (panel_min.y + panel_max.y) / 2.0 > screen_size.y / 2.0;
         let bottom = if near_top {
             panel_min.y - TOOLTIP_GAP - 2.0 * BORDER - size.y
@@ -533,9 +570,9 @@ impl GameState {
                 Target::WorkerJobRemove(_) => {
                     ("REMOVE".into(), "CLICK".into(), "REFUNDED.".into(), None)
                 }
-                // Unit strip tokens aren't buttons: their help is in the strip.
-                Target::RosterSelect(_) | Target::RosterAdd(_) | Target::RosterRemove(_) => {
-                    return Vec::new();
+                Target::RosterSelect(key) | Target::RosterAdd(key) | Target::RosterRemove(key) => {
+                    let (title, clicks, description) = self.roster_tooltip(key);
+                    (title, clicks.into(), description, None)
                 }
                 Target::ShowWorker(_) => (
                     "WORKER".into(),
@@ -543,10 +580,19 @@ impl GameState {
                     "SHOW IT ON THE MAP.".into(),
                     None,
                 ),
+                // A click shows a worker job on the map; other rows only drag.
+                Target::QueueItem(QueueKind::Workers, _) => (
+                    "PLACED JOB".into(),
+                    "CLICK · DRAG".into(),
+                    "CLICK: SHOW IT ON THE MAP. DRAG ONTO ANOTHER ROW: MOVE IT THERE. ITS X \
+                     TAKES IT OFF."
+                        .into(),
+                    None,
+                ),
                 Target::QueueItem(..) => (
                     "QUEUED".into(),
-                    "CLICK · DRAG".into(),
-                    "CLICK: SHOW IT. DRAG: REORDER.".into(),
+                    "DRAG".into(),
+                    "DRAG ONTO ANOTHER ROW: MOVE IT THERE. ITS X TAKES IT OFF.".into(),
                     None,
                 ),
                 Target::RecallWorker(_) => (
