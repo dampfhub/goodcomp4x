@@ -1,0 +1,330 @@
+//! The library UI as pressed: each test builds a game and a context over the game's real fonts,
+//! runs frames of scripted input (the mouse the way the window adapter reports it) and checks
+//! what the game did and where the panels went. The buttons are found where `UiState.seen`
+//! says they were laid out, so a change of layout moves what a test presses with it.
+
+use std.linalg.Rect;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.rand.Rand;
+use std.str.Str;
+use std.test.assert;
+use std.test.assert_eq;
+use std.test.Assert;
+use log.Log;
+use font.ttf.FontError;
+use ui.atlas.FontAtlas;
+use ui.boxfont.box_atlas;
+use ui.context.Context;
+use ui.context.NO_MOVE;
+use ui.context.NO_SCROLLBAR;
+use ui.context.NO_SCROLL_WITH_MOUSE;
+use ui.context.NO_TITLE_BAR;
+use ui.input.MouseButton;
+use ui.input.Mods;
+use ui_win32.next_frame;
+use game.GameState;
+use game.city.Build;
+use game.city.BuildUnit;
+use game.font.ui_atlas;
+use game.imgui.UiState;
+use game.imgui.run_ui;
+use game.imgui.status_flags;
+use game.imgui.ui_context;
+use game.imgui.ui_state;
+use game.imgui_layout.DEBUG;
+use game.imgui_layout.PinnedKind;
+use game.imgui_layout.PinnedPanel;
+use game.imgui_layout.layout_from_text;
+use game.imgui_layout.layout_state;
+use game.tests.sandbox;
+use game.ui.QueueKind;
+use game.ui.Target;
+use game.ui.UnitAction;
+use game.unit.Team;
+
+const SCREEN_W: f32 = 1600.0;
+const SCREEN_H: f32 = 900.0;
+
+fn screen() -> Vec2 { vec2(SCREEN_W, SCREEN_H) }
+
+/// A game, the library's context over the game's fonts and the UI's state, kept together so a
+/// helper is handed one thing.
+struct Rig { game: GameState, ctx: Context, st: UiState }
+
+/// The library's context over the game's fonts, with `saved` windows restored; whether the fonts
+/// rasterized (else a box font stands in).
+fn context(saved: Option[Str]) -> (Context, bool) {
+    let mut built: Option[FontAtlas] = Option.None;
+    let rc = handle { built = Option.Some(ui_atlas()); 0 } with FontError { fail(c) => { abort c } };
+    let real = rc == 0 && built.is_some();
+    let atlas = match built { Option.Some(a) => a, Option.None => box_atlas(&[15.0], 128) };
+    (ui_context(atlas, saved), real)
+}
+
+/// A rig over `game` in the library UI, its panels laid out for three frames so hover has
+/// windows to judge against.
+fn rig(game: GameState) -> Rig can {Log, Rand} {
+    let mut game = game;
+    game.imgui_ui = true;
+    let (ctx, _real) = context(Option.None);
+    let mut r = Rig { game, ctx, st: ui_state(layout_state(), screen()) };
+    frames(&mut r, 3);
+    r
+}
+
+/// One frame at the current input; the wheel and keys spent afterwards, as the game's frame
+/// does.
+fn frame(r: &mut Rig) can {Log, Rand} {
+    let cursor = r.st.input.mouse;
+    run_ui(&mut r.game, &mut r.ctx, &mut r.st, screen(), 1.0, 0.016, cursor);
+    r.st.input = next_frame(r.st.input);
+}
+
+fn frames(r: &mut Rig, n: i32) can {Log, Rand} {
+    for _ in 0..n { frame(r); }
+}
+
+fn move_to(r: &mut Rig, p: Vec2) { r.st.input.mouse = Option.Some(p); }
+
+fn set_left(r: &mut Rig, down: bool) { r.st.input.down[MouseButton.Left.slot()] = down; }
+
+/// A full left click at `p`: hover, press, release.
+fn click_at(r: &mut Rig, p: Vec2) can {Log, Rand} {
+    move_to(r, p);
+    frames(r, 2);
+    set_left(r, true);
+    frame(r);
+    set_left(r, false);
+    frame(r);
+}
+
+/// Drags from `a` to `b` in three steps with the left button.
+fn drag(r: &mut Rig, a: Vec2, b: Vec2) can {Log, Rand} {
+    move_to(r, a);
+    frames(r, 2);
+    set_left(r, true);
+    frame(r);
+    move_to(r, vec2((a.x + b.x) / 2.0, (a.y + b.y) / 2.0));
+    frame(r);
+    move_to(r, b);
+    frame(r);
+    set_left(r, false);
+    frames(r, 3);
+}
+
+fn center(rc: Rect) -> Vec2 { vec2((rc.min.x + rc.max.x) / 2.0, (rc.min.y + rc.max.y) / 2.0) }
+
+/// Where the widget pressing `target` was laid out in the last frame.
+fn seen_rect(r: &Rig, target: Target) -> Option[Rect] {
+    for k in 0..r.st.seen.len() {
+        if r.st.seen[k].target == target { return Option.Some(r.st.seen[k].rect); }
+    }
+    Option.None
+}
+
+fn click_target(r: &mut Rig, target: Target) can {Log, Rand, Assert} {
+    let Option.Some(rc) = seen_rect(&*r, target) else { assert(false); return; };
+    click_at(r, center(rc));
+}
+
+@test
+fn the_ui_fonts_rasterize() {
+    let (_ctx, real) = context(Option.None);
+    assert(real);
+}
+
+@test
+fn the_status_bar_never_scrolls() {
+    let flags = status_flags();
+    assert(flags.has(NO_SCROLLBAR.plus(NO_SCROLL_WITH_MOUSE)));
+    assert(flags.has(NO_TITLE_BAR.plus(NO_MOVE)));
+}
+
+@test
+fn a_click_on_a_panel_button_does_what_the_classic_button_does() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        let mut r = rig(game);
+        assert(r.game.cities[city].queue.is_empty());
+        click_target(&mut r, Target.Build(BuildUnit.Melee));
+        assert(r.game.cities[city].queue.contains(Build.Unit(BuildUnit.Melee)));
+    });
+}
+
+@test
+fn a_disabled_button_takes_the_click_and_does_nothing() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut r = rig(GameState.city_scenario());
+        // Nothing saved yet, so Load is off.
+        assert(r.game.savestate.is_none());
+        click_target(&mut r, Target.LoadState);
+        assert(r.game.savestate.is_none());
+        assert(r.st.wants_mouse);
+        // Save is on: the same click on it saves.
+        click_target(&mut r, Target.SaveState);
+        assert(r.game.savestate.is_some());
+    });
+}
+
+@test
+fn the_ui_takes_the_mouse_over_a_panel_and_leaves_the_map_alone() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut r = rig(GameState.city_scenario());
+        // Over the status bar.
+        move_to(&mut r, vec2(300.0, 20.0));
+        frames(&mut r, 2);
+        assert(r.st.wants_mouse);
+        // Over the middle of the map, where nothing is: the game keeps the mouse.
+        move_to(&mut r, vec2(800.0, 450.0));
+        frames(&mut r, 2);
+        assert(!r.st.wants_mouse);
+        // And with no cursor at all.
+        r.st.input.mouse = Option.None;
+        frames(&mut r, 2);
+        assert(!r.st.wants_mouse);
+    });
+}
+
+@test
+fn end_turn_in_the_status_bar_selects_what_the_turn_waits_on() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut r = rig(GameState.city_scenario());
+        assert(r.game.selected_city.is_none());
+        click_target(&mut r, Target.EndTurn);
+        assert(r.game.selected_city.is_some());
+    });
+}
+
+@test
+fn dragging_a_queue_row_onto_another_reorders_the_queue() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        game.queue_selected_city_unit(BuildUnit.Melee);
+        game.queue_selected_city_unit(BuildUnit.Ranged);
+        game.queue_selected_city_unit(BuildUnit.Siege);
+        assert(game.cities[city].queue.len() == 3);
+        let mut r = rig(game);
+        let Option.Some(last) = seen_rect(&r, Target.QueueItem(QueueKind.City, 2)) else { assert(false); return; };
+        let Option.Some(middle) = seen_rect(&r, Target.QueueItem(QueueKind.City, 1)) else { assert(false); return; };
+        drag(&mut r, center(last), center(middle));
+        // Siege now sits second, ahead of Ranged.
+        assert(r.game.cities[city].queue.len() == 3);
+        assert(r.game.cities[city].queue[1] == Build.Unit(BuildUnit.Siege));
+        assert(r.game.cities[city].queue[2] == Build.Unit(BuildUnit.Ranged));
+    });
+}
+
+@test
+fn the_settings_menu_changes_settings_with_its_controls() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.settings_open = true;
+        let mut r = rig(game);
+        // Pressing the first control that would change its setting changes it.
+        let mut pressed = 0;
+        for k in 0..r.st.seen.len() {
+            if pressed > 0 { break; }
+            match r.st.seen[k].target {
+                Target.SetSetting(setting, to) => {
+                    if r.game.settings.get(setting) == to { continue; }
+                    let at = center(r.st.seen[k].rect);
+                    click_at(&mut r, at);
+                    assert(r.game.settings.get(setting) == to);
+                    pressed = pressed + 1;
+                }
+                _ => {}
+            }
+        }
+        assert(pressed == 1);
+        // Close is a button of the menu too.
+        click_target(&mut r, Target.CloseSettings);
+        assert(!r.game.settings_open);
+    });
+}
+
+@test
+fn the_turn_strip_chip_of_a_group_selects_its_units() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut r = rig(GameState.new());
+        r.game.selected = Option.None;
+        r.game.group.clear();
+        frames(&mut r, 2);
+        let mut chip: Option[Target] = Option.None;
+        for k in 0..r.st.seen.len() {
+            match r.st.seen[k].target { Target.RosterSelect(_) => { chip = Option.Some(r.st.seen[k].target); } _ => {} }
+        }
+        let Option.Some(target) = chip else { assert(false); return; };
+        click_target(&mut r, target);
+        assert(!r.game.selection().is_empty());
+    });
+}
+
+@test
+fn a_panel_is_moved_only_while_ctrl_is_held_and_the_layout_remembers_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut r = rig(GameState.city_scenario());
+        let Option.Some(start) = r.ctx.window_rect("Debug") else { assert(false); return; };
+        assert(!r.st.layout.windows[DEBUG].manual);
+        // Without Ctrl, a drag inside the panel moves nothing.
+        let grab = vec2(start.min.x + 40.0, start.min.y + 12.0);
+        drag(&mut r, grab, vec2(grab.x - 300.0, grab.y + 40.0));
+        let Option.Some(same) = r.ctx.window_rect("Debug") else { assert(false); return; };
+        assert(same.min.x == start.min.x && same.min.y == start.min.y);
+        // With Ctrl held the title bar shows and the panel follows the mouse.
+        r.st.input.mods = Mods { ctrl: true, shift: false, alt: false };
+        frames(&mut r, 2);
+        let Option.Some(titled) = r.ctx.window_rect("Debug") else { assert(false); return; };
+        let title = vec2(titled.min.x + 40.0, titled.min.y + 10.0);
+        drag(&mut r, title, vec2(title.x - 300.0, title.y + 40.0));
+        let Option.Some(moved) = r.ctx.window_rect("Debug") else { assert(false); return; };
+        assert(moved.min.x < start.min.x - 200.0);
+        assert(r.st.layout.windows[DEBUG].manual);
+        // The layout saved as text, and the windows the context saved, bring it back in a new
+        // session.
+        let layout_text = r.st.layout.to_text();
+        let windows = r.ctx.save_settings();
+        let mut game2 = GameState.city_scenario();
+        game2.imgui_ui = true;
+        let (ctx2, _real2) = context(Option.Some(windows));
+        let mut again = Rig { game: game2, ctx: ctx2, st: ui_state(layout_from_text(&layout_text), screen()) };
+        frames(&mut again, 3);
+        let Option.Some(back) = again.ctx.window_rect("Debug") else { assert(false); return; };
+        assert_eq(back.min.x as i32, moved.min.x as i32);
+        assert_eq(back.min.y as i32, moved.min.y as i32);
+        assert(again.st.layout.windows[DEBUG].manual);
+    });
+}
+
+@test
+fn captured_unit_action_targets_its_stable_unit_id() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let mut mine: i32 = 0 - 1;
+        for i in 0..game.units.len() { if mine < 0 && game.units[i].team == Team.Blue { mine = i; } }
+        assert(mine >= 0);
+        let pin = PinnedPanel { kind: PinnedKind.Unit, city_id: game.units[mine].id };
+        game.selected = Option.None;
+        game.activate_pinned(pin, Target.Unit(UnitAction.Hold));
+        assert(game.units[mine].holding);
+    });
+}
+
+@test
+fn pinned_city_action_uses_its_own_city_after_selection_closes() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let Option.Some(pin) = game.selected_pin() else { assert(false); return; };
+        game.leave_city_view();
+        assert(game.selected_city.is_none());
+        game.activate_pinned(pin, Target.Build(BuildUnit.Melee));
+        let Option.Some(city) = game.pinned_city_index(pin) else { assert(false); return; };
+        assert(game.selected_city == Option.Some(city));
+        assert(!game.cities[city].queue.is_empty());
+    });
+}

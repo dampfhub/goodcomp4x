@@ -187,6 +187,11 @@ fn min_f(a: f32, b: f32) -> f32 { if a < b { a } else { b } }
 
 fn clamp_v(v: Vec2, lo: Vec2, hi: Vec2) -> Vec2 { vec2(clamp_f(v.x, lo.x, hi.x), clamp_f(v.y, lo.y, hi.y)) }
 
+/// The name of the dock space inside box `id`.
+pub fn box_space_name(id: u32) -> Str {
+    text_of(fn() can {Out} { Out.put("BoxSpace-"); show_u64(id as u64); })
+}
+
 /// A box the player made: a window holding a dock space of its own.
 pub struct OuterBox { id: u32, dock_id: u32, scope: BoxScope, geometry: WindowGeometry }
 
@@ -199,10 +204,7 @@ impl OuterBox {
     }
 
     /// The name of the dock space inside the box.
-    pub fn space(&self) -> Str {
-        let id = self.id;
-        text_of(fn() can {Out} { Out.put("BoxSpace-"); show_u64(id as u64); })
-    }
+    pub fn space(&self) -> Str { box_space_name(self.id) }
 }
 
 /// How one panel sits beside another in a dock: the side, the share of the pair it takes, and
@@ -456,6 +458,8 @@ impl ImGuiLayoutState {
         }
     }
 
+    pub fn has_box(&self, id: u32) -> bool { self.box_index(id).is_some() }
+
     fn box_index(&self, id: u32) -> Option[i32] {
         for k in 0..self.outer_boxes.len() {
             if self.outer_boxes[k].id == id { return Option.Some(k); }
@@ -463,7 +467,7 @@ impl ImGuiLayoutState {
         Option.None
     }
 
-    fn box_id_visible(&self, id: u32) -> bool {
+    pub fn box_id_visible(&self, id: u32) -> bool {
         match self.box_index(id) { Option.Some(k) => self.box_visible(&self.outer_boxes[k]), Option.None => false }
     }
 
@@ -886,6 +890,16 @@ impl ImGuiLayoutState {
             let _ok = ctx.dock_beside("Production Queue", "Selection", dir, fraction);
         }
         self.queue_restore_attempts = self.queue_restore_attempts - 1;
+    }
+
+    /// Files Debug's placement under the layer it is in, so a layout saved now brings it back
+    /// (a view's placement is otherwise only kept when the player changes view).
+    pub fn settle(&mut self) {
+        match self.debug_layout_scope {
+            Option.Some(BoxScope.Outer) => { self.debug_outer_geometry = self.windows[DEBUG]; }
+            Option.Some(BoxScope.View(v)) => { let g = self.windows[DEBUG]; self.set_debug_view_geometry(v, g); }
+            Option.None => {}
+        }
     }
 
     // ---- observing the windows ----------------------------------------------------------

@@ -21,11 +21,15 @@ use std.str.eq as str_eq;
 use std.str.len as str_len;
 use std.str.byte_at;
 use std.str.sub;
-use std.str.Span;
+use std.str.Span as TextSpan;
 use std.str.to_owned;
 use std.str.push;
 use log.Log;
 use ui.Ui;
+use ui.Dir;
+use ui.dock_into;
+use ui.cursor_screen;
+use std.core.Keep;
 use ui.frame_into;
 use ui.window;
 use ui.spec;
@@ -88,6 +92,7 @@ use ui.context.NO_TITLE_BAR;
 use ui.context.NO_RESIZE;
 use ui.context.NO_MOVE;
 use ui.context.NO_DOCKING;
+use ui.context.NO_COLLAPSE;
 use ui.context.NO_SAVED_SETTINGS;
 use ui.context.NO_SCROLLBAR;
 use ui.context.NO_SCROLL_WITH_MOUSE;
@@ -112,6 +117,9 @@ use game.draw.UNIT_ICON_RADIUS;
 use game.font.TextSize;
 use game.imgui_layout.ImGuiLayoutState;
 use game.imgui_layout.PinnedKind;
+use game.imgui_layout.PinBox;
+use game.imgui_layout.box_space_name;
+use game.imgui_layout.GroupIds;
 use game.imgui_layout.PinnedPanel;
 use game.imgui_layout.ViewScope;
 use game.imgui_layout.BoxScope;
@@ -145,6 +153,8 @@ use game.ui.PanelBuilder;
 use game.ui.QueueKind;
 use game.ui.Row;
 use game.ui.RowKind;
+use game.ui.Span;
+use game.ui.QueueItemSpec;
 use game.ui.RosterChip;
 use game.ui.RosterKey;
 use game.ui.Target;
@@ -254,6 +264,8 @@ pub enum Action {
     ToggleLayoutLayer,
     RemoveOuterBox(u32),
     ResetView,
+    /// A widget laid out this frame and where: `UiState.seen`.
+    Seen(Target, Rect),
 }
 
 /// The UI's state between frames, besides the library's `Context`.
@@ -268,12 +280,16 @@ pub struct UiState {
     /// inputs alone.
     wants_mouse: bool,
     wants_keyboard: bool,
-    /// The last hover summary, kept while the Inspect panel sits in a box.
-    inspector: Option[PanelBuilder],
+    /// Where each widget that presses a target was laid out this frame, in logical pixels: what
+    /// a test clicks, and what a keyboard-driven mode would walk.
+    seen: Vec[SeenWidget],
 }
 
+/// A widget that presses `target`, and where it is.
+pub struct SeenWidget { target: Target, rect: Rect }
+
 pub fn ui_state(layout: ImGuiLayoutState, display: Vec2) -> UiState {
-    UiState { layout, out: draw_data(), input: idle_input(display), prev_left: false, wants_mouse: false, wants_keyboard: false, inspector: Option.None }
+    UiState { layout, out: draw_data(), input: idle_input(display), prev_left: false, wants_mouse: false, wants_keyboard: false, seen: Vec.new() }
 }
 
 /// The panels of one frame, built from the game before the frame starts.
@@ -464,6 +480,7 @@ fn spec_button(game: &GameState, spec: &ButtonSpec, label: &str, size: Vec2, sco
     let off = match spec.state { ButtonState.Disabled => true, _ => false };
     let d = disabled(off);
     if accent_button(label, size, accent) { push_action(actions, scope, spec.target); }
+    actions.push(Action.Seen(spec.target, item_rect()));
     if item_hovered(ALLOW_WHEN_DISABLED) { button_tooltip(game, spec.target); }
     d.end();
 }
@@ -484,6 +501,7 @@ fn render_setting(setting: Setting, value: i32, label_width: f32, scope: Option[
             let shown = setting.value_text(value);
             let label = text(fn() can {Out} { Out.put(&shown); Out.put("##setting-"); Out.put(setting.name()); });
             if checkbox(&label, &mut on) { push_action(actions, scope, Target.SetSetting(setting, if on { 1 } else { 0 })); }
+            actions.push(Action.Seen(Target.SetSetting(setting, if value == 1 { 0 } else { 1 }), item_rect()));
             if item_hovered(0) { setting_tooltip(setting); }
         }
         Control.Slider => {
@@ -491,6 +509,7 @@ fn render_setting(setting: Setting, value: i32, label_width: f32, scope: Option[
             next_item_width(width);
             let label = text(fn() can {Out} { Out.put("##setting-"); Out.put(setting.name()); });
             if slider_i32(&label, &mut to, low, high) && to != value { push_action(actions, scope, Target.SetSetting(setting, to)); }
+            actions.push(Action.Seen(Target.SetSetting(setting, high), item_rect()));
             if item_hovered(0) { setting_tooltip(setting); }
         }
         Control.Choice => {
@@ -520,6 +539,7 @@ fn render_setting(setting: Setting, value: i32, label_width: f32, scope: Option[
                     let label = text(fn() can {Out} { Out.put(&shown_to); Out.put("##setting-"); Out.put(setting.name()); Out.put("-"); show_i64(to as i64); });
                     let accent: Option[Color] = if to == value { Option.Some([0.34, 0.30, 0.17, 1.0]) } else { Option.None };
                     if accent_button(&label, vec2(each, 0.0), accent) && to != value { push_action(actions, scope, Target.SetSetting(setting, to)); }
+                    actions.push(Action.Seen(Target.SetSetting(setting, to), item_rect()));
                     if item_hovered(0) { setting_tooltip(setting); }
                 }
             }
@@ -575,7 +595,7 @@ fn queue_label(label: &Str) -> Str {
             Option.None => { break; }
         }
     }
-    to_owned(sub(label, Span { lo: i, hi: n }))
+    to_owned(sub(label, TextSpan { lo: i, hi: n }))
 }
 
 fn queue_drag_name(kind: QueueKind, scope: Option[PinnedPanel]) -> Str {
@@ -625,6 +645,7 @@ fn render_rows(game: &GameState, panel: &PanelBuilder, scope: Option[PinnedPanel
                     let chip = panel.chips[k];
                     let sc = id_scope_int((r * 64 + k) as i64);
                     let clicked = invisible_button("##roster", vec2(ROSTER_CHIP, ROSTER_CHIP));
+                    actions.push(Action.Seen(Target.RosterSelect(chip.key), item_rect()));
                     let hovered = item_hovered(0);
                     draw_roster_chip(item_rect(), chip, hovered);
                     if clicked {
@@ -688,6 +709,7 @@ fn render_rows(game: &GameState, panel: &PanelBuilder, scope: Option[PinnedPanel
                 let shown = queue_label(&item.label);
                 let label = text(fn() can {Out} { Out.put("::  "); Out.put(&shown); Out.put("##queue"); });
                 if button_sized(&label, vec2(width, 30.0)) { push_action(actions, scope, Target.QueueItem(item.kind, item.index)); }
+                actions.push(Action.Seen(Target.QueueItem(item.kind, item.index), item_rect()));
                 bg.pop();
                 align.pop();
                 if !item.locked && !game.is_resolving() {
@@ -957,7 +979,19 @@ fn render_slot(game: &GameState, layout: &mut ImGuiLayoutState, slot: i32, posit
     let mut sp = spec().flags(flags);
     // While the library is moving a panel or showing docking targets it owns the geometry:
     // applying the automatic position here would fight it.
-    let free = !layout.windows[slot].docked && !layout.defer_geometry;
+    // Debug goes back into the box it was left in.
+    let mut docking_now = false;
+    if slot == DEBUG {
+        if let Option.Some(id) = layout.pending_debug_box {
+            if layout.box_id_visible(id) {
+                let space = box_space_name(id);
+                dock_into(title, &space, Dir.Left, BOX_DOCK_RATIO);
+                layout.pending_debug_box = Option.None;
+                docking_now = true;
+            }
+        }
+    }
+    let free = !layout.windows[slot].docked && !layout.defer_geometry && !docking_now;
     if free { sp = sp.at(position, pos_cond).sized(size, size_cond); }
     let restored_debug = slot == DEBUG && layout.debug_reposition && !layout.windows[slot].docked && !layout.defer_geometry;
     // The settings menu opens over the other panels: keep their text from showing through.
@@ -1017,6 +1051,7 @@ fn render_status(layout: &mut ImGuiLayoutState, panels: &Panels, viewport: Vec2,
     set_cursor(vec2(max_f(viewport.x - end_width, 8.0), 7.0));
     let d = disabled(panels.resolving);
     if button_sized(&label, vec2(end_width - 15.0, 29.0)) { actions.push(Action.Button(Target.EndTurn)); }
+    actions.push(Action.Seen(Target.EndTurn, item_rect()));
     d.end();
     w.end();
 }
@@ -1028,7 +1063,7 @@ fn cut_last(s: &Str) -> Str {
     while n > 0 {
         match byte_at(s, n) { Option.Some(b) => { if b >= 128 && b < 192 { n = n - 1; } else { break; } } Option.None => { break; } }
     }
-    to_owned(sub(s, Span { lo: 0, hi: n }))
+    to_owned(sub(s, TextSpan { lo: 0, hi: n }))
 }
 
 /// Every window of one frame: the dock space, the status bar and the six panels placed by
@@ -1038,6 +1073,7 @@ fn frame_body(game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, 
     let base = push_font(font_of(TextSize.Body));
     dockspace(GAME_SPACE, Rect { min: vec2(0.0, STATUS_HEIGHT), max: vec2(viewport.x, max_f(viewport.y, STATUS_HEIGHT + 1.0)) });
     render_status(layout, panels, viewport, actions);
+    render_boxes(layout, viewport, arranging, actions);
 
     // Measure the actual row geometry in logical pixels. The dock reserves every visible panel
     // before any window is presented.
@@ -1074,6 +1110,10 @@ fn frame_body(game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, 
     let mut sizes: [Option[Vec2]; 6] = [Option.None; 6];
     for slot in 0..SLOT_COUNT {
         if let Option.Some(m) = measured[slot] { sizes[slot] = Option.Some(layout.size(slot, m, viewport)); }
+    }
+    for k in 0..layout.pinned.len() {
+        let pin = layout.pinned[k];
+        if layout.pin_visible(pin) { render_pin(game, layout, pin, k, viewport, arranging, actions); }
     }
     let positions = layout.plan(viewport, &mut sizes);
     for slot in 0..SLOT_COUNT {
@@ -1125,11 +1165,13 @@ pub fn run_ui(game: &mut GameState, ctx: &mut Context, st: &mut UiState, size: V
     let clicked = left && !st.prev_left;
     st.prev_left = left;
     let mouse = match inp.mouse { Option.Some(m) => m, Option.None => vec2(0.0 - 1.0, 0.0 - 1.0) };
+    st.seen.clear();
     st.layout.begin_frame(arranging, left, clicked, mouse);
     for slot in 0..SLOT_COUNT { st.layout.sync_window(slot, &*ctx, SLOT_TITLES[slot]); }
     let view = game.layout_view();
     st.layout.switch_layout_scope(ctx, view);
     st.layout.apply_pending_view_reset(ctx);
+    prune_pins(&mut st.layout, &*game);
     let panels = build_panels(&*game, &mut st.layout, cursor, size, st.wants_mouse);
     let mut actions: Vec[Action] = Vec.new();
     draw_frame(ctx, inp, &mut st.out, &*game, &mut st.layout, &panels, &mut actions, viewport, arranging);
@@ -1143,6 +1185,8 @@ pub fn run_ui(game: &mut GameState, ctx: &mut Context, st: &mut UiState, size: V
         st.layout.maintain_debug_scope(ctx, if kind.is_empty() { Option.None } else { Option.Some(kind) });
     }
     st.layout.track_captured_panels(&*ctx);
+    capture_boxed(&*game, ctx, &mut st.layout, &panels);
+    st.layout.settle();
     for k in 0..actions.len() { apply_action(game, ctx, st, viewport, actions[k]); }
 }
 
@@ -1160,5 +1204,227 @@ fn apply_action(game: &mut GameState, ctx: &mut Context, st: &mut UiState, viewp
         Action.ToggleLayoutLayer => { st.layout.editing_outer = !st.layout.editing_outer; }
         Action.RemoveOuterBox(id) => st.layout.remove_outer_box(id, ctx),
         Action.ResetView => { let _ok = st.layout.request_reset_active_view(); }
+        Action.Seen(target, rect) => { st.seen.push(SeenWidget { target, rect }); }
     }
+}
+
+// ---- boxes and pinned panels ---------------------------------------------------------------
+
+/// The share of a box a panel docked into it takes: the library's dock space keeps a central node
+/// that holds no window, so a first panel cannot fill the box.
+const BOX_DOCK_RATIO: f32 = 0.95;
+
+/// The boxes of the layer being shown: each a window holding a dock space the player can drag
+/// panels into.
+fn render_boxes(layout: &mut ImGuiLayoutState, viewport: Vec2, arranging: bool, actions: &mut Vec[Action]) can {Ui} {
+    for k in 0..layout.outer_boxes.len() {
+        if !layout.box_visible(&layout.outer_boxes[k]) { continue; }
+        let title = layout.outer_boxes[k].title();
+        let space = layout.outer_boxes[k].space();
+        let (id, scope) = (layout.outer_boxes[k].id, layout.outer_boxes[k].scope);
+        let g = layout.outer_boxes[k].geometry;
+        let flags = panel_chrome(arranging, false).plus(NO_COLLAPSE).plus(NO_DOCKING);
+        let mut sp = spec().flags(flags);
+        if !g.docked && !layout.defer_geometry { sp = sp.at(g.pos, Cond.Once).sized(g.size, Cond.Once); }
+        let w = window(&title, sp);
+        let label = match scope { BoxScope.Outer => "OUTER", BoxScope.View(v) => v.label() };
+        let heading = text(fn() can {Out} { Out.put(label); Out.put(" BOX "); show_u64(id as u64); });
+        ui_text(&heading);
+        same_line();
+        let remove = text(fn() can {Out} { Out.put("X##outer-"); show_u64(id as u64); });
+        if small_button(&remove) { actions.push(Action.RemoveOuterBox(id)); }
+        let origin = cursor_screen();
+        let room = avail();
+        dockspace(&space, Rect { min: origin, max: vec2(origin.x + max_f(room.x, 1.0), origin.y + max_f(room.y, 1.0)) });
+        layout.outer_boxes[k].geometry.pos = window_pos();
+        layout.outer_boxes[k].geometry.size = window_size();
+        layout.outer_boxes[k].geometry.docked = is_docked(&title);
+        w.end();
+    }
+}
+
+/// The content of a pinned panel: what its city, unit or group shows, with the queue below it
+/// unless the queue is pinned of its own.
+fn pin_panel(game: &GameState, queue_pinned: bool, members: &Vec[i32], pin: PinnedPanel) -> Option[PanelBuilder] {
+    let mut panel = panel_builder(false);
+    match pin.kind {
+        PinnedKind.City => {
+            let Option.Some(city) = game.pinned_city_index(pin) else { return Option.None; };
+            game.city_tray_rows(city, &mut panel, false);
+            if !queue_pinned {
+                let mut queue = panel_builder(false);
+                game.city_queue_panel(city, &mut queue);
+                if has_rows(&queue) { panel.gap(10.0); append_rows(&mut panel, &queue); }
+            }
+        }
+        PinnedKind.Barracks => {
+            let Option.Some(city) = game.pinned_city_index(pin) else { return Option.None; };
+            game.barracks_tray_rows(city, &mut panel, false);
+            if !queue_pinned {
+                let mut queue = panel_builder(false);
+                game.barracks_queue_panel(city, &mut queue);
+                if has_rows(&queue) { panel.gap(10.0); append_rows(&mut panel, &queue); }
+            }
+        }
+        PinnedKind.Unit => {
+            let Option.Some(unit) = game.pinned_unit_index(pin) else { return Option.None; };
+            game.unit_info(unit, &mut panel);
+            panel.gap(10.0);
+            game.unit_buttons(unit, &mut panel);
+        }
+        PinnedKind.Group => {
+            if members.is_empty() { return Option.None; }
+            game.group_tray_for(members, &mut panel);
+        }
+        PinnedKind.CityQueue => {
+            let Option.Some(city) = game.pinned_city_index(pin) else { return Option.None; };
+            game.city_queue_panel(city, &mut panel);
+        }
+        PinnedKind.BarracksQueue => {
+            let Option.Some(city) = game.pinned_city_index(pin) else { return Option.None; };
+            game.barracks_queue_panel(city, &mut panel);
+        }
+    }
+    Option.Some(panel)
+}
+
+/// Copies `from`'s rows and what they name onto the end of `to`.
+fn append_rows(to: &mut PanelBuilder, from: &PanelBuilder) {
+    for r in 0..from.rows.len() {
+        let row = from.rows[r];
+        match row.kind {
+            RowKind.Text => {
+                let first = to.spans.len();
+                for i in row.from..row.to {
+                    let sp = &from.spans[i];
+                    let t = &sp.text;
+                    to.spans.push(Span { text: to_owned(t), color: sp.color });
+                }
+                to.rows.push(Row { kind: RowKind.Text, size: row.size, value: row.value, from: first, to: first + (row.to - row.from), offset: 0 });
+            }
+            RowKind.QueueItem => {
+                let item = &from.queue_items[row.from];
+                let l = &item.label;
+                to.queue_item(QueueItemSpec { kind: item.kind, index: item.index, label: to_owned(l), active: item.active, locked: item.locked });
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A pinned panel's window: a floating one the player dragged into a box, kept there while
+/// its city, unit or group is not the selection.
+fn render_pin(game: &GameState, layout: &mut ImGuiLayoutState, pin: PinnedPanel, index: i32, viewport: Vec2, arranging: bool, actions: &mut Vec[Action]) can {Ui} {
+    let queue_pin = match pin.kind {
+        PinnedKind.City => PinnedPanel { kind: PinnedKind.CityQueue, city_id: pin.city_id },
+        _ => PinnedPanel { kind: PinnedKind.BarracksQueue, city_id: pin.city_id },
+    };
+    let queue_pinned = layout.is_pinned(queue_pin);
+    let members = group_members(&*layout, pin.city_id, game);
+    let Option.Some(panel) = pin_panel(game, queue_pinned, &members, pin) else { return; };
+    let title = pin.title();
+    let width = min_f(370.0, viewport.x - 2.0 * PANEL_MARGIN);
+    let height = max_f(min_f(measure_panel(&panel, width), viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN), 180.0);
+    let column = max_f(((viewport.x - 2.0 * PANEL_MARGIN) / (width + PANEL_GAP)).floor(), 1.0) as i32;
+    let mut previous_height: f32 = 0.0;
+    for k in 0..index {
+        if k % column == index % column {
+            let prior = layout.pinned[k];
+            let known = layout.pin_geometry(prior);
+            previous_height = previous_height + (if is_zero(known.size) { height } else { known.size.y }) + PANEL_GAP;
+        }
+    }
+    let default_pos = vec2(PANEL_MARGIN + (index % column) as f32 * (width + PANEL_GAP), STATUS_HEIGHT + PANEL_MARGIN + previous_height);
+    let mut docking_now = false;
+    let mut pending_box: Option[u32] = Option.None;
+    for k in 0..layout.pending_pin_dock.len() {
+        if layout.pending_pin_dock[k].pin == pin { pending_box = Option.Some(layout.pending_pin_dock[k].box_id); }
+    }
+    if let Option.Some(box_id) = pending_box {
+        if layout.has_box(box_id) {
+            let space = box_space_name(box_id);
+            dock_into(&title, &space, Dir.Left, BOX_DOCK_RATIO);
+            forget_pending_dock(layout, pin);
+            docking_now = true;
+        }
+    }
+    let mut g = layout.pin_geometry(pin);
+    let mut sp = spec().flags(panel_chrome(arranging, g.collapsed));
+    if !g.docked && !layout.defer_geometry && !docking_now {
+        sp = sp.at(default_pos, Cond.Once).sized(vec2(width, height), Cond.Once);
+    }
+    let w = window(&title, sp);
+    if w.visible() { render_rows(game, &panel, Option.Some(pin), actions); }
+    g.pos = window_pos();
+    g.size = window_size();
+    g.docked = is_docked(&title);
+    g.collapsed = Ui.window_collapsed();
+    if !g.docked && !g.collapsed { g.floating_pos = g.pos; g.floating_size = g.size; }
+    layout.set_pin_geometry(pin, g);
+    w.end();
+}
+
+/// The members of the pinned group `id`, as unit indices, when they are still the player's.
+fn group_members(layout: &ImGuiLayoutState, id: u32, game: &GameState) -> Vec[i32] {
+    let mut out: Vec[i32] = Vec.new();
+    for k in 0..layout.pinned_groups.len() {
+        if layout.pinned_groups[k].id != id { continue; }
+        let ids = &layout.pinned_groups[k].members;
+        for m in 0..ids.len() {
+            for i in 0..game.units.len() {
+                if game.units[i].id == ids[m] && game.units[i].team == PLAYER_TEAM { out.push(i); }
+            }
+        }
+    }
+    out
+}
+
+fn forget_pending_dock(layout: &mut ImGuiLayoutState, pin: PinnedPanel) {
+    handle { layout.pending_pin_dock.retain(); } with Keep[PinBox] { keep(e) => { resume e.pin != pin } }
+}
+
+/// Drops the pins whose city, unit or group is gone.
+fn prune_pins(layout: &mut ImGuiLayoutState, game: &GameState) {
+    let mut stale: Vec[PinnedPanel] = Vec.new();
+    for k in 0..layout.pinned.len() {
+        let pin = layout.pinned[k];
+        let alive = game.valid_pin(pin) && (match pin.kind { PinnedKind.Group => !group_members(&*layout, pin.city_id, game).is_empty(), _ => true });
+        if !alive { stale.push(pin); }
+    }
+    for k in 0..stale.len() { layout.forget_pin(stale[k]); }
+}
+
+fn same_id(a: Option[u32], b: Option[u32]) -> bool {
+    match a {
+        Option.Some(x) => match b { Option.Some(y) => x == y, Option.None => false },
+        Option.None => b.is_none(),
+    }
+}
+
+/// After a frame: the panels the player dragged into a box while a city, unit or group was
+/// selected stay there as pins of their own.
+fn capture_boxed(game: &GameState, ctx: &mut Context, layout: &mut ImGuiLayoutState, panels: &Panels) {
+    let selected_pin = game.selected_pin();
+    let selection_is_pinned = match selected_pin { Option.Some(p) => layout.is_pinned(p), Option.None => false };
+    let queue_pin = game.selected_queue_pin();
+    let queue_is_pinned = match queue_pin { Option.Some(p) => layout.is_pinned(p), Option.None => false };
+    let selection_box = layout.outer_box_for_window(&*ctx, "Selection");
+    if !same_id(selection_box, layout.last_selection_outer_box) && !selection_is_pinned && has_rows(&panels.tray) {
+        if let (Option.Some(pin), Option.Some(box_id)) = (selected_pin, selection_box) {
+            if let PinnedKind.Group = pin.kind {
+                let mut ids: Vec[u32] = Vec.new();
+                for k in 0..game.group.len() { ids.push(game.units[game.group[k]].id); }
+                layout.pinned_groups.push(GroupIds { id: pin.city_id, members: ids });
+            }
+            layout.capture_panel(pin, box_id, ctx, "Selection");
+        }
+    }
+    layout.last_selection_outer_box = selection_box;
+    let queue_box = layout.outer_box_for_window(&*ctx, "Production Queue");
+    if !same_id(queue_box, layout.last_queue_outer_box) && !selection_is_pinned && !queue_is_pinned && has_rows(&panels.queue) {
+        if let (Option.Some(pin), Option.Some(box_id)) = (queue_pin, queue_box) {
+            layout.capture_panel(pin, box_id, ctx, "Production Queue");
+        }
+    }
+    layout.last_queue_outer_box = queue_box;
 }

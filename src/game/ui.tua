@@ -858,12 +858,15 @@ impl GameState {
 
     /// A group of selected units: how many of each, how to order them, and buttons for what
     /// every member can do at once.
-    pub fn group_tray(&self, panel: &mut PanelBuilder) {
+    pub fn group_tray(&self, panel: &mut PanelBuilder) { self.group_tray_for(&self.group, panel); }
+
+    /// The tray for `members` (unit indices) selected together.
+    pub fn group_tray_for(&self, members: &Vec[i32], panel: &mut PanelBuilder) {
         // Each role and its count, in first-seen order.
         let mut kinds: Vec[str] = Vec.new();
         let mut counts: Vec[i32] = Vec.new();
-        for m in 0..self.group.len() {
-            let role = self.unit_role(&self.units[self.group[m]]).name();
+        for m in 0..members.len() {
+            let role = self.unit_role(&self.units[members[m]]).name();
             let mut found = false;
             for k in 0..kinds.len() {
                 if str_eq(kinds[k], role) {
@@ -876,7 +879,7 @@ impl GameState {
                 counts.push(1);
             }
         }
-        let count = self.group.len();
+        let count = members.len();
         panel.text_owned(TextSize.Title, text(fn() can {Out} { show_i64(count as i64); Out.put(" UNITS SELECTED"); }), TEXT);
         panel.text_owned(TextSize.Body, group_summary(&kinds, &counts), DIM_TEXT);
         panel.text(TextSize.Small, "CLICK A HEX: EACH MOVES AS CLOSE TO IT AS IT CAN", LABEL_TEXT);
@@ -886,8 +889,8 @@ impl GameState {
         panel.gap(GAP);
 
         let mut all_guarding = true;
-        for m in 0..self.group.len() {
-            if !self.units[self.group[m]].guarding { all_guarding = false; }
+        for m in 0..members.len() {
+            if !self.units[members[m]].guarding { all_guarding = false; }
         }
         panel.begin_buttons();
         panel.button(Target.Unit(UnitAction.Move), "MOVE", "M", ButtonState.Ready, self.armed(ClickMode.Move));
@@ -895,7 +898,7 @@ impl GameState {
         panel.button(Target.Unit(UnitAction.Hold), "HOLD", "SPACE", ButtonState.Ready, false);
         panel.button(Target.Unit(UnitAction.Guard), "GUARD", "G", button_state(all_guarding, false), false);
         let mut any_orders = false;
-        for m in 0..self.group.len() { if self.units[self.group[m]].has_orders() { any_orders = true; } }
+        for m in 0..members.len() { if self.units[members[m]].has_orders() { any_orders = true; } }
         panel.button(Target.Unit(UnitAction.ClearOrders), "CLEAR ORDERS", "CTRL-RMB", button_state(false, !any_orders), false);
         panel.end_buttons(false);
     }
