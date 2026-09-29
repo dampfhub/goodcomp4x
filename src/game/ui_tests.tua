@@ -1130,3 +1130,48 @@ fn queue_row_count_tracks_available_screen_height() {
         assert(counts[1] < counts[2]);
     });
 }
+
+/// A passable neighbour of `hex` that takes a road, or `hex` itself when there is none.
+fn road_neighbour(game: &GameState, hex: Hex) -> Hex {
+    let around = hex.neighbors();
+    for k in 0..6 {
+        if game.grid.contains(around[k]) && game.grid.is_passable(around[k]) && game.job_unavailable(around[k], JobKind.Road).is_none() { return around[k]; }
+    }
+    hex
+}
+
+@test
+fn worker_jobs_reorder_by_dragging_and_x_removes_one() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, first) = empty_tile_near_blue_city();
+        let second = road_neighbour(&game, first);
+        assert(second != first);
+        game.placing_job = Option.Some(JobKind.Road);
+        assert(game.place_job_at(first, Option.None));
+        assert(game.place_job_at(second, Option.None));
+        game.toggle_worker_mode();
+        assert(game.cities[0].worker_jobs[0].hex == first);
+        assert(game.start_queue_drag_at(row_cursor(&game, QueueKind.Workers, 1), screen()));
+        game.finish_queue_drag_at(row_cursor(&game, QueueKind.Workers, 0), screen());
+        assert(game.cities[0].worker_jobs[0].hex == second && game.cities[0].worker_jobs[1].hex == first);
+        // The X removes without starting a drag.
+        let x = button_cursor(&game, Target.WorkerJobRemove(0));
+        assert(!game.start_queue_drag_at(x, screen()));
+        game.handle_click(x, screen(), ClickMode.Normal);
+        assert(game.cities[0].worker_jobs.len() == 1 && game.cities[0].worker_jobs[0].hex == first);
+    });
+}
+
+@test
+fn debug_completion_button_finishes_the_current_production() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        game.queue_selected_city_unit(BuildUnit.Melee);
+        let queued = game.cities[city].queue.len();
+        assert(queued >= 1);
+        let units = game.units.len();
+        game.handle_click(button_cursor(&game, Target.CompleteProduction), screen(), ClickMode.Normal);
+        assert(game.cities[city].queue.len() < queued || game.units.len() > units);
+    });
+}

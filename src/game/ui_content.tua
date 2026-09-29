@@ -121,7 +121,7 @@ impl GameState {
 
     /// Whether row `index` is the one being dragged and whether a drop on it would land (`drag`:
     /// the drag is in this row's list).
-    fn drag_flags(&self, drag: bool, index: i32) -> (bool, bool) {
+    pub fn drag_flags(&self, drag: bool, index: i32) -> (bool, bool) {
         if !drag { return (false, false); }
         match self.queue_drag {
             Option.Some(d) => (d.source == index, d.target == Option.Some(index) && d.source != index),

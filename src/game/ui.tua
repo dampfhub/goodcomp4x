@@ -1199,13 +1199,13 @@ impl GameState {
         }
         if city.worker_jobs.is_empty() { return; }
         panel.text(TextSize.Small, "WORKER JOBS", LABEL_TEXT);
+        let dragging_jobs = match self.queue_drag { Option.Some(d) => d.kind == QueueKind.Workers, Option.None => false };
         for j in 0..city.worker_jobs.len() {
             let job = city.worker_jobs[j];
             let title = self.job_title(job);
             let label = text(fn() can {Out} { Out.put(&title); Out.put(" \u{b7} "); show_u64(job.kind.turns() as u64); Out.put("T"); });
-            panel.begin_buttons();
-            panel.button(Target.WorkerJobRemove(j), &label, "X", ButtonState.Ready, false);
-            panel.end_buttons(true);
+            let (dragging, drop_target) = self.drag_flags(dragging_jobs, j);
+            panel.queue_item(QueueItemSpec { kind: QueueKind.Workers, index: j, label, active: false, locked: false, dragging, drop_target });
         }
     }
 
