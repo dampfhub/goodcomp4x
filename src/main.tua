@@ -75,6 +75,16 @@ use game.orders.ClickMode;
 use game.scenario.Scenario;
 use game.ui.selection_box;
 use game.ui.ui_projection;
+use interact.Mailbox;
+use interact.Driver;
+use interact.mailbox;
+use interact.driver;
+use interact.drive;
+use interact.poster;
+use interact.verdict;
+use std.thread.Scope;
+use std.thread.scope;
+use std.thread.spawn;
 
 const TITLE: str = "Hex Combat Sandbox";
 /// The game's application id on Windows (`claim_app_id`).
@@ -347,7 +357,9 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
 /// Plays one frame: advances the game by `dt` seconds and lays out the world and the UI as
 /// two batches. Answers whether to keep running: not once the window was closed, the
 /// screenshot written, or its time run out.
-fn on_frame(game: &mut GameState, input: &Controls, ctx: &mut Context, ui: &mut UiState, shot: &mut Option[Screenshot], w: u32, h: u32, dt: f32, scale: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> FrameOut can {Log, Rand, Clock} {
+fn on_frame(game: &mut GameState, input: &Controls, ctx: &mut Context, ui: &mut UiState, shot: &mut Option[Screenshot], script: &mut Driver, mb: &Mailbox, interact: bool, w: u32, h: u32, dt: f32, scale: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> FrameOut can {Log, Rand, Clock} {
+    // The interaction script looks at the game and posts its next input before the frame plays.
+    if interact && !drive(script, mb, &*game, &*ui, &*ctx, vec2(w as f32, h as f32), scale, Clock.now_nanos(), input.closed) { return FrameOut { keep: false, ui: draw_data() }; }
     if input.closed || game.quit_requested() { return FrameOut { keep: false, ui: draw_data() }; }
     let shooting = shot.is_some();
     if let &mut Option.Some(s) = shot {
@@ -406,7 +418,7 @@ const SETTINGS_FILE: str = "settings.txt";
 const LAYOUT_FILE: str = "layout.txt";
 const IMGUI_FILE: str = "imgui.txt";
 
-fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
+fn play(options: &Options, mb: &Mailbox) -> i32 can {Log, Clock, Fs, Env} {
     let mut rng = seed(Clock.now_nanos() as u64);
     let hidden = options.screenshot.is_some();
     let mut spec = window_spec();
@@ -447,7 +459,7 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
             Option.None => options.scenario.start(&default_settings()),
         };
         // Everywhere but a screenshot keeps the player's settings between sessions.
-        let remember = !hidden;
+        let remember = !hidden && !options.interact;
         let saved = if remember { read(SETTINGS_FILE) } else { Option.None };
         if let &Option.Some(t) = &saved { let view = &t; game.set_settings(settings_from_text(view)); }
         game.imgui_ui = !options.classic;
@@ -472,10 +484,14 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
             mods: Modifiers { shift: false, control: false, alt: false },
             closed: false,
         };
+        let mut script = driver();
         let rc = handle { run(TITLE, spec, &icons, &atlas, &ui_font, frames, validate) } with Scene {
             // A screenshot shows the scenario as it starts, whatever the mouse and keyboard do.
             input(e, scale) => { resume if hidden { WindowRequest.Nothing } else { on_event(&mut game, &mut input, &mut ui, scale, e) } }
-            frame(w, h, dt, scale, vertices, batches) => { resume on_frame(&mut game, &input, &mut ctx, &mut ui, &mut shot, w, h, dt, scale, vertices, batches) }
+            frame(w, h, dt, scale, vertices, batches) => {
+                resume on_frame(&mut game, &input, &mut ctx, &mut ui, &mut shot, &mut script, mb, options.interact, w, h, dt, scale, vertices, batches)
+            }
+            opened(hwnd) => { mb.hwnd.store(hwnd as i64); resume options.interact }
             capture() => { resume match &shot { &Option.Some(s) => s.capture_this_frame(), &Option.None => false } }
             captured(w, h, rgba) => {
                 if let &mut Option.Some(s) = &mut shot { let _ok = s.captured(w, h, rgba); }
@@ -491,6 +507,7 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
             write(IMGUI_FILE, &ctx.save_settings());
         }
         let written = match &shot { &Option.Some(s) => s.is_written(), &Option.None => true };
+        if options.interact && rc == 0 { return verdict(&script); }
         if rc == 0 && !written {
             error(fn() can {Out} { Out.put("the window closed before the screenshot was written"); });
             1
@@ -510,9 +527,16 @@ fn main() -> i32 can {Env} {
         println(USAGE);
         return 0;
     }
+    let mb = mailbox();
     with_env_level("HEX_LOG", Level.Info, fn() -> i32 can {Log, Env} {
         with_system_clock(fn() -> i32 can {Log, Clock, Env} {
-            default_fs(fn() -> i32 can {Log, Clock, Fs, Env} { play(&options) })
+            default_fs(fn() -> i32 can {Log, Clock, Fs, Env} {
+                // The interaction script's poster runs beside the game and ends with the script.
+                scope(fn(s: &Scope) -> i32 can {Log, Clock, Fs, Env} {
+                    if options.interact { spawn(s, fn() -> i32 { poster(&mb) }); }
+                    play(&options, &mb)
+                })
+            })
         })
     })
 }

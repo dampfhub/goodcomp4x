@@ -158,9 +158,11 @@ use win32.toggle_fullscreen;
 use win32.client_size;
 use win32.window_dpi;
 use win32.destroy_window;
+use win32.raw_hwnd;
 use win32.events.Event;
 use win32.events.Events;
 use win32.events.Pacer;
+use win32.events.ignore_cursor_leave;
 use win32.events.pacer;
 use win32.events.next_frame;
 use renderer.pipelines.Mesh;
@@ -270,6 +272,9 @@ pub effect Scene {
     fn frame(width: u32, height: u32, dt: f32, scale: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> FrameOut;
     fn capture() -> bool;
     fn captured(width: u32, height: u32, rgba: &Vec[u8]);
+    /// The window is open (`hwnd`, its native handle) and about to draw. Answers whether the
+    /// program posts the window's mouse input itself, with the real cursor elsewhere.
+    fn opened(hwnd: u64) -> bool;
 }
 
 /// Waits for the next frame's turn, handing the window's input to the program as it arrives;
@@ -480,6 +485,7 @@ fn run_on_device(family: u32, title: &str, spec: WindowPlace, icons: &Icons, atl
             show_window(&mut win);
             run.icon_refresh_at = Option.Some(Clock.now_nanos() + ICON_REFRESH_NANOS);
         }
+        if Scene.opened(raw_hwnd(&win)) { ignore_cursor_leave(&mut win); }
         let surface = create_surface(&win);
         defer { destroy_surface(surface); }
         let mut alloc = create_allocator(pd);

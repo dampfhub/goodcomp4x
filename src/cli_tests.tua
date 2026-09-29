@@ -67,3 +67,13 @@ fn bad_arguments_are_errors() {
     let Result.Ok(options) = parse(&help) else { assert(false); return; };
     assert(options.help);
 }
+
+@test
+fn the_interaction_flag_parses_and_refuses_a_hidden_window() {
+    let a = args(&["--interact"]);
+    let Result.Ok(options) = parse(&a) else { assert(false); return; };
+    assert(options.interact);
+    assert(!default_options().interact);
+    // The script needs the visible window its messages are posted to.
+    assert(refused(&["--interact", "--screenshot", "out.png"]));
+}

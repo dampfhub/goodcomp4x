@@ -1,0 +1,459 @@
+//! The interaction test: `hex.exe --interact` opens the real window (which never takes the
+//! focus) and plays a fixed script through the window's own message queue, so the real message
+//! pump, the input decoding, the library UI and the frame loop all run.
+//!
+//! Two parties share a `Mailbox` of atomics:
+//!
+//! - The frame loop's `Driver` looks at the game once a frame, works out where the next step's
+//!   target is on screen (a hex under the camera, a widget where the UI laid it out this frame, a
+//!   panel's title bar), hands the poster that order, and later checks what the game did.
+//! - The poster is a second thread. It turns an order into `PostMessageW` calls (mouse moves,
+//!   buttons, keys, the close request) with real pauses between them, so the messages arrive
+//!   while the frame loop sleeps on its queue as well as while it draws. It is also the watchdog:
+//!   it reads the frame counter every few milliseconds, and a loop that draws no frame for a
+//!   second ends the process with `EXIT_FROZEN`; a window that never draws one, with
+//!   `EXIT_NO_FRAME`; a script that never ends, with `EXIT_TIMEOUT`.
+//!
+//! The exit code is 0 for a script that ran to the close, 100 + the step for a step whose check
+//! failed, or one of the four watchdog codes. `tools/interact.ps1` runs it without a console.
+
+use std.atomic.AtomicNum;
+use std.linalg.Rect;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.str.Str;
+use std.str.to_owned;
+use log.Log;
+use log.info;
+use log.error;
+use ui.context.Context;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.city.BuildUnit;
+use game.hex.Hex;
+use game.imgui.UiState;
+use game.ui.Target;
+
+/// No frame was drawn for `FREEZE_MS`.
+pub const EXIT_FROZEN: i32 = 94;
+/// The script did not finish in `SCRIPT_MS`.
+pub const EXIT_TIMEOUT: i32 = 95;
+/// The window drew no frame in `STARTUP_MS`.
+pub const EXIT_NO_FRAME: i32 = 96;
+/// The window became the foreground window: the test must never take the focus.
+pub const EXIT_ACTIVATED: i32 = 97;
+/// A step's check failed: this plus the step's index.
+pub const EXIT_STEP: i32 = 100;
+
+/// The longest the frame loop may go without drawing, once it draws.
+const FREEZE_MS: i64 = 1000;
+const STARTUP_MS: i64 = 30000;
+/// How long the window may take to go once it was asked to close.
+const CLOSE_MS: i64 = 15000;
+const SCRIPT_MS: i64 = 120000;
+/// How often the poster looks at the frame counter and the mailbox.
+const POLL_MS: u32 = 4;
+
+const KIND_NONE: i64 = 0;
+const KIND_CLICK: i64 = 1;
+const KIND_DRAG: i64 = 2;
+const KIND_KEY: i64 = 3;
+const KIND_MOVE: i64 = 5;
+const KIND_KEY_DOWN: i64 = 6;
+const KIND_KEY_UP: i64 = 7;
+const KIND_CLOSE: i64 = 4;
+
+const WM_CLOSE: u32 = 16;
+const WM_KEYDOWN: u32 = 256;
+const WM_KEYUP: u32 = 257;
+const WM_MOUSEMOVE: u32 = 512;
+const WM_LBUTTONDOWN: u32 = 513;
+const WM_LBUTTONUP: u32 = 514;
+const MK_LBUTTON: u64 = 1;
+const VK_CONTROL: u32 = 17;
+const VK_ESCAPE: u32 = 27;
+const VK_SPACE: u32 = 32;
+/// `lParam` of a key going up: repeat count 1, previous state down, transition up.
+const KEY_UP_LPARAM: u64 = 3221225473;
+/// The pause between the messages of one gesture, in milliseconds; a frame is about 16.
+const GESTURE_MS: u32 = 40;
+/// The mouse moves a drag is made of.
+const DRAG_MOVES: i64 = 8;
+
+extern "user32.dll" {
+    fn PostMessageW(hwnd: u64, msg: u32, wparam: u64, lparam: u64) -> i32;
+    fn GetForegroundWindow() -> u64;
+}
+
+extern "kernel32.dll" {
+    fn Sleep(ms: u32);
+    fn GetTickCount64() -> u64;
+    fn TerminateProcess(process: u64, code: u32) -> i32;
+}
+
+/// What the frame loop and the poster tell each other. Every field is one word each side reads
+/// or writes whole; the frame loop writes `seq` last, so the poster sees an order complete.
+pub struct Mailbox {
+    /// Frames drawn so far (the frame loop writes; the watchdog reads).
+    frames: AtomicNum,
+    /// The window's handle, once it is open.
+    hwnd: AtomicNum,
+    /// The last order issued, and the last one the poster finished.
+    seq: AtomicNum,
+    ack: AtomicNum,
+    kind: AtomicNum,
+    x0: AtomicNum,
+    y0: AtomicNum,
+    x1: AtomicNum,
+    y1: AtomicNum,
+    /// The close request was issued: the window may take a while to go.
+    closing: AtomicNum,
+    /// The script is over: the poster returns.
+    finished: AtomicNum,
+}
+
+pub fn mailbox() -> Mailbox {
+    Mailbox {
+        frames: AtomicNum { v: 0 }, hwnd: AtomicNum { v: 0 }, seq: AtomicNum { v: 0 }, ack: AtomicNum { v: 0 },
+        kind: AtomicNum { v: 0 }, x0: AtomicNum { v: 0 }, y0: AtomicNum { v: 0 }, x1: AtomicNum { v: 0 }, y1: AtomicNum { v: 0 },
+        closing: AtomicNum { v: 0 }, finished: AtomicNum { v: 0 },
+    }
+}
+
+// ---- the poster thread --------------------------------------------------------------------
+
+/// A client position as a mouse message's `lParam`.
+fn point(x: i64, y: i64) -> u64 { (((y & 65535) << 16) | (x & 65535)) as u64 }
+
+fn post(hwnd: u64, msg: u32, wparam: u64, lparam: u64) { let _posted = PostMessageW(hwnd, msg, wparam, lparam); }
+
+fn pause(ms: u32) { Sleep(ms); }
+
+/// Moves to `(x, y)`, presses the left button there and releases it.
+fn click(hwnd: u64, x: i64, y: i64) {
+    post(hwnd, WM_MOUSEMOVE, 0, point(x, y));
+    pause(GESTURE_MS);
+    post(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, point(x, y));
+    pause(GESTURE_MS);
+    post(hwnd, WM_LBUTTONUP, 0, point(x, y));
+}
+
+/// Presses at `(x0, y0)`, moves to `(x1, y1)` in steps and releases there.
+fn drag(hwnd: u64, x0: i64, y0: i64, x1: i64, y1: i64) {
+    post(hwnd, WM_MOUSEMOVE, 0, point(x0, y0));
+    pause(GESTURE_MS);
+    post(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, point(x0, y0));
+    pause(GESTURE_MS);
+    let mut k = 1;
+    while k <= DRAG_MOVES {
+        post(hwnd, WM_MOUSEMOVE, MK_LBUTTON, point(x0 + (x1 - x0) * k / DRAG_MOVES, y0 + (y1 - y0) * k / DRAG_MOVES));
+        pause(GESTURE_MS / 2);
+        k = k + 1;
+    }
+    pause(GESTURE_MS);
+    post(hwnd, WM_LBUTTONUP, 0, point(x1, y1));
+}
+
+fn key(hwnd: u64, vk: u32) {
+    post(hwnd, WM_KEYDOWN, vk as u64, 1);
+    pause(GESTURE_MS);
+    post(hwnd, WM_KEYUP, vk as u64, KEY_UP_LPARAM);
+}
+
+/// Carries out the order in the mailbox.
+fn perform(mb: &Mailbox, hwnd: u64) {
+    let kind = mb.kind.load();
+    let (x0, y0, x1, y1) = (mb.x0.load(), mb.y0.load(), mb.x1.load(), mb.y1.load());
+    if kind == KIND_MOVE { post(hwnd, WM_MOUSEMOVE, 0, point(x0, y0)); pause(GESTURE_MS); }
+    else if kind == KIND_CLICK { click(hwnd, x0, y0); }
+    else if kind == KIND_DRAG { drag(hwnd, x0, y0, x1, y1); }
+    else if kind == KIND_KEY { key(hwnd, x0 as u32); }
+    else if kind == KIND_KEY_DOWN { post(hwnd, WM_KEYDOWN, x0 as u64, 1); }
+    else if kind == KIND_KEY_UP { post(hwnd, WM_KEYUP, x0 as u64, KEY_UP_LPARAM); }
+    else if kind == KIND_CLOSE { post(hwnd, WM_CLOSE, 0, 0); }
+}
+
+/// The poster and the watchdog: carries out each order the frame loop issues, and ends the
+/// process when the loop stops drawing.
+pub fn poster(mb: &Mailbox) -> i32 {
+    let started = GetTickCount64() as i64;
+    let mut seen_frames: i64 = 0;
+    let mut drew_at = started;
+    let mut done_seq: i64 = 0;
+    while mb.finished.load() == 0 {
+        pause(POLL_MS);
+        let now = GetTickCount64() as i64;
+        let frames = mb.frames.load();
+        if frames != seen_frames { seen_frames = frames; drew_at = now; }
+        if now - started > SCRIPT_MS { let _t = TerminateProcess(18446744073709551615, EXIT_TIMEOUT as u32); }
+        if frames == 0 && now - started > STARTUP_MS { let _t = TerminateProcess(18446744073709551615, EXIT_NO_FRAME as u32); }
+        let allowed = if mb.closing.load() != 0 { CLOSE_MS } else { FREEZE_MS };
+        if frames > 0 && now - drew_at > allowed { let _t = TerminateProcess(18446744073709551615, EXIT_FROZEN as u32); }
+        let seq = mb.seq.load();
+        let hwnd = mb.hwnd.load() as u64;
+        if hwnd != 0 && GetForegroundWindow() == hwnd { let _t = TerminateProcess(18446744073709551615, EXIT_ACTIVATED as u32); }
+        if seq != done_seq && hwnd != 0 {
+            perform(mb, hwnd);
+            done_seq = seq;
+            mb.ack.store(seq);
+        }
+    }
+    0
+}
+
+// ---- the script ---------------------------------------------------------------------------
+
+/// What a step does to the window before its check.
+enum Gesture { Nothing, Move(Vec2), Click(Vec2), Drag(Vec2, Vec2), Key(u32), KeyDown(u32), KeyUp(u32), Close, Missing }
+
+const WARM_UP: i32 = 0;
+const CLICK_CITY: i32 = 1;
+const QUEUE_UNIT: i32 = 2;
+const LEAVE_CITY: i32 = 3;
+const CLICK_UNIT: i32 = 4;
+const CLEAR_SELECTION: i32 = 5;
+const OPEN_SETTINGS: i32 = 6;
+const CLOSE_SETTINGS: i32 = 7;
+const HOLD_CONTROL: i32 = 8;
+const DRAG_PANEL: i32 = 9;
+const RELEASE_CONTROL: i32 = 10;
+const HOVER_CITY: i32 = 11;
+const CLICK_UNIT_AGAIN: i32 = 12;
+const HOLD_UNIT: i32 = 13;
+const END_TURN_1: i32 = 14;
+const END_TURN_3: i32 = 16;
+const CLICK_CITY_AGAIN: i32 = 17;
+const STEP_COUNT: i32 = 19;
+const STEP_NAMES: [str; 19] = [
+    "warm up", "click a city", "queue a unit", "leave the city", "click a unit", "clear the selection", "open settings",
+    "close settings", "hold Control", "drag the debug panel", "release Control", "hover the city", "click a unit again", "hold it", "end turn 1", "end turn 2",
+    "end turn 3", "click the city again", "close",
+];
+/// The frames a step's check may take to come true (a turn plays out over many).
+const CHECK_FRAMES: i32 = 120;
+const TURN_FRAMES: i32 = 1500;
+/// Frames the frame loop waits after an order is done, so its effect reaches the game.
+const SETTLE_FRAMES: i32 = 3;
+
+/// The script's state between frames.
+pub struct Driver {
+    step: i32,
+    /// 0: the step is not started; 1: its order is out; 2: the order is done and the check runs.
+    phase: i32,
+    seq: i64,
+    waited: i32,
+    /// What the step began with, for a check that compares.
+    before: i64,
+    before_pos: Vec2,
+    /// The exit code the script ended with: 0 while it is passing.
+    failure: i32,
+    last_frame_nanos: i64,
+    longest_gap_nanos: i64,
+    frames: i32,
+}
+
+pub fn driver() -> Driver {
+    Driver { step: 0, phase: 0, seq: 0, waited: 0, before: 0, before_pos: vec2(0.0, 0.0), failure: 0, last_frame_nanos: 0, longest_gap_nanos: 0, frames: 0 }
+}
+
+fn center(r: Rect) -> Vec2 { vec2((r.min.x + r.max.x) / 2.0, (r.min.y + r.max.y) / 2.0) }
+
+/// Where the widget pressing `target` is, in window pixels.
+fn widget(ui: &UiState, target: Target, scale: f32) -> Option[Vec2] {
+    for k in 0..ui.seen.len() {
+        if ui.seen[k].target == target { return Option.Some(center(ui.seen[k].rect).scale(scale)); }
+    }
+    Option.None
+}
+
+/// The first city of the player's.
+fn own_city(game: &GameState) -> Option[i32] {
+    for i in 0..game.cities.len() { if game.cities[i].team == PLAYER_TEAM { return Option.Some(i); } }
+    Option.None
+}
+
+fn hex_on_screen(g: &GameState, hex: Hex, size: Vec2) -> Vec2 { g.camera.world_to_screen(hex.to_world(), size) }
+
+/// A panel's title bar, in from its left end past the collapse arrow, in window pixels.
+fn title_bar(ctx: &Context, title: &str, scale: f32) -> Option[Vec2] {
+    match ctx.window_rect(title) {
+        Option.Some(r) => Option.Some(vec2(r.min.x + 40.0, r.min.y + 10.0).scale(scale)),
+        Option.None => Option.None,
+    }
+}
+
+fn panel_open(ctx: &Context, title: &str) -> bool { ctx.window_rect(title).is_some() }
+
+/// A player's unit that stands outside every city, and its hex.
+fn field_unit(g: &GameState) -> Option[(i32, Hex)] {
+    for i in 0..g.units.len() {
+        if !g.is_player_controlled(i) { continue; }
+        let pos = g.units[i].pos;
+        let mut in_city = false;
+        for c in 0..g.cities.len() { if g.cities[c].pos == pos { in_city = true; } }
+        if !in_city { return Option.Some((i, pos)); }
+    }
+    Option.None
+}
+
+fn selected_is(slot: Option[i32], want: Option[i32]) -> bool {
+    match (slot, want) {
+        (Option.Some(a), Option.Some(b)) => a == b,
+        (Option.None, Option.None) => true,
+        _ => false,
+    }
+}
+
+/// The order step `step` gives, from the game as it stands.
+fn issue(d: &mut Driver, step: i32, g: &GameState, ui: &UiState, ctx: &Context, size: Vec2, scale: f32) -> Gesture {
+    let city = own_city(g);
+    if step == WARM_UP { return Gesture.Nothing; }
+    if step == CLICK_CITY || step == CLICK_CITY_AGAIN {
+        return match city { Option.Some(c) => Gesture.Click(hex_on_screen(g, g.cities[c].pos, size)), Option.None => Gesture.Missing };
+    }
+    if step == QUEUE_UNIT {
+        let Option.Some(c) = city else { return Gesture.Missing; };
+        d.before = g.cities[c].queue.len() as i64;
+        return match widget(ui, Target.Build(BuildUnit.Melee), scale) { Option.Some(p) => Gesture.Click(p), Option.None => Gesture.Missing };
+    }
+    if step == CLICK_UNIT || step == CLICK_UNIT_AGAIN {
+        return match field_unit(g) { Option.Some((_i, hex)) => Gesture.Click(hex_on_screen(g, hex, size)), Option.None => Gesture.Missing };
+    }
+    if step == LEAVE_CITY || step == CLEAR_SELECTION || step == OPEN_SETTINGS { return Gesture.Key(VK_ESCAPE); }
+    if step == CLOSE_SETTINGS {
+        return match widget(ui, Target.CloseSettings, scale) { Option.Some(p) => Gesture.Click(p), Option.None => Gesture.Missing };
+    }
+    if step == HOLD_CONTROL { return Gesture.KeyDown(VK_CONTROL); }
+    if step == DRAG_PANEL {
+        let Option.Some(from) = title_bar(ctx, "Debug", scale) else { return Gesture.Missing; };
+        let Option.Some(r) = ctx.window_rect("Debug") else { return Gesture.Missing; };
+        d.before_pos = r.min;
+        return Gesture.Drag(from, from.add(vec2(0.0 - 300.0, 40.0).scale(scale)));
+    }
+    if step == RELEASE_CONTROL { return Gesture.KeyUp(VK_CONTROL); }
+    if step == HOVER_CITY {
+        return match city { Option.Some(c) => Gesture.Move(hex_on_screen(g, g.cities[c].pos, size)), Option.None => Gesture.Missing };
+    }
+    if step == HOLD_UNIT {
+        let (units, _cities) = g.pending();
+        d.before = units as i64;
+        return Gesture.Key(VK_SPACE);
+    }
+    if step >= END_TURN_1 && step <= END_TURN_3 {
+        d.before = g.turn as i64;
+        return match widget(ui, Target.EndTurn, scale) { Option.Some(p) => Gesture.Click(p), Option.None => Gesture.Missing };
+    }
+    Gesture.Close
+}
+
+/// Whether what step `step` did shows in the game.
+fn check(d: &Driver, step: i32, g: &GameState, ui: &UiState, ctx: &Context, closed: bool) -> bool {
+    let city = own_city(g);
+    if step == WARM_UP { return d.frames >= 12 && panel_open(ctx, "Debug") && panel_open(ctx, "Units"); }
+    if step == CLICK_CITY || step == CLICK_CITY_AGAIN { return selected_is(g.selected_city, city) && panel_open(ctx, "Selection"); }
+    if step == QUEUE_UNIT {
+        return match city { Option.Some(c) => (g.cities[c].queue.len() as i64) > d.before && panel_open(ctx, "Production Queue"), Option.None => false };
+    }
+    if step == LEAVE_CITY || step == CLEAR_SELECTION { return g.selected.is_none() && g.selected_city.is_none() && !g.settings_open; }
+    if step == CLICK_UNIT || step == CLICK_UNIT_AGAIN { return g.selected.is_some() && g.selected_city.is_none(); }
+    if step == OPEN_SETTINGS { return g.settings_open && panel_open(ctx, "Settings"); }
+    if step == CLOSE_SETTINGS { return !g.settings_open; }
+    if step == HOLD_CONTROL { return ui.input.mods.ctrl; }
+    if step == DRAG_PANEL {
+        return match ctx.window_rect("Debug") {
+            Option.Some(r) => r.min.distance(d.before_pos) > 50.0,
+            Option.None => false,
+        };
+    }
+    if step == RELEASE_CONTROL { return !ui.input.mods.ctrl; }
+    if step == HOVER_CITY {
+        return match city { Option.Some(c) => g.hovered_tile == Option.Some(g.cities[c].pos) && panel_open(ctx, "Inspect"), Option.None => false };
+    }
+    if step == HOLD_UNIT { let (units, _cities) = g.pending(); return (units as i64) < d.before; }
+    if step >= END_TURN_1 && step <= END_TURN_3 { return (g.turn as i64) > d.before && !g.is_resolving(); }
+    closed
+}
+
+fn frames_allowed(step: i32) -> i32 { if step >= END_TURN_1 && step <= END_TURN_3 { TURN_FRAMES } else { CHECK_FRAMES } }
+
+fn hand_over(mb: &Mailbox, d: &mut Driver, kind: i64, a: Vec2, b: Vec2) {
+    mb.kind.store(kind);
+    mb.x0.store(a.x as i64);
+    mb.y0.store(a.y as i64);
+    mb.x1.store(b.x as i64);
+    mb.y1.store(b.y as i64);
+    d.seq = d.seq + 1;
+    // The order is complete before the poster can see it.
+    mb.seq.store(d.seq);
+}
+
+fn fail(d: &mut Driver, mb: &Mailbox, why: &str) can {Log} {
+    let step = d.step;
+    error(fn() can {Out} { Out.put("interaction step "); show_i64(step as i64); Out.put(" ("); Out.put(STEP_NAMES[step]); Out.put("): "); Out.put(why); });
+    d.failure = EXIT_STEP + step;
+    mb.finished.store(1);
+}
+
+/// One frame of the script, run before the game's own frame. Answers whether the script goes on:
+/// `false` once a step failed (the caller closes the window).
+pub fn drive(d: &mut Driver, mb: &Mailbox, g: &GameState, ui: &UiState, ctx: &Context, size: Vec2, scale: f32, now: i64, closed: bool) -> bool can {Log} {
+    d.frames = d.frames + 1;
+    mb.frames.store(d.frames as i64);
+    if d.last_frame_nanos > 0 && now - d.last_frame_nanos > d.longest_gap_nanos { d.longest_gap_nanos = now - d.last_frame_nanos; }
+    d.last_frame_nanos = now;
+    if d.failure != 0 { return false; }
+    if d.step >= STEP_COUNT { return true; }
+    let step = d.step;
+    if d.phase == 0 {
+        let order = issue(d, step, g, ui, ctx, size, scale);
+        match order {
+            Gesture.Missing => { fail(d, mb, "its target is not on screen"); return false; }
+            Gesture.Nothing => { d.phase = 2; d.waited = 0; }
+            Gesture.Move(p) => { hand_over(mb, d, KIND_MOVE, p, p); d.phase = 1; }
+            Gesture.Click(p) => { hand_over(mb, d, KIND_CLICK, p, p); d.phase = 1; }
+            Gesture.Drag(a, b) => { hand_over(mb, d, KIND_DRAG, a, b); d.phase = 1; }
+            Gesture.Key(vk) => { hand_over(mb, d, KIND_KEY, vec2(vk as f32, 0.0), vec2(0.0, 0.0)); d.phase = 1; }
+            Gesture.KeyDown(vk) => { hand_over(mb, d, KIND_KEY_DOWN, vec2(vk as f32, 0.0), vec2(0.0, 0.0)); d.phase = 1; }
+            Gesture.KeyUp(vk) => { hand_over(mb, d, KIND_KEY_UP, vec2(vk as f32, 0.0), vec2(0.0, 0.0)); d.phase = 1; }
+            Gesture.Close => { mb.closing.store(1); hand_over(mb, d, KIND_CLOSE, vec2(0.0, 0.0), vec2(0.0, 0.0)); d.phase = 1; }
+        }
+        return true;
+    }
+    if d.phase == 1 {
+        if mb.ack.load() < d.seq { return true; }
+        d.phase = 2;
+        d.waited = 0;
+    }
+    d.waited = d.waited + 1;
+    // The close is checked as soon as it is done: the loop ends the frame it is heard in.
+    if d.waited < SETTLE_FRAMES && step != STEP_COUNT - 1 { return true; }
+    if check(&*d, step, g, ui, ctx, closed) {
+        let frames = d.frames;
+        info(fn() can {Out} { Out.put("interaction step "); show_i64(step as i64); Out.put(" ("); Out.put(STEP_NAMES[step]); Out.put(") ok at frame "); show_i64(frames as i64); });
+        d.step = step + 1;
+        d.phase = 0;
+        if d.step >= STEP_COUNT { mb.finished.store(1); }
+        return true;
+    }
+    if d.waited > frames_allowed(step) {
+        fail(d, mb, "its effect never showed in the game");
+        return false;
+    }
+    true
+}
+
+/// The script's exit code once the window is gone: 0 only when every step passed.
+pub fn verdict(d: &Driver) -> i32 can {Log} {
+    if d.failure != 0 { return d.failure; }
+    if d.step < STEP_COUNT {
+        let step = d.step;
+        error(fn() can {Out} { Out.put("the window closed at interaction step "); show_i64(step as i64); Out.put(" of "); show_i64(STEP_COUNT as i64); });
+        return EXIT_STEP + step;
+    }
+    let gap = d.longest_gap_nanos / 1000000;
+    let frames = d.frames;
+    info(fn() can {Out} { Out.put("interaction script passed: "); show_i64(frames as i64); Out.put(" frames, longest gap "); show_i64(gap); Out.put(" ms"); });
+    0
+}
