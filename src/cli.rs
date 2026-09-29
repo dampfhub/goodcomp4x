@@ -18,7 +18,8 @@ Options:
   --screenshot <FILE>  render the scenario in a hidden window, write one frame
                        to FILE as a PNG, and exit
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
-                       default to 1600x900)
+                       default to 1600x900); at least 640x480 at 100%
+                       display scaling, and more at higher scaling
   --host               host a network game on a new world and wait for the
                        other players to join; you play Blue
   --players <N>        with --host: how many people play, you included (2-7,

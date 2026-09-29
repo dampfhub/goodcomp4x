@@ -52,6 +52,11 @@ use crate::renderer::Vertex;
 use builder::PanelBuilder;
 use dock::{Dock, Rect, Zone};
 pub use imgui::{ImGuiLayoutState, style_imgui};
+
+/// The least window size, in logical pixels, the game lets the window be
+/// resized to: the ImGui status bar has room for all of its controls
+/// (`imgui_status_bar_keeps_its_parts_apart_at_every_width`).
+pub const MIN_WINDOW_SIZE: [f32; 2] = [640.0, 480.0];
 use paint::{draw_button, draw_chip_hover, draw_shape};
 
 const BUILDING_LIST_VISIBLE: usize = 5;

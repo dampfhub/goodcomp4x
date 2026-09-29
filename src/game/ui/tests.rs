@@ -1304,11 +1304,11 @@ fn a_manager_picked_up_takes_its_income_off_the_panels_at_once() {
     assert_shows(&tray, &format!("{FOOD_ICON}{}", signed_quantity(net.food)));
     let expected = stock_spans(
         game.stock(team),
-        Stock {
+        Some(Stock {
             food: game.side_income(team).food - carried.food - game.upkeep(team),
             wood: game.side_income(team).wood - carried.wood,
             metal: game.side_income(team).metal - carried.metal,
-        },
+        }),
     );
     assert_eq!(game.stockpile_line(), expected);
     assert_ne!(game.stockpile_line(), side_before);
@@ -4552,6 +4552,104 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
                     crowded.is_empty(),
                     "{name} at {width}, scrolled: {crowded:#?}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn imgui_status_bar_keeps_its_parts_apart_at_every_width() {
+    // #320: in a narrow window the VIEW label ran into the stockpile and End
+    // Turn covered RESET, and with the game's fonts Menu's top was a pixel
+    // inside the notice's line at any width.
+    const SLACK: f32 = 0.5;
+    const NOTICE: &str = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE";
+    let city = || {
+        let mut game = city_view();
+        game.notice = NOTICE.into();
+        game
+    };
+    let rich = || {
+        let mut game = city();
+        *game.stock_mut(Team::Blue) = Stock::whole(12345, 23456, 34567);
+        game
+    };
+    let map = || {
+        let mut game = GameState::new();
+        game.clear_selection();
+        game.notice = NOTICE.into();
+        game
+    };
+    let bars: [(&str, &dyn Fn() -> GameState, bool); 3] = [
+        ("city", &city, true),
+        ("rich city", &rich, true),
+        ("map", &map, false),
+    ];
+    let height = 720.0;
+    let least = MIN_WINDOW_SIZE[0] as u32;
+    let mut screen = ImGuiScreen::styled(Vec2::new(least as f32, height));
+    for (name, make, reset) in bars {
+        let mut game = make();
+        for width in (least..1000).step_by(12).chain((1000..=1600).step_by(100)) {
+            let width = width as f32;
+            screen.size = Vec2::new(width, height);
+            screen.context.io_mut().display_size = [width, height];
+            screen.settle(&mut game);
+            // Every piece of text and icon, control and End Turn.
+            let mut parts: Vec<(String, [f32; 2], [f32; 2])> =
+                imgui::DRAWN_MARKS.with_borrow(|marks| {
+                    marks
+                        .iter()
+                        .filter(|mark| mark.window == "Status")
+                        .map(|mark| (mark.what.clone(), mark.min, mark.max))
+                        .collect()
+                });
+            let texts: Vec<String> = parts.iter().map(|part| part.0.clone()).collect();
+            assert!(
+                texts.iter().any(|text| text.starts_with("TURN ")),
+                "{name} at {width}: {texts:?}"
+            );
+            // The stockpile and supply, dropped from their end only when
+            // there's no room: with the game's font all of them at every
+            // width, with ImGui's own (no system font) from 800 px.
+            let icons = texts.iter().filter(|text| *text == "icon").count();
+            let supply = texts.iter().any(|text| text.contains("SUPPLY"));
+            assert!(icons >= 1, "{name} at {width}: {texts:?}");
+            if width >= 800.0 {
+                assert!(icons == 3 && supply, "{name} at {width}: {texts:?}");
+            }
+            let controls = imgui_status_controls();
+            let labels: Vec<&str> = controls.iter().map(|(text, ..)| text.as_str()).collect();
+            let mut wanted = vec!["MENU", "EDIT VIEW", "+ BOX"];
+            if reset {
+                wanted.push("RESET");
+            }
+            assert!(
+                wanted.iter().all(|want| labels.contains(want)),
+                "{name} at {width}: {labels:?}"
+            );
+            parts.extend(controls);
+            let (end_min, end_max) = imgui_end_turn();
+            parts.push(("End Turn".into(), end_min, end_max));
+            for (what, min, max) in &parts {
+                assert!(
+                    min[0] >= -SLACK
+                        && max[0] <= width + SLACK
+                        && min[1] >= -SLACK
+                        && max[1] <= imgui::STATUS_HEIGHT + SLACK,
+                    "{name} at {width}: {what:?} ({min:?}-{max:?}) leaves the bar"
+                );
+            }
+            for (index, (what, min, max)) in parts.iter().enumerate() {
+                for (other, other_min, other_max) in &parts[index + 1..] {
+                    let overlap = Vec2::from(*max).min(Vec2::from(*other_max))
+                        - Vec2::from(*min).max(Vec2::from(*other_min));
+                    assert!(
+                        !overlap.cmpgt(Vec2::splat(SLACK)).all(),
+                        "{name} at {width}: {what:?} ({min:?}-{max:?}) overlaps {other:?} \
+                         ({other_min:?}-{other_max:?})"
+                    );
+                }
             }
         }
     }
