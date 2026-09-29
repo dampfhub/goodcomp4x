@@ -200,7 +200,10 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   as sight grows. Never-seen terrain and objects are not drawn beneath
   the clouds.
 - Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
-  remembered hexes from memory.
+  remembered hexes from memory. An enemy unit's hover panel gives its stats and state, not the
+  player's instructions (boarding, unloading) or a landing craft's cargo. A command post
+  breached or a city captured in its interior is announced only for the player's own cities and
+  cities in sight.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
   Terrain seen once is known for good (it never changes); a hex never seen counts as open ground
   for planning, whatever is really there, so a path planned into the fog goes straight through
@@ -212,7 +215,8 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   there is known of, and refusing it would give away that nobody is), and the attack misses if
   nobody is there when it comes.
 - What the map and panels show follows the same rule: yields, and which hexes a city's or
-  barracks' goods reach (badges, delivery percentages, tooltip), use remembered
+  barracks' goods reach (badges, delivery percentages, tooltip, a Work Camp's CONNECTED or
+  CUT OFF), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
   is the player's own or in sight. The economy itself runs on the real board: an enemy out of
   sight on a route hex that isn't a worked tile still cuts the goods behind it, and that shows as
