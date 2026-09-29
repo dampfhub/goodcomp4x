@@ -185,6 +185,8 @@ interior map; its clicks control only the interior copies.
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
 | Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
+Attack arrows appear only when both ends are in sight; damage numbers appear only on visible tiles.
+
 The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10 (F9 is FINISH
 BUILD), PROD SPEEDUP, which switches the stockpile economy's variant where a city's production
 speeds its builds, and UNIT CAP, which switches the Cavalry and Armored cap between counting
