@@ -172,6 +172,12 @@ Hospital heals nearby troops (see Buildings). A Harbor in a city whose center to
 Landing Craft can carry four land units. Select a land troop and click an adjacent friendly craft
 to plan boarding. Select the craft and click adjacent empty land to plan landing its first
 passenger. Both happen after combat, so cargo sinks with its ship. A craft cannot attack.
+Boarding and landing are orders like any other: boarding replaces the troop's move (both halves
+of a swap), attack and queue, landing replaces the craft's move and queue (it lands from where it
+is), each ends a hold, guard or alert and counts as the unit's orders for the turn, and any
+other order (a move, attack, swap, queued turn, group move or attack, Alert, Ctrl-right-click)
+calls either off. Disbanding a loaded craft disbands its passengers too; the first press says
+how many.
 Patrol Galleys fight ships well but deal 35% damage to land troops; Bombard Ships attack from
 three hexes. Land melee troops cannot attack ships; Ranged deal 40% and Siege 60% damage to
 ships. These attack restrictions apply to direct, group, queued, AI and resolving orders.
@@ -269,13 +275,14 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   member already is. With nothing left waiting, Space ends the turn. With a city or barracks
   view open, Space only closes it.
 - **Guard:** G toggles `Unit::guarding`, like holding but lasting across turns, so the unit never
-  comes back up in the turn order. Queuing any move, attack or swap wakes it, as do G and
+  comes back up in the turn order. Queuing any move, attack, swap, boarding or landing wakes it,
+  as do G and
   Ctrl-right-click. Guarding units get a white hex outline.
 - **Alert:** E (or the Alert button) toggles `Unit::alert`, a stance of its own beside Guard:
   the unit drops this turn's move and attack and its queue, stays put, is skipped in the turn
   order every turn, and costs nothing to keep. Each turn, in its own type's attack step, it
   attacks an enemy in its attack range (see Turn resolution). Any other order ends it: a move,
-  attack, swap, queued turn, group move or attack, its ability, Guard, E again or
+  attack, swap, queued turn, boarding, group move or attack, its ability, Guard, E again or
   Ctrl-right-click; Hold keeps it, and going on alert ends a guard. Melee, cavalry, armored and
   ranged troops can go on alert, and siege once set up (or setting up this turn: set it up with
   Q, then E; packing it up ends the alert). Scouts, ships and settlers can't ("ONLY MELEE,
@@ -285,7 +292,8 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   orders for (a side whose player left) comes off alert as the turn resolves.
 - **Selection flow:** the first unit needing orders is selected at the start of each turn, and
   once the selected unit is done the next one is selected automatically. "Done" (`needs_orders`)
-  means holding, guarding, on alert or following an order queue, or having a move queued (or unable to
+  means holding, guarding, on alert, following an order queue, boarding a craft or (a craft)
+  landing a passenger, or having a move queued (or unable to
   move) and an attack queued (or unable to attack). Enemies in range don't matter, since hex attacks are always possible. A unit
   in a contested hex is always done. Selecting a unit by clicking never auto-advances, so a
   finished unit can be reselected to edit. Tab looks at the next unit without holding the current
@@ -355,7 +363,7 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 - **Not holding up the turn:** a unit following a queue counts as done (`needs_orders`), this
   turn and every turn it has queued orders for.
 - **Cancelling:** any other order to the unit (a plain move or attack, a group move or attack, a
-  swap, its ability, Guard, Alert, Ctrl-right-click) drops its queue. Hold keeps it. This turn's
+  swap, boarding, landing, its ability, Guard, Alert, Ctrl-right-click) drops its queue. Hold keeps it. This turn's
   orders stay (but for Alert, which drops them too), so the unit needs orders again unless the
   new order completes them. A map click that
   would replace a queue reaching past this turn (a plain move, attack or swap, for a unit or a
@@ -494,7 +502,8 @@ Everyone in a step acts simultaneously:
   orders: a ghost and an attack arrow, no numbers.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
   "MISS" on a hex with no enemy unit, worker or barracks, or "OUT OF RANGE" if the target moved
-  away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
+  away. Every unit or structure hurt (retaliation, Coastal Battery fire and hits on a battery
+  included) shows a rising damage number, or
   "KILLED". Enemy attacks animate too.
 
 ## Abilities (`ability.rs`)
@@ -622,10 +631,10 @@ hostile to every side, and no side's AI plays it (World maps only).
   order** of food, wood and metal (Food, Wood, Metal to start; the AI's cities keep it). Citizens are placed one at a
   time, the first manager first, each on the open tile worth the most: its delivered food, wood and
   metal, the first good in the order ×9, the second ×3 and the third ×1, ties going to the lower
-  hex coordinates. The **food floor** holds whatever the order: until the food the city center
-  and the tiles already taken deliver covers the citizens' upkeep plus 1, food counts as first
-  and the other two keep their order. So the first manager, placed while the city is unfed, always
-  goes by food first. A citizen becomes a worker, beside a manager whose cluster has room (the
+  hex coordinates. The **food floor** holds whatever the order: until the food the city center,
+  its Cannery and the tiles already taken deliver covers the citizens' upkeep plus 1, food counts
+  as first and the other two keep their order. So the first manager, placed while the city is
+  unfed, goes by food first unless its Cannery already feeds it. A citizen becomes a worker, beside a manager whose cluster has room (the
   first such cluster takes it); once no manager has room or an open tile beside it, and the
   population allows another manager, it becomes a new manager on the best open land tile
   beside none of the others. A click assigns the same way: a tile beside a manager with room
@@ -633,7 +642,7 @@ hostile to every side, and no side's AI plays it (World maps only).
   Changing the order (drag its chips, or click one to put it first)
   re-assigns. On growth or route disruption, reconciliation keeps valid manual assignments and
   fills an open slot the same way, by the order with the food floor, counting the food of the
-  tiles kept; a manual tile cut off by an enemy is remembered and returns
+  center, its Cannery and the tiles kept; a manual tile cut off by an enemy is remembered and returns
   when the route reopens, unless you changed it. A manager cut off is stood in for by the first
   of its workers that could manage, until its tile is back.
 - **Losing a citizen** (starving, or a Settler costing one): an idle citizen goes first; then
@@ -842,8 +851,8 @@ hostile to every side, and no side's AI plays it (World maps only).
   the city's next job, or walks home when there is none. A job that became impossible is dropped
   (with a notice); a worker that can't reach its job gives up and heads home.
 - **Danger:** out on the map a worker can be seen (your own see 1 hex around them). An enemy unit
-  that moves onto its hex captures it: it joins the captor's nearest city (or is lost if the
-  captor has none). An attack on its hex kills it when nothing else is there to hit. A unit
+  that moves onto its hex, or lands there from a landing craft, captures it: it joins the
+  captor's nearest city (or is lost if the captor has none). An attack on its hex kills it when nothing else is there to hit. A unit
   standing on the same hex shields it from both, since it blocks the move and takes the hit.
   A captured or killed worker's job goes back to the top of its city's list.
 - **Recall:** workers otherwise follow their jobs on their own, so each of your workers out on

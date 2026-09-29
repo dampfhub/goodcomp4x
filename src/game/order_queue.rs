@@ -517,8 +517,7 @@ impl GameState {
             });
         }
         unit.following_queue = true;
-        unit.wake();
-        unit.holding = false;
+        unit.take_new_order();
     }
 
     fn set_attack_on_turn(&mut self, idx: usize, turn: usize, target: Hex) {
@@ -528,8 +527,7 @@ impl GameState {
             n => unit.queued[n - 1].attack = Some(target),
         }
         unit.following_queue = true;
-        unit.wake();
-        unit.holding = false;
+        unit.take_new_order();
     }
 
     /// Whether unit `idx` could attack `target` on turn `turn` of its plan,

@@ -179,8 +179,11 @@ impl GameState {
         self.start_transition(before, turn_over);
     }
 
-    /// Cargo remains the same logical unit, with its exterior and interior HP.
-    /// It does not occupy a map tile while embarked, and goes down with the ship.
+    /// Every Coastal Battery fires at the nearest enemy ship within two
+    /// hexes; each ship hit shows its damage (or KILLED), as an attack's
+    /// target does. Cargo remains the same logical unit, with its exterior
+    /// and interior HP. It does not occupy a map tile while embarked, and
+    /// goes down with the ship.
     fn resolve_coastal_batteries(&mut self) {
         let batteries: Vec<_> = self
             .cities
@@ -188,11 +191,11 @@ impl GameState {
             .filter_map(|city| {
                 city.placed_site(Building::CoastalBattery)
                     .filter(|_| city.coastal_battery_hp > 0.0)
-                    .map(|site| (site, city.team))
+                    .map(|site| (site, city.team, city.id))
             })
             .collect();
         let mut hits = vec![0.0; self.units.len()];
-        for (site, team) in batteries {
+        for (site, team, city_id) in batteries {
             if let Some((index, target)) = self
                 .units
                 .iter()
@@ -202,17 +205,34 @@ impl GameState {
                 })
                 .min_by_key(|(_, unit)| (site.distance(unit.pos), unit.id))
             {
-                hits[index] +=
-                    combat::roll_damage_against(28.0, target.stats().defense, &mut self.rng);
+                let hit = combat::roll_damage_against(28.0, target.stats().defense, &mut self.rng);
+                hits[index] += hit;
+                log::info!(
+                    "city {}'s coastal battery hits {target} for {hit:.0}",
+                    city_id + 1
+                );
+                let to = target.pos.to_world();
                 self.play(Effect::Shot {
                     from: site.to_world(),
-                    to: target.pos.to_world(),
+                    to,
                     outcome: Outcome::Hit,
                 });
             }
         }
+        for (i, &taken) in hits.iter().enumerate() {
+            if taken > 0.0 {
+                self.play(Effect::Damage {
+                    at: self.unit_layout(i).0,
+                    amount: taken,
+                    fatal: self.units[i].hp <= taken,
+                });
+            }
+        }
         for (unit, hit) in self.units.iter_mut().zip(hits) {
-            unit.hp = (unit.hp - hit).max(0.0);
+            if hit > 0.0 {
+                unit.hp = (unit.hp - hit).max(0.0);
+                log::info!("  {unit}: {}", combat::hp_status(unit));
+            }
         }
         self.units.retain(Unit::is_alive);
         self.discard_interior_copies_of_dead_units();
@@ -243,6 +263,8 @@ impl GameState {
                 self.units.push(passenger);
             }
         }
+        // Landing on an enemy worker captures it, as stepping onto one does.
+        self.capture_workers();
         let mut boarders: Vec<usize> = self
             .units
             .iter()
@@ -731,12 +753,18 @@ impl GameState {
 
         let mut battery_damage = vec![0.0; self.cities.len()];
         for (attacker, city, scale) in battery_hits {
-            battery_damage[city] += scale
+            let hit = scale
                 * combat::roll_damage_against(
                     self.units[attacker].stats().attack,
                     18.0,
                     &mut self.rng,
                 );
+            battery_damage[city] += hit;
+            log::info!(
+                "{} hits city {}'s coastal battery for {hit:.0}",
+                self.units[attacker],
+                self.cities[city].id + 1
+            );
         }
 
         for shot in shots {
@@ -788,10 +816,26 @@ impl GameState {
                 }
             }
         }
-        for (city, taken) in self.cities.iter_mut().zip(battery_damage) {
+        for (i, taken) in battery_damage.into_iter().enumerate() {
             if taken > 0.0 {
+                let Some(site) = self.cities[i].placed_site(Building::CoastalBattery) else {
+                    continue;
+                };
+                self.play(Effect::Damage {
+                    at: site.to_world(),
+                    amount: taken,
+                    fatal: self.cities[i].coastal_battery_hp <= taken,
+                });
+                let city = &mut self.cities[i];
                 city.coastal_battery_hp = (city.coastal_battery_hp - taken).max(0.0);
-                if city.coastal_battery_hp == 0.0 {
+                if city.coastal_battery_hp > 0.0 {
+                    log::info!(
+                        "  city {}'s coastal battery: {:.0} hp",
+                        city.id + 1,
+                        city.coastal_battery_hp
+                    );
+                } else {
+                    log::info!("  city {}'s coastal battery: destroyed", city.id + 1);
                     city.extra_buildings.remove(&Building::CoastalBattery);
                     city.built.retain(|&b| b != Building::CoastalBattery);
                 }
@@ -961,6 +1005,35 @@ mod naval_tests {
     }
 
     #[test]
+    fn landing_on_an_enemy_worker_captures_it() {
+        let mut g = GameState::naval_scenario();
+        g.units.clear();
+        g.field_workers.clear();
+        let mut craft = Unit::new(90, Hex::new(-1, 0), Team::Blue, UnitType::LandingCraft);
+        craft
+            .cargo
+            .push(Unit::new(91, Hex::new(-1, 0), Team::Blue, UnitType::Melee));
+        let shore = Hex::new(-2, 1);
+        craft.planned_unload = Some(shore);
+        g.units.push(craft);
+        g.field_workers.push(crate::game::workers::FieldWorker {
+            id: 10_000,
+            team: Team::Red,
+            home: 1,
+            base: g.cities[1].pos,
+            pos: shore,
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
+        let workers = g.cities[0].workers;
+        g.resolve_transport();
+        assert_eq!(g.units[1].pos, shore, "the passenger lands");
+        assert!(g.field_workers.is_empty(), "and captures the worker");
+        assert_eq!(g.cities[0].workers, workers + 1);
+    }
+
+    #[test]
     fn coastal_battery_hits_ships_and_can_be_destroyed() {
         let mut g = GameState::naval_scenario();
         g.units.clear();
@@ -981,6 +1054,67 @@ mod naval_tests {
         g.cities[1].coastal_battery_hp = 1.0;
         g.resolve_attacks(&[0]);
         assert_eq!(g.cities[1].placed_site(Building::CoastalBattery), None);
+    }
+
+    /// The damage numbers playing: where, how much, and whether fatal.
+    fn damage_shown(g: &GameState) -> Vec<(glam::Vec2, f32, bool)> {
+        g.effects
+            .iter()
+            .filter_map(|(effect, _)| match *effect {
+                Effect::Damage { at, amount, fatal } => Some((at, amount, fatal)),
+                Effect::Shot { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn coastal_battery_hits_show_damage_numbers_both_ways() {
+        // #159: a battery's hits on ships, and hits on a battery, played a
+        // shot but no damage number.
+        let mut g = GameState::naval_scenario();
+        g.fog_of_war = false;
+        g.units.clear();
+        g.effects.clear();
+        let ship_at = Hex::new(-1, 0);
+        g.units
+            .push(Unit::new(300, ship_at, Team::Red, UnitType::PatrolGalley));
+        let initial = g.units[0].hp;
+        g.resolve_coastal_batteries();
+        let lost = initial - g.units[0].hp;
+        assert!(lost > 0.0);
+        assert_eq!(damage_shown(&g), vec![(ship_at.to_world(), lost, false)]);
+
+        // A ship with less left than the hit shows KILLED.
+        g.effects.clear();
+        g.units[0].hp = 1.0;
+        g.resolve_coastal_batteries();
+        assert!(g.units.is_empty());
+        assert!(matches!(damage_shown(&g)[..], [(_, _, true)]));
+
+        // A hit on a battery shows at its site; the last one is fatal.
+        g.effects.clear();
+        let site = g.cities[1].placed_site(Building::CoastalBattery).unwrap();
+        let mut ship = Unit::new(301, Hex::new(1, 0), Team::Blue, UnitType::BombardShip);
+        ship.planned_attack = Some(site);
+        g.units.push(ship);
+        g.resolve_attacks(&[0]);
+        let lost = 150.0 - g.cities[1].coastal_battery_hp;
+        assert!(lost > 0.0);
+        assert!(
+            matches!(damage_shown(&g)[..], [(at, amount, false)]
+                if at == site.to_world() && (amount - lost).abs() < 1e-3),
+            "{:?}",
+            damage_shown(&g)
+        );
+        g.effects.clear();
+        g.cities[1].coastal_battery_hp = 1.0;
+        g.units[0].planned_attack = Some(site);
+        g.resolve_attacks(&[0]);
+        assert!(
+            matches!(damage_shown(&g)[..], [(at, _, true)] if at == site.to_world()),
+            "{:?}",
+            damage_shown(&g)
+        );
     }
 }
 
