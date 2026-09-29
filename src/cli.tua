@@ -26,7 +26,7 @@ Options:
                        to FILE as a PNG, and exit
   --classic            start in the classic panels (F11 switches)
   --open <PANEL>       open a panel first, for a screenshot of it: city, barracks,
-                       unit, group, workers or settings
+                       unit, group, workers, queue or settings
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
                        default to 1600x900)
   --validate           run under the Khronos validation layer; exit 83 if it
@@ -90,7 +90,7 @@ pub fn scenario_named(name: &str) -> Option[Scenario] {
 
 /// Whether `--open` knows the panel `name`.
 fn is_panel(name: &str) -> bool {
-    str_eq(name, "city") || str_eq(name, "barracks") || str_eq(name, "unit") || str_eq(name, "group") || str_eq(name, "workers") || str_eq(name, "settings")
+    str_eq(name, "city") || str_eq(name, "barracks") || str_eq(name, "unit") || str_eq(name, "group") || str_eq(name, "workers") || str_eq(name, "queue") || str_eq(name, "settings")
 }
 
 /// A whole number of at most `max`, all digits.
@@ -159,7 +159,7 @@ pub fn parse(args: &Vec[Str]) -> Result[Options, Str] {
             i = i + 2;
         } else if str_eq(arg, "--open") {
             let panel = &args[i + 1];
-            if !is_panel(panel) { return Result.Err(text3("no panel called \"", panel, "\": try city, barracks, unit, group, workers or settings")); }
+            if !is_panel(panel) { return Result.Err(text3("no panel called \"", panel, "\": try city, barracks, unit, group, workers, queue or settings")); }
             options.open = Option.Some(to_owned(panel));
             i = i + 2;
         } else if str_eq(arg, "-h") || str_eq(arg, "--help") {

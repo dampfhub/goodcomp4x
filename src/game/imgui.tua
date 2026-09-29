@@ -143,6 +143,7 @@ use game.imgui_layout.is_zero;
 use game.imgui_layout.context_kind;
 use game.mesh.Color;
 use game.orders.ClickMode;
+use game.city.BuildUnit;
 use game.settings.Control;
 use game.settings.Setting;
 use game.settings.MAX_BUTTONS;
@@ -850,11 +851,18 @@ impl GameState {
     }
 
     /// Opens a panel as the player would, for a screenshot of it: `city`, `barracks`, `unit`,
-    /// `group`, `workers` or `settings`. Whether there was something to open.
+    /// `group`, `workers`, `queue` (a city with builds queued) or `settings`. Whether there was
+    /// something to open.
     pub fn open_panel(&mut self, what: &str) -> bool can {Log, Rand} {
         if str_eq(what, "settings") { self.settings_open = true; return true; }
         if str_eq(what, "workers") { self.toggle_worker_mode(); return self.worker_mode; }
         if str_eq(what, "city") { self.select_city(); return self.selected_city.is_some(); }
+        if str_eq(what, "queue") {
+            self.select_city();
+            if self.selected_city.is_none() { return false; }
+            for k in 0..5 { self.queue_selected_city_unit(if k % 3 == 0 { BuildUnit.Melee } else if k % 3 == 1 { BuildUnit.Ranged } else { BuildUnit.Siege }); }
+            return true;
+        }
         if str_eq(what, "barracks") {
             for i in 0..self.cities.len() {
                 if self.cities[i].team == PLAYER_TEAM && self.cities[i].barracks.is_some() { self.open_barracks(i); return true; }
@@ -1097,9 +1105,8 @@ fn frame_body(game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, 
     let mut tray_height = min_f(measure_panel(&panels.tray, left_width), available);
     // On a narrow screen the queue cannot wrap into a second column, so reserve its space above
     // the selection before docking either window.
-    if has_rows(&panels.tray) && has_rows(&panels.queue) && viewport.x < 2.0 * left_width + 3.0 * PANEL_MARGIN + PANEL_GAP {
-        tray_height = min_f(tray_height, max_f(available - queue_height - PANEL_GAP, 120.0));
-    }
+    let narrow = has_rows(&panels.tray) && has_rows(&panels.queue) && viewport.x < 2.0 * left_width + 3.0 * PANEL_MARGIN + PANEL_GAP;
+    if narrow { tray_height = min_f(tray_height, max_f(available - queue_height - PANEL_GAP, 120.0)); }
     let hover_width = min_f(345.0, max_width);
     let mut measured: [Option[Vec2]; 6] = [Option.None; 6];
     if has_rows(&panels.tray) { measured[SELECTION] = Option.Some(vec2(left_width, tray_height)); }
@@ -1118,6 +1125,11 @@ fn frame_body(game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, 
     let mut sizes: [Option[Vec2]; 6] = [Option.None; 6];
     for slot in 0..SLOT_COUNT {
         if let Option.Some(m) = measured[slot] { sizes[slot] = Option.Some(layout.size(slot, m, viewport)); }
+    }
+    // What the selection's content asked for last frame cannot take the room the queue was
+    // reserved: the panel scrolls instead.
+    if narrow && !layout.windows[SELECTION].manual && !layout.windows[SELECTION].docked {
+        if let Option.Some(size) = sizes[SELECTION] { sizes[SELECTION] = Option.Some(vec2(size.x, min_f(size.y, tray_height))); }
     }
     for k in 0..layout.pinned.len() {
         let pin = layout.pinned[k];
