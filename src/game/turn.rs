@@ -2,11 +2,11 @@
 //! each unit type's role. All units in a step act simultaneously.
 
 use super::ability::{Ability, VOLLEY_DAMAGE};
-use super::city::{BARRACKS_DEFENSE, Building};
+use super::city::{BARRACKS_DEFENSE, Building, COASTAL_BATTERY_DEFENSE};
 use super::effects::{Effect, Outcome};
 use super::fast_hash::HashMap;
 use super::hex::Hex;
-use super::unit::{Unit, UnitType};
+use super::unit::{Team, Unit, UnitType};
 use super::{GameState, combat};
 
 /// Seconds between steps while a turn plays out, and how long the units that
@@ -29,7 +29,7 @@ pub(super) enum Phase {
 /// - Siege is slow: it moves and fires last, and may die before it acts.
 /// - Animals (`animals.rs`) act beside their like: wolves after cavalry,
 ///   bears after melee.
-const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
+pub(super) const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
     (UnitType::Wolf, Phase::Move),
@@ -71,6 +71,17 @@ pub(super) fn step_rank(unit_type: UnitType, phase: Phase) -> u32 {
         .position(|&(t, _)| t == unit_type)
         .expect("every unit type has a move and an attack step");
     rank as u32 + 1
+}
+
+/// Whether `unit_type`'s move step comes before its attack step, so it
+/// attacks from where its move takes it (ranged shoot, then move).
+pub(super) fn moves_before_attacking(unit_type: UnitType) -> bool {
+    let at = |phase| {
+        RESOLUTION_ORDER
+            .iter()
+            .position(|&step| step == (unit_type, phase))
+    };
+    at(Phase::Move) < at(Phase::Attack)
 }
 
 impl GameState {
@@ -165,6 +176,8 @@ impl GameState {
             // Before the economy, so a city reward is spent (or capped) like
             // the turn's own income.
             self.resolve_ruins();
+            // Dens are cleared and their animals come back (`animals.rs`).
+            self.resolve_dens();
             self.resolve_economy();
             for unit in &mut self.units {
                 if unit.ability_queued && unit.ability() == Ability::Deploy {
@@ -682,6 +695,10 @@ impl GameState {
         }
 
         let mut damage = vec![0.0; self.units.len()];
+        // Blows that hit animals, by who struck them: (the animal, the
+        // side, the damage). The side that dealt one that dies the most
+        // gets its bounty (`animals.rs`).
+        let mut hunts: Vec<(usize, Team, f32)> = Vec::new();
         let mut barracks_damage = vec![0.0; self.cities.len()];
         for engagement in &engagements {
             let (a, d) = (engagement.attacker, engagement.defender);
@@ -702,6 +719,9 @@ impl GameState {
                 * engagement.damage_scale
                 * combat::damage(attacker, defender, defender_cover);
             damage[d] += hit;
+            if defender.is_animal() && attacker.team.is_side() {
+                hunts.push((d, attacker.team, hit));
+            }
             let attacker_note = combat::unit_note(attacker, &self.grid, self.in_fort(attacker));
             let defender_note = combat::unit_note(defender, &self.grid, self.in_fort(defender));
             let verb = if engagement.damage_scale < 1.0 {
@@ -722,6 +742,9 @@ impl GameState {
                     * combat::shore_scale(defender, attacker)
                     * combat::damage(defender, attacker, attacker_cover);
                 damage[a] += back;
+                if attacker.is_animal() && defender.team.is_side() {
+                    hunts.push((a, defender.team, back));
+                }
                 let verb = if reverse.is_some() {
                     "trades blows with"
                 } else {
@@ -745,7 +768,11 @@ impl GameState {
 
         let mut battery_damage = vec![0.0; self.cities.len()];
         for (attacker, city, scale) in battery_hits {
-            let hit = scale * combat::damage_against(self.units[attacker].stats().attack, 18.0);
+            let hit = scale
+                * combat::damage_against(
+                    self.units[attacker].stats().attack,
+                    COASTAL_BATTERY_DEFENSE,
+                );
             battery_damage[city] += hit;
             log::info!(
                 "{} hits city {}'s coastal battery for {hit:.0}",
@@ -839,6 +866,7 @@ impl GameState {
         for &a in attackers {
             self.units[a].planned_attack = None;
         }
+        self.reward_hunts(&hunts);
         self.units.retain(Unit::is_alive);
         self.discard_interior_copies_of_dead_units();
     }

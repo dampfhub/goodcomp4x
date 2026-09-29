@@ -1461,6 +1461,7 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
             }
             Row::Roster(_) => ROSTER_CHIP + 6.0,
             Row::ScrollList(_) => unreachable!("flattened by flat_rows"),
+            Row::LabeledButtons(..) => unreachable!("classic only"),
             Row::Heading(_) => {
                 let _font = ui.push_font(fonts[0]);
                 // The text, the rule under it, and the spacing after each.
@@ -2740,6 +2741,7 @@ impl GameState {
                 }
                 Row::Gap(height) => ui.dummy([0.0, height.max(0.0)]),
                 Row::ScrollList(_) => unreachable!("flattened by flat_rows"),
+                Row::LabeledButtons(..) => unreachable!("classic only"),
                 Row::Roster(chips) => {
                     let io = ui.io();
                     let mode = if io.key_shift {

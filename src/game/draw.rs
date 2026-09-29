@@ -4,7 +4,8 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 use glam::Vec2;
 
-use super::city::{Stock, resource_icon};
+use super::city::{BARRACKS_MAX_HP, Building, COASTAL_BATTERY_MAX_HP, Stock, resource_icon};
+use super::combat::{AttackPreview, Hurt, Loss};
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, SeenBuilding, SeenJob};
 use super::hex::{HEX_SIZE, Hex, HexGrid, edge, edge_corners};
@@ -232,6 +233,23 @@ const ATTACK_ORDER_COLOR: Color = [1.00, 0.40, 0.35, 1.0];
 const HEALTH_BAR_WIDTH: f32 = 0.9;
 const HEALTH_BAR_HEIGHT: f32 = 0.14;
 const HEALTH_BAR_OFFSET_Y: f32 = 0.78;
+/// Structures' health bars, relative to a unit's.
+const BARRACKS_BAR_SCALE: f32 = 0.7;
+const BATTERY_BAR_SCALE: f32 = 0.62;
+const POST_BAR_SCALE: f32 = 1.1;
+
+/// The attack preview on a health bar (`push_health_loss`): the HP it would
+/// lose pulses between these two, a lethal loss rims the bar in red, and the
+/// number sits over the bar, red for the target, gold for retaliation.
+const PREVIEW_LOSS_BRIGHT: Color = [1.0, 0.93, 0.80, 1.0];
+const PREVIEW_LOSS_DARK: Color = [0.80, 0.10, 0.06, 1.0];
+const PREVIEW_LETHAL_COLOR: Color = [1.0, 0.16, 0.10, 1.0];
+const PREVIEW_RIM: f32 = 0.05;
+const PREVIEW_DEALT_COLOR: Color = [1.0, 0.45, 0.36, 1.0];
+const PREVIEW_RETALIATION_COLOR: Color = [1.0, 0.82, 0.32, 1.0];
+const PREVIEW_LABEL_HEIGHT: f32 = 0.2;
+/// Pulses a second.
+const PREVIEW_PULSE_RATE: f32 = 1.6;
 
 /// Outline around each tile the hovered or selected city works; a job on the
 /// tile nests inside it (`JOB_RING_RADIUS`).
@@ -483,6 +501,9 @@ impl GameState {
                 );
             }
         }
+        if let Some(preview) = self.attack_preview() {
+            self.push_attack_preview(&preview, &mut out);
+        }
         self.push_field_workers(&fog, &mut out);
         self.push_tile_yields(&fog, &mut out);
         self.push_effects(&mut out);
@@ -603,7 +624,7 @@ impl GameState {
         push_health_bar(
             post,
             city.interior.core_hp / super::city::CORE_HP,
-            1.1,
+            POST_BAR_SCALE,
             &mut out,
         );
 
@@ -645,6 +666,24 @@ impl GameState {
                 &mut out,
             );
             push_health_bar(at, fighter.health_fraction(), 1.0, &mut out);
+        }
+        if let Some(preview) = self.attack_preview() {
+            let pulse = self.preview_pulse();
+            for loss in &preview.losses {
+                let (at, scale, max_hp) = match loss.hurt {
+                    Hurt::Post => (post, POST_BAR_SCALE, super::city::CORE_HP),
+                    Hurt::Fighter(id) => {
+                        let Some(fighter) =
+                            city.interior.fighters.iter().find(|f| f.source_id == id)
+                        else {
+                            continue;
+                        };
+                        (fighter.pos.to_world(), 1.0, fighter.stats().max_hp)
+                    }
+                    _ => continue,
+                };
+                push_health_loss(at, loss, max_hp, scale, pulse, &mut out);
+            }
         }
         out
     }
@@ -1388,7 +1427,7 @@ impl GameState {
         }
         for (hex, barracks) in &view.barracks {
             push_barracks_marker(hex.to_world(), barracks.team.color(), out);
-            push_health_bar(hex.to_world(), barracks.health, 0.7, out);
+            push_health_bar(hex.to_world(), barracks.health, BARRACKS_BAR_SCALE, out);
         }
         for city in &self.cities {
             for building in super::city::Building::PLACEABLE {
@@ -1405,7 +1444,8 @@ impl GameState {
                 mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, color, out);
                 font::push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
                 if building == super::city::Building::CoastalBattery {
-                    push_health_bar(hex.to_world(), city.coastal_battery_hp / 150.0, 0.62, out);
+                    let health = city.coastal_battery_hp / COASTAL_BATTERY_MAX_HP;
+                    push_health_bar(hex.to_world(), health, BATTERY_BAR_SCALE, out);
                 }
             }
         }
@@ -2729,6 +2769,107 @@ fn push_rank_badge(pos: Vec2, rank: u32, scale: f32, color: Color, out: &mut Vec
     } else {
         font::push_text_centered(pos, height, &text, color, out);
     }
+}
+
+impl GameState {
+    /// The attack preview's marks on the map's health bars: units' where
+    /// they're drawn, and the Barracks' and coastal batteries'.
+    fn push_attack_preview(&self, preview: &AttackPreview, out: &mut Vec<Vertex>) {
+        let pulse = self.preview_pulse();
+        for loss in &preview.losses {
+            let (at, scale, max_hp) = match loss.hurt {
+                Hurt::Unit(i) => {
+                    let (at, scale) = self.drawn_unit_layout(i);
+                    (at, scale, self.units[i].max_hp())
+                }
+                Hurt::Barracks(city) => match self.cities[city].barracks {
+                    Some(hex) => (hex.to_world(), BARRACKS_BAR_SCALE, BARRACKS_MAX_HP),
+                    None => continue,
+                },
+                Hurt::Battery(city) => {
+                    match self.cities[city].placed_site(Building::CoastalBattery) {
+                        Some(hex) => (hex.to_world(), BATTERY_BAR_SCALE, COASTAL_BATTERY_MAX_HP),
+                        None => continue,
+                    }
+                }
+                // Drawn with the interior (`build_interior_vertices`).
+                Hurt::Fighter(_) | Hurt::Post => continue,
+            };
+            push_health_loss(at, loss, max_hp, scale, pulse, out);
+        }
+    }
+
+    /// The preview's pulse, 0 to 1, on the presentation clock (still in a
+    /// screenshot, like the clouds).
+    fn preview_pulse(&self) -> f32 {
+        0.5 + 0.5 * (self.cloud_time * PREVIEW_PULSE_RATE * TAU).sin()
+    }
+}
+
+/// The color of the HP a preview shows lost, at `pulse` (0 to 1).
+fn preview_loss_color(pulse: f32) -> Color {
+    mix(PREVIEW_LOSS_DARK, PREVIEW_LOSS_BRIGHT, pulse)
+}
+
+/// `loss` marked on the health bar `push_health_bar` draws for `max_hp` at
+/// `unit_center`: the HP it would lose as a pulsing segment, a flashing red
+/// rim if it's lethal, and the number over the bar.
+fn push_health_loss(
+    unit_center: Vec2,
+    loss: &Loss,
+    max_hp: f32,
+    scale: f32,
+    pulse: f32,
+    out: &mut Vec<Vertex>,
+) {
+    let size = Vec2::new(HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT) * scale;
+    let min = unit_center + Vec2::new(0.0, HEALTH_BAR_OFFSET_Y * scale) - size / 2.0;
+    let max = min + size;
+    let from = ((loss.hp - loss.amount) / max_hp).clamp(0.0, 1.0);
+    let to = (loss.hp / max_hp).clamp(0.0, 1.0);
+    mesh::quad(
+        Vec2::new(min.x + size.x * from, min.y),
+        Vec2::new(min.x + size.x * to, max.y),
+        preview_loss_color(pulse),
+        out,
+    );
+    let lethal = loss.lethal();
+    if lethal {
+        let rim = PREVIEW_RIM * scale;
+        let color = with_alpha(PREVIEW_LETHAL_COLOR, 0.35 + 0.65 * pulse);
+        let (outer_min, outer_max) = (min - Vec2::splat(rim), max + Vec2::splat(rim));
+        mesh::quad(outer_min, Vec2::new(outer_max.x, min.y), color, out);
+        mesh::quad(Vec2::new(outer_min.x, max.y), outer_max, color, out);
+        mesh::quad(
+            Vec2::new(outer_min.x, min.y),
+            Vec2::new(min.x, max.y),
+            color,
+            out,
+        );
+        mesh::quad(
+            Vec2::new(max.x, min.y),
+            Vec2::new(outer_max.x, max.y),
+            color,
+            out,
+        );
+    }
+    let text = if lethal {
+        format!("-{:.0} LETHAL", loss.amount)
+    } else {
+        format!("-{:.0}", loss.amount)
+    };
+    let color = if loss.target_side {
+        PREVIEW_DEALT_COLOR
+    } else {
+        PREVIEW_RETALIATION_COLOR
+    };
+    // Legible however small the unit is drawn (a contested hex).
+    let height = PREVIEW_LABEL_HEIGHT * scale.max(0.75);
+    let radius = height * 0.85;
+    let at = Vec2::new(unit_center.x, max.y + PREVIEW_RIM * scale + radius);
+    let reach = (font::world_text_width(&text, height) / 2.0 + radius * 0.4 - radius).max(0.0);
+    push_pill(at, reach, radius, BADGE_BG_COLOR, out);
+    font::push_text_centered(at, height, &text, color, out);
 }
 
 fn push_health_bar(unit_center: Vec2, hp_fraction: f32, scale: f32, out: &mut Vec<Vertex>) {
@@ -4144,5 +4285,41 @@ mod tests {
             "which tile"
         );
         assert!(drawn(Hex::new(0, 5), true).1 == out_of_sight);
+    }
+
+    #[test]
+    fn the_attack_preview_marks_health_bars_only_while_its_target_is_hovered() {
+        let target = Hex::new(1, 0);
+        let mut game = GameState::new();
+        game.cities.clear();
+        game.units = vec![
+            Unit::new(1, Hex::new(0, 0), Team::Blue, UnitType::Melee),
+            Unit::new(2, target, Team::Red, UnitType::Melee),
+        ];
+        game.selected = Some(0);
+        let loss = preview_loss_color(game.preview_pulse());
+        let rim = with_alpha(PREVIEW_LETHAL_COLOR, 0.35 + 0.65 * game.preview_pulse());
+        let marks = |game: &GameState| {
+            let scene = game.build_vertices();
+            (count_color(&scene, loss), count_color(&scene, rim))
+        };
+
+        game.hovered_tile = None;
+        assert_eq!(marks(&game), (0, 0));
+        game.hovered_tile = Some(Hex::new(0, 1));
+        assert_eq!(marks(&game), (0, 0), "an empty hex is no target");
+        // The target's loss and the attacker's retaliation, neither lethal.
+        game.hovered_tile = Some(target);
+        let (segments, rims) = marks(&game);
+        assert!(segments > 0);
+        assert_eq!(rims, 0);
+        let one_bar = segments / 2;
+        // A lethal hit rims the target's bar, and draws no retaliation.
+        game.units[1].hp = 5.0;
+        let (segments, rims) = marks(&game);
+        assert_eq!(segments, one_bar);
+        assert!(rims > 0);
+        game.hovered_tile = None;
+        assert_eq!(marks(&game), (0, 0));
     }
 }

@@ -101,6 +101,9 @@ pub struct GameState {
     /// City interior currently being inspected and ordered.
     interior_view: Option<usize>,
     interior_selected: Option<u32>,
+    /// The interior tile under the cursor while a city interior is open, for
+    /// the attack preview (`hovered_tile` is the map's, and `None` then).
+    hovered_interior: Option<Hex>,
     /// Preserve the exterior camera while the tactical city map is open.
     exterior_camera: Option<Camera>,
     /// The city and cluster whose manager has been picked up and awaits a
@@ -191,7 +194,8 @@ pub struct GameState {
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec<u32>,
     highlight_timer: f32,
-    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.rs`).
+    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.rs`):
+    /// the presentation clock, which also pulses the attack preview.
     cloud_time: f32,
     /// The turn transition playing: units and workers gliding to where a
     /// turn left them, and the new turn's cue (`transition.rs`).
@@ -277,6 +281,7 @@ impl GameState {
             selected_barracks: None,
             interior_view: None,
             interior_selected: None,
+            hovered_interior: None,
             exterior_camera: None,
             moving_manager: None,
             hovered_city: None,

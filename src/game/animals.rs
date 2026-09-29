@@ -13,13 +13,32 @@
 //! kills). It decides on the real board as the step begins, the same on
 //! every machine: its "plan" is a rule of the game, not a side's planning.
 //! Ties break by hex coordinates.
+//!
+//! Hunting pays: the side that kills an animal gets food (`bounty`), and a
+//! side that stands a unit (not a settler) on a den at a turn's end clears
+//! it for food and metal (`DEN_SPOILS`). Until then, a den whose animal
+//! died has another there `DEN_RETURN_TURNS` turns later (`resolve_dens`).
+//! How many dens a world has is the Animals setting (`world_animals`).
 
 use super::GameState;
+use super::city::{Stock, stock_words};
 use super::hex::Hex;
 use super::unit::{Team, Unit, UnitType};
 
 /// How far from its den an animal goes: it stays within this many hexes.
 pub const TERRITORY_RADIUS: i32 = 3;
+/// Turns after its animal dies that a den has another.
+pub const DEN_RETURN_TURNS: u32 = 8;
+/// What clearing a den gives the side that clears it.
+pub const DEN_SPOILS: Stock = Stock::whole(6, 0, 2);
+
+/// What killing an animal of `kind` gives the side that kills it.
+pub fn bounty(kind: UnitType) -> Stock {
+    match kind {
+        UnitType::Bear => Stock::whole(5, 0, 0),
+        _ => Stock::whole(3, 0, 0),
+    }
+}
 
 /// An animal's den (`mapgen.rs` places them).
 #[derive(Clone, Debug, PartialEq)]
@@ -27,6 +46,9 @@ pub struct Den {
     pub pos: Hex,
     /// The animal it keeps.
     pub kind: UnitType,
+    /// With its animal dead: the turn ends until another is there (at 1,
+    /// the next; at 0, as soon as nothing stands on the den).
+    pub returns_in: Option<u32>,
 }
 
 impl Den {
@@ -44,14 +66,23 @@ fn den_name(kind: UnitType) -> &'static str {
     }
 }
 
+/// The name of an animal of `kind`.
+fn animal_name(kind: UnitType) -> &'static str {
+    match kind {
+        UnitType::Bear => "BEAR",
+        _ => "WOLF PACK",
+    }
+}
+
 impl GameState {
     /// The den on `hex`, if there is one.
     pub(super) fn den_at(&self, hex: Hex) -> Option<&Den> {
         self.dens.iter().find(|d| d.pos == hex)
     }
 
-    /// The tile tooltip's lines about a den on `hex`. Out of sight
-    /// (`remembered`), only that it was there when last seen.
+    /// The tile tooltip's lines about a den on `hex`: what it keeps, what
+    /// clearing it gives, and when a dead animal's successor comes. Out of
+    /// sight (`remembered`), only that it was there when last seen.
     pub(super) fn den_notes(&self, hex: Hex, remembered: bool) -> Vec<String> {
         if remembered {
             let seen = self.memory.get(&hex).and_then(|seen| seen.den);
@@ -63,10 +94,21 @@ impl GameState {
         let Some(den) = self.den_at(hex) else {
             return Vec::new();
         };
-        vec![format!(
-            "{}: ITS ANIMAL ATTACKS WHOEVER COMES WITHIN {TERRITORY_RADIUS} HEXES",
-            den.name()
-        )]
+        let animal = animal_name(den.kind);
+        let mut notes = vec![
+            format!(
+                "{}: ITS {animal} ATTACKS WHOEVER COMES WITHIN {TERRITORY_RADIUS} HEXES",
+                den.name()
+            ),
+            format!(
+                "END A TURN ON IT WITH A UNIT TO CLEAR IT: +{} FOR THE STOCKPILE",
+                stock_words(DEN_SPOILS)
+            ),
+        ];
+        if let Some(turns) = den.returns_in {
+            notes.push(format!("ANOTHER {animal} IN {} TURNS", turns.max(1)));
+        }
+        notes
     }
 
     /// Makes a den on each of `sites`, wolves and bears in turn, each with
@@ -78,14 +120,100 @@ impl GameState {
             } else {
                 UnitType::Bear
             };
-            self.dens.push(Den { pos, kind });
+            self.dens.push(Den {
+                pos,
+                kind,
+                returns_in: None,
+            });
             self.spawn_animal(self.dens.len() - 1);
+        }
+    }
+
+    /// At a turn's end, before the economy: a den with a side's unit (not a
+    /// settler) on it is cleared, and gone, and the side gets
+    /// `DEN_SPOILS`; its animal, if alive, keeps to its territory. A den
+    /// whose animal has died counts down `DEN_RETURN_TURNS` and then has
+    /// another, once nothing stands on it.
+    pub(super) fn resolve_dens(&mut self) {
+        let mut d = 0;
+        while d < self.dens.len() {
+            let pos = self.dens[d].pos;
+            let clearer = self
+                .units
+                .iter()
+                .find(|u| u.pos == pos && u.team.is_side() && !self.settlers.contains(&u.id))
+                .map(|u| u.team);
+            if let Some(team) = clearer {
+                let den = self.dens.remove(d);
+                *self.stock_mut(team) += DEN_SPOILS;
+                let what = format!("+{} FOR THE STOCKPILE", stock_words(DEN_SPOILS));
+                log::info!("{team:?} clears the {} at {pos:?}: {what}", den.name());
+                if team == self.local_team {
+                    self.notice = format!("{} CLEARED: {what}", den.name());
+                }
+                continue;
+            }
+            let alive = self.units.iter().any(|u| u.home == Some(pos));
+            let returns_in = match self.dens[d].returns_in {
+                None if alive => None,
+                None => Some(DEN_RETURN_TURNS),
+                Some(turns) if turns > 1 => Some(turns - 1),
+                Some(_) => (!self.spawn_animal(d)).then_some(0),
+            };
+            self.dens[d].returns_in = returns_in;
+            d += 1;
+        }
+    }
+
+    /// After an attack step's damage lands, before the dead are removed
+    /// (`resolve_attacks`): each animal the step killed goes to the side
+    /// whose blows on it (`hunts`: the animal, the side, the damage) did
+    /// the most damage this step, the earliest in `Team::ALL` on a tie, and
+    /// that side gets its bounty.
+    pub(super) fn reward_hunts(&mut self, hunts: &[(usize, Team, f32)]) {
+        let mut kills: Vec<(usize, Team)> = Vec::new();
+        for &(idx, ..) in hunts {
+            if self.units[idx].is_alive() || kills.iter().any(|&(i, _)| i == idx) {
+                continue;
+            }
+            let mut by_side: Vec<(Team, f32)> = Vec::new();
+            for &(_, team, dealt) in hunts.iter().filter(|h| h.0 == idx) {
+                match by_side.iter_mut().find(|(t, _)| *t == team) {
+                    Some(side) => side.1 += dealt,
+                    None => by_side.push((team, dealt)),
+                }
+            }
+            let most = by_side
+                .into_iter()
+                .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)));
+            if let Some((team, _)) = most {
+                kills.push((idx, team));
+            }
+        }
+        for (idx, team) in kills {
+            let (kind, pos) = (self.units[idx].unit_type, self.units[idx].pos);
+            self.reward_kill(team, kind, pos);
+        }
+    }
+
+    /// An animal of `kind` killed at `pos` by `team`: the side gets its
+    /// `bounty`.
+    fn reward_kill(&mut self, team: Team, kind: UnitType, pos: Hex) {
+        let goods = bounty(kind);
+        *self.stock_mut(team) += goods;
+        let what = format!("+{} FOR THE STOCKPILE", stock_words(goods));
+        log::info!(
+            "{team:?} kills the {} at {pos:?}: {what}",
+            animal_name(kind)
+        );
+        if team == self.local_team {
+            self.notice = format!("{} KILLED: {what}", animal_name(kind));
         }
     }
 
     /// Den `den`'s animal appears on it, if nothing stands there.
     fn spawn_animal(&mut self, den: usize) -> bool {
-        let Den { pos, kind } = self.dens[den];
+        let Den { pos, kind, .. } = self.dens[den];
         if self.is_occupied(pos) || self.field_workers.iter().any(|w| w.pos == pos) {
             return false;
         }
@@ -205,6 +333,7 @@ mod tests {
     use super::*;
     use crate::game::hex::HexGrid;
     use crate::game::terrain::Tile;
+    use crate::game::turn::Phase;
     use crate::game::workers::{FieldWorker, JobKind, WorkerJob};
 
     /// An open radius-6 map with no cities, a wolf den at (0, 0) with its
@@ -351,5 +480,116 @@ mod tests {
             "the worker is dead"
         );
         assert_eq!(game.cities[0].workers, at_home, "not captured, nor home");
+    }
+
+    #[test]
+    fn the_side_that_kills_an_animal_gets_its_bounty() {
+        let mut game = wolf_den();
+        game.units[0].hp = 1.0;
+        add(&mut game, Hex::new(1, 0), Team::Red, UnitType::Melee);
+        let red = game.units.len() - 1;
+        game.units[red].planned_attack = Some(Hex::new(0, 0));
+        let (blue, before) = (game.stock(Team::Blue), game.stock(Team::Red));
+        game.resolve_step(UnitType::Melee, Phase::Attack);
+        assert!(game.units.iter().all(|u| !u.is_animal()), "killed");
+        assert_eq!(game.stock(Team::Red), before + bounty(UnitType::Wolf));
+        assert_eq!(game.stock(Team::Blue), blue, "only the hunter gains");
+    }
+
+    #[test]
+    fn standing_on_a_den_clears_it_for_its_spoils() {
+        let mut game = wolf_den();
+        // The wolf is out; a settler on the den doesn't clear it.
+        game.units[0].pos = Hex::new(3, 0);
+        let settler = add(&mut game, Hex::new(0, 0), Team::Blue, UnitType::Melee);
+        game.settlers.insert(settler);
+        let before = game.stock(Team::Blue);
+        game.resolve_dens();
+        assert_eq!(game.dens.len(), 1);
+        assert_eq!(game.stock(Team::Blue), before);
+        // A scout does, and the wolf keeps to its old territory.
+        game.settlers.clear();
+        game.units.last_mut().unwrap().unit_type = UnitType::Scout;
+        game.resolve_dens();
+        assert!(game.dens.is_empty(), "cleared");
+        assert_eq!(game.stock(Team::Blue), before + DEN_SPOILS);
+        assert_eq!(animal(&game).home, Some(Hex::new(0, 0)));
+    }
+
+    #[test]
+    fn a_den_has_another_animal_some_turns_after_one_dies() {
+        let mut game = wolf_den();
+        game.units.clear();
+        for turn in 1..=DEN_RETURN_TURNS {
+            game.resolve_dens();
+            assert!(game.units.is_empty(), "turn {turn}");
+            assert_eq!(
+                game.den_at(Hex::new(0, 0)).unwrap().returns_in,
+                Some(DEN_RETURN_TURNS + 1 - turn)
+            );
+        }
+        // Due, but a settler stands on the den: it waits for it to leave.
+        let settler = add(&mut game, Hex::new(0, 0), Team::Blue, UnitType::Melee);
+        game.settlers.insert(settler);
+        game.resolve_dens();
+        assert_eq!(game.den_at(Hex::new(0, 0)).unwrap().returns_in, Some(0));
+        game.units.clear();
+        game.resolve_dens();
+        let wolf = animal(&game);
+        assert_eq!((wolf.pos, wolf.unit_type), (Hex::new(0, 0), UnitType::Wolf));
+        assert_eq!(game.den_at(Hex::new(0, 0)).unwrap().returns_in, None);
+    }
+
+    #[test]
+    fn the_animals_setting_picks_how_many_dens_a_world_has() {
+        use crate::game::settings::{ANIMALS_FEW, ANIMALS_MANY, ANIMALS_OFF, Settings};
+        let world = |animals| {
+            let settings = Settings {
+                world_ai: 3,
+                world_animals: animals,
+                ..Settings::default()
+            };
+            GameState::world_scenario_with(11, &settings)
+        };
+        let off = world(ANIMALS_OFF);
+        assert!(off.dens.is_empty());
+        assert!(off.units.iter().all(|u| !u.is_animal()));
+        let few = world(ANIMALS_FEW);
+        assert_eq!(few.dens.len(), 4, "one a side");
+        let many = world(ANIMALS_MANY);
+        assert_eq!(many.dens.len(), 8, "two a side");
+        assert_eq!(many.dens[..4], few.dens[..], "the same first few");
+        for game in [&few, &many] {
+            assert_eq!(
+                game.units.iter().filter(|u| u.is_animal()).count(),
+                game.dens.len(),
+                "an animal a den"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tooltip_tells_what_a_den_keeps_and_gives() {
+        let mut game = wolf_den();
+        let notes = game.den_notes(Hex::new(0, 0), false);
+        assert!(
+            notes[0].starts_with("WOLF DEN: ITS WOLF PACK ATTACKS"),
+            "{notes:?}"
+        );
+        assert!(
+            notes[1].contains("CLEAR IT") && notes[1].contains("FOOD"),
+            "{notes:?}"
+        );
+        assert_eq!(notes.len(), 2);
+        game.units.clear();
+        game.resolve_dens();
+        let notes = game.den_notes(Hex::new(0, 0), false);
+        assert_eq!(
+            notes[2],
+            format!("ANOTHER WOLF PACK IN {DEN_RETURN_TURNS} TURNS")
+        );
+        // Out of sight, only what was seen: nothing, before anyone looked.
+        assert!(game.den_notes(Hex::new(0, 0), true).is_empty());
+        assert!(game.den_notes(Hex::new(1, 0), false).is_empty());
     }
 }

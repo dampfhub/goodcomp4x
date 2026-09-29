@@ -82,8 +82,10 @@ beside it a checkbox (`Control::Toggle`), a slider showing `value_text`
 (`Control::Choice`; a combo box past `Control::MAX_BUTTONS` values), with
 the setting's description as the tooltip. Classic expands the two rows
 (`builder::classic_rows`, `settings_menu::classic_setting_rows`) into a
-gold heading line, the name, and compact buttons: one per value (OFF / ON
-for a switch), or < and > beside the value for a slider or long list.
+gold heading line and, for each setting, one row
+(`Row::LabeledButtons`, classic only) of its name and compact buttons at
+the row's end: one per value (OFF / ON for a switch), or < and > beside
+the value for a slider or long list.
 Every control acts through `Target::SetSetting(setting, value)`, which
 clamps to the range. A new setting therefore needs no UI code: add it in
 `game/settings.rs` as its module comment describes, and both presentations

@@ -141,7 +141,8 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   - **Animal dens** (see Animals) go on forest, jungle or hills, at least 5 hexes from every
     start, off the map's edge, reachable from every start, clear of resources, special tiles and
     ruins, and at least 6 hexes apart: two a side at most, in a random order, of which a world
-    takes one a side, wolves and bears in turn.
+    takes as many as the Animals setting (Next World) says: none, one a side (the default) or
+    two, the first of them, wolves and bears in turn.
 
 ## Units (`unit.rs`)
 
@@ -511,6 +512,15 @@ Everyone in a step acts simultaneously:
   away. Every unit or structure hurt (retaliation, Coastal Battery fire and hits on a battery
   included) shows a rising damage number, or
   "KILLED". Enemy attacks animate too.
+- **Damage preview:** hovering an enemy in sight that the selection (a unit or a group) can
+  attack this turn, or that the player's units already attack, marks the health bars with what
+  the turn's attacks on it would do: the target's loss as a pulsing segment with the number over
+  the bar, and each attacker's retaliation on its own bar; a lethal hit rims the bar in red and
+  reads LETHAL. It plays the attacks in their resolution steps with the same damage functions,
+  so it is exact if the target stays and uses no ability, which the player can't know (the tile
+  tooltip says IF IT STAYS). The same holds for Barracks, coastal batteries and, in a city's
+  interior, fighters and the command post (with the post's shot back when it targets one of
+  the attackers). Only what is in sight is previewed; queued (Shift) attacks aren't.
 
 ## Abilities (`ability.rs`)
 
@@ -560,6 +570,17 @@ hostile to every side, and no side's AI plays it (World maps only).
   never goes into a city's interior, and never captures anything: it doesn't step onto a worker
   (it attacks it), a worker that shares its hex is killed, and it never holds ruins (a side's
   count pauses while one stands on them). No city can be founded on a den.
+- **Hunting pays:** the side that kills an animal gets +3 food (a wolf pack) or +5 food (a
+  bear) for its stockpile at once; if several sides' blows land in the step that kills it, the
+  one that dealt the most damage that step gets it (the earliest in `Team::ALL` on a tie).
+- **Clearing a den:** a side that ends a turn with a unit (anything but a settler; scouts count)
+  on a den clears it, for +6 food and 2 metal, before the turn's economy. The den is gone for
+  good; its animal, if alive, still keeps to its old territory.
+- **Coming back:** until then, a den whose animal died has another there 8 turns later, or as
+  soon after as nothing stands on the den. The tile tooltip says what clearing it gives and,
+  with its animal dead, when the next comes.
+- **How many:** the Animals setting (Next World; see `controls.md`) gives the next world none,
+  one den a side (the default) or two.
 - Animals are seen like any enemy unit (and not remembered, as they move), attacked like one,
   and fired on by units on alert. A player can't select or order them, and a network plan that
   names one is refused.
@@ -943,7 +964,7 @@ hostile to every side, and no side's AI plays it (World maps only).
 Every side but Blue is played by the AI, in `Team::ALL` order, and every side is at war with
 every other. The AI plays under the fog (see Fog of war): it plans only on what its side sees and
 remembers, as the player does. An enemy unit or worker counts only while in sight; cities, ruins,
-walls and terrain count as last seen; ground never seen counts as open.
+dens, walls and terrain count as last seen; ground never seen counts as open.
 Each AI unit picks, of the enemy units in sight, the enemy workers alone in sight and ruins its
 side knows of that no unit of its side holds or is heading for, and the enemy cities its side has
 seen, the one nearest on foot (walking distance around the terrain, walls and others' gates and
@@ -1008,6 +1029,12 @@ The AI builds Scouts and expands with Settlers:
 - **First city:** a side with a settler and no city founds at once where the rules allow it,
   as before, and otherwise walks to the nearest site they allow; knowing none, it founds where
   it stands anyway.
+
+The AI and animals (see Animals): an animal in sight is an enemy like any other, fought, fired
+on and kept away from; a den its side has seen (in sight or as last seen) is a target like ruins,
+which a unit (a scout too, while it's safe) goes to stand on to clear it. Its side keeps clear of
+the territory of every den it knows of (the hexes within 3 of it): its settlers step around it
+where they can, it picks no city site in it, and its workers take no job in it.
 
 ## Open questions
 

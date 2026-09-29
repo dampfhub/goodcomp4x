@@ -15,7 +15,7 @@ use std::thread;
 
 mod economy;
 
-use super::animals::TERRITORY_RADIUS;
+use super::animals::{DEN_RETURN_TURNS, TERRITORY_RADIUS};
 use super::city::{
     Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, MIN_CITY_DISTANCE, Queued,
     WORKERS_PER_MANAGER,
@@ -344,6 +344,16 @@ fn check_invariants(game: &GameState, context: &str) {
             game.cities.iter().all(|c| c.pos != den.pos),
             "{context}: a city on a den"
         );
+        // A den counts down to its next animal only while it has none.
+        let alive = game.units.iter().any(|u| u.home == Some(den.pos));
+        assert_eq!(
+            alive,
+            den.returns_in.is_none(),
+            "{context}: the {} at {:?} counts down with its animal alive, or the reverse",
+            den.name(),
+            den.pos
+        );
+        assert!(den.returns_in.is_none_or(|t| t <= DEN_RETURN_TURNS));
     }
     for worker in &game.field_workers {
         assert!(
@@ -700,12 +710,15 @@ fn interior_hp_uses_the_source_unit_upgrade() {
 
 #[test]
 fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
+    // Animals killed and dens cleared, over every world.
+    let (killed, cleared) = (AtomicUsize::new(0), AtomicUsize::new(0));
     for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
         let mut game = start(scenario, seed);
         let name = format!("{} seed {seed}", scenario.name());
         check_invariants(&game, &format!("{name} at start"));
         let starting = game.cities.len();
         let ruins_at_start = game.ruins.len();
+        let dens_at_start = game.dens.len();
         let animals: Vec<u32> = game
             .units
             .iter()
@@ -746,6 +759,11 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                     .is_none_or(|u| u.hp < u.max_hp())
             });
             assert!(fought, "{name}: no animal fought in {TURNS} turns");
+            let dead = animals
+                .iter()
+                .filter(|&&id| game.units.iter().all(|u| u.id != id));
+            killed.fetch_add(dead.count(), Ordering::Relaxed);
+            cleared.fetch_add(dens_at_start - game.dens.len(), Ordering::Relaxed);
         }
         // Anti-vacuity: with cities, the AI buys both troops and growth from its stockpile.
         if matches!(scenario, Scenario::Cities | Scenario::World) {
@@ -759,6 +777,11 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
             assert!(special > 0, "{name}: no Cavalry or Armored trained");
         }
     });
+    // Anti-vacuity: the AI hunts, killing animals and clearing dens.
+    let (killed, cleared) = (killed.into_inner(), cleared.into_inner());
+    eprintln!("worlds: {killed} animals killed, {cleared} dens cleared");
+    assert!(killed > 0, "no side killed an animal in any world");
+    assert!(cleared > 0, "no side cleared a den in any world");
 }
 
 #[test]

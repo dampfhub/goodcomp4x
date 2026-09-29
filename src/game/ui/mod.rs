@@ -821,16 +821,13 @@ impl GameState {
     /// it has rested there, for city hover outlines and the tile tooltip.
     /// `cursor` is in window pixels with the origin at the top-left.
     pub fn update_hover(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
-        if self.interior_view.is_some() {
-            self.hovered_tile = None;
-            self.hovered_city = None;
-            self.hover_seconds = 0.0;
-            return;
-        }
         let layout = self.layout(screen_size);
         let hex = cursor
             .filter(|&c| !layout.covers(to_ui(c, screen_size)))
             .and_then(|c| self.hex_at_screen(c, screen_size));
+        if self.hover_interior(hex) {
+            return;
+        }
         if hex == self.hovered_tile {
             self.hover_seconds += dt;
         } else {
@@ -842,13 +839,10 @@ impl GameState {
     }
 
     pub fn update_hover_imgui(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
-        if self.interior_view.is_some() {
-            self.hovered_tile = None;
-            self.hovered_city = None;
-            self.hover_seconds = 0.0;
+        let hex = cursor.and_then(|c| self.hex_at_screen(c, screen_size));
+        if self.hover_interior(hex) {
             return;
         }
-        let hex = cursor.and_then(|c| self.hex_at_screen(c, screen_size));
         if hex == self.hovered_tile {
             self.hover_seconds += dt;
         } else {
@@ -857,6 +851,19 @@ impl GameState {
         }
         self.hovered_city = hex.and_then(|h| self.cities.iter().position(|c| c.pos == h));
         self.hover_edge(hex.and(cursor), screen_size);
+    }
+
+    /// In a city interior, `hex` (an interior tile) is the hovered one, for
+    /// the attack preview, and there's no map hover; says whether it is.
+    fn hover_interior(&mut self, hex: Option<Hex>) -> bool {
+        let inside = self.interior_view.is_some();
+        self.hovered_interior = hex.filter(|_| inside);
+        if inside {
+            self.hovered_tile = None;
+            self.hovered_city = None;
+            self.hover_seconds = 0.0;
+        }
+        inside
     }
 
     /// With a wall or gate armed, the hex edge under `cursor` (over the map,

@@ -170,6 +170,7 @@ interior map; its clicks control only the interior copies.
 | Rest the cursor on a hex | After 0.75 s, a tooltip: terrain, yields, site, road, who works it, units |
 | Hover a unit | Its stats, in a box at the top-right |
 | Hover a city or barracks | What the city delivers and its population, or the barracks' HP, and the current build, at the bottom-left |
+| Hover an enemy in sight with units selected (or one your units already attack) | Damage preview on the health bars: the HP the target would lose this turn pulses on its bar, with the number over it, and each melee attacker's bar shows the retaliation it would take; a lethal hit rims the target's bar in red and reads LETHAL. It sums every attack of yours on it this turn (the selection's, and those already planned), counts retaliation from the target's HP at each blow, and works for groups, Barracks, coastal batteries and, inside a city, fighters and the command post. The tile tooltip says it in words, with IF IT STAYS: the enemy's own move or ability can't be known, so the preview assumes it stays and uses none. Not for Shift (queued) attacks |
 | F5 | Toggle borderless fullscreen |
 | Escape with nothing open | Open the settings menu (below), which has the Quit button; Escape again, or its Close button, closes it |
 | F1 / F2 / F3 | Start the combat / city / frontier scenario (again to restart it) |
@@ -228,6 +229,7 @@ that end of the range).
 | Fog (Map) | Buttons | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
 | AI players (Next World) | Drop-down list | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |
 | Start with (Next World) | Buttons | City (the default) or settler: what every side in the next world (F4) starts with, beside its scout |
+| Animals (Next World) | Buttons | Off, few (the default: one animal den a side) or many (two a side): the dens of wolf packs and bears in the next world (F4); see `game-rules.md`, Animals |
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).

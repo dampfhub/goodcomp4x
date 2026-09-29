@@ -1264,15 +1264,16 @@ impl GameState {
     }
 
     /// The AI's workers: each city with idle workers and nothing queued
-    /// improves the tiles it works, then puts roads on them.
-    pub(super) fn plan_ai_workers(&mut self, team: Team) {
+    /// improves the tiles it works, then puts roads on them, but none where
+    /// `unsafe_tile` says an animal would attack it (`animals.rs`).
+    pub(super) fn plan_ai_workers(&mut self, team: Team, unsafe_tile: impl Fn(Hex) -> bool) {
         for city in 0..self.cities.len() {
             let c = &self.cities[city];
             if c.team != team || c.workers == 0 || !c.worker_jobs.is_empty() {
                 continue;
             }
             let stock = self.stock(team);
-            let worked: Vec<Hex> = c.worked().collect();
+            let worked: Vec<Hex> = c.worked().filter(|&hex| !unsafe_tile(hex)).collect();
             let job = [JobKind::Improve, JobKind::Road]
                 .into_iter()
                 .find_map(|kind| {
