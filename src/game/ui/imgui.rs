@@ -359,6 +359,90 @@ fn opposite_dock_direction(direction: ::imgui::sys::ImGuiDir) -> ::imgui::sys::I
     }
 }
 
+/// Before `title`'s window begins with `flags`: whether this frame's click
+/// is the second of a double-click on its title bar, which puts the panel
+/// back where the layout would (`ImGuiLayoutState::reset_position`). ImGui
+/// would collapse the window on it, when nothing on it is hovered: this
+/// says something is, so the arrow alone collapses it.
+fn title_double_clicked(ui: &Ui, title: &str, flags: WindowFlags) -> bool {
+    if flags.contains(WindowFlags::NO_TITLE_BAR) || !ui.is_mouse_double_clicked(ImMouseButton::Left)
+    {
+        return false;
+    }
+    let native = native_window(title);
+    if native.is_null() {
+        return false;
+    }
+    let mouse = ui.io().mouse_pos;
+    // The title bar, as ImGui measures it (`TitleBarHeight`).
+    let height = ui.frame_height();
+    unsafe {
+        let context = &*::imgui::sys::igGetCurrentContext();
+        let window = &*native;
+        let on_title = mouse[0] >= window.Pos.x
+            && mouse[0] < window.Pos.x + window.Size.x
+            && mouse[1] >= window.Pos.y
+            && mouse[1] < window.Pos.y + height;
+        // As ImGui tests it: docked windows keep their title in the tab bar,
+        // and a hovered item (the collapse arrow) takes the click.
+        if !window.DockNode.is_null()
+            || context.HoveredWindow != native
+            || context.HoveredId != 0
+            || context.HoveredIdPreviousFrame != 0
+            || !on_title
+        {
+            return false;
+        }
+        ::imgui::sys::igSetHoveredID(window.MoveId);
+    }
+    true
+}
+
+/// After `title`'s window ends: whether this frame's click is the second of
+/// a double-click on its resize grip, which puts the panel back to the size
+/// the layout gives it (`ImGuiLayoutState::reset_size`).
+fn grip_double_clicked(ui: &Ui, title: &str) -> bool {
+    if !ui.is_mouse_double_clicked(ImMouseButton::Left) {
+        return false;
+    }
+    let native = native_window(title);
+    !native.is_null()
+        && unsafe {
+            (*native).DockNode.is_null()
+                && ::imgui::sys::igGetHoveredID()
+                    == ::imgui::sys::igGetWindowResizeCornerID(native, 0)
+        }
+}
+
+/// Moves and sizes `title`'s window now, as far as given, so the next
+/// frame reads it back (`sync_native_window`) where it was put.
+fn set_native_geometry(title: &str, pos: Option<Vec2>, size: Option<Vec2>) {
+    if unsafe { ::imgui::sys::igGetCurrentContext() }.is_null() {
+        return;
+    }
+    let native = native_window(title);
+    if native.is_null() {
+        return;
+    }
+    let always = ::imgui::sys::ImGuiCond_Always as i32;
+    unsafe {
+        if let Some(pos) = pos {
+            ::imgui::sys::igSetWindowPos_WindowPtr(
+                native,
+                ::imgui::sys::ImVec2::new(pos.x, pos.y),
+                always,
+            );
+        }
+        if let Some(size) = size {
+            ::imgui::sys::igSetWindowSize_WindowPtr(
+                native,
+                ::imgui::sys::ImVec2::new(size.x, size.y),
+                always,
+            );
+        }
+    }
+}
+
 /// A panel's window flags: movable and resizable only while arranging (Ctrl
 /// held), and titled then or when collapsed. Panels keep ImGui's saved
 /// settings, so their docking comes back next session (`app.rs`).
@@ -380,10 +464,24 @@ struct WindowGeometry {
     size: Vec2,
     floating_size: Vec2,
     floating_pos: Vec2,
+    /// Placed by the player: the layout keeps it where it is.
     manual: bool,
+    /// Sized by the player: it keeps `floating_size` rather than the size
+    /// its content measures. Set with `manual` when the player drags the
+    /// panel; the two part only when one is reset (double-clicking the
+    /// title bar or the resize grip, `reset_position`, `reset_size`).
+    sized: bool,
     docked: bool,
     collapsed: bool,
     content_height: f32,
+}
+
+impl WindowGeometry {
+    /// The player has moved or resized it: it stays as they left it.
+    fn place_by_player(&mut self) {
+        self.manual = true;
+        self.sized = true;
+    }
 }
 
 /// ImGui windows follow collision-free docks until the player drags a title
@@ -427,11 +525,99 @@ pub struct ImGuiLayoutState {
     debug_attached: bool,
     debug_reposition: bool,
     debug_outer_relation: Option<(PinnedPanel, QueueDockRelation)>,
+    /// Whether each panel was placed and sized by the player before the
+    /// click on its title bar or grip that began this double-click, if any
+    /// (`begin_frame`).
+    before_click: [Option<(bool, bool)>; SLOT_COUNT],
     /// The game's `generation` at the last frame (`game_changed`).
     game_generation: Option<u32>,
 }
 
 impl ImGuiLayoutState {
+    /// The player double-clicked `slot`'s title bar: it goes back where the
+    /// current view's layout puts it, keeping its size. That is the
+    /// automatic place, but for Debug in City / Building or Troop, where
+    /// RESET would put it: Default's placement (`debug_default`).
+    fn reset_position(&mut self, slot: usize) {
+        let inherited = self
+            .debug_default(slot)
+            .filter(|default| default.floating_pos != Vec2::ZERO);
+        // Sized as before the double-click's first click, which made it the
+        // player's (`begin_frame`).
+        let sized = self.before_click[slot].map(|(_, sized)| sized);
+        let window = &mut self.windows[slot];
+        window.sized = sized.unwrap_or(window.sized);
+        match inherited {
+            Some(default) => {
+                window.manual = true;
+                window.pos = default.floating_pos;
+                window.floating_pos = default.floating_pos;
+                set_native_geometry(SLOT_TITLES[slot], Some(default.floating_pos), None);
+            }
+            None => window.manual = false,
+        }
+        self.follow_default_debug(slot);
+    }
+
+    /// The player double-clicked `slot`'s resize grip: it goes back to the
+    /// size the current view's layout gives it, staying where it is. That
+    /// is the size its content measures, but for Debug in City / Building
+    /// or Troop, the size RESET would give it: Default's (`debug_default`).
+    fn reset_size(&mut self, slot: usize) {
+        let inherited = self
+            .debug_default(slot)
+            .filter(|default| default.floating_size != Vec2::ZERO);
+        // Placed as before the double-click's first click (`begin_frame`).
+        let manual = self.before_click[slot].map(|(manual, _)| manual);
+        let window = &mut self.windows[slot];
+        window.manual = manual.unwrap_or(window.manual);
+        match inherited {
+            Some(default) => {
+                window.sized = true;
+                window.size = default.floating_size;
+                window.floating_size = default.floating_size;
+                set_native_geometry(SLOT_TITLES[slot], None, Some(default.floating_size));
+            }
+            None => window.sized = false,
+        }
+        self.follow_default_debug(slot);
+    }
+
+    /// Debug's placement in Default, when `slot` is Debug in City /
+    /// Building or Troop: what that view's RESET restores
+    /// (`apply_pending_view_reset`).
+    fn debug_default(&self, slot: usize) -> Option<WindowGeometry> {
+        match self.debug_layout_scope {
+            Some(BoxScope::View(view)) if slot == DEBUG && view != ViewScope::Default => Some(
+                self.debug_view_geometry
+                    .get(&ViewScope::Default)
+                    .copied()
+                    .unwrap_or_default(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// After a reset of Debug in City / Building or Troop: once it's where
+    /// and as big as Default has it, that view follows Default's Debug
+    /// again, as after RESET.
+    fn follow_default_debug(&mut self, slot: usize) {
+        let (Some(default), Some(BoxScope::View(view))) =
+            (self.debug_default(slot), self.debug_layout_scope)
+        else {
+            return;
+        };
+        let window = self.windows[DEBUG];
+        let placed = |at: Vec2| at != Vec2::ZERO;
+        let same_place = window.manual == placed(default.floating_pos)
+            && (!window.manual || window.pos == default.floating_pos);
+        let same_size = window.sized == placed(default.floating_size)
+            && (!window.sized || window.floating_size == default.floating_size);
+        if same_place && same_size {
+            self.debug_view_overrides.remove(&view);
+        }
+    }
+
     pub fn request_reset_active_view(&mut self) -> bool {
         if self.editing_outer || self.active_view == ViewScope::Default {
             return false;
@@ -711,6 +897,7 @@ impl ImGuiLayoutState {
                 floating_pos: pos,
                 floating_size: size,
                 manual: true,
+                sized: true,
                 ..Default::default()
             },
         });
@@ -813,7 +1000,7 @@ impl ImGuiLayoutState {
         if restored.floating_pos != Vec2::ZERO {
             restored.pos = restored.floating_pos;
             restored.size = restored.floating_size;
-            restored.manual = true;
+            restored.place_by_player();
         }
         self.windows[DEBUG] = restored;
         self.debug_reposition = true;
@@ -1004,7 +1191,7 @@ impl ImGuiLayoutState {
         let native = unsafe { &*native };
         let docked = !native.DockNode.is_null();
         if self.windows[slot].docked && !docked {
-            self.windows[slot].manual = true;
+            self.windows[slot].place_by_player();
         }
         self.windows[slot].docked = docked;
         self.windows[slot].collapsed = native.Collapsed;
@@ -1016,7 +1203,7 @@ impl ImGuiLayoutState {
                 if remembered != Vec2::ZERO {
                     self.windows[slot].pos = remembered;
                     self.windows[slot].size = self.windows[slot].floating_size;
-                    self.windows[slot].manual = true;
+                    self.windows[slot].place_by_player();
                 }
             } else if !(docked || (slot == DEBUG && self.defer_geometry)) {
                 self.windows[slot].floating_size = self.windows[slot].size;
@@ -1048,6 +1235,7 @@ impl ImGuiLayoutState {
                 // ImGui may have removed the inactive split. Place this as a
                 // normal floater for the restoration frame, not over Queue.
                 restored.manual = false;
+                restored.sized = false;
                 restored.pos = Vec2::ZERO;
                 restored.size = restored.floating_size;
             }
@@ -1070,8 +1258,15 @@ impl ImGuiLayoutState {
         if !arranging || !ui.is_mouse_clicked(ImMouseButton::Left) {
             return;
         }
+        // The second click of a double-click keeps what the first found:
+        // how the panel was before it (`reset_position`, `reset_size`).
+        let second = ui.is_mouse_double_clicked(ImMouseButton::Left);
+        if !second {
+            self.before_click = [None; SLOT_COUNT];
+        }
         let mouse = Vec2::from_array(ui.io().mouse_pos);
-        for (slot, window) in self.windows.iter_mut().enumerate() {
+        for slot in 0..SLOT_COUNT {
+            let window = &mut self.windows[slot];
             if window.size == Vec2::ZERO || window.docked {
                 continue;
             }
@@ -1085,7 +1280,10 @@ impl ImGuiLayoutState {
                 && relative.y >= window.size.y - 20.0
                 && relative.y <= window.size.y;
             if title || grip {
-                window.manual = true;
+                if !second {
+                    self.before_click[slot] = Some((window.manual, window.sized));
+                }
+                window.place_by_player();
                 if slot == DEBUG
                     && let Some(BoxScope::View(view)) = self.debug_layout_scope
                     && view != ViewScope::Default
@@ -1101,7 +1299,7 @@ impl ImGuiLayoutState {
         let window = self.windows[slot];
         let preferred = if window.docked && window.size != Vec2::ZERO {
             window.size
-        } else if window.manual {
+        } else if window.sized {
             if window.floating_size != Vec2::ZERO {
                 window.floating_size
             } else {
@@ -1257,7 +1455,7 @@ impl ImGuiLayoutState {
     fn record(&mut self, slot: usize, ui: &Ui, arranging: bool) {
         let docked = unsafe { ::imgui::sys::igIsWindowDocked() };
         if self.windows[slot].docked && !docked {
-            self.windows[slot].manual = true;
+            self.windows[slot].place_by_player();
         }
         self.windows[slot].pos = Vec2::from_array(ui.window_pos());
         self.windows[slot].size = Vec2::from_array(ui.window_size());
@@ -1305,7 +1503,8 @@ impl ImGuiLayoutState {
                 lines.push(format!("{key} {id}"));
             }
         }
-        if self.debug_outer_geometry.manual || self.debug_outer_geometry.docked {
+        let chosen = |g: &WindowGeometry| g.manual || g.sized || g.docked;
+        if chosen(&self.debug_outer_geometry) {
             lines.push(format!(
                 "debug_outer {}",
                 geometry_text(&self.debug_outer_geometry)
@@ -1316,7 +1515,7 @@ impl ImGuiLayoutState {
             // Only a placement the player chose: one the layout made is made
             // again, and restoring it would pin the panel (`switch_layout_scope`).
             if let Some(geometry) = self.debug_view_geometry.get(&view)
-                && (geometry.manual || geometry.docked)
+                && chosen(geometry)
             {
                 lines.push(format!("debug_view {name} {}", geometry_text(geometry)));
             }
@@ -1417,11 +1616,12 @@ impl ImGuiLayoutState {
 }
 
 /// A panel's saved geometry: position, size, floating position and size,
-/// and whether it's placed by the player, docked and collapsed.
+/// whether it's placed by the player, docked and collapsed, and whether it's
+/// sized by the player (last, so a file from before it still reads).
 fn geometry_text(geometry: &WindowGeometry) -> String {
     let g = geometry;
     format!(
-        "{} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {}",
         g.pos.x,
         g.pos.y,
         g.size.x,
@@ -1432,7 +1632,8 @@ fn geometry_text(geometry: &WindowGeometry) -> String {
         g.floating_size.y,
         u8::from(g.manual),
         u8::from(g.docked),
-        u8::from(g.collapsed)
+        u8::from(g.collapsed),
+        u8::from(g.sized)
     )
 }
 
@@ -1458,12 +1659,18 @@ fn geometry_from_text(values: &[&str]) -> Option<WindowGeometry> {
     else {
         return None;
     };
+    // Before the sized flag, placing a panel sized it too.
+    let sized = match values.get(11) {
+        Some(value) => *value != "0",
+        None => manual != 0.0,
+    };
     Some(WindowGeometry {
         pos: Vec2::new(px, py),
         size: Vec2::new(sx, sy),
         floating_pos: Vec2::new(fpx, fpy),
         floating_size: Vec2::new(fsx, fsy),
         manual: manual != 0.0,
+        sized,
         docked: docked != 0.0,
         collapsed: collapsed != 0.0,
         ..WindowGeometry::default()
@@ -3082,12 +3289,13 @@ impl GameState {
             && old_size.y <= viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN;
         let size_condition = if restoring {
             Condition::Always
-        } else if layout.windows[slot].manual && fits {
+        } else if layout.windows[slot].sized && fits {
             Condition::FirstUseEver
         } else {
             Condition::Always
         };
         let flags = panel_chrome(arranging, layout.windows[slot].collapsed);
+        let title_reset = title_double_clicked(ui, title, flags);
         let mut window = ui.window(title).flags(flags);
         if slot == SETTINGS {
             // It opens over the other panels: keep their text from showing
@@ -3128,6 +3336,14 @@ impl GameState {
             layout.debug_reposition = false;
         }
         layout.sync_native_window(slot, title);
+        // Double-clicked: the title bar puts the panel back
+        // where the layout would, the grip back to the size it would give.
+        if title_reset {
+            layout.reset_position(slot);
+        }
+        if grip_double_clicked(ui, title) {
+            layout.reset_size(slot);
+        }
         if context_changed && !layout.defer_geometry {
             layout.selection_geometry_changed = false;
         }
@@ -3985,10 +4201,35 @@ impl ImGuiLayoutState {
             (*native).Size = full;
         }
         let window = &mut self.windows[slot];
-        window.manual = true;
+        window.place_by_player();
         window.size = size;
         window.floating_size = size;
     }
+
+    /// Tests only: whether the panel titled `title` is placed by the player,
+    /// and whether it's sized by them.
+    pub(super) fn chosen_by_player(&self, title: &str) -> (bool, bool) {
+        let slot = SLOT_TITLES
+            .iter()
+            .position(|slot| *slot == title)
+            .expect("a panel's title");
+        (self.windows[slot].manual, self.windows[slot].sized)
+    }
+}
+
+/// Tests only: where the window titled `title` is, how big, and whether
+/// it's collapsed, as ImGui has it.
+#[cfg(test)]
+pub(super) fn native_geometry(title: &str) -> Option<(Vec2, Vec2, bool)> {
+    let native = native_window(title);
+    (!native.is_null()).then(|| unsafe {
+        let window = &*native;
+        (
+            Vec2::new(window.Pos.x, window.Pos.y),
+            Vec2::new(window.SizeFull.x, window.SizeFull.y),
+            window.Collapsed,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -4403,7 +4644,7 @@ mod tests {
         layout.windows[SELECTION].content_height = arranging;
         assert_eq!(layout.size(SELECTION, measured, viewport), automatic);
 
-        layout.windows[SELECTION].manual = true;
+        layout.windows[SELECTION].place_by_player();
         layout.windows[SELECTION].floating_size = Vec2::new(340.0, 270.0);
         assert_eq!(
             layout.size(SELECTION, measured, viewport),
@@ -4419,6 +4660,8 @@ mod tests {
             floating_pos: Vec2::new(90.0, 70.0),
             floating_size: Vec2::new(400.0, 220.0),
             manual: true,
+            // Put back to the size its content measures (`reset_size`).
+            sized: false,
             docked: false,
             collapsed: true,
             // Recomputed every frame, so not saved.
@@ -4449,7 +4692,8 @@ mod tests {
                 && a.size == b.size
                 && a.floating_pos == b.floating_pos
                 && a.floating_size == b.floating_size
-                && (a.manual, a.docked, a.collapsed) == (b.manual, b.docked, b.collapsed)
+                && (a.manual, a.sized, a.docked, a.collapsed)
+                    == (b.manual, b.sized, b.docked, b.collapsed)
         };
         for slot in 0..SLOT_COUNT {
             assert!(
@@ -4477,6 +4721,54 @@ mod tests {
     }
 
     #[test]
+    fn a_reset_debug_panel_goes_where_its_view_would_put_it() {
+        // No ImGui windows to move: the layout's half only.
+        let _one = one_context_at_a_time();
+        let moved = WindowGeometry {
+            pos: Vec2::new(300.0, 300.0),
+            size: Vec2::new(500.0, 500.0),
+            floating_pos: Vec2::new(300.0, 300.0),
+            floating_size: Vec2::new(500.0, 500.0),
+            manual: true,
+            sized: true,
+            ..WindowGeometry::default()
+        };
+        // In Default: where and as big as the layout makes it.
+        let mut layout = ImGuiLayoutState {
+            debug_layout_scope: Some(BoxScope::View(ViewScope::Default)),
+            ..ImGuiLayoutState::default()
+        };
+        layout.windows[DEBUG] = moved;
+        layout.reset_position(DEBUG);
+        assert!(!layout.windows[DEBUG].manual && layout.windows[DEBUG].sized);
+        layout.reset_size(DEBUG);
+        assert!(!layout.windows[DEBUG].sized);
+        // In City / Building: where RESET would, Default's placement, and
+        // once both are back it follows Default again.
+        let default = WindowGeometry {
+            floating_pos: Vec2::new(900.0, 80.0),
+            floating_size: Vec2::new(330.0, 400.0),
+            ..moved
+        };
+        layout
+            .debug_view_geometry
+            .insert(ViewScope::Default, default);
+        layout.active_view = ViewScope::City;
+        layout.debug_layout_scope = Some(BoxScope::View(ViewScope::City));
+        layout.debug_view_overrides.insert(ViewScope::City);
+        layout.windows[DEBUG] = moved;
+        layout.reset_position(DEBUG);
+        let debug = layout.windows[DEBUG];
+        assert!(debug.manual);
+        assert_eq!(debug.pos, default.floating_pos);
+        assert_eq!(debug.floating_size, moved.floating_size, "size kept");
+        assert!(layout.debug_view_overrides.contains(&ViewScope::City));
+        layout.reset_size(DEBUG);
+        assert_eq!(layout.windows[DEBUG].floating_size, default.floating_size);
+        assert!(!layout.debug_view_overrides.contains(&ViewScope::City));
+    }
+
+    #[test]
     fn a_damaged_layout_file_still_loads() {
         let text = "window 9 1 2 3 4 5 6 7 8 1 0 0\nwindow 1 nope\nbox 2 sideways 0 0 0 0 0 0 0 0 0 0 0\nbox 5 outer 0 0 10 10 0 0 10 10 1 0 0\nnext_box 1\njunk\n";
         let layout = ImGuiLayoutState::from_text(text);
@@ -4487,6 +4779,10 @@ mod tests {
         assert_eq!(layout.outer_boxes.len(), 1);
         assert_eq!(layout.next_outer_box_id, 6, "past every box already there");
         assert_eq!(ImGuiLayoutState::from_text("").outer_boxes.len(), 0);
+        // A file from before the sized flag: a panel the player placed was
+        // sized by them too.
+        let old = ImGuiLayoutState::from_text("window 0 1 2 3 4 5 6 7 8 1 0 0");
+        assert!(old.windows[SELECTION].manual && old.windows[SELECTION].sized);
     }
 
     #[test]
@@ -4542,7 +4838,7 @@ mod tests {
         let mut layout = ImGuiLayoutState::default();
         layout.selection_changed("city-1");
         layout.windows[SELECTION].size = Vec2::new(600.0, 420.0);
-        layout.windows[SELECTION].manual = true;
+        layout.windows[SELECTION].place_by_player();
         layout.selection_changed("city-2");
         assert_eq!(layout.windows[SELECTION].size.y, 420.0);
         layout.selection_changed("unit-7");
@@ -4564,6 +4860,7 @@ mod tests {
             size: Vec2::new(340.0, 700.0),
             floating_size: Vec2::new(560.0, 390.0),
             manual: true,
+            sized: true,
             docked: true,
             ..WindowGeometry::default()
         };
@@ -4680,6 +4977,7 @@ mod tests {
             floating_size: sizes[DEBUG].unwrap(),
             floating_pos: Vec2::new(510.0, 80.0),
             manual: true,
+            sized: true,
             docked: false,
             collapsed: false,
             content_height: 0.0,
@@ -4731,6 +5029,7 @@ mod tests {
             floating_size: Vec2::new(560.0, 225.0),
             docked: true,
             manual: true,
+            sized: true,
             ..WindowGeometry::default()
         };
         assert_eq!(
