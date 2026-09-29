@@ -152,6 +152,20 @@ position across all views.
 In City / Building or Troop, **Ctrl+Shift+R** (or the status-bar Reset button)
 clears that view's Debug position and contextual dock relation so it inherits
 Default again. It leaves the view's boxes and other panels in place.
+One floating panel resets on its own by a double-click: on its title bar, it
+goes back where its view's layout places it and keeps its size
+(`ImGuiLayoutState::reset_position`); on its resize grip, back to the size the
+layout gives it, keeping its place (`reset_size`). A panel's geometry says
+whether its place (`manual`) and its size (`sized`) are the player's; dragging
+either makes both the player's, and a reset gives one back to the layout (as it
+was before the double-click's first click), which the saved layout keeps. The
+layout's place and size are the automatic ones (the settings menu centered);
+for Debug in City / Building or Troop, they are what RESET restores, Default's
+placement, and once both are back that view follows Default's Debug again.
+ImGui collapses a window double-clicked on its title bar: `title_double_clicked`
+tells it an item is hovered that frame, so only the arrow collapses a panel.
+Docked panels, captured ones in their boxes among them, take their place and
+size from the dock and have no reset.
 
 Hold Ctrl and drag Selection, Production Queue, Debug, or Inspect into a box.
 Each box has an X to remove the whole container. A dropped city, barracks,

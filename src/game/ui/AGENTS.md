@@ -18,7 +18,8 @@ file holds.
   while `is_resolving`.
 - **Every new ImGui panel is draggable and dockable.** Give it a slot: a constant and an entry in
   `SLOT_TITLES` (`imgui.rs`), a zone in `ImGuiLayoutState::plan`, a measured size in
-  `draw_imgui`, and a `render_imgui_window` call. That makes it movable, resizable, dockable
+  `draw_imgui`, and a `render_imgui_window` call. That makes it movable, resizable (a
+  double-click on its title bar or grip resets its place or size), dockable
   and boxable (Ctrl) like Selection, Debug or the turn strip (`UNITS`). Only static chrome,
   such as the status bar, may be a fixed `ui.window` with its own flags.
 - **Classic placement.** Place persistent panels with `Layout::dock_panel(panel, Zone::..)`

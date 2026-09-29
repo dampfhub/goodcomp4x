@@ -184,6 +184,8 @@ interior map; its clicks control only the interior copies.
 | F10 | Toggle fog of war (on by default) |
 | F11 | Switch between the ImGui and classic UI presentations; cancel any drag in progress |
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
+| Double-click a panel's title bar (ImGui, Ctrl held or collapsed) | Put the panel back where its view's layout places it, keeping its size; the arrow alone collapses it |
+| Double-click a panel's resize grip (ImGui, Ctrl held) | Put the panel back to the size its view's layout gives it, keeping its place |
 | Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 | EDIT VIEW, + BOX, RESET (ImGui, top bar beside MENU) | After the VIEW label naming the current view: EDIT VIEW switches between arranging this view and the boxes shared by every view (EDIT OUTER); + BOX adds an empty box to the layer being edited; RESET is Ctrl+Shift+R |
 | Hover the top bar's notice (ImGui) | Show all of it when it was too long for the bar and ends in "…" |

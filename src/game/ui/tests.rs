@@ -2731,6 +2731,36 @@ impl ImGuiScreen {
         self.frame(game, Some(at), false);
     }
 
+    /// Presses Ctrl, or lets it go, with the mouse away: held, the panels
+    /// show their title bars and grips to be arranged.
+    fn hold_ctrl(&mut self, game: &mut GameState, down: bool) {
+        let io = self.context.io_mut();
+        io.add_key_event(::imgui::Key::ModCtrl, down);
+        io.add_key_event(::imgui::Key::LeftCtrl, down);
+        self.frame(game, None, false);
+    }
+
+    /// Drags with the left button from `from` to `to`, a few frames on the
+    /// way, and lets go.
+    fn drag(&mut self, game: &mut GameState, from: Vec2, to: Vec2) {
+        self.frame(game, Some(from), false);
+        self.frame(game, Some(from), true);
+        for step in 1..=4 {
+            self.frame(game, Some(from.lerp(to, step as f32 / 4.0)), true);
+        }
+        self.frame(game, Some(to), false);
+    }
+
+    /// Double-clicks at `at`, then moves the mouse away and lets the
+    /// panels settle.
+    fn double_click(&mut self, game: &mut GameState, at: Vec2) {
+        self.frame(game, Some(at), false);
+        for down in [true, false, true, false] {
+            self.frame(game, Some(at), down);
+        }
+        self.settle(game);
+    }
+
     /// Presses and lets go of Ctrl+`key`, a frame each, with the mouse
     /// away: a shortcut for the text box that has the keys.
     fn ctrl_key(&mut self, game: &mut GameState, key: ::imgui::Key) {
@@ -4565,4 +4595,89 @@ fn a_queued_troop_the_supply_has_no_room_for_waits_for_supply() {
     );
     let tray = panel_strings(|panel| game.city_tray(0, panel));
     assert_shows(&tray, waits);
+}
+
+/// Where ImGui has the panel titled `title`, and how big.
+fn imgui_panel(title: &str) -> (Vec2, Vec2) {
+    let (pos, size, _) = imgui::native_geometry(title).unwrap_or_else(|| panic!("no {title}"));
+    (pos, size)
+}
+
+#[test]
+fn imgui_double_clicks_put_a_panel_back_where_and_as_big_as_the_layout_has_it() {
+    // #312: with Ctrl held, a double-click on a panel's resize grip gives it
+    // back its size, and one on its title bar its place, without collapsing.
+    let mut game = city_view();
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    let (home, size) = imgui_panel("Selection");
+    screen.hold_ctrl(&mut game, true);
+    screen.settle(&mut game);
+    assert_eq!(imgui_panel("Selection"), (home, size), "Ctrl moves nothing");
+    // Moved by its title bar into the map, and made bigger by its grip.
+    let title = |at: Vec2, size: Vec2| at + Vec2::new(size.x / 2.0, 8.0);
+    let grip = |at: Vec2, size: Vec2| at + size - Vec2::splat(4.0);
+    screen.drag(&mut game, title(home, size), Vec2::new(800.0, 300.0));
+    let (moved, _) = imgui_panel("Selection");
+    assert_ne!(moved, home, "dragged");
+    screen.drag(
+        &mut game,
+        grip(moved, size),
+        grip(moved, size) + Vec2::new(90.0, 40.0),
+    );
+    let (at, bigger) = imgui_panel("Selection");
+    assert_eq!(at, moved);
+    assert_ne!(bigger, size, "resized");
+    assert_eq!(screen.layout.chosen_by_player("Selection"), (true, true));
+    // The grip: the size the layout gives, where it is.
+    screen.double_click(&mut game, grip(moved, bigger));
+    assert_eq!(imgui_panel("Selection"), (moved, size));
+    assert_eq!(screen.layout.chosen_by_player("Selection"), (true, false));
+    // The title bar: the place the layout gives, still open.
+    screen.double_click(&mut game, title(moved, size));
+    assert_eq!(imgui_panel("Selection"), (home, size));
+    assert!(
+        !imgui::native_geometry("Selection").unwrap().2,
+        "not collapsed"
+    );
+    assert_eq!(screen.layout.chosen_by_player("Selection"), (false, false));
+    // Kept with the layout, so it lasts into the next session.
+    let saved = ImGuiLayoutState::from_text(&screen.layout.to_text());
+    assert_eq!(saved.chosen_by_player("Selection"), (false, false));
+    // Resized and double-clicked on the title only: the place goes back,
+    // the size the player chose stays.
+    screen.drag(
+        &mut game,
+        grip(home, size),
+        grip(home, size) + Vec2::new(60.0, 0.0),
+    );
+    let (at, wider) = imgui_panel("Selection");
+    screen.double_click(&mut game, title(at, wider));
+    assert_eq!(imgui_panel("Selection").1, wider);
+    assert_eq!(screen.layout.chosen_by_player("Selection"), (false, true));
+    // The arrow still collapses it.
+    let (at, _) = imgui_panel("Selection");
+    screen.frame(&mut game, Some(at + Vec2::new(10.0, 9.0)), false);
+    screen.frame(&mut game, Some(at + Vec2::new(10.0, 9.0)), true);
+    screen.frame(&mut game, Some(at + Vec2::new(10.0, 9.0)), false);
+    screen.frame(&mut game, None, false);
+    assert!(imgui::native_geometry("Selection").unwrap().2, "collapsed");
+}
+
+#[test]
+fn imgui_double_clicking_the_settings_title_centers_it_again() {
+    let mut game = GameState::new();
+    game.clear_selection();
+    game.press_escape();
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    let (home, size) = imgui_panel("Settings");
+    screen.hold_ctrl(&mut game, true);
+    screen.settle(&mut game);
+    let title = home + Vec2::new(size.x / 2.0, 8.0);
+    screen.drag(&mut game, title, title + Vec2::new(-300.0, 120.0));
+    let (moved, _) = imgui_panel("Settings");
+    assert_ne!(moved, home, "dragged");
+    screen.double_click(&mut game, moved + Vec2::new(size.x / 2.0, 8.0));
+    assert_eq!(imgui_panel("Settings"), (home, size), "centered");
 }
