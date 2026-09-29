@@ -25,7 +25,7 @@ fn named(s: Str, want: str) -> bool { str_eq(&s, want) }
 @test
 fn every_setting_starts_in_range_and_changes_within_it() {
     let mut settings = default_settings();
-    for i in 0..6 {
+    for i in 0..7 {
         let setting = SETTINGS[i];
         let (lo, hi) = setting.range();
         let v = settings.get(setting);
@@ -49,7 +49,7 @@ fn every_setting_starts_in_range_and_changes_within_it() {
 
 @test
 fn every_setting_has_a_control_that_fits_its_range() {
-    for i in 0..6 {
+    for i in 0..7 {
         let setting = SETTINGS[i];
         let (lo, hi) = setting.range();
         match setting.control() {
@@ -68,7 +68,7 @@ fn every_setting_has_a_control_that_fits_its_range() {
         assert(len(setting.group()) > 0);
     }
     // A group's settings are listed together, so each heading shows once.
-    for i in 0..6 {
+    for i in 0..7 {
         for j in i + 2..5 {
             if str_eq(SETTINGS[i].group(), SETTINGS[j].group()) {
                 for k in i + 1..j { assert(str_eq(SETTINGS[k].group(), SETTINGS[i].group())); }
@@ -80,7 +80,7 @@ fn every_setting_has_a_control_that_fits_its_range() {
 @test
 fn settings_save_as_text_and_read_back() {
     let mut settings = default_settings();
-    for i in 0..6 {
+    for i in 0..7 {
         // Every setting away from its default, one step.
         let setting = SETTINGS[i];
         let value = settings.get(setting);
@@ -90,7 +90,7 @@ fn settings_save_as_text_and_read_back() {
     let t = settings.to_text();
     let mut count = 0;
     for _line in lines(&t) { count = count + 1; }
-    assert(count == 6);
+    assert(count == 7);
     assert(settings_from_text(&t) == settings);
 
     // Unknown keys, bad values, comments and out-of-range values are skipped; what's missing
@@ -104,8 +104,8 @@ fn settings_save_as_text_and_read_back() {
 
 @test
 fn every_setting_has_its_own_key() {
-    for i in 0..6 {
-        for j in i + 1..6 { assert(!str_eq(SETTINGS[i].key(), SETTINGS[j].key())); }
+    for i in 0..7 {
+        for j in i + 1..7 { assert(!str_eq(SETTINGS[i].key(), SETTINGS[j].key())); }
         let key = SETTINGS[i].key();
         for b in 0..len(key) {
             let c = byte_at(key, b);

@@ -1,0 +1,288 @@
+//! The turn transition (`transition.tua`): units and workers glide to where a turn left them,
+//! the new turn is cued, and none of it changes the game.
+
+use std.core.Keep;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.rand.Rand;
+use std.rand.seed;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.hex.Hex;
+use game.tests.sandbox;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+use game.workers.JobKind;
+use renderer.pipelines.MeshVertex;
+
+const GLIDE_TIME: f32 = 0.35;
+const CUE_TIME: f32 = 0.8;
+const DIM_TIME: f32 = 0.4;
+const WHITE: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+const CUE_COLOR: [f32; 4] = [1.0, 0.78, 0.30, 1.0];
+
+/// A game with one Blue melee ordered one hex east, alone on the map: the game, the unit's id and
+/// the hexes it goes from and to.
+struct Mover { game: GameState, id: u32, from: Hex, to: Hex }
+
+fn check(ok: bool) can {Assert} { assert(ok); }
+
+fn one_mover() -> Mover can {Log, Assert} {
+    let mut game = GameState.new();
+    let _cleared = game.clear_selection();
+    let mut blue = 0 - 1;
+    for i in 0..game.units.len() { if blue < 0 && game.units[i].team == Team.Blue { blue = i; } }
+    let id = game.units[blue].id;
+    handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.id == id } }
+    let from = game.units[0].pos;
+    let to = Hex.new(from.q + 1, from.r);
+    check(game.grid.is_passable(to));
+    game.units[0].planned_move = Option.Some(to);
+    Mover { game, id, from, to }
+}
+
+fn resolve(game: &mut GameState) can {Log, Rand, Assert} {
+    game.resolve_turn();
+    game.update(0.0);
+    assert(!game.is_resolving());
+}
+
+fn drawn(game: &GameState, id: u32) -> Vec2 {
+    let mut at = vec2(0.0, 0.0);
+    for i in 0..game.units.len() { if game.units[i].id == id { at = game.drawn_unit_layout(i).0; } }
+    at
+}
+
+fn at(a: Vec2, b: Vec2) -> bool { a.x == b.x && a.y == b.y }
+
+fn same_color(a: [f32; 4], b: [f32; 4]) -> bool { a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3] }
+
+/// How far along the way from `from` to `to` a point is, as a share of the way.
+fn along(point: Vec2, from: Vec2, to: Vec2) -> f32 { point.sub(from).length() / to.sub(from).length() }
+
+@test
+fn a_unit_glides_from_its_old_hex_to_its_new_one() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let m = one_mover();
+        let mut game = m.game;
+        resolve(&mut game);
+        // The game moved it at once, and it's drawn where it was.
+        assert(game.units[0].pos == m.to);
+        assert(at(drawn(&game, m.id), m.from.to_world()));
+
+        // Part way, eased: past halfway at half the time, and always between the two hexes.
+        game.update(GLIDE_TIME / 2.0);
+        let half = along(drawn(&game, m.id), m.from.to_world(), m.to.to_world());
+        assert(half > 0.5 && half < 1.0);
+        let mut last = half;
+        for _ in 0..3 {
+            game.update(GLIDE_TIME / 8.0);
+            let now = along(drawn(&game, m.id), m.from.to_world(), m.to.to_world());
+            assert(now >= last && now <= 1.0);
+            last = now;
+        }
+
+        game.update(GLIDE_TIME);
+        assert(at(drawn(&game, m.id), m.to.to_world()));
+    });
+}
+
+fn dim_vertices(game: &GameState) -> i32 {
+    let mut dim: Vec[MeshVertex] = Vec.new();
+    game.push_turn_dim(&mut dim);
+    dim.len()
+}
+
+@test
+fn the_turn_cue_flashes_the_turn_number_and_dims_the_map_briefly() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let m = one_mover();
+        let mut game = m.game;
+        assert(dim_vertices(&game) == 0);
+        assert(same_color(game.turn_number_color(WHITE), WHITE));
+
+        resolve(&mut game);
+        // The map dims as the turn ends.
+        assert(dim_vertices(&game) > 0);
+        assert(same_color(game.turn_number_color(WHITE), CUE_COLOR));
+
+        game.update(DIM_TIME);
+        // The dimming clears first.
+        assert(dim_vertices(&game) == 0);
+        let fading = game.turn_number_color(WHITE);
+        assert(!same_color(fading, CUE_COLOR) && !same_color(fading, WHITE));
+        game.update(CUE_TIME);
+        assert(same_color(game.turn_number_color(WHITE), WHITE));
+    });
+}
+
+@test
+fn step_playback_glides_each_step_and_cues_once_at_the_end() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let m = one_mover();
+        let mut game = m.game;
+        game.settings.instant_playback = false;
+        game.resolve_turn();
+        // The pause before the first step, then the melee's move.
+        game.update(0.61);
+        assert(game.units[0].pos == m.to);
+        assert(at(drawn(&game, m.id), m.from.to_world()));
+        assert(game.is_resolving());
+        // Not while the turn plays out.
+        assert(same_color(game.turn_number_color(WHITE), WHITE));
+        while game.is_resolving() { game.update(0.61); }
+        // Glided during the steps.
+        assert(at(drawn(&game, m.id), m.to.to_world()));
+        assert(same_color(game.turn_number_color(WHITE), CUE_COLOR));
+    });
+}
+
+@test
+fn nothing_glides_or_cues_with_the_setting_off() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let m = one_mover();
+        let mut game = m.game;
+        game.settings.turn_transition = false;
+        resolve(&mut game);
+        assert(at(drawn(&game, m.id), m.to.to_world()));
+        assert(same_color(game.turn_number_color(WHITE), WHITE));
+        assert(dim_vertices(&game) == 0);
+    });
+}
+
+/// A hex out of sight, and one in sight next to it, both open and empty.
+struct Edge2 { hidden: Hex, seen: Hex, found: bool }
+
+fn hidden_beside_sight(game: &GameState) -> Edge2 {
+    let fog = game.fog();
+    let all = game.grid.hex_list();
+    for k in 0..all.len() {
+        let h = all[k];
+        if fog.sees(h) || !game.grid.is_passable(h) || game.is_occupied(h) { continue; }
+        let around = h.neighbors();
+        for n in 0..6 {
+            if fog.sees(around[n]) && game.grid.is_passable(around[n]) && !game.is_occupied(around[n]) {
+                return Edge2 { hidden: h, seen: around[n], found: true };
+            }
+        }
+    }
+    Edge2 { hidden: Hex.new(0, 0), seen: Hex.new(0, 0), found: false }
+}
+
+@test
+fn a_unit_the_player_never_saw_does_not_give_away_where_it_came_from() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let m = one_mover();
+        let mut game = m.game;
+        game.units[0].planned_move = Option.None;
+        // A Red scout just out of sight steps into it. People play Red too, so the AI leaves its
+        // order be.
+        game.humans.push(Team.Red);
+        let spot = hidden_beside_sight(&game);
+        assert(spot.found);
+        let id = 900;
+        let mut scout = Unit.new(id, spot.hidden, Team.Red, UnitType.Scout);
+        scout.planned_move = Option.Some(spot.seen);
+        game.units.push(scout);
+        resolve(&mut game);
+        assert(game.units[1].pos == spot.seen);
+        // It appears where it is.
+        assert(at(drawn(&game, id), spot.seen.to_world()));
+    });
+}
+
+@test
+fn a_worker_sent_out_glides_from_its_city() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.units.clear();
+        game.selected = Option.None;
+        game.fog_of_war = false;
+        let city = game.cities[0].pos;
+        let all = game.grid.hex_list();
+        let mut bare: Option[Hex] = Option.None;
+        for k in 0..all.len() {
+            let h = all[k];
+            if h.distance(city) != 3 || !game.grid.is_passable(h) || game.sites.get(h).is_some() || game.roads.contains(h) { continue; }
+            let better = match bare { Option.None => true, Option.Some(b) => h.q < b.q || (h.q == b.q && h.r < b.r) };
+            if better { bare = Option.Some(h); }
+        }
+        let Option.Some(hex) = bare else { assert(false); return; };
+        game.selected_city = Option.Some(0);
+        game.placing_job = Option.Some(JobKind.Fort);
+        let _placed = game.place_job_at(hex, Option.None);
+        game.placing_job = Option.None;
+        game.selected_city = Option.None;
+        resolve(&mut game);
+
+        let mut w = 0 - 1;
+        for i in 0..game.field_workers.len() { if game.field_workers[i].home == 0 { w = i; } }
+        assert(w >= 0);
+        let worker = game.field_workers[w];
+        // On its way, and drawn at home.
+        assert(worker.pos != city);
+        let glide = game.worker_glide(&worker);
+        assert(at(worker.pos.to_world().add(glide), city.to_world()));
+        game.update(GLIDE_TIME);
+        let after = game.field_workers[w];
+        assert(at(game.worker_glide(&after), vec2(0.0, 0.0)));
+    });
+}
+
+/// The game after `turns` turns of Blue's AI, with or without the transition: where every unit
+/// stands and its health, and each city's people.
+fn played(transition: bool, turns: i32) -> Vec[f64] can {Log, Rand, Assert} {
+    let mut game = GameState.city_scenario();
+    game.settings.turn_transition = transition;
+    for _ in 0..turns {
+        let _cleared = game.clear_selection();
+        game.plan_ai_turn(Team.Blue);
+        game.resolve_turn();
+        game.update(0.0);
+        game.update(0.1);
+    }
+    let mut out: Vec[f64] = Vec.new();
+    out.push(game.turn as f64);
+    for i in 0..game.units.len() {
+        out.push(game.units[i].id as f64);
+        out.push(game.units[i].pos.q as f64);
+        out.push(game.units[i].pos.r as f64);
+        out.push(game.units[i].hp as f64);
+    }
+    for c in 0..game.cities.len() { out.push(game.cities[c].population as f64); }
+    out
+}
+
+/// `played` with `Rand` drawing from a fixed seed.
+fn seeded_play(transition: bool) -> Vec[f64] can {Log, Assert} {
+    let mut g = seed(7);
+    handle { played(transition, 6) } with Rand { rand() => { resume g.next() } }
+}
+
+@test
+fn the_game_is_the_same_with_or_without_the_transition() {
+    handle {
+        let gliding = seeded_play(true);
+        let snapping = seeded_play(false);
+        assert(gliding.len() == snapping.len() && gliding.len() > 10);
+        for k in 0..gliding.len() { assert(gliding[k] == snapping[k]); }
+    } with Log {
+        enabled(level) => { resume false }
+        record(level, text) => { resume }
+    }
+}
+
+@test
+fn a_copy_of_the_game_starts_settled() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let m = one_mover();
+        let mut game = m.game;
+        resolve(&mut game);
+        let copy = game.snapshot();
+        assert(same_color(copy.turn_number_color(WHITE), WHITE));
+        assert(at(drawn(&copy, m.id), m.to.to_world()));
+    });
+}

@@ -307,6 +307,8 @@ pub struct Panels {
     tile_tip: Option[PanelBuilder],
     reset_selection_scroll: bool,
     turn: u32,
+    /// The turn number's color: flashing gold as a new turn begins (`transition.tua`).
+    turn_color: Color,
     resolving: bool,
     end_label: Str,
     notice: Str,
@@ -994,7 +996,8 @@ pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Opt
     let (u, c) = game.pending();
     let end_label = if resolving { to_owned("RESOLVING") } else { end_turn_label(u, c) };
     let notice = game.shown_notice();
-    Panels { tray, queue, debug, hover, units, settings, tile_tip, reset_selection_scroll, turn, resolving, end_label, notice }
+    let turn_color = game.turn_number_color(TEXT);
+    Panels { tray, queue, debug, hover, units, settings, tile_tip, reset_selection_scroll, turn, turn_color, resolving, end_label, notice }
 }
 
 fn vec_of_one(i: i32) -> Vec[i32] {
@@ -1057,7 +1060,7 @@ fn render_status(layout: &mut ImGuiLayoutState, panels: &Panels, viewport: Vec2,
     let end_width = min_f(text_size(&label).x + 50.0, viewport.x * 0.45);
     let turn = panels.turn;
     let turn_label = text(fn() can {Out} { Out.put("TURN "); show_u64(turn as u64); });
-    ui_text(&turn_label);
+    text_colored(lc(panels.turn_color), &turn_label);
     same_line();
     let notice_x = 12.0 + text_size(&turn_label).x + 7.0;
     let max_notice = max_f(viewport.x - end_width - notice_x - 12.0, 0.0);

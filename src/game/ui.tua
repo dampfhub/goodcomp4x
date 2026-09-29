@@ -749,7 +749,7 @@ impl GameState {
         let mut panel = panel_builder(false);
         panel.text(TextSize.Title, "SETTINGS", TEXT);
         let mut group = "";
-        for k in 0..6 {
+        for k in 0..7 {
             let setting = SETTINGS[k];
             let heading = setting.group();
             if !str_eq(&heading, &group) {
@@ -890,7 +890,7 @@ impl GameState {
         let turn_text = text(fn() can {Out} { Out.put("TURN "); show_u64(turn as u64); });
         let turn_end = MARGIN + ui(TextSize.Title).width(&turn_text);
         let mut spans: Vec[Span] = Vec.new();
-        spans.push(Span { text: turn_text, color: TEXT });
+        spans.push(Span { text: turn_text, color: self.turn_number_color(TEXT) });
         layout.text_row(vec2(MARGIN, middle), TextSize.Title, spans);
         // The player's stockpile and supply beside the turn number.
         let status = self.status_spans();

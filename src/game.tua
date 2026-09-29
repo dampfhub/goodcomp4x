@@ -36,6 +36,8 @@ use game.scenario.Scenario;
 use game.ruins.Ruin;
 use game.animals.Den;
 use game.fog.Sighting;
+use game.transition.Transition;
+use game.transition.no_transition;
 use game.settings.default_settings as fresh_settings;
 use game.settings.Settings;
 use game.settings.default_settings;
@@ -261,6 +263,9 @@ pub struct GameState {
     /// What each side (`Team.index`) has seen, as it last saw it: game state, brought up to date
     /// as the AI plans that side's turn (`side_fog`).
     side_memory: Vec[Map[Hex, Sighting]],
+    /// The turn transition playing: units and workers gliding to where a turn left them, and the
+    /// new turn's cue (`transition.tua`). Presentation only: a copy of the game starts without it.
+    transition: Transition,
     /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.tua`).
     cloud_time: f32,
     /// A click that would replace the selection's queue, waiting to be repeated
@@ -372,6 +377,7 @@ impl GameState {
             ui_captured: false,
             memory: Map.new(),
             side_memory: empty_side_memory(),
+            transition: no_transition(),
             cloud_time: 0.0,
             queue_replace_armed: Option.None,
             disband_armed: Option.None,

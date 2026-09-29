@@ -382,7 +382,7 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
             let menu = layout.panels[layout.panels.len() - 1];
             let center = menu.min.add(menu.max).scale(0.5);
             assert(center.distance(screen().scale(0.5)) <= 1.5);
-            for k in 0..6 { assert(setting_buttons(&game, SETTINGS[k]).len() >= 2); }
+            for k in 0..7 { assert(setting_buttons(&game, SETTINGS[k]).len() >= 2); }
             let targets = [Target.CloseSettings, Target.Quit, on, off];
             for t in 0..4 {
                 let Option.Some(i) = layout.button_for(targets[t]) else { assert(false); return; };

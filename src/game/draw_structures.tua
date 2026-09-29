@@ -486,7 +486,8 @@ impl GameState {
             if !fog.shows_worker(&worker) { continue; }
             let mut shared = false;
             for i in 0..self.units.len() { if self.units[i].pos == worker.pos && fog.shows(&self.units[i]) { shared = true; } }
-            let (center, scale) = if shared { (worker.pos.to_world().add(WORKER_BESIDE_UNIT), WORKER_BESIDE_SCALE) } else { (worker.pos.to_world(), WORKER_SCALE) };
+            let (home, scale) = if shared { (worker.pos.to_world().add(WORKER_BESIDE_UNIT), WORKER_BESIDE_SCALE) } else { (worker.pos.to_world(), WORKER_SCALE) };
+            let center = home.add(self.worker_glide(&worker));
             if worker.team == self.local_team {
                 if let Option.Some(job) = worker.job {
                     if job.hex != worker.pos { push_dotted_segment(center, job.hex.to_world(), 0.05, PLANNED_JOB_COLOR, out); }

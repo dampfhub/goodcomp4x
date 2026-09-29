@@ -1,0 +1,222 @@
+//! The turn transition, so a turn that resolves at once (instant playback, or a network game
+//! resolving when the last player ends theirs) doesn't just snap everything into place: every
+//! unit and worker the player saw glides from where it was drawn to its new spot (`GLIDE_TIME`),
+//! and as the next turn's planning begins the map dims for a moment and the turn number flashes
+//! gold (the turn cue, `CUE_TIME`). With step-by-step playback each step's movers glide, and the
+//! cue comes once, as the turn ends.
+//!
+//! Presentation only: the game state still changes at once, and only where things are drawn
+//! lags for a fraction of a second. Nothing here is read by resolution, the AI or the checksum;
+//! input, hover and hit tests keep using the real positions, so nothing waits on it. Its clock
+//! runs in `update(dt)`, so it only plays when time passes: screenshot mode shows the opening
+//! position, and tests calling `update(0.0)` keep it still. The Turn Transition setting turns it
+//! off.
+
+use std.collections.Map;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use renderer.pipelines.MeshVertex;
+use game.GameState;
+use game.fog.Fog;
+use game.mesh.Color;
+use game.mesh.quad;
+use game.workers.FieldWorker;
+
+/// Seconds a unit or worker takes to glide to its new spot.
+const GLIDE_TIME: f32 = 0.35;
+/// Seconds the turn number takes to fade from gold back to its color.
+const CUE_TIME: f32 = 0.8;
+/// Seconds the map's dimming takes to clear, and how dark it starts.
+const DIM_TIME: f32 = 0.4;
+const DIM_ALPHA: f32 = 0.18;
+/// The turn number's color as a new turn begins.
+const CUE_COLOR: Color = [1.0, 0.78, 0.30, 1.0];
+
+/// The transition playing. A copy of the game (a savestate) starts without one: it belongs to
+/// what this window shows, not to the game.
+pub struct Transition {
+    /// Units gliding, by id: from where they were drawn to `unit_layout`.
+    units: Map[i64, Glide],
+    /// Workers gliding, by id: from where they were drawn to their hex.
+    workers: Map[i64, Glide],
+    /// Seconds since the latest turn cue began, while it plays.
+    cue: Option[f32],
+}
+
+pub fn no_transition() -> Transition { Transition { units: Map.new(), workers: Map.new(), cue: Option.None } }
+
+pub struct Glide { from: Vec2, from_scale: f32, age: f32 }
+
+impl Glide {
+    /// How far along it is, 0 to 1, easing out so it slows into place.
+    fn progress(&self) -> f32 {
+        let t = clamp01(self.age / GLIDE_TIME);
+        let rest = 1.0 - t;
+        1.0 - rest * rest * rest
+    }
+}
+
+fn clamp01(x: f32) -> f32 { if x < 0.0 { 0.0 } else if x > 1.0 { 1.0 } else { x } }
+
+/// One unit as the player saw it as a batch of steps began: where it stood (`unit_layout`) and
+/// where it was drawn.
+pub struct SeenUnit { id: u32, at: Vec2, scale: f32, drawn: Vec2, drawn_scale: f32 }
+
+/// One worker as the player saw it: its hex's center, and where it was drawn.
+pub struct SeenWorker { id: u32, at: Vec2, drawn: Vec2 }
+
+/// What the player saw as a batch of steps began (`GameState.before_steps`): each unit's and
+/// worker's spot and where it was drawn, and the fog then.
+pub struct Before { fog: Fog, units: Vec[SeenUnit], workers: Vec[SeenWorker] }
+
+fn same_point(a: Vec2, b: Vec2) -> bool { a.x == b.x && a.y == b.y }
+
+impl GameState {
+    /// Before `update` resolves a batch of steps: what the player sees, for `start_transition`
+    /// to glide from. `None` with the setting off or nothing to resolve.
+    pub fn before_steps(&self) -> Option[Before] {
+        if !self.settings.turn_transition || self.pending_steps.is_empty() { return Option.None; }
+        let fog = self.fog();
+        let mut units: Vec[SeenUnit] = Vec.new();
+        for i in 0..self.units.len() {
+            if !fog.shows(&self.units[i]) { continue; }
+            let (at, scale) = self.unit_layout(i);
+            let (drawn, drawn_scale) = self.drawn_unit_layout(i);
+            units.push(SeenUnit { id: self.units[i].id, at, scale, drawn, drawn_scale });
+        }
+        let mut workers: Vec[SeenWorker] = Vec.new();
+        for w in 0..self.field_workers.len() {
+            let worker = &self.field_workers[w];
+            if !fog.shows_worker(worker) { continue; }
+            let at = worker.pos.to_world();
+            workers.push(SeenWorker { id: worker.id, at, drawn: at.add(self.worker_glide(worker)) });
+        }
+        Option.Some(Before { fog, units, workers })
+    }
+
+    /// After `update` resolved a batch of steps: everything the player saw that has moved glides
+    /// from where it was drawn, and a finished turn (`turn_over`) starts the cue. A worker sent
+    /// out this turn glides from the base it left, if the player saw it.
+    pub fn start_transition(&mut self, before: Option[Before], turn_over: bool) {
+        let Option.Some(before) = before else { return; };
+        // What still glides, of units still there.
+        let mut glides: Map[i64, Glide] = Map.new();
+        for k in 0..self.transition.units.len() {
+            let (Option.Some(id), Option.Some(glide)) = (self.transition.units.key_at(k), self.transition.units.val_at(k)) else { continue; };
+            if self.unit_index(id as u32).is_some() { let _old = glides.insert(id, glide); }
+        }
+        for k in 0..before.units.len() {
+            let seen = &before.units[k];
+            let Option.Some(i) = self.unit_index(seen.id) else { continue; };
+            let (now, now_scale) = self.unit_layout(i);
+            if !same_point(now, seen.at) || now_scale != seen.scale {
+                let _old = glides.insert(seen.id as i64, Glide { from: seen.drawn, from_scale: seen.drawn_scale, age: 0.0 });
+            }
+        }
+        self.transition.units = glides;
+
+        let local = self.local_team;
+        let mut workers: Map[i64, Glide] = Map.new();
+        for k in 0..self.transition.workers.len() {
+            let (Option.Some(id), Option.Some(glide)) = (self.transition.workers.key_at(k), self.transition.workers.val_at(k)) else { continue; };
+            let mut alive = false;
+            for w in 0..self.field_workers.len() { if self.field_workers[w].id as i64 == id { alive = true; } }
+            if alive { let _old = workers.insert(id, glide); }
+        }
+        for w in 0..self.field_workers.len() {
+            let worker = &self.field_workers[w];
+            let at = worker.pos.to_world();
+            let mut was: Option[SeenWorker] = Option.None;
+            for k in 0..before.workers.len() { if before.workers[k].id == worker.id { was = Option.Some(before.workers[k]); } }
+            let from: Option[Vec2] = match was {
+                Option.Some(seen) => if same_point(seen.at, at) { Option.None } else { Option.Some(seen.drawn) },
+                Option.None => {
+                    let base = worker.base.to_world();
+                    if (worker.team == local || before.fog.sees(worker.base)) && !same_point(base, at) { Option.Some(base) } else { Option.None }
+                }
+            };
+            if let Option.Some(start) = from {
+                let _old = workers.insert(worker.id as i64, Glide { from: start, from_scale: 1.0, age: 0.0 });
+            }
+        }
+        self.transition.workers = workers;
+
+        if turn_over { self.transition.cue = Option.Some(0.0); }
+    }
+
+    /// The index of the unit with `id`, if it is still there.
+    fn unit_index(&self, id: u32) -> Option[i32] {
+        for i in 0..self.units.len() { if self.units[i].id == id { return Option.Some(i); } }
+        Option.None
+    }
+
+    /// Moves the transition `dt` seconds on (`update`), dropping what's done.
+    pub fn age_transition(&mut self, dt: f32) {
+        self.transition.units = aged(&self.transition.units, dt);
+        self.transition.workers = aged(&self.transition.workers, dt);
+        if let Option.Some(age) = self.transition.cue {
+            let next = age + dt;
+            self.transition.cue = if next >= CUE_TIME { Option.None } else { Option.Some(next) };
+        }
+    }
+
+    /// Where unit `idx` is drawn and at what scale: `unit_layout`, or part way there while it
+    /// glides.
+    pub fn drawn_unit_layout(&self, idx: i32) -> (Vec2, f32) {
+        let (center, scale) = self.unit_layout(idx);
+        if self.transition.units.is_empty() { return (center, scale); }
+        match self.transition.units.get(self.units[idx].id as i64) {
+            Option.Some(glide) => {
+                let t = glide.progress();
+                let drawn_scale = glide.from_scale + (scale - glide.from_scale) * t;
+                (vec2(glide.from.x + (center.x - glide.from.x) * t, glide.from.y + (center.y - glide.from.y) * t), drawn_scale)
+            }
+            Option.None => (center, scale),
+        }
+    }
+
+    /// How far from its hex's center `worker` is drawn while it glides.
+    pub fn worker_glide(&self, worker: &FieldWorker) -> Vec2 {
+        if self.transition.workers.is_empty() { return vec2(0.0, 0.0); }
+        match self.transition.workers.get(worker.id as i64) {
+            Option.Some(glide) => {
+                let left = 1.0 - glide.progress();
+                let at = worker.pos.to_world();
+                vec2((glide.from.x - at.x) * left, (glide.from.y - at.y) * left)
+            }
+            Option.None => vec2(0.0, 0.0),
+        }
+    }
+
+    /// The turn number's color in the top bar, both presentations: `base`, flashing gold as a
+    /// new turn begins and fading back over `CUE_TIME`.
+    pub fn turn_number_color(&self, base: Color) -> Color {
+        let Option.Some(age) = self.transition.cue else { return base; };
+        // Holds near gold, then fades faster toward the end.
+        let rest = clamp01(age / CUE_TIME);
+        let gold = 1.0 - rest * rest;
+        [base[0] + (CUE_COLOR[0] - base[0]) * gold, base[1] + (CUE_COLOR[1] - base[1]) * gold, base[2] + (CUE_COLOR[2] - base[2]) * gold, base[3] + (CUE_COLOR[3] - base[3]) * gold]
+    }
+
+    /// The turn cue on the map: a moment's dimming over everything the camera may show,
+    /// clearing over `DIM_TIME`. Drawn under the units, so they stand out as they glide.
+    pub fn push_turn_dim(&self, out: &mut Vec[MeshVertex]) {
+        let Option.Some(age) = self.transition.cue else { return; };
+        let t = age / DIM_TIME;
+        if t >= 1.0 { return; }
+        let alpha = DIM_ALPHA * (1.0 - t) * (1.0 - t);
+        let (min, max) = self.view_rect();
+        quad(min.sub(vec2(1.0, 1.0)), max.add(vec2(1.0, 1.0)), [0.0, 0.0, 0.0, alpha], out);
+    }
+}
+
+/// `glides` `dt` seconds on, without the ones that are done.
+fn aged(glides: &Map[i64, Glide], dt: f32) -> Map[i64, Glide] {
+    let mut out: Map[i64, Glide] = Map.new();
+    for k in 0..glides.len() {
+        let (Option.Some(id), Option.Some(glide)) = (glides.key_at(k), glides.val_at(k)) else { continue; };
+        let age = glide.age + dt;
+        if age < GLIDE_TIME { let _old = out.insert(id, Glide { from: glide.from, from_scale: glide.from_scale, age }); }
+    }
+    out
+}
