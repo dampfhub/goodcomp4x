@@ -1,0 +1,201 @@
+//! Up to `SLOTS` sealed channels, one per connection. A channel is `linear` (closing it wipes its
+//! keys) and a `Vec` holds no linear value (R14970), so the channels live in named fields and a
+//! slot number picks one.
+
+use std.core.Option;
+use std.mem.replace;
+use std.rand.Entropy;
+use netlib.effects.Deliver;
+use netlib.effects.Transmit;
+use seal.channel.Channel;
+use seal.channel.ChannelEvent;
+use seal.channel.close_channel;
+
+pub const SLOTS: i32 = 8;
+
+/// What a channel delivered while it handled one frame.
+pub struct Batch { opened: bool, failed: i32, msgs: Vec[Vec[u8]] }
+
+pub fn new_batch() -> Batch { Batch { opened: false, failed: 0, msgs: Vec.new() } }
+
+pub linear struct Conns {
+    c0: Option[Channel],
+    c1: Option[Channel],
+    c2: Option[Channel],
+    c3: Option[Channel],
+    c4: Option[Channel],
+    c5: Option[Channel],
+    c6: Option[Channel],
+    c7: Option[Channel],
+}
+
+pub fn new_conns() -> Conns {
+    Conns { c0: Option.None, c1: Option.None, c2: Option.None, c3: Option.None, c4: Option.None, c5: Option.None, c6: Option.None, c7: Option.None }
+}
+
+fn copy_slice(b: &[u8]) -> Vec[u8] {
+    let mut v: Vec[u8] = Vec.with_capacity(b.len());
+    for i in 0..b.len() { v.push(b[i]); }
+    v
+}
+
+fn note(e: &ChannelEvent, batch: &mut Batch) {
+    match e {
+        &ChannelEvent.Opened => { batch.opened = true; }
+        &ChannelEvent.Message(m) => { batch.msgs.push(copy_slice(&m.buf)); }
+        &ChannelEvent.Failed(c) => { let code = c + 0; batch.failed = code; }
+    }
+}
+
+/// `frame` into the channel in `o`: its transmissions appended to `out`, its events to `batch`.
+fn feed_one(o: &mut Option[Channel], frame: &[u8], out: &mut Vec[Vec[u8]], batch: &mut Batch) can {Entropy} {
+    let old = replace(o, Option.None);
+    match old {
+        Option.None => {}
+        Option.Some(mut c) => {
+            handle {
+                handle { c.on_frame(frame); } with Transmit {
+                    bytes(b) => { out.push(copy_slice(b)); resume(()) }
+                }
+            } with Deliver[ChannelEvent] {
+                event(e) => { note(e, batch); resume(()) }
+            }
+            if c.is_dead() { close_channel(c); } else { *o = Option.Some(c); }
+        }
+    }
+}
+
+/// `plain` sealed by the channel in `o`, the frame appended to `out`; the result code (`-1` when
+/// there is no channel).
+fn seal_one(o: &mut Option[Channel], plain: &[u8], out: &mut Vec[Vec[u8]]) -> i32 {
+    let old = replace(o, Option.None);
+    match old {
+        Option.None => 0 - 1,
+        Option.Some(mut c) => {
+            let mut code = 0;
+            handle { code = c.send_record(plain); } with Transmit {
+                bytes(b) => { out.push(copy_slice(b)); resume(()) }
+            }
+            *o = Option.Some(c);
+            code
+        }
+    }
+}
+
+fn open_one(o: &mut Option[Channel]) -> bool {
+    let old = replace(o, Option.None);
+    match old {
+        Option.None => false,
+        Option.Some(mut c) => {
+            let open = c.is_open();
+            *o = Option.Some(c);
+            open
+        }
+    }
+}
+
+fn end_one(o: &mut Option[Channel]) {
+    let old = replace(o, Option.None);
+    match old {
+        Option.None => {}
+        Option.Some(c) => { close_channel(c); }
+    }
+}
+
+fn put_one(o: &mut Option[Channel], c: Channel) {
+    let old = replace(o, Option.Some(c));
+    match old {
+        Option.None => {}
+        Option.Some(prev) => { close_channel(prev); }
+    }
+}
+
+fn has_one(o: &Option[Channel]) -> bool { match o { &Option.Some(c) => true, &Option.None => false } }
+
+impl Conns {
+    /// Puts `c` in slot `k`, closing what was there.
+    pub fn put(&mut self, k: i32, c: Channel) {
+        if k == 0 { put_one(&mut self.c0, c); }
+        else if k == 1 { put_one(&mut self.c1, c); }
+        else if k == 2 { put_one(&mut self.c2, c); }
+        else if k == 3 { put_one(&mut self.c3, c); }
+        else if k == 4 { put_one(&mut self.c4, c); }
+        else if k == 5 { put_one(&mut self.c5, c); }
+        else if k == 6 { put_one(&mut self.c6, c); }
+        else if k == 7 { put_one(&mut self.c7, c); }
+        else { close_channel(c); }
+    }
+
+    pub fn has(&self, k: i32) -> bool {
+        if k == 0 { return has_one(&self.c0); }
+        if k == 1 { return has_one(&self.c1); }
+        if k == 2 { return has_one(&self.c2); }
+        if k == 3 { return has_one(&self.c3); }
+        if k == 4 { return has_one(&self.c4); }
+        if k == 5 { return has_one(&self.c5); }
+        if k == 6 { return has_one(&self.c6); }
+        if k == 7 { return has_one(&self.c7); }
+        false
+    }
+
+    pub fn is_open(&mut self, k: i32) -> bool {
+        if k == 0 { return open_one(&mut self.c0); }
+        if k == 1 { return open_one(&mut self.c1); }
+        if k == 2 { return open_one(&mut self.c2); }
+        if k == 3 { return open_one(&mut self.c3); }
+        if k == 4 { return open_one(&mut self.c4); }
+        if k == 5 { return open_one(&mut self.c5); }
+        if k == 6 { return open_one(&mut self.c6); }
+        if k == 7 { return open_one(&mut self.c7); }
+        false
+    }
+
+    /// Feeds a frame to slot `k`'s channel.
+    pub fn feed(&mut self, k: i32, frame: &[u8], out: &mut Vec[Vec[u8]], batch: &mut Batch) can {Entropy} {
+        if k == 0 { feed_one(&mut self.c0, frame, out, batch); }
+        else if k == 1 { feed_one(&mut self.c1, frame, out, batch); }
+        else if k == 2 { feed_one(&mut self.c2, frame, out, batch); }
+        else if k == 3 { feed_one(&mut self.c3, frame, out, batch); }
+        else if k == 4 { feed_one(&mut self.c4, frame, out, batch); }
+        else if k == 5 { feed_one(&mut self.c5, frame, out, batch); }
+        else if k == 6 { feed_one(&mut self.c6, frame, out, batch); }
+        else if k == 7 { feed_one(&mut self.c7, frame, out, batch); }
+    }
+
+    /// Seals one record on slot `k`'s channel.
+    pub fn seal(&mut self, k: i32, plain: &[u8], out: &mut Vec[Vec[u8]]) -> i32 {
+        if k == 0 { return seal_one(&mut self.c0, plain, out); }
+        if k == 1 { return seal_one(&mut self.c1, plain, out); }
+        if k == 2 { return seal_one(&mut self.c2, plain, out); }
+        if k == 3 { return seal_one(&mut self.c3, plain, out); }
+        if k == 4 { return seal_one(&mut self.c4, plain, out); }
+        if k == 5 { return seal_one(&mut self.c5, plain, out); }
+        if k == 6 { return seal_one(&mut self.c6, plain, out); }
+        if k == 7 { return seal_one(&mut self.c7, plain, out); }
+        0 - 1
+    }
+
+    pub fn end(&mut self, k: i32) {
+        if k == 0 { end_one(&mut self.c0); }
+        else if k == 1 { end_one(&mut self.c1); }
+        else if k == 2 { end_one(&mut self.c2); }
+        else if k == 3 { end_one(&mut self.c3); }
+        else if k == 4 { end_one(&mut self.c4); }
+        else if k == 5 { end_one(&mut self.c5); }
+        else if k == 6 { end_one(&mut self.c6); }
+        else if k == 7 { end_one(&mut self.c7); }
+    }
+}
+
+/// Ends every channel.
+pub fn end_conns(cs: Conns) {
+    let Conns { c0, c1, c2, c3, c4, c5, c6, c7 } = cs;
+    match c0 { Option.Some(c) => { close_channel(c); } Option.None => {} }
+    match c1 { Option.Some(c) => { close_channel(c); } Option.None => {} }
+    match c2 { Option.Some(c) => { close_channel(c); } Option.None => {} }
+    match c3 { Option.Some(c) => { close_channel(c); } Option.None => {} }
+    match c4 { Option.Some(c) => { close_channel(c); } Option.None => {} }
+    match c5 { Option.Some(c) => { close_channel(c); } Option.None => {} }
+    match c6 { Option.Some(c) => { close_channel(c); } Option.None => {} }
+    match c7 { Option.Some(c) => { close_channel(c); } Option.None => {} }
+}

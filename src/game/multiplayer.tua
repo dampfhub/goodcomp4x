@@ -551,6 +551,15 @@ impl GameState {
         out
     }
 
+    /// Starts this game with `old`'s menus and settings as they were, as a new game of the same window.
+    pub fn keep_menus_of(&mut self, old: &GameState) {
+        self.settings = old.settings.copy();
+        self.settings_open = old.settings_open;
+        self.show_yields = old.show_yields;
+        self.fog_of_war = old.fog_of_war;
+        self.imgui_ui = old.imgui_ui;
+    }
+
     /// The sides whose plan the checks refused in the bundle just applied, once: the host drops
     /// their players.
     pub fn take_refused(&mut self) -> Vec[Team] {

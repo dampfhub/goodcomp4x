@@ -1,0 +1,190 @@
+//! The networked game over real loopback sockets and the sealed channel: a host session and a
+//! guest session in one process, each pumped once per frame by the test. Everything binds to
+//! 127.0.0.1 and every wait is a bounded count of pumps.
+//!
+//! What this does not catch: two machines (one OS, one clock), packet loss (`net.sim` owns that),
+//! and the window (`hex.exe --interact-mp` runs two processes).
+
+use std.core.Option;
+use std.net.Net;
+use std.net.default_net;
+use std.rand.Rand;
+use std.str.Str;
+use std.str.contains;
+use std.str.to_owned;
+use std.test.assert;
+use std.test.Assert;
+use std.thread.yield_now;
+use netlib.addr.ipv4;
+use crypto.entropy.seeded_entropy;
+use log.Log;
+use game.GameState;
+use game.city.BuildUnit;
+use game.hex.Hex;
+use game.tests.sandbox;
+use game.unit.Team;
+use link.hub.open_hub;
+use link.session.MAX_CHUNK;
+use link.session.Joined;
+use link.session.Session;
+use link.session.Started;
+use link.session.chunk_records;
+use link.session.close_session;
+use link.session.join_record;
+use link.session.start_guest;
+use link.session.start_host;
+use link.table.CODE;
+use link.table.small;
+use std.rand.Entropy;
+
+/// A host session and a guest session, each with its game.
+linear struct Duo { host: Session, guest: Session, hg: GameState, gg: GameState, now: i64 }
+
+fn end_duo(d: Duo) can {Net} {
+    let Duo { host, guest, hg, gg, now } = d;
+    close_session(host);
+    close_session(guest);
+}
+
+/// A host on a loopback port for two people, and a guest that joins it with `guest_code`.
+fn make_duo(guest_code: &str, seed: u32) -> Option[Duo] can {Net, Log, Rand} {
+    let mut hg = GameState.host_game(2, &small(), seed, to_owned(CODE));
+    let hub = open_hub(2, 0, &mut hg);
+    match start_host(&ipv4(127, 0, 0, 1, 0), CODE, hub) {
+        Started.Failed(why) => Option.None,
+        Started.Ok(hs) => {
+            let port = hs.port();
+            match start_guest(&ipv4(127, 0, 0, 1, port), guest_code) {
+                Started.Failed(why) => { close_session(hs); Option.None }
+                Started.Ok(gs) => Option.Some(Duo { host: hs, guest: gs, hg: hg, gg: GameState.new(), now: 0 }),
+            }
+        }
+    }
+}
+
+impl Duo {
+    /// `n` frames: each side pumps, and time moves 2 ms.
+    fn spin(&mut self, n: i32) can {Net, Entropy, Log, Rand} {
+        for _ in 0..n {
+            self.host.pump(self.now, &mut self.hg);
+            self.guest.pump(self.now, &mut self.gg);
+            self.now = self.now + 2000000;
+            yield_now();
+        }
+    }
+
+    /// Pumps until the guest has joined or a bound runs out.
+    fn until_joined(&mut self) -> bool can {Net, Entropy, Log, Rand} {
+        for _ in 0..600 {
+            self.spin(1);
+            if self.guest.is_joined() { self.spin(20); return true; }
+            if self.guest.failure().is_some() { return false; }
+        }
+        false
+    }
+}
+
+fn play_out(game: &mut GameState) can {Log, Rand} {
+    while game.is_playing_out() { game.update(1.0); }
+}
+
+fn plan_something(game: &mut GameState) {
+    let team = game.local_team;
+    let mut unit = 0 - 1;
+    for i in 0..game.units.len() { if unit < 0 && game.units[i].team == team { unit = i; } }
+    let from = game.units[unit].pos;
+    let around = from.neighbors();
+    let mut target = from;
+    for k in 0..6 { if target == from && game.grid.is_passable(around[k]) && !game.is_occupied(around[k]) { target = around[k]; } }
+    game.units[unit].planned_move = Option.Some(target);
+    let mut city = 0 - 1;
+    for i in 0..game.cities.len() { if city < 0 && game.cities[i].team == team { city = i; } }
+    game.open_city(city);
+    game.queue_selected_city_unit(BuildUnit.Melee);
+    game.leave_city_view();
+}
+
+fn turn_over_sockets() -> i32 can {Net, Entropy, Log, Rand} {
+        let Option.Some(mut d) = make_duo(CODE, 4242) else { return 1; };
+        if !d.until_joined() { end_duo(d); return 2; }
+        if d.gg.local_team != Team.Red || d.hg.map_seed != d.gg.map_seed { end_duo(d); return 3; }
+        if d.hg.checksum() != d.gg.checksum() { end_duo(d); return 4; }
+        plan_something(&mut d.hg);
+        plan_something(&mut d.gg);
+        d.gg.submit_plan();
+        d.spin(30);
+        if d.hg.is_resolving() { end_duo(d); return 5; }
+        d.hg.submit_plan();
+        d.spin(60);
+        play_out(&mut d.hg);
+        play_out(&mut d.gg);
+        d.spin(60);
+        let mut rc = 0;
+        if d.hg.turn != 1 || d.gg.turn != 1 { rc = 6; }
+        else if d.hg.checksum() != d.gg.checksum() { rc = 7; }
+        else if d.hg.lockstep.desync.is_some() { rc = 8; }
+        end_duo(d);
+        rc
+}
+
+fn wrong_code_case() -> i32 can {Net, Entropy, Log, Rand} {
+        let Option.Some(mut d) = make_duo("WRONG1", 4242) else { return 1; };
+        for _ in 0..600 { d.spin(1); if d.guest.failure().is_some() { break; } }
+        let why = d.guest.failure().unwrap_or(to_owned(""));
+        let mut rc = 0;
+        if !contains(&why, "WRONG JOIN CODE") { rc = 2; }
+        else if d.hg.open_seats().len() != 1 { rc = 3; }
+        end_duo(d);
+        rc
+}
+
+/// A turn over sockets and sealed records: both sides plan, end their turns, and play out the
+/// same game (the checksum agrees), the guest's game built from the host's welcome.
+@test
+fn a_turn_plays_out_over_sealed_sockets() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let code = default_net(fn() -> i32 can {Net, Log, Rand} { seeded_entropy(11, turn_over_sockets) });
+        assert(code == 0);
+    });
+}
+
+/// A guest holding the wrong code never reaches the game: its channel fails, it says so, and the
+/// host still has its seat open (the right code, next, gets in).
+@test
+fn a_wrong_code_is_turned_away_and_the_seat_stays_open() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let code = default_net(fn() -> i32 can {Net, Log, Rand} { seeded_entropy(11, wrong_code_case) });
+        assert(code == 0);
+    });
+}
+
+/// A payload past one record's size travels as several and joins again, whatever its length; a
+/// record that is empty, or a message that would not end, is refused.
+@test
+fn a_payload_past_one_record_splits_and_joins_again() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let sizes = [0, 1, 15999, 16000, 16001, 32000, 40000];
+        for s in 0..7 {
+            let mut payload: Vec[u8] = Vec.new();
+            for i in 0..sizes[s] { payload.push((i % 251) as u8); }
+            let records = chunk_records(&payload.buf);
+            let expected = if sizes[s] == 0 { 1 } else { (sizes[s] + MAX_CHUNK - 1) / MAX_CHUNK };
+            assert(records.len() == expected);
+            let mut partial: Vec[u8] = Vec.new();
+            let mut whole = 0;
+            for r in 0..records.len() {
+                assert(records[r].len() <= MAX_CHUNK + 1);
+                match join_record(&mut partial, &records[r].buf) {
+                    Joined.Whole => { whole = whole + 1; assert(r == records.len() - 1); }
+                    Joined.More => { assert(r < records.len() - 1); }
+                    Joined.Bad => { assert(false); }
+                }
+            }
+            assert(whole == 1);
+            assert(partial.len() == payload.len());
+            for i in 0..payload.len() { assert(partial[i] == payload[i]); }
+        }
+        let mut partial: Vec[u8] = Vec.new();
+        match join_record(&mut partial, &[]) { Joined.Bad => {} _ => { assert(false); } }
+    });
+}

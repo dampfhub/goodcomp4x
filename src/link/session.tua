@@ -1,0 +1,502 @@
+//! A networked game's connections: the poll driver's sockets, a sealed channel on each
+//! (`seal`, keyed by the join code) and, over them, the hub (host) or the peer (guest) that speaks
+//! lockstep. `pump` is called once a frame and never blocks.
+//!
+//! A lockstep message is one payload; a sealed record carries at most `MAX_CHUNK` bytes, so a
+//! payload past that (a bundle of many plans) is sent as several records, each led by a byte that
+//! says whether more follow, and joined again on receipt.
+//!
+//! A host admits connections through `seal.admission` (concurrent handshakes, a time to finish,
+//! lockouts and a global budget of wrong codes) and turns away a guest for whom the game has no
+//! seat, saying why. The poll driver does not report a peer's address, so admission counts every
+//! connection as one address: its per-address limits are the global ones (`R15010`).
+
+use std.core.Option;
+use std.mem.replace;
+use std.mem.swap;
+use std.rand.Entropy;
+use std.rand.Rand;
+use std.net.Net;
+use std.str.Str;
+use std.str.to_owned;
+use std.str.len;
+use std.str.byte_at;
+use netlib.addr.SocketAddr;
+use netlib.addr.ipv4;
+use netlib.effects.Deliver;
+use netlib.effects.Transmit;
+use netlib.frame.NEVER;
+use netlib.poll.ConnId;
+use netlib.poll.NetEvent;
+use netlib.poll.PollDriver;
+use netlib.poll.config;
+use netlib.poll.open_driver;
+use netlib.poll.shutdown;
+use seal.admission.Admission;
+use seal.admission.Admit;
+use seal.admission.admission_config;
+use seal.admission.open_admission;
+use seal.channel.JoinCode;
+use seal.channel.MAX_FRAME;
+use seal.channel.MAX_PLAINTEXT;
+use seal.channel.PEER_ABORTED;
+use seal.channel.BAD_CONFIRMATION;
+use seal.channel.forget_join_code;
+use seal.channel.guest_channel;
+use seal.channel.host_channel;
+use seal.channel.join_code;
+use lockstep.msg.MAX_MESSAGE;
+use link.conns.Batch;
+use link.conns.Conns;
+use link.conns.SLOTS;
+use link.conns.end_conns;
+use link.conns.new_batch;
+use link.conns.new_conns;
+use link.hub.CONNECT_FULL;
+use link.hub.CONNECT_STARTED;
+use link.hub.Hub;
+use link.hub.refusal_payload;
+use link.peer.Peer;
+use link.peer.REFUSE_STARTED;
+use link.peer.open_peer;
+use lockstep.msg.REFUSE_FULL;
+use log.Log;
+use game.GameState;
+use game.multiplayer.clean_code;
+
+/// The most plaintext a chunk carries: a sealed record's, less the continuation byte.
+pub const MAX_CHUNK: i32 = 16000;
+/// The most bytes of a message a peer may make this side buffer.
+const MAX_BUFFERED: i32 = 1114112;
+/// The time a join has, on either end, to connect, run the handshake and be seated.
+const JOIN_TIMEOUT_NS: i64 = 10000000000;
+/// How many handshakes a host runs at once, and how many wrong codes it takes in a window.
+const MAX_HANDSHAKES: i32 = 8;
+const WRONG_CODES: i32 = 10;
+const RECORD_LIMIT: u64 = 1000000000;
+/// The identity both ends of a channel hold: a session of this game's networking.
+const SESSION_ID: [u8; 13] = [104, 101, 120, 47, 108, 111, 99, 107, 115, 116, 101, 112, 49];
+const GUEST_NAME: [u8; 5] = [103, 117, 101, 115, 116];
+
+/// The records a payload is sent as: at most `MAX_CHUNK` bytes of it each, led by a byte that is 1
+/// when more records of the payload follow and 0 on its last. An empty payload is one record.
+pub fn chunk_records(payload: &[u8]) -> Vec[Vec[u8]] {
+    let mut out: Vec[Vec[u8]] = Vec.new();
+    let total = payload.len();
+    let mut at = 0;
+    loop {
+        let left = total - at;
+        let n = if left > MAX_CHUNK { MAX_CHUNK } else { left };
+        let more = at + n < total;
+        let mut plain: Vec[u8] = Vec.with_capacity(n + 1);
+        plain.push(if more { 1 } else { 0 });
+        for i in 0..n { plain.push(payload[at + i]); }
+        out.push(plain);
+        at = at + n;
+        if at >= total { break; }
+    }
+    out
+}
+
+/// What joining one more record to a partial message did.
+pub enum Joined { More, Whole, Bad }
+
+/// Adds `record` (one `chunk_records` element) to `partial`: `Whole` when it was the last of its
+/// payload, `Bad` for an empty record or a message past `MAX_BUFFERED`.
+pub fn join_record(partial: &mut Vec[u8], record: &[u8]) -> Joined {
+    if record.len() == 0 { return Joined.Bad; }
+    for b in 1..record.len() { partial.push(record[b]); }
+    if partial.len() > MAX_BUFFERED { return Joined.Bad; }
+    if record[0] == 0 { Joined.Whole } else { Joined.More }
+}
+
+/// One connection: its driver id, where its handshake stands, the guest id the hub gave it (host)
+/// and the message being joined from chunks.
+pub struct Meta {
+    conn: ConnId,
+    live: bool,
+    ticket: i64,
+    guest: i32,
+    opened: bool,
+    /// Close once what is queued has been written.
+    closing: bool,
+    partial: Vec[u8],
+}
+
+/// What the driver reported, copied out of its handler.
+struct NetEv { kind: i32, slot: i32, gen: i32, payload: Vec[u8] }
+
+const EV_ACCEPTED: i32 = 1;
+const EV_CONNECTED: i32 = 2;
+const EV_FRAME: i32 = 3;
+const EV_CLOSED: i32 = 4;
+
+pub linear struct Session {
+    is_host: bool,
+    drv: PollDriver,
+    chans: Conns,
+    meta: Vec[Meta],
+    hub: Option[Hub],
+    peer: Option[Peer],
+    adm: Admission,
+    /// Host: the join code, as the channel takes it.
+    code: Vec[u8],
+    /// Guest: the code entered, until the connection is made.
+    entered: Option[JoinCode],
+    port: i32,
+    status: Str,
+    failed: Option[Str],
+    /// Guest: the socket connected.
+    connected: bool,
+}
+
+/// `start_host` and `start_guest` answer with a session or why not.
+pub linear enum Started { Ok(Session), Failed(Str) }
+
+fn new_meta() -> Vec[Meta] {
+    let mut v: Vec[Meta] = Vec.new();
+    for _ in 0..SLOTS {
+        v.push(Meta { conn: ConnId { slot: 0 - 1, gen: 0 }, live: false, ticket: 0, guest: 0 - 1, opened: false, closing: false, partial: Vec.new() });
+    }
+    v
+}
+
+fn copy_str(s: &Str) -> Str { to_owned(s) }
+
+fn same_conn(a: ConnId, b: ConnId) -> bool { a.slot == b.slot && a.gen == b.gen }
+
+fn copy_slice(b: &[u8]) -> Vec[u8] {
+    let mut v: Vec[u8] = Vec.with_capacity(b.len());
+    for i in 0..b.len() { v.push(b[i]); }
+    v
+}
+
+fn note_net(e: &NetEvent, out: &mut Vec[NetEv]) {
+    match e {
+        &NetEvent.Accepted(id) => { out.push(NetEv { kind: EV_ACCEPTED, slot: id.slot, gen: id.gen, payload: Vec.new() }); }
+        &NetEvent.Connected(id) => { out.push(NetEv { kind: EV_CONNECTED, slot: id.slot, gen: id.gen, payload: Vec.new() }); }
+        &NetEvent.Frame(id, v) => { out.push(NetEv { kind: EV_FRAME, slot: id.slot, gen: id.gen, payload: copy_slice(&v.buf) }); }
+        &NetEvent.Closed(id, why) => { out.push(NetEv { kind: EV_CLOSED, slot: id.slot, gen: id.gen, payload: Vec.new() }); }
+    }
+}
+
+fn poll_events(d: &mut PollDriver, now: i64) -> Vec[NetEv] can {Net} {
+    let mut out: Vec[NetEv] = Vec.new();
+    handle { d.poll(now); } with Deliver[NetEvent] {
+        event(e) => { note_net(e, &mut out); resume(()) }
+    }
+    out
+}
+
+fn text_bytes(s: &str) -> Vec[u8] {
+    let mut out: Vec[u8] = Vec.new();
+    for i in 0..len(s) { out.push(byte_at(s, i).unwrap_or(0) as u8); }
+    out
+}
+
+fn driver_config() -> netlib.poll.PollConfig {
+    // Frames a sealed channel carries (`seal.channel.MAX_FRAME`), a queue of a few records.
+    config(16, MAX_FRAME, 10000000000, 1048576, 4096)
+}
+
+fn admission() -> Admission {
+    open_admission(admission_config(MAX_HANDSHAKES, MAX_HANDSHAKES, JOIN_TIMEOUT_NS, WRONG_CODES, 1000000000, 60000000000, WRONG_CODES, 60000000000, 256))
+}
+
+/// Starts listening at `addr` for a game `hub` runs, guests joining with `code`.
+pub fn start_host(addr: &SocketAddr, code: &str, hub: Hub) -> Started can {Net} {
+    let cleaned = clean_code(code);
+    let mut drv = open_driver(driver_config());
+    let rc = drv.listen_on(addr);
+    if rc != 0 {
+        shutdown(drv);
+        return Started.Failed(to_owned("CAN'T LISTEN ON THAT PORT"));
+    }
+    let port = match drv.listen_addr() { Option.Some(a) => a.port, Option.None => addr.port };
+    Started.Ok(Session {
+        is_host: true, drv: drv, chans: new_conns(), meta: new_meta(), hub: Option.Some(hub), peer: Option.None,
+        adm: admission(), code: text_bytes(&cleaned), entered: Option.None, port: port,
+        status: to_owned(""), failed: Option.None, connected: false,
+    })
+}
+
+/// Starts connecting to the host at `addr` with the join `entered`.
+pub fn start_guest(addr: &SocketAddr, entered: &str) -> Started can {Net} {
+    let cleaned = clean_code(entered);
+    let bytes = text_bytes(&cleaned);
+    let Option.Some(jc) = join_code(&bytes.buf) else { return Started.Failed(to_owned("TYPE THE JOIN CODE THE HOST SHOWS")); };
+    let mut drv = open_driver(driver_config());
+    let mut conn = ConnId { slot: 0 - 1, gen: 0 };
+    let mut reached = false;
+    match drv.connect(addr) {
+        Result.Ok(c) => { conn = c; reached = true; }
+        Result.Err(e) => {}
+    }
+    if !reached {
+        shutdown(drv);
+        forget_join_code(jc);
+        return Started.Failed(to_owned("CAN'T REACH A HOST AT THAT ADDRESS"));
+    }
+    let mut meta = new_meta();
+    meta[0].conn = conn;
+    meta[0].live = true;
+    Started.Ok(Session {
+        is_host: false, drv: drv, chans: new_conns(), meta: meta, hub: Option.None, peer: Option.Some(open_peer(NEVER)),
+        adm: admission(), code: Vec.new(), entered: Option.Some(jc), port: 0, status: to_owned("CONNECTING"),
+        failed: Option.None, connected: false,
+    })
+}
+
+/// Ends the session: every connection closed, every key wiped.
+pub fn close_session(s: Session) can {Net} {
+    let Session { is_host, drv, chans, meta, hub, peer, adm, code, entered, port, status, failed, connected } = s;
+    end_conns(chans);
+    match entered { Option.Some(jc) => { forget_join_code(jc); } Option.None => {} }
+    shutdown(drv);
+}
+
+impl Session {
+    /// The port a host listens on.
+    pub fn port(&self) -> i32 { self.port }
+
+    pub fn is_host(&self) -> bool { self.is_host }
+
+    /// Why the session failed, once it has.
+    pub fn failure(&self) -> Option[Str] {
+        match &self.failed { &Option.Some(w) => Option.Some(to_owned(&w)), &Option.None => Option.None }
+    }
+
+    /// Guest: the words for the menu while it joins.
+    pub fn status(&self) -> Str { copy_str(&self.status) }
+
+    /// Guest: the host's welcome has built the game.
+    pub fn is_joined(&self) -> bool {
+        match &self.peer { &Option.Some(p) => p.is_playing(), &Option.None => false }
+    }
+
+    fn fail(&mut self, why: &str) {
+        if self.failed.is_none() { self.failed = Option.Some(to_owned(why)); }
+    }
+
+    fn slot_of(&self, id: ConnId) -> i32 {
+        for k in 0..SLOTS { if self.meta[k].live && same_conn(self.meta[k].conn, id) { return k; } }
+        0 - 1
+    }
+
+    fn free_slot(&self) -> i32 {
+        for k in 0..SLOTS { if !self.meta[k].live { return k; } }
+        0 - 1
+    }
+
+    /// Ends slot `k`'s connection: its channel wiped, its socket closed, its guest told to the hub.
+    fn drop_slot(&mut self, k: i32, now: i64, game: &mut GameState, hub: &mut Hub) can {Net} {
+        if !self.meta[k].live { return; }
+        self.chans.end(k);
+        let id = self.meta[k].conn;
+        self.drv.close(id);
+        if self.meta[k].guest >= 0 { hub.on_disconnect(now, self.meta[k].guest, game); }
+        self.meta[k].live = false;
+        self.meta[k].guest = 0 - 1;
+        self.meta[k].opened = false;
+        self.meta[k].closing = false;
+        self.meta[k].partial.clear();
+    }
+
+    /// Sends `payload` on slot `k` as sealed records.
+    fn send_payload(&mut self, k: i32, payload: &[u8]) {
+        let mut frames: Vec[Vec[u8]] = Vec.new();
+        let records = chunk_records(payload);
+        for r in 0..records.len() {
+            let rc = self.chans.seal(k, &records[r].buf, &mut frames);
+            if rc != 0 { self.meta[k].closing = true; break; }
+        }
+        let id = self.meta[k].conn;
+        for i in 0..frames.len() {
+            let rc = self.drv.queue(id, &frames[i].buf);
+            if rc != 0 { self.meta[k].closing = true; }
+        }
+    }
+
+    /// Opened records of slot `k` become messages: chunks are joined until one says it is the last.
+    /// A complete message is returned.
+    fn take_messages(&mut self, k: i32, batch: &Batch) -> Vec[Vec[u8]] {
+        let mut done: Vec[Vec[u8]] = Vec.new();
+        for i in 0..batch.msgs.len() {
+            let record = &batch.msgs[i];
+            match join_record(&mut self.meta[k].partial, &record.buf) {
+                Joined.More => {}
+                Joined.Whole => {
+                    let mut m: Vec[u8] = Vec.new();
+                    swap(&mut m, &mut self.meta[k].partial);
+                    done.push(m);
+                }
+                Joined.Bad => { self.meta[k].closing = true; self.meta[k].partial.clear(); }
+            }
+        }
+        done
+    }
+
+    /// Flushes closing connections whose queues have drained.
+    fn finish_closing(&mut self, now: i64, game: &mut GameState, hub: &mut Hub) can {Net} {
+        for k in 0..SLOTS {
+            if self.meta[k].live && self.meta[k].closing && self.drv.queued(self.meta[k].conn) == 0 {
+                self.drop_slot(k, now, game, hub);
+            }
+        }
+    }
+
+    /// Once a frame: the driver polled, what arrived handled, the hub (or peer) run and what they
+    /// say sent.
+    pub fn pump(&mut self, now: i64, game: &mut GameState) can {Net, Entropy, Log, Rand} {
+        if self.failed.is_some() { return; }
+        if self.is_host { self.host_pump(now, game); } else { self.guest_pump(now, game); }
+    }
+
+    fn host_pump(&mut self, now: i64, game: &mut GameState) can {Net, Entropy, Log, Rand} {
+        let taken = replace(&mut self.hub, Option.None);
+        let Option.Some(mut hub) = taken else { return; };
+        let evs = poll_events(&mut self.drv, now);
+        for i in 0..evs.len() {
+            let id = ConnId { slot: evs[i].slot, gen: evs[i].gen };
+            if evs[i].kind == EV_ACCEPTED {
+                let free = self.free_slot();
+                let ip = ipv4(127, 0, 0, 1, 0).ip;
+                let ticket = match self.adm.on_connect(&ip, now) { Admit.Yes(t) => t, Admit.No(r) => 0 - 1 };
+                let mut code = Vec.new();
+                for b in 0..self.code.len() { code.push(self.code[b]); }
+                let chan = if free >= 0 && ticket >= 0 { host_channel(&code.buf, &SESSION_ID, RECORD_LIMIT) } else { Option.None };
+                match chan {
+                    Option.Some(c) => {
+                        self.chans.put(free, c);
+                        self.meta[free].conn = id;
+                        self.meta[free].live = true;
+                        self.meta[free].ticket = ticket;
+                        self.meta[free].guest = 0 - 1;
+                        self.meta[free].opened = false;
+                        self.meta[free].closing = false;
+                        self.meta[free].partial.clear();
+                    }
+                    Option.None => {
+                        if ticket >= 0 { self.adm.on_outcome(ticket, false, now); }
+                        self.drv.close(id);
+                    }
+                }
+            } else if evs[i].kind == EV_FRAME {
+                let k = self.slot_of(id);
+                if k < 0 { continue; }
+                let mut frames: Vec[Vec[u8]] = Vec.new();
+                let mut batch = new_batch();
+                self.chans.feed(k, &evs[i].payload.buf, &mut frames, &mut batch);
+                for f in 0..frames.len() { let _rc = self.drv.queue(id, &frames[f].buf); }
+                if batch.opened { self.host_opened(k, now, game, &mut hub); }
+                if batch.failed != 0 {
+                    if !self.meta[k].opened { self.adm.on_outcome(self.meta[k].ticket, false, now); }
+                    self.drop_slot(k, now, game, &mut hub);
+                    continue;
+                }
+                let msgs = self.take_messages(k, &batch);
+                for m in 0..msgs.len() {
+                    if self.meta[k].guest >= 0 { hub.on_payload(now, self.meta[k].guest, &msgs[m].buf, game); }
+                }
+            } else if evs[i].kind == EV_CLOSED {
+                let k = self.slot_of(id);
+                if k >= 0 {
+                    if !self.meta[k].opened { self.adm.on_outcome(self.meta[k].ticket, false, now); }
+                    self.drop_slot(k, now, game, &mut hub);
+                }
+            }
+        }
+        // Handshakes that took too long count as wrong codes and end.
+        let late = self.adm.on_tick(now);
+        for t in 0..late.len() {
+            for k in 0..SLOTS {
+                if self.meta[k].live && !self.meta[k].opened && self.meta[k].ticket == late[t] { self.drop_slot(k, now, game, &mut hub); }
+            }
+        }
+        hub.tick(now, game);
+        hub.pump(now, game);
+        for k in 0..SLOTS {
+            if self.meta[k].live && self.meta[k].guest >= 0 {
+                let out = hub.take_out(self.meta[k].guest);
+                for m in 0..out.len() { self.send_payload(k, &out[m].buf); }
+            }
+        }
+        let kicks = hub.take_kicks();
+        for i in 0..kicks.len() {
+            for k in 0..SLOTS { if self.meta[k].live && self.meta[k].guest == kicks[i] { self.meta[k].closing = true; } }
+        }
+        self.finish_closing(now, game, &mut hub);
+        self.hub = Option.Some(hub);
+    }
+
+    /// A guest's channel opened: it is seated, or refused and sent away with the reason.
+    fn host_opened(&mut self, k: i32, now: i64, game: &mut GameState, hub: &mut Hub) {
+        self.meta[k].opened = true;
+        self.adm.on_outcome(self.meta[k].ticket, true, now);
+        let id = hub.connect(now, game);
+        if id >= 0 {
+            self.meta[k].guest = id;
+        } else {
+            let payload = refusal_payload(if id == CONNECT_STARTED { REFUSE_STARTED } else { REFUSE_FULL });
+            self.send_payload(k, &payload.buf);
+            self.meta[k].closing = true;
+        }
+    }
+
+    fn guest_pump(&mut self, now: i64, game: &mut GameState) can {Net, Entropy, Log, Rand} {
+        let taken = replace(&mut self.peer, Option.None);
+        let Option.Some(mut peer) = taken else { return; };
+        let evs = poll_events(&mut self.drv, now);
+        for i in 0..evs.len() {
+            let id = ConnId { slot: evs[i].slot, gen: evs[i].gen };
+            if evs[i].kind == EV_CONNECTED && self.meta[0].live && same_conn(self.meta[0].conn, id) {
+                self.connected = true;
+                let entered = replace(&mut self.entered, Option.None);
+                if let Option.Some(jc) = entered {
+                    let mut frames: Vec[Vec[u8]] = Vec.new();
+                    let made = handle { guest_channel(jc, &SESSION_ID, &GUEST_NAME, RECORD_LIMIT) } with Transmit {
+                        bytes(b) => { frames.push(copy_slice(b)); resume(()) }
+                    };
+                    match made {
+                        Option.Some(c) => { self.chans.put(0, c); }
+                        Option.None => { self.fail("THE JOIN CODE WAS REFUSED"); }
+                    }
+                    for f in 0..frames.len() { let _rc = self.drv.queue(id, &frames[f].buf); }
+                    self.status = to_owned("CHECKING THE JOIN CODE");
+                }
+            } else if evs[i].kind == EV_FRAME && self.meta[0].live && same_conn(self.meta[0].conn, id) {
+                let mut frames: Vec[Vec[u8]] = Vec.new();
+                let mut batch = new_batch();
+                self.chans.feed(0, &evs[i].payload.buf, &mut frames, &mut batch);
+                for f in 0..frames.len() { let _rc = self.drv.queue(id, &frames[f].buf); }
+                if batch.opened { self.meta[0].opened = true; self.status = to_owned("WAITING FOR THE HOST'S GAME"); }
+                if batch.failed != 0 {
+                    let wrong = batch.failed == BAD_CONFIRMATION || batch.failed == PEER_ABORTED;
+                    self.fail(if wrong { "WRONG JOIN CODE (or the host refused the connection)" } else { "THE CONNECTION FAILED" });
+                    continue;
+                }
+                let msgs = self.take_messages(0, &batch);
+                for m in 0..msgs.len() { peer.on_payload(now, &msgs[m].buf, game); }
+            } else if evs[i].kind == EV_CLOSED && self.meta[0].live && same_conn(self.meta[0].conn, id) {
+                self.meta[0].live = false;
+                if peer.failure().is_none() && self.failed.is_none() {
+                    if peer.is_playing() { game.peer_lost(); }
+                    self.fail(if self.meta[0].opened { "THE HOST CLOSED THE CONNECTION" } else { "CAN'T REACH A HOST AT THAT ADDRESS" });
+                }
+            }
+        }
+        if let Option.Some(joined) = peer.take_joined() {
+            let mut next = joined;
+            next.keep_menus_of(&*game);
+            *game = next;
+        }
+        if let Option.Some(why) = peer.failure() { self.fail(&why); }
+        peer.pump(now, game);
+        let out = peer.take_out();
+        if self.meta[0].live && self.chans.has(0) {
+            for m in 0..out.len() { self.send_payload(0, &out[m].buf); }
+        }
+        peer.on_tick(now, game);
+        self.peer = Option.Some(peer);
+    }
+}
