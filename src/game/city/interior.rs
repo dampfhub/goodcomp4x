@@ -1,6 +1,7 @@
 //! A small tactical board inside each city. Field units on the six neighboring
 //! hexes project independent fighters through the corresponding gates.
 
+use crate::game::combat::{AttackPreview, Hurt};
 use crate::game::fast_hash::HashSet;
 use crate::game::hex::Hex;
 use crate::game::multiplayer::WAITING_NOTICE;
@@ -42,7 +43,7 @@ pub(in crate::game) struct InteriorFighter {
 }
 
 impl InteriorFighter {
-    fn stats(&self) -> UnitStats {
+    pub(in crate::game) fn stats(&self) -> UnitStats {
         let mut stats = self.unit_type.stats();
         apply_training_upgrade(&mut stats, self.training_upgrade);
         stats
@@ -327,6 +328,70 @@ impl GameState {
         }
     }
 
+    /// The attack preview inside `city` (`GameState::attack_preview`): the
+    /// player's fighters' attacks on the hovered tile this turn, the
+    /// selected one's included if it could attack there, and, when the
+    /// target is the post, the post's shot at one of them.
+    pub(in crate::game) fn interior_attack_preview(&self, city: usize) -> Option<AttackPreview> {
+        let target = self.hovered_interior?;
+        let owner = self.cities[city].team;
+        let interior = &self.cities[city].interior;
+        let defender = interior
+            .fighters
+            .iter()
+            .find(|f| f.pos == target && f.team != self.local_team);
+        let post = target == CENTER && owner != self.local_team && interior.core_hp > 0.0;
+        if defender.is_none() && !post {
+            return None;
+        }
+        let mut preview = AttackPreview::default();
+        let mut attackers = Vec::new();
+        for fighter in &interior.fighters {
+            let aims = fighter.planned_attack == Some(target)
+                || self.interior_selected == Some(fighter.source_id);
+            if fighter.team != self.local_team || !aims || !fighter.attack_reaches(target) {
+                continue;
+            }
+            attackers.push(fighter.source_id);
+            let attack = fighter.stats().attack;
+            match defender {
+                Some(defender) => {
+                    let hit = combat::damage_against(attack, defender.stats().defense);
+                    preview.add(Hurt::Fighter(defender.source_id), hit, defender.hp, true);
+                }
+                None => {
+                    let hit = combat::damage_against(attack, CORE_DEFENSE);
+                    preview.add(Hurt::Post, hit, interior.core_hp, true);
+                }
+            }
+        }
+        if attackers.is_empty() {
+            return None;
+        }
+        // The post fires at the lowest-numbered hostile fighter in its range
+        // once the moves are made: the player's fighters where their moves
+        // take them, anyone else where they stand.
+        if post
+            && let Some(shot) = interior
+                .fighters
+                .iter()
+                .filter(|f| {
+                    let pos = match f.team == self.local_team {
+                        true => f.planned_move.unwrap_or(f.pos),
+                        false => f.pos,
+                    };
+                    f.team != owner && pos.distance(CENTER) <= CORE_ATTACK_RANGE
+                })
+                .min_by_key(|f| f.source_id)
+                .filter(|f| attackers.contains(&f.source_id))
+        {
+            let back = combat::damage_against(CORE_ATTACK, shot.stats().defense);
+            preview.add(Hurt::Fighter(shot.source_id), back, shot.hp, false);
+        }
+        preview.if_it_stays = defender.is_some();
+        Some(preview)
+    }
+
     fn plan_interior_ai(&mut self, city: usize) {
         let owner = self.cities[city].team;
         let core_breached = self.cities[city].interior.core_hp <= 0.0;
@@ -583,6 +648,35 @@ mod tests {
                 .hp,
             wounded
         );
+    }
+
+    #[test]
+    fn the_interior_preview_is_the_damage_the_turn_deals() {
+        let mut game = GameState::siege_scenario();
+        // The ranged copy alone in the post's range, so the post fires at it.
+        game.units.retain(|unit| unit.id != 0);
+        game.discard_interior_copies_of_dead_units();
+        game.open_city_interior(1);
+        game.hovered_interior = Some(CENTER);
+        assert_eq!(game.attack_preview(), None, "nothing selected or planned");
+        game.interior_selected = Some(1);
+        let preview = game
+            .attack_preview()
+            .expect("the ranged copy reaches the post");
+        assert!(!preview.if_it_stays);
+        let post = *preview.loss(Hurt::Post).unwrap();
+        let shot = *preview.loss(Hurt::Fighter(1)).expect("the post fires back");
+        assert!(post.target_side && !shot.target_side);
+
+        let hp = |game: &GameState| {
+            let fighters = &game.cities[1].interior.fighters;
+            fighters.iter().find(|f| f.source_id == 1).unwrap().hp
+        };
+        let (core, fighter) = (game.cities[1].interior.core_hp, hp(&game));
+        game.interior_click(CENTER);
+        game.resolve_one_interior(1);
+        assert!((core - game.cities[1].interior.core_hp - post.amount).abs() < 1e-3);
+        assert!((fighter - hp(&game) - shot.amount).abs() < 1e-3);
     }
 
     #[test]

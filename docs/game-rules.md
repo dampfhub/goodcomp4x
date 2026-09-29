@@ -495,6 +495,15 @@ Everyone in a step acts simultaneously:
   away. Every unit or structure hurt (retaliation, Coastal Battery fire and hits on a battery
   included) shows a rising damage number, or
   "KILLED". Enemy attacks animate too.
+- **Damage preview:** hovering an enemy in sight that the selection (a unit or a group) can
+  attack this turn, or that the player's units already attack, marks the health bars with what
+  the turn's attacks on it would do: the target's loss as a pulsing segment with the number over
+  the bar, and each attacker's retaliation on its own bar; a lethal hit rims the bar in red and
+  reads LETHAL. It plays the attacks in their resolution steps with the same damage functions,
+  so it is exact if the target stays and uses no ability, which the player can't know (the tile
+  tooltip says IF IT STAYS). The same holds for Barracks, coastal batteries and, in a city's
+  interior, fighters and the command post (with the post's shot back when it targets one of
+  the attackers). Only what is in sight is previewed; queued (Shift) attacks aren't.
 
 ## Abilities (`ability.rs`)
 

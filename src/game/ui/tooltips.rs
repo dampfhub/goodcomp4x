@@ -137,6 +137,9 @@ impl GameState {
             (None, None, None, None) => (tile.name(), TEXT),
         };
         let mut lines = vec![(BODY, vec![title])];
+        if self.hovered_tile == Some(hex) {
+            lines.extend(self.attack_preview_lines());
+        }
 
         if !terrain.is_workable() {
             lines.push((SMALL, vec![("IMPASSABLE".into(), DIM_TEXT)]));
@@ -295,6 +298,33 @@ impl GameState {
                 .into_iter()
                 .map(|note| (SMALL, vec![(note, DIM_TEXT)])),
         );
+        lines
+    }
+
+    /// The attack preview in words (`attack_preview`), for the hovered
+    /// tile's tooltip: the damage the target would take, the retaliation,
+    /// and that it holds only if an enemy target stays and does nothing.
+    pub(super) fn attack_preview_lines(&self) -> Vec<(u32, Line)> {
+        let Some(preview) = self.attack_preview() else {
+            return Vec::new();
+        };
+        let lethal = |lethal: bool| if lethal { ", LETHAL" } else { "" };
+        let (dealt, kills) = preview.dealt();
+        let mut lines = vec![(
+            SMALL,
+            vec![(format!("{dealt:.0} DAMAGE{}", lethal(kills)), REDUCED_TEXT)],
+        )];
+        let back = preview.retaliation();
+        if back > 0.0 {
+            let dies = preview.losses.iter().any(|l| !l.target_side && l.lethal());
+            lines.push((
+                SMALL,
+                vec![(format!("RETALIATION {back:.0}{}", lethal(dies)), GOLD_TEXT)],
+            ));
+        }
+        if preview.if_it_stays {
+            lines.push((SMALL, vec![("IF IT STAYS".into(), DIM_TEXT)]));
+        }
         lines
     }
 

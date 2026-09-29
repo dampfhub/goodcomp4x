@@ -16,7 +16,7 @@ behavior.
 | `order_queue.rs` | multi-turn order queues: Shift-click adds turns (`queue_move`, `queue_attack`, equal lengths for a group) or, on a planned stop, takes a move off (`unqueue_move`), `advance_queues` at each turn's end (real board only), and `replan_queues` as the player's planning begins (steered queues planned again toward their `waypoints` on what the player knows) |
 | `group.rs` | multi-unit selection (drag a box, Shift-click adds, Ctrl-click removes) and group orders |
 | `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks, and units on alert firing: `alert_target`), coastal battery fire and ship boarding |
-| `combat.rs` | damage formula, retaliation, combat log helpers |
+| `combat.rs` | damage formula (no random spread), retaliation, combat log helpers; the attack preview (`attack_preview`: what the attacks on the hovered hex would do this turn, stepped in resolution order on what the player knows; the interior's is `interior_attack_preview`) |
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `ai.rs` | the AI, playing every side but the player's (`ai_teams`) |
@@ -44,7 +44,7 @@ behavior.
 | `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues) in every scenario, board invariants checked each turn, same seed replays the same game |
 | `simulation/economy.rs` | tests only: `economy_report` (ignored; run with `--release -- --ignored --nocapture`) measures the economy's tempo over many seeds (units by type and turn, growth, stockpiles, fights, build times, spread; its `REPORT_*` knobs are in its module comment, its numbers in `docs/rts-economy.md`) |
 | `camera.rs` | orthographic camera: pan, zoom, glide, screen/world conversion |
-| `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges |
+| `draw.rs` | world geometry (`build_vertices`): hexes, terrain, ghosts, attack arcs, units, badges, health bars and the attack preview's marks on them (`push_health_loss`) |
 | `unit_icons.rs` | unit pictograms (sword, bow, horse head, ...) built from rects, triangles, circles and lines, in the mockup coordinates they were designed in |
 | `map_icons.rs` | resource and improvement icons (horse head, ingot, wheat, ore cart, fence, logs) in a hex's top corners, and the food, wood and metal icons in yield pips; the icon characters (`FOOD_ICON`, `WOOD_ICON`, `METAL_ICON`, `TIME_ICON`) that UI text draws as those icons (`push_inline_icon`); dark-edged shapes in their mockup coordinates |
 | `effects.rs` | attack animations during playback |
