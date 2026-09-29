@@ -371,6 +371,13 @@ impl GameState {
         }
     }
 
+    /// Whether the player hears of what happens in `city`'s interior: their
+    /// own city, or one in sight.
+    fn hears_of_city(&self, city: usize) -> bool {
+        let city = &self.cities[city];
+        city.team == self.local_team || self.fog().sees(city.pos)
+    }
+
     fn resolve_one_interior(&mut self, city: usize) {
         let owner = self.cities[city].team;
         let interior = &mut self.cities[city].interior;
@@ -422,14 +429,8 @@ impl GameState {
                 combat::roll_damage_against(CORE_ATTACK, fighter.stats().defense, &mut self.rng);
         }
         interior.core_hp = (interior.core_hp - core_damage).max(0.0);
-        if core_damage > 0.0 && interior.core_hp <= 0.0 {
-            self.notice = if owner == self.local_team {
-                "YOUR POST BREACHED - KEEP RED OFF THE CENTER"
-            } else {
-                "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE"
-            }
-            .into();
-        }
+        let breached = core_damage > 0.0 && interior.core_hp <= 0.0;
+        let player_inside = snapshot.iter().any(|f| f.team == self.local_team);
         for (fighter, amount) in interior.fighters.iter_mut().zip(damage) {
             fighter.hp = (fighter.hp - amount).max(0.0);
             fighter.planned_move = None;
@@ -456,7 +457,31 @@ impl GameState {
             })
             .flatten()
             .map(|f| f.team);
+        if breached && self.hears_of_city(city) {
+            let player = self.local_team;
+            let id = self.cities[city].id + 1;
+            self.notice = if owner == player {
+                "YOUR POST BREACHED - KEEP THE ENEMY OFF THE CENTER".into()
+            } else if player_inside {
+                format!("ENEMY POST BREACHED - MOVE A {player:?} TROOP ONTO THE CENTER TO CAPTURE")
+                    .to_uppercase()
+            } else {
+                format!("{owner:?} CITY {id}'S POST BREACHED").to_uppercase()
+            };
+        }
         if let Some(team) = conqueror {
+            let player = self.local_team;
+            let id = self.cities[city].id + 1;
+            if team == player {
+                self.notice = format!("CITY {id} CAPTURED IN THE INTERIOR");
+            } else if self.hears_of_city(city) {
+                self.notice = if owner == player {
+                    format!("CITY {id} LOST: {team:?} TOOK ITS COMMAND POST")
+                } else {
+                    format!("{team:?} CAPTURED {owner:?} CITY {id}")
+                }
+                .to_uppercase();
+            }
             let city_ref = &mut self.cities[city];
             city_ref.team = team;
             city_ref.interior.core_hp = CORE_HP;
@@ -465,7 +490,6 @@ impl GameState {
             city_ref.worker_jobs.clear();
             // Its workers at home serve the new owner, none of them held.
             city_ref.held_workers = 0;
-            self.notice = format!("CITY {} CAPTURED IN THE INTERIOR", city_ref.id + 1);
             log::info!("{}: {team:?} captures its command post", city_ref.id + 1);
             for index in 0..self.field_workers.len() {
                 if self.field_workers[index].home != city {
@@ -843,7 +867,85 @@ mod tests {
             .planned_attack = Some(CENTER);
         game.resolve_one_interior(1);
         assert_eq!(game.cities[1].interior.core_hp, 0.0);
-        assert!(game.notice.contains("POST BREACHED"));
+        assert_eq!(
+            game.notice,
+            "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE"
+        );
+    }
+
+    /// The siege of Red's city 2 by Blue, with the player on Green, which
+    /// sees only what a scout on `watch` sees: the post breached, then Blue
+    /// onto the center. What the player was told of each.
+    fn a_siege_watched_by_green(watch: Option<Hex>) -> (String, String) {
+        let mut game = GameState::siege_scenario();
+        let red = 1;
+        assert_eq!(game.cities[red].team, Team::Red);
+        game.local_team = Team::Green;
+        if let Some(pos) = watch {
+            game.units.push(crate::game::unit::Unit::new(
+                90,
+                pos,
+                Team::Green,
+                UnitType::Scout,
+            ));
+        }
+        game.notice.clear();
+        fn blue(game: &mut GameState, red: usize) -> &mut InteriorFighter {
+            game.cities[red]
+                .interior
+                .fighters
+                .iter_mut()
+                .find(|fighter| fighter.source_id == 1)
+                .unwrap()
+        }
+        game.cities[red].interior.core_hp = 1.0;
+        blue(&mut game, red).planned_attack = Some(CENTER);
+        game.resolve_one_interior(red);
+        assert_eq!(game.cities[red].interior.core_hp, 0.0);
+        let breach = std::mem::take(&mut game.notice);
+
+        game.cities[red]
+            .interior
+            .fighters
+            .retain(|fighter| fighter.team != Team::Red);
+        blue(&mut game, red).pos = CENTER;
+        game.resolve_one_interior(red);
+        assert_eq!(game.cities[red].team, Team::Blue);
+        (breach, game.notice)
+    }
+
+    #[test]
+    fn only_a_city_the_player_owns_or_sees_makes_news() {
+        assert_eq!(a_siege_watched_by_green(None), Default::default());
+        let city = GameState::siege_scenario().cities[1].pos;
+        let (breach, capture) = a_siege_watched_by_green(Some(city.neighbors()[0]));
+        assert_eq!(breach, "RED CITY 2'S POST BREACHED");
+        assert_eq!(capture, "BLUE CAPTURED RED CITY 2");
+    }
+
+    #[test]
+    fn the_players_own_city_lost_or_taken_is_worded_by_side() {
+        let mut game = GameState::siege_scenario();
+        game.cities[1].interior.core_hp = 0.0;
+        game.cities[1]
+            .interior
+            .fighters
+            .retain(|fighter| fighter.team != Team::Red);
+        game.cities[1].interior.fighters[0].pos = CENTER;
+        game.resolve_one_interior(1);
+        assert_eq!(game.notice, "CITY 2 CAPTURED IN THE INTERIOR");
+
+        // Played from Red's side, the same capture is a loss.
+        let mut game = GameState::siege_scenario();
+        game.local_team = Team::Red;
+        game.cities[1].interior.core_hp = 0.0;
+        game.cities[1]
+            .interior
+            .fighters
+            .retain(|fighter| fighter.team != Team::Red);
+        game.cities[1].interior.fighters[0].pos = CENTER;
+        game.resolve_one_interior(1);
+        assert_eq!(game.notice, "CITY 2 LOST: BLUE TOOK ITS COMMAND POST");
     }
 
     #[test]
