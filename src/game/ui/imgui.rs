@@ -10,8 +10,8 @@ use ::imgui::{
 use super::action_icons::{self, ICON_BUTTON_SIZE};
 use super::builder::{ButtonSpec, CatalogEntry, Row, flat_rows, icon_row, visible_button_hint};
 use super::network_menu::NetField;
-use super::text::{end_turn_label, fit_text};
-use super::tooltips::Subject;
+use super::text::fit_text;
+use super::tooltips::{PLAN_SENT, Subject};
 use super::*;
 use crate::game::map_icons;
 use crate::game::settings::{Control, Setting};
@@ -3398,7 +3398,7 @@ impl GameState {
             if index % columns != 0 {
                 ui.same_line();
             }
-            let _accent = match spec.state {
+            let _accent = match spec.state() {
                 ButtonState::Queued => {
                     Some(ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]))
                 }
@@ -3407,7 +3407,7 @@ impl GameState {
                 }
                 _ => None,
             };
-            let disabled = spec.state == ButtonState::Disabled;
+            let disabled = spec.unavailable.is_some();
             let _disabled = ui.begin_disabled(disabled);
             let id = format!("{:?}", spec.target);
             if rich_button(ui, &id, &grid.lines[index], size, false) {
@@ -3416,7 +3416,7 @@ impl GameState {
             note_drawn_button(ui, spec.target);
             if icons {
                 let icon = action_icons::for_button(spec.target, &spec.label).expect("icon row");
-                let color = match spec.state {
+                let color = match spec.state() {
                     ButtonState::Disabled => DIM_TEXT,
                     ButtonState::Queued => GOLD_TEXT,
                     ButtonState::Ready if spec.armed => BOOSTED_TEXT,
@@ -3465,7 +3465,12 @@ impl GameState {
         }
         show_tooltip(
             ui,
-            &self.subject_tooltip_lines(spec.target, &spec.label, subject),
+            &self.subject_tooltip_lines(
+                spec.target,
+                &spec.label,
+                spec.unavailable.as_deref(),
+                subject,
+            ),
         );
     }
 
@@ -3546,7 +3551,10 @@ impl GameState {
                         }
                         if hovered {
                             let target = Target::RosterSelect(chip.key);
-                            show_tooltip(ui, &self.subject_tooltip_lines(target, "", subject));
+                            show_tooltip(
+                                ui,
+                                &self.subject_tooltip_lines(target, "", None, subject),
+                            );
                         }
                     }
                 }
@@ -3596,7 +3604,7 @@ impl GameState {
                         let [x, y] = ui.cursor_pos();
                         ui.set_cursor_pos([x + room, y]);
                     }
-                    let _disabled = ui.begin_disabled(spec.state == ButtonState::Disabled);
+                    let _disabled = ui.begin_disabled(spec.unavailable.is_some());
                     let id = format!("{:?}", spec.target);
                     if rich_button(ui, &id, &[label], [width, 0.0], false) {
                         actions.push(Action::Button(scope, spec.target));
@@ -3620,15 +3628,14 @@ impl GameState {
                                     }
                                     continue;
                                 };
-                                let _accent = match spec.state {
+                                let _accent = match spec.state() {
                                     ButtonState::Queued => Some(ui.push_style_color(
                                         StyleColor::Button,
                                         [0.34, 0.30, 0.17, 1.0],
                                     )),
                                     _ => None,
                                 };
-                                let _disabled =
-                                    ui.begin_disabled(spec.state == ButtonState::Disabled);
+                                let _disabled = ui.begin_disabled(spec.unavailable.is_some());
                                 let width = ui.content_region_avail()[0].max(80.0);
                                 let hint = visible_button_hint(&spec.hint, false);
                                 let has_icon =
@@ -3683,7 +3690,7 @@ impl GameState {
                     note_drawn_button(ui, row);
                     // Not while it is pressed or dragged: its payload shows then.
                     if ui.is_item_hovered() && !ui.is_item_active() {
-                        show_tooltip(ui, &self.subject_tooltip_lines(row, "", subject));
+                        show_tooltip(ui, &self.subject_tooltip_lines(row, "", None, subject));
                     }
                     drop(_background);
                     drop(_align);
@@ -3727,7 +3734,11 @@ impl GameState {
                     note_button_label(ui, "X");
                     note_drawn_button(ui, remove);
                     if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                        show_tooltip(ui, &self.subject_tooltip_lines(remove, "X", subject));
+                        let locked = item.locked.then_some(PLAN_SENT);
+                        show_tooltip(
+                            ui,
+                            &self.subject_tooltip_lines(remove, "X", locked, subject),
+                        );
                     }
                 }
             }
@@ -3782,7 +3793,6 @@ impl GameState {
         layout
             .pinned_geometry
             .retain(|pin, _| layout.pinned.contains(pin));
-        let pending = self.pending();
         let turn = self.shown_turn();
         // The stockpile and supply beside the turn number: all of it, or
         // without the stockpile's change a turn when that won't fit.
@@ -3885,7 +3895,7 @@ impl GameState {
                 note_drawn_button(ui, Target::OpenSettings);
                 if ui.is_item_hovered() {
                     let lines =
-                        self.subject_tooltip_lines(Target::OpenSettings, "MENU", no_subject);
+                        self.subject_tooltip_lines(Target::OpenSettings, "MENU", None, no_subject);
                     show_tooltip(ui, &lines);
                 }
                 ui.same_line_with_spacing(0.0, STATUS_MENU_GAP);
@@ -3927,20 +3937,21 @@ impl GameState {
                     }
                 }
                 ui.set_cursor_pos([end_x, 7.0]);
-                let label = if self.is_resolving() {
-                    self.resolving_label()
-                } else {
-                    end_turn_label(pending)
-                };
                 // Waiting for the others' plans, it takes this side's back.
-                let _disabled = ui.begin_disabled(self.is_playing_out());
+                let end_turn = self.end_turn_button();
+                let _disabled = ui.begin_disabled(end_turn.unavailable.is_some());
                 let end_size = [end_width - 15.0, 29.0];
-                if ui.button_with_size(format!("{label}###EndTurn"), end_size) {
+                if ui.button_with_size(format!("{}###EndTurn", end_turn.label), end_size) {
                     actions.push(Action::Button(None, Target::EndTurn));
                 }
                 note_drawn_button(ui, Target::EndTurn);
                 if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                    let lines = self.subject_tooltip_lines(Target::EndTurn, &label, no_subject);
+                    let lines = self.subject_tooltip_lines(
+                        Target::EndTurn,
+                        &end_turn.label,
+                        end_turn.unavailable.as_deref(),
+                        no_subject,
+                    );
                     show_tooltip(ui, &lines);
                 }
             });
@@ -4538,18 +4549,24 @@ mod tests {
         game.units[pinned].ability_cooldown = 2;
         let pin = unit_pin(&game, pinned);
         let focus = game.pin_focus(pin, &PinnedGroups::default()).unwrap();
-        let tooltip = |game: &GameState, subject| {
-            game.subject_tooltip_lines(Target::Unit(UnitAction::Ability), "", subject)
+        // The Ability button of `unit`'s tray, and its tooltip for `subject`.
+        let tooltip = |game: &GameState, unit: usize, subject| {
+            let ability = Target::Unit(UnitAction::Ability);
+            let buttons = game.unit_buttons(unit);
+            let spec = buttons.iter().find(|b| b.target == ability).unwrap();
+            game.subject_tooltip_lines(ability, "", spec.unavailable.as_deref(), subject)
                 .into_iter()
                 .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
                 .collect::<String>()
         };
         // Nothing selected: the panel's unit still has a tooltip.
-        assert!(tooltip(&game, GameState::pin_subject(&focus)).contains("READY IN"));
+        let subject = GameState::pin_subject(&focus);
+        assert!(tooltip(&game, pinned, subject).contains("READY IN"));
         // Another unit selected: still the panel's unit's, not the selection's.
         game.set_selection(vec![selected]);
-        assert!(tooltip(&game, GameState::pin_subject(&focus)).contains("READY IN"));
-        assert!(!tooltip(&game, game.selection_subject()).contains("READY IN"));
+        assert!(tooltip(&game, pinned, subject).contains("READY IN"));
+        let selection = game.selection_subject();
+        assert!(!tooltip(&game, selected, selection).contains("READY IN"));
     }
 
     #[test]

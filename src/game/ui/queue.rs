@@ -3,8 +3,8 @@
 
 use super::builder::{ButtonSpec, PanelBuilder};
 use super::{
-    ButtonState, LABEL_TEXT, PADDING, QUEUE_ITEM_HEIGHT, QueueDrag, QueueItemSpec, QueueKind,
-    TITLE_ROW_HEIGHT, Target, contains, to_ui,
+    LABEL_TEXT, PADDING, QUEUE_ITEM_HEIGHT, QueueDrag, QueueItemSpec, QueueKind, TITLE_ROW_HEIGHT,
+    Target, contains, to_ui,
 };
 use crate::game::GameState;
 use crate::game::city::{Lane, SETTLER_MIN_POPULATION, Stock, stock_icons, turns_icon};
@@ -274,13 +274,10 @@ impl GameState {
     fn queue_title(&self, title: &str, clear: Target, panel: &mut PanelBuilder) {
         panel.title_with_button(
             vec![(title.into(), LABEL_TEXT)],
-            ButtonSpec {
-                target: clear,
-                label: "CLEAR".into(),
-                hint: String::new(),
-                state: ButtonState::new(false, self.is_resolving()),
-                armed: false,
-            },
+            ButtonSpec::new(clear, "CLEAR", "").unavailable(
+                self.is_resolving()
+                    .then(|| "NOT WHILE THE TURN PLAYS OUT".into()),
+            ),
         );
     }
 

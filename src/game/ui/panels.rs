@@ -5,8 +5,8 @@ use super::dock::Zone;
 use super::paint::fade;
 use super::text::{end_turn_label, fit_text, price_hint, stock_spans};
 use super::{
-    BODY, Button, ButtonState, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, Line,
-    MARGIN, NOTICE_TEXT, REDUCED_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
+    BODY, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN, NOTICE_TEXT,
+    REDUCED_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
 };
 use crate::game::GameState;
 use crate::game::city::{Lane, MAX_CITY_POPULATION, Stock, turns_icon};
@@ -29,26 +29,16 @@ impl GameState {
             ..PanelBuilder::default()
         };
         panel.text(SMALL, vec![("DEBUG".into(), fade(LABEL_TEXT, true))]);
-        let debug_button = |target, label: &str, hint: &str, state| ButtonSpec {
-            target,
-            label: label.into(),
-            hint: hint.into(),
-            state,
-            armed: false,
+        let debug_button = |target, label: &str, hint: &str| ButtonSpec::new(target, label, hint);
+        // The current scenario's page is gold; pressing it restarts it.
+        let scenario = |scenario: Scenario, hint: &str| {
+            debug_button(Target::Scenario(scenario), scenario.name(), hint)
+                .queued(scenario == self.scenario)
         };
         panel.compact_buttons(
             Scenario::ALL[..4]
                 .iter()
-                .copied()
-                .map(|scenario| {
-                    let current = ButtonState::new(scenario == self.scenario, false);
-                    debug_button(
-                        Target::Scenario(scenario),
-                        scenario.name(),
-                        scenario.key(),
-                        current,
-                    )
-                })
+                .map(|&page| scenario(page, page.key()))
                 .collect(),
         );
         if let Some(seed) = self.map_seed {
@@ -59,37 +49,30 @@ impl GameState {
         }
         panel.gap(GAP);
         panel.compact_buttons(vec![
-            debug_button(
-                Target::Scenario(Scenario::Siege),
-                "SIEGE",
-                "F12",
-                ButtonState::new(self.scenario == Scenario::Siege, false),
+            scenario(Scenario::Siege, "F12"),
+            scenario(Scenario::Naval, ""),
+            debug_button(Target::SaveState, "SAVE", "F6").unavailable(
+                self.is_resolving()
+                    .then(|| "NOT WHILE A TURN PLAYS OUT".into()),
             ),
-            debug_button(
-                Target::Scenario(Scenario::Naval),
-                "NAVAL",
-                "",
-                ButtonState::new(self.scenario == Scenario::Naval, false),
-            ),
-            debug_button(
-                Target::SaveState,
-                "SAVE",
-                "F6",
-                ButtonState::new(false, self.is_resolving()),
-            ),
-            debug_button(
-                Target::LoadState,
-                "LOAD",
-                "F7",
-                ButtonState::new(false, self.savestate.is_none()),
-            ),
+            debug_button(Target::LoadState, "LOAD", "F7")
+                .unavailable(self.savestate.is_none().then(|| "NOTHING SAVED YET".into())),
         ]);
-        let can_complete = if let Some(city) = self.selected_barracks {
-            !self.cities[city].barracks_queue.is_empty()
+        // What F9 would finish: the open Barracks' or city's current build.
+        let complete = if self.is_resolving() {
+            Some("NOT WHILE A TURN PLAYS OUT")
+        } else if let Some(city) = self.selected_barracks {
+            self.cities[city]
+                .barracks_queue
+                .is_empty()
+                .then_some("THE BARRACKS QUEUE IS EMPTY")
         } else if let Some(city) = self.selected_city {
-            !self.cities[city].queue.is_empty()
+            self.cities[city]
+                .queue
+                .is_empty()
+                .then_some("THE CITY QUEUE IS EMPTY")
         } else {
-            false
+            Some("OPEN A CITY OR BARRACKS FIRST")
         };
         // Beside it, how the Cavalry and Armored cap counts
         // (`city/barracks.rs`): those alive, or every one ever trained.
@@ -99,13 +82,9 @@ impl GameState {
             "UNIT CAP: ALIVE"
         };
         panel.compact_buttons(vec![
-            debug_button(
-                Target::CompleteProduction,
-                "FINISH BUILD",
-                "F9",
-                ButtonState::new(false, self.is_resolving() || !can_complete),
-            ),
-            debug_button(Target::ToggleLifetimeCap, cap, "", ButtonState::Ready),
+            debug_button(Target::CompleteProduction, "FINISH BUILD", "F9")
+                .unavailable(complete.map(String::from)),
+            debug_button(Target::ToggleLifetimeCap, cap, ""),
         ]);
         if let Some(saved) = self.saved_summary() {
             panel.text(
@@ -124,12 +103,7 @@ impl GameState {
         } else {
             "FOG OF WAR: OFF"
         };
-        panel.compact_buttons(vec![debug_button(
-            Target::TogglePlayback,
-            playback,
-            "F8",
-            ButtonState::Ready,
-        )]);
+        panel.compact_buttons(vec![debug_button(Target::TogglePlayback, playback, "F8")]);
         // Beside fog, the economy experiment's variant
         // (`docs/rts-economy.md`): production speeds builds.
         let speedup = if self.production_speedup {
@@ -138,13 +112,8 @@ impl GameState {
             "PROD SPEEDUP: OFF"
         };
         panel.compact_buttons(vec![
-            debug_button(Target::ToggleFog, fog, "F10", ButtonState::Ready),
-            debug_button(
-                Target::ToggleProductionSpeedup,
-                speedup,
-                "",
-                ButtonState::Ready,
-            ),
+            debug_button(Target::ToggleFog, fog, "F10"),
+            debug_button(Target::ToggleProductionSpeedup, speedup, ""),
         ]);
         panel
     }
@@ -221,6 +190,27 @@ impl GameState {
         }
     }
 
+    /// The End Turn button, in both presentations (`top_bar`, and ImGui's
+    /// status bar): it names whatever the turn still waits on (a click
+    /// selects that), and is gold once nothing does. While a network game
+    /// waits for the others' plans, a click takes this side's back.
+    pub(super) fn end_turn_button(&self) -> ButtonSpec {
+        let pending = self.pending();
+        let label = if self.is_resolving() {
+            self.resolving_label()
+        } else {
+            end_turn_label(pending)
+        };
+        let waiting = self.waiting_for_peers();
+        let hint = if waiting { "TAKE BACK" } else { "SPACE" };
+        ButtonSpec::new(Target::EndTurn, label, hint)
+            .queued(!waiting && pending == (0, 0))
+            .unavailable(
+                self.is_playing_out()
+                    .then(|| "NOT WHILE THE TURN PLAYS OUT".into()),
+            )
+    }
+
     /// Turn number, the stockpile and supply on the left, the latest notice in the
     /// middle, and on the right the End Turn button, which names whatever the turn is still
     /// waiting on (clicking it selects that).
@@ -229,7 +219,6 @@ impl GameState {
         layout.panel(min, size, false);
         let middle = min.y + TOP_BAR_HEIGHT / 2.0;
 
-        let pending = self.pending();
         let turn = self.shown_turn();
         let turn_text = format!("TURN {turn}");
         let turn_end = MARGIN + font::ui(TITLE).width(&turn_text);
@@ -253,49 +242,24 @@ impl GameState {
         );
         let left_end = turn_end + 2.0 * GAP + stockpile_width;
 
-        let label = if self.is_resolving() {
-            self.resolving_label()
-        } else {
-            end_turn_label(pending)
-        };
-        // While waiting for the others, a click takes the turn back.
-        let hint = if self.waiting_for_peers() {
-            "TAKE BACK"
-        } else {
-            "SPACE"
-        }
-        .to_string();
-        let width = single_line_button_width(&label, &hint);
+        let end_turn = self.end_turn_button();
+        let width = single_line_button_width(&end_turn.label, &end_turn.hint);
         let button_min = Vec2::new(size.x - MARGIN - width, middle - END_TURN_HEIGHT / 2.0);
-        let end_turn = Button {
-            target: Target::EndTurn,
-            label,
-            hint,
-            state: if self.is_playing_out() {
-                ButtonState::Disabled
-            } else if self.waiting_for_peers() {
-                ButtonState::Ready
-            } else {
-                ButtonState::new(pending == (0, 0), false)
-            },
-            armed: false,
-            faded: false,
-            min: button_min.round(),
-            max: (button_min + Vec2::new(width, END_TURN_HEIGHT)).round(),
-        };
+        let end_turn = end_turn.place(
+            button_min.round(),
+            (button_min + Vec2::new(width, END_TURN_HEIGHT)).round(),
+            false,
+        );
 
         let menu_width = single_line_button_width("MENU", "");
         let menu_min = Vec2::new(left_end + GAP * 2.0, middle - END_TURN_HEIGHT / 2.0);
-        layout.buttons.push(Button {
-            target: Target::OpenSettings,
-            label: "MENU".into(),
-            hint: String::new(),
-            state: ButtonState::Ready,
-            armed: false,
-            faded: false,
-            min: menu_min.round(),
-            max: (menu_min + Vec2::new(menu_width, END_TURN_HEIGHT)).round(),
-        });
+        layout
+            .buttons
+            .push(ButtonSpec::new(Target::OpenSettings, "MENU", "").place(
+                menu_min.round(),
+                (menu_min + Vec2::new(menu_width, END_TURN_HEIGHT)).round(),
+                false,
+            ));
         let left_end = menu_min.x + menu_width;
 
         // The notice sits centered in the space left between the two,

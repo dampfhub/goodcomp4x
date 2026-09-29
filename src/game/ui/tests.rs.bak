@@ -255,7 +255,7 @@ fn alert_button_puts_the_selected_unit_on_alert_in_both_presentations() {
     game.selected = Some(first);
     let layout = game.layout(SCREEN);
     let button = layout.buttons.iter().find(|b| b.target == alert).unwrap();
-    assert_eq!(button.state(), ButtonState::Queued);
+    assert_eq!(button.state, ButtonState::Queued);
     assert_eq!(
         layout
             .button_at((button.min + button.max) / 2.0)
@@ -292,7 +292,7 @@ fn only_troops_that_can_go_on_alert_show_its_button() {
             .into_iter()
             .find(|b| b.target == alert)
             .unwrap()
-            .state()
+            .state
     };
     assert_eq!(state(&game), ButtonState::Disabled);
     game.units[melee].deployed = true;
@@ -317,7 +317,7 @@ fn debug_panel_saves_loads_and_switches_scenarios() {
             .iter()
             .find(|b| b.target == load)
             .unwrap()
-            .state()
+            .state
     };
     assert_eq!(
         load_state(&game),
@@ -567,7 +567,7 @@ fn building_card(game: &mut GameState, building: Building) -> ButtonState {
         .iter()
         .find(|b| b.target == Target::Building(building))
         .expect("building card shown")
-        .state()
+        .state
 }
 
 /// Plays the turn out to the next planning phase.
@@ -974,7 +974,13 @@ fn docked_panel_buttons_share_the_rendered_hit_box() {
     let mut panel = PanelBuilder::default();
     panel.text(TITLE, vec![("ADDED PANEL".into(), TEXT)]);
     panel.gap(37.0);
-    panel.buttons(vec![ButtonSpec::new(Target::ToggleYields, "ACTION", "Y")]);
+    panel.buttons(vec![ButtonSpec {
+        target: Target::ToggleYields,
+        label: "ACTION".into(),
+        hint: "Y".into(),
+        state: ButtonState::Ready,
+        armed: false,
+    }]);
     let rect = layout.dock_panel(panel, Zone::BottomLeft).unwrap();
     let button = layout
         .buttons
@@ -1298,11 +1304,11 @@ fn a_manager_picked_up_takes_its_income_off_the_panels_at_once() {
     assert_shows(&tray, &format!("{FOOD_ICON}{}", signed_quantity(net.food)));
     let expected = stock_spans(
         game.stock(team),
-        Some(Stock {
+        Stock {
             food: game.side_income(team).food - carried.food - game.upkeep(team),
             wood: game.side_income(team).wood - carried.wood,
             metal: game.side_income(team).metal - carried.metal,
-        }),
+        },
     );
     assert_eq!(game.stockpile_line(), expected);
     assert_ne!(game.stockpile_line(), side_before);
@@ -1342,8 +1348,7 @@ fn find_button(game: &GameState, target: Target) -> Button {
         target: button.target,
         label: button.label.clone(),
         hint: button.hint.clone(),
-        queued: button.queued,
-        unavailable: button.unavailable.clone(),
+        state: button.state,
         armed: button.armed,
         faded: button.faded,
         min: button.min,
@@ -1356,7 +1361,7 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
     let mut game = GameState::city_scenario();
     game.open_city(0);
     let melee = find_button(&game, Target::Build(BuildUnit::Melee));
-    assert_eq!(melee.state(), ButtonState::Ready);
+    assert_eq!(melee.state, ButtonState::Ready);
     let price = format!("{FOOD_ICON}3 {WOOD_ICON}9");
     assert!(melee.hint.contains(&price), "{}", melee.hint);
     // The city center takes twice a Barracks' turns.
@@ -1379,7 +1384,7 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
     // tooltip says what it's short of this turn, and that it'll wait.
     for target in [Target::Build(BuildUnit::Melee), Target::Grow] {
         let card = find_button(&game, target);
-        assert_eq!(card.state(), ButtonState::Ready, "{target:?}");
+        assert_eq!(card.state, ButtonState::Ready, "{target:?}");
         let text = tooltip(&game, &card);
         assert!(
             text.contains("SHORT OF") && text.contains("WAITS"),
@@ -1389,7 +1394,7 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
     // A building is still paid when placed: its card is dimmed.
     game.cities[0].building_scroll = 5;
     let card = find_button(&game, Target::Building(Building::Barracks));
-    assert_eq!(card.state(), ButtonState::Disabled);
+    assert_eq!(card.state, ButtonState::Disabled);
     assert!(tooltip(&game, &card).contains("SHORT OF"));
     game.cities[0].building_scroll = 0;
 
@@ -1489,7 +1494,7 @@ fn card_state(game: &mut GameState, target: Target) -> ButtonState {
         .iter()
         .find(|b| b.target == target)
         .expect("card shown")
-        .state()
+        .state
 }
 
 #[test]
@@ -2020,11 +2025,7 @@ fn clear_orders_drops_a_groups_queues() {
         .into_iter()
         .find(|b| b.target == Target::Unit(UnitAction::ClearOrders))
         .unwrap();
-    assert_eq!(
-        clear.state(),
-        ButtonState::Disabled,
-        "nothing left to clear"
-    );
+    assert_eq!(clear.state, ButtonState::Disabled, "nothing left to clear");
 }
 
 /// The classic settings menu's buttons for `setting`, in order.
@@ -2033,7 +2034,7 @@ fn setting_buttons(game: &GameState, setting: Setting) -> Vec<(i32, ButtonState)
         .buttons
         .iter()
         .filter_map(|b| match b.target {
-            Target::SetSetting(s, to) if s == setting => Some((to, b.state())),
+            Target::SetSetting(s, to) if s == setting => Some((to, b.state)),
             _ => None,
         })
         .collect()
@@ -2276,7 +2277,16 @@ fn the_settings_menu_shows_every_setting_under_its_heading() {
     }
 
     let tooltip = |target| {
-        let button = ButtonSpec::new(target, "", "").place(Vec2::ZERO, Vec2::ZERO, false);
+        let button = Button {
+            target,
+            label: String::new(),
+            hint: String::new(),
+            state: ButtonState::Ready,
+            armed: false,
+            faded: false,
+            min: Vec2::ZERO,
+            max: Vec2::ZERO,
+        };
         line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l))
     };
     let current = tooltip(Target::SetSetting(Setting::TurnPlayback, 1));
@@ -2285,17 +2295,8 @@ fn the_settings_menu_shows_every_setting_under_its_heading() {
     let other = tooltip(Target::SetSetting(Setting::TurnPlayback, 0));
     assert_shows(&other, "OFF");
     assert!(!other.iter().any(|line| line.contains("ALREADY")));
-    // Classic's < at the lowest value is off, saying why.
-    let lowest = *Setting::MaxQueuedTurns.range().start();
-    let rows = settings_menu::classic_setting_rows(Setting::MaxQueuedTurns, lowest);
-    let Some(Row::LabeledButtons(_, buttons)) = rows.first() else {
-        panic!("a row of buttons");
-    };
-    let down = buttons.iter().find(|b| b.label == "<").unwrap();
-    assert_eq!(down.state(), ButtonState::Disabled);
-    let button = down.clone().place(Vec2::ZERO, Vec2::ZERO, false);
-    let why = line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l));
-    assert_shows(&why, "ALREADY THE LOWEST: 1 TURN");
+    let past_the_end = tooltip(Target::SetSetting(Setting::MaxQueuedTurns, 0));
+    assert_shows(&past_the_end, "ALREADY 6 TURNS");
 }
 
 #[test]
@@ -2309,9 +2310,9 @@ fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
     assert_shows(&tray, "CAVALRY: 3 OF 3 LEFT (1 HORSES DEPOSIT × 3)");
     assert_shows(&tray, "ARMORED: LOCKED - PUT A BARRACKS ON IRON");
     let cavalry = find_button(&game, Target::BarracksBuild(BuildUnit::Cavalry));
-    assert_eq!(cavalry.state(), ButtonState::Ready);
+    assert_eq!(cavalry.state, ButtonState::Ready);
     let armored = find_button(&game, Target::BarracksBuild(BuildUnit::Armored));
-    assert_eq!(armored.state(), ButtonState::Disabled);
+    assert_eq!(armored.state, ButtonState::Disabled);
     let tooltip: String = game
         .tooltip_lines(&armored)
         .into_iter()
@@ -3002,7 +3003,7 @@ fn placing_shows_a_cancel_button_that_stops_it_with_nothing_placed() {
         .iter()
         .find(|b| b.target == Target::Building(Building::Barracks))
         .expect("the picked card stays in view");
-    assert_eq!(armed.state(), ButtonState::Queued);
+    assert_eq!(armed.state, ButtonState::Queued);
     let cancel = layout
         .buttons
         .iter()
@@ -3355,7 +3356,7 @@ fn the_clear_button_is_dimmed_while_a_turn_plays_out() {
         .iter()
         .find(|b| b.target == Target::ClearCityQueue)
         .expect("shown");
-    assert_eq!(clear.state(), ButtonState::Disabled);
+    assert_eq!(clear.state, ButtonState::Disabled);
     let why = line_strings(game.tooltip_lines(clear).into_iter().map(|(_, l)| l)).join(" ");
     assert!(why.contains("NOT WHILE THE TURN PLAYS OUT"), "{why}");
     game.activate_target(Target::ClearCityQueue);
@@ -3458,7 +3459,7 @@ fn waiting_for_the_others_the_classic_panels_show_but_change_nothing() {
         assert!(!changing.is_empty(), "{view}: something to refuse");
         for button in &changing {
             let target = button.target;
-            assert_eq!(button.state(), ButtonState::Disabled, "{view}: {target:?}");
+            assert_eq!(button.state, ButtonState::Disabled, "{view}: {target:?}");
             let why = line_strings(game.tooltip_lines(button).into_iter().map(|(_, l)| l));
             assert!(
                 why.join(" ").contains(tooltips::PLAN_SENT),
@@ -3477,7 +3478,7 @@ fn waiting_for_the_others_the_classic_panels_show_but_change_nothing() {
         };
         for button in layout.buttons.iter().filter(|b| looking(b.target)) {
             let target = button.target;
-            assert_ne!(button.state(), ButtonState::Disabled, "{view}: {target:?}");
+            assert_ne!(button.state, ButtonState::Disabled, "{view}: {target:?}");
         }
         // Clicking every button, or dragging a queue row, changes nothing.
         let targets: Vec<Target> = changing.iter().map(|b| b.target).collect();
@@ -3543,7 +3544,7 @@ fn the_waiting_button_takes_the_turn_back_in_both_presentations() {
         let button = find_button(&game, Target::EndTurn);
         assert_eq!(button.label, "WAITING FOR THE OTHERS");
         assert_eq!(button.hint, "TAKE BACK");
-        assert_eq!(button.state(), ButtonState::Ready);
+        assert_eq!(button.state, ButtonState::Ready);
         let tip = line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l));
         assert!(tip[0].starts_with("TAKE BACK END TURN"), "{tip:?}");
         if imgui {
@@ -3565,7 +3566,7 @@ fn the_waiting_button_takes_the_turn_back_in_both_presentations() {
         let city = game.cities.iter().position(|c| c.team == team).unwrap();
         game.open_city(city);
         let melee = find_button(&game, Target::Build(BuildUnit::Melee));
-        assert_ne!(melee.state(), ButtonState::Disabled);
+        assert_ne!(melee.state, ButtonState::Disabled);
         game.activate_target(Target::Build(BuildUnit::Melee));
         game.activate_target(Target::EndTurn);
         assert!(game.waiting_for_peers(), "{}", game.notice);
@@ -3853,7 +3854,7 @@ fn waiting_for_the_others_the_city_workers_list_changes_nothing() {
             0
         };
         assert_eq!(
-            find_button(&game, target).state(),
+            find_button(&game, target).state,
             ButtonState::Disabled,
             "{target:?}"
         );
@@ -3862,7 +3863,7 @@ fn waiting_for_the_others_the_city_workers_list_changes_nothing() {
     }
     game.cities[city].worker_scroll = 0;
     let show = find_button(&game, Target::ShowWorker(9_000));
-    assert_ne!(show.state(), ButtonState::Disabled);
+    assert_ne!(show.state, ButtonState::Disabled);
     // ImGui: the same.
     let mut screen = ImGuiScreen::new();
     for target in changing {
@@ -3964,7 +3965,7 @@ fn priority_chips_show_the_order_and_drag_or_click_to_change_it() {
             .iter()
             .find(|b| b.target == target)
             .unwrap();
-        (b.state(), b.armed)
+        (b.state, b.armed)
     };
     assert_eq!(state(Target::Priority(Metal)), (ButtonState::Queued, false));
     assert_eq!(state(Target::Priority(Food)), (ButtonState::Ready, true));
@@ -4101,7 +4102,7 @@ fn scout_and_settler_cards_queue_from_the_city_and_say_why_when_they_cannot() {
     // says so, and its tooltip gives the rule.
     catalog_cursor(&mut game, Target::BuildSettler);
     let settler = find_button(&game, Target::BuildSettler);
-    assert_eq!(settler.state(), ButtonState::Disabled);
+    assert_eq!(settler.state, ButtonState::Disabled);
     assert_eq!(settler.hint, "NEEDS POPULATION 3");
     let text = tooltip(&game, &settler);
     assert!(text.contains("NEEDS POPULATION 3"), "{text}");
@@ -4110,7 +4111,7 @@ fn scout_and_settler_cards_queue_from_the_city_and_say_why_when_they_cannot() {
     // The Scout card queues a scout, and then says it's one at a time.
     let card = catalog_cursor(&mut game, Target::BuildScout);
     let scout = find_button(&game, Target::BuildScout);
-    assert_eq!(scout.state(), ButtonState::Ready);
+    assert_eq!(scout.state, ButtonState::Ready);
     assert!(
         scout.hint.contains(&format!("{FOOD_ICON}2 {WOOD_ICON}4")),
         "{}",
@@ -4125,7 +4126,7 @@ fn scout_and_settler_cards_queue_from_the_city_and_say_why_when_they_cannot() {
     assert_eq!(game.cities[0].queue, [Queued::new(Build::Scout)]);
     let scout = find_button(&game, Target::BuildScout);
     assert_eq!(
-        (scout.state(), scout.hint.as_str()),
+        (scout.state, scout.hint.as_str()),
         (ButtonState::Disabled, "ONE SCOUT AT A TIME")
     );
 
@@ -4133,7 +4134,7 @@ fn scout_and_settler_cards_queue_from_the_city_and_say_why_when_they_cannot() {
     game.cities[0].population = 3;
     let card = catalog_cursor(&mut game, Target::BuildSettler);
     let settler = find_button(&game, Target::BuildSettler);
-    assert_eq!(settler.state(), ButtonState::Ready);
+    assert_eq!(settler.state, ButtonState::Ready);
     assert!(
         settler
             .hint
@@ -4556,104 +4557,6 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
     }
 }
 
-#[test]
-fn imgui_status_bar_keeps_its_parts_apart_at_every_width() {
-    // #320: in a narrow window the VIEW label ran into the stockpile and End
-    // Turn covered RESET, and with the game's fonts Menu's top was a pixel
-    // inside the notice's line at any width.
-    const SLACK: f32 = 0.5;
-    const NOTICE: &str = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE";
-    let city = || {
-        let mut game = city_view();
-        game.notice = NOTICE.into();
-        game
-    };
-    let rich = || {
-        let mut game = city();
-        *game.stock_mut(Team::Blue) = Stock::whole(12345, 23456, 34567);
-        game
-    };
-    let map = || {
-        let mut game = GameState::new();
-        game.clear_selection();
-        game.notice = NOTICE.into();
-        game
-    };
-    let bars: [(&str, &dyn Fn() -> GameState, bool); 3] = [
-        ("city", &city, true),
-        ("rich city", &rich, true),
-        ("map", &map, false),
-    ];
-    let height = 720.0;
-    let least = MIN_WINDOW_SIZE[0] as u32;
-    let mut screen = ImGuiScreen::styled(Vec2::new(least as f32, height));
-    for (name, make, reset) in bars {
-        let mut game = make();
-        for width in (least..1000).step_by(12).chain((1000..=1600).step_by(100)) {
-            let width = width as f32;
-            screen.size = Vec2::new(width, height);
-            screen.context.io_mut().display_size = [width, height];
-            screen.settle(&mut game);
-            // Every piece of text and icon, control and End Turn.
-            let mut parts: Vec<(String, [f32; 2], [f32; 2])> =
-                imgui::DRAWN_MARKS.with_borrow(|marks| {
-                    marks
-                        .iter()
-                        .filter(|mark| mark.window == "Status")
-                        .map(|mark| (mark.what.clone(), mark.min, mark.max))
-                        .collect()
-                });
-            let texts: Vec<String> = parts.iter().map(|part| part.0.clone()).collect();
-            assert!(
-                texts.iter().any(|text| text.starts_with("TURN ")),
-                "{name} at {width}: {texts:?}"
-            );
-            // The stockpile and supply, dropped from their end only when
-            // there's no room: with the game's font all of them at every
-            // width, with ImGui's own (no system font) from 800 px.
-            let icons = texts.iter().filter(|text| *text == "icon").count();
-            let supply = texts.iter().any(|text| text.contains("SUPPLY"));
-            assert!(icons >= 1, "{name} at {width}: {texts:?}");
-            if width >= 800.0 {
-                assert!(icons == 3 && supply, "{name} at {width}: {texts:?}");
-            }
-            let controls = imgui_status_controls();
-            let labels: Vec<&str> = controls.iter().map(|(text, ..)| text.as_str()).collect();
-            let mut wanted = vec!["MENU", "EDIT VIEW", "+ BOX"];
-            if reset {
-                wanted.push("RESET");
-            }
-            assert!(
-                wanted.iter().all(|want| labels.contains(want)),
-                "{name} at {width}: {labels:?}"
-            );
-            parts.extend(controls);
-            let (end_min, end_max) = imgui_end_turn();
-            parts.push(("End Turn".into(), end_min, end_max));
-            for (what, min, max) in &parts {
-                assert!(
-                    min[0] >= -SLACK
-                        && max[0] <= width + SLACK
-                        && min[1] >= -SLACK
-                        && max[1] <= imgui::STATUS_HEIGHT + SLACK,
-                    "{name} at {width}: {what:?} ({min:?}-{max:?}) leaves the bar"
-                );
-            }
-            for (index, (what, min, max)) in parts.iter().enumerate() {
-                for (other, other_min, other_max) in &parts[index + 1..] {
-                    let overlap = Vec2::from(*max).min(Vec2::from(*other_max))
-                        - Vec2::from(*min).max(Vec2::from(*other_min));
-                    assert!(
-                        !overlap.cmpgt(Vec2::splat(SLACK)).all(),
-                        "{name} at {width}: {what:?} ({min:?}-{max:?}) overlaps {other:?} \
-                         ({other_min:?}-{other_max:?})"
-                    );
-                }
-            }
-        }
-    }
-}
-
 /// The text of every tooltip line for `button` (classic), joined.
 fn tooltip_text(game: &GameState, button: &Button) -> String {
     game.tooltip_lines(button)
@@ -4685,7 +4588,7 @@ fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_present
     assert!(drawn(&game, &count), "the classic top bar shows {count}");
     // A troop card says what it uses.
     let melee = find_button(&game, Target::Build(BuildUnit::Melee));
-    assert_eq!(melee.state(), ButtonState::Ready);
+    assert_eq!(melee.state, ButtonState::Ready);
     let tooltip = tooltip_text(&game, &melee);
     assert!(
         tooltip
@@ -4701,7 +4604,7 @@ fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_present
     let full = format!("SUPPLY FULL ({cap}/{cap})");
     for target in [Target::Build(BuildUnit::Melee), Target::BuildScout] {
         let card = find_button(&game, target);
-        assert_eq!(card.state(), ButtonState::Disabled, "{target:?}");
+        assert_eq!(card.state, ButtonState::Disabled, "{target:?}");
         assert_eq!(card.hint, full, "{target:?}");
         let tooltip = tooltip_text(&game, &card).replace(' ', "");
         assert!(tooltip.contains(&full.replace(' ', "")), "{tooltip}");
@@ -4730,7 +4633,7 @@ fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_present
     let tray = panel_strings(|panel| game.barracks_tray(0, panel));
     assert_shows(&tray, &format!("SUPPLY {cap}/{cap} · FULL"));
     let ranged = find_button(&game, Target::BarracksBuild(BuildUnit::Ranged));
-    assert_eq!(ranged.state(), ButtonState::Disabled);
+    assert_eq!(ranged.state, ButtonState::Disabled);
     assert_eq!(ranged.hint, "SUPPLY FULL");
     assert!(
         tooltip_text(&game, &ranged)
@@ -4857,150 +4760,4 @@ fn imgui_double_clicking_the_settings_title_centers_it_again() {
     assert_ne!(moved, home, "dragged");
     screen.double_click(&mut game, moved + Vec2::new(size.x / 2.0, 8.0));
     assert_eq!(imgui_panel("Settings"), (home, size), "centered");
-}
-
-/// Every view of `game` whose buttons can be off, named: nothing selected
-/// (the top bar and Debug panel), each of the player's units alone, all of
-/// them as a group, each of the player's cities, its Barracks and its
-/// interior, the settings menu and its Multiplayer page, and a turn playing
-/// out.
-fn every_view(game: &GameState) -> Vec<(String, GameState)> {
-    let mut views = vec![("nothing".to_string(), game.clone())];
-    let view = |name: String, open: &dyn Fn(&mut GameState)| {
-        let mut view = game.clone();
-        open(&mut view);
-        (name, view)
-    };
-    let units: Vec<usize> = (0..game.units.len())
-        .filter(|&i| game.is_player_controlled(i))
-        .collect();
-    for &unit in &units {
-        views.push(view(format!("unit {unit}"), &|v| {
-            v.set_selection(vec![unit])
-        }));
-    }
-    if units.len() > 1 {
-        views.push(view("group".into(), &|v| v.set_selection(units.clone())));
-    }
-    for (i, city) in game.cities.iter().enumerate() {
-        if city.team != game.local_team {
-            continue;
-        }
-        views.push(view(format!("city {i}"), &|v| v.open_city(i)));
-        if city.barracks.is_some() {
-            views.push(view(format!("barracks {i}"), &|v| v.open_barracks(i)));
-        }
-        views.push(view(format!("interior {i}"), &|v| v.open_city_interior(i)));
-    }
-    views.push(view("settings".into(), &|v| v.settings_open = true));
-    views.push(view("multiplayer".into(), &|v| {
-        v.settings_open = true;
-        v.activate_target(Target::OpenMultiplayer);
-    }));
-    views.push(view("playing out".into(), &|v| {
-        // Something to build everywhere, so ending the turn plays it out.
-        for city in &mut v.cities {
-            city.queue.push(Queued::new(Build::Gather));
-        }
-        v.end_planning();
-        assert!(v.is_playing_out());
-    }));
-    views
-}
-
-#[test]
-fn every_disabled_button_says_why_in_every_scenario() {
-    let mut reasons = std::collections::BTreeSet::new();
-    for scenario in Scenario::ALL {
-        let mut game = GameState::new();
-        game.switch_scenario(scenario);
-        for (view, game) in every_view(&game) {
-            let layout = game.layout(SCREEN);
-            for button in &layout.buttons {
-                if button.state() != ButtonState::Disabled {
-                    continue;
-                }
-                let target = button.target;
-                let why = button.unavailable.as_deref().unwrap_or_default();
-                assert!(!why.is_empty(), "{scenario:?} {view}: {target:?}");
-                // The tooltip's last line, in red.
-                let lines = game.tooltip_lines(button);
-                let (_, last) = lines.last().expect("a tooltip");
-                assert_eq!(
-                    last.as_slice(),
-                    [(why.to_string(), REDUCED_TEXT)],
-                    "{scenario:?} {view}: {target:?}"
-                );
-                reasons.insert(why.to_string());
-            }
-        }
-    }
-    // Among them, the ones that used to be off with nothing said.
-    for expected in [
-        "NO ORDERS TO CLEAR",
-        "OPEN A CITY OR BARRACKS FIRST",
-        "NOTHING SAVED YET",
-        "SELECT A TROOP ON THE MAP FIRST",
-        "NOT WHILE THE TURN PLAYS OUT",
-        "A NETWORK GAME NEEDS 2 PLAYERS OR MORE",
-    ] {
-        assert!(reasons.contains(expected), "{expected}: {reasons:?}");
-    }
-}
-
-#[test]
-fn a_groups_orders_are_off_only_when_no_member_can_take_them() {
-    let mut game = GameState::city_scenario();
-    let units = player_units(&game);
-    let (a, b) = (units[0], units[1]);
-    game.set_selection(vec![a, b]);
-    let order = |game: &GameState, action| {
-        let mut panel = PanelBuilder::default();
-        game.group_tray(&mut panel);
-        panel
-            .rows
-            .iter()
-            .find_map(|row| match row {
-                Row::Buttons(buttons, _) => buttons
-                    .iter()
-                    .find(|b| b.target == Target::Unit(action))
-                    .cloned(),
-                _ => None,
-            })
-            .expect("the order's button")
-    };
-    // No orders among them: nothing to clear.
-    game.units[a].clear_orders();
-    game.units[b].clear_orders();
-    let clear = order(&game, UnitAction::ClearOrders);
-    assert_eq!(clear.unavailable.as_deref(), Some("NO ORDERS TO CLEAR"));
-    assert_eq!(clear.state(), ButtonState::Disabled);
-    // One with orders: there's something to clear.
-    game.units[b].holding = true;
-    assert_eq!(order(&game, UnitAction::ClearOrders).unavailable, None);
-    // Move and Attack follow the members too, not always on.
-    for action in [UnitAction::Move, UnitAction::Attack] {
-        assert_eq!(order(&game, action).unavailable, None, "{action:?}");
-    }
-    // Whatever keeps every member from an order: the reason they share,
-    // or that none can.
-    let ability = |game: &GameState| game.group_action_unavailable(UnitAction::Ability, &[a, b]);
-    game.units[a].ability_cooldown = 2;
-    assert_eq!(ability(&game), None, "one can");
-    game.units[b].ability_cooldown = 2;
-    assert!(ability(&game).unwrap().starts_with("READY IN"));
-    game.units[b].ability_cooldown = 3;
-    assert_eq!(ability(&game).as_deref(), Some("NONE OF THEM CAN NOW"));
-}
-
-#[test]
-fn imgui_shows_why_a_units_button_is_off() {
-    let mut game = GameState::city_scenario();
-    let unit = player_units(&game)[0];
-    game.units[unit].clear_orders();
-    game.set_selection(vec![unit]);
-    let mut screen = ImGuiScreen::new();
-    let tips = screen.tooltips(&mut game, Target::Unit(UnitAction::ClearOrders));
-    assert_eq!(tips.len(), 1, "{tips:?}");
-    assert!(tips[0].ends_with("NO ORDERS TO CLEAR"), "{tips:?}");
 }

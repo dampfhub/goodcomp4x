@@ -208,7 +208,17 @@ window; their rows share the same reorder and remove game actions as classic.
 The classic layout uses reusable placement code in `src/game/ui/dock.rs`.
 
 `PanelBuilder` is the content primitive. Add rows with `text`, `bar`, `gap`,
-`buttons`, `compact_buttons`, `queue_item`, `title_with_button`, `heading`, or `setting`; `size()` measures the finished panel. A
+`buttons`, `compact_buttons`, `queue_item`, `title_with_button`, `heading`, or `setting`; `size()` measures the finished panel.
+A button is a `ButtonSpec`, built as
+`ButtonSpec::new(target, label, hint).queued(q).unavailable(why).armed(a)`:
+gold when queued, and disabled exactly when it has a reason it's unavailable,
+which its tooltip gives in red (`subject_tooltip_lines`) in both presentations.
+Availability is decided only there, where the button is built (a unit's orders
+in `unit_action_unavailable`, a group's when no member can take one), so a
+button and its tooltip can't disagree; the tooltip adds only a caution on a
+button that's on (what the stockpile is short of for a build, which then waits).
+A plan sent in a network game makes a plan-changing button's reason
+`PLAN_SENT` (`freeze_plan`). A
 `Layout` owns shapes, buttons, panel hit boxes, scroll regions, and a `Dock`.
 `Layout::dock_panel(panel, Zone::BottomLeft)` places the measured panel and
 registers its render and hit-test geometry together. Available zones are

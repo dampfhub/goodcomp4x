@@ -101,11 +101,12 @@ impl Building {
             Self::Railhead => 5,
         }
     }
-    pub fn shortcut(self) -> char {
+    /// The key that places it from an open city, if it has one (`app.rs`).
+    pub fn shortcut(self) -> Option<char> {
         match self {
-            Self::Barracks => '5',
-            Self::Mill => '6',
-            Self::Workshop => '7',
+            Self::Barracks => Some('5'),
+            Self::Mill => Some('6'),
+            Self::Workshop => Some('7'),
             Self::CanoeHouse
             | Self::Forge
             | Self::Stable
@@ -116,7 +117,7 @@ impl Building {
             | Self::Smelter
             | Self::Railhead
             | Self::Harbor
-            | Self::CoastalBattery => ' ',
+            | Self::CoastalBattery => None,
         }
     }
     pub fn description(self) -> &'static str {
@@ -319,16 +320,17 @@ impl BuildUnit {
             Self::BombardShip => "RANGE 3 SHORE AND SHIP BOMBARDMENT",
         }
     }
-    pub fn shortcut(self) -> char {
+    /// The key that queues it in an open city, if it has one (`app.rs`).
+    pub fn shortcut(self) -> Option<char> {
         match self {
-            Self::Melee => '1',
-            Self::Ranged => '2',
-            Self::Siege => '3',
+            Self::Melee => Some('1'),
+            Self::Ranged => Some('2'),
+            Self::Siege => Some('3'),
             Self::Cavalry
             | Self::Armored
             | Self::PatrolGalley
             | Self::LandingCraft
-            | Self::BombardShip => '-',
+            | Self::BombardShip => None,
         }
     }
 

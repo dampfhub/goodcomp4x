@@ -90,14 +90,6 @@ impl GameState {
         })
     }
 
-    /// Why `city` can't queue `build` (`city_build_issue`: supply, a
-    /// Scout at a time, a Settler's citizens), or else what the stockpile
-    /// is short of for it (`shortfall_text`).
-    fn city_build_unavailable(&self, build: Build, city: Option<usize>) -> Option<String> {
-        city.and_then(|city| self.city_build_issue(city, build))
-            .or_else(|| self.shortfall_text(build, city))
-    }
-
     /// What one of `city`'s queues works, by name, for a tile's tooltip:
     /// `empty` if it holds nothing.
     fn queue_word(&self, city: usize, lane: Lane, empty: &'static str) -> &'static str {
@@ -405,8 +397,12 @@ impl GameState {
             .iter()
             .find(|&&(min, max, _)| contains(min, max, point))
         {
-            let lines =
-                self.subject_tooltip_lines(Target::RosterSelect(key), "", self.selection_subject());
+            let lines = self.subject_tooltip_lines(
+                Target::RosterSelect(key),
+                "",
+                None,
+                self.selection_subject(),
+            );
             (lines, (min, max))
         } else {
             let row = layout.queue_items.iter().find(|row| {
@@ -418,7 +414,7 @@ impl GameState {
                 return None;
             }
             let target = Target::QueueItem(row.kind, row.index);
-            let lines = self.subject_tooltip_lines(target, "", self.selection_subject());
+            let lines = self.subject_tooltip_lines(target, "", None, self.selection_subject());
             (lines, (row.min, Vec2::new(row.body_max_x, row.max.y)))
         };
         (!lines.is_empty()).then_some((lines, rect))
@@ -467,55 +463,60 @@ impl GameState {
     /// A classic button's tooltip: `subject_tooltip_lines` for the
     /// selection.
     pub(super) fn tooltip_lines(&self, button: &Button) -> Vec<(u32, Line)> {
-        self.subject_tooltip_lines(button.target, &button.label, self.selection_subject())
+        self.subject_tooltip_lines(
+            button.target,
+            &button.label,
+            button.unavailable.as_deref(),
+            self.selection_subject(),
+        )
     }
 
-    /// A tooltip's title (with the shortcut), description, and why the
-    /// button for `target` (labelled `label`) is unavailable, if it is, for
-    /// the unit or city `subject` names.
+    /// A tooltip's title (with the shortcut) and description for the button
+    /// for `target` (labelled `label`), for the unit or city `subject`
+    /// names; then why it's `unavailable`, which the button carries
+    /// (`ButtonSpec::unavailable`), or else a caution about pressing it
+    /// (what the stockpile is short of for a build, which then waits).
     pub(super) fn subject_tooltip_lines(
         &self,
         target: Target,
         label: &str,
+        unavailable: Option<&str>,
         subject: Subject,
     ) -> Vec<(u32, Line)> {
         let city = subject.city;
-        let (title, shortcut, description, unavailable): (String, String, String, Option<String>) =
+        let (title, shortcut, description, caution): (String, String, String, Option<String>) =
             match target {
                 Target::Unit(action) => {
                     // A group's buttons are described for its first member.
                     let Some(idx) = subject.unit else {
                         return Vec::new();
                     };
-                    let (title, shortcut, description, unavailable) =
-                        self.unit_action_text(action, idx);
-                    (title, shortcut.into(), description, unavailable)
+                    let (title, shortcut, description) = self.unit_action_text(action, idx);
+                    (title, shortcut.into(), description, None)
                 }
                 Target::Build(build) => (
                     build.name().into(),
-                    build.shortcut().to_string(),
+                    build.shortcut().map_or_else(|| "CLICK".into(), String::from),
                     format!(
                         "{}. {}{}",
                         build.description(),
                         self.price_text(Build::Unit(build), false, city),
                         self.supply_note(Build::Unit(build))
                     ),
-                    self.city_build_unavailable(Build::Unit(build), city),
+                    self.shortfall_text(Build::Unit(build), city),
                 ),
                 Target::Building(building) => (
                     building.name().into(),
-                    if building.shortcut() == ' ' {
-                        "CITY BUILD MENU".into()
-                    } else {
-                        building.shortcut().to_string()
-                    },
+                    building
+                        .shortcut()
+                        .map_or_else(|| "CITY BUILD MENU".into(), String::from),
                     format!(
                         "{} {} {}",
                         building.description(),
                         stock_icons(building.price()),
                         turns_icon(building.turns())
                     ),
-                    city.and_then(|city| self.job_kind_unavailable(city, JobKind::Build(building))),
+                    None,
                 ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
@@ -527,8 +528,7 @@ impl GameState {
                         self.special_note(build),
                         self.supply_note(Build::Unit(build))
                     ),
-                    city.and_then(|city| self.barracks_lock(city, build))
-                        .or_else(|| self.shortfall_text(Build::Unit(build), city)),
+                    self.shortfall_text(Build::Unit(build), city),
                 ),
                 Target::OpenBarracks => (
                     "SEE BARRACKS".into(),
@@ -564,8 +564,7 @@ impl GameState {
                     "CLEAR QUEUE".into(),
                     "CLICK".into(),
                     "TAKES EVERY ITEM OFF, EACH REFUNDED AS ITS X WOULD. THEIR WORK IS LOST.".into(),
-                    self.is_resolving()
-                        .then(|| "NOT WHILE THE TURN PLAYS OUT".into()),
+                    None,
                 ),
                 Target::WorkerJobRemove(_) => {
                     ("REMOVE".into(), "CLICK".into(), "REFUNDED.".into(), None)
@@ -625,7 +624,7 @@ impl GameState {
                         self.price_text(Build::Scout, false, city),
                         self.supply_note(Build::Scout)
                     ),
-                    self.city_build_unavailable(Build::Scout, city),
+                    self.shortfall_text(Build::Scout, city),
                 ),
                 Target::BuildSettler => (
                     "SETTLER".into(),
@@ -635,7 +634,7 @@ impl GameState {
                          NEEDS POPULATION {SETTLER_MIN_POPULATION}, AND TAKES A CITIZEN WHEN DONE. {}",
                         self.price_text(Build::Settler, false, city)
                     ),
-                    self.city_build_unavailable(Build::Settler, city),
+                    self.shortfall_text(Build::Settler, city),
                 ),
                 Target::Grow => (
                     "GROW".into(),
@@ -665,7 +664,7 @@ impl GameState {
                         stock_icons(kind.price()),
                         turns_icon(kind.turns() as i32)
                     ),
-                    city.and_then(|city| self.job_kind_unavailable(city, kind)),
+                    None,
                 ),
                 Target::CancelPlacing => (
                     "CANCEL PLACING".into(),
@@ -704,16 +703,13 @@ impl GameState {
                     "SAVE".into(),
                     "F6".into(),
                     "SNAPSHOTS THE GAME.".into(),
-                    self.is_resolving()
-                        .then(|| "NOT WHILE A TURN PLAYS OUT".to_string()),
+                    None,
                 ),
                 Target::LoadState => (
                     "LOAD".into(),
                     "F7".into(),
                     self.saved_summary().unwrap_or_default(),
-                    self.savestate
-                        .is_none()
-                        .then(|| "NOTHING SAVED YET".to_string()),
+                    None,
                 ),
                 Target::CompleteProduction => (
                     "FINISH BUILD".into(),
@@ -742,6 +738,7 @@ impl GameState {
                     ),
                     None,
                 ),
+                // The current value's button says so.
                 Target::SetSetting(setting, value) => {
                     let current = self.settings.get(setting);
                     let valid = setting.range().contains(&value);
@@ -753,7 +750,7 @@ impl GameState {
                             String::new()
                         },
                         setting.description().into(),
-                        (!valid || value == current)
+                        (value == current)
                             .then(|| format!("ALREADY {}", setting.value_text(current))),
                     )
                 }
@@ -795,13 +792,13 @@ impl GameState {
                     "HOST GAME".into(),
                     String::new(),
                     "STARTS A NEW WORLD FOR THIS MANY PLAYERS AND SHOWS THE JOIN CODE TO GIVE THEM. THEY NEED YOUR ADDRESS AND THE PORT OPEN.".into(),
-                    self.net_menu.busy.then(|| "JOINING A GAME".into()),
+                    None,
                 ),
                 Target::JoinGame => (
                     "JOIN GAME".into(),
                     String::new(),
                     "JOINS THE GAME HOSTED AT THIS ADDRESS (HOST OR HOST:PORT) WITH THE CODE IT SHOWS.".into(),
-                    self.net_menu.busy.then(|| "ALREADY JOINING".into()),
+                    None,
                 ),
                 Target::LeaveGame => (
                     "LEAVE GAME".into(),
@@ -850,14 +847,6 @@ impl GameState {
                     None,
                 ),
             };
-        // With the plan sent, this is why a button that would change it is
-        // off, whatever else might be.
-        let unavailable = if self.plan_frozen() && target.changes_plan() {
-            Some(PLAN_SENT.to_string())
-        } else {
-            unavailable
-        };
-
         let mut lines = vec![(
             BODY,
             vec![(title, TEXT), (format!("   {shortcut}"), LABEL_TEXT)],
@@ -867,49 +856,30 @@ impl GameState {
                 .into_iter()
                 .map(|line| (SMALL, vec![(line, DIM_TEXT)])),
         );
-        if let Some(reason) = unavailable {
+        if let Some(reason) = unavailable.map(String::from).or(caution) {
             lines.push((SMALL, vec![(reason, REDUCED_TEXT)]));
         }
         lines
     }
 
-    fn unit_action_text(
-        &self,
-        action: UnitAction,
-        idx: usize,
-    ) -> (String, &'static str, String, Option<String>) {
+    /// A unit order's title, shortcut and description, for unit `idx`.
+    fn unit_action_text(&self, action: UnitAction, idx: usize) -> (String, &'static str, String) {
         let unit = &self.units[idx];
-        let can_move = unit.stats().move_range > 0;
-        let locked = self.rival_of(idx).is_some();
-        let cannot_move = (!can_move).then(|| "CANNOT MOVE THIS TURN".to_string());
         match action {
             UnitAction::Move => (
                 "MOVE".into(),
                 "M OR CLICK",
                 "CLICK A GREEN HEX. SHIFT-CLICK QUEUES LATER TURNS.".into(),
-                cannot_move,
             ),
             UnitAction::Attack => (
                 "ATTACK".into(),
                 "X OR RIGHT-CLICK",
                 "CLICK A HEX IN RANGE OF WHERE IT ENDS ITS MOVE.".into(),
-                if locked {
-                    Some("LOCKED IN A CONTESTED HEX".into())
-                } else if !unit.can_attack() {
-                    Some("BUSY WITH ITS ABILITY THIS TURN".into())
-                } else {
-                    None
-                },
             ),
             UnitAction::Swap => (
                 "SWAP".into(),
                 "CTRL-CLICK",
                 "CLICK AN ADJACENT ALLY.".into(),
-                if locked {
-                    Some("LOCKED IN A CONTESTED HEX".into())
-                } else {
-                    cannot_move
-                },
             ),
             UnitAction::Ability => {
                 let (name, description) = ability_text(unit);
@@ -917,16 +887,13 @@ impl GameState {
                     0 => format!("{description}."),
                     turns => format!("{description}. COOLDOWN {}", turns_text(turns)),
                 };
-                let unavailable = (unit.ability_cooldown > 0)
-                    .then(|| format!("READY IN {}", turns_text(unit.ability_cooldown)));
-                (name.into(), "Q", description, unavailable)
+                (name.into(), "Q", description)
             }
-            UnitAction::Hold => ("HOLD".into(), "SPACE", "SKIP IT THIS TURN.".into(), None),
+            UnitAction::Hold => ("HOLD".into(), "SPACE", "SKIP IT THIS TURN.".into()),
             UnitAction::Guard => (
                 "GUARD".into(),
                 "G",
                 "SKIP IT UNTIL IT'S GIVEN AN ORDER.".into(),
-                None,
             ),
             UnitAction::Alert => (
                 "ALERT".into(),
@@ -934,28 +901,19 @@ impl GameState {
                 "STAYS PUT AND ATTACKS THE NEAREST ENEMY IN RANGE EACH TURN, UNTIL IT'S GIVEN \
                  AN ORDER."
                     .into(),
-                if unit.alert || self.can_go_on_alert(idx) {
-                    None
-                } else if unit.unit_type == crate::game::unit::UnitType::Siege {
-                    Some("SET IT UP FIRST".into())
-                } else {
-                    Some("ONLY TROOPS THAT FIGHT ON LAND".into())
-                },
             ),
-            UnitAction::Disband => ("DISBAND".into(), "DEL", "REMOVES IT FOR GOOD.".into(), None),
+            UnitAction::Disband => ("DISBAND".into(), "DEL", "REMOVES IT FOR GOOD.".into()),
             UnitAction::Settle => (
                 "FOUND CITY".into(),
                 "F",
                 format!(
                     "HERE: OPEN LAND, NOT RUINS, {MIN_CITY_DISTANCE} OR MORE HEXES FROM ANY CITY."
                 ),
-                None,
             ),
             UnitAction::ClearOrders => (
                 "CLEAR ORDERS".into(),
                 "CTRL-RIGHT-CLICK",
                 "DROPS ALL ITS ORDERS AND QUEUED TURNS.".into(),
-                None,
             ),
         }
     }
