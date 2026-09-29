@@ -3,7 +3,7 @@
 //! (e.g. the world through a camera, then UI in screen space on top).
 //! Triangles are vertex-colored, and can be masked by a single-channel
 //! coverage atlas (e.g. font glyphs) supplied once at startup. Edges are
-//! smoothed with multisampling, at the most samples the GPU supports.
+//! smoothed with multisampling, capped at 8 samples by default.
 
 mod buffer;
 mod device;
@@ -96,7 +96,9 @@ pub struct Renderer {
 
     swapchain_loader: ash::khr::swapchain::Device,
     swapchain: SwapchainData,
-    /// Antialiasing samples per pixel: the most the GPU supports, up to 16.
+    /// Startup cap, retained across swapchain recreation.
+    sample_cap: u32,
+    /// Highest supported antialiasing count within the startup cap.
     samples: vk::SampleCountFlags,
     /// Multisampled image each frame is drawn into, then resolved into the
     /// swapchain image. Sized to match, so it's rebuilt with the swapchain.
@@ -185,8 +187,15 @@ impl Renderer {
             )
         }?;
 
-        let samples =
-            unsafe { msaa::pick_samples(&vk_instance, physical_device, swapchain_data.format) };
+        let sample_cap = msaa::sample_cap();
+        let samples = unsafe {
+            msaa::pick_samples(
+                &vk_instance,
+                physical_device,
+                swapchain_data.format,
+                sample_cap,
+            )
+        }?;
         log::info!("antialiasing with {} samples per pixel", samples.as_raw());
         let color_target = unsafe {
             ColorTarget::new(
@@ -258,6 +267,7 @@ impl Renderer {
             swapchain_loader,
             swapchain: swapchain_data,
             samples,
+            sample_cap,
             color_target,
             render_pass,
             pipeline_layout,
@@ -612,7 +622,14 @@ impl Renderer {
         };
         let format_changed = next.format != self.swapchain.format;
         let next_samples = if format_changed {
-            unsafe { msaa::pick_samples(&self.instance, self.physical_device, next.format) }
+            unsafe {
+                msaa::pick_samples(
+                    &self.instance,
+                    self.physical_device,
+                    next.format,
+                    self.sample_cap,
+                )
+            }?
         } else {
             self.samples
         };
