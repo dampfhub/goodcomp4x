@@ -67,7 +67,11 @@ memory and invalidates noncoherent mappings after the GPU finishes.
 - Swapchain recreation skips zero-size surfaces, creates the replacement before releasing the old
   resources, and keeps the render pass/pipeline when the format is unchanged. Destroy methods
   null or drain handles so teardown remains safe after a partial recreation failure.
-- MSAA uses the highest supported count from `PREFERRED_SAMPLES` (16, then 8), falling back to 4.
+- MSAA uses the highest supported count up to 8 by default. `RENDER_MSAA=2|4|8|16|32|64`
+  overrides the cap at startup (PowerShell: `$env:RENDER_MSAA="4"`). Invalid values warn
+  and use 8; unsupported caps return a setup error. A 1-sample override is unsupported
+  because this render pass requires a multisampled resolve source. Target allocation
+  size is logged at startup and resize; the cap is retained across recreation.
 - Validation runs only in debug builds (`cfg!(debug_assertions)`). Check `cargo run` output for
   validation errors after any change here.
 

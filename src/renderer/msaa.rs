@@ -2,26 +2,54 @@
 //! target, which the render pass resolves (averages) into the swapchain image,
 //! smoothing polygon edges.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ash::vk;
 
 use super::buffer;
 
-/// Sample counts to try, most first. Vulkan requires every device to support
-/// 4 for color attachments, so the search always succeeds by then.
-const PREFERRED_SAMPLES: [vk::SampleCountFlags; 3] = [
-    vk::SampleCountFlags::TYPE_16,
-    vk::SampleCountFlags::TYPE_8,
-    vk::SampleCountFlags::TYPE_4,
-];
+const DEFAULT_SAMPLE_CAP: u32 = 8;
 
-/// The most samples per pixel the device supports for a color target of
-/// `format`: more samples mean smoother edges.
+/// Read once at renderer startup. A single-sample target needs a different render
+/// pass (no resolve attachment), so the testing override accepts 2 through 64.
+pub fn sample_cap() -> u32 {
+    let value = std::env::var("RENDER_MSAA").ok();
+    match parse_sample_cap(value.as_deref()) {
+        Some(cap) => cap,
+        None => {
+            log::warn!(
+                "invalid RENDER_MSAA; expected 2, 4, 8, 16, 32 or 64; using {DEFAULT_SAMPLE_CAP}"
+            );
+            DEFAULT_SAMPLE_CAP
+        }
+    }
+}
+
+fn parse_sample_cap(value: Option<&str>) -> Option<u32> {
+    match value {
+        None => Some(DEFAULT_SAMPLE_CAP),
+        Some(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|n| matches!(n, 2 | 4 | 8 | 16 | 32 | 64)),
+    }
+}
+
+fn best_samples(supported: vk::SampleCountFlags, cap: u32) -> Result<vk::SampleCountFlags> {
+    [64, 32, 16, 8, 4, 2]
+        .into_iter()
+        .filter(|&n| n <= cap)
+        .map(vk::SampleCountFlags::from_raw)
+        .find(|&count| supported.contains(count))
+        .context("no supported multisample count within RENDER_MSAA cap")
+}
+
+/// Highest supported multisample count at or below the startup cap.
 pub unsafe fn pick_samples(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
     format: vk::Format,
-) -> vk::SampleCountFlags {
+    cap: u32,
+) -> Result<vk::SampleCountFlags> {
     let limits = unsafe { instance.get_physical_device_properties(physical_device) }.limits;
     let image = unsafe {
         instance.get_physical_device_image_format_properties(
@@ -32,17 +60,12 @@ pub unsafe fn pick_samples(
             USAGE,
             vk::ImageCreateFlags::empty(),
         )
-    };
-    let supported = limits.framebuffer_color_sample_counts
-        & image.map_or(vk::SampleCountFlags::TYPE_4, |p| p.sample_counts);
-    best_samples(supported)
-}
-
-fn best_samples(supported: vk::SampleCountFlags) -> vk::SampleCountFlags {
-    PREFERRED_SAMPLES
-        .into_iter()
-        .find(|&count| supported.contains(count))
-        .unwrap_or(vk::SampleCountFlags::TYPE_4)
+    }
+    .context("querying MSAA target format support")?;
+    best_samples(
+        limits.framebuffer_color_sample_counts & image.sample_counts,
+        cap,
+    )
 }
 
 /// Only ever resolved, never read back, so the target can live in lazily
@@ -86,6 +109,13 @@ impl ColorTarget {
         let image = unsafe { device.create_image(&image_info, None) }?;
 
         let requirements = unsafe { device.get_image_memory_requirements(image) };
+        log::info!(
+            "MSAA target {}x{}, {} samples: {:.1} MiB allocation",
+            extent.width,
+            extent.height,
+            samples.as_raw(),
+            requirements.size as f64 / 1_048_576.0
+        );
         let find = |properties| unsafe {
             buffer::find_memory_type(
                 instance,
@@ -144,11 +174,52 @@ impl ColorTarget {
 mod tests {
     use super::*;
     #[test]
+    fn sample_choice_never_exceeds_the_cap_or_supported_set() {
+        for bits in 0..128 {
+            let supported = vk::SampleCountFlags::from_raw(bits);
+            for cap in 0..=64 {
+                if let Ok(chosen) = best_samples(supported, cap) {
+                    assert!(chosen.as_raw() <= cap);
+                    assert!(supported.contains(chosen));
+                    assert!(chosen.as_raw() >= 2);
+                    assert!(
+                        ![2, 4, 8, 16, 32, 64]
+                            .into_iter()
+                            .any(|n| n > chosen.as_raw()
+                                && n <= cap
+                                && supported.contains(vk::SampleCountFlags::from_raw(n)))
+                    );
+                } else {
+                    assert!(
+                        ![2, 4, 8, 16, 32, 64]
+                            .into_iter()
+                            .any(|n| n <= cap
+                                && supported.contains(vk::SampleCountFlags::from_raw(n)))
+                    );
+                }
+            }
+        }
+    }
+    #[test]
     fn sample_choice_prefers_the_highest_supported_multisample_count() {
         use vk::SampleCountFlags as S;
-        assert_eq!(best_samples(S::TYPE_4), S::TYPE_4);
-        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_8), S::TYPE_8);
-        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_8 | S::TYPE_16), S::TYPE_16);
-        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_64), S::TYPE_4);
+        assert_eq!(best_samples(S::TYPE_4, 16).unwrap(), S::TYPE_4);
+        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_8, 16).unwrap(), S::TYPE_8);
+        assert_eq!(
+            best_samples(S::TYPE_4 | S::TYPE_8 | S::TYPE_16, 16).unwrap(),
+            S::TYPE_16
+        );
+        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_64, 16).unwrap(), S::TYPE_4);
+    }
+
+    #[test]
+    fn sample_cap_parses_without_changing_process_environment() {
+        assert_eq!(parse_sample_cap(None), Some(8));
+        for n in [2, 4, 8, 16, 32, 64] {
+            assert_eq!(parse_sample_cap(Some(&n.to_string())), Some(n));
+        }
+        for invalid in ["", "1", "0", "3", "128", "-4", "auto"] {
+            assert_eq!(parse_sample_cap(Some(invalid)), None);
+        }
     }
 }
