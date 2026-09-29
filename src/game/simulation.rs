@@ -262,6 +262,14 @@ fn check_invariants(game: &GameState, context: &str) {
             },
             "{context}: {unit} stands on an impassable or off-map hex"
         );
+        // Nobody walks onto another side's city center, and a city changing
+        // hands pushes its old owner's units off (`push_off_city_center`).
+        assert!(
+            game.cities
+                .iter()
+                .all(|city| city.pos != unit.pos || city.team == unit.team),
+            "{context}: {unit} stands on another side's city center"
+        );
         assert!(unit.cargo.len() <= 4, "{context}: craft over capacity");
         assert!(
             unit.cargo.is_empty() || unit.unit_type == super::unit::UnitType::LandingCraft,

@@ -257,7 +257,6 @@ impl GameState {
                     unit.pos.distance(city.pos) == 1
                         && !unit.is_naval()
                         && !self.settlers.contains(&unit.id)
-                        && !unit.is_animal()
                 })
                 .collect();
             let ids: HashSet<_> = adjacent.iter().map(|unit| unit.id).collect();
@@ -626,8 +625,8 @@ mod tests {
     use super::*;
     use crate::game::unit::Unit;
 
-    /// The siege position with a Red cavalry (id 900, holding and
-    /// guarding) on Red's city center as Blue's fighter takes the breached post.
+    /// The siege position with a Red cavalry (id 900, holding and with a
+    /// queue) on Red's city center as Blue's fighter takes the breached post.
     fn capture_under_a_red_unit(prepare: impl FnOnce(&mut GameState)) -> GameState {
         let mut game = GameState::siege_scenario();
         let center = game.cities[1].pos;
