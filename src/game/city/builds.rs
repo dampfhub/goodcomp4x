@@ -4,6 +4,7 @@
 use super::MAX_CITY_POPULATION;
 use super::barracks::CITY_TRAINING_SLOWDOWN;
 use super::economy::{Lane, Stock, WORK_PER_TURN, stock_icons, turns_icon};
+use super::founding::MIN_CITY_DISTANCE;
 use crate::game::GameState;
 use crate::game::JobKind;
 use crate::game::hex::Hex;
@@ -149,14 +150,27 @@ pub enum Build {
     /// The city spends a turn gathering: free, and `GATHER_YIELD` goes to
     /// the stockpile when it's done. Something a city can always do.
     Gather,
+    /// A settler, to found a city (`founding.rs`): dear and slow, and it
+    /// takes one of the city's citizens when it's done. Only a city of at
+    /// least `SETTLER_MIN_POPULATION` works on it or finishes it; below
+    /// that it waits in the queue, keeping its work.
+    Settler,
+    /// A scout: cheap and quick, and a city queues one at a time.
+    Scout,
 }
 
 /// The Worker, Grow and Gather cards' keys.
 pub(in crate::game) const WORKER_SHORTCUT: char = '8';
 pub(in crate::game) const GROW_SHORTCUT: char = '9';
 pub(in crate::game) const GATHER_SHORTCUT: char = '0';
+/// The Scout and Settler cards' keys.
+pub(in crate::game) const SCOUT_SHORTCUT: char = '4';
+pub(in crate::game) const SETTLER_SHORTCUT: char = 'S';
 /// What a turn of gathering (`Build::Gather`) brings in.
 pub(in crate::game) const GATHER_YIELD: Stock = Stock::whole(2, 2, 1);
+/// The citizens a city needs to work on a Settler, which takes one of them
+/// when it's done: a city never settles itself below two.
+pub(in crate::game) const SETTLER_MIN_POPULATION: usize = 3;
 
 impl Build {
     pub fn name(self) -> &'static str {
@@ -165,27 +179,43 @@ impl Build {
             Self::Worker => "WORKER",
             Self::Grow => "GROW",
             Self::Gather => "GATHER",
+            Self::Settler => "SETTLER",
+            Self::Scout => "SCOUT",
         }
     }
     /// Its price, except a Grow's, which depends on the city
-    /// (`GameState::queue_price`).
+    /// (`GameState::queue_price`). A Settler also takes a citizen when it's
+    /// done (`complete_builds`).
     pub fn price(self) -> Stock {
         match self {
             Self::Unit(u) => u.price(),
             Self::Worker => Stock::whole(4, 2, 0),
+            Self::Settler => Stock::whole(30, 10, 0),
+            Self::Scout => Stock::whole(2, 4, 0),
             Self::Grow | Self::Gather => Stock::default(),
         }
     }
     pub fn turns(self) -> i32 {
         match self {
             Self::Unit(u) => u.turns(),
-            Self::Worker | Self::Grow => 2,
+            Self::Worker | Self::Grow | Self::Scout => 2,
             Self::Gather => 1,
+            Self::Settler => 6,
         }
     }
     /// Work it needs, in quarter turns.
     pub fn work(self) -> i32 {
         self.turns() * WORK_PER_TURN
+    }
+    /// The unit it turns out, if it's one: a troop or ship, a settler (a
+    /// civilian with the Melee body) or a scout.
+    pub(in crate::game) fn unit_type(self) -> Option<UnitType> {
+        match self {
+            Self::Unit(unit) => Some(unit.unit_type()),
+            Self::Settler => Some(UnitType::Melee),
+            Self::Scout => Some(UnitType::Scout),
+            Self::Worker | Self::Grow | Self::Gather => None,
+        }
     }
 }
 
@@ -427,6 +457,60 @@ impl GameState {
             return;
         }
         self.queue_in_city(city, Build::Worker);
+    }
+
+    /// 4 or the Scout card: a scout from the open city's own queue.
+    pub fn queue_selected_city_scout(&mut self) {
+        self.queue_selected_city_civilian(Build::Scout);
+    }
+
+    /// S or the Settler card: a settler from the open city's own queue.
+    pub fn queue_selected_city_settler(&mut self) {
+        self.queue_selected_city_civilian(Build::Settler);
+    }
+
+    /// A scout or a settler from the open city's own queue, if it may queue
+    /// one (`city_build_issue`).
+    fn queue_selected_city_civilian(&mut self, build: Build) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(city) = self.selected_city else {
+            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            return;
+        };
+        if self.cities[city].team != self.local_team {
+            return;
+        }
+        if let Some(why) = self.city_build_issue(city, build) {
+            self.notice = format!("{}: {why}", build.name());
+            return;
+        }
+        self.queue_in_city(city, build);
+    }
+
+    /// Why `city` can't queue `build` now, for the rules only its queue
+    /// has: a Settler needs `SETTLER_MIN_POPULATION` citizens, and a city
+    /// queues one Scout at a time.
+    pub(in crate::game) fn city_build_issue(&self, city: usize, build: Build) -> Option<String> {
+        let c = &self.cities[city];
+        match build {
+            Build::Settler if c.population < SETTLER_MIN_POPULATION => {
+                Some(format!("NEEDS POPULATION {SETTLER_MIN_POPULATION}"))
+            }
+            Build::Scout if c.queue.iter().any(|q| q.build == Build::Scout) => {
+                Some("ONE SCOUT AT A TIME".into())
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether item `index` of `city`'s own queue waits for citizens: a
+    /// Settler, in a city below `SETTLER_MIN_POPULATION`. The queue works
+    /// the next item meanwhile, and the Settler keeps its work.
+    pub(in crate::game) fn waits_for_citizens(&self, city: usize, index: usize) -> bool {
+        let c = &self.cities[city];
+        c.queue[index].build == Build::Settler && c.population < SETTLER_MIN_POPULATION
     }
 
     pub fn queue_selected_city_building(&mut self, building: Building) {
@@ -802,15 +886,18 @@ impl GameState {
         let mut spawn = Vec::new();
         // Where each Barracks troop that drew on a deposit appears, and which.
         let mut drawn = Vec::new();
+        // Where each settler appears.
+        let mut settlers = Vec::new();
         for i in 0..self.cities.len() {
             if only.is_some_and(|lane| lane != (i, false)) {
                 continue;
             }
             // The first finished item: the one worked this turn, or one
-            // finished before and held for want of an open hex.
+            // finished before and held for want of an open hex (or, a
+            // Settler, of citizens).
             let Some(index) = (0..self.cities[i].queue.len()).find(|&index| {
                 let (paid, progress, work) = self.lane_item(i, Lane::City, index);
-                paid && progress >= work
+                paid && progress >= work && !self.waits_for_citizens(i, index)
             }) else {
                 continue;
             };
@@ -875,10 +962,21 @@ impl GameState {
                 continue;
             };
             self.cities[i].queue.remove(index);
-            let Build::Unit(unit) = build else {
-                unreachable!()
-            };
-            spawn.push((self.cities[i].team, pos, unit.unit_type(), None));
+            let kind = build.unit_type().expect("every other build is done above");
+            spawn.push((self.cities[i].team, pos, kind, None));
+            if build == Build::Settler {
+                // The settler takes one of the city's citizens with it.
+                settlers.push(pos);
+                self.remove_citizen(i);
+                let c = &self.cities[i];
+                log::info!("{:?} city {} completed a settler", c.team, c.id + 1);
+                if c.team == self.local_team {
+                    self.notice = format!(
+                        "CITY {} TRAINED A SETTLER - F FOUNDS A CITY {MIN_CITY_DISTANCE} HEXES FROM ANY OTHER",
+                        c.id + 1
+                    );
+                }
+            }
         }
         for i in 0..self.cities.len() {
             if only.is_some_and(|lane| lane != (i, true)) {
@@ -924,6 +1022,9 @@ impl GameState {
             unit.hp = unit.max_hp();
             unit.interior_hp = unit.max_hp();
             self.units.push(unit);
+            if settlers.contains(&pos) {
+                self.settlers.insert(id);
+            }
             log::info!("{team:?} city completed {kind:?}");
         }
     }

@@ -274,6 +274,17 @@ impl GameState {
         }
     }
 
+    /// `city` loses a citizen (never its last): the last tile it works is
+    /// given up, and the rest reconciled (`reconcile_citizens`). A finished
+    /// Settler takes one this way (`complete_builds`).
+    pub(in crate::game) fn remove_citizen(&mut self, city: usize) {
+        let c = &mut self.cities[city];
+        c.population = c.population.saturating_sub(1).max(1);
+        let keep = c.population.min(MAX_CITY_POPULATION);
+        c.worked.truncate(keep);
+        self.reconcile_citizens(city);
+    }
+
     pub fn auto_assign_selected_city(&mut self) {
         if self.is_resolving() {
             return;

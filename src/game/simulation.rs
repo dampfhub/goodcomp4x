@@ -15,7 +15,7 @@ use std::thread;
 
 mod economy;
 
-use super::city::{Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, Queued};
+use super::city::{Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MIN_CITY_DISTANCE, Queued};
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
@@ -498,6 +498,23 @@ fn check_invariants(game: &GameState, context: &str) {
     }
 }
 
+/// Every city founded in play (those after the first `starting`, which the scenario set up
+/// wherever it liked) stands by the founding rules (`founding_issue`): at least
+/// `MIN_CITY_DISTANCE` from every other city.
+fn check_founding(game: &GameState, starting: usize, context: &str) {
+    for (i, city) in game.cities.iter().enumerate().skip(starting) {
+        for other in &game.cities[..i] {
+            let apart = other.pos.distance(city.pos);
+            assert!(
+                apart >= MIN_CITY_DISTANCE,
+                "{context}: city {} was founded {apart} hexes from city {}",
+                city.id + 1,
+                other.id + 1
+            );
+        }
+    }
+}
+
 /// What the stockpile economy bought over a game: troops that appeared (trained, or ruins'
 /// recruits), whether any city grew past the size it started at (or was founded at) and
 /// whether any side built a Barracks. It also checks the Cavalry and Armored cap
@@ -599,6 +616,7 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
         let mut game = start(scenario, seed);
         let name = format!("{} seed {seed}", scenario.name());
         check_invariants(&game, &format!("{name} at start"));
+        let starting = game.cities.len();
         let ruins_at_start = game.ruins.len();
         let mut economy = EconomyWatch::new(&game);
         for turn in 1..=TURNS {
@@ -615,6 +633,7 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 "{context}: ruins appeared"
             );
             check_invariants(&game, &context);
+            check_founding(&game, starting, &context);
             economy.watch(&game, &context);
         }
         // Anti-vacuity: the AI goes for the world's ruins, and claims some.
@@ -655,6 +674,7 @@ fn a_crowded_world_of_settlers_keeps_the_board_consistent() {
         for turn in 1..=TURNS {
             play_turn(&mut game);
             check_invariants(&game, &format!("{name} turn {turn}"));
+            check_founding(&game, 0, &format!("{name} turn {turn}"));
             if turn == 1 {
                 // Every side founded its city on its start.
                 for team in Team::ALL {
@@ -673,12 +693,14 @@ fn queued_orders_against_the_ai_keep_the_board_consistent() {
     for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
         let mut game = start(scenario, seed);
         let name = format!("{} seed {seed}", scenario.name());
+        let starting = game.cities.len();
         let mut followed = 0;
         for turn in 1..=TURNS {
             followed += play_queued_turn(&mut game);
             let context = format!("{name} queued turn {turn}");
             assert!(!game.is_resolving(), "{context}: the turn did not finish");
             check_invariants(&game, &context);
+            check_founding(&game, starting, &context);
         }
         // Anti-vacuity: queues were actually carried from turn to turn.
         assert!(followed > 0, "{name}: no unit ever followed a queued turn");
@@ -691,11 +713,13 @@ fn troops_on_alert_against_the_ai_keep_the_board_consistent() {
     for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
         let mut game = start(scenario, seed);
         let name = format!("{} seed {seed}", scenario.name());
+        let starting = game.cities.len();
         for turn in 1..=TURNS {
             let context = format!("{name} alert turn {turn}");
             ready.fetch_add(play_alert_turn(&mut game, &context), Ordering::Relaxed);
             assert!(!game.is_resolving(), "{context}: the turn did not finish");
             check_invariants(&game, &context);
+            check_founding(&game, starting, &context);
         }
     });
     // Anti-vacuity: units on alert did have enemies to fire at.
@@ -703,6 +727,31 @@ fn troops_on_alert_against_the_ai_keep_the_board_consistent() {
         ready.into_inner() > 0,
         "no unit on alert ever had an enemy in range"
     );
+}
+
+/// Turns a world plays for its sides to expand: a city reaches population 4 by about turn 14,
+/// and its first Settler founds by about turn 40 (`economy_report`).
+const EXPANSION_TURNS: u32 = 60;
+
+#[test]
+fn ai_sides_expand_with_settlers() {
+    // Anti-vacuity: the AI trains Settlers from its cities' queues and founds new cities with
+    // them (`plan_ai_settlers`), by the founding rules, in a long game of a two-side world.
+    for_every_game(&[Scenario::World], &seeds(), |scenario, seed| {
+        let mut game = start_with(scenario, seed, |settings| settings.world_ai = 1);
+        let name = format!("two-side world seed {seed}");
+        let starting = game.cities.len();
+        for turn in 1..=EXPANSION_TURNS {
+            play_turn(&mut game);
+            let context = format!("{name} turn {turn}");
+            check_invariants(&game, &context);
+            check_founding(&game, starting, &context);
+        }
+        assert!(
+            game.cities.len() > starting,
+            "{name}: no side founded a city in {EXPANSION_TURNS} turns"
+        );
+    });
 }
 
 #[test]

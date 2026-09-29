@@ -3284,3 +3284,109 @@ fn a_frozen_plan_locks_a_waiting_queue_row_like_any_other() {
         .collect();
     assert_eq!(rows, [(true, true), (false, true)]);
 }
+
+#[test]
+fn scout_and_settler_cards_queue_from_the_city_and_say_why_when_they_cannot() {
+    let mut game = GameState::city_scenario();
+    game.open_city(0);
+    let tooltip = |game: &GameState, card: &Button| -> String {
+        line_strings(game.tooltip_lines(card).into_iter().map(|(_, l)| l)).join(" ")
+    };
+    // A city of 2 is too small for a Settler: the card is dimmed and
+    // says so, and its tooltip gives the rule.
+    catalog_cursor(&mut game, Target::BuildSettler);
+    let settler = find_button(&game, Target::BuildSettler);
+    assert_eq!(settler.state, ButtonState::Disabled);
+    assert_eq!(settler.hint, "NEEDS POPULATION 3");
+    let text = tooltip(&game, &settler);
+    assert!(text.contains("NEEDS POPULATION 3"), "{text}");
+    assert!(text.contains("TAKES A CITIZEN"), "{text}");
+
+    // The Scout card queues a scout, and then says it's one at a time.
+    let card = catalog_cursor(&mut game, Target::BuildScout);
+    let scout = find_button(&game, Target::BuildScout);
+    assert_eq!(scout.state, ButtonState::Ready);
+    assert!(
+        scout.hint.contains(&format!("{FOOD_ICON}2 {WOOD_ICON}4")),
+        "{}",
+        scout.hint
+    );
+    assert!(
+        scout.hint.ends_with(&format!("{TIME_ICON}2")),
+        "{}",
+        scout.hint
+    );
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert_eq!(game.cities[0].queue, [Queued::new(Build::Scout)]);
+    let scout = find_button(&game, Target::BuildScout);
+    assert_eq!(
+        (scout.state, scout.hint.as_str()),
+        (ButtonState::Disabled, "ONE SCOUT AT A TIME")
+    );
+
+    // Grown to 3, the Settler card queues one: 6 turns, city or not.
+    game.cities[0].population = 3;
+    let card = catalog_cursor(&mut game, Target::BuildSettler);
+    let settler = find_button(&game, Target::BuildSettler);
+    assert_eq!(settler.state, ButtonState::Ready);
+    assert!(
+        settler
+            .hint
+            .contains(&format!("{FOOD_ICON}30 {WOOD_ICON}10")),
+        "{}",
+        settler.hint
+    );
+    assert!(
+        settler.hint.ends_with(&format!("{TIME_ICON}6")),
+        "{}",
+        settler.hint
+    );
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert_eq!(
+        game.cities[0].queue,
+        [Queued::new(Build::Scout), Queued::new(Build::Settler)]
+    );
+}
+
+#[test]
+fn imgui_queues_a_scout_and_a_settler_from_their_cards() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].population = 3;
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::BuildScout);
+    screen.click(&mut game, Target::BuildSettler);
+    assert_eq!(
+        game.cities[city].queue,
+        [Queued::new(Build::Scout), Queued::new(Build::Settler)]
+    );
+}
+
+#[test]
+fn a_settler_waiting_for_citizens_says_so_in_its_row_and_the_tray() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].population = 2;
+    game.cities[city].queue = vec![Queued::new(Build::Settler)];
+    let mut queue = PanelBuilder::default();
+    game.city_queue_panel(city, usize::MAX, &mut queue);
+    let rows: Vec<(String, bool)> = queue
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::QueueItem(item) => Some((item.label.clone(), item.waiting)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].0.contains("WAITS FOR POP 3"), "{}", rows[0].0);
+    assert!(rows[0].1, "tinted as waiting");
+    let mut tray = PanelBuilder::default();
+    game.city_tray(city, &mut tray);
+    let text = line_strings(tray.rows.iter().filter_map(|row| match row {
+        Row::Text(_, line) => Some(line.clone()),
+        _ => None,
+    }))
+    .join(" ");
+    assert!(text.contains("SETTLER WAITS FOR POPULATION 3"), "{text}");
+}

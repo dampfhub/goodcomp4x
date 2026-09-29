@@ -11,7 +11,8 @@ use super::{
 use crate::game::GameState;
 use crate::game::city::{
     Build, Building, GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, Lane, MAX_CITY_POPULATION,
-    UNITS_PER_DEPOSIT, WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
+    MIN_CITY_DISTANCE, SCOUT_SHORTCUT, SETTLER_MIN_POPULATION, SETTLER_SHORTCUT, UNITS_PER_DEPOSIT,
+    WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
 };
 use crate::game::hex::Hex;
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, WOOD_ICON};
@@ -65,6 +66,14 @@ impl GameState {
                 stock_icons(short)
             )
         })
+    }
+
+    /// Why the open city can't queue a Scout or Settler (`city_build_issue`),
+    /// or else what the stockpile is short of for it (`shortfall_text`).
+    fn civilian_unavailable(&self, build: Build) -> Option<String> {
+        self.selected_city
+            .and_then(|city| self.city_build_issue(city, build))
+            .or_else(|| self.shortfall_text(build))
     }
 
     /// What one of `city`'s queues works, by name, for a tile's tooltip:
@@ -491,6 +500,25 @@ impl GameState {
                     ),
                     self.shortfall_text(Build::Worker),
                 ),
+                Target::BuildScout => (
+                    "SCOUT".into(),
+                    SCOUT_SHORTCUT.to_string(),
+                    format!(
+                        "SEES FAR, MOVES FAST; NOT A TROOP, SO NO BARRACKS. ONE AT A TIME. {}",
+                        self.price_text(Build::Scout, false)
+                    ),
+                    self.civilian_unavailable(Build::Scout),
+                ),
+                Target::BuildSettler => (
+                    "SETTLER".into(),
+                    SETTLER_SHORTCUT.to_string(),
+                    format!(
+                        "FOUNDS A CITY (F) {MIN_CITY_DISTANCE} HEXES OR MORE FROM ANY OTHER. \
+                         NEEDS POPULATION {SETTLER_MIN_POPULATION}, AND TAKES A CITIZEN WHEN DONE. {}",
+                        self.price_text(Build::Settler, false)
+                    ),
+                    self.civilian_unavailable(Build::Settler),
+                ),
                 Target::Grow => (
                     "GROW".into(),
                     GROW_SHORTCUT.to_string(),
@@ -782,7 +810,9 @@ impl GameState {
             UnitAction::Settle => (
                 "FOUND CITY".into(),
                 "F",
-                "3 OR MORE HEXES FROM ANY CITY.".into(),
+                format!(
+                    "HERE: OPEN LAND, NOT RUINS, {MIN_CITY_DISTANCE} OR MORE HEXES FROM ANY CITY."
+                ),
                 None,
             ),
             UnitAction::ClearOrders => (

@@ -1043,6 +1043,8 @@ impl ApplicationHandler for App {
                     KeyCode::Digit3 => self
                         .game
                         .queue_selected_city_unit(crate::game::BuildUnit::Siege),
+                    KeyCode::Digit4 => self.game.queue_selected_city_scout(),
+                    KeyCode::KeyS => self.game.queue_selected_city_settler(),
                     KeyCode::Digit5 => self
                         .game
                         .queue_selected_city_building(crate::game::Building::Barracks),

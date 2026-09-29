@@ -243,6 +243,8 @@ pub(super) fn production_unit_icon(target: Target) -> Option<UnitIcon> {
         Target::Build(BuildUnit::LandingCraft) => UnitIcon::LandingCraft,
         Target::Build(BuildUnit::BombardShip) => UnitIcon::BombardShip,
         Target::BuildWorker => UnitIcon::Shovel,
+        Target::BuildScout => UnitIcon::Spyglass,
+        Target::BuildSettler => UnitIcon::Flag,
         _ => return None,
     })
 }

@@ -185,6 +185,10 @@ enum Target {
     ClearBarracksQueue,
     /// A worker for the open city's pool.
     BuildWorker,
+    /// A scout from the open city's own queue.
+    BuildScout,
+    /// A settler from the open city's own queue.
+    BuildSettler,
     /// One more citizen for the open city, bought with food.
     Grow,
     /// The open city spends a turn gathering.
@@ -265,6 +269,8 @@ impl Target {
             | Target::ClearCityQueue
             | Target::ClearBarracksQueue
             | Target::BuildWorker
+            | Target::BuildScout
+            | Target::BuildSettler
             | Target::Grow
             | Target::Gather
             | Target::WorkerJob(_)
@@ -740,6 +746,8 @@ impl GameState {
             Target::RosterAdd(id) => self.roster_add(id),
             Target::RosterRemove(id) => self.roster_remove(id),
             Target::BuildWorker => self.queue_selected_city_worker(),
+            Target::BuildScout => self.queue_selected_city_scout(),
+            Target::BuildSettler => self.queue_selected_city_settler(),
             Target::Grow => self.queue_selected_city_growth(),
             Target::Gather => self.queue_selected_city_gather(),
             Target::WorkerJob(kind) => self.arm_worker_job(kind),

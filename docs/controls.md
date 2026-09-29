@@ -38,7 +38,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds, guards and alerts |
 | Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
-| F / Found City button | Found a city with the selected settler |
+| F / Found City button | Found a city with the selected settler, where it stands: on open land, not ruins, and at least 6 hexes from every other city (the notice says why not) |
 | Escape | Let go of the selected unit or group |
 
 A unit can queue a move and an attack; it attacks from the hex it moves to. Units can't move
@@ -131,10 +131,12 @@ orders shows disabled.
 | Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
+| 4 / Scout card | Queue a scout from the city (not a Barracks): 2 food and 4 wood, 2 turns; one at a time (the card is dimmed while one is queued) |
+| S / Settler card | Queue a settler: 30 food and 10 wood, 6 turns, and a citizen when it's done; only a city of population 3 or more (the card is dimmed, saying NEEDS POPULATION 3, below that). Below 3 a queued settler waits (WAITS FOR POP 3) and the queue works the next item |
 | 9 / Grow card | Queue one more citizen, paid in food when work on it starts (the city doesn't grow on its own) |
 | 0 / Gather card | Spend a turn gathering: free, and 2 food, 2 wood and 1 metal come in when it's done |
 | A build card the stockpile can't pay for yet | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the city shows a badge over its tower with the missing resources' icons. Prices show as resource icons and amounts, turns after a clock |
-| A dimmed build card | It can't be queued: (Cavalry, Armored) the barracks has no deposit or its cap is used up, or (Grow) the city is full; its tooltip says why |
+| A dimmed build card | It can't be queued: (Cavalry, Armored) the barracks has no deposit or its cap is used up, or (Grow) the city is full, (Settler) the city is below population 3, or (Scout) one is already queued; its tooltip says why |
 | Drag a queue row onto another | Reorder the queue; work stays with each build, and a paused build with work shows SAVED on its row |
 | Click a row's X | Remove it, refunding its price if it was paid for (work on it started); its work is lost |
 | Clear (beside a queue's title, city or barracks) | Empty that queue: every item comes off, refunded as its X would refund it (their work is lost) |
