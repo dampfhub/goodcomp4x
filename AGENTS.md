@@ -95,21 +95,11 @@ agent. Check `list --open` before filing something new.
 ## Commits and PRs
 
 - One PR per change, using the PR template: what changed, how it was verified, what it closes.
-- After creating a PR or pushing any update, start monitoring its CI immediately
-  (`gh pr checks <number> --watch --interval 10`, or equivalent live checks). Keep
-  monitoring while doing other work, and inspect failures as they appear. Fix their
-  cause, rerun the relevant local checks, push, and watch again until every required
-  check succeeds for the latest pushed commit. Confirm the PR head SHA still matches
-  the commit checked before reporting completion; a passing older run is not evidence.
-  Do not leave a failing or pending PR for the user to discover. If an external blocker
-  prevents success, report the failing check, evidence, and blocker explicitly. An
-  intentionally skipped draft-only merge job is expected; do not mark a draft ready
-  just to run it. If the PR merges, also watch the resulting CI on `main` through success
-  before marking its board issue Done. Track unrelated failures on the board and resolve
-  or explicitly report them; do not retry repeatedly just to get a green run.
-- A PR merges itself: CI's `merge` job merges it once `rust`, `msrv` and `tools` pass, deletes
-  its branch, then runs CI on `main`. To keep a PR open (for review, or while still working), open it as a draft
-  (`gh pr create --draft`, or `gh pr ready --undo <#>`); marking it ready runs CI and merges it.
+- Open PRs ready for auto-merge by default. Use a draft only for a specific reason to
+  hold it back, and explain that reason. Passing CI merges the PR and deletes its branch.
+- After every PR creation or push, watch CI until all required checks pass for the latest
+  head; investigate and fix failures. After merging, watch `main` CI too before marking
+  the board item Done. Report any blocker instead of leaving pending or failed CI unnoticed.
 - Put `Closes #N` on one line: the merge job closes the issues a merged PR links that way. A line ending in `fix`/`close`/`resolve` (any tense) followed by a
   line starting `#N` also closes #N; `node tools/commit-msg-lint.mjs` catches that in commit
   messages, and CI runs it on every PR's commits.
