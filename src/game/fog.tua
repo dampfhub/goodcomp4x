@@ -354,20 +354,48 @@ impl GameState {
     /// walls and gates the player knows of; a land unit by one of its side's cities may also
     /// take the rail to a connected Railhead.
     pub fn known_reachable_for_domain(&self, start: Hex, move_range: i32, team: Team, fog: &Fog, naval: bool) -> Set[Hex] {
+        self.known_reachable_past(start, move_range, team, fog, naval, false)
+    }
+
+    /// `known_reachable_for_domain`, with the units that close a hex: any unit the player sees
+    /// there, or, with `enemies_only`, only enemies in sight (an ally may be moving off, so a
+    /// column following its leader doesn't stop behind it every turn).
+    pub fn known_reachable_past(&self, start: Hex, move_range: i32, team: Team, fog: &Fog, naval: bool, enemies_only: bool) -> Set[Hex] {
         let mut reachable = handle { reachable_by(start, move_range) } with Step {
             open(from, to) => {
-                let ground = if naval { self.grid.contains(to) && self.grid.terrain(to).is_water() } else { self.can_enter(to) };
-                resume ground && !self.known_enemy_city_at(to, team, fog) && self.known_can_cross(from, to, team, fog) && !self.known_occupied(to, fog)
+                resume self.known_step(from, to, team, fog, naval) && !self.known_closed(to, team, fog, enemies_only)
             }
         };
         if move_range > 0 && !naval {
             for c in 0..self.cities.len() {
                 if self.cities[c].team != team { continue; }
                 let Option.Some(dest) = self.cities[c].placed_site(Building.Railhead) else { continue; };
-                if !self.known_occupied(dest, fog) && self.known_rail_transfer_available(start, dest, team, fog) { let _new = reachable.insert(dest); }
+                if !self.known_closed(dest, team, fog, enemies_only) && self.known_rail_transfer_available(start, dest, team, fog) { let _new = reachable.insert(dest); }
             }
         }
         reachable
+    }
+
+    /// Whether a unit the player sees on `hex` closes it (`known_reachable_past`).
+    fn known_closed(&self, hex: Hex, team: Team, fog: &Fog, enemies_only: bool) -> bool {
+        if enemies_only { fog.sees(hex) && self.enemy_of_team_at(hex, team).is_some() } else { self.known_occupied(hex, fog) }
+    }
+
+    /// Whether the player knows of nothing on `hex` that stops a unit entering it: on the map,
+    /// and never seen (the player can't know what's there), or seen to be land a unit can walk
+    /// (for a ship, water). Terrain never changes, so a hex seen once is known for good.
+    pub fn known_passable(&self, hex: Hex, naval: bool, fog: &Fog) -> bool {
+        if !self.grid.contains(hex) { return false; }
+        if !self.is_explored(hex) { return true; }
+        if naval { self.grid.terrain(hex).is_water() } else { self.can_enter(hex) }
+    }
+
+    /// `can_step` as the player knows the board: whether a unit of `team` (a ship, if `naval`)
+    /// may step from `from` onto the adjacent `to`, going by the terrain, enemy city centers,
+    /// walls and gates the player knows of. Units aside, as they'll have moved by the time
+    /// anyone gets there.
+    pub fn known_step(&self, from: Hex, to: Hex, team: Team, fog: &Fog, naval: bool) -> bool {
+        self.known_passable(to, naval, fog) && !self.known_enemy_city_at(to, team, fog) && self.known_can_cross(from, to, team, fog)
     }
 
     /// Records everything in sight as the player's latest memory of it. Called every frame.

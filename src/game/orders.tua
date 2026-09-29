@@ -213,7 +213,7 @@ impl GameState {
             }
             // Queuing never moves selection on: the player keeps adding turns until they let
             // go of the unit.
-            (ClickMode.QueueMove, _) => { let _queued = self.queue_move(hex); }
+            (ClickMode.QueueMove, _) => { let _queued = self.queue_or_unqueue_move(hex); }
             (ClickMode.QueueAttack, _) => { let _queued = self.queue_attack(hex); }
         }
     }

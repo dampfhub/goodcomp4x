@@ -68,6 +68,14 @@ impl Hex {
         Hex.new(rq as i32, rr as i32)
     }
 
+    /// How far apart the two centers are in a straight line, as a number that orders exactly:
+    /// the squared distance over 3 (in hex steps).
+    pub fn straight_distance_sq(self, other: Hex) -> i32 {
+        let dq = self.q - other.q;
+        let dr = self.r - other.r;
+        dq * dq + dr * dr + dq * dr
+    }
+
     pub fn distance(self, other: Hex) -> i32 {
         let dq = self.q - other.q;
         let dr = self.r - other.r;

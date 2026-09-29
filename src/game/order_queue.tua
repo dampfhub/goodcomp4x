@@ -1,6 +1,7 @@
 //! Order queues: Shift-click plans a unit's (or a group's) orders over several turns.
-//! Shift-left-click adds the turns it takes to walk to the clicked hex; Shift-right-click adds
-//! an attack on it. Turn 0 of a plan is the unit's ordinary `planned_move` and
+//! Shift-left-click adds the turns it takes to walk to the clicked hex (or, on a hex the plan
+//! already moves to, takes that move and the turns after it off); Shift-right-click adds an
+//! attack on it. Turn 0 of a plan is the unit's ordinary `planned_move` and
 //! `planned_attack`; later turns wait in `Unit.queued`, and each turn's end moves the next one
 //! up (`advance_queues`). A unit following a queue doesn't hold up ending the turn, and any
 //! other order cancels its queue.
@@ -12,6 +13,7 @@ use std.core.Ordering;
 use std.fmt.Out;
 use std.fmt.show_i64;
 use std.math.max;
+use std.math.min;
 use std.mem.elements_mut;
 use std.sort.Compare;
 use std.sort.sort;
@@ -22,7 +24,9 @@ use game.GameState;
 use game.Step;
 use game.reachable_by;
 use game.text;
+use game.city.turns_icon;
 use game.fog.Fog;
+use game.orders.SHIPS_NOTICE;
 use game.hex.Hex;
 use game.turn.Phase;
 use game.turn.step_rank;
@@ -54,13 +58,16 @@ fn before(a: Away, b: Away) -> bool {
 struct Chooser { index: i32, away: Away }
 
 /// A candidate destination's rank: nearer the target, then nearer the start (so staying put
-/// wins ties and nobody shuffles sideways for nothing), then by `(q, r)`.
-struct Rank { away: Away, from_start: i32, q: i32, r: i32 }
+/// wins ties and nobody shuffles sideways for nothing), then the nearest the target as the crow
+/// flies (many ways are equally short on hexes, and this keeps to the straightest, not one
+/// direction then another), then by `(q, r)`.
+struct Rank { away: Away, from_start: i32, straight_sq: i32, q: i32, r: i32 }
 
 fn outranks(a: &Rank, b: &Rank) -> bool {
     if before(a.away, b.away) { return true; }
     if before(b.away, a.away) { return false; }
     if a.from_start != b.from_start { return a.from_start < b.from_start; }
+    if a.straight_sq != b.straight_sq { return a.straight_sq < b.straight_sq; }
     if a.q != b.q { return a.q < b.q; }
     a.r < b.r
 }
@@ -68,10 +75,10 @@ fn outranks(a: &Rank, b: &Rank) -> bool {
 /// The best of `open` to move to (`outranks`), if any.
 fn best_of(open: &Vec[Hex], walk: &Map[Hex, i32], target: Hex, start: Hex) -> Option[Hex] {
     let mut best: Option[Hex] = Option.None;
-    let mut best_rank = Rank { away: Away { walk: 0, straight: 0 }, from_start: 0, q: 0, r: 0 };
+    let mut best_rank = Rank { away: Away { walk: 0, straight: 0 }, from_start: 0, straight_sq: 0, q: 0, r: 0 };
     for k in 0..open.len() {
         let hex = open[k];
-        let candidate = Rank { away: away(walk, hex, target), from_start: hex.distance(start), q: hex.q, r: hex.r };
+        let candidate = Rank { away: away(walk, hex, target), from_start: hex.distance(start), straight_sq: hex.straight_distance_sq(target), q: hex.q, r: hex.r };
         if best.is_none() || outranks(&candidate, &best_rank) {
             best = Option.Some(hex);
             best_rank = candidate;
@@ -84,11 +91,101 @@ fn order(a: i32, b: i32) -> Ordering {
     if a < b { Ordering.Less } else if a > b { Ordering.Greater } else { Ordering.Equal }
 }
 
-/// A unit that took a queued turn at a turn's end, and where the queue expected it to start
-/// that turn.
-struct Promoted { unit: i32, from: Hex }
+/// What `extend_queue` made of a Shift-click.
+enum Extended {
+    /// Turns queued: from turn `first` (0 is this one) to `length`, and whether the limit cut
+    /// it short.
+    Queued(i32, i32, bool),
+    /// Nobody's plan had room: the limit.
+    Full(i32),
+    /// Nobody could get any closer.
+    NoCloser,
+}
+
+/// The steered queues of a group: its waypoints, and the members that share them.
+struct Steered { waypoints: Vec[Hex], members: Vec[i32] }
+
+fn same_hexes(a: &Vec[Hex], b: &Vec[Hex]) -> bool {
+    if a.len() != b.len() { return false; }
+    for k in 0..a.len() { if a[k] != b[k] { return false; } }
+    true
+}
 
 impl GameState {
+    /// Shift-left-click on a hex: on one of the selection's planned move destinations (a stop
+    /// of its queue, or this turn's ghost), takes that move back off (`unqueue_move`); anywhere
+    /// else, queues the way there (`queue_move`). Returns whether any plan changed.
+    pub fn queue_or_unqueue_move(&mut self, hex: Hex) -> bool {
+        self.unqueue_move(hex) || self.queue_move(hex)
+    }
+
+    /// Takes a planned move onto `hex` off the plan of the selected unit (or group member)
+    /// heading there, with every turn after it; the turns before it stay. The turn itself keeps
+    /// its attack if that's still in range from where the unit then stands, and is dropped if
+    /// it's left with nothing (unless it's this turn). If several moves end on `hex`, the latest
+    /// goes: another click takes the one before it. In a group, the member waits out the turns
+    /// it lost, so its plan stays as long as the others'. Returns whether a move was taken off.
+    pub fn unqueue_move(&mut self, hex: Hex) -> bool {
+        let members = self.selection();
+        if self.is_resolving() { return false; }
+        // The latest turn onto `hex`; on a tie, the first in the selection.
+        let mut found: Option[(i32, i32, i32)] = Option.None;
+        for n in 0..members.len() {
+            let i = members[n];
+            for t in 0..self.units[i].plan_len() {
+                if self.units[i].move_on_turn(t) != Option.Some(hex) { continue; }
+                let better = match found { Option.None => true, Option.Some((bt, bn, _)) => t > bt || (t == bt && n < bn) };
+                if better { found = Option.Some((t, n, i)); }
+            }
+        }
+        let Option.Some((turn, _, idx)) = found else { return false; };
+        let before = self.units[idx].plan_len();
+        let mut others: Vec[i32] = Vec.new();
+        for n in 0..members.len() { if members[n] != idx { others.push(members[n]); } }
+        self.cut_plan(idx, turn);
+        // Still steered: now toward where the cut plan ends.
+        if !self.units[idx].waypoints.is_empty() {
+            let end = self.units[idx].plan_end();
+            let queued = self.units[idx].has_queue();
+            self.units[idx].waypoints.clear();
+            if queued { self.units[idx].waypoints.push(end); }
+        }
+        let length = min(self.plan_length(&others), before);
+        self.pad_plan(idx, length);
+        self.notice = if turn + 1 < before {
+            text(fn() can {Out} { Out.put("TOOK THE MOVE OFF TURN "); show_i64((turn + 1) as i64); Out.put(" AND ALL AFTER IT"); })
+        } else {
+            text(fn() can {Out} { Out.put("TOOK THE MOVE OFF TURN "); show_i64((turn + 1) as i64); })
+        };
+        true
+    }
+
+    /// Cuts unit `idx`'s plan back to before turn `turn`'s move: the turns before stay, the move
+    /// and every later turn go, and the turn's attack stays if it's still in range without the
+    /// move. A later turn left with nothing is dropped too; a plan left with nothing at all is
+    /// no plan.
+    fn cut_plan(&mut self, idx: i32, turn: i32) {
+        // Half of a swap takes the other half with it.
+        if turn == 0 { self.cancel_swap(idx); }
+        self.units[idx].queued.truncate(turn);
+        if turn == 0 {
+            let unit = &mut self.units[idx];
+            unit.planned_move = Option.None;
+            unit.drop_unreachable_attack();
+            if unit.planned_attack.is_none() { unit.following_queue = false; }
+            return;
+        }
+        let range = self.units[idx].later_stats().attack_range;
+        let unit = &mut self.units[idx];
+        unit.queued[turn - 1].move_to = Option.None;
+        let far = match unit.queued[turn - 1].attack {
+            Option.Some(target) => unit.queued[turn - 1].from.distance(target) > range,
+            Option.None => false,
+        };
+        if far { unit.queued[turn - 1].attack = Option.None; }
+        if unit.queued[turn - 1].attack.is_none() { let _gone = unit.queued.pop(); }
+    }
+
     /// Shift-left-click: adds as many turns to the selection's plan as it takes to get to
     /// `target`, as long as no member's plan grows past `Settings.max_queued_turns` turns in
     /// all (this one included). Each turn every unit moves to the hex it can reach that turn,
@@ -103,8 +200,6 @@ impl GameState {
     pub fn queue_move(&mut self, target: Hex) -> bool {
         let members = self.selection();
         if members.is_empty() || self.is_resolving() { return false; }
-        let fog = self.fog();
-        let team = self.units[members[0]].team;
         let naval = self.units[members[0]].is_naval();
         for k in 0..members.len() {
             if self.units[members[k]].is_naval() != naval {
@@ -112,7 +207,56 @@ impl GameState {
                 return false;
             }
         }
-        let walk = self.planned_walk_to(target, team, &fog, naval);
+        let fog = self.fog();
+        // A plan built by Shift-clicks alone keeps going where it was sent (`waypoints`); one
+        // with an attack queued stays as it was built.
+        let mut steered: Vec[bool] = Vec.new();
+        for k in 0..members.len() {
+            let unit = &self.units[members[k]];
+            steered.push(unit.plan_len() == 0 || !unit.waypoints.is_empty());
+        }
+        match self.extend_queue(&members, target, &fog) {
+            Extended.Queued(first, length, cut_short) => {
+                for k in 0..members.len() {
+                    if steered[k] { self.units[members[k]].waypoints.push(target); }
+                }
+                // Cut short, the limit is the news (the plan drawn on the map shows how far it
+                // goes), and the notice stays short enough for the top bar of a small window.
+                let limit = max(self.settings.max_queued_turns, 1);
+                self.notice = if cut_short {
+                    let icon = turns_icon(limit);
+                    text(fn() can {Out} { Out.put("QUEUED UP TO THE "); Out.put(&icon); Out.put(" LIMIT"); })
+                } else {
+                    queued_notice(first, length - first)
+                };
+                true
+            }
+            Extended.Full(limit) => {
+                let icon = turns_icon(limit);
+                self.notice = text(fn() can {Out} { Out.put("QUEUE FULL - "); Out.put(&icon); Out.put(" LIMIT"); });
+                false
+            }
+            Extended.NoCloser => {
+                self.set_notice("CAN'T GET ANY CLOSER THERE");
+                false
+            }
+        }
+    }
+
+    /// Adds to `members`' plans the turns it takes each to get as close to `target` as it can
+    /// (`queue_move`), as the player knows the board, up to `Settings.max_queued_turns`. Leaves
+    /// every plan as it was if nobody moves.
+    fn extend_queue(&mut self, members: &Vec[i32], target: Hex, fog: &Fog) -> Extended {
+        let team = self.units[members[0]].team;
+        let naval = self.units[members[0]].is_naval();
+        // Allies with no orders will still be standing where they are.
+        let mut parked: Set[Hex] = Set.new();
+        for j in 0..self.units.len() {
+            if !members.contains(j) && self.units[j].team == team && self.units[j].plan_len() == 0 {
+                let _new = parked.insert(self.units[j].pos);
+            }
+        }
+        let walk = self.planned_walk_to(target, team, fog, naval, &parked);
         let mut saved: Vec[Unit] = Vec.new();
         for k in 0..members.len() { saved.push(self.units[members[k]].snapshot()); }
         // No member's plan grows past `limit` turns.
@@ -122,7 +266,7 @@ impl GameState {
             let len = self.units[members[k]].plan_len();
             if len < first { first = len; }
         }
-        let longest = self.plan_length(&members);
+        let longest = self.plan_length(members);
         let mut moved_any = false;
         let mut turn = first;
         let mut planning = true;
@@ -138,7 +282,7 @@ impl GameState {
                 if turn >= longest { planning = false; } else { turn = turn + 1; }
                 continue;
             }
-            let legs = self.plan_move_turn(&active, target, turn, &walk, &fog);
+            let legs = self.plan_move_turn(&active, target, turn, &walk, fog);
             let mut moved = false;
             for k in 0..legs.len() { if legs[k].dest.is_some() { moved = true; } }
             if !moved && turn >= longest {
@@ -157,12 +301,7 @@ impl GameState {
                 let Option.Some(unit) = saved.pop() else { break; };
                 self.units[members[k]] = unit;
             }
-            self.notice = if first >= limit {
-                text(fn() can {Out} { Out.put("QUEUE FULL - "); show_i64(limit as i64); Out.put("-TURN LIMIT"); })
-            } else {
-                text(fn() can {Out} { Out.put("CAN'T GET ANY CLOSER THERE"); })
-            };
-            return false;
+            return if first >= limit { Extended.Full(limit) } else { Extended.NoCloser };
         }
         // Whether a member whose plan is full could still have got closer, checked before
         // padding (which would count as its turns).
@@ -173,20 +312,13 @@ impl GameState {
             if len >= limit {
                 let mut one: Vec[i32] = Vec.new();
                 one.push(i);
-                let legs = self.plan_move_turn(&one, target, len, &walk, &fog);
+                let legs = self.plan_move_turn(&one, target, len, &walk, fog);
                 for l in 0..legs.len() { if legs[l].dest.is_some() { cut_short = true; } }
             }
         }
-        let length = self.plan_length(&members);
+        let length = self.plan_length(members);
         for k in 0..members.len() { self.pad_plan(members[k], length); }
-        // Cut short, the limit is the news (the plan drawn on the map shows how far it goes),
-        // and the notice stays short enough for the top bar of a small window.
-        self.notice = if cut_short {
-            text(fn() can {Out} { Out.put("QUEUED UP TO THE "); show_i64(limit as i64); Out.put("-TURN LIMIT"); })
-        } else {
-            queued_notice(first, length - first)
-        };
-        true
+        Extended.Queued(first, length, cut_short)
     }
 
     /// One turn of a queued move toward `target` for each of `active`, on turn `turn` of their
@@ -228,7 +360,10 @@ impl GameState {
             let start = self.units[i].pos_after(turn);
             let naval = self.units[i].is_naval();
             let reachable = if turn == 0 {
-                self.known_reachable_for_domain(start, self.units[i].stats().move_range, team, fog, naval)
+                // Only enemies in sight close hexes: an ally may be moving off (`claimed` and
+                // `vacated_too_late` keep out the hexes allies stay on or leave too late), so a
+                // column following its leader doesn't stop behind it every turn.
+                self.known_reachable_past(start, self.units[i].stats().move_range, team, fog, naval, true)
             } else {
                 self.planned_reachable(start, self.units[i].later_stats().move_range, team, fog, naval)
             };
@@ -258,9 +393,10 @@ impl GameState {
     }
 
     /// How many steps each hex is from `target` for a unit of `team` in a later turn, as far as
-    /// the player knows (around terrain, walls and gates, not units). Hexes with no way to
-    /// `target` are left out.
-    fn planned_walk_to(&self, target: Hex, team: Team, fog: &Fog, naval: bool) -> Map[Hex, i32] {
+    /// the player knows (around the terrain, walls and gates the player has seen, and the
+    /// `parked` hexes, where allies stand still; not other units, which will have moved: a hex
+    /// never seen counts as open). Hexes with no known way to `target` are left out.
+    fn planned_walk_to(&self, target: Hex, team: Team, fog: &Fog, naval: bool, parked: &Set[Hex]) -> Map[Hex, i32] {
         let mut steps: Map[Hex, i32] = Map.new();
         let _old = steps.insert(target, 0);
         let mut frontier: Deque[Hex] = Deque.new();
@@ -271,7 +407,7 @@ impl GameState {
             let around = hex.neighbors();
             for k in 0..6 {
                 let neighbor = around[k];
-                if !steps.has(neighbor) && self.can_stand(neighbor, naval) && self.known_can_cross(neighbor, hex, team, fog) {
+                if !steps.has(neighbor) && !parked.contains(neighbor) && self.known_passable(neighbor, naval, fog) && self.known_can_cross(neighbor, hex, team, fog) {
                     let _old = steps.insert(neighbor, next);
                     frontier.push_back(neighbor);
                 }
@@ -292,9 +428,10 @@ impl GameState {
     /// past `Settings.max_queued_turns`. Returns whether anything was queued.
     pub fn queue_attack(&mut self, target: Hex) -> bool {
         let members = self.selection();
-        let on_map = self.grid.is_passable(target) || (self.grid.contains(target) && self.grid.terrain(target).is_water());
-        if members.is_empty() || self.is_resolving() || !on_map { return false; }
+        // As the player knows it: a hex never seen may be attacked, whatever is really there.
         let fog = self.fog();
+        let water = self.is_explored(target) && self.grid.contains(target) && self.grid.terrain(target).is_water();
+        if members.is_empty() || self.is_resolving() || !(self.known_passable(target, false, &fog) || water) { return false; }
         if self.known_empty_city_target(target, self.units[members[0]].team, &fog) {
             self.set_notice("CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR");
             return false;
@@ -306,7 +443,7 @@ impl GameState {
             let mut all_free = true;
             for k in 0..members.len() {
                 let i = members[k];
-                if self.can_attack_on_turn(i, len - 1, target) {
+                if self.can_attack_on_turn(i, len - 1, target, &fog) {
                     any_able = true;
                     if self.units[i].attack_on_turn(len - 1).is_some() { all_free = false; }
                 }
@@ -314,24 +451,30 @@ impl GameState {
             fill = any_able && all_free;
         }
         let mut turn = if fill { len - 1 } else { len };
-        let mut attackers = self.attackers_on(&members, turn, target);
+        let mut attackers = self.attackers_on(&members, turn, target, &fog);
         // With nothing planned yet and no attack possible this turn (siege setting up, say),
         // the attack waits for the next.
         if attackers.is_empty() && turn == 0 {
             turn = 1;
-            attackers = self.attackers_on(&members, turn, target);
+            attackers = self.attackers_on(&members, turn, target, &fog);
         }
         let limit = max(self.settings.max_queued_turns, 1);
         if turn >= limit {
-            self.notice = text(fn() can {Out} { Out.put("QUEUE FULL - "); show_i64(limit as i64); Out.put("-TURN LIMIT"); });
+            let icon = turns_icon(limit);
+            self.notice = text(fn() can {Out} { Out.put("QUEUE FULL - "); Out.put(&icon); Out.put(" LIMIT"); });
             return false;
         }
         if attackers.is_empty() {
-            self.set_notice("OUT OF RANGE THERE");
+            let mut nobody_hits_water = true;
+            for k in 0..members.len() { if self.units[members[k]].attacks_water() { nobody_hits_water = false; } }
+            if water && nobody_hits_water { self.set_notice(SHIPS_NOTICE); } else { self.set_notice("OUT OF RANGE THERE"); }
             return false;
         }
         for k in 0..members.len() {
             let i = members[k];
+            // A plan with an attack in it stays as it's built: it isn't planned again toward
+            // where it was going.
+            self.units[i].waypoints.clear();
             self.pad_plan(i, if fill { turn + 1 } else { turn });
             let attack = if attackers.contains(i) { Option.Some(target) } else { Option.None };
             if fill {
@@ -345,9 +488,9 @@ impl GameState {
     }
 
     /// The members of `members` that could attack `target` on turn `turn` of their plans.
-    fn attackers_on(&self, members: &Vec[i32], turn: i32, target: Hex) -> Vec[i32] {
+    fn attackers_on(&self, members: &Vec[i32], turn: i32, target: Hex, fog: &Fog) -> Vec[i32] {
         let mut out: Vec[i32] = Vec.new();
-        for k in 0..members.len() { if self.can_attack_on_turn(members[k], turn, target) { out.push(members[k]); } }
+        for k in 0..members.len() { if self.can_attack_on_turn(members[k], turn, target, fog) { out.push(members[k]); } }
         out
     }
 
@@ -398,12 +541,10 @@ impl GameState {
     }
 
     /// Whether unit `idx` could attack `target` on turn `turn` of its plan, from where the plan
-    /// has it standing then.
-    fn can_attack_on_turn(&self, idx: i32, turn: i32, target: Hex) -> bool {
+    /// has it standing then, as far as the player knows.
+    fn can_attack_on_turn(&self, idx: i32, turn: i32, target: Hex, fog: &Fog) -> bool {
         let unit = &self.units[idx];
-        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
-        let shoots_ships = unit.unit_type == UnitType.Ranged || unit.unit_type == UnitType.Siege;
-        if water && !unit.is_naval() && !shoots_ships { return false; }
+        if !self.known_attack_target_legal(idx, target, turn > 0, fog) { return false; }
         let (able, range) = if turn == 0 {
             (unit.can_attack() && self.rival_of(idx).is_none(), unit.stats().attack_range)
         } else {
@@ -413,66 +554,65 @@ impl GameState {
     }
 
     /// Hexes a unit of `team` could reach from `start` in a later turn, as far as the player
-    /// knows: around terrain, walls and gates, but not units, which will have moved by then.
+    /// knows: around the terrain, walls and gates it has seen (a hex never seen counts as open),
+    /// but not units, which will have moved by then.
     fn planned_reachable(&self, start: Hex, move_range: i32, team: Team, fog: &Fog, naval: bool) -> Set[Hex] {
         handle { reachable_by(start, move_range) } with Step {
-            open(from, to) => { resume self.can_stand(to, naval) && self.known_can_cross(from, to, team, fog) }
+            open(from, to) => { resume self.known_passable(to, naval, fog) && self.known_can_cross(from, to, team, fog) }
         }
     }
 
     /// At the end of a turn, after each unit's `end_turn`: every unit with a queue takes its
-    /// next turn's orders. A unit whose queued turn no longer fits the board (it isn't where
-    /// the queue expects, it's in a contested hex, its way or destination is blocked, its
-    /// target out of range) drops its whole queue and needs orders again.
+    /// next turn's orders. A unit whose queued turn can't be carried out on the real board (it
+    /// isn't where the queue expects, it's in a contested hex, its target is out of range)
+    /// drops its whole queue and needs orders again. This runs as the turn resolves, on every
+    /// machine of a network game, so it reads no player's fog: what the player knows is for
+    /// `replan_queues`, as their next turn's planning begins.
     pub fn advance_queues(&mut self) can {Log} {
-        let mut promoted: Vec[Promoted] = Vec.new();
         for i in 0..self.units.len() {
-            if self.units[i].queued.is_empty() { continue; }
+            if self.units[i].queued.is_empty() {
+                // A queue that ran out is done, unless it hasn't got where it was going (its
+                // last move was turned back, say): then it's planned again as the next turn's
+                // planning begins.
+                let count = self.units[i].waypoints.len();
+                let short = count > 0 && self.units[i].waypoints[count - 1] != self.units[i].pos;
+                if short { self.units[i].following_queue = true; } else { self.units[i].waypoints.clear(); }
+                continue;
+            }
             let next = self.units[i].queued.remove(0);
-            let unit = &mut self.units[i];
-            unit.planned_move = next.move_to;
-            unit.planned_attack = next.attack;
-            unit.following_queue = true;
-            promoted.push(Promoted { unit: i, from: next.from });
-        }
-        if promoted.is_empty() { return; }
-        let fog = self.fog();
-        // Dropping one unit's orders leaves it standing where an ally may have meant to go, so
-        // check again until nothing changes.
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for k in 0..promoted.len() {
-                let i = promoted[k].unit;
-                if !self.units[i].following_queue { continue; }
-                let Option.Some(reason) = self.queued_turn_problem(i, promoted[k].from, &fog) else { continue; };
-                {
-                    let unit = &self.units[i];
-                    info(fn() can {Out} { unit.show(); Out.put(" drops its queued orders: "); Out.put(reason); });
+            {
+                let unit = &mut self.units[i];
+                unit.planned_move = next.move_to;
+                unit.planned_attack = next.attack;
+                unit.following_queue = true;
+                // Steered, a turned-back step is no reason to stop: the queue is planned again
+                // from where the unit stands.
+                if unit.pos != next.from && !unit.waypoints.is_empty() {
+                    unit.planned_move = Option.None;
+                    unit.planned_attack = Option.None;
+                    unit.queued.clear();
+                    continue;
+                }
+            }
+            let Option.Some(reason) = self.queued_turn_problem(i, next.from) else { continue; };
+            {
+                let unit = &self.units[i];
+                info(fn() can {Out} { unit.show(); Out.put(" drops its queued orders: "); Out.put(reason); });
+                if self.is_player_controlled(i) {
                     let role = self.unit_role(unit).name();
                     self.notice = text(fn() can {Out} { Out.put(role); Out.put(" STOPPED: "); Out.put(reason); });
                 }
-                self.units[i].clear_orders();
-                changed = true;
             }
+            self.units[i].clear_orders();
         }
     }
 
-    /// Why unit `idx` can't carry out the queued turn it just took, if it can't. `from` is
-    /// where the queue expected it to start the turn.
-    fn queued_turn_problem(&self, idx: i32, from: Hex, fog: &Fog) -> Option[str] {
+    /// Why unit `idx` can't carry out the queued turn it just took, on the real board, if it
+    /// can't. `from` is where the queue expected it to start the turn.
+    fn queued_turn_problem(&self, idx: i32, from: Hex) -> Option[str] {
         let unit = &self.units[idx];
         if unit.pos != from { return Option.Some("IT DIDN'T GET WHERE IT WAS GOING"); }
         if self.rival_of(idx).is_some() { return Option.Some("IT IS FIGHTING FOR ITS HEX"); }
-        if let Option.Some(dest) = unit.planned_move {
-            let reachable = self.planned_reachable(unit.pos, unit.stats().move_range, unit.team, fog, unit.is_naval());
-            if !reachable.contains(dest) { return Option.Some("ITS WAY IS BLOCKED"); }
-            if fog.sees(dest) && self.enemy_of_team_at(dest, unit.team).is_some() { return Option.Some("AN ENEMY STANDS IN ITS WAY"); }
-            for j in 0..self.units.len() {
-                let other = &self.units[j];
-                if j != idx && other.team == unit.team && other.planned_pos() == dest { return Option.Some("AN ALLY IS IN ITS WAY"); }
-            }
-        }
         if let Option.Some(target) = unit.planned_attack {
             if !unit.can_attack() || unit.planned_pos().distance(target) > unit.stats().attack_range {
                 return Option.Some("ITS TARGET IS OUT OF RANGE");
@@ -480,17 +620,117 @@ impl GameState {
         }
         Option.None
     }
+
+    /// As the player's next turn's planning begins: each of the player's queues is looked over
+    /// on the board as the player now knows it. One built by Shift-clicks alone is planned
+    /// again from where its units stand toward where it's going (`waypoints`), along the
+    /// shortest way the player knows, so a path set through the fog follows what the fog
+    /// reveals; a waypoint reached, or as near as the unit can get, is dropped, and a queue with
+    /// none left is done. A queue whose next move runs into an enemy in sight stops, and its
+    /// units need orders again. One built with an attack is kept as it was, unless its next move
+    /// is now known to be blocked.
+    pub fn replan_queues(&mut self) can {Log} {
+        let fog = self.fog();
+        let mut queued: Vec[i32] = Vec.new();
+        for i in 0..self.units.len() {
+            if self.is_player_controlled(i) && self.units[i].following_queue { queued.push(i); }
+        }
+        for k in 0..queued.len() {
+            let i = queued[k];
+            if let Option.Some(reason) = self.known_queue_problem(i, &fog) { self.stop_queue(i, reason); }
+        }
+        // Steered queues, a group (the same waypoints) planned together.
+        let mut groups: Vec[Steered] = Vec.new();
+        for k in 0..queued.len() {
+            let i = queued[k];
+            if !self.units[i].following_queue || self.units[i].waypoints.is_empty() { continue; }
+            while !self.units[i].waypoints.is_empty() && self.units[i].waypoints[0] == self.units[i].pos {
+                let _first = self.units[i].waypoints.remove(0);
+            }
+            let mut found = 0 - 1;
+            for g in 0..groups.len() { if same_hexes(&groups[g].waypoints, &self.units[i].waypoints) { found = g; } }
+            if found >= 0 {
+                groups[found].members.push(i);
+            } else {
+                let mut waypoints: Vec[Hex] = Vec.new();
+                for w in 0..self.units[i].waypoints.len() { waypoints.push(self.units[i].waypoints[w]); }
+                let mut members: Vec[i32] = Vec.new();
+                members.push(i);
+                groups.push(Steered { waypoints, members });
+            }
+        }
+        for g in 0..groups.len() {
+            let waypoints = &groups[g].waypoints;
+            let members = &groups[g].members;
+            for k in 0..members.len() {
+                let unit = &mut self.units[members[k]];
+                unit.planned_move = Option.None;
+                unit.planned_attack = Option.None;
+                unit.queued.clear();
+                unit.following_queue = false;
+            }
+            let mut left: Vec[Hex] = Vec.new();
+            for w in 0..waypoints.len() { left.push(waypoints[w]); }
+            for w in 0..waypoints.len() {
+                let target = waypoints[w];
+                match self.extend_queue(members, target, &fog) {
+                    Extended.Queued(_, _, _) => {}
+                    // As near as it gets: on to the next.
+                    Extended.NoCloser => {
+                        let mut kept: Vec[Hex] = Vec.new();
+                        for l in 0..left.len() { if left[l] != target { kept.push(left[l]); } }
+                        left = kept;
+                    }
+                    Extended.Full(_) => { break; }
+                }
+            }
+            for k in 0..members.len() {
+                let unit = &mut self.units[members[k]];
+                unit.waypoints.clear();
+                if unit.has_queue() { for l in 0..left.len() { unit.waypoints.push(left[l]); } }
+            }
+        }
+    }
+
+    /// Why unit `idx`'s queued turn, just taken, can't go ahead on the board as the player knows
+    /// it, if it can't: an enemy in sight where it's going, or, for a queue kept as built, a way
+    /// the player now knows is blocked or an ally standing where it's going.
+    fn known_queue_problem(&self, idx: i32, fog: &Fog) -> Option[str] {
+        let unit = &self.units[idx];
+        let dest = unit.planned_move?;
+        if fog.sees(dest) && self.enemy_of_team_at(dest, unit.team).is_some() { return Option.Some("AN ENEMY STANDS IN ITS WAY"); }
+        if !unit.waypoints.is_empty() { return Option.None; }
+        let reachable = self.planned_reachable(unit.pos, unit.stats().move_range, unit.team, fog, unit.is_naval());
+        if !reachable.contains(dest) { return Option.Some("ITS WAY IS BLOCKED"); }
+        for j in 0..self.units.len() {
+            let other = &self.units[j];
+            if j != idx && other.team == unit.team && other.planned_pos() == dest { return Option.Some("AN ALLY IS IN ITS WAY"); }
+        }
+        Option.None
+    }
+
+    /// Drops unit `idx`'s queue and orders for `reason`, telling the player.
+    fn stop_queue(&mut self, idx: i32, reason: str) can {Log} {
+        {
+            let unit = &self.units[idx];
+            info(fn() can {Out} { unit.show(); Out.put(" drops its queued orders: "); Out.put(reason); });
+            let role = self.unit_role(unit).name();
+            self.notice = text(fn() can {Out} { Out.put(role); Out.put(" STOPPED: "); Out.put(reason); });
+        }
+        self.units[idx].clear_orders();
+    }
 }
 
 /// What the top bar says after a Shift-click queued `turns` turns starting on turn `first` (0
 /// is this one).
 fn queued_notice(first: i32, turns: i32) -> Str {
     let last = first + turns;
+    let icon = turns_icon(turns);
     text(fn() can {Out} {
         if first == 0 && turns == 1 {
             Out.put("QUEUED FOR THIS TURN - SHIFT-CLICK AGAIN FOR THE NEXT");
         } else if first == 0 {
-            Out.put("QUEUED FOR THE NEXT "); show_i64(turns as i64); Out.put(" TURNS");
+            Out.put("QUEUED FOR THE NEXT "); Out.put(&icon);
         } else if turns == 1 {
             Out.put("QUEUED FOR TURN "); show_i64(last as i64); Out.put(" FROM NOW");
         } else {

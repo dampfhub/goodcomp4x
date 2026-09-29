@@ -157,6 +157,8 @@ fn mountains_block_movement_and_pathing() {
         // (0, -2), and the mountain itself can't be entered.
         game.units[cavalry].pos = Hex.new(-1, -2);
         assert(game.grid.terrain(Hex.new(0, -2)) == Terrain.Mountains);
+        // Pathing goes by what the player knows: the mountains in sight.
+        game.explore();
         game.try_queue_move(cavalry, Hex.new(0, -2));
         assert(game.units[cavalry].planned_move == Option.None);
         game.try_queue_move(cavalry, Hex.new(1, -3));
@@ -703,6 +705,8 @@ fn harbor_produces_a_ship_on_water_and_it_cannot_walk_ashore() {
         let before = g.units.len();
         g.complete_builds();
         assert(g.units.len() == before + 1);
+        // The ship plans on what the player knows: the coast in sight.
+        g.explore();
         let ship = g.units.len() - 1;
         assert(g.units[ship].unit_type == UnitType.PatrolGalley);
         assert(g.grid.terrain(g.units[ship].pos).is_water());

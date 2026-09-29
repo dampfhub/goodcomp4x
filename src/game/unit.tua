@@ -251,6 +251,11 @@ pub struct Unit {
     /// This turn's orders came from a queue the player built with Shift, so the unit doesn't
     /// hold up ending the turn.
     following_queue: bool,
+    /// Where a queue built by Shift-clicks is going, in order: the hexes clicked. Each turn the
+    /// player's machine plans the queue again toward them along the shortest way it knows
+    /// (`replan_queues`), dropping each once reached. Empty for a plan kept as it was built (one
+    /// with a queued attack).
+    waypoints: Vec[Hex],
     /// Land units carried by a landing craft. Cargo is lost if it sinks.
     cargo: Vec[Unit],
     /// Boarding and landing resolve with the rest of the turn.
@@ -280,6 +285,7 @@ impl Unit {
             lookout: false,
             queued: Vec.new(),
             following_queue: false,
+            waypoints: Vec.new(),
             cargo: Vec.new(),
             planned_board: Option.None,
             planned_unload: Option.None,
@@ -295,6 +301,8 @@ impl Unit {
     pub fn snapshot(&self) -> Unit {
         let mut queued: Vec[TurnOrder] = Vec.new();
         for i in 0..self.queued.len() { queued.push(self.queued[i]); }
+        let mut waypoints: Vec[Hex] = Vec.new();
+        for i in 0..self.waypoints.len() { waypoints.push(self.waypoints[i]); }
         let mut cargo: Vec[Unit] = Vec.new();
         for i in 0..self.cargo.len() { cargo.push(self.cargo[i].snapshot()); }
         Unit {
@@ -317,6 +325,7 @@ impl Unit {
             lookout: self.lookout,
             queued,
             following_queue: self.following_queue,
+            waypoints,
             cargo,
             planned_board: self.planned_board,
             planned_unload: self.planned_unload,
@@ -441,6 +450,12 @@ impl Unit {
         self.queued[at].end_pos()
     }
 
+    /// The move planned for turn `turn` of the unit's plan (0 is this turn).
+    pub fn move_on_turn(&self, turn: i32) -> Option[Hex] {
+        if turn == 0 { return self.planned_move; }
+        if turn - 1 < self.queued.len() { self.queued[turn - 1].move_to } else { Option.None }
+    }
+
     /// The attack planned for turn `turn` of the unit's plan (0 is this turn).
     pub fn attack_on_turn(&self, turn: i32) -> Option[Hex] {
         if turn == 0 { return self.planned_attack; }
@@ -456,6 +471,7 @@ impl Unit {
     pub fn cancel_queue(&mut self) {
         self.queued.clear();
         self.following_queue = false;
+        self.waypoints.clear();
     }
 
     /// Clears this turn's orders and a hold, but not the turns queued after it.

@@ -1,5 +1,6 @@
 //! Order queues: Shift-click plans over several turns, and the plan plays out turn by turn.
 
+use std.collections.Map;
 use std.collections.Set;
 use std.linalg.Vec2;
 use std.linalg.vec2;
@@ -17,6 +18,10 @@ use game.draw.QUEUE_LINE_ALPHA;
 use game.draw.queue_plans;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
+use game.hex.HexGrid;
+use game.terrain.Terrain;
+use game.terrain.Tile;
+use game.orders.SHIPS_NOTICE;
 use game.hex.edge;
 use game.workers.Structure;
 use game.workers.StructureKind;
@@ -131,7 +136,7 @@ fn one_far_shift_click_queues_every_turn_it_takes_to_get_there() {
         // Six hexes: as many turns as a queue holds by default.
         let far = Hex.new(2, 0);
         assert(g.queue_move(far));
-        assert(notice_is(&g, "QUEUED FOR THE NEXT 6 TURNS"));
+        assert(notice_is(&g, "QUEUED FOR THE NEXT \u{E003}6"));
         assert(g.units[0].plan_len() == g.units[0].pos.distance(far));
         assert(g.units[0].plan_end() == far);
         // Already there.
@@ -153,10 +158,10 @@ fn a_hex_past_the_limit_is_queued_as_far_as_the_limit_goes() {
         assert(g.units[0].plan_len() == 6);
         assert(g.units[0].plan_end() == Hex.new(2, 0));
         assert(all_move(&moves(&g, 0), 0));
-        assert(notice_is(&g, "QUEUED UP TO THE 6-TURN LIMIT"));
+        assert(notice_is(&g, "QUEUED UP TO THE \u{E003}6 LIMIT"));
         assert(!g.queue_move(far));
         assert(g.units[0].plan_len() == 6);
-        assert(notice_is(&g, "QUEUE FULL - 6-TURN LIMIT"));
+        assert(notice_is(&g, "QUEUE FULL - \u{E003}6 LIMIT"));
         // An attack still fits into the last turn, but a second one would need a turn of its
         // own.
         g.units.push(Unit.new(99, Hex.new(3, 0), Team.Red, UnitType.Melee));
@@ -164,7 +169,7 @@ fn a_hex_past_the_limit_is_queued_as_far_as_the_limit_goes() {
         assert(g.units[0].plan_len() == 6);
         assert(!g.queue_attack(Hex.new(3, 0)));
         assert(g.units[0].plan_len() == 6);
-        assert(notice_is(&g, "QUEUE FULL - 6-TURN LIMIT"));
+        assert(notice_is(&g, "QUEUE FULL - \u{E003}6 LIMIT"));
 
         // Each turn played frees a turn of the queue.
         let _gone = g.units.pop();
@@ -204,7 +209,7 @@ fn the_limit_is_the_queue_limit_setting() {
         let far = Hex.new(4, 0);
         assert(g.queue_move(far));
         assert(g.units[0].plan_len() == 3);
-        assert(notice_is(&g, "QUEUED UP TO THE 3-TURN LIMIT"));
+        assert(notice_is(&g, "QUEUED UP TO THE \u{E003}3 LIMIT"));
 
         // A higher limit lets the next click go the rest of the way; past the top of its range
         // it stops there.
@@ -242,7 +247,7 @@ fn no_group_member_queues_past_the_limit() {
         select(&mut g, &[0, 1]);
         let far = Hex.new(5, 0);
         assert(g.queue_move(far));
-        assert(notice_is(&g, "QUEUED UP TO THE 5-TURN LIMIT"));
+        assert(notice_is(&g, "QUEUED UP TO THE \u{E003}5 LIMIT"));
         // The melee keeps its three turns and adds two; the ranged unit, starting now, moves
         // all five.
         for i in 0..2 { assert(g.units[i].plan_len() == 5); }
@@ -253,7 +258,7 @@ fn no_group_member_queues_past_the_limit() {
 
         // Both queues are full.
         assert(!g.queue_move(far));
-        assert(notice_is(&g, "QUEUE FULL - 5-TURN LIMIT"));
+        assert(notice_is(&g, "QUEUE FULL - \u{E003}5 LIMIT"));
     });
 }
 
@@ -527,25 +532,6 @@ fn a_group_marches_its_queue_in_step() {
 }
 
 @test
-fn a_blocked_queue_is_dropped_and_the_unit_wants_orders() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut g = open_field(&[UnitType.Melee]);
-        g.selected = Option.Some(0);
-        assert(g.queue_move(Hex.new(-3, 0)));
-        assert(g.queue_move(Hex.new(-2, 0)));
-        assert(g.queue_move(Hex.new(-1, 0)));
-        // An ally arrives on next turn's destination and stays there.
-        g.units.push(Unit.new(200, Hex.new(-2, 0), Team.Blue, UnitType.Melee));
-        play_turn(&mut g);
-        assert(g.units[0].pos == Hex.new(-3, 0));
-        assert(!g.units[0].has_queue());
-        assert(g.units[0].planned_move.is_none());
-        assert(g.needs_orders(0));
-        assert(notice_has(&g, "STOPPED"));
-    });
-}
-
-@test
 fn an_enemy_seen_on_the_way_stops_the_queue() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut g = open_field(&[UnitType.Melee]);
@@ -759,5 +745,413 @@ fn a_far_shift_click_walks_around_a_wall() {
         let turns = g.units[0].plan_len();
         for _ in 0..turns { play_turn(&mut g); }
         assert(g.units[0].pos == far);
+    });
+}
+
+/// The hexes unit `idx`'s plan moves onto, turn by turn.
+fn stops(game: &GameState, idx: i32) -> Vec[Hex] {
+    let unit = &game.units[idx];
+    let mut out: Vec[Hex] = Vec.new();
+    for t in 0..unit.plan_len() { if let Option.Some(h) = unit.move_on_turn(t) { out.push(h); } }
+    out
+}
+
+fn hex_in(hexes: &Vec[Hex], hex: Hex) -> bool {
+    for k in 0..hexes.len() { if hexes[k] == hex { return true; } }
+    false
+}
+
+fn same_stops(a: &Vec[Hex], b: &Vec[Hex]) -> bool {
+    if a.len() != b.len() { return false; }
+    for k in 0..a.len() { if a[k] != b[k] { return false; } }
+    true
+}
+
+fn same_notice(a: &GameState, b: &GameState) -> bool {
+    let x: &Str = &a.notice;
+    let y: &Str = &b.notice;
+    str_eq(x, y)
+}
+
+/// The attack of the last queued turn of `unit`'s plan, if it has one.
+fn last_attack(unit: &Unit) -> Option[Hex] {
+    if unit.queued.is_empty() { return Option.None; }
+    unit.queued[unit.queued.len() - 1].attack
+}
+
+@test
+fn a_queue_goes_around_an_ally_in_its_way() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = open_field(&[UnitType.Melee]);
+        g.selected = Option.Some(0);
+        assert(g.queue_move(Hex.new(-3, 0)));
+        assert(g.queue_move(Hex.new(-2, 0)));
+        assert(g.queue_move(Hex.new(-1, 0)));
+        // An ally arrives on next turn's destination and stays there: the waypoint under it is
+        // as near as the unit gets, and it goes on around it.
+        g.units.push(Unit.new(200, Hex.new(-2, 0), Team.Blue, UnitType.Melee));
+        play_turn(&mut g);
+        assert(g.units[0].pos == Hex.new(-3, 0));
+        assert(g.units[0].has_queue());
+        assert(g.units[0].plan_end() == Hex.new(-1, 0));
+        assert(!hex_in(&stops(&g, 0), Hex.new(-2, 0)));
+        assert(g.units[0].waypoints.len() == 1 && g.units[0].waypoints[0] == Hex.new(-1, 0));
+    });
+}
+
+@test
+fn a_steered_unit_turned_back_goes_on_from_where_it_stands() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = open_field(&[UnitType.Melee]);
+        g.selected = Option.Some(0);
+        let target = Hex.new(0, 0);
+        assert(g.queue_move(target));
+        // An ally with no orders stops on this turn's destination: the move is turned back, and
+        // the queue goes on around it from where the unit stands.
+        let dest = g.units[0].planned_move.unwrap_or(target);
+        g.units.push(Unit.new(300, dest, Team.Blue, UnitType.Melee));
+        g.units[1].holding = true;
+        play_turn(&mut g);
+        assert(g.units[0].pos == Hex.new(-4, 0));
+        assert(g.units[0].has_queue());
+        assert(g.units[0].plan_end() == target);
+        assert(!hex_in(&stops(&g, 0), dest));
+    });
+}
+
+@test
+fn a_column_keeps_moving_behind_its_leader() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Two in a line, the second right behind the first: planned again each turn, the second
+        // follows into the hex the first leaves rather than waiting behind it.
+        let mut g = open_field(&[UnitType.Melee, UnitType.Melee]);
+        g.units[0].pos = Hex.new(-3, 0);
+        g.units[1].pos = Hex.new(-4, 0);
+        select(&mut g, &[0, 1]);
+        assert(g.queue_move(Hex.new(1, 0)));
+        for _ in 0..3 {
+            let before = g.units[1].pos;
+            play_turn(&mut g);
+            assert(g.units[1].pos != before);
+            assert(g.units[1].has_queue());
+        }
+    });
+}
+
+@test
+fn a_blocked_queue_kept_as_built_is_dropped_and_the_unit_wants_orders() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = open_field(&[UnitType.Melee]);
+        g.selected = Option.Some(0);
+        assert(g.queue_move(Hex.new(-3, 0)));
+        assert(g.queue_move(Hex.new(-2, 0)));
+        // An attack in the plan keeps it as it was built.
+        assert(g.queue_attack(Hex.new(-1, 0)));
+        // An ally arrives on next turn's destination and stays there.
+        g.units.push(Unit.new(200, Hex.new(-2, 0), Team.Blue, UnitType.Melee));
+        play_turn(&mut g);
+        assert(g.units[0].pos == Hex.new(-3, 0));
+        assert(!g.units[0].has_queue());
+        assert(g.units[0].planned_move.is_none());
+        assert(g.needs_orders(0));
+        assert(notice_has(&g, "STOPPED"));
+    });
+}
+
+/// Shift-clicks each of `hexes` on the map, as the player would.
+fn shift_click(game: &mut GameState, hexes: &[Hex]) can {Log, Rand} {
+    for k in 0..hexes.len() {
+        let at = cursor(&*game, hexes[k]);
+        game.handle_map_click(at, screen(), ClickMode.QueueMove);
+    }
+}
+
+fn moves_are(game: &GameState, idx: i32, want: &[Option[Hex]]) -> bool {
+    let plan = moves(game, idx);
+    if plan.len() != want.len() { return false; }
+    for k in 0..want.len() { if plan[k] != want[k] { return false; } }
+    true
+}
+
+@test
+fn shift_clicking_a_queued_stop_takes_it_and_every_later_move_off() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = open_field(&[UnitType.Melee]);
+        g.selected = Option.Some(0);
+        let path = [Hex.new(-3, 0), Hex.new(-2, 0), Hex.new(-1, 0), Hex.new(0, 0)];
+        shift_click(&mut g, &path);
+        assert(moves_are(&g, 0, &[Option.Some(path[0]), Option.Some(path[1]), Option.Some(path[2]), Option.Some(path[3])]));
+
+        // A stop in the middle: the move there and everything after go.
+        shift_click(&mut g, &[path[1]]);
+        assert(moves_are(&g, 0, &[Option.Some(path[0])]));
+        assert(notice_is(&g, "TOOK THE MOVE OFF TURN 2 AND ALL AFTER IT"));
+        // What's left is still its queue.
+        assert(g.units[0].following_queue);
+        assert(!g.needs_orders(0));
+        // Selection stays.
+        assert(g.selected == Option.Some(0));
+
+        // Not a stop any more, so the same hex queues again, and so does a hex beside the stops.
+        shift_click(&mut g, &[path[1], Hex.new(-2, 1)]);
+        assert(moves_are(&g, 0, &[Option.Some(path[0]), Option.Some(path[1]), Option.Some(Hex.new(-2, 1))]));
+
+        // The last stop: only it goes.
+        shift_click(&mut g, &[Hex.new(-2, 1)]);
+        assert(moves_are(&g, 0, &[Option.Some(path[0]), Option.Some(path[1])]));
+        assert(notice_is(&g, "TOOK THE MOVE OFF TURN 3"));
+
+        // This turn's: nothing is left, and the unit wants orders again.
+        shift_click(&mut g, &[path[0]]);
+        assert(!g.units[0].has_orders());
+        assert(g.needs_orders(0));
+
+        // The ghost of a plain move goes the same way.
+        let at = cursor(&g, path[0]);
+        g.handle_map_click(at, screen(), ClickMode.Normal);
+        assert(g.units[0].planned_move == Option.Some(path[0]));
+        g.selected = Option.Some(0);
+        shift_click(&mut g, &[path[0]]);
+        assert(g.units[0].planned_move.is_none());
+    });
+}
+
+@test
+fn a_hex_stopped_on_twice_loses_its_latest_move_first() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = open_field(&[UnitType.Melee]);
+        g.selected = Option.Some(0);
+        let (a, b) = (Hex.new(-3, 0), Hex.new(-2, 0));
+        assert(g.queue_move(a) && g.queue_move(b) && g.queue_move(a));
+        assert(moves_are(&g, 0, &[Option.Some(a), Option.Some(b), Option.Some(a)]));
+        assert(g.unqueue_move(a));
+        assert(moves_are(&g, 0, &[Option.Some(a), Option.Some(b)]));
+        assert(g.unqueue_move(a));
+        assert(!g.units[0].has_queue());
+        // Nothing heads there now.
+        assert(!g.unqueue_move(a));
+    });
+}
+
+@test
+fn a_turns_attack_stays_if_still_in_range_without_its_move() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = open_field(&[UnitType.Ranged]);
+        g.selected = Option.Some(0);
+        let (a, b) = (Hex.new(-3, 0), Hex.new(-2, 0));
+        assert(g.queue_move(a) && g.queue_move(b));
+        // Two hexes from `a`, one from `b`: in range either way.
+        let near = Hex.new(-1, 0);
+        assert(g.queue_attack(near));
+        assert(g.unqueue_move(b));
+        assert(g.units[0].queued.len() == 1);
+        assert(g.units[0].queued[0].from == a && g.units[0].queued[0].move_to.is_none() && g.units[0].queued[0].attack == Option.Some(near));
+
+        // Out of range from `a`: the turn goes with its move.
+        assert(g.queue_move(b));
+        let far = Hex.new(0, 0);
+        assert(g.queue_attack(far));
+        assert(g.unqueue_move(b));
+        assert(moves_are(&g, 0, &[Option.Some(a), Option.None]));
+        // Earlier turns stay.
+        assert(g.units[0].attack_on_turn(1) == Option.Some(near));
+    });
+}
+
+@test
+fn landing_craft_cannot_queue_an_attack() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = open_field(&[UnitType.LandingCraft]);
+        g.selected = Option.Some(0);
+        assert(!g.queue_attack(Hex.new(-3, 0)));
+        assert(g.units[0].planned_attack.is_none());
+        assert(g.units[0].queued.is_empty());
+    });
+}
+
+/// `open_field` with the fog of war on and nothing seen yet but what the units see now.
+fn fogged_field(types: &[UnitType]) -> GameState can {Log} {
+    let mut game = open_field(types);
+    game.fog_of_war = true;
+    game.memory = Map.new();
+    game.explore();
+    game
+}
+
+/// A flat radius-7 map with, if `walled`, a wall of mountains down the middle (q = 0) but for a
+/// gap at its south end; one Blue cavalry at `start`, selected, with the fog on and nothing seen
+/// but what it sees.
+fn field_in_fog(start: Hex, walled: bool) -> GameState can {Log} {
+    let mut game = open_field(&[UnitType.Cavalry]);
+    let mut tiles: Vec[(Hex, Tile)] = Vec.new();
+    if walled { for r in -7..=5 { tiles.push((Hex.new(0, r), Tile.of(Terrain.Mountains))); } }
+    game.grid = HexGrid.new(7, &tiles);
+    game.units[0].pos = start;
+    game.fog_of_war = true;
+    game.memory = Map.new();
+    game.explore();
+    game.selected = Option.Some(0);
+    game
+}
+
+@test
+fn a_queued_attack_can_target_a_hex_in_the_fog() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Queued moves end at (-2, 0); the melee attacks next door from there.
+        let target = Hex.new(-1, 0);
+        let mut seen = open_field(&[UnitType.Melee]);
+        seen.selected = Option.Some(0);
+        assert(seen.queue_move(Hex.new(-2, 0)));
+        assert(seen.queue_attack(target));
+        assert(last_attack(&seen.units[0]) == Option.Some(target));
+
+        // Never seen: the same plan, and it's carried out.
+        let mut unseen = fogged_field(&[UnitType.Melee]);
+        assert(!unseen.fog().sees(target) && !unseen.is_explored(target));
+        unseen.selected = Option.Some(0);
+        assert(unseen.queue_move(Hex.new(-2, 0)));
+        assert(unseen.queue_attack(target));
+        assert(last_attack(&unseen.units[0]) == Option.Some(target));
+        assert(unseen.units[0].queued.len() == seen.units[0].queued.len());
+        assert(same_notice(&unseen, &seen));
+
+        // Only in range of where the queue ends, as for a seen hex.
+        let mut far = fogged_field(&[UnitType.Melee]);
+        far.selected = Option.Some(0);
+        assert(far.queue_move(Hex.new(-2, 0)));
+        assert(!far.queue_attack(Hex.new(0, 0)));
+        assert(notice_is(&far, "OUT OF RANGE THERE"));
+    });
+}
+
+@test
+fn a_queued_attack_on_water_says_who_can_attack_ships() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let lake = Hex.new(-3, 0);
+        for k in 0..2 {
+            let kind = if k == 0 { UnitType.Melee } else { UnitType.Ranged };
+            let mut g = open_field(&[kind]);
+            let mut tiles: Vec[(Hex, Tile)] = Vec.new();
+            tiles.push((lake, Tile.of(Terrain.Lake)));
+            g.grid = HexGrid.new(6, &tiles);
+            g.selected = Option.Some(0);
+            assert(g.queue_attack(lake) == (k == 1));
+            if k == 0 { assert(notice_is(&g, SHIPS_NOTICE)); }
+        }
+    });
+}
+
+@test
+fn a_queued_path_through_open_fog_keeps_to_the_straight_line() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let start = Hex.new(-5, 2);
+        let target = Hex.new(5, 0 - 3);
+        let mut game = field_in_fog(start, false);
+        game.settings.max_queued_turns = 12;
+        assert(game.queue_move(target));
+        assert(game.units[0].plan_len() == (start.distance(target) + 1) / 2);
+        // Every stop is within a hex of the line from start to target, not one direction first
+        // and then the other.
+        let a = start.to_world();
+        let b = target.to_world();
+        let step = a.sub(start.neighbors()[0].to_world()).length();
+        let stops = stops(&game, 0);
+        for k in 0..stops.len() {
+            let p = stops[k].to_world();
+            let d = b.sub(a);
+            let cross = d.x * (p.y - a.y) - d.y * (p.x - a.x);
+            let off = (if cross < 0.0 { 0.0 - cross } else { cross }) / d.length();
+            assert(off <= step);
+        }
+    });
+}
+
+@test
+fn a_queued_path_into_the_fog_goes_by_what_the_player_has_seen() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let start = Hex.new(-5, 0);
+        let target = Hex.new(5, 0);
+        let mut game = field_in_fog(start, true);
+        assert(!game.is_explored(Hex.new(0, 0)));
+        // The wall no one has seen doesn't count: straight through it, 10 hexes at 2 a turn.
+        assert(game.queue_move(target));
+        assert(game.units[0].plan_len() == 5);
+    });
+}
+
+@test
+fn a_queue_takes_the_shortest_known_way_again_each_turn() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let start = Hex.new(-5, 0);
+        let target = Hex.new(5, 0);
+        let mut game = field_in_fog(start, true);
+        game.settings.max_queued_turns = 12;
+        assert(game.queue_move(target));
+        let through_the_fog = stops(&game, 0);
+        // The fog lifts from the wall (a scout walks by, say): the queue is planned again around
+        // it, still to the same hex.
+        for r in -7..=5 {
+            let h = Hex.new(0, r);
+            let sighting = game.sighting(h);
+            let _old = game.memory.insert(h, sighting);
+        }
+        game.replan_queues();
+        let around = stops(&game, 0);
+        assert(!same_stops(&around, &through_the_fog));
+        for k in 0..around.len() { assert(game.grid.is_passable(around[k])); }
+        assert(game.units[0].plan_end() == target);
+        // The way round is longer.
+        assert(game.units[0].plan_len() > 5);
+        assert(game.units[0].waypoints.len() == 1 && game.units[0].waypoints[0] == target);
+    });
+}
+
+@test
+fn a_queue_keeps_going_where_it_was_sent_past_the_turn_limit() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let start = Hex.new(-5, 0);
+        let target = Hex.new(5, 0);
+        let mut game = field_in_fog(start, false);
+        game.settings.max_queued_turns = 2;
+        assert(game.queue_move(target));
+        // Cut short at the limit.
+        assert(game.units[0].plan_len() == 2);
+        // Each turn it's planned again from where it stands, so it gets there in the 5 turns it
+        // takes, and is then done.
+        for _ in 0..5 { play_turn(&mut game); }
+        assert(game.units[0].pos == target);
+        assert(!game.units[0].has_queue());
+        assert(game.units[0].waypoints.is_empty());
+        assert(game.needs_orders(0));
+    });
+}
+
+@test
+fn waypoints_are_visited_in_order_and_dropped_once_reached() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = field_in_fog(Hex.new(-5, 0), false);
+        let first = Hex.new(-3, 0 - 2);
+        let second = Hex.new(2, 0);
+        assert(game.queue_move(first));
+        assert(game.queue_move(second));
+        assert(game.units[0].waypoints.len() == 2);
+        assert(game.units[0].waypoints[0] == first && game.units[0].waypoints[1] == second);
+        play_turn(&mut game);
+        assert(game.units[0].pos == first);
+        assert(game.units[0].waypoints.len() == 1 && game.units[0].waypoints[0] == second);
+        assert(game.units[0].plan_end() == second);
+    });
+}
+
+@test
+fn a_plan_with_a_queued_attack_is_kept_as_built() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = field_in_fog(Hex.new(-5, 0), false);
+        assert(game.queue_move(Hex.new(-2, 0)));
+        assert(game.queue_attack(Hex.new(-1, 0)));
+        assert(game.units[0].waypoints.is_empty());
+        let plan = stops(&game, 0);
+        game.replan_queues();
+        assert(same_stops(&stops(&game, 0), &plan));
     });
 }
