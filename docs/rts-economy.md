@@ -641,8 +641,8 @@ invariants hold, and the Cities check for a Cavalry or Armored passes with the h
 ## Round 8: the supply limit (#237)
 
 A hard cap on each side's army, which the user settled in #237: supply used against supply
-available, as in an RTS. Its cities give it (3 a city and 1 a citizen, for now), and every
-troop, ship and Scout uses 1. It only stops new training; the rule is in `game-rules.md`
+available, as in an RTS. Its cities give it (for now 3 a city, 1 for each of a city's first 7
+citizens and 1 for every 2 past them), and every troop, ship and Scout uses 1. It only stops new training; the rule is in `game-rules.md`
 (Supply), the code in `city/supply.rs`.
 
 Measured against `main` at 5663dbc (60 turns, seeds 0-23, World with 4 to 6 AI sides): the
