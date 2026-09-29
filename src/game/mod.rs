@@ -170,7 +170,7 @@ pub struct GameState {
     side_memory: [std::sync::Arc<fog::Memory>; Team::ALL.len()],
     turn: u32,
     pub camera: Camera,
-    /// Damage rolls, and the F4 world's map seed. Seeded from entropy; tests
+    /// The F4 world's map seed (combat has no rolls). Seeded from entropy; tests
     /// seed it (`seed_rng`) so a game replays exactly. Kept across scenario
     /// switches (`scenario.rs`).
     rng: GameRng,
@@ -808,19 +808,15 @@ mod tests {
 
     #[test]
     fn hills_reduce_damage_taken() {
-        use rand::SeedableRng;
-        use rand::rngs::StdRng;
-
         let hill = Hex::new(1, 0);
         let plain = Hex::new(-1, 0);
         let grid = HexGrid::new(GRID_RADIUS, [(hill, Tile::HILLS)]);
 
-        // Same seed on both sides so both attacks roll the same variance.
         let damage_taken_at = |pos: Hex| {
             let siege = Unit::new(0, Hex::new(0, 0), Team::Blue, UnitType::Siege);
             let defender = Unit::new(1, pos, Team::Red, UnitType::Melee);
             let multiplier = grid.tile(pos).defense_multiplier();
-            combat::roll_damage(&siege, &defender, multiplier, &mut StdRng::seed_from_u64(7))
+            combat::damage(&siege, &defender, multiplier)
         };
 
         assert!(damage_taken_at(hill) < damage_taken_at(plain));
