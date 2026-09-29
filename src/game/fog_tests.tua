@@ -73,10 +73,15 @@ fn units_see_around_them_and_explored_hexes_stay_explored() {
         let sight = game.sight(&game.units[scout]);
         // Scouts see farther.
         assert(sight >= 3);
-        let far = Hex.new(start.q + sight, start.r);
         let fog = game.fog();
         assert(fog.sees(start) && game.is_explored(start));
-        assert(fog.sees(far) || !game.grid.contains(far));
+        // Some hex as far as it sees is in sight (a mountain may hide the one straight east).
+        let mut far_seen = false;
+        for hh in game.grid.hexes() {
+            let h = *hh;
+            if h.distance(start) == sight && fog.sees(h) { far_seen = true; }
+        }
+        assert(far_seen);
         let mut distant = start;
         let mut found = false;
         for hh in game.grid.hexes() {

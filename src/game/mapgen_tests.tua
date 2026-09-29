@@ -17,10 +17,15 @@ use game.mapgen.walking_distances;
 use game.mapgen.within;
 use game.mapgen.world_shape;
 use game.terrain.Feature;
+use game.terrain.Special;
 use game.terrain.Resource;
 use game.terrain.Terrain;
 use game.terrain.Tile;
 use std.collections.Set;
+use std.core.Ordering;
+use std.mem.elements_mut;
+use std.sort.Compare;
+use std.sort.sort;
 use std.str.Str;
 use std.str.eq as str_eq;
 
@@ -341,4 +346,68 @@ fn maps_mix_every_kind_of_tile() {
     for i in 0..4 { assert(hilly[i]); }
     let share = water as f32 / hexes as f32;
     assert(share >= 0.35 && share < 0.65);
+}
+
+// ---- what a map holds, hashed --------------------------------------------------------------
+
+fn terrain_index(t: Terrain) -> i64 {
+    match t {
+        Terrain.Grassland => 0, Terrain.Plains => 1, Terrain.Desert => 2, Terrain.Tundra => 3, Terrain.Snow => 4,
+        Terrain.Marsh => 5, Terrain.Mountains => 6, Terrain.Coast => 7, Terrain.Ocean => 8, Terrain.Lake => 9,
+    }
+}
+
+/// FNV-1a over a word's eight little-endian bytes.
+fn hash_word(hash: u64, word: i64) -> u64 {
+    let mut h = hash;
+    let w = word as u64;
+    for k in 0..8 {
+        let byte = w.shr(8 * k).bit_and(255);
+        h = h.bit_xor(byte) * 0x100000001b3;
+    }
+    h
+}
+
+fn hex_words(hash: u64, h: Hex) -> u64 { hash_word(hash_word(hash, h.q as i64), h.r as i64) }
+
+/// A hash of everything a map holds, the same on every machine and build.
+fn golden_hash(map: &GeneratedMap) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    let grid = &map.grid;
+    let all = grid.hex_list();
+    for k in 0..all.len() {
+        let h = all[k];
+        let tile = grid.tile(h);
+        hash = hex_words(hash, h);
+        hash = hash_word(hash, terrain_index(tile.terrain));
+        hash = hash_word(hash, if tile.hills { 1 } else { 0 });
+        hash = hash_word(hash, match tile.feature { Option.Some(Feature.Forest) => 0, Option.Some(Feature.Jungle) => 1, Option.None => 0 - 1 });
+        hash = hash_word(hash, match grid.resource(h) { Option.Some(Resource.Horses) => 0, Option.Some(Resource.Iron) => 1, Option.None => 0 - 1 });
+        hash = hash_word(hash, match grid.special(h) { Option.Some(Special.Orchard) => 0, Option.Some(Special.Quarry) => 1, Option.None => 0 - 1 });
+    }
+    let mut rivers: Vec[Edge] = Vec.new();
+    for e in grid.rivers() { rivers.push(*e); }
+    handle { with elements_mut(&mut rivers.buf) { sort() }; } with Compare[Edge] {
+        cmp(x, y) => {
+            resume if x.a.q != y.a.q { order_of(x.a.q, y.a.q) } else if x.a.r != y.a.r { order_of(x.a.r, y.a.r) } else if x.b.q != y.b.q { order_of(x.b.q, y.b.q) } else { order_of(x.b.r, y.b.r) }
+        }
+    };
+    for k in 0..rivers.len() { hash = hex_words(hex_words(hash, rivers[k].a), rivers[k].b); }
+    for k in 0..map.starts.len() { hash = hex_words(hash, map.starts[k]); }
+    for k in 0..map.ruins.len() { hash = hex_words(hash, map.ruins[k]); }
+    for k in 0..map.dens.len() { hash = hex_words(hash, map.dens[k]); }
+    hash
+}
+
+fn order_of(a: i32, b: i32) -> Ordering { if a < b { Ordering.Less } else if a > b { Ordering.Greater } else { Ordering.Equal } }
+
+/// Pins what two seeds generate: the hashes are the ones upstream's generator gives them, so a
+/// change to any stage shows here and is made on purpose (a network game's players must build
+/// the same map).
+@test
+fn golden_maps_stay_the_same() {
+    let first = golden_hash(&generate(7, 5));
+    let second = golden_hash(&generate(42, 7));
+    assert(first == 16546110019411421274);
+    assert(second == 3624537242313206384);
 }

@@ -1,0 +1,336 @@
+//! The rules every generated world keeps (rivers, mountains, starts, dens), checked over many
+//! seeds, each with as many sides as the world scenario gives it by default.
+
+use std.collections.Map;
+use std.collections.Set;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.math.Float;
+use std.test.assert;
+use std.test.Assert;
+use game.hex.Edge;
+use game.hex.Hex;
+use game.mapgen.Corner;
+use game.mapgen.DEN_START_DISTANCE;
+use game.mapgen.GeneratedMap;
+use game.mapgen.MAX_DENS_PER_SIDE;
+use game.mapgen.Mouth;
+use game.mapgen.River;
+use game.mapgen.components;
+use game.mapgen.drains_into;
+use game.mapgen.generate_with_rivers;
+use game.mapgen.longest_river;
+use game.mapgen.next_corners;
+use game.mapgen.river_edges;
+use game.mapgen.shared_edge;
+use game.mapgen.start_score;
+use game.mapgen.walking_distances;
+use game.mapgen.walking_spread;
+use game.terrain.Terrain;
+
+/// How near each other dens may be (`mapgen.tua`'s `DEN_GAP`).
+const DEN_GAP: i32 = 6;
+
+/// Sides on a seed's map, as the world scenario picks them by default (the player and four to
+/// six AI).
+fn default_sides(seed: u32) -> i32 { 5 + (seed % 3) as i32 }
+
+/// Counts over several maps, for the rules that hold on the whole rather than on every map.
+struct Totals {
+    rivers: i32,
+    /// Edges the rivers run along, and the straight distance from each source to its mouth.
+    river_edges: i32,
+    river_reach: f32,
+    mountains: i32,
+    /// Mountains in clusters of four or more.
+    in_ranges: i32,
+    /// Mountains with four or more mountains around them.
+    crowded: i32,
+    /// Dens placed, and the most there could have been.
+    dens: i32,
+    den_room: i32,
+}
+
+fn is_water(map: &GeneratedMap, h: Hex) -> bool { map.grid.terrain(h).is_water() }
+
+fn is_sea(map: &GeneratedMap, h: Hex) -> bool {
+    map.grid.contains(h) && (map.grid.terrain(h) == Terrain.Ocean || map.grid.terrain(h) == Terrain.Coast)
+}
+
+/// The lake each lake hex belongs to, numbered in map order.
+fn lakes_of(map: &GeneratedMap, all: &Vec[Hex]) -> Map[Hex, i32] {
+    let mut lakes: Set[Hex] = Set.new();
+    for k in 0..all.len() { if map.grid.terrain(all[k]) == Terrain.Lake { let _new = lakes.insert(all[k]); } }
+    let bodies = components(all, &lakes);
+    let mut out: Map[Hex, i32] = Map.new();
+    for b in 0..bodies.len() {
+        for j in 0..bodies[b].len() { let _old = out.insert(bodies[b][j], b); }
+    }
+    out
+}
+
+/// The lakes a corner touches, lowest first, each once.
+fn lakes_at(c: Corner, lake_of: &Map[Hex, i32]) -> Vec[i32] {
+    let hs = c.hexes();
+    let mut out: Vec[i32] = Vec.new();
+    for k in 0..3 {
+        if let Option.Some(l) = lake_of.get(hs[k]) {
+            if !out.contains(l) { out.push(l); }
+        }
+    }
+    for i in 1..out.len() {
+        let mut j = i;
+        while j > 0 && out[j] < out[j - 1] { out.swap_at(j, j - 1); j = j - 1; }
+    }
+    out
+}
+
+fn highland(map: &GeneratedMap, h: Hex) -> bool {
+    let tile = map.grid.tile(h);
+    if tile.terrain == Terrain.Mountains { return true; }
+    if !tile.hills { return false; }
+    let around = h.neighbors();
+    for k in 0..6 { if map.grid.contains(around[k]) && map.grid.terrain(around[k]) == Terrain.Mountains { return true; } }
+    false
+}
+
+fn centre(c: Corner) -> Vec2 {
+    let hs = c.hexes();
+    let mut sum = vec2(0.0, 0.0);
+    for k in 0..3 { sum = sum.add(hs[k].to_world()); }
+    vec2(sum.x / 3.0, sum.y / 3.0)
+}
+
+/// Where a river checked ends.
+enum End { Sea, Lake(i32), Joins(i32), Nowhere }
+
+/// Every river rises at a lake or in the mountains or their foothills, runs downhill along hex
+/// edges to the sea, a lake, or another river, merging but never splitting, at a length that
+/// suits the map, and never runs back into the lake it left, directly or through other rivers
+/// and lakes. At most one river leaves each lake.
+fn check_rivers(seed: u32, map: &GeneratedMap, rivers: &Vec[River], totals: &mut Totals) can {Assert} {
+    let all = map.grid.hex_list();
+    // The map's rivers are these courses.
+    let courses = river_edges(rivers);
+    let mut shown: Vec[Edge] = Vec.new();
+    for e in map.grid.rivers() { shown.push(*e); }
+    for k in 0..shown.len() { assert(courses.contains(shown[k])); }
+    assert(shown.len() == courses.len());
+    let lake_of = lakes_of(map, &all);
+    let mut extent = vec2(0.0, 0.0);
+    for k in 0..all.len() { extent = extent.max(all[k].to_world().abs()); }
+    let mut flows_on: Map[Corner, i32] = Map.new();
+    let mut outflow: Map[i32, i32] = Map.new();
+    for i in 0..rivers.len() {
+        let corners = &rivers[i].corners;
+        let length = corners.len() - 1;
+        assert(length >= 3 && length <= longest_river(extent));
+        for k in 1..corners.len() {
+            let options = next_corners(corners[k - 1]);
+            let mut adjacent = false;
+            for n in 0..3 { if options[n].0 == corners[k] { adjacent = true; } }
+            assert(adjacent);
+            let e = shared_edge(corners[k - 1], corners[k]);
+            assert(!is_water(map, e.a) && !is_water(map, e.b));
+        }
+        for k in 0..length {
+            assert(!flows_on.has(corners[k]));
+            let _old = flows_on.insert(corners[k], i);
+        }
+        let source = corners[0];
+        let source_lakes = lakes_at(source, &lake_of);
+        let hs = source.hexes();
+        assert(!source_lakes.is_empty() || highland(map, hs[0]) || highland(map, hs[1]) || highland(map, hs[2]));
+        assert(source_lakes.len() <= 1);
+        if !source_lakes.is_empty() {
+            assert(!outflow.has(source_lakes[0]));
+            let _old = outflow.insert(source_lakes[0], i);
+        }
+        totals.rivers = totals.rivers + 1;
+        totals.river_edges = totals.river_edges + length;
+        totals.river_reach = totals.river_reach + centre(source).sub(centre(corners[length])).length();
+    }
+    // Where each river ends.
+    let mut ends: Vec[End] = Vec.new();
+    for i in 0..rivers.len() {
+        let corners = &rivers[i].corners;
+        let end = corners[corners.len() - 1];
+        let hs = end.hexes();
+        let mut out = End.Nowhere;
+        if is_sea(map, hs[0]) || is_sea(map, hs[1]) || is_sea(map, hs[2]) {
+            out = End.Sea;
+        } else {
+            let source_lakes = lakes_at(corners[0], &lake_of);
+            let touched = lakes_at(end, &lake_of);
+            let mut found: Option[i32] = Option.None;
+            for k in 0..touched.len() { if found.is_none() && !source_lakes.contains(touched[k]) { found = Option.Some(touched[k]); } }
+            if let Option.Some(l) = found {
+                out = End.Lake(l);
+            } else if let Option.Some(j) = flows_on.get(end) {
+                if j != i { out = End.Joins(j); }
+            }
+        }
+        ends.push(out);
+    }
+    for i in 0..rivers.len() {
+        let source_lakes = lakes_at(rivers[i].corners[0], &lake_of);
+        if source_lakes.is_empty() { continue; }
+        let lake = source_lakes[0];
+        let mut at = i;
+        let mut settled = false;
+        for _ in 0..(rivers.len() + 1) {
+            if settled { continue; }
+            match ends[at] {
+                End.Sea => { settled = true; }
+                End.Nowhere => { assert(false); settled = true; }
+                End.Lake(l) => {
+                    // A river never runs back into its lake.
+                    assert(l != lake);
+                    match outflow.get(l) {
+                        Option.Some(j) => { at = j; }
+                        Option.None => { settled = true; }
+                    }
+                }
+                End.Joins(j) => { at = j; }
+            }
+        }
+        assert(settled);
+    }
+}
+
+/// How the mountain cluster `cluster` is shaped: its length (the farthest two of its hexes are
+/// apart, and one) and its thickness (its size over its length).
+fn cluster_thickness(cluster: &Vec[Hex]) -> f32 {
+    let mut far = 0;
+    for a in 0..cluster.len() {
+        for b in 0..cluster.len() {
+            let d = cluster[a].distance(cluster[b]);
+            if d > far { far = d; }
+        }
+    }
+    cluster.len() as f32 / (far + 1) as f32
+}
+
+/// Mountains with four or more mountains around them: a range one or two hexes wide has next to
+/// none, a blob has many.
+fn crowded_mountains(map: &GeneratedMap, all: &Vec[Hex]) -> i32 {
+    let mut crowded = 0;
+    for k in 0..all.len() {
+        if map.grid.terrain(all[k]) != Terrain.Mountains { continue; }
+        let around = all[k].neighbors();
+        let mut n = 0;
+        for m in 0..6 { if map.grid.contains(around[m]) && map.grid.terrain(around[m]) == Terrain.Mountains { n = n + 1; } }
+        if n >= 4 { crowded = crowded + 1; }
+    }
+    crowded
+}
+
+/// Mountains are a small share of the land and come in ranges: long, thin chains rather than
+/// blobs.
+fn check_mountains(map: &GeneratedMap, totals: &mut Totals) can {Assert} {
+    let all = map.grid.hex_list();
+    let mut land = 0;
+    let mut mountains = 0;
+    let mut set: Set[Hex] = Set.new();
+    for k in 0..all.len() {
+        if !is_water(map, all[k]) { land = land + 1; }
+        if map.grid.terrain(all[k]) == Terrain.Mountains { mountains = mountains + 1; let _new = set.insert(all[k]); }
+    }
+    let share = mountains as f32 / land as f32;
+    assert(share >= 0.03 && share < 0.07);
+    let clusters = components(&all, &set);
+    for c in 0..clusters.len() {
+        assert(cluster_thickness(&clusters[c]) < 2.5);
+        if clusters[c].len() >= 4 { totals.in_ranges = totals.in_ranges + clusters[c].len(); }
+    }
+    totals.mountains = totals.mountains + mountains;
+    totals.crowded = totals.crowded + crowded_mountains(map, &all);
+}
+
+/// Every start can walk to every other, the nearest neighbors on foot are about as far for all,
+/// and the land around each is about as good.
+fn check_starts(map: &GeneratedMap) can {Assert} {
+    let reach = walking_distances(&map.grid, map.starts[0]);
+    for k in 0..map.starts.len() { assert(reach.has(map.starts[k])); }
+    assert(walking_spread(&map.grid, &map.starts) <= 2.0);
+    let mut lo = 2147483647;
+    let mut hi = 0;
+    for k in 0..map.starts.len() {
+        let score = start_score(&map.grid, map.starts[k]);
+        if score < lo { lo = score; }
+        if score > hi { hi = score; }
+    }
+    assert(hi as f32 <= 1.35 * lo as f32);
+}
+
+/// Animal dens keep their rules: on forest, jungle or hills every start can walk to,
+/// `DEN_START_DISTANCE` from every start, off the edge, clear of resources, special tiles and
+/// ruins, `DEN_GAP` apart; at least one a side, for the fewest a world takes.
+fn check_dens(map: &GeneratedMap, totals: &mut Totals) can {Assert} {
+    let grid = &map.grid;
+    let reach = walking_distances(grid, map.starts[0]);
+    assert(map.dens.len() >= map.starts.len());
+    assert(map.dens.len() <= MAX_DENS_PER_SIDE * map.starts.len());
+    for i in 0..map.dens.len() {
+        let den = map.dens[i];
+        let tile = grid.tile(den);
+        assert(grid.is_passable(den) && (tile.hills || tile.feature.is_some()));
+        assert(reach.has(den));
+        assert(grid.edge_distance(den) >= 1);
+        assert(grid.resource(den).is_none() && grid.special(den).is_none());
+        for r in 0..map.ruins.len() { assert(map.ruins[r].distance(den) >= 2); }
+        for s in 0..map.starts.len() { assert(map.starts[s].distance(den) >= DEN_START_DISTANCE); }
+        for j in 0..i { assert(map.dens[j].distance(den) >= DEN_GAP); }
+    }
+    totals.dens = totals.dens + map.dens.len();
+    totals.den_room = totals.den_room + MAX_DENS_PER_SIDE * map.starts.len();
+}
+
+/// Checks the rules on the maps of `from..to`.
+fn check_worlds(from: u32, to: u32) can {Assert} {
+    let mut totals = Totals { rivers: 0, river_edges: 0, river_reach: 0.0, mountains: 0, in_ranges: 0, crowded: 0, dens: 0, den_room: 0 };
+    for seed in from..to {
+        let (map, rivers) = generate_with_rivers(seed, default_sides(seed));
+        check_rivers(seed, &map, &rivers, &mut totals);
+        check_mountains(&map, &mut totals);
+        check_starts(&map);
+        check_dens(&map, &mut totals);
+    }
+    let maps = (to - from) as i32;
+    // Rivers are common.
+    assert(totals.rivers >= 40 * maps);
+    // Mostly a steady course: not much longer than the straight line.
+    assert(totals.river_edges as f32 / totals.river_reach < 1.6);
+    assert(totals.in_ranges as f32 > 0.65 * totals.mountains as f32);
+    assert((totals.crowded as f32) < 0.02 * totals.mountains as f32);
+    // Nearly always as many dens as the most a world takes.
+    assert(totals.dens as f32 >= 0.95 * totals.den_room as f32);
+}
+
+@test
+fn worlds_keep_the_rules_seeds_0_to_19() { check_worlds(0, 20); }
+
+@test
+fn worlds_keep_the_rules_seeds_20_to_39() { check_worlds(20, 40); }
+
+@test
+fn worlds_keep_the_rules_seeds_40_to_59() { check_worlds(40, 60); }
+
+/// A river leaving a lake mustn't drain back into it, however far round: straight in, down a
+/// river it joins, or out through another lake.
+@test
+fn drains_into_follows_rivers_and_lakes_downstream() {
+    // River 0 runs to the sea; river 1 leaves lake 1 for lake 0; river 2 joins river 1.
+    let mut mouths: Vec[Mouth] = Vec.new();
+    mouths.push(Mouth.Sea);
+    mouths.push(Mouth.Lake(0));
+    mouths.push(Mouth.River(1));
+    let mut outflow: Map[i32, i32] = Map.new();
+    let _old = outflow.insert(1, 1);
+    assert(drains_into(Mouth.Lake(1), 1, &mouths, &outflow));
+    assert(drains_into(Mouth.River(2), 0, &mouths, &outflow));
+    assert(drains_into(Mouth.Lake(1), 0, &mouths, &outflow));
+    assert(!drains_into(Mouth.River(0), 0, &mouths, &outflow));
+    assert(!drains_into(Mouth.Lake(0), 1, &mouths, &outflow));
+    assert(!drains_into(Mouth.Sea, 0, &mouths, &outflow));
+}
