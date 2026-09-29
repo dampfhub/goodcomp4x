@@ -21,7 +21,7 @@ use super::workers::{Structure, StructureKind, WorkerJob};
 use super::{GameState, font, mesh};
 use crate::renderer::Vertex;
 
-type Color = [f32; 4];
+use super::mesh::Color;
 
 const BORDER_COLOR: Color = [0.10, 0.10, 0.13, 1.0];
 /// Each hex's fill as a share of its size; the rest is the border between hexes.
@@ -2068,10 +2068,7 @@ fn wave(at: Vec2, width: f32, color: Color, out: &mut Vec<Vertex>) {
 fn push_rivers(grid: &HexGrid, explored: impl Fn(Hex) -> bool, out: &mut Vec<Vertex>) {
     for (a, b) in grid.rivers().filter(|(a, b)| explored(*a) || explored(*b)) {
         let (start, end) = edge_corners(a, b);
-        mesh::segment(start, end, RIVER_WIDTH, RIVER_COLOR, out);
-        for p in [start, end] {
-            mesh::regular_polygon(p, RIVER_WIDTH / 2.0, 12, 0.0, RIVER_COLOR, out);
-        }
+        push_rounded_segment(start, end, RIVER_WIDTH, RIVER_COLOR, out);
     }
 }
 
@@ -2372,9 +2369,9 @@ fn push_unit_icon(center: Vec2, look: UnitLook, scale: f32, color: Color, out: &
 /// Axis-aligned rectangles in `color` with a dark border, the border drawn
 /// first under all of them so shapes built from several rectangles get one
 /// clean outline.
-fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec<Vertex>) {
+fn push_outlined_rects(rects: &[(Vec2, Vec2)], scale: f32, color: Color, out: &mut Vec<Vertex>) {
     let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
-    let grow = Vec2::splat(ICON_OUTLINE_WIDTH);
+    let grow = Vec2::splat(ICON_OUTLINE_WIDTH * scale);
     for &(min, max) in rects {
         mesh::quad(min - grow, max + grow, outline, out);
     }
@@ -2407,8 +2404,6 @@ pub(super) fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec
             pos + Vec2::new(x1, y1) * scale,
         )
     };
-    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
-    let grow = Vec2::splat(ICON_OUTLINE_WIDTH * scale);
     let rects = [
         rect(-0.42, -0.4, 0.42, 0.24),
         // Three merlons along the top.
@@ -2416,12 +2411,7 @@ pub(super) fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec
         rect(-0.09, 0.24, 0.09, 0.4),
         rect(0.24, 0.24, 0.42, 0.4),
     ];
-    for &(min, max) in &rects {
-        mesh::quad(min - grow, max + grow, outline, out);
-    }
-    for &(min, max) in &rects {
-        mesh::quad(min, max, color, out);
-    }
+    push_outlined_rects(&rects, scale, color, out);
 }
 
 /// How many workers a city has at home: a dark tag at the tower's lower
@@ -2553,7 +2543,7 @@ fn push_structure(center: Vec2, kind: StructureKind, team: Color, out: &mut Vec<
                 mesh::segment(foot, top, 0.09, ICON_OUTLINE_COLOR, out);
                 mesh::segment(foot, top, 0.05, WOOD_COLOR, out);
             }
-            push_outlined_rects(&[(at(-0.15, 0.03), at(0.15, 0.24))], WOOD_COLOR, out);
+            push_outlined_rects(&[(at(-0.15, 0.03), at(0.15, 0.24))], 1.0, WOOD_COLOR, out);
             let roof = [at(-0.22, 0.24), at(0.22, 0.24), at(0.0, 0.44)];
             mesh::polygon(
                 &[at(-0.27, 0.21), at(0.27, 0.21), at(0.0, 0.48)],
@@ -2602,7 +2592,7 @@ fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
     let (a, b, c) = roof(ICON_OUTLINE_WIDTH * 1.6);
     mesh::triangle(a, b, c, outline, out);
     let walls = (pos + Vec2::new(-0.28, -0.32), pos + Vec2::new(0.28, eave));
-    push_outlined_rects(&[walls], color, out);
+    push_outlined_rects(&[walls], 1.0, color, out);
     let (a, b, c) = roof(0.0);
     mesh::triangle(a, b, c, color, out);
     font::push_glyph(
@@ -2691,9 +2681,20 @@ fn push_order_badges(center: Vec2, unit: &Unit, look: UnitLook, scale: f32, out:
     let shown = if look.civilian { 1 } else { 2 };
     for (offset_x, phase, color) in badges.into_iter().take(shown) {
         let pos = center + Vec2::new(offset_x * scale, 0.0);
-        let digit = char::from_digit(step_rank(unit.unit_type, phase), 10).unwrap();
-        mesh::regular_polygon(pos, BADGE_RADIUS * scale, 12, 0.0, BADGE_BG_COLOR, out);
-        font::push_glyph(pos, BADGE_DIGIT_HEIGHT * scale, digit, color, out);
+        push_rank_badge(pos, step_rank(unit.unit_type, phase), scale, color, out);
+    }
+}
+
+/// Preserve single-digit ink centering; future ranks also support multiple digits.
+fn push_rank_badge(pos: Vec2, rank: u32, scale: f32, color: Color, out: &mut Vec<Vertex>) {
+    let text = rank.to_string();
+    let height = BADGE_DIGIT_HEIGHT * scale;
+    let radius = (BADGE_RADIUS * scale).max(font::world_text_width(&text, height) / 2.0);
+    mesh::regular_polygon(pos, radius, 12, 0.0, BADGE_BG_COLOR, out);
+    if rank < 10 {
+        font::push_glyph(pos, height, char::from(b'0' + rank as u8), color, out);
+    } else {
+        font::push_text_centered(pos, height, &text, color, out);
     }
 }
 
@@ -2730,6 +2731,17 @@ mod tests {
     use crate::game::PLAYER_TEAM;
     use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
     use crate::game::unit::{Unit, UnitType};
+
+    #[test]
+    fn order_badges_render_multidigit_ranks_without_panicking() {
+        for rank in [0, 9, 10, 100, u32::MAX] {
+            let mut vertices = Vec::new();
+            push_rank_badge(Vec2::ZERO, rank, 1.0, LABEL_COLOR, &mut vertices);
+            let glyphs = vertices.iter().filter(|v| v.color == LABEL_COLOR).count();
+            assert_eq!(glyphs, rank.to_string().len() * 6);
+            assert!(vertices.iter().all(|v| v.pos.iter().all(|x| x.is_finite())));
+        }
+    }
 
     #[test]
     fn breached_post_gains_a_distinct_world_marker() {

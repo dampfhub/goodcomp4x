@@ -14,7 +14,7 @@ use super::mesh;
 use super::terrain::{Resource, Special};
 use crate::renderer::Vertex;
 
-type Color = [f32; 4];
+use super::mesh::Color;
 
 /// Hex radius the shapes are laid out on.
 const DESIGN_HEX_RADIUS: f32 = 100.0;

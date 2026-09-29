@@ -10,7 +10,7 @@ use super::mesh;
 use super::unit::UnitType;
 use crate::renderer::Vertex;
 
-type Color = [f32; 4];
+use super::mesh::Color;
 
 /// Token radius the shapes are laid out on.
 const DESIGN_RADIUS: f32 = 42.0;
@@ -31,8 +31,11 @@ pub(super) enum UnitIcon {
     Spyglass,
     /// Armored: a heater shield.
     Shield,
+    /// Patrol galley: a narrow hull with oars.
     Galley,
+    /// Landing craft: a broad troop transport.
     LandingCraft,
+    /// Bombard ship: a hull carrying a cannon.
     BombardShip,
     /// Settler: a flag planted to found a city.
     Flag,

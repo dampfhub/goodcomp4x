@@ -13,7 +13,7 @@ use super::fast_hash::HashMap;
 use super::map_icons;
 use crate::renderer::{Atlas, Vertex};
 
-type Color = [f32; 4];
+use super::mesh::Color;
 
 /// Pixel sizes UI text can be drawn at.
 pub const UI_SIZES: [u32; 3] = [15, 18, 22];
@@ -610,19 +610,6 @@ mod tests {
             let face = ui(px);
             assert!(face.cap_height > 0.0 && face.line_height > face.cap_height);
             assert!(face.width("MOVE") > face.width("M"));
-        }
-    }
-}
-#[cfg(test)]
-mod measure_tmp {
-    #[test]
-    fn measure() {
-        let font =
-            fontdue::Font::from_bytes(super::FONT_DATA, fontdue::FontSettings::default()).unwrap();
-        let cap = font.metrics('H', 256.0).bounds.height;
-        for ch in "MRCSAHWBTXI".chars() {
-            let m = font.metrics(ch, 256.0);
-            println!("{ch} width/cap {:.3}", m.bounds.width / cap);
         }
     }
 }

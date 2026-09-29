@@ -2,13 +2,16 @@ use glam::Vec2;
 
 use crate::renderer::{SOLID_UV, Vertex};
 
+/// Linear RGBA shared by game geometry and text.
+pub(super) type Color = [f32; 4];
+
 /// Appends a filled regular polygon, as a triangle fan around its center.
 pub fn regular_polygon(
     center: Vec2,
     radius: f32,
     sides: u32,
     rotation: f32,
-    color: [f32; 4],
+    color: Color,
     out: &mut Vec<Vertex>,
 ) {
     out.reserve(sides as usize * 3);
@@ -45,7 +48,7 @@ pub fn polygon_outline(
     width: f32,
     sides: u32,
     rotation: f32,
-    color: [f32; 4],
+    color: Color,
     out: &mut Vec<Vertex>,
 ) {
     // Moving an edge `width / 2` along its normal moves the corners further,
@@ -67,7 +70,7 @@ pub fn polygon_outline(
 }
 
 /// Appends an axis-aligned filled rectangle spanning `min`..`max`.
-pub fn quad(min: Vec2, max: Vec2, color: [f32; 4], out: &mut Vec<Vertex>) {
+pub fn quad(min: Vec2, max: Vec2, color: Color, out: &mut Vec<Vertex>) {
     let bottom_right = Vec2::new(max.x, min.y);
     let top_left = Vec2::new(min.x, max.y);
     push_triangle(out, min, bottom_right, max, color);
@@ -75,7 +78,7 @@ pub fn quad(min: Vec2, max: Vec2, color: [f32; 4], out: &mut Vec<Vertex>) {
 }
 
 /// Appends a straight line from `a` to `b`, `width` world units thick.
-pub fn segment(a: Vec2, b: Vec2, width: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
+pub fn segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec<Vertex>) {
     let side = (b - a).perp().normalize_or_zero() * (width / 2.0);
     push_triangle(out, a - side, b - side, b + side, color);
     push_triangle(out, a - side, b + side, a + side, color);
@@ -84,7 +87,7 @@ pub fn segment(a: Vec2, b: Vec2, width: f32, color: [f32; 4], out: &mut Vec<Vert
 /// Appends a line through `points`, `width` world units thick, as one ribbon
 /// whose pieces meet exactly at each bend: no gaps, and no overlaps to darken
 /// when the color is see-through.
-pub fn polyline(points: &[Vec2], width: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
+pub fn polyline(points: &[Vec2], width: f32, color: Color, out: &mut Vec<Vertex>) {
     if points.len() < 2 {
         return;
     }
@@ -119,7 +122,7 @@ pub fn polyline(points: &[Vec2], width: f32, color: [f32; 4], out: &mut Vec<Vert
 /// Appends a band `width` thick centered on the closed outline through
 /// `points`: a polygon's edge, drawn before its fill so only the outer half
 /// shows, like an SVG stroke painted under the fill.
-pub fn outline(points: &[Vec2], width: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
+pub fn outline(points: &[Vec2], width: f32, color: Color, out: &mut Vec<Vertex>) {
     let Some(&last) = points.last() else {
         return;
     };
@@ -154,7 +157,7 @@ pub fn place(
 
 /// Appends a filled convex polygon: a fan from its first corner, without
 /// `polygon`'s search for ears.
-pub fn convex_polygon(points: &[Vec2], color: [f32; 4], out: &mut Vec<Vertex>) {
+pub fn convex_polygon(points: &[Vec2], color: Color, out: &mut Vec<Vertex>) {
     let Some((&first, rest)) = points.split_first() else {
         return;
     };
@@ -164,14 +167,14 @@ pub fn convex_polygon(points: &[Vec2], color: [f32; 4], out: &mut Vec<Vertex>) {
 }
 
 /// Appends a filled triangle.
-pub fn triangle(a: Vec2, b: Vec2, c: Vec2, color: [f32; 4], out: &mut Vec<Vertex>) {
+pub fn triangle(a: Vec2, b: Vec2, c: Vec2, color: Color, out: &mut Vec<Vertex>) {
     push_triangle(out, a, b, c, color);
 }
 
 /// Appends a filled simple polygon, convex or not, with its corners in either
 /// winding order. It's cut into triangles by clipping ears: repeatedly
 /// removing a corner that bulges outward with no other corner inside it.
-pub fn polygon(points: &[Vec2], color: [f32; 4], out: &mut Vec<Vertex>) {
+pub fn polygon(points: &[Vec2], color: Color, out: &mut Vec<Vertex>) {
     // Twice the signed area: which way the corners wind.
     let winding: f32 = (0..points.len())
         .map(|i| points[i].perp_dot(points[(i + 1) % points.len()]))
@@ -214,7 +217,7 @@ fn inside_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
     sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0)
 }
 
-fn push_triangle(out: &mut Vec<Vertex>, a: Vec2, b: Vec2, c: Vec2, color: [f32; 4]) {
+fn push_triangle(out: &mut Vec<Vertex>, a: Vec2, b: Vec2, c: Vec2, color: Color) {
     out.extend([a, b, c].map(|p| Vertex {
         pos: [p.x, p.y, 0.0],
         color,
