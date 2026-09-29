@@ -1045,9 +1045,15 @@ impl GameState {
 
         // Where each moving unit's ghost is drawn, for its attack arc.
         let mut ghosts: HashMap<u32, Vec2> = HashMap::default();
+        // Another side's move shows only in sight at both ends: its units
+        // carry their moves while a turn plays out.
         let plain_moves = group_by_target(&self.units, |u| {
-            u.planned_move
-                .filter(|_| !swapping.contains(&u.id) && !u.plans_later_turns() && fog.shows(u))
+            u.planned_move.filter(|&dest| {
+                !swapping.contains(&u.id)
+                    && !u.plans_later_turns()
+                    && fog.shows(u)
+                    && (u.team == fog.team() || fog.sees(dest))
+            })
         });
         for (hex, movers) in plain_moves {
             for (i, unit) in movers.iter().enumerate() {
@@ -1059,7 +1065,10 @@ impl GameState {
         }
 
         for (idx, unit) in self.units.iter().enumerate() {
-            if let Some(partner) = self.swap_partner(idx).filter(|&p| p > idx) {
+            if let Some(partner) = self
+                .swap_partner(idx)
+                .filter(|&p| p > idx && fog.shows(unit) && fog.shows(&self.units[p]))
+            {
                 let color = with_alpha(unit.team.color(), SWAP_LINK_ALPHA);
                 let (a, b) = (unit.pos.to_world(), self.units[partner].pos.to_world());
                 mesh::segment(a, b, SWAP_LINK_WIDTH, color, out);
@@ -1164,7 +1173,8 @@ impl GameState {
         if in_group || selection.is_some_and(|sel| sel.pos == hex) {
             return SELECTED_COLOR;
         }
-        if self.is_contested(hex) {
+        // Only in sight: out of it, no unit is known to be anywhere.
+        if fog.sees(hex) && self.is_contested(hex) {
             return CONTESTED_COLOR;
         }
         let Some(sel) = selection else { return base };
@@ -1221,8 +1231,12 @@ impl GameState {
             .filter(|&i| self.cities[i].team == self.local_team || fog.sees(self.cities[i].pos))
         {
             // Delivery labels show routes as the player knows them; the
-            // worked-tile rings below show whether goods really arrive.
-            let routes = self.routes(i);
+            // worked-tile rings below show whether goods really arrive. Of
+            // another side's city, only the tiles it works in sight show,
+            // and not whether their goods arrive: its routes aren't known.
+            let own = self.cities[i].team == fog.team();
+            let shown = |h: Hex| own || fog.sees(h);
+            let routes = own.then(|| self.routes(i));
             let known_routes = self.known_routes(i, fog);
             // A manager picked up takes its cluster with it until it's
             // placed: none show.
@@ -1233,7 +1247,11 @@ impl GameState {
                     continue;
                 }
                 for (worker_index, h) in cluster.tiles().enumerate() {
-                    let color = if routes.costs.contains_key(&h) {
+                    if !shown(h) {
+                        continue;
+                    }
+                    let arrives = routes.as_ref().is_none_or(|r| r.costs.contains_key(&h));
+                    let color = if arrives {
                         if worker_index == 0 {
                             [1.0, 0.78, 0.20, 1.0]
                         } else {
@@ -1259,6 +1277,9 @@ impl GameState {
                     mesh::polygon_outline(center, radius, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
                 }
                 // The manager's mark: M, or with several clusters M1 to M4.
+                if !shown(cluster.manager) {
+                    continue;
+                }
                 let center = cluster.manager.to_world();
                 if several {
                     let label = super::city::manager_label(k, clusters.len());
@@ -2729,7 +2750,9 @@ fn with_alpha([r, g, b, _]: Color, a: f32) -> Color {
 mod tests {
     use super::*;
     use crate::game::PLAYER_TEAM;
-    use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
+    use crate::game::fog::tests::{
+        behind_the_mountain, glance_at, remembered_route_hex, worked_tile_behind_the_mountain,
+    };
     use crate::game::unit::{Unit, UnitType};
 
     #[test]
@@ -3930,5 +3953,121 @@ mod tests {
         game.units
             .push(Unit::new(51, far, Team::Red, UnitType::Melee));
         assert_eq!(scene(&game), before);
+    }
+
+    #[test]
+    fn a_fight_out_of_sight_leaves_its_hex_uncolored() {
+        let drawn = |fight: bool| {
+            let (mut game, idx, hidden) = behind_the_mountain();
+            glance_at(&mut game, idx, hidden);
+            if fight {
+                for (id, team) in [(2, Team::Red), (3, Team::Green)] {
+                    game.units
+                        .push(Unit::new(id, hidden, team, UnitType::Melee));
+                }
+                assert!(game.is_contested(hidden));
+            }
+            scene(&game)
+        };
+        assert!(drawn(true) == drawn(false));
+
+        // In sight, the fight shows.
+        let (mut game, idx, _) = behind_the_mountain();
+        let near = Hex::new(0, 1);
+        game.units
+            .push(Unit::new(2, near, Team::Red, UnitType::Melee));
+        game.units[idx].pos = near;
+        game.selected = None;
+        game.explore();
+        assert!(count_color(&game.build_vertices(), CONTESTED_COLOR) > 0);
+    }
+
+    #[test]
+    fn another_sides_moves_show_only_in_sight_at_both_ends() {
+        // A Red unit in sight next to the hex behind the mountain, and two
+        // Red units out of sight: what they plan out of sight draws nothing.
+        let setup = || {
+            let (mut game, idx, hidden) = behind_the_mountain();
+            glance_at(&mut game, idx, hidden);
+            let fog = game.fog();
+            let near = hidden
+                .neighbors()
+                .into_iter()
+                .filter(|&h| fog.sees(h) && game.grid.terrain(h).is_passable())
+                .min_by_key(|h| (h.q, h.r))
+                .expect("a hex in sight next to the hidden one");
+            let unseen = hidden
+                .neighbors()
+                .into_iter()
+                .filter(|&h| !fog.sees(h) && game.grid.terrain(h).is_passable())
+                .min_by_key(|h| (h.q, h.r))
+                .expect("a hex out of sight next to the hidden one");
+            for (id, pos) in [(2, near), (3, hidden), (4, unseen)] {
+                game.units
+                    .push(Unit::new(id, pos, Team::Red, UnitType::Melee));
+            }
+            (game, near, hidden, unseen)
+        };
+        let (quiet, ..) = setup();
+        let quiet = scene(&quiet);
+
+        // Into the hidden hex, and two unseen units swapping places.
+        let (mut moving, _, hidden, unseen) = setup();
+        moving.units[1].planned_move = Some(hidden);
+        moving.units[2].planned_move = Some(unseen);
+        moving.units[3].planned_move = Some(hidden);
+        assert!(moving.swap_partner(2).is_some());
+        assert!(scene(&moving) == quiet);
+
+        // A move in sight at both ends still shows its ghost.
+        let (mut moving, near, _, _) = setup();
+        moving.units[1].planned_move = Some(Hex::new(0, 1));
+        assert!(moving.fog().sees(Hex::new(0, 1)) && moving.fog().sees(near));
+        assert!(scene(&moving) != quiet);
+    }
+
+    #[test]
+    fn a_hovered_enemy_city_rings_only_its_tiles_in_sight_and_not_their_routes() {
+        // The city of `worked_tile_behind_the_mountain`, now Red's, seen by
+        // two Blue scouts: one west of its center, one by the tile it works
+        // east of the mountain. `cut` puts Green, out of their sight, on
+        // both hexes that start the road home, so no goods arrive.
+        let drawn = |worked: Hex, cut: bool| {
+            let (mut game, city, _) = worked_tile_behind_the_mountain();
+            game.cities[city].team = Team::Red;
+            game.cities[city].clusters = crate::game::city::one_cluster(&[worked]);
+            game.cities[city].remembered = game.cities[city].clusters.clone();
+            for (id, pos) in [(50, Hex::new(-3, 0)), (51, Hex::new(6, 1))] {
+                game.units
+                    .push(Unit::new(id, pos, Team::Blue, UnitType::Scout));
+            }
+            let blockers = [Hex::new(1, 0), Hex::new(1, -1)];
+            if cut {
+                for (id, pos) in [(52, blockers[0]), (53, blockers[1])] {
+                    game.units
+                        .push(Unit::new(id, pos, Team::Green, UnitType::Melee));
+                }
+            }
+            game.explore();
+            let fog = game.fog();
+            assert!(fog.sees(game.cities[city].pos));
+            assert!(blockers.iter().all(|&h| !fog.sees(h)));
+            let arrives = game.routes(city).costs.contains_key(&worked);
+            assert!(arrives != cut || !fog.sees(worked));
+            game.hovered_city = Some(city);
+            game.hovered_tile = Some(game.cities[city].pos);
+            (fog.sees(worked), scene(&game))
+        };
+        let (seen, in_sight) = drawn(Hex::new(5, 0), false);
+        assert!(seen);
+        assert!(drawn(Hex::new(5, 0), true).1 == in_sight, "its routes");
+
+        let (seen, out_of_sight) = drawn(Hex::new(0, 5), false);
+        assert!(!seen && out_of_sight != in_sight);
+        assert!(
+            drawn(Hex::new(0, -5), false).1 == out_of_sight,
+            "which tile"
+        );
+        assert!(drawn(Hex::new(0, 5), true).1 == out_of_sight);
     }
 }
