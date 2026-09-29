@@ -18,6 +18,7 @@ use std.test.Assert;
 use log.Log;
 use font.ttf.FontError;
 use ui.atlas.FontAtlas;
+use ui.Dir;
 use ui.boxfont.box_atlas;
 use ui.context.Context;
 use ui.context.NO_MOVE;
@@ -55,6 +56,7 @@ use game.imgui_layout.PinnedPanel;
 use game.imgui_layout.layout_from_text;
 use game.imgui_layout.layout_state;
 use game.imgui_layout.box_space_name;
+use game.imgui_layout.GAME_SPACE;
 use game.tests.sandbox;
 use game.ui.QueueKind;
 use game.ui.Target;
@@ -797,5 +799,37 @@ fn the_queue_keeps_its_room_on_a_narrow_screen() {
         assert(!overlaps(queue, selection, 0.0));
         // Both are inside the screen, under the status bar.
         assert(queue.min.y >= 52.0 && selection.max.y <= 600.0 && selection.max.x <= 1067.0);
+    });
+}
+
+@test
+fn debug_docked_beside_a_kind_of_selection_comes_back_with_that_kind() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.open_panel("unit");
+        let mut r = rig(game);
+        // Selection docks into the game space, Debug beside it.
+        r.ctx.dock_into("Selection", GAME_SPACE, Dir.Left, 0.5);
+        frames(&mut r, 3);
+        assert(r.ctx.is_docked("Selection"));
+        assert(r.ctx.dock_beside("Debug", "Selection", Dir.Right, 0.4));
+        frames(&mut r, 4);
+        assert(r.ctx.is_docked("Debug"));
+        // The layout remembers where Debug sits by the kind of thing selected.
+        assert(r.st.layout.has_context_relation("unit"));
+        // Selecting a city is another kind: Debug leaves the dock.
+        r.game.set_selection(Vec.new());
+        r.game.select_city();
+        frames(&mut r, 4);
+        assert(r.game.selected_city.is_some());
+        assert(!r.ctx.is_docked("Debug"));
+        // Back to a unit: it docks beside Selection again, where it was.
+        r.game.leave_city_view();
+        r.game.open_panel("unit");
+        frames(&mut r, 6);
+        assert(r.ctx.is_docked("Debug"));
+        let Option.Some(d) = r.ctx.dock_node_of("Debug") else { assert(false); return; };
+        let Option.Some(sel) = r.ctx.dock_node_of("Selection") else { assert(false); return; };
+        assert(r.ctx.dock_node(d).parent == r.ctx.dock_node(sel).parent);
     });
 }
