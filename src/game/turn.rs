@@ -257,6 +257,8 @@ impl GameState {
                 self.units.push(passenger);
             }
         }
+        // Landing on an enemy worker captures it, as stepping onto one does.
+        self.capture_workers();
         let mut boarders: Vec<usize> = self
             .units
             .iter()
@@ -987,6 +989,35 @@ mod naval_tests {
         assert_eq!(g.units[0].cargo.len(), 3);
         assert_eq!(g.units[2].id, 92);
         assert_eq!(g.units[2].pos, Hex::new(-2, 1));
+    }
+
+    #[test]
+    fn landing_on_an_enemy_worker_captures_it() {
+        let mut g = GameState::naval_scenario();
+        g.units.clear();
+        g.field_workers.clear();
+        let mut craft = Unit::new(90, Hex::new(-1, 0), Team::Blue, UnitType::LandingCraft);
+        craft
+            .cargo
+            .push(Unit::new(91, Hex::new(-1, 0), Team::Blue, UnitType::Melee));
+        let shore = Hex::new(-2, 1);
+        craft.planned_unload = Some(shore);
+        g.units.push(craft);
+        g.field_workers.push(crate::game::workers::FieldWorker {
+            id: 10_000,
+            team: Team::Red,
+            home: 1,
+            base: g.cities[1].pos,
+            pos: shore,
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
+        let workers = g.cities[0].workers;
+        g.resolve_transport();
+        assert_eq!(g.units[1].pos, shore, "the passenger lands");
+        assert!(g.field_workers.is_empty(), "and captures the worker");
+        assert_eq!(g.cities[0].workers, workers + 1);
     }
 
     #[test]

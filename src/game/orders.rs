@@ -143,22 +143,7 @@ impl GameState {
                 && self.units[selected].team == self.units[craft].team
                 && self.units[selected].pos.distance(hex) == 1
             {
-                let id = self.units[craft].id;
-                let reserved = self
-                    .units
-                    .iter()
-                    .filter(|u| u.planned_board == Some(id))
-                    .count();
-                if self.units[craft].cargo.len() + reserved < 4 {
-                    self.units[selected].planned_board = Some(id);
-                    self.units[selected].planned_move = None;
-                    self.units[selected].planned_attack = None;
-                    self.units[selected].wake();
-                    self.units[selected].holding = false;
-                    self.notice = "BOARDING LANDING CRAFT AFTER COMBAT".into();
-                } else {
-                    self.notice = "LANDING CRAFT FULL (4 TROOPS)".into();
-                }
+                self.try_board(selected, craft);
                 return;
             }
             if self.units[selected].unit_type == super::unit::UnitType::LandingCraft
@@ -166,13 +151,7 @@ impl GameState {
                 && self.grid.is_passable(hex)
                 && self.units[selected].pos.distance(hex) == 1
             {
-                if !self.units[selected].cargo.is_empty()
-                    && !self.is_occupied(hex)
-                    && self.cities.iter().all(|city| city.pos != hex)
-                {
-                    self.units[selected].planned_unload = Some(hex);
-                    self.notice = "LANDING FIRST PASSENGER AFTER COMBAT".into();
-                }
+                self.try_land(selected, hex);
                 return;
             }
         }
@@ -423,19 +402,17 @@ impl GameState {
     pub(super) fn go_on_alert(&mut self, idx: usize) {
         self.cancel_swap(idx);
         let unit = &mut self.units[idx];
+        unit.take_new_order();
         unit.planned_move = None;
         unit.planned_attack = None;
-        unit.planned_board = None;
-        unit.planned_unload = None;
-        unit.holding = false;
-        unit.guarding = false;
         unit.cancel_queue();
         unit.alert = true;
     }
 
     /// Delete or the Disband button: removes the selected unit for good. The
     /// first press only arms it (the button asks to confirm); a second press
-    /// on the same unit disbands it, and selection moves on.
+    /// on the same unit disbands it, and selection moves on. A landing craft
+    /// goes with its passengers, which the first press warns of.
     pub fn disband_selected(&mut self) {
         if self.is_resolving() {
             return;
@@ -446,14 +423,27 @@ impl GameState {
         let id = self.units[idx].id;
         if self.disband_armed != Some(id) {
             self.disband_armed = Some(id);
-            self.notice = "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS UNIT".into();
+            self.notice = match self.units[idx].cargo.len() {
+                0 => "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS UNIT".into(),
+                1 => {
+                    "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS CRAFT AND ITS PASSENGER".into()
+                }
+                n => format!(
+                    "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS CRAFT AND ITS {n} PASSENGERS"
+                ),
+            };
             return;
         }
         self.disband_armed = None;
         let unit = self.units.remove(idx);
         self.discard_interior_copies_of_dead_units();
-        self.settlers.remove(&unit.id);
-        self.player_controlled_units.remove(&unit.id);
+        for gone in std::iter::once(&unit).chain(&unit.cargo) {
+            self.settlers.remove(&gone.id);
+            self.player_controlled_units.remove(&gone.id);
+        }
+        for passenger in &unit.cargo {
+            log::info!("{passenger} disbanded with its landing craft");
+        }
         log::info!("{unit} disbanded");
         self.notice = format!("{} DISBANDED", self.unit_role(&unit));
         // Indices after it shifted down, so nothing else stays selected.
@@ -559,8 +549,9 @@ impl GameState {
     /// Whether the unit still has something to plan: a move or an attack it
     /// could queue but hasn't. Any hex in range can be attacked, so a unit
     /// that can attack needs orders until it does (or holds, guards, is on
-    /// alert, or follows a queue built with Shift). A unit locked in a
-    /// contested hex already has its fight, so it's done.
+    /// alert, follows a queue built with Shift, boards a craft or, a craft,
+    /// lands a passenger). A unit locked in a contested hex already has its
+    /// fight, so it's done.
     pub(super) fn needs_orders(&self, idx: usize) -> bool {
         let unit = &self.units[idx];
         if unit.holding
@@ -568,6 +559,7 @@ impl GameState {
             || unit.alert
             || unit.has_queue()
             || unit.planned_board.is_some()
+            || unit.planned_unload.is_some()
             || self.rival_of(idx).is_some()
         {
             return false;
@@ -701,8 +693,7 @@ impl GameState {
         };
         unit.drop_unreachable_attack();
         // Any order wakes a guarding (or alert) unit, and replaces a queue.
-        unit.wake();
-        unit.holding = false;
+        unit.take_new_order();
         unit.cancel_queue();
     }
 
@@ -771,10 +762,56 @@ impl GameState {
             } else {
                 Some(target)
             };
-            unit.wake();
-            unit.holding = false;
+            unit.take_new_order();
             unit.cancel_queue();
         }
+    }
+
+    /// Plans land troop `idx` boarding the adjacent friendly landing craft
+    /// `craft` after combat, if the craft has room: four passengers,
+    /// counting those already planning to board it. Like any other order,
+    /// boarding replaces the troop's move (both halves of a swap), attack,
+    /// queue, hold, guard and alert.
+    pub(super) fn try_board(&mut self, idx: usize, craft: usize) {
+        let (troop_id, craft_id) = (self.units[idx].id, self.units[craft].id);
+        let reserved = self
+            .units
+            .iter()
+            .filter(|u| u.id != troop_id && u.planned_board == Some(craft_id))
+            .count();
+        if self.units[craft].cargo.len() + reserved >= 4 {
+            self.notice = "LANDING CRAFT FULL (4 TROOPS)".into();
+            return;
+        }
+        self.cancel_swap(idx);
+        let unit = &mut self.units[idx];
+        unit.take_new_order();
+        unit.planned_move = None;
+        unit.planned_attack = None;
+        unit.cancel_queue();
+        unit.planned_board = Some(craft_id);
+        self.notice = "BOARDING LANDING CRAFT AFTER COMBAT".into();
+    }
+
+    /// Plans landing craft `craft` landing its first passenger on the
+    /// adjacent open land `hex` after combat. The craft must stay where it
+    /// is to land it, so landing replaces its move (both halves of a swap),
+    /// queue, hold and guard, as any other order does.
+    pub(super) fn try_land(&mut self, craft: usize, hex: Hex) {
+        if self.units[craft].cargo.is_empty()
+            || self.is_occupied(hex)
+            || self.cities.iter().any(|city| city.pos == hex)
+        {
+            return;
+        }
+        self.cancel_swap(craft);
+        let unit = &mut self.units[craft];
+        unit.take_new_order();
+        unit.planned_move = None;
+        unit.planned_attack = None;
+        unit.cancel_queue();
+        unit.planned_unload = Some(hex);
+        self.notice = "LANDING FIRST PASSENGER AFTER COMBAT".into();
     }
 
     /// Toggles a swap between `idx` and the adjacent ally `ally`: each moves
@@ -803,8 +840,7 @@ impl GameState {
         }
         for i in [idx, ally] {
             self.units[i].drop_unreachable_attack();
-            self.units[i].wake();
-            self.units[i].holding = false;
+            self.units[i].take_new_order();
             self.units[i].cancel_queue();
         }
     }
@@ -1109,5 +1145,121 @@ mod tests {
         g.set_selection(vec![0, 1]);
         g.toggle_alert();
         assert!(!g.units[1].alert, "all that could were: they come off it");
+    }
+
+    /// A Blue landing craft offshore at (-1, 0), and Blue melee on the two
+    /// shore hexes beside it, (-2, 0) and (-2, 1); no cities, fog off, the
+    /// first troop selected.
+    fn shore_field() -> GameState {
+        let mut g = GameState::naval_scenario();
+        g.fog_of_war = false;
+        g.units.clear();
+        g.cities.clear();
+        g.field_workers.clear();
+        g.group.clear();
+        for (id, pos, unit_type) in [
+            (90, Hex::new(-1, 0), UnitType::LandingCraft),
+            (91, Hex::new(-2, 0), UnitType::Melee),
+            (92, Hex::new(-2, 1), UnitType::Melee),
+        ] {
+            g.units.push(Unit::new(id, pos, Team::Blue, unit_type));
+        }
+        g.selected = Some(1);
+        g
+    }
+
+    #[test]
+    fn boarding_replaces_the_troops_other_orders() {
+        let mut g = shore_field();
+        g.try_queue_swap(1, 2);
+        g.units[1].guarding = true;
+        g.try_board(1, 0);
+        assert_eq!(g.units[1].planned_board, Some(90));
+        assert_eq!(g.units[1].planned_move, None);
+        assert_eq!(
+            g.units[2].planned_move, None,
+            "the partner's half of the swap goes too"
+        );
+        assert!(!g.units[1].guarding, "boarding ends a guard");
+        assert!(!g.needs_orders(1), "a troop boarding is done");
+
+        let mut g = shore_field();
+        g.go_on_alert(1);
+        g.try_board(1, 0);
+        assert!(!g.units[1].alert, "boarding ends an alert");
+        assert_eq!(g.units[1].planned_board, Some(90));
+    }
+
+    #[test]
+    fn any_other_order_replaces_boarding() {
+        type Give = fn(&mut GameState);
+        let orders: [(&str, Give); 6] = [
+            ("a move", |g| g.try_queue_move(1, Hex::new(-3, 0))),
+            ("an attack", |g| g.try_queue_attack(1, Hex::new(-3, 1))),
+            ("a swap", |g| g.try_queue_swap(1, 2)),
+            ("a queued move", |g| {
+                g.queue_or_unqueue_move(Hex::new(-4, 0));
+            }),
+            ("a group move", |g| {
+                g.set_selection(vec![1, 2]);
+                g.group_order(Hex::new(-4, 0), ClickMode::Normal);
+            }),
+            ("alert", GameState::toggle_alert),
+        ];
+        for (order, give) in orders {
+            let mut g = shore_field();
+            g.try_board(1, 0);
+            give(&mut g);
+            assert_eq!(g.units[1].planned_board, None, "{order}");
+            assert!(g.units[1].has_orders(), "{order} was given");
+        }
+    }
+
+    #[test]
+    fn landing_keeps_the_craft_in_place_until_another_order() {
+        let mut g = shore_field();
+        let passenger = g.units.remove(1);
+        g.units[0].cargo.push(passenger);
+        g.selected = Some(0);
+        let water = Hex::new(0, 0);
+        g.try_queue_move(0, water);
+        assert_eq!(g.units[0].planned_move, Some(water));
+        g.units[0].guarding = true;
+
+        g.try_land(0, Hex::new(-2, 0));
+        assert_eq!(g.units[0].planned_unload, Some(Hex::new(-2, 0)));
+        assert_eq!(g.units[0].planned_move, None, "it lands from where it is");
+        assert!(!g.units[0].guarding, "landing ends a guard");
+        assert!(!g.needs_orders(0), "a craft landing a passenger is done");
+
+        g.try_queue_move(0, water);
+        assert_eq!(g.units[0].planned_move, Some(water));
+        assert_eq!(g.units[0].planned_unload, None, "a move calls it off");
+
+        // An occupied hex, or an empty craft, can't be landed on.
+        g.units[0].planned_move = None;
+        g.try_land(0, Hex::new(-2, 1));
+        assert_eq!(g.units[0].planned_unload, None);
+        g.units[0].cargo.clear();
+        g.try_land(0, Hex::new(-2, 0));
+        assert_eq!(g.units[0].planned_unload, None);
+    }
+
+    #[test]
+    fn disbanding_a_loaded_craft_warns_of_its_passengers_and_takes_them() {
+        let mut g = shore_field();
+        let passenger = g.units.remove(1);
+        g.units[0].cargo.push(passenger);
+        g.settlers.insert(91);
+        g.selected = Some(0);
+        g.disband_selected();
+        assert_eq!(
+            g.notice,
+            "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS CRAFT AND ITS PASSENGER"
+        );
+        assert_eq!(g.units.len(), 2, "the first press only asks");
+        g.disband_selected();
+        assert!(g.units.iter().all(|u| u.id != 90));
+        assert!(!g.settlers.contains(&91), "the passenger goes with it");
     }
 }
