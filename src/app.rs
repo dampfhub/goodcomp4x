@@ -4,10 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use glam::Vec2;
-use imgui::{
-    ConfigFlags, Context as ImGuiContext, FontConfig, FontGlyphRanges, FontId, FontSource,
-    StyleColor,
-};
+use imgui::{ConfigFlags, Context as ImGuiContext, FontId};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -23,7 +20,7 @@ use crate::clipboard;
 use crate::game::Settings;
 use crate::game::{
     ClickMode, GameState, ImGuiLayoutState, NetMenu, NetRequest, Scenario, font_atlas,
-    selection_box, ui_projection,
+    selection_box, style_imgui, ui_projection,
 };
 use crate::icon;
 use crate::net::{self, Session};
@@ -50,11 +47,6 @@ fn frame_duration(window: &Window) -> Duration {
     FRAME_DURATION.max(Duration::from_micros(1_000_000 / u64::from(hertz)))
 }
 const DRAG_THRESHOLD: f32 = 6.0;
-/// What ImGui's system font draws, as pairs of first and last code points:
-/// Basic Latin and Latin-1 (ImGui's default), and the punctuation beyond
-/// them that game text uses, as the classic font has it (`font.rs`): the
-/// em dash and the ellipsis a notice too long for the status bar ends in.
-const IMGUI_GLYPHS: &[u32] = &[0x20, 0xFF, 0x2014, 0x2014, 0x2026, 0x2026, 0];
 /// The window opens at this fraction of the primary monitor's size.
 const WINDOW_SCREEN_FRACTION: f32 = 0.8;
 
@@ -748,66 +740,7 @@ impl ApplicationHandler for App {
         // The corner grip is reliable here; edge resizing conflicts with the
         // game's panel placement and offers no useful cursor feedback.
         imgui.io_mut().config_windows_resize_from_edges = false;
-        // Use the host UI font when available. ImGui copies the bytes into its atlas.
-        let system_font = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf").ok();
-        let mut add_font = |size| {
-            if let Some(font) = &system_font {
-                imgui.fonts().add_font(&[FontSource::TtfData {
-                    data: font,
-                    size_pixels: size,
-                    config: Some(FontConfig {
-                        glyph_ranges: FontGlyphRanges::from_slice(IMGUI_GLYPHS),
-                        ..FontConfig::default()
-                    }),
-                }])
-            } else {
-                imgui.fonts().add_font(&[FontSource::DefaultFontData {
-                    config: Some(FontConfig {
-                        size_pixels: size,
-                        ..FontConfig::default()
-                    }),
-                }])
-            }
-        };
-        let body_font = add_font(18.0);
-        let small_font = add_font(15.0);
-        let title_font = add_font(22.0);
-        let style = imgui.style_mut();
-        style.window_padding = [12.0, 10.0];
-        style.frame_padding = [10.0, 6.0];
-        style.item_spacing = [7.0, 6.0];
-        style.window_rounding = 0.0;
-        style.frame_rounding = 0.0;
-        style.scrollbar_rounding = 0.0;
-        style.popup_rounding = 0.0;
-        style.child_rounding = 0.0;
-        style.grab_rounding = 0.0;
-        style.tab_rounding = 0.0;
-        style.window_border_size = 1.0;
-        style.frame_border_size = 1.0;
-        style.window_title_align = [0.0, 0.5];
-        style.button_text_align = [0.5, 0.5];
-        style.colors[StyleColor::Text as usize] = [0.91, 0.92, 0.91, 1.0];
-        style.colors[StyleColor::TextDisabled as usize] = [0.46, 0.48, 0.50, 1.0];
-        style.colors[StyleColor::WindowBg as usize] = [0.018, 0.022, 0.030, 0.96];
-        style.colors[StyleColor::PopupBg as usize] = [0.025, 0.030, 0.041, 0.98];
-        style.colors[StyleColor::Border as usize] = [0.29, 0.32, 0.38, 0.95];
-        style.colors[StyleColor::TitleBg as usize] = [0.030, 0.036, 0.050, 1.0];
-        style.colors[StyleColor::TitleBgActive as usize] = [0.055, 0.065, 0.086, 1.0];
-        style.colors[StyleColor::TitleBgCollapsed as usize] = [0.030, 0.036, 0.050, 0.96];
-        style.colors[StyleColor::FrameBg as usize] = [0.032, 0.039, 0.052, 1.0];
-        style.colors[StyleColor::FrameBgHovered as usize] = [0.073, 0.084, 0.108, 1.0];
-        style.colors[StyleColor::FrameBgActive as usize] = [0.12, 0.14, 0.18, 1.0];
-        style.colors[StyleColor::Button as usize] = [0.045, 0.053, 0.070, 1.0];
-        style.colors[StyleColor::ButtonHovered as usize] = [0.085, 0.10, 0.13, 1.0];
-        style.colors[StyleColor::ButtonActive as usize] = [0.13, 0.15, 0.19, 1.0];
-        style.colors[StyleColor::Header as usize] = [0.075, 0.090, 0.12, 1.0];
-        style.colors[StyleColor::HeaderHovered as usize] = [0.12, 0.15, 0.19, 1.0];
-        style.colors[StyleColor::ScrollbarBg as usize] = [0.024, 0.029, 0.039, 1.0];
-        style.colors[StyleColor::ScrollbarGrab as usize] = [0.21, 0.24, 0.28, 1.0];
-        style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.31, 0.35, 0.39, 1.0];
-        style.colors[StyleColor::PlotHistogram as usize] = [0.80, 0.69, 0.35, 1.0];
-        style.colors[StyleColor::DragDropTarget as usize] = [0.91, 0.77, 0.38, 1.0];
+        let [small_font, body_font, title_font] = style_imgui(&mut imgui);
         let mut imgui_platform = WinitPlatform::new(&mut imgui);
         imgui_platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
 

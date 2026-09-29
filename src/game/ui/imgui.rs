@@ -16,6 +16,80 @@ use super::*;
 use crate::game::map_icons;
 use crate::game::settings::{Control, Setting};
 
+/// What ImGui's system font draws, as pairs of first and last code points:
+/// Basic Latin and Latin-1 (ImGui's default), and the punctuation beyond
+/// them that game text uses, as the classic font has it (`font.rs`): the
+/// em dash and the ellipsis a notice too long for the status bar ends in.
+const IMGUI_GLYPHS: &[u32] = &[0x20, 0xFF, 0x2014, 0x2014, 0x2026, 0x2026, 0];
+
+/// Gives `imgui` the game's fonts and style: `App`'s context, and the
+/// tests' headless one, so they measure text as the game does. Returns the
+/// small, body and title fonts; the body font is the default.
+pub fn style_imgui(imgui: &mut ::imgui::Context) -> [FontId; 3] {
+    use ::imgui::{FontConfig, FontGlyphRanges, FontSource};
+    // Use the host UI font when available. ImGui copies the bytes into its atlas.
+    let system_font = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf").ok();
+    let mut add_font = |size| {
+        if let Some(font) = &system_font {
+            imgui.fonts().add_font(&[FontSource::TtfData {
+                data: font,
+                size_pixels: size,
+                config: Some(FontConfig {
+                    glyph_ranges: FontGlyphRanges::from_slice(IMGUI_GLYPHS),
+                    ..FontConfig::default()
+                }),
+            }])
+        } else {
+            imgui.fonts().add_font(&[FontSource::DefaultFontData {
+                config: Some(FontConfig {
+                    size_pixels: size,
+                    ..FontConfig::default()
+                }),
+            }])
+        }
+    };
+    let body_font = add_font(18.0);
+    let small_font = add_font(15.0);
+    let title_font = add_font(22.0);
+    let style = imgui.style_mut();
+    style.window_padding = [12.0, 10.0];
+    style.frame_padding = [10.0, 6.0];
+    style.item_spacing = [7.0, 6.0];
+    style.window_rounding = 0.0;
+    style.frame_rounding = 0.0;
+    style.scrollbar_rounding = 0.0;
+    style.popup_rounding = 0.0;
+    style.child_rounding = 0.0;
+    style.grab_rounding = 0.0;
+    style.tab_rounding = 0.0;
+    style.window_border_size = 1.0;
+    style.frame_border_size = 1.0;
+    style.window_title_align = [0.0, 0.5];
+    style.button_text_align = [0.5, 0.5];
+    style.colors[StyleColor::Text as usize] = [0.91, 0.92, 0.91, 1.0];
+    style.colors[StyleColor::TextDisabled as usize] = [0.46, 0.48, 0.50, 1.0];
+    style.colors[StyleColor::WindowBg as usize] = [0.018, 0.022, 0.030, 0.96];
+    style.colors[StyleColor::PopupBg as usize] = [0.025, 0.030, 0.041, 0.98];
+    style.colors[StyleColor::Border as usize] = [0.29, 0.32, 0.38, 0.95];
+    style.colors[StyleColor::TitleBg as usize] = [0.030, 0.036, 0.050, 1.0];
+    style.colors[StyleColor::TitleBgActive as usize] = [0.055, 0.065, 0.086, 1.0];
+    style.colors[StyleColor::TitleBgCollapsed as usize] = [0.030, 0.036, 0.050, 0.96];
+    style.colors[StyleColor::FrameBg as usize] = [0.032, 0.039, 0.052, 1.0];
+    style.colors[StyleColor::FrameBgHovered as usize] = [0.073, 0.084, 0.108, 1.0];
+    style.colors[StyleColor::FrameBgActive as usize] = [0.12, 0.14, 0.18, 1.0];
+    style.colors[StyleColor::Button as usize] = [0.045, 0.053, 0.070, 1.0];
+    style.colors[StyleColor::ButtonHovered as usize] = [0.085, 0.10, 0.13, 1.0];
+    style.colors[StyleColor::ButtonActive as usize] = [0.13, 0.15, 0.19, 1.0];
+    style.colors[StyleColor::Header as usize] = [0.075, 0.090, 0.12, 1.0];
+    style.colors[StyleColor::HeaderHovered as usize] = [0.12, 0.15, 0.19, 1.0];
+    style.colors[StyleColor::ScrollbarBg as usize] = [0.024, 0.029, 0.039, 1.0];
+    style.colors[StyleColor::ScrollbarGrab as usize] = [0.21, 0.24, 0.28, 1.0];
+    style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.31, 0.35, 0.39, 1.0];
+    style.colors[StyleColor::PlotHistogram as usize] = [0.80, 0.69, 0.35, 1.0];
+    style.colors[StyleColor::DragDropTarget as usize] = [0.91, 0.77, 0.38, 1.0];
+    [small_font, body_font, title_font]
+}
+
 enum Action {
     Button(Option<PinnedPanel>, Target),
     /// A typed field's new text.
@@ -1441,21 +1515,32 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
                     _ => fonts[1],
                 };
                 let _font = ui.push_font(font);
-                let text = line.iter().map(|(s, _)| s.as_str()).collect::<String>();
-                let measured = ui.calc_text_size(text);
-                let lines = if line.len() == 1 {
-                    (measured[0] / inner).ceil().max(1.0)
-                } else {
-                    1.0
-                };
-                measured[1] * lines + 7.0
+                let rows = wrap_spans(ui, line, inner).len();
+                ui.text_line_height() * rows as f32 + 7.0
             }
             Row::Gap(gap) => gap + 6.0,
             Row::Bar(_) => 18.0,
-            Row::Buttons(buttons, compact) => measure_buttons(buttons, *compact, inner),
-            Row::Reorder(_, buttons) => measure_buttons(buttons, true, inner),
-            Row::QueueItem(_) => 37.0,
-            Row::TitleWithButton(..) => ui.frame_height_with_spacing(),
+            Row::Buttons(buttons, compact) => {
+                measure_buttons(ui, buttons, *compact, panel.faded, inner)
+            }
+            Row::Reorder(_, buttons) => measure_buttons(ui, buttons, true, panel.faded, inner),
+            Row::QueueItem(item) => {
+                let width = (inner - QUEUE_X_ROOM).max(QUEUE_ROW_MIN);
+                queue_row_height(ui, queue_row_lines(ui, item, width).len()) + 7.0
+            }
+            Row::TitleWithButton(line, spec) => {
+                let label = title_button_label(spec, panel.faded);
+                if title_button_fits(ui, line, &label, fonts[0], inner) {
+                    ui.frame_height_with_spacing()
+                } else {
+                    // The title's rows, then the button under them.
+                    let _font = ui.push_font(fonts[0]);
+                    let rows = wrap_spans(ui, line, inner).len() as f32;
+                    let title = rows * ui.text_line_height() + SPACING_Y;
+                    drop(_font);
+                    title + ui.frame_height_with_spacing()
+                }
+            }
             Row::BuildingCatalog(_, buttons, ..) => {
                 (buttons.len().clamp(1, 5) as f32 * 34.0) + 18.0
             }
@@ -1469,27 +1554,239 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
             }
             Row::Setting(..) | Row::Field(..) => {
                 let _font = ui.push_font(fonts[1]);
-                ui.calc_text_size("A")[1] + 2.0 * FRAME_PADDING_Y + SPACING_Y
+                let label_width = setting_label_width(ui, panel, fonts[1]);
+                let lines = match row {
+                    Row::Setting(setting, _) => {
+                        setting_fit(ui, *setting, label_width, inner).stacked
+                    }
+                    _ => field_stacked(label_width, inner),
+                };
+                let line = ui.calc_text_size("A")[1] + 2.0 * FRAME_PADDING_Y + SPACING_Y;
+                line * if lines { 2.0 } else { 1.0 }
             }
         };
     }
     height + 12.0
 }
 
-/// A row of buttons' height, as `render_buttons` wraps it in `inner` of
-/// width.
-fn measure_buttons(buttons: &[ButtonSpec], compact: bool, inner: f32) -> f32 {
-    if icon_row(buttons) {
-        let columns = ((inner + 7.0) / (ICON_BUTTON_SIZE + 7.0)).floor().max(1.0) as usize;
-        buttons.len().div_ceil(columns) as f32 * (ICON_BUTTON_SIZE + 6.0)
-    } else {
-        let columns = ((inner + 7.0) / 135.0).floor().max(1.0) as usize;
-        let rows = buttons.len().div_ceil(columns);
-        rows as f32 * (if compact { 34.0 } else { 54.0 })
+/// How a setting's row fits its width: whether its control goes on a line
+/// of its own under its name, and whether a choice shows as a drop-down
+/// list rather than a button per value.
+#[derive(Clone, Copy)]
+struct SettingFit {
+    stacked: bool,
+    combo: bool,
+}
+
+/// How `setting`'s row fits in `available` of width, its name taking
+/// `label_width`: the control beside the name if it fits there, else under
+/// it; a choice's buttons, if they fit either way, before a drop-down list.
+fn setting_fit(ui: &Ui, setting: Setting, label_width: f32, available: f32) -> SettingFit {
+    let count = setting.range().count();
+    let buttons = setting.control() == Control::Choice && count <= Control::MAX_BUTTONS;
+    let mut tries = Vec::new();
+    if buttons {
+        tries.push(false);
+    }
+    tries.push(setting.control() == Control::Choice);
+    for combo in tries {
+        let needs = control_width(ui, setting, combo);
+        for stacked in [false, true] {
+            let room = if stacked {
+                available
+            } else {
+                available - label_width
+            };
+            if needs <= room {
+                return SettingFit { stacked, combo };
+            }
+        }
+    }
+    SettingFit {
+        stacked: true,
+        combo: setting.control() == Control::Choice,
     }
 }
 
-/// The style's vertical item spacing and frame padding (`app.rs`), as
+/// The least width `setting`'s control shows its values in: a drop-down
+/// list with `combo`.
+fn control_width(ui: &Ui, setting: Setting, combo: bool) -> f32 {
+    let style = ui.clone_style();
+    let pad = style.frame_padding[0];
+    let widest = setting
+        .range()
+        .map(|value| ui.calc_text_size(setting.value_text(value))[0])
+        .fold(0.0, f32::max);
+    match setting.control() {
+        Control::Toggle => ui.frame_height() + style.item_inner_spacing[0] + widest,
+        Control::Slider => widest + 4.0 * pad,
+        Control::Choice if combo => widest + 2.0 * pad + ui.frame_height(),
+        Control::Choice => {
+            let count = setting.range().count() as f32;
+            count * (widest + 2.0 * pad) + (count - 1.0) * style.item_spacing[0]
+        }
+    }
+}
+
+/// The least width of a typed field's text box beside its name.
+const FIELD_MIN_WIDTH: f32 = 120.0;
+
+/// Whether a typed field's text box goes under its name, `label_width`
+/// wide, for want of room beside it in `available`.
+fn field_stacked(label_width: f32, available: f32) -> bool {
+    available - label_width < FIELD_MIN_WIDTH
+}
+
+/// The room a queue row leaves its X button, and the least width of the
+/// row itself.
+const QUEUE_X_ROOM: f32 = 39.0;
+const QUEUE_ROW_MIN: f32 = 50.0;
+
+/// A queue row's lines in a button `width` wide: the drag handle and its
+/// label, broken between words when they don't fit on one line.
+fn queue_row_lines(ui: &Ui, item: &QueueItemSpec, width: f32) -> Vec<String> {
+    let text = format!("::  {}", item.label.trim_start_matches("> ").trim());
+    // The text starts a pad in from the left, and must end as far in.
+    let pad = ui.clone_style().frame_padding[0].max(width * 0.03);
+    wrap_spans(ui, &vec![(text, TEXT)], width - 2.0 * pad)
+        .into_iter()
+        .map(|row| row.into_iter().map(|(text, _)| text).collect())
+        .collect()
+}
+
+/// A queue row's height with `lines` of text.
+fn queue_row_height(ui: &Ui, lines: usize) -> f32 {
+    (lines as f32 * ui.text_line_height() + 6.0).max(30.0)
+}
+
+/// The text on a `Row::TitleWithButton`'s button: its label and hint.
+fn title_button_label(spec: &ButtonSpec, faded: bool) -> String {
+    let hint = visible_button_hint(&spec.hint, faded);
+    if hint.is_empty() {
+        spec.label.clone()
+    } else {
+        format!("{}  {hint}", spec.label)
+    }
+}
+
+/// Whether a `Row::TitleWithButton`'s title (`line`, in `font`) and its
+/// button (`label`) fit side by side in `available` of width; if not, the
+/// button goes on the line below.
+fn title_button_fits(ui: &Ui, line: &Line, label: &str, font: FontId, available: f32) -> bool {
+    let title: f32 = {
+        let _font = ui.push_font(font);
+        line.iter().map(|(text, _)| rich_width(ui, text)).sum()
+    };
+    let style = ui.clone_style();
+    let button = rich_width(ui, label) + 2.0 * style.frame_padding[0];
+    title + style.item_spacing[0] + button <= available
+}
+
+/// A row of buttons' height, as `render_buttons` lays it out in `inner` of
+/// width.
+fn measure_buttons(ui: &Ui, buttons: &[ButtonSpec], compact: bool, faded: bool, inner: f32) -> f32 {
+    let grid = button_grid(ui, buttons, compact, faded, inner);
+    buttons.len().div_ceil(grid.columns) as f32 * (grid.height + SPACING_Y)
+}
+
+/// How `render_buttons` lays out a row of buttons: in columns of equal
+/// buttons, each with its lines of text.
+struct ButtonGrid {
+    columns: usize,
+    width: f32,
+    height: f32,
+    /// Each button's lines, in the order of the buttons.
+    lines: Vec<Vec<String>>,
+}
+
+/// The least width of a button with text.
+const MIN_BUTTON_WIDTH: f32 = 128.0;
+
+/// Lays out `buttons` in `available` of width: as many columns as the
+/// widest button's text leaves room for, down to one. A compact button's
+/// label and hint share a line, and a full one's go on two; text that
+/// still doesn't fit its button breaks between words (a compact button's
+/// hint going under its label first), and the buttons grow to hold it.
+/// Icon buttons (`icon_row`) are squares.
+fn button_grid(
+    ui: &Ui,
+    buttons: &[ButtonSpec],
+    compact: bool,
+    faded: bool,
+    available: f32,
+) -> ButtonGrid {
+    let style = ui.clone_style();
+    let spacing = style.item_spacing[0];
+    let columns_of = |width: f32| {
+        (((available + spacing) / (width + spacing)).floor() as usize)
+            .clamp(1, buttons.len().max(1))
+    };
+    if icon_row(buttons) {
+        return ButtonGrid {
+            columns: columns_of(ICON_BUTTON_SIZE),
+            width: ICON_BUTTON_SIZE,
+            height: ICON_BUTTON_SIZE,
+            lines: vec![vec![String::new()]; buttons.len()],
+        };
+    }
+    let pad = style.frame_padding[0];
+    let text: Vec<(String, String)> = buttons
+        .iter()
+        .map(|spec| {
+            let hint = visible_button_hint(&spec.hint, faded).to_string();
+            (spec.label.clone(), hint)
+        })
+        .collect();
+    let one_line = |(label, hint): &(String, String)| {
+        if hint.is_empty() {
+            vec![label.clone()]
+        } else if compact {
+            vec![format!("{label}  {hint}")]
+        } else {
+            vec![label.clone(), hint.clone()]
+        }
+    };
+    let needs = |lines: &[String]| {
+        lines
+            .iter()
+            .map(|line| rich_width(ui, line))
+            .fold(0.0, f32::max)
+            + 2.0 * pad
+    };
+    let widest = text
+        .iter()
+        .map(|text| needs(&one_line(text)))
+        .fold(MIN_BUTTON_WIDTH, f32::max);
+    let columns = columns_of(widest);
+    let width = ((available - spacing * (columns - 1) as f32) / columns as f32).max(1.0);
+    let lines: Vec<Vec<String>> = text
+        .iter()
+        .map(|text| {
+            let mut lines = one_line(text);
+            if compact && needs(&lines) > width {
+                lines = vec![text.0.clone(), text.1.clone()];
+            }
+            lines
+                .iter()
+                .flat_map(|line| {
+                    wrap_spans(ui, &vec![(line.clone(), TEXT)], width - 2.0 * pad)
+                        .into_iter()
+                        .map(|row| row.into_iter().map(|(text, _)| text).collect::<String>())
+                })
+                .collect()
+        })
+        .collect();
+    let most = lines.iter().map(Vec::len).max().unwrap_or(1);
+    let least = if compact { 28.0 } else { 48.0 };
+    ButtonGrid {
+        columns,
+        width,
+        height: (most as f32 * ui.text_line_height()).max(least),
+        lines,
+    }
+}
+
+/// The style's vertical item spacing and frame padding (`style_imgui`), as
 /// `measure_panel` counts them for the settings menu's rows.
 const SPACING_Y: f32 = 6.0;
 const FRAME_PADDING_Y: f32 = 6.0;
@@ -1522,8 +1819,9 @@ fn setting_tooltip(ui: &Ui, setting: Setting) {
 }
 
 /// A setting's row in the settings menu: its name in the label column, then
-/// the control `Setting::control` names across the rest of the width. A
-/// change is a `Target::SetSetting` action.
+/// the control `Setting::control` names across the rest of the width, or
+/// under the name when it has no room there (`setting_fit`). A change is a
+/// `Target::SetSetting` action.
 fn render_setting(
     ui: &Ui,
     setting: Setting,
@@ -1544,10 +1842,14 @@ fn render_setting(
         }
     };
     let left = ui.cursor_pos()[0];
+    let fit = setting_fit(ui, setting, label_width, ui.content_region_avail()[0]);
     ui.align_text_to_frame_padding();
     ui.text_colored([0.82, 0.84, 0.86, 1.0], setting.name());
+    note_text_item(ui, setting.name());
     tooltip();
-    ui.same_line_with_pos(left + label_width);
+    if !fit.stacked {
+        ui.same_line_with_pos(left + label_width);
+    }
     let width = ui.content_region_avail()[0];
     let id = format!("##setting-{setting:?}");
     match setting.control() {
@@ -1556,6 +1858,7 @@ fn render_setting(
             if ui.checkbox(format!("{}{id}", setting.value_text(value)), &mut on) {
                 set(on as i32);
             }
+            note_text_item(ui, "checkbox");
             tooltip();
         }
         Control::Slider => {
@@ -1572,9 +1875,10 @@ fn render_setting(
             {
                 set(to);
             }
+            note_button_label(ui, &setting.value_text(value));
             tooltip();
         }
-        Control::Choice if range.clone().count() > Control::MAX_BUTTONS => {
+        Control::Choice if fit.combo => {
             ui.set_next_item_width(width);
             match ui.begin_combo(&id, setting.value_text(value)) {
                 Some(_combo) => {
@@ -1604,9 +1908,10 @@ fn render_setting(
                     )
                 });
                 let label = format!("{}{id}-{to}", setting.value_text(to));
-                if ui.button_with_size(label, [each, 0.0]) {
+                if ui.button_with_size(&label, [each, 0.0]) {
                     set(to);
                 }
+                note_button_label(ui, &label);
                 tooltip();
             }
         }
@@ -1614,12 +1919,17 @@ fn render_setting(
 }
 
 /// A typed field's row (the Multiplayer section): its name in the label
-/// column, then a text box across the rest; an edit is an `Action::Text`.
+/// column, then a text box across the rest (under the name when there is
+/// no room beside it); an edit is an `Action::Text`.
 fn render_field(ui: &Ui, field: NetField, text: &str, label_width: f32, actions: &mut Vec<Action>) {
     let left = ui.cursor_pos()[0];
+    let stacked = field_stacked(label_width, ui.content_region_avail()[0]);
     ui.align_text_to_frame_padding();
     ui.text_colored([0.82, 0.84, 0.86, 1.0], field.name());
-    ui.same_line_with_pos(left + label_width);
+    note_text_item(ui, field.name());
+    if !stacked {
+        ui.same_line_with_pos(left + label_width);
+    }
     ui.set_next_item_width(ui.content_region_avail()[0]);
     let mut edited = text.to_string();
     let flags = match field {
@@ -1729,14 +2039,40 @@ fn draw_action_icon(
     small_font: FontId,
 ) {
     let draw = ui.get_window_draw_list();
-    let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
+    let mut center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let mut vertices = Vec::new();
     action_icons::push_icon(Vec2::ZERO, 14.0, icon, color, &mut vertices);
-    fill_shapes(&draw, center, &vertices);
-    if let Some(turns) = cooldown {
+    // The badge in the top-right corner: where it goes, and its text's size.
+    let badge = cooldown.map(|turns| {
         let _font = ui.push_font(small_font);
-        let width = ui.calc_text_size(turns)[0];
-        let pos = [max[0] - width - 3.0, min[1] + 2.0];
+        let size = [ui.calc_text_size(turns)[0], ui.text_line_height()];
+        (turns, [max[0] - size[0] - 3.0, min[1] + 2.0], size)
+    });
+    if let Some((_, pos, size)) = badge {
+        // The icon moves left, then down, as far as it must and can to
+        // clear the badge.
+        let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for vertex in &vertices {
+            let at = Vec2::new(vertex.pos[0], vertex.pos[1]);
+            low = low.min(at);
+            high = high.max(at);
+        }
+        let gap = 1.0;
+        let right = center[0] + high.x;
+        let top = center[1] - high.y;
+        let bottom = pos[1] + size[1];
+        if right + gap > pos[0] && top < bottom {
+            let room = (center[0] + low.x - min[0] - 3.0).max(0.0);
+            center[0] -= (right + gap - pos[0]).min(room);
+            if center[0] + high.x + gap > pos[0] {
+                let room = (max[1] - 3.0 - (center[1] - low.y)).max(0.0);
+                center[1] += (bottom + gap - top).min(room);
+            }
+        }
+    }
+    fill_shapes(&draw, center, &vertices);
+    if let Some((turns, pos, size)) = badge {
+        let _font = ui.push_font(small_font);
         draw.add_rect(
             [pos[0] - 2.0, pos[1] - 1.0],
             [max[0] - 1.0, pos[1] + 13.0],
@@ -1745,6 +2081,7 @@ fn draw_action_icon(
         .filled(true)
         .build();
         draw.add_text(pos, color, turns);
+        note_mark(turns, pos, [pos[0] + size[0], pos[1] + size[1]], None);
     }
 }
 
@@ -1754,7 +2091,7 @@ fn draw_production_icon(
     max: [f32; 2],
     icon: crate::game::unit_icons::UnitIcon,
 ) {
-    let center = [min[0] + 19.0, (min[1] + max[1]) / 2.0];
+    let center = [min[0] + CARD_ICON_CENTER, (min[1] + max[1]) / 2.0];
     let mut vertices = Vec::new();
     crate::game::unit_icons::push_pictogram(Vec2::ZERO, 12.0, icon, TEXT, &mut vertices);
     fill_shapes(&ui.get_window_draw_list(), center, &vertices);
@@ -1783,6 +2120,15 @@ fn fill_shapes(draw: &::imgui::DrawListMut, center: [f32; 2], vertices: &[Vertex
         .build();
     }
     unsafe { (*list).Flags = flags };
+    #[cfg(test)]
+    if !vertices.is_empty() {
+        let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for [x, y] in vertices.iter().map(at) {
+            min = [min[0].min(x), min[1].min(y)];
+            max = [max[0].max(x), max[1].max(y)];
+        }
+        note_mark("icon", min, max, None);
+    }
 }
 
 fn text_line(ui: &Ui, line: &Line) {
@@ -1799,6 +2145,94 @@ fn text_line(ui: &Ui, line: &Line) {
         };
         rich_text(ui, text, readable);
     }
+}
+
+/// A panel's line of text: `text_line`, broken between words into as many
+/// rows as it takes to fit the panel's width (`wrap_spans`).
+fn panel_text_line(ui: &Ui, line: &Line) {
+    let rows = wrap_spans(ui, line, ui.content_region_avail()[0]);
+    let spacing = ui.clone_style().item_spacing;
+    for (index, row) in rows.iter().enumerate() {
+        // The rows of one line sit as close as a wrapped paragraph's.
+        let _tight = (index + 1 < rows.len())
+            .then(|| ui.push_style_var(StyleVar::ItemSpacing([spacing[0], 0.0])));
+        text_line(ui, row);
+    }
+}
+
+/// `line`'s spans broken between words into rows no wider than `width`,
+/// each span keeping its color; a word wider than `width` has a row of its
+/// own. A span ending in one space runs into the next, as a label into its
+/// value ("DEFENSE " and "20"), so the two stay on one row. The rows after
+/// the first drop the spaces they would start with.
+fn wrap_spans(ui: &Ui, line: &Line, width: f32) -> Vec<Line> {
+    fn push(row: &mut Line, text: &str, color: Color) {
+        match row.last_mut() {
+            Some((last, last_color)) if *last_color == color => last.push_str(text),
+            _ => row.push((text.to_string(), color)),
+        }
+    }
+    // The words, each its pieces of spans.
+    let mut words: Vec<Line> = Vec::new();
+    let mut word = Line::new();
+    for (text, color) in line {
+        let pieces: Vec<&str> = text.split_inclusive(' ').collect();
+        for (index, piece) in pieces.iter().enumerate() {
+            push(&mut word, piece, *color);
+            let joins_next = index + 1 == pieces.len() && piece.len() > 1;
+            if piece.ends_with(' ') && !joins_next {
+                words.push(std::mem::take(&mut word));
+            }
+        }
+    }
+    words.push(word);
+    let width_of =
+        |pieces: &Line| -> f32 { pieces.iter().map(|(text, _)| rich_width(ui, text)).sum() };
+    let mut rows: Vec<Line> = vec![Vec::new()];
+    let mut x = 0.0;
+    for mut word in words {
+        let mut shown = word.clone();
+        if let Some((last, _)) = shown.last_mut() {
+            *last = last.trim_end().to_string();
+        }
+        if x > 0.0 && x + width_of(&shown) > width + 0.5 {
+            rows.push(Vec::new());
+            x = 0.0;
+        }
+        if x == 0.0 && rows.len() > 1 {
+            // A new row starts at its first letter.
+            while let Some((first, _)) = word.first_mut() {
+                *first = first.trim_start().to_string();
+                if !first.is_empty() {
+                    break;
+                }
+                word.remove(0);
+            }
+        }
+        x += width_of(&word);
+        let row = rows.last_mut().expect("a row");
+        for (text, color) in word {
+            if !text.is_empty() {
+                push(row, &text, color);
+            }
+        }
+    }
+    // A row ends at its last letter: the spaces after it take no room.
+    for row in &mut rows {
+        while let Some((last, _)) = row.last_mut() {
+            let kept = last.trim_end().len();
+            last.truncate(kept);
+            if !last.is_empty() {
+                break;
+            }
+            row.pop();
+        }
+        // A line of nothing still takes its line.
+        if row.is_empty() {
+            row.push((String::new(), TEXT));
+        }
+    }
+    rows
 }
 
 /// Whether `text` holds any inline icon characters (`map_icons::inline_icon`).
@@ -1838,7 +2272,9 @@ fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
     let flush = |run: &mut String, x: &mut f32| {
         if !run.is_empty() {
             draw.add_text([*x, pos[1]], color, run.as_str());
-            *x += ui.calc_text_size(run.as_str())[0];
+            let size = ui.calc_text_size(run.as_str());
+            note_mark(run, [*x, pos[1]], [*x + size[0], pos[1] + size[1]], None);
+            *x += size[0];
             run.clear();
         }
     };
@@ -1867,6 +2303,7 @@ fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
 fn rich_text(ui: &Ui, text: &str, color: [f32; 4]) {
     if !has_icons(text) {
         ui.text_colored(color, text);
+        note_text_item(ui, text);
         return;
     }
     let pos = ui.cursor_screen_pos();
@@ -1955,12 +2392,104 @@ fn note_drawn_button(_ui: &Ui, _target: Target) {
         .with_borrow_mut(|drawn| drawn.push((_target, _ui.item_rect_min(), _ui.item_rect_max())));
 }
 
+/// Tests only: a piece of text or an icon ImGui drew.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(super) struct DrawnMark {
+    /// The panel (root window) it is in.
+    pub window: String,
+    /// Its text, or "icon".
+    pub what: String,
+    /// Its rectangle's corners.
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+    /// The corners of what it must stay inside: its window's clip
+    /// rectangle, cut down to its button's for a label.
+    pub clip_min: [f32; 2],
+    pub clip_max: [f32; 2],
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: each piece of text or icon ImGui drew this thread.
+    pub(super) static DRAWN_MARKS: std::cell::RefCell<Vec<DrawnMark>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Tests only: notes `_what` (text, or an icon), drawn from `_min` to `_max`
+/// in the current window, clipped as the window's draw list is now, and
+/// within `_inside` too if given (a button's label, its button).
+fn note_mark(_what: &str, _min: [f32; 2], _max: [f32; 2], _inside: Option<([f32; 2], [f32; 2])>) {
+    #[cfg(test)]
+    {
+        let (window, mut clip_min, mut clip_max) = unsafe {
+            let window = ::imgui::sys::igGetCurrentWindow();
+            let root = (*window).RootWindow;
+            let name = std::ffi::CStr::from_ptr((*root).Name)
+                .to_string_lossy()
+                .into_owned();
+            let list = ::imgui::sys::igGetWindowDrawList();
+            let mut min = ::imgui::sys::ImVec2::zero();
+            let mut max = ::imgui::sys::ImVec2::zero();
+            ::imgui::sys::ImDrawList_GetClipRectMin(&mut min, list);
+            ::imgui::sys::ImDrawList_GetClipRectMax(&mut max, list);
+            (name, [min.x, min.y], [max.x, max.y])
+        };
+        if let Some((min, max)) = _inside {
+            clip_min = [clip_min[0].max(min[0]), clip_min[1].max(min[1])];
+            clip_max = [clip_max[0].min(max[0]), clip_max[1].min(max[1])];
+        }
+        DRAWN_MARKS.with_borrow_mut(|drawn| {
+            drawn.push(DrawnMark {
+                window,
+                what: _what.to_string(),
+                min: _min,
+                max: _max,
+                clip_min,
+                clip_max,
+            })
+        });
+    }
+}
+
+/// Tests only: notes the text item just drawn (`ui.text` and the like),
+/// `_what`.
+fn note_text_item(_ui: &Ui, _what: &str) {
+    #[cfg(test)]
+    note_mark(_what, _ui.item_rect_min(), _ui.item_rect_max(), None);
+}
+
+/// Tests only: notes the label ImGui drew on the button just drawn: `text`,
+/// placed as `RenderTextClipped` places it (by the style's alignment, from
+/// the left when it doesn't fit), inside the button.
+fn note_button_label(_ui: &Ui, _text: &str) {
+    #[cfg(test)]
+    {
+        let ui = _ui;
+        let text = _text.split("##").next().unwrap_or_default();
+        if text.is_empty() {
+            return;
+        }
+        let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
+        let style = ui.clone_style();
+        let pad = style.frame_padding;
+        let align = style.button_text_align;
+        let size = ui.calc_text_size(text);
+        let x = min[0] + pad[0] + (max[0] - min[0] - 2.0 * pad[0] - size[0]).max(0.0) * align[0];
+        let y = min[1] + pad[1] + (max[1] - min[1] - 2.0 * pad[1] - size[1]).max(0.0) * align[1];
+        note_mark(text, [x, y], [x + size[0], y + size[1]], Some((min, max)));
+    }
+}
+
 /// A button whose lines may hold icons: ImGui's own button when they
 /// don't; otherwise a blank button with the lines drawn over it, centered,
 /// or from the left with `left` set.
 fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) -> bool {
     if !lines.iter().any(|line| has_icons(line)) {
-        return ui.button_with_size(format!("{}###{id}", lines.join("\n")), size);
+        let label = lines.join("\n");
+        let clicked = ui.button_with_size(format!("{label}###{id}"), size);
+        note_button_label(ui, &label);
+        return clicked;
     }
     let clicked = ui.button_with_size(format!("###{id}"), size);
     let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
@@ -1969,34 +2498,52 @@ fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) 
     let line_height = ui.text_line_height();
     let total = line_height * lines.len() as f32;
     let top = min[1] + (max[1] - min[1] - total) / 2.0;
-    for (index, line) in lines.iter().enumerate() {
-        let width = rich_width(ui, line);
-        let x = if left {
-            min[0] + (max[0] - min[0]) * 0.03
-        } else {
-            min[0] + (max[0] - min[0] - width) / 2.0
-        };
-        let faded = [
-            color[0],
-            color[1],
-            color[2],
-            if disabled { 0.45 } else { 1.0 },
-        ];
-        draw_rich(
-            ui,
-            [x, top + line_height * index as f32],
-            line,
-            faded,
-            disabled,
-        );
-    }
+    // Kept inside the button, as ImGui keeps its own labels.
+    clipped_to(min, max, || {
+        for (index, line) in lines.iter().enumerate() {
+            let width = rich_width(ui, line);
+            let x = if left {
+                min[0] + (max[0] - min[0]) * 0.03
+            } else {
+                min[0] + (max[0] - min[0] - width) / 2.0
+            };
+            let faded = [
+                color[0],
+                color[1],
+                color[2],
+                if disabled { 0.45 } else { 1.0 },
+            ];
+            draw_rich(
+                ui,
+                [x, top + line_height * index as f32],
+                line,
+                faded,
+                disabled,
+            );
+        }
+    });
     clicked
 }
 
-/// A one-line button with `left` from its left edge and `right` flush
-/// with its right edge, so a list of them lines their right parts up (the
-/// building catalog's prices).
-fn split_button(ui: &Ui, id: &str, left: &str, right: &str, size: [f32; 2]) -> bool {
+/// Runs `draw` with what the window draws clipped to `min`..`max` too.
+fn clipped_to(min: [f32; 2], max: [f32; 2], draw: impl FnOnce()) {
+    unsafe {
+        ::imgui::sys::igPushClipRect(
+            ::imgui::sys::ImVec2::new(min[0], min[1]),
+            ::imgui::sys::ImVec2::new(max[0], max[1]),
+            true,
+        )
+    };
+    draw();
+    unsafe { ::imgui::sys::igPopClipRect() };
+}
+
+/// A one-line button with `left` from its left edge, after `indent` of room
+/// for an icon drawn there, and `right` flush with its right edge, so a list
+/// of them lines their right parts up (the building catalog's prices).
+/// When the two don't fit side by side with a gap between, `right` is left
+/// out (the button's tooltip gives it) and `left` shortened to what fits.
+fn split_button(ui: &Ui, id: &str, left: &str, indent: f32, right: &str, size: [f32; 2]) -> bool {
     let clicked = ui.button_with_size(format!("###{id}"), size);
     let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
     let disabled = ui.clone_style().alpha < 1.0;
@@ -2007,13 +2554,38 @@ fn split_button(ui: &Ui, id: &str, left: &str, right: &str, size: [f32; 2]) -> b
         color[2],
         if disabled { 0.45 } else { 1.0 },
     ];
-    let pad = (max[0] - min[0]) * 0.03;
+    let pad = ((max[0] - min[0]) * 0.03).max(SPLIT_PAD);
+    let left_x = min[0] + indent.max(pad);
+    let room = max[0] - pad - left_x;
+    let right_width = rich_width(ui, right);
+    let fits = rich_width(ui, left) + icon_box(ui) + right_width <= room;
+    let (left, right) = if fits {
+        (left.to_string(), right)
+    } else {
+        (fit_text(left, room, |t| rich_width(ui, t)), "")
+    };
     let top = min[1] + (max[1] - min[1] - ui.text_line_height()) / 2.0;
-    draw_rich(ui, [min[0] + pad, top], left, color, disabled);
-    let right_x = max[0] - pad - rich_width(ui, right);
-    draw_rich(ui, [right_x, top], right, color, disabled);
+    clipped_to(min, max, || {
+        draw_rich(ui, [left_x, top], &left, color, disabled);
+        if !right.is_empty() {
+            draw_rich(
+                ui,
+                [max[0] - pad - right_width, top],
+                right,
+                color,
+                disabled,
+            );
+        }
+    });
     clicked
 }
+
+/// The least room between a split button's text and its edges.
+const SPLIT_PAD: f32 = 6.0;
+/// A catalogue card's room for its unit's pictogram, centered
+/// `CARD_ICON_CENTER` from the card's left edge, before the name.
+const CARD_ICON_CENTER: f32 = 19.0;
+const CARD_ICON_ROOM: f32 = 2.0 * CARD_ICON_CENTER + 2.0;
 
 fn draw_game_dockspace(ui: &Ui, viewport: Vec2) {
     let _padding = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
@@ -2582,16 +3154,10 @@ impl GameState {
             return;
         }
         let available = ui.content_region_avail()[0];
-        let spacing = ui.clone_style().item_spacing[0];
         let icons = icon_row(buttons);
-        let min_width = if icons { ICON_BUTTON_SIZE } else { 128.0 };
-        let columns = (((available + spacing) / (min_width + spacing)).floor() as usize)
-            .clamp(1, buttons.len());
-        let width = if icons {
-            ICON_BUTTON_SIZE
-        } else {
-            ((available - spacing * (columns - 1) as f32) / columns as f32).max(min_width)
-        };
+        let grid = button_grid(ui, buttons, compact, panel.faded, available);
+        let columns = grid.columns;
+        let size = [grid.width, grid.height];
         for (index, spec) in buttons.iter().enumerate() {
             if index % columns != 0 {
                 ui.same_line();
@@ -2607,25 +3173,8 @@ impl GameState {
             };
             let disabled = spec.state == ButtonState::Disabled;
             let _disabled = ui.begin_disabled(disabled);
-            let height = if icons {
-                ICON_BUTTON_SIZE
-            } else if compact {
-                28.0
-            } else {
-                48.0
-            };
-            let hint = visible_button_hint(&spec.hint, panel.faded);
-            let lines = if icons {
-                vec![String::new()]
-            } else if hint.is_empty() {
-                vec![spec.label.clone()]
-            } else if compact {
-                vec![format!("{}  {hint}", spec.label)]
-            } else {
-                vec![spec.label.clone(), hint.to_string()]
-            };
             let id = format!("{:?}", spec.target);
-            if rich_button(ui, &id, &lines, [width, height], false) {
+            if rich_button(ui, &id, &grid.lines[index], size, false) {
                 actions.push(Action::Button(scope, spec.target));
             }
             note_drawn_button(ui, spec.target);
@@ -2719,6 +3268,7 @@ impl GameState {
                 Row::Heading(text) => {
                     let _font = ui.push_font(fonts[0]);
                     ui.text_colored(GOLD_TEXT, text);
+                    note_text_item(ui, text);
                     ui.separator();
                 }
                 Row::Setting(setting, value) => {
@@ -2736,8 +3286,7 @@ impl GameState {
                         _ => fonts[1],
                     };
                     let _font = ui.push_font(font);
-                    let _wrap = (line.len() == 1).then(|| ui.push_text_wrap_pos());
-                    text_line(ui, line);
+                    panel_text_line(ui, line);
                 }
                 Row::Gap(height) => ui.dummy([0.0, height.max(0.0)]),
                 Row::ScrollList(_) => unreachable!("flattened by flat_rows"),
@@ -2792,20 +3341,24 @@ impl GameState {
                     actions,
                 ),
                 Row::TitleWithButton(line, spec) => {
-                    ui.align_text_to_frame_padding();
+                    let label = title_button_label(spec, panel.faded);
+                    let width = rich_width(ui, &label) + 2.0 * ui.clone_style().frame_padding[0];
+                    let beside =
+                        title_button_fits(ui, line, &label, fonts[0], ui.content_region_avail()[0]);
                     {
                         let _font = ui.push_font(fonts[0]);
-                        text_line(ui, line);
+                        if beside {
+                            ui.align_text_to_frame_padding();
+                            text_line(ui, line);
+                        } else {
+                            panel_text_line(ui, line);
+                        }
                     }
-                    let hint = visible_button_hint(&spec.hint, panel.faded);
-                    let label = if hint.is_empty() {
-                        spec.label.clone()
-                    } else {
-                        format!("{}  {hint}", spec.label)
-                    };
-                    let width = rich_width(ui, &label) + 2.0 * ui.clone_style().frame_padding[0];
-                    // At the right end of the title's line.
-                    ui.same_line();
+                    // At the right end of the title's line, or of the next
+                    // when the title leaves it no room.
+                    if beside {
+                        ui.same_line();
+                    }
                     let room = ui.content_region_avail()[0] - width;
                     if room > 0.0 {
                         let [x, y] = ui.cursor_pos();
@@ -2830,6 +3383,7 @@ impl GameState {
                                 let CatalogEntry::Card(spec) = entry else {
                                     if let CatalogEntry::Heading(label) = entry {
                                         ui.text_colored(LABEL_TEXT, *label);
+                                        note_text_item(ui, label);
                                         ui.dummy([1.0, 4.0]);
                                     }
                                     continue;
@@ -2847,10 +3401,9 @@ impl GameState {
                                 let hint = visible_button_hint(&spec.hint, false);
                                 let has_icon =
                                     action_icons::production_unit_icon(spec.target).is_some();
-                                let prefix = if has_icon { "     " } else { "" };
-                                let left = format!("{prefix}{}", spec.label);
+                                let indent = if has_icon { CARD_ICON_ROOM } else { 0.0 };
                                 let id = format!("{:?}", spec.target);
-                                if split_button(ui, &id, &left, hint, [width, 28.0]) {
+                                if split_button(ui, &id, &spec.label, indent, hint, [width, 28.0]) {
                                     actions.push(Action::Button(scope, spec.target));
                                 }
                                 note_drawn_button(ui, spec.target);
@@ -2868,7 +3421,8 @@ impl GameState {
                         });
                 }
                 Row::QueueItem(item) => {
-                    let width = (ui.content_region_avail()[0] - 39.0).max(50.0);
+                    let width = (ui.content_region_avail()[0] - QUEUE_X_ROOM).max(QUEUE_ROW_MIN);
+                    let lines = queue_row_lines(ui, item, width);
                     let _align = ui.push_style_var(StyleVar::ButtonTextAlign([0.03, 0.5]));
                     let _background = ui.push_style_color(
                         StyleColor::Button,
@@ -2884,11 +3438,8 @@ impl GameState {
                     if rich_button(
                         ui,
                         &format!("queue-{:?}-{}", item.kind, item.index),
-                        &[format!(
-                            "::  {}",
-                            item.label.trim_start_matches("> ").trim()
-                        )],
-                        [width, 30.0],
+                        &lines,
+                        [width, queue_row_height(ui, lines.len())],
                         true,
                     ) {
                         actions.push(Action::Button(
@@ -2936,6 +3487,7 @@ impl GameState {
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
                         actions.push(Action::Button(scope, remove));
                     }
+                    note_button_label(ui, "X");
                     note_drawn_button(ui, remove);
                 }
             }
@@ -3415,6 +3967,27 @@ impl ImGuiLayoutState {
     /// Tests only: how many panels are captured.
     pub(super) fn captured(&self) -> usize {
         self.pinned.len()
+    }
+
+    /// Tests only: the player resizing the panel titled `title` to `size`,
+    /// as dragging its grip does. The panel must have been drawn.
+    pub(super) fn resize_panel(&mut self, title: &str, size: Vec2) {
+        let slot = SLOT_TITLES
+            .iter()
+            .position(|slot| *slot == title)
+            .expect("a panel's title");
+        let name = std::ffi::CString::new(title).expect("ImGui window title");
+        let native = unsafe { ::imgui::sys::igFindWindowByName(name.as_ptr()) };
+        assert!(!native.is_null(), "{title} has been drawn");
+        let full = ::imgui::sys::ImVec2::new(size.x, size.y);
+        unsafe {
+            (*native).SizeFull = full;
+            (*native).Size = full;
+        }
+        let window = &mut self.windows[slot];
+        window.manual = true;
+        window.size = size;
+        window.floating_size = size;
     }
 }
 

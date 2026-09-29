@@ -51,7 +51,7 @@ use super::{GameState, mesh};
 use crate::renderer::Vertex;
 use builder::PanelBuilder;
 use dock::{Dock, Rect, Zone};
-pub use imgui::ImGuiLayoutState;
+pub use imgui::{ImGuiLayoutState, style_imgui};
 use paint::{draw_button, draw_chip_hover, draw_shape};
 
 const BUILDING_LIST_VISIBLE: usize = 5;
