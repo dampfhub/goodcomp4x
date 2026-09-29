@@ -28,9 +28,11 @@ side by side, and a compact button's price and turns go under its label, then
 wrap, before its text would leave the button (`button_grid`, which
 `measure_panel` uses too); a catalogue card keeps a fixed room for its unit's
 pictogram before the name and drops its price, which its tooltip gives, when the
-two don't fit (`split_button`); a queue title's Clear button moves under the
-title; and a setting's control goes under its name, a choice becoming a
-drop-down list when its buttons don't fit (`setting_fit`). Text drawn on a
+two don't fit (`split_button`); a queue row's label wraps and the row grows
+(`queue_row_lines`); a queue title wraps, its Clear button moving under the
+title; a setting's control goes under its name, a choice becoming a
+drop-down list when its buttons don't fit (`setting_fit`); and an order icon
+moves aside for its cooldown badge. Text drawn on a
 button is clipped to it, as ImGui clips its own labels.
 `ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible
 windows without overlap. A window follows the dock as its content changes

@@ -1524,15 +1524,22 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
                 measure_buttons(ui, buttons, *compact, panel.faded, inner)
             }
             Row::Reorder(_, buttons) => measure_buttons(ui, buttons, true, panel.faded, inner),
-            Row::QueueItem(_) => 37.0,
+            Row::QueueItem(item) => {
+                let width = (inner - QUEUE_X_ROOM).max(QUEUE_ROW_MIN);
+                queue_row_height(ui, queue_row_lines(ui, item, width).len()) + 7.0
+            }
             Row::TitleWithButton(line, spec) => {
                 let label = title_button_label(spec, panel.faded);
-                let lines = if title_button_fits(ui, line, &label, fonts[0], inner) {
-                    1.0
+                if title_button_fits(ui, line, &label, fonts[0], inner) {
+                    ui.frame_height_with_spacing()
                 } else {
-                    2.0
-                };
-                ui.frame_height_with_spacing() * lines
+                    // The title's rows, then the button under them.
+                    let _font = ui.push_font(fonts[0]);
+                    let rows = wrap_spans(ui, line, inner).len() as f32;
+                    let title = rows * ui.text_line_height() + SPACING_Y;
+                    drop(_font);
+                    title + ui.frame_height_with_spacing()
+                }
             }
             Row::BuildingCatalog(_, buttons, ..) => {
                 (buttons.len().clamp(1, 5) as f32 * 34.0) + 18.0
@@ -1628,6 +1635,28 @@ const FIELD_MIN_WIDTH: f32 = 120.0;
 /// wide, for want of room beside it in `available`.
 fn field_stacked(label_width: f32, available: f32) -> bool {
     available - label_width < FIELD_MIN_WIDTH
+}
+
+/// The room a queue row leaves its X button, and the least width of the
+/// row itself.
+const QUEUE_X_ROOM: f32 = 39.0;
+const QUEUE_ROW_MIN: f32 = 50.0;
+
+/// A queue row's lines in a button `width` wide: the drag handle and its
+/// label, broken between words when they don't fit on one line.
+fn queue_row_lines(ui: &Ui, item: &QueueItemSpec, width: f32) -> Vec<String> {
+    let text = format!("::  {}", item.label.trim_start_matches("> ").trim());
+    // The text starts a pad in from the left, and must end as far in.
+    let pad = ui.clone_style().frame_padding[0].max(width * 0.03);
+    wrap_spans(ui, &vec![(text, TEXT)], width - 2.0 * pad)
+        .into_iter()
+        .map(|row| row.into_iter().map(|(text, _)| text).collect())
+        .collect()
+}
+
+/// A queue row's height with `lines` of text.
+fn queue_row_height(ui: &Ui, lines: usize) -> f32 {
+    (lines as f32 * ui.text_line_height() + 6.0).max(30.0)
 }
 
 /// The text on a `Row::TitleWithButton`'s button: its label and hint.
@@ -2010,14 +2039,40 @@ fn draw_action_icon(
     small_font: FontId,
 ) {
     let draw = ui.get_window_draw_list();
-    let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
+    let mut center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let mut vertices = Vec::new();
     action_icons::push_icon(Vec2::ZERO, 14.0, icon, color, &mut vertices);
-    fill_shapes(&draw, center, &vertices);
-    if let Some(turns) = cooldown {
+    // The badge in the top-right corner: where it goes, and its text's size.
+    let badge = cooldown.map(|turns| {
         let _font = ui.push_font(small_font);
-        let width = ui.calc_text_size(turns)[0];
-        let pos = [max[0] - width - 3.0, min[1] + 2.0];
+        let size = [ui.calc_text_size(turns)[0], ui.text_line_height()];
+        (turns, [max[0] - size[0] - 3.0, min[1] + 2.0], size)
+    });
+    if let Some((_, pos, size)) = badge {
+        // The icon moves left, then down, as far as it must and can to
+        // clear the badge.
+        let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for vertex in &vertices {
+            let at = Vec2::new(vertex.pos[0], vertex.pos[1]);
+            low = low.min(at);
+            high = high.max(at);
+        }
+        let gap = 1.0;
+        let right = center[0] + high.x;
+        let top = center[1] - high.y;
+        let bottom = pos[1] + size[1];
+        if right + gap > pos[0] && top < bottom {
+            let room = (center[0] + low.x - min[0] - 3.0).max(0.0);
+            center[0] -= (right + gap - pos[0]).min(room);
+            if center[0] + high.x + gap > pos[0] {
+                let room = (max[1] - 3.0 - (center[1] - low.y)).max(0.0);
+                center[1] += (bottom + gap - top).min(room);
+            }
+        }
+    }
+    fill_shapes(&draw, center, &vertices);
+    if let Some((turns, pos, size)) = badge {
+        let _font = ui.push_font(small_font);
         draw.add_rect(
             [pos[0] - 2.0, pos[1] - 1.0],
             [max[0] - 1.0, pos[1] + 13.0],
@@ -2026,12 +2081,7 @@ fn draw_action_icon(
         .filled(true)
         .build();
         draw.add_text(pos, color, turns);
-        note_mark(
-            turns,
-            pos,
-            [pos[0] + width, pos[1] + ui.text_line_height()],
-            None,
-        );
+        note_mark(turns, pos, [pos[0] + size[0], pos[1] + size[1]], None);
     }
 }
 
@@ -2165,6 +2215,21 @@ fn wrap_spans(ui: &Ui, line: &Line, width: f32) -> Vec<Line> {
             if !text.is_empty() {
                 push(row, &text, color);
             }
+        }
+    }
+    // A row ends at its last letter: the spaces after it take no room.
+    for row in &mut rows {
+        while let Some((last, _)) = row.last_mut() {
+            let kept = last.trim_end().len();
+            last.truncate(kept);
+            if !last.is_empty() {
+                break;
+            }
+            row.pop();
+        }
+        // A line of nothing still takes its line.
+        if row.is_empty() {
+            row.push((String::new(), TEXT));
         }
     }
     rows
@@ -3280,10 +3345,14 @@ impl GameState {
                     let width = rich_width(ui, &label) + 2.0 * ui.clone_style().frame_padding[0];
                     let beside =
                         title_button_fits(ui, line, &label, fonts[0], ui.content_region_avail()[0]);
-                    ui.align_text_to_frame_padding();
                     {
                         let _font = ui.push_font(fonts[0]);
-                        text_line(ui, line);
+                        if beside {
+                            ui.align_text_to_frame_padding();
+                            text_line(ui, line);
+                        } else {
+                            panel_text_line(ui, line);
+                        }
                     }
                     // At the right end of the title's line, or of the next
                     // when the title leaves it no room.
@@ -3352,7 +3421,8 @@ impl GameState {
                         });
                 }
                 Row::QueueItem(item) => {
-                    let width = (ui.content_region_avail()[0] - 39.0).max(50.0);
+                    let width = (ui.content_region_avail()[0] - QUEUE_X_ROOM).max(QUEUE_ROW_MIN);
+                    let lines = queue_row_lines(ui, item, width);
                     let _align = ui.push_style_var(StyleVar::ButtonTextAlign([0.03, 0.5]));
                     let _background = ui.push_style_color(
                         StyleColor::Button,
@@ -3368,11 +3438,8 @@ impl GameState {
                     if rich_button(
                         ui,
                         &format!("queue-{:?}-{}", item.kind, item.index),
-                        &[format!(
-                            "::  {}",
-                            item.label.trim_start_matches("> ").trim()
-                        )],
-                        [width, 30.0],
+                        &lines,
+                        [width, queue_row_height(ui, lines.len())],
                         true,
                     ) {
                         actions.push(Action::Button(
