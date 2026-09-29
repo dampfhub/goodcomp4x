@@ -14,7 +14,7 @@ in `rts-economy.md`.
 | F1 | Combat | radius-3 map with a mountain pass; one Melee, Ranged, Cavalry and Siege per side; no cities |
 | F2 | Cities (default) | radius-6 map; the Combat units plus a city (with one worker at home), owned farms/mines/pastures and dirt roads per side; Horses and Iron deposits |
 | F3 | Frontier | radius-6 map; a settler and a scout per side, no cities. Red's scout is player-controlled, to test route cuts and contests without the AI |
-| F4 | World | a generated map (see World generation) for you and 4-6 AI sides, each with a city (or a settler) and a scout; a new random seed every press |
+| F4 | World | a generated map (see World generation) for you and 4-6 AI sides, each with a city (or a settler) and a scout, and animal dens (see Animals); a new random seed every press |
 | F12 | Siege | the Cities map with four Blue attackers against two Red gate defenders; the Red city's interior opens for testing |
 
 Pressing F1-F3 restarts that scenario; F4 always makes a new map. The savestate (F6 save, F7
@@ -138,6 +138,10 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
     from every start, off the map's edge and reachable from every start. That keeps them out of
     pockets only one side can reach. There are about as many of each as sides, spread apart, and
     special tiles keep clear of ruins.
+  - **Animal dens** (see Animals) go on forest, jungle or hills, at least 5 hexes from every
+    start, off the map's edge, reachable from every start, clear of resources, special tiles and
+    ruins, and at least 6 hexes apart: two a side at most, in a random order, of which a world
+    takes one a side, wolves and bears in turn.
 
 ## Units (`unit.rs`)
 
@@ -150,14 +154,17 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 | Scout | 60 | 8 | 10 | 3 | 1 | 3 | Lookout | spyglass |
 | Armored | 140 | 30 | 28 | 1 | 1 | 2 | Shield Wall | heater shield |
 | Patrol Galley | 115 | 23 | 17 | 3 | 1 | 3 | Lookout | sailboat |
-| Landing Craft | 125 | 8 | 15 | 2 | � | 2 | Lookout | cargo boat |
+| Landing Craft | 125 | 8 | 15 | 2 | - | 2 | Lookout | cargo boat |
 | Bombard Ship | 105 | 30 | 12 | 2 | 3 | 2 | Lookout | gunship |
+| Wolf Pack | 70 | 20 | 10 | 2 | 1 | 2 | - | wolf's head |
+| Bear | 130 | 26 | 18 | 1 | 1 | 2 | - | bear's head |
 
 `Unit::stats()` applies abilities and siege deployment on top of these; everything that asks
 what a unit can do goes through it. Settlers (a planted flag) are civilians with the Melee body,
 drawn as hollow hexagons with only a move badge; every other unit is a team-colored disc with its
 pictogram. Settlers can be ordered to attack, though no badge shows it. Workers aren't units:
-see Workers below. Cavalry and
+see Workers below. Wolf packs and bears are animals, owned by no side, on tan discs (see
+Animals). Cavalry and
 Armored are built at a Barracks on Horses or Iron, or supported by an adjacent Stable or Forge;
 cities can't queue them. Stable-trained Cavalry get +1 move; Forge-trained Armored get +20% HP
 and +15% defense. These upgrades stay with the unit, including in city interiors. A Field
@@ -373,15 +380,18 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 
 ## Turn resolution (`turn.rs`)
 
-After a 0.6 s pause (so the last order is visible), the turn plays out in 13 steps, one every
-0.6 s, with the acting units flashing (or all at once with instant playback). Steps where nobody
-acts are skipped.
+After a 0.6 s pause (so the last order is visible), the turn plays out in 17 steps on land, one
+every 0.6 s, with the acting units flashing (or all at once with instant playback). Steps where
+nobody acts are skipped.
 
-1. Scout move  2. Cavalry move  3. Melee move  4. Ranged attack  5. Scout attack
-6. Cavalry attack  7. Melee attack  8. Ranged move  9. Siege move  10. Siege attack
-11. Armored move  12. Armored attack  13. Workers
+1. Scout move  2. Cavalry move  3. Wolf move  4. Melee move  5. Bear move  6. Ranged attack
+7. Scout attack  8. Cavalry attack  9. Wolf attack  10. Melee attack  11. Bear attack
+12. Ranged move  13. Siege move  14. Siege attack  15. Armored move  16. Armored attack
+17. Workers
 
-Workers go last, after every unit has acted, so they're exposed (see Workers).
+Ships move and attack after the Armored steps, before the workers. Animals act beside their like
+(see Animals): wolves after cavalry, bears after melee. Workers go last, after every unit has
+acted, so they're exposed (see Workers).
 
 Holding Alt shows each unit's rank: blue number = its move among move steps, red = its attack
 among attack steps.
@@ -400,7 +410,7 @@ Everyone in a step acts simultaneously:
 - **Alert fire:** a unit on alert (see Orders) acts in its own type's attack step, like a
   planned attack, at an enemy unit within its attack range as the step starts. So it hits
   whatever ended an earlier move step in range, this turn or a turn before, and one that comes
-  in range only after its step (a siege moving in at step 9, say, against melee on alert) is
+  in range only after its step (a siege moving in at step 13, say, against melee on alert) is
   fired on the next turn, if it's still there. The target is the nearest enemy unit, then the
   weakest (fewest HP), then the lowest hex (q, then r). It is chosen on the real board, fog or
   not, the same on every machine of a network game. It is only ever a unit: never a city or an
@@ -503,6 +513,31 @@ every turn end.
   can then build a new one, at full HP. A structure is hit only when the attack hits no enemy unit
   at all (for a Volley, none on the target or its neighbors); Volley's 60% applies to structures
   too.
+
+## Animals (`animals.rs`)
+
+Aggressive neutral units that guard dens, so the early map is dangerous and an army pays. They
+belong to the wild, which is no side: no cities, stockpile, fog or plan, never a player's seat,
+hostile to every side, and no side's AI plays it (World maps only).
+
+- **Kinds:** a Wolf Pack (fast, frail, fierce: it runs down scouts and workers) and a Bear
+  (slow and tough: it beats a lone melee troop). See Units for their stats. Each den keeps one:
+  a wolf den or a bear den, marked with a dark brown rim and a paw print in the hex's
+  bottom-left corner. Out of sight, dens show as last seen, and the tile tooltip names the den.
+- **Territory:** an animal never leaves the hexes within 3 of its den. As its move step begins
+  (wolves after cavalry, bears after melee; see Turn resolution), it goes for the nearest unit
+  or worker out on the map within its territory, as close as its move and its territory allow;
+  with nobody there, it heads home. As its attack step begins, it attacks whoever is in its
+  reach, in its territory or not: the nearest unit, then the weakest, then the lowest hex (q,
+  then r); with no unit, a worker. It decides on the real board as its step begins, the same on
+  every machine; ties go to staying put, then the lowest hex.
+- **Never cities:** an animal never enters or attacks a city center or anyone standing on one,
+  never goes into a city's interior, and never captures anything: it doesn't step onto a worker
+  (it attacks it), a worker that shares its hex is killed, and it never holds ruins (a side's
+  count pauses while one stands on them). No city can be founded on a den.
+- Animals are seen like any enemy unit (and not remembered, as they move), attacked like one,
+  and fired on by units on alert. A player can't select or order them, and a network plan that
+  names one is refused.
 
 ## City interiors (`city/interior.rs`)
 

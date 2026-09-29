@@ -6,8 +6,11 @@ use super::ability::{
 use super::hex::Hex;
 use super::terrain::Resource;
 
-/// A side. Blue is the player (`PLAYER_TEAM`); every other team is played
-/// by the AI, and every team is at war with every other.
+/// A side, or the wild. Blue is the player (`PLAYER_TEAM`); every other side
+/// is played by the AI, and every team is at war with every other. `Wild`
+/// owns the animals (`animals.rs`): it isn't a side, so it isn't in `ALL`
+/// and never has a seat, a stockpile, cities, fog or a plan; `index` must
+/// never be asked of it.
 #[derive(
     Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -19,12 +22,21 @@ pub enum Team {
     Purple,
     Teal,
     Orange,
+    /// The animals' owner (`animals.rs`): hostile to every side, and not one.
+    Wild,
 }
 
 impl Team {
-    /// Its place in `ALL`.
+    /// Its place in `ALL`. Only for a side: arrays by side are `ALL`'s
+    /// length, so the wild has no place in them.
     pub fn index(self) -> usize {
+        debug_assert!(self.is_side(), "the wild isn't a side");
         self as usize
+    }
+
+    /// Whether it's a side (one of `ALL`), not the wild.
+    pub fn is_side(self) -> bool {
+        self != Team::Wild
     }
 
     /// Every team, the player's first: the order AI teams plan their turns in
@@ -48,6 +60,7 @@ impl Team {
             Team::Purple => [0.66, 0.40, 0.92, 1.0],
             Team::Teal => [0.22, 0.80, 0.78, 1.0],
             Team::Orange => [0.97, 0.52, 0.16, 1.0],
+            Team::Wild => [0.58, 0.44, 0.30, 1.0],
         }
     }
 }
@@ -64,6 +77,10 @@ pub enum UnitType {
     PatrolGalley,
     LandingCraft,
     BombardShip,
+    /// An animal (`animals.rs`): a wolf pack, fast and fierce but frail.
+    Wolf,
+    /// An animal: a bear, slow and tough.
+    Bear,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,9 +111,16 @@ impl UnitType {
         )
     }
 
+    /// Whether it's an animal (`animals.rs`), which only the wild owns.
+    pub fn is_animal(self) -> bool {
+        matches!(self, Self::Wolf | Self::Bear)
+    }
+
     /// Melee is the balanced baseline; ranged trades toughness for reach,
     /// cavalry trades defense for mobility, and siege hits hardest but folds
     /// once anything reaches it. Scouts give up fighting for speed and sight.
+    /// Of the animals, a wolf pack runs down scouts and settlers but folds
+    /// before troops, and a bear beats a lone melee troop.
     pub fn stats(self) -> UnitStats {
         let (max_hp, attack, defense, move_range, attack_range) = match self {
             UnitType::Melee => (100.0, 22.0, 20.0, 1, 1),
@@ -108,6 +132,8 @@ impl UnitType {
             UnitType::PatrolGalley => (115.0, 23.0, 17.0, 3, 1),
             UnitType::LandingCraft => (125.0, 8.0, 15.0, 2, 1),
             UnitType::BombardShip => (105.0, 30.0, 12.0, 2, 3),
+            UnitType::Wolf => (70.0, 20.0, 10.0, 2, 1),
+            UnitType::Bear => (130.0, 26.0, 18.0, 1, 1),
         };
         UnitStats {
             max_hp,
@@ -208,6 +234,9 @@ pub struct Unit {
     /// Boarding and landing resolve with the rest of the turn.
     pub planned_board: Option<u32>,
     pub planned_unload: Option<Hex>,
+    /// An animal's den (`animals.rs`): it never leaves its territory, the
+    /// hexes within `TERRITORY_RADIUS` of it. `None` for everyone else.
+    pub home: Option<Hex>,
 }
 
 impl Unit {
@@ -236,7 +265,13 @@ impl Unit {
             cargo: Vec::new(),
             planned_board: None,
             planned_unload: None,
+            home: None,
         }
+    }
+
+    /// Whether it's an animal, owned by the wild (`animals.rs`).
+    pub fn is_animal(&self) -> bool {
+        self.team == Team::Wild
     }
 
     pub fn is_naval(&self) -> bool {

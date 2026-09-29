@@ -1,7 +1,7 @@
 //! Map icons: small pictures of strategic resources and tile improvements,
-//! drawn straight on the tile in the hex's top corners, of special tiles and
-//! ruins in its bottom-left corner, and of food and production in the yield
-//! rows. Each shape is edged in dark so it reads on
+//! drawn straight on the tile in the hex's top corners, of special tiles,
+//! ruins and animal dens in its bottom-left corner, and of food and
+//! production in the yield rows. Each shape is edged in dark so it reads on
 //! any terrain. Shapes are laid out in the coordinates of
 //! the mockups they were designed in: a hex of radius 100 with Y pointing
 //! down, centered on the icon's spot.
@@ -55,6 +55,7 @@ const LEAVES: Color = [0.06, 0.30, 0.05, 1.0];
 const METAL: Color = [0.42, 0.46, 0.52, 1.0];
 const CLOCK_FACE: Color = [0.80, 0.80, 0.74, 1.0];
 const FRUIT: Color = [0.80, 0.08, 0.04, 1.0];
+const FUR: Color = [0.30, 0.17, 0.08, 1.0];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum MapIcon {
@@ -84,6 +85,8 @@ pub(super) enum MapIcon {
     FruitTree,
     /// Quarry: three cut stone blocks.
     StoneBlocks,
+    /// An animal den: a paw print.
+    Paw,
 }
 
 impl MapIcon {
@@ -359,6 +362,12 @@ fn build_map_icon(icon: MapIcon, out: &mut Vec<Vertex>) {
                 );
             }
         }
+        MapIcon::Paw => {
+            pen.shape(&ellipse((0.0, 5.0), 8.5, 7.0, 0.0), FUR, 2.5);
+            for (x, y) in [(-10.0, -4.0), (-4.0, -10.0), (4.0, -10.0), (10.0, -4.0)] {
+                pen.shape(&ellipse((x, y), 3.4, 3.8, 0.0), FUR, 2.0);
+            }
+        }
     }
 }
 
@@ -418,7 +427,7 @@ impl Pen<'_> {
 mod tests {
     use super::*;
 
-    const ICONS: [MapIcon; 9] = [
+    const ICONS: [MapIcon; 10] = [
         MapIcon::HorseHead,
         MapIcon::Ingot,
         MapIcon::Wheat,
@@ -428,6 +437,7 @@ mod tests {
         MapIcon::Ruins,
         MapIcon::FruitTree,
         MapIcon::StoneBlocks,
+        MapIcon::Paw,
     ];
 
     /// Whether `p` is inside the flat-top hexagon of `radius` around the origin.
@@ -443,7 +453,7 @@ mod tests {
         for icon in ICONS {
             let (spot, scale) = match icon {
                 MapIcon::HorseHead | MapIcon::Ingot => (RESOURCE_SPOT, 1.0),
-                MapIcon::Ruins | MapIcon::FruitTree | MapIcon::StoneBlocks => {
+                MapIcon::Ruins | MapIcon::FruitTree | MapIcon::StoneBlocks | MapIcon::Paw => {
                     (LANDMARK_SPOT, LANDMARK_SCALE)
                 }
                 _ => (IMPROVEMENT_SPOT, 1.0),

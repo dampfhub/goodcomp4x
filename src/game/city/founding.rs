@@ -34,7 +34,7 @@ impl GameState {
     }
 
     /// Why no city can be founded on `hex`, if none can: only on passable
-    /// land, not water or ruins, and at least `MIN_CITY_DISTANCE` hexes
+    /// land, not water, ruins or a den, and at least `MIN_CITY_DISTANCE` hexes
     /// from every other city, whoever's. A settler stands on its hex, so
     /// its side knows the ground; a city it hasn't seen still counts.
     pub(in crate::game) fn founding_issue(&self, hex: Hex) -> Option<String> {
@@ -46,6 +46,9 @@ impl GameState {
         }
         if self.ruin_at(hex).is_some() {
             return Some("NOT ON RUINS: CLAIM THEM FIRST".into());
+        }
+        if self.den_at(hex).is_some() {
+            return Some("NOT ON A DEN: CLEAR IT FIRST".into());
         }
         if self
             .cities

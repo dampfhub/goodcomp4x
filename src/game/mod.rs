@@ -4,6 +4,7 @@
 
 mod ability;
 mod ai;
+mod animals;
 mod camera;
 mod city;
 mod combat;
@@ -202,6 +203,9 @@ pub struct GameState {
     roster_open: Option<ui::RosterKey>,
     /// Ruins not yet claimed (`ruins.rs`), in the order the map made them.
     ruins: Vec<ruins::Ruin>,
+    /// Animal dens not yet cleared (`animals.rs`), in the order the map made
+    /// them.
+    dens: Vec<animals::Den>,
     /// Workers out on the map; the ones at home are counted by their city
     /// (`workers.rs`).
     field_workers: Vec<workers::FieldWorker>,
@@ -313,6 +317,7 @@ impl GameState {
             settlers: HashSet::default(),
             refused_sites: Vec::new(),
             ruins: Vec::new(),
+            dens: Vec::new(),
             roster_open: None,
             field_workers: Vec::new(),
             structures: HashMap::default(),
@@ -540,6 +545,8 @@ impl GameState {
                 UnitType::PatrolGalley => "PATROL GALLEY",
                 UnitType::LandingCraft => "LANDING CRAFT",
                 UnitType::BombardShip => "BOMBARD SHIP",
+                UnitType::Wolf => "WOLF PACK",
+                UnitType::Bear => "BEAR",
             }
         }
     }
@@ -969,10 +976,12 @@ mod tests {
         use turn::step_rank;
         assert_eq!(step_rank(UnitType::Scout, Phase::Move), 1);
         assert_eq!(step_rank(UnitType::Cavalry, Phase::Move), 2);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 5);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 7);
         assert_eq!(step_rank(UnitType::Ranged, Phase::Attack), 1);
         assert_eq!(step_rank(UnitType::Scout, Phase::Attack), 2);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 5);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 7);
+        assert_eq!(step_rank(UnitType::Wolf, Phase::Move), 3);
+        assert_eq!(step_rank(UnitType::Bear, Phase::Attack), 6);
     }
 
     /// Selects `idx` and toggles its ability, as the button would.

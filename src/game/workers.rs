@@ -1189,7 +1189,7 @@ impl GameState {
 
     /// After a move step: every worker sharing a hex with an enemy unit is
     /// captured. It joins the captor's nearest city, or is lost if the captor
-    /// has no city.
+    /// has no city. An animal captures nobody: the worker is killed.
     pub(super) fn capture_workers(&mut self) {
         let mut w = 0;
         while w < self.field_workers.len() {
@@ -1198,6 +1198,11 @@ impl GameState {
                 w += 1;
                 continue;
             };
+            if self.units[captor].is_animal() {
+                let id = worker.id;
+                self.kill_workers(&[id]);
+                continue;
+            }
             let captor_team = self.units[captor].team;
             let worker = self.field_workers.remove(w);
             self.return_job(&worker);

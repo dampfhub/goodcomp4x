@@ -350,7 +350,8 @@ impl GameState {
             let Some(site) = site else {
                 let open_land = self.grid.is_passable(pos)
                     && !self.grid.terrain(pos).is_water()
-                    && self.ruin_at(pos).is_none();
+                    && self.ruin_at(pos).is_none()
+                    && self.den_at(pos).is_none();
                 if first && open_land {
                     self.found_city(id, team, pos);
                 }
