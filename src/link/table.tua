@@ -9,6 +9,8 @@ use std.str.to_owned;
 use netlib.frame.NEVER;
 use log.Log;
 use game.GameState;
+use game.plan.TeamPlan;
+use game.plan.plan_bytes;
 use game.multiplayer.HOST_SEAT;
 use game.settings.Settings;
 use game.settings.default_settings;
@@ -41,9 +43,14 @@ pub struct Lobby {
 
 /// A table with a host and `guests` guests connected and seated (two to seven people in all), on
 /// a world made from `seed`. The peers have not been given time: call `exchange`.
-pub fn table_seeded(guests: i32, seed: u32) -> Lobby can {Log, Rand} {
+pub fn table_seeded(guests: i32, seed: u32) -> Lobby can {Log, Rand} { lobby(guests, 1, seed) }
+
+/// A table on a world with `ai` AI sides besides the players.
+pub fn lobby(guests: i32, ai: i32, seed: u32) -> Lobby can {Log, Rand} {
     let players = guests + 1;
-    let mut host = GameState.host_game(players, &small(), seed, to_owned(CODE));
+    let mut settings = default_settings();
+    settings.world_ai = ai;
+    let mut host = GameState.host_game(players, &settings, seed, to_owned(CODE));
     let hub = open_hub(players, 1000, &mut host);
     let mut t = Lobby { hub: hub, host: host, peers: Vec.new(), games: Vec.new(), ids: Vec.new(), alive: Vec.new(), now: 1000 };
     for _ in 0..guests { t.connect(); }
@@ -97,6 +104,16 @@ impl Lobby {
             }
         }
     }
+
+    /// Guest `i` sends `plan` as its input for the turn, whatever its game says: what a modified
+    /// client would.
+    pub fn force_input(&mut self, i: i32, plan: &TeamPlan) can {Log, Rand} {
+        let bytes = match plan_bytes(plan) { Option.Some(b) => b, Option.None => Vec.new() };
+        self.peers[i].send_raw_input(self.now, &bytes.buf);
+    }
+
+    /// Whether guest `i` is still connected to the host.
+    pub fn is_alive(&self, i: i32) -> bool { self.alive[i] }
 
     /// Guest `i` leaves: the host is told its connection ended.
     pub fn drop_guest(&mut self, i: i32) can {Log, Rand} {

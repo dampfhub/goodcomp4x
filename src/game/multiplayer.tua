@@ -748,12 +748,13 @@ impl GameState {
                 if sound[i] && plans[i].team.index() == t { next.apply_plan(&plans[i]); }
             }
         }
+        next.keep_view_of(self);
+        // The sides whose players left play as the AI from this turn on, on every machine.
         for i in 0..gone.len() {
             next.humans.retain_team(gone[i]);
             lockstep.departed.push(gone[i]);
             lockstep.seated.retain_team(gone[i]);
         }
-        next.keep_view_of(self);
         lockstep.submitted = false;
         swap(&mut next.lockstep, &mut lockstep);
         *self = next;

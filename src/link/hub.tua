@@ -11,6 +11,9 @@ use std.mem.swap;
 use std.rand.Rand;
 use netlib.effects.Deliver;
 use netlib.frame.NEVER;
+use netlib.wire.Varint;
+use netlib.wire.Wire;
+use netlib.wire.reader;
 use lockstep.host.Host;
 use lockstep.host.HostEvent;
 use lockstep.host.Send;
@@ -254,8 +257,18 @@ impl Hub {
         id
     }
 
-    /// A payload from guest `id`.
+    /// A payload from guest `id`. An input for a side that is not the guest's own is a forged plan:
+    /// the guest is dropped, told why, and the sequencer never hears of the input.
     pub fn on_payload(&mut self, now: i64, id: i32, payload: &[u8], game: &mut GameState) {
+        let claimed = input_side(payload);
+        let seat = if id >= 0 { self.seat[id % MAX_GUESTS] } else { 0 - 1 };
+        if claimed >= 0 && claimed != seat && id != self.io.local_id {
+            let _q = queue_for(&mut self.io, id, &refusal_payload(REFUSE_BAD_PLAN).buf);
+            self.kicks.push(id);
+            self.core_disconnect(now, id);
+            self.settle(now, game);
+            return;
+        }
         self.core_message(now, id, payload);
         self.settle(now, game);
     }
@@ -342,6 +355,19 @@ impl Hub {
         if s < 0 || self.io.ids[id % MAX_GUESTS] != id { return Option.None; }
         Option.Some(TEAMS[s])
     }
+}
+
+/// The side an input payload claims to be for (the team byte its plan starts with), or -1 when
+/// `payload` is not an input or carries no plan.
+fn input_side(payload: &[u8]) -> i32 {
+    let mut r = reader();
+    match r.u8(payload) { Result.Ok(v) => { if v != 1 { return 0 - 1; } } Result.Err(e) => { return 0 - 1; } }
+    let tag = match Varint.take(payload, &mut r) { Result.Ok(t) => t.value(), Result.Err(e) => { return 0 - 1; } };
+    if tag != 0 { return 0 - 1; }
+    match u32.take(payload, &mut r) { Result.Ok(t) => {} Result.Err(e) => { return 0 - 1; } }
+    let n = match Varint.take(payload, &mut r) { Result.Ok(t) => t.value(), Result.Err(e) => { return 0 - 1; } };
+    if n == 0 { return 0 - 1; }
+    match r.u8(payload) { Result.Ok(b) => b as i32, Result.Err(e) => 0 - 1 }
 }
 
 fn take_all(v: &mut Vec[Vec[u8]]) -> Vec[Vec[u8]] {

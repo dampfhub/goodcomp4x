@@ -209,7 +209,7 @@ impl GameState {
     /// The attack preview for the hovered hex, or None if no attack of the player's this turn
     /// would hit anything there the player knows of. Only the hovered hex is ever computed.
     pub fn attack_preview(&self) -> Option[AttackPreview] {
-        if self.is_resolving() { return Option.None; }
+        if self.is_playing_out() { return Option.None; }
         let target = self.hovered_tile?;
         // The cheap test first: most hexes hold nothing to attack.
         if !self.has_enemy_target_at(target, self.local_team) { return Option.None; }

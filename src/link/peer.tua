@@ -169,6 +169,15 @@ impl Peer {
         }
     }
 
+    /// Sends `data` as this peer's input for the next turn, as it is (a test's forged plan).
+    pub fn send_raw_input(&mut self, now: i64, data: &[u8]) -> i32 {
+        let mut rc = 0;
+        handle { rc = self.core.input(now, data); } with Transmit {
+            bytes(b) => { self.st.out.push(copy_slice(b)); resume(()) }
+        }
+        rc
+    }
+
     /// Time passing: a silent host is noticed.
     pub fn on_tick(&mut self, now: i64, game: &mut GameState) can {Log} {
         handle { self.core.on_tick(now); } with Deliver[GuestEvent] {

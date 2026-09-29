@@ -1,0 +1,281 @@
+//! What a plan may hold (`multiplayer.tua`'s `check_plan`), what it does when applied, and its
+//! wire form (`plan.tua`): the plan checks upstream runs on the host, here run by every machine on
+//! every bundle. A plan a machine refuses is one it treats as absent, so these tests call
+//! `check_plan` (the refusal and its reason) and, for the bundle path, let the lobby play the turn.
+
+use std.rand.Rand;
+use std.rand.seed;
+use std.str.Str;
+use std.str.contains;
+use std.str.to_owned;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.city.Build;
+use game.city.BuildUnit;
+use game.city.Building;
+use game.city.City;
+use game.city.Cluster;
+use game.city.Good;
+use game.city.Priorities;
+use game.city.Queued;
+use game.city.SETTLER_MIN_POPULATION;
+use game.city.Stock;
+use game.city.grow_price;
+use game.hex.Hex;
+use game.hex.HexGrid;
+use game.multiplayer.HOST_SEAT;
+use game.multiplayer.NetRole;
+use game.plan.TeamPlan;
+use game.plan.MAX_PLAN_LIST;
+use game.plan.plan_bytes;
+use game.plan.plan_of;
+use game.tests.sandbox;
+use game.unit.Team;
+use game.unit.TurnOrder;
+use game.unit.Unit;
+use game.unit.UnitType;
+use game.workers.FieldWorker;
+use game.workers.JobKind;
+use game.workers.WorkerJob;
+use link.table.Lobby;
+use link.table.lobby;
+
+const GUEST_SEAT: Team = Team.Red;
+
+fn city_of(game: &GameState, team: Team) -> i32 {
+    for i in 0..game.cities.len() { if game.cities[i].team == team { return i; } }
+    0 - 1
+}
+
+fn reason(r: Result[(), Str]) -> Str { match r { Result.Err(w) => w, Result.Ok(u) => to_owned("") } }
+
+fn passes(r: Result[(), Str]) -> bool { match r { Result.Ok(u) => true, Result.Err(w) => false } }
+
+/// True when \`host\` refuses \`plan\` with a reason that has \`part\` in it.
+fn refused_with(host: &GameState, plan: &TeamPlan, part: &str) -> bool {
+    let why = reason(host.check_plan(plan));
+    contains(&why, part)
+}
+
+fn refused(host: &GameState, plan: &TeamPlan) -> bool { !passes(host.check_plan(plan)) }
+
+/// A copy of \`p\` (through its wire form, which is also what the copy is checked against).
+fn copy_plan(p: &TeamPlan) -> TeamPlan {
+    let bytes = match plan_bytes(p) { Option.Some(b) => b, Option.None => Vec.new() };
+    match plan_of(&bytes.buf) {
+        Result.Ok(q) => q,
+        Result.Err(e) => TeamPlan { turn: 0, team: p.team, stock: p.stock, units: Vec.new(), cities: Vec.new(), workers: Vec.new(), fighters: Vec.new() },
+    }
+}
+
+/// The first `n` bytes of `b`.
+fn prefix(b: &Vec[u8], n: i32) -> Vec[u8] {
+    let mut out: Vec[u8] = Vec.with_capacity(n);
+    for i in 0..n { out.push(b[i]); }
+    out
+}
+
+/// One host and one guest, on a two-side world.
+fn pair() -> Lobby can {Log, Rand} { lobby(1, 1, 4242) }
+
+/// \`pos\` in the plan's city list, by position.
+fn plan_city(plan: &TeamPlan, pos: Hex) -> i32 {
+    for i in 0..plan.cities.len() { if plan.cities[i].pos == pos { return i; } }
+    0 - 1
+}
+
+/// The host's copy of the game as the turn began: what a plan is checked against.
+fn with_start(t: &mut Lobby, edit: fn(&mut GameState)) {
+    if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start { edit(&mut *s); }
+}
+
+@test
+fn a_plan_survives_the_wire() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let t = pair();
+        let plan = t.host.team_plan(HOST_SEAT);
+        let bytes = match plan_bytes(&plan) { Option.Some(b) => b, Option.None => Vec.new() };
+        assert(!bytes.is_empty());
+        let back = match plan_of(&bytes.buf) { Result.Ok(p) => p, Result.Err(e) => copy_plan(&plan) };
+        let again = match plan_bytes(&back) { Option.Some(b) => b, Option.None => Vec.new() };
+        assert(again.len() == bytes.len());
+        for i in 0..bytes.len() { assert(again[i] == bytes[i]); }
+        // Damaged bytes decode to nothing or to something that still checks the same: none of
+        // these panics, and a cut plan is not a plan.
+        for cut in 0..bytes.len() {
+            if cut % 7 != 0 { continue; }
+            let head = plan_of(&prefix(&bytes, cut).buf);
+            assert(match head { Result.Err(e) => true, Result.Ok(p) => false });
+        }
+        let mut extra = prefix(&bytes, bytes.len());
+        extra.push(0);
+        assert(match plan_of(&extra.buf) { Result.Err(e) => true, Result.Ok(p) => false });
+    });
+}
+
+@test
+fn a_hostile_plan_is_refused_before_it_touches_the_game() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let good = t.games[0].team_plan(GUEST_SEAT);
+        let before = t.host.checksum();
+        assert(passes(t.host.check_plan(&good)));
+        // Orders for the host's units.
+        let mut plan = copy_plan(&good);
+        let mut blue = 0;
+        for i in 0..t.host.units.len() { if t.host.units[i].team == HOST_SEAT { blue = t.host.units[i].id; } }
+        plan.units[0].id = blue;
+        assert(refused(&t.host, &plan));
+        // Orders for an animal, as one of its own or added; and a plan for the wild, which is no
+        // side.
+        let mut animal = 0;
+        let mut found = false;
+        for i in 0..t.host.units.len() { if t.host.units[i].is_animal() { animal = t.host.units[i].id; found = true; } }
+        assert(found);
+        let mut plan = copy_plan(&good);
+        plan.units[0].id = animal;
+        assert(refused(&t.host, &plan));
+        let mut plan = copy_plan(&good);
+        let mut order = copy_plan(&good).units.remove(0);
+        order.id = animal;
+        order.planned_move = Option.None;
+        plan.units.push(order);
+        assert(refused_with(&t.host, &plan, "UNIT"));
+        let mut plan = copy_plan(&good);
+        plan.team = Team.Wild;
+        assert(refused(&t.host, &plan));
+        // A move off the map, and one across it.
+        let mut plan = copy_plan(&good);
+        plan.units[0].planned_move = Option.Some(Hex.new(9999, 0 - 9999));
+        assert(refused(&t.host, &plan));
+        let mut plan = copy_plan(&good);
+        let mut far = Hex.new(0, 0);
+        let mut best = 0 - 1;
+        let from = { let mut p = Hex.new(0, 0); for i in 0..t.games[0].units.len() { if t.games[0].units[i].id == good.units[0].id { p = t.games[0].units[i].pos; } } p };
+        for q in -30..30 { for r in -30..30 {
+            let h = Hex.new(q, r);
+            if t.host.grid.contains(h) && h.distance(from) > best { best = h.distance(from); far = h; }
+        } }
+        plan.units[0].planned_move = Option.Some(far);
+        assert(refused(&t.host, &plan));
+        // A worker job off the map.
+        let mut plan = copy_plan(&good);
+        plan.cities[0].worker_jobs.push(WorkerJob.on_tile(Hex.new(500, 0), JobKind.Road));
+        assert(refused(&t.host, &plan));
+        // A city it doesn't own, "founded" with no settler.
+        let mut plan = copy_plan(&good);
+        plan.cities[0].pos = t.host.cities[city_of(&t.host, HOST_SEAT)].pos;
+        assert(refused(&t.host, &plan));
+        // Riches from nowhere, and builds for free.
+        let mut plan = copy_plan(&good);
+        plan.stock = Stock.whole(1000000, 0, 0);
+        assert(refused(&t.host, &plan));
+        // A build marked paid that it never paid for, and one paid for as it's queued: only the
+        // turn's economy pays, as work starts.
+        let mut plan = copy_plan(&good);
+        plan.cities[0].queue.push(Queued.prepaid(Build.Unit(BuildUnit.Siege)));
+        assert(refused(&t.host, &plan));
+        plan.stock = plan.stock.minus(BuildUnit.Siege.price());
+        assert(refused(&t.host, &plan));
+        // Progress it didn't make, a troop a city can't train, and tiles out of its reach.
+        let mut plan = copy_plan(&good);
+        plan.cities[0].queue.clear();
+        plan.cities[0].queue.push(Queued { build: Build.Gather, paid: false, progress: 999 });
+        assert(refused(&t.host, &plan));
+        plan.cities[0].queue[0].paid = true;
+        assert(refused(&t.host, &plan));
+        let mut plan = copy_plan(&good);
+        plan.cities[0].queue.push(Queued.new(Build.Unit(BuildUnit.Cavalry)));
+        assert(refused(&t.host, &plan));
+        // A queue far longer than play makes.
+        let mut plan = copy_plan(&good);
+        plan.cities[0].queue.clear();
+        for _ in 0..(MAX_PLAN_LIST + 1) { plan.cities[0].queue.push(Queued.new(Build.Gather)); }
+        assert(refused(&t.host, &plan));
+        // A priority order that isn't each good once.
+        let mut plan = copy_plan(&good);
+        plan.cities[0].priorities = Priorities.of(Good.Wood, Good.Wood, Good.Metal);
+        assert(refused_with(&t.host, &plan, "PRIORITY ORDER"));
+        // The wrong turn.
+        let mut plan = copy_plan(&good);
+        plan.turn = 7;
+        assert(refused(&t.host, &plan));
+        // Nothing reached the game, and a sound plan still passes.
+        assert(t.host.checksum() == before);
+        assert(passes(t.host.check_plan(&good)));
+    });
+}
+
+/// Whatever a machine does to its own copy of a plan it never sent, every machine drops the
+/// plan the same way: a bundle carrying a plan that fails the checks plays out with that side idle,
+/// identically on both, and the host drops the sender.
+@test
+fn a_bundle_with_a_hostile_plan_plays_out_alike_and_drops_its_sender() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = lobby(2, 3, 4242);
+        // Green sends orders for a unit of Blue's; Red and the host send sound ones.
+        let mut plan = t.games[1].team_plan(Team.Green);
+        let mut blue = 0;
+        for i in 0..t.host.units.len() { if t.host.units[i].team == HOST_SEAT { blue = t.host.units[i].id; } }
+        plan.units[0].id = blue;
+        // Its player's own machine cannot end the turn with that plan (it would check it too), so
+        // the bytes go straight to the sequencer: as a modified client would send them.
+        t.games[0].submit_plan();
+        t.host.submit_plan();
+        t.exchange();
+        t.force_input(1, &plan);
+        t.exchange();
+        while t.host.is_playing_out() { t.host.update(1.0); }
+        while t.games[0].is_playing_out() { t.games[0].update(1.0); }
+        t.exchange();
+        assert(t.host.turn == 1 && t.games[0].turn == 1);
+        assert(t.host.checksum() == t.games[0].checksum());
+        // The host dropped Green: its player was told why, and its side is the AI's from the
+        // next turn on, on both machines still playing.
+        assert(!t.is_alive(1));
+        t.host.submit_plan();
+        t.games[0].submit_plan();
+        t.exchange();
+        while t.host.is_playing_out() { t.host.update(1.0); }
+        while t.games[0].is_playing_out() { t.games[0].update(1.0); }
+        t.exchange();
+        assert(t.host.turn == 2 && t.games[0].turn == 2);
+        assert(!t.host.is_human(Team.Green) && !t.games[0].is_human(Team.Green));
+        assert(t.host.checksum() == t.games[0].checksum());
+        assert(t.host.lockstep.desync.is_none());
+    });
+}
+
+/// A guest that puts another side's plan in its input (a plan for the host's side) is dropped
+/// before the sequencer hears of it: the host's own plan stands, the turn plays out on the two
+/// machines left, and the guest is told why.
+@test
+fn a_plan_for_another_side_gets_its_sender_dropped_before_the_sequencer_hears_of_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let mut forged = t.host.team_plan(HOST_SEAT);
+        forged.turn = 1;
+        t.force_input(0, &forged);
+        t.exchange();
+        assert(!t.is_alive(0));
+        assert(t.host.turn == 0);
+        // Before the first turn its seat opens again: the turn waits for a new player, whose plan
+        // it then plays with the host's own.
+        assert(t.host.open_seats().len() == 1);
+        let next = t.connect();
+        assert(next >= 0);
+        t.exchange();
+        assert(t.games[next].local_team == GUEST_SEAT);
+        t.host.submit_plan();
+        t.games[next].submit_plan();
+        t.exchange();
+        while t.host.is_playing_out() { t.host.update(1.0); }
+        while t.games[next].is_playing_out() { t.games[next].update(1.0); }
+        t.exchange();
+        assert(t.host.turn == 1 && t.games[next].turn == 1);
+        assert(t.host.checksum() == t.games[next].checksum());
+        assert(t.host.lockstep.desync.is_none());
+    });
+}

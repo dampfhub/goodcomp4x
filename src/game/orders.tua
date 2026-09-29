@@ -116,14 +116,14 @@ impl GameState {
     /// `mode` itself. Once the selected unit has nothing left to plan, selection moves on to
     /// the next unit that does. Ignored while a turn is playing out.
     pub fn handle_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) can {Log, Rand} {
-        if self.is_resolving() { return; }
+        if self.is_playing_out() { return; }
         if self.click_ui(cursor, screen_size, mode) { return; }
         self.handle_map_click(cursor, screen_size, mode);
     }
 
     /// A click on the map, once the UI has had its turn at it.
     pub fn handle_map_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) can {Log, Rand} {
-        if self.is_resolving() { return; }
+        if self.is_playing_out() { return; }
         if self.interior_view.is_some() {
             if let Option.Some(tile) = self.hex_at_screen(cursor, screen_size) { self.interior_click(tile); }
             return;
@@ -143,6 +143,12 @@ impl GameState {
         };
 
         if self.city_click(hex) { return; }
+        // The plan is sent (a network game waiting for the others'): a click only picks what to
+        // look at.
+        if self.is_resolving() {
+            self.select_only(hex, mode);
+            return;
+        }
 
         // A selected land troop boards a friendly landing craft; a selected craft lands its
         // first passenger on adjacent open ground. Both orders resolve after combat, so a ship
@@ -483,10 +489,25 @@ impl GameState {
         (units, cities)
     }
 
+    /// A map click on `hex` that changes nothing but the selection, while the plan can't change: one
+    /// of the player's units there is selected (Shift adds it, Ctrl takes it out of a group);
+    /// anywhere else lets go.
+    fn select_only(&mut self, hex: Hex, mode: ClickMode) {
+        let ally = self.controlled_unit_at(hex);
+        match (mode, ally) {
+            (ClickMode.QueueMove, Option.Some(a)) => { self.add_to_selection(a); }
+            (ClickMode.Swap, Option.Some(a)) => {
+                if !self.group.is_empty() { let _removed = self.remove_from_selection(a); } else { self.set_selection(vec_of(a)); }
+            }
+            (_, Option.Some(a)) => { self.set_selection(vec_of(a)); }
+            (_, Option.None) => { self.set_selection(Vec.new()); }
+        }
+    }
+
     /// Tab: selects the next unit that still needs orders, or just the next unit if they all
     /// have them, without holding the current one.
     pub fn select_next_unit(&mut self) {
-        if self.is_resolving() { return; }
+        if self.is_playing_out() { return; }
         self.leave_city_view();
         let next = match self.next_unit_needing_orders(self.selected) {
             Option.Some(i) => Option.Some(i),
@@ -796,4 +817,11 @@ impl GameState {
             }
         }
     }
+}
+
+/// A single index as a selection.
+fn vec_of(i: i32) -> Vec[i32] {
+    let mut v: Vec[i32] = Vec.new();
+    v.push(i);
+    v
 }

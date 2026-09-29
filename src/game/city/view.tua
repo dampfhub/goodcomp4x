@@ -6,6 +6,8 @@ use std.fmt.show_i64;
 use std.fmt.show_u64;
 use log.Log;
 use game.GameState;
+use game.multiplayer.WAITING_NOTICE;
+use std.str.to_owned;
 use game.text;
 use game.city.CLUSTER_SIZE;
 use game.city.Cluster;
@@ -68,7 +70,7 @@ impl GameState {
 
     /// C: opens a city that needs something to build, or else the first of the player's cities.
     pub fn select_city(&mut self) {
-        if self.is_resolving() { return; }
+        if self.is_playing_out() { return; }
         let mut city: Option[i32] = Option.None;
         for i in 0..self.cities.len() {
             if city.is_none() && self.city_needs_build(i) { city = Option.Some(i); }
@@ -110,6 +112,12 @@ impl GameState {
         city.team == self.local_team && city.queue.is_empty()
     }
 
+    /// What the top bar says once a view closes: how planning goes, or (the plan sent) that it
+    /// waits for the others.
+    fn planning_notice(&self) -> str {
+        if self.waiting_for_peers() { WAITING_NOTICE } else { "PLANNING - C CITY - SPACE HOLD OR END TURN" }
+    }
+
     pub fn leave_city_view(&mut self) {
         self.close_city_interior();
         self.selected_city = Option.None;
@@ -130,7 +138,7 @@ impl GameState {
         if self.selected_city.is_none() && self.selected_barracks.is_none() { return false; }
         if self.stop_placing() { return true; }
         self.leave_city_view();
-        self.set_notice("PLANNING - C CITY - SPACE HOLD OR END TURN");
+        self.notice = to_owned(self.planning_notice());
         true
     }
 
@@ -158,7 +166,7 @@ impl GameState {
         self.group.clear();
         self.ui_click_mode = Option.None;
         self.camera.focus_on(barracks.to_world());
-        self.set_notice("BARRACKS - QUEUE TROOPS OR CLICK CITY TO RETURN");
+        if self.waiting_for_peers() { self.notice = to_owned(WAITING_NOTICE); } else { self.set_notice("BARRACKS - QUEUE TROOPS OR CLICK CITY TO RETURN"); }
     }
 
     /// The Barracks view's City button: back to its city.
@@ -196,6 +204,17 @@ impl GameState {
         };
         if hex == self.cities[i].pos {
             self.open_city_interior(i);
+            return true;
+        }
+        // The plan is sent: citizens stay where they are, but another of the player's cities can
+        // be looked at.
+        if self.is_resolving() {
+            let mut other: Option[i32] = Option.None;
+            for c in 0..self.cities.len() { if self.cities[c].pos == hex && self.cities[c].team == self.local_team { other = Option.Some(c); } }
+            match other {
+                Option.Some(c) => { self.open_city(c); }
+                Option.None => { self.notice = to_owned(WAITING_NOTICE); }
+            }
             return true;
         }
         // City management owns map clicks, so citizens may be assigned onto a unit's tile. A tile

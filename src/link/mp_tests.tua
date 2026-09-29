@@ -1,0 +1,398 @@
+//! Multiplayer's rules across the whole path (game, plan wire, lockstep, hub and peers): taking
+//! a turn back, looking around while the others' plans are awaited, seats that fill and empty,
+//! desyncs and refusals. Every message crosses as the bytes the sequencer really sends
+//! (`table.tua`).
+
+use std.rand.Rand;
+use std.str.Str;
+use std.str.to_owned;
+use game.settings.default_settings;
+use std.str.contains;
+use std.str.eq as str_eq;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.city.Build;
+use game.city.Building;
+use game.plan.TeamPlan;
+use game.plan.plan_bytes;
+use game.city.BuildUnit;
+use game.city.Priorities;
+use game.city.Good;
+use game.city.Stock;
+use game.hex.Hex;
+use game.multiplayer.HOST_SEAT;
+use game.orders.ClickMode;
+use game.tests.sandbox;
+use game.unit.Team;
+use link.table.Lobby;
+use link.table.lobby;
+use link.table.table;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+
+const GUEST_SEAT: Team = Team.Red;
+
+fn play_out(game: &mut GameState) can {Log, Rand} {
+    while game.is_playing_out() { game.update(1.0); }
+}
+
+fn city_of(game: &GameState, team: Team) -> i32 {
+    for i in 0..game.cities.len() { if game.cities[i].team == team { return i; } }
+    0 - 1
+}
+
+fn unit_of(game: &GameState, team: Team) -> i32 {
+    for i in 0..game.units.len() { if game.units[i].team == team { return i; } }
+    0 - 1
+}
+
+/// Ends `game`'s turn with \`build\` queued in its first city (a gather when it is \`None\`).
+fn end_turn_building(game: &mut GameState, build: Option[BuildUnit]) can {Log} {
+    let city = city_of(&*game, game.local_team);
+    game.open_city(city);
+    match build {
+        Option.Some(unit) => { game.queue_selected_city_unit(unit); }
+        Option.None => { game.queue_selected_city_gather(); }
+    }
+    game.end_planning();
+}
+
+/// How many of \`unit\` \`team\`'s cities have queued.
+fn units_queued(game: &GameState, team: Team, unit: BuildUnit) -> i32 {
+    let mut n = 0;
+    for c in 0..game.cities.len() {
+        if game.cities[c].team != team { continue; }
+        for k in 0..game.cities[c].queue.len() {
+            if game.cities[c].queue[k].build == Build.Unit(unit) { n = n + 1; }
+        }
+    }
+    n
+}
+
+fn notice_is(g: &GameState, want: &str) -> bool { let n = &g.notice; str_eq(n, want) }
+
+/// The seat \`team\` has a plan in for this turn at the host.
+fn host_has_plan(t: &Lobby, team: Team) -> bool { t.host.has_plan_from(team) }
+
+@test
+fn a_guest_takes_back_its_turn_and_its_new_orders_play_out_everywhere() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = lobby(2, 2, 4242);
+        // Red ends its turn, gathering.
+        end_turn_building(&mut t.games[0], Option.None);
+        t.exchange();
+        // It takes the turn back: the host lets go of its plan and waits.
+        t.games[0].take_back_turn();
+        assert(!t.games[0].waiting_for_peers() && !t.games[0].is_resolving());
+        t.exchange();
+        // Its player queues a Melee too and ends the turn again.
+        end_turn_building(&mut t.games[0], Option.Some(BuildUnit.Melee));
+        t.exchange();
+        // Green and the host end theirs, and the turn plays out with Red's new orders on every
+        // machine.
+        t.games[1].submit_plan();
+        t.host.submit_plan();
+        t.exchange();
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        play_out(&mut t.games[1]);
+        t.exchange();
+        assert(t.host.turn == 1 && t.games[0].turn == 1 && t.games[1].turn == 1);
+        assert(t.games[0].checksum() == t.host.checksum() && t.games[1].checksum() == t.host.checksum());
+        assert(units_queued(&t.host, Team.Red, BuildUnit.Melee) == 1);
+        assert(units_queued(&t.games[1], Team.Red, BuildUnit.Melee) == 1);
+        assert(t.host.lockstep.desync.is_none());
+    });
+}
+
+@test
+fn the_host_takes_back_its_own_turn() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        end_turn_building(&mut t.host, Option.None);
+        t.host.take_back_turn();
+        assert(!t.host.waiting_for_peers());
+        // The guest's plan alone doesn't resolve the turn now.
+        end_turn_building(&mut t.games[0], Option.None);
+        t.exchange();
+        assert(!t.host.is_playing_out());
+        end_turn_building(&mut t.host, Option.Some(BuildUnit.Melee));
+        t.exchange();
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.turn == 1);
+        assert(t.host.checksum() == t.games[0].checksum());
+        assert(units_queued(&t.games[0], HOST_SEAT, BuildUnit.Melee) == 1);
+    });
+}
+
+@test
+fn end_turn_closes_the_city_and_barracks_views_as_in_a_local_game() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        let team = GUEST_SEAT;
+        let city = city_of(&t.games[0], team);
+        let city_pos = t.games[0].cities[city].pos;
+        // A Barracks by its city, on no tile a citizen works, on both machines.
+        let around = city_pos.neighbors();
+        let mut barracks = city_pos;
+        for k in 0..6 {
+            if barracks == city_pos && t.games[0].grid.is_passable(around[k]) && !t.games[0].is_occupied(around[k]) && !t.games[0].cities[city].works(around[k]) { barracks = around[k]; }
+        }
+        t.games[0].cities[city].barracks = Option.Some(barracks);
+        // The city view.
+        end_turn_building(&mut t.games[0], Option.None);
+        assert(t.games[0].waiting_for_peers());
+        assert(t.games[0].selected_city.is_none());
+        // Taken back, the Barracks view.
+        t.games[0].take_back_turn();
+        t.games[0].open_barracks(city);
+        assert(t.games[0].selected_barracks == Option.Some(city));
+        t.games[0].end_planning();
+        assert(t.games[0].waiting_for_peers());
+        assert(t.games[0].selected_barracks.is_none());
+        // Taken back, a unit selected.
+        t.games[0].take_back_turn();
+        let unit = unit_of(&t.games[0], team);
+        let mut one: Vec[i32] = Vec.new();
+        one.push(unit);
+        t.games[0].set_selection(one);
+        t.games[0].end_planning();
+        assert(t.games[0].waiting_for_peers());
+        assert(t.games[0].selection().is_empty());
+        // Waiting, the player may look again, and the turn plays out alike.
+        let plan = t.games[0].team_plan(team);
+        t.games[0].open_city(city);
+        assert(t.games[0].selected_city == Option.Some(city));
+        let looked = t.games[0].team_plan(team);
+        assert(plans_equal(&plan, &looked));
+        t.exchange();
+        t.host.submit_plan();
+        t.exchange();
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.turn == t.games[0].turn);
+        assert(t.host.checksum() == t.games[0].checksum());
+        assert(t.host.lockstep.desync.is_none());
+    });
+}
+
+fn bytes_of(p: &TeamPlan) -> Vec[u8] {
+    match plan_bytes(p) { Option.Some(b) => b, Option.None => Vec.new() }
+}
+
+fn plans_equal(a: &TeamPlan, b: &TeamPlan) -> bool {
+    let p = bytes_of(a);
+    let q = bytes_of(b);
+    if p.len() != q.len() { return false; }
+    for i in 0..p.len() { if p[i] != q[i] { return false; } }
+    true
+}
+
+fn checked(r: Result[(), Str]) -> bool { match r { Result.Ok(u) => true, Result.Err(w) => false } }
+
+fn applied(r: Result[bool, Str]) -> bool { match r { Result.Ok(b) => true, Result.Err(w) => false } }
+
+/// Red ends its turn, takes it back and ends it again with a Melee queued, all before the host
+/// has heard of the first: the host's own plan makes it close the turn with the first, and the
+/// later messages come too late to change it and are not hostile. Red plays out what the host
+/// closed and says so.
+@test
+fn a_take_back_after_the_host_resolved_changes_nothing() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        end_turn_building(&mut t.host, Option.None);
+        end_turn_building(&mut t.games[0], Option.None);
+        // Both plans are in before anything is delivered: the guest's messages are still on the
+        // way when it takes the turn back and sends another.
+        t.games[0].take_back_turn();
+        end_turn_building(&mut t.games[0], Option.Some(BuildUnit.Melee));
+        t.exchange();
+        assert(t.host.is_playing_out() && t.games[0].is_playing_out());
+        // Red is told its later orders came too late.
+        assert(notice_is(&t.games[0], "TOO LATE TO CHANGE - THE TURN PLAYS OUT AS SENT"));
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.turn == 1 && t.games[0].turn == 1);
+        assert(t.host.checksum() == t.games[0].checksum());
+        assert(t.host.lockstep.desync.is_none());
+        // Both machines played the plan the host closed the turn with: no Melee.
+        assert(units_queued(&t.host, GUEST_SEAT, BuildUnit.Melee) == 0);
+        assert(units_queued(&t.games[0], GUEST_SEAT, BuildUnit.Melee) == 0);
+        // Nothing of the later plan reaches the next turn: the host is still waiting for Red.
+        assert(!t.host.is_resolving() || t.host.turn == 1);
+    });
+}
+
+/// A bundle that lacks this side's own orders, or holds another's that this side never sent, is
+/// refused whole: nothing changes and the host is no longer trusted.
+@test
+fn a_guest_refuses_a_turn_with_orders_it_never_sent() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        end_turn_building(&mut t.games[0], Option.None);
+        let sent = t.games[0].team_plan(GUEST_SEAT);
+        let own = t.host.team_plan(HOST_SEAT);
+        // Its orders changed on the way, though they'd pass the checks.
+        let mut changed = t.games[0].team_plan(GUEST_SEAT);
+        changed.units[0].holding = !changed.units[0].holding;
+        assert(checked(t.host.check_plan(&changed)));
+        let before = t.games[0].checksum();
+        let mut plans: Vec[Vec[u8]] = Vec.new();
+        plans.push(bytes_of(&own));
+        plans.push(bytes_of(&changed));
+        t.games[0].receive_bundle(0, plans);
+        let refused = t.games[0].apply_waiting_bundle();
+        let why = match refused { Result.Err(w) => w, Result.Ok(b) => to_owned("") };
+        assert(contains(&why, "NEVER SENT"));
+        assert(t.games[0].checksum() == before);
+        assert(t.games[0].waiting_for_peers());
+        // Its own go through.
+        let mut good: Vec[Vec[u8]] = Vec.new();
+        good.push(bytes_of(&own));
+        good.push(bytes_of(&sent));
+        t.games[0].receive_bundle(0, good);
+        assert(applied(t.games[0].apply_waiting_bundle()));
+        assert(t.games[0].is_playing_out());
+    });
+}
+
+@test
+fn a_disbanded_unit_is_gone_on_both_machines() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        let unit = unit_of(&t.games[0], GUEST_SEAT);
+        let id = t.games[0].units[unit].id;
+        t.games[0].selected = Option.Some(unit);
+        t.games[0].disband_selected();
+        let again = unit_index(&t.games[0], id);
+        t.games[0].selected = Option.Some(again);
+        t.games[0].disband_selected();
+        assert(unit_index(&t.games[0], id) < 0);
+        t.games[0].submit_plan();
+        t.host.submit_plan();
+        t.exchange();
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(unit_index(&t.host, id) < 0);
+        assert(t.host.checksum() == t.games[0].checksum());
+    });
+}
+
+fn unit_index(game: &GameState, id: u32) -> i32 {
+    for i in 0..game.units.len() { if game.units[i].id == id { return i; } }
+    0 - 1
+}
+
+@test
+fn a_mismatched_checksum_is_reported_as_a_desync() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        t.games[0].submit_plan();
+        t.host.submit_plan();
+        t.exchange();
+        play_out(&mut t.host);
+        // The guest's game drifts before it resolves.
+        t.games[0].stockpiles[GUEST_SEAT.index()] = Stock.whole(1, 2, 3);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.lockstep.desync == Option.Some(0));
+        assert(notice_is(&t.host, "DESYNC WITH RED AFTER TURN 1"));
+    });
+}
+
+fn play_turn(t: &mut Lobby) can {Log, Rand} {
+    t.host.submit_plan();
+    for i in 0..t.games.len() { t.games[i].submit_plan(); }
+    t.exchange();
+    play_out(&mut t.host);
+    for i in 0..t.games.len() { play_out(&mut t.games[i]); }
+    t.exchange();
+}
+
+@test
+fn three_players_share_a_world_with_the_ai_on_the_rest() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = lobby(2, 4, 4242);
+        assert(t.games[0].local_team == Team.Red && t.games[1].local_team == Team.Green);
+        assert(t.host.humans.len() == 3);
+        assert(!t.host.ai_teams().is_empty());
+        assert(t.host.ai_teams().len() == t.games[0].ai_teams().len());
+        // A fourth is turned away: the seats are full.
+        assert(t.connect() == 0 - 1);
+        assert(t.games[0].checksum() == t.host.checksum() && t.games[1].checksum() == t.host.checksum());
+        for _ in 0..3 {
+            play_turn(&mut t);
+            assert(t.games[0].checksum() == t.host.checksum());
+            assert(t.games[1].checksum() == t.host.checksum());
+        }
+        assert(t.host.turn == 3);
+        assert(t.host.lockstep.desync.is_none());
+        // Nobody joins a game under way.
+        assert(t.host.has_started());
+    });
+}
+
+/// With a seat open the first turn does not resolve: the host's End Turn says how many are to
+/// come. A guest who leaves before the start frees their seat, and the seats still take a person.
+@test
+fn the_host_waits_for_every_seat_before_the_first_turn() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = lobby(1, 3, 4242);
+        // Green's seat is open.
+        assert(t.host.humans.len() == 2);
+        let mut settings = default_settings();
+        settings.world_ai = 3;
+        let mut host3 = GameState.host_game(3, &settings, 99, to_owned("K7M2QX"));
+        let seat = host3.seat_next_guest();
+        assert(seat == Option.Some(Team.Red));
+        assert(host3.open_seats().len() == 1 && host3.open_seats()[0] == Team.Green);
+        host3.submit_plan();
+        assert(!host3.waiting_for_peers());
+        let label = host3.resolving_label();
+        assert(contains(&label, "JOIN CODE K7M2QX - 1 TO COME"));
+        // A guest who leaves before the start frees their seat.
+        host3.seat_left(Team.Red);
+        assert(host3.open_seats().len() == 2);
+        assert(host3.humans.len() == 3);
+    });
+}
+
+/// Green's player goes while Red and the host wait on the turn: the sequencer closes it without
+/// Green, on both machines left, and the AI plays Green from then on.
+@test
+fn a_guest_who_leaves_mid_game_hands_their_side_to_the_ai() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = lobby(2, 4, 4242);
+        play_turn(&mut t);
+        // Green's player goes; Red is waiting on the turn.
+        t.games[0].submit_plan();
+        t.host.submit_plan();
+        t.exchange();
+        assert(t.host.waiting_for_peers());
+        t.drop_guest(1);
+        t.exchange();
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.turn == 2 && t.games[0].turn == 2);
+        assert(!t.host.is_human(Team.Green) && !t.games[0].is_human(Team.Green));
+        assert(t.host.ai_teams().contains(Team.Green));
+        assert(t.host.checksum() == t.games[0].checksum());
+        // And the next turn too.
+        t.host.submit_plan();
+        t.games[0].submit_plan();
+        t.exchange();
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.checksum() == t.games[0].checksum());
+        assert(t.host.lockstep.desync.is_none());
+    });
+}

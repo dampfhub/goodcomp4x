@@ -326,7 +326,7 @@ impl GameState {
 
     /// Moves queue row `source` of `kind` to place `target`.
     pub fn reorder_queue(&mut self, kind: QueueKind, source: i32, target: i32) {
-        if source == target { return; }
+        if source == target || self.is_resolving() { return; }
         let city = match kind {
             QueueKind.Workers => self.worker_list_city(),
             _ => match self.selected_city { Option.Some(c) => Option.Some(c), Option.None => self.selected_barracks },
