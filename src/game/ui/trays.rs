@@ -72,13 +72,16 @@ impl GameState {
             .interior_selected
             .and_then(|source| interior.fighters.iter().find(|f| f.source_id == source))
         {
+            // A fighter is a copy of a troop outside, named as the troop is.
+            let name = self
+                .units
+                .iter()
+                .find(|u| u.id == fighter.source_id)
+                .map_or("TROOP", |u| self.unit_role(u));
             panel.gap(GAP);
             panel.text(
                 BODY,
-                vec![(
-                    format!("{:?}  {:.0} HP", fighter.unit_type, fighter.hp).to_uppercase(),
-                    BOOSTED_TEXT,
-                )],
+                vec![(format!("{name}  {:.0} HP", fighter.hp), BOOSTED_TEXT)],
             );
             panel.text(SMALL, vec![("GREEN: MOVE  RED: ATTACK".into(), LABEL_TEXT)]);
         } else {
@@ -219,13 +222,17 @@ impl GameState {
         if unit.deployed {
             notes.push("DEPLOYED".to_string());
         }
-        if unit.unit_type == crate::game::unit::UnitType::LandingCraft {
-            notes.push(format!(
-                "CARGO {}/4 - CLICK ADJACENT LAND TO UNLOAD",
-                unit.cargo.len()
-            ));
-        } else if !unit.is_naval() {
-            notes.push("CLICK AN ADJACENT LANDING CRAFT TO BOARD".to_string());
+        // Instructions, and what a landing craft carries, are the player's
+        // own units' alone.
+        if self.is_player_controlled(idx) {
+            if unit.unit_type == crate::game::unit::UnitType::LandingCraft {
+                notes.push(format!(
+                    "CARGO {}/4 - CLICK ADJACENT LAND TO UNLOAD",
+                    unit.cargo.len()
+                ));
+            } else if !unit.is_naval() {
+                notes.push("CLICK AN ADJACENT LANDING CRAFT TO BOARD".to_string());
+            }
         }
         if unit.lookout {
             notes.push(format!(
