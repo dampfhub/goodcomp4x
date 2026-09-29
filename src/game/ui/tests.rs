@@ -1,5 +1,5 @@
 use super::builder::{ButtonSpec, Row, classic_rows, flat_rows};
-use super::text::{end_turn_label, price_hint, quantity, signed_quantity, wrap};
+use super::text::{end_turn_label, price_hint, quantity, signed_quantity, stock_spans, wrap};
 use super::*;
 
 use crate::game::PLAYER_TEAM;
@@ -1180,18 +1180,17 @@ fn every_panel_shows_what_a_city_delivers_in_displayed_units() {
     let income = game.income(0);
     // Stored in quarters: a raw value would read four times too high.
     assert!(income.food > 4 && income.wood > 4);
-    let short = price_hint(income);
-    assert!(short.contains(&format!("{FOOD_ICON}{}", quantity(income.food))));
+    // Net of the food the city's citizens eat, everywhere it shows.
+    let net = game.net_delivery(0);
+    assert_eq!(net.wood, income.wood);
+    assert!(net.food < income.food);
+    let short = price_hint(net);
+    assert!(short.contains(&format!("{FOOD_ICON}{}", quantity(net.food))));
 
     let tray = panel_strings(|panel| game.city_tray(0, panel));
-    assert_shows(
-        &tray,
-        &format!("{WOOD_ICON}{}", signed_quantity(income.wood)),
-    );
-    assert_shows(
-        &tray,
-        &format!("{FOOD_ICON}{}", signed_quantity(income.food)),
-    );
+    assert_shows(&tray, &format!("{WOOD_ICON}{}", signed_quantity(net.wood)));
+    assert_shows(&tray, &format!("{FOOD_ICON}{}", signed_quantity(net.food)));
+    assert!(tray.iter().all(|line| !line.contains("EATS")), "{tray:?}");
     let hover = panel_strings(|panel| game.structure_hover_panel(0, false, panel));
     assert_shows(&hover, &format!("DELIVERS {short}"));
     let city_tooltip = line_strings(
@@ -1200,6 +1199,40 @@ fn every_panel_shows_what_a_city_delivers_in_displayed_units() {
             .map(|(_, line)| line),
     );
     assert_shows(&city_tooltip, &format!("DELIVERS {short}"));
+}
+
+#[test]
+fn a_manager_picked_up_takes_its_income_off_the_panels_at_once() {
+    let mut game = GameState::city_scenario();
+    game.fog_of_war = false;
+    game.units.clear();
+    game.auto_assign_city(0);
+    let team = game.cities[0].team;
+    game.local_team = team;
+    let carried = game.cluster_income(0, 0);
+    assert!(carried.food + carried.production() > 0);
+    let (before, side_before) = (game.net_delivery(0), game.stockpile_line());
+    game.moving_manager = Some((0, 0));
+    // Shown without the cluster, in the city panel and the top bar...
+    let net = game.net_delivery(0);
+    assert_eq!(net, before - carried);
+    let tray = panel_strings(|panel| game.city_tray(0, panel));
+    assert_shows(&tray, &format!("{FOOD_ICON}{}", signed_quantity(net.food)));
+    let expected = stock_spans(
+        game.stock(team),
+        Stock {
+            food: game.side_income(team).food - carried.food - game.upkeep(team),
+            wood: game.side_income(team).wood - carried.wood,
+            metal: game.side_income(team).metal - carried.metal,
+        },
+    );
+    assert_eq!(game.stockpile_line(), expected);
+    assert_ne!(game.stockpile_line(), side_before);
+    // ...but the city still earns it: the economy never sees a carried
+    // manager, which is put back before any turn resolves.
+    assert_eq!(game.income(0), game.shown_income(0) + carried);
+    game.moving_manager = None;
+    assert_eq!(game.net_delivery(0), before);
 }
 
 #[test]

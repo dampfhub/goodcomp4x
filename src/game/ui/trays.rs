@@ -2,8 +2,7 @@
 
 use super::builder::{ButtonSpec, CatalogEntry, PanelBuilder, Row};
 use super::text::{
-    ability_text, compare, cost_hint, quantity, resource_color, signed_quantity, stat_spans,
-    turns_text,
+    ability_text, compare, cost_hint, resource_color, signed_quantity, stat_spans, turns_text,
 };
 use super::{
     BODY, BOOSTED_TEXT, ButtonState, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, QueueItemSpec,
@@ -11,8 +10,8 @@ use super::{
 };
 use crate::game::GameState;
 use crate::game::city::{
-    Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, FOOD_PER_CITIZEN, GATHER_SHORTCUT,
-    GATHER_YIELD, GROW_SHORTCUT, Lane, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, WORKERS_PER_MANAGER,
+    Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, GATHER_SHORTCUT, GATHER_YIELD,
+    GROW_SHORTCUT, Lane, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, WORKERS_PER_MANAGER,
     manager_label, resource_icon, stock_icons, turns_icon,
 };
 use crate::game::orders::ClickMode;
@@ -456,8 +455,7 @@ impl GameState {
 
     pub(super) fn city_tray(&self, i: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
-        let income = self.income(i);
-        let upkeep = city.population as i32 * FOOD_PER_CITIZEN;
+        let net = self.net_delivery(i);
 
         panel.text(
             TITLE,
@@ -498,27 +496,27 @@ impl GameState {
                     TEXT,
                 ),
             ];
-            for (name, amount) in self.cluster_income(i, k).parts() {
-                line.push((
-                    format!("{}{}  ", resource_icon(name), signed_quantity(amount)),
-                    resource_color(name),
-                ));
+            if self.moving_manager == Some((i, k)) {
+                line.push(("PICKED UP".to_string(), DIM_TEXT));
+            } else {
+                for (name, amount) in self.cluster_income(i, k).parts() {
+                    line.push((
+                        format!("{}{}  ", resource_icon(name), signed_quantity(amount)),
+                        resource_color(name),
+                    ));
+                }
             }
             panel.text(SMALL, line);
         }
-        // What this city adds to the side's stockpile, and what its
-        // citizens eat from it.
+        // What this city adds to the side's stockpile a turn, net of the
+        // food its citizens eat.
         let mut income_line = vec![("DELIVERS ".to_string(), LABEL_TEXT)];
-        for (name, amount) in income.parts() {
+        for (name, amount) in net.parts() {
             income_line.push((
                 format!("{}{}   ", resource_icon(name), signed_quantity(amount)),
                 resource_color(name),
             ));
         }
-        income_line.push((
-            format!("EATS {}{}", resource_icon("FOOD"), quantity(upkeep)),
-            DIM_TEXT,
-        ));
         panel.text(BODY, income_line);
         let status = self.queue_status(i, Lane::City);
         let worked = self.worked_item(i, Lane::City, &status);

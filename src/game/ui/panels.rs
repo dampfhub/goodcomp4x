@@ -151,7 +151,7 @@ impl GameState {
     /// The player's stockpile and its change a turn (every city's delivery,
     /// less the citizens' food), for the top bar in both presentations.
     pub(super) fn stockpile_line(&self) -> Line {
-        let income = self.side_income(self.local_team);
+        let income = self.shown_side_income(self.local_team);
         let change = Stock {
             food: income.food - self.upkeep(self.local_team),
             ..income
@@ -315,7 +315,7 @@ impl GameState {
                     format!(
                         "POP {}/{MAX_CITY_POPULATION} · DELIVERS {}",
                         city.population,
-                        price_hint(self.income(i))
+                        price_hint(self.net_delivery(i))
                     ),
                     GOLD_TEXT,
                 )],
