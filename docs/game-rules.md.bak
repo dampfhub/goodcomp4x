@@ -19,9 +19,7 @@ in `rts-economy.md`.
 
 Pressing F1-F3 restarts that scenario; F4 always makes a new map. The savestate (F6 save, F7
 load) holds a copy of the whole game in memory; it survives scenario switches, loading keeps the
-snapshot, and saving is refused mid-turn. Loading opens the view the snapshot was in (the map or
-a city's interior) and keeps the camera where it is on the same map (the same scenario, and for
-F4 the same world); a snapshot of another map brings its own camera. Loading
+snapshot (and the camera, within the same scenario), and saving is refused mid-turn. Loading
 doesn't restore the dice: combat rolls carry on from the current game, so a retry can go
 differently. Instant
 playback (F8, or Instant Playback in the settings menu; on by default) resolves every step of a

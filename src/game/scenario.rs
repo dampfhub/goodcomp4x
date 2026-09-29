@@ -116,8 +116,9 @@ impl GameState {
 
     /// F1-F4: starts `scenario` afresh (restarting it, if it's the current
     /// one; the world gets a new random map), keeping the savestate, the
-    /// player's settings (and whether their menu is open), the debug settings
-    /// and the RNG (so a seeded game stays reproducible).
+    /// player's settings (and whether their menu is open), whether Alt is
+    /// held, the debug settings and the RNG (so a seeded game stays
+    /// reproducible).
     pub fn switch_scenario(&mut self, scenario: Scenario) {
         if self.refuses_debug() {
             return;
@@ -125,6 +126,8 @@ impl GameState {
         let savestate = self.savestate.take();
         let settings = std::mem::take(&mut self.settings);
         let (settings_open, fog_of_war) = (self.settings_open, self.fog_of_war);
+        // Whether Alt is held doesn't change with the scenario.
+        let show_details = self.show_details;
         let net_menu = std::mem::take(&mut self.net_menu);
         let production_speedup = self.production_speedup;
         let lifetime_special_cap = self.lifetime_special_cap;
@@ -136,6 +139,7 @@ impl GameState {
         self.savestate = savestate;
         self.settings = settings;
         self.settings_open = settings_open;
+        self.show_details = show_details;
         self.net_menu = net_menu;
         self.fog_of_war = fog_of_war;
         self.production_speedup = production_speedup;
@@ -171,8 +175,11 @@ impl GameState {
         );
     }
 
-    /// F7: restores the saved snapshot, keeping it to load again. The camera
-    /// stays where it is, unless the snapshot is from another scenario.
+    /// F7: restores the saved snapshot, keeping it to load again. On the
+    /// same map (`same_map`) the camera on the map stays where it is, and so
+    /// does the camera inside a city if the snapshot and the game both have
+    /// one open; whichever view the snapshot is in, it opens in it. On
+    /// another map the snapshot's cameras come back with it.
     pub fn load_state(&mut self) {
         if self.refuses_debug() {
             return;
@@ -182,9 +189,21 @@ impl GameState {
             return;
         };
         let mut restored = (*saved).clone();
-        if restored.scenario == self.scenario {
-            restored.camera = self.camera.clone();
+        if self.same_map(&restored) {
+            let (map_camera, interior_camera) = match (&self.exterior_camera, self.interior_view) {
+                (Some(exterior), Some(_)) => (exterior.clone(), Some(self.camera.clone())),
+                _ => (self.camera.clone(), None),
+            };
+            if restored.interior_view.is_some() {
+                restored.exterior_camera = Some(map_camera);
+                if let Some(camera) = interior_camera {
+                    restored.camera = camera;
+                }
+            } else {
+                restored.camera = map_camera;
+            }
         }
+        restored.show_details = self.show_details;
         restored.settings = self.settings.clone();
         restored.settings_open = self.settings_open;
         restored.net_menu = self.net_menu.clone();
@@ -200,6 +219,14 @@ impl GameState {
         *self = restored;
     }
 
+    /// Whether `other` is on the same map as this game: the same scenario
+    /// and, for a generated world, the same seed and size.
+    fn same_map(&self, other: &GameState) -> bool {
+        self.scenario == other.scenario
+            && self.map_seed == other.map_seed
+            && self.grid.bounds() == other.grid.bounds()
+    }
+
     /// What's saved, like "TURN 3 OF CITIES", if anything is.
     pub(super) fn saved_summary(&self) -> Option<String> {
         self.savestate
@@ -212,8 +239,10 @@ impl GameState {
 mod tests {
     use super::*;
     use crate::game::PLAYER_TEAM;
+    use crate::game::camera::Camera;
     use crate::game::hex::Hex;
     use crate::game::unit::{Team, UnitType};
+    use glam::Vec2;
 
     #[test]
     fn loading_restores_the_snapshot_and_keeps_it() {
@@ -235,6 +264,104 @@ mod tests {
         game.load_state();
         assert_eq!(game.scenario, Scenario::Combat);
         assert_eq!(game.units[unit].hp, game.units[unit].max_hp());
+    }
+
+    fn camera_at(x: f32, y: f32) -> Camera {
+        Camera::new(Vec2::new(x, y), 9.0)
+    }
+
+    #[test]
+    fn loading_on_the_same_map_keeps_the_camera() {
+        for mut game in [GameState::city_scenario(), GameState::world_scenario(5)] {
+            game.save_state();
+            game.camera = camera_at(7.0, -3.0);
+            game.load_state();
+            assert_eq!(game.camera.center, Vec2::new(7.0, -3.0));
+            assert_eq!(game.camera.half_height, 9.0);
+            assert!(game.exterior_camera.is_none());
+        }
+    }
+
+    #[test]
+    fn loading_a_snapshot_of_another_world_brings_its_camera() {
+        // Another seed (F4 again).
+        let mut game = GameState::world_scenario(5);
+        game.camera = camera_at(7.0, -3.0);
+        game.save_state();
+        game.switch_scenario(Scenario::World);
+        assert_ne!(game.map_seed, Some(5));
+        game.camera = camera_at(-20.0, 4.0);
+        game.load_state();
+        assert_eq!(game.map_seed, Some(5));
+        assert_eq!(game.camera.center, Vec2::new(7.0, -3.0));
+
+        // The same seed at another size (more sides).
+        let settings = |world_ai| Settings {
+            world_ai,
+            ..Settings::default()
+        };
+        let mut small = GameState::world_scenario_with(5, &settings(1));
+        let mut large = GameState::world_scenario_with(5, &settings(5));
+        assert_ne!(small.grid.bounds(), large.grid.bounds());
+        small.camera = camera_at(7.0, -3.0);
+        small.save_state();
+        large.savestate = small.savestate.take();
+        large.camera = camera_at(-20.0, 4.0);
+        large.load_state();
+        assert_eq!(large.camera.center, Vec2::new(7.0, -3.0));
+    }
+
+    #[test]
+    fn loading_opens_the_snapshots_view_with_the_current_map_camera() {
+        // Saved inside the city (Siege starts there), loaded outside it:
+        // the interior's camera inside, and the map's as it was on leaving.
+        let mut game = GameState::siege_scenario();
+        let city = game.interior_view.expect("Siege starts inside a city");
+        let inside = game.camera.center;
+        game.save_state();
+        game.close_city_interior();
+        game.camera = camera_at(7.0, -3.0);
+        game.load_state();
+        assert_eq!(game.interior_view, Some(city));
+        assert_eq!(game.camera.center, inside);
+        game.close_city_interior();
+        assert_eq!(game.camera.center, Vec2::new(7.0, -3.0));
+
+        // Saved outside, loaded inside: the map's camera from before
+        // entering, with no interior camera left over.
+        let mut game = GameState::siege_scenario();
+        game.close_city_interior();
+        game.save_state();
+        game.camera = camera_at(7.0, -3.0);
+        game.open_city_interior(city);
+        game.load_state();
+        assert_eq!(game.interior_view, None);
+        assert_eq!(game.camera.center, Vec2::new(7.0, -3.0));
+        assert!(game.exterior_camera.is_none());
+
+        // Saved and loaded inside: both cameras stay where they are.
+        let mut game = GameState::siege_scenario();
+        game.save_state();
+        game.camera = camera_at(1.0, 2.0);
+        game.exterior_camera = Some(camera_at(7.0, -3.0));
+        game.load_state();
+        assert_eq!(game.camera.center, Vec2::new(1.0, 2.0));
+        game.close_city_interior();
+        assert_eq!(game.camera.center, Vec2::new(7.0, -3.0));
+    }
+
+    #[test]
+    fn holding_alt_carries_across_loads_and_scenario_switches() {
+        let mut game = GameState::new();
+        game.save_state();
+        game.set_details(true);
+        game.load_state();
+        assert!(game.show_details);
+        game.switch_scenario(Scenario::Cities);
+        assert!(game.show_details);
+        game.set_details(false);
+        game.load_state();
+        assert!(!game.show_details);
     }
 
     #[test]
