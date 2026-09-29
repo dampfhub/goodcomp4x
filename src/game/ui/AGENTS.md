@@ -51,6 +51,9 @@ file holds.
   Render game text in ImGui with those, never `ui.text`, or an icon shows as `?`. A count of
   turns is always the clock and the number (`turns_icon`, or `turns_text` in the UI), never
   "N TURNS" or "NT"; world text (`font::push_text`) draws the icons too.
+- **Characters past ASCII** in game text: only those in `font::UI_PUNCTUATION`
+  (`font.rs`), which both presentations' fonts carry. A new one goes in that list;
+  `ui_text_uses_only_the_shared_glyphs` finds one used and not listed.
 - **New kind of turn task** (research, say): a `RosterKey` variant, its place in
   `roster_tasks` (civilian tasks before the unit groups), its chip in `roster_chip`, what a
   click does in `roster_select`, and its tooltip in `roster_tooltip` (`roster.rs`).

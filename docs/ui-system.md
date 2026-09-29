@@ -128,9 +128,16 @@ follows in the room left (classic: between Menu and End Turn; ImGui: the
 rest of the first line, up to End Turn, since Menu and the view controls
 share the second line); a notice too long for it is cut after its last whole word
 that fits, ending in "…" (`fit_text`, `text.rs`), and ImGui shows all of it
-when the notice is hovered. ImGui's fonts carry the ellipsis and em dash
-beyond Latin-1 (`IMGUI_GLYPHS`, `imgui.rs`); `style_imgui` there gives a context
-the game's fonts and style, for `App` and for the tests (`ImGuiScreen::styled`).
+when the notice is hovered. Past ASCII, game text uses only the punctuation in
+`font::UI_PUNCTUATION` (`font.rs`: the middle dot, em dash, times sign and
+ellipsis), which the classic font has and ImGui's fonts are given
+(`IMGUI_GLYPHS`, `imgui.rs`, built from it), and the map's icon characters
+(below); `ui_text_uses_only_the_shared_glyphs` reads every string literal in
+`src/` to hold to that, and checks ImGui's fonts have each glyph.
+`style_imgui` (`imgui.rs`) gives a context the game's fonts and style, for
+`App` and for the tests (`ImGuiScreen::styled`): Segoe UI where the system
+has it, or else the classic font's IBM Plex Mono, which has the punctuation
+(ImGui's own font doesn't).
 Resources and turns appear in text as icons: a UI string may hold the icon
 characters of `map_icons.rs` (`FOOD_ICON`, `WOOD_ICON`, `METAL_ICON`,
 `TIME_ICON`), which the classic font (`font::Face::width` and `push`) and

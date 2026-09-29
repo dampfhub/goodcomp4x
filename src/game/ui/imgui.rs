@@ -13,40 +13,64 @@ use super::network_menu::NetField;
 use super::text::{end_turn_label, fit_text};
 use super::tooltips::Subject;
 use super::*;
-use crate::game::map_icons;
 use crate::game::settings::{Control, Setting};
+use crate::game::{font, map_icons};
 
-/// What ImGui's system font draws, as pairs of first and last code points:
-/// Basic Latin and Latin-1 (ImGui's default), and the punctuation beyond
-/// them that game text uses, as the classic font has it (`font.rs`): the
-/// em dash and the ellipsis a notice too long for the status bar ends in.
-const IMGUI_GLYPHS: &[u32] = &[0x20, 0xFF, 0x2014, 0x2014, 0x2026, 0x2026, 0];
+/// How many of the punctuation characters game text uses
+/// (`font::UI_PUNCTUATION`) are past Latin-1.
+const PAST_LATIN_1: usize = {
+    let mut count = 0;
+    let mut i = 0;
+    while i < font::UI_PUNCTUATION.len() {
+        if font::UI_PUNCTUATION[i] as u32 > 0xFF {
+            count += 1;
+        }
+        i += 1;
+    }
+    count
+};
+
+/// What ImGui's fonts draw, as pairs of first and last code points ending
+/// in 0: Basic Latin and Latin-1 (ImGui's default), and each character past
+/// them of the punctuation game text uses, the list the classic font has
+/// too (`font::UI_PUNCTUATION`). The ranges may not overlap.
+static IMGUI_GLYPHS: [u32; 3 + 2 * PAST_LATIN_1] = {
+    let mut ranges = [0; 3 + 2 * PAST_LATIN_1];
+    ranges[0] = 0x20;
+    ranges[1] = 0xFF;
+    let mut next = 2;
+    let mut i = 0;
+    while i < font::UI_PUNCTUATION.len() {
+        let ch = font::UI_PUNCTUATION[i] as u32;
+        if ch > 0xFF {
+            ranges[next] = ch;
+            ranges[next + 1] = ch;
+            next += 2;
+        }
+        i += 1;
+    }
+    ranges
+};
 
 /// Gives `imgui` the game's fonts and style: `App`'s context, and the
 /// tests' headless one, so they measure text as the game does. Returns the
 /// small, body and title fonts; the body font is the default.
 pub fn style_imgui(imgui: &mut ::imgui::Context) -> [FontId; 3] {
     use ::imgui::{FontConfig, FontGlyphRanges, FontSource};
-    // Use the host UI font when available. ImGui copies the bytes into its atlas.
+    // The host's UI font when it has one, or else the classic UI's, which
+    // has every glyph game text uses (ImGui's own has no punctuation past
+    // Latin-1). ImGui copies the bytes into its atlas.
     let system_font = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf").ok();
+    let data = system_font.as_deref().unwrap_or(font::FONT_DATA);
     let mut add_font = |size| {
-        if let Some(font) = &system_font {
-            imgui.fonts().add_font(&[FontSource::TtfData {
-                data: font,
-                size_pixels: size,
-                config: Some(FontConfig {
-                    glyph_ranges: FontGlyphRanges::from_slice(IMGUI_GLYPHS),
-                    ..FontConfig::default()
-                }),
-            }])
-        } else {
-            imgui.fonts().add_font(&[FontSource::DefaultFontData {
-                config: Some(FontConfig {
-                    size_pixels: size,
-                    ..FontConfig::default()
-                }),
-            }])
-        }
+        imgui.fonts().add_font(&[FontSource::TtfData {
+            data,
+            size_pixels: size,
+            config: Some(FontConfig {
+                glyph_ranges: FontGlyphRanges::from_slice(&IMGUI_GLYPHS),
+                ..FontConfig::default()
+            }),
+        }])
     };
     let body_font = add_font(18.0);
     let small_font = add_font(15.0);
