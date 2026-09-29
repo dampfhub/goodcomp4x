@@ -317,7 +317,7 @@ fn check_worlds(seeds: std::ops::Range<u32>) {
         check_dens(seed, &map, &mut totals);
     }
     assert!(
-        totals.rivers >= 8 * maps,
+        totals.rivers >= 40 * maps,
         "rivers should be common: {} in {maps} maps",
         totals.rivers
     );
@@ -491,7 +491,7 @@ fn check_mountains(seed: u32, map: &GeneratedMap, totals: &mut Totals) {
         .count();
     let share = mountains as f32 / land as f32;
     assert!(
-        (0.015..0.045).contains(&share),
+        (0.03..0.07).contains(&share),
         "seed {seed}: mountains are {share} of the land"
     );
     for cluster in components(&all, |h| grid.terrain(h) == Terrain::Mountains) {
@@ -618,7 +618,7 @@ fn golden_maps_stay_the_same() {
     let hashes = [golden_hash(&generate(7, 5)), golden_hash(&generate(42, 7))];
     assert_eq!(
         hashes,
-        [11607816629019504290, 4137227220886610193],
+        [17803062363294728766, 2332927749463368037],
         "the maps changed: if on purpose, update the hashes and bump PROTOCOL_VERSION"
     );
 }

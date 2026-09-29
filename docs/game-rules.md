@@ -97,9 +97,9 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   with its own RNG, so a seed and side count always rebuild the same map, on every machine (the
   seed shows in the debug panel; `--seed N` on the command line picks one). A Pangea: 42-52%
   sea, one continent plus islets of at most 12 hexes, built in stages:
-  - **Mountains** are 2.5-4% of the land, in ranges: long chains one hex wide where plates of
-    crust meet (the map is split among a dozen or more warped plates, and about half their
-    borders rise). A range stays a hex back from the shore, breaks off where it runs low, and
+  - **Mountains** are about 4-6% of the land, in ranges: long chains one hex wide where plates of
+    crust meet (the map is split among a dozen or more warped plates, and about two in three of
+    their borders rise). A range stays a hex back from the shore, breaks off where it runs low, and
     has an open hex (a pass, on hills) about one in ten; a lone peak or two may stand apart.
     Mountains never wall land off: if a range cuts off a stretch of open land, the mountains on
     the shortest way out become hills.
@@ -112,7 +112,9 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
     river leaves a lake) or in the mountains and their foothills, and ends at the sea, in a lake,
     or where it joins another river: rivers merge but never split, never run back into the lake
     they left (directly or through other rivers and lakes), and are at most about half the map's
-    width long. About one per 90 hexes of land.
+    width long. A river stuck in a dip ends in a pool there, a new lake of one hex, where one
+    fits (on open land ringed by open land, by no other river). About one per 45 hexes of land,
+    rising at least three hexes apart.
   - **Climate:** colder toward the top and bottom of the map and beside mountains; wetter by
     fresh water and the sea, drier far inland. Snow, tundra, desert, marsh, grassland or plains
     follow; forest grows on wetter grassland, plains and tundra, and jungle on most marsh, both
