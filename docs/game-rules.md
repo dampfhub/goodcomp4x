@@ -97,7 +97,7 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   with its own RNG, so a seed and side count always rebuild the same map, on every machine (the
   seed shows in the debug panel; `--seed N` on the command line picks one). A Pangea: 42-52%
   sea, one continent plus islets of at most 12 hexes, built in stages:
-  - **Mountains** are about 4-6% of the land, in ranges: long chains one hex wide where plates of
+  - **Mountains** are about 4-5% of the land, in ranges: long chains one hex wide where plates of
     crust meet (the map is split among a dozen or more warped plates, and about two in three of
     their borders rise). A range stays a hex back from the shore, breaks off where it runs low, and
     has an open hex (a pass, on hills) about one in ten; a lone peak or two may stand apart.

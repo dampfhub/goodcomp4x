@@ -14,7 +14,7 @@
 //!    a small island of at most `MAX_ISLAND` hexes.
 //! 2. Mountain ranges (`raise_ranges`) where plates of crust push together:
 //!    long chains one hex wide along most of the borders between plates,
-//!    only about 4-6% of the land, broken by passes, off the shore.
+//!    only about 4-5% of the land, broken by passes, off the shore.
 //! 3. Hills (`roll_hills`): foothills along the ranges, and rolling uplands.
 //!    Hills are a modifier, so whatever ground the climate gives them stays
 //!    hilly.
@@ -314,7 +314,7 @@ fn sea_distance(draft: &Draft) -> HashMap<Hex, i32> {
 }
 
 /// Hexes of map per plate of crust (`raise_ranges`).
-const HEXES_PER_PLATE: usize = 200;
+const HEXES_PER_PLATE: usize = 150;
 /// The chance that two plates meeting push together and raise a range.
 const RANGE_CHANCE: f32 = 0.65;
 /// The chance that a hex along a range stays open, as a pass.
@@ -326,7 +326,7 @@ const PASS_CHANCE: f32 = 0.1;
 /// in three borders rise, each by its own amount, and the hexes along a
 /// border (one hex wide, on one side of it) are the ridge: the rising
 /// borders first, the others only where those fall short. Only the highest
-/// 4.5-6.5% of the land (varying per map) becomes mountains, so ridges come in long,
+/// 4-6% of the land (varying per map) becomes mountains, so ridges come in long,
 /// thin chains that break off where they're lowest; a hex here and there
 /// stays open as a pass, and ranges keep a hex back from the shore. A lone
 /// peak or two may rise elsewhere.
@@ -393,7 +393,7 @@ fn raise_ranges(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) {
         b.1.total_cmp(&a.1)
             .then((a.0.q, a.0.r).cmp(&(b.0.q, b.0.r)))
     });
-    let share = 0.045 + 0.02 * rng.unit();
+    let share = 0.04 + 0.02 * rng.unit();
     let wanted = (land.len() as f32 * share) as usize;
     for &(h, _) in ridge.iter().take(wanted) {
         let pass = rng.unit() < PASS_CHANCE;
