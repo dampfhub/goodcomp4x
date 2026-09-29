@@ -129,7 +129,7 @@ pub struct Renderer {
 
     /// One vertex buffer per frame in flight, so the CPU can fill one while
     /// the GPU still reads another, each with its capacity in vertices.
-    vertex_buffers: Vec<(vk::Buffer, vk::DeviceMemory, usize)>,
+    vertex_buffers: Vec<VertexBuffer>,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -479,33 +479,27 @@ impl Renderer {
             return Ok(ranges);
         }
 
-        let (buffer, memory, capacity) = self.vertex_buffers[self.current_frame];
+        let capacity = self.vertex_buffers[self.current_frame].capacity;
         if used > capacity {
             let capacity = used.next_power_of_two();
             log::info!("growing vertex buffer to {capacity} vertices");
             unsafe {
-                self.device.destroy_buffer(buffer, None);
-                self.device.free_memory(memory, None);
-                self.vertex_buffers[self.current_frame] = create_vertex_buffer(
+                let next = create_vertex_buffer(
                     &self.instance,
                     &self.device,
                     self.physical_device,
                     capacity,
                 )?;
+                let old = std::mem::replace(&mut self.vertex_buffers[self.current_frame], next);
+                old.destroy(&self.device);
             }
         }
-        let (_, memory, _) = self.vertex_buffers[self.current_frame];
-        let size = (used * size_of::<Vertex>()) as vk::DeviceSize;
+        let dst = self.vertex_buffers[self.current_frame].mapped;
         unsafe {
-            let dst = self
-                .device
-                .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?
-                .cast::<Vertex>();
             for (batch, range) in batches.iter().zip(&ranges) {
                 dst.add(range.first as usize)
                     .copy_from_nonoverlapping(batch.vertices.as_ptr(), range.count as usize);
             }
-            self.device.unmap_memory(memory);
         }
         Ok(ranges)
     }
@@ -565,7 +559,7 @@ impl Renderer {
             device.cmd_bind_vertex_buffers(
                 command_buffer,
                 0,
-                &[self.vertex_buffers[self.current_frame].0],
+                &[self.vertex_buffers[self.current_frame].buffer],
                 &[0],
             );
             device.cmd_set_viewport(command_buffer, 0, &[viewport]);
@@ -734,9 +728,8 @@ impl Drop for Renderer {
             if let Some(readback) = self.readback.take() {
                 readback.destroy(&self.device);
             }
-            for &(buffer, memory, _) in &self.vertex_buffers {
-                self.device.destroy_buffer(buffer, None);
-                self.device.free_memory(memory, None);
+            for buffer in self.vertex_buffers.drain(..) {
+                buffer.destroy(&self.device);
             }
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
@@ -808,25 +801,60 @@ fn mat4_to_bytes(m: &Mat4) -> [u8; 64] {
     bytes
 }
 
+/// Mapped for its lifetime; only write after waiting on this frame slot's fence.
+struct VertexBuffer {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    capacity: usize,
+    mapped: *mut Vertex,
+}
+
+impl VertexBuffer {
+    /// The GPU must no longer reference this buffer.
+    unsafe fn destroy(self, device: &ash::Device) {
+        unsafe {
+            device.unmap_memory(self.memory);
+            device.destroy_buffer(self.buffer, None);
+            device.free_memory(self.memory, None);
+        }
+    }
+}
+
 /// A host-visible vertex buffer with room for `capacity` vertices.
 unsafe fn create_vertex_buffer(
     instance: &ash::Instance,
     device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     capacity: usize,
-) -> Result<(vk::Buffer, vk::DeviceMemory, usize)> {
+) -> Result<VertexBuffer> {
     let size = (capacity * size_of::<Vertex>()) as vk::DeviceSize;
-    let (buffer, memory) = unsafe {
-        buffer::create_buffer(
+    let (buffer, memory, _) = unsafe {
+        buffer::create_buffer_preferred(
             instance,
             device,
             physical_device,
             size,
             vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            &[vk::MemoryPropertyFlags::DEVICE_LOCAL],
         )
     }?;
-    Ok((buffer, memory, capacity))
+    let mapped = match unsafe { device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty()) } {
+        Ok(mapped) => mapped.cast::<Vertex>(),
+        Err(error) => {
+            unsafe {
+                device.destroy_buffer(buffer, None);
+                device.free_memory(memory, None);
+            }
+            return Err(error.into());
+        }
+    };
+    Ok(VertexBuffer {
+        buffer,
+        memory,
+        capacity,
+        mapped,
+    })
 }
 
 #[cfg(test)]
