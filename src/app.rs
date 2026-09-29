@@ -618,6 +618,28 @@ impl App {
         window.set_fullscreen(fullscreen);
     }
 
+    fn cancel_drags(&mut self) {
+        self.painting_jobs = false;
+        self.left_press = None;
+        self.left_dragging = false;
+        self.queue_scroll_dragging = false;
+        self.building_scroll_dragging = false;
+        self.queue_item_dragging = false;
+        self.game.cancel_queue_drag();
+        self.panning = false;
+        self.box_start = None;
+    }
+
+    fn switch_presentation(&mut self) {
+        self.use_imgui = !self.use_imgui;
+        self.cancel_drags();
+        self.game.set_ui_notice(if self.use_imgui {
+            "IMGUI UI (F11 TO COMPARE)"
+        } else {
+            "CLASSIC UI (F11 TO COMPARE)"
+        });
+    }
+
     fn screen_size(&self) -> Option<Vec2> {
         let (width, height) = self.renderer.as_ref()?.window_size();
         Some(Vec2::new(width as f32, height as f32))
@@ -857,17 +879,10 @@ impl ApplicationHandler for App {
                 }
                 self.cursor_pos = Some(pos);
             }
-            WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
-                self.painting_jobs = false;
-                self.left_press = None;
-                self.left_dragging = false;
-                self.queue_scroll_dragging = false;
-                self.building_scroll_dragging = false;
-                self.queue_item_dragging = false;
-                self.game.cancel_queue_drag();
-                self.panning = false;
+            WindowEvent::Focused(false) => self.cancel_drags(),
+            WindowEvent::CursorLeft { .. } => {
+                self.cancel_drags();
                 self.cursor_pos = None;
-                self.box_start = None;
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers;
@@ -1130,16 +1145,7 @@ impl ApplicationHandler for App {
                     KeyCode::F8 => self.game.toggle_instant_playback(),
                     KeyCode::F9 => self.game.debug_complete_current_production(),
                     KeyCode::F10 => self.game.toggle_fog(),
-                    KeyCode::F11 => {
-                        self.use_imgui = !self.use_imgui;
-                        self.left_press = None;
-                        self.game.cancel_queue_drag();
-                        self.game.set_ui_notice(if self.use_imgui {
-                            "IMGUI UI (F11 TO COMPARE)"
-                        } else {
-                            "CLASSIC UI (F11 TO COMPARE)"
-                        });
-                    }
+                    KeyCode::F11 => self.switch_presentation(),
                     _ => {}
                 }
             }
@@ -1192,6 +1198,46 @@ fn is_input(event: &WindowEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_loss_keeps_the_cursor_and_switching_ui_cancels_every_drag() {
+        fn arm_drags(app: &mut App, cursor: Vec2) {
+            app.left_press = Some((cursor, ClickMode::Normal, Some(false)));
+            app.left_dragging = true;
+            app.painting_jobs = true;
+            app.queue_scroll_dragging = true;
+            app.building_scroll_dragging = true;
+            app.queue_item_dragging = true;
+            app.panning = true;
+            app.box_start = Some(cursor);
+        }
+
+        fn assert_no_drags(app: &App) {
+            assert!(app.left_press.is_none());
+            assert!(!app.left_dragging);
+            assert!(!app.painting_jobs);
+            assert!(!app.queue_scroll_dragging);
+            assert!(!app.building_scroll_dragging);
+            assert!(!app.queue_item_dragging);
+            assert!(!app.panning);
+            assert!(app.box_start.is_none());
+        }
+
+        let mut app = App::new_with_load(Options::default(), None, |_| None);
+        let cursor = Vec2::new(120.0, 240.0);
+        app.cursor_pos = Some(cursor);
+        arm_drags(&mut app, cursor);
+        app.cancel_drags(); // Focused(false), with no later CursorMoved.
+        assert_eq!(app.cursor_pos, Some(cursor));
+        assert_no_drags(&app);
+
+        arm_drags(&mut app, cursor);
+        let old_presentation = app.use_imgui;
+        app.switch_presentation(); // F11.
+        assert_ne!(app.use_imgui, old_presentation);
+        assert_eq!(app.cursor_pos, Some(cursor));
+        assert_no_drags(&app);
+    }
 
     #[test]
     fn saved_window_round_trips() {
