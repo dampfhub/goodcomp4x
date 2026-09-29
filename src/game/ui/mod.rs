@@ -40,7 +40,7 @@ mod trays;
 
 use glam::{Mat4, Vec2, Vec3};
 
-use super::city::{BuildUnit, Building, LaborFocus};
+use super::city::{BuildUnit, Building, Good};
 use super::draw::UnitLook;
 use super::hex::Hex;
 use super::orders::ClickMode;
@@ -213,7 +213,9 @@ enum Target {
     RosterSelect(RosterKey),
     RosterAdd(RosterKey),
     RosterRemove(RosterKey),
-    Focus(LaborFocus),
+    /// A chip of the open city's priority order: a click puts its good
+    /// first (dragging one onto another reorders them, `QueueKind::Priority`).
+    Priority(Good),
     EndTurn,
     /// Debug panel: scenario pages, the savestate, playback pacing and fog.
     Scenario(Scenario),
@@ -272,7 +274,7 @@ impl Target {
             | Target::WorkerJobRemove(_)
             | Target::RecallWorker(_)
             | Target::ReleaseWorker
-            | Target::Focus(_) => true,
+            | Target::Priority(_) => true,
             Target::ToggleYields
             | Target::OpenSettings
             | Target::OpenBarracks
@@ -432,6 +434,9 @@ pub(super) enum QueueKind {
     Barracks,
     /// The open city's worker jobs, listed in its tray.
     Workers,
+    /// The open city's priority order: its food, wood and metal chips
+    /// (`Row::Reorder`), which never scroll or come off.
+    Priority,
 }
 
 impl QueueKind {
@@ -441,6 +446,7 @@ impl QueueKind {
             QueueKind::City => Target::CityQueueRemove(index),
             QueueKind::Barracks => Target::BarracksQueueRemove(index),
             QueueKind::Workers => Target::WorkerJobRemove(index),
+            QueueKind::Priority => unreachable!("priority chips have no X"),
         }
     }
 }
@@ -768,7 +774,7 @@ impl GameState {
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
             Target::ClearCityQueue => self.clear_selected_city_queue(),
             Target::ClearBarracksQueue => self.clear_selected_barracks_queue(),
-            Target::Focus(focus) => self.set_selected_city_focus(focus),
+            Target::Priority(good) => self.prioritize_selected_city(good),
             // While a network game waits for the others' plans, End Turn
             // takes this side's back.
             Target::EndTurn if self.waiting_for_peers() => self.take_back_turn(),

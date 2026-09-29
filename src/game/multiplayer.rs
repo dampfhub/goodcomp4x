@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::GameState;
 use super::camera::Camera;
 use super::city::{
-    Build, BuildUnit, Building, City, LaborFocus, MAX_CITY_POPULATION, Queued, Stock, grow_price,
+    Build, BuildUnit, Building, City, MAX_CITY_POPULATION, Priorities, Queued, Stock, grow_price,
     in_interior,
 };
 use super::hex::Hex;
@@ -33,7 +33,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -151,7 +151,7 @@ pub struct CityPlan {
     pub barracks_queue: Vec<Queued<BuildUnit>>,
     pub worked: Vec<Hex>,
     pub remembered_worked: Vec<Hex>,
-    pub focus: LaborFocus,
+    pub priorities: Priorities,
     pub worker_jobs: Vec<WorkerJob>,
     /// Of its workers at home, those held there (recalled, not yet
     /// released).
@@ -968,6 +968,11 @@ impl GameState {
                 return bad(format!("CITY AT ({}, {})", city.pos.q, city.pos.r));
             }
             let at = format!("CITY AT ({}, {})", city.pos.q, city.pos.r);
+            if !city.priorities.is_order() {
+                return bad(format!(
+                    "{at}: A PRIORITY ORDER THAT ISN'T FOOD, WOOD AND METAL"
+                ));
+            }
             let before = start.cities.iter().find(|c| c.pos == city.pos);
             let population = before.map_or(1, |c| c.population);
             // Planning pays for nothing and works on nothing: that happens as
@@ -1322,7 +1327,7 @@ impl GameState {
                     barracks_queue: c.barracks_queue.clone(),
                     worked: c.worked.clone(),
                     remembered_worked: c.remembered_worked.clone(),
-                    focus: c.focus,
+                    priorities: c.priorities,
                     worker_jobs: c.worker_jobs.clone(),
                     held_workers: c.held_workers,
                 }
@@ -1426,7 +1431,7 @@ impl GameState {
             city.barracks_queue = city_plan.barracks_queue.clone();
             city.worked = city_plan.worked.clone();
             city.remembered_worked = city_plan.remembered_worked.clone();
-            city.focus = city_plan.focus;
+            city.priorities = city_plan.priorities;
             city.worker_jobs = city_plan.worker_jobs.clone();
             city.held_workers = city_plan.held_workers;
         }
@@ -1485,6 +1490,7 @@ impl GameState {
                 (q.paid, q.progress).hash(&mut h);
             }
             c.worked.hash(&mut h);
+            c.priorities.hash(&mut h);
             c.built.len().hash(&mut h);
             c.queue.len().hash(&mut h);
             for j in &c.worker_jobs {
@@ -1530,6 +1536,7 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::city::Good;
 
     /// The seat the first guest gets.
     const GUEST_SEAT: Team = Team::Red;
@@ -1788,8 +1795,8 @@ mod tests {
         guest.remove_selected_city_queue_item(0);
         guest.clear_selected_city_queue();
         guest.auto_assign_selected_city();
-        guest.set_selected_city_focus(LaborFocus::Metal);
-        guest.set_selected_city_focus(LaborFocus::Food);
+        guest.prioritize_selected_city(Good::Metal);
+        guest.set_selected_city_priorities(Priorities([Good::Wood, Good::Food, Good::Metal]));
         guest.arm_worker_job(super::super::JobKind::Road);
         assert_eq!(guest.placing_job, None);
         guest.release_worker();
@@ -2635,6 +2642,11 @@ mod tests {
         let mut plan = good.clone();
         plan.cities[0].queue = vec![Queued::new(Build::Gather); MAX_PLAN_LIST + 1];
         refused(&mut host, plan);
+        // A priority order that isn't each good once.
+        let mut plan = good.clone();
+        plan.cities[0].priorities = Priorities([Good::Wood, Good::Wood, Good::Metal]);
+        let why = refused(&mut host, plan);
+        assert!(why.contains("PRIORITY ORDER"), "{why}");
         // The wrong turn.
         let mut plan = good.clone();
         plan.turn = 7;
@@ -3233,6 +3245,27 @@ mod tests {
         let (host, _) = pair();
         let plan = host.team_plan(HOST_SEAT);
         assert_eq!(roundtrip(&Message::Plan(plan.clone())), Message::Plan(plan));
+    }
+
+    #[test]
+    fn a_citys_priority_order_crosses_the_wire_and_applies() {
+        let (mut host, mut guest) = pair();
+        let city = guest
+            .cities
+            .iter()
+            .position(|c| c.team == GUEST_SEAT)
+            .unwrap();
+        guest.selected_city = Some(city);
+        let order = Priorities([Good::Metal, Good::Food, Good::Wood]);
+        guest.set_selected_city_priorities(order);
+        let plan = guest.team_plan(GUEST_SEAT);
+        let arrived = roundtrip(&Message::Plan(plan.clone()));
+        assert_eq!(arrived, Message::Plan(plan.clone()));
+        host.receive(GUEST_SEAT, arrived).expect("sound");
+        let mut applied = host.lockstep.as_ref().unwrap().turn_start.clone().unwrap();
+        applied.apply_plan(&plan);
+        assert_eq!(applied.cities[city].priorities, order);
+        assert_eq!(applied.cities[city].worked, guest.cities[city].worked);
     }
 
     #[test]

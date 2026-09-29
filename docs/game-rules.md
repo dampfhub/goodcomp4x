@@ -567,11 +567,17 @@ every turn end.
   manager, click it to pick it up (its workers leave the map with it), then click its
   destination; workers keep their offsets where they can and are otherwise replaced by the best
   nearby tiles. Clicking the manager again puts it and its workers back.
-- **Citizens:** click tiles to assign or release; A auto-assigns by the city's labor focus: Food,
-  Wood or Metal, each favoring tiles that deliver the most of it, or Balanced (the default), which
-  picks food tiles until the city's food income covers upkeep plus 1, then wood and metal alike. Setting a focus
+- **Citizens:** click tiles to assign or release; A auto-assigns by the city's **priority
+  order** of food, wood and metal (Food, Wood, Metal to start; the AI's cities keep it). Citizens are placed one at a
+  time, the manager first, each on the free tile worth the most: its delivered food, wood and
+  metal, the first good in the order ×9, the second ×3 and the third ×1, ties going to the lower
+  hex coordinates. The **food floor** holds whatever the order: until the food the city center
+  and the tiles already taken deliver covers the citizens' upkeep plus 1, food counts as first
+  and the other two keep their order. So the manager, placed while the city is unfed, always
+  goes by food first. Changing the order (drag its chips, or click one to put it first)
   re-assigns. On growth or route disruption, reconciliation keeps valid manual assignments and
-  fills or replaces the affected slot; a manual tile cut off by an enemy is remembered and returns
+  fills an open slot the same way, by the order with the food floor, counting the food of the
+  tiles kept; a manual tile cut off by an enemy is remembered and returns
   when the route reopens, unless you changed it.
 - **Stockpile** (`city/economy.rs`): each side has one store of food, wood and metal (top bar,
   with its change a turn), not one per city. Every city's delivered goods go into it at the
@@ -796,7 +802,8 @@ every turn end.
   still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
   TURN.
 - **Command tray** (bottom-left): with a city open, it shows population, what the city delivers
-  and its citizens eat, the current build and its turns left, labor focus buttons, the Grow card
+  and its citizens eat, the current build and its turns left, the priority chips (food, wood and
+  metal icons, each with its rank), the Grow card
   (9), unit cards (1-3) and the Worker card (8), each with its price and turns (never dimmed for
   the price: what the stockpile can't pay for yet waits in the queue), the Yields button,
   the production list (units, buildings not yet built, and works for its workers, each with its
