@@ -64,6 +64,12 @@ use game.scenario.SCENARIOS;
 use game.scenario.SCENARIO_COUNT;
 use game.scenario.Scenario;
 use game.unit.Unit;
+use game.dock.Dock;
+use game.dock.DockZone;
+use game.dock.dock;
+use game.draw.push_city_tower;
+use game.draw.push_unit_icon;
+use game.draw.UNIT_ICON_RADIUS;
 use game.unit.UnitType;
 use game.draw.UnitLook;
 
@@ -79,6 +85,14 @@ const BORDER: f32 = 2.0;
 const ARMED_BORDER: f32 = 3.0;
 
 const TOP_BAR_HEIGHT: f32 = 52.0;
+/// Room kept between the top bar and the panels docked under it.
+const QUEUE_TOP_GAP: f32 = 4.0;
+/// A turn strip token's square, the gap between them, the share of the square its picture
+/// fills, and how far its count sits in from the corner.
+const ROSTER_CHIP: f32 = 44.0;
+const ROSTER_CHIP_GAP: f32 = 6.0;
+const ROSTER_TOKEN_SHARE: f32 = 0.8;
+const CHIP_COUNT_INSET: f32 = 3.0;
 const END_TURN_HEIGHT: f32 = 38.0;
 const BUTTON_HEIGHT: f32 = 60.0;
 const BUTTON_MIN_WIDTH: f32 = 120.0;
@@ -327,6 +341,8 @@ pub enum Shape {
     Panel(Vec2, Vec2, bool),
     Text(i32),
     Bar(Vec2, Vec2, f32),
+    /// A turn strip token: an index into `UiLayout.roster_chips`.
+    Chip(i32),
 }
 
 /// A line of text: where its first span starts, at what size, and its spans.
@@ -340,6 +356,10 @@ pub struct UiLayout {
     buttons: Vec[Button],
     panels: Vec[Rect],
     catalogs: Vec[CatalogRegion],
+    /// The turn strip's tokens and the key each one stands for.
+    roster_chips: Vec[ChipRegion],
+    /// Where the panels go by zone, and what is already placed.
+    zones: Dock,
     /// Where the settings menu's shapes and buttons start, while it's open: drawn over
     /// everything else, and its buttons take clicks before any underneath.
     overlay: Option[HoverOverlay],
@@ -348,7 +368,15 @@ pub struct UiLayout {
 /// The first shape and the first button of the settings menu.
 pub struct HoverOverlay { shapes: i32, buttons: i32 }
 
-fn empty_layout() -> UiLayout { UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new(), catalogs: Vec.new(), overlay: Option.None } }
+/// A turn strip token's square, and what it stands for.
+pub struct ChipRegion { min: Vec2, max: Vec2, key: RosterKey, chip: RosterChip }
+
+fn empty_layout() -> UiLayout { layout_for(vec2(100000.0, 100000.0)) }
+
+/// An empty layout over a screen: its panels are docked by zone under the top bar.
+pub fn layout_for(screen: Vec2) -> UiLayout {
+    UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new(), catalogs: Vec.new(), roster_chips: Vec.new(), zones: dock(screen, MARGIN, GAP, TOP_BAR_HEIGHT + QUEUE_TOP_GAP), overlay: Option.None }
+}
 
 impl UiLayout {
     pub fn button_at(&self, point: Vec2) -> Option[i32] {
@@ -367,6 +395,25 @@ impl UiLayout {
             if self.buttons[i].target == target { return Option.Some(i); }
         }
         Option.None
+    }
+
+    /// The turn strip token under `point`, if any.
+    pub fn roster_chip_at(&self, point: Vec2) -> Option[RosterKey] {
+        for i in 0..self.roster_chips.len() {
+            let c = &self.roster_chips[i];
+            if contains(c.min, c.max, point) { return Option.Some(c.key); }
+        }
+        Option.None
+    }
+
+    /// Places a measured panel in a screen zone: docked panels stack, wrap and never overlap,
+    /// and their drawing and hit boxes are one rectangle. The rectangle, or nothing when the
+    /// panel does not fit.
+    pub fn dock_panel(&mut self, panel: PanelBuilder, zone: DockZone) -> Option[Rect] {
+        let size = panel.size();
+        let Option.Some(r) = self.zones.place(size, zone) else { return Option.None; };
+        panel.place_bottom_left(r.min, self);
+        Option.Some(Rect { min: r.min, max: r.max })
     }
 
     pub fn covers(&self, point: Vec2) -> bool {
@@ -405,6 +452,7 @@ impl UiLayout {
                         pen = pen + face.width(t);
                     }
                 }
+                Shape.Chip(k) => { let c = &self.roster_chips[k]; draw_chip(c.min, c.max, c.chip, out); }
                 Shape.Bar(min, max, fraction) => {
                     quad(min, max, BAR_BG, out);
                     let f = if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction };
@@ -479,11 +527,19 @@ impl GameState {
     /// Handles a click on the UI, returning whether it hit anything (in which case it shouldn't
     /// also count as a click on the map). `cursor` is in window pixels with the origin at the
     /// top-left.
-    pub fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2) -> bool can {Log, Rand} {
+    pub fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) -> bool can {Log, Rand} {
         if self.imgui_ui { return false; }
         let point = to_ui(cursor, screen_size);
         let layout = self.layout(screen_size);
-        let Option.Some(i) = layout.button_at(point) else { return layout.covers(point); };
+        let Option.Some(i) = layout.button_at(point) else {
+            // A turn strip token: a click selects its units, Shift adds them, Ctrl takes them out.
+            if let Option.Some(key) = layout.roster_chip_at(point) {
+                let target = match mode { ClickMode.QueueMove => Target.RosterAdd(key), ClickMode.Swap => Target.RosterRemove(key), _ => Target.RosterSelect(key) };
+                self.activate_target(target);
+                return true;
+            }
+            return layout.covers(point);
+        };
         let (target, state) = (layout.buttons[i].target, layout.buttons[i].state);
         if state == ButtonState.Disabled { return true; }
         self.activate_target(target);
@@ -567,9 +623,8 @@ impl GameState {
     }
 
     pub fn layout(&self, screen_size: Vec2) -> UiLayout {
-        let mut layout = empty_layout();
+        let mut layout = layout_for(screen_size);
         self.top_bar(screen_size, &mut layout);
-        self.debug_panel(screen_size, &mut layout);
 
         let mut tray = panel_builder(false);
         let mut shown = true;
@@ -590,7 +645,11 @@ impl GameState {
         } else {
             shown = false;
         }
-        if shown { tray.place_bottom_left(vec2(MARGIN, MARGIN), &mut layout); }
+        // The order is the priority: the command tray first, then the debug panel, then the
+        // turn strip.
+        if shown { let _placed = layout.dock_panel(tray, DockZone.BottomLeft); }
+        let _debug = layout.dock_panel(self.debug_panel_content(), DockZone.TopLeft);
+        if let Option.Some(strip) = self.roster_panel() { let _placed = layout.dock_panel(strip, DockZone.BottomCenter); }
         self.place_settings(screen_size, &mut layout);
         layout
     }
@@ -651,10 +710,6 @@ impl GameState {
     /// Testing tools, top-left under the top bar and see-through so they don't read as game
     /// UI: the scenario pages (the current one gold; pressing it again restarts it), the
     /// savestate, finishing a build, the playback pacing and the fog.
-    fn debug_panel(&self, size: Vec2, layout: &mut UiLayout) {
-        self.debug_panel_content().place_top_left(vec2(MARGIN, size.y - TOP_BAR_HEIGHT - MARGIN), layout);
-    }
-
     /// The debug panel's rows, shared by both presentations.
     pub fn debug_panel_content(&self) -> PanelBuilder {
         let mut panel = panel_builder(true);
@@ -1762,6 +1817,10 @@ impl PanelBuilder {
 
     /// Ends a row of equally wide buttons; `compact` ones are one line each.
     pub fn end_buttons(&mut self, compact: bool) {
+        // Button borders are drawn just outside their rows, so a row right under another needs a
+        // gap to keep them from overlapping.
+        let below_buttons = !self.rows.is_empty() && (self.rows[self.rows.len() - 1].kind == RowKind.Buttons || self.rows[self.rows.len() - 1].kind == RowKind.CompactButtons);
+        if below_buttons { self.gap(GAP); }
         let kind = if compact { RowKind.CompactButtons } else { RowKind.Buttons };
         let to = self.specs.len();
         self.rows.push(Row { kind, size: TextSize.Small, value: 0.0, from: self.buttons_from, to, offset: 0 });
@@ -1812,7 +1871,8 @@ impl PanelBuilder {
             RowKind.Bar => GROWTH_BAR_HEIGHT,
             RowKind.Buttons => BUTTON_HEIGHT,
             RowKind.CompactButtons => END_TURN_HEIGHT,
-            RowKind.Heading | RowKind.Setting | RowKind.QueueItem | RowKind.Roster => 0.0,
+            RowKind.Roster => ROSTER_CHIP,
+            RowKind.Heading | RowKind.Setting | RowKind.QueueItem => 0.0,
         }
     }
 
@@ -1827,7 +1887,11 @@ impl PanelBuilder {
                 }
                 w
             }
-            RowKind.Gap | RowKind.Bar | RowKind.Heading | RowKind.Setting | RowKind.QueueItem | RowKind.Roster => 0.0,
+            RowKind.Gap | RowKind.Bar | RowKind.Heading | RowKind.Setting | RowKind.QueueItem => 0.0,
+            RowKind.Roster => {
+                let n = (row.to - row.from) as f32;
+                n * ROSTER_CHIP + (if n > 1.0 { n - 1.0 } else { 0.0 }) * ROSTER_CHIP_GAP
+            }
             RowKind.Buttons | RowKind.CompactButtons => {
                 let n = row.to - row.from;
                 let width = self.button_width(row);
@@ -1904,7 +1968,16 @@ impl PanelBuilder {
                     for i in row.from..row.to { spans.push(Span { text: copy_str(&self.spans[i].text), color: self.spans[i].color }); }
                     layout.text_row(vec2(left, middle), row.size, spans);
                 }
-                RowKind.Gap | RowKind.Heading | RowKind.Setting | RowKind.QueueItem | RowKind.Roster => {}
+                RowKind.Gap | RowKind.Heading | RowKind.Setting | RowKind.QueueItem => {}
+                RowKind.Roster => {
+                    for i in row.from..row.to {
+                        let cmin = vec2(left + (i - row.from) as f32 * (ROSTER_CHIP + ROSTER_CHIP_GAP), top - height).round();
+                        let cmax = cmin.add(vec2(ROSTER_CHIP, ROSTER_CHIP));
+                        let chip = self.chips[i];
+                        layout.shapes.push(Shape.Chip(layout.roster_chips.len()));
+                        layout.roster_chips.push(ChipRegion { min: cmin, max: cmax, key: chip.key, chip });
+                    }
+                }
                 RowKind.Catalog => self.place_catalog(row, left, inner_width, top, height, layout),
                 RowKind.Bar => layout.shapes.push(Shape.Bar(vec2(left, top - height), vec2(left + inner_width, top), row.value)),
                 RowKind.Buttons | RowKind.CompactButtons => {
@@ -2021,6 +2094,28 @@ fn draw_button(button: &Button, hovered: bool, out: &mut Vec[MeshVertex]) {
         let hint_left = center.x - hint_face.width(hint) / 2.0;
         label_face.push(vec2(label_left, label_baseline), label, text_color, out);
         hint_face.push(vec2(hint_left, hint_baseline), hint, hint_color, out);
+    }
+}
+
+/// A turn strip token: its square (bright while selected), the same picture as on the map, and
+/// a count in the corner when it stands for several.
+fn draw_chip(min: Vec2, max: Vec2, chip: RosterChip, out: &mut Vec[MeshVertex]) {
+    let (bg, border, border_color) = if chip.selected { (BUTTON_HOVER_BG, ARMED_BORDER, ARMED_BORDER_COLOR) } else { (BUTTON_BG, BORDER, BORDER_COLOR) };
+    draw_box(min, max, bg, border, border_color, out);
+    let center = min.add(max).scale(0.5);
+    let radius = (max.x - min.x) * ROSTER_TOKEN_SHARE / 2.0;
+    match chip.icon {
+        ChipIcon.Unit(look) => push_unit_icon(center, look, radius / UNIT_ICON_RADIUS, chip.color, out),
+        // The tower is 0.84 wide at scale 1.
+        ChipIcon.City => push_city_tower(center, 2.0 * radius / 0.84, chip.color, out),
+    }
+    if chip.count > 1 {
+        let face = ui(TextSize.Small);
+        let label = text(fn() can {Out} { show_i64(chip.count as i64); });
+        let origin = vec2(max.x - face.width(&label) - CHIP_COUNT_INSET, min.y + CHIP_COUNT_INSET);
+        let pad = vec2(2.0, 2.0);
+        quad(origin.sub(pad), vec2(max.x - CHIP_COUNT_INSET + 2.0, origin.y + face.cap_height).add(pad), PANEL_BG, out);
+        face.push(origin, &label, TEXT, out);
     }
 }
 

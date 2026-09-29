@@ -25,6 +25,14 @@ use game.tests.sandbox;
 use game.settings.SETTINGS;
 use game.settings.Setting;
 use game.ui.ButtonState;
+use game.ui.UiLayout;
+use game.ui.layout_for;
+use game.ui.panel_builder;
+use game.dock.DockZone;
+use game.dock.overlaps;
+use game.font.TextSize;
+use std.linalg.Rect;
+use std.math.Float;
 use game.ui.steps_in_classic;
 use game.ui.TILE_TOOLTIP_DELAY;
 use game.ui.Target;
@@ -830,5 +838,84 @@ fn city_interior_map_fits_and_its_tiles_issue_orders() {
         game.handle_click(hex_cursor(&game, Hex.new(-1, 0)), screen(), ClickMode.Normal);
         let Option.Some(k) = game.cities[1].interior.index_of(0) else { assert(false); return; };
         assert(game.cities[1].interior.fighters[k].planned_move == Option.Some(Hex.new(-1, 0)));
+    });
+}
+
+@test
+fn docked_panel_buttons_share_the_rendered_hit_box() {
+    let mut layout = layout_for(screen());
+    let mut panel = panel_builder(false);
+    panel.text(TextSize.Title, "ADDED PANEL", [0.95, 0.95, 0.95, 1.0]);
+    panel.gap(37.0);
+    panel.begin_buttons();
+    panel.button(Target.ToggleYields, "ACTION", "Y", ButtonState.Ready, false);
+    panel.end_buttons(false);
+    let Option.Some(rect) = layout.dock_panel(panel, DockZone.BottomLeft) else { assert(false); return; };
+    let Option.Some(i) = layout.button_for(Target.ToggleYields) else { assert(false); return; };
+    let center = layout.buttons[i].min.add(layout.buttons[i].max).scale(0.5);
+    assert(center.x >= rect.min.x && center.x <= rect.max.x && center.y >= rect.min.y && center.y <= rect.max.y);
+    assert(layout.button_at(center) == Option.Some(i));
+    assert(layout.covers(center));
+    // The next panel docks clear of it.
+    let mut next = panel_builder(false);
+    next.text(TextSize.Body, "ANOTHER PANEL", [0.95, 0.95, 0.95, 1.0]);
+    let Option.Some(next_rect) = layout.dock_panel(next, DockZone.BottomLeft) else { assert(false); return; };
+    assert(next_rect.min.y >= rect.max.y + 10.0);
+}
+
+/// The strip's panel: the panel of `layout` holding the token `k`.
+fn panel_of_chip(layout: &UiLayout, k: i32) -> Option[i32] {
+    let c = &layout.roster_chips[k];
+    for p in 0..layout.panels.len() {
+        let r = &layout.panels[p];
+        if c.min.x >= r.min.x && c.min.y >= r.min.y && c.max.x <= r.max.x && c.max.y <= r.max.y { return Option.Some(p); }
+    }
+    Option.None
+}
+
+@test
+fn the_turn_strip_sits_at_the_bottom_and_clears_every_panel() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Alone at the bottom, it is centered.
+        let mut game = GameState.new();
+        game.set_selection(Vec.new());
+        let layout = game.layout(screen());
+        assert(!layout.roster_chips.is_empty());
+        let Option.Some(p) = panel_of_chip(&layout, 0) else { assert(false); return; };
+        let panel = &layout.panels[p];
+        assert(panel.min.y <= 19.0);
+        assert(((panel.min.x + panel.max.x) / 2.0 - SCREEN_W / 2.0).abs() <= 1.0);
+        // It never overlaps another panel, with or without a city open.
+        let mut game = GameState.city_scenario();
+        for open in 0..2 {
+            if open == 1 { game.select_city(); }
+            let layout = game.layout(screen());
+            assert(!layout.roster_chips.is_empty());
+            for a in 0..layout.panels.len() {
+                for b in (a + 1)..layout.panels.len() {
+                    let ra = &layout.panels[a];
+                    let rb = &layout.panels[b];
+                    assert(!overlaps(Rect { min: ra.min, max: ra.max }, Rect { min: rb.min, max: rb.max }, 0.0));
+                }
+            }
+            for k in 0..layout.roster_chips.len() { assert(panel_of_chip(&layout, k).is_some()); }
+        }
+    });
+}
+
+@test
+fn a_click_on_a_turn_strip_token_in_the_classic_panels_selects_its_units() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.set_selection(Vec.new());
+        let layout = game.layout(screen());
+        let chip = &layout.roster_chips[0];
+        let at = to_ui(chip.min.add(chip.max).scale(0.5), screen());
+        game.handle_click(at, screen(), ClickMode.Normal);
+        assert(!game.selection().is_empty());
+        // Ctrl-click on the same token takes its units out again, unless that empties it.
+        let before = game.selection().len();
+        game.handle_click(at, screen(), ClickMode.Swap);
+        assert(game.selection().len() <= before && !game.selection().is_empty());
     });
 }

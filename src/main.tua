@@ -403,7 +403,7 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
         let remember = !hidden;
         let saved = if remember { read(SETTINGS_FILE) } else { Option.None };
         if let &Option.Some(t) = &saved { let view = &t; game.set_settings(settings_from_text(view)); }
-        game.imgui_ui = true;
+        game.imgui_ui = !options.classic;
         if let &Option.Some(name) = &options.open { let _opened = game.open_panel(&name); }
         let mut ctx = ui_context(ctx_font, if remember { read(IMGUI_FILE) } else { Option.None });
         let saved_layout = if remember { read(LAYOUT_FILE) } else { Option.None };

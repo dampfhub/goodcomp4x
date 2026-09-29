@@ -39,6 +39,9 @@ fn the_screenshot_command_parses() {
     let sized = match options.size { Option.Some((w, h)) => w == 1280 && h == 720, Option.None => false };
     assert(sized);
     assert(!options.help);
+    let c = args(&["--classic"]);
+    let Result.Ok(classic) = parse(&c) else { assert(false); return; };
+    assert(classic.classic && !options.classic);
     let o = args(&["--open", "city"]);
     let Result.Ok(opened) = parse(&o) else { assert(false); return; };
     let open_city = match opened.open { Option.Some(p) => str_eq(&p, "city"), Option.None => false };

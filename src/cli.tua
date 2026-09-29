@@ -24,6 +24,7 @@ Options:
                        map every run
   --screenshot <FILE>  render the scenario in a hidden window, write one frame
                        to FILE as a PNG, and exit
+  --classic            start in the classic panels (F11 switches)
   --open <PANEL>       open a panel first, for a screenshot of it: city, barracks,
                        unit, group, workers or settings
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
@@ -47,12 +48,14 @@ pub struct Options {
     /// Frames to draw before exiting, 0 for no limit.
     frames: i32,
     validate: bool,
+    /// Start in the classic panels rather than the library UI.
+    classic: bool,
     /// A panel to open before the first frame (`GameState.open_panel`).
     open: Option[Str],
 }
 
 pub fn default_options() -> Options {
-    Options { scenario: Scenario.Cities, seed: Option.None, screenshot: Option.None, size: Option.None, help: false, frames: 0, validate: false, open: Option.None }
+    Options { scenario: Scenario.Cities, seed: Option.None, screenshot: Option.None, size: Option.None, help: false, frames: 0, validate: false, classic: false, open: Option.None }
 }
 
 /// A refusal's text: `message`, then the usage.
@@ -161,6 +164,9 @@ pub fn parse(args: &Vec[Str]) -> Result[Options, Str] {
             i = i + 2;
         } else if str_eq(arg, "-h") || str_eq(arg, "--help") {
             options.help = true;
+            i = i + 1;
+        } else if str_eq(arg, "--classic") {
+            options.classic = true;
             i = i + 1;
         } else if str_eq(arg, "--validate") {
             options.validate = true;

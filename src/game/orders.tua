@@ -109,7 +109,7 @@ impl GameState {
     /// the next unit that does. Ignored while a turn is playing out.
     pub fn handle_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) can {Log, Rand} {
         if self.is_resolving() { return; }
-        if self.click_ui(cursor, screen_size) { return; }
+        if self.click_ui(cursor, screen_size, mode) { return; }
         self.handle_map_click(cursor, screen_size, mode);
     }
 
