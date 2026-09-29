@@ -108,7 +108,7 @@ impl OuterBox {
 }
 
 const PANEL_MARGIN: f32 = 14.0;
-/// Room kept between the status bar's notice and the VIEW label after it.
+/// Room kept between the status bar's notice and End Turn after it.
 const NOTICE_GAP: f32 = 16.0;
 /// Where the tooltip holding a shortened notice in full wraps.
 const NOTICE_TOOLTIP_WIDTH: f32 = 480.0;
@@ -1845,19 +1845,41 @@ thread_local! {
     pub(super) static DRAWN_BUTTONS: std::cell::RefCell<Vec<DrawnButton>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
-
 #[cfg(test)]
 thread_local! {
-    /// Tests only: the status bar's notice as ImGui last drew it, where it
-    /// ended, and where the VIEW label after it starts.
-    pub(super) static SHOWN_NOTICE: std::cell::RefCell<(String, f32, f32)> =
-        const { std::cell::RefCell::new((String::new(), 0.0, 0.0)) };
+    /// Tests only: the status bar's notice as ImGui last drew it, its
+    /// rectangle, and how far right it may reach (short of End Turn).
+    pub(super) static SHOWN_NOTICE: std::cell::RefCell<ShownNotice> =
+        const { std::cell::RefCell::new((String::new(), [0.0; 2], [0.0; 2], 0.0)) };
+    /// Tests only: the status bar's second line as ImGui last drew it:
+    /// each control's text and rectangle, from Menu on.
+    pub(super) static STATUS_CONTROLS: std::cell::RefCell<Vec<DrawnControl>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// Tests only: a notice drawn, its rectangle and its limit.
+#[cfg(test)]
+pub(super) type ShownNotice = (String, [f32; 2], [f32; 2], f32);
+/// Tests only: a status bar control's text and rectangle.
+#[cfg(test)]
+pub(super) type DrawnControl = (String, [f32; 2], [f32; 2]);
+
 /// Tests only: notes the notice just drawn.
-fn note_shown_notice(_notice: &str, _end: f32, _view: f32) {
+fn note_shown_notice(_notice: &str, _min: [f32; 2], _max: [f32; 2], _limit: f32) {
     #[cfg(test)]
-    SHOWN_NOTICE.set((_notice.to_string(), _end, _view));
+    SHOWN_NOTICE.set((_notice.to_string(), _min, _max, _limit));
+}
+
+/// Tests only: notes the status bar control just drawn; Menu, the first,
+/// starts the list again.
+fn note_status_control(_ui: &Ui, _text: &str) {
+    #[cfg(test)]
+    STATUS_CONTROLS.with_borrow_mut(|drawn| {
+        if _text == "MENU" {
+            drawn.clear();
+        }
+        drawn.push((_text.to_string(), _ui.item_rect_min(), _ui.item_rect_max()));
+    });
 }
 
 /// Tests only: notes where the button for `target` just went.
@@ -2883,15 +2905,16 @@ impl GameState {
                     rich_text(ui, text, *color);
                 }
                 ui.same_line_with_spacing(0.0, 24.0);
-                // The notice runs up to the VIEW label on the same line,
+                // The notice has the rest of the line, up to End Turn,
                 // shortened to what fits; hovering shows all of it.
-                let view_x = (viewport.x - end_width - 365.0).max(8.0);
+                let end_x = (viewport.x - end_width).max(8.0);
+                let limit = end_x - NOTICE_GAP;
                 let notice = self.shown_notice();
-                let room = view_x - NOTICE_GAP - ui.cursor_pos()[0];
+                let room = limit - ui.cursor_pos()[0];
                 let shown = fit_text(notice, room, |t| rich_width(ui, t));
                 if !shown.is_empty() {
                     rich_text(ui, &shown, NOTICE_TEXT);
-                    note_shown_notice(&shown, ui.item_rect_max()[0], view_x);
+                    note_shown_notice(&shown, ui.item_rect_min(), ui.item_rect_max(), limit);
                     if shown != notice && ui.is_item_hovered() {
                         ui.tooltip(|| {
                             let _wrap = ui.push_text_wrap_pos_with_pos(NOTICE_TOOLTIP_WIDTH);
@@ -2899,13 +2922,18 @@ impl GameState {
                         });
                     }
                 }
+                // The second line: Menu, then the view's layout controls,
+                // so the notice above has the width of the bar.
                 ui.set_cursor_pos([15.0, 27.0]);
                 if ui.small_button("MENU") {
                     actions.push(Action::Button(None, Target::OpenSettings));
                 }
-                ui.set_cursor_pos([view_x, 7.0]);
-                ui.text(format!("VIEW: {}", layout.active_view.label()));
-                ui.set_cursor_pos([view_x, 27.0]);
+                note_status_control(ui, "MENU");
+                ui.same_line_with_spacing(0.0, 24.0);
+                let view = format!("VIEW: {}", layout.active_view.label());
+                ui.text(&view);
+                note_status_control(ui, &view);
+                ui.same_line();
                 let layer = if layout.editing_outer {
                     "EDIT OUTER"
                 } else {
@@ -2914,22 +2942,25 @@ impl GameState {
                 if ui.small_button(layer) {
                     actions.push(Action::ToggleLayoutLayer);
                 }
+                note_status_control(ui, layer);
                 ui.same_line();
                 if ui.small_button("+ BOX") {
                     actions.push(Action::CreateBox);
                 }
+                note_status_control(ui, "+ BOX");
                 if layout.active_view != ViewScope::Default && !layout.editing_outer {
                     ui.same_line();
                     if ui.small_button("RESET") {
                         layout.request_reset_active_view();
                     }
+                    note_status_control(ui, "RESET");
                     if ui.is_item_hovered() {
                         ui.tooltip_text(
                             "Ctrl+Shift+R: Restore this view's Debug placement from Default",
                         );
                     }
                 }
-                ui.set_cursor_pos([(viewport.x - end_width).max(8.0), 7.0]);
+                ui.set_cursor_pos([end_x, 7.0]);
                 let label = if self.is_resolving() {
                     self.resolving_label()
                 } else {

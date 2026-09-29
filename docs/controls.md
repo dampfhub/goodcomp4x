@@ -184,6 +184,8 @@ interior map; its clicks control only the interior copies.
 | F11 | Switch between the ImGui and classic UI presentations; cancel any drag in progress |
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
 | Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
+| EDIT VIEW, + BOX, RESET (ImGui, top bar beside MENU) | After the VIEW label naming the current view: EDIT VIEW switches between arranging this view and the boxes shared by every view (EDIT OUTER); + BOX adds an empty box to the layer being edited; RESET is Ctrl+Shift+R |
+| Hover the top bar's notice (ImGui) | Show all of it when it was too long for the bar and ends in "…" |
 
 Attack arrows appear only when both ends are in sight; damage numbers appear only on visible tiles.
 
