@@ -548,6 +548,11 @@ every turn end.
   Recall). Field workers from that city return to another friendly city if one exists;
   otherwise they pass to the new owner, free to take its jobs.
   A worker sharing its hex with a new enemy is captured immediately after the ownership change.
+  A unit of the old owner standing on the center (one that stepped onto it the turn it fell) is
+  pushed off it: to the nearest hex within 2 (`PUSH_OFF_RANGE`) it can stand on with no unit, no
+  city center and no other side's worker on it, walls ignored, the lowest q then r among equally
+  near ones. With no such hex it is lost. A pushed unit loses its orders, queue, hold, guard and
+  alert. So no unit ever stands on another side's city center.
   The exterior city remains non-attackable.
   A breached post changes its map marker and city panel to show that it is open for occupation.
 - Red's interior fighters defend their own city's post by engaging intruders. When attacking an
@@ -560,7 +565,8 @@ every turn end.
 ## Cities (`city/`)
 
 - **Founding** (`city/founding.rs`): F with a selected settler founds a city where it stands:
-  only on passable land (not water), not on ruins, and at least 6 hexes (`MIN_CITY_DISTANCE`)
+  only on passable land (not water), not on ruins, not in a hex an enemy contests (it would be
+  left on the new city's center), and at least 6 hexes (`MIN_CITY_DISTANCE`)
   from every other city, any side's, whether you have seen it or not (the refusal says why). The
   new city starts at population 1 with nothing built, auto-assigns and opens. A side's first city
   comes with a worker at home, as a starting city does; any other city starts without one.
