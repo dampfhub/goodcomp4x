@@ -116,7 +116,7 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    sets or clears Lookout, and clears its orders; `advance_queues` (`order_queue.rs`) gives each
    unit with a queue its next turn's orders, dropping queues that no longer fit; then selection
    moves to the first unit needing orders, or else the first city needing a build
-   (`select_next_or_end_turn`). Last, the turn cue starts (`start_transition`, see A frame).
+   (`select_next_needing_attention`). Last, the turn cue starts (`start_transition`, see A frame).
 
 The rules each step applies are in `game-rules.md`.
 
@@ -161,10 +161,10 @@ save, F7 load) clones the whole `GameState`. Both live in `scenario.rs` and in m
 tests build a scenario and drive the same methods input does, so no window or GPU is needed;
 `simulation.rs` plays whole AI-vs-AI games that way and checks invariants every turn.
 
-`GameState.rng` (a `Xoshiro256PlusPlus`, `Clone` for the savestate) rolls damage and picks each
-F4 world's map seed. The game seeds it from entropy; tests seed it (`seed_rng`), and it carries
-across scenario switches, so a seed replays the same game, map included. Loading a savestate
-keeps the current RNG, so retrying a save rolls afresh. `mapgen.rs` has its own RNG, seeded by
+`GameState.rng` (a `Xoshiro256PlusPlus`, `Clone` for the savestate) picks each F4 world's
+map seed; combat has no random spread (`combat.rs`), so the same orders always fight the same
+way. The game seeds it from entropy; tests seed it (`seed_rng`), and it carries across scenario
+switches, so a seed replays the same game, map included. `mapgen.rs` has its own RNG, seeded by
 the map seed.
 
 Screenshot mode (`--screenshot out.png`, `src/screenshot.rs`) is the visual counterpart: it

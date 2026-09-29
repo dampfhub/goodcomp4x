@@ -83,9 +83,14 @@ impl GameState {
         }
         self.turn += 1;
         log::info!("=== resolving turn {} ===", self.turn);
-        // Indices shift as units die, so nothing stays selected.
+        // Indices shift as units die, so nothing stays selected, and nothing
+        // armed while planning (an action for the next map click, a Disband
+        // to confirm, a click to repeat to replace a queue) outlives the turn.
         self.selected = None;
         self.group.clear();
+        self.ui_click_mode = None;
+        self.disband_armed = None;
+        self.queue_replace_armed = None;
 
         for team in self.ai_teams() {
             self.plan_ai_turn(team);
@@ -168,7 +173,7 @@ impl GameState {
             // Planning begins: the player's queues go on from what they now
             // know. After the network turn's start snapshot, so it's planning.
             self.replan_queues();
-            self.select_next_or_end_turn(None);
+            self.select_next_needing_attention(None);
         }
         self.start_transition(before, turn_over);
     }
@@ -199,7 +204,7 @@ impl GameState {
                 })
                 .min_by_key(|(_, unit)| (site.distance(unit.pos), unit.id))
             {
-                let hit = combat::roll_damage_against(28.0, target.stats().defense, &mut self.rng);
+                let hit = combat::damage_against(28.0, target.stats().defense);
                 hits[index] += hit;
                 log::info!(
                     "city {}'s coastal battery hits {target} for {hit:.0}",
@@ -680,20 +685,9 @@ impl GameState {
                 self.defense_multiplier(attacker),
                 self.defense_multiplier(defender),
             );
-            let shore_scale = if !attacker.is_naval() && defender.is_naval() {
-                match attacker.unit_type {
-                    UnitType::Ranged => 0.4,
-                    UnitType::Siege => 0.6,
-                    _ => 0.0,
-                }
-            } else if attacker.unit_type == UnitType::PatrolGalley && !defender.is_naval() {
-                0.35
-            } else {
-                1.0
-            };
-            let hit = shore_scale
+            let hit = combat::shore_scale(attacker, defender)
                 * engagement.damage_scale
-                * combat::roll_damage(attacker, defender, defender_cover, &mut self.rng);
+                * combat::damage(attacker, defender, defender_cover);
             damage[d] += hit;
             let attacker_note = combat::unit_note(attacker, &self.grid, self.in_fort(attacker));
             let defender_note = combat::unit_note(defender, &self.grid, self.in_fort(defender));
@@ -705,17 +699,15 @@ impl GameState {
 
             let retaliation_scale = match reverse {
                 Some(reverse) => Some(reverse.damage_scale),
-                None if combat::draws_retaliation(attacker)
-                    && attacker.is_naval() == defender.is_naval()
-                    && defender.hp > hit =>
-                {
-                    Some(1.0)
-                }
+                None if combat::retaliates(attacker, defender, hit) => Some(1.0),
                 None => None,
             };
             if let Some(back_scale) = retaliation_scale {
+                // Across the waterline only in an exchange of blows, where
+                // the shore scales the blow back as it would its own attack.
                 let back = back_scale
-                    * combat::roll_damage(defender, attacker, attacker_cover, &mut self.rng);
+                    * combat::shore_scale(defender, attacker)
+                    * combat::damage(defender, attacker, attacker_cover);
                 damage[a] += back;
                 let verb = if reverse.is_some() {
                     "trades blows with"
@@ -734,18 +726,13 @@ impl GameState {
 
         for (attacker, city, scale) in barracks_hits {
             let attack = self.units[attacker].stats().attack;
-            let hit = scale * combat::roll_damage_against(attack, BARRACKS_DEFENSE, &mut self.rng);
+            let hit = scale * combat::damage_against(attack, BARRACKS_DEFENSE);
             barracks_damage[city] += hit;
         }
 
         let mut battery_damage = vec![0.0; self.cities.len()];
         for (attacker, city, scale) in battery_hits {
-            let hit = scale
-                * combat::roll_damage_against(
-                    self.units[attacker].stats().attack,
-                    18.0,
-                    &mut self.rng,
-                );
+            let hit = scale * combat::damage_against(self.units[attacker].stats().attack, 18.0);
             battery_damage[city] += hit;
             log::info!(
                 "{} hits city {}'s coastal battery for {hit:.0}",
@@ -1291,5 +1278,66 @@ mod alert_tests {
         assert_eq!(blue.pos, Hex::new(-3, 0));
         assert!(!blue.alert);
         assert_eq!(by_id(&game, 101).hp, by_id(&game, 101).max_hp());
+    }
+}
+
+#[cfg(test)]
+mod combat_tests {
+    use rand::RngExt;
+
+    use super::*;
+    use crate::game::hex::HexGrid;
+    use crate::game::terrain::Terrain;
+    use crate::game::unit::Team;
+
+    /// A game with only `units` on the board, and water at `water`.
+    fn board(units: Vec<Unit>, water: &[Hex]) -> GameState {
+        let mut game = GameState::new();
+        game.grid = HexGrid::new(3, water.iter().map(|&hex| (hex, Terrain::Coast)));
+        game.cities.clear();
+        game.units = units;
+        game
+    }
+
+    #[test]
+    fn damage_is_the_formula_with_no_spread() {
+        assert_eq!(combat::damage_against(20.0, 20.0), 30.0);
+        assert_eq!(combat::damage_against(0.0, 200.0), 1.0);
+        assert_eq!(combat::damage_against(200.0, 0.0), 100.0);
+        let blow = combat::damage_against(24.0, 17.0);
+        assert!((blow - 30.0 * (7.0f32 * 0.04).exp()).abs() < 1e-4);
+        assert_eq!(combat::damage_against(24.0, 17.0), blow);
+    }
+
+    #[test]
+    fn resolving_a_fight_draws_nothing_from_the_rng() {
+        let mut attacker = Unit::new(90, Hex::new(0, 0), Team::Blue, UnitType::Melee);
+        attacker.planned_attack = Some(Hex::new(1, 0));
+        let defender = Unit::new(91, Hex::new(1, 0), Team::Red, UnitType::Melee);
+        let mut game = board(vec![attacker.clone(), defender.clone()], &[]);
+        let mut untouched = game.rng.clone();
+        game.resolve_attacks(&[0]);
+        assert_eq!(game.rng.random::<u64>(), untouched.random::<u64>());
+
+        // And it dealt exactly the formula's damage, both ways.
+        let hit = combat::damage(&attacker, &defender, 1.0);
+        let back = combat::damage(&defender, &attacker, 1.0);
+        assert_eq!(game.units[1].hp, defender.hp - hit);
+        assert_eq!(game.units[0].hp, attacker.hp - back);
+    }
+
+    #[test]
+    fn blows_traded_across_the_waterline_are_shore_scaled_both_ways() {
+        let (shore, sea) = (Hex::new(0, 0), Hex::new(1, 0));
+        let mut archer = Unit::new(90, shore, Team::Blue, UnitType::Ranged);
+        archer.planned_attack = Some(sea);
+        let mut galley = Unit::new(91, sea, Team::Red, UnitType::PatrolGalley);
+        galley.planned_attack = Some(shore);
+        let mut game = board(vec![archer.clone(), galley.clone()], &[sea]);
+        game.resolve_attacks(&[0, 1]);
+        let to_galley = 0.4 * combat::damage(&archer, &galley, 1.0);
+        let to_archer = 0.35 * combat::damage(&galley, &archer, 1.0);
+        assert_eq!(game.units[1].hp, galley.hp - to_galley);
+        assert_eq!(game.units[0].hp, archer.hp - to_archer);
     }
 }
