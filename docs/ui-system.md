@@ -70,8 +70,12 @@ then the City Yields overlay control, Multiplayer (`Target::OpenMultiplayer`), C
 Multiplayer page (`network_menu.rs`, the same `SETTINGS` slot), so the menu is never taller
 than one page; its typed fields are `Row::Field`s, which ImGui draws as text boxes (edits come
 back as `Action::Text`) and classic as a button that starts typing into the field
-(`Target::EditNetField`; `App` then hands it keys until Enter, Tab or Escape). Its buttons
-leave a `NetRequest` that `App` carries out with `src/net`. A setting's `control` picks
+(`Target::EditNetField`; `App` then hands it keys until Enter, Tab or Escape, and does
+Ctrl+V/C/X itself with `src/clipboard.rs`). ImGui's text boxes get the clipboard from the
+context (`App` sets its backend) and keep to what the field takes while edited (`CleanField`,
+through `NetField::clean`). While hosting, the join code and the LAN address are
+`Row::TitleWithButton`s with a COPY button (`Target::CopyJoinCode`, `CopyHostAddress`). Its
+buttons leave a `NetRequest` that `App` carries out with `src/net` or the clipboard. A setting's `control` picks
 its widget: ImGui (`render_setting`) puts the name in a label column and
 beside it a checkbox (`Control::Toggle`), a slider showing `value_text`
 (`Control::Slider`), or a button per value with the current one gold

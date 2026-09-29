@@ -724,7 +724,7 @@ impl GameState {
                 Target::EditNetField(field) => (
                     field.name().into(),
                     "CLICK".into(),
-                    "CLICK, THEN TYPE. ENTER WHEN DONE.".into(),
+                    "CLICK, THEN TYPE OR PASTE (CTRL+V). ENTER WHEN DONE.".into(),
                     None,
                 ),
                 Target::HostGame => (
@@ -747,6 +747,18 @@ impl GameState {
                     } else {
                         "THE AI PLAYS YOUR SIDE; YOU START A NEW GAME OF YOUR OWN.".into()
                     },
+                    None,
+                ),
+                Target::CopyJoinCode => (
+                    "COPY JOIN CODE".into(),
+                    String::new(),
+                    "PUTS THE JOIN CODE ON THE CLIPBOARD, TO SEND TO THE OTHER PLAYERS.".into(),
+                    None,
+                ),
+                Target::CopyHostAddress => (
+                    "COPY ADDRESS".into(),
+                    String::new(),
+                    "PUTS YOUR ADDRESS ON THE LOCAL NETWORK ON THE CLIPBOARD. PLAYERS OVER THE INTERNET NEED YOUR PUBLIC IP INSTEAD.".into(),
                     None,
                 ),
                 Target::ToggleYields => (

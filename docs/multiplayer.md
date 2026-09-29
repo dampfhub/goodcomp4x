@@ -12,8 +12,19 @@ included, 2-7) and the port (7777 unless changed), then **Host Game**. To join, 
 host's address (`HOST`, or `HOST:PORT` for another port than 7777) and the join code it
 shows, then **Join Game**; the page says how joining goes, or why it couldn't. The port,
 address and player count are kept for next time. In a network game the page shows your side
-and, on the host, the join code and the seats still open, and **Leave Game** leaves it for a
-new world of your own (the host leaving ends the game for everyone).
+and, on the host, the join code, the host's address on the local network (`YOUR ADDRESS
+192.168.1.20:7777`), and the seats still open, and **Leave Game** leaves it for a new world of
+your own (the host leaving ends the game for everyone). The code and the address each have a
+**COPY** button, and the fields take Ctrl+V (and Ctrl+C), so the host can copy both into a
+message and a guest paste them in (`controls.md`, Multiplayer; the clipboard is Windows only
+for now, `src/clipboard.rs`).
+
+The address shown is the one players on the same network join at. The host finds it with std
+alone (`net::lan_address`): it "connects" a UDP socket towards an outside address, which only
+picks the route and sends nothing, and reads the socket's own address. It asks no outside
+service, so it can't know the public address: players over the internet need the host's public
+IP, which the host's player finds themselves (on the router, say), and the port forwarded to
+the host, as the page says.
 
 The same from the command line:
 

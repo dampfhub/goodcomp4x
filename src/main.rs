@@ -1,5 +1,6 @@
 mod app;
 mod cli;
+mod clipboard;
 mod game;
 mod icon;
 mod icon_art;

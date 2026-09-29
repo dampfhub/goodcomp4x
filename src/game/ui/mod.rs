@@ -250,6 +250,10 @@ enum Target {
     JoinGame,
     /// Multiplayer: leave the network game.
     LeaveGame,
+    /// Multiplayer, hosting: put the join code, or this machine's address
+    /// on the local network, on the clipboard.
+    CopyJoinCode,
+    CopyHostAddress,
 }
 
 impl Target {
@@ -309,7 +313,9 @@ impl Target {
             | Target::EditNetField(_)
             | Target::HostGame
             | Target::JoinGame
-            | Target::LeaveGame => false,
+            | Target::LeaveGame
+            | Target::CopyJoinCode
+            | Target::CopyHostAddress => false,
         }
     }
 }
@@ -805,7 +811,9 @@ impl GameState {
             | Target::EditNetField(_)
             | Target::HostGame
             | Target::JoinGame
-            | Target::LeaveGame => self.activate_network_target(target),
+            | Target::LeaveGame
+            | Target::CopyJoinCode
+            | Target::CopyHostAddress => self.activate_network_target(target),
         }
     }
 

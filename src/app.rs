@@ -19,13 +19,14 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::cli::Options;
+use crate::clipboard;
 use crate::game::Settings;
 use crate::game::{
     ClickMode, GameState, ImGuiLayoutState, NetMenu, NetRequest, Scenario, font_atlas,
     selection_box, ui_projection,
 };
 use crate::icon;
-use crate::net::Session;
+use crate::net::{self, Session};
 use crate::persist;
 use crate::renderer::{DrawBatch, Renderer, Vertex};
 use crate::screenshot::{self, Screenshot};
@@ -227,6 +228,13 @@ fn initial_window_rect(
     (size, position)
 }
 
+/// `game` is hosted on `port`: its Multiplayer page shows the address
+/// players on the local network join at, if this machine has one.
+fn show_hosting(game: &mut GameState, port: u16) {
+    game.set_net_status(String::new(), false);
+    game.set_host_address(port, net::lan_address());
+}
+
 /// The settings saved from the last session, or the defaults.
 pub fn saved_settings() -> Settings {
     persist::read(SETTINGS_FILE).map_or_else(Settings::default, |text| Settings::from_text(&text))
@@ -267,7 +275,7 @@ impl App {
             game.set_net_menu(NetMenu::from_text(&text));
         }
         if let Some(port) = network.as_ref().and_then(Session::port) {
-            game.set_net_status(format!("HOSTING ON PORT {port}"), false);
+            show_hosting(&mut game, port);
         }
         Self {
             renderer: None,
@@ -367,8 +375,7 @@ impl App {
                 match Session::host(port, players, self.game.settings()) {
                     Ok((session, game)) => {
                         self.start_network_game(session, game);
-                        self.game
-                            .set_net_status(format!("HOSTING ON PORT {port}"), false);
+                        show_hosting(&mut self.game, port);
                     }
                     Err(err) => {
                         let status = format!("CAN'T HOST: {err:#}").to_uppercase();
@@ -394,7 +401,20 @@ impl App {
                 self.game
                     .set_ui_notice("LEFT THE NETWORK GAME - A NEW WORLD");
             }
+            NetRequest::Copy(text) => self.copy(&text),
         }
+    }
+
+    /// Puts `text` on the clipboard, with a notice saying so.
+    fn copy(&mut self, text: &str) {
+        let notice = if text.is_empty() {
+            "NOTHING TO COPY".to_string()
+        } else if clipboard::set_text(text) {
+            format!("COPIED {text}")
+        } else {
+            "CAN'T COPY: NO CLIPBOARD".to_string()
+        };
+        self.game.set_ui_notice(&notice);
     }
 
     /// Takes the game a join brought back, once it has.
@@ -441,12 +461,24 @@ impl App {
     }
 
     /// A key pressed while typing: ImGui has it already; classic types it
-    /// into the field, and Enter, Tab or Escape ends typing.
+    /// into the field, pastes into it (Ctrl+V) or copies it (Ctrl+C, and
+    /// Ctrl+X, which empties it), and Enter, Tab or Escape ends typing.
     fn type_key(&mut self, event: &KeyEvent) {
         if self.use_imgui {
             return;
         }
+        let ctrl = self.modifiers.state().control_key();
         match event.physical_key {
+            PhysicalKey::Code(KeyCode::KeyV) if ctrl => {
+                if let Some(text) = clipboard::get_text() {
+                    self.game.paste_net_text(&text);
+                }
+            }
+            PhysicalKey::Code(key @ (KeyCode::KeyC | KeyCode::KeyX)) if ctrl => {
+                if let Some(text) = self.game.copy_net_field(key == KeyCode::KeyX) {
+                    self.copy(&text);
+                }
+            }
             PhysicalKey::Code(KeyCode::Backspace) => self.game.net_field_backspace(),
             PhysicalKey::Code(
                 KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab | KeyCode::Escape,
@@ -700,6 +732,8 @@ impl ApplicationHandler for App {
         }
 
         let mut imgui = ImGuiContext::create();
+        // Ctrl+C, X and V in its text boxes (the Multiplayer fields).
+        imgui.set_clipboard_backend(clipboard::ImGuiClipboard);
         // No file of its own: its docking data is kept with the rest of the
         // session (`save_session`) and loaded before the first frame.
         imgui.set_ini_filename(None);
