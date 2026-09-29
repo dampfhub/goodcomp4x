@@ -94,9 +94,14 @@ impl GameState {
         }
         self.turn += 1;
         log::info!("=== resolving turn {} ===", self.turn);
-        // Indices shift as units die, so nothing stays selected.
+        // Indices shift as units die, so nothing stays selected, and nothing
+        // armed while planning (an action for the next map click, a Disband
+        // to confirm, a click to repeat to replace a queue) outlives the turn.
         self.selected = None;
         self.group.clear();
+        self.ui_click_mode = None;
+        self.disband_armed = None;
+        self.queue_replace_armed = None;
 
         for team in self.ai_teams() {
             self.plan_ai_turn(team);
@@ -179,7 +184,7 @@ impl GameState {
             // Planning begins: the player's queues go on from what they now
             // know. After the network turn's start snapshot, so it's planning.
             self.replan_queues();
-            self.select_next_or_end_turn(None);
+            self.select_next_needing_attention(None);
         }
         self.start_transition(before, turn_over);
     }
@@ -1066,7 +1071,14 @@ mod naval_tests {
         g.resolve_coastal_batteries();
         let lost = initial - g.units[0].hp;
         assert!(lost > 0.0);
-        assert_eq!(damage_shown(&g), vec![(ship_at.to_world(), lost, false)]);
+        // The number shown is the hit; `lost` is it after rounding in the
+        // subtraction from the ship's HP, so they agree only closely.
+        assert!(
+            matches!(damage_shown(&g)[..], [(at, amount, false)]
+                if at == ship_at.to_world() && (amount - lost).abs() < 1e-3),
+            "{:?}",
+            damage_shown(&g)
+        );
 
         // A ship with less left than the hit shows KILLED.
         g.effects.clear();
