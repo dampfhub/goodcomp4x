@@ -79,9 +79,9 @@ const MORTAR_COLOR: Color = [0.09, 0.085, 0.08, 1.0];
 const WOOD_COLOR: Color = [0.40, 0.20, 0.07, 1.0];
 /// Hovering the manager traces its goods' way to the city center.
 const MANAGER_ROUTE_WIDTH: f32 = 0.06;
-const MANAGER_ROUTE_COLOR: Color = [0.35, 0.82, 1.0, 0.9];
+pub const MANAGER_ROUTE_COLOR: Color = [0.35, 0.82, 1.0, 0.9];
 const MANAGER_MARK_COLOR: Color = [1.0, 0.78, 0.20, 1.0];
-const BARRACKS_SHARE_COLOR: Color = [1.0, 0.70, 0.30, 1.0];
+pub const BARRACKS_SHARE_COLOR: Color = [1.0, 0.70, 0.30, 1.0];
 const BARRACKS_SOURCE_COLOR: Color = [1.0, 0.62, 0.20, 0.9];
 const WORKER_SHOVEL: UnitIcon = UnitIcon.Shovel;
 /// A unit token's radius on the map, which a worker token is drawn a fraction of.

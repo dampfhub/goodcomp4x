@@ -23,6 +23,13 @@ use game.draw_structures.PLANNED_EDGE_COLOR;
 use game.draw_structures.JOB_UNDER_WAY_COLOR;
 use game.workers.JobKind;
 use game.workers.WorkerJob;
+use game.draw.SELECTED_COLOR;
+use game.draw.DELIVERY_TEXT_COLOR;
+use game.draw_structures.MANAGER_ROUTE_COLOR;
+use game.draw_structures.BARRACKS_SHARE_COLOR;
+use game.city.Building;
+use game.unit.Unit;
+use game.fog_tests.remembered_route_hex;
 use game.tests.sandbox;
 use game.unit.Team;
 use game.unit.UnitType;
@@ -257,5 +264,133 @@ fn work_under_way_is_ringed_and_counts_its_turns_left() {
         let _acted = game.resolve_workers();
         assert(game.field_workers[0].work_left == Option.Some(3));
         assert(count_color(&game.build_vertices(), JOB_UNDER_WAY_COLOR) > walking);
+    });
+}
+
+@test
+fn breached_post_gains_a_distinct_world_marker() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        let intact = count_color(&game.build_vertices(), SELECTED_COLOR);
+        game.cities[1].interior.core_hp = 0.0;
+        let breached = count_color(&game.build_vertices(), SELECTED_COLOR);
+        // A breached post needs a visible gold ring.
+        assert(breached > intact);
+    });
+}
+
+@test
+fn delivery_labels_show_only_on_explored_tiles() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.explore();
+        game.select_city();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        let seen = count_color(&game.build_vertices(), DELIVERY_TEXT_COLOR);
+        // Labels on the explored tiles.
+        assert(seen > 0);
+        // Forget an explored tile the known routes reach: its label goes.
+        let fog = game.fog();
+        let routes = game.known_routes(city, &fog);
+        let mut forgotten: Option[Hex] = Option.None;
+        for k in 0..routes.costs.len() {
+            let Option.Some(h) = routes.costs.key_at(k) else { continue; };
+            if forgotten.is_none() && h != game.cities[city].pos && game.is_explored(h) { forgotten = Option.Some(h); }
+        }
+        let Option.Some(h) = forgotten else { assert(false); return; };
+        let _gone = game.memory.remove(h);
+        assert(!game.is_explored(h));
+        assert(count_color(&game.build_vertices(), DELIVERY_TEXT_COLOR) < seen);
+    });
+}
+
+@test
+fn a_site_preview_follows_the_cursor_only_in_its_open_city() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.units.clear();
+        game.selected = Option.None;
+        game.explore();
+        let city = 0;
+        assert(game.cities[city].team == PLAYER_TEAM);
+        let mut site: Option[Hex] = Option.None;
+        for hh in game.grid.hexes() { if site.is_none() && game.site_available(city, Building.Barracks, *hh) { site = Option.Some(*hh); } }
+        let Option.Some(site) = site else { assert(false); return; };
+        game.hovered_tile = Option.Some(site);
+        let plain = game.build_vertices().len();
+        game.placing_building = Option.Some((city, Building.Barracks));
+        game.selected_city = Option.None;
+        // No city open: no preview.
+        assert(game.build_vertices().len() == plain);
+        game.selected_city = Option.Some(city);
+        // Its city open: a preview. The open city draws its yields too, so compare against the
+        // open city without placement.
+        let with_preview = game.build_vertices().len();
+        game.placing_building = Option.None;
+        assert(with_preview > game.build_vertices().len());
+    });
+}
+
+@test
+fn only_hovering_the_manager_draws_a_line_and_it_follows_the_route_home() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        let city = 0;
+        game.selected_city = Option.Some(city);
+        let fog = game.fog();
+        let routes = game.known_routes(city, &fog);
+        // A manager at least two legs from the city, so the route bends through other hexes.
+        let mut manager: Option[Hex] = Option.None;
+        for k in 0..routes.costs.len() {
+            let Option.Some(h) = routes.costs.key_at(k) else { continue; };
+            if game.grid.terrain(h).is_water() || game.cities[city].worked.contains(h) || routes.path_from(h).len() < 3 { continue; }
+            let better = match manager { Option.None => true, Option.Some(b) => h.q < b.q || (h.q == b.q && h.r < b.r) };
+            if better { manager = Option.Some(h); }
+        }
+        let Option.Some(manager) = manager else { assert(false); return; };
+        game.cities[city].worked.set(0, manager);
+        // The manager has workers.
+        assert(game.cities[city].worked.len() > 1);
+        let path = routes.path_from(manager);
+        assert(path[0] == manager && path[path.len() - 1] == game.cities[city].pos);
+        for k in 1..path.len() {
+            assert(path[k - 1].distance(path[k]) == 1);
+            assert(routes.costs.get(path[k]).unwrap_or(99) < routes.costs.get(path[k - 1]).unwrap_or(0));
+        }
+        // Not hovering: no route line; hovering another worked tile: none either.
+        game.hovered_tile = Option.None;
+        assert(count_color(&game.build_vertices(), MANAGER_ROUTE_COLOR) == 0);
+        game.hovered_tile = Option.Some(game.cities[city].worked[1]);
+        assert(count_color(&game.build_vertices(), MANAGER_ROUTE_COLOR) == 0);
+        // Hovering the manager: seven dashes along each leg of its route.
+        game.hovered_tile = Option.Some(manager);
+        assert(count_color(&game.build_vertices(), MANAGER_ROUTE_COLOR) == (path.len() - 1) * 7 * 6);
+        // Carrying the manager to a new tile hides the line.
+        game.moving_manager = Option.Some(city);
+        assert(count_color(&game.build_vertices(), MANAGER_ROUTE_COLOR) == 0);
+    });
+}
+
+@test
+fn barracks_delivery_labels_do_not_react_to_unseen_units() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, city, far) = remembered_route_hex();
+        // A barracks two hexes from the remembered hex: it sees only 1.
+        let fog = game.fog();
+        let mut site: Option[Hex] = Option.None;
+        for hh in game.grid.hexes() {
+            let h = *hh;
+            if site.is_some() || h.distance(far) != 2 || !game.site_available(city, Building.Barracks, h) { continue; }
+            if !fog.sees(far) && game.routes_from(PLAYER_TEAM, h).costs.has(far) { site = Option.Some(h); }
+        }
+        let Option.Some(site) = site else { assert(false); return; };
+        game.cities[city].barracks = Option.Some(site);
+        game.selected_city = Option.None;
+        game.selected_barracks = Option.Some(city);
+        assert(!game.fog().sees(far));
+        let before = count_color(&game.build_vertices(), BARRACKS_SHARE_COLOR);
+        assert(before > 0);
+        game.units.push(Unit.new(51, far, Team.Red, UnitType.Melee));
+        assert(count_color(&game.build_vertices(), BARRACKS_SHARE_COLOR) == before);
     });
 }

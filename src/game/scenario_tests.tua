@@ -175,3 +175,34 @@ fn every_world_starts_its_scouts_on_hills() {
         }
     });
 }
+
+@test
+fn cities_work_water_but_goods_never_cross_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // A world whose Blue start has water within logistics reach.
+        let mut checked = false;
+        for s in 0..40 {
+            if checked { continue; }
+            let mut game = GameState.world_scenario(s as u32);
+            if game.cities.is_empty() { game.found_city_selected(); }
+            let routes = game.routes(0);
+            let mut water: Vec[Hex] = Vec.new();
+            for k in 0..routes.costs.len() {
+                let Option.Some(h) = routes.costs.key_at(k) else { continue; };
+                if game.grid.terrain(h).is_water() { water.push(h); }
+            }
+            if water.is_empty() { continue; }
+            for w in 0..water.len() {
+                // Reached from land beside it, never over water.
+                let around = water[w].neighbors();
+                let mut land_beside = false;
+                for n in 0..6 { if !game.grid.terrain(around[n]).is_water() && routes.costs.has(around[n]) { land_beside = true; } }
+                assert(land_beside);
+            }
+            // The manager stands on land.
+            assert(!game.grid.terrain(game.cities[0].worked[0]).is_water());
+            checked = true;
+        }
+        assert(checked);
+    });
+}

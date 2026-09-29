@@ -6,6 +6,7 @@ use std.rand.Rand;
 use log.Log;
 use game.GameState;
 use game.hex.Hex;
+use game.city.Building;
 use game.tests.sandbox;
 use game.unit.Team;
 
@@ -113,5 +114,36 @@ fn an_enemy_cannot_be_disbanded() {
         g.disband_selected();
         g.disband_selected();
         assert(g.units.len() == count);
+    });
+}
+
+@test
+fn tab_closes_the_barracks_view_and_its_placement_modes() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.cities[0].barracks = Option.Some(Hex.new(-1, 0));
+        g.open_barracks(0);
+        g.moving_manager = Option.Some(0);
+        g.placing_building = Option.Some((0, Building.Barracks));
+        g.select_next_unit();
+        assert(g.selected_barracks.is_none());
+        assert(g.selected_city.is_none());
+        assert(g.moving_manager.is_none());
+        assert(g.placing_building.is_none());
+        // Tab still moves on to a unit.
+        assert(g.selected.is_some());
+    });
+}
+
+@test
+fn tab_from_the_city_view_drops_a_building_site_preview() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.open_city(0);
+        g.queue_selected_city_building(Building.Barracks);
+        assert(g.placing_building.is_some());
+        g.select_next_unit();
+        assert(g.selected_city.is_none());
+        assert(g.placing_building.is_none());
     });
 }

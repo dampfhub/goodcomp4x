@@ -22,6 +22,13 @@ use game.city.Site;
 use game.city.SiteKind;
 use game.hex.Hex;
 use game.hex.HexGrid;
+use game.hex.GridShape;
+use game.city.City;
+use game.unit.IdSet;
+use game.terrain.Tile;
+use game.terrain.Terrain;
+use game.fog.CITY_SIGHT;
+use game.scenario.copy_vec;
 use game.orders.ClickMode;
 use game.settings.default_settings;
 use game.terrain.MOUNTAINS;
@@ -391,7 +398,7 @@ fn the_widest_view_of_a_world_fits_the_vertex_buffer() {
 /// The cities scenario with no units, the player's city open, and one of its route hexes out
 /// of the city's sight but explored (a scout looked and left). Answers the game, the city and
 /// that hex.
-fn remembered_route_hex() -> (GameState, i32, Hex) can {Log, Assert} {
+pub fn remembered_route_hex() -> (GameState, i32, Hex) can {Log, Assert} {
     let mut game = GameState.city_scenario();
     game.units.clear();
     game.selected = Option.None;
@@ -490,5 +497,92 @@ fn an_enemy_seen_before_leaves_no_trace_once_out_of_sight() {
     sandbox(fn() can {Log, Rand, Assert} {
         // Neither a ghost of the enemy seen there nor a target highlight shows.
         assert(same_scene(&drawn(true), &drawn(false)));
+    });
+}
+
+/// Blue's city alone at the origin on marsh, working (5, 0) behind a mountain at (3, 0) and
+/// out of the city's sight, reached by a road around the mountain.
+fn worked_tile_behind_the_mountain() -> (GameState, i32, Hex) can {Log, Assert} {
+    let mut game = GameState.city_scenario();
+    game.units.clear();
+    game.sites = Map.new();
+    game.memory = Map.new();
+    game.player_controlled_units = IdSet.new();
+    game.selected = Option.None;
+    game.selected_city = Option.None;
+    handle { game.cities.retain(); } with Keep[City] { keep(c) => { resume c.team == PLAYER_TEAM } }
+    let origin = Hex.new(0, 0);
+    let mountain = Hex.new(3, 0);
+    let road = [Hex.new(1, 0), Hex.new(2, 0), Hex.new(3, -1), Hex.new(4, -1), Hex.new(4, 0), Hex.new(5, 0)];
+    let mut tiles: Map[Hex, Tile] = Map.new();
+    for hh in HexGrid.new(7, &[(origin, Tile.of(Terrain.Plains))]).hexes() {
+        let h = *hh;
+        let mut on_road = false;
+        for k in 0..6 { if road[k] == h { on_road = true; } }
+        let tile = if h == mountain { MOUNTAINS } else if h == origin || on_road { Tile.of(Terrain.Plains) } else { Tile.of(Terrain.Marsh) };
+        let _old = tiles.insert(h, tile);
+    }
+    game.grid = HexGrid.from_tiles(GridShape.Hexagon(7), tiles);
+    game.roads.clear();
+    for k in 0..6 { game.roads.insert(road[k]); }
+    let worked = Hex.new(5, 0);
+    game.cities[0].pos = origin;
+    game.cities[0].population = 1;
+    game.cities[0].worked.clear();
+    game.cities[0].worked.push(worked);
+    game.cities[0].remembered_worked.clear();
+    game.cities[0].remembered_worked.push(worked);
+    check_found(game.routes(0).costs.get(worked) == Option.Some(6));
+    (game, 0, worked)
+}
+
+@test
+fn a_worked_tile_is_in_sight_past_range_and_mountains() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, city, worked) = worked_tile_behind_the_mountain();
+        let pos = game.cities[city].pos;
+        assert(pos.distance(worked) > CITY_SIGHT && !game.in_line_of_sight(pos, worked));
+        game.explore();
+        let fog = game.fog();
+        assert(fog.sees(worked) && game.is_explored(worked));
+        // Only the tile itself, not around it.
+        assert(!fog.sees(Hex.new(4, 0)));
+
+        // A Red unit steps onto it: the player sees it there.
+        game.units.push(Unit.new(51, worked, Team.Red, UnitType.Melee));
+        assert(game.fog().shows(&game.units[0]));
+        assert(game.known_occupied(worked, &game.fog()));
+
+        // The turn ends, and the cut-off citizen moves elsewhere; the enemy stays in sight on
+        // the tile it took.
+        game.resolve_economy();
+        assert(!game.cities[city].worked.contains(worked));
+        let fog = game.fog();
+        assert(fog.sees(worked) && fog.shows(&game.units[0]));
+
+        // Once the player assigns citizens elsewhere, which forgets that tile, it's out of
+        // sight again.
+        game.cities[city].remembered_worked = copy_vec(&game.cities[city].worked);
+        assert(!game.fog().shows(&game.units[0]));
+    });
+}
+
+@test
+fn an_unseen_enemy_on_a_route_hex_still_cuts_goods() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Accepted: an enemy on a route hex that isn't a worked tile stays hidden, but the
+        // city's real income, rings and route notice (all from `routes`) show the goods it
+        // cuts off.
+        let (mut game, city, worked) = worked_tile_behind_the_mountain();
+        let full = game.income(city);
+        let blocker = Hex.new(4, -1);
+        game.units.push(Unit.new(51, blocker, Team.Red, UnitType.Melee));
+        game.explore();
+        let fog = game.fog();
+        assert(fog.sees(worked) && !fog.sees(blocker));
+        assert(!fog.shows(&game.units[0]));
+        assert(!game.routes(city).costs.has(worked));
+        let now = game.income(city);
+        assert(now.0 < full.0 || (now.0 == full.0 && now.1 < full.1));
     });
 }
