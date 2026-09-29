@@ -369,7 +369,11 @@ struct Button {
     /// The keyboard shortcut or cost, shown under the label (or beside it on
     /// a single-line button).
     hint: String,
-    state: ButtonState,
+    /// Queued or chosen: gold (`ButtonSpec::queued`).
+    queued: bool,
+    /// Why it can't be pressed, if it can't: disabled
+    /// (`ButtonSpec::unavailable`).
+    unavailable: Option<String>,
     /// This button's action is what the next map click will do.
     armed: bool,
     /// Part of the debug panel, drawn see-through so it doesn't read as game UI.
@@ -379,6 +383,11 @@ struct Button {
 }
 
 impl Button {
+    /// How it's drawn: disabled when unavailable, else gold when queued.
+    fn state(&self) -> ButtonState {
+        ButtonState::new(self.queued, self.unavailable.is_some())
+    }
+
     fn contains(&self, point: Vec2) -> bool {
         contains(self.min, self.max, point)
     }
@@ -735,7 +744,7 @@ impl GameState {
         let Some(button) = layout.button_at(point) else {
             return layout.covers(point);
         };
-        if button.state == ButtonState::Disabled {
+        if button.unavailable.is_some() {
             return true;
         }
         self.activate_target(button.target);

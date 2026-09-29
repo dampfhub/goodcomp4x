@@ -16,6 +16,11 @@ file holds.
   in `Target::changes_plan` (`mod.rs`), so both presentations show it disabled while a network
   game waits for the others' plans (`PanelBuilder::freeze_plan`); the method it calls refuses
   while `is_resolving`.
+- **A button that can be off says why.** Build buttons with `ButtonSpec::new(target, label, hint)`
+  and its `.queued(..)`, `.unavailable(reason)`, `.armed(..)` (`builder.rs`): a button is
+  disabled exactly when it has a reason, which its tooltip shows in red in both presentations, so
+  never decide a button's availability anywhere else (not in `tooltips.rs`).
+  `every_disabled_button_says_why_in_every_scenario` (`tests.rs`) walks every view.
 - **Every new ImGui panel is draggable and dockable.** Give it a slot: a constant and an entry in
   `SLOT_TITLES` (`imgui.rs`), a zone in `ImGuiLayoutState::plan`, a measured size in
   `draw_imgui`, and a `render_imgui_window` call. That makes it movable, resizable (a
@@ -51,6 +56,9 @@ file holds.
   Render game text in ImGui with those, never `ui.text`, or an icon shows as `?`. A count of
   turns is always the clock and the number (`turns_icon`, or `turns_text` in the UI), never
   "N TURNS" or "NT"; world text (`font::push_text`) draws the icons too.
+- **Characters past ASCII** in game text: only those in `font::UI_PUNCTUATION`
+  (`font.rs`), which both presentations' fonts carry. A new one goes in that list;
+  `ui_text_uses_only_the_shared_glyphs` finds one used and not listed.
 - **New kind of turn task** (research, say): a `RosterKey` variant, its place in
   `roster_tasks` (civilian tasks before the unit groups), its chip in `roster_chip`, what a
   click does in `roster_select`, and its tooltip in `roster_tooltip` (`roster.rs`).
@@ -63,9 +71,10 @@ file holds.
   computes is computed again.
 
 - **New unit button:** a `UnitAction` variant (`mod.rs`), a `ButtonSpec` in the tray's button
-  list (`unit_buttons` or `group_tray_for` in `trays.rs`), its tooltip text (the `UnitAction`
-  match in `unit_action_text`, `tooltips.rs`), and an arm in `activate_target` (`mod.rs`). Add
-  a hit-test unit test in `tests.rs`.
+  list (`unit_buttons` or `group_tray_for` in `trays.rs`), when it's off and why
+  (`unit_action_unavailable`, `trays.rs`; a group's is off when no member can take it), its
+  tooltip text (the `UnitAction` match in `unit_action_text`, `tooltips.rs`), and an arm in
+  `activate_target` (`mod.rs`). Add a hit-test unit test in `tests.rs`.
 - **New panel:** shared content in a `GameState` method returning a `PanelBuilder`; dock it in
   `layout()` for classic and give it an ImGui slot (above). Add a layout test (no overlap,
   buttons inside their panel) in `tests.rs`, and for ImGui extend the `plan` tests in
