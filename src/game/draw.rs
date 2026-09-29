@@ -1224,42 +1224,61 @@ impl GameState {
             // worked-tile rings below show whether goods really arrive.
             let routes = self.routes(i);
             let known_routes = self.known_routes(i, fog);
-            // A manager picked up takes its citizens with it until it's
+            // A manager picked up takes its cluster with it until it's
             // placed: none show.
-            let manager_is_moving = self.moving_manager == Some(i);
-            for (worker_index, h) in self.cities[i].worked.iter().enumerate() {
-                if manager_is_moving {
+            let clusters = &self.cities[i].clusters;
+            let several = clusters.len() > 1;
+            for (k, cluster) in clusters.iter().enumerate() {
+                if self.moving_manager == Some((i, k)) {
                     continue;
                 }
-                let color = if routes.costs.contains_key(h) {
-                    if worker_index == 0 {
-                        [1.0, 0.78, 0.20, 1.0]
+                for (worker_index, h) in cluster.tiles().enumerate() {
+                    let color = if routes.costs.contains_key(&h) {
+                        if worker_index == 0 {
+                            [1.0, 0.78, 0.20, 1.0]
+                        } else {
+                            [0.25, 1.0, 0.4, 1.0]
+                        }
                     } else {
-                        [0.25, 1.0, 0.4, 1.0]
-                    }
+                        [1.0, 0.25, 0.2, 1.0]
+                    };
+                    // A colored ring on a slightly wider dark one, just inside
+                    // the hex's fill so it doesn't blur into the grid lines.
+                    let center = h.to_world();
+                    let radius = WORKED_OUTLINE_RADIUS;
+                    let rim = WORKED_OUTLINE_RIM_COLOR;
+                    mesh::polygon_outline(
+                        center,
+                        radius,
+                        WORKED_OUTLINE_RIM_WIDTH,
+                        6,
+                        0.0,
+                        rim,
+                        out,
+                    );
+                    mesh::polygon_outline(center, radius, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
+                }
+                // The manager's mark: M, or with several clusters M1 to M4.
+                let center = cluster.manager.to_world();
+                if several {
+                    let label = super::city::manager_label(k, clusters.len());
+                    font::push_text_centered(center, 0.34, &label, LABEL_COLOR, out);
                 } else {
-                    [1.0, 0.25, 0.2, 1.0]
-                };
-                // A colored ring on a slightly wider dark one, just inside the
-                // hex's fill so it doesn't blur into the grid lines.
-                let center = h.to_world();
-                let radius = WORKED_OUTLINE_RADIUS;
-                let rim = WORKED_OUTLINE_RIM_COLOR;
-                mesh::polygon_outline(center, radius, WORKED_OUTLINE_RIM_WIDTH, 6, 0.0, rim, out);
-                mesh::polygon_outline(center, radius, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
-                if worker_index == 0 {
                     font::push_glyph(center, 0.34, 'M', LABEL_COLOR, out);
                 }
-            }
-            if let Some(&manager) = self.cities[i].worked.first()
-                && !manager_is_moving
-                && self.hovered_tile == Some(manager)
-            {
-                // Hovering the manager traces the way its goods travel to the
-                // city center, as the player knows the board.
-                for leg in known_routes.path_from(manager).windows(2) {
-                    let (from, to) = (leg[0].to_world(), leg[1].to_world());
-                    push_dotted_segment(from, to, MANAGER_ROUTE_WIDTH, MANAGER_ROUTE_COLOR, out);
+                if self.hovered_tile == Some(cluster.manager) {
+                    // Hovering a manager traces the way its goods travel to
+                    // the city center, as the player knows the board.
+                    for leg in known_routes.path_from(cluster.manager).windows(2) {
+                        let (from, to) = (leg[0].to_world(), leg[1].to_world());
+                        push_dotted_segment(
+                            from,
+                            to,
+                            MANAGER_ROUTE_WIDTH,
+                            MANAGER_ROUTE_COLOR,
+                            out,
+                        );
+                    }
                 }
             }
         }
@@ -1276,7 +1295,7 @@ impl GameState {
                     out,
                 );
             }
-            for source in &self.cities[i].worked {
+            for source in self.cities[i].worked() {
                 push_dotted_segment(
                     source.to_world(),
                     barracks.to_world(),
@@ -1737,7 +1756,7 @@ impl GameState {
                 && self.grid.terrain(h).is_workable()
                 && (self.show_details
                     || reach.as_ref().is_some_and(|(city, routes)| {
-                        routes.costs.contains_key(&h) || self.cities[*city].worked.contains(&h)
+                        routes.costs.contains_key(&h) || self.cities[*city].works(h)
                     }))
                 && self.is_explored(h)
                 && !self.known_building_at_off_center(h, fog)
@@ -3034,7 +3053,10 @@ mod tests {
         let mut game = GameState::city_scenario();
         game.explore();
         game.open_city(0);
-        let (manager, worker) = (game.cities[0].worked[0], game.cities[0].worked[1]);
+        let (manager, worker) = (
+            game.cities[0].clusters[0].manager,
+            game.cities[0].clusters[0].workers[0],
+        );
         // A job under way on the manager's tile, one queued on the worker's.
         let job = WorkerJob::on_tile(manager, JobKind::Improve);
         game.field_workers.push(FieldWorker {
@@ -3595,12 +3617,12 @@ mod tests {
         game.units.clear();
         game.explore();
         game.open_city(0);
-        assert!(game.cities[0].worked.len() > 1);
+        assert!(game.cities[0].working() > 1);
         let citizen_ring = [0.25, 1.0, 0.4, 1.0];
         assert!(count_color(&game.build_vertices(), citizen_ring) > 0);
-        let manager = game.cities[0].worked[0];
+        let manager = game.cities[0].clusters[0].manager;
         game.city_click(manager);
-        assert_eq!(game.moving_manager, Some(0));
+        assert_eq!(game.moving_manager, Some((0, 0)));
         assert_eq!(count_color(&game.build_vertices(), citizen_ring), 0);
         // Cancelling puts them back.
         game.city_click(manager);
@@ -3757,16 +3779,13 @@ mod tests {
             .copied()
             .filter(|&h| {
                 !game.grid.terrain(h).is_water()
-                    && !game.cities[city].worked.contains(&h)
+                    && !game.cities[city].works(h)
                     && routes.path_from(h).len() >= 3
             })
             .min_by_key(|h| (h.q, h.r))
             .expect("a land tile two legs from the city");
-        game.cities[city].worked[0] = manager;
-        assert!(
-            game.cities[city].worked.len() > 1,
-            "the manager has workers"
-        );
+        game.cities[city].clusters[0].manager = manager;
+        assert!(game.cities[city].working() > 1, "the manager has workers");
         let path = routes.path_from(manager);
         assert_eq!(path.first(), Some(&manager));
         assert_eq!(path.last(), Some(&game.cities[city].pos));
@@ -3791,10 +3810,10 @@ mod tests {
         game.hovered_tile = None;
         let with_workers = city_map(&game);
         assert!(route_vertices(&with_workers).is_empty());
-        let workers = game.cities[city].worked.len() - 1;
+        let workers = game.cities[city].working() - 1;
         let alone = {
             let mut alone = game.clone();
-            alone.cities[city].worked.truncate(1);
+            alone.cities[city].clusters[0].workers.clear();
             city_map(&alone)
         };
         let mut ring = Vec::new();
@@ -3803,7 +3822,7 @@ mod tests {
         assert_eq!(with_workers.len() - alone.len(), workers * ring.len());
 
         // Hovering another worked tile draws nothing either.
-        game.hovered_tile = Some(game.cities[city].worked[1]);
+        game.hovered_tile = Some(game.cities[city].clusters[0].workers[0]);
         assert!(route_vertices(&city_map(&game)).is_empty());
 
         // Hovering the manager: dashes along each leg of its route and
@@ -3828,7 +3847,7 @@ mod tests {
         }
 
         // Carrying the manager to a new tile hides the line.
-        game.moving_manager = Some(city);
+        game.moving_manager = Some((city, 0));
         assert!(route_vertices(&city_map(&game)).is_empty());
     }
 

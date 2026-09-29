@@ -250,9 +250,8 @@ impl GameState {
             .find(|h| lacking(h))
             .or_else(|| near.iter().find(|h| deposit(h).is_some()))
             .or_else(|| {
-                near.iter().find(|h| {
-                    h.distance(c.pos) <= 2 && !self.cities.iter().any(|o| o.worked.contains(h))
-                })
+                near.iter()
+                    .find(|h| h.distance(c.pos) <= 2 && !self.cities.iter().any(|o| o.works(**h)))
             })
             .or_else(|| near.first())
             .copied()

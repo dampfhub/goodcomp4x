@@ -117,9 +117,9 @@ orders shows disabled.
 | --- | --- |
 | C | Open a city needing a build (or your first city); from a barracks view, its city |
 | Left-click your city | Open its city view |
-| Click a tile in the city view | Assign a citizen there, or release one; where one of your units stands, click beside its token |
+| Click a tile in the city view | Assign a citizen there (a worker beside a manager with room, or a new manager on open land clear of the others while the population allows one), or release one; where one of your units stands, click beside its token |
 | Click one of your units' tokens in the city or barracks view | Select the unit and close the view |
-| Click the manager (`M`), then a tile | Move the manager; workers follow where they can (once it's picked up, a click on a unit's token places it too) |
+| Click a manager (`M`, or `M1` to `M4`), then a tile | Move that manager; its workers follow where they can, the other clusters stay (once it's picked up, a click on a unit's token places it too) |
 | A | Auto-assign citizens by the city's priority order |
 | Drag a priority chip (wheat, log, ingot; its rank in the corner) onto another | Reorder the city's priorities (and re-assign) |
 | Click a priority chip | Put that good first (and re-assign) |
@@ -321,7 +321,7 @@ them.
 - Fog of war: never-seen hexes are under clouds; hexes you've seen but can't see now are under a
   grey veil and show the cities, improvements, roads, structures and other sides' construction
   that were there when you last looked, but no units or workers.
-- In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
-  the manager; hovering the manager draws a dotted line along the way its goods travel to the
+- In the city view, green outlines are worked tiles (red if cut off), each gold ring marked `M` (or `M1` to `M4`) is
+  a manager; hovering a manager draws a dotted line along the way its goods travel to the
   city. Green grain and amber hammers show food and production, with the share that reaches the
   city.

@@ -109,7 +109,7 @@ fn every_tile_beside_a_city_delivers_everything_whatever_its_terrain() {
     // The city's income agrees: all of a forested-hills tile's goods arrive.
     let mut g = g;
     let forested_hills = around[0];
-    g.cities[0].worked = vec![forested_hills];
+    g.cities[0].clusters = one_cluster(&[forested_hills]);
     let (food, wood, metal) = g.tile_goods(forested_hills);
     assert!(wood + metal > 0);
     assert_eq!(
@@ -260,7 +260,7 @@ fn remote_cannery_collects_food_beyond_city_reach_but_not_through_an_enemy() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.sites.clear();
-    g.cities[0].worked.clear();
+    g.cities[0].clusters.clear();
     let cannery = Hex::new(0, 0);
     let farm = Hex::new(1, 0);
     assert!(!g.routes(0).costs.contains_key(&farm));
@@ -289,7 +289,7 @@ fn remote_smelter_collects_unworked_mines_beyond_city_reach() {
     g.units.clear();
     g.fog_of_war = false;
     g.sites.clear();
-    g.cities[0].worked.clear();
+    g.cities[0].clusters.clear();
     let smelter = Hex::new(0, 0);
     let mine = Hex::new(1, 0);
     assert!(g.site_available(0, Building::Smelter, smelter));
@@ -390,10 +390,10 @@ fn hill_watchpost_reveals_distant_hexes() {
 fn economy_ticks_once_into_the_stockpile_and_preserves_quarters() {
     let mut g = GameState::city_scenario();
     g.units.clear();
-    g.cities[0].worked.clear();
+    g.cities[0].clusters.clear();
     let tile = Hex::new(-1, 0);
     g.roads.clear();
-    g.cities[0].worked.push(tile);
+    g.cities[0].clusters = one_cluster(&[tile]);
     // The center's 2 food and 1 wood, and half of the plains' 2 food and
     // 1 wood, which is a long haul away.
     assert_eq!(
@@ -543,7 +543,7 @@ fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
     // Nothing comes in, and enough wood for one Melee: city 0 pays first,
     // its city queue before its Barracks', and the others wait.
     for c in [0, other] {
-        g.cities[c].worked.clear();
+        g.cities[c].clusters.clear();
         g.cities[c].population = 1;
     }
     let melee = Build::Unit(BuildUnit::Melee);
@@ -720,11 +720,7 @@ fn growth_is_bought_with_food_when_it_starts_and_takes_its_turns() {
     assert_eq!(g.cities[0].population, population, "not grown yet");
     g.resolve_economy();
     assert_eq!(g.cities[0].population, population + 1);
-    assert_eq!(
-        g.cities[0].worked.len(),
-        population + 1,
-        "the citizen works"
-    );
+    assert_eq!(g.cities[0].working(), population + 1, "the citizen works");
 
     // No Grow past the cap, counting those queued.
     g.cities[0].population = MAX_CITY_POPULATION - 1;
@@ -796,12 +792,12 @@ fn a_side_that_cannot_feed_its_citizens_starves_its_largest_city() {
 #[test]
 fn workers_after_the_manager_must_be_adjacent_to_it() {
     let mut g = GameState::city_scenario();
-    g.cities[0].worked.clear();
+    g.cities[0].clusters.clear();
     let manager = Hex::new(-1, 0);
     let nearby = Hex::new(-1, 1);
     let distant = Hex::new(-3, 0);
     assert!(g.may_assign(0, manager));
-    g.cities[0].worked.push(manager);
+    g.cities[0].clusters = one_cluster(&[manager]);
     assert!(g.may_assign(0, nearby));
     assert!(!g.may_assign(0, distant));
 }
@@ -812,25 +808,25 @@ fn blocked_worked_tile_is_restored_after_the_unit_leaves() {
     g.units.clear();
     let manager = Hex::new(-2, 0);
     let blocked_worker = Hex::new(-1, 0);
-    g.cities[0].worked = vec![manager, blocked_worker];
-    g.cities[0].remembered_worked = g.cities[0].worked.clone();
+    g.cities[0].clusters = one_cluster(&[manager, blocked_worker]);
+    g.cities[0].remembered = g.cities[0].clusters.clone();
     g.units
         .push(Unit::new(777, blocked_worker, Team::Red, UnitType::Melee));
 
     g.reconcile_citizens(0);
-    assert!(!g.cities[0].worked.contains(&blocked_worker));
-    assert!(g.cities[0].remembered_worked.contains(&blocked_worker));
+    assert!(!g.cities[0].works(blocked_worker));
+    assert!(cluster_tiles(&g.cities[0].remembered).any(|h| h == blocked_worker));
 
     g.units.clear();
     g.reconcile_citizens(0);
-    assert!(g.cities[0].worked.contains(&blocked_worker));
+    assert!(g.cities[0].works(blocked_worker));
 }
 #[test]
 fn assignments_obey_population() {
     let mut g = GameState::city_scenario();
     g.auto_assign_city(0);
-    assert_eq!(g.cities[0].worked.len(), 2);
-    assert!(!g.may_assign(1, g.cities[0].worked[0]));
+    assert_eq!(g.cities[0].working(), 2);
+    assert!(!g.may_assign(1, g.cities[0].clusters[0].manager));
 }
 
 #[test]
@@ -873,8 +869,8 @@ fn barracks_trains_whatever_the_manager_does_and_faster_than_the_city() {
     g.units.clear();
     let manager = Hex::new(-1, 0);
     let worker = Hex::new(-1, 1);
-    g.cities[0].worked = vec![manager, worker];
-    g.cities[0].remembered_worked = g.cities[0].worked.clone();
+    g.cities[0].clusters = one_cluster(&[manager, worker]);
+    g.cities[0].remembered = g.cities[0].clusters.clone();
     g.cities[0].barracks = Some(manager);
     g.cities[0].barracks_queue = vec![Queued::prepaid(BuildUnit::Siege)];
     g.cities[0].queue = vec![Queued::prepaid(Build::Unit(BuildUnit::Siege))];
@@ -891,16 +887,16 @@ fn barracks_trains_whatever_the_manager_does_and_faster_than_the_city() {
     );
 
     // The manager elsewhere doesn't pause it.
-    g.cities[0].worked.swap(0, 1);
-    g.cities[0].remembered_worked = g.cities[0].worked.clone();
+    swap_manager(&mut g.cities[0].clusters[0]);
+    g.cities[0].remembered = g.cities[0].clusters.clone();
     g.resolve_economy();
     assert_eq!(g.cities[0].barracks_queue[0].progress, 2 * WORK_PER_TURN);
     g.cities[0].barracks_queue[0].progress = WORK_PER_TURN;
 
     // With production speeding builds, the Barracks adds what's delivered
     // to it, with its own delivery falloff.
-    g.cities[0].worked.swap(0, 1);
-    g.cities[0].remembered_worked = g.cities[0].worked.clone();
+    swap_manager(&mut g.cities[0].clusters[0]);
+    g.cities[0].remembered = g.cities[0].clusters.clone();
     g.production_speedup = true;
     let barracks_income = g.barracks_income(0);
     assert!(barracks_income > 0);
@@ -964,7 +960,7 @@ fn a_barracks_may_stand_on_an_unworked_tile_as_its_card_says() {
         .all_hexes()
         .find(|&h| {
             h.distance(city) <= 3
-                && !g.cities.iter().any(|c| c.worked.contains(&h))
+                && !g.cities.iter().any(|c| c.works(h))
                 && g.site_available(0, Building::Barracks, h)
         })
         .expect("an open, unworked land tile in reach");
@@ -1101,7 +1097,7 @@ fn mill_restores_food_delivery_only_within_city_reach() {
     g.roads.clear();
     let worked = Hex::new(-1, 0);
     assert_eq!(g.routes(0).costs.get(&worked), Some(&6));
-    g.cities[0].worked = vec![worked];
+    g.cities[0].clusters = one_cluster(&[worked]);
     let food_before = g.income(0).food;
     let food_yield = g.tile_yield(worked).0;
     g.cities[0].mill = Some(Hex::new(-2, 0));
@@ -1118,7 +1114,7 @@ fn mill_restores_food_delivery_only_within_city_reach() {
         .into_iter()
         .find(|&h| g.grid.is_passable(h))
         .unwrap();
-    g.cities[0].worked = vec![out_of_reach];
+    g.cities[0].clusters = one_cluster(&[out_of_reach]);
     g.cities[0].mill = Some(mill_site);
     assert_eq!(
         g.income(0).food,
@@ -1197,7 +1193,7 @@ fn barracks_queue_is_independent_and_completes_in_order() {
     g.selected_city = Some(0);
     let site = Hex::new(-1, 0);
     g.cities[0].barracks = Some(site);
-    g.cities[0].worked = vec![site];
+    g.cities[0].clusters = one_cluster(&[site]);
     g.queue_selected_barracks_unit(BuildUnit::Melee);
     g.queue_selected_barracks_unit(BuildUnit::Ranged);
     g.move_selected_barracks_queue_item(1, true);
@@ -1382,9 +1378,8 @@ fn priority_scores_weigh_the_order_nine_three_one_with_food_first_until_fed() {
 fn worked_goods(g: &GameState, city: usize) -> (i32, i32, i32) {
     let routes = g.routes(city);
     g.cities[city]
-        .worked
-        .iter()
-        .map(|h| g.delivered_goods(city, *h, routes.costs[h]))
+        .worked()
+        .map(|h| g.delivered_goods(city, h, routes.costs[&h]))
         .fold((8, 4, 0), |(f, w, m), (a, b, c)| (f + a, w + b, m + c))
 }
 
@@ -1392,8 +1387,8 @@ fn worked_goods(g: &GameState, city: usize) -> (i32, i32, i32) {
 fn a_citys_priority_order_picks_its_tiles_and_the_food_floor_holds() {
     let mut g = GameState::city_scenario();
     g.units.clear();
-    g.cities[0].population = MAX_CITY_POPULATION;
-    let upkeep = MAX_CITY_POPULATION as i32 * FOOD_PER_CITIZEN;
+    g.cities[0].population = CLUSTER_SIZE;
+    let upkeep = CLUSTER_SIZE as i32 * FOOD_PER_CITIZEN;
     let orders = [
         [Good::Food, Good::Wood, Good::Metal],
         [Good::Food, Good::Metal, Good::Wood],
@@ -1408,7 +1403,7 @@ fn a_citys_priority_order_picks_its_tiles_and_the_food_floor_holds() {
         .map(|order| {
             g.cities[0].priorities = order;
             g.auto_assign_city(0);
-            assert!(g.cities[0].worked.len() > 1, "{order:?}");
+            assert!(g.cities[0].working() > 1, "{order:?}");
             (order, worked_goods(&g, 0))
         })
         .collect();
@@ -1445,7 +1440,7 @@ fn a_new_citizen_takes_the_tile_the_priority_order_ranks_best() {
         g.cities[0].population = 4;
         g.cities[0].priorities = Priorities::default().with_first(first);
         g.auto_assign_city(0);
-        let before = g.cities[0].worked.clone();
+        let before = g.cities[0].worked().collect::<Vec<_>>();
         // It grows: reconciling fills the new slot by the order (food
         // first if the tiles kept don't feed it), keeping the others.
         g.cities[0].population += 1;
@@ -1463,7 +1458,7 @@ fn a_new_citizen_takes_the_tile_the_priority_order_ranks_best() {
             .max()
             .expect("a free tile by the manager");
         g.reconcile_citizens(0);
-        let worked = g.cities[0].worked.clone();
+        let worked = g.cities[0].worked().collect::<Vec<_>>();
         assert_eq!(worked.len(), 5, "{first:?}");
         assert_eq!(worked[..before.len()], before[..], "{first:?}");
         assert_eq!(score(&g, worked[before.len()]), best, "{first:?}");
@@ -1484,23 +1479,23 @@ fn no_citizen_works_a_city_center_or_a_building_tile() {
         .unwrap();
     g.cities[0].barracks = Some(barracks);
     g.cities[0].population = MAX_CITY_POPULATION;
-    g.cities[0].worked = vec![manager];
-    g.cities[0].remembered_worked = vec![manager, center, barracks];
+    g.cities[0].clusters = one_cluster(&[manager]);
+    g.cities[0].remembered = one_cluster(&[manager, center, barracks]);
     g.reconcile_citizens(0);
-    let worked = &g.cities[0].worked;
+    let worked: Vec<Hex> = g.cities[0].worked().collect();
     assert_eq!(worked[0], manager);
     assert!(!worked.contains(&center), "{worked:?}");
     assert!(!worked.contains(&barracks), "{worked:?}");
     assert!(worked.len() > 1, "the others found open tiles");
     // Nor by hand, nor as the manager.
     assert!(!g.may_assign(0, center) && !g.may_assign(0, barracks));
-    assert!(!g.may_be_manager(0, barracks));
+    assert!(!g.may_be_manager(0, 0, barracks));
     g.open_city(0);
     g.city_click(barracks);
-    assert!(!g.cities[0].worked.contains(&barracks));
+    assert!(!g.cities[0].works(barracks));
     assert_eq!(g.notice, "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT");
     // A city center's yield comes in whoever works what.
-    g.cities[0].worked.clear();
+    g.cities[0].clusters.clear();
     assert_eq!(g.income(0).food, 8, "2 food from the center alone");
 }
 
@@ -1511,18 +1506,21 @@ fn city_menu_keeps_barracks_clicks_in_manager_assignment_context() {
     g.explore();
     let manager = Hex::new(-2, 0);
     let barracks = Hex::new(-1, 0);
-    g.cities[0].worked = vec![manager];
+    g.cities[0].clusters = one_cluster(&[manager]);
     g.cities[0].barracks = Some(barracks);
     g.open_city(0);
 
     g.city_click(manager);
-    assert_eq!(g.moving_manager, Some(0));
+    assert_eq!(g.moving_manager, Some((0, 0)));
     g.city_click(barracks);
 
     // A building covers its tile: the manager can't go there, and the
     // click stays with the city rather than opening the Barracks.
-    assert_eq!(g.cities[0].worked.first(), Some(&manager));
-    assert_eq!(g.moving_manager, Some(0));
+    assert_eq!(
+        g.cities[0].clusters.first().map(|c| c.manager),
+        Some(manager)
+    );
+    assert_eq!(g.moving_manager, Some((0, 0)));
     assert_eq!(g.selected_city, Some(0));
     assert_eq!(g.selected_barracks, None);
 }
@@ -1549,7 +1547,7 @@ fn a_queue_of_units_completes_at_the_rate_production_allows() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.roads.clear();
-    g.cities[0].worked = vec![Hex::new(-3, 0)];
+    g.cities[0].clusters = one_cluster(&[Hex::new(-3, 0)]);
     g.cities[0].queue = vec![Queued::prepaid(Build::Unit(BuildUnit::Melee)); 6];
     let cost = g.city_build_work(0, Build::Unit(BuildUnit::Melee));
 
@@ -1782,15 +1780,14 @@ fn reconciliation_never_assigns_a_citizen_to_a_city_center() {
     let center = game.cities[city].pos;
     let manager = center.neighbors()[0];
     game.cities[city].population = 7;
-    game.cities[city].worked = vec![manager, center];
-    game.cities[city].remembered_worked = vec![manager, center];
+    game.cities[city].clusters = one_cluster(&[manager, center]);
+    game.cities[city].remembered = one_cluster(&[manager, center]);
     game.reconcile_citizens(city);
-    assert!(!game.cities[city].worked.contains(&center));
-    assert!(!game.may_be_manager(city, center));
+    assert!(!game.cities[city].works(center));
+    assert!(!game.may_be_manager(city, 0, center));
     assert!(
         game.cities[city]
-            .worked
-            .iter()
+            .worked()
             .skip(1)
             .all(|h| h.distance(manager) == 1)
     );
@@ -1952,7 +1949,7 @@ fn a_cleared_queue_makes_a_plan_that_passes_the_checks() {
         .pos
         .neighbors()
         .into_iter()
-        .find(|h| guest.grid.is_passable(*h) && !c.worked.contains(h));
+        .find(|h| guest.grid.is_passable(*h) && !c.works(*h));
     for game in [&mut host, &mut guest] {
         let c = &mut game.cities[city];
         c.barracks = barracks;
@@ -2002,8 +1999,8 @@ fn city_with_a_unit_on_a_workable_tile() -> (GameState, usize, Hex) {
     g.units.clear();
     g.explore();
     let tile = Hex::new(-1, 0);
-    g.cities[0].worked = vec![Hex::new(-2, 0)];
-    g.cities[0].remembered_worked = g.cities[0].worked.clone();
+    g.cities[0].clusters = one_cluster(&[Hex::new(-2, 0)]);
+    g.cities[0].remembered = g.cities[0].clusters.clone();
     g.units
         .push(Unit::new(900, tile, Team::Blue, UnitType::Melee));
     g.open_city(0);
@@ -2034,11 +2031,15 @@ const OFF_TOKEN: glam::Vec2 = glam::Vec2::new(0.6, 0.0);
 fn clicking_a_units_token_in_the_city_view_selects_it_and_closes_the_city() {
     for classic in [false, true] {
         let (mut g, unit, tile) = city_with_a_unit_on_a_workable_tile();
-        let worked = g.cities[0].worked.clone();
+        let worked = g.cities[0].worked().collect::<Vec<_>>();
         click_at(&mut g, tile.to_world(), classic);
         assert_eq!(g.selected, Some(unit), "classic: {classic}");
         assert_eq!(g.selected_city, None);
-        assert_eq!(g.cities[0].worked, worked, "no citizen moved");
+        assert_eq!(
+            g.cities[0].worked().collect::<Vec<_>>(),
+            worked,
+            "no citizen moved"
+        );
     }
 }
 
@@ -2053,9 +2054,9 @@ fn clicking_a_units_tile_off_its_token_still_assigns_a_citizen() {
         click_at(&mut g, point, classic);
         assert_eq!(g.selected, None, "classic: {classic}");
         assert_eq!(g.selected_city, Some(0));
-        assert!(g.cities[0].worked.contains(&tile), "{}", g.notice);
+        assert!(g.cities[0].works(tile), "{}", g.notice);
         click_at(&mut g, point, classic);
-        assert!(!g.cities[0].worked.contains(&tile));
+        assert!(!g.cities[0].works(tile));
         assert_eq!(g.selected_city, Some(0));
     }
 }
@@ -2137,16 +2138,21 @@ fn placing_and_manager_clicks_are_not_taken_by_unit_tokens() {
     // The manager's tile, with a unit on it: off the token picks the
     // manager up; then a click on a unit's token is where it goes.
     let (mut g, _, tile) = city_with_a_unit_on_a_workable_tile();
-    let manager = g.cities[0].worked[0];
+    let manager = g.cities[0].clusters[0].manager;
     g.units
         .push(Unit::new(902, manager, Team::Blue, UnitType::Melee));
     click_at(&mut g, manager.to_world() + OFF_TOKEN, false);
-    assert_eq!(g.moving_manager, Some(0), "{}", g.notice);
+    assert_eq!(g.moving_manager, Some((0, 0)), "{}", g.notice);
     assert_eq!(g.selected, None);
-    assert!(g.may_be_manager(0, tile));
+    assert!(g.may_be_manager(0, 0, tile));
     click_at(&mut g, tile.to_world(), false);
     assert_eq!(g.moving_manager, None);
-    assert_eq!(g.cities[0].worked.first(), Some(&tile), "{}", g.notice);
+    assert_eq!(
+        g.cities[0].clusters.first().map(|c| c.manager),
+        Some(tile),
+        "{}",
+        g.notice
+    );
     assert_eq!(g.selected, None);
     assert_eq!(g.selected_city, Some(0));
 
@@ -2156,4 +2162,290 @@ fn placing_and_manager_clicks_are_not_taken_by_unit_tokens() {
     assert!(g.city_click_at(tile, tile.to_world()));
     assert_eq!(g.selected, None);
     assert_eq!(g.interior_view, Some(0));
+}
+
+/// Swaps a cluster's manager with its first worker.
+fn swap_manager(cluster: &mut Cluster) {
+    std::mem::swap(&mut cluster.manager, &mut cluster.workers[0]);
+}
+
+/// `g`'s city `city` at `population`, its citizens auto-assigned.
+fn grown(g: &mut GameState, city: usize, population: usize) {
+    g.cities[city].population = population;
+    g.auto_assign_city(city);
+}
+
+/// The cluster rules hold for `city`: no more managers than its population
+/// allows, each on land and beside none of the others, each worker beside
+/// its own manager, six at most, and no tile twice.
+fn assert_clusters_hold(g: &GameState, city: usize) {
+    let c = &g.cities[city];
+    assert!(c.clusters.len() <= c.managers_allowed(), "{:?}", c.clusters);
+    assert!(c.working() <= c.capacity());
+    let mut seen = crate::game::fast_hash::HashSet::default();
+    for (k, cluster) in c.clusters.iter().enumerate() {
+        assert!(!g.grid.terrain(cluster.manager).is_water(), "M{}", k + 1);
+        for other in &c.clusters[..k] {
+            assert!(other.manager.distance(cluster.manager) > 1, "M{}", k + 1);
+        }
+        assert!(cluster.workers.len() <= WORKERS_PER_MANAGER);
+        for w in &cluster.workers {
+            assert_eq!(w.distance(cluster.manager), 1, "M{}: {w:?}", k + 1);
+        }
+    }
+    for h in c.worked() {
+        assert!(seen.insert(h), "{h:?} twice");
+    }
+}
+
+#[test]
+fn a_city_has_a_manager_for_each_seven_citizens_or_part_up_to_four() {
+    assert_eq!(MAX_CITY_POPULATION, 28);
+    let allowed: Vec<usize> = [1, 7, 8, 14, 15, 21, 22, 28, 40]
+        .into_iter()
+        .map(managers_for)
+        .collect();
+    assert_eq!(allowed, [1, 1, 2, 2, 3, 3, 4, 4, 4]);
+}
+
+#[test]
+fn auto_assign_fills_a_cluster_then_starts_the_next_on_the_best_open_land() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    let routes = g.routes(0);
+    for population in [7, 8, 15, 22, 28] {
+        grown(&mut g, 0, population);
+        let c = &g.cities[0];
+        assert_eq!(c.clusters.len(), managers_for(population), "{population}");
+        assert_eq!(c.remembered, c.clusters, "remembered as assigned");
+        assert_clusters_hold(&g, 0);
+        // A cluster is full, or has no open tile beside its manager, before
+        // the next begins; and a citizen idles only when no cluster has
+        // room and no new manager may start.
+        let open_beside = |m: Hex| {
+            m.neighbors()
+                .into_iter()
+                .any(|h| routes.costs.contains_key(&h) && g.is_open(0, h))
+        };
+        for cluster in &c.clusters[..c.clusters.len() - 1] {
+            assert!(
+                cluster.workers.len() == WORKERS_PER_MANAGER || !open_beside(cluster.manager),
+                "{population}: {cluster:?}"
+            );
+        }
+        if c.working() < population {
+            assert!(
+                c.clusters.iter().all(|cluster| {
+                    cluster.workers.len() == WORKERS_PER_MANAGER || !open_beside(cluster.manager)
+                }),
+                "{population}"
+            );
+        }
+    }
+    // A new manager is the open land tile the order ranks best, clear of the
+    // others; ties by coordinates.
+    grown(&mut g, 0, 7);
+    let first = g.cities[0].clusters.clone();
+    g.cities[0].population = 8;
+    g.reconcile_citizens(0);
+    let c = &g.cities[0];
+    assert_eq!(c.clusters[0], first[0], "the first cluster stays");
+    let new = c.clusters[1].manager;
+    let routes = g.routes(0);
+    let food = worked_goods(&g, 0).0 - g.delivered_goods(0, new, routes.costs[&new]).0;
+    let fed = g.is_fed(0, food);
+    let score = |h: Hex| {
+        c.priorities
+            .score(g.delivered_goods(0, h, routes.costs[&h]), fed)
+    };
+    let best = routes
+        .costs
+        .keys()
+        .filter(|&&h| {
+            (h == new || g.is_open(0, h))
+                && !g.grid.terrain(h).is_water()
+                && first[0].manager.distance(h) > 1
+        })
+        .map(|&h| (-score(h), h.q, h.r))
+        .min()
+        .unwrap();
+    assert_eq!((-score(new), new.q, new.r), best);
+}
+
+#[test]
+fn clicks_add_a_worker_beside_a_manager_or_start_a_cluster_when_allowed() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.fog_of_war = false;
+    grown(&mut g, 0, 9);
+    g.open_city(0);
+    // Free a slot: release a worker of the first cluster.
+    let released = g.cities[0].clusters[0].workers[0];
+    g.city_click(released);
+    assert_eq!(g.notice, "CITIZEN UNASSIGNED");
+    assert_eq!(g.cities[0].working(), 8);
+    assert!(!cluster_tiles(&g.cities[0].remembered).any(|h| h == released));
+    // A tile beside no manager, with the managers the city may have: refused.
+    let away = |g: &GameState, land: bool| {
+        g.routes(0)
+            .costs
+            .keys()
+            .copied()
+            .filter(|&h| {
+                g.is_open(0, h)
+                    && (!land || !g.grid.terrain(h).is_water())
+                    && g.cities[0]
+                        .clusters
+                        .iter()
+                        .all(|c| c.manager.distance(h) > 2)
+            })
+            .min_by_key(|h| (h.q, h.r))
+            .expect("an open tile away from the managers")
+    };
+    let far = away(&g, false);
+    g.city_click(far);
+    assert!(
+        g.notice.contains("ANOTHER MANAGER AT 15 CITIZENS"),
+        "{}",
+        g.notice
+    );
+    assert!(!g.cities[0].works(far));
+    // Back beside its manager, it's a worker again.
+    g.city_click(released);
+    assert_eq!(g.notice, "CITIZEN ASSIGNED");
+    assert_eq!(g.cities[0].cluster_of(released), Some(0));
+    // With a third manager allowed and a slot free, a click on open land
+    // clear of the managers starts one; beside a manager, it can't.
+    g.cities[0].population = 15;
+    let clusters = g.cities[0].clusters.len();
+    assert_eq!(clusters, 2);
+    let beside = g.cities[0].clusters[1]
+        .manager
+        .neighbors()
+        .into_iter()
+        .find(|&h| {
+            g.is_open(0, h) && !g.grid.terrain(h).is_water() && g.cluster_with_room(0, h).is_none()
+        });
+    if let Some(beside) = beside {
+        g.city_click(beside);
+        assert_eq!(
+            g.notice, "A MANAGER WORKS LAND, NOT BESIDE ANOTHER MANAGER",
+            "{beside:?}"
+        );
+    }
+    let land_far = away(&g, true);
+    g.city_click(land_far);
+    assert_eq!(g.notice, "MANAGER ASSIGNED - A NEW CLUSTER");
+    assert_eq!(g.cities[0].clusters.len(), clusters + 1);
+    assert_eq!(g.cities[0].clusters.last().unwrap().manager, land_far);
+    assert_eq!(g.cities[0].remembered, g.cities[0].clusters);
+    assert_clusters_hold(&g, 0);
+}
+
+#[test]
+fn moving_a_manager_takes_its_own_cluster_and_leaves_the_others() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.fog_of_war = false;
+    grown(&mut g, 0, 12);
+    let before = g.cities[0].clusters.clone();
+    assert_eq!(before.len(), 2);
+    let old = before[1].manager;
+    // Not beside the other manager, or onto another cluster's tile.
+    assert!(!g.may_be_manager(0, 1, before[0].workers[0]));
+    assert!(!g.may_be_manager(0, 1, before[0].manager));
+    // Somewhere it may go (land in reach, clear of the first manager and
+    // its cluster) where one of its workers' offsets lands on an open tile.
+    let routes = g.routes(0);
+    let shift_to = |to: Hex, h: Hex| Hex::new(h.q + to.q - old.q, h.r + to.r - old.r);
+    let to = routes
+        .costs
+        .keys()
+        .copied()
+        .filter(|&h| {
+            g.may_be_manager(0, 1, h)
+                && !before[1].tiles().any(|t| t == h)
+                && before[1].workers.iter().any(|&w| {
+                    let t = shift_to(h, w);
+                    routes.costs.contains_key(&t) && g.is_open(0, t)
+                })
+        })
+        .min_by_key(|h| (h.distance(old), h.q, h.r))
+        .expect("somewhere to move it");
+    g.open_city(0);
+    g.city_click(old);
+    assert_eq!(g.moving_manager, Some((0, 1)));
+    g.city_click(to);
+    assert_eq!(g.moving_manager, None);
+    let after = &g.cities[0].clusters;
+    assert_eq!(after[0], before[0], "the first cluster stays put");
+    assert_eq!(after[1].manager, to);
+    // Its workers kept their offsets where they could.
+    let shift = |h: Hex| Hex::new(h.q + to.q - old.q, h.r + to.r - old.r);
+    let kept = before[1]
+        .workers
+        .iter()
+        .filter(|&&w| after[1].workers.contains(&shift(w)))
+        .count();
+    assert!(kept > 0, "{before:?} -> {after:?}");
+    assert_clusters_hold(&g, 0);
+}
+
+#[test]
+fn a_city_losing_citizens_loses_the_last_clusters_workers_then_its_manager() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    // Three clusters, 7, 7 and 2 citizens: where doesn't matter here.
+    let cluster = |q: i32, citizens: usize| Cluster {
+        manager: Hex::new(q, 0),
+        workers: Hex::new(q, 0).neighbors()[..citizens - 1].to_vec(),
+    };
+    g.cities[0].population = 16;
+    g.cities[0].clusters = vec![cluster(-4, 7), cluster(0, 7), cluster(4, 2)];
+    g.cities[0].remembered = g.cities[0].clusters.clone();
+    let sizes = |g: &GameState| -> Vec<usize> {
+        g.cities[0].clusters.iter().map(Cluster::citizens).collect()
+    };
+    let last_worker = g.cities[0].clusters[2].workers[0];
+    assert!(g.remove_citizen(0));
+    assert_eq!(sizes(&g), [7, 7, 1], "the last cluster's worker goes");
+    assert!(!g.cities[0].works(last_worker));
+    assert!(g.remove_citizen(0));
+    assert_eq!(sizes(&g), [7, 7], "then its manager");
+    assert!(g.remove_citizen(0));
+    assert_eq!(sizes(&g), [7, 6], "then the next cluster's workers");
+    assert_eq!(g.cities[0].population, 13);
+    assert_eq!(g.cities[0].remembered, g.cities[0].clusters);
+    // An idle citizen goes before any that works.
+    g.cities[0].clusters[1].workers.pop();
+    g.cities[0].remembered = g.cities[0].clusters.clone();
+    assert!(g.remove_citizen(0));
+    assert_eq!(sizes(&g), [7, 5]);
+    // Starving uses the same rule, and never goes below one citizen.
+    g.stockpiles[Team::Blue.index()].food = 0;
+    g.feed_citizens();
+    assert_eq!(g.cities[0].population, 11);
+    assert_eq!(sizes(&g), [7, 4]);
+    grown(&mut g, 0, 1);
+    assert!(!g.remove_citizen(0));
+    assert_eq!(sizes(&g), [1]);
+}
+
+#[test]
+fn a_blocked_manager_is_stood_in_for_until_its_tile_clears() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    grown(&mut g, 0, 10);
+    let first = g.cities[0].clusters[0].clone();
+    // An enemy on the first manager's tile cuts it off: its first worker
+    // that can manage stands in, and the cluster rules still hold.
+    g.units
+        .push(Unit::new(777, first.manager, Team::Red, UnitType::Melee));
+    g.reconcile_citizens(0);
+    assert!(!g.cities[0].works(first.manager));
+    assert_clusters_hold(&g, 0);
+    g.units.clear();
+    g.reconcile_citizens(0);
+    assert_eq!(g.cities[0].clusters[0], first, "back as it was");
+    assert_clusters_hold(&g, 0);
 }

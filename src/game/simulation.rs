@@ -15,7 +15,9 @@ use std::thread;
 
 mod economy;
 
-use super::city::{Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, Queued};
+use super::city::{
+    Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, Queued, WORKERS_PER_MANAGER,
+};
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
@@ -377,13 +379,55 @@ fn check_invariants(game: &GameState, context: &str) {
             city.population
         );
         assert!(
-            city.worked.len() <= city.population,
+            city.working() <= city.population,
             "{context}: city {} works {} tiles with population {}",
             city.id,
-            city.worked.len(),
+            city.working(),
             city.population
         );
-        for (index, &hex) in city.worked.iter().enumerate() {
+        // Up to four managers, one for each seven citizens or part of that,
+        // on land and beside none of the others; each worker beside its own
+        // manager, six at most to a manager.
+        assert!(
+            city.clusters.len() <= MAX_MANAGERS && city.clusters.len() <= city.managers_allowed(),
+            "{context}: city {} has {} managers with population {}",
+            city.id,
+            city.clusters.len(),
+            city.population
+        );
+        for (k, cluster) in city.clusters.iter().enumerate() {
+            let manager = cluster.manager;
+            assert!(
+                !game.grid.terrain(manager).is_water(),
+                "{context}: city {} manager {} on water at {manager:?}",
+                city.id,
+                k + 1
+            );
+            assert!(
+                city.clusters[..k]
+                    .iter()
+                    .all(|other| other.manager.distance(manager) > 1),
+                "{context}: city {} manager {} beside another",
+                city.id,
+                k + 1
+            );
+            assert!(
+                cluster.workers.len() <= WORKERS_PER_MANAGER,
+                "{context}: city {} manager {} runs {} workers",
+                city.id,
+                k + 1,
+                cluster.workers.len()
+            );
+            for &worker in &cluster.workers {
+                assert_eq!(
+                    manager.distance(worker),
+                    1,
+                    "{context}: city {} worker is not adjacent to its manager",
+                    city.id
+                );
+            }
+        }
+        for hex in city.worked() {
             assert!(
                 game.cities.iter().all(|other| other.pos != hex),
                 "{context}: city {} works a city center at {hex:?}",
@@ -393,14 +437,6 @@ fn check_invariants(game: &GameState, context: &str) {
                 all_worked_tiles.insert(hex),
                 "{context}: worked tile claimed by multiple citizens"
             );
-            if index > 0 {
-                assert_eq!(
-                    city.worked[0].distance(hex),
-                    1,
-                    "{context}: city {} worker is not adjacent to its manager",
-                    city.id
-                );
-            }
         }
         assert!(
             (0.0..=CORE_HP).contains(&city.interior.core_hp),

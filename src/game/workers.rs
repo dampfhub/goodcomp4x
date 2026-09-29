@@ -1257,7 +1257,7 @@ impl GameState {
                 continue;
             }
             let stock = self.stock(team);
-            let worked = c.worked.clone();
+            let worked: Vec<Hex> = c.worked().collect();
             let job = [JobKind::Improve, JobKind::Road]
                 .into_iter()
                 .find_map(|kind| {
@@ -1887,9 +1887,7 @@ mod tests {
         let mut game = cities();
         let city = game.cities[0].pos;
         let tile = game.cities[0]
-            .worked
-            .iter()
-            .copied()
+            .worked()
             .find(|&h| h.distance(city) == 1)
             .expect("a worked tile next to the city");
         assert!(game.routes(0).costs.contains_key(&tile));

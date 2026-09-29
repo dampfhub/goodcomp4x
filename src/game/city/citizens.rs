@@ -1,8 +1,10 @@
-//! Citizens: the priority order, tile assignment (the manager and its
-//! workers), growth, and the end-of-turn economy tick.
+//! Citizens: the priority order, tile assignment (up to `MAX_MANAGERS`
+//! clusters of a manager and its workers), losing a citizen, and the
+//! end-of-turn economy tick.
 
 use super::{
-    Building, FOOD_PER_CITIZEN, Good, MAX_CITY_POPULATION, Priorities, Routes, delivered_share,
+    Building, Cluster, FOOD_PER_CITIZEN, Good, Priorities, Routes, WORKERS_PER_MANAGER,
+    cluster_tiles, delivered_share,
 };
 use crate::game::GameState;
 use crate::game::fast_hash::HashSet;
@@ -13,6 +15,25 @@ use crate::game::hex::Hex;
 const FOOD_FLOOR_MARGIN: i32 = 4;
 /// The city center's own food, which counts toward the food floor.
 const CENTER_FOOD: i32 = 8;
+
+/// A tile a citizen might take, with its delivered food, wood and metal.
+type Candidate = (Hex, (i32, i32, i32));
+
+/// Trims `clusters` to `capacity` citizens and `allowed` managers: the
+/// last cluster's last worker goes first, and a manager only once its
+/// cluster has no workers left.
+pub(super) fn trim_clusters(clusters: &mut Vec<Cluster>, capacity: usize, allowed: usize) {
+    while clusters.iter().map(Cluster::citizens).sum::<usize>() > capacity
+        || clusters.len() > allowed
+    {
+        let Some(last) = clusters.last_mut() else {
+            break;
+        };
+        if last.workers.pop().is_none() {
+            clusters.pop();
+        }
+    }
+}
 
 impl GameState {
     /// The open city's priority order changes (a chip dragged, or clicked
@@ -60,10 +81,9 @@ impl GameState {
     fn worked_food(&self, city: usize, routes: &Routes) -> i32 {
         CENTER_FOOD
             + self.cities[city]
-                .worked
-                .iter()
-                .filter_map(|h| routes.costs.get(h).map(|&cost| (h, cost)))
-                .map(|(&h, cost)| self.delivered_goods(city, h, cost).0)
+                .worked()
+                .filter_map(|h| routes.costs.get(&h).map(|&cost| (h, cost)))
+                .map(|(h, cost)| self.delivered_goods(city, h, cost).0)
                 .sum::<i32>()
     }
 
@@ -79,228 +99,252 @@ impl GameState {
         })
     }
 
-    pub(super) fn may_assign(&self, city: usize, hex: Hex) -> bool {
-        let manager_can_reach = self.cities[city]
-            .worked
-            .first()
-            .is_none_or(|manager| manager.distance(hex) == 1);
-        manager_can_reach
-            && !self.closed_to_citizens(hex)
-            && !self.cities.iter().any(|c| c.worked.contains(&hex))
+    /// Whether `city`'s citizens may take `hex` at all: no city center or
+    /// building on it, no citizen of any city working it, and no other
+    /// side's site.
+    pub(super) fn is_open(&self, city: usize, hex: Hex) -> bool {
+        !self.closed_to_citizens(hex)
+            && !self.cities.iter().any(|c| c.works(hex))
             && self
                 .sites
                 .get(&hex)
                 .is_none_or(|s| s.team == self.cities[city].team)
     }
 
-    pub(super) fn may_be_manager(&self, city: usize, hex: Hex) -> bool {
+    /// The first of `city`'s clusters with room for a worker on `hex`: its
+    /// manager beside it, and fewer than `WORKERS_PER_MANAGER` workers.
+    pub(super) fn cluster_with_room(&self, city: usize, hex: Hex) -> Option<usize> {
+        self.cities[city]
+            .clusters
+            .iter()
+            .position(|c| c.workers.len() < WORKERS_PER_MANAGER && c.manager.distance(hex) == 1)
+    }
+
+    /// Whether `hex` could take a new manager of `city`, as far as its
+    /// other managers go: on land, and beside none of them (`except`, the
+    /// cluster whose manager is moving, aside).
+    pub(super) fn clear_of_managers(&self, city: usize, hex: Hex, except: Option<usize>) -> bool {
+        !self.grid.terrain(hex).is_water()
+            && self.cities[city]
+                .clusters
+                .iter()
+                .enumerate()
+                .all(|(k, c)| Some(k) == except || c.manager.distance(hex) > 1)
+    }
+
+    /// Whether a citizen can be assigned to `hex`: it's open, and either a
+    /// manager with room is beside it, or the city may start a cluster
+    /// there (it has fewer managers than its population allows, and `hex`
+    /// is land clear of its other managers). A click assigns by the same
+    /// rules (`city_click`), each with its own notice.
+    #[cfg(test)]
+    pub(super) fn may_assign(&self, city: usize, hex: Hex) -> bool {
+        let c = &self.cities[city];
+        self.is_open(city, hex)
+            && (self.cluster_with_room(city, hex).is_some()
+                || (c.clusters.len() < c.managers_allowed()
+                    && self.clear_of_managers(city, hex, None)))
+    }
+
+    /// Whether cluster `cluster`'s manager can move to `hex`: land in the
+    /// city's reach that no building, other city or other of its clusters
+    /// takes, beside none of its other managers.
+    pub(super) fn may_be_manager(&self, city: usize, cluster: usize, hex: Hex) -> bool {
+        let c = &self.cities[city];
         !self.closed_to_citizens(hex)
             && !self
                 .cities
                 .iter()
                 .enumerate()
-                .any(|(i, c)| i != city && c.worked.contains(&hex))
-            && self
-                .sites
-                .get(&hex)
-                .is_none_or(|site| site.team == self.cities[city].team)
-            && !self.grid.terrain(hex).is_water()
+                .any(|(i, other)| i != city && other.works(hex))
+            && c.cluster_of(hex).is_none_or(|k| k == cluster)
+            && self.sites.get(&hex).is_none_or(|site| site.team == c.team)
+            && self.clear_of_managers(city, hex, Some(cluster))
             && self.routes(city).costs.contains_key(&hex)
     }
 
-    /// Whether `hex` can take the city's next citizen as far as the manager
-    /// goes: the first citizen, the manager, has to be on land.
-    pub(super) fn may_manage_or_work(&self, city: usize, hex: Hex) -> bool {
-        !self.cities[city].worked.is_empty() || !self.grid.terrain(hex).is_water()
-    }
-
-    /// Relocates the manager and carries each worker's axial offset with it.
-    /// Workers whose matching tile is unavailable are filled by normal auto-assignment.
-    pub(super) fn move_manager(&mut self, city: usize, new_manager: Hex) {
-        let old = self.cities[city].worked.clone();
-        let old_manager = old[0];
+    /// Relocates cluster `cluster`'s manager and carries each of its
+    /// workers' axial offsets with it; the other clusters stay. Workers
+    /// whose matching tile is unavailable are filled by normal
+    /// auto-assignment.
+    pub(super) fn move_manager(&mut self, city: usize, cluster: usize, new_manager: Hex) {
+        let old = self.cities[city].clusters[cluster].clone();
         let routes = self.routes(city);
-        let other_claims: HashSet<Hex> = self
+        let claims: HashSet<Hex> = self
             .cities
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != city)
-            .flat_map(|(_, c)| c.worked.iter().copied())
+            .flat_map(|(i, c)| {
+                c.clusters
+                    .iter()
+                    .enumerate()
+                    .filter(move |&(k, _)| i != city || k != cluster)
+                    .flat_map(|(_, c)| c.tiles())
+            })
             .collect();
-        let mut relocated = vec![new_manager];
-        for worker in old.into_iter().skip(1) {
+        let mut relocated = Cluster::new(new_manager);
+        for worker in old.workers {
             let target = Hex::new(
-                new_manager.q + worker.q - old_manager.q,
-                new_manager.r + worker.r - old_manager.r,
+                new_manager.q + worker.q - old.manager.q,
+                new_manager.r + worker.r - old.manager.r,
             );
             let legal = routes.costs.contains_key(&target)
-                && !other_claims.contains(&target)
+                && !claims.contains(&target)
                 && !self.closed_to_citizens(target)
                 && self
                     .sites
                     .get(&target)
                     .is_none_or(|site| site.team == self.cities[city].team);
-            if legal && !relocated.contains(&target) {
-                relocated.push(target);
+            if legal && target != new_manager && !relocated.workers.contains(&target) {
+                relocated.workers.push(target);
             }
         }
-        self.cities[city].worked = relocated;
-        self.cities[city].remembered_worked = self.cities[city].worked.clone();
+        self.cities[city].clusters[cluster] = relocated;
+        self.cities[city].remembered = self.cities[city].clusters.clone();
         self.reconcile_citizens(city);
         self.notice = "MANAGER MOVED - WORKERS FOLLOWED WHERE POSSIBLE".into();
     }
 
-    /// Assigns the city's citizens afresh, one at a time, each to the free
-    /// tile worth the most by its priority order (`Priorities::score`,
-    /// food first until the city is fed); ties go by hex coordinates.
+    /// Assigns the city's citizens afresh (`fill_citizens`).
     pub(in crate::game) fn auto_assign_city(&mut self, city: usize) {
-        self.cities[city].worked.clear();
+        self.cities[city].clusters.clear();
         let routes = self.routes(city);
-        // Each tile's food, wood and metal as delivered to the city.
-        let mut tiles: Vec<_> = routes
+        self.fill_citizens(city, &routes);
+        self.cities[city].remembered = self.cities[city].clusters.clone();
+    }
+
+    /// Fills `city`'s open slots one citizen at a time, each on the open
+    /// tile worth the most by its priority order (`Priorities::score`,
+    /// food first until the city is fed; ties go by hex coordinates): a
+    /// worker, beside a manager with room (the first such cluster takes
+    /// it), or, once no manager has room or an open tile beside it, a new
+    /// manager, on land clear of its other managers, while its population
+    /// allows another.
+    fn fill_citizens(&mut self, city: usize, routes: &Routes) {
+        let mut tiles: Vec<Candidate> = routes
             .costs
             .iter()
-            .filter(|(h, _)| self.may_assign(city, **h))
+            .filter(|(h, _)| self.is_open(city, **h))
             .map(|(&h, &cost)| (h, self.delivered_goods(city, h, cost)))
             .collect();
-        let mut food = CENTER_FOOD;
-        while self.cities[city].worked.len() < self.cities[city].population.min(MAX_CITY_POPULATION)
-            && !tiles.is_empty()
-        {
-            if let Some(manager) = self.cities[city].worked.first().copied() {
-                tiles.retain(|(hex, _)| manager.distance(*hex) == 1);
-            }
-            let Some(pick) = self.best_tile(city, &tiles, food) else {
+        let mut food = self.worked_food(city, routes);
+        while self.cities[city].working() < self.cities[city].capacity() {
+            let c = &self.cities[city];
+            let worker = self.best_tile(city, &tiles, food, |h| {
+                self.cluster_with_room(city, h).is_some()
+            });
+            let pick = match worker {
+                Some(pick) => Some((pick, false)),
+                None if c.clusters.len() < c.managers_allowed() => self
+                    .best_tile(city, &tiles, food, |h| {
+                        self.clear_of_managers(city, h, None)
+                    })
+                    .map(|pick| (pick, true)),
+                None => None,
+            };
+            let Some((pick, as_manager)) = pick else {
                 break;
             };
             let (hex, (f, _, _)) = tiles.remove(pick);
-            self.cities[city].worked.push(hex);
+            if as_manager {
+                self.cities[city].clusters.push(Cluster::new(hex));
+            } else {
+                let k = self.cluster_with_room(city, hex).expect("room beside it");
+                self.cities[city].clusters[k].workers.push(hex);
+            }
             food += f;
         }
-        self.cities[city].remembered_worked = self.cities[city].worked.clone();
     }
 
-    /// Of `tiles` (each with its delivered goods), the one `city`'s next
+    /// Of `tiles` that `allowed` lets it take, the one `city`'s next
     /// citizen takes: the most by its priority order, food first while
-    /// `food` doesn't feed it, ties by hex coordinates; the first citizen,
-    /// the manager, only on land.
-    fn best_tile(&self, city: usize, tiles: &[(Hex, (i32, i32, i32))], food: i32) -> Option<usize> {
+    /// `food` doesn't feed it, ties by hex coordinates.
+    fn best_tile(
+        &self,
+        city: usize,
+        tiles: &[Candidate],
+        food: i32,
+        allowed: impl Fn(Hex) -> bool,
+    ) -> Option<usize> {
         let priorities = self.cities[city].priorities;
         let fed = self.is_fed(city, food);
         tiles
             .iter()
             .enumerate()
-            .filter(|(_, (h, _))| self.may_manage_or_work(city, *h))
+            .filter(|(_, (h, _))| allowed(*h))
             .min_by_key(|(_, (h, goods))| (-priorities.score(*goods, fed), h.q, h.r))
             .map(|(i, _)| i)
     }
 
-    /// Keeps manual choices where possible, substitutes around temporarily
-    /// blocked tiles, then restores those choices once they are available.
+    /// Works the city's clusters out again from what was last assigned
+    /// (`City::remembered`), then fills what's left open (`fill_citizens`).
+    /// A remembered tile the city can't keep (out of reach, or another
+    /// city's, a city center or a building now) is skipped until it can; a
+    /// cluster whose manager can't be kept is run meanwhile by the first of
+    /// its workers that could manage, until the manager's tile is back.
+    /// Clusters past what the population allows go, last first
+    /// (`trim_clusters`).
     pub(super) fn reconcile_citizens(&mut self, city: usize) {
         let routes = self.routes(city);
-        // Tiles no citizen may take: another city's worked tiles, and city
-        // centers and placed buildings (`closed_to_citizens`).
-        let other_claims: HashSet<Hex> = self
+        let team = self.cities[city].team;
+        let others: HashSet<Hex> = self
             .cities
             .iter()
             .enumerate()
             .filter(|(i, _)| *i != city)
-            .flat_map(|(_, c)| c.worked.iter().copied())
-            .chain(
-                routes
-                    .costs
-                    .keys()
-                    .copied()
-                    .filter(|&h| self.closed_to_citizens(h)),
-            )
+            .flat_map(|(_, c)| c.worked())
             .collect();
-        let centers: HashSet<Hex> = self.cities.iter().map(|c| c.pos).collect();
-        self.cities[city].worked.retain(|h| {
-            routes.costs.contains_key(h) && !other_claims.contains(h) && !centers.contains(h)
-        });
-        // The first remembered tile is the manager. Restore it to the first
-        // slot before restoring workers, so an automatically promoted worker
-        // never becomes a permanent manager after the original tile clears.
-        let remembered = self.cities[city].remembered_worked.clone();
-        let capacity = self.cities[city].population.min(MAX_CITY_POPULATION);
-        if let Some(manager) = remembered.first().copied()
-            && routes.costs.contains_key(&manager)
-            && !other_claims.contains(&manager)
-            && !centers.contains(&manager)
-        {
-            let worked = &mut self.cities[city].worked;
-            if !worked.contains(&manager) && worked.len() >= capacity {
-                if let Some(fallback) = worked.iter().rposition(|h| !remembered.contains(h)) {
-                    worked.remove(fallback);
-                } else {
-                    worked.pop();
-                }
-            }
-            worked.retain(|h| *h != manager);
-            worked.insert(0, manager);
-        }
-
-        // Desired assignments take priority over temporary replacements. A
-        // manual change updates `remembered_worked`, so this only restores
-        // tiles that the player has not since replaced.
-        for h in remembered.iter().copied().skip(1) {
-            if routes.costs.contains_key(&h)
-                && !other_claims.contains(&h)
-                && !centers.contains(&h)
-                && !self.cities[city].worked.contains(&h)
-                && self.may_assign(city, h)
-            {
-                if self.cities[city].worked.len() >= capacity {
-                    if let Some(fallback) = self.cities[city]
-                        .worked
-                        .iter()
-                        .rposition(|tile| !remembered.contains(tile))
-                    {
-                        self.cities[city].worked.remove(fallback);
-                    } else {
-                        continue;
-                    }
-                }
-                self.cities[city].worked.push(h);
-            }
-        }
-        if let Some(manager) = self.cities[city].worked.first().copied() {
-            self.cities[city]
-                .worked
-                .retain(|h| *h == manager || manager.distance(*h) == 1);
-        }
-        let mut candidates: Vec<_> = routes
-            .costs
-            .iter()
-            .filter(|(h, _)| {
-                !self.cities[city].worked.contains(h)
-                    && !other_claims.contains(h)
-                    && !centers.contains(h)
-            })
-            .filter(|(h, _)| {
-                self.sites
-                    .get(h)
-                    .is_none_or(|s| s.team == self.cities[city].team)
-            })
-            .map(|(&h, &cost)| (h, self.delivered_goods(city, h, cost)))
-            .collect();
-        // An open slot goes as auto-assign would fill it: by the priority
-        // order, food first until the tiles kept feed the city.
-        let mut food = self.worked_food(city, &routes);
-        while self.cities[city].worked.len() < self.cities[city].population.min(MAX_CITY_POPULATION)
-            && !candidates.is_empty()
-        {
-            if let Some(manager) = self.cities[city].worked.first().copied() {
-                candidates.retain(|(hex, _)| manager.distance(*hex) == 1);
-            }
-            let Some(pick) = self.best_tile(city, &candidates, food) else {
-                break;
+        let keeps = |h: Hex| {
+            routes.costs.contains_key(&h)
+                && !others.contains(&h)
+                && !self.closed_to_citizens(h)
+                && self.sites.get(&h).is_none_or(|s| s.team == team)
+        };
+        let mut clusters: Vec<Cluster> = Vec::new();
+        for plan in &self.cities[city].remembered {
+            let taken: HashSet<Hex> = cluster_tiles(&clusters).collect();
+            let Some(manager) = plan.tiles().find(|&h| {
+                keeps(h)
+                    && !taken.contains(&h)
+                    && !self.grid.terrain(h).is_water()
+                    && clusters.iter().all(|c| c.manager.distance(h) > 1)
+            }) else {
+                continue;
             };
-            let (hex, (f, _, _)) = candidates.remove(pick);
-            self.cities[city].worked.push(hex);
-            food += f;
+            let mut cluster = Cluster::new(manager);
+            for &worker in &plan.workers {
+                if worker != manager
+                    && keeps(worker)
+                    && !taken.contains(&worker)
+                    && manager.distance(worker) == 1
+                    && cluster.workers.len() < WORKERS_PER_MANAGER
+                {
+                    cluster.workers.push(worker);
+                }
+            }
+            clusters.push(cluster);
         }
+        let c = &self.cities[city];
+        trim_clusters(&mut clusters, c.capacity(), c.managers_allowed());
+        self.cities[city].clusters = clusters;
+        self.fill_citizens(city, &routes);
+    }
+
+    /// `city` loses a citizen (it starves, or a Settler costs it one). An
+    /// idle citizen goes first, if it has one; then the last cluster's last
+    /// worker, and a manager only once its cluster has no workers left
+    /// (`trim_clusters`, on what it works and what it remembers alike). A
+    /// city never goes below one citizen: returns whether it lost one.
+    pub(in crate::game) fn remove_citizen(&mut self, city: usize) -> bool {
+        let c = &mut self.cities[city];
+        if c.population <= 1 {
+            return false;
+        }
+        c.population -= 1;
+        let (capacity, allowed) = (c.capacity(), c.managers_allowed());
+        trim_clusters(&mut c.clusters, capacity, allowed);
+        trim_clusters(&mut c.remembered, capacity, allowed);
+        true
     }
 
     pub fn auto_assign_selected_city(&mut self) {
@@ -333,13 +377,9 @@ impl GameState {
             *self.stock_mut(team) += goods;
         }
         self.feed_citizens();
-        for city in &mut self.cities {
-            city.worked
-                .truncate(city.population.min(MAX_CITY_POPULATION));
-        }
         // Each queue pays for what it starts and works it. A Barracks trains
-        // whatever the manager does; with production speeding builds, the
-        // manager on it adds its group's work.
+        // whatever its managers do; with production speeding builds, each
+        // manager beside it adds its cluster's work.
         self.work_queues(&rates);
         self.complete_builds();
         self.heal_at_hospitals();
