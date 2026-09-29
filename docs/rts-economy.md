@@ -483,7 +483,7 @@ Prices are food / wood / metal. Turns are at a Barracks. Files are under `src/ga
 | `GROW_BASE` | `city/economy.rs` | 5 | 10 |
 | `GROW_PER_CITIZEN` | `city/economy.rs` | 5 | 10 |
 | `GATHER_YIELD` | `city/builds.rs` | 2 / 2 / 1 (`Stock::whole(2, 2, 1)`) | 1 / 1 / 0.5 (in quarters, 4 / 4 / 2) |
-| `PROTOCOL_VERSION` | `multiplayer.rs` | 15 | 16 |
+| `PROTOCOL_VERSION` | `multiplayer.rs` | 16 | 17 |
 
 - **x1.5 rounds halves up**, as the knob run did: Ranged's 10.5 wood is 11, Cavalry's 4.5 food
   and metal are 5, Siege's 1.5 food is 2, Armored's 4.5 food is 5 and its 10.5 metal is 11.
@@ -509,8 +509,9 @@ Prices are food / wood / metal. Turns are at a Barracks. Files are under `src/ga
   `economy_ticks_once_into_the_stockpile_and_preserves_quarters` now tops up the stockpile for
   its Siege, which costs more than the Cities scenario starts with.
 
-**To revert**, run `git revert 4acc76b`, then set `PROTOCOL_VERSION` to main's value plus one.
-Don't set it back to 15: builds with option B already use 16. Or set by hand:
+**To revert**, run `git revert 4acc76b`. It will conflict on `PROTOCOL_VERSION`: set that to
+main's value plus one. Don't set it back to 16, because builds with option B already use 17. Or
+set by hand:
 - the five troop prices back to the Old column;
 - `LIGHT_TROOP_TURNS` = 2 and `HEAVY_TROOP_TURNS` = 3 (the Patrol Galley keeps its own 3);
 - `GROW_BASE` = `GROW_PER_CITIZEN` = 5;
@@ -532,17 +533,21 @@ SIM_SEEDS=24 REPORT_GAMES=cities,world1,world REPORT_ARMY_FIRST=1 cargo test --r
 SIM_SEEDS=24 REPORT_TURNS=100 REPORT_GAMES=cities,world cargo test --release economy_report -- --ignored --nocapture
 ```
 
-**The baseline moved.** `main` has changed since Round 6. The AI now plans only on what its side
-has seen (#235), and its scouts explore and keep out of harm's way (#234). So each run was also
-made on `main` just before this change, at a054502, as "main before". There, fights start later
-(turn 12 instead of 10) and fewer troops die, so armies grow larger: 11.8 alive at turn 60
-instead of 7.1.
+**The baseline moved.** `main` has changed since Round 6:
+- the AI plans only on what its side has seen (#235);
+- its scouts explore and keep out of harm's way (#234);
+- a city's priority order replaced the labor focus (#247), which moved these numbers by a tenth
+  or two at most.
+
+So each run was also made on `main` just before this change was merged in, at 718acad, as "main
+before". There, fights start later (turn 12 instead of 10) and fewer troops die, so armies grow
+larger: 11.9 alive at turn 60 instead of 7.1.
 
 The columns:
 - **R6 base:** Round 6's baseline, at 6f5c4c8.
 - **R6 combo:** Round 6's `combo-slow-all` run, the prediction.
-- **main before:** `main` at a054502, just before this change.
-- **option B:** this round.
+- **main before:** `main` at 718acad.
+- **option B:** this round, merged with 718acad.
 
 World, 4 to 6 AI sides, per side. Turns are medians; "never" is the share of sides that don't
 get there by turn 60.
@@ -550,28 +555,28 @@ get there by turn 60.
 | The AI as it plays | R6 base | R6 combo | main before | option B |
 |---|---|---|---|---|
 | First troop | 7 | 9 | 7 | 9 |
-| Army at turn 10 / 20 | 2.2 / 5.4 | 1.3 / 3.4 | 2.0 / 6.0 | 1.3 / 3.7 |
-| Army at turn 40 / 60 | 6.7 / 7.1 | 4.7 / 4.6 | 10.5 / 11.8 | 6.8 / 7.5 |
+| Army at turn 10 / 20 | 2.2 / 5.4 | 1.3 / 3.4 | 2.1 / 6.0 | 1.3 / 3.7 |
+| Army at turn 40 / 60 | 6.7 / 7.1 | 4.7 / 4.6 | 10.4 / 11.9 | 6.8 / 7.7 |
 | Troops trained by turn 60 | 22.3 | 14.9 | 23.1 | 15.0 |
 | Army of 5 | 17 | 23 | 17 | 23 |
-| Army of 10 (never) | 31 (54%) | 43 (90%) | 28 (18%) | 42 (53%) |
+| Army of 10 (never) | 31 (54%) | 43 (90%) | 28 (19%) | 42 (52%) |
 | Population at turn 20 | 5.4 | 3.5 | 4.9 | 3.1 |
-| City full at 7 (never) | 27 (1%) | 43 (20%) | 30 (8%) | 46 (43%) |
-| Stockpile f / w / m at turn 40 | 92 / 107 / 96 | 41 / 58 / 64 | 60 / 85 / 97 | 29 / 40 / 70 |
-| Stockpile f / w / m at turn 60 | 242 / 205 / 178 | 131 / 130 / 123 | 170 / 173 / 179 | 85 / 98 / 136 |
+| City full at 7 (never) | 27 (1%) | 43 (20%) | 30 (9%) | 47 (42%) |
+| Stockpile f / w / m at turn 40 | 92 / 107 / 96 | 41 / 58 / 64 | 60 / 86 / 91 | 29 / 41 / 66 |
+| Stockpile f / w / m at turn 60 | 242 / 205 / 178 | 131 / 130 / 123 | 169 / 174 / 171 | 82 / 98 / 129 |
 | First fight between troops | 10 | 11 | 12 | 14 |
 
 | Army first (`REPORT_ARMY_FIRST=1`) | R6 base | R6 combo | main before | option B |
 |---|---|---|---|---|
 | First troop | 7 | 9 | 7 | 9 |
 | Army at turn 10 / 20 | 2.2 / 6.4 | 1.3 / 3.6 | 2.3 / 6.9 | 1.3 / 3.7 |
-| Army at turn 40 / 60 | 9.8 / 11.0 | 5.6 / 6.7 | 13.8 / 16.4 | 7.4 / 9.4 |
-| Troops trained by turn 60 | 31.0 | 18.7 | 30.2 | 17.7 |
+| Army at turn 40 / 60 | 9.8 / 11.0 | 5.6 / 6.7 | 13.9 / 16.8 | 7.5 / 9.5 |
+| Troops trained by turn 60 | 31.0 | 18.7 | 30.4 | 17.7 |
 | Army of 5 | 15 | 23 | 15 | 23 |
-| Army of 10 (never) | 27 (25%) | 39 (67%) | 26 (6%) | 38 (41%) |
-| City full at 7 (never) | 32 (5%) | 46 (37%) | 35 (18%) | 48 (52%) |
-| Stockpile f / w / m at turn 40 | 59 / 31 / 75 | 47 / 17 / 59 | 40 / 17 / 74 | 38 / 10 / 61 |
-| Stockpile f / w / m at turn 60 | 165 / 64 / 142 | 107 / 48 / 115 | 112 / 43 / 143 | 70 / 27 / 119 |
+| Army of 10 (never) | 27 (25%) | 39 (67%) | 25 (5%) | 38 (39%) |
+| City full at 7 (never) | 32 (5%) | 46 (37%) | 35 (19%) | 48 (55%) |
+| Stockpile f / w / m at turn 40 | 59 / 31 / 75 | 47 / 17 / 59 | 39 / 18 / 70 | 39 / 10 / 57 |
+| Stockpile f / w / m at turn 60 | 165 / 64 / 142 | 107 / 48 / 115 | 111 / 42 / 135 | 71 / 27 / 113 |
 | First fight between troops | 10 | 11 | 12 | 14 |
 
 100 turns, World with 4 to 6 AI sides, the AI as it plays. The Round 6 column is its `final-100`
@@ -579,26 +584,26 @@ run, at 6f5c4c8:
 
 | | R6 base | main before | option B |
 |---|---|---|---|
-| Army at turn 60 / 100 | 7.1 / 8.1 | 11.8 / 12.2 | 7.5 / 8.1 |
-| Troops trained by turn 100 | 38.6 | 39.9 | 26.7 |
-| City full at 7 (never by turn 100) | 28 (1%) | 30 (7%) | 49 (22%) |
-| Stockpile f / w / m at turn 100 | 598 / 425 / 349 | 429 / 376 / 355 | 281 / 252 / 277 |
+| Army at turn 60 / 100 | 7.1 / 8.1 | 11.9 / 12.3 | 7.7 / 8.0 |
+| Troops trained by turn 100 | 38.6 | 39.8 | 26.6 |
+| City full at 7 (never by turn 100) | 28 (1%) | 30 (6%) | 52 (20%) |
+| Stockpile f / w / m at turn 100 | 598 / 425 / 349 | 420 / 377 / 340 | 276 / 254 / 266 |
 
 The other games, the AI as it plays, main before → option B:
 - **World with 1 AI side:**
   - first troop 7 → 9;
-  - army at turns 20 / 60: 5.8 / 11.6 → 3.7 / 8.5;
-  - city full 26 → 41 (21% never);
+  - army at turns 20 / 60: 5.9 / 11.6 → 3.7 / 8.4;
+  - city full 26 → 40 (23% never);
   - first troop fight 22 → 26.
 - **Cities:**
   - first troop 8 → 9;
-  - army at turns 20 / 60: 4.4 / 8.8 → 3.6 / 8.4;
-  - city full 27 → 46;
+  - army at turns 20 / 60: 4.4 / 8.9 → 3.5 / 8.5;
+  - city full 27 → 45;
   - troops still fight on turn 2, and a city still falls in 22 of the 24 games, at turn 10
     (11 before), so half the sides never fill a city.
 
-**Gather 1 / 1 / 0**, the exact knob, was measured too, in the World with 4 to 6 AI sides. Against
-option B's half metal:
+**Gather 1 / 1 / 0**, the exact knob, was measured too, in the World with 4 to 6 AI sides. Both
+runs here are on `main` at a054502, before #247. Against option B's half metal:
 - army at turn 60: 8.0 against 7.5;
 - trained by turn 60: 15.0 against 15.0;
 - city full: 46 against 46;
@@ -619,14 +624,14 @@ In Cities its metal stayed at 4 all game, and it trained no Cavalry or Armored.
   prediction: 33% from Round 6's baseline).
 - **Late armies are larger than predicted, because the baseline moved, not option B.**
   - Since #235 and #234, troops fight later and die less.
-  - Option B brings the army at turn 60 from 11.8 to 7.5, about where Round 6's baseline was.
+  - Option B brings the army at turn 60 from 11.9 to 7.7, about where Round 6's baseline was.
   - The prediction was 4.6, from a baseline of 7.1.
 - **Growth is slower than predicted.**
-  - Cities are full at turn 46, with 43% short of 7 at turn 60 (the prediction: 43, and 20%).
-  - By turn 100, 22% are still short.
+  - Cities are full at turn 47, with 42% short of 7 at turn 60 (the prediction: 43, and 20%).
+  - By turn 100, 20% are still short.
   - Main before also grows slower than Round 6 did: population 4.9 at turn 20 against 5.4.
-- **The stockpile still only grows,** at about half the rate. At turn 60 it holds 85 food, 98
-  wood and 136 metal, and at turn 100, 281 / 252 / 277. Metal piles up most. The late game still
+- **The stockpile still only grows,** at about half the rate. At turn 60 it holds 82 food, 98
+  wood and 129 metal, and at turn 100, 276 / 254 / 266. Metal piles up most. The late game still
   has nothing to spend on; Settlers (#249) and the larger population cap (#250) are meant to be
   that.
 
