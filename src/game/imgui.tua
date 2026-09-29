@@ -1011,21 +1011,17 @@ fn render_slot(game: &GameState, layout: &mut ImGuiLayoutState, slot: i32, posit
 /// The status bar: the turn, the notice, the layout controls and End Turn.
 fn render_status(layout: &mut ImGuiLayoutState, panels: &Panels, viewport: Vec2, actions: &mut Vec[Action]) can {Ui} {
     let w = window("Status", spec().flags(status_flags()).at(vec2(0.0, 0.0), Cond.Always).sized(vec2(viewport.x, STATUS_HEIGHT), Cond.Always));
-    // End Turn is as wide as its label needs; the layout controls and the notice give way to it.
+    // End Turn is as wide as its label needs and takes the bar's right end; the notice has the
+    // rest of the top row, and the layout controls run along the bottom one.
     let end_label = &panels.end_label;
     let label = text(fn() can {Out} { Out.put(end_label); Out.put("  [SPACE]"); });
     let end_width = min_f(text_size(&label).x + 50.0, viewport.x * 0.45);
-    let edit_label = if layout.editing_outer { "EDIT OUTER" } else { "EDIT VIEW" };
-    let with_reset = layout.active_view.index() != 0 && !layout.editing_outer;
-    let mut controls_width = text_size(edit_label).x + text_size("+ BOX").x + 2.0 * 20.0 + 7.0;
-    if with_reset { controls_width = controls_width + text_size("RESET [CTRL+SHIFT+R]").x + 20.0 + 7.0; }
-    let controls_x = max_f(viewport.x - end_width - controls_width - 12.0, 8.0);
     let turn = panels.turn;
     let turn_label = text(fn() can {Out} { Out.put("TURN "); show_u64(turn as u64); });
     ui_text(&turn_label);
     same_line();
     let notice_x = 12.0 + text_size(&turn_label).x + 7.0;
-    let max_notice = max_f(controls_x - notice_x - 12.0, 0.0);
+    let max_notice = max_f(viewport.x - end_width - notice_x - 12.0, 0.0);
     let notice = &panels.notice;
     if text_size(notice).x <= max_notice {
         text_colored(lc(NOTICE_TEXT), notice);
@@ -1035,18 +1031,22 @@ fn render_status(layout: &mut ImGuiLayoutState, panels: &Panels, viewport: Vec2,
         while !shortened.is_empty() && text_size(&shortened).x > max_notice { shortened = cut_last(&shortened); }
         text_colored(lc(NOTICE_TEXT), &shortened);
     }
-    set_cursor(vec2(controls_x, 7.0));
     let view_label = layout.active_view.label();
     let view_text = text(fn() can {Out} { Out.put("VIEW: "); Out.put(view_label); });
+    let edit_label = if layout.editing_outer { "EDIT OUTER" } else { "EDIT VIEW" };
+    let with_reset = layout.active_view.index() != 0 && !layout.editing_outer;
+    let mut controls_width = text_size(&view_text).x + 7.0 + text_size(edit_label).x + text_size("+ BOX").x + 2.0 * 20.0 + 7.0 * 2.0;
+    if with_reset { controls_width = controls_width + text_size("RESET").x + 20.0 + 7.0; }
+    set_cursor(vec2(max_f(viewport.x - end_width - controls_width - 12.0, 8.0), 27.0));
     ui_text(&view_text);
-    set_cursor(vec2(controls_x, 27.0));
+    same_line();
     if small_button(edit_label) { actions.push(Action.ToggleLayoutLayer); }
     same_line();
     if small_button("+ BOX") { actions.push(Action.CreateBox); }
     if with_reset {
         same_line();
-        if small_button("RESET [CTRL+SHIFT+R]") { actions.push(Action.ResetView); }
-        if item_hovered(0) { tooltip_text("Restore this view's Debug placement from Default"); }
+        if small_button("RESET") { actions.push(Action.ResetView); }
+        if item_hovered(0) { tooltip_text("Restore this view's Debug placement from Default [CTRL+SHIFT+R]"); }
     }
     set_cursor(vec2(max_f(viewport.x - end_width, 8.0), 7.0));
     let d = disabled(panels.resolving);

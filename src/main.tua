@@ -94,10 +94,10 @@ const DRAG_THRESHOLD: f32 = 6.0;
 
 /// A left-button press waiting for its release: where it went down, the click mode the
 /// modifiers picked then, and whether a click was allowed then (not while a turn played out).
-struct Press { origin: Vec2, mode: ClickMode, may_click: bool }
+pub struct Press { origin: Vec2, mode: ClickMode, may_click: bool }
 
 /// The input state the frame loop keeps between events.
-struct Controls {
+pub struct Controls {
     cursor: Option[Vec2],
     size: Vec2,
     panning: bool,
@@ -122,8 +122,11 @@ fn forget_gestures(input: &mut Controls) {
 }
 
 /// Applies one window event to the game, answering what the window should do about it.
-fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, scale: f32, e: Event) -> WindowRequest can {Log, Clock, Rand} {
-    ui.input = feed(ui.input, e, scale);
+pub fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, scale: f32, e: Event) -> WindowRequest can {Log, Clock, Rand} {
+    // The library reads the mouse and the modifiers; the keys are the game's alone (the UI has
+    // no text to type, and its Tab and Space focus would fight the game's hotkeys).
+    let is_key = match e { Event.KeyDown(_, _) | Event.KeyUp(_) | Event.Char(_) => true, _ => false };
+    if !is_key { ui.input = feed(ui.input, e, scale); }
     // The library UI gets the events first; what it took (a panel under the cursor, a widget
     // with the focus) the game leaves alone.
     let over_ui = game.imgui_ui && ui.wants_mouse;
@@ -215,6 +218,12 @@ fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, scale:
         }
         Event.KeyDown(key, repeat) => {
             if !repeat && !keys_taken {
+                // Ctrl+Shift+R gives the active view's Debug placement back to Default's.
+                let reset = match key { Key.Letter(c) => c as char == 'R', _ => false };
+                if game.imgui_ui && reset && input.mods.control && input.mods.shift {
+                    if ui.layout.request_reset_active_view() { game.set_notice("VIEW DEBUG LAYOUT RESET TO DEFAULT"); }
+                    return WindowRequest.Nothing;
+                }
                 match key {
                     // Escape closes the settings menu, a view or the selection first; with
                     // nothing to close it opens the settings menu, which has Quit.
@@ -222,7 +231,11 @@ fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, scale:
                     // F5: borderless fullscreen on the window's monitor, or back.
                     Key.Function(5) => { return WindowRequest.ToggleFullscreen; }
                     // F11: the classic panels, or back to the library UI.
-                    Key.Function(11) => { game.imgui_ui = !game.imgui_ui; }
+                    Key.Function(11) => {
+                        game.imgui_ui = !game.imgui_ui;
+                        input.left_press = Option.None;
+                        game.set_notice(if game.imgui_ui { "IMGUI UI (F11 TO COMPARE)" } else { "CLASSIC UI (F11 TO COMPARE)" });
+                    }
                     _ => on_key(game, key),
                 }
             }

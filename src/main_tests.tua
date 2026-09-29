@@ -1,0 +1,115 @@
+//! What the frame loop does with a window event once the library UI has had it: the mouse and
+//! keys it took never reach the map, and what it did not take does.
+
+use std.linalg.vec2;
+use std.rand.Rand;
+use std.test.assert;
+use std.test.Assert;
+use std.time.Clock;
+use log.Log;
+use win32.events.Button;
+use win32.events.Event;
+use win32.events.Key;
+use win32.events.Modifiers;
+use game.GameState;
+use game.imgui.UiState;
+use game.imgui.ui_state;
+use game.imgui_layout.layout_state;
+use game.tests.sandbox;
+use main.Controls;
+use main.on_event;
+use renderer.WindowRequest;
+
+fn controls() -> Controls {
+    Controls {
+        cursor: Option.Some(vec2(800.0, 450.0)),
+        size: vec2(1600.0, 900.0),
+        panning: false,
+        left_press: Option.None,
+        left_dragging: false,
+        box_start: Option.None,
+        painting_jobs: false,
+        mods: Modifiers { shift: false, control: false, alt: false },
+        closed: false,
+    }
+}
+
+fn ui(taken: bool) -> UiState {
+    let mut u = ui_state(layout_state(), vec2(1600.0, 900.0));
+    u.wants_mouse = taken;
+    u
+}
+
+/// An event applied under a fake clock, the way the loop would.
+fn feed_event(game: &mut GameState, input: &mut Controls, u: &mut UiState, e: Event) can {Log, Rand} {
+    let mut clock = 0;
+    let _request = handle { on_event(game, input, u, 1.0, e) } with Clock { now_nanos() => { clock = clock + 1; resume 0 } };
+}
+
+@test
+fn a_press_the_ui_took_starts_no_map_gesture() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.imgui_ui = true;
+        let mut input = controls();
+        let mut taken = ui(true);
+        feed_event(&mut game, &mut input, &mut taken, Event.MouseDown(Button.Left));
+        assert(input.left_press.is_none() && input.box_start.is_none());
+        feed_event(&mut game, &mut input, &mut taken, Event.MouseDown(Button.Middle));
+        assert(!input.panning);
+        // The same press with the mouse free is the map's.
+        let mut free = ui(false);
+        feed_event(&mut game, &mut input, &mut free, Event.MouseDown(Button.Left));
+        assert(input.left_press.is_some());
+        assert(input.box_start.is_some());
+        feed_event(&mut game, &mut input, &mut free, Event.MouseDown(Button.Middle));
+        assert(input.panning);
+    });
+}
+
+@test
+fn the_wheel_zooms_the_map_only_where_the_ui_left_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.imgui_ui = true;
+        let mut input = controls();
+        let before = game.camera.half_height;
+        let mut taken = ui(true);
+        feed_event(&mut game, &mut input, &mut taken, Event.Wheel(1.0));
+        assert(game.camera.half_height == before);
+        let mut free = ui(false);
+        feed_event(&mut game, &mut input, &mut free, Event.Wheel(1.0));
+        assert(game.camera.half_height != before);
+    });
+}
+
+@test
+fn the_library_reads_the_mouse_but_not_the_keys() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.imgui_ui = true;
+        let mut input = controls();
+        let mut u = ui(false);
+        feed_event(&mut game, &mut input, &mut u, Event.CursorMoved(120.0, 60.0));
+        assert(u.input.mouse.is_some());
+        // Tab is the game's (select the next unit), not the UI's focus key.
+        feed_event(&mut game, &mut input, &mut u, Event.KeyDown(Key.Tab, false));
+        let mut any = false;
+        for k in 0..18 { if u.input.keys[k] || u.input.key_hits[k] { any = true; } }
+        assert(!any);
+    });
+}
+
+@test
+fn f11_switches_between_the_library_ui_and_the_classic_panels() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.imgui_ui = true;
+        let mut input = controls();
+        let mut u = ui(false);
+        feed_event(&mut game, &mut input, &mut u, Event.KeyDown(Key.Function(11), false));
+        assert(!game.imgui_ui);
+        feed_event(&mut game, &mut input, &mut u, Event.KeyDown(Key.Function(11), false));
+        assert(game.imgui_ui);
+    });
+}
