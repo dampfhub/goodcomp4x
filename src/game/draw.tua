@@ -161,6 +161,13 @@ const DEPLOYED_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.18;
 const GUARD_OUTLINE_COLOR: Color = [0.92, 0.94, 0.98, 1.0];
 const GUARD_OUTLINE_RADIUS: f32 = UNIT_ICON_RADIUS * 1.5;
 const GUARD_OUTLINE_WIDTH: f32 = 0.05;
+/// A red reticle around a unit on alert: a ring outside any status rings, with four ticks on the
+/// diagonals (clear of the turn-order badges and the health bar).
+const ALERT_COLOR: Color = [0.96, 0.26, 0.16, 1.0];
+const ALERT_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.45;
+const ALERT_TICK_INNER: f32 = UNIT_ICON_RADIUS * 1.2;
+const ALERT_TICK_OUTER: f32 = UNIT_ICON_RADIUS * 1.95;
+const ALERT_WIDTH: f32 = 0.05;
 
 /// The two units sharing a contested hex are drawn at this scale, stacked vertically with Blue
 /// on top.
@@ -1242,11 +1249,23 @@ fn push_status_rings(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec[MeshVe
     if unit.guarding {
         polygon_outline(center, GUARD_OUTLINE_RADIUS * scale, GUARD_OUTLINE_WIDTH * scale, 6, 0.0, GUARD_OUTLINE_COLOR, out);
     }
+    if unit.alert { push_alert_reticle(center, scale, out); }
     if unit.ability_queued {
         regular_polygon(center, ABILITY_RING_RADIUS * scale, 24, 0.0, ABILITY_RING_COLOR, out);
     }
     if unit.deployed {
         regular_polygon(center, DEPLOYED_RING_RADIUS * scale, 24, 0.0, DEPLOYED_RING_COLOR, out);
+    }
+}
+
+/// The reticle of a unit on alert (`Unit.alert`): a red ring with a tick on each diagonal,
+/// unlike Guard's white hex.
+fn push_alert_reticle(center: Vec2, scale: f32, out: &mut Vec[MeshVertex]) {
+    polygon_outline(center, ALERT_RING_RADIUS * scale, ALERT_WIDTH * scale, 32, 0.0, ALERT_COLOR, out);
+    let angles = [0.7853982, 2.3561945, 3.9269908, 5.497787];
+    for k in 0..4 {
+        let direction = vec2_from_angle(angles[k]);
+        segment(center.add(direction.scale(ALERT_TICK_INNER * scale)), center.add(direction.scale(ALERT_TICK_OUTER * scale)), ALERT_WIDTH * 1.4 * scale, ALERT_COLOR, out);
     }
 }
 

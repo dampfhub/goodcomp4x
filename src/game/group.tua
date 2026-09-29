@@ -5,6 +5,7 @@
 //! Members that can't get any closer, or reach, stay as they are. Shift-clicks queue orders for
 //! later turns (`order_queue.tua`).
 
+use game.orders.ALERT_NOTICE;
 use std.collections.Set;
 use std.core.Ordering;
 use std.linalg.Vec2;
@@ -92,7 +93,8 @@ impl GameState {
         // Land, or water (for ships): anything on the map but mountains.
         let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
         if !(self.grid.is_passable(target) || water) { return; }
-        if !self.group.is_empty() && self.empty_city_target(target, self.units[self.group[0]].team) {
+        let fog = self.fog();
+        if !self.group.is_empty() && self.known_empty_city_target(target, self.units[self.group[0]].team, &fog) {
             self.set_notice("CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR");
             return;
         }
@@ -116,8 +118,7 @@ impl GameState {
         for k in 0..able.len() {
             let i = able[k];
             self.units[i].planned_attack = if already { Option.None } else { Option.Some(target) };
-            self.units[i].guarding = false;
-            self.units[i].holding = false;
+            self.units[i].take_new_order();
         }
     }
 
@@ -171,8 +172,7 @@ impl GameState {
                     claimed.insert(dest);
                     self.units[i].planned_move = Option.Some(dest);
                     self.units[i].drop_unreachable_attack();
-                    self.units[i].guarding = false;
-                    self.units[i].holding = false;
+                    self.units[i].take_new_order();
                 }
             }
         }
@@ -196,7 +196,7 @@ impl GameState {
             self.units[i].holding = true;
         }
         self.group.clear();
-        self.select_next_or_end_turn(Option.None);
+        self.select_next_needing_attention(Option.None);
     }
 
     /// G or Guard with a group: every member guards, or if they all already are, they all
@@ -210,10 +210,39 @@ impl GameState {
             let i = self.group[m];
             self.units[i].guarding = !all_guarding;
             self.units[i].cancel_queue();
+            if !all_guarding { self.units[i].alert = false; }
         }
         if !all_guarding {
             self.group.clear();
-            self.select_next_or_end_turn(Option.None);
+            self.select_next_needing_attention(Option.None);
+        }
+    }
+
+    /// E or Alert with a group: every member that can goes on alert, or if they all already
+    /// are, they all come off it. Members that can't (`can_go_on_alert`) are left as they were.
+    pub fn toggle_group_alert(&mut self) {
+        let mut able: Vec[i32] = Vec.new();
+        for m in 0..self.group.len() {
+            let i = self.group[m];
+            if self.units[i].alert || self.can_go_on_alert(i) { able.push(i); }
+        }
+        if able.is_empty() {
+            self.set_notice(ALERT_NOTICE);
+            return;
+        }
+        let mut all_alert = true;
+        for k in 0..able.len() { if !self.units[able[k]].alert { all_alert = false; } }
+        for k in 0..able.len() {
+            let i = able[k];
+            if all_alert {
+                self.units[i].alert = false;
+            } else if self.can_go_on_alert(i) {
+                self.go_on_alert(i);
+            }
+        }
+        if !all_alert {
+            self.group.clear();
+            self.select_next_needing_attention(Option.None);
         }
     }
 
@@ -223,7 +252,7 @@ impl GameState {
             let i = self.group[m];
             self.cancel_swap(i);
             self.units[i].clear_orders();
-            self.units[i].guarding = false;
+            self.units[i].wake();
             self.units[i].holding = false;
         }
     }

@@ -114,6 +114,15 @@ pub fn apply_training_upgrade(stats: &mut UnitStats, upgrade: Option[Resource]) 
 }
 
 impl UnitType {
+    /// Whether units of this type go on alert: the land troops that fight (siege only once set
+    /// up, `Unit.alert_capable`).
+    pub fn takes_alert(self) -> bool {
+        match self {
+            UnitType.Melee | UnitType.Cavalry | UnitType.Armored | UnitType.Ranged | UnitType.Siege => true,
+            _ => false,
+        }
+    }
+
     pub fn is_naval(self) -> bool {
         match self { UnitType.PatrolGalley | UnitType.LandingCraft | UnitType.BombardShip => true, _ => false }
     }
@@ -230,6 +239,10 @@ pub struct Unit {
     /// Like `holding`, but lasting across turns: the unit stays put and is skipped in the
     /// turn order until it's given an order or unguarded.
     guarding: bool,
+    /// On alert: like `guarding` (it stays put and is skipped in the turn order until it's
+    /// given another order), but in its attack step it attacks an enemy in range
+    /// (`GameState.alert_target`, `turn.tua`).
+    alert: bool,
     /// Scout only: spent last turn on lookout, so it sees farther until the end of this one.
     lookout: bool,
     /// Orders for the turns after this one, in turn order: each turn's end moves the first of
@@ -263,6 +276,7 @@ impl Unit {
             deployed: false,
             holding: false,
             guarding: false,
+            alert: false,
             lookout: false,
             queued: Vec.new(),
             following_queue: false,
@@ -299,6 +313,7 @@ impl Unit {
             deployed: self.deployed,
             holding: self.holding,
             guarding: self.guarding,
+            alert: self.alert,
             lookout: self.lookout,
             queued,
             following_queue: self.following_queue,
@@ -373,10 +388,30 @@ impl Unit {
     /// Whether the unit is following a queue of orders built with Shift.
     pub fn has_queue(&self) -> bool { self.following_queue || !self.queued.is_empty() }
 
-    /// Whether the unit has anything Clear Orders would drop: a move, an attack, a queue, a
-    /// hold or a guard.
+    /// Whether the unit has anything Clear Orders would drop: a move, an attack, a queue,
+    /// boarding, landing, a hold, a guard or an alert.
     pub fn has_orders(&self) -> bool {
-        self.has_queue() || self.planned_move.is_some() || self.planned_attack.is_some() || self.holding || self.guarding
+        self.has_turn_orders() || self.holding || self.guarding || self.alert
+    }
+
+    /// Whether the unit has an order this turn besides a stance: a move, an attack, a queue,
+    /// boarding or landing. An alert unit stays put, so any of these ends its alert.
+    pub fn has_turn_orders(&self) -> bool {
+        self.has_queue() || self.planned_move.is_some() || self.planned_attack.is_some() || self.planned_board.is_some() || self.planned_unload.is_some()
+    }
+
+    /// Whether its type can go on alert: the land troops that fight (melee, cavalry, armored,
+    /// ranged), and siege once set up (or setting up this turn), not while packing up. Scouts
+    /// and ships can't; nor can settlers (`GameState.can_go_on_alert`).
+    pub fn alert_capable(&self) -> bool {
+        let deploying = self.ability_queued && self.ability() == Ability.Deploy;
+        self.unit_type.takes_alert() && (self.unit_type != UnitType.Siege || self.deployed != deploying)
+    }
+
+    /// Whether it may attack a water hex: ships, and ranged and siege land troops firing at
+    /// them from the shore.
+    pub fn attacks_water(&self) -> bool {
+        self.is_naval() || self.unit_type == UnitType.Ranged || self.unit_type == UnitType.Siege
     }
 
     /// Whether the unit's plan reaches past this turn, so the map shows it as numbered turns. A
@@ -434,8 +469,21 @@ impl Unit {
         self.following_queue = false;
     }
 
-    /// Ends a guard: any order to the unit does.
-    pub fn wake(&mut self) { self.guarding = false; }
+    /// Ends a guard or an alert: any order to the unit does.
+    pub fn wake(&mut self) {
+        self.guarding = false;
+        self.alert = false;
+    }
+
+    /// A new order to the unit (a move, attack, swap, queued turn, boarding or landing)
+    /// replaces its stance and its transport order: it ends a hold, a guard and an alert, and
+    /// drops a planned boarding or landing. The caller sets the new order afterwards.
+    pub fn take_new_order(&mut self) {
+        self.wake();
+        self.holding = false;
+        self.planned_board = Option.None;
+        self.planned_unload = Option.None;
+    }
 
     /// Clears every order: this turn's, the queue, and a hold.
     pub fn clear_orders(&mut self) {

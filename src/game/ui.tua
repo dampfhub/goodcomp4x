@@ -279,7 +279,7 @@ impl Eq for Target {
 }
 
 /// An order for the selected unit.
-pub enum UnitAction { Move, Attack, Swap, Ability, Hold, Guard, Settle, ClearOrders, Disband }
+pub enum UnitAction { Move, Attack, Swap, Ability, Hold, Guard, Alert, Settle, ClearOrders, Disband }
 
 /// Which production list a queue row belongs to.
 pub enum QueueKind { City, Barracks, Workers }
@@ -613,6 +613,7 @@ impl GameState {
                 UnitAction.Ability => self.toggle_selected_ability(),
                 UnitAction.Hold => self.hold_selected_unit(),
                 UnitAction.Guard => self.toggle_guard(),
+                UnitAction.Alert => self.toggle_alert(),
                 UnitAction.Settle => self.found_city_selected(),
                 UnitAction.ClearOrders => self.handle_right_click(),
                 UnitAction.Disband => self.disband_selected(),
@@ -983,9 +984,9 @@ impl GameState {
         if unit.deployed { panel.text(TextSize.Small, "DEPLOYED: +1 RANGE, CANNOT MOVE", DIM_TEXT); }
         if self.rival_of(idx).is_some() { panel.text(TextSize.Small, "CONTESTED: FIGHTING FOR THIS HEX", DIM_TEXT); }
         if self.is_player_controlled(idx) {
-            let names = [(unit.planned_move.is_some(), "MOVE"), (unit.planned_attack.is_some(), "ATTACK"), (unit.holding, "HOLD"), (unit.guarding, "GUARD")];
+            let names = [(unit.planned_move.is_some(), "MOVE"), (unit.planned_attack.is_some(), "ATTACK"), (unit.holding, "HOLD"), (unit.guarding, "GUARD"), (unit.alert, "ALERT")];
             let mut any = false;
-            for k in 0..4 {
+            for k in 0..5 {
                 let (on, _) = names[k];
                 if on { any = true; }
             }
@@ -993,7 +994,7 @@ impl GameState {
                 let orders = text(fn() can {Out} {
                     Out.put("ORDERS: ");
                     let mut first = true;
-                    for k in 0..4 {
+                    for k in 0..5 {
                         let (on, name) = names[k];
                         if on {
                             if !first { Out.put(", "); }
@@ -1038,6 +1039,7 @@ impl GameState {
         panel.begin_buttons();
         panel.button(Target.Unit(UnitAction.Hold), "HOLD", "SPACE", button_state(unit.holding, false), false);
         panel.button(Target.Unit(UnitAction.Guard), "GUARD", "G", button_state(unit.guarding, false), false);
+        panel.button(Target.Unit(UnitAction.Alert), "ALERT", "E", button_state(unit.alert, !unit.alert && !self.can_go_on_alert(idx)), false);
         panel.button(Target.Unit(UnitAction.ClearOrders), "CLEAR ORDERS", "CTRL-RMB", button_state(false, !unit.has_orders()), false);
         let confirming = self.disband_armed == Option.Some(unit.id);
         panel.button(Target.Unit(UnitAction.Disband), if confirming { "CONFIRM?" } else { "DISBAND" }, "DEL", ButtonState.Ready, confirming);
@@ -1087,6 +1089,16 @@ impl GameState {
         panel.button(Target.Unit(UnitAction.Attack), "ATTACK", "X \u{b7} RMB", ButtonState.Ready, self.armed(ClickMode.Attack));
         panel.button(Target.Unit(UnitAction.Hold), "HOLD", "SPACE", ButtonState.Ready, false);
         panel.button(Target.Unit(UnitAction.Guard), "GUARD", "G", button_state(all_guarding, false), false);
+        let mut all_alert = true;
+        let mut any_alert_able = false;
+        for m in 0..members.len() {
+            let i = members[m];
+            if self.units[i].alert || self.can_go_on_alert(i) {
+                any_alert_able = true;
+                if !self.units[i].alert { all_alert = false; }
+            }
+        }
+        panel.button(Target.Unit(UnitAction.Alert), "ALERT", "E", button_state(any_alert_able && all_alert, !any_alert_able), false);
         let mut any_orders = false;
         for m in 0..members.len() { if self.units[members[m]].has_orders() { any_orders = true; } }
         panel.button(Target.Unit(UnitAction.ClearOrders), "CLEAR ORDERS", "CTRL-RMB", button_state(false, !any_orders), false);
@@ -1855,6 +1867,11 @@ impl GameState {
                 *shortcut = to_owned("G");
                 *description = to_owned("THE UNIT STAYS WHERE IT IS AND IS SKIPPED EVERY TURN, NOT JUST THIS ONE, UNTIL YOU GIVE IT AN ORDER OR PRESS G AGAIN.");
             }
+            UnitAction.Alert => {
+                *title = to_owned("ALERT");
+                *shortcut = to_owned("E");
+                *description = to_owned("THE UNIT STAYS WHERE IT IS, SKIPPED EVERY TURN LIKE A GUARD, AND FIRES AT AN ENEMY IN RANGE EACH TURN UNTIL YOU GIVE IT AN ORDER OR PRESS E AGAIN. MELEE, CAVALRY, ARMORED, RANGED AND SET-UP SIEGE ONLY.");
+            }
             UnitAction.Settle => {
                 *title = to_owned("FOUND CITY");
                 *shortcut = to_owned("F");
@@ -1863,7 +1880,7 @@ impl GameState {
             UnitAction.ClearOrders => {
                 *title = to_owned("CLEAR ORDERS");
                 *shortcut = to_owned("CTRL-RIGHT-CLICK");
-                *description = to_owned("DROPS EVERY SELECTED UNIT'S ORDERS: MOVES, ATTACKS, QUEUED TURNS, HOLD AND GUARD.");
+                *description = to_owned("DROPS EVERY SELECTED UNIT'S ORDERS: MOVES, ATTACKS, QUEUED TURNS, HOLD, GUARD AND ALERT.");
             }
             UnitAction.Disband => {
                 *title = to_owned("DISBAND");

@@ -1,0 +1,476 @@
+//! The Alert stance: which troops may take it, what ends it, what a unit on alert fires at, and
+//! how boarding and landing replace the other orders.
+
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.city.City;
+use game.hex.Hex;
+use game.orders.ALERT_NOTICE;
+use game.orders.ClickMode;
+use game.tests.sandbox;
+use game.turn.Phase;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+use std.str.eq as str_eq;
+
+fn notice_is(game: &GameState, want: str) -> bool {
+    let n = &game.notice;
+    str_eq(n, want)
+}
+
+/// Two Blue units side by side on an open field, and a Red melee off to the east; no cities,
+/// fog off, the first selected.
+fn alert_field(first: UnitType) -> GameState can {Log} {
+    let mut g = GameState.city_scenario();
+    g.fog_of_war = false;
+    g.units.clear();
+    g.cities.clear();
+    g.field_workers.clear();
+    g.group.clear();
+    g.units.push(Unit.new(100, Hex.new(-4, 0), Team.Blue, first));
+    g.units.push(Unit.new(101, Hex.new(-4, 1), Team.Blue, UnitType.Melee));
+    g.units.push(Unit.new(102, Hex.new(-1, 0), Team.Red, UnitType.Melee));
+    g.selected = Option.Some(0);
+    g
+}
+
+/// An open field with `units` on it, no cities, fog off, both sides planned by hand (no AI),
+/// each unit placed as given.
+fn field(units: &Vec[(Team, UnitType, Hex)]) -> GameState can {Log, Assert} {
+    let mut game = GameState.city_scenario();
+    game.fog_of_war = false;
+    game.units.clear();
+    game.cities.clear();
+    game.field_workers.clear();
+    game.selected = Option.None;
+    game.group.clear();
+    game.humans = Vec.new();
+    game.humans.push(Team.Blue);
+    game.humans.push(Team.Red);
+    game.settings.instant_playback = true;
+    for n in 0..units.len() {
+        let (team, unit_type, pos) = units[n];
+        check(game.grid.is_passable(pos));
+        game.units.push(Unit.new(100 + n as u32, pos, team, unit_type));
+    }
+    game
+}
+
+fn check(ok: bool) can {Assert} { assert(ok); }
+
+fn field_of(a: (Team, UnitType, Hex), b: (Team, UnitType, Hex)) -> GameState can {Log, Assert} {
+    let mut units: Vec[(Team, UnitType, Hex)] = Vec.new();
+    units.push(a);
+    units.push(b);
+    field(&units)
+}
+
+fn play_turn(game: &mut GameState) can {Log, Rand, Assert} {
+    game.resolve_turn();
+    while game.is_resolving() { game.update(1.0); }
+}
+
+fn by_id(game: &GameState, id: u32) -> i32 {
+    for i in 0..game.units.len() { if game.units[i].id == id { return i; } }
+    0 - 1
+}
+
+@test
+fn alert_drops_this_turns_orders_and_lasts_until_taken_off() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = alert_field(UnitType.Melee);
+        g.try_queue_move(0, Hex.new(-3, 0));
+        assert(g.units[0].planned_move.is_some());
+        g.toggle_alert();
+        assert(g.units[0].alert && g.units[0].planned_move.is_none());
+        // Skipped in the turn order, and selection moves on.
+        assert(!g.needs_orders(0));
+        assert(g.selected != Option.Some(0));
+        // Hold keeps it.
+        g.selected = Option.Some(0);
+        g.hold_selected_unit();
+        assert(g.units[0].alert);
+        // E again takes it off, and it stays selected, needing orders.
+        g.selected = Option.Some(0);
+        g.units[0].holding = false;
+        g.toggle_alert();
+        assert(!g.units[0].alert);
+        assert(g.selected == Option.Some(0));
+        assert(g.needs_orders(0));
+    });
+}
+
+@test
+fn any_other_order_ends_an_alert() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        for k in 0..8 {
+            let mut g = alert_field(UnitType.Melee);
+            g.toggle_alert();
+            assert(g.units[0].alert);
+            g.selected = Option.Some(0);
+            if k == 0 { g.try_queue_move(0, Hex.new(-3, 0)); }
+            else if k == 1 { g.try_queue_attack(0, Hex.new(-3, 0)); }
+            else if k == 2 { g.try_queue_swap(0, 1); }
+            else if k == 3 { assert(g.queue_move(Hex.new(-2, 0))); }
+            else if k == 4 { g.toggle_guard(); }
+            else if k == 5 { g.toggle_selected_ability(); }
+            else if k == 6 { g.handle_right_click(); }
+            else {
+                g.set_selection(vec_of_two());
+                g.group_order(Hex.new(-2, 0), ClickMode.Normal);
+            }
+            assert(!g.units[0].alert);
+        }
+        // Guard and Alert: going on alert ends a guard too.
+        let mut g = alert_field(UnitType.Melee);
+        g.toggle_guard();
+        g.selected = Option.Some(0);
+        g.toggle_alert();
+        assert(g.units[0].alert && !g.units[0].guarding);
+    });
+}
+
+fn vec_of_two() -> Vec[i32] {
+    let mut v: Vec[i32] = Vec.new();
+    v.push(0);
+    v.push(1);
+    v
+}
+
+@test
+fn only_troops_that_fight_on_land_go_on_alert() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        for k in 0..3 {
+            let kind = if k == 0 { UnitType.Melee } else if k == 1 { UnitType.Ranged } else { UnitType.Cavalry };
+            let mut g = alert_field(kind);
+            g.toggle_alert();
+            assert(g.units[0].alert);
+        }
+        for k in 0..2 {
+            let kind = if k == 0 { UnitType.Scout } else { UnitType.Siege };
+            let mut g = alert_field(kind);
+            g.toggle_alert();
+            assert(!g.units[0].alert);
+            assert(notice_is(&g, ALERT_NOTICE));
+        }
+        // A settler (a melee body) can't.
+        let mut g = alert_field(UnitType.Melee);
+        g.settlers.insert(100);
+        g.toggle_alert();
+        assert(!g.units[0].alert);
+        // Siege once set up, or setting up this turn, can.
+        let mut g = alert_field(UnitType.Siege);
+        g.toggle_selected_ability();
+        g.selected = Option.Some(0);
+        g.toggle_alert();
+        assert(g.units[0].alert && g.units[0].ability_queued);
+        let mut g = alert_field(UnitType.Siege);
+        g.units[0].deployed = true;
+        g.toggle_alert();
+        assert(g.units[0].alert);
+        // An enemy selected by hand isn't put on alert.
+        let mut g = alert_field(UnitType.Melee);
+        g.selected = Option.Some(2);
+        g.toggle_alert();
+        assert(!g.units[2].alert);
+    });
+}
+
+@test
+fn a_group_goes_on_alert_together_leaving_out_those_that_cannot() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = alert_field(UnitType.Scout);
+        g.set_selection(vec_of_two());
+        g.toggle_alert();
+        // A scout can't.
+        assert(!g.units[0].alert);
+        assert(g.units[1].alert);
+        // Selection moves on.
+        assert(g.group.is_empty());
+        g.set_selection(vec_of_two());
+        g.toggle_alert();
+        // All that could were: they come off it.
+        assert(!g.units[1].alert);
+    });
+}
+
+/// A Blue landing craft offshore at (-1, 0), and Blue melee on the two shore hexes beside it,
+/// (-2, 0) and (-2, 1); no cities, fog off, the first troop selected.
+fn shore_field() -> GameState can {Log} {
+    let mut g = GameState.naval_scenario();
+    g.fog_of_war = false;
+    g.units.clear();
+    g.cities.clear();
+    g.field_workers.clear();
+    g.group.clear();
+    g.units.push(Unit.new(90, Hex.new(-1, 0), Team.Blue, UnitType.LandingCraft));
+    g.units.push(Unit.new(91, Hex.new(-2, 0), Team.Blue, UnitType.Melee));
+    g.units.push(Unit.new(92, Hex.new(-2, 1), Team.Blue, UnitType.Melee));
+    g.selected = Option.Some(1);
+    g
+}
+
+@test
+fn boarding_replaces_the_troops_other_orders() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = shore_field();
+        g.try_queue_swap(1, 2);
+        g.units[1].guarding = true;
+        g.try_board(1, 0);
+        assert(g.units[1].planned_board == Option.Some(90));
+        assert(g.units[1].planned_move.is_none());
+        // The partner's half of the swap goes too.
+        assert(g.units[2].planned_move.is_none());
+        assert(!g.units[1].guarding);
+        // A troop boarding is done.
+        assert(!g.needs_orders(1));
+
+        let mut g = shore_field();
+        g.go_on_alert(1);
+        g.try_board(1, 0);
+        assert(!g.units[1].alert);
+        assert(g.units[1].planned_board == Option.Some(90));
+    });
+}
+
+@test
+fn any_other_order_replaces_boarding() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        for k in 0..6 {
+            let mut g = shore_field();
+            g.try_board(1, 0);
+            if k == 0 { g.try_queue_move(1, Hex.new(-3, 0)); }
+            else if k == 1 { g.try_queue_attack(1, Hex.new(-3, 1)); }
+            else if k == 2 { g.try_queue_swap(1, 2); }
+            else if k == 3 { let _q = g.queue_move(Hex.new(-4, 0)); }
+            else if k == 4 {
+                let mut two: Vec[i32] = Vec.new();
+                two.push(1);
+                two.push(2);
+                g.set_selection(two);
+                g.group_order(Hex.new(-4, 0), ClickMode.Normal);
+            }
+            else { g.toggle_alert(); }
+            assert(g.units[1].planned_board.is_none());
+            assert(g.units[1].has_orders());
+        }
+    });
+}
+
+@test
+fn landing_keeps_the_craft_in_place_until_another_order() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = shore_field();
+        let passenger = g.units.remove(1);
+        g.units[0].cargo.push(passenger);
+        g.selected = Option.Some(0);
+        let water = Hex.new(0, 0);
+        g.try_queue_move(0, water);
+        assert(g.units[0].planned_move == Option.Some(water));
+        g.units[0].guarding = true;
+
+        g.try_land(0, Hex.new(-2, 0));
+        assert(g.units[0].planned_unload == Option.Some(Hex.new(-2, 0)));
+        // It lands from where it is.
+        assert(g.units[0].planned_move.is_none());
+        assert(!g.units[0].guarding);
+        assert(!g.needs_orders(0));
+
+        g.try_queue_move(0, water);
+        assert(g.units[0].planned_move == Option.Some(water));
+        // A move calls it off.
+        assert(g.units[0].planned_unload.is_none());
+
+        // An occupied hex, or an empty craft, can't be landed on.
+        g.units[0].planned_move = Option.None;
+        g.try_land(0, Hex.new(-2, 1));
+        assert(g.units[0].planned_unload.is_none());
+        g.units[0].cargo.clear();
+        g.try_land(0, Hex.new(-2, 0));
+        assert(g.units[0].planned_unload.is_none());
+    });
+}
+
+@test
+fn disbanding_a_loaded_craft_warns_of_its_passengers_and_takes_them() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = shore_field();
+        let passenger = g.units.remove(1);
+        g.units[0].cargo.push(passenger);
+        g.settlers.insert(91);
+        g.selected = Option.Some(0);
+        g.disband_selected();
+        assert(notice_is(&g, "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS CRAFT AND ITS PASSENGER"));
+        // The first press only asks.
+        assert(g.units.len() == 2);
+        g.disband_selected();
+        for i in 0..g.units.len() { assert(g.units[i].id != 90); }
+        // The passenger goes with it.
+        assert(!g.settlers.contains(91));
+    });
+}
+
+@test
+fn with_nobody_left_to_order_an_armed_action_is_let_go() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = alert_field(UnitType.Melee);
+        g.units[1].holding = true;
+        g.choose_attack_action();
+        assert(g.ui_click_mode == Option.Some(ClickMode.Attack));
+        g.hold_selected_unit();
+        // Nobody else needs orders.
+        assert(g.selected.is_none());
+        // Nothing is left armed, and the turn waits to be ended.
+        assert(g.ui_click_mode.is_none());
+        assert(!g.is_resolving());
+    });
+}
+
+@test
+fn an_alert_unit_attacks_an_enemy_that_moves_into_range_and_stays_put() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = field_of((Team.Blue, UnitType.Melee, Hex.new(-4, 0)), (Team.Red, UnitType.Melee, Hex.new(-2, 0)));
+        game.units[0].alert = true;
+        // Out of reach as planning ends: nothing to plan an attack on.
+        assert(game.alert_target(0).is_none());
+        game.units[1].planned_move = Option.Some(Hex.new(-3, 0));
+        play_turn(&mut game);
+
+        let (b, r) = (by_id(&game, 100), by_id(&game, 101));
+        assert(game.units[r].pos == Hex.new(-3, 0));
+        // Hit in the melee attack step, and a melee attack draws retaliation.
+        assert(game.units[r].hp < game.units[r].max_hp());
+        assert(game.units[b].hp < game.units[b].max_hp());
+        // It stays put, and is still on alert next turn.
+        assert(game.units[b].pos == Hex.new(-4, 0));
+        assert(game.units[b].alert);
+
+        // And again the next turn, with the enemy still in range.
+        let red_hp = game.units[r].hp;
+        play_turn(&mut game);
+        assert(game.units[by_id(&game, 101)].hp < red_hp);
+    });
+}
+
+@test
+fn without_alert_nothing_fires() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = field_of((Team.Blue, UnitType.Ranged, Hex.new(-4, 0)), (Team.Red, UnitType.Melee, Hex.new(-3, 0)));
+        play_turn(&mut game);
+        let r = by_id(&game, 101);
+        assert(game.units[r].hp == game.units[r].max_hp());
+    });
+}
+
+@test
+fn an_alert_unit_picks_the_nearest_then_the_weakest() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut units: Vec[(Team, UnitType, Hex)] = Vec.new();
+        units.push((Team.Blue, UnitType.Ranged, Hex.new(-4, 0)));
+        units.push((Team.Red, UnitType.Melee, Hex.new(-2, 0)));
+        units.push((Team.Red, UnitType.Melee, Hex.new(-3, 0)));
+        units.push((Team.Red, UnitType.Melee, Hex.new(-4, 1)));
+        let mut game = field(&units);
+        game.units[0].alert = true;
+        // The one two hexes off is the weakest, but the adjacent ones are nearer; of those, the
+        // weaker.
+        game.units[1].hp = 5.0;
+        game.units[2].hp = 60.0;
+        game.units[3].hp = 50.0;
+        assert(game.alert_target(0) == Option.Some(Hex.new(-4, 1)));
+        // A tie goes to the lower (q, r).
+        game.units[3].hp = 60.0;
+        assert(game.alert_target(0) == Option.Some(Hex.new(-4, 1)));
+        game.units.truncate(2);
+        assert(game.alert_target(0) == Option.Some(Hex.new(-2, 0)));
+        // Allies are never targets.
+        game.units[1].team = Team.Blue;
+        assert(game.alert_target(0).is_none());
+    });
+}
+
+@test
+fn an_alert_unit_never_fires_at_a_city_or_its_barracks() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut units: Vec[(Team, UnitType, Hex)] = Vec.new();
+        units.push((Team.Blue, UnitType.Ranged, Hex.new(-4, 0)));
+        let mut game = field(&units);
+        let mut city = City.new(0, Team.Red, Hex.new(-3, 0));
+        city.barracks = Option.Some(Hex.new(-4, 1));
+        let hp = city.barracks_hp;
+        game.cities.push(city);
+        game.units[0].alert = true;
+        assert(game.alert_target(0).is_none());
+        play_turn(&mut game);
+        assert(game.cities[0].barracks_hp == hp);
+        // A unit standing on the city center is a unit, and is fired at.
+        game.units.push(Unit.new(200, Hex.new(-3, 0), Team.Red, UnitType.Melee));
+        assert(game.alert_target(0) == Option.Some(Hex.new(-3, 0)));
+    });
+}
+
+@test
+fn siege_on_alert_fires_only_once_set_up() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = field_of((Team.Blue, UnitType.Siege, Hex.new(-4, 0)), (Team.Red, UnitType.Melee, Hex.new(-2, 0)));
+        game.units[0].alert = true;
+        // Packed up.
+        assert(game.alert_target(0).is_none());
+        // Setting up this turn: it may go on alert, but can't fire yet.
+        game.units[0].ability_queued = true;
+        assert(game.can_go_on_alert(0));
+        assert(game.alert_target(0).is_none());
+        play_turn(&mut game);
+        let s = by_id(&game, 100);
+        assert(game.units[s].deployed && game.units[s].alert);
+        let r = by_id(&game, 101);
+        assert(game.units[r].hp == game.units[r].max_hp());
+        // Set up, with its extra range, it fires.
+        play_turn(&mut game);
+        assert(game.units[by_id(&game, 101)].hp < game.units[by_id(&game, 101)].max_hp());
+    });
+}
+
+/// What a player's machine never sends, but the AI (playing a side a player left) may plan: a
+/// move for a unit on alert.
+@test
+fn an_alert_unit_given_another_order_moves_and_stops_being_alert() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = field_of((Team.Blue, UnitType.Melee, Hex.new(-4, 0)), (Team.Red, UnitType.Melee, Hex.new(-4, 2)));
+        game.units[0].alert = true;
+        game.units[0].planned_move = Option.Some(Hex.new(-3, 0));
+        play_turn(&mut game);
+        let b = by_id(&game, 100);
+        assert(game.units[b].pos == Hex.new(-3, 0));
+        assert(!game.units[b].alert);
+        let r = by_id(&game, 101);
+        assert(game.units[r].hp == game.units[r].max_hp());
+    });
+}
+
+@test
+fn nothing_armed_while_planning_outlives_the_turn() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = alert_field(UnitType.Melee);
+        g.settings.instant_playback = true;
+        let id = g.units[0].id;
+        g.disband_selected();
+        assert(g.disband_armed == Option.Some(id));
+        g.selected = Option.Some(0);
+        g.choose_move_action();
+        assert(g.ui_click_mode == Option.Some(ClickMode.Move));
+        play_turn(&mut g);
+        assert(g.disband_armed.is_none());
+        assert(g.ui_click_mode.is_none());
+        assert(g.queue_replace_armed.is_none());
+        let idx = by_id(&g, id);
+        g.selected = Option.Some(idx);
+        g.disband_selected();
+        // One press only asks again.
+        assert(by_id(&g, id) >= 0);
+    });
+}

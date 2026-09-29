@@ -120,12 +120,18 @@ impl GameState {
         self.turn = self.turn + 1;
         let turn = self.turn;
         info(fn() can {Out} { Out.put("=== resolving turn "); show_u64(turn as u64); Out.put(" ==="); });
-        // Indices shift as units die, so nothing stays selected.
+        // Indices shift as units die, so nothing stays selected. Nothing armed while planning
+        // outlives the turn: an armed map action, a Disband waiting to be confirmed, a click
+        // waiting to replace a queue.
         self.selected = Option.None;
         self.group.clear();
+        self.ui_click_mode = Option.None;
+        self.disband_armed = Option.None;
+        self.queue_replace_armed = Option.None;
 
         let teams = self.ai_teams();
         for t in 0..teams.len() { self.plan_ai_turn(teams[t]); }
+        self.end_broken_alerts();
         for i in 0..18 {
             let (unit_type, phase) = RESOLUTION_ORDER[i];
             self.pending_steps.push_back(TurnStep.Units(unit_type, phase));
@@ -134,6 +140,49 @@ impl GameState {
 
         // Pause before the first step so the last order placed can be seen.
         self.step_timer = STEP_INTERVAL;
+    }
+
+    /// Where unit `idx`, on alert, fires in its attack step: at an enemy unit within its attack
+    /// range as the step starts, on the real board (the same on every machine, whatever each
+    /// player sees). So it hits whatever ended an earlier move step in range, this turn or
+    /// before. Only units, never a city, barracks, battery or worker, and only ones it may
+    /// attack (`attack_target_legal`: a ship only by a troop that can hit ships). The nearest,
+    /// then the weakest (fewest HP), then the lowest (q, r, id). None if it isn't on alert, has
+    /// an attack planned, can't attack this step (locked in a contested hex, setting up) or has
+    /// nobody in range.
+    pub fn alert_target(&self, idx: i32) -> Option[Hex] {
+        let unit = &self.units[idx];
+        if !unit.alert || unit.planned_attack.is_some() || !self.can_go_on_alert(idx) { return Option.None; }
+        let range = unit.stats().attack_range;
+        let mut best: Option[i32] = Option.None;
+        for k in 0..self.units.len() {
+            let other = &self.units[k];
+            if other.team == unit.team || unit.pos.distance(other.pos) > range { continue; }
+            if !self.attack_target_legal(idx, other.pos, false) { continue; }
+            let better = match best {
+                Option.None => true,
+                Option.Some(b) => {
+                    let held = &self.units[b];
+                    let (da, db) = (unit.pos.distance(other.pos), unit.pos.distance(held.pos));
+                    if da != db { da < db }
+                    else if other.hp != held.hp { other.hp < held.hp }
+                    else if other.pos.q != held.pos.q { other.pos.q < held.pos.q }
+                    else if other.pos.r != held.pos.r { other.pos.r < held.pos.r }
+                    else { other.id < held.id }
+                }
+            };
+            if better { best = Option.Some(k); }
+        }
+        match best { Option.Some(k) => Option.Some(self.units[k].pos), Option.None => Option.None }
+    }
+
+    /// As the turn starts to resolve, ends the alert of any unit with another order this turn
+    /// (an alert unit stays put; the AI, playing a side a player left, gives orders without
+    /// knowing of alerts) or that can no longer keep it (a siege packing up).
+    fn end_broken_alerts(&mut self) {
+        for i in 0..self.units.len() {
+            if self.units[i].alert && (self.units[i].has_turn_orders() || !self.can_go_on_alert(i)) { self.units[i].alert = false; }
+        }
     }
 
     /// Advances turn playback by `dt` seconds, playing the next step once `STEP_INTERVAL` has
@@ -188,7 +237,7 @@ impl GameState {
             self.advance_queues();
             let turn = self.turn;
             info(fn() can {Out} { Out.put("=== turn "); show_u64(turn as u64); Out.put(" resolved ==="); });
-            self.select_next_or_end_turn(Option.None);
+            self.select_next_needing_attention(Option.None);
         }
     }
 
@@ -287,8 +336,9 @@ impl GameState {
             if self.units[i].unit_type != unit_type { continue; }
             let acts = match phase {
                 Phase.Move => self.units[i].planned_move.is_some(),
-                // Units in a contested hex fight whether or not they have orders.
-                Phase.Attack => self.units[i].planned_attack.is_some() || self.rival_of(i).is_some(),
+                // Units in a contested hex fight whether or not they have orders, and units on
+                // alert fire at an enemy in range.
+                Phase.Attack => self.units[i].planned_attack.is_some() || self.rival_of(i).is_some() || self.alert_target(i).is_some(),
             };
             if acts { actors.push(i); }
         }
@@ -484,8 +534,20 @@ impl GameState {
                 continue;
             }
 
-            let target = attacker.planned_attack.unwrap_or(attacker.pos);
+            let target = match attacker.planned_attack {
+                Option.Some(target) => target,
+                Option.None => {
+                    let Option.Some(target) = self.alert_target(a) else { continue; };
+                    info(fn() can {Out} { attacker.show(); Out.put(" is on alert and fires at "); target.show(); });
+                    target
+                }
+            };
             let to = target.to_world();
+            if self.empty_city_target(target, attacker.team) {
+                shots.push(Effect.Shot(from, to, Outcome.Miss));
+                continue;
+            }
+            if !self.attack_target_legal(a, target, false) { continue; }
             if attacker.pos.distance(target) > attacker.stats().attack_range {
                 info(fn() can {Out} { attacker.show(); Out.put("'s attack canceled: target out of range after moves"); });
                 shots.push(Effect.Shot(from, to, Outcome.OutOfRange));

@@ -3,6 +3,8 @@
 use std.rand.Rand;
 use std.core.Eq;
 use std.fmt.Out;
+use std.fmt.show_u64;
+use game.fog.Fog;
 use std.linalg.Vec2;
 use std.iter.each;
 use std.str.Str;
@@ -13,6 +15,12 @@ use game.GameState;
 use game.text;
 use game.hex.Hex;
 use game.unit.UnitType;
+
+/// Why a land troop that isn't ranged or siege can't attack a water hex.
+pub const SHIPS_NOTICE: str = "ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS";
+
+/// Why a unit can't go on alert.
+pub const ALERT_NOTICE: str = "ONLY MELEE, CAVALRY, ARMORED, RANGED AND SET-UP SIEGE CAN GO ON ALERT";
 
 /// A click that would replace the selection's multi-turn queue, remembered until it's
 /// repeated: which hex, whether it was an attack, for which units, on which turn.
@@ -219,20 +227,7 @@ impl GameState {
                 && self.units[selected].team == self.units[craft].team
                 && self.units[selected].pos.distance(hex) == 1;
             if boards {
-                let id = self.units[craft].id;
-                let mut reserved = 0;
-                for i in 0..self.units.len() { if self.units[i].planned_board == Option.Some(id) { reserved = reserved + 1; } }
-                if self.units[craft].cargo.len() + reserved < 4 {
-                    let unit = &mut self.units[selected];
-                    unit.planned_board = Option.Some(id);
-                    unit.planned_move = Option.None;
-                    unit.planned_attack = Option.None;
-                    unit.guarding = false;
-                    unit.holding = false;
-                    self.set_notice("BOARDING LANDING CRAFT AFTER COMBAT");
-                } else {
-                    self.set_notice("LANDING CRAFT FULL (4 TROOPS)");
-                }
+                self.try_board(selected, craft);
                 return true;
             }
         }
@@ -241,11 +236,48 @@ impl GameState {
             && self.grid.is_passable(hex)
             && self.units[selected].pos.distance(hex) == 1;
         if !lands { return false; }
-        if !self.units[selected].cargo.is_empty() && !self.is_occupied(hex) && self.city_at(hex).is_none() {
-            self.units[selected].planned_unload = Option.Some(hex);
-            self.set_notice("LANDING FIRST PASSENGER AFTER COMBAT");
-        }
+        self.try_land(selected, hex);
         true
+    }
+
+    /// Plans land troop `idx` boarding the adjacent friendly landing craft `craft` after combat,
+    /// if the craft has room: four passengers, counting those already planning to board it. Like
+    /// any other order, boarding replaces the troop's move (both halves of a swap), attack,
+    /// queue, hold, guard and alert.
+    pub fn try_board(&mut self, idx: i32, craft: i32) {
+        let troop_id = self.units[idx].id;
+        let craft_id = self.units[craft].id;
+        let mut reserved = 0;
+        for i in 0..self.units.len() {
+            if self.units[i].id != troop_id && self.units[i].planned_board == Option.Some(craft_id) { reserved = reserved + 1; }
+        }
+        if self.units[craft].cargo.len() + reserved >= 4 {
+            self.set_notice("LANDING CRAFT FULL (4 TROOPS)");
+            return;
+        }
+        self.cancel_swap(idx);
+        let unit = &mut self.units[idx];
+        unit.take_new_order();
+        unit.planned_move = Option.None;
+        unit.planned_attack = Option.None;
+        unit.cancel_queue();
+        unit.planned_board = Option.Some(craft_id);
+        self.set_notice("BOARDING LANDING CRAFT AFTER COMBAT");
+    }
+
+    /// Plans landing craft `craft` landing its first passenger on the adjacent open land `hex`
+    /// after combat. The craft must stay where it is to land it, so landing replaces its move
+    /// (both halves of a swap), queue, hold and guard, as any other order does.
+    pub fn try_land(&mut self, craft: i32, hex: Hex) {
+        if self.units[craft].cargo.is_empty() || self.is_occupied(hex) || self.city_at(hex).is_some() { return; }
+        self.cancel_swap(craft);
+        let unit = &mut self.units[craft];
+        unit.take_new_order();
+        unit.planned_move = Option.None;
+        unit.planned_attack = Option.None;
+        unit.cancel_queue();
+        unit.planned_unload = Option.Some(hex);
+        self.set_notice("LANDING FIRST PASSENGER AFTER COMBAT");
     }
 
     /// Whether a plain order on `hex` (an attack if `attack`) may go ahead for the selection.
@@ -332,7 +364,7 @@ impl GameState {
             }
             self.units[idx].holding = true;
         }
-        self.select_next_or_end_turn(self.selected);
+        self.select_next_needing_attention(self.selected);
     }
 
     /// G or the Guard button: the selected unit stays put and is skipped in the turn order
@@ -346,7 +378,53 @@ impl GameState {
         let Option.Some(idx) = self.selected else { return; };
         self.units[idx].guarding = !self.units[idx].guarding;
         self.units[idx].cancel_queue();
-        if self.units[idx].guarding { self.select_next_or_end_turn(Option.Some(idx)); }
+        if self.units[idx].guarding {
+            // Guard and Alert are two stances; one ends the other.
+            self.units[idx].alert = false;
+            self.select_next_needing_attention(Option.Some(idx));
+        }
+    }
+
+    /// E or the Alert button: the selected unit (or group) goes on alert. It drops this turn's
+    /// move and attack and its queue, stays put and is skipped in the turn order every turn, and
+    /// in its attack step attacks an enemy in range (`alert_target`), until it's given another
+    /// order, or E takes it off alert. Only troops that can (`can_go_on_alert`).
+    pub fn toggle_alert(&mut self) {
+        if self.is_resolving() { return; }
+        if !self.group.is_empty() {
+            self.toggle_group_alert();
+            return;
+        }
+        let Option.Some(idx) = self.selected else { return; };
+        if !self.is_player_controlled(idx) { return; }
+        if self.units[idx].alert {
+            self.units[idx].alert = false;
+            return;
+        }
+        if !self.can_go_on_alert(idx) {
+            self.set_notice(ALERT_NOTICE);
+            return;
+        }
+        self.go_on_alert(idx);
+        self.select_next_needing_attention(Option.Some(idx));
+    }
+
+    /// Whether unit `idx` can go on alert: a troop that fights on land (`Unit.alert_capable`:
+    /// siege only set up), not a settler.
+    pub fn can_go_on_alert(&self, idx: i32) -> bool {
+        self.units[idx].alert_capable() && !self.settlers.contains(self.units[idx].id)
+    }
+
+    /// Puts unit `idx` on alert, dropping whatever else it had planned but its ability (a siege
+    /// setting up keeps setting up).
+    pub fn go_on_alert(&mut self, idx: i32) {
+        self.cancel_swap(idx);
+        let unit = &mut self.units[idx];
+        unit.take_new_order();
+        unit.planned_move = Option.None;
+        unit.planned_attack = Option.None;
+        unit.cancel_queue();
+        unit.alert = true;
     }
 
     /// Delete or the Disband button: removes the selected unit for good. The first press only
@@ -359,13 +437,26 @@ impl GameState {
         let id = self.units[idx].id;
         if self.disband_armed != Option.Some(id) {
             self.disband_armed = Option.Some(id);
-            self.set_notice("PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS UNIT");
+            let passengers = self.units[idx].cargo.len();
+            self.notice = if passengers == 0 {
+                to_owned("PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS UNIT")
+            } else if passengers == 1 {
+                to_owned("PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS CRAFT AND ITS PASSENGER")
+            } else {
+                text(fn() can {Out} { Out.put("PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS CRAFT AND ITS "); show_u64(passengers as u64); Out.put(" PASSENGERS"); })
+            };
             return;
         }
         self.disband_armed = Option.None;
         let unit = self.units.remove(idx);
         let _was = self.settlers.remove(unit.id);
         let _was = self.player_controlled_units.remove(unit.id);
+        for p in 0..unit.cargo.len() {
+            let _was = self.settlers.remove(unit.cargo[p].id);
+            let _was = self.player_controlled_units.remove(unit.cargo[p].id);
+            let passenger = &unit.cargo[p];
+            info(fn() can {Out} { passenger.show(); Out.put(" disbanded with its landing craft"); });
+        }
         info(fn() can {Out} { unit.show(); Out.put(" disbanded"); });
         let role = self.unit_role(&unit).name();
         self.notice = text(fn() can {Out} { Out.put(role); Out.put(" DISBANDED"); });
@@ -374,7 +465,7 @@ impl GameState {
         self.selected = Option.None;
         self.group.clear();
         self.ui_click_mode = Option.None;
-        self.select_next_or_end_turn(if idx > 0 { Option.Some(idx - 1) } else { Option.None });
+        self.select_next_needing_attention(if idx > 0 { Option.Some(idx - 1) } else { Option.None });
     }
 
     /// How many of the player's units still need orders, and how many of their cities still
@@ -408,14 +499,14 @@ impl GameState {
     /// that does, leaving city planning open if there are none.
     pub fn advance_selection_if_done(&mut self) {
         if let Option.Some(idx) = self.selected {
-            if !self.needs_orders(idx) { self.select_next_or_end_turn(Option.Some(idx)); }
+            if !self.needs_orders(idx) { self.select_next_needing_attention(Option.Some(idx)); }
         }
     }
 
     /// Selects the next unit after `after` that still needs orders. If none do, opens a city
-    /// that needs something to build; failing that, clears the selection and waits for the
-    /// player to end the turn.
-    pub fn select_next_or_end_turn(&mut self, after: Option[i32]) {
+    /// that needs something to build; failing that, lets go of the selection (and any action
+    /// armed for it) and waits for the player to end the turn; it never ends the turn itself.
+    pub fn select_next_needing_attention(&mut self, after: Option[i32]) {
         // In the turn strip's order: production first, then the units.
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) {
@@ -427,7 +518,7 @@ impl GameState {
             self.select_and_focus(Option.Some(next));
             return;
         }
-        self.selected = Option.None;
+        self.set_selection(Vec.new());
     }
 
     /// Selects `idx` and glides the camera to it. Used when the game picks the unit, not when
@@ -475,11 +566,12 @@ impl GameState {
 
     /// Whether the unit still has something to plan: a move or an attack it could queue but
     /// hasn't. Any hex in range can be attacked, so a unit that can attack needs orders until
-    /// it does (or holds, guards, or follows a queue built with Shift). A unit locked in a
+    /// it does (or holds, guards, is on alert, follows a queue built with Shift, boards a craft
+    /// or, a craft, lands a passenger). A unit locked in a
     /// contested hex already has its fight, so it's done.
     pub fn needs_orders(&self, idx: i32) -> bool {
         let unit = &self.units[idx];
-        if unit.holding || unit.guarding || unit.has_queue() || unit.planned_board.is_some() || self.rival_of(idx).is_some() { return false; }
+        if unit.holding || unit.guarding || unit.alert || unit.has_queue() || unit.planned_board.is_some() || unit.planned_unload.is_some() || self.rival_of(idx).is_some() { return false; }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
         let may_attack = unit.planned_attack.is_none() && unit.can_attack();
         may_move || may_attack
@@ -496,7 +588,7 @@ impl GameState {
         if let Option.Some(selected) = self.selected {
             self.cancel_swap(selected);
             self.units[selected].clear_orders();
-            self.units[selected].guarding = false;
+            self.units[selected].wake();
         }
     }
 
@@ -577,33 +669,59 @@ impl GameState {
         let unit = &mut self.units[idx];
         unit.planned_move = if unit.planned_move == Option.Some(dest) { Option.None } else { Option.Some(dest) };
         unit.drop_unreachable_attack();
-        // Any order wakes a guarding unit, and replaces a queue.
-        unit.guarding = false;
-        unit.holding = false;
+        // Any order wakes a guarding (or alert) unit, and replaces a queue.
+        unit.take_new_order();
         unit.cancel_queue();
+    }
+
+    /// Shared exterior attack rule for the AI's and resolving orders, on the real board. `later`
+    /// ignores this turn's deploy and contest lock.
+    pub fn attack_target_legal(&self, idx: i32, target: Hex, later: bool) -> bool {
+        self.attack_rule(idx, target, later) && !self.empty_city_target(target, self.units[idx].team)
+    }
+
+    /// `attack_target_legal` as the player knows the board, for the orders the player plans
+    /// (direct, group and queued): a city center out of sight may have someone standing in it,
+    /// so it's never refused as empty (`known_empty_city_target`), and whether it's accepted
+    /// gives nothing away. If it's empty when the attack comes, it misses.
+    pub fn known_attack_target_legal(&self, idx: i32, target: Hex, later: bool, fog: &Fog) -> bool {
+        self.attack_rule(idx, target, later) && !self.known_empty_city_target(target, self.units[idx].team, fog)
+    }
+
+    /// Everything in the attack rule but the empty city center: the unit can attack (this turn,
+    /// unless `later`), and the target is open ground, or water for a ship or a ranged or siege
+    /// land troop.
+    fn attack_rule(&self, idx: i32, target: Hex, later: bool) -> bool {
+        let unit = &self.units[idx];
+        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
+        if unit.unit_type == UnitType.LandingCraft
+            || (!later && (!unit.can_attack() || self.rival_of(idx).is_some()))
+            || !(self.grid.is_passable(target) || water)
+        {
+            return false;
+        }
+        !water || unit.attacks_water()
     }
 
     /// Toggles an attack on `target`, measured from the unit's planned position so
     /// move-then-attack works. Mountains can't be targeted since no one can stand there, and a
     /// unit locked in a contested hex can only fight its rival there.
     pub fn try_queue_attack(&mut self, idx: i32, target: Hex) {
-        let unable = !self.units[idx].can_attack() || self.rival_of(idx).is_some();
         let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
-        let shoots_ships = self.units[idx].unit_type == UnitType.Ranged || self.units[idx].unit_type == UnitType.Siege;
-        if water && !self.units[idx].is_naval() && !shoots_ships {
-            self.set_notice("ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS");
+        if water && !self.units[idx].attacks_water() {
+            self.set_notice(SHIPS_NOTICE);
             return;
         }
-        if unable || !(self.grid.is_passable(target) || water) { return; }
-        if self.empty_city_target(target, self.units[idx].team) {
+        let fog = self.fog();
+        if self.known_empty_city_target(target, self.units[idx].team, &fog) {
             self.set_notice("CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR");
             return;
         }
+        if !self.known_attack_target_legal(idx, target, false, &fog) { return; }
         let unit = &mut self.units[idx];
         if unit.planned_pos().distance(target) <= unit.stats().attack_range {
             unit.planned_attack = if unit.planned_attack == Option.Some(target) { Option.None } else { Option.Some(target) };
-            unit.guarding = false;
-            unit.holding = false;
+            unit.take_new_order();
             unit.cancel_queue();
         }
     }
@@ -630,8 +748,7 @@ impl GameState {
         }
         for i in each(&[idx, ally]) {
             self.units[*i].drop_unreachable_attack();
-            self.units[*i].guarding = false;
-            self.units[*i].holding = false;
+            self.units[*i].take_new_order();
             self.units[*i].cancel_queue();
         }
     }
@@ -646,6 +763,9 @@ impl GameState {
         self.units[idx].ability_queued = !self.units[idx].ability_queued;
         // The queue was planned with the unit's old stats.
         self.units[idx].cancel_queue();
+        // Like any other order, it ends an alert (a siege packing up couldn't keep one). Set
+        // up first, then go on alert.
+        self.units[idx].alert = false;
         self.drop_orders_now_impossible(idx);
         self.advance_selection_if_done();
     }

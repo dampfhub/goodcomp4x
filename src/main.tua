@@ -308,6 +308,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
             'F' => game.found_city_selected(),
             'Y' => game.toggle_yields(),
             'G' => game.toggle_guard(),
+            'E' => game.toggle_alert(),
             _ => {}
         },
         Key.Function(f) => match f {

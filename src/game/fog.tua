@@ -100,6 +100,14 @@ pub struct Sighting {
 }
 
 impl GameState {
+    /// `empty_city_target` as the player knows the board: a city center in sight may be refused
+    /// as empty, but one out of sight may have someone standing in it, so it's never refused and
+    /// whether an order is accepted gives nothing away. If it's empty when the attack comes, the
+    /// attack misses.
+    pub fn known_empty_city_target(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
+        fog.sees(hex) && self.empty_city_target(hex, team)
+    }
+
     pub fn fog(&self) -> Fog {
         if self.fog_of_war { Fog { visible: Option.Some(self.visible_hexes()), team: self.local_team } } else { Fog { visible: Option.None, team: self.local_team } }
     }

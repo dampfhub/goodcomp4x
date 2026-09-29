@@ -362,7 +362,7 @@ impl GameState {
             disband_armed: Option.None,
             effects: Vec.new(),
         };
-        game.select_next_or_end_turn(Option.None);
+        game.select_next_needing_attention(Option.None);
         game
     }
 
@@ -484,7 +484,7 @@ impl GameState {
         game.camera = Camera.new(at.to_world(), game.camera.half_height);
         // What needs seeing to first, as every turn starts: the city's production, or else the
         // settler.
-        game.select_next_or_end_turn(Option.None);
+        game.select_next_needing_attention(Option.None);
         game
     }
 
