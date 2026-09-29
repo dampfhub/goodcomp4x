@@ -1435,6 +1435,56 @@ fn a_citys_priority_order_picks_its_tiles_and_the_food_floor_holds() {
 }
 
 #[test]
+fn a_canneries_food_counts_toward_the_food_floor() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.cities[0].population = 1;
+    g.cities[0].priorities = Priorities::default().with_first(Good::Wood);
+    g.cities[0].clusters.clear();
+    let routes = g.routes(0);
+    // Where a lone citizen of this order goes, the city fed or not.
+    let pick = |g: &GameState, fed: bool| {
+        routes
+            .costs
+            .iter()
+            .filter(|&(&h, _)| g.is_open(0, h) && !g.grid.terrain(h).is_water())
+            .map(|(&h, &cost)| {
+                let score = g.cities[0]
+                    .priorities
+                    .score(g.delivered_goods(0, h, cost), fed);
+                (h, -score)
+            })
+            .min_by_key(|&(h, score)| (score, h.q, h.r))
+            .map(|(h, _)| h)
+            .unwrap()
+    };
+    let (unfed, fed) = (pick(&g, false), pick(&g, true));
+    assert_ne!(unfed, fed, "the food floor makes a difference");
+    // The center alone doesn't feed one citizen: food first.
+    g.auto_assign_city(0);
+    assert_eq!(g.cities[0].worked().collect::<Vec<_>>(), [unfed]);
+
+    // A Cannery collecting from a farm feeds it, so it goes by its order.
+    // It used to count only the center and the tiles worked.
+    let (cannery, farm) = (Hex::new(0, 0), Hex::new(1, 0));
+    g.sites.insert(
+        farm,
+        Site {
+            team: Team::Blue,
+            food: 16,
+            production: 0,
+            label: "FARM",
+        },
+    );
+    g.cities[0]
+        .extra_buildings
+        .insert(Building::Cannery, cannery);
+    assert!(g.cannery_income(0) > 0);
+    g.auto_assign_city(0);
+    assert_eq!(g.cities[0].worked().collect::<Vec<_>>(), [fed]);
+}
+
+#[test]
 fn a_new_citizen_takes_the_tile_the_priority_order_ranks_best() {
     let mut g = GameState::city_scenario();
     g.units.clear();
@@ -2611,4 +2661,20 @@ fn no_city_is_founded_on_water_or_ruins() {
         assert!(g.founding_issue(pos).is_some(), "{pos:?}");
     }
     assert_eq!(g.founding_issue(Hex::new(-6, 0)), None);
+}
+
+/// #289: a settler sharing its hex with an enemy (both stepped in at once)
+/// can't found a city there, or the enemy would stand on its center.
+#[test]
+fn no_city_is_founded_in_a_contested_hex() {
+    use crate::game::unit::{Unit, UnitType};
+    let mut g = lone_city_on(|_| Tile::default());
+    let site = Hex::new(-6, 0);
+    g.units
+        .push(Unit::new(100, site, Team::Blue, UnitType::Melee));
+    g.settlers.insert(100);
+    assert_eq!(g.founding_issue(site), None);
+    g.units
+        .push(Unit::new(101, site, Team::Red, UnitType::Melee));
+    assert!(g.founding_issue(site).is_some());
 }

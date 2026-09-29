@@ -13,7 +13,8 @@ use crate::game::hex::Hex;
 /// Food a city's tiles bring in past its citizens' upkeep before it's fed
 /// and follows its priority order (the food floor): one whole food.
 const FOOD_FLOOR_MARGIN: i32 = 4;
-/// The city center's own food, which counts toward the food floor.
+/// The city center's own food, which counts toward the food floor (as
+/// does a Cannery's, `unworked_food`).
 const CENTER_FOOD: i32 = 8;
 
 /// A tile a citizen might take, with its delivered food, wood and metal.
@@ -70,21 +71,27 @@ impl GameState {
         )
     }
 
-    /// Whether `food` (the center's and its worked tiles', delivered)
-    /// feeds `city`: its citizens' upkeep and one more (the food floor).
+    /// Whether `food` (the center's, its Cannery's and its worked tiles',
+    /// delivered) feeds `city`: its citizens' upkeep and one more (the food
+    /// floor).
     pub(super) fn is_fed(&self, city: usize, food: i32) -> bool {
         food >= self.cities[city].population as i32 * FOOD_PER_CITIZEN + FOOD_FLOOR_MARGIN
     }
 
-    /// The food `city`'s center and worked tiles deliver, as auto-assign
-    /// counts it for the food floor.
+    /// The food `city` gets that none of its citizens work for, which counts
+    /// toward the food floor as its income does: its center's, and what its
+    /// Cannery collects from sites no citizen works (as they stand now).
+    fn unworked_food(&self, city: usize) -> i32 {
+        CENTER_FOOD + self.cannery_income(city)
+    }
+
+    /// The food `city`'s worked tiles deliver.
     fn worked_food(&self, city: usize, routes: &Routes) -> i32 {
-        CENTER_FOOD
-            + self.cities[city]
-                .worked()
-                .filter_map(|h| routes.costs.get(&h).map(|&cost| (h, cost)))
-                .map(|(h, cost)| self.delivered_goods(city, h, cost).0)
-                .sum::<i32>()
+        self.cities[city]
+            .worked()
+            .filter_map(|h| routes.costs.get(&h).map(|&cost| (h, cost)))
+            .map(|(h, cost)| self.delivered_goods(city, h, cost).0)
+            .sum()
     }
 
     /// Whether a city center or a placed building (any side's) stands on
@@ -227,8 +234,10 @@ impl GameState {
             .filter(|(h, _)| self.is_open(city, **h))
             .map(|(&h, &cost)| (h, self.delivered_goods(city, h, cost)))
             .collect();
-        let mut food = self.worked_food(city, routes);
+        let mut tile_food = self.worked_food(city, routes);
         while self.cities[city].working() < self.cities[city].capacity() {
+            // Anew each time: a tile taken may be one its Cannery collected.
+            let food = self.unworked_food(city) + tile_food;
             let c = &self.cities[city];
             let worker = self.best_tile(city, &tiles, food, |h| {
                 self.cluster_with_room(city, h).is_some()
@@ -252,7 +261,7 @@ impl GameState {
                 let k = self.cluster_with_room(city, hex).expect("room beside it");
                 self.cities[city].clusters[k].workers.push(hex);
             }
-            food += f;
+            tile_food += f;
         }
     }
 

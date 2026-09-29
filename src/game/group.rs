@@ -140,21 +140,23 @@ impl GameState {
         for i in able {
             let unit = &mut self.units[i];
             unit.planned_attack = (!already).then_some(target);
-            unit.wake();
-            unit.holding = false;
+            unit.take_new_order();
         }
     }
 
-    /// Sends every member toward `target`, replacing their queued moves: each
-    /// takes the reachable hex nearest the target that nobody else on its
-    /// side is heading for, nearest members first. One that can't get any
-    /// closer stays put.
+    /// Sends every member toward `target`, replacing their moves, queues,
+    /// boarding and landing: each takes the reachable hex nearest the target
+    /// that nobody else on its side is heading for, nearest members first.
+    /// One that can't get any closer stays put.
     fn group_move(&mut self, target: Hex) {
         let mut members = self.group.clone();
         for &i in &members {
             self.cancel_swap(i);
-            self.units[i].planned_move = None;
-            self.units[i].cancel_queue();
+            let unit = &mut self.units[i];
+            unit.planned_move = None;
+            unit.planned_board = None;
+            unit.planned_unload = None;
+            unit.cancel_queue();
         }
         let team = self.units[members[0]].team;
         let mut claimed: HashSet<Hex> = self
@@ -185,8 +187,7 @@ impl GameState {
                 let unit = &mut self.units[i];
                 unit.planned_move = Some(dest);
                 unit.drop_unreachable_attack();
-                unit.wake();
-                unit.holding = false;
+                unit.take_new_order();
             }
         }
     }

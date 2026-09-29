@@ -205,8 +205,11 @@ pub struct Unit {
     pub waypoints: Vec<Hex>,
     /// Land units carried by a landing craft. Cargo is lost if it sinks.
     pub cargo: Vec<Unit>,
-    /// Boarding and landing resolve with the rest of the turn.
+    /// Boarding: the id of the adjacent friendly landing craft this land
+    /// troop boards after combat. Any other order drops it.
     pub planned_board: Option<u32>,
+    /// Landing craft only: the adjacent land its first passenger lands on
+    /// after combat. Any other order drops it.
     pub planned_unload: Option<Hex>,
 }
 
@@ -323,20 +326,26 @@ impl Unit {
     }
 
     /// Whether the unit has anything Clear Orders would drop: a move, an
-    /// attack, a queue, a hold, a guard or an alert.
+    /// attack, a queue, boarding, landing, a hold, a guard or an alert.
     pub fn has_orders(&self) -> bool {
-        self.has_queue()
-            || self.planned_move.is_some()
-            || self.planned_attack.is_some()
-            || self.holding
-            || self.guarding
-            || self.alert
+        self.has_turn_orders() || self.holding || self.guarding || self.alert
     }
 
     /// Ends a guard or an alert: any order to the unit does.
     pub fn wake(&mut self) {
         self.guarding = false;
         self.alert = false;
+    }
+
+    /// A new order to the unit (a move, attack, swap, queued turn, boarding
+    /// or landing) replaces its stance and its transport order: it ends a
+    /// hold, a guard and an alert, and drops a planned boarding or landing.
+    /// The caller sets the new order afterwards.
+    pub fn take_new_order(&mut self) {
+        self.wake();
+        self.holding = false;
+        self.planned_board = None;
+        self.planned_unload = None;
     }
 
     /// Whether its type can go on alert: the land troops that fight (melee,

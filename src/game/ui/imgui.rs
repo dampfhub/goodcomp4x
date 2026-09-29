@@ -9,7 +9,7 @@ use ::imgui::{
 use super::action_icons::{self, ICON_BUTTON_SIZE};
 use super::builder::{ButtonSpec, CatalogEntry, Row, flat_rows, icon_row, visible_button_hint};
 use super::network_menu::NetField;
-use super::text::end_turn_label;
+use super::text::{end_turn_label, fit_text};
 use super::tooltips::Subject;
 use super::*;
 use crate::game::map_icons;
@@ -121,6 +121,10 @@ impl OuterBox {
 }
 
 const PANEL_MARGIN: f32 = 14.0;
+/// Room kept between the status bar's notice and the VIEW label after it.
+const NOTICE_GAP: f32 = 16.0;
+/// Where the tooltip holding a shortened notice in full wraps.
+const NOTICE_TOOLTIP_WIDTH: f32 = 480.0;
 const PANEL_GAP: f32 = 8.0;
 const STATUS_HEIGHT: f32 = 52.0;
 /// The top status bar is a fixed strip: its second row of small buttons
@@ -1873,6 +1877,10 @@ thread_local! {
     /// thread, a line per string.
     pub(super) static SHOWN_TOOLTIPS: std::cell::RefCell<Vec<Vec<String>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Tests only: the status bar's notice as ImGui last drew it, where it
+    /// ended, and where the VIEW label after it starts.
+    pub(super) static SHOWN_NOTICE: std::cell::RefCell<(String, f32, f32)> =
+        const { std::cell::RefCell::new((String::new(), 0.0, 0.0)) };
 }
 
 /// Tests only: notes the tooltip about to show.
@@ -1886,6 +1894,12 @@ fn note_shown_tooltip(_lines: &[(u32, Line)]) {
                 .collect(),
         )
     });
+}
+
+/// Tests only: notes the notice just drawn.
+fn note_shown_notice(_notice: &str, _end: f32, _view: f32) {
+    #[cfg(test)]
+    SHOWN_NOTICE.set((_notice.to_string(), _end, _view));
 }
 
 /// Tests only: notes where the button for `target` just went.
@@ -2944,30 +2958,34 @@ impl GameState {
                 let turn_color = self.turn_number_color(ui.style_color(StyleColor::Text));
                 rich_text(ui, &format!("TURN {turn}"), turn_color);
                 // The player's stockpile, then the notice in what's left.
-                let mut stockpile_width = 0.0;
                 for (text, color) in &stockpile {
                     ui.same_line_with_spacing(0.0, 0.0);
                     rich_text(ui, text, *color);
-                    stockpile_width += rich_width(ui, text);
                 }
                 ui.same_line_with_spacing(0.0, 24.0);
-                let max_notice = (viewport.x - end_width - 520.0 - stockpile_width).max(0.0);
-                if rich_width(ui, self.shown_notice()) <= max_notice {
-                    rich_text(ui, self.shown_notice(), NOTICE_TEXT);
-                } else {
-                    let mut shortened = self.shown_notice().to_string();
-                    while !shortened.is_empty() && rich_width(ui, &shortened) > max_notice {
-                        shortened.pop();
+                // The notice runs up to the VIEW label on the same line,
+                // shortened to what fits; hovering shows all of it.
+                let view_x = (viewport.x - end_width - 365.0).max(8.0);
+                let notice = self.shown_notice();
+                let room = view_x - NOTICE_GAP - ui.cursor_pos()[0];
+                let shown = fit_text(notice, room, |t| rich_width(ui, t));
+                if !shown.is_empty() {
+                    rich_text(ui, &shown, NOTICE_TEXT);
+                    note_shown_notice(&shown, ui.item_rect_max()[0], view_x);
+                    if shown != notice && ui.is_item_hovered() {
+                        ui.tooltip(|| {
+                            let _wrap = ui.push_text_wrap_pos_with_pos(NOTICE_TOOLTIP_WIDTH);
+                            rich_text(ui, notice, NOTICE_TEXT);
+                        });
                     }
-                    rich_text(ui, &shortened, NOTICE_TEXT);
                 }
                 ui.set_cursor_pos([15.0, 27.0]);
                 if ui.small_button("MENU") {
                     actions.push(Action::Button(None, Target::OpenSettings));
                 }
-                ui.set_cursor_pos([(viewport.x - end_width - 365.0).max(8.0), 7.0]);
+                ui.set_cursor_pos([view_x, 7.0]);
                 ui.text(format!("VIEW: {}", layout.active_view.label()));
-                ui.set_cursor_pos([(viewport.x - end_width - 365.0).max(8.0), 27.0]);
+                ui.set_cursor_pos([view_x, 27.0]);
                 let layer = if layout.editing_outer {
                     "EDIT OUTER"
                 } else {
