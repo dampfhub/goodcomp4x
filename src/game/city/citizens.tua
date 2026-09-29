@@ -1,0 +1,357 @@
+//! Citizens: labor focus, tile assignment (the manager and its workers), growth, and the
+//! end-of-turn economy tick.
+
+use std.collections.Set;
+use std.core.Keep;
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.str.Str;
+use log.Log;
+use game.GameState;
+use game.text;
+use game.city.Building;
+use game.city.LaborFocus;
+use game.city.MAX_CITY_POPULATION;
+use game.city.Routes;
+use game.city.delivered_share;
+use game.hex.Hex;
+use game.scenario.copy_vec;
+use std.math.min;
+
+/// A candidate tile for a citizen: its delivered food and production.
+struct Candidate { hex: Hex, food: i32, production: i32 }
+
+/// The index of the candidate that sorts first by `(-score, q, r)` among those `usable`
+/// allows, where the Rust sorts and takes the first usable one.
+fn best_candidate(candidates: &Vec[Candidate], usable: &Vec[bool], focus: LaborFocus, needs_food: bool) -> Option[i32] {
+    let mut best: Option[i32] = Option.None;
+    for i in 0..candidates.len() {
+        if !usable[i] { continue; }
+        let a = candidates[i];
+        let better = match best {
+            Option.None => true,
+            Option.Some(b) => {
+                let (sa, sb) = (score(a, focus, needs_food), score(candidates[b], focus, needs_food));
+                sa > sb || (sa == sb && (a.hex.q < candidates[b].hex.q || (a.hex.q == candidates[b].hex.q && a.hex.r < candidates[b].hex.r)))
+            }
+        };
+        if better { best = Option.Some(i); }
+    }
+    best
+}
+
+fn score(c: Candidate, focus: LaborFocus, needs_food: bool) -> i32 {
+    match focus {
+        LaborFocus.Food => c.food * 5 + c.production,
+        LaborFocus.Production => c.production * 5 + c.food,
+        LaborFocus.Balanced => if needs_food { c.food * 4 + c.production } else { c.production * 4 + c.food },
+    }
+}
+
+/// Reconciling's score, `food * 3 + production`, as a `LaborFocus`-free weight.
+fn reconcile_score(c: Candidate) -> i32 { c.food * 3 + c.production }
+
+/// Drops the candidates the manager at `manager` can't reach: only tiles next to it.
+fn keep_beside(candidates: &mut Vec[Candidate], manager: Hex) {
+    handle { candidates.retain(); } with Keep[Candidate] { keep(c) => { resume manager.distance(c.hex) == 1 } }
+}
+
+/// Drops `candidates[at]`, keeping the rest in order.
+fn remove_candidate(candidates: &mut Vec[Candidate], at: i32) { let _gone = candidates.remove(at); }
+
+/// The index of the last tile of `worked` that isn't one of `remembered`.
+fn last_not_remembered(worked: &Vec[Hex], remembered: &Vec[Hex]) -> Option[i32] {
+    let mut i = worked.len();
+    while i > 0 {
+        i = i - 1;
+        if !remembered.contains(worked[i]) { return Option.Some(i); }
+    }
+    Option.None
+}
+
+impl GameState {
+    /// A labor focus button: the open city favours `focus` and reassigns its citizens.
+    pub fn set_selected_city_focus(&mut self, focus: LaborFocus) {
+        let Option.Some(city) = self.selected_city else { return; };
+        self.cities[city].focus = focus;
+        self.auto_assign_city(city);
+        self.notice = text(fn() can {Out} { Out.put("CITY FOCUS: "); Out.put(focus.name()); });
+    }
+
+    /// The most citizens city `city` can put to work: its population, up to the cap.
+    pub fn citizen_slots(&self, city: i32) -> i32 { min(self.cities[city].population, MAX_CITY_POPULATION) }
+
+    /// Whether city `city` may put its next citizen on `hex`: the manager (the first citizen)
+    /// anywhere, later citizens next to it; no city stands there or works it, and any site
+    /// there is its own team's.
+    pub fn may_assign(&self, city: i32, hex: Hex) -> bool {
+        let worked = &self.cities[city].worked;
+        if !worked.is_empty() && worked[0].distance(hex) != 1 { return false; }
+        for i in 0..self.cities.len() {
+            if self.cities[i].pos == hex || self.cities[i].worked.contains(hex) { return false; }
+        }
+        self.own_or_no_site(city, hex)
+    }
+
+    /// Whether any site on `hex` belongs to city `city`'s team.
+    fn own_or_no_site(&self, city: i32, hex: Hex) -> bool {
+        match self.sites.get(hex) { Option.Some(s) => s.team == self.cities[city].team, Option.None => true }
+    }
+
+    /// Whether the manager of city `city` may move to `hex`: no other city stands there or works
+    /// it, any site there is its own, and it is land the city's goods reach.
+    pub fn may_be_manager(&self, city: i32, hex: Hex) -> bool {
+        for i in 0..self.cities.len() {
+            if i != city && (self.cities[i].pos == hex || self.cities[i].worked.contains(hex)) { return false; }
+        }
+        self.own_or_no_site(city, hex) && !self.grid.terrain(hex).is_water() && self.routes(city).costs.has(hex)
+    }
+
+    /// Whether `hex` can take the city's next citizen as far as the manager goes: the first
+    /// citizen, the manager, has to be on land.
+    pub fn may_manage_or_work(&self, city: i32, hex: Hex) -> bool {
+        !self.cities[city].worked.is_empty() || !self.grid.terrain(hex).is_water()
+    }
+
+    /// Every tile other cities work.
+    fn other_claims(&self, city: i32) -> Set[Hex] {
+        let mut claims: Set[Hex] = Set.new();
+        for i in 0..self.cities.len() {
+            if i == city { continue; }
+            for k in 0..self.cities[i].worked.len() { let _new = claims.insert(self.cities[i].worked[k]); }
+        }
+        claims
+    }
+
+    /// Relocates the manager and carries each worker's axial offset with it. Workers whose
+    /// matching tile is unavailable are filled by normal auto-assignment.
+    pub fn move_manager(&mut self, city: i32, new_manager: Hex) {
+        let old = copy_vec(&self.cities[city].worked);
+        let old_manager = old[0];
+        let routes = self.routes(city);
+        let claims = self.other_claims(city);
+        let mut relocated: Vec[Hex] = Vec.new();
+        relocated.push(new_manager);
+        for k in 1..old.len() {
+            let worker = old[k];
+            let target = Hex.new(new_manager.q + worker.q - old_manager.q, new_manager.r + worker.r - old_manager.r);
+            let legal = routes.costs.has(target) && !claims.contains(target) && self.city_at(target).is_none() && self.own_or_no_site(city, target);
+            if legal && !relocated.contains(target) { relocated.push(target); }
+        }
+        self.cities[city].remembered_worked = copy_vec(&relocated);
+        self.cities[city].worked = relocated;
+        self.reconcile_citizens(city);
+        self.set_notice("MANAGER MOVED - WORKERS FOLLOWED WHERE POSSIBLE");
+    }
+
+    /// The tiles `routes` reaches that `open` admits, with their delivered yields.
+    fn candidates(&self, city: i32, routes: &Routes, reconciling: bool, claims: &Set[Hex]) -> Vec[Candidate] {
+        let mut out: Vec[Candidate] = Vec.new();
+        for i in 0..routes.costs.len() {
+            let Option.Some(hex) = routes.costs.key_at(i) else { continue; };
+            let Option.Some(cost) = routes.costs.val_at(i) else { continue; };
+            let open = if reconciling {
+                !self.cities[city].worked.contains(hex) && !claims.contains(hex) && self.own_or_no_site(city, hex)
+            } else {
+                self.may_assign(city, hex)
+            };
+            if !open { continue; }
+            let (f, p) = self.tile_yield(hex);
+            out.push(Candidate { hex, food: f * self.mill_food_share(city, hex, cost), production: p * delivered_share(cost) });
+        }
+        out
+    }
+
+    /// Which of `candidates` city `city` could put its next citizen on (`may_manage_or_work`).
+    fn usable(&self, city: i32, candidates: &Vec[Candidate]) -> Vec[bool] {
+        let mut out: Vec[bool] = Vec.new();
+        for i in 0..candidates.len() { out.push(self.may_manage_or_work(city, candidates[i].hex)); }
+        out
+    }
+
+    /// Puts every citizen of city `city` on the best tiles it reaches, by its focus: the first
+    /// becomes the manager, and the rest go next to it.
+    pub fn auto_assign_city(&mut self, city: i32) {
+        self.cities[city].worked.clear();
+        let routes = self.routes(city);
+        let none: Set[Hex] = Set.new();
+        let mut tiles = self.candidates(city, &routes, false, &none);
+        let mut food = 8;
+        while self.cities[city].worked.len() < self.citizen_slots(city) && !tiles.is_empty() {
+            if !self.cities[city].worked.is_empty() { keep_beside(&mut tiles, self.cities[city].worked[0]); }
+            let needs_food = food < self.cities[city].population * 8 + 4;
+            let usable = self.usable(city, &tiles);
+            let Option.Some(at) = best_candidate(&tiles, &usable, self.cities[city].focus, needs_food) else { break; };
+            let pick = tiles[at];
+            remove_candidate(&mut tiles, at);
+            self.cities[city].worked.push(pick.hex);
+            food = food + pick.food;
+        }
+        self.cities[city].remembered_worked = copy_vec(&self.cities[city].worked);
+    }
+
+    /// Keeps manual choices where possible, substitutes around temporarily blocked tiles, then
+    /// restores those choices once they are available.
+    pub fn reconcile_citizens(&mut self, city: i32) {
+        let routes = self.routes(city);
+        let claims = self.other_claims(city);
+        handle { self.cities[city].worked.retain(); } with Keep[Hex] {
+            keep(h) => { resume routes.costs.has(*h) && !claims.contains(*h) }
+        }
+        // The first remembered tile is the manager. It goes back to the first slot before the
+        // workers are restored, so an automatically promoted worker never becomes a permanent
+        // manager after the original tile clears.
+        let remembered = copy_vec(&self.cities[city].remembered_worked);
+        let capacity = self.citizen_slots(city);
+        if !remembered.is_empty() {
+            let manager = remembered[0];
+            if routes.costs.has(manager) && !claims.contains(manager) {
+                if !self.cities[city].worked.contains(manager) && self.cities[city].worked.len() >= capacity {
+                    match last_not_remembered(&self.cities[city].worked, &remembered) {
+                        Option.Some(fallback) => { let _gone = self.cities[city].worked.remove(fallback); }
+                        Option.None => { let _gone = self.cities[city].worked.pop(); }
+                    }
+                }
+                handle { self.cities[city].worked.retain(); } with Keep[Hex] { keep(h) => { resume *h != manager } }
+                self.cities[city].worked.insert(0, manager);
+            }
+        }
+        // Desired assignments take priority over temporary replacements. A manual change
+        // updates `remembered_worked`, so this only restores tiles the player has not since
+        // replaced.
+        for k in 1..remembered.len() {
+            let h = remembered[k];
+            if !routes.costs.has(h) || claims.contains(h) || self.cities[city].worked.contains(h) || !self.may_assign(city, h) { continue; }
+            if self.cities[city].worked.len() >= capacity {
+                let Option.Some(fallback) = last_not_remembered(&self.cities[city].worked, &remembered) else { continue; };
+                let _gone = self.cities[city].worked.remove(fallback);
+            }
+            self.cities[city].worked.push(h);
+        }
+        if !self.cities[city].worked.is_empty() {
+            let manager = self.cities[city].worked[0];
+            handle { self.cities[city].worked.retain(); } with Keep[Hex] { keep(h) => { resume *h == manager || manager.distance(*h) == 1 } }
+        }
+        let mut candidates = self.candidates(city, &routes, true, &claims);
+        while self.cities[city].worked.len() < self.citizen_slots(city) && !candidates.is_empty() {
+            if !self.cities[city].worked.is_empty() { keep_beside(&mut candidates, self.cities[city].worked[0]); }
+            let usable = self.usable(city, &candidates);
+            // Reconciling ranks by `food * 3 + production`, which is Food focus's order at a
+            // weight of 3.
+            let mut best: Option[i32] = Option.None;
+            for i in 0..candidates.len() {
+                if !usable[i] { continue; }
+                let a = candidates[i];
+                let better = match best {
+                    Option.None => true,
+                    Option.Some(b) => {
+                        let (sa, sb) = (reconcile_score(a), reconcile_score(candidates[b]));
+                        sa > sb || (sa == sb && (a.hex.q < candidates[b].hex.q || (a.hex.q == candidates[b].hex.q && a.hex.r < candidates[b].hex.r)))
+                    }
+                };
+                if better { best = Option.Some(i); }
+            }
+            let Option.Some(at) = best else { break; };
+            let pick = candidates[at];
+            remove_candidate(&mut candidates, at);
+            self.cities[city].worked.push(pick.hex);
+        }
+    }
+
+    /// City `city`'s growth: percent of the way to the next citizen, the food that takes, and
+    /// the line saying when it grows.
+    pub fn growth_status(&self, city: i32) -> (i32, i32, Str) {
+        let c = &self.cities[city];
+        let threshold = (10 + 5 * c.population) * 4;
+        let net = self.income(city).0 - c.population * 8;
+        let label = if net > 0 {
+            let missing = if threshold - c.food > 0 { threshold - c.food } else { 0 };
+            let turns = (missing + net - 1) / net;
+            text(fn() can {Out} { Out.put("GROWTH IN "); show_i64(turns as i64); Out.put(" TURNS"); })
+        } else {
+            text(fn() can {Out} { Out.put("NO GROWTH: NEED FOOD"); })
+        };
+        let percent = c.food * 100 / threshold;
+        (if percent < 0 { 0 } else if percent > 100 { 100 } else { percent }, threshold, label)
+    }
+
+    /// A: the open city's citizens are assigned afresh.
+    pub fn auto_assign_selected_city(&mut self) {
+        if self.is_resolving() { return; }
+        if let Option.Some(city) = self.selected_city {
+            self.auto_assign_city(city);
+            self.set_notice("CITIZENS AUTO ASSIGNED");
+        }
+    }
+
+    /// Once a turn has resolved: each city eats, grows or starves, stores production for an
+    /// active build (and its Barracks' queue), finishes what it can afford, and reconciles its
+    /// citizens; then the Field Hospitals heal.
+    pub fn resolve_economy(&mut self) can {Log} {
+        let mut income: Vec[(i32, i32)] = Vec.new();
+        let mut barracks_income: Vec[i32] = Vec.new();
+        for i in 0..self.cities.len() {
+            income.push(self.income(i));
+            barracks_income.push(self.barracks_income(i));
+        }
+        for i in 0..self.cities.len() {
+            let (food, production) = income[i];
+            let barracks_production = barracks_income[i];
+            let city = &mut self.cities[i];
+            city.food = city.food + food - city.population * 8;
+            // A manager at a Barracks directs the work group there, but does not stop the city
+            // itself benefiting from its labor.
+            city.production = if !city.queue.is_empty() { city.production + production } else { 0 };
+            if !city.barracks_queue.is_empty() && barracks_production > 0 {
+                city.barracks_production = city.barracks_production + barracks_production;
+            } else if city.barracks_queue.is_empty() {
+                city.barracks_production = 0;
+            }
+            let threshold = (10 + 5 * city.population) * 4;
+            if city.food >= threshold && city.population < MAX_CITY_POPULATION {
+                city.food = city.food - threshold;
+                city.population = city.population + 1;
+            }
+            if city.food < 0 {
+                city.population = if city.population - 1 > 1 { city.population - 1 } else { 1 };
+                city.food = 0;
+            }
+            city.worked.truncate(min(city.population, MAX_CITY_POPULATION));
+        }
+        self.complete_builds();
+        self.heal_at_hospitals();
+        for i in 0..self.cities.len() { self.reconcile_citizens(i); }
+        self.set_notice("PLANNING - C CITY - SPACE HOLD OR END TURN");
+    }
+
+    /// Each hospital treats two nearby survivors once per turn, the most hurt first. Both
+    /// health bars belong to the same unit, so a projected fighter benefits too.
+    fn heal_at_hospitals(&mut self) {
+        let mut treated: Vec[u32] = Vec.new();
+        for c in 0..self.cities.len() {
+            let Option.Some(site) = self.cities[c].placed_site(Building.FieldHospital) else { continue; };
+            let team = self.cities[c].team;
+            for _ in 0..2 {
+                // The unit missing the most health across both bars, ties to the lower id.
+                let mut best: Option[(i32, f32, u32)] = Option.None;
+                for i in 0..self.units.len() {
+                    let unit = &self.units[i];
+                    let max = unit.max_hp();
+                    if unit.team != team || unit.pos.distance(site) > 2 || treated.contains(unit.id) || (unit.hp >= max && unit.interior_hp >= max) { continue; }
+                    let missing = 2.0 * max - unit.hp - unit.interior_hp;
+                    let better = match best {
+                        Option.None => true,
+                        Option.Some((_, m, id)) => missing > m || (missing == m && unit.id < id),
+                    };
+                    if better { best = Option.Some((i, missing, unit.id)); }
+                }
+                let Option.Some((index, _, id)) = best else { break; };
+                let max = self.units[index].max_hp();
+                let unit = &mut self.units[index];
+                unit.hp = if unit.hp + 20.0 < max { unit.hp + 20.0 } else { max };
+                unit.interior_hp = if unit.interior_hp + 20.0 < max { unit.interior_hp + 20.0 } else { max };
+                treated.push(id);
+            }
+        }
+    }
+}

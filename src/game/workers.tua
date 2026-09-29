@@ -1,0 +1,175 @@
+//! Workers: each city keeps a pool of workers at home, safe and off the map, and a queue of
+//! jobs the player orders from a tile: roads, tile improvements and structures. In the last
+//! step of every turn, after every unit has moved and attacked, cities send idle workers out.
+//! Each walks to its job, works it for a few turns, then takes the city's next job or walks
+//! home. A worker out on the map is exposed: an enemy unit moving onto its hex captures it for
+//! the enemy's nearest city, and an attack on its hex kills it. A unit standing on the same hex
+//! shields it from both.
+//!
+//! Structures: walls and gates stand on the edge between two hexes, walls stopping everyone
+//! from crossing it and gates everyone but their owner. Outposts (the owner sees around them)
+//! and forts (the owner's units in one defend better) stand on a tile.
+
+use std.core.Eq;
+use game.GameState;
+use game.hex.Hex;
+use game.hex.edge;
+use game.unit.Team;
+use game.unit.Unit;
+
+/// Hexes a worker walks per turn.
+pub const WORKER_MOVE: i32 = 1;
+/// How far from one of its side's cities a worker will go to work, in hexes, unless a road runs
+/// by the job (`in_worker_reach`).
+pub const WORKER_REACH: i32 = 3;
+/// How far an outpost lets its owner see, and a worker out on the map.
+pub const OUTPOST_SIGHT: i32 = 2;
+pub const WORKER_SIGHT: i32 = 1;
+/// Defense multiplier for the owner's units standing in a fort. A placeholder until forts get
+/// their real role.
+pub const FORT_DEFENSE: f32 = 1.5;
+
+pub enum JobKind { Road, Improve, Wall, Gate, Outpost, Fort }
+
+/// Every job, in the order the worker menu lists them.
+pub const JOB_KINDS: [JobKind; 6] = [JobKind.Road, JobKind.Improve, JobKind.Wall, JobKind.Gate, JobKind.Outpost, JobKind.Fort];
+
+impl Eq for JobKind {
+    fn eq(self, other: JobKind) -> bool { self.index() == other.index() }
+}
+
+impl JobKind {
+    pub fn index(self) -> i32 {
+        match self { JobKind.Road => 0, JobKind.Improve => 1, JobKind.Wall => 2, JobKind.Gate => 3, JobKind.Outpost => 4, JobKind.Fort => 5 }
+    }
+
+    pub fn name(self) -> str {
+        match self {
+            JobKind.Road => "ROAD",
+            JobKind.Improve => "IMPROVE",
+            JobKind.Wall => "WALL",
+            JobKind.Gate => "GATE",
+            JobKind.Outpost => "OUTPOST",
+            JobKind.Fort => "FORT",
+        }
+    }
+
+    /// Turns of work once the worker stands on the tile.
+    pub fn turns(self) -> u32 {
+        match self {
+            JobKind.Road | JobKind.Wall => 2,
+            JobKind.Improve | JobKind.Gate | JobKind.Outpost => 3,
+            JobKind.Fort => 4,
+        }
+    }
+
+    pub fn description(self) -> str {
+        match self {
+            JobKind.Road => "LOWERS THE COST OF CARRYING GOODS THROUGH THIS TILE.",
+            JobKind.Improve => "A MINE ON HILLS (+2 PRODUCTION), LUMBER MILL IN FOREST OR JUNGLE (+1), FARM ELSEWHERE (+2 FOOD).",
+            JobKind.Wall => "ON A HEX EDGE: NO UNIT OR GOODS CROSS IT, YOURS INCLUDED.",
+            JobKind.Gate => "ON A HEX EDGE: YOUR UNITS AND GOODS CROSS IT; ENEMIES' DON'T.",
+            JobKind.Outpost => "YOU SEE 2 TILES AROUND IT.",
+            JobKind.Fort => "YOUR UNITS IN IT DEFEND 50% BETTER.",
+        }
+    }
+
+    /// The structure the job builds, if any.
+    pub fn structure(self) -> Option[StructureKind] {
+        match self {
+            JobKind.Road | JobKind.Improve => Option.None,
+            JobKind.Wall => Option.Some(StructureKind.Wall),
+            JobKind.Gate => Option.Some(StructureKind.Gate),
+            JobKind.Outpost => Option.Some(StructureKind.Outpost),
+            JobKind.Fort => Option.Some(StructureKind.Fort),
+        }
+    }
+
+    /// Whether the job goes on the edge between two hexes rather than on a tile.
+    pub fn on_edge(self) -> bool { self == JobKind.Wall || self == JobKind.Gate }
+}
+
+pub enum StructureKind { Wall, Gate, Outpost, Fort }
+
+impl Eq for StructureKind {
+    fn eq(self, other: StructureKind) -> bool {
+        match (self, other) {
+            (StructureKind.Wall, StructureKind.Wall) | (StructureKind.Gate, StructureKind.Gate) | (StructureKind.Outpost, StructureKind.Outpost) | (StructureKind.Fort, StructureKind.Fort) => true,
+            _ => false,
+        }
+    }
+}
+
+pub struct Structure { kind: StructureKind, team: Team }
+
+impl Structure {
+    /// Whether a unit, worker or goods of `team` may cross the wall or gate.
+    pub fn admits(&self, team: Team) -> bool {
+        match self.kind {
+            StructureKind.Wall => false,
+            StructureKind.Gate => self.team == team,
+            StructureKind.Outpost | StructureKind.Fort => true,
+        }
+    }
+}
+
+pub struct WorkerJob {
+    /// Where the worker stands to do it.
+    hex: Hex,
+    kind: JobKind,
+    /// For a wall or gate, the hex across the edge it goes on.
+    across: Option[Hex],
+}
+
+impl Eq for WorkerJob {
+    fn eq(self, other: WorkerJob) -> bool { self.hex == other.hex && self.kind == other.kind && self.across == other.across }
+}
+
+impl WorkerJob {
+    pub fn on_tile(hex: Hex, kind: JobKind) -> WorkerJob { WorkerJob { hex, kind, across: Option.None } }
+
+    /// Whether two jobs would build on the same place: the same tile, or for walls and gates,
+    /// the same edge.
+    pub fn same_place(&self, other: WorkerJob) -> bool {
+        match (self.across, other.across) {
+            (Option.Some(a), Option.Some(b)) => edge(self.hex, a) == edge(other.hex, b),
+            (Option.None, Option.None) => self.hex == other.hex && self.kind == other.kind,
+            _ => false,
+        }
+    }
+}
+
+impl GameState {
+    /// Whether a unit or worker may stand on `hex`: open ground.
+    pub fn can_enter(&self, hex: Hex) -> bool { self.grid.is_passable(hex) }
+
+    /// The wall or gate on the edge between adjacent `a` and `b`, if any.
+    pub fn barrier(&self, a: Hex, b: Hex) -> Option[Structure] { self.barriers.get(edge(a, b)) }
+
+    /// Whether `team` may cross the edge between adjacent `from` and `to`: no wall there, and no
+    /// gate but its own.
+    pub fn can_cross(&self, from: Hex, to: Hex, team: Team) -> bool {
+        match self.barrier(from, to) { Option.Some(b) => b.admits(team), Option.None => true }
+    }
+
+    /// Whether a unit or worker of `team` can step from `from` onto the adjacent `to`. Enemy
+    /// city centers are entered through the interior battle, not by walking onto the exterior
+    /// marker.
+    pub fn can_step(&self, from: Hex, to: Hex, team: Team) -> bool {
+        self.can_enter(to) && !self.enemy_city_at(to, team) && self.can_cross(from, to, team)
+    }
+
+    /// Whether `unit` stands in a fort of its own side.
+    pub fn in_fort(&self, unit: &Unit) -> bool {
+        match self.structures.get(unit.pos) {
+            Option.Some(s) => s.kind == StructureKind.Fort && s.team == unit.team,
+            Option.None => false,
+        }
+    }
+
+    /// Terrain and fort bonuses on `unit`'s defense.
+    pub fn defense_multiplier(&self, unit: &Unit) -> f32 {
+        let fort = if self.in_fort(unit) { FORT_DEFENSE } else { 1.0 };
+        self.grid.tile(unit.pos).defense_multiplier() * fort
+    }
+}

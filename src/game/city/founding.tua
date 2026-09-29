@@ -1,0 +1,36 @@
+//! Settlers: founding cities. Workers live with their cities (`workers.tua`).
+
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.city.City;
+
+impl GameState {
+    /// F or the Found City button: the selected settler becomes a city on its hex.
+    pub fn found_city_selected(&mut self) {
+        if self.is_resolving() { return; }
+        let Option.Some(index) = self.selected else {
+            self.set_notice("SELECT YOUR SETTLER FIRST");
+            return;
+        };
+        let (unit_id, unit_team, pos) = (self.units[index].id, self.units[index].team, self.units[index].pos);
+        if unit_team != PLAYER_TEAM || !self.settlers.contains(unit_id) {
+            self.set_notice("ONLY A SETTLER CAN FOUND A CITY");
+            return;
+        }
+        for i in 0..self.cities.len() {
+            if self.cities[i].pos.distance(pos) < 3 {
+                self.set_notice("TOO CLOSE TO ANOTHER CITY");
+                return;
+            }
+        }
+        let id = self.cities.len() as u32;
+        self.cities.push(City.new(id, unit_team, pos));
+        self.settlers.remove(unit_id);
+        let _settler = self.units.remove(index);
+        self.selected = Option.None;
+        let city = self.cities.len() - 1;
+        self.auto_assign_city(city);
+        self.selected_city = Option.Some(city);
+        self.set_notice("CITY FOUNDED - PRESS 1-4 TO BUILD A UNIT");
+    }
+}

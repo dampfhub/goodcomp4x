@@ -272,13 +272,6 @@ impl GameState {
         }
     }
 
-    /// Closes the open city view, if one is. Answers whether one was.
-    fn exit_structure_menu(&mut self) -> bool {
-        if self.selected_city.is_none() { return false; }
-        self.leave_city_view();
-        true
-    }
-
     /// The menu's control for `setting` asks for `value`; outside the range it goes to the
     /// nearer end.
     pub fn set_setting(&mut self, setting: Setting, value: i32) {

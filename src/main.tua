@@ -53,7 +53,8 @@ use icon.icon;
 use game.GameState;
 use renderer.Atlas;
 use game.font.atlas;
-use game.city.BUILDS;
+use game.city.Building;
+use game.city.BuildUnit;
 use game.orders.ClickMode;
 use game.scenario.Scenario;
 use game.ui.selection_box;
@@ -166,7 +167,10 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
             Button.Middle => { input.panning = false; }
             Button.Right => {}
         },
-        Event.Wheel(steps) => game.camera.zoom(steps),
+        Event.Wheel(steps) => {
+            let over_catalog = match input.cursor { Option.Some(c) => game.scroll_buildings_at(c, input.size, steps), Option.None => false };
+            if !over_catalog { game.camera.zoom(steps); }
+        }
         Event.KeyDown(key, repeat) => {
             if !repeat {
                 match key {
@@ -211,12 +215,24 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
             6 => game.save_state(),
             7 => game.load_state(),
             8 => game.toggle_instant_playback(),
+            9 => game.debug_complete_current_production(),
             10 => game.toggle_fog(),
             _ => {}
         },
-        Key.Digit(d) => {
-            if d >= 1 && d <= 4 { game.queue_selected_city_unit(BUILDS[(d - 1) as i32]); }
-        }
+        Key.Digit(d) => match d {
+            1 => game.queue_selected_city_unit(BuildUnit.Melee),
+            2 => game.queue_selected_city_unit(BuildUnit.Ranged),
+            3 => game.queue_selected_city_unit(BuildUnit.Siege),
+            4 => game.queue_selected_city_building(Building.Granary),
+            5 => game.queue_selected_city_building(Building.Barracks),
+            6 => game.queue_selected_city_building(Building.Mill),
+            7 => game.queue_selected_city_building(Building.Workshop),
+            8 => game.queue_selected_city_worker(),
+            _ => {}
+        },
+        Key.Backspace => game.remove_selected_city_queue_head(),
+        // Page Down.
+        Key.Other(0x22) => game.move_selected_city_queue_head(false),
         _ => {}
     }
 }

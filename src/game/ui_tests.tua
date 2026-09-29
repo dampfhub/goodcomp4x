@@ -11,6 +11,7 @@ use std.test.assert;
 use std.test.Assert;
 use log.Log;
 use game.GameState;
+use game.city.Build;
 use game.city.BuildUnit;
 use game.hex.Hex;
 use game.orders.ClickMode;
@@ -169,10 +170,10 @@ fn build_card_queues_its_unit() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.city_scenario();
         game.select_city();
-        let cavalry = Target.Build(BuildUnit.Cavalry);
-        game.handle_click(button_cursor(&game, cavalry), screen(), ClickMode.Normal);
+        let ranged = Target.Build(BuildUnit.Ranged);
+        game.handle_click(button_cursor(&game, ranged), screen(), ClickMode.Normal);
         let city = game.selected_city.unwrap_or(0 - 1);
-        assert(match game.cities[city].queue { Option.Some(BuildUnit.Cavalry) => true, _ => false });
+        assert(game.cities[city].queue.len() == 1 && game.cities[city].queue[0] == Build.Unit(BuildUnit.Ranged));
     });
 }
 
@@ -185,7 +186,7 @@ fn city_view() -> GameState can {Log, Rand} {
 }
 
 @test
-fn clicking_a_unit_leaves_the_city_view() {
+fn a_click_on_a_unit_keeps_the_city_view_open() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = city_view();
         // One of the player's units drawn clear of the top bar and the tray.
@@ -199,8 +200,9 @@ fn clicking_a_unit_leaves_the_city_view() {
         // A unit in view.
         assert(unit >= 0);
         game.handle_click(hex_cursor(&game, game.units[unit].pos), screen(), ClickMode.Normal);
-        assert(game.selected_city == Option.None);
-        assert(game.selected == Option.Some(unit));
+        // City management owns map clicks until Escape or Space dismisses it.
+        assert(game.selected_city.is_some());
+        assert(game.selected.is_none());
     });
 }
 
@@ -228,7 +230,7 @@ fn yields_show_only_for_the_open_city_and_toggle() {
 
         // Hovering a city without opening it no longer shows its yields.
         let city = game.cities[game.selected_city.unwrap_or(0 - 1)].pos;
-        game.close_city();
+        game.leave_city_view();
         game.update_hover(Option.Some(hex_cursor(&game, city)), screen(), 0.0);
         assert(game.hovered_city.is_some());
         assert(game.yields_city() == Option.None);

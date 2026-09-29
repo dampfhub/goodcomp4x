@@ -1,0 +1,101 @@
+//! A city center is an implicit rail terminal. A remote Railhead connected by an unbroken road
+//! corridor receives one-turn moves from the city's ring.
+
+use std.collections.Deque;
+use std.collections.Set;
+use game.GameState;
+use game.city.Building;
+use game.fog.Fog;
+use game.hex.Hex;
+use game.unit.Team;
+
+/// What a rail search asks of the board about a step onto `to`: whether the line runs there
+/// (a road or a city), whether the step can cross the edge, and whether something hostile
+/// blocks it. Answered from the real board, or from what the player knows of it.
+effect RailBoard {
+    fn on_line(to: Hex) -> bool;
+    fn crosses(from: Hex, to: Hex) -> bool;
+    fn blocked(to: Hex) -> bool;
+}
+
+impl GameState {
+    /// Whether a unit of `team` at `from` can take the rail to `dest` this turn: it stands by
+    /// one of its side's cities whose Railhead is `dest` and connected.
+    pub fn rail_transfer_available(&self, from: Hex, dest: Hex, team: Team) -> bool {
+        for c in 0..self.cities.len() {
+            if self.rail_serves(c, from, dest, team) && self.rail_connected(c) { return true; }
+        }
+        false
+    }
+
+    /// `rail_transfer_available` as the player knows the board.
+    pub fn known_rail_transfer_available(&self, from: Hex, dest: Hex, team: Team, fog: &Fog) -> bool {
+        for c in 0..self.cities.len() {
+            if self.rail_serves(c, from, dest, team) && self.known_rail_connected(c, fog) { return true; }
+        }
+        false
+    }
+
+    fn rail_serves(&self, city: i32, from: Hex, dest: Hex, team: Team) -> bool {
+        let c = &self.cities[city];
+        c.team == team && c.pos.distance(from) <= 1 && c.placed_site(Building.Railhead) == Option.Some(dest)
+    }
+
+    /// Whether city `city`'s Railhead is joined to it by roads nothing blocks.
+    pub fn rail_connected(&self, city: i32) -> bool {
+        let team = self.cities[city].team;
+        handle { self.rail_connected_by(city) } with RailBoard {
+            on_line(to) => { resume self.is_road_hex(to) }
+            crosses(from, to) => { resume self.can_cross(from, to, team) }
+            blocked(to) => { resume self.enemy_of_team_at(to, team).is_some() || self.enemy_city_at(to, team) }
+        }
+    }
+
+    /// `rail_connected` as the player knows the board: out of sight, roads and cities as last
+    /// seen.
+    pub fn known_rail_connected(&self, city: i32, fog: &Fog) -> bool {
+        let team = self.cities[city].team;
+        handle { self.rail_connected_by(city) } with RailBoard {
+            on_line(to) => {
+                resume if fog.sees(to) {
+                    self.is_road_hex(to)
+                } else {
+                    match self.memory.get(to) {
+                        Option.Some(seen) => seen.road || match seen.city { Option.Some(c) => c.team == team, Option.None => false },
+                        Option.None => false,
+                    }
+                }
+            }
+            crosses(from, to) => { resume self.known_can_cross(from, to, team, fog) }
+            blocked(to) => {
+                resume if fog.sees(to) {
+                    self.enemy_of_team_at(to, team).is_some() || self.enemy_city_at(to, team)
+                } else {
+                    self.known_enemy_city_at(to, team, fog)
+                }
+            }
+        }
+    }
+
+    /// A breadth-first walk from city `city` along the line `RailBoard` describes, answering
+    /// whether it reaches the Railhead.
+    fn rail_connected_by(&self, city: i32) -> bool can {RailBoard} {
+        let owner = &self.cities[city];
+        let Option.Some(terminal) = owner.placed_site(Building.Railhead) else { return false; };
+        let mut visited: Set[Hex] = Set.new();
+        let _new = visited.insert(owner.pos);
+        let mut queue: Deque[Hex] = Deque.new();
+        queue.push_back(owner.pos);
+        while let Option.Some(from) = queue.pop_front() {
+            if from == terminal { return true; }
+            let around = from.neighbors();
+            for k in 0..6 {
+                let to = around[k];
+                if !self.grid.is_passable(to) || visited.contains(to) { continue; }
+                if to != terminal && !RailBoard.on_line(to) { continue; }
+                if RailBoard.crosses(from, to) && !RailBoard.blocked(to) && visited.insert(to) { queue.push_back(to); }
+            }
+        }
+        false
+    }
+}

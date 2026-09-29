@@ -1,0 +1,231 @@
+//! City and Barracks views: opening and leaving them, map clicks while one is open, and ending
+//! planning (which waits on cities with nothing to build).
+
+use std.core.Keep;
+use std.fmt.Out;
+use std.fmt.show_u64;
+use log.Log;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.text;
+use game.city.Build;
+use game.scenario.copy_vec;
+use game.hex.Hex;
+
+impl GameState {
+    /// Y or the Yields button: shows or hides tile yields around the open city.
+    pub fn toggle_yields(&mut self) { self.show_yields = !self.show_yields; }
+
+    /// The open city, if its tile yields are being shown.
+    pub fn yields_city(&self) -> Option[i32] {
+        if self.show_yields { self.selected_city } else { Option.None }
+    }
+
+    /// C: opens a city that needs something to build, or else the first of the player's cities.
+    pub fn select_city(&mut self) {
+        if self.is_resolving() { return; }
+        let mut city: Option[i32] = Option.None;
+        for i in 0..self.cities.len() {
+            if city.is_none() && self.city_needs_build(i) { city = Option.Some(i); }
+        }
+        for i in 0..self.cities.len() {
+            if city.is_none() && self.cities[i].team == PLAYER_TEAM { city = Option.Some(i); }
+        }
+        if let Option.Some(i) = city { self.open_city(i); }
+    }
+
+    /// Opens city `i`'s view and glides the camera to it.
+    pub fn open_city(&mut self, i: i32) {
+        if self.selected_city != Option.Some(i) {
+            self.city_queue_scroll = 0;
+            // Site placement belongs to the open city. A building that finished while the view
+            // was closed, with no site chosen yet, picks its site now.
+            let _was = self.abandon_site_placement();
+            self.placing_building = match self.cities[i].pending_building {
+                Option.Some(building) => if self.needs_site(i, building) { Option.Some((i, building)) } else { Option.None },
+                Option.None => Option.None,
+            };
+        }
+        self.selected_city = Option.Some(i);
+        self.selected_barracks = Option.None;
+        self.selected = Option.None;
+        self.group.clear();
+        self.ui_click_mode = Option.None;
+        self.camera.focus_on(self.cities[i].pos.to_world());
+        if self.city_needs_build(i) {
+            let id = self.cities[i].id;
+            self.notice = text(fn() can {Out} { Out.put("CHOOSE WHAT CITY "); show_u64((id + 1) as u64); Out.put(" BUILDS - 1-4"); });
+        } else {
+            self.set_notice("CLICK TILES TO ASSIGN - A AUTO ASSIGN - ESC OR SPACE TO EXIT");
+        }
+    }
+
+    /// One of the player's cities with nothing queued to build. The turn waits for these, as
+    /// it does for units without orders.
+    pub fn city_needs_build(&self, i: i32) -> bool {
+        let city = &self.cities[i];
+        city.team == PLAYER_TEAM && city.queue.is_empty()
+    }
+
+    pub fn leave_city_view(&mut self) {
+        self.selected_city = Option.None;
+        self.selected_barracks = Option.None;
+        self.moving_manager = Option.None;
+        let _was = self.abandon_site_placement();
+    }
+
+    /// Escape and Space dismiss city or building management without issuing a unit order or
+    /// opening the settings menu. While a building site is being chosen, the first press only
+    /// cancels that (and the unsited building) and keeps the city open.
+    pub fn exit_structure_menu(&mut self) -> bool {
+        if self.selected_city.is_none() && self.selected_barracks.is_none() { return false; }
+        if self.site_placement().is_some() {
+            let _was = self.abandon_site_placement();
+            return true;
+        }
+        self.leave_city_view();
+        self.set_notice("PLANNING - C CITY - SPACE HOLD OR END TURN");
+        true
+    }
+
+    /// Opens city `city`'s Barracks view and glides the camera to it.
+    pub fn open_barracks(&mut self, city: i32) {
+        let Option.Some(barracks) = self.cities[city].barracks else { return; };
+        if self.selected_barracks != Option.Some(city) { self.barracks_queue_scroll = 0; }
+        self.selected_city = Option.None;
+        let _was = self.abandon_site_placement();
+        self.selected_barracks = Option.Some(city);
+        self.selected = Option.None;
+        self.group.clear();
+        self.ui_click_mode = Option.None;
+        self.camera.focus_on(barracks.to_world());
+        self.set_notice("BARRACKS - QUEUE TROOPS OR CLICK CITY TO RETURN");
+    }
+
+    /// The Barracks view's City button: back to its city.
+    pub fn open_selected_city_from_barracks(&mut self) {
+        if let Option.Some(city) = self.selected_barracks { self.open_city(city); }
+    }
+
+    /// A map click the city views take. A structure menu owns every map click until its
+    /// explicit exit: with nothing open, clicking one of the player's Barracks or cities opens
+    /// it; with a city open, the click places a building being sited, picks up or puts down the
+    /// manager, or assigns or releases a citizen. Answers whether the click was theirs.
+    pub fn city_click(&mut self, hex: Hex) -> bool {
+        if self.selected_barracks.is_some() {
+            self.set_notice("BARRACKS MENU - PRESS ESC OR SPACE TO EXIT");
+            return true;
+        }
+        let Option.Some(i) = self.selected_city else {
+            for c in 0..self.cities.len() {
+                if self.cities[c].barracks == Option.Some(hex) && self.cities[c].team == PLAYER_TEAM {
+                    self.open_barracks(c);
+                    return true;
+                }
+            }
+            for c in 0..self.cities.len() {
+                if self.cities[c].pos == hex && self.cities[c].team == PLAYER_TEAM {
+                    self.open_city(c);
+                    return true;
+                }
+            }
+            return false;
+        };
+        if let Option.Some((_, building)) = self.site_placement() {
+            if let Option.Some(reason) = self.site_issue(i, building, hex) {
+                self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" "); Out.put(reason); });
+                return true;
+            }
+            let _old = self.cities[i].planned_sites.insert(building, hex);
+            self.placing_building = Option.None;
+            let cost = self.city_build_cost(i, Build.Building(building));
+            if self.cities[i].pending_building == Option.Some(building) && self.cities[i].production < cost {
+                self.cities[i].pending_building = Option.None;
+            }
+            let at_front = !self.cities[i].queue.is_empty() && self.cities[i].queue[0] == Build.Building(building);
+            let ready = self.cities[i].pending_building == Option.Some(building) || (at_front && self.cities[i].production >= cost);
+            let tail = if ready { " SITE SELECTED - CLICK CONFIRM IN THE CITY TRAY" } else { " SITE SELECTED - CONSTRUCTION CONTINUES" };
+            self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(tail); });
+            return true;
+        }
+        if hex == self.cities[i].pos {
+            self.exit_to_units();
+            return true;
+        }
+        // City management owns map clicks: it is dismissed with Escape or Space before units are
+        // selected, so citizens may be assigned onto a unit's tile without the unit taking the
+        // click. A tile never seen can't be worked.
+        if !self.is_explored(hex) {
+            self.set_notice("UNEXPLORED - SCOUT IT FIRST");
+            return true;
+        }
+        if self.moving_manager == Option.Some(i) {
+            let manager_here = !self.cities[i].worked.is_empty() && self.cities[i].worked[0] == hex;
+            if manager_here {
+                self.moving_manager = Option.None;
+                self.set_notice("MANAGER MOVE CANCELLED");
+            } else if self.may_be_manager(i, hex) {
+                self.moving_manager = Option.None;
+                self.move_manager(i, hex);
+            } else {
+                self.set_notice("MANAGER NEEDS A REACHABLE, UNCLAIMED TILE");
+            }
+            return true;
+        }
+        let at = self.cities[i].worked.index_of(hex);
+        if at == 0 {
+            self.moving_manager = Option.Some(i);
+            self.set_notice("MANAGER PICKED UP - CLICK A DESTINATION");
+        } else if at > 0 {
+            let _gone = self.cities[i].worked.remove(at);
+            handle { self.cities[i].remembered_worked.retain(); } with Keep[Hex] { keep(h) => { resume *h != hex } }
+            self.set_notice("CITIZEN UNASSIGNED");
+        } else if !self.may_assign(i, hex) {
+            self.set_notice("CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN ADJACENT TILE TO ASSIGN");
+        } else if !self.routes(i).costs.has(hex) {
+            self.set_notice("NO OPEN ROUTE WITHIN LOGISTICS BUDGET");
+        } else if !self.may_manage_or_work(i, hex) {
+            self.set_notice("THE FIRST CITIZEN MANAGES THE OTHERS AND MUST WORK LAND");
+        } else if self.cities[i].worked.len() >= self.citizen_slots(i) {
+            self.set_notice("ALL CITIZENS BUSY - RELEASE A WORKED TILE FIRST");
+        } else {
+            self.cities[i].worked.push(hex);
+            self.cities[i].remembered_worked = copy_vec(&self.cities[i].worked);
+            self.set_notice("CITIZEN ASSIGNED");
+        }
+        true
+    }
+
+    /// Clicking the open city's own hex: back to the units, selecting the next one that needs
+    /// orders.
+    fn exit_to_units(&mut self) {
+        if self.is_resolving() { return; }
+        self.leave_city_view();
+        self.select_next_unit();
+    }
+
+    /// Space (once nothing needs orders) or the End Turn button: resolves the turn, unless a
+    /// city needs something to build, in which case that city is opened instead. Units still
+    /// waiting for orders hold.
+    pub fn end_planning(&mut self) can {Log} {
+        if self.is_resolving() { return; }
+        // A building left without a site comes out of its queue first, so a city it leaves
+        // with nothing to build is asked for something.
+        let _was = self.abandon_site_placement();
+        for i in 0..self.units.len() {
+            if self.is_player_controlled(i) && self.needs_orders(i) { self.units[i].holding = true; }
+        }
+        for i in 0..self.cities.len() {
+            if self.city_needs_build(i) {
+                self.open_city(i);
+                return;
+            }
+        }
+        for i in 0..self.cities.len() {
+            if self.cities[i].team != PLAYER_TEAM { self.auto_assign_city(i); }
+        }
+        self.selected_city = Option.None;
+        self.set_notice("RESOLVING ORDERS");
+        self.resolve_turn();
+    }
+}

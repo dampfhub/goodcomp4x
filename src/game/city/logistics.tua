@@ -1,0 +1,274 @@
+//! Logistics: delivery routes from a city or a placed building, how much of a worked tile's
+//! yield each route delivers, and the resulting income.
+
+use std.collections.Map;
+use std.collections.Set;
+use game.GameState;
+use game.city.Building;
+use game.city.SiteKind;
+use game.hex.Edge;
+use game.hex.Hex;
+use game.unit.Team;
+
+/// A delivery network: every hex goods can come from, with the cheapest route's cost (in half
+/// hexes) and the next hex toward the origin along it.
+pub struct Routes {
+    costs: Map[Hex, i32],
+    toward_origin: Map[Hex, Hex],
+}
+
+impl Routes {
+    /// The hexes goods from `hex` pass through to reach the origin, `hex` first and the origin
+    /// last; empty if they can't reach it.
+    pub fn path_from(&self, hex: Hex) -> Vec[Hex] {
+        let mut path: Vec[Hex] = Vec.new();
+        if !self.costs.has(hex) { return path; }
+        path.push(hex);
+        let mut at = hex;
+        // A `loop` until `while let` over a struct-keyed lookup stops holding a loan on `at`.
+        loop {
+            let found = self.toward_origin.get(at);
+            let Option.Some(next) = found else { break; };
+            path.push(next);
+            at = next;
+        }
+        path
+    }
+}
+
+/// What a route search asks of the board: whether goods can't enter a hex, whether they can
+/// cross the edge between two (walls and others' gates stop them), and whether a step between
+/// two travels cheaply (a road or city, or a navigable river).
+pub effect RouteBoard {
+    fn blocked(hex: Hex) -> bool;
+    fn crosses(from: Hex, to: Hex) -> bool;
+    fn road(from: Hex, to: Hex) -> bool;
+}
+
+/// Quarters of a tile's yield that reach the city along a route of `cost`.
+pub fn delivered_share(cost: i32) -> i32 {
+    if cost <= 2 { 4 } else if cost <= 4 { 3 } else if cost <= 6 { 2 } else if cost <= 8 { 1 } else { 0 }
+}
+
+impl GameState {
+    /// Banks on river stretches connected to a friendly Canoe House.
+    pub fn navigable_river_banks(&self, team: Team) -> Set[Hex] {
+        let mut banks: Set[Hex] = Set.new();
+        for i in 0..self.cities.len() {
+            if self.cities[i].team != team { continue; }
+            if let Option.Some(site) = self.cities[i].placed_site(Building.CanoeHouse) { let _new = banks.insert(site); }
+        }
+        if banks.is_empty() { return banks; }
+        loop {
+            let before = banks.len();
+            for e in self.grid.rivers() {
+                if banks.contains(e.a) || banks.contains(e.b) {
+                    let _a = banks.insert(e.a);
+                    let _b = banks.insert(e.b);
+                }
+            }
+            if banks.len() == before { break; }
+        }
+        banks
+    }
+
+    pub fn is_road_hex(&self, hex: Hex) -> bool { self.roads.contains(hex) || self.city_at(hex).is_some() }
+
+    /// What `hex` produces when worked: a city center's own yield, a site's, or its terrain's.
+    pub fn raw_yield(&self, hex: Hex) -> (i32, i32) {
+        if self.city_at(hex).is_some() { (2, 1) } else { self.tile_yield(hex) }
+    }
+
+    pub fn routes(&self, city: i32) -> Routes {
+        let c = &self.cities[city];
+        self.routes_from(c.team, c.pos)
+    }
+
+    /// The delivery network to a city center or a placed building of `team`. Each endpoint has
+    /// its own falloff, so a worker can deliver differently to each.
+    pub fn routes_from(&self, team: Team, origin: Hex) -> Routes {
+        let river_banks = self.navigable_river_banks(team);
+        handle { self.routes_from_by(origin) } with RouteBoard {
+            blocked(hex) => { resume self.enemy_of_team_at(hex, team).is_some() || self.enemy_city_at(hex, team) }
+            crosses(from, to) => { resume self.can_cross(from, to, team) }
+            road(from, to) => { resume self.is_road_hex(to) || (river_banks.contains(from) && river_banks.contains(to)) }
+        }
+    }
+
+    /// `routes_from` over the board `RouteBoard` describes: the real one for the economy, or
+    /// what the player knows of it for what's shown to them (`known_routes`). Roads cost 1,
+    /// hills 3, anything else 2; goods come in from water tiles but never travel across them.
+    /// Ties between unsettled hexes go to the smaller `(q, r)`, so the answer never depends on
+    /// iteration order.
+    pub fn routes_from_by(&self, origin: Hex) -> Routes can {RouteBoard} {
+        let mut result = Routes { costs: Map.new(), toward_origin: Map.new() };
+        if RouteBoard.blocked(origin) { return result; }
+        result.costs.insert(origin, 0);
+        let mut visited: Set[Hex] = Set.new();
+        loop {
+            let mut next: Option[(Hex, i32)] = Option.None;
+            for i in 0..result.costs.len() {
+                let Option.Some(h) = result.costs.key_at(i) else { continue; };
+                let Option.Some(c) = result.costs.val_at(i) else { continue; };
+                if visited.contains(h) { continue; }
+                let better = match next {
+                    Option.None => true,
+                    Option.Some((bh, bc)) => c < bc || (c == bc && (h.q < bh.q || (h.q == bh.q && h.r < bh.r))),
+                };
+                if better { next = Option.Some((h, c)); }
+            }
+            let Option.Some((hex, cost)) = next else { break; };
+            visited.insert(hex);
+            if self.grid.terrain(hex).is_water() { continue; }
+            let around = hex.neighbors();
+            for k in 0..6 {
+                let n = around[k];
+                if !self.grid.contains(n) || !self.grid.terrain(n).is_workable() || RouteBoard.blocked(n) || !RouteBoard.crosses(hex, n) { continue; }
+                let step = if RouteBoard.road(hex, n) { 1 } else { self.grid.tile(n).route_cost() };
+                let total = cost + step;
+                let shorter = match result.costs.get(n) { Option.None => true, Option.Some(old) => total < old };
+                if total <= 8 && shorter {
+                    result.costs.insert(n, total);
+                    result.toward_origin.insert(n, hex);
+                }
+            }
+        }
+        result
+    }
+
+    /// Whether a city of another side than `team` stands on `hex`.
+    pub fn enemy_city_at(&self, hex: Hex, team: Team) -> bool {
+        for i in 0..self.cities.len() {
+            if self.cities[i].pos == hex && self.cities[i].team != team { return true; }
+        }
+        false
+    }
+
+    /// Production reaching city `city`'s Barracks from its work group: only while the manager
+    /// stands on the Barracks, with the Barracks' own delivery falloff.
+    pub fn barracks_income(&self, city: i32) -> i32 {
+        let c = &self.cities[city];
+        let Option.Some(barracks) = c.barracks else { return 0; };
+        if c.worked.is_empty() || c.worked[0] != barracks { return 0; }
+        let routes = self.routes_from(c.team, barracks);
+        let mut total = 0;
+        for i in 0..c.worked.len() {
+            let tile = c.worked[i];
+            let share = match routes.costs.get(tile) { Option.Some(cost) => delivered_share(cost), Option.None => 0 };
+            total = total + self.tile_yield(tile).1 * share;
+        }
+        total
+    }
+
+    /// What a worked tile produces: its site's yield or its terrain's, plus one food for fresh
+    /// water (a river or lake beside it) and a special tile's bonus.
+    pub fn tile_yield(&self, hex: Hex) -> (i32, i32) {
+        let (food, production) = match self.sites.get(hex) {
+            Option.Some(s) => (s.food, s.production),
+            Option.None => self.grid.tile(hex).yields(),
+        };
+        let (extra_food, extra_production) = match self.grid.special(hex) {
+            Option.Some(s) => s.bonus(),
+            Option.None => (0, 0),
+        };
+        let fresh = if self.grid.has_fresh_water(hex) { 1 } else { 0 };
+        (food + fresh + extra_food, production + extra_production)
+    }
+
+    /// Quarters of `hex`'s food that reach city `city` along a route of `cost`: all of it next
+    /// to one of its side's Mills, else the usual share.
+    pub fn mill_food_share(&self, city: i32, hex: Hex, cost: i32) -> i32 {
+        let team = self.cities[city].team;
+        for i in 0..self.cities.len() {
+            if self.cities[i].team != team { continue; }
+            if let Option.Some(mill) = self.cities[i].mill {
+                if mill.distance(hex) == 1 { return 4; }
+            }
+        }
+        delivered_share(cost)
+    }
+
+    /// Food a city's Cannery collects from up to three owned, unworked improvements.
+    pub fn cannery_income(&self, city: i32) -> i32 { self.remote_site_income(city, Building.Cannery) }
+
+    /// Production a city's Smelter collects from up to three owned, unworked mines.
+    pub fn smelter_income(&self, city: i32) -> i32 { self.remote_site_income(city, Building.Smelter) }
+
+    /// Remote processors collect from up to three owned, unworked sites within 3 hexes. Their
+    /// sites need a local route, but not an onward route to the city.
+    fn remote_site_income(&self, city: i32, building: Building) -> i32 {
+        let c = &self.cities[city];
+        let Option.Some(processor) = c.placed_site(building) else { return 0; };
+        let routes = self.routes_from(c.team, processor);
+        let cannery = building == Building.Cannery;
+        // (yield, hex) for each site the processor owns.
+        let mut output: Vec[(i32, Hex)] = Vec.new();
+        for s in 0..self.sites.len() {
+            let (Option.Some(hex), Option.Some(site)) = (self.sites.key_at(s), self.sites.val_at(s)) else { continue; };
+            let unfit = if cannery { site.food <= 0 } else { site.kind != SiteKind.Mine || site.production <= 0 };
+            if site.team != c.team || unfit || self.worked_by_any(hex) { continue; }
+            let distance = processor.distance(hex);
+            if distance < 1 || distance > 3 || !routes.costs.has(hex) { continue; }
+            // One processor of each kind owns a site; ties go to the older city.
+            let mut owned_elsewhere = false;
+            for o in 0..self.cities.len() {
+                if o == city || self.cities[o].team != c.team { continue; }
+                if let Option.Some(other) = self.cities[o].placed_site(building) {
+                    let d = other.distance(hex);
+                    if d < distance || (d == distance && o < city) { owned_elsewhere = true; }
+                }
+            }
+            if owned_elsewhere { continue; }
+            let share = if distance == 1 { 4 } else if distance == 2 { 3 } else { 2 };
+            let (food, production) = self.tile_yield(hex);
+            output.push(((if cannery { food } else { production }) * share, hex));
+        }
+        // The three best, by (-yield, q, r).
+        let mut total = 0;
+        let mut taken: Vec[Hex] = Vec.new();
+        for _ in 0..3 {
+            let mut best: Option[(i32, Hex)] = Option.None;
+            for i in 0..output.len() {
+                let (value, hex) = output[i];
+                if taken.contains(hex) { continue; }
+                let better = match best {
+                    Option.None => true,
+                    Option.Some((bv, bh)) => value > bv || (value == bv && (hex.q < bh.q || (hex.q == bh.q && hex.r < bh.r))),
+                };
+                if better { best = Option.Some((value, hex)); }
+            }
+            let Option.Some((value, hex)) = best else { break; };
+            taken.push(hex);
+            total = total + value;
+        }
+        total
+    }
+
+    /// Whether any city works `hex`.
+    pub fn worked_by_any(&self, hex: Hex) -> bool {
+        for i in 0..self.cities.len() { if self.cities[i].worked.contains(hex) { return true; } }
+        false
+    }
+
+    /// Food and production reaching city `city` this turn, in quarters: the center's own 2 and
+    /// 1 whole units (and a Granary's 2 food), each worked tile's delivered share, and what a
+    /// Cannery or Smelter collects.
+    pub fn income(&self, city: i32) -> (i32, i32) {
+        let routes = self.routes(city);
+        let granary = if self.cities[city].built.contains(Building.Granary) { 8 } else { 0 };
+        let mut food = 8 + granary;
+        let mut production = 4;
+        let worked = &self.cities[city].worked;
+        for i in 0..worked.len() {
+            let hex = worked[i];
+            let (food_share, production_share) = match routes.costs.get(hex) {
+                Option.Some(cost) => (self.mill_food_share(city, hex, cost), delivered_share(cost)),
+                Option.None => (0, 0),
+            };
+            let (f, p) = self.tile_yield(hex);
+            food = food + f * food_share;
+            production = production + p * production_share;
+        }
+        (food + self.cannery_income(city), production + self.smelter_income(city))
+    }
+}

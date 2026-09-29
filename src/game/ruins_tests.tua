@@ -39,7 +39,7 @@ fn end_turns(game: &mut GameState, turns: u32) can {Log} {
 }
 
 fn city(id: u32, team: Team, pos: Hex) -> City {
-    City { id, team, pos, population: 1, food: 0, production: 0, worked: Vec.new(), focus: LaborFocus.Balanced, queue: Option.None }
+    City.new(id, team, pos)
 }
 
 fn has(line: &Str, part: &str) -> bool { find(line, part).is_some() }

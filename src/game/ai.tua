@@ -8,7 +8,7 @@ use game.PLAYER_TEAM;
 use game.hex.Hex;
 use game.city.BuildUnit;
 use game.city.City;
-use game.city.LaborFocus;
+use game.city.Build;
 use game.unit.Team;
 use game.unit.TEAMS;
 
@@ -67,7 +67,7 @@ impl GameState {
             let stats = unit.stats();
             // Ruins are captured by moving onto them. Ships keep their water-only movement.
             let capture = self.enemy_of_team_at(target, team).is_none();
-            let reachable = if unit.is_naval() { self.reachable_water(unit.pos, stats.move_range) } else { self.reachable_hexes(unit.pos, stats.move_range) };
+            let reachable = if unit.is_naval() { self.reachable_water(unit.pos, stats.move_range) } else { self.reachable_hexes(unit.pos, stats.move_range, unit.team) };
             let dest = if capture && reachable.contains(target) {
                 target
             } else if !capture && unit.pos.distance(target) <= stats.attack_range {
@@ -148,7 +148,9 @@ impl GameState {
         self.remove_unit(unit_id);
         self.settlers.remove(unit_id);
         let id = self.cities.len() as u32;
-        self.cities.push(City { id, team, pos: unit_pos, population: 1, food: 0, production: 0, worked: Vec.new(), focus: LaborFocus.Balanced, queue: Option.Some(BuildUnit.Melee) });
+        let mut city = City.new(id, team, unit_pos);
+        city.queue.push(Build.Unit(BuildUnit.Melee));
+        self.cities.push(city);
         self.auto_assign_city(self.cities.len() - 1);
     }
 

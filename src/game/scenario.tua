@@ -162,8 +162,7 @@ impl GameState {
     pub fn snapshot(&self) -> GameState {
         let mut cities: Vec[City] = Vec.new();
         for i in 0..self.cities.len() {
-            let c = &self.cities[i];
-            cities.push(City { id: c.id, team: c.team, pos: c.pos, population: c.population, food: c.food, production: c.production, worked: copy_vec(&c.worked), focus: c.focus, queue: c.queue });
+            cities.push(self.cities[i].snapshot());
         }
         let mut pending_steps: Deque[(UnitType, Phase)] = Deque.new();
         for i in 0..self.pending_steps.len() {
@@ -178,7 +177,6 @@ impl GameState {
             show_yields: self.show_yields,
             show_details: self.show_details,
             ui_click_mode: self.ui_click_mode,
-            inspected_tile: self.inspected_tile,
             hovered_tile: self.hovered_tile,
             hover_seconds: self.hover_seconds,
             notice: copy_str(&self.notice),
@@ -205,6 +203,13 @@ impl GameState {
             step_timer: self.step_timer,
             recent_actors: copy_vec(&self.recent_actors),
             highlight_timer: self.highlight_timer,
+            selected_barracks: self.selected_barracks,
+            moving_manager: self.moving_manager,
+            placing_building: self.placing_building,
+            city_queue_scroll: self.city_queue_scroll,
+            barracks_queue_scroll: self.barracks_queue_scroll,
+            structures: copy_map(&self.structures),
+            barriers: copy_map(&self.barriers),
             settlers: self.settlers.snapshot(),
             workers: self.workers.snapshot(),
             player_controlled_units: self.player_controlled_units.snapshot(),
@@ -219,13 +224,13 @@ fn copy_units(units: &Vec[Unit]) -> Vec[Unit] {
     out
 }
 
-fn copy_vec[T](v: &Vec[T]) -> Vec[T] {
+pub fn copy_vec[T](v: &Vec[T]) -> Vec[T] {
     let mut out: Vec[T] = Vec.new();
     for i in 0..v.len() { out.push(v[i]); }
     out
 }
 
-fn copy_set[K: Key](s: &Set[K]) -> Set[K] {
+pub fn copy_set[K: Key](s: &Set[K]) -> Set[K] {
     let mut out: Set[K] = Set.new();
     for i in 0..s.len() {
         if let Option.Some(k) = s.key_at(i) { let _new = out.insert(k); }
@@ -233,7 +238,7 @@ fn copy_set[K: Key](s: &Set[K]) -> Set[K] {
     out
 }
 
-fn copy_map[K: Key, V](m: &Map[K, V]) -> Map[K, V] {
+pub fn copy_map[K: Key, V](m: &Map[K, V]) -> Map[K, V] {
     let mut out: Map[K, V] = Map.new();
     for i in 0..m.len() {
         if let (Option.Some(k), Option.Some(v)) = (m.key_at(i), m.val_at(i)) { let _old = out.insert(k, v); }

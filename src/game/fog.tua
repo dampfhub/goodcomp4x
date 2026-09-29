@@ -21,6 +21,11 @@ use game.text;
 use game.city.RouteBoard;
 use game.city.Routes;
 use game.city.SiteKind;
+use game.city.Building;
+use game.city.BARRACKS_MAX_HP;
+use game.workers.Structure;
+use game.workers.StructureKind;
+use game.workers.OUTPOST_SIGHT;
 use game.hex.Hex;
 use game.terrain.Terrain;
 use game.unit.Team;
@@ -28,6 +33,9 @@ use game.unit.Unit;
 
 /// How far a city sees.
 pub const CITY_SIGHT: i32 = 3;
+/// How far a Barracks sees, and a Watchpost (one more from hills).
+const BARRACKS_SIGHT: i32 = 1;
+const WATCHPOST_SIGHT: i32 = 4;
 /// Extra sight for a unit standing on hills.
 const HILLS_SIGHT: i32 = 1;
 /// Extra sight for a scout after a turn on lookout.
@@ -52,21 +60,30 @@ impl Fog {
     pub fn shows(&self, unit: &Unit) -> bool { unit.team == PLAYER_TEAM || self.sees(unit.pos) }
 }
 
-/// A city as the player last saw it.
-pub struct SeenCity {
+/// A city or Barracks as the player last saw it.
+pub struct SeenBuilding {
     team: Team,
     /// The city's number, from 0.
     id: u32,
+    /// Share of full health, 0 to 1.
+    health: f32,
+    /// For a city: its population, and whether it has a granary.
     population: i32,
+    granary: bool,
 }
 
 /// A hex as the player last saw it. Only what can change is kept; the ground itself never does.
 /// Units aren't kept: a sighting of one says nothing about where it is now.
 pub struct Sighting {
-    city: Option[SeenCity],
+    city: Option[SeenBuilding],
+    barracks: Option[SeenBuilding],
     /// An improvement's kind and owner.
     site: Option[(SiteKind, Team)],
     road: bool,
+    /// An outpost or fort.
+    structure: Option[Structure],
+    /// Walls and gates on the hex's edges, by neighbour direction (`Hex.neighbors` order).
+    barriers: [Option[Structure]; 6],
     /// The tile's food and production, with any improvement or city.
     yields: (i32, i32),
     /// Unclaimed ruins (`ruins.tua`).
@@ -113,9 +130,11 @@ impl GameState {
         }
     }
 
-    /// Every hex the player's units and cities can see now, and every tile a player's city
-    /// works, whatever the range or mountains: an enemy standing on one of the player's tiles is
-    /// always seen.
+    /// Every hex the player's units, cities, Barracks, Watchposts and outposts can see now, and
+    /// every tile a player's city works, whatever the range or mountains: an enemy standing on
+    /// one of the player's tiles is always seen. That includes a tile the city was working until
+    /// a cut route took its citizen off it (`remembered_worked`), so an enemy that ends a turn on
+    /// a worked tile doesn't vanish when the city reassigns the citizen.
     pub fn visible_hexes(&self) -> Set[Hex] {
         let mut seen: Set[Hex] = Set.new();
         for idx in 0..self.units.len() {
@@ -125,25 +144,54 @@ impl GameState {
             }
         }
         for c in 0..self.cities.len() {
-            if self.cities[c].team == PLAYER_TEAM { self.look(self.cities[c].pos, CITY_SIGHT, &mut seen); }
+            let city = &self.cities[c];
+            if city.team != PLAYER_TEAM { continue; }
+            self.look(city.pos, CITY_SIGHT, &mut seen);
+            if let Option.Some(barracks) = city.barracks { self.look(barracks, BARRACKS_SIGHT, &mut seen); }
+            if let Option.Some(post) = city.placed_site(Building.Watchpost) {
+                let hills = if self.grid.tile(post).hills { 1 } else { 0 };
+                self.look(post, WATCHPOST_SIGHT + hills, &mut seen);
+            }
+        }
+        for k in 0..self.structures.len() {
+            let (Option.Some(hex), Option.Some(structure)) = (self.structures.key_at(k), self.structures.val_at(k)) else { continue; };
+            if structure.team == PLAYER_TEAM && structure.kind == StructureKind.Outpost { self.look(hex, OUTPOST_SIGHT, &mut seen); }
         }
         for c in 0..self.cities.len() {
-            if self.cities[c].team == PLAYER_TEAM {
-                for w in 0..self.cities[c].worked.len() { let _new = seen.insert(self.cities[c].worked[w]); }
-            }
+            let city = &self.cities[c];
+            if city.team != PLAYER_TEAM { continue; }
+            for w in 0..city.worked.len() { let _new = seen.insert(city.worked[w]); }
+            for w in 0..city.remembered_worked.len() { let _new = seen.insert(city.remembered_worked[w]); }
         }
         seen
     }
 
     /// `hex` as it is right now, for the memory.
     fn sighting(&self, hex: Hex) -> Sighting {
-        let mut city: Option[SeenCity] = Option.None;
+        let mut city: Option[SeenBuilding] = Option.None;
+        let mut barracks: Option[SeenBuilding] = Option.None;
         for c in 0..self.cities.len() {
             let x = &self.cities[c];
-            if x.pos == hex { city = Option.Some(SeenCity { team: x.team, id: x.id, population: x.population }); }
+            if city.is_none() && x.pos == hex {
+                city = Option.Some(SeenBuilding { team: x.team, id: x.id, health: 1.0, population: x.population, granary: x.built.contains(Building.Granary) });
+            }
+            if barracks.is_none() && x.barracks == Option.Some(hex) {
+                barracks = Option.Some(SeenBuilding { team: x.team, id: x.id, health: x.barracks_hp / BARRACKS_MAX_HP, population: 0, granary: false });
+            }
         }
         let site = match self.sites.get(hex) { Option.Some(s) => Option.Some((s.kind, s.team)), Option.None => Option.None };
-        Sighting { city, site, road: self.roads.contains(hex), yields: self.raw_yield(hex), ruin: self.ruin_at(hex).is_some() }
+        let around = hex.neighbors();
+        let barriers = [self.barrier(hex, around[0]), self.barrier(hex, around[1]), self.barrier(hex, around[2]), self.barrier(hex, around[3]), self.barrier(hex, around[4]), self.barrier(hex, around[5])];
+        Sighting {
+            city,
+            barracks,
+            site,
+            road: self.roads.contains(hex),
+            structure: self.structures.get(hex),
+            barriers,
+            yields: self.raw_yield(hex),
+            ruin: self.ruin_at(hex).is_some(),
+        }
     }
 
     // What the player knows: a hex in sight as it is, one out of sight as last seen. Planning and
@@ -154,9 +202,14 @@ impl GameState {
     /// remembered.
     pub fn known_occupied(&self, hex: Hex, fog: &Fog) -> bool { fog.sees(hex) && self.is_occupied(hex) }
 
-    /// Whether the player knows of an enemy on `hex` that `team` can attack: only one in sight.
+    /// Whether the player knows of something on `hex` that `team` can attack: an enemy unit in
+    /// sight, or an enemy Barracks in sight or remembered.
     pub fn known_enemy_target_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
-        fog.sees(hex) && self.enemy_of_team_at(hex, team).is_some()
+        if fog.sees(hex) { return self.has_enemy_target_at(hex, team); }
+        match self.memory.get(hex) {
+            Option.Some(seen) => match seen.barracks { Option.Some(b) => b.team != team, Option.None => false },
+            Option.None => false,
+        }
     }
 
     /// A tile's food and production as the player knows them.
@@ -179,21 +232,58 @@ impl GameState {
         }
     }
 
-    /// City `index`'s delivery routes as the player knows the board: what the yield badges,
+    /// City `city`'s delivery routes as the player knows the board: what the yield badges,
     /// tooltips and city panel show. Income still follows the real routes (`routes`).
-    pub fn known_routes(&self, index: i32, fog: &Fog) -> Routes {
-        let team = self.cities[index].team;
-        handle { self.routes_by(index) } with RouteBoard {
+    pub fn known_routes(&self, city: i32, fog: &Fog) -> Routes {
+        self.known_routes_from(self.cities[city].team, self.cities[city].pos, fog)
+    }
+
+    /// `routes_from` as the player knows the board.
+    pub fn known_routes_from(&self, team: Team, origin: Hex, fog: &Fog) -> Routes {
+        let river_banks = self.navigable_river_banks(team);
+        handle { self.routes_from_by(origin) } with RouteBoard {
             blocked(hex) => {
                 // Out of sight, the memory (none for a hex never seen); in sight, the board.
                 resume if fog.sees(hex) {
-                    self.enemy_of_team_at(hex, team).is_some() || self.known_enemy_city_at(hex, team, fog)
+                    self.enemy_of_team_at(hex, team).is_some() || self.enemy_city_at(hex, team)
                 } else {
-                    self.known_enemy_city_at(hex, team, fog)
+                    match self.memory.get(hex) {
+                        Option.Some(seen) => match seen.city { Option.Some(c) => c.team != team, Option.None => false },
+                        Option.None => false,
+                    }
                 }
             }
-            road(hex) => { resume self.known_road(hex, fog) || self.known_city_team(hex, fog).is_some() }
+            crosses(from, to) => { resume self.known_can_cross(from, to, team, fog) }
+            road(from, to) => {
+                let river = river_banks.contains(from) && river_banks.contains(to);
+                resume river || if fog.sees(to) {
+                    self.is_road_hex(to)
+                } else {
+                    match self.memory.get(to) { Option.Some(seen) => seen.road || seen.city.is_some(), Option.None => false }
+                }
+            }
         }
+    }
+
+    /// The wall or gate the player knows of on the edge between adjacent `a` and `b`: the real
+    /// one when either side is in sight, else as last seen.
+    pub fn known_barrier(&self, a: Hex, b: Hex, fog: &Fog) -> Option[Structure] {
+        if fog.sees(a) || fog.sees(b) { return self.barrier(a, b); }
+        match self.remembered_barrier(a, b) { Option.Some(s) => Option.Some(s), Option.None => self.remembered_barrier(b, a) }
+    }
+
+    /// The wall or gate the memory of `from` holds on its edge toward `across`.
+    fn remembered_barrier(&self, from: Hex, across: Hex) -> Option[Structure] {
+        let Option.Some(seen) = self.memory.get(from) else { return Option.None; };
+        let around = from.neighbors();
+        for k in 0..6 { if around[k] == across { return seen.barriers[k]; } }
+        Option.None
+    }
+
+    /// Whether the player knows of nothing stopping `team` crossing from `from` to the adjacent
+    /// `to`.
+    pub fn known_can_cross(&self, from: Hex, to: Hex, team: Team, fog: &Fog) -> bool {
+        match self.known_barrier(from, to, fog) { Option.Some(b) => b.admits(team), Option.None => true }
     }
 
     /// Whether the player knows of a road on `hex`: in sight, or as last seen.
@@ -238,14 +328,24 @@ impl GameState {
         self.known_reachable_for_domain(start, move_range, team, fog, false)
     }
 
-    /// `known_reachable_hexes` over water for a ship (`naval`), over land otherwise.
+    /// `known_reachable_hexes` over water for a ship (`naval`), over land otherwise, around the
+    /// walls and gates the player knows of; a land unit by one of its side's cities may also
+    /// take the rail to a connected Railhead.
     pub fn known_reachable_for_domain(&self, start: Hex, move_range: i32, team: Team, fog: &Fog, naval: bool) -> Set[Hex] {
-        handle { reachable_by(start, move_range) } with Step {
-            open(_from, to) => {
-                let ground = if naval { self.grid.contains(to) && self.grid.terrain(to).is_water() } else { self.grid.is_passable(to) };
-                resume ground && !self.known_enemy_city_at(to, team, fog) && !self.known_occupied(to, fog)
+        let mut reachable = handle { reachable_by(start, move_range) } with Step {
+            open(from, to) => {
+                let ground = if naval { self.grid.contains(to) && self.grid.terrain(to).is_water() } else { self.can_enter(to) };
+                resume ground && !self.known_enemy_city_at(to, team, fog) && self.known_can_cross(from, to, team, fog) && !self.known_occupied(to, fog)
+            }
+        };
+        if move_range > 0 && !naval {
+            for c in 0..self.cities.len() {
+                if self.cities[c].team != team { continue; }
+                let Option.Some(dest) = self.cities[c].placed_site(Building.Railhead) else { continue; };
+                if !self.known_occupied(dest, fog) && self.known_rail_transfer_available(start, dest, team, fog) { let _new = reachable.insert(dest); }
             }
         }
+        reachable
     }
 
     /// Records everything in sight as the player's latest memory of it. Called every frame.

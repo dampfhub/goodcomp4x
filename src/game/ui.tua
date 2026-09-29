@@ -39,7 +39,15 @@ use game.settings.Setting;
 use game.show_rounded;
 use game.text;
 use game.ability.Ability;
-use game.city.BUILDS;
+use game.city.Build;
+use game.city.Building;
+use game.city.BUILDINGS;
+use game.city.PLACEABLE;
+use game.city.CITY_UNITS;
+use game.city.BARRACKS_UNITS;
+use game.city.BARRACKS_MAX_HP;
+use game.city.WORKER_COST;
+use game.city.WORKER_SHORTCUT;
 use game.city.BuildUnit;
 use game.city.delivered_share;
 use game.font.TextSize;
@@ -143,6 +151,18 @@ pub enum Target {
     TogglePlayback,
     /// City tray: the open city's labor focus.
     Focus(LaborFocus),
+    /// City tray: queue a worker, queue a building (or resume choosing its site), confirm a
+    /// finished building, open the Barracks; a queue row's up arrow and X.
+    BuildWorker,
+    Building(Building),
+    ConfirmBuilding(Building),
+    OpenBarracks,
+    QueueUp(i32),
+    QueueRemove(i32),
+    /// Barracks tray: train a troop, take a queued one out, back to the city.
+    BarracksBuild(BuildUnit),
+    BarracksQueueRemove(i32),
+    OpenCity,
     /// Settings menu: set a setting to a value, close the menu, or quit the game.
     SetSetting(Setting, i32),
     CloseSettings,
@@ -160,6 +180,13 @@ impl Eq for Target {
             (Target.SetSetting(a, x), Target.SetSetting(b, y)) => a == b && x == y,
             (Target.CloseSettings, Target.CloseSettings) | (Target.Quit, Target.Quit) => true,
             (Target.Focus(a), Target.Focus(b)) => a == b,
+            (Target.BuildWorker, Target.BuildWorker) | (Target.OpenBarracks, Target.OpenBarracks) | (Target.OpenCity, Target.OpenCity) => true,
+            (Target.Building(a), Target.Building(b)) => a == b,
+            (Target.ConfirmBuilding(a), Target.ConfirmBuilding(b)) => a == b,
+            (Target.QueueUp(a), Target.QueueUp(b)) => a == b,
+            (Target.QueueRemove(a), Target.QueueRemove(b)) => a == b,
+            (Target.BarracksQueueRemove(a), Target.BarracksQueueRemove(b)) => a == b,
+            (Target.BarracksBuild(a), Target.BarracksBuild(b)) => a == b,
             _ => false,
         }
     }
@@ -222,6 +249,7 @@ pub struct UiLayout {
     texts: Vec[TextShape],
     buttons: Vec[Button],
     panels: Vec[Rect],
+    catalogs: Vec[CatalogRegion],
     /// Where the settings menu's shapes and buttons start, while it's open: drawn over
     /// everything else, and its buttons take clicks before any underneath.
     overlay: Option[Overlay],
@@ -230,7 +258,7 @@ pub struct UiLayout {
 /// The first shape and the first button of the settings menu.
 pub struct Overlay { shapes: i32, buttons: i32 }
 
-fn empty_layout() -> UiLayout { UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new(), overlay: Option.None } }
+fn empty_layout() -> UiLayout { UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new(), catalogs: Vec.new(), overlay: Option.None } }
 
 impl UiLayout {
     pub fn button_at(&self, point: Vec2) -> Option[i32] {
@@ -333,6 +361,23 @@ impl GameState {
     }
 
     /// Whether `cursor` (window pixels, origin top-left) is over a panel or button.
+    /// The wheel over a city's building catalog scrolls the catalog, a card per step,
+    /// instead of zooming the map. Answers whether the wheel was the catalog's.
+    pub fn scroll_buildings_at(&mut self, cursor: Vec2, screen_size: Vec2, steps: f32) -> bool {
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        for k in 0..layout.catalogs.len() {
+            let region = &layout.catalogs[k];
+            if !contains(region.min, region.max, point) { continue; }
+            let delta = steps.abs().ceil() as i32;
+            let current = self.cities[region.city].building_scroll;
+            let moved = if steps > 0.0 { current - delta } else { current + delta };
+            self.cities[region.city].building_scroll = if moved < 0 { 0 } else if moved > region.max_offset { region.max_offset } else { moved };
+            return true;
+        }
+        false
+    }
+
     pub fn ui_covers(&self, cursor: Vec2, screen_size: Vec2) -> bool {
         let point = to_ui(cursor, screen_size);
         let layout = self.layout(screen_size);
@@ -372,6 +417,15 @@ impl GameState {
             Target.SetSetting(setting, value) => self.set_setting(setting, value),
             Target.CloseSettings => self.close_settings(),
             Target.Focus(focus) => self.set_selected_city_focus(focus),
+            Target.BuildWorker => self.queue_selected_city_worker(),
+            Target.Building(building) => self.queue_selected_city_building(building),
+            Target.ConfirmBuilding(building) => self.confirm_building(building),
+            Target.OpenBarracks => { if let Option.Some(city) = self.selected_city { self.open_barracks(city); } }
+            Target.QueueUp(index) => self.move_selected_city_queue_item(index, true),
+            Target.QueueRemove(index) => self.remove_selected_city_queue_item(index),
+            Target.BarracksBuild(build) => self.queue_selected_barracks_unit(build),
+            Target.BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
+            Target.OpenCity => self.open_selected_city_from_barracks(),
             Target.Quit => self.request_quit(),
         }
         true
@@ -404,6 +458,8 @@ impl GameState {
         let mut shown = true;
         if let Option.Some(city) = self.selected_city {
             self.city_tray(city, &mut tray);
+        } else if let Option.Some(city) = self.selected_barracks {
+            self.barracks_tray(city, &mut tray);
         } else if let Option.Some(idx) = self.selected {
             self.unit_info(idx, &mut tray);
             tray.gap(GAP);
@@ -704,15 +760,16 @@ impl GameState {
         panel.end_buttons(false);
     }
 
-    /// The open city: population, stores and income, growth, what it's building, and a card
-    /// for each unit it can build.
+    /// The open city: population, stores and income, growth, its queue, and a card for each
+    /// unit, the worker and each building it can build.
     fn city_tray(&self, i: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let (food, production) = self.income(i);
         let net_food = food - city.population * 8;
-        let (growth_percent, _, growth_turns) = self.growth_status(i);
+        let (growth_percent, _, growth_label) = self.growth_status(i);
         let (id, population, team, working) = (city.id, city.population, city.team, city.worked.len());
-        let (stored_food, stored_production, queue) = (city.food, city.production, city.queue);
+        let (stored_food, stored_production) = (city.food, city.production);
+        let slots = self.citizen_slots(i);
 
         panel.begin_line();
         panel.span_owned(text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); }), team.color());
@@ -720,7 +777,7 @@ impl GameState {
         panel.end_line(TextSize.Title);
         let net_color = if net_food > 0 { BOOSTED_TEXT } else if net_food < 0 { REDUCED_TEXT } else { TEXT };
         panel.begin_line();
-        panel.stat("CITIZENS", text(fn() can {Out} { show_i64(working as i64); Out.put(" OF "); show_i64(population as i64); Out.put(" WORKING"); }), TEXT);
+        panel.stat("CITIZENS", text(fn() can {Out} { show_i64(working as i64); Out.put(" OF "); show_i64(slots as i64); Out.put(" WORKING"); }), TEXT);
         panel.end_line(TextSize.Body);
         panel.begin_line();
         panel.stat("FOOD", text(fn() can {Out} { show_quantity(stored_food); }), TEXT);
@@ -730,57 +787,170 @@ impl GameState {
         panel.stat("PRODUCTION", text(fn() can {Out} { show_quantity(stored_production); }), TEXT);
         panel.span_owned(text(fn() can {Out} { Out.put("   "); show_signed_quantity(production); Out.put(" PER TURN"); }), DIM_TEXT);
         panel.end_line(TextSize.Body);
+        if !city.queue.is_empty() {
+            let build = city.queue[0];
+            let cost = self.city_build_cost(i, build);
+            let spent = if stored_production < cost { stored_production } else { cost };
+            panel.text_owned(TextSize.Small, text(fn() can {Out} {
+                Out.put(build.name()); Out.put(": "); show_quantity(spent); Out.put(" / "); show_quantity(cost); Out.put(" PRODUCTION");
+            }), GOLD_TEXT);
+            let fraction = stored_production as f32 / cost as f32;
+            panel.bar(if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction });
+        }
         panel.begin_line();
-        match queue {
-            Option.Some(build) => {
-                let spent = if stored_production < build.cost() { stored_production } else { build.cost() };
-                panel.stat("BUILDING", text(fn() can {Out} {
-                    Out.put(build.name()); Out.put(" ("); show_quantity(spent); Out.put(" OF "); show_quantity(build.cost()); Out.put(")");
-                }), GOLD_TEXT);
-            }
-            Option.None => panel.stat("BUILDING", to_owned("NOTHING - CHOOSE BELOW"), DIM_TEXT),
+        if city.queue.is_empty() {
+            panel.stat("BUILDING", to_owned("NOTHING - CHOOSE BELOW"), DIM_TEXT);
+        } else {
+            let build = city.queue[0];
+            let cost = self.city_build_cost(i, build);
+            let spent = if stored_production < cost { stored_production } else { cost };
+            panel.stat("BUILDING", text(fn() can {Out} {
+                Out.put(build.name()); Out.put(" ("); show_quantity(spent); Out.put(" OF "); show_quantity(cost); Out.put(")");
+            }), GOLD_TEXT);
         }
         panel.end_line(TextSize.Body);
-        let focus = self.cities[i].focus;
+        let focus = city.focus;
         panel.text(TextSize.Small, "LABOR FOCUS", LABEL_TEXT);
         panel.begin_buttons();
         for k in 0..3 { panel.button(Target.Focus(FOCUSES[k]), FOCUSES[k].name(), "AUTO", button_state(FOCUSES[k] == focus, false), false); }
         panel.end_buttons(true);
 
         panel.gap(GAP);
-        let growth = match growth_turns {
-            Option.Some(turns) => text(fn() can {Out} { Out.put("GROWTH IN "); show_i64(turns as i64); Out.put(" TURNS"); }),
-            Option.None => to_owned("NO GROWTH: NEED FOOD"),
-        };
-        panel.text_owned(TextSize.Small, growth, DIM_TEXT);
+        panel.text_owned(TextSize.Small, growth_label, DIM_TEXT);
         panel.bar(growth_percent as f32 / 100.0);
 
-        if let Option.Some(hex) = self.inspected_tile {
-            let fog = self.fog();
-            let (tile_food, tile_production) = self.known_yield(hex, &fog);
-            let share = match self.known_routes(i, &fog).costs.get(hex) { Option.Some(cost) => delivered_share(cost), Option.None => 0 };
+        if city.queue.len() > 0 {
             panel.gap(GAP);
-            panel.text_owned(TextSize.Small, text(fn() can {Out} {
-                Out.put("SELECTED TILE: "); show_i64(tile_food as i64); Out.put(" FOOD, "); show_i64(tile_production as i64);
-                Out.put(" PRODUCTION, "); show_i64((share * 25) as i64); Out.put("% DELIVERED");
-            }), DIM_TEXT);
+            panel.text(TextSize.Small, "QUEUE", LABEL_TEXT);
+            for q in 0..city.queue.len() {
+                let build = city.queue[q];
+                let label = text(fn() can {Out} { show_i64((q + 1) as i64); Out.put(". "); Out.put(build.name()); });
+                panel.begin_buttons();
+                panel.button(Target.QueueUp(q), &label, "UP", button_state(false, q == 0), false);
+                panel.button(Target.QueueRemove(q), "X", "", ButtonState.Ready, false);
+                panel.end_buttons(true);
+            }
         }
 
         panel.gap(GAP);
+        let ships = self.city_is_coastal(i) && city.placed_site(Building.Harbor).is_some();
+        let front: Option[Build] = if city.queue.is_empty() { Option.None } else { Option.Some(city.queue[0]) };
         panel.begin_buttons();
-        for b in 0..4 {
-            let build = BUILDS[b];
+        for b in 0..6 {
+            let build = CITY_UNITS[b];
+            if b >= 3 && !ships { continue; }
             let hint = text(fn() can {Out} { Out.put_char(build.shortcut()); Out.put(" \u{b7} "); show_quantity(build.cost()); Out.put(" PROD"); });
-            let queued = match queue { Option.Some(q) => q == build, Option.None => false };
-            panel.button(Target.Build(build), build.name(), &hint, button_state(queued, false), false);
+            panel.button(Target.Build(build), build.name(), &hint, button_state(front == Option.Some(Build.Unit(build)), false), false);
         }
+        let worker_hint = text(fn() can {Out} { Out.put_char(WORKER_SHORTCUT); Out.put(" \u{b7} "); show_quantity(WORKER_COST); Out.put(" PROD"); });
+        panel.button(Target.BuildWorker, "WORKER", &worker_hint, button_state(front == Option.Some(Build.Worker), false), false);
         panel.end_buttons(false);
         panel.gap(GAP);
         panel.begin_buttons();
         panel.button(Target.ToggleYields, "YIELDS", "Y", button_state(self.show_yields, false), false);
         panel.end_buttons(false);
         panel.gap(GAP);
-        panel.text(TextSize.Small, "CLICK TILES TO ASSIGN CITIZENS \u{b7} A AUTO-ASSIGN \u{b7} CLICK A UNIT TO LEAVE", LABEL_TEXT);
+        panel.text(TextSize.Small, "CLICK MANAGER TO MOVE \u{b7} CLICK TILES TO ASSIGN \u{b7} ESC OR SPACE TO EXIT", LABEL_TEXT);
+
+        panel.text(TextSize.Small, "BUILDINGS", LABEL_TEXT);
+        let scroll = city.building_scroll;
+        panel.begin_buttons();
+        for b in 0..15 {
+            let building = BUILDINGS[b];
+            if city.built.contains(building) || (building.is_naval() && !self.city_is_coastal(i)) { continue; }
+            let hint = text(fn() can {Out} {
+                if building.shortcut() != ' ' { Out.put_char(building.shortcut()); Out.put(" | "); }
+                show_quantity(building.cost()); Out.put(" PROD");
+            });
+            let needs_site = self.needs_site(i, building);
+            let queued = front == Option.Some(Build.Building(building)) || needs_site || self.placing(i, building) && self.selected_city == Option.Some(i);
+            let waiting = (city.pending_building == Option.Some(building) || city.queue.contains(Build.Building(building))) && !needs_site;
+            panel.button(Target.Building(building), building.name(), &hint, button_state(queued, waiting), false);
+        }
+        panel.end_catalog(i, scroll);
+        if let Option.Some(tile) = city.barracks {
+            let active = !city.worked.is_empty() && city.worked[0] == tile;
+            panel.gap(GAP);
+            panel.text(TextSize.Small, if active { "BARRACKS: MANAGER ACTIVE" } else { "BARRACKS: MOVE MANAGER ONTO BARRACKS" }, if active { BOOSTED_TEXT } else { REDUCED_TEXT });
+            panel.begin_buttons();
+            panel.button(Target.OpenBarracks, "SEE BARRACKS", "CLICK", ButtonState.Ready, false);
+            panel.end_buttons(false);
+        }
+        for b in 0..14 {
+            let building = PLACEABLE[b];
+            let Option.Some(site) = city.planned_sites.get(building) else {
+                if self.needs_site(i, building) {
+                    let how = if self.placing(i, building) { "CLICK AN OPEN TILE ON THE MAP" } else { "CLICK ITS CARD TO CHOOSE ONE" };
+                    panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(building.name()); Out.put(" NEEDS A SITE"); }), GOLD_TEXT);
+                    panel.text(TextSize.Small, how, DIM_TEXT);
+                }
+                continue;
+            };
+            let ready = front == Option.Some(Build.Building(building)) && stored_production >= self.city_build_cost(i, Build.Building(building));
+            let status = if ready { " READY: SITE (" } else { " PLANNED: SITE (" };
+            panel.text_owned(TextSize.Small, text(fn() can {Out} {
+                Out.put(building.name()); Out.put(status); show_i64(site.q as i64); Out.put(", "); show_i64(site.r as i64); Out.put(")");
+            }), GOLD_TEXT);
+            panel.text(TextSize.Small, "CLICK ITS MAP BADGE TO MOVE THE SITE", DIM_TEXT);
+            if ready {
+                let label = text(fn() can {Out} { Out.put("CONFIRM "); Out.put(building.name()); });
+                panel.begin_buttons();
+                panel.button(Target.ConfirmBuilding(building), &label, "CLICK", ButtonState.Ready, false);
+                panel.end_buttons(false);
+            }
+        }
+    }
+
+    /// The open Barracks: its health, its work group's production, what it's training, its
+    /// queue, and a card for each troop.
+    fn barracks_tray(&self, i: i32, panel: &mut PanelBuilder) {
+        let city = &self.cities[i];
+        let Option.Some(tile) = city.barracks else { return; };
+        let active = !city.worked.is_empty() && city.worked[0] == tile;
+        let barracks_production = if active { self.barracks_income(i) } else { 0 };
+        let (id, team, hp) = (city.id, city.team, city.barracks_hp);
+        panel.text_owned(TextSize.Title, text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" BARRACKS"); }), team.color());
+        panel.begin_line();
+        panel.stat("HP", text(fn() can {Out} { show_rounded(hp); Out.put("/"); show_rounded(BARRACKS_MAX_HP); }), GOLD_TEXT);
+        panel.end_line(TextSize.Body);
+        panel.text_owned(TextSize.Small, text(fn() can {Out} {
+            Out.put(if active { "MANAGER ACTIVE" } else { "NEEDS MANAGER" }); Out.put(" \u{b7} "); show_signed_quantity(barracks_production); Out.put(" PROD/T");
+        }), if active { BOOSTED_TEXT } else { REDUCED_TEXT });
+        if !city.barracks_queue.is_empty() {
+            let build = city.barracks_queue[0];
+            let stored = city.barracks_production;
+            let spent = if stored < build.cost() { stored } else { build.cost() };
+            panel.text_owned(TextSize.Small, text(fn() can {Out} {
+                Out.put("TRAINING "); Out.put(build.name()); Out.put(": "); show_quantity(spent); Out.put(" / "); show_quantity(build.cost()); Out.put(" PROD");
+            }), GOLD_TEXT);
+            let fraction = stored as f32 / build.cost() as f32;
+            panel.bar(if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction });
+            for q in 0..city.barracks_queue.len() {
+                let queued = city.barracks_queue[q];
+                let label = text(fn() can {Out} { show_i64((q + 1) as i64); Out.put(". "); Out.put(queued.name()); });
+                panel.begin_buttons();
+                panel.button(Target.BarracksQueueRemove(q), &label, "X", ButtonState.Ready, false);
+                panel.end_buttons(true);
+            }
+        }
+        panel.gap(GAP);
+        let front: Option[BuildUnit] = if city.barracks_queue.is_empty() { Option.None } else { Option.Some(city.barracks_queue[0]) };
+        panel.begin_buttons();
+        for b in 0..5 {
+            let build = BARRACKS_UNITS[b];
+            let label = text(fn() can {Out} { Out.put("TRAIN "); Out.put(build.name()); });
+            let hint = text(fn() can {Out} {
+                match build.required_resource() {
+                    Option.Some(resource) => { Out.put(resource.name()); Out.put(" \u{b7} "); show_quantity(build.cost()); }
+                    Option.None => { show_quantity(build.cost()); Out.put(" PROD"); }
+                }
+            });
+            panel.button(Target.BarracksBuild(build), &label, &hint, button_state(front == Option.Some(build), !self.barracks_can_train(i, build)), false);
+        }
+        panel.end_buttons(false);
+        panel.begin_buttons();
+        panel.button(Target.OpenCity, "OPEN CITY", "CLICK", ButtonState.Ready, false);
+        panel.end_buttons(false);
     }
 
     /// Everything about a map hex: terrain, what it yields, and what's on it.
@@ -935,6 +1105,37 @@ impl GameState {
                     Out.put(" PRODUCTION; THE CITY SPENDS ITS STORED PRODUCTION AND PLACES THE UNIT NEXT TO ITSELF ONCE THERE'S ENOUGH.");
                 });
             }
+            Target.Building(building) => {
+                title = to_owned(building.name());
+                shortcut = if building.shortcut() == ' ' { to_owned("CITY BUILD MENU") } else { text(fn() can {Out} { Out.put_char(building.shortcut()); }) };
+                description = text(fn() can {Out} { Out.put(building.description()); Out.put(" COSTS "); show_quantity(building.cost()); Out.put(" PRODUCTION. ONE PER CITY."); });
+            }
+            Target.BarracksBuild(build) => {
+                title = text(fn() can {Out} { Out.put("TRAIN "); Out.put(build.name()); });
+                shortcut = to_owned("BARRACKS");
+                description = text(fn() can {Out} { Out.put(build.description()); Out.put(" COSTS "); show_quantity(build.cost()); Out.put(" PRODUCTION FROM THE ACTIVE MANAGER'S WORK GROUP."); });
+            }
+            Target.OpenBarracks => {
+                title = to_owned("SEE BARRACKS");
+                shortcut = to_owned("CLICK");
+                description = to_owned("OPENS THE BARRACKS' OWN TRAINING AND QUEUE PANEL.");
+            }
+            Target.OpenCity => {
+                title = to_owned("OPEN CITY");
+                shortcut = to_owned("CLICK");
+                description = to_owned("RETURNS TO THIS CITY'S LABOR AND MAIN PRODUCTION PANEL.");
+            }
+            Target.BuildWorker => {
+                title = to_owned("WORKER");
+                shortcut = text(fn() can {Out} { Out.put_char(WORKER_SHORTCUT); });
+                description = text(fn() can {Out} { Out.put("JOINS THE CITY'S WORKERS, WHO GO OUT TO BUILD WHAT YOU ORDER FROM A TILE. "); show_quantity(WORKER_COST); Out.put(" PRODUCTION."); });
+            }
+            Target.ConfirmBuilding(building) => {
+                title = text(fn() can {Out} { Out.put("CONFIRM "); Out.put(building.name()); });
+                shortcut = to_owned("CLICK");
+                description = to_owned("FINALIZES THE SELECTED BUILDING SITE.");
+            }
+            Target.QueueUp(_) | Target.QueueRemove(_) | Target.BarracksQueueRemove(_) => { return false; }
             Target.Scenario(scenario) => {
                 title = text(fn() can {Out} { Out.put(scenario.name()); Out.put(" SCENARIO"); });
                 shortcut = to_owned(scenario.key());
@@ -1129,9 +1330,21 @@ pub enum RowKind {
     Buttons,
     /// Buttons `from..to` of equal width, one line each, label then hint.
     CompactButtons,
+    /// City `value`'s building catalog: buttons `from..to` stacked one per line, at most
+    /// `BUILDING_LIST_VISIBLE` of them in view from `offset`.
+    Catalog,
 }
 
-pub struct Row { kind: RowKind, size: TextSize, value: f32, from: i32, to: i32 }
+/// Building cards in view at once in the city tray's catalog; the wheel scrolls the rest.
+const BUILDING_LIST_VISIBLE: i32 = 2;
+/// A catalog card's height and the space around it.
+const CATALOG_ROW: f32 = 30.0;
+const CATALOG_INSET: f32 = 4.0;
+
+/// Where a city's building catalog lies on screen, for the wheel to scroll it.
+pub struct CatalogRegion { city: i32, min: Vec2, max: Vec2, max_offset: i32 }
+
+pub struct Row { kind: RowKind, size: TextSize, value: f32, from: i32, to: i32, offset: i32 }
 
 /// Stacks rows top to bottom in a panel sized to fit them.
 pub struct PanelBuilder {
@@ -1180,13 +1393,13 @@ impl PanelBuilder {
 
     fn end_line(&mut self, size: TextSize) {
         let to = self.spans.len();
-        self.rows.push(Row { kind: RowKind.Text, size, value: 0.0, from: self.line_from, to });
+        self.rows.push(Row { kind: RowKind.Text, size, value: 0.0, from: self.line_from, to, offset: 0 });
     }
 
-    fn gap(&mut self, height: f32) { self.rows.push(Row { kind: RowKind.Gap, size: TextSize.Small, value: height, from: 0, to: 0 }); }
+    fn gap(&mut self, height: f32) { self.rows.push(Row { kind: RowKind.Gap, size: TextSize.Small, value: height, from: 0, to: 0, offset: 0 }); }
 
     /// A progress bar across the panel, `fraction` full.
-    fn bar(&mut self, fraction: f32) { self.rows.push(Row { kind: RowKind.Bar, size: TextSize.Small, value: fraction, from: 0, to: 0 }); }
+    fn bar(&mut self, fraction: f32) { self.rows.push(Row { kind: RowKind.Bar, size: TextSize.Small, value: fraction, from: 0, to: 0, offset: 0 }); }
 
     fn begin_buttons(&mut self) { self.buttons_from = self.specs.len(); }
 
@@ -1198,11 +1411,22 @@ impl PanelBuilder {
     fn end_buttons(&mut self, compact: bool) {
         let kind = if compact { RowKind.CompactButtons } else { RowKind.Buttons };
         let to = self.specs.len();
-        self.rows.push(Row { kind, size: TextSize.Small, value: 0.0, from: self.buttons_from, to });
+        self.rows.push(Row { kind, size: TextSize.Small, value: 0.0, from: self.buttons_from, to, offset: 0 });
+    }
+
+    /// Ends city `city`'s building catalog, scrolled to `offset`.
+    fn end_catalog(&mut self, city: i32, offset: i32) {
+        let to = self.specs.len();
+        self.rows.push(Row { kind: RowKind.Catalog, size: TextSize.Small, value: city as f32, from: self.buttons_from, to, offset });
     }
 
     fn row_height(&self, row: Row) -> f32 {
         match row.kind {
+            RowKind.Catalog => {
+                let n = row.to - row.from;
+                let visible = if n < 1 { 1 } else if n > BUILDING_LIST_VISIBLE { BUILDING_LIST_VISIBLE } else { n };
+                visible as f32 * CATALOG_ROW + (visible + 1) as f32 * CATALOG_INSET
+            }
             RowKind.Text => ui(row.size).line_height + LINE_GAP,
             RowKind.Gap => row.value,
             RowKind.Bar => GROWTH_BAR_HEIGHT,
@@ -1227,6 +1451,17 @@ impl PanelBuilder {
                 let n = row.to - row.from;
                 let width = self.button_width(row);
                 n as f32 * width + (if n > 0 { n - 1 } else { 0 }) as f32 * GAP
+            }
+            RowKind.Catalog => {
+                let mut widest: f32 = 320.0;
+                for i in row.from..row.to {
+                    let b = &self.specs[i];
+                    let label_text = &b.label;
+                    let hint_text = &b.hint;
+                    let w = single_line_button_width(label_text, hint_text);
+                    if w > widest { widest = w; }
+                }
+                widest
             }
         }
     }
@@ -1289,6 +1524,7 @@ impl PanelBuilder {
                     layout.text_row(vec2(left, middle), row.size, spans);
                 }
                 RowKind.Gap => {}
+                RowKind.Catalog => self.place_catalog(row, left, inner_width, top, height, layout),
                 RowKind.Bar => layout.shapes.push(Shape.Bar(vec2(left, top - height), vec2(left + inner_width, top), row.value)),
                 RowKind.Buttons | RowKind.CompactButtons => {
                     let width = self.button_width(row);
@@ -1310,6 +1546,33 @@ impl PanelBuilder {
             }
             top = top - height;
         }
+    }
+
+    /// Places a building catalog row in the region from `left` to `left + width` below `top`.
+    fn place_catalog(&self, row: Row, left: f32, width: f32, top: f32, height: f32, layout: &mut UiLayout) {
+        let total = row.to - row.from;
+        let visible = if total < BUILDING_LIST_VISIBLE { total } else { BUILDING_LIST_VISIBLE };
+        let region_min = vec2(left, top - height).round();
+        let region_max = vec2(left + width, top).round();
+        layout.shapes.push(Shape.Panel(region_min, region_max, self.faded));
+        let max_offset = total - visible;
+        let offset = if row.offset > max_offset { max_offset } else if row.offset < 0 { 0 } else { row.offset };
+        let list_width = width - 2.0 * CATALOG_INSET;
+        for k in 0..visible {
+            let spec = &self.specs[row.from + offset + k];
+            let y = region_max.y - CATALOG_INSET - k as f32 * (CATALOG_ROW + CATALOG_INSET);
+            layout.buttons.push(Button {
+                target: spec.target,
+                label: copy_str(&spec.label),
+                hint: copy_str(&spec.hint),
+                state: spec.state,
+                armed: spec.armed,
+                faded: self.faded,
+                min: vec2(left + CATALOG_INSET, y - CATALOG_ROW).round(),
+                max: vec2(left + CATALOG_INSET + list_width, y).round(),
+            });
+        }
+        layout.catalogs.push(CatalogRegion { city: row.value as i32, min: region_min, max: region_max, max_offset });
     }
 }
 

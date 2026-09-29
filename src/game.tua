@@ -18,6 +18,11 @@ use log.info;
 use game.camera.Camera;
 use game.city.City;
 use game.city.Site;
+use game.city.Building;
+use game.city.Build;
+use game.city.BuildUnit;
+use game.workers.Structure;
+use game.hex.Edge;
 use game.effects.Playing;
 use game.scenario.Scenario;
 use game.ruins.Ruin;
@@ -101,6 +106,15 @@ pub struct GameState {
     sites: Map[Hex, Site],
     roads: Set[Hex],
     selected_city: Option[i32],
+    /// Barracks have their own production screen, separate from city labor.
+    selected_barracks: Option[i32],
+    /// City whose manager has been picked up and awaits a destination click.
+    moving_manager: Option[i32],
+    /// City and building whose site is being chosen. Only live while that city's view is open:
+    /// read it through `site_placement`.
+    placing_building: Option[(i32, Building)],
+    city_queue_scroll: i32,
+    barracks_queue_scroll: i32,
     hovered_city: Option[i32],
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
@@ -108,7 +122,6 @@ pub struct GameState {
     show_details: bool,
     /// The action a command-tray button (or M, X) armed for the next map click.
     ui_click_mode: Option[ClickMode],
-    inspected_tile: Option[Hex],
     /// The map hex under the cursor (not over the UI), and how long the cursor has rested on
     /// it, for the tile tooltip.
     hovered_tile: Option[Hex],
@@ -142,6 +155,10 @@ pub struct GameState {
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec[u32],
     highlight_timer: f32,
+    /// Outposts and forts built by workers, by tile.
+    structures: Map[Hex, Structure],
+    /// Walls and gates built by workers, by the edge they stand on (`hex.edge`).
+    barriers: Map[Edge, Structure],
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: IdSet,
     workers: IdSet,
@@ -216,7 +233,13 @@ impl GameState {
             show_yields: true,
             show_details: false,
             ui_click_mode: Option.None,
-            inspected_tile: Option.None,
+            selected_barracks: Option.None,
+            moving_manager: Option.None,
+            placing_building: Option.None,
+            city_queue_scroll: 0,
+            barracks_queue_scroll: 0,
+            structures: Map.new(),
+            barriers: Map.new(),
             hovered_tile: Option.None,
             hover_seconds: 0.0,
             notice: to_owned(""),
@@ -261,9 +284,9 @@ impl GameState {
         game
     }
 
-    /// A narrow strait between two coastal cities, with ships already out, for naval
-    /// playtesting: each side has a troop ashore, a landing craft, a patrol galley and a
-    /// bombard ship.
+    /// A narrow strait between two coastal cities, with ships and shore defenses already
+    /// deployed for naval playtesting: each city has a Harbor and a Coastal Battery, and each
+    /// side a troop ashore, a landing craft, a patrol galley and a bombard ship.
     pub fn naval_scenario() -> GameState can {Log} {
         let mut game = GameState.city_scenario();
         game.scenario = Scenario.Naval;
@@ -290,8 +313,10 @@ impl GameState {
         // Both city centers on the shoreline, not two tiles inland.
         game.cities[0].pos = Hex.new(-2, 0);
         game.cities[1].pos = Hex.new(2, 0);
-        game.cities[0].worked.clear();
-        game.cities[1].worked.clear();
+        for c in 0..2 {
+            game.cities[c].worked.clear();
+            game.cities[c].remembered_worked.clear();
+        }
         game.units.clear();
         game.next_unit_id = 0;
         let sides = [(Team.Blue, -1), (Team.Red, 1)];
@@ -303,6 +328,11 @@ impl GameState {
                 (Hex.new(sign, sign), UnitType.PatrolGalley),
                 (Hex.new(0, sign * 2), UnitType.BombardShip),
             ];
+            let city = &mut game.cities[t];
+            city.set_placed_site(Building.Harbor, Hex.new(sign * 2, 1));
+            city.set_placed_site(Building.CoastalBattery, Hex.new(sign * 2, -1));
+            city.built.push(Building.Harbor);
+            city.built.push(Building.CoastalBattery);
             for k in 0..4 {
                 let (pos, kind) = layout[k];
                 let id = game.next_unit_id;
@@ -311,6 +341,7 @@ impl GameState {
             }
         }
         for c in 0..game.cities.len() { game.auto_assign_city(c); }
+        game.cities[0].queue.push(Build.Unit(BuildUnit.PatrolGalley));
         game.start_on_whole_map();
         game.set_notice("NAVAL TEST: SELECT TROOP THEN CLICK CRAFT TO BOARD; CRAFT THEN SHORE TO LAND");
         game
@@ -381,7 +412,7 @@ impl GameState {
 
     fn is_occupied(&self, hex: Hex) -> bool { self.count_at(hex) > 0 }
 
-    fn count_at(&self, hex: Hex) -> i32 {
+    pub fn count_at(&self, hex: Hex) -> i32 {
         let mut n = 0;
         for i in 0..self.units.len() {
             if self.units[i].pos == hex { n = n + 1; }
@@ -405,6 +436,30 @@ impl GameState {
             i = i + 1;
         }
         Option.None
+    }
+
+    /// The city whose standing Barracks of a side other than `team`'s is on `hex`.
+    pub fn enemy_barracks_at(&self, hex: Hex, team: Team) -> Option[i32] {
+        for i in 0..self.cities.len() {
+            let city = &self.cities[i];
+            if city.team != team && city.barracks == Option.Some(hex) && city.barracks_hp > 0.0 { return Option.Some(i); }
+        }
+        Option.None
+    }
+
+    /// The city whose standing Coastal Battery of a side other than `team`'s is on `hex`.
+    pub fn enemy_coastal_battery_at(&self, hex: Hex, team: Team) -> Option[i32] {
+        for i in 0..self.cities.len() {
+            let city = &self.cities[i];
+            if city.team != team && city.placed_site(Building.CoastalBattery) == Option.Some(hex) && city.coastal_battery_hp > 0.0 { return Option.Some(i); }
+        }
+        Option.None
+    }
+
+    /// Whether `team` has something to attack on `hex`: an enemy unit, Barracks or Coastal
+    /// Battery.
+    pub fn has_enemy_target_at(&self, hex: Hex, team: Team) -> bool {
+        self.enemy_of_team_at(hex, team).is_some() || self.enemy_barracks_at(hex, team).is_some() || self.enemy_coastal_battery_at(hex, team).is_some()
     }
 
     /// Whether two enemies are fighting over this hex.
@@ -432,28 +487,14 @@ impl GameState {
         Option.None
     }
 
-    /// Hexes reachable from `start` in at most `move_range` steps without passing through
-    /// mountains or an occupied hex, so a line of units blocks the way. Includes `start`.
-    fn reachable_hexes(&self, start: Hex, move_range: i32) -> Set[Hex] {
-        let mut visited: Set[Hex] = Set.new();
-        visited.insert(start);
-        let mut frontier: Vec[Hex] = Vec.new();
-        frontier.push(start);
-        for _ in 0..move_range {
-            let mut next: Vec[Hex] = Vec.new();
-            for f in 0..frontier.len() {
-                let around = frontier[f].neighbors();
-                for k in 0..6 {
-                    let neighbor = around[k];
-                    let open = self.grid.is_passable(neighbor) && !self.is_occupied(neighbor);
-                    if open && visited.insert(neighbor) {
-                        next.push(neighbor);
-                    }
-                }
-            }
-            frontier = next;
+    /// Hexes a unit of `team` can reach from `start` in at most `move_range` steps without
+    /// passing through mountains, walls, others' gates or an occupied hex, so a line of units
+    /// blocks the way. Includes `start` itself. This is the real board, as the AI sees it; the
+    /// player plans with `known_reachable_hexes` (`fog.tua`).
+    fn reachable_hexes(&self, start: Hex, move_range: i32, team: Team) -> Set[Hex] {
+        handle { reachable_by(start, move_range) } with Step {
+            open(from, to) => { resume self.can_step(from, to, team) && !self.is_occupied(to) }
         }
-        visited
     }
 }
 

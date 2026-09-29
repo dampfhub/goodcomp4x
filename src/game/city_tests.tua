@@ -1,22 +1,49 @@
-//! The economy as played: logistics routes, income, growth and starvation, founding a city
-//! and spending production on a unit.
+//! The economy as played: logistics routes and the buildings that extend them, income, growth
+//! and starvation, the manager and its workers, the city and Barracks queues, building sites,
+//! founding a city and spending production on units.
 
+use std.collections.Map;
+use std.collections.Set;
+use std.core.Keep;
+use std.fmt.Out;
+use std.str.eq as eq_str;
+use std.str.contains;
 use std.test.assert;
 use std.test.Assert;
 use std.rand.Rand;
 use log.Log;
 use game.GameState;
 use game.PLAYER_TEAM;
-use game.city.Site;
-use game.city.SiteKind;
-use game.turn.Phase;
+use game.text;
+use game.city.BARRACKS_MAX_HP;
+use game.city.Build;
+use game.city.Building;
 use game.city.BuildUnit;
 use game.city.LaborFocus;
+use game.city.MAX_CITY_POPULATION;
+use game.city.Site;
+use game.city.SiteKind;
+use game.hex.Edge;
 use game.hex.Hex;
+use game.hex.edge;
+use game.terrain.Resource;
 use game.tests.sandbox;
+use game.turn.Phase;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
+
+fn build_is(queue: &Vec[Build], at: i32, build: Build) -> bool { at < queue.len() && queue[at] == build }
+
+fn unit_by_id(g: &GameState, id: u32) -> i32 {
+    for i in 0..g.units.len() { if g.units[i].id == id { return i; } }
+    0 - 1
+}
+
+fn has_unit(g: &GameState, team: Team, kind: UnitType) -> bool {
+    for i in 0..g.units.len() { if g.units[i].team == team && g.units[i].unit_type == kind { return true; } }
+    false
+}
 
 @test
 fn roads_improve_delivery_and_enemy_occupation_blocks_the_site() {
@@ -34,6 +61,172 @@ fn roads_improve_delivery_and_enemy_occupation_blocks_the_site() {
 }
 
 @test
+fn canoe_house_turns_its_connected_river_into_a_transport_corridor() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.roads.clear();
+        let bank = Hex.new(-3, 0);
+        let middle = Hex.new(-2, 0);
+        let destination = Hex.new(-1, 0);
+        let mut rivers: Set[Edge] = Set.new();
+        let _a = rivers.insert(edge(bank, middle));
+        let _b = rivers.insert(edge(middle, destination));
+        g.grid.set_rivers(rivers);
+        let before = g.routes(0).costs.get(destination).unwrap_or(99);
+        assert(g.site_available(0, Building.CanoeHouse, bank));
+        assert(!g.site_available(0, Building.CanoeHouse, Hex.new(-4, 1)));
+        g.cities[0].set_placed_site(Building.CanoeHouse, bank);
+        assert(g.routes(0).costs.get(destination).unwrap_or(99) < before);
+        assert(g.routes(0).costs.get(destination) == Option.Some(4));
+    });
+}
+
+@test
+fn forge_and_stable_unlock_and_upgrade_troops_at_an_off_resource_barracks() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        let barracks = Hex.new(-3, 1);
+        let horses = Hex.new(-2, 0);
+        let iron = Hex.new(-2, 1);
+        assert(g.grid.resource(barracks).is_none());
+        assert(g.site_available(0, Building.Stable, horses));
+        assert(g.site_available(0, Building.Forge, iron));
+        g.cities[0].barracks = Option.Some(barracks);
+        assert(!g.barracks_can_train(0, BuildUnit.Cavalry));
+        assert(!g.barracks_can_train(0, BuildUnit.Armored));
+        g.cities[0].set_placed_site(Building.Stable, horses);
+        g.cities[0].set_placed_site(Building.Forge, iron);
+        assert(g.barracks_can_train(0, BuildUnit.Cavalry));
+        assert(g.barracks_can_train(0, BuildUnit.Armored));
+        g.cities[0].barracks_queue.push(BuildUnit.Cavalry);
+        g.cities[0].barracks_production = BuildUnit.Cavalry.cost();
+        g.complete_builds();
+        let mut cavalry = 0 - 1;
+        for i in 0..g.units.len() { if g.units[i].unit_type == UnitType.Cavalry { cavalry = i; } }
+        assert(cavalry >= 0);
+        assert(g.units[cavalry].training_upgrade == Option.Some(Resource.Horses));
+        assert(g.units[cavalry].stats().move_range == 3);
+        g.units.clear();
+        g.cities[0].barracks_queue.clear();
+        g.cities[0].barracks_queue.push(BuildUnit.Armored);
+        g.cities[0].barracks_production = BuildUnit.Armored.cost();
+        g.complete_builds();
+        let mut armored = 0 - 1;
+        for i in 0..g.units.len() { if g.units[i].unit_type == UnitType.Armored { armored = i; } }
+        assert(armored >= 0);
+        assert(g.units[armored].training_upgrade == Option.Some(Resource.Iron));
+        assert(g.units[armored].max_hp() > UnitType.Armored.stats().max_hp);
+    });
+}
+
+@test
+fn remote_cannery_collects_food_beyond_city_reach_but_not_through_an_enemy() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.sites = Map.new();
+        g.cities[0].worked.clear();
+        let cannery = Hex.new(0, 0);
+        let farm = Hex.new(1, 0);
+        assert(!g.routes(0).costs.has(farm));
+        let _old = g.sites.insert(farm, Site { team: Team.Blue, food: 16, production: 0, kind: SiteKind.Farm });
+        let before = g.income(0).0;
+        g.cities[0].set_placed_site(Building.Cannery, cannery);
+        assert(g.income(0).0 - before == g.tile_yield(farm).0 * 4);
+        g.units.push(Unit.new(900, farm, Team.Red, UnitType.Melee));
+        assert(g.income(0).0 == before);
+    });
+}
+
+@test
+fn remote_smelter_collects_unworked_mines_beyond_city_reach() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.fog_of_war = false;
+        g.sites = Map.new();
+        g.cities[0].worked.clear();
+        let smelter = Hex.new(0, 0);
+        let mine = Hex.new(1, 0);
+        assert(g.site_available(0, Building.Smelter, smelter));
+        assert(!g.routes(0).costs.has(mine));
+        let _old = g.sites.insert(mine, Site { team: Team.Blue, food: 0, production: 16, kind: SiteKind.Mine });
+        let before = g.income(0).1;
+        g.cities[0].set_placed_site(Building.Smelter, smelter);
+        assert(g.income(0).1 - before == 64);
+        g.units.push(Unit.new(900, mine, Team.Red, UnitType.Melee));
+        assert(g.income(0).1 == before);
+    });
+}
+
+@test
+fn a_road_connected_railhead_moves_a_city_troop_across_the_map_in_one_turn() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.fog_of_war = false;
+        g.roads.clear();
+        let terminal = Hex.new(0, 0);
+        for q in -3..=0 { g.roads.insert(Hex.new(q, 0)); }
+        g.cities[0].set_placed_site(Building.Railhead, terminal);
+        g.units.push(Unit.new(900, Hex.new(-4, 1), Team.Blue, UnitType.Melee));
+        assert(g.rail_connected(0));
+        g.try_queue_move(0, terminal);
+        assert(g.units[0].planned_move == Option.Some(terminal));
+        let _acted = g.resolve_step(UnitType.Melee, Phase.Move);
+        assert(g.units[0].pos == terminal);
+        g.units[0].pos = Hex.new(-4, 1);
+        g.try_queue_move(0, terminal);
+        g.units.push(Unit.new(901, Hex.new(-2, 0), Team.Red, UnitType.Melee));
+        let _acted = g.resolve_step(UnitType.Melee, Phase.Move);
+        assert(g.units[0].pos == Hex.new(-4, 1));
+        let _red = g.units.pop();
+        g.roads.remove(Hex.new(-2, 0));
+        assert(!g.rail_connected(0));
+        g.try_queue_move(0, terminal);
+        assert(g.units[0].planned_move.is_none());
+    });
+}
+
+@test
+fn field_hospital_heals_two_nearby_survivors_in_both_layers() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        let site = Hex.new(-3, 0);
+        g.cities[0].set_placed_site(Building.FieldHospital, site);
+        let hurt = [(10, Hex.new(-2, 0), 30.0), (11, Hex.new(-3, 1), 40.0), (12, Hex.new(-4, 1), 50.0)];
+        for k in 0..3 {
+            let (id, pos, hp) = hurt[k];
+            let mut unit = Unit.new(id, pos, Team.Blue, UnitType.Melee);
+            unit.hp = hp;
+            unit.interior_hp = hp;
+            g.units.push(unit);
+        }
+        g.resolve_economy();
+        assert(g.units[unit_by_id(&g, 10)].hp == 50.0);
+        assert(g.units[unit_by_id(&g, 11)].interior_hp == 60.0);
+        assert(g.units[unit_by_id(&g, 12)].hp == 50.0);
+    });
+}
+
+@test
+fn hill_watchpost_reveals_distant_hexes() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        let post = Hex.new(0, 0);
+        let distant = Hex.new(5, 0);
+        assert(g.grid.tile(post).hills);
+        assert(!g.fog().sees(distant));
+        g.cities[0].set_placed_site(Building.Watchpost, post);
+        assert(g.fog().sees(distant));
+    });
+}
+
+@test
 fn economy_ticks_once_with_no_units_and_preserves_quarters() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut g = GameState.city_scenario();
@@ -47,12 +240,70 @@ fn economy_ticks_once_with_no_units_and_preserves_quarters() {
         // turn's production, so none is spent.
         g.end_planning();
         assert(!g.is_resolving());
-        g.cities[0].queue = Option.Some(BuildUnit.Siege);
+        g.cities[0].queue.push(Build.Unit(BuildUnit.Siege));
         g.end_planning();
         g.update(1.0);
         assert(g.cities[0].production == 6);
         g.update(10.0);
         assert(g.cities[0].production == 6);
+    });
+}
+
+@test
+fn active_build_accumulates_production_and_population_is_capped_at_seven() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.cities[0].worked.clear();
+        g.cities[0].worked.push(Hex.new(-1, 0));
+        g.cities[0].queue.push(Build.Unit(BuildUnit.Siege));
+        g.resolve_economy();
+        assert(g.cities[0].production > 0);
+
+        g.cities[0].population = MAX_CITY_POPULATION;
+        g.cities[0].food = 10000;
+        g.resolve_economy();
+        assert(g.cities[0].population == MAX_CITY_POPULATION);
+    });
+}
+
+@test
+fn workers_after_the_manager_must_be_adjacent_to_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.cities[0].worked.clear();
+        let manager = Hex.new(-1, 0);
+        let nearby = Hex.new(-1, 1);
+        let distant = Hex.new(-3, 0);
+        assert(g.may_assign(0, manager));
+        g.cities[0].worked.push(manager);
+        assert(g.may_assign(0, nearby));
+        assert(!g.may_assign(0, distant));
+    });
+}
+
+@test
+fn blocked_worked_tile_is_restored_after_the_unit_leaves() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        let manager = Hex.new(-2, 0);
+        let blocked_worker = Hex.new(-1, 0);
+        g.cities[0].worked.clear();
+        g.cities[0].worked.push(manager);
+        g.cities[0].worked.push(blocked_worker);
+        g.cities[0].remembered_worked.clear();
+        g.cities[0].remembered_worked.push(manager);
+        g.cities[0].remembered_worked.push(blocked_worker);
+        g.units.push(Unit.new(777, blocked_worker, Team.Red, UnitType.Melee));
+
+        g.reconcile_citizens(0);
+        assert(!g.cities[0].worked.contains(blocked_worker));
+        assert(g.cities[0].remembered_worked.contains(blocked_worker));
+
+        g.units.clear();
+        g.reconcile_citizens(0);
+        assert(g.cities[0].worked.contains(blocked_worker));
     });
 }
 
@@ -84,108 +335,640 @@ fn frontier_settler_founds_city_and_city_spends_production_on_unit() {
         g.queue_selected_city_unit(BuildUnit.Melee);
         g.cities[0].production = BuildUnit.Melee.cost();
         g.complete_builds();
-        assert(g.cities[0].queue.is_none());
-        let mut finished: Option[i32] = Option.None;
-        for i in 0..g.units.len() {
-            if finished.is_none() && g.units[i].team == Team.Blue { finished = Option.Some(i); }
-        }
-        let Option.Some(f) = finished else { assert(false); return; };
-        assert(g.units[f].unit_type == UnitType.Melee);
-        assert(g.units[f].pos.distance(g.cities[0].pos) == 1);
+        assert(g.cities[0].queue.is_empty());
+        let last = g.units.len() - 1;
+        assert(g.units[last].team == Team.Blue);
+        assert(g.units[last].unit_type == UnitType.Melee);
+        assert(g.units[last].pos.distance(g.cities[0].pos) == 1);
     });
 }
 
-/// How many of Blue's units there are.
-fn blue_units(g: &GameState) -> i32 {
+@test
+fn granary_is_unique_and_adds_two_food_per_turn() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.cities[0].worked.clear();
+        assert(g.income(0).0 == 8);
+        g.cities[0].queue.push(Build.Building(Building.Granary));
+        g.cities[0].production = Building.Granary.cost();
+        g.complete_builds();
+        assert(g.cities[0].built.contains(Building.Granary));
+        assert(g.income(0).0 == 16);
+        g.selected_city = Option.Some(0);
+        g.queue_selected_city_building(Building.Granary);
+        assert(g.cities[0].queue.is_empty());
+    });
+}
+
+@test
+fn barracks_has_its_own_delivery_falloff_when_manager_is_on_site() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        let manager = Hex.new(-1, 0);
+        let worker = Hex.new(-1, 1);
+        g.cities[0].worked.clear();
+        g.cities[0].worked.push(manager);
+        g.cities[0].worked.push(worker);
+        g.cities[0].barracks = Option.Some(manager);
+        g.cities[0].barracks_queue.push(BuildUnit.Melee);
+        g.cities[0].queue.push(Build.Unit(BuildUnit.Siege));
+        let total_production = g.income(0).1;
+        let barracks_production = g.barracks_income(0);
+        g.resolve_economy();
+        assert(g.cities[0].barracks_production == barracks_production);
+        // The city and Barracks both receive active group production.
+        assert(g.cities[0].production == total_production);
+
+        g.cities[0].worked.swap_at(0, 1);
+        let stored = g.cities[0].barracks_production;
+        g.resolve_economy();
+        assert(g.cities[0].barracks_production == stored);
+    });
+}
+
+@test
+fn end_turn_holds_unfinished_player_units() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.new();
+        assert(g.next_unit_needing_orders(Option.None).is_some());
+        g.end_planning();
+        for i in 0..g.units.len() {
+            if g.units[i].team == PLAYER_TEAM { assert(g.units[i].holding); }
+        }
+        assert(g.is_resolving());
+    });
+}
+
+@test
+fn barracks_site_can_be_chosen_before_completion_and_needs_confirmation() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        g.queue_selected_city_building(Building.Barracks);
+        let site = Hex.new(-2, 0);
+        assert(g.grid.is_passable(site));
+        let _ours = g.city_click(site);
+        assert(g.cities[0].planned_sites.get(Building.Barracks) == Option.Some(site));
+        // Choosing a site ends placement.
+        assert(g.placing_building.is_none());
+        let normal_city_click = Hex.new(-1, 0);
+        let _ours = g.city_click(normal_city_click);
+        // A later city click must not move the planned Barracks.
+        assert(g.cities[0].planned_sites.get(Building.Barracks) != Option.Some(normal_city_click));
+        g.cities[0].production = Building.Barracks.cost();
+        g.complete_builds();
+        assert(g.cities[0].pending_building == Option.Some(Building.Barracks));
+        assert(g.cities[0].barracks.is_none());
+        g.confirm_building(Building.Barracks);
+        assert(g.cities[0].barracks == Option.Some(site));
+    });
+}
+
+@test
+fn a_barracks_may_stand_on_an_unworked_tile_as_its_card_says() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        let mut unworked: Option[Hex] = Option.None;
+        for hh in g.grid.hexes() {
+            let h = *hh;
+            if unworked.is_none() && !g.worked_by_any(h) && g.site_available(0, Building.Barracks, h) { unworked = Option.Some(h); }
+        }
+        let Option.Some(site) = unworked else { assert(false); return; };
+        g.queue_selected_city_building(Building.Barracks);
+        let _ours = g.city_click(site);
+        assert(g.cities[0].planned_sites.get(Building.Barracks) == Option.Some(site));
+        let card = Building.Barracks.description();
+        assert(!contains(&card, "WORKED TILE"));
+        assert(contains(&card, "OPEN LAND"));
+    });
+}
+
+@test
+fn a_destroyed_barracks_can_be_rebuilt() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        let old_site = Hex.new(-2, 0);
+        g.cities[0].barracks = Option.Some(old_site);
+        g.cities[0].built.push(Building.Barracks);
+        g.cities[0].barracks_hp = 1.0;
+        g.cities[0].barracks_queue.push(BuildUnit.Melee);
+        g.open_barracks(0);
+        g.units.push(Unit.new(901, old_site.neighbors()[0], Team.Red, UnitType.Ranged));
+        g.units[0].planned_attack = Option.Some(old_site);
+        let _acted = g.resolve_step(UnitType.Ranged, Phase.Attack);
+        assert(g.cities[0].barracks.is_none());
+        assert(!g.cities[0].built.contains(Building.Barracks));
+        assert(g.cities[0].barracks_queue.is_empty());
+        // Its view closes with it.
+        assert(g.selected_barracks.is_none());
+
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        g.queue_selected_city_building(Building.Barracks);
+        assert(g.cities[0].queue.last() == Build.Building(Building.Barracks));
+        let site = Hex.new(-1, 0);
+        let _ours = g.city_click(site);
+        handle { g.cities[0].queue.retain(); } with Keep[Build] { keep(b) => { resume *b == Build.Building(Building.Barracks) } }
+        g.cities[0].production = Building.Barracks.cost();
+        g.complete_builds();
+        g.confirm_building(Building.Barracks);
+        assert(g.cities[0].barracks == Option.Some(site));
+        assert(g.cities[0].barracks_hp == BARRACKS_MAX_HP);
+    });
+}
+
+@test
+fn city_queue_completes_in_order_and_can_be_reordered_or_removed() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        g.queue_selected_city_unit(BuildUnit.Melee);
+        g.queue_selected_city_unit(BuildUnit.Ranged);
+        assert(g.cities[0].queue.len() == 2);
+        assert(build_is(&g.cities[0].queue, 0, Build.Unit(BuildUnit.Melee)) && build_is(&g.cities[0].queue, 1, Build.Unit(BuildUnit.Ranged)));
+        g.move_selected_city_queue_item(1, true);
+        assert(build_is(&g.cities[0].queue, 0, Build.Unit(BuildUnit.Ranged)));
+        g.remove_selected_city_queue_item(1);
+        assert(g.cities[0].queue.len() == 1 && build_is(&g.cities[0].queue, 0, Build.Unit(BuildUnit.Ranged)));
+        g.cities[0].production = BuildUnit.Ranged.cost();
+        g.complete_builds();
+        assert(g.cities[0].queue.is_empty());
+        assert(has_unit(&g, Team.Blue, UnitType.Ranged));
+    });
+}
+
+@test
+fn removing_a_queued_barracks_clears_its_placement_preview() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.selected_city = Option.Some(0);
+        g.queue_selected_city_building(Building.Barracks);
+        let _ours = g.city_click(Hex.new(-2, 0));
+        assert(g.cities[0].planned_sites.get(Building.Barracks).is_some());
+        g.remove_selected_city_queue_item(0);
+        assert(g.cities[0].planned_sites.get(Building.Barracks).is_none());
+        assert(g.placing_building.is_none());
+    });
+}
+
+@test
+fn queued_barracks_opens_site_selection_behind_another_build() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.selected_city = Option.Some(0);
+        g.queue_selected_city_unit(BuildUnit.Melee);
+        g.queue_selected_city_building(Building.Barracks);
+        assert(g.placing(0, Building.Barracks));
+        let site = Hex.new(-2, 0);
+        let _ours = g.city_click(site);
+        assert(g.cities[0].planned_sites.get(Building.Barracks) == Option.Some(site));
+        assert(g.placing_building.is_none());
+    });
+}
+
+@test
+fn planned_barracks_site_can_change_before_final_confirmation() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.selected_city = Option.Some(0);
+        g.queue_selected_city_building(Building.Barracks);
+        let original = Hex.new(-2, 0);
+        let revised = Hex.new(-1, 0);
+        let _ours = g.city_click(original);
+        g.change_selected_building_site(Building.Barracks);
+        assert(g.placing(0, Building.Barracks));
+        let _ours = g.city_click(revised);
+        assert(g.cities[0].planned_sites.get(Building.Barracks) == Option.Some(revised));
+        assert(g.cities[0].barracks.is_none());
+    });
+}
+
+@test
+fn mill_restores_food_delivery_only_within_city_reach() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.roads.clear();
+        let worked = Hex.new(-1, 0);
+        assert(g.routes(0).costs.get(worked) == Option.Some(6));
+        g.cities[0].worked.clear();
+        g.cities[0].worked.push(worked);
+        let food_before = g.income(0).0;
+        let food_yield = g.tile_yield(worked).0;
+        g.cities[0].mill = Option.Some(Hex.new(-2, 0));
+        assert(g.income(0).0 == food_before + food_yield * 2);
+
+        // An open tile beyond the logistics cutoff, with an open tile beside it for the mill.
+        let routes = g.routes(0);
+        let mut out_of_reach: Option[Hex] = Option.None;
+        for hh in g.grid.hexes() {
+            let h = *hh;
+            if out_of_reach.is_some() || !g.grid.is_passable(h) || routes.costs.has(h) { continue; }
+            let around = h.neighbors();
+            let mut open = false;
+            for k in 0..6 { if g.grid.is_passable(around[k]) { open = true; } }
+            if open { out_of_reach = Option.Some(h); }
+        }
+        let Option.Some(far) = out_of_reach else { assert(false); return; };
+        let around = far.neighbors();
+        let mut mill_site = far;
+        let mut found = false;
+        for k in 0..6 { if !found && g.grid.is_passable(around[k]) { mill_site = around[k]; found = true; } }
+        g.cities[0].worked.clear();
+        g.cities[0].worked.push(far);
+        g.cities[0].mill = Option.Some(mill_site);
+        // A mill cannot bypass the hard route cutoff.
+        assert(g.income(0).0 == 8);
+    });
+}
+
+@test
+fn workshop_allows_early_confirmation_of_adjacent_buildings() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        let workshop = Hex.new(-2, 0);
+        let barracks = Hex.new(-1, 0);
+        assert(g.site_available(0, Building.Workshop, workshop));
+        assert(g.site_available(0, Building.Barracks, barracks));
+        g.cities[0].workshop = Option.Some(workshop);
+        g.queue_selected_city_building(Building.Barracks);
+        let _ours = g.city_click(barracks);
+        assert(g.city_build_cost(0, Build.Building(Building.Barracks)) == Building.Barracks.cost() / 2);
+        g.cities[0].production = Building.Barracks.cost() / 2 - 1;
+        g.confirm_building(Building.Barracks);
+        assert(g.cities[0].barracks.is_none());
+        g.cities[0].production = g.cities[0].production + 1;
+        g.confirm_building(Building.Barracks);
+        assert(g.cities[0].barracks == Option.Some(barracks));
+        assert(g.cities[0].queue.is_empty());
+        assert(g.cities[0].production == 0);
+    });
+}
+
+@test
+fn moving_a_half_built_site_away_from_workshop_resumes_construction() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        let workshop = Hex.new(-2, 0);
+        let adjacent = Hex.new(-1, 0);
+        let mut distant_site: Option[Hex] = Option.None;
+        for hh in g.grid.hexes() {
+            let h = *hh;
+            if distant_site.is_none() && h.distance(workshop) > 1 && g.site_available(0, Building.Barracks, h) { distant_site = Option.Some(h); }
+        }
+        let Option.Some(distant) = distant_site else { assert(false); return; };
+        g.cities[0].workshop = Option.Some(workshop);
+        g.queue_selected_city_building(Building.Barracks);
+        let _ours = g.city_click(adjacent);
+        let half = Building.Barracks.cost() / 2;
+        g.cities[0].production = half;
+        g.complete_builds();
+        assert(g.cities[0].pending_building == Option.Some(Building.Barracks));
+        assert(build_is(&g.cities[0].queue, 0, Build.Building(Building.Barracks)));
+        g.change_selected_building_site(Building.Barracks);
+        let _ours = g.city_click(distant);
+        assert(g.cities[0].pending_building.is_none());
+        assert(g.cities[0].production == half);
+        assert(g.city_build_cost(0, Build.Building(Building.Barracks)) == Building.Barracks.cost());
+        g.confirm_building(Building.Barracks);
+        assert(g.cities[0].barracks.is_none());
+        assert(build_is(&g.cities[0].queue, 0, Build.Building(Building.Barracks)));
+        g.cities[0].production = Building.Barracks.cost();
+        g.complete_builds();
+        assert(g.cities[0].pending_building == Option.Some(Building.Barracks));
+        g.confirm_building(Building.Barracks);
+        assert(g.cities[0].barracks == Option.Some(distant));
+        assert(g.cities[0].queue.is_empty());
+    });
+}
+
+@test
+fn placed_buildings_cannot_share_a_site() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.selected_city = Option.Some(0);
+        let site = Hex.new(-2, 0);
+        g.cities[0].mill = Option.Some(site);
+        g.queue_selected_city_building(Building.Workshop);
+        let _ours = g.city_click(site);
+        assert(!g.cities[0].planned_sites.has(Building.Workshop));
+        assert(g.placing(0, Building.Workshop));
+    });
+}
+
+@test
+fn debug_completion_only_finishes_the_selected_production_lane() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        g.queue_selected_city_building(Building.Mill);
+        let _ours = g.city_click(Hex.new(-2, 0));
+        g.cities[1].queue.push(Build.Building(Building.Granary));
+        g.cities[1].production = Building.Granary.cost();
+        g.debug_complete_current_production();
+        assert(g.cities[0].pending_building == Option.Some(Building.Mill));
+        assert(g.cities[1].queue.len() == 1 && build_is(&g.cities[1].queue, 0, Build.Building(Building.Granary)));
+        assert(!g.cities[1].built.contains(Building.Granary));
+
+        g.cities[0].barracks = Option.Some(Hex.new(-1, 0));
+        g.selected_city = Option.None;
+        g.selected_barracks = Option.Some(0);
+        g.cities[0].barracks_queue.push(BuildUnit.Melee);
+        g.debug_complete_current_production();
+        assert(g.cities[0].barracks_queue.is_empty());
+        assert(has_unit(&g, PLAYER_TEAM, UnitType.Melee));
+        assert(g.cities[0].pending_building == Option.Some(Building.Mill));
+    });
+}
+
+@test
+fn barracks_queue_is_independent_and_completes_in_order() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        let site = Hex.new(-1, 0);
+        g.cities[0].barracks = Option.Some(site);
+        g.cities[0].worked.clear();
+        g.cities[0].worked.push(site);
+        g.queue_selected_barracks_unit(BuildUnit.Melee);
+        g.queue_selected_barracks_unit(BuildUnit.Ranged);
+        g.move_selected_barracks_queue_item(1, true);
+        assert(g.cities[0].barracks_queue[0] == BuildUnit.Ranged);
+        g.cities[0].barracks_production = BuildUnit.Ranged.cost();
+        g.complete_builds();
+        assert(g.cities[0].barracks_queue.len() == 1 && g.cities[0].barracks_queue[0] == BuildUnit.Melee);
+        assert(has_unit(&g, Team.Blue, UnitType.Ranged));
+    });
+}
+
+@test
+fn resource_units_require_a_barracks_on_the_matching_resource() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.selected_city = Option.Some(0);
+        g.cities[0].barracks = Option.Some(Hex.new(-2, 0));
+        assert(g.barracks_can_train(0, BuildUnit.Cavalry));
+        assert(!g.barracks_can_train(0, BuildUnit.Armored));
+        g.queue_selected_barracks_unit(BuildUnit.Cavalry);
+        assert(g.cities[0].barracks_queue.len() == 1 && g.cities[0].barracks_queue[0] == BuildUnit.Cavalry);
+        g.cities[0].barracks = Option.Some(Hex.new(-2, 1));
+        assert(g.barracks_can_train(0, BuildUnit.Armored));
+        assert(!g.barracks_can_train(0, BuildUnit.Cavalry));
+    });
+}
+
+@test
+fn structure_menu_can_be_dismissed_without_selecting_a_unit() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.open_city(0);
+        assert(g.exit_structure_menu());
+        assert(g.selected_city.is_none());
+        assert(!g.exit_structure_menu());
+    });
+}
+
+@test
+fn city_menu_keeps_barracks_clicks_in_manager_assignment_context() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.explore();
+        let manager = Hex.new(-2, 0);
+        let barracks = Hex.new(-1, 0);
+        g.cities[0].worked.clear();
+        g.cities[0].worked.push(manager);
+        g.cities[0].barracks = Option.Some(barracks);
+        g.open_city(0);
+
+        let _ours = g.city_click(manager);
+        assert(g.moving_manager == Option.Some(0));
+        let _ours = g.city_click(barracks);
+
+        assert(g.cities[0].worked[0] == barracks);
+        assert(g.selected_city == Option.Some(0));
+        assert(g.selected_barracks.is_none());
+    });
+}
+
+fn blue_count(g: &GameState) -> i32 {
     let mut n = 0;
     for i in 0..g.units.len() { if g.units[i].team == Team.Blue { n = n + 1; } }
     n
 }
 
+/// Plays one turn of city 0's economy and returns the production it earned and how many of its
+/// (Blue) units came out of it. Newly finished units walk away at once, so the city always has
+/// an open hex beside it unless the test blocks them.
+fn economy_turn(g: &mut GameState, blockers: &Vec[u32]) -> (i32, i32) can {Log} {
+    let income = g.income(0).1;
+    let before = blue_count(&*g);
+    g.resolve_economy();
+    let finished = blue_count(&*g) - before;
+    handle { g.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team != Team.Blue || blockers.contains(u.id) } }
+    (income, finished)
+}
+
+/// With production per turn below a unit's cost, a queue of units comes out at the rate
+/// production allows. A finished unit that waits for an open hex doesn't bank the production
+/// earned meanwhile, which would empty the rest of the queue one unit a turn.
 @test
-fn a_finished_unit_waiting_for_a_hex_banks_nothing_more() {
+fn a_queue_of_units_completes_at_the_rate_production_allows() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut g = GameState.city_scenario();
         g.units.clear();
-        assert(g.cities[0].team == Team.Blue);
+        g.roads.clear();
+        g.cities[0].worked.clear();
+        g.cities[0].worked.push(Hex.new(-3, 0));
+        for _ in 0..6 { g.cities[0].queue.push(Build.Unit(BuildUnit.Melee)); }
+        g.cities[0].production = 0;
         let cost = BuildUnit.Melee.cost();
-        g.cities[0].queue = Option.Some(BuildUnit.Melee);
-        g.cities[0].production = cost;
-        // Every hex around the city taken.
-        let around = g.cities[0].pos.neighbors();
-        for k in 0..6 { g.units.push(Unit.new(200 + k as u32, around[k], Team.Blue, UnitType.Melee)); }
-        let units = blue_units(&g);
-        for _turn in 0..3 {
-            g.resolve_economy();
-            // The unit waits, and the city holds just its cost.
-            assert(blue_units(&g) == units);
-            assert(g.cities[0].production == cost);
+        let none: Vec[u32] = Vec.new();
+
+        // Open hexes: the first unit takes several turns, as its cost allows.
+        let mut earned = 0;
+        let mut turns = 0;
+        loop {
+            let (income, finished) = economy_turn(&mut g, &none);
+            // The test needs production below a unit's cost.
+            assert(income < cost);
+            earned = earned + income;
+            turns = turns + 1;
+            if finished > 0 {
+                assert(finished == 1);
+                assert(earned >= cost);
+                break;
+            }
         }
-        // A hex opens: the unit comes out, and nothing is left over to pay for the next.
-        let mut blocker = 0;
-        for i in 0..g.units.len() { if g.units[i].id == 205 { blocker = i; } }
-        let _gone = g.units.remove(blocker);
-        g.resolve_economy();
-        assert(blue_units(&g) == units);
-        assert(g.cities[0].production < cost);
+        assert(turns > 1);
+        // The leftover carries over.
+        assert(g.cities[0].production == earned - cost);
+
+        // Every open hex beside the city is taken: the next unit waits in the city.
+        let mut blockers: Vec[u32] = Vec.new();
+        let around = g.cities[0].pos.neighbors();
+        let mut n = 0;
+        for k in 0..6 {
+            if !g.grid.is_passable(around[k]) { continue; }
+            let id = 1000 + n as u32;
+            g.units.push(Unit.new(id, around[k], Team.Blue, UnitType.Melee));
+            blockers.push(id);
+            n = n + 1;
+        }
+        let mut blocked_earnings = 0;
+        while blocked_earnings < 5 * cost {
+            let (income, finished) = economy_turn(&mut g, &blockers);
+            blocked_earnings = blocked_earnings + income;
+            // No hex is open.
+            assert(finished == 0);
+        }
+        // The waiting unit is paid for, and nothing more is banked.
+        assert(g.cities[0].production == cost);
+
+        // A hex opens: the waiting unit comes out, and each after it takes its cost again.
+        handle { g.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team != Team.Blue } }
+        let mut earned = 0;
+        let mut finished = 0;
+        for _ in 0..6 {
+            let (income, done) = economy_turn(&mut g, &none);
+            earned = earned + income;
+            finished = finished + done;
+            assert((finished - 1) * cost <= earned);
+        }
+        assert(finished >= 1);
     });
 }
 
-/// A land tile with no road, city or unit that a worker can improve.
-fn open_tile(g: &GameState) -> Hex {
-    let mut found = Hex.new(0, 0);
-    let mut any = false;
+/// A city and a barracks beside it that finish units the same turn with only one hex open
+/// between them don't both put a unit on it.
+@test
+fn a_city_and_its_barracks_never_finish_units_onto_one_hex() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        let city = g.cities[0].pos;
+        let barracks = Hex.new(-3, 0);
+        assert(city.distance(barracks) == 1);
+        g.cities[0].barracks = Option.Some(barracks);
+        let city_ring = city.neighbors();
+        let mut open = city;
+        let mut found = false;
+        for k in 0..6 {
+            let h = city_ring[k];
+            if !found && h.distance(barracks) == 1 && g.grid.is_passable(h) { open = h; found = true; }
+        }
+        assert(found);
+        let barracks_ring = barracks.neighbors();
+        let mut n = 0;
+        for k in 0..12 {
+            let h = if k < 6 { city_ring[k] } else { barracks_ring[k - 6] };
+            if h != open && g.grid.is_passable(h) {
+                if g.count_at(h) == 0 { g.units.push(Unit.new(1000 + n as u32, h, Team.Blue, UnitType.Melee)); }
+                n = n + 1;
+            }
+        }
+        g.cities[0].queue.push(Build.Unit(BuildUnit.Melee));
+        g.cities[0].production = BuildUnit.Melee.cost();
+        g.cities[0].barracks_queue.push(BuildUnit.Ranged);
+        g.cities[0].barracks_production = BuildUnit.Ranged.cost();
+        g.complete_builds();
+        // One unit on the open hex.
+        assert(g.count_at(open) == 1);
+        // The barracks waits for a hex.
+        assert(g.cities[0].barracks_queue.len() == 1 && g.cities[0].barracks_queue[0] == BuildUnit.Ranged);
+    });
+}
+
+@test
+fn coastal_construction_requires_the_city_center_to_touch_the_sea() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut inland = GameState.city_scenario();
+        inland.selected_city = Option.Some(0);
+        assert(!inland.city_is_coastal(0));
+        let naval = [Building.Harbor, Building.CoastalBattery];
+        for k in 0..2 {
+            let building = naval[k];
+            inland.queue_selected_city_building(building);
+            assert(!inland.cities[0].queue.contains(Build.Building(building)));
+            assert(!inland.site_available(0, building, Hex.new(-2, 1)));
+        }
+        inland.cities[0].set_placed_site(Building.Harbor, Hex.new(-2, 1));
+        inland.queue_selected_city_unit(BuildUnit.PatrolGalley);
+        assert(!inland.cities[0].queue.contains(Build.Unit(BuildUnit.PatrolGalley)));
+
+        let mut coastal = GameState.naval_scenario();
+        coastal.selected_city = Option.Some(0);
+        assert(coastal.city_is_coastal(0));
+        assert(coastal.cities[0].placed_site(Building.Harbor).is_some());
+        coastal.queue_selected_city_unit(BuildUnit.LandingCraft);
+        assert(coastal.cities[0].queue.contains(Build.Unit(BuildUnit.LandingCraft)));
+    });
+}
+
+/// An open land tile (a valid Barracks site) where `building`'s site check names `reason`.
+fn lacking_site(g: &GameState, building: Building, reason: str) -> Option[Hex] {
+    let mut found: Option[Hex] = Option.None;
     for hh in g.grid.hexes() {
         let h = *hh;
-        if any || !g.grid.is_passable(h) || g.roads.contains(h) || g.city_at(h).is_some() { continue; }
-        let mut taken = false;
-        for i in 0..g.units.len() { if g.units[i].pos == h { taken = true; } }
-        if !taken { found = h; any = true; }
+        if found.is_some() || !g.site_available(0, Building.Barracks, h) { continue; }
+        if let Option.Some(issue) = g.site_issue(0, building, h) {
+            if eq_str(&issue, &reason) { found = Option.Some(h); }
+        }
     }
     found
 }
 
-/// Selects the player's worker, moved to `at`.
-fn select_worker_at(g: &mut GameState, at: Hex) {
-    let mut worker = 0 - 1;
-    for i in 0..g.units.len() { if worker < 0 && g.units[i].team == PLAYER_TEAM && g.workers.contains(g.units[i].id) { worker = i; } }
-    g.units[worker].pos = at;
-    g.selected = Option.Some(worker);
-}
-
 @test
-fn worker_actions_wait_for_the_turn_to_finish_playing() {
+fn rejected_building_sites_name_the_requirement_and_keep_placement_active() {
     sandbox(fn() can {Log, Rand, Assert} {
-        let mut g = GameState.city_scenario();
-        let at = open_tile(&g);
-        let _old = g.sites.remove(at);
-        select_worker_at(&mut g, at);
-        g.pending_steps.push_back((UnitType.Melee, Phase.Move));
-        assert(g.is_resolving());
-        g.build_worker_road_selected();
-        g.improve_worker_tile_selected();
-        assert(!g.roads.contains(at));
-        assert(!g.sites.has(at));
-
-        let _step = g.pending_steps.pop_front();
-        g.build_worker_road_selected();
-        g.improve_worker_tile_selected();
-        assert(g.roads.contains(at));
-        let Option.Some(site) = g.sites.get(at) else { assert(false); return; };
-        assert(site.team == PLAYER_TEAM);
+        let cases = [
+            (Building.Stable, "NEEDS HORSES ON OR NEXT TO THE TILE"),
+            (Building.Forge, "NEEDS IRON ON OR NEXT TO THE TILE"),
+            (Building.CanoeHouse, "NEEDS A RIVERBANK TILE"),
+            (Building.Smelter, "NEEDS HILLS OR IRON ON OR NEXT TO THE TILE"),
+        ];
+        for k in 0..4 {
+            let (building, reason) = cases[k];
+            let mut game = GameState.city_scenario();
+            game.fog_of_war = false;
+            game.selected_city = Option.Some(0);
+            let Option.Some(site) = lacking_site(&game, building, reason) else { assert(false); return; };
+            game.queue_selected_city_building(building);
+            let _ours = game.city_click(site);
+            let expected = text(fn() can {Out} { Out.put(building.name()); Out.put(" "); Out.put(reason); });
+            let notice = &game.notice;
+            let want = &expected;
+            assert(eq_str(notice, want));
+            assert(game.site_placement().is_some() && game.placing(0, building));
+            assert(!game.cities[0].planned_sites.has(building));
+        }
     });
 }
 
 @test
-fn a_worker_cannot_improve_over_an_enemy_site() {
+fn final_confirmation_explains_a_site_that_lost_its_required_feature() {
     sandbox(fn() can {Log, Rand, Assert} {
-        let mut g = GameState.city_scenario();
-        let at = open_tile(&g);
-        select_worker_at(&mut g, at);
-        let _old = g.sites.insert(at, Site { team: Team.Red, food: 3, production: 0, kind: SiteKind.Farm });
-        g.improve_worker_tile_selected();
-        let Option.Some(site) = g.sites.get(at) else { assert(false); return; };
-        assert(site.team == Team.Red && site.food == 3);
+        let mut game = GameState.city_scenario();
+        game.fog_of_war = false;
+        game.selected_city = Option.Some(0);
+        let Option.Some(site) = lacking_site(&game, Building.Stable, "NEEDS HORSES ON OR NEXT TO THE TILE") else { assert(false); return; };
+        let _old = game.cities[0].planned_sites.insert(Building.Stable, site);
+        game.confirm_building(Building.Stable);
+        let notice = &game.notice;
+        assert(eq_str(notice, "STABLE SITE INVALID: NEEDS HORSES ON OR NEXT TO THE TILE"));
     });
 }
 
@@ -207,7 +990,8 @@ fn a_tile_never_seen_cannot_be_picked_or_worked() {
         assert(found);
         let worked = g.cities[city].worked.len();
         let _ours = g.city_click(unseen);
-        assert(g.inspected_tile.is_none());
+        let notice = &g.notice;
+        assert(eq_str(notice, "UNEXPLORED - SCOUT IT FIRST"));
         assert(g.cities[city].worked.len() == worked);
     });
 }

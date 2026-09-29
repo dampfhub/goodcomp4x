@@ -51,6 +51,7 @@ const WHEEL: Color = [0.023, 0.023, 0.027, 1.0];
 const FRESH_WOOD: Color = [0.58, 0.28, 0.098, 1.0];
 const WEATHERED_WOOD: Color = [0.43, 0.195, 0.055, 1.0];
 const BARK: Color = [0.254, 0.102, 0.032, 1.0];
+const GROWTH_RING: Color = [0.195, 0.08, 0.021, 1.0];
 const STONE: Color = [0.42, 0.40, 0.36, 1.0];
 const STONE_LIT: Color = [0.68, 0.65, 0.58, 1.0];
 const STONE_SHADE: Color = [0.20, 0.19, 0.17, 1.0];
@@ -68,6 +69,8 @@ pub enum MapIcon {
     OreCart,
     /// Pasture: a fence, two posts and two rails.
     Fence,
+    /// Lumber mill: three stacked logs.
+    Logs,
     /// Food, on a yield chip: a small wheat stalk.
     Food,
     /// Production, on a yield chip: a hammer.
@@ -90,13 +93,13 @@ impl MapIcon {
     }
 
     pub fn improvement(kind: SiteKind) -> MapIcon {
-        match kind { SiteKind.Farm => MapIcon.Wheat, SiteKind.Mine => MapIcon.OreCart, SiteKind.Pasture => MapIcon.Fence }
+        match kind { SiteKind.Farm => MapIcon.Wheat, SiteKind.Mine => MapIcon.OreCart, SiteKind.Pasture => MapIcon.Fence, SiteKind.LumberMill => MapIcon.Logs }
     }
 }
 
 /// Every map icon, and where it's drawn: `(icon, spot, scale)`.
-pub const MAP_ICONS: [MapIcon; 8] = [
-    MapIcon.HorseHead, MapIcon.Ingot, MapIcon.Wheat, MapIcon.OreCart, MapIcon.Fence,
+pub const MAP_ICONS: [MapIcon; 9] = [
+    MapIcon.HorseHead, MapIcon.Ingot, MapIcon.Wheat, MapIcon.OreCart, MapIcon.Fence, MapIcon.Logs,
     MapIcon.Ruins, MapIcon.FruitTree, MapIcon.StoneBlocks,
 ];
 
@@ -145,6 +148,24 @@ pub fn push_map_icon(center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec[Mesh
             pen.line(&low_rail, 3.5, WEATHERED_WOOD, out);
             pen.line(&left_post, 4.0, FRESH_WOOD, out);
             pen.line(&right_post, 4.0, FRESH_WOOD, out);
+        }
+        MapIcon.Logs => {
+            // Back to front: the top log, then the two it rests on. Each runs off to the right
+            // from its cut end.
+            let ends = [vec2(-8.0, -5.0), vec2(-12.0, 6.0), vec2(-4.0, 6.0)];
+            for k in 0..3 {
+                let (x, y) = (ends[k].x, ends[k].y);
+                let mut side: Vec[Vec2] = Vec.new();
+                side.push(vec2(x, y - 5.5));
+                for i in 0..=8 {
+                    let angle = (-90.0 + 180.0 * i as f32 / 8.0) * pi() as f32 / 180.0;
+                    side.push(vec2(x + 12.0 + 2.5 * angle.cos(), y + 5.5 * angle.sin()));
+                }
+                side.push(vec2(x, y + 5.5));
+                pen.shape(&side, BARK, 3.0, out);
+                pen.shape(&ellipse(vec2(x, y), 3.0, 5.5, 0.0), FRESH_WOOD, 2.5, out);
+                pen.ring(&ellipse(vec2(x, y), 1.2, 2.2, 0.0), 1.2, GROWTH_RING, out);
+            }
         }
         MapIcon.Food => {
             let stem = points(&[vec2(0.0, 7.0), vec2(0.0, -4.0)]);
@@ -238,6 +259,12 @@ impl MapPen {
         let corners = self.world(design);
         if edge > 0.0 { outline(&corners, edge * self.scale, OUTLINE, out); }
         polygon(&corners, fill, out);
+    }
+
+    /// Just the outline through `design`, `width` wide.
+    fn ring(&self, design: &Vec[Vec2], width: f32, color: Color, out: &mut Vec[MeshVertex]) {
+        let corners = self.world(design);
+        outline(&corners, width * self.scale, color, out);
     }
 
     /// A line through `design` with rounded ends.
