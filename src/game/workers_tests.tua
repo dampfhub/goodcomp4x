@@ -25,7 +25,7 @@ use game.city.SiteKind;
 use game.hex.Hex;
 use game.hex.edge;
 use game.tests.sandbox;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
@@ -496,7 +496,7 @@ fn a_captured_workers_job_keeps_its_work() {
     sandbox(fn() can {Log, Rand, Assert} {
         let (mut game, hex, red) = worker_beside_enemy();
         game.units[red].planned_move = Option.Some(hex);
-        let _acted = game.resolve_step(UnitType.Melee, Phase.Move);
+        let _acted = game.resolve_step(UnitType.Melee, TurnPhase.Move);
         // Captured.
         assert(game.field_workers.is_empty());
         let job = game.cities[0].worker_jobs[0];
@@ -551,7 +551,7 @@ fn an_enemy_stepping_onto_a_worker_captures_it() {
         let (mut game, hex, red) = worker_beside_enemy();
         let red_home = game.cities[1].workers;
         game.units[red].planned_move = Option.Some(hex);
-        let _acted = game.resolve_step(UnitType.Melee, Phase.Move);
+        let _acted = game.resolve_step(UnitType.Melee, TurnPhase.Move);
         assert(game.units[red].pos == hex);
         assert(game.field_workers.is_empty());
         // Joins Red's city.
@@ -566,14 +566,14 @@ fn an_attack_kills_a_worker_unless_a_unit_shields_it() {
     sandbox(fn() can {Log, Rand, Assert} {
         let (mut game, hex, red) = worker_beside_enemy();
         game.units[red].planned_attack = Option.Some(hex);
-        let _acted = game.resolve_step(UnitType.Melee, Phase.Attack);
+        let _acted = game.resolve_step(UnitType.Melee, TurnPhase.Attack);
         // Killed.
         assert(game.field_workers.is_empty());
 
         let (mut game, hex, red) = worker_beside_enemy();
         game.units.push(Unit.new(300, hex, Team.Blue, UnitType.Armored));
         game.units[red].planned_attack = Option.Some(hex);
-        let _acted = game.resolve_step(UnitType.Melee, Phase.Attack);
+        let _acted = game.resolve_step(UnitType.Melee, TurnPhase.Attack);
         // The escort took the hit.
         assert(game.field_workers.len() == 1);
     });
@@ -601,7 +601,7 @@ fn walls_stop_everyone_and_gates_stop_only_enemies() {
         // A move planned into the gate anyway is turned back.
         game.units.push(Unit.new(200, start, Team.Red, UnitType.Melee));
         game.units[0].planned_move = Option.Some(gate);
-        let _acted = game.resolve_step(UnitType.Melee, Phase.Move);
+        let _acted = game.resolve_step(UnitType.Melee, TurnPhase.Move);
         assert(game.units[0].pos == start);
     });
 }

@@ -75,7 +75,7 @@ use game.fog.Sighting;
 use game.city.SiteKind;
 use game.city.WORKER_SHORTCUT;
 use game.city.CORE_HP;
-use game.Role;
+use game.UnitRole;
 use game.workers.JobKind;
 use game.workers.JOB_KINDS;
 use game.city.BuildUnit;

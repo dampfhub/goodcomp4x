@@ -15,7 +15,7 @@ use game.city.COASTAL_BATTERY_DEFENSE;
 use game.fog.Fog;
 use game.hex.Hex;
 use game.hex.HexGrid;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.turn.moves_before_attacking;
 use game.turn.step_rank;
 use game.unit.Unit;
@@ -239,7 +239,7 @@ impl GameState {
             if aim != target && !(volley && aim.distance(target) == 1) { continue; }
             let from = if moves_before_attacking(unit.unit_type) { unit.planned_pos() } else { unit.pos };
             if from.distance(aim) <= range {
-                attacks.push(PlannedAttack { unit: i, aim, from, rank: step_rank(unit.unit_type, Phase.Attack) });
+                attacks.push(PlannedAttack { unit: i, aim, from, rank: step_rank(unit.unit_type, TurnPhase.Attack) });
             }
         }
         if attacks.is_empty() { return Option.None; }

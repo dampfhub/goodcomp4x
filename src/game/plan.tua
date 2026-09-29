@@ -1,0 +1,487 @@
+//! A side's plan for a turn and its wire form (`multiplayer.tua`). A plan is everything a player's
+//! planning can change, as it stood when they ended it: their units' orders, their cities' queues
+//! and citizens, their placed jobs, their stockpile. It travels as one lockstep input, so every
+//! list is bounded and every decode is checked before any of it reaches the game.
+
+use netlib.wire.DecodeError;
+use netlib.wire.Varint;
+use netlib.wire.Wire;
+use netlib.wire.reader;
+use netlib.wire.Reader;
+use netlib.wire.Writer;
+use netlib.wire.writer;
+use game.city.Build;
+use game.city.BuildUnit;
+use game.city.Building;
+use game.city.BUILDINGS;
+use game.city.Cluster;
+use game.city.Good;
+use game.city.GOODS;
+use game.city.Priorities;
+use game.city.Queued;
+use game.city.Stock;
+use game.hex.Hex;
+use game.unit.Team;
+use game.unit.TurnOrder;
+use game.workers.JobKind;
+use game.workers.WorkerJob;
+
+/// The most of anything a plan may list (units, a queue, worked tiles...): far past what play
+/// produces, and a bound on what a hostile peer can make this machine process.
+pub const MAX_PLAN_LIST: i32 = 256;
+/// The most bytes a plan takes on the wire (`lockstep.msg.INPUT_MAX`).
+pub const MAX_PLAN_BYTES: i32 = 65536;
+
+pub struct UnitPlan {
+    id: u32,
+    planned_move: Option[Hex],
+    planned_attack: Option[Hex],
+    ability_queued: bool,
+    holding: bool,
+    guarding: bool,
+    /// On alert (`Unit.alert`): only for its own troops that can be.
+    alert: bool,
+    queued: Vec[TurnOrder],
+    following_queue: bool,
+    waypoints: Vec[Hex],
+    planned_board: Option[u32],
+    planned_unload: Option[Hex],
+}
+
+pub struct CityPlan {
+    /// A city is known by its position, which never changes.
+    pos: Hex,
+    /// The settler that founded it this turn, for a city new since the turn began.
+    founded_by: Option[u32],
+    /// Each item with whether it's paid for and its work (`Queued`).
+    queue: Vec[Queued[Build]],
+    barracks_queue: Vec[Queued[BuildUnit]],
+    /// Its citizens' clusters (`City.clusters`), and as last assigned.
+    clusters: Vec[Cluster],
+    remembered: Vec[Cluster],
+    priorities: Priorities,
+    worker_jobs: Vec[WorkerJob],
+    /// Of its workers at home, those held there (recalled, not yet released).
+    held_workers: u32,
+}
+
+pub struct WorkerPlan {
+    id: u32,
+    job: Option[WorkerJob],
+    work_left: Option[u32],
+    recalled: bool,
+    base: Hex,
+}
+
+pub struct FighterPlan {
+    /// The city whose interior it's in, by position.
+    city: Hex,
+    source_id: u32,
+    planned_move: Option[Hex],
+    planned_attack: Option[Hex],
+}
+
+/// One side's plan for a turn: the one about to resolve.
+pub struct TeamPlan {
+    turn: u32,
+    team: Team,
+    stock: Stock,
+    /// Its units that remain (one disbanded, or a settler that founded a city, isn't here).
+    units: Vec[UnitPlan],
+    cities: Vec[CityPlan],
+    workers: Vec[WorkerPlan],
+    /// Orders to its troops inside city interiors.
+    fighters: Vec[FighterPlan],
+}
+
+// ---- encoding ---------------------------------------------------------------------------------
+
+fn put_count(n: i32, w: &mut Writer) { w.put_varint(n as u64); }
+
+fn take_count(b: &[u8], r: &mut Reader) -> Result[i32, DecodeError] {
+    let n = Varint.take(b, r)?;
+    if n.value() > MAX_PLAN_LIST as u64 { return Result.Err(DecodeError.TooLong); }
+    Result.Ok(n.value() as i32)
+}
+
+fn take_i32(b: &[u8], r: &mut Reader) -> Result[i32, DecodeError] { i32.take(b, r) }
+fn take_u32(b: &[u8], r: &mut Reader) -> Result[u32, DecodeError] { u32.take(b, r) }
+fn take_bool(b: &[u8], r: &mut Reader) -> Result[bool, DecodeError] { bool.take(b, r) }
+
+fn put_hex(h: Hex, w: &mut Writer) { w.put_i32(h.q); w.put_i32(h.r); }
+
+fn take_hex(b: &[u8], r: &mut Reader) -> Result[Hex, DecodeError] {
+    let q = take_i32(b, r)?;
+    let rr = take_i32(b, r)?;
+    Result.Ok(Hex.new(q, rr))
+}
+
+fn put_opt_hex(h: Option[Hex], w: &mut Writer) {
+    match h {
+        Option.Some(x) => { w.put_bool(true); put_hex(x, w); }
+        Option.None => { w.put_bool(false); }
+    }
+}
+
+fn take_opt_hex(b: &[u8], r: &mut Reader) -> Result[Option[Hex], DecodeError] {
+    if take_bool(b, r)? { Result.Ok(Option.Some(take_hex(b, r)?)) } else { Result.Ok(Option.None) }
+}
+
+fn put_opt_u32(v: Option[u32], w: &mut Writer) {
+    match v {
+        Option.Some(x) => { w.put_bool(true); w.put_u32(x); }
+        Option.None => { w.put_bool(false); }
+    }
+}
+
+fn take_opt_u32(b: &[u8], r: &mut Reader) -> Result[Option[u32], DecodeError] {
+    if take_bool(b, r)? { Result.Ok(Option.Some(take_u32(b, r)?)) } else { Result.Ok(Option.None) }
+}
+
+fn team_of(index: u8) -> Result[Team, DecodeError] {
+    match index {
+        0 => Result.Ok(Team.Blue),
+        1 => Result.Ok(Team.Red),
+        2 => Result.Ok(Team.Green),
+        3 => Result.Ok(Team.Gold),
+        4 => Result.Ok(Team.Purple),
+        5 => Result.Ok(Team.Teal),
+        6 => Result.Ok(Team.Orange),
+        7 => Result.Ok(Team.Wild),
+        _ => Result.Err(DecodeError.Unknown),
+    }
+}
+
+pub fn put_team(t: Team, w: &mut Writer) { w.put_u8(t.index() as u8); }
+
+pub fn take_team(b: &[u8], r: &mut Reader) -> Result[Team, DecodeError] { team_of(r.u8(b)?) }
+
+fn unit_index(u: BuildUnit) -> u8 {
+    match u {
+        BuildUnit.Melee => 0, BuildUnit.Ranged => 1, BuildUnit.Cavalry => 2, BuildUnit.Siege => 3,
+        BuildUnit.Armored => 4, BuildUnit.PatrolGalley => 5, BuildUnit.LandingCraft => 6, BuildUnit.BombardShip => 7,
+    }
+}
+
+fn unit_of(i: u8) -> Result[BuildUnit, DecodeError] {
+    match i {
+        0 => Result.Ok(BuildUnit.Melee), 1 => Result.Ok(BuildUnit.Ranged), 2 => Result.Ok(BuildUnit.Cavalry),
+        3 => Result.Ok(BuildUnit.Siege), 4 => Result.Ok(BuildUnit.Armored), 5 => Result.Ok(BuildUnit.PatrolGalley),
+        6 => Result.Ok(BuildUnit.LandingCraft), 7 => Result.Ok(BuildUnit.BombardShip),
+        _ => Result.Err(DecodeError.Unknown),
+    }
+}
+
+fn put_build_unit(u: BuildUnit, w: &mut Writer) { w.put_u8(unit_index(u)); }
+
+fn take_build_unit(b: &[u8], r: &mut Reader) -> Result[BuildUnit, DecodeError] { unit_of(r.u8(b)?) }
+
+fn put_build(x: Build, w: &mut Writer) {
+    match x {
+        Build.Unit(u) => { w.put_u8(0); put_build_unit(u, w); }
+        Build.Worker => { w.put_u8(1); }
+        Build.Grow => { w.put_u8(2); }
+        Build.Gather => { w.put_u8(3); }
+        Build.Settler => { w.put_u8(4); }
+        Build.Scout => { w.put_u8(5); }
+    }
+}
+
+fn take_build(b: &[u8], r: &mut Reader) -> Result[Build, DecodeError] {
+    let tag = r.u8(b)?;
+    match tag {
+        0 => Result.Ok(Build.Unit(take_build_unit(b, r)?)),
+        1 => Result.Ok(Build.Worker),
+        2 => Result.Ok(Build.Grow),
+        3 => Result.Ok(Build.Gather),
+        4 => Result.Ok(Build.Settler),
+        5 => Result.Ok(Build.Scout),
+        _ => Result.Err(DecodeError.Unknown),
+    }
+}
+
+fn take_building(b: &[u8], r: &mut Reader) -> Result[Building, DecodeError] {
+    let i = r.u8(b)? as i32;
+    if i >= 14 { return Result.Err(DecodeError.Unknown); }
+    Result.Ok(BUILDINGS[i])
+}
+
+fn put_job_kind(k: JobKind, w: &mut Writer) {
+    match k {
+        JobKind.Build(building) => { w.put_u8(6); w.put_u8(building.index() as u8); }
+        other => { w.put_u8(other.index() as u8); }
+    }
+}
+
+fn take_job_kind(b: &[u8], r: &mut Reader) -> Result[JobKind, DecodeError] {
+    let tag = r.u8(b)?;
+    match tag {
+        0 => Result.Ok(JobKind.Road),
+        1 => Result.Ok(JobKind.Improve),
+        2 => Result.Ok(JobKind.Wall),
+        3 => Result.Ok(JobKind.Gate),
+        4 => Result.Ok(JobKind.Outpost),
+        5 => Result.Ok(JobKind.Fort),
+        6 => Result.Ok(JobKind.Build(take_building(b, r)?)),
+        _ => Result.Err(DecodeError.Unknown),
+    }
+}
+
+fn put_job(j: WorkerJob, w: &mut Writer) {
+    put_hex(j.hex, w);
+    put_job_kind(j.kind, w);
+    put_opt_hex(j.across, w);
+    w.put_u32(j.done);
+}
+
+fn take_job(b: &[u8], r: &mut Reader) -> Result[WorkerJob, DecodeError] {
+    let hex = take_hex(b, r)?;
+    let kind = take_job_kind(b, r)?;
+    let across = take_opt_hex(b, r)?;
+    let done = take_u32(b, r)?;
+    Result.Ok(WorkerJob { hex: hex, kind: kind, across: across, done: done })
+}
+
+fn put_opt_job(j: Option[WorkerJob], w: &mut Writer) {
+    match j {
+        Option.Some(x) => { w.put_bool(true); put_job(x, w); }
+        Option.None => { w.put_bool(false); }
+    }
+}
+
+fn take_opt_job(b: &[u8], r: &mut Reader) -> Result[Option[WorkerJob], DecodeError] {
+    if take_bool(b, r)? { Result.Ok(Option.Some(take_job(b, r)?)) } else { Result.Ok(Option.None) }
+}
+
+fn put_stock(s: Stock, w: &mut Writer) { w.put_i32(s.food); w.put_i32(s.wood); w.put_i32(s.metal); }
+
+fn take_stock(b: &[u8], r: &mut Reader) -> Result[Stock, DecodeError] {
+    let food = take_i32(b, r)?;
+    let wood = take_i32(b, r)?;
+    let metal = take_i32(b, r)?;
+    Result.Ok(Stock { food: food, wood: wood, metal: metal })
+}
+
+fn put_cluster(c: &Cluster, w: &mut Writer) {
+    put_hex(c.manager, w);
+    w.put_u8(c.count as u8);
+    for k in 0..c.count { put_hex(c.slots[k], w); }
+}
+
+fn take_cluster(b: &[u8], r: &mut Reader) -> Result[Cluster, DecodeError] {
+    let manager = take_hex(b, r)?;
+    let count = r.u8(b)? as i32;
+    if count > 6 { return Result.Err(DecodeError.TooLong); }
+    let mut c = Cluster.new(manager);
+    for k in 0..count { c.add_worker(take_hex(b, r)?); }
+    Result.Ok(c)
+}
+
+fn put_clusters(v: &Vec[Cluster], w: &mut Writer) {
+    put_count(v.len(), w);
+    for i in 0..v.len() { put_cluster(&v[i], w); }
+}
+
+fn take_clusters(b: &[u8], r: &mut Reader) -> Result[Vec[Cluster], DecodeError] {
+    let n = take_count(b, r)?;
+    let mut out: Vec[Cluster] = Vec.new();
+    for i in 0..n { out.push(take_cluster(b, r)?); }
+    Result.Ok(out)
+}
+
+fn put_priorities(p: Priorities, w: &mut Writer) {
+    for k in 0..3 { w.put_u8(p.at(k).index() as u8); }
+}
+
+fn take_good(b: &[u8], r: &mut Reader) -> Result[Good, DecodeError] {
+    let i = r.u8(b)? as i32;
+    if i >= 3 { return Result.Err(DecodeError.Unknown); }
+    Result.Ok(GOODS[i])
+}
+
+fn take_priorities(b: &[u8], r: &mut Reader) -> Result[Priorities, DecodeError] {
+    let a = take_good(b, r)?;
+    let c = take_good(b, r)?;
+    let d = take_good(b, r)?;
+    Result.Ok(Priorities.of(a, c, d))
+}
+
+fn put_unit(u: &UnitPlan, w: &mut Writer) {
+    w.put_u32(u.id);
+    put_opt_hex(u.planned_move, w);
+    put_opt_hex(u.planned_attack, w);
+    w.put_bool(u.ability_queued);
+    w.put_bool(u.holding);
+    w.put_bool(u.guarding);
+    w.put_bool(u.alert);
+    put_count(u.queued.len(), w);
+    for i in 0..u.queued.len() {
+        put_hex(u.queued[i].from, w);
+        put_opt_hex(u.queued[i].move_to, w);
+        put_opt_hex(u.queued[i].attack, w);
+    }
+    w.put_bool(u.following_queue);
+    put_count(u.waypoints.len(), w);
+    for i in 0..u.waypoints.len() { put_hex(u.waypoints[i], w); }
+    put_opt_u32(u.planned_board, w);
+    put_opt_hex(u.planned_unload, w);
+}
+
+fn take_unit(b: &[u8], r: &mut Reader) -> Result[UnitPlan, DecodeError] {
+    let id = take_u32(b, r)?;
+    let planned_move = take_opt_hex(b, r)?;
+    let planned_attack = take_opt_hex(b, r)?;
+    let ability_queued = take_bool(b, r)?;
+    let holding = take_bool(b, r)?;
+    let guarding = take_bool(b, r)?;
+    let alert = take_bool(b, r)?;
+    let n = take_count(b, r)?;
+    let mut queued: Vec[TurnOrder] = Vec.new();
+    for i in 0..n {
+        let from = take_hex(b, r)?;
+        let move_to = take_opt_hex(b, r)?;
+        let attack = take_opt_hex(b, r)?;
+        queued.push(TurnOrder { from: from, move_to: move_to, attack: attack });
+    }
+    let following_queue = take_bool(b, r)?;
+    let m = take_count(b, r)?;
+    let mut waypoints: Vec[Hex] = Vec.new();
+    for i in 0..m { waypoints.push(take_hex(b, r)?); }
+    let planned_board = take_opt_u32(b, r)?;
+    let planned_unload = take_opt_hex(b, r)?;
+    Result.Ok(UnitPlan {
+        id: id, planned_move: planned_move, planned_attack: planned_attack, ability_queued: ability_queued,
+        holding: holding, guarding: guarding, alert: alert, queued: queued, following_queue: following_queue,
+        waypoints: waypoints, planned_board: planned_board, planned_unload: planned_unload,
+    })
+}
+
+fn put_city(c: &CityPlan, w: &mut Writer) {
+    put_hex(c.pos, w);
+    put_opt_u32(c.founded_by, w);
+    put_count(c.queue.len(), w);
+    for i in 0..c.queue.len() {
+        put_build(c.queue[i].build, w);
+        w.put_bool(c.queue[i].paid);
+        w.put_i32(c.queue[i].progress);
+    }
+    put_count(c.barracks_queue.len(), w);
+    for i in 0..c.barracks_queue.len() {
+        put_build_unit(c.barracks_queue[i].build, w);
+        w.put_bool(c.barracks_queue[i].paid);
+        w.put_i32(c.barracks_queue[i].progress);
+    }
+    put_clusters(&c.clusters, w);
+    put_clusters(&c.remembered, w);
+    put_priorities(c.priorities, w);
+    put_count(c.worker_jobs.len(), w);
+    for i in 0..c.worker_jobs.len() { put_job(c.worker_jobs[i], w); }
+    w.put_u32(c.held_workers);
+}
+
+fn take_city(b: &[u8], r: &mut Reader) -> Result[CityPlan, DecodeError] {
+    let pos = take_hex(b, r)?;
+    let founded_by = take_opt_u32(b, r)?;
+    let n = take_count(b, r)?;
+    let mut queue: Vec[Queued[Build]] = Vec.new();
+    for i in 0..n {
+        let build = take_build(b, r)?;
+        let paid = take_bool(b, r)?;
+        let progress = take_i32(b, r)?;
+        queue.push(Queued { build: build, paid: paid, progress: progress });
+    }
+    let m = take_count(b, r)?;
+    let mut barracks_queue: Vec[Queued[BuildUnit]] = Vec.new();
+    for i in 0..m {
+        let build = take_build_unit(b, r)?;
+        let paid = take_bool(b, r)?;
+        let progress = take_i32(b, r)?;
+        barracks_queue.push(Queued { build: build, paid: paid, progress: progress });
+    }
+    let clusters = take_clusters(b, r)?;
+    let remembered = take_clusters(b, r)?;
+    let priorities = take_priorities(b, r)?;
+    let j = take_count(b, r)?;
+    let mut worker_jobs: Vec[WorkerJob] = Vec.new();
+    for i in 0..j { worker_jobs.push(take_job(b, r)?); }
+    let held_workers = take_u32(b, r)?;
+    Result.Ok(CityPlan {
+        pos: pos, founded_by: founded_by, queue: queue, barracks_queue: barracks_queue, clusters: clusters,
+        remembered: remembered, priorities: priorities, worker_jobs: worker_jobs, held_workers: held_workers,
+    })
+}
+
+fn put_worker(p: &WorkerPlan, w: &mut Writer) {
+    w.put_u32(p.id);
+    put_opt_job(p.job, w);
+    put_opt_u32(p.work_left, w);
+    w.put_bool(p.recalled);
+    put_hex(p.base, w);
+}
+
+fn take_worker(b: &[u8], r: &mut Reader) -> Result[WorkerPlan, DecodeError] {
+    let id = take_u32(b, r)?;
+    let job = take_opt_job(b, r)?;
+    let work_left = take_opt_u32(b, r)?;
+    let recalled = take_bool(b, r)?;
+    let base = take_hex(b, r)?;
+    Result.Ok(WorkerPlan { id: id, job: job, work_left: work_left, recalled: recalled, base: base })
+}
+
+fn put_fighter(p: &FighterPlan, w: &mut Writer) {
+    put_hex(p.city, w);
+    w.put_u32(p.source_id);
+    put_opt_hex(p.planned_move, w);
+    put_opt_hex(p.planned_attack, w);
+}
+
+fn take_fighter(b: &[u8], r: &mut Reader) -> Result[FighterPlan, DecodeError] {
+    let city = take_hex(b, r)?;
+    let source_id = take_u32(b, r)?;
+    let planned_move = take_opt_hex(b, r)?;
+    let planned_attack = take_opt_hex(b, r)?;
+    Result.Ok(FighterPlan { city: city, source_id: source_id, planned_move: planned_move, planned_attack: planned_attack })
+}
+
+/// `plan` as bytes: the team first, so a host can tell a plan's side without decoding it all.
+/// `None` when it does not fit `MAX_PLAN_BYTES`.
+pub fn plan_bytes(plan: &TeamPlan) -> Option[Vec[u8]] {
+    let buf: Vec[u8] = Vec.with_capacity(MAX_PLAN_BYTES);
+    let mut w = writer(buf);
+    put_team(plan.team, &mut w);
+    w.put_u32(plan.turn);
+    put_stock(plan.stock, &mut w);
+    put_count(plan.units.len(), &mut w);
+    for i in 0..plan.units.len() { put_unit(&plan.units[i], &mut w); }
+    put_count(plan.cities.len(), &mut w);
+    for i in 0..plan.cities.len() { put_city(&plan.cities[i], &mut w); }
+    put_count(plan.workers.len(), &mut w);
+    for i in 0..plan.workers.len() { put_worker(&plan.workers[i], &mut w); }
+    put_count(plan.fighters.len(), &mut w);
+    for i in 0..plan.fighters.len() { put_fighter(&plan.fighters[i], &mut w); }
+    if w.failed() { return Option.None; }
+    Option.Some(w.into_vec())
+}
+
+/// The plan `bytes` hold, or why they hold none: every list bounded, every enum a known one, and
+/// nothing left over.
+pub fn plan_of(bytes: &[u8]) -> Result[TeamPlan, DecodeError] {
+    let mut r = reader();
+    let team = take_team(bytes, &mut r)?;
+    let turn = take_u32(bytes, &mut r)?;
+    let stock = take_stock(bytes, &mut r)?;
+    let n = take_count(bytes, &mut r)?;
+    let mut units: Vec[UnitPlan] = Vec.new();
+    for i in 0..n { units.push(take_unit(bytes, &mut r)?); }
+    let c = take_count(bytes, &mut r)?;
+    let mut cities: Vec[CityPlan] = Vec.new();
+    for i in 0..c { cities.push(take_city(bytes, &mut r)?); }
+    let k = take_count(bytes, &mut r)?;
+    let mut workers: Vec[WorkerPlan] = Vec.new();
+    for i in 0..k { workers.push(take_worker(bytes, &mut r)?); }
+    let f = take_count(bytes, &mut r)?;
+    let mut fighters: Vec[FighterPlan] = Vec.new();
+    for i in 0..f { fighters.push(take_fighter(bytes, &mut r)?); }
+    r.finish(bytes)?;
+    Result.Ok(TeamPlan { turn: turn, team: team, stock: stock, units: units, cities: cities, workers: workers, fighters: fighters })
+}

@@ -22,7 +22,7 @@ use game.settings.default_settings;
 use game.terrain.Terrain;
 use game.terrain.Tile;
 use game.tests.sandbox;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
@@ -199,7 +199,7 @@ fn the_side_that_kills_an_animal_gets_its_bounty() {
         game.units[red].planned_attack = Option.Some(Hex.new(0, 0));
         let blue = game.stock(Team.Blue);
         let before = game.stock(Team.Red);
-        let _acted = game.resolve_step(UnitType.Melee, Phase.Attack);
+        let _acted = game.resolve_step(UnitType.Melee, TurnPhase.Attack);
         assert(animal_count(&game) == 0);
         assert(game.stock(Team.Red) == before.plus(bounty(UnitType.Wolf)));
         // Only the hunter gains.

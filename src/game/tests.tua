@@ -26,7 +26,7 @@ use game.hex.HexGrid;
 use game.terrain.HILLS;
 use game.terrain.Terrain;
 use game.terrain.Tile;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.turn.step_rank;
 use game.unit.Team;
 use game.unit.Unit;
@@ -124,7 +124,7 @@ fn siege_can_queue_and_land_a_max_range_attack() {
         assert(game.units[siege].planned_attack == Option.Some(Hex.new(2, 0)));
         let enemy_id = game.units[enemy].id;
         let hp_before = game.units[enemy].hp;
-        game.resolve_step(UnitType.Siege, Phase.Attack);
+        game.resolve_step(UnitType.Siege, TurnPhase.Attack);
         // The defender either took damage or died and was removed.
         let hp_after = match index_of_id(&game, enemy_id) { Option.Some(i) => game.units[i].hp, Option.None => 0.0 };
         assert(hp_after < hp_before);
@@ -201,7 +201,7 @@ fn enemies_moving_onto_the_same_hex_contest_it_and_fight() {
         let mut game = GameState.new();
         let center = Hex.new(0, 0);
         let (blue, red) = cavalry_moves(&mut game, Hex.new(-1, 0), center, Hex.new(1, 0), center);
-        game.resolve_step(UnitType.Cavalry, Phase.Move);
+        game.resolve_step(UnitType.Cavalry, TurnPhase.Move);
         assert(game.units[blue].pos == center);
         assert(game.units[red].pos == center);
         assert(game.is_contested(center));
@@ -209,7 +209,7 @@ fn enemies_moving_onto_the_same_hex_contest_it_and_fight() {
         game.try_queue_attack(blue, Hex.new(-1, 1));
         assert(game.units[blue].planned_attack == Option.None);
         // ...but fights its rival in its attack step without any orders.
-        game.resolve_step(UnitType.Cavalry, Phase.Attack);
+        game.resolve_step(UnitType.Cavalry, TurnPhase.Attack);
         let mut i = 0;
         while i < game.units.len() {
             let u = &game.units[i];
@@ -225,9 +225,9 @@ fn a_unit_can_withdraw_from_a_contested_hex() {
         let mut game = GameState.new();
         let center = Hex.new(0, 0);
         let (blue, red) = cavalry_moves(&mut game, Hex.new(-1, 0), center, Hex.new(1, 0), center);
-        game.resolve_step(UnitType.Cavalry, Phase.Move);
+        game.resolve_step(UnitType.Cavalry, TurnPhase.Move);
         game.try_queue_move(blue, Hex.new(-1, 0));
-        game.resolve_step(UnitType.Cavalry, Phase.Move);
+        game.resolve_step(UnitType.Cavalry, TurnPhase.Move);
         assert(game.units[blue].pos == Hex.new(-1, 0));
         assert(game.units[red].pos == center);
         assert(!game.is_contested(center));
@@ -249,10 +249,10 @@ fn allies_swap_places_when_the_first_of_them_moves() {
         assert(game.swap_partner(melee) == Option.None);
         game.try_queue_swap(melee, ranged);
         assert(game.swap_partner(melee) == Option.Some(ranged));
-        game.resolve_step(UnitType.Melee, Phase.Move);
+        game.resolve_step(UnitType.Melee, TurnPhase.Move);
         assert(game.units[melee].pos == ranged_start);
         assert(game.units[ranged].pos == melee_start);
-        assert(game.resolve_step(UnitType.Ranged, Phase.Move).is_empty());
+        assert(game.resolve_step(UnitType.Ranged, TurnPhase.Move).is_empty());
     });
 }
 
@@ -278,7 +278,7 @@ fn a_unit_can_move_into_a_hex_vacated_in_the_same_step() {
         // blocked by Red, which hadn't moved yet.
         let (blue, red) = cavalry_moves(&mut game, Hex.new(-1, 0), Hex.new(0, 0), Hex.new(0, 0), Hex.new(1, -1));
         assert(game.units[blue].id < game.units[red].id);
-        game.resolve_step(UnitType.Cavalry, Phase.Move);
+        game.resolve_step(UnitType.Cavalry, TurnPhase.Move);
         assert(game.units[blue].pos == Hex.new(0, 0));
         assert(game.units[red].pos == Hex.new(1, -1));
     });
@@ -289,7 +289,7 @@ fn enemies_cannot_swap_places() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.new();
         let (blue, red) = cavalry_moves(&mut game, Hex.new(-1, 0), Hex.new(0, 0), Hex.new(0, 0), Hex.new(-1, 0));
-        game.resolve_step(UnitType.Cavalry, Phase.Move);
+        game.resolve_step(UnitType.Cavalry, TurnPhase.Move);
         assert(game.units[blue].pos == Hex.new(-1, 0));
         assert(game.units[red].pos == Hex.new(0, 0));
     });
@@ -308,7 +308,7 @@ fn simultaneous_attacks_all_land_before_anyone_is_removed() {
         game.units[red].planned_attack = Option.Some(Hex.new(-1, 0));
         game.units[red].hp = 1.0;
         // Either blow alone is lethal; both units still get theirs in.
-        game.resolve_step(UnitType.Melee, Phase.Attack);
+        game.resolve_step(UnitType.Melee, TurnPhase.Attack);
         let mut i = 0;
         while i < game.units.len() {
             assert(game.units[i].unit_type != UnitType.Melee);
@@ -319,21 +319,21 @@ fn simultaneous_attacks_all_land_before_anyone_is_removed() {
 
 @test
 fn order_badges_follow_the_resolution_order() {
-    assert(step_rank(UnitType.Scout, Phase.Move) == 1);
-    assert(step_rank(UnitType.Cavalry, Phase.Move) == 2);
-    assert(step_rank(UnitType.Siege, Phase.Move) == 7);
-    assert(step_rank(UnitType.Ranged, Phase.Attack) == 1);
-    assert(step_rank(UnitType.Scout, Phase.Attack) == 2);
-    assert(step_rank(UnitType.Siege, Phase.Attack) == 7);
-    assert(step_rank(UnitType.Wolf, Phase.Move) == 3);
-    assert(step_rank(UnitType.Bear, Phase.Attack) == 6);
+    assert(step_rank(UnitType.Scout, TurnPhase.Move) == 1);
+    assert(step_rank(UnitType.Cavalry, TurnPhase.Move) == 2);
+    assert(step_rank(UnitType.Siege, TurnPhase.Move) == 7);
+    assert(step_rank(UnitType.Ranged, TurnPhase.Attack) == 1);
+    assert(step_rank(UnitType.Scout, TurnPhase.Attack) == 2);
+    assert(step_rank(UnitType.Siege, TurnPhase.Attack) == 7);
+    assert(step_rank(UnitType.Wolf, TurnPhase.Move) == 3);
+    assert(step_rank(UnitType.Bear, TurnPhase.Attack) == 6);
 }
 
 /// Every unit type has a rank in both phases, so a badge never reads 0.
 @test
 fn every_step_has_a_rank() {
     for p in 0..2 {
-        let phase = if p == 0 { Phase.Move } else { Phase.Attack };
+        let phase = if p == 0 { TurnPhase.Move } else { TurnPhase.Attack };
         assert(step_rank(UnitType.Melee, phase) > 0);
         assert(step_rank(UnitType.Ranged, phase) > 0);
         assert(step_rank(UnitType.Cavalry, phase) > 0);
@@ -394,7 +394,7 @@ fn volley_also_hits_enemies_next_to_the_target() {
         let ids = [game.units[target].id, game.units[neighbor].id];
         toggle_ability(&mut game, ranged);
         game.try_queue_attack(ranged, Hex.new(1, 0));
-        game.resolve_step(UnitType.Ranged, Phase.Attack);
+        game.resolve_step(UnitType.Ranged, TurnPhase.Attack);
         for k in 0..2 {
             // A unit the volley killed is gone, which is hit enough.
             if let Option.Some(i) = index_of_id(&game, ids[k]) {
@@ -633,7 +633,7 @@ fn a_resolved_attack_animates_and_clears_its_arrow() {
         let ranged = find(&game, Team.Blue, UnitType.Ranged);
         // An empty hex: the shot plays out as a miss.
         game.try_queue_attack(ranged, Hex.new(0, 1));
-        game.resolve_step(UnitType.Ranged, Phase.Attack);
+        game.resolve_step(UnitType.Ranged, TurnPhase.Attack);
         assert(game.units[ranged].planned_attack == Option.None);
         assert(game.effects.len() == 1);
         let missed = match game.effects[0].animation { Effect.Shot(_, _, Outcome.Miss) => true, _ => false };
@@ -738,7 +738,7 @@ fn coastal_battery_hits_ships_and_can_be_destroyed() {
         ship.planned_attack = Option.Some(site);
         g.units.push(ship);
         g.cities[1].coastal_battery_hp = 1.0;
-        let _acted = g.resolve_step(UnitType.BombardShip, Phase.Attack);
+        let _acted = g.resolve_step(UnitType.BombardShip, TurnPhase.Attack);
         assert(g.cities[1].placed_site(Building.CoastalBattery).is_none());
     });
 }
@@ -790,13 +790,13 @@ fn coastal_battery_hits_show_damage_numbers_both_ways() {
         let mut ship = Unit.new(301, Hex.new(1, 0), Team.Blue, UnitType.BombardShip);
         ship.planned_attack = Option.Some(site);
         g.units.push(ship);
-        let _acted = g.resolve_step(UnitType.BombardShip, Phase.Attack);
+        let _acted = g.resolve_step(UnitType.BombardShip, TurnPhase.Attack);
         let (n, fatal, at) = damage_numbers(&g);
         assert(n == 1 && !fatal && at.x == site.to_world().x);
         g.effects.clear();
         g.cities[1].coastal_battery_hp = 1.0;
         g.units[0].planned_attack = Option.Some(site);
-        let _acted = g.resolve_step(UnitType.BombardShip, Phase.Attack);
+        let _acted = g.resolve_step(UnitType.BombardShip, TurnPhase.Attack);
         let (n, fatal, _) = damage_numbers(&g);
         assert(n == 1 && fatal);
     });

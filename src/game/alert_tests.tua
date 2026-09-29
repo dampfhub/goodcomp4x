@@ -11,7 +11,7 @@ use game.hex.Hex;
 use game.orders.ALERT_NOTICE;
 use game.orders.ClickMode;
 use game.tests.sandbox;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;

@@ -51,7 +51,7 @@ use game.hex.HexGrid;
 use game.hex.Edge;
 use game.fog.Fog;
 use game.hex.edge_corners;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.turn.step_rank;
 use game.unit.Team;
 use game.unit.Unit;
@@ -1324,8 +1324,8 @@ fn push_alert_reticle(center: Vec2, scale: f32, out: &mut Vec[MeshVertex]) {
 /// Small numbered badges showing where the unit's type moves and attacks in the turn order.
 fn push_order_badges(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec[MeshVertex]) {
     let badges = [
-        (-BADGE_OFFSET_X, Phase.Move, MOVE_ORDER_COLOR),
-        (BADGE_OFFSET_X, Phase.Attack, ATTACK_ORDER_COLOR),
+        (-BADGE_OFFSET_X, TurnPhase.Move, MOVE_ORDER_COLOR),
+        (BADGE_OFFSET_X, TurnPhase.Attack, ATTACK_ORDER_COLOR),
     ];
     for b in 0..2 {
         let (offset_x, phase, color) = badges[b];

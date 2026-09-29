@@ -35,7 +35,7 @@ use game.terrain.Resource;
 use game.terrain.Terrain;
 use game.terrain.Tile;
 use game.tests.sandbox;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;

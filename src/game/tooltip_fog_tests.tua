@@ -97,12 +97,12 @@ fn open(game: &GameState, h: Hex) -> bool {
 
 /// What the fixture found: the game, Red's city, its Smelter, its Barracks, a mine for the
 /// Smelter and a worked tile out of sight.
-struct Half { game: GameState, red: i32, smelter: Hex, barracks: Hex, mine: Hex, worked: Hex, found: bool }
+struct Sides { game: GameState, red: i32, smelter: Hex, barracks: Hex, mine: Hex, worked: Hex, found: bool }
 
 /// The Cities scenario with no units, Red's city given a Smelter and a Barracks beside it and a
 /// mine for the Smelter, and a Blue Scout that sees the city, Smelter and Barracks but neither
 /// the mine nor a tile the city works.
-fn enemy_city_half_in_sight() -> Half can {Log} {
+fn enemy_city_half_in_sight() -> Sides can {Log} {
     let mut base = GameState.city_scenario();
     base.units.clear();
     base.selected = Option.None;
@@ -142,11 +142,11 @@ fn enemy_city_half_in_sight() -> Half can {Log} {
                 let Option.Some(mine) = mine else { continue; };
                 let _old = game.sites.insert(mine, Site { team: Team.Red, food: 0, production: 4, kind: SiteKind.Mine });
                 if game.smelter_income(red) <= 0 { continue; }
-                return Half { game, red, smelter, barracks, mine, worked, found: true };
+                return Sides { game, red, smelter, barracks, mine, worked, found: true };
             }
         }
     }
-    Half { game: base, red, smelter: pos, barracks: pos, mine: pos, worked: pos, found: false }
+    Sides { game: base, red, smelter: pos, barracks: pos, mine: pos, worked: pos, found: false }
 }
 
 @test

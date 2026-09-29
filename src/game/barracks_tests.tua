@@ -29,7 +29,7 @@ use game.hex.Edge;
 use game.hex.Hex;
 use game.terrain.Resource;
 use game.tests.sandbox;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
@@ -219,7 +219,7 @@ fn a_destroyed_barracks_can_be_rebuilt() {
         g.open_barracks(0);
         g.units.push(Unit.new(901, old_site.neighbors()[0], Team.Red, UnitType.Ranged));
         g.units[0].planned_attack = Option.Some(old_site);
-        let _acted = g.resolve_step(UnitType.Ranged, Phase.Attack);
+        let _acted = g.resolve_step(UnitType.Ranged, TurnPhase.Attack);
         assert(g.cities[0].barracks.is_none());
         assert(!g.cities[0].built.contains(Building.Barracks));
         assert(g.cities[0].barracks_queue.is_empty());
@@ -510,7 +510,7 @@ fn a_road_connected_railhead_moves_a_city_troop_across_the_map_in_one_turn() {
         assert(g.rail_connected(0));
         g.try_queue_move(0, terminal);
         assert(g.units[0].planned_move == Option.Some(terminal));
-        let _acted = g.resolve_step(UnitType.Melee, Phase.Move);
+        let _acted = g.resolve_step(UnitType.Melee, TurnPhase.Move);
         assert(g.units[0].pos == terminal);
     });
 }

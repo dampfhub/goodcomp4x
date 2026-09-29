@@ -551,8 +551,8 @@ impl GameState {
 
     /// What the unit is, for display: settlers and workers are marked on top of an ordinary
     /// unit type.
-    pub fn unit_role(&self, unit: &Unit) -> Role {
-        if self.settlers.contains(unit.id) { Role.Settler } else { Role.Troop(unit.unit_type) }
+    pub fn unit_role(&self, unit: &Unit) -> UnitRole {
+        if self.settlers.contains(unit.id) { UnitRole.Settler } else { UnitRole.Troop(unit.unit_type) }
     }
 
     fn is_occupied(&self, hex: Hex) -> bool { self.count_at(hex) > 0 }
@@ -676,13 +676,13 @@ pub fn reachable_by(start: Hex, move_range: i32) -> Set[Hex] can {Step} {
 
 /// `x` with no decimals, a half rounding to the even neighbour as Rust's `{:.0}` does.
 /// What a unit is, for display (`GameState.unit_role`).
-pub enum Role { Settler, Troop(UnitType) }
+pub enum UnitRole { Settler, Troop(UnitType) }
 
-impl Role {
+impl UnitRole {
     pub fn name(self) -> str {
         match self {
-            Role.Settler => "SETTLER",
-            Role.Troop(t) => match t {
+            UnitRole.Settler => "SETTLER",
+            UnitRole.Troop(t) => match t {
                 UnitType.Melee => "MELEE",
                 UnitType.Ranged => "RANGED",
                 UnitType.Cavalry => "CAVALRY",

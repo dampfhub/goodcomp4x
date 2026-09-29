@@ -39,11 +39,11 @@ const HIGHLIGHT_DURATION: f32 = 0.4;
 const BATTERY_ATTACK: f32 = 28.0;
 const BATTERY_DEFENSE: f32 = 18.0;
 
-pub enum Phase { Move, Attack }
+pub enum TurnPhase { Move, Attack }
 
-impl Show for Phase {
+impl Show for TurnPhase {
     fn show(&self) can {Out} {
-        match *self { Phase.Move => Out.put("Move"), Phase.Attack => Out.put("Attack") }
+        match *self { TurnPhase.Move => Out.put("Move"), TurnPhase.Attack => Out.put("Attack") }
     }
 }
 
@@ -55,29 +55,29 @@ impl Show for Phase {
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Animals (`animals.tua`) act beside their like: wolves after cavalry, bears after melee.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-pub const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
-    (UnitType.Scout, Phase.Move),
-    (UnitType.Cavalry, Phase.Move),
-    (UnitType.Wolf, Phase.Move),
-    (UnitType.Melee, Phase.Move),
-    (UnitType.Bear, Phase.Move),
-    (UnitType.Ranged, Phase.Attack),
-    (UnitType.Scout, Phase.Attack),
-    (UnitType.Cavalry, Phase.Attack),
-    (UnitType.Wolf, Phase.Attack),
-    (UnitType.Melee, Phase.Attack),
-    (UnitType.Bear, Phase.Attack),
-    (UnitType.Ranged, Phase.Move),
-    (UnitType.Siege, Phase.Move),
-    (UnitType.Siege, Phase.Attack),
-    (UnitType.Armored, Phase.Move),
-    (UnitType.Armored, Phase.Attack),
-    (UnitType.PatrolGalley, Phase.Move),
-    (UnitType.LandingCraft, Phase.Move),
-    (UnitType.BombardShip, Phase.Move),
-    (UnitType.PatrolGalley, Phase.Attack),
-    (UnitType.LandingCraft, Phase.Attack),
-    (UnitType.BombardShip, Phase.Attack),
+pub const RESOLUTION_ORDER: [(UnitType, TurnPhase); 22] = [
+    (UnitType.Scout, TurnPhase.Move),
+    (UnitType.Cavalry, TurnPhase.Move),
+    (UnitType.Wolf, TurnPhase.Move),
+    (UnitType.Melee, TurnPhase.Move),
+    (UnitType.Bear, TurnPhase.Move),
+    (UnitType.Ranged, TurnPhase.Attack),
+    (UnitType.Scout, TurnPhase.Attack),
+    (UnitType.Cavalry, TurnPhase.Attack),
+    (UnitType.Wolf, TurnPhase.Attack),
+    (UnitType.Melee, TurnPhase.Attack),
+    (UnitType.Bear, TurnPhase.Attack),
+    (UnitType.Ranged, TurnPhase.Move),
+    (UnitType.Siege, TurnPhase.Move),
+    (UnitType.Siege, TurnPhase.Attack),
+    (UnitType.Armored, TurnPhase.Move),
+    (UnitType.Armored, TurnPhase.Attack),
+    (UnitType.PatrolGalley, TurnPhase.Move),
+    (UnitType.LandingCraft, TurnPhase.Move),
+    (UnitType.BombardShip, TurnPhase.Move),
+    (UnitType.PatrolGalley, TurnPhase.Attack),
+    (UnitType.LandingCraft, TurnPhase.Attack),
+    (UnitType.BombardShip, TurnPhase.Attack),
 ];
 
 /// Whether `unit_type`'s move step comes before its attack step, so it attacks from where its
@@ -88,7 +88,7 @@ pub fn moves_before_attacking(unit_type: UnitType) -> bool {
     for i in 0..22 {
         let (t, p) = RESOLUTION_ORDER[i];
         if t != unit_type { continue; }
-        if p == Phase.Move { move_at = i; } else { attack_at = i; }
+        if p == TurnPhase.Move { move_at = i; } else { attack_at = i; }
     }
     move_at < attack_at
 }
@@ -96,7 +96,7 @@ pub fn moves_before_attacking(unit_type: UnitType) -> bool {
 /// One step of a turn: a unit type's moves or attacks, or, after all of those, the workers'
 /// (`workers.tua`). Workers go last so they're exposed: they walk and work only once every unit
 /// has acted.
-pub enum TurnStep { Units(UnitType, Phase), Workers }
+pub enum TurnStep { Units(UnitType, TurnPhase), Workers }
 
 impl Eq for TurnStep {
     fn eq(self, other: TurnStep) -> bool {
@@ -110,7 +110,7 @@ impl Eq for TurnStep {
 
 /// Where `unit_type` falls (1 = first) among all the steps of `phase`. Every unit type has a
 /// move and an attack step, which a test checks, so the `0` after the loop is never reached.
-pub fn step_rank(unit_type: UnitType, phase: Phase) -> u32 {
+pub fn step_rank(unit_type: UnitType, phase: TurnPhase) -> u32 {
     let mut rank = 0;
     for i in 0..22 {
         let (t, p) = RESOLUTION_ORDER[i];
@@ -376,27 +376,27 @@ impl GameState {
     }
 
     /// Resolves one step, returning the ids of the units that acted in it.
-    pub fn resolve_step(&mut self, unit_type: UnitType, phase: Phase) -> Vec[u32] can {Log, Rand} {
+    pub fn resolve_step(&mut self, unit_type: UnitType, phase: TurnPhase) -> Vec[u32] can {Log, Rand} {
         // Animals decide as their step begins, on the board as it is then.
         if unit_type.is_animal() {
             match phase {
-                Phase.Move => self.plan_animal_moves(unit_type),
-                Phase.Attack => self.plan_animal_attacks(unit_type),
+                TurnPhase.Move => self.plan_animal_moves(unit_type),
+                TurnPhase.Attack => self.plan_animal_attacks(unit_type),
             }
         }
         let mut actors: Vec[i32] = Vec.new();
         for i in 0..self.units.len() {
             if self.units[i].unit_type != unit_type { continue; }
             let acts = match phase {
-                Phase.Move => self.units[i].planned_move.is_some(),
+                TurnPhase.Move => self.units[i].planned_move.is_some(),
                 // Units in a contested hex fight whether or not they have orders, and units on
                 // alert fire at an enemy in range.
-                Phase.Attack => self.units[i].planned_attack.is_some() || self.rival_of(i).is_some() || self.alert_target(i).is_some(),
+                TurnPhase.Attack => self.units[i].planned_attack.is_some() || self.rival_of(i).is_some() || self.alert_target(i).is_some(),
             };
             if acts { actors.push(i); }
         }
         // A swap partner moves together with its ally, even if its own type moves later.
-        if phase == Phase.Move {
+        if phase == TurnPhase.Move {
             let movers = actors.len();
             for m in 0..movers {
                 if let Option.Some(partner) = self.swap_partner(actors[m]) {
@@ -410,8 +410,8 @@ impl GameState {
         info(fn() can {Out} { Out.put("-- "); unit_type.show(); Out.put(" "); phase.show(); Out.put(" --"); });
         for a in 0..actors.len() { ids.push(self.units[actors[a]].id); }
         match phase {
-            Phase.Move => self.resolve_moves(&actors),
-            Phase.Attack => self.resolve_attacks(&actors),
+            TurnPhase.Move => self.resolve_moves(&actors),
+            TurnPhase.Attack => self.resolve_attacks(&actors),
         }
         ids
     }

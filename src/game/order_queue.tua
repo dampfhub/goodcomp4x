@@ -28,7 +28,7 @@ use game.city.turns_icon;
 use game.fog.Fog;
 use game.orders.SHIPS_NOTICE;
 use game.hex.Hex;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.turn.step_rank;
 use game.unit.TurnOrder;
 use game.unit.Unit;
@@ -165,7 +165,7 @@ impl GameState {
     /// move. A later turn left with nothing is dropped too; a plan left with nothing at all is
     /// no plan.
     fn cut_plan(&mut self, idx: i32, turn: i32) {
-        // Half of a swap takes the other half with it.
+        // Sides of a swap takes the other half with it.
         if turn == 0 { self.cancel_swap(idx); }
         self.units[idx].queued.truncate(turn);
         if turn == 0 {
@@ -367,7 +367,7 @@ impl GameState {
             } else {
                 self.planned_reachable(start, self.units[i].later_stats().move_range, team, fog, naval)
             };
-            let rank = step_rank(self.units[i].unit_type, Phase.Move);
+            let rank = step_rank(self.units[i].unit_type, TurnPhase.Move);
             let mut open: Vec[Hex] = Vec.new();
             for h in reachable.each() {
                 let hex = *h;
@@ -387,7 +387,7 @@ impl GameState {
         for k in 0..allies.len() {
             let j = allies[k];
             let ally = &self.units[j];
-            if j != idx && ally.pos_after(turn) == hex && step_rank(ally.unit_type, Phase.Move) > rank { return true; }
+            if j != idx && ally.pos_after(turn) == hex && step_rank(ally.unit_type, TurnPhase.Move) > rank { return true; }
         }
         false
     }

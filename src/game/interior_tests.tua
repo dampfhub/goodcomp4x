@@ -26,7 +26,7 @@ use game.effects.Outcome;
 use game.hex.Hex;
 use game.orders.ClickMode;
 use game.tests.sandbox;
-use game.turn.Phase;
+use game.turn.TurnPhase;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
@@ -116,7 +116,7 @@ fn exterior_death_removes_its_interior_copy_in_the_attack_step() {
         let target = game.units[melee].pos;
         let archer = unit_index(&game, 5);
         game.units[archer].planned_attack = Option.Some(target);
-        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        let _acted = game.resolve_step(UnitType.Ranged, TurnPhase.Attack);
         assert(unit_index(&game, 0) < 0);
         assert(copy_of(&game, 1, 0) < 0);
         game.resolve_city_interiors();
@@ -140,7 +140,7 @@ fn exterior_unit_cannot_walk_onto_enemy_city_and_lose_its_interior_copy() {
         // move actually resolves.
         game.units[archer].planned_move = Option.Some(city);
         let start = game.units[archer].pos;
-        let _acted = game.resolve_step(UnitType.Ranged, Phase.Move);
+        let _acted = game.resolve_step(UnitType.Ranged, TurnPhase.Move);
         assert(game.units[archer].pos == start);
         game.sync_city_interiors();
         assert(copy_of(&game, 1, 1) >= 0);
@@ -168,7 +168,7 @@ fn nonfatal_exterior_damage_leaves_interior_health_unchanged() {
         let target = game.units[unit_index(&game, 0)].pos;
         let archer = unit_index(&game, 5);
         game.units[archer].planned_attack = Option.Some(target);
-        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        let _acted = game.resolve_step(UnitType.Ranged, TurnPhase.Attack);
         let source = unit_index(&game, 0);
         assert(game.units[source].hp < game.units[source].max_hp());
         assert(game.units[source].interior_hp == game.units[source].max_hp());
@@ -402,7 +402,7 @@ fn empty_city_center_rejects_exterior_attacks() {
 
         // An old or externally supplied order cannot damage the city either.
         game.units[0].planned_attack = Option.Some(pos);
-        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        let _acted = game.resolve_step(UnitType.Ranged, TurnPhase.Attack);
         let mut missed = false;
         for e in 0..game.effects.len() {
             if let Effect.Shot(_, _, Outcome.Miss) = game.effects[e].animation { missed = true; }
@@ -422,7 +422,7 @@ fn unit_on_city_center_remains_attackable() {
         game.units.push(Unit.new(902, city.neighbors()[0], Team.Blue, UnitType.Ranged));
         game.try_queue_attack(1, city);
         assert(game.units[1].planned_attack == Option.Some(city));
-        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        let _acted = game.resolve_step(UnitType.Ranged, TurnPhase.Attack);
         assert(game.units[0].hp < game.units[0].max_hp());
     });
 }
@@ -438,7 +438,7 @@ fn hitting_an_empty_enemy_barracks_is_a_hit_not_a_miss() {
         game.cities[1].barracks = Option.Some(barracks);
         game.units.push(Unit.new(902, Hex.new(barracks.q, barracks.r + 2), Team.Blue, UnitType.Ranged));
         game.units[0].planned_attack = Option.Some(barracks);
-        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        let _acted = game.resolve_step(UnitType.Ranged, TurnPhase.Attack);
         let mut shots = 0;
         let mut hits = 0;
         for e in 0..game.effects.len() {
@@ -465,7 +465,7 @@ fn barracks_is_tanky_but_does_not_return_fire() {
         game.units.push(Unit.new(901, barracks.neighbors()[0], Team.Blue, UnitType.Ranged));
         let (barracks_hp, unit_hp) = (game.cities[1].barracks_hp, game.units[0].hp);
         game.try_queue_attack(0, barracks);
-        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        let _acted = game.resolve_step(UnitType.Ranged, TurnPhase.Attack);
         assert(game.cities[1].barracks_hp < barracks_hp);
         assert(game.units[0].hp == unit_hp);
     });
