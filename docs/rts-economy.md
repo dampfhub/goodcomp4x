@@ -297,6 +297,12 @@ sides bank less metal (40 against 87 at turn 40).
 
 A playtest found the game moving too fast. This round measures the tempo and changes no rule.
 
+The full report the user decided from is kept in `docs/economy/`:
+[round6-tempo-report.md](economy/round6-tempo-report.md) (findings, options and questions),
+[round6-how-it-works.md](economy/round6-how-it-works.md) (the rules then, from the code) and
+[round6-knobs.md](economy/round6-knobs.md) (what each knob changed, and every knob in every
+setting). This section is its summary.
+
 `economy_report` (`src/game/simulation/economy.rs`) now measures, over many seeds:
 - units trained by type and turn, army size, population and when each growth step lands;
 - stockpiles, income, and where the resources go;
