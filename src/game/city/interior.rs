@@ -47,6 +47,18 @@ impl InteriorFighter {
         apply_training_upgrade(&mut stats, self.training_upgrade);
         stats
     }
+
+    pub(in crate::game) fn move_reaches(&self, tile: Hex) -> bool {
+        self.planned_move.unwrap_or(self.pos).distance(tile) <= self.stats().move_range.max(1)
+    }
+
+    pub(in crate::game) fn attack_reaches(&self, tile: Hex) -> bool {
+        self.planned_move.unwrap_or(self.pos).distance(tile) <= self.stats().attack_range
+    }
+
+    pub(in crate::game) fn health_fraction(&self) -> f32 {
+        self.hp / self.stats().max_hp
+    }
 }
 
 pub(in crate::game) fn in_bounds(hex: Hex) -> bool {
@@ -192,13 +204,12 @@ impl GameState {
             self.interior_selected = None;
             return;
         };
-        let from = fighter.planned_move.unwrap_or(fighter.pos);
         let enemy = clicked.is_some_and(|f| f.team != self.local_team);
         let core = tile == CENTER
             && self.cities[city].team != self.local_team
             && self.cities[city].interior.core_hp > 0.0;
         if enemy || core {
-            if from.distance(tile) <= fighter.stats().attack_range {
+            if fighter.attack_reaches(tile) {
                 let fighter = self.cities[city]
                     .interior
                     .fighters
@@ -212,7 +223,7 @@ impl GameState {
             }
         } else if clicked.is_none()
             && (tile != CENTER || self.cities[city].interior.core_hp <= 0.0)
-            && from.distance(tile) <= fighter.stats().move_range.max(1)
+            && fighter.move_reaches(tile)
         {
             let fighter = self.cities[city]
                 .interior
