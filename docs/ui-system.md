@@ -113,7 +113,8 @@ closes. Remember their adjacent dock relation while visible, then restore that
 relation if ImGui removes an inactive split before they reappear. A lost dock
 position is never reused as a floating position over another panel.
 Debug can also be docked beside a contextual Selection group. City, barracks,
-unit, and group menus each remember their own Debug docking relation. When a
+unit, and group menus and an open city interior each remember their own Debug
+docking relation, by `SelectionKind` (`imgui.rs`). When a
 menu closes or changes kind, Debug returns to its previous standalone position
 or persistent panel group; reopening that kind of menu restores its split.
 The last standalone position is frozen while dragging and is not overwritten
@@ -157,7 +158,9 @@ updates views that still inherit; moving it while editing Outer applies the
 position to all views and clears local overrides. Outer boxes keep one
 position across all views.
 In City / Building or Troop, **Ctrl+Shift+R** (or the status-bar Reset button)
-clears that view's Debug position and contextual dock relation so it inherits
+clears that view's Debug position and the contextual dock relations of every
+kind of selection shown in it (`SelectionKind::view`: an open interior's too,
+in City / Building) so it inherits
 Default again. It leaves the view's boxes and other panels in place.
 One floating panel resets on its own by a double-click: on its title bar, it
 goes back where its view's layout places it and keeps its size
@@ -195,8 +198,8 @@ identity and a renderer for captured content, as the city, barracks, unit,
 group, and queue examples show.
 Give draggable content a payload type scoped to its panel identity, so rows
 from two city queues cannot reorder one another.
-Floating Selection panels remember dimensions by context kind (city, barracks,
-unit, or group), so resizing the city controls does not stretch unit controls.
+Floating Selection panels remember dimensions by context kind (interior, city,
+barracks, unit, or group), so resizing the city controls does not stretch unit controls.
 Edge resizing is disabled; hold Ctrl and use the lower corner grip to resize.
 Docked windows use ImGui's geometry, while undocked panels use the measured
 layout. Floating panel height is corrected from the previous rendered frame.
