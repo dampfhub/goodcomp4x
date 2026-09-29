@@ -4,7 +4,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use glam::Vec2;
-use imgui::{ConfigFlags, Context as ImGuiContext, FontConfig, FontId, FontSource, StyleColor};
+use imgui::{
+    ConfigFlags, Context as ImGuiContext, FontConfig, FontGlyphRanges, FontId, FontSource,
+    StyleColor,
+};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -46,6 +49,11 @@ fn frame_duration(window: &Window) -> Duration {
     FRAME_DURATION.max(Duration::from_micros(1_000_000 / u64::from(hertz)))
 }
 const DRAG_THRESHOLD: f32 = 6.0;
+/// What ImGui's system font draws, as pairs of first and last code points:
+/// Basic Latin and Latin-1 (ImGui's default), and the punctuation beyond
+/// them that game text uses, as the classic font has it (`font.rs`): the
+/// em dash and the ellipsis a notice too long for the status bar ends in.
+const IMGUI_GLYPHS: &[u32] = &[0x20, 0xFF, 0x2014, 0x2014, 0x2026, 0x2026, 0];
 /// The window opens at this fraction of the primary monitor's size.
 const WINDOW_SCREEN_FRACTION: f32 = 0.8;
 
@@ -713,7 +721,10 @@ impl ApplicationHandler for App {
                 imgui.fonts().add_font(&[FontSource::TtfData {
                     data: font,
                     size_pixels: size,
-                    config: None,
+                    config: Some(FontConfig {
+                        glyph_ranges: FontGlyphRanges::from_slice(IMGUI_GLYPHS),
+                        ..FontConfig::default()
+                    }),
                 }])
             } else {
                 imgui.fonts().add_font(&[FontSource::DefaultFontData {

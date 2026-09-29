@@ -101,7 +101,12 @@ Dock relation detection walks the native dock tree, so it works beside a
 nested Selection+Queue group as well as beside Selection alone.
 Beside the turn number, the status bar (and the classic top bar) shows the
 player's stockpile from `GameState::stockpile_line`, one shared line of
-colored spans, so both presentations read the same.
+colored spans, so both presentations read the same. The latest notice
+follows in the room left (classic: between Menu and End Turn; ImGui: up to
+the VIEW label); a notice too long for it is cut after its last whole word
+that fits, ending in "…" (`fit_text`, `text.rs`), and ImGui shows all of it
+when the notice is hovered. ImGui's fonts carry the ellipsis and em dash
+beyond Latin-1 (`IMGUI_GLYPHS`, `app.rs`).
 Resources and turns appear in text as icons: a UI string may hold the icon
 characters of `map_icons.rs` (`FOOD_ICON`, `WOOD_ICON`, `METAL_ICON`,
 `TIME_ICON`), which the classic font (`font::Face::width` and `push`) and

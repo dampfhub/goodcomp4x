@@ -3,7 +3,7 @@
 use super::builder::{ButtonSpec, PanelBuilder, push_text_row, single_line_button_width};
 use super::dock::Zone;
 use super::paint::fade;
-use super::text::{end_turn_label, price_hint, stock_spans};
+use super::text::{end_turn_label, fit_text, price_hint, stock_spans};
 use super::{
     BODY, Button, ButtonState, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, Line,
     MARGIN, NOTICE_TEXT, REDUCED_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
@@ -247,16 +247,16 @@ impl GameState {
         });
         let left_end = menu_min.x + menu_width;
 
-        // The notice sits centered in the space left between the two.
-        let notice = self.shown_notice();
+        // The notice sits centered in the space left between the two,
+        // shortened to what fits.
+        let face = font::ui(BODY);
+        let space = (left_end + 2.0 * GAP, end_turn.min.x - 2.0 * GAP);
+        let notice = fit_text(self.shown_notice(), space.1 - space.0, |t| face.width(t));
         if !notice.is_empty() {
-            let width = font::ui(BODY).width(notice);
-            let space = (left_end + 2.0 * GAP, end_turn.min.x - 2.0 * GAP);
+            let width = face.width(&notice);
             let left = ((space.0 + space.1 - width) / 2.0).max(space.0);
-            if left + width <= space.1 {
-                let line = vec![(notice.to_string(), NOTICE_TEXT)];
-                push_text_row(layout, Vec2::new(left, middle), BODY, line);
-            }
+            let line = vec![(notice, NOTICE_TEXT)];
+            push_text_row(layout, Vec2::new(left, middle), BODY, line);
         }
         layout.buttons.push(end_turn);
     }
