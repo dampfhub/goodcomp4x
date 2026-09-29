@@ -12,6 +12,7 @@ use std.test.Assert;
 use log.Log;
 use game.GameState;
 use game.city.Build;
+use game.city.Building;
 use game.city.BuildUnit;
 use game.hex.Hex;
 use game.orders.ClickMode;
@@ -186,7 +187,7 @@ fn city_view() -> GameState can {Log, Rand} {
 }
 
 @test
-fn a_click_on_a_unit_keeps_the_city_view_open() {
+fn city_clicks_do_not_select_units_without_exiting_city_view() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = city_view();
         // One of the player's units drawn clear of the top bar and the tray.
@@ -509,5 +510,162 @@ fn every_city_tray_button_can_be_hovered_and_clicked() {
             fresh.handle_click(cursor, screen(), ClickMode.Normal);
             for _ in 0..2 { play_frame(&mut fresh, cursor); }
         }
+    });
+}
+
+/// Whether the card for `building` is shown in the open city's catalog, in `want`.
+fn building_card_is(game: &GameState, building: Building, want: ButtonState) -> bool {
+    let layout = game.layout(screen());
+    for b in 0..layout.buttons.len() {
+        if layout.buttons[b].target == Target.Building(building) {
+            return match (layout.buttons[b].state, want) {
+                (ButtonState.Ready, ButtonState.Ready) | (ButtonState.Queued, ButtonState.Queued) | (ButtonState.Disabled, ButtonState.Disabled) => true,
+                _ => false,
+            };
+        }
+    }
+    false
+}
+
+/// Plays the turn out to the next planning phase.
+fn play_turn_out(game: &mut GameState) can {Log, Rand, Assert} {
+    game.end_planning();
+    assert(game.is_resolving());
+    while game.is_resolving() { game.update(10.0); }
+}
+
+fn queued(game: &GameState, city: i32, building: Building) -> bool { game.cities[city].queue.contains(Build.Building(building)) }
+
+@test
+fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.naval_scenario();
+        game.select_city();
+        let ships = [BuildUnit.PatrolGalley, BuildUnit.LandingCraft, BuildUnit.BombardShip];
+        for k in 0..3 {
+            let card = button_cursor(&game, Target.Build(ships[k]));
+            let layout = game.layout(screen());
+            let Option.Some(i) = layout.button_at(to_ui(card, screen())) else { assert(false); return; };
+            assert(layout.buttons[i].target == Target.Build(ships[k]));
+        }
+        game.handle_click(button_cursor(&game, Target.Build(BuildUnit.LandingCraft)), screen(), ClickMode.Normal);
+        let city = game.selected_city.unwrap_or(0 - 1);
+        assert(game.cities[city].queue.contains(Build.Unit(BuildUnit.LandingCraft)));
+    });
+}
+
+@test
+fn ending_the_turn_while_choosing_a_site_leaves_no_preview_on_the_map() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap_or(0 - 1);
+        // Something else to build, so the city isn't left empty-handed.
+        game.queue_selected_city_worker();
+        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
+        assert(game.placing(city, Building.Barracks) && game.site_placement().is_some());
+        play_turn_out(&mut game);
+        assert(game.selected_city.is_none());
+        assert(game.site_placement().is_none());
+        assert(game.placing_building.is_none());
+        // A Barracks with no site is taken back out of the queue.
+        assert(!queued(&game, city, Building.Barracks));
+    });
+}
+
+@test
+fn a_building_finished_with_its_city_closed_picks_its_site_when_reopened() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap_or(0 - 1);
+        // A Barracks queued with no site and not being placed.
+        game.cities[city].queue.push(Build.Building(Building.Barracks));
+        assert(game.exit_structure_menu());
+        game.cities[city].production = Building.Barracks.cost();
+        play_turn_out(&mut game);
+        // Paid for, the Barracks waits for a site.
+        assert(game.cities[city].pending_building == Option.Some(Building.Barracks));
+        // Finishing it during the turn starts no placement with no city open.
+        assert(game.placing_building.is_none());
+        assert(game.site_placement().is_none());
+
+        // Opening the city resumes choosing the site, and the card isn't dead.
+        game.open_city(city);
+        game.update(10.0);
+        assert(game.placing(city, Building.Barracks) && game.site_placement().is_some());
+        assert(!building_card_is(&game, Building.Barracks, ButtonState.Disabled));
+        let site = Hex.new(-2, 0);
+        assert(game.site_available(city, Building.Barracks, site));
+        let _ours = game.city_click(site);
+        game.confirm_building(Building.Barracks);
+        assert(game.cities[city].barracks == Option.Some(site));
+    });
+}
+
+@test
+fn escape_while_choosing_a_site_cancels_the_building() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap_or(0 - 1);
+        assert(building_card_is(&game, Building.Barracks, ButtonState.Ready));
+        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
+        assert(queued(&game, city, Building.Barracks));
+
+        // The first Escape only cancels choosing the site, and the Barracks.
+        assert(game.exit_structure_menu());
+        // The city stays open.
+        assert(game.selected_city == Option.Some(city));
+        assert(game.site_placement().is_none());
+        assert(!queued(&game, city, Building.Barracks));
+        assert(building_card_is(&game, Building.Barracks, ButtonState.Ready));
+
+        // End Turn mid-placement cancels it, and the city, left with nothing to build, asks
+        // for something instead of ending the turn.
+        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
+        game.end_planning();
+        assert(!game.is_resolving());
+        assert(game.selected_city == Option.Some(city));
+        assert(!queued(&game, city, Building.Barracks));
+
+        // Closing the city mid-placement cancels it too.
+        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
+        game.leave_city_view();
+        game.open_city(city);
+        game.update(10.0);
+        assert(!queued(&game, city, Building.Barracks));
+        assert(game.site_placement().is_none());
+        assert(building_card_is(&game, Building.Barracks, ButtonState.Ready));
+
+        // With its site chosen, the card is spent until the Barracks is removed.
+        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
+        let _ours = game.city_click(Hex.new(-2, 0));
+        // Nothing to cancel: Escape closes.
+        assert(game.exit_structure_menu());
+        assert(game.selected_city.is_none());
+        // A Barracks with a site stays queued.
+        assert(queued(&game, city, Building.Barracks));
+        game.open_city(city);
+        assert(building_card_is(&game, Building.Barracks, ButtonState.Disabled));
+        let at = game.cities[city].queue.index_of(Build.Building(Building.Barracks));
+        game.remove_selected_city_queue_item(at);
+        assert(building_card_is(&game, Building.Barracks, ButtonState.Ready));
+    });
+}
+
+@test
+fn opening_another_view_drops_the_site_placement() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap_or(0 - 1);
+        game.cities[city].barracks = Option.Some(Hex.new(-2, 0));
+        game.queue_selected_city_building(Building.Mill);
+        assert(game.placing(city, Building.Mill) && game.site_placement().is_some());
+        game.open_barracks(city);
+        assert(game.site_placement().is_none());
+        assert(game.placing_building.is_none());
+        assert(!queued(&game, city, Building.Mill));
     });
 }
