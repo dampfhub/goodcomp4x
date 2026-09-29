@@ -3,7 +3,7 @@
 use glam::Vec2;
 
 use super::{Target, UnitAction};
-use crate::game::city::{BuildUnit, LaborFocus};
+use crate::game::city::{BuildUnit, Good};
 use crate::game::mesh;
 use crate::game::unit_icons::{self, UnitIcon};
 use crate::renderer::Vertex;
@@ -30,7 +30,6 @@ pub(super) enum ActionIcon {
     Food,
     Wood,
     Metal,
-    Balanced,
 }
 
 pub(super) fn for_button(target: Target, label: &str) -> Option<ActionIcon> {
@@ -52,15 +51,16 @@ pub(super) fn for_button(target: Target, label: &str) -> Option<ActionIcon> {
             "LOOKOUT" => ActionIcon::Lookout,
             _ => return None,
         },
-        Target::Focus(LaborFocus::Food) => ActionIcon::Food,
-        Target::Focus(LaborFocus::Wood) => ActionIcon::Wood,
-        Target::Focus(LaborFocus::Metal) => ActionIcon::Metal,
-        Target::Focus(LaborFocus::Balanced) => ActionIcon::Balanced,
+        Target::Priority(Good::Food) => ActionIcon::Food,
+        Target::Priority(Good::Wood) => ActionIcon::Wood,
+        Target::Priority(Good::Metal) => ActionIcon::Metal,
         _ => return None,
     })
 }
 
-pub(super) fn cooldown(label: &str) -> Option<&str> {
+/// What an icon button shows in its corner, from the end of its label,
+/// "NAME (3)": an ability's cooldown, or a priority chip's rank.
+pub(super) fn badge(label: &str) -> Option<&str> {
     label.rsplit_once(" (")?.1.strip_suffix(')')
 }
 
@@ -186,24 +186,6 @@ pub(super) fn push_icon(
                 .map(|(x, y)| center + Vec2::new(x, y) * radius);
             mesh::polygon(&bar, color, out);
         }
-        ActionIcon::Balanced => {
-            // A balance: post and base, beam, and a pan hanging from each end.
-            line(out, (0.0, -0.62), (0.0, 0.5), 0.12);
-            rect(out, (-0.34, -0.72), (0.34, -0.6));
-            line(out, (-0.72, 0.46), (0.72, 0.46), 0.1);
-            for side in [-1.0_f32, 1.0] {
-                let x = 0.62 * side;
-                line(out, (x, 0.46), (x - 0.2, -0.02), 0.06);
-                line(out, (x, 0.46), (x + 0.2, -0.02), 0.06);
-                let pan: Vec<Vec2> = (0..=8)
-                    .map(|i| {
-                        let angle = std::f32::consts::PI * (1.0 + i as f32 / 8.0);
-                        center + Vec2::new(x + 0.28 * angle.cos(), 0.16 * angle.sin()) * radius
-                    })
-                    .collect();
-                mesh::polygon(&pan, color, out);
-            }
-        }
     }
 }
 
@@ -273,7 +255,6 @@ mod tests {
             ActionIcon::Food,
             ActionIcon::Wood,
             ActionIcon::Metal,
-            ActionIcon::Balanced,
         ] {
             let mut vertices = Vec::new();
             push_icon(Vec2::ZERO, 14.0, icon, [1.0; 4], &mut vertices);

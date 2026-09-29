@@ -409,6 +409,8 @@ fn economy_ticks_once_into_the_stockpile_and_preserves_quarters() {
     g.end_planning();
     assert!(!g.is_resolving());
     g.queue_build(0, Build::Unit(BuildUnit::Siege));
+    // A Siege costs more wood and metal than the scenario starts with.
+    g.stockpiles[Team::Blue.index()] += BuildUnit::Siege.price();
     let before = g.stock(Team::Blue);
     let upkeep = g.upkeep(Team::Blue);
     g.end_planning();
@@ -1349,41 +1351,126 @@ fn structure_menu_can_be_dismissed_without_selecting_a_unit() {
 }
 
 #[test]
-fn each_resource_focus_puts_the_manager_on_its_best_tile() {
-    /// One resource out of a tile's food, wood and metal.
-    type Pick = fn((i32, i32, i32)) -> i32;
-    let mut g = GameState::city_scenario();
-    g.units.clear();
-    let routes = g.routes(0);
-    // The most of each resource any tile the city could work delivers.
-    let best = |g: &GameState, pick: Pick| {
-        routes
-            .costs
-            .iter()
-            .filter(|(h, _)| g.may_assign(0, **h) && !g.grid.terrain(**h).is_water())
-            .map(|(h, cost)| pick(g.tile_goods(*h)) * delivered_share(*cost))
-            .max()
-            .unwrap()
-    };
-    let delivered = |g: &GameState, pick: Pick| {
-        let manager = g.cities[0].worked[0];
-        pick(g.tile_goods(manager)) * delivered_share(routes.costs[&manager])
-    };
-    let picks: [(LaborFocus, Pick); 3] = [
-        (LaborFocus::Wood, |(_, w, _)| w),
-        (LaborFocus::Metal, |(_, _, m)| m),
-        (LaborFocus::Food, |(f, _, _)| f),
-    ];
-    for (focus, pick) in picks {
-        g.cities[0].worked.clear();
-        let most = best(&g, pick);
-        assert!(most > 0, "{focus:?}: some tile yields it");
-        g.cities[0].focus = focus;
-        g.auto_assign_city(0);
-        assert_eq!(delivered(&g, pick), most, "{focus:?}");
-    }
+fn priority_scores_weigh_the_order_nine_three_one_with_food_first_until_fed() {
+    let order = Priorities([Good::Metal, Good::Food, Good::Wood]);
+    assert!(order.is_order());
+    // Food 1, wood 2, metal 3: metal ×9, food ×3, wood ×1.
+    assert_eq!(order.score((1, 2, 3), true), 3 * 9 + 3 + 2);
+    // Unfed, food goes first and the others keep their order: food ×9,
+    // metal ×3, wood ×1.
+    assert_eq!(order.score((1, 2, 3), false), 9 + 3 * 3 + 2);
+    // The default is Food, Wood, Metal, fed or not.
+    let default = Priorities::default();
+    assert_eq!(default.0, [Good::Food, Good::Wood, Good::Metal]);
+    assert_eq!(
+        default.score((1, 2, 3), true),
+        default.score((1, 2, 3), false)
+    );
+    // A tile of the first good beats one with some of everything else.
+    assert!(order.score((0, 0, 1), true) > order.score((2, 2, 0), true));
+    // Reordering: to the front, and a drag either way.
+    assert_eq!(
+        order.with_first(Good::Wood).0,
+        [Good::Wood, Good::Metal, Good::Food]
+    );
+    assert_eq!(order.moved(0, 2).0, [Good::Food, Good::Wood, Good::Metal]);
+    assert_eq!(order.moved(2, 1).0, [Good::Metal, Good::Wood, Good::Food]);
+    assert_eq!(order.moved(1, 1), order);
+    assert_eq!(order.moved(0, 5), order, "out of range: unchanged");
+    assert!(!Priorities([Good::Food, Good::Food, Good::Metal]).is_order());
 }
 
+/// The food, wood and metal `city`'s center and worked tiles deliver.
+fn worked_goods(g: &GameState, city: usize) -> (i32, i32, i32) {
+    let routes = g.routes(city);
+    g.cities[city]
+        .worked
+        .iter()
+        .map(|h| g.delivered_goods(city, *h, routes.costs[h]))
+        .fold((8, 4, 0), |(f, w, m), (a, b, c)| (f + a, w + b, m + c))
+}
+
+#[test]
+fn a_citys_priority_order_picks_its_tiles_and_the_food_floor_holds() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.cities[0].population = MAX_CITY_POPULATION;
+    let upkeep = MAX_CITY_POPULATION as i32 * FOOD_PER_CITIZEN;
+    let orders = [
+        [Good::Food, Good::Wood, Good::Metal],
+        [Good::Food, Good::Metal, Good::Wood],
+        [Good::Wood, Good::Food, Good::Metal],
+        [Good::Wood, Good::Metal, Good::Food],
+        [Good::Metal, Good::Food, Good::Wood],
+        [Good::Metal, Good::Wood, Good::Food],
+    ]
+    .map(Priorities);
+    let goods: Vec<(Priorities, (i32, i32, i32))> = orders
+        .into_iter()
+        .map(|order| {
+            g.cities[0].priorities = order;
+            g.auto_assign_city(0);
+            assert!(g.cities[0].worked.len() > 1, "{order:?}");
+            (order, worked_goods(&g, 0))
+        })
+        .collect();
+    let most_food = goods.iter().map(|(_, (f, _, _))| *f).max().unwrap();
+    assert!(most_food >= upkeep + 4, "the city can feed itself");
+    for &(order, (food, wood, metal)) in &goods {
+        // Fed whatever the order: upkeep and one more.
+        assert!(food >= upkeep + 4, "{order:?}: {food}");
+        // Its first good: as much of it as any order gets.
+        let most =
+            |pick: fn(&(i32, i32, i32)) -> i32| goods.iter().map(|(_, g)| pick(g)).max().unwrap();
+        let first = match order.0[0] {
+            Good::Food => (food, most(|g| g.0)),
+            Good::Wood => (wood, most(|g| g.1)),
+            Good::Metal => (metal, most(|g| g.2)),
+        };
+        assert_eq!(first.0, first.1, "{order:?}: {:?}", (food, wood, metal));
+    }
+    // Setting the order from the city view reassigns by it.
+    g.open_city(0);
+    g.set_selected_city_priorities(orders[5]);
+    assert_eq!(worked_goods(&g, 0), goods[5].1);
+    g.prioritize_selected_city(Good::Wood);
+    assert_eq!(g.cities[0].priorities, orders[3]);
+    assert_eq!(worked_goods(&g, 0), goods[3].1);
+    assert_eq!(g.notice, "CITY PRIORITIES: WOOD > METAL > FOOD");
+}
+
+#[test]
+fn a_new_citizen_takes_the_tile_the_priority_order_ranks_best() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    for first in [Good::Wood, Good::Metal, Good::Food] {
+        g.cities[0].population = 4;
+        g.cities[0].priorities = Priorities::default().with_first(first);
+        g.auto_assign_city(0);
+        let before = g.cities[0].worked.clone();
+        // It grows: reconciling fills the new slot by the order (food
+        // first if the tiles kept don't feed it), keeping the others.
+        g.cities[0].population += 1;
+        let fed = g.is_fed(0, worked_goods(&g, 0).0);
+        let routes = g.routes(0);
+        let score = |g: &GameState, h: Hex| {
+            let goods = g.delivered_goods(0, h, routes.costs[&h]);
+            g.cities[0].priorities.score(goods, fed)
+        };
+        let best = routes
+            .costs
+            .keys()
+            .filter(|h| before[0].distance(**h) == 1 && g.may_assign(0, **h))
+            .map(|&h| score(&g, h))
+            .max()
+            .expect("a free tile by the manager");
+        g.reconcile_citizens(0);
+        let worked = g.cities[0].worked.clone();
+        assert_eq!(worked.len(), 5, "{first:?}");
+        assert_eq!(worked[..before.len()], before[..], "{first:?}");
+        assert_eq!(score(&g, worked[before.len()]), best, "{first:?}");
+    }
+}
 #[test]
 fn no_citizen_works_a_city_center_or_a_building_tile() {
     let mut g = GameState::city_scenario();

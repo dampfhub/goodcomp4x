@@ -77,6 +77,7 @@ impl GameState {
                     self.cities[city].worker_scroll = offset;
                 }
             }
+            QueueKind::Priority => {}
         }
     }
 
@@ -126,6 +127,7 @@ impl GameState {
             QueueKind::Workers => self
                 .worker_list_city()
                 .map_or(0, |city| self.cities[city].worker_scroll),
+            QueueKind::Priority => 0,
         }
         // Kept past the end (by removing rows), it steps back from the end.
         .min(scroll.max_offset);
@@ -191,8 +193,16 @@ impl GameState {
     }
 
     /// A click on queue row `index`, rather than a drag: the camera goes to a
-    /// worker job's tile (or edge). City and barracks rows do nothing.
+    /// worker job's tile (or edge), and a priority chip's good goes first.
+    /// City and barracks rows do nothing.
     pub(super) fn queue_item_clicked(&mut self, kind: QueueKind, index: usize) {
+        if kind == QueueKind::Priority
+            && let Some(city) = self.selected_city
+            && let Some(&good) = self.cities[city].priorities.0.get(index)
+        {
+            self.prioritize_selected_city(good);
+            return;
+        }
         if kind != QueueKind::Workers {
             return;
         }
@@ -243,6 +253,12 @@ impl GameState {
                     let job = jobs.remove(source);
                     jobs.insert(target, job);
                     self.notice = "WORKER JOBS REORDERED".into();
+                }
+            }
+            QueueKind::Priority => {
+                if self.selected_city == Some(city) {
+                    let priorities = self.cities[city].priorities.moved(source, target);
+                    self.set_selected_city_priorities(priorities);
                 }
             }
         }

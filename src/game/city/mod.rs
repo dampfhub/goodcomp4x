@@ -48,23 +48,104 @@ pub(super) const MAX_CITY_POPULATION: usize = 7;
 pub(super) const BARRACKS_MAX_HP: f32 = 220.0;
 pub(super) const BARRACKS_DEFENSE: f32 = 25.0;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-pub enum LaborFocus {
+/// A good a city's citizens bring in, as its priority order ranks them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Good {
     Food,
     Wood,
     Metal,
-    Balanced,
 }
-impl LaborFocus {
-    pub const ALL: [Self; 4] = [Self::Food, Self::Wood, Self::Metal, Self::Balanced];
+
+impl Good {
+    pub const ALL: [Self; 3] = [Self::Food, Self::Wood, Self::Metal];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Food => "FOOD",
             Self::Wood => "WOOD",
             Self::Metal => "METAL",
-            Self::Balanced => "BALANCED",
         }
+    }
+
+    /// This good's amount in a tile's `(food, wood, metal)`.
+    fn of(self, (food, wood, metal): (i32, i32, i32)) -> i32 {
+        match self {
+            Self::Food => food,
+            Self::Wood => wood,
+            Self::Metal => metal,
+        }
+    }
+}
+
+/// A city's priority order: food, wood and metal, first to last, each
+/// once. Auto-assign weighs a tile's delivered goods by their places
+/// (`WEIGHTS`), with food first until the city is fed (`score`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Priorities(pub [Good; 3]);
+
+impl Default for Priorities {
+    fn default() -> Self {
+        Self(Good::ALL)
+    }
+}
+
+impl Priorities {
+    /// What the first, second and third good count for: the first
+    /// dominates, and ties go down the list.
+    pub const WEIGHTS: [i32; 3] = [9, 3, 1];
+
+    /// Whether this is an order of the three goods, each once (a network
+    /// plan's may not be).
+    pub fn is_order(self) -> bool {
+        Good::ALL.iter().all(|good| self.0.contains(good))
+    }
+
+    /// Where `good` stands, 0 first.
+    pub fn rank(self, good: Good) -> usize {
+        self.0.iter().position(|&g| g == good).unwrap_or(0)
+    }
+
+    /// The same order with `good` moved to the front, the others keeping
+    /// theirs.
+    pub fn with_first(self, good: Good) -> Self {
+        self.moved(self.rank(good), 0)
+    }
+
+    /// The same order with the good at `from` taken out and put back at
+    /// `to` (a chip dragged onto another).
+    pub fn moved(self, from: usize, to: usize) -> Self {
+        let mut goods = self.0;
+        if from < goods.len() && to < goods.len() {
+            if from < to {
+                goods[from..=to].rotate_left(1);
+            } else {
+                goods[to..=from].rotate_right(1);
+            }
+        }
+        Self(goods)
+    }
+
+    /// A tile's worth to auto-assign: its delivered `(food, wood, metal)`,
+    /// each times its place's weight. Until the city is `fed` (the food
+    /// floor: its tiles' food covers its upkeep and one more), food counts
+    /// as first whatever the order, the others keeping theirs.
+    pub fn score(self, goods: (i32, i32, i32), fed: bool) -> i32 {
+        let order = if fed {
+            self
+        } else {
+            self.with_first(Good::Food)
+        };
+        order
+            .0
+            .iter()
+            .zip(Self::WEIGHTS)
+            .map(|(good, weight)| good.of(goods) * weight)
+            .sum()
+    }
+
+    /// "FOOD > WOOD > METAL".
+    pub fn text(self) -> String {
+        self.0.map(Good::name).join(" > ")
     }
 }
 
@@ -80,7 +161,8 @@ pub(super) struct City {
     /// Manual tiles displaced by a blocked logistics route. They return when
     /// available unless the player changes the assignment.
     pub remembered_worked: Vec<Hex>,
-    pub focus: LaborFocus,
+    /// What auto-assign favors for its citizens (`Priorities`).
+    pub priorities: Priorities,
     /// Units, workers, Grows and Gathers, each with whether it's paid and
     /// the work done on it (`Queued`). Each turn the city works the first
     /// item that's paid for or that the stockpile can pay for
@@ -125,7 +207,7 @@ impl City {
             coastal_battery_hp: 150.0,
             worked: Vec::new(),
             remembered_worked: Vec::new(),
-            focus: LaborFocus::Balanced,
+            priorities: Priorities::default(),
             queue: Vec::new(),
             built: Vec::new(),
             barracks: None,

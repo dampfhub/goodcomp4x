@@ -729,9 +729,9 @@ fn troops_on_alert_against_the_ai_keep_the_board_consistent() {
     );
 }
 
-/// Turns a world plays for its sides to expand: a city reaches population 4 by about turn 14,
-/// and its first Settler founds by about turn 40 (`economy_report`).
-const EXPANSION_TURNS: u32 = 60;
+/// Turns a world plays for its sides to expand: a city reaches population 4 by about turn 23,
+/// and a side's second city comes by about turn 45, a few sides not by 60 (`economy_report`).
+const EXPANSION_TURNS: u32 = 80;
 
 #[test]
 fn ai_sides_expand_with_settlers() {

@@ -166,11 +166,20 @@ pub(in crate::game) const GATHER_SHORTCUT: char = '0';
 /// The Scout and Settler cards' keys.
 pub(in crate::game) const SCOUT_SHORTCUT: char = '4';
 pub(in crate::game) const SETTLER_SHORTCUT: char = 'S';
-/// What a turn of gathering (`Build::Gather`) brings in.
-pub(in crate::game) const GATHER_YIELD: Stock = Stock::whole(2, 2, 1);
 /// The citizens a city needs to work on a Settler, which takes one of them
 /// when it's done: a city never settles itself below two.
 pub(in crate::game) const SETTLER_MIN_POPULATION: usize = 3;
+/// What a turn of gathering (`Build::Gather`) brings in, in quarters: 1
+/// food, 1 wood and half a metal. Tempo tuning (#239): option B halved it
+/// from 2 food, 2 wood, 1 metal. The half metal is kept (Round 6 measured
+/// none): a city with no metal tile gets metal only from gathering, and
+/// without it the Cities scenario could never afford a Cavalry
+/// (`docs/rts-economy.md`, Round 7).
+pub(in crate::game) const GATHER_YIELD: Stock = Stock {
+    food: 4,
+    wood: 4,
+    metal: 2,
+};
 
 impl Build {
     pub fn name(self) -> &'static str {
@@ -219,6 +228,15 @@ impl Build {
     }
 }
 
+/// Turns a Melee or Ranged takes at a Barracks (twice that in a city
+/// center). Tempo tuning (#239): option B raised it from 2
+/// (`docs/rts-economy.md`, Round 7).
+pub(in crate::game) const LIGHT_TROOP_TURNS: i32 = 3;
+/// Turns a Cavalry, Siege or Armored takes at a Barracks (twice that in a
+/// city center). Tempo tuning (#239): option B raised it from 3; the
+/// Patrol Galley, which shared it, keeps 3 (`docs/rts-economy.md`, Round 7).
+pub(in crate::game) const HEAVY_TROOP_TURNS: i32 = 4;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum BuildUnit {
     Melee,
@@ -257,24 +275,30 @@ impl BuildUnit {
         }
     }
     /// What queuing it takes from the side's stockpile (`economy.rs`).
+    /// Tempo tuning (#239): option B raised the land troops' prices x1.5,
+    /// rounding halves up, from Melee 2/6/0, Ranged 2/7/0, Cavalry 3/4/3,
+    /// Siege 1/8/4 and Armored 3/2/7 (`docs/rts-economy.md`, Round 7).
+    /// Ships are unchanged.
     pub fn price(self) -> Stock {
         let (food, wood, metal) = match self {
-            Self::Melee => (2, 6, 0),
-            Self::Ranged => (2, 7, 0),
-            Self::Cavalry => (3, 4, 3),
-            Self::Siege => (1, 8, 4),
-            Self::Armored => (3, 2, 7),
+            Self::Melee => (3, 9, 0),
+            Self::Ranged => (3, 11, 0),
+            Self::Cavalry => (5, 6, 5),
+            Self::Siege => (2, 12, 6),
+            Self::Armored => (5, 3, 11),
             Self::PatrolGalley => (1, 10, 2),
             Self::LandingCraft => (1, 12, 2),
             Self::BombardShip => (1, 12, 6),
         };
         Stock::whole(food, wood, metal)
     }
-    /// Turns it takes at the head of the queue.
+    /// Turns it takes at the head of the queue; a city center takes
+    /// `CITY_TRAINING_SLOWDOWN` times as long for a land troop.
     pub fn turns(self) -> i32 {
         match self {
-            Self::Melee | Self::Ranged => 2,
-            Self::Cavalry | Self::Siege | Self::Armored | Self::PatrolGalley => 3,
+            Self::Melee | Self::Ranged => LIGHT_TROOP_TURNS,
+            Self::Cavalry | Self::Siege | Self::Armored => HEAVY_TROOP_TURNS,
+            Self::PatrolGalley => 3,
             Self::LandingCraft | Self::BombardShip => 4,
         }
     }

@@ -23,9 +23,12 @@ pub const WORK_PER_TURN: i32 = 4;
 pub(in crate::game) const STARTING_STOCK: Stock = Stock::whole(10, 10, 4);
 /// Food each citizen eats a turn.
 pub(in crate::game) const FOOD_PER_CITIZEN: i32 = 8;
-/// Growth costs `GROW_BASE + GROW_PER_CITIZEN * population` whole food.
-const GROW_BASE: i32 = 5;
-const GROW_PER_CITIZEN: i32 = 5;
+/// Growth costs `GROW_BASE + GROW_PER_CITIZEN * population` whole food:
+/// 1 to 7 citizens costs 270 food in all. Tempo tuning (#239): option B
+/// doubled both from 5 (`docs/rts-economy.md`, Round 7).
+const GROW_BASE: i32 = 10;
+/// The part of a Grow's price per citizen the city has (`GROW_BASE`).
+const GROW_PER_CITIZEN: i32 = 10;
 
 /// An item in a city's or a Barracks' queue: the build, whether its side
 /// has paid for it, and the work done on it, in quarter turns. An item is

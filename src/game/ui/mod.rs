@@ -40,7 +40,7 @@ mod trays;
 
 use glam::{Mat4, Vec2, Vec3};
 
-use super::city::{BuildUnit, Building, LaborFocus};
+use super::city::{BuildUnit, Building, Good};
 use super::draw::UnitLook;
 use super::hex::Hex;
 use super::orders::ClickMode;
@@ -217,7 +217,9 @@ enum Target {
     RosterSelect(RosterKey),
     RosterAdd(RosterKey),
     RosterRemove(RosterKey),
-    Focus(LaborFocus),
+    /// A chip of the open city's priority order: a click puts its good
+    /// first (dragging one onto another reorders them, `QueueKind::Priority`).
+    Priority(Good),
     EndTurn,
     /// Debug panel: scenario pages, the savestate, playback pacing and fog.
     Scenario(Scenario),
@@ -278,7 +280,7 @@ impl Target {
             | Target::WorkerJobRemove(_)
             | Target::RecallWorker(_)
             | Target::ReleaseWorker
-            | Target::Focus(_) => true,
+            | Target::Priority(_) => true,
             Target::ToggleYields
             | Target::OpenSettings
             | Target::OpenBarracks
@@ -438,6 +440,9 @@ pub(super) enum QueueKind {
     Barracks,
     /// The open city's worker jobs, listed in its tray.
     Workers,
+    /// The open city's priority order: its food, wood and metal chips
+    /// (`Row::Reorder`), which never scroll or come off.
+    Priority,
 }
 
 impl QueueKind {
@@ -447,6 +452,7 @@ impl QueueKind {
             QueueKind::City => Target::CityQueueRemove(index),
             QueueKind::Barracks => Target::BarracksQueueRemove(index),
             QueueKind::Workers => Target::WorkerJobRemove(index),
+            QueueKind::Priority => unreachable!("priority chips have no X"),
         }
     }
 }
@@ -701,13 +707,14 @@ impl GameState {
     pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) -> bool {
         let point = to_ui(cursor, screen_size);
         let layout = self.layout_with_hover(screen_size, Some(cursor)).0;
-        if self.drag_queue_scrollbar_at(cursor, screen_size, false)
-            || self.drag_building_scrollbar_at(cursor, screen_size, false)
+        // A button (the centered settings menu's, drawn over the panels)
+        // takes the click before a scrollbar or a chip under it.
+        if layout.button_at(point).is_none()
+            && (self.drag_queue_scrollbar_at(cursor, screen_size, false)
+                || self.drag_building_scrollbar_at(cursor, screen_size, false))
         {
             return true;
         }
-        // A button (the centered settings menu's, drawn over the strip) takes
-        // the click before a chip under it.
         if layout.button_at(point).is_none()
             && let Some(key) = layout.roster_chip_at(point)
         {
@@ -776,7 +783,7 @@ impl GameState {
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
             Target::ClearCityQueue => self.clear_selected_city_queue(),
             Target::ClearBarracksQueue => self.clear_selected_barracks_queue(),
-            Target::Focus(focus) => self.set_selected_city_focus(focus),
+            Target::Priority(good) => self.prioritize_selected_city(good),
             // While a network game waits for the others' plans, End Turn
             // takes this side's back.
             Target::EndTurn if self.waiting_for_peers() => self.take_back_turn(),

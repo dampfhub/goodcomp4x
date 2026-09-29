@@ -50,7 +50,7 @@ UNIT CAP) are off in a network game.
 Every machine runs the whole game (`src/game/multiplayer.rs`). Turns are simultaneous, so a
 player's planning stays on their machine until they end it. Then their side's **plan**
 (`TeamPlan`) goes to the host: their units' orders and queues, their cities' queues, citizens
-and focus, their placed jobs and recalled workers, their troops' orders inside city interiors,
+and priority order, their placed jobs and recalled workers, their troops' orders inside city interiors,
 and their stockpile; a unit missing from it was disbanded, and a city new since the turn began
 was founded by the settler that stood there. A city founded too near one another side's plan
 founded earlier in side order (each was checked only against the turn's start) isn't founded,

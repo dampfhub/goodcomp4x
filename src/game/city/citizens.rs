@@ -1,22 +1,70 @@
-//! Citizens: labor focus, tile assignment (the manager and its workers),
-//! growth, and the end-of-turn economy tick.
+//! Citizens: the priority order, tile assignment (the manager and its
+//! workers), growth, and the end-of-turn economy tick.
 
-use super::{Building, LaborFocus, MAX_CITY_POPULATION, delivered_share};
+use super::{
+    Building, FOOD_PER_CITIZEN, Good, MAX_CITY_POPULATION, Priorities, Routes, delivered_share,
+};
 use crate::game::GameState;
 use crate::game::fast_hash::HashSet;
 use crate::game::hex::Hex;
 
+/// Food a city's tiles bring in past its citizens' upkeep before it's fed
+/// and follows its priority order (the food floor): one whole food.
+const FOOD_FLOOR_MARGIN: i32 = 4;
+/// The city center's own food, which counts toward the food floor.
+const CENTER_FOOD: i32 = 8;
+
 impl GameState {
-    /// A focus button: the open city's citizens are reassigned to suit it.
-    pub fn set_selected_city_focus(&mut self, focus: LaborFocus) {
-        if self.is_resolving() {
+    /// The open city's priority order changes (a chip dragged, or clicked
+    /// to put first): its citizens are reassigned by it.
+    pub fn set_selected_city_priorities(&mut self, priorities: Priorities) {
+        if self.is_resolving() || !priorities.is_order() {
             return;
         }
         if let Some(city) = self.selected_city {
-            self.cities[city].focus = focus;
+            self.cities[city].priorities = priorities;
             self.auto_assign_city(city);
-            self.notice = format!("CITY FOCUS: {}", focus.name());
+            self.notice = format!("CITY PRIORITIES: {}", priorities.text());
         }
+    }
+
+    /// A priority chip clicked: its good goes first in the open city's
+    /// order.
+    pub fn prioritize_selected_city(&mut self, good: Good) {
+        if let Some(city) = self.selected_city {
+            let priorities = self.cities[city].priorities.with_first(good);
+            self.set_selected_city_priorities(priorities);
+        }
+    }
+
+    /// A tile's food, wood and metal as delivered to `city`, along a route
+    /// of `cost`.
+    pub(super) fn delivered_goods(&self, city: usize, hex: Hex, cost: i32) -> (i32, i32, i32) {
+        let (food, wood, metal) = self.tile_goods(hex);
+        let share = delivered_share(cost);
+        (
+            food * self.mill_food_share(city, hex, cost),
+            wood * share,
+            metal * share,
+        )
+    }
+
+    /// Whether `food` (the center's and its worked tiles', delivered)
+    /// feeds `city`: its citizens' upkeep and one more (the food floor).
+    pub(super) fn is_fed(&self, city: usize, food: i32) -> bool {
+        food >= self.cities[city].population as i32 * FOOD_PER_CITIZEN + FOOD_FLOOR_MARGIN
+    }
+
+    /// The food `city`'s center and worked tiles deliver, as auto-assign
+    /// counts it for the food floor.
+    fn worked_food(&self, city: usize, routes: &Routes) -> i32 {
+        CENTER_FOOD
+            + self.cities[city]
+                .worked
+                .iter()
+                .filter_map(|h| routes.costs.get(h).map(|&cost| (h, cost)))
+                .map(|(&h, cost)| self.delivered_goods(city, h, cost).0)
+                .sum::<i32>()
     }
 
     /// Whether a city center or a placed building (any side's) stands on
@@ -102,6 +150,9 @@ impl GameState {
         self.notice = "MANAGER MOVED - WORKERS FOLLOWED WHERE POSSIBLE".into();
     }
 
+    /// Assigns the city's citizens afresh, one at a time, each to the free
+    /// tile worth the most by its priority order (`Priorities::score`,
+    /// food first until the city is fed); ties go by hex coordinates.
     pub(in crate::game) fn auto_assign_city(&mut self, city: usize) {
         self.cities[city].worked.clear();
         let routes = self.routes(city);
@@ -110,54 +161,38 @@ impl GameState {
             .costs
             .iter()
             .filter(|(h, _)| self.may_assign(city, **h))
-            .map(|(h, cost)| {
-                let (f, w, m) = self.tile_goods(*h);
-                let share = delivered_share(*cost);
-                (
-                    *h,
-                    f * self.mill_food_share(city, *h, *cost),
-                    (w * share, m * share),
-                )
-            })
+            .map(|(&h, &cost)| (h, self.delivered_goods(city, h, cost)))
             .collect();
-        let mut food = 8;
+        let mut food = CENTER_FOOD;
         while self.cities[city].worked.len() < self.cities[city].population.min(MAX_CITY_POPULATION)
             && !tiles.is_empty()
         {
             if let Some(manager) = self.cities[city].worked.first().copied() {
-                tiles.retain(|(hex, _, _)| manager.distance(*hex) == 1);
+                tiles.retain(|(hex, _)| manager.distance(*hex) == 1);
             }
-            let needs_food = food < self.cities[city].population as i32 * 8 + 4;
-            let focus = self.cities[city].focus;
-            tiles.sort_by_key(|(h, f, (w, m))| {
-                let score = match focus {
-                    LaborFocus::Food => f * 5 + w + m,
-                    LaborFocus::Wood => w * 5 + f + m,
-                    LaborFocus::Metal => m * 5 + f + w,
-                    // Food until the city's citizens are fed, then wood and
-                    // metal alike.
-                    LaborFocus::Balanced => {
-                        if needs_food {
-                            f * 4 + w + m
-                        } else {
-                            (w + m) * 4 + f
-                        }
-                    }
-                };
-                (-score, h.q, h.r)
-            });
-            // The first citizen is the manager, who must stand on land.
-            let Some(pick) = tiles
-                .iter()
-                .position(|(h, _, _)| self.may_manage_or_work(city, *h))
-            else {
+            let Some(pick) = self.best_tile(city, &tiles, food) else {
                 break;
             };
-            let (hex, f, _) = tiles.remove(pick);
+            let (hex, (f, _, _)) = tiles.remove(pick);
             self.cities[city].worked.push(hex);
             food += f;
         }
         self.cities[city].remembered_worked = self.cities[city].worked.clone();
+    }
+
+    /// Of `tiles` (each with its delivered goods), the one `city`'s next
+    /// citizen takes: the most by its priority order, food first while
+    /// `food` doesn't feed it, ties by hex coordinates; the first citizen,
+    /// the manager, only on land.
+    fn best_tile(&self, city: usize, tiles: &[(Hex, (i32, i32, i32))], food: i32) -> Option<usize> {
+        let priorities = self.cities[city].priorities;
+        let fed = self.is_fed(city, food);
+        tiles
+            .iter()
+            .enumerate()
+            .filter(|(_, (h, _))| self.may_manage_or_work(city, *h))
+            .min_by_key(|(_, (h, goods))| (-priorities.score(*goods, fed), h.q, h.r))
+            .map(|(i, _)| i)
     }
 
     /// Keeps manual choices where possible, substitutes around temporarily
@@ -248,29 +283,23 @@ impl GameState {
                     .get(h)
                     .is_none_or(|s| s.team == self.cities[city].team)
             })
-            .map(|(h, cost)| {
-                let (f, p) = self.tile_yield(*h);
-                (
-                    *h,
-                    f * self.mill_food_share(city, *h, *cost),
-                    p * delivered_share(*cost),
-                )
-            })
+            .map(|(&h, &cost)| (h, self.delivered_goods(city, h, cost)))
             .collect();
+        // An open slot goes as auto-assign would fill it: by the priority
+        // order, food first until the tiles kept feed the city.
+        let mut food = self.worked_food(city, &routes);
         while self.cities[city].worked.len() < self.cities[city].population.min(MAX_CITY_POPULATION)
             && !candidates.is_empty()
         {
             if let Some(manager) = self.cities[city].worked.first().copied() {
-                candidates.retain(|(hex, _, _)| manager.distance(*hex) == 1);
+                candidates.retain(|(hex, _)| manager.distance(*hex) == 1);
             }
-            candidates.sort_by_key(|(h, f, p)| (-(f * 3 + p), h.q, h.r));
-            let Some(pick) = candidates
-                .iter()
-                .position(|(h, _, _)| self.may_manage_or_work(city, *h))
-            else {
+            let Some(pick) = self.best_tile(city, &candidates, food) else {
                 break;
             };
-            self.cities[city].worked.push(candidates.remove(pick).0);
+            let (hex, (f, _, _)) = candidates.remove(pick);
+            self.cities[city].worked.push(hex);
+            food += f;
         }
     }
 

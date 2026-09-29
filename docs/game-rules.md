@@ -571,11 +571,17 @@ every turn end.
   manager, click it to pick it up (its workers leave the map with it), then click its
   destination; workers keep their offsets where they can and are otherwise replaced by the best
   nearby tiles. Clicking the manager again puts it and its workers back.
-- **Citizens:** click tiles to assign or release; A auto-assigns by the city's labor focus: Food,
-  Wood or Metal, each favoring tiles that deliver the most of it, or Balanced (the default), which
-  picks food tiles until the city's food income covers upkeep plus 1, then wood and metal alike. Setting a focus
+- **Citizens:** click tiles to assign or release; A auto-assigns by the city's **priority
+  order** of food, wood and metal (Food, Wood, Metal to start; the AI's cities keep it). Citizens are placed one at a
+  time, the manager first, each on the free tile worth the most: its delivered food, wood and
+  metal, the first good in the order ×9, the second ×3 and the third ×1, ties going to the lower
+  hex coordinates. The **food floor** holds whatever the order: until the food the city center
+  and the tiles already taken deliver covers the citizens' upkeep plus 1, food counts as first
+  and the other two keep their order. So the manager, placed while the city is unfed, always
+  goes by food first. Changing the order (drag its chips, or click one to put it first)
   re-assigns. On growth or route disruption, reconciliation keeps valid manual assignments and
-  fills or replaces the affected slot; a manual tile cut off by an enemy is remembered and returns
+  fills an open slot the same way, by the order with the food floor, counting the food of the
+  tiles kept; a manual tile cut off by an enemy is remembered and returns
   when the route reopens, unless you changed it.
 - **Stockpile** (`city/economy.rs`): each side has one store of food, wood and metal (top bar,
   with its change a turn), not one per city. Every city's delivered goods go into it at the
@@ -584,7 +590,7 @@ every turn end.
   feed another. If the stockpile can't feed all of a side's citizens, its food empties and the
   side's largest city (the first on ties) loses a citizen (never below 1).
 - **Growth** is bought: Grow (9, or the city tray's Grow card) queues one more citizen, paid in
-  food when work on it starts: 5 + 5 × (population + the Grows already paid for in that city),
+  food when work on it starts: 10 + 10 × (population + the Grows already paid for in that city),
   so a Grow queued behind another costs a citizen more by the time its turn comes. It takes 2
   turns in the city queue like any build. Nothing grows by itself, and no Grow goes past the
   cap of 7, counting every Grow queued.
@@ -617,7 +623,7 @@ every turn end.
   items all wait doesn't. Buildings and works placed for workers are still paid when placed
   (see Workers).
 - **Gather** (0, or its card beside Grow): free, one turn; when it's done, the side's stockpile
-  gets 2 food, 2 wood and 1 metal. A city that can't pay for anything, or has nothing it wants,
+  gets 1 food, 1 wood and half a metal. A city that can't pay for anything, or has nothing it wants,
   gathers instead of standing idle.
 - **Settlers and Scouts** come from a city's own queue (the town centre, never a Barracks), at
   their own pace: the half-speed rule for troops in a city center doesn't apply to them, and
@@ -635,10 +641,10 @@ every turn end.
 - **Production speeds builds** (the Debug panel's PROD SPEEDUP, off by default): a city's queue
   also gains a quarter turn of work a turn for each point of production (wood and metal) the city
   delivers, and a Barracks for each point delivered to it; the stockpile still gets those goods.
-- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 2/6/0, 2; Ranged
-  2/7/0, 2; Cavalry 3/4/3, 3; Siege 1/8/4, 3; Armored 3/2/7, 3; Patrol Galley 1/10/2, 3; Landing
+- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 3/9/0, 3; Ranged
+  3/11/0, 3; Cavalry 5/6/5, 4; Siege 2/12/6, 4; Armored 5/3/11, 4; Patrol Galley 1/10/2, 3; Landing
   Craft 1/12/2, 4; Bombard Ship 1/12/6, 4; Worker 4/2/0, 2; Grow as above, 2; Gather free, 1. A city center
-  trains land troops at half a Barracks' pace (twice the turns: a Melee takes 4); ships, which
+  trains land troops at half a Barracks' pace (twice the turns: a Melee takes 6); ships, which
   only a city with a Harbor builds, take their own turns. Barracks 0/10/0,
   3; Mill, Canoe House and Watchpost 0/10/0, 3; Workshop 0/10/4, 4; Forge 0/6/8, 4; Stable
   2/12/0, 4; Field Hospital 4/10/4, 4; Cannery 0/12/4, 4; Work Camp 2/10/2, 3; Smelter 0/8/8, 4;
@@ -813,7 +819,8 @@ every turn end.
   still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
   TURN.
 - **Command tray** (bottom-left): with a city open, it shows population, what the city delivers
-  and its citizens eat, the current build and its turns left, labor focus buttons, the Grow card
+  and its citizens eat, the current build and its turns left, the priority chips (food, wood and
+  metal icons, each with its rank), the Grow card
   (9), unit cards (1-3) and the Worker card (8), each with its price and turns (never dimmed for
   the price: what the stockpile can't pay for yet waits in the queue), the Yields button,
   the production list (units, buildings not yet built, and works for its workers, each with its
@@ -944,7 +951,7 @@ Known bugs link to their board item; the rest are design questions nobody has de
   move); it doesn't stop when an enemy merely comes into sight, and it can't queue abilities,
   swaps or holds for later turns.
 - The stockpile economy's prices, times, growth cost and the Barracks' 3 troops per deposit are
-  a first pass, and the late game has nothing to spend a growing stockpile on once cities are
-  full (see `rts-economy.md`).
+  a first pass, slowed once for tempo (option B, `rts-economy.md` Round 7), and the late game
+  has nothing to spend a growing stockpile on once cities are full (see `rts-economy.md`).
 - No victory condition; F1-F4 restart a scenario. The Debug panel offers a Naval scenario
   with two coastal cities, prebuilt Harbors and Coastal Batteries, and ships ready to fight.

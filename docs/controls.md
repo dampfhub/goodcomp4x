@@ -120,8 +120,9 @@ orders shows disabled.
 | Click a tile in the city view | Assign a citizen there, or release one; where one of your units stands, click beside its token |
 | Click one of your units' tokens in the city or barracks view | Select the unit and close the view |
 | Click the manager (`M`), then a tile | Move the manager; workers follow where they can (once it's picked up, a click on a unit's token places it too) |
-| A | Auto-assign citizens by the city's labor focus |
-| Food / Wood / Metal / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
+| A | Auto-assign citizens by the city's priority order |
+| Drag a priority chip (wheat, log, ingot; its rank in the corner) onto another | Reorder the city's priorities (and re-assign) |
+| Click a priority chip | Put that good first (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile when work on it starts (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
 | 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |
@@ -134,7 +135,7 @@ orders shows disabled.
 | 4 / Scout card | Queue a scout from the city (not a Barracks): 2 food and 4 wood, 2 turns; one at a time (the card is dimmed while one is queued) |
 | S / Settler card | Queue a settler: 30 food and 10 wood, 6 turns, and a citizen when it's done; only a city of population 3 or more (the card is dimmed, saying NEEDS POPULATION 3, below that). Below 3 a queued settler waits (WAITS FOR POP 3) and the queue works the next item |
 | 9 / Grow card | Queue one more citizen, paid in food when work on it starts (the city doesn't grow on its own) |
-| 0 / Gather card | Spend a turn gathering: free, and 2 food, 2 wood and 1 metal come in when it's done |
+| 0 / Gather card | Spend a turn gathering: free, and 1 food, 1 wood and half a metal come in when it's done |
 | A build card the stockpile can't pay for yet | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the city shows a badge over its tower with the missing resources' icons. Prices show as resource icons and amounts, turns after a clock |
 | A dimmed build card | It can't be queued: (Cavalry, Armored) the barracks has no deposit or its cap is used up, or (Grow) the city is full, (Settler) the city is below population 3, or (Scout) one is already queued; its tooltip says why |
 | Drag a queue row onto another | Reorder the queue; work stays with each build, and a paused build with work shows SAVED on its row |
