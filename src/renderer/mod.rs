@@ -622,14 +622,21 @@ impl Renderer {
         };
         let format_changed = next.format != self.swapchain.format;
         let next_samples = if format_changed {
-            unsafe {
+            match unsafe {
                 msaa::pick_samples(
                     &self.instance,
                     self.physical_device,
                     next.format,
                     self.sample_cap,
                 )
-            }?
+            } {
+                Ok(samples) => samples,
+                Err(error) => {
+                    let mut next = next;
+                    unsafe { next.destroy(&self.device, &self.swapchain_loader) };
+                    return Err(error);
+                }
+            }
         } else {
             self.samples
         };
