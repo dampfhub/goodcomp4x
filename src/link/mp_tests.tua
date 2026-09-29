@@ -24,6 +24,7 @@ use game.city.Priorities;
 use game.city.Good;
 use game.city.Stock;
 use game.hex.Hex;
+use game.workers.JobKind;
 use game.multiplayer.HOST_SEAT;
 use game.orders.ClickMode;
 use game.tests.sandbox;
@@ -490,4 +491,151 @@ fn no_order_of_ending_and_taking_back_turns_confuses_the_sequencer() {
             let _n = trial;
         }
     });
+}
+
+const SCREEN: Vec2 = Vec2 { x: 1600.0, y: 900.0 };
+
+/// A left click on \`hex\` on the map, as the window passes it on.
+fn click(game: &mut GameState, hex: Hex, mode: ClickMode) can {Log, Rand} {
+    let cursor = game.camera.world_to_screen(hex.to_world(), SCREEN);
+    game.handle_map_click(cursor, SCREEN, mode);
+}
+
+/// A free hex beside \`around\` that no city or Barracks stands on.
+fn open_beside(game: &GameState, around: Hex) -> Hex {
+    let ring = around.neighbors();
+    for k in 0..6 {
+        let h = ring[k];
+        let mut free = game.grid.is_passable(h) && !game.is_occupied(h);
+        for c in 0..game.cities.len() { if game.cities[c].pos == h || game.cities[c].barracks == Option.Some(h) { free = false; } }
+        if free { return h; }
+    }
+    around
+}
+
+/// Waiting for the others, a player looks around, selecting units and cities and opening views,
+/// and changes nothing: the plan they sent stands, the game's state is the same, and the button
+/// says it waits.
+@test
+fn waiting_for_the_others_a_player_looks_around_but_changes_nothing() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        let team = GUEST_SEAT;
+        let city = city_of(&t.games[0], team);
+        let city_pos = t.games[0].cities[city].pos;
+        // A Barracks by its city (not on a tile a citizen works), on both machines.
+        let around = city_pos.neighbors();
+        let mut barracks = city_pos;
+        for k in 0..6 {
+            if barracks == city_pos && t.games[0].grid.is_passable(around[k]) && !t.games[0].is_occupied(around[k]) && !t.games[0].cities[city].works(around[k]) { barracks = around[k]; }
+        }
+        t.games[0].cities[city].barracks = Option.Some(barracks);
+        t.host.cities[city].barracks = Option.Some(barracks);
+        t.games[0].begin_lockstep_turn();
+        t.host.begin_lockstep_turn();
+        t.games[0].update(0.0);
+        // The guest plans: a unit's move and a build, then ends its turn.
+        let mut unit = 0 - 1;
+        for i in 0..t.games[0].units.len() {
+            let u = &t.games[0].units[i];
+            if unit < 0 && u.team == team && u.pos != city_pos && u.pos != barracks { unit = i; }
+        }
+        assert(unit >= 0);
+        let pos = t.games[0].units[unit].pos;
+        let away = open_beside(&t.games[0], pos);
+        t.games[0].units[unit].planned_move = Option.Some(away);
+        t.games[0].open_city(city);
+        t.games[0].queue_selected_city_unit(BuildUnit.Melee);
+        t.games[0].end_planning();
+        assert(t.games[0].waiting_for_peers());
+        let plan = t.games[0].team_plan(team);
+        let checksum = t.games[0].checksum();
+        assert(t.games[0].selected_city.is_none());
+        // A unit, selected by clicking it; a click elsewhere only lets go.
+        click(&mut t.games[0], pos, ClickMode.Normal);
+        assert(t.games[0].selected == Option.Some(unit));
+        click(&mut t.games[0], away, ClickMode.Normal);
+        assert(t.games[0].selected.is_none());
+        assert(unchanged(&t.games[0], team, &plan, checksum));
+        click(&mut t.games[0], pos, ClickMode.Normal);
+        // Every order for it is refused.
+        t.games[0].choose_move_action();
+        assert(t.games[0].ui_click_mode.is_none());
+        click(&mut t.games[0], away, ClickMode.Move);
+        t.games[0].selected = Option.Some(unit);
+        t.games[0].toggle_selected_ability();
+        t.games[0].hold_selected_unit();
+        t.games[0].toggle_guard();
+        t.games[0].toggle_alert();
+        t.games[0].disband_selected();
+        t.games[0].disband_selected();
+        t.games[0].found_city_selected();
+        t.games[0].handle_right_click();
+        t.games[0].hold_or_end_turn();
+        assert(unchanged(&t.games[0], team, &plan, checksum));
+        // Tab picks a unit; a click on the city opens it.
+        t.games[0].set_selection(Vec.new());
+        t.games[0].select_next_unit();
+        assert(t.games[0].selected.is_some());
+        // Its city opens (C), and nothing in it changes.
+        t.games[0].select_city();
+        assert(t.games[0].selected_city == Option.Some(city));
+        t.games[0].queue_selected_city_unit(BuildUnit.Ranged);
+        t.games[0].queue_selected_city_gather();
+        t.games[0].queue_selected_city_growth();
+        t.games[0].queue_selected_city_worker();
+        t.games[0].queue_selected_city_scout();
+        t.games[0].queue_selected_city_settler();
+        t.games[0].queue_selected_city_building(Building.Mill);
+        t.games[0].move_selected_city_queue_item(0, false);
+        t.games[0].remove_selected_city_queue_item(0);
+        t.games[0].clear_selected_city_queue();
+        t.games[0].auto_assign_selected_city();
+        t.games[0].prioritize_selected_city(Good.Metal);
+        t.games[0].set_selected_city_priorities(Priorities.of(Good.Wood, Good.Food, Good.Metal));
+        t.games[0].arm_worker_job(JobKind.Road);
+        assert(t.games[0].placing_job.is_none());
+        t.games[0].release_worker();
+        // Clicks on its tiles don't move citizens.
+        let worked = cluster_hexes(&t.games[0], city);
+        for k in 0..worked.len() {
+            click(&mut t.games[0], worked[k], ClickMode.Normal);
+            t.games[0].open_city(city);
+        }
+        assert(unchanged(&t.games[0], team, &plan, checksum));
+        assert(t.games[0].selected_city == Option.Some(city));
+        // The Barracks, by clicking it.
+        t.games[0].press_escape();
+        click(&mut t.games[0], barracks, ClickMode.Normal);
+        assert(t.games[0].selected_barracks == Option.Some(city));
+        t.games[0].queue_selected_barracks_unit(BuildUnit.Melee);
+        t.games[0].clear_selected_barracks_queue();
+        assert(unchanged(&t.games[0], team, &plan, checksum));
+        // The plan as sent reaches the host, and both machines play the same turn.
+        t.games[0].open_city(city);
+        t.exchange();
+        t.host.submit_plan();
+        t.exchange();
+        assert(t.games[0].selected_city.is_none() || t.games[0].is_playing_out());
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.turn == 1);
+        assert(t.host.checksum() == t.games[0].checksum());
+        assert(units_queued(&t.games[0], team, BuildUnit.Melee) == 1);
+    });
+}
+
+fn cluster_hexes(game: &GameState, city: i32) -> Vec[Hex] {
+    let mut out: Vec[Hex] = Vec.new();
+    for k in 0..game.cities[city].clusters.len() {
+        let t = game.cities[city].clusters[k].tiles();
+        for i in 0..t.len() { out.push(t[i]); }
+    }
+    out
+}
+
+/// The plan, the game and the waiting are as they were.
+fn unchanged(game: &GameState, team: Team, plan: &TeamPlan, checksum: u64) -> bool {
+    plans_equal(&game.team_plan(team), plan) && game.checksum() == checksum && game.waiting_for_peers()
 }

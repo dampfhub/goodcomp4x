@@ -77,3 +77,32 @@ fn the_interaction_flag_parses_and_refuses_a_hidden_window() {
     // The script needs the visible window its messages are posted to.
     assert(refused(&["--interact", "--screenshot", "out.png"]));
 }
+
+@test
+fn host_and_join_take_a_port_and_a_code() {
+    let a = args(&["--host"]);
+    let Result.Ok(options) = parse(&a) else { assert(false); return; };
+    assert(options.host && options.port == 7777 && options.players == 2 && options.join.is_none());
+    let b = args(&["--host", "--port", "9000", "--players", "3"]);
+    let Result.Ok(options) = parse(&b) else { assert(false); return; };
+    assert(options.host && options.port == 9000 && options.players == 3);
+    let c = args(&["--join", "10.0.0.2", "--code", "ABC123"]);
+    let Result.Ok(options) = parse(&c) else { assert(false); return; };
+    assert(!options.host && options.join.is_some() && options.code.is_some());
+    // A join needs its code, and each flag belongs to its own mode.
+    assert(refused(&["--join", "10.0.0.2"]));
+    assert(refused(&["--host", "--join", "x", "--code", "y"]));
+    assert(refused(&["--port", "9000"]));
+    assert(refused(&["--host", "--code", "y"]));
+    assert(refused(&["--host", "--port", "lots"]));
+    assert(refused(&["--host", "--players", "1"]));
+    assert(refused(&["--host", "--players", "8"]));
+    assert(refused(&["--players", "3"]));
+    assert(refused(&["--host", "--screenshot", "x.png"]));
+    // The two-process script needs a game to host or join, and replaces the single-player one.
+    assert(refused(&["--interact-mp"]));
+    assert(refused(&["--interact-mp", "--interact", "--host"]));
+    let d = args(&["--interact-mp", "--host"]);
+    let Result.Ok(options) = parse(&d) else { assert(false); return; };
+    assert(options.interact_mp && options.host);
+}
