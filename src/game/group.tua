@@ -44,6 +44,7 @@ impl GameState {
 
     /// Selects `units`: nothing, one unit as usual, or several as a group.
     pub fn set_selection(&mut self, units: Vec[i32]) {
+        if !units.is_empty() { self.worker_mode = false; }
         self.ui_click_mode = Option.None;
         if !units.is_empty() { self.leave_city_view(); }
         if units.len() > 1 {
@@ -101,7 +102,6 @@ impl GameState {
             let i = self.group[m];
             let unit = &self.units[i];
             let reaches = unit.can_attack()
-                && !self.workers.contains(unit.id)
                 && self.rival_of(i).is_none()
                 && unit.planned_pos().distance(target) <= unit.stats().attack_range;
             if reaches { able.push(i); }

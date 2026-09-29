@@ -92,8 +92,8 @@ impl GameState {
     /// Shift-left-click: adds as many turns to the selection's plan as it takes to get to
     /// `target`, as long as no member's plan grows past `Settings.max_queued_turns` turns in
     /// all (this one included). Each turn every unit moves to the hex it can reach that turn,
-    /// with no ally standing on it, that is the shortest walk from `target` (around terrain),
-    /// until nobody can get any closer or every member's plan is full. A hex farther away is
+    /// with no ally standing on it, that is the shortest walk from `target` (around terrain and
+    /// known walls), until nobody can get any closer or every member's plan is full. A hex farther away is
     /// queued as far as the limit goes. Each member continues from the end of its own plan, so
     /// a unit added to a group with queues starts moving this turn instead of waiting for the
     /// others' queues to run out; what the others already had queued stays as it was.
@@ -104,6 +104,7 @@ impl GameState {
         let members = self.selection();
         if members.is_empty() || self.is_resolving() { return false; }
         let fog = self.fog();
+        let team = self.units[members[0]].team;
         let naval = self.units[members[0]].is_naval();
         for k in 0..members.len() {
             if self.units[members[k]].is_naval() != naval {
@@ -111,7 +112,7 @@ impl GameState {
                 return false;
             }
         }
-        let walk = self.planned_walk_to(target, naval);
+        let walk = self.planned_walk_to(target, team, &fog, naval);
         let mut saved: Vec[Unit] = Vec.new();
         for k in 0..members.len() { saved.push(self.units[members[k]].snapshot()); }
         // No member's plan grows past `limit` turns.
@@ -229,7 +230,7 @@ impl GameState {
             let reachable = if turn == 0 {
                 self.known_reachable_for_domain(start, self.units[i].stats().move_range, team, fog, naval)
             } else {
-                self.planned_reachable(start, self.units[i].later_stats().move_range, naval)
+                self.planned_reachable(start, self.units[i].later_stats().move_range, team, fog, naval)
             };
             let rank = step_rank(self.units[i].unit_type, Phase.Move);
             let mut open: Vec[Hex] = Vec.new();
@@ -256,9 +257,10 @@ impl GameState {
         false
     }
 
-    /// How many steps each hex is from `target` for a unit in a later turn, as far as the
-    /// player knows (around terrain, not units). Hexes with no way to `target` are left out.
-    fn planned_walk_to(&self, target: Hex, naval: bool) -> Map[Hex, i32] {
+    /// How many steps each hex is from `target` for a unit of `team` in a later turn, as far as
+    /// the player knows (around terrain, walls and gates, not units). Hexes with no way to
+    /// `target` are left out.
+    fn planned_walk_to(&self, target: Hex, team: Team, fog: &Fog, naval: bool) -> Map[Hex, i32] {
         let mut steps: Map[Hex, i32] = Map.new();
         let _old = steps.insert(target, 0);
         let mut frontier: Deque[Hex] = Deque.new();
@@ -269,7 +271,7 @@ impl GameState {
             let around = hex.neighbors();
             for k in 0..6 {
                 let neighbor = around[k];
-                if !steps.has(neighbor) && self.can_stand(neighbor, naval) {
+                if !steps.has(neighbor) && self.can_stand(neighbor, naval) && self.known_can_cross(neighbor, hex, team, fog) {
                     let _old = steps.insert(neighbor, next);
                     frontier.push_back(neighbor);
                 }
@@ -407,11 +409,11 @@ impl GameState {
         able && unit.pos_after(turn + 1).distance(target) <= range
     }
 
-    /// Hexes a unit could reach from `start` in a later turn, as far as the player knows:
-    /// around terrain, but not units, which will have moved by then.
-    fn planned_reachable(&self, start: Hex, move_range: i32, naval: bool) -> Set[Hex] {
+    /// Hexes a unit of `team` could reach from `start` in a later turn, as far as the player
+    /// knows: around terrain, walls and gates, but not units, which will have moved by then.
+    fn planned_reachable(&self, start: Hex, move_range: i32, team: Team, fog: &Fog, naval: bool) -> Set[Hex] {
         handle { reachable_by(start, move_range) } with Step {
-            open(_from, to) => { resume self.can_stand(to, naval) }
+            open(from, to) => { resume self.can_stand(to, naval) && self.known_can_cross(from, to, team, fog) }
         }
     }
 
@@ -460,7 +462,7 @@ impl GameState {
         if unit.pos != from { return Option.Some("IT DIDN'T GET WHERE IT WAS GOING"); }
         if self.rival_of(idx).is_some() { return Option.Some("IT IS FIGHTING FOR ITS HEX"); }
         if let Option.Some(dest) = unit.planned_move {
-            let reachable = self.planned_reachable(unit.pos, unit.stats().move_range, unit.is_naval());
+            let reachable = self.planned_reachable(unit.pos, unit.stats().move_range, unit.team, fog, unit.is_naval());
             if !reachable.contains(dest) { return Option.Some("ITS WAY IS BLOCKED"); }
             if fog.sees(dest) && self.enemy_of_team_at(dest, unit.team).is_some() { return Option.Some("AN ENEMY STANDS IN ITS WAY"); }
             for j in 0..self.units.len() {

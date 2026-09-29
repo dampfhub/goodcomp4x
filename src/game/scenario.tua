@@ -18,7 +18,7 @@ use game.GameState;
 use game.text;
 use game.city.City;
 use game.hex.HexGrid;
-use game.turn.Phase;
+use game.turn.TurnStep;
 use game.unit.UnitType;
 use game.settings.Settings;
 use game.ruins.Ruin;
@@ -164,7 +164,7 @@ impl GameState {
         for i in 0..self.cities.len() {
             cities.push(self.cities[i].snapshot());
         }
-        let mut pending_steps: Deque[(UnitType, Phase)] = Deque.new();
+        let mut pending_steps: Deque[TurnStep] = Deque.new();
         for i in 0..self.pending_steps.len() {
             if let Option.Some(step) = self.pending_steps.at(i) { pending_steps.push_back(step); }
         }
@@ -211,7 +211,11 @@ impl GameState {
             structures: copy_map(&self.structures),
             barriers: copy_map(&self.barriers),
             settlers: self.settlers.snapshot(),
-            workers: self.workers.snapshot(),
+            worker_mode: self.worker_mode,
+            worker_menu_city: self.worker_menu_city,
+            placing_job: self.placing_job,
+            hovered_job: self.hovered_job,
+            field_workers: copy_vec(&self.field_workers),
             player_controlled_units: self.player_controlled_units.snapshot(),
             next_unit_id: self.next_unit_id,
         }

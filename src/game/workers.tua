@@ -10,8 +10,26 @@
 //! from crossing it and gates everyone but their owner. Outposts (the owner sees around them)
 //! and forts (the owner's units in one defend better) stand on a tile.
 
+use std.collections.Deque;
+use std.collections.Map;
 use std.core.Eq;
+use std.fmt.Out;
+use std.fmt.Show;
+use std.fmt.show_u64;
+use std.linalg.Vec2;
+use std.str.Str;
+use std.str.to_owned;
+use log.Log;
+use log.info;
 use game.GameState;
+use game.PLAYER_TEAM;
+use game.text;
+use game.city.Building;
+use game.city.PLACEABLE;
+use game.city.Site;
+use game.city.SiteKind;
+use game.scenario.copy_vec;
+use game.terrain.Terrain;
 use game.hex.Hex;
 use game.hex.edge;
 use game.unit.Team;
@@ -172,4 +190,750 @@ impl GameState {
         let fort = if self.in_fort(unit) { FORT_DEFENSE } else { 1.0 };
         self.grid.tile(unit.pos).defense_multiplier() * fort
     }
+}
+
+/// The hex edge nearest `point` among `hex`'s six, as the neighbour across it.
+pub fn nearest_edge(hex: Hex, point: Vec2) -> Hex {
+    let around = hex.neighbors();
+    let mut best = around[0];
+    let mut best_distance = midpoint(hex, around[0]).distance(point);
+    for k in 1..6 {
+        let d = midpoint(hex, around[k]).distance(point);
+        if d < best_distance {
+            best = around[k];
+            best_distance = d;
+        }
+    }
+    best
+}
+
+fn midpoint(a: Hex, b: Hex) -> Vec2 { a.to_world().add(b.to_world()).scale(0.5) }
+
+/// A worker out on the map.
+pub struct FieldWorker {
+    id: u32,
+    team: Team,
+    /// The city it belongs to and returns to.
+    home: i32,
+    /// The city center or connected Work Camp this assignment uses as a base.
+    base: Hex,
+    pos: Hex,
+    /// What it's out to do; `None` while it walks home.
+    job: Option[WorkerJob],
+    /// Turns of work left, once it stands on the job's tile.
+    work_left: Option[u32],
+    /// Sent home by the player: it takes no job until it gets there.
+    recalled: bool,
+}
+
+/// The improvement a worker builds on a tile: its yields and its kind.
+pub struct Improvement { food: i32, production: i32, kind: SiteKind }
+
+impl GameState {
+    /// How many of city `city`'s workers are out on the map.
+    pub fn workers_out(&self, city: i32) -> i32 {
+        let mut n = 0;
+        for w in 0..self.field_workers.len() { if self.field_workers[w].home == city { n = n + 1; } }
+        n
+    }
+
+    /// `team`'s city nearest `hex`, ties going to the older city.
+    pub fn nearest_city(&self, team: Team, hex: Hex) -> Option[i32] {
+        let mut best: Option[i32] = Option.None;
+        for i in 0..self.cities.len() {
+            if self.cities[i].team != team { continue; }
+            let closer = match best { Option.None => true, Option.Some(b) => self.cities[i].pos.distance(hex) < self.cities[b].pos.distance(hex) };
+            if closer { best = Option.Some(i); }
+        }
+        best
+    }
+
+    /// The player's city whose workers would take a job at `hex`: the open city, or else the
+    /// nearest one.
+    pub fn job_city(&self, hex: Hex) -> Option[i32] {
+        if let Option.Some(city) = self.selected_city {
+            if self.cities[city].team == PLAYER_TEAM { return Option.Some(city); }
+        }
+        self.nearest_city(PLAYER_TEAM, hex)
+    }
+
+    /// What `job` builds, as the player reads it: an improvement by its kind (FARM, MINE or
+    /// LUMBER MILL), anything else by the job's name.
+    pub fn job_name(&self, job: WorkerJob) -> str {
+        if job.kind == JobKind.Improve {
+            if let Option.Some(improvement) = self.improvement(job.hex) { return improvement.kind.name(); }
+        }
+        job.kind.name()
+    }
+
+    /// A job as the worker menu names it: what it builds, and the tile it's on, like
+    /// "FARM · GRASSLAND" or "MINE · PLAINS HILLS".
+    pub fn job_title(&self, job: WorkerJob) -> Str {
+        let tile = self.grid.tile(job.hex).name();
+        text(fn() can {Out} { Out.put(self.job_name(job)); Out.put(" \u{b7} "); Out.put(&tile); })
+    }
+
+    /// The improvement a worker would build at `hex`: a mine on hills, a lumber mill in forest
+    /// or jungle, a farm elsewhere; nothing on snow.
+    pub fn improvement(&self, hex: Hex) -> Option[Improvement] {
+        let tile = self.grid.tile(hex);
+        let (food, production) = tile.yields();
+        if tile.hills {
+            Option.Some(Improvement { food, production: production + 2, kind: SiteKind.Mine })
+        } else if tile.feature.is_some() {
+            Option.Some(Improvement { food, production: production + 1, kind: SiteKind.LumberMill })
+        } else if tile.terrain == Terrain.Snow {
+            Option.None
+        } else {
+            Option.Some(Improvement { food: food + 2, production, kind: SiteKind.Farm })
+        }
+    }
+
+    /// Whether a placed building of any city stands on `hex`.
+    fn building_at(&self, hex: Hex) -> bool {
+        for c in 0..self.cities.len() {
+            for b in 0..14 { if self.cities[c].placed_site(PLACEABLE[b]) == Option.Some(hex) { return true; } }
+        }
+        false
+    }
+
+    /// Why `team`'s workers can't do `job`, or `None` if they can.
+    pub fn job_problem(&self, team: Team, job: WorkerJob) -> Option[str] {
+        let hex = job.hex;
+        if !self.grid.contains(hex) || !self.grid.is_passable(hex) { return Option.Some("WORKERS CAN'T WORK THIS TERRAIN"); }
+        if !self.in_worker_reach(team, hex) {
+            return Option.Some("OUT OF REACH: WORKERS GO 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD");
+        }
+        if let Option.Some(across) = job.across {
+            return if hex.distance(across) != 1 || !self.grid.contains(across) {
+                Option.Some("WALLS AND GATES GO BETWEEN TWO TILES ON THE MAP")
+            } else if self.barriers.has(edge(hex, across)) {
+                Option.Some("A WALL OR GATE STANDS HERE")
+            } else {
+                Option.None
+            };
+        }
+        if self.city_at(hex).is_some() { return Option.Some("A CITY STANDS HERE"); }
+        let building = self.building_at(hex);
+        match job.kind {
+            JobKind.Road => if self.is_road_hex(hex) { Option.Some("THERE IS A ROAD HERE ALREADY") } else { Option.None },
+            JobKind.Improve => {
+                if building { return Option.Some("A BUILDING STANDS HERE"); }
+                match self.sites.get(hex) {
+                    Option.Some(site) => if site.team != team { Option.Some("THIS TILE BELONGS TO THE ENEMY") } else { Option.Some("THIS TILE IS IMPROVED ALREADY") },
+                    Option.None => if self.improvement(hex).is_none() { Option.Some("NOTHING GROWS ON SNOW") } else { Option.None },
+                }
+            }
+            _ => {
+                if building { Option.Some("A BUILDING STANDS HERE") } else if self.structures.has(hex) { Option.Some("A STRUCTURE STANDS HERE") } else { Option.None }
+            }
+        }
+    }
+
+    /// Where `team`'s workers go out from: its cities, and each Work Camp connected to its city
+    /// (workers start nearby jobs from one, `work_base_for`).
+    pub fn worker_bases(&self, team: Team) -> Vec[Hex] {
+        let mut bases: Vec[Hex] = Vec.new();
+        for i in 0..self.cities.len() {
+            if self.cities[i].team != team { continue; }
+            bases.push(self.cities[i].pos);
+            if let Option.Some(camp) = self.cities[i].placed_site(Building.WorkCamp) {
+                if self.routes(i).costs.has(camp) { bases.push(camp); }
+            }
+        }
+        bases
+    }
+
+    /// Whether `team`'s workers will work at `hex`: within `WORKER_REACH` of one of its cities
+    /// or connected Work Camps (`worker_bases`), or on or next to a road, so roads carry the
+    /// reach out as far as they go.
+    pub fn in_worker_reach(&self, team: Team, hex: Hex) -> bool {
+        let bases = self.worker_bases(team);
+        self.in_reach_of(&bases, hex)
+    }
+
+    /// `in_worker_reach` with the bases worked out once, for checking many hexes (worker mode's
+    /// lit tiles).
+    pub fn in_reach_of(&self, bases: &Vec[Hex], hex: Hex) -> bool {
+        for b in 0..bases.len() { if bases[b].distance(hex) <= WORKER_REACH { return true; } }
+        if self.roads.contains(hex) { return true; }
+        let around = hex.neighbors();
+        for k in 0..6 { if self.roads.contains(around[k]) { return true; } }
+        false
+    }
+
+    /// W, or Worker Jobs in the city panel: opens or closes the worker menu.
+    pub fn toggle_worker_mode(&mut self) {
+        let on = !self.worker_mode;
+        self.set_worker_mode(on);
+    }
+
+    /// Workers at home in city `city` waiting for the player: none have a job to go to and
+    /// they aren't resting this turn.
+    pub fn idle_workers(&self, city: i32) -> u32 {
+        let c = &self.cities[city];
+        if c.team == PLAYER_TEAM && c.worker_jobs.is_empty() && !c.workers_resting { c.workers } else { 0 }
+    }
+
+    /// The first of the player's cities with idle workers.
+    pub fn next_idle_workers(&self) -> Option[i32] {
+        for i in 0..self.cities.len() { if self.idle_workers(i) > 0 { return Option.Some(i); } }
+        Option.None
+    }
+
+    /// Opens the worker menu on city `city` (the turn strip's workers, and the turn order).
+    pub fn open_worker_menu(&mut self, city: i32) {
+        self.set_worker_mode(true);
+        if self.worker_mode { self.worker_menu_city = Option.Some(city); }
+    }
+
+    /// The city whose worker jobs a queue row or its X acts on: the open city, or else the
+    /// worker menu's.
+    pub fn worker_list_city(&self) -> Option[i32] {
+        if self.selected_city.is_some() { return self.selected_city; }
+        if self.worker_mode { self.worker_menu_city } else { Option.None }
+    }
+
+    /// Sleep in the worker menu, or Space there: the menu city's idle workers rest this turn,
+    /// and the menu moves on to the next city with idle workers; with none left, it closes and
+    /// the turn moves on.
+    pub fn sleep_workers(&mut self) {
+        if self.is_resolving() || !self.worker_mode { return; }
+        let Option.Some(city) = self.worker_menu_city else { return; };
+        if self.idle_workers(city) > 0 {
+            self.cities[city].workers_resting = true;
+            let id = self.cities[city].id;
+            self.notice = text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put("'S WORKERS REST THIS TURN"); });
+        }
+        match self.next_idle_workers() {
+            Option.Some(next) => { self.worker_menu_city = Option.Some(next); }
+            Option.None => {
+                self.set_worker_mode(false);
+                self.select_next_or_end_turn(Option.None);
+            }
+        }
+    }
+
+    /// The worker menu: the only way to give workers jobs. The map shows every tile the
+    /// player's workers can reach; a job picked in the menu (`arm_worker_job`) is placed with
+    /// clicks and drags on the map. It ends with W, Escape, Done, or selecting a unit or a city.
+    pub fn set_worker_mode(&mut self, on: bool) {
+        if on == self.worker_mode || self.is_resolving() { return; }
+        if on {
+            let mut any = false;
+            for c in 0..self.cities.len() { if self.cities[c].team == PLAYER_TEAM { any = true; } }
+            if !any {
+                self.set_notice("FOUND A CITY FIRST - ITS WORKERS DO THE WORK");
+                return;
+            }
+            self.leave_city_view();
+        }
+        self.selected = Option.None;
+        self.group.clear();
+        self.placing_job = Option.None;
+        self.hovered_job = Option.None;
+        self.ui_click_mode = Option.None;
+        self.worker_mode = on;
+        self.worker_menu_city = if on {
+            match self.next_idle_workers() {
+                Option.Some(c) => Option.Some(c),
+                Option.None => {
+                    let mut first: Option[i32] = Option.None;
+                    for c in 0..self.cities.len() { if first.is_none() && self.cities[c].team == PLAYER_TEAM { first = Option.Some(c); } }
+                    first
+                }
+            }
+        } else {
+            Option.None
+        };
+        self.set_notice(if on { "WORKERS: PICK A JOB, THEN PLACE IT ON THE MAP - W WHEN DONE" } else { "DONE WITH WORKERS" });
+    }
+
+    /// Whether `team` already has a job queued or under way in `job`'s place.
+    pub fn job_taken(&self, team: Team, job: WorkerJob) -> bool {
+        for c in 0..self.cities.len() {
+            if self.cities[c].team != team { continue; }
+            let jobs = &self.cities[c].worker_jobs;
+            for j in 0..jobs.len() { if jobs[j].same_place(job) { return true; } }
+        }
+        for w in 0..self.field_workers.len() {
+            let worker = &self.field_workers[w];
+            if worker.team != team { continue; }
+            if let Option.Some(other) = worker.job { if other.same_place(job) { return true; } }
+        }
+        false
+    }
+
+    /// A job button in the worker menu, or R and I: arms `kind` for placing on the map (opening
+    /// the worker menu if it isn't open), or disarms it if it's the one armed already.
+    pub fn arm_worker_job(&mut self, kind: JobKind) {
+        if self.is_resolving() { return; }
+        if !self.worker_mode {
+            self.set_worker_mode(true);
+            if !self.worker_mode { return; }
+        }
+        if self.placing_job == Option.Some(kind) {
+            self.placing_job = Option.None;
+            self.hovered_job = Option.None;
+            self.set_notice("PICK A JOB TO PLACE - W WHEN DONE");
+            return;
+        }
+        self.placing_job = Option.Some(kind);
+        let how = if kind.on_edge() { "CLICK OR DRAG ALONG HEX EDGES TO PLACE " } else { "CLICK OR DRAG OVER LIT TILES TO PLACE " };
+        self.notice = text(fn() can {Out} { Out.put(how); Out.put(kind.name()); Out.put("S - ESC TO STOP"); });
+    }
+
+    /// With a job armed: where a map point would place it, as the tile the point is in and,
+    /// for a wall or gate, the neighbour across the edge nearest the point.
+    pub fn job_target_at(&self, point: Vec2) -> Option[(Hex, Option[Hex])] {
+        let Option.Some(kind) = self.placing_job else { return Option.None; };
+        let hex = Hex.from_world(point);
+        if !self.grid.contains(hex) { return Option.None; }
+        let across = if kind.on_edge() { Option.Some(nearest_edge(hex, point)) } else { Option.None };
+        Option.Some((hex, across))
+    }
+
+    /// Places the armed job at `hex` (across the edge to `across`, for a wall or gate). Answers
+    /// whether it was queued. A drag calls this for every tile or edge it passes, so a place
+    /// that already has this job is skipped without a notice.
+    pub fn place_job_at(&mut self, hex: Hex, across: Option[Hex]) -> bool {
+        if self.is_resolving() { return false; }
+        let Option.Some(kind) = self.placing_job else { return false; };
+        if let Option.Some(other) = across { return self.queue_barrier_at(hex, other); }
+        if self.job_taken(PLAYER_TEAM, WorkerJob.on_tile(hex, kind)) { return false; }
+        if let Option.Some(reason) = self.job_unavailable(hex, kind) {
+            self.notice = reason;
+            return false;
+        }
+        self.queue_worker_job_at(hex, kind);
+        true
+    }
+
+    /// Queues the armed wall or gate on the edge between `a` and `b`. The worker builds it from
+    /// the side nearer its city. Answers whether it was queued; a drag calls this for every edge
+    /// it passes, so an edge already queued is skipped without a notice.
+    pub fn queue_barrier_at(&mut self, a: Hex, b: Hex) -> bool {
+        let Option.Some(kind) = self.placing_job else { return false; };
+        let Option.Some(city) = self.job_city(a) else { return false; };
+        let pos = self.cities[city].pos;
+        let (first, second) = if b.distance(pos) < a.distance(pos) { (b, a) } else { (a, b) };
+        let hex = if self.grid.is_passable(first) && self.is_explored(first) {
+            first
+        } else if self.grid.is_passable(second) && self.is_explored(second) {
+            second
+        } else {
+            self.notice = text(fn() can {Out} { Out.put("A "); Out.put(kind.name()); Out.put(" NEEDS OPEN, EXPLORED GROUND ON ONE SIDE"); });
+            return false;
+        };
+        let across = if hex == a { b } else { a };
+        let job = WorkerJob { hex, kind, across: Option.Some(across) };
+        if self.job_taken(PLAYER_TEAM, job) { return false; }
+        if let Option.Some(problem) = self.job_problem(PLAYER_TEAM, job) {
+            self.set_notice(problem);
+            return false;
+        }
+        self.cities[city].worker_jobs.push(job);
+        let (id, waiting) = (self.cities[city].id, self.cities[city].worker_jobs.len());
+        self.notice = text(fn() can {Out} {
+            Out.put(kind.name()); Out.put(" QUEUED FOR CITY "); show_u64((id + 1) as u64); Out.put(" - "); show_u64(waiting as u64); Out.put(" JOBS WAITING - ESC TO STOP");
+        });
+        true
+    }
+
+    /// With a job armed, places it at the tile or hex edge under `cursor` (window pixels).
+    /// Called on the press and for every cursor move while the button is held, so a drag places
+    /// it on each tile or edge it passes. Answers whether the press belongs to placing: false
+    /// over the UI (`check_ui`) or with nothing armed.
+    pub fn paint_job_at(&mut self, cursor: Vec2, screen_size: Vec2, check_ui: bool) -> bool {
+        if self.placing_job.is_none() || self.is_resolving() { return false; }
+        if check_ui && self.ui_covers(cursor, screen_size) { return false; }
+        let point = self.camera.screen_to_world(cursor, screen_size);
+        if let Option.Some((hex, across)) = self.job_target_at(point) { let _queued = self.place_job_at(hex, across); }
+        true
+    }
+
+    /// Why the player can't queue `kind` at `hex` right now, if they can't. Walls and gates only
+    /// need a city: their edge is picked on the map.
+    pub fn job_unavailable(&self, hex: Hex, kind: JobKind) -> Option[Str] {
+        let job = WorkerJob.on_tile(hex, kind);
+        if self.job_city(hex).is_none() { return Option.Some(to_owned("FOUND A CITY FIRST - ITS WORKERS DO THE WORK")); }
+        if kind.on_edge() { return Option.None; }
+        if !self.is_explored(hex) { return Option.Some(to_owned("WORKERS CAN'T WORK AN UNEXPLORED TILE")); }
+        if let Option.Some(problem) = self.job_problem(PLAYER_TEAM, job) { return Option.Some(to_owned(problem)); }
+        if self.job_taken(PLAYER_TEAM, job) {
+            return Option.Some(text(fn() can {Out} { Out.put(kind.name()); Out.put(" IS QUEUED HERE ALREADY"); }));
+        }
+        // A tile takes one job at a time.
+        match self.tile_job_at(PLAYER_TEAM, hex) {
+            Option.Some(other) => Option.Some(text(fn() can {Out} { Out.put(other.name()); Out.put(" IS QUEUED HERE - ONE JOB AT A TIME"); })),
+            Option.None => Option.None,
+        }
+    }
+
+    /// The job `team` has queued or under way on tile `hex`, if any (walls and gates, on edges,
+    /// aside). A tile takes one job at a time.
+    pub fn tile_job_at(&self, team: Team, hex: Hex) -> Option[JobKind] {
+        for c in 0..self.cities.len() {
+            if self.cities[c].team != team { continue; }
+            let jobs = &self.cities[c].worker_jobs;
+            for j in 0..jobs.len() { if jobs[j].across.is_none() && jobs[j].hex == hex { return Option.Some(jobs[j].kind); } }
+        }
+        for w in 0..self.field_workers.len() {
+            let worker = &self.field_workers[w];
+            if worker.team != team { continue; }
+            if let Option.Some(job) = worker.job {
+                if job.across.is_none() && job.hex == hex { return Option.Some(job.kind); }
+            }
+        }
+        Option.None
+    }
+
+    pub fn queue_worker_job_at(&mut self, hex: Hex, kind: JobKind) {
+        if let Option.Some(reason) = self.job_unavailable(hex, kind) {
+            self.notice = reason;
+            return;
+        }
+        let Option.Some(city) = self.job_city(hex) else { return; };
+        self.cities[city].worker_jobs.push(WorkerJob.on_tile(hex, kind));
+        let (id, home) = (self.cities[city].id, self.cities[city].workers);
+        self.notice = text(fn() can {Out} {
+            Out.put(kind.name()); Out.put(" QUEUED FOR CITY "); show_u64((id + 1) as u64); Out.put(" - "); show_u64(home as u64);
+            Out.put(if home == 1 { " WORKER AT HOME" } else { " WORKERS AT HOME" });
+        });
+    }
+
+    /// The X on a worker job in the open city or the worker menu.
+    pub fn remove_worker_job(&mut self, index: i32) {
+        if self.is_resolving() { return; }
+        let Option.Some(city) = self.worker_list_city() else { return; };
+        if index < 0 || index >= self.cities[city].worker_jobs.len() { return; }
+        let job = self.cities[city].worker_jobs.remove(index);
+        self.notice = text(fn() can {Out} { Out.put("REMOVED "); Out.put(job.kind.name()); Out.put(" FROM THE WORKER JOBS"); });
+    }
+
+    /// A worker's row in the worker menu: the camera goes to the worker.
+    pub fn show_worker(&mut self, id: u32) {
+        for w in 0..self.field_workers.len() {
+            if self.field_workers[w].id == id && self.field_workers[w].team == PLAYER_TEAM {
+                let at = self.field_workers[w].pos.to_world();
+                self.camera.focus_on(at);
+                return;
+            }
+        }
+    }
+
+    /// A Recall button: sends one of the player's workers out on the map straight home, out of
+    /// danger. Its job goes back to the top of its city's list, and it takes no new one on the
+    /// way.
+    pub fn recall_worker(&mut self, id: u32) {
+        if self.is_resolving() { return; }
+        let mut found: Option[i32] = Option.None;
+        for w in 0..self.field_workers.len() {
+            if found.is_none() && self.field_workers[w].id == id && self.field_workers[w].team == PLAYER_TEAM { found = Option.Some(w); }
+        }
+        let Option.Some(w) = found else { return; };
+        let worker = self.field_workers[w];
+        self.return_job(worker);
+        let home = self.cities[worker.home].pos;
+        let recalled = &mut self.field_workers[w];
+        recalled.job = Option.None;
+        recalled.work_left = Option.None;
+        recalled.recalled = true;
+        recalled.base = home;
+        self.set_notice("WORKER RECALLED - IT HEADS HOME; ITS JOB WAITS ON THE LIST");
+    }
+
+    /// Takes the first job in city `city`'s queue its workers can still do, dropping any that
+    /// became impossible.
+    fn take_job(&mut self, city: i32) -> Option[WorkerJob] {
+        let team = self.cities[city].team;
+        while !self.cities[city].worker_jobs.is_empty() {
+            let job = self.cities[city].worker_jobs.remove(0);
+            match self.job_problem(team, job) {
+                Option.None => { return Option.Some(job); }
+                Option.Some(problem) => {
+                    if team == PLAYER_TEAM {
+                        self.notice = text(fn() can {Out} { Out.put(job.kind.name()); Out.put(" DROPPED: "); Out.put(problem); });
+                    }
+                }
+            }
+        }
+        Option.None
+    }
+
+    /// Where a worker starts `job` from: city `city`'s connected Work Camp within 3 hexes of
+    /// it, else the city.
+    fn work_base_for(&self, city: i32, job: WorkerJob) -> Hex {
+        let center = self.cities[city].pos;
+        let Option.Some(camp) = self.cities[city].placed_site(Building.WorkCamp) else { return center; };
+        if camp.distance(job.hex) <= 3 && self.routes(city).costs.has(camp) { camp } else { center }
+    }
+
+    /// Where `worker` walks home to: the connected Work Camp it set out from, else its city.
+    fn return_base_for(&self, worker: FieldWorker, home: i32) -> Hex {
+        let center = self.cities[home].pos;
+        let Option.Some(camp) = self.cities[home].placed_site(Building.WorkCamp) else { return center; };
+        if worker.base == camp && self.routes(home).costs.has(camp) { camp } else { center }
+    }
+
+    /// The last step of a turn: workers heading home take newly queued jobs, cities send idle
+    /// workers out, and every worker out on the map walks, works or arrives home. Answers the
+    /// ids of the workers that did any of that.
+    pub fn resolve_workers(&mut self) -> Vec[u32] can {Log} {
+        for w in 0..self.field_workers.len() {
+            if self.field_workers[w].job.is_none() && !self.field_workers[w].recalled {
+                let home = self.field_workers[w].home;
+                if let Option.Some(job) = self.take_job(home) {
+                    self.field_workers[w].base = self.work_base_for(home, job);
+                    self.field_workers[w].job = Option.Some(job);
+                }
+            }
+        }
+        for city in 0..self.cities.len() {
+            while self.cities[city].workers > 0 {
+                let Option.Some(job) = self.take_job(city) else { break; };
+                self.cities[city].workers = self.cities[city].workers - 1;
+                let id = self.take_unit_id();
+                let base = self.work_base_for(city, job);
+                self.field_workers.push(FieldWorker { id, team: self.cities[city].team, home: city, base, pos: base, job: Option.Some(job), work_left: Option.None, recalled: false });
+            }
+        }
+        let mut acted: Vec[u32] = Vec.new();
+        let mut home: Vec[i32] = Vec.new();
+        for w in 0..self.field_workers.len() {
+            let (did_something, arrived_home) = self.advance_worker(w);
+            if did_something { acted.push(self.field_workers[w].id); }
+            if arrived_home { home.push(w); }
+        }
+        let mut k = home.len();
+        while k > 0 {
+            k = k - 1;
+            let worker = self.field_workers.remove(home[k]);
+            self.cities[worker.home].workers = self.cities[worker.home].workers + 1;
+        }
+        acted
+    }
+
+    /// One worker's turn. Answers whether it did anything, and whether it reached its city with
+    /// nothing left to do.
+    fn advance_worker(&mut self, w: i32) -> (bool, bool) can {Log} {
+        let worker = self.field_workers[w];
+        if let (Option.Some(job), Option.Some(left)) = (worker.job, worker.work_left) {
+            if worker.pos == job.hex {
+                if let Option.Some(problem) = self.job_problem(worker.team, job) {
+                    if worker.team == PLAYER_TEAM {
+                        self.notice = text(fn() can {Out} { Out.put(job.kind.name()); Out.put(" ABANDONED: "); Out.put(problem); });
+                    }
+                    self.field_workers[w].job = Option.None;
+                    self.field_workers[w].work_left = Option.None;
+                    return (true, false);
+                }
+                if left > 1 {
+                    self.field_workers[w].work_left = Option.Some(left - 1);
+                    return (true, false);
+                }
+                self.complete_job(worker.team, job);
+                let next = self.take_job(worker.home);
+                if let Option.Some(next_job) = next { self.field_workers[w].base = self.work_base_for(worker.home, next_job); }
+                self.field_workers[w].job = next;
+                self.field_workers[w].work_left = Option.None;
+                return (true, false);
+            }
+        }
+
+        // Walking: to the job, or home.
+        let Option.Some(home) = self.home_of(worker) else { return (false, false); };
+        let target = match worker.job { Option.Some(job) => job.hex, Option.None => self.return_base_for(worker, home) };
+        let Option.Some(path) = self.worker_path(worker.team, worker.pos, target) else {
+            if let Option.Some(job) = worker.job {
+                if worker.team == PLAYER_TEAM {
+                    self.notice = text(fn() can {Out} {
+                        Out.put("A WORKER CAN'T REACH ITS "); Out.put(job.kind.name()); Out.put(" AT "); job.hex.show(); Out.put(" - IT'S COMING HOME");
+                    });
+                }
+                self.field_workers[w].job = Option.None;
+                return (true, false);
+            }
+            return (false, false);
+        };
+        let step = if WORKER_MOVE < path.len() - 1 { WORKER_MOVE } else { path.len() - 1 };
+        let pos = path[step];
+        let moved = pos != worker.pos;
+        let walker = &mut self.field_workers[w];
+        walker.home = home;
+        walker.pos = pos;
+        if pos != target { return (moved, false); }
+        match walker.job {
+            Option.Some(job) => {
+                walker.work_left = Option.Some(job.kind.turns());
+                (true, false)
+            }
+            Option.None => (true, true),
+        }
+    }
+
+    /// The city a worker heads back to: its own, or if that one was lost, its side's nearest.
+    fn home_of(&self, worker: FieldWorker) -> Option[i32] {
+        if self.cities[worker.home].team == worker.team { Option.Some(worker.home) } else { self.nearest_city(worker.team, worker.pos) }
+    }
+
+    /// The shortest walk for a worker of `team` from `from` to `to`, both ends included, around
+    /// impassable terrain, walls, others' gates, enemy units and enemy cities. Ties break by hex
+    /// coordinates.
+    fn worker_path(&self, team: Team, from: Hex, to: Hex) -> Option[Vec[Hex]] {
+        let mut came_from: Map[Hex, Hex] = Map.new();
+        let _start = came_from.insert(from, from);
+        let mut queue: Deque[Hex] = Deque.new();
+        queue.push_back(from);
+        while let Option.Some(hex) = queue.pop_front() {
+            if hex == to {
+                let mut reversed: Vec[Hex] = Vec.new();
+                reversed.push(to);
+                let mut at = to;
+                while at != from {
+                    at = came_from.get(at).unwrap_or(from);
+                    reversed.push(at);
+                }
+                let mut path: Vec[Hex] = Vec.new();
+                let mut k = reversed.len();
+                while k > 0 {
+                    k = k - 1;
+                    path.push(reversed[k]);
+                }
+                return Option.Some(path);
+            }
+            let around = sorted_neighbors(hex);
+            for k in 0..6 {
+                let n = around[k];
+                let open = self.can_step(hex, n, team) && self.enemy_of_team_at(n, team).is_none() && !self.enemy_city_at(n, team);
+                if open && !came_from.has(n) {
+                    let _new = came_from.insert(n, hex);
+                    queue.push_back(n);
+                }
+            }
+        }
+        Option.None
+    }
+
+    /// Builds `job` for `team`: a road, an improvement, or a structure.
+    fn complete_job(&mut self, team: Team, job: WorkerJob) can {Log} {
+        let hex = job.hex;
+        match job.kind {
+            JobKind.Road => { self.roads.insert(hex); }
+            JobKind.Improve => {
+                if let Option.Some(improvement) = self.improvement(hex) {
+                    let _old = self.sites.insert(hex, Site { team, food: improvement.food, production: improvement.production, kind: improvement.kind });
+                }
+            }
+            kind => {
+                if let Option.Some(structure_kind) = kind.structure() {
+                    let structure = Structure { kind: structure_kind, team };
+                    match job.across {
+                        Option.Some(across) => { let _old = self.barriers.insert(edge(hex, across), structure); }
+                        Option.None => { let _old = self.structures.insert(hex, structure); }
+                    }
+                }
+            }
+        }
+        info(fn() can {Out} { team.show(); Out.put(" workers finished a "); Out.put(job.kind.name()); Out.put(" at "); hex.show(); });
+        if team == PLAYER_TEAM {
+            let title = self.job_title(job);
+            self.notice = text(fn() can {Out} { Out.put("WORKERS FINISHED: "); Out.put(&title); });
+        }
+    }
+
+    /// A worker taken off the map with a job in hand leaves that job at the front of its city's
+    /// queue, for the next worker to try.
+    fn return_job(&mut self, worker: FieldWorker) {
+        let Option.Some(job) = worker.job else { return; };
+        if self.cities[worker.home].team == worker.team { self.cities[worker.home].worker_jobs.insert(0, job); }
+    }
+
+    /// After a move step: every worker sharing a hex with an enemy unit is captured. It joins
+    /// the captor's nearest city, or is lost if the captor has no city.
+    pub fn capture_workers(&mut self) can {Log} {
+        let mut w = 0;
+        while w < self.field_workers.len() {
+            let worker = self.field_workers[w];
+            let Option.Some(captor) = self.enemy_of_team_at(worker.pos, worker.team) else {
+                w = w + 1;
+                continue;
+            };
+            let captor_team = self.units[captor].team;
+            let _gone = self.field_workers.remove(w);
+            self.return_job(worker);
+            {
+                let unit = &self.units[captor];
+                info(fn() can {Out} { unit.show(); Out.put(" captures a "); worker.team.show(); Out.put(" worker at "); worker.pos.show(); });
+            }
+            if let Option.Some(city) = self.nearest_city(captor_team, worker.pos) {
+                self.cities[city].workers = self.cities[city].workers + 1;
+            }
+            if worker.team == PLAYER_TEAM {
+                self.set_notice("AN ENEMY CAPTURED ONE OF YOUR WORKERS");
+            } else if captor_team == PLAYER_TEAM {
+                self.set_notice("WORKER CAPTURED - IT JOINS YOUR NEAREST CITY");
+            }
+        }
+    }
+
+    /// The workers of `team`'s foes on `hex`, by index.
+    pub fn enemy_workers_at(&self, hex: Hex, team: Team) -> Vec[i32] {
+        let mut out: Vec[i32] = Vec.new();
+        for w in 0..self.field_workers.len() {
+            if self.field_workers[w].pos == hex && self.field_workers[w].team != team { out.push(w); }
+        }
+        out
+    }
+
+    /// Kills the workers with these ids.
+    pub fn kill_workers(&mut self, ids: &Vec[u32]) can {Log} {
+        let mut w = 0;
+        while w < self.field_workers.len() {
+            let worker = self.field_workers[w];
+            if !ids.contains(worker.id) {
+                w = w + 1;
+                continue;
+            }
+            let _gone = self.field_workers.remove(w);
+            self.return_job(worker);
+            info(fn() can {Out} { Out.put("a "); worker.team.show(); Out.put(" worker is killed at "); worker.pos.show(); });
+            if worker.team == PLAYER_TEAM { self.set_notice("ONE OF YOUR WORKERS WAS KILLED"); }
+        }
+    }
+
+    /// The AI's workers: each city with idle workers and nothing queued improves the tiles it
+    /// works, then puts roads on them.
+    pub fn plan_ai_workers(&mut self, team: Team) {
+        for city in 0..self.cities.len() {
+            let c = &self.cities[city];
+            if c.team != team || c.workers == 0 || !c.worker_jobs.is_empty() { continue; }
+            let worked = copy_vec(&c.worked);
+            let kinds = [JobKind.Improve, JobKind.Road];
+            let mut chosen: Option[WorkerJob] = Option.None;
+            for k in 0..2 {
+                for i in 0..worked.len() {
+                    let job = WorkerJob.on_tile(worked[i], kinds[k]);
+                    if chosen.is_none() && self.job_problem(team, job).is_none() && !self.job_taken(team, job) { chosen = Option.Some(job); }
+                }
+            }
+            if let Option.Some(job) = chosen { self.cities[city].worker_jobs.push(job); }
+        }
+    }
+}
+
+/// `hex`'s neighbours sorted by `(q, r)`, so a search visiting them in this order breaks ties
+/// by hex coordinates.
+fn sorted_neighbors(hex: Hex) -> [Hex; 6] {
+    let mut around = hex.neighbors();
+    for i in 1..6 {
+        let mut j = i;
+        while j > 0 && (around[j].q < around[j - 1].q || (around[j].q == around[j - 1].q && around[j].r < around[j - 1].r)) {
+            let t = around[j];
+            around[j] = around[j - 1];
+            around[j - 1] = t;
+            j = j - 1;
+        }
+    }
+    around
 }

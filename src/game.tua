@@ -22,6 +22,8 @@ use game.city.Building;
 use game.city.Build;
 use game.city.BuildUnit;
 use game.workers.Structure;
+use game.workers.FieldWorker;
+use game.workers.JobKind;
 use game.hex.Edge;
 use game.effects.Playing;
 use game.scenario.Scenario;
@@ -40,7 +42,7 @@ use game.terrain.HILLS;
 use game.terrain.MOUNTAINS;
 use game.orders.ClickMode;
 use game.orders.QueueReplace;
-use game.turn.Phase;
+use game.turn.TurnStep;
 use game.unit.IdSet;
 use game.unit.Team;
 use game.unit.Unit;
@@ -150,18 +152,30 @@ pub struct GameState {
     turn: u32,
     camera: Camera,
     /// Steps of the turn currently playing out, drained one at a time by `update`.
-    pending_steps: Deque[(UnitType, Phase)],
+    pending_steps: Deque[TurnStep],
     step_timer: f32,
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec[u32],
     highlight_timer: f32,
+    /// Worker mode (W): reachable tiles are shown, and map clicks place the armed job
+    /// (`workers.tua`).
+    worker_mode: bool,
+    /// The city whose workers and jobs the worker menu lists.
+    worker_menu_city: Option[i32],
+    /// The worker job armed in the worker menu: map clicks and drags place it, on tiles or (a
+    /// wall or gate) on hex edges, until Escape or another pick.
+    placing_job: Option[JobKind],
+    /// The tile (and, for a wall or gate, the neighbour across the edge) under the cursor while
+    /// placing a job, highlighted.
+    hovered_job: Option[(Hex, Option[Hex])],
+    /// Workers out on the map; the ones at home are counted by their city (`workers.tua`).
+    field_workers: Vec[FieldWorker],
     /// Outposts and forts built by workers, by tile.
     structures: Map[Hex, Structure],
     /// Walls and gates built by workers, by the edge they stand on (`hex.edge`).
     barriers: Map[Edge, Structure],
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: IdSet,
-    workers: IdSet,
     /// Frontier sandbox units that the player may command despite being Red.
     player_controlled_units: IdSet,
     next_unit_id: u32,
@@ -259,7 +273,11 @@ impl GameState {
             recent_actors: Vec.new(),
             highlight_timer: 0.0,
             settlers: IdSet.new(),
-            workers: IdSet.new(),
+            worker_mode: false,
+            worker_menu_city: Option.None,
+            placing_job: Option.None,
+            hovered_job: Option.None,
+            field_workers: Vec.new(),
             player_controlled_units: IdSet.new(),
             next_unit_id: 8,
             map_seed: Option.None,
@@ -407,7 +425,7 @@ impl GameState {
     /// What the unit is, for display: settlers and workers are marked on top of an ordinary
     /// unit type.
     pub fn unit_role(&self, unit: &Unit) -> Role {
-        if self.settlers.contains(unit.id) { Role.Settler } else if self.workers.contains(unit.id) { Role.Worker } else { Role.Troop(unit.unit_type) }
+        if self.settlers.contains(unit.id) { Role.Settler } else { Role.Troop(unit.unit_type) }
     }
 
     fn is_occupied(&self, hex: Hex) -> bool { self.count_at(hex) > 0 }
@@ -491,7 +509,7 @@ impl GameState {
     /// passing through mountains, walls, others' gates or an occupied hex, so a line of units
     /// blocks the way. Includes `start` itself. This is the real board, as the AI sees it; the
     /// player plans with `known_reachable_hexes` (`fog.tua`).
-    fn reachable_hexes(&self, start: Hex, move_range: i32, team: Team) -> Set[Hex] {
+    pub fn reachable_hexes(&self, start: Hex, move_range: i32, team: Team) -> Set[Hex] {
         handle { reachable_by(start, move_range) } with Step {
             open(from, to) => { resume self.can_step(from, to, team) && !self.is_occupied(to) }
         }
@@ -525,13 +543,12 @@ pub fn reachable_by(start: Hex, move_range: i32) -> Set[Hex] can {Step} {
 
 /// `x` with no decimals, a half rounding to the even neighbour as Rust's `{:.0}` does.
 /// What a unit is, for display (`GameState.unit_role`).
-pub enum Role { Settler, Worker, Troop(UnitType) }
+pub enum Role { Settler, Troop(UnitType) }
 
 impl Role {
     pub fn name(self) -> str {
         match self {
             Role.Settler => "SETTLER",
-            Role.Worker => "WORKER",
             Role.Troop(t) => match t {
                 UnitType.Melee => "MELEE",
                 UnitType.Ranged => "RANGED",

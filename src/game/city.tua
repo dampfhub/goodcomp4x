@@ -302,9 +302,6 @@ impl GameState {
                 let (q, r) = roads[k];
                 self.roads.insert(Hex.new(sign * q, sign * r));
             }
-            let worker_id = self.take_unit_id();
-            self.units.push(Unit.new(worker_id, Hex.new(sign * 4, sign * 2), team, UnitType.Melee));
-            self.workers.insert(worker_id);
         }
         for i in 0..self.cities.len() { self.auto_assign_city(i); }
         self.notice = text(fn() can {Out} { Out.put("C CITY - SPACE HOLD OR END TURN - F1 COMBAT - F2 CITIES"); });
@@ -371,10 +368,6 @@ impl GameState {
             let id = self.take_unit_id();
             self.units.push(Unit.new(id, pos, team, UnitType.Melee));
             self.settlers.insert(id);
-            let worker_id = self.take_unit_id();
-            let worker_pos = Hex.new(pos.q, pos.r + if team == Team.Blue { 1 } else { -1 });
-            self.units.push(Unit.new(worker_id, worker_pos, team, UnitType.Melee));
-            self.workers.insert(worker_id);
         }
         let scouts = [(Team.Blue, Hex.new(-3, -1)), (Team.Red, Hex.new(3, 1))];
         for s in 0..2 {
@@ -401,37 +394,5 @@ impl GameState {
     /// Takes the unit with `id` off the map.
     pub fn remove_unit(&mut self, id: u32) {
         handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume u.id != id } }
-    }
-
-    /// R or the Build Road button: a road on the selected worker's hex.
-    pub fn build_worker_road_selected(&mut self) {
-        if self.is_resolving() { return; }
-        let Option.Some(i) = self.selected else { return; };
-        let (unit_id, unit_pos) = (self.units[i].id, self.units[i].pos);
-        if !self.workers.contains(unit_id) {
-            self.set_notice("ONLY A WORKER BUILDS ROADS");
-            return;
-        }
-        self.roads.insert(unit_pos);
-        self.set_notice("DIRT ROAD BUILT - IT LOWERS LOGISTICS COST");
-    }
-
-    /// I or the Improve button: a mine on hills, else a farm, on the selected worker's hex.
-    pub fn improve_worker_tile_selected(&mut self) {
-        if self.is_resolving() { return; }
-        let Option.Some(i) = self.selected else { return; };
-        let (unit_id, unit_pos, unit_team) = (self.units[i].id, self.units[i].pos, self.units[i].team);
-        if !self.workers.contains(unit_id) {
-            self.set_notice("ONLY A WORKER IMPROVES TILES");
-            return;
-        }
-        let enemy_site = match self.sites.get(unit_pos) { Option.Some(site) => site.team != unit_team, Option.None => false };
-        if enemy_site {
-            self.set_notice("THIS TILE BELONGS TO THE ENEMY - NO IMPROVEMENT POSSIBLE");
-            return;
-        }
-        let (food, production, kind) = if self.grid.tile(unit_pos).hills { (1, 4, SiteKind.Mine) } else { (4, 0, SiteKind.Farm) };
-        self.sites.insert(unit_pos, Site { team: unit_team, food, production, kind });
-        self.notice = text(fn() can {Out} { Out.put(kind.name()); Out.put(" BUILT"); });
     }
 }

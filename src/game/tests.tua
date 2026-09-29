@@ -489,11 +489,11 @@ pub fn open_neighbor(game: &GameState, hex: Hex) -> Option[Hex] {
     Option.None
 }
 
-/// Whether no unit needs orders and no city needs a build. `pending() == (0, 0)` has no `Eq`
-/// to call: a tuple has no `impl Eq`.
+/// Whether no unit needs orders, no city needs a build and no worker a job.
+/// `pending() == (0, 0, 0)` has no `Eq` to call: a tuple has no `impl Eq`.
 pub fn nothing_pending(game: &GameState) -> bool {
-    let (units, cities) = game.pending();
-    units == 0 && cities == 0
+    let (units, cities, workers) = game.pending();
+    units == 0 && cities == 0 && workers == 0
 }
 
 fn blue_count(game: &GameState) -> i32 {
@@ -573,7 +573,9 @@ fn turn_waits_for_city_builds_but_not_citizens() {
         let mut game = GameState.city_scenario();
         handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team != Team.Blue } }
         game.selected = Option.None;
-        assert(game.pending().0 == 0 && game.pending().1 == 1);
+        // A city with nothing to build, and its worker idle at home.
+        let (units, cities, workers) = game.pending();
+        assert(units == 0 && cities == 1 && workers == 1);
 
         // Space opens the city that needs a build instead of ending the turn.
         game.hold_or_end_turn();
@@ -581,6 +583,13 @@ fn turn_waits_for_city_builds_but_not_citizens() {
         assert(game.selected_city == Option.Some(0));
 
         game.queue_selected_city_unit(BuildUnit.Melee);
+        let (units, cities, workers) = game.pending();
+        assert(units == 0 && cities == 0 && workers == 1);
+        // Then the worker menu, where Space lets the worker sleep.
+        game.hold_or_end_turn();
+        assert(game.worker_mode && !game.is_resolving());
+        game.hold_or_end_turn();
+        assert(!game.worker_mode);
         assert(nothing_pending(&game));
         game.hold_or_end_turn();
         assert(game.is_resolving());

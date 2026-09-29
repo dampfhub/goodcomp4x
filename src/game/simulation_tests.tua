@@ -92,6 +92,20 @@ fn check_invariants(game: &GameState) can {Assert} {
         // One unit per hex, except a contest: exactly two enemies.
         assert(here == 1 || (here == 2 && enemies));
     }
+    for w in 0..game.field_workers.len() {
+        let worker = game.field_workers[w];
+        // Worker ids are unit ids' neighbours: unique across both.
+        assert(ids.insert(worker.id as i64));
+        assert(game.can_enter(worker.pos));
+        assert(game.can_enter(worker.base));
+        // Sharing a hex with an enemy, it would have been captured.
+        assert(game.enemy_of_team_at(worker.pos, worker.team).is_none());
+        assert(game.cities[worker.home].team == worker.team);
+    }
+    for k in 0..game.structures.len() {
+        let Option.Some(hex) = game.structures.key_at(k) else { continue; };
+        assert(game.city_at(hex).is_none());
+    }
     for c in 0..game.cities.len() {
         let city = &game.cities[c];
         assert(city.population >= 1);

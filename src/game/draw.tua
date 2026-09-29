@@ -338,7 +338,9 @@ impl GameState {
         self.push_rivers(&mut out);
 
         self.push_city_map(&mut out);
+        self.push_structures(&fog, &mut out);
         self.push_fog(&fog, view_min, view_max, &mut out);
+        self.push_worker_reach(&mut out);
         self.push_order_markers(&fog, &mut out);
 
         for idx in 0..self.units.len() {
@@ -360,6 +362,8 @@ impl GameState {
                 push_turn_badge(at, &tag, QUEUE_TAG_SCALE * scale, unit.team.color(), &mut out);
             }
         }
+
+        self.push_field_workers(&fog, &mut out);
 
         self.push_tile_yields(&mut out);
         self.push_effects(&mut out);
@@ -1157,7 +1161,6 @@ pub struct UnitLook { icon: UnitIcon, civilian: bool }
 impl GameState {
     pub fn unit_look(&self, unit: &Unit) -> UnitLook {
         if self.settlers.contains(unit.id) { return UnitLook { icon: UnitIcon.Flag, civilian: true }; }
-        if self.workers.contains(unit.id) { return UnitLook { icon: UnitIcon.Shovel, civilian: true }; }
         UnitLook { icon: UnitIcon.of(unit.unit_type), civilian: false }
     }
 }

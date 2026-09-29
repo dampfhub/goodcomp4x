@@ -17,6 +17,9 @@ use game.draw.QUEUE_LINE_ALPHA;
 use game.draw.queue_plans;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
+use game.hex.edge;
+use game.workers.Structure;
+use game.workers.StructureKind;
 use game.mesh.Color;
 use renderer.pipelines.MeshVertex;
 use game.orders.ClickMode;
@@ -341,8 +344,8 @@ fn a_queued_unit_does_not_hold_up_the_turn() {
         assert(!g.needs_orders(0));
         g.selected = Option.Some(1);
         g.hold_selected_unit();
-        let (units, cities) = g.pending();
-        assert(units == 0 && cities == 0);
+        let (units, cities, workers) = g.pending();
+        assert(units == 0 && cities == 0 && workers == 0);
 
         // Next turn it follows the queue's second turn and still doesn't wait for orders,
         // while the unit that held does, and the turn starts on it.
@@ -730,5 +733,31 @@ fn a_queue_of_this_turn_alone_draws_a_plain_ghost_and_arrow() {
         assert(count_color(&game.build_vertices(), line) > 0);
         // The ghost moves to the plan's end.
         assert(count_color(&game.build_vertices(), ghost) > 0);
+    });
+}
+
+@test
+fn a_far_shift_click_walks_around_a_wall() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = open_field(&[UnitType.Melee]);
+        // A wall from (-2, -1) to (-2, 2) along their east edges, so the straight way east is
+        // shut and the unit has to go round.
+        for r in -1..=2 {
+            let across = [Hex.new(-1, r), Hex.new(-1, r - 1)];
+            for k in 0..2 { let _w = g.barriers.insert(edge(Hex.new(-2, r), across[k]), Structure { kind: StructureKind.Wall, team: Team.Red }); }
+        }
+        g.selected = Option.Some(0);
+        let far = Hex.new(0, 0);
+        assert(g.queue_move(far));
+        assert(g.units[0].plan_end() == far);
+        // The detour takes longer than the straight line.
+        assert(g.units[0].plan_len() > g.units[0].pos.distance(far));
+        for turn in 0..g.units[0].plan_len() {
+            let (from, to) = (g.units[0].pos_after(turn), g.units[0].pos_after(turn + 1));
+            assert(g.can_step(from, to, Team.Blue));
+        }
+        let turns = g.units[0].plan_len();
+        for _ in 0..turns { play_turn(&mut g); }
+        assert(g.units[0].pos == far);
     });
 }

@@ -68,6 +68,13 @@ impl GameState {
     /// Deselects whatever is selected, a unit or a group, and disarms a tray action. Answers
     /// whether anything was selected.
     pub fn clear_selection(&mut self) -> bool {
+        // A worker job being placed stops first, leaving the worker menu open.
+        if self.placing_job.is_some() {
+            self.placing_job = Option.None;
+            self.hovered_job = Option.None;
+            self.set_notice("STOPPED PLACING - PICK ANOTHER JOB, OR W WHEN DONE");
+            return true;
+        }
         let had = self.selected.is_some() || !self.group.is_empty();
         self.selected = Option.None;
         self.group.clear();
@@ -109,6 +116,13 @@ impl GameState {
     /// A click on the map, once the UI has had its turn at it.
     pub fn handle_map_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) can {Log, Rand} {
         if self.is_resolving() { return; }
+        if self.paint_job_at(cursor, screen_size, false) { return; }
+        // In the worker menu, clicks place the armed job (`paint_job_at`, above); with none
+        // armed, they do nothing.
+        if self.worker_mode {
+            self.set_notice("PICK A JOB TO PLACE FROM THE WORKER MENU - W WHEN DONE");
+            return;
+        }
         let armed = self.ui_click_mode;
         self.ui_click_mode = Option.None;
         let mode = match (mode, armed) {
@@ -289,14 +303,19 @@ impl GameState {
     /// whatever else does. Once nothing does, ends the turn.
     pub fn hold_or_end_turn(&mut self) can {Log} {
         if self.is_resolving() { return; }
+        // In the worker menu: the workers there rest, and the turn moves on.
+        if self.worker_mode {
+            self.sleep_workers();
+            return;
+        }
         if !self.group.is_empty() {
             self.hold_group();
             return;
         }
         let selected_needs_orders = match self.selected { Option.Some(i) => self.needs_orders(i), Option.None => false };
         let selected_holding = match self.selected { Option.Some(i) => self.units[i].holding, Option.None => false };
-        let (units, cities) = self.pending();
-        if selected_needs_orders || selected_holding || units != 0 || cities != 0 {
+        let (units, cities, workers) = self.pending();
+        if selected_needs_orders || selected_holding || units != 0 || cities != 0 || workers != 0 {
             self.hold_selected_unit();
         } else {
             self.end_planning();
@@ -353,7 +372,6 @@ impl GameState {
         self.disband_armed = Option.None;
         let unit = self.units.remove(idx);
         let _was = self.settlers.remove(unit.id);
-        let _was = self.workers.remove(unit.id);
         let _was = self.player_controlled_units.remove(unit.id);
         info(fn() can {Out} { unit.show(); Out.put(" disbanded"); });
         let role = self.unit_role(&unit).name();
@@ -368,7 +386,7 @@ impl GameState {
     /// How many of the player's units still need orders, and how many of their cities still
     /// need something to build. The turn can't end until both are zero; assigning citizens
     /// never holds it up.
-    pub fn pending(&self) -> (i32, i32) {
+    pub fn pending(&self) -> (i32, i32, i32) {
         let mut units = 0;
         for i in 0..self.units.len() {
             if self.is_player_controlled(i) && self.needs_orders(i) { units = units + 1; }
@@ -377,7 +395,9 @@ impl GameState {
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) { cities = cities + 1; }
         }
-        (units, cities)
+        let mut workers = 0;
+        for i in 0..self.cities.len() { workers = workers + self.idle_workers(i) as i32; }
+        (units, cities, workers)
     }
 
     /// Tab: selects the next unit that still needs orders, or just the next unit if they all
@@ -404,12 +424,16 @@ impl GameState {
     /// that needs something to build; failing that, clears the selection and waits for the
     /// player to end the turn.
     pub fn select_next_or_end_turn(&mut self, after: Option[i32]) {
-        // In the turn strip's order: production first, then the units.
+        // In the turn strip's order: production first, then idle workers, then the units.
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) {
                 self.open_city(i);
                 return;
             }
+        }
+        if let Option.Some(city) = self.next_idle_workers() {
+            self.open_worker_menu(city);
+            return;
         }
         if let Option.Some(next) = self.next_unit_needing_orders(after) {
             self.select_and_focus(Option.Some(next));
@@ -421,6 +445,7 @@ impl GameState {
     /// Selects `idx` and glides the camera to it. Used when the game picks the unit, not when
     /// the player clicks one they can already see.
     fn select_and_focus(&mut self, idx: Option[i32]) {
+        if idx.is_some() { self.worker_mode = false; }
         self.selected = idx;
         self.group.clear();
         self.ui_click_mode = Option.None;
@@ -469,7 +494,7 @@ impl GameState {
         let unit = &self.units[idx];
         if unit.holding || unit.guarding || unit.has_queue() || unit.planned_board.is_some() || self.rival_of(idx).is_some() { return false; }
         let may_move = unit.planned_move.is_none() && unit.stats().move_range > 0;
-        let may_attack = unit.planned_attack.is_none() && unit.can_attack() && !self.workers.contains(unit.id);
+        let may_attack = unit.planned_attack.is_none() && unit.can_attack();
         may_move || may_attack
     }
 
@@ -495,6 +520,11 @@ impl GameState {
         if self.is_resolving() { return; }
         if self.ui_click_mode.is_some() {
             self.ui_click_mode = Option.None;
+            return;
+        }
+        if self.placing_job.is_some() {
+            self.placing_job = Option.None;
+            self.hovered_job = Option.None;
             return;
         }
         if clear {
@@ -561,7 +591,7 @@ impl GameState {
     /// move-then-attack works. Mountains can't be targeted since no one can stand there, and a
     /// unit locked in a contested hex can only fight its rival there.
     pub fn try_queue_attack(&mut self, idx: i32, target: Hex) {
-        let unable = !self.units[idx].can_attack() || self.workers.contains(self.units[idx].id) || self.rival_of(idx).is_some();
+        let unable = !self.units[idx].can_attack() || self.rival_of(idx).is_some();
         let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
         let shoots_ships = self.units[idx].unit_type == UnitType.Ranged || self.units[idx].unit_type == UnitType.Siege;
         if water && !self.units[idx].is_naval() && !shoots_ships {

@@ -2,6 +2,7 @@
 //! role. All units in a step act simultaneously.
 
 use std.collections.Map;
+use std.core.Eq;
 use std.core.Keep;
 use std.fmt.Show;
 use std.fmt.show_f64_fixed;
@@ -72,6 +73,21 @@ pub const RESOLUTION_ORDER: [(UnitType, Phase); 18] = [
     (UnitType.BombardShip, Phase.Attack),
 ];
 
+/// One step of a turn: a unit type's moves or attacks, or, after all of those, the workers'
+/// (`workers.tua`). Workers go last so they're exposed: they walk and work only once every unit
+/// has acted.
+pub enum TurnStep { Units(UnitType, Phase), Workers }
+
+impl Eq for TurnStep {
+    fn eq(self, other: TurnStep) -> bool {
+        match (self, other) {
+            (TurnStep.Units(a, p), TurnStep.Units(b, q)) => a == b && p == q,
+            (TurnStep.Workers, TurnStep.Workers) => true,
+            _ => false,
+        }
+    }
+}
+
 /// Where `unit_type` falls (1 = first) among all the steps of `phase`. Every unit type has a
 /// move and an attack step, which a test checks, so the `0` after the loop is never reached.
 pub fn step_rank(unit_type: UnitType, phase: Phase) -> u32 {
@@ -110,7 +126,11 @@ impl GameState {
 
         let teams = self.ai_teams();
         for t in 0..teams.len() { self.plan_ai_turn(teams[t]); }
-        for i in 0..18 { self.pending_steps.push_back(RESOLUTION_ORDER[i]); }
+        for i in 0..18 {
+            let (unit_type, phase) = RESOLUTION_ORDER[i];
+            self.pending_steps.push_back(TurnStep.Units(unit_type, phase));
+        }
+        self.pending_steps.push_back(TurnStep.Workers);
 
         // Pause before the first step so the last order placed can be seen.
         self.step_timer = STEP_INTERVAL;
@@ -132,8 +152,11 @@ impl GameState {
         if self.step_timer > 0.0 && !self.settings.instant_playback { return; }
 
         if self.settings.instant_playback { self.recent_actors.clear(); }
-        while let Option.Some((unit_type, phase)) = self.pending_steps.pop_front() {
-            let actors = self.resolve_step(unit_type, phase);
+        while let Option.Some(step) = self.pending_steps.pop_front() {
+            let actors = match step {
+                TurnStep.Units(unit_type, phase) => self.resolve_step(unit_type, phase),
+                TurnStep.Workers => self.resolve_workers(),
+            };
             if !actors.is_empty() {
                 self.highlight_timer = HIGHLIGHT_DURATION;
                 if self.settings.instant_playback {
@@ -160,6 +183,7 @@ impl GameState {
                 self.units[i].end_turn();
             }
             self.advance_queues();
+            for c in 0..self.cities.len() { self.cities[c].workers_resting = false; }
             let turn = self.turn;
             info(fn() can {Out} { Out.put("=== turn "); show_u64(turn as u64); Out.put(" resolved ==="); });
             self.select_next_or_end_turn(Option.None);
@@ -258,7 +282,6 @@ impl GameState {
         let mut actors: Vec[i32] = Vec.new();
         for i in 0..self.units.len() {
             if self.units[i].unit_type != unit_type { continue; }
-            if phase == Phase.Attack && self.workers.contains(self.units[i].id) { continue; }
             let acts = match phase {
                 Phase.Move => self.units[i].planned_move.is_some(),
                 // Units in a contested hex fight whether or not they have orders.
@@ -402,6 +425,8 @@ impl GameState {
             if moving[m] { self.units[i].pos = dests[m]; }
             self.units[i].planned_move = Option.None;
         }
+        // Stepping onto an enemy worker captures it.
+        self.capture_workers();
     }
 
     /// Whether unit `i` can still reach `dest` this step, walls, others' gates and ground (or
@@ -436,6 +461,8 @@ impl GameState {
     /// the one there at planning time. A unit in a contested hex fights its rival instead.
     fn resolve_attacks(&mut self, attackers: &Vec[i32]) can {Log, Rand} {
         let mut engagements: Vec[Engagement] = Vec.new();
+        // Workers the step kills, by id.
+        let mut killed_workers: Vec[u32] = Vec.new();
         // Attacks on a Barracks or a Coastal Battery: (attacker, city, damage scale).
         let mut barracks_hits: Vec[(i32, i32, f32)] = Vec.new();
         let mut battery_hits: Vec[(i32, i32, f32)] = Vec.new();
@@ -486,6 +513,23 @@ impl GameState {
                 } else if let Option.Some(city) = self.enemy_coastal_battery_at(target, attacker.team) {
                     battery_hits.push((a, city, scale));
                     hit_any = true;
+                }
+            }
+            // With nothing else to hit, the attack kills any enemy workers out on its hexes. A unit
+            // on a worker's hex shields it.
+            if !hit_any {
+                let mut hexes: Vec[Hex] = Vec.new();
+                hexes.push(target);
+                if volley {
+                    let around = target.neighbors();
+                    for h in 0..6 { hexes.push(around[h]); }
+                }
+                for h in 0..hexes.len() {
+                    let hit = self.enemy_workers_at(hexes[h], attacker.team);
+                    for w in 0..hit.len() {
+                        killed_workers.push(self.field_workers[hit[w]].id);
+                        hit_any = true;
+                    }
                 }
             }
             if !hit_any {
@@ -563,6 +607,13 @@ impl GameState {
         }
 
         for s in 0..shots.len() { self.play(shots[s]); }
+        for w in 0..self.field_workers.len() {
+            if killed_workers.contains(self.field_workers[w].id) {
+                let at = self.field_workers[w].pos.to_world();
+                self.play(Effect.Damage(at, 1.0, true));
+            }
+        }
+        self.kill_workers(&killed_workers);
         for c in 0..self.cities.len() {
             let taken = barracks_damage[c];
             if taken <= 0.0 { continue; }

@@ -54,6 +54,7 @@ use game.GameState;
 use renderer.Atlas;
 use game.font.atlas;
 use game.city.Building;
+use game.workers.JobKind;
 use game.city.BuildUnit;
 use game.orders.ClickMode;
 use game.scenario.Scenario;
@@ -89,6 +90,8 @@ struct Input {
     left_dragging: bool,
     /// Where a drag selection box started, while the button is down.
     box_start: Option[Vec2],
+    /// The left button went down placing a worker job: moves while it's held place it too.
+    painting_jobs: bool,
     mods: Modifiers,
     closed: bool,
 }
@@ -100,6 +103,7 @@ fn forget_gestures(input: &mut Input) {
     input.panning = false;
     input.cursor = Option.None;
     input.box_start = Option.None;
+    input.painting_jobs = false;
 }
 
 /// Applies one window event to the game, answering what the window should do about it.
@@ -113,6 +117,11 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
             // not a click; only the middle button pans.
             if let Option.Some(press) = input.left_press {
                 if !input.left_dragging && pos.distance(press.origin) >= DRAG_THRESHOLD { input.left_dragging = true; }
+            }
+            if input.painting_jobs {
+                let _placing = game.paint_job_at(pos, input.size, false);
+                input.cursor = Option.Some(pos);
+                return WindowRequest.Nothing;
             }
             if input.panning && input.size.y > 0.0 {
                 if let Option.Some(last) = input.cursor { game.camera.pan(pos.sub(last), input.size); }
@@ -128,6 +137,12 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
         Event.MouseDown(b) => match b {
             Button.Left => {
                 if let Option.Some(cursor) = input.cursor {
+                    // With a job armed, the press (and any drag) places it on tiles or hex
+                    // edges instead of clicking or panning.
+                    if game.paint_job_at(cursor, input.size, true) {
+                        input.painting_jobs = true;
+                        return WindowRequest.Nothing;
+                    }
                     // Left-click moves; Shift adds the move to the queue.
                     let mode = if input.mods.shift { ClickMode.QueueMove } else if input.mods.control { ClickMode.Swap } else { ClickMode.Normal };
                     input.left_press = Option.Some(Press { origin: cursor, mode, may_click: !game.is_resolving() });
@@ -147,6 +162,10 @@ fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest 
         },
         Event.MouseUp(b) => match b {
             Button.Left => {
+                if input.painting_jobs {
+                    input.painting_jobs = false;
+                    return WindowRequest.Nothing;
+                }
                 let boxed = input.box_start;
                 input.box_start = Option.None;
                 if let (Option.Some(start), Option.Some(end)) = (boxed, input.cursor) {
@@ -200,8 +219,9 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
             'A' => game.auto_assign_selected_city(),
             'M' => game.choose_move_action(),
             'X' => game.choose_attack_action(),
-            'R' => game.build_worker_road_selected(),
-            'I' => game.improve_worker_tile_selected(),
+            'R' => game.arm_worker_job(JobKind.Road),
+            'I' => game.arm_worker_job(JobKind.Improve),
+            'W' => game.toggle_worker_mode(),
             'F' => game.found_city_selected(),
             'Y' => game.toggle_yields(),
             'G' => game.toggle_guard(),
@@ -326,6 +346,7 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
             left_press: Option.None,
             left_dragging: false,
             box_start: Option.None,
+            painting_jobs: false,
             mods: Modifiers { shift: false, control: false, alt: false },
             closed: false,
         };

@@ -45,13 +45,21 @@ impl GameState {
     /// beyond not sending two units to the same hex, and no retreating.
     pub fn plan_ai_turn(&mut self, team: Team) {
         self.found_first_city(team);
+        // A city that has lost every worker trains a new one first.
+        for city in 0..self.cities.len() {
+            let lost_all = {
+                let c = &self.cities[city];
+                c.team == team && c.workers == 0 && self.workers_out(city) == 0 && !c.queue.contains(Build.Worker)
+            };
+            if lost_all { self.cities[city].queue.insert(0, Build.Worker); }
+        }
+        self.plan_ai_workers(team);
         for idx in 0..self.units.len() {
             let id = self.units[idx].id;
             if self.units[idx].team != team
                 || self.rival_of(idx).is_some()
                 || self.player_controlled_units.contains(id)
                 || self.settlers.contains(id)
-                || self.workers.contains(id)
             {
                 continue;
             }
@@ -73,7 +81,7 @@ impl GameState {
             } else if !capture && unit.pos.distance(target) <= stats.attack_range {
                 unit.pos
             } else {
-                let to_target = if unit.is_naval() { Map.new() } else { self.steps_to(target, &reachable) };
+                let to_target = if unit.is_naval() { Map.new() } else { self.steps_to(target, team, &reachable) };
                 let mut best: Option[Hex] = Option.None;
                 let mut best_steps = UNREACHED;
                 for hh in reachable.each() {
@@ -209,7 +217,7 @@ impl GameState {
             for k in 0..ring.len() {
                 let around = ring[k].neighbors();
                 for n in 0..6 {
-                    if self.grid.is_passable(around[n]) && seen.insert(around[n]) { next.push(around[n]); }
+                    if self.can_step(ring[k], around[n], team) && seen.insert(around[n]) { next.push(around[n]); }
                 }
             }
             ring = next;
@@ -217,10 +225,11 @@ impl GameState {
         nearest_enemy
     }
 
-    /// Steps on foot from each of `wanted` to `target`, around impassable terrain but ignoring
-    /// units, since those will have moved by the time anyone gets there. Searches outward from
-    /// `target` only until every one of `wanted` is found; any it can't reach are left out.
-    fn steps_to(&self, target: Hex, wanted: &Set[Hex]) -> Map[Hex, i32] {
+    /// Steps on foot for `team` from each of `wanted` to `target`, around impassable terrain,
+    /// walls and others' gates but ignoring units, since those will have moved by the time anyone
+    /// gets there. Searches outward from `target` only until every one of `wanted` is found; any
+    /// it can't reach are left out.
+    fn steps_to(&self, target: Hex, team: Team, wanted: &Set[Hex]) -> Map[Hex, i32] {
         let mut distances: Map[Hex, i32] = Map.new();
         let _old = distances.insert(target, 0);
         let mut queue: Deque[Hex] = Deque.new();
@@ -233,7 +242,7 @@ impl GameState {
             let around = hex.neighbors();
             for k in 0..6 {
                 let neighbor = around[k];
-                if self.grid.is_passable(neighbor) && !distances.has(neighbor) {
+                if self.can_step(hex, neighbor, team) && !distances.has(neighbor) {
                     let _old = distances.insert(neighbor, next_distance);
                     queue.push_back(neighbor);
                     if wanted.contains(neighbor) { left = left - 1; }

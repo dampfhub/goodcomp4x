@@ -1,0 +1,598 @@
+//! Workers as played: their reach, the worker menu, queuing jobs on tiles and edges, walking
+//! out, working and coming home, capture and death, walls, gates, outposts and forts, and the
+//! AI's workers.
+
+use std.collections.Map;
+use std.core.Keep;
+use std.str.eq as str_eq;
+use std.str.starts_with;
+use std.str.contains;
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.turn.TurnStep;
+use game.city.Build;
+use game.city.Building;
+use game.city.Site;
+use game.city.SiteKind;
+use game.hex.Hex;
+use game.hex.edge;
+use game.tests.sandbox;
+use game.turn.Phase;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+use game.workers.FieldWorker;
+use game.workers.FORT_DEFENSE;
+use game.workers.JobKind;
+use game.workers.Structure;
+use game.workers.StructureKind;
+use game.workers.WorkerJob;
+
+/// The Cities scenario with no units, the fog lifted, and Blue's city (index 0, one worker at
+/// home) at (-4, 0).
+fn cities() -> GameState can {Log} {
+    let mut game = GameState.city_scenario();
+    game.units.clear();
+    game.selected = Option.None;
+    game.fog_of_war = false;
+    game
+}
+
+/// An open, unimproved tile `distance` steps from Blue's city, the smallest `(q, r)`.
+fn bare_tile(game: &GameState, distance: i32) -> Hex {
+    let city = game.cities[0].pos;
+    let mut best: Option[Hex] = Option.None;
+    for hh in game.grid.hexes() {
+        let h = *hh;
+        if h.distance(city) != distance || !game.grid.is_passable(h) || game.sites.has(h) || game.improvement(h).is_none() || game.roads.contains(h) { continue; }
+        let better = match best { Option.None => true, Option.Some(b) => h.q < b.q || (h.q == b.q && h.r < b.r) };
+        if better { best = Option.Some(h); }
+    }
+    best.unwrap_or(city)
+}
+
+fn queue(game: &mut GameState, hex: Hex, kind: JobKind) {
+    game.placing_job = Option.Some(kind);
+    let _queued = game.place_job_at(hex, Option.None);
+    game.placing_job = Option.None;
+}
+
+fn notice_is(game: &GameState, want: str) -> bool {
+    let n = &game.notice;
+    str_eq(n, want)
+}
+
+fn notice_has(game: &GameState, want: str) -> bool {
+    let n = &game.notice;
+    contains(n, want)
+}
+
+@test
+fn workers_reach_three_tiles_from_a_city_or_next_to_a_road() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        assert(game.cities[0].workers == 1);
+        // Blue's city is at (-4, 0); (0, 0) is four away, with no road by it.
+        let far = Hex.new(0, 0);
+        assert(game.cities[0].pos.distance(far) == 4);
+        assert(!game.in_worker_reach(PLAYER_TEAM, far));
+        let Option.Some(reason) = game.job_unavailable(far, JobKind.Road) else { assert(false); return; };
+        assert(starts_with(&reason, "OUT OF REACH"));
+        let near = Hex.new(-1, 0);
+        assert(game.in_worker_reach(PLAYER_TEAM, near));
+
+        // A road next to it brings it into reach, and each road reaches on.
+        game.roads.insert(near);
+        assert(game.in_worker_reach(PLAYER_TEAM, far));
+        assert(game.job_unavailable(far, JobKind.Road).is_none());
+        // Two past the road.
+        assert(!game.in_worker_reach(PLAYER_TEAM, Hex.new(1, 1)));
+        // Red's reach is its own.
+        assert(!game.in_worker_reach(Team.Red, Hex.new(-4, 4)));
+    });
+}
+
+@test
+fn the_worker_menu_places_jobs_and_ends_with_escape_or_a_selection() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.explore();
+        game.select_city();
+        game.toggle_worker_mode();
+        assert(game.worker_mode);
+        // The city view closes.
+        assert(game.selected_city.is_none());
+        assert(game.selected.is_none());
+        // On the city with idle workers.
+        assert(game.worker_menu_city == Option.Some(0));
+
+        // R picks roads; Escape puts them down, and again closes the menu.
+        game.arm_worker_job(JobKind.Road);
+        assert(game.placing_job == Option.Some(JobKind.Road));
+        game.press_escape();
+        assert(game.placing_job.is_none());
+        assert(game.worker_mode);
+        game.press_escape();
+        assert(!game.worker_mode);
+        // Escape closed the menu, not more.
+        assert(!game.settings_open);
+
+        // R with the menu closed opens it with roads picked.
+        game.arm_worker_job(JobKind.Road);
+        assert(game.worker_mode);
+        assert(game.placing_job == Option.Some(JobKind.Road));
+
+        // Selecting a unit ends it; so does opening a city.
+        let mut unit = 0 - 1;
+        for i in 0..game.units.len() { if unit < 0 && game.units[i].team == PLAYER_TEAM { unit = i; } }
+        let mut one: Vec[i32] = Vec.new();
+        one.push(unit);
+        game.set_selection(one);
+        assert(!game.worker_mode);
+        game.toggle_worker_mode();
+        game.select_city();
+        assert(!game.worker_mode);
+
+        // No city, no workers.
+        let mut game = GameState.new();
+        game.toggle_worker_mode();
+        assert(!game.worker_mode);
+        assert(notice_has(&game, "FOUND A CITY"));
+    });
+}
+
+@test
+fn a_job_can_not_go_on_an_unexplored_tile() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let unseen = Hex.new(-2, 3);
+        let _gone = game.memory.remove(unseen);
+        game.fog_of_war = true;
+        assert(!game.is_explored(unseen));
+        game.placing_job = Option.Some(JobKind.Road);
+        assert(!game.place_job_at(unseen, Option.None));
+        assert(notice_is(&game, "WORKERS CAN'T WORK AN UNEXPLORED TILE"));
+    });
+}
+
+@test
+fn sleeping_workers_rest_for_the_turn_and_wait_again_the_next() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team != PLAYER_TEAM } }
+        game.cities[0].queue.push(Build.Worker);
+        assert(game.idle_workers(0) == 1);
+        // The turn order comes to them: the worker menu opens.
+        game.select_next_or_end_turn(Option.None);
+        assert(game.worker_mode);
+        game.sleep_workers();
+        assert(game.idle_workers(0) == 0);
+        // Nothing else idle: the menu closes.
+        assert(!game.worker_mode);
+        // End the turn; next turn they wait again.
+        game.end_planning();
+        while game.is_resolving() { game.update(1.0); }
+        assert(!game.cities[0].workers_resting);
+        assert(game.idle_workers(0) == 1);
+    });
+}
+
+@test
+fn a_tile_takes_one_job_at_a_time() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let around = game.cities[0].pos.neighbors();
+        let mut tile: Option[Hex] = Option.None;
+        for k in 0..6 {
+            let h = around[k];
+            if tile.is_none() && game.job_unavailable(h, JobKind.Road).is_none() && game.job_unavailable(h, JobKind.Improve).is_none() { tile = Option.Some(h); }
+        }
+        let Option.Some(tile) = tile else { assert(false); return; };
+        game.queue_worker_job_at(tile, JobKind.Improve);
+        assert(game.tile_job_at(PLAYER_TEAM, tile) == Option.Some(JobKind.Improve));
+        let Option.Some(reason) = game.job_unavailable(tile, JobKind.Road) else { assert(false); return; };
+        assert(str_eq(&reason, "IMPROVE IS QUEUED HERE - ONE JOB AT A TIME"));
+        game.queue_worker_job_at(tile, JobKind.Road);
+        // No road queued.
+        assert(game.cities[0].worker_jobs.len() == 1);
+        // A wall on one of its edges is another matter.
+        assert(game.job_unavailable(tile, JobKind.Wall).is_none());
+    });
+}
+
+@test
+fn a_job_goes_to_the_nearest_city_once() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let hex = bare_tile(&game, 2);
+        queue(&mut game, hex, JobKind.Road);
+        let road = WorkerJob.on_tile(hex, JobKind.Road);
+        assert(game.cities[0].worker_jobs.len() == 1 && game.cities[0].worker_jobs[0] == road);
+        queue(&mut game, hex, JobKind.Road);
+        // No duplicate.
+        assert(game.cities[0].worker_jobs.len() == 1);
+        let city = game.cities[0].pos;
+        queue(&mut game, city, JobKind.Fort);
+        // Not on a city.
+        assert(game.cities[0].worker_jobs.len() == 1);
+        assert(notice_has(&game, "CITY"));
+    });
+}
+
+@test
+fn new_placed_buildings_keep_worker_structures_off_their_tile() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let tile = bare_tile(&game, 2);
+        game.cities[0].set_placed_site(Building.FieldHospital, tile);
+        queue(&mut game, tile, JobKind.Improve);
+        assert(game.cities[0].worker_jobs.is_empty());
+        assert(notice_has(&game, "BUILDING"));
+        queue(&mut game, tile, JobKind.Fort);
+        assert(game.cities[0].worker_jobs.is_empty());
+    });
+}
+
+@test
+fn a_worker_walks_out_works_and_comes_home() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let hex = bare_tile(&game, 2);
+        queue(&mut game, hex, JobKind.Improve);
+
+        // One hex a turn: halfway, then there.
+        let _acted = game.resolve_workers();
+        assert(game.cities[0].workers == 0);
+        assert(game.field_workers.len() == 1);
+        assert(game.field_workers[0].pos.distance(hex) == 1);
+        let _acted = game.resolve_workers();
+        assert(game.field_workers[0].pos == hex);
+        assert(game.field_workers[0].work_left == Option.Some(3));
+        // Three turns of work.
+        for _ in 0..2 {
+            let _acted = game.resolve_workers();
+            assert(!game.sites.has(hex));
+        }
+        let _acted = game.resolve_workers();
+        let Option.Some(site) = game.sites.get(hex) else { assert(false); return; };
+        assert(site.team == PLAYER_TEAM);
+        assert(game.field_workers[0].job.is_none());
+        // And home, two turns back.
+        let _acted = game.resolve_workers();
+        assert(game.field_workers.len() == 1);
+        let _acted = game.resolve_workers();
+        assert(game.field_workers.is_empty());
+        assert(game.cities[0].workers == 1);
+    });
+}
+
+@test
+fn a_connected_work_camp_extends_the_reach() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        // Five from Blue's city at (-4, 0), with no road by it.
+        let far = Hex.new(1, 0);
+        assert(!game.in_worker_reach(PLAYER_TEAM, far));
+        let camp = Hex.new(-1, 0);
+        game.cities[0].set_placed_site(Building.WorkCamp, camp);
+        // Connected.
+        assert(game.routes(0).costs.has(camp));
+        let bases = game.worker_bases(PLAYER_TEAM);
+        assert(bases.len() == 2 && bases[0] == game.cities[0].pos && bases[1] == camp);
+        // Two from the camp.
+        assert(game.in_worker_reach(PLAYER_TEAM, far));
+        assert(game.job_unavailable(far, JobKind.Road).is_none());
+        // Four from it.
+        assert(!game.in_worker_reach(PLAYER_TEAM, Hex.new(2, -4)));
+    });
+}
+
+@test
+fn connected_work_camp_is_a_fast_base_for_nearby_jobs() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        game.roads.clear();
+        let camp = Hex.new(-3, 1);
+        let job = Hex.new(-2, 1);
+        game.cities[0].set_placed_site(Building.WorkCamp, camp);
+        assert(game.routes(0).costs.has(camp));
+        queue(&mut game, job, JobKind.Road);
+        let _acted = game.resolve_workers();
+        assert(game.field_workers[0].base == camp);
+        assert(game.field_workers[0].pos == job);
+        // Two turns of work.
+        let _acted = game.resolve_workers();
+        assert(!game.roads.contains(job));
+        let _acted = game.resolve_workers();
+        assert(game.roads.contains(job));
+        let _acted = game.resolve_workers();
+        assert(game.field_workers.is_empty());
+        assert(game.cities[0].workers == 1);
+    });
+}
+
+@test
+fn a_worker_takes_the_next_job_before_going_home() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let (first, second) = (bare_tile(&game, 1), bare_tile(&game, 2));
+        queue(&mut game, first, JobKind.Road);
+        queue(&mut game, second, JobKind.Road);
+        // A turn to get there, two of work.
+        for _ in 0..3 { let _acted = game.resolve_workers(); }
+        assert(game.roads.contains(first));
+        let Option.Some(job) = game.field_workers[0].job else { assert(false); return; };
+        assert(job.hex == second);
+    });
+}
+
+@test
+fn a_recalled_worker_heads_home_and_leaves_its_job_waiting() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let (first, second) = (bare_tile(&game, 2), bare_tile(&game, 1));
+        queue(&mut game, first, JobKind.Fort);
+        let _acted = game.resolve_workers();
+        let _acted = game.resolve_workers();
+        assert(game.field_workers[0].pos == first);
+        queue(&mut game, second, JobKind.Road);
+
+        let id = game.field_workers[0].id;
+        game.recall_worker(id);
+        // Its job back on top.
+        {
+            let jobs = &game.cities[0].worker_jobs;
+            assert(jobs.len() == 2 && jobs[0].kind == JobKind.Fort && jobs[1].kind == JobKind.Road);
+        }
+        // Home in two turns, taking neither job on the way.
+        let _acted = game.resolve_workers();
+        assert(game.field_workers[0].job.is_none());
+        let _acted = game.resolve_workers();
+        assert(game.field_workers.is_empty());
+        assert(game.cities[0].workers == 1);
+        assert(game.cities[0].worker_jobs.len() == 2);
+        assert(!game.structures.has(first));
+    });
+}
+
+@test
+fn workers_act_after_every_unit() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        game.settings.instant_playback = false;
+        game.resolve_turn();
+        let steps = game.pending_steps.len();
+        let Option.Some(last) = game.pending_steps.at(steps - 1) else { assert(false); return; };
+        assert(last == TurnStep.Workers);
+        for k in 0..steps - 1 {
+            let Option.Some(step) = game.pending_steps.at(k) else { assert(false); return; };
+            assert(match step { TurnStep.Units(_, _) => true, TurnStep.Workers => false });
+        }
+    });
+}
+
+/// A Blue worker at work on a bare tile, with a Red melee beside it.
+fn worker_beside_enemy() -> (GameState, Hex, i32) can {Log} {
+    let mut game = cities();
+    let hex = bare_tile(&game, 2);
+    game.field_workers.push(FieldWorker { id: 100, team: Team.Blue, home: 0, base: game.cities[0].pos, pos: hex, job: Option.Some(WorkerJob.on_tile(hex, JobKind.Fort)), work_left: Option.Some(3), recalled: false });
+    let around = hex.neighbors();
+    let mut beside = hex;
+    let mut found = false;
+    for k in 0..6 {
+        let h = around[k];
+        if !found && game.grid.is_passable(h) && game.city_at(h).is_none() { beside = h; found = true; }
+    }
+    game.units.push(Unit.new(200, beside, Team.Red, UnitType.Melee));
+    let red = game.units.len() - 1;
+    (game, hex, red)
+}
+
+@test
+fn an_enemy_stepping_onto_a_worker_captures_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, hex, red) = worker_beside_enemy();
+        let red_home = game.cities[1].workers;
+        game.units[red].planned_move = Option.Some(hex);
+        let _acted = game.resolve_step(UnitType.Melee, Phase.Move);
+        assert(game.units[red].pos == hex);
+        assert(game.field_workers.is_empty());
+        // Joins Red's city.
+        assert(game.cities[1].workers == red_home + 1);
+        // Its job goes back on the list.
+        assert(!game.cities[0].worker_jobs.is_empty() && game.cities[0].worker_jobs[0].hex == hex);
+    });
+}
+
+@test
+fn an_attack_kills_a_worker_unless_a_unit_shields_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, hex, red) = worker_beside_enemy();
+        game.units[red].planned_attack = Option.Some(hex);
+        let _acted = game.resolve_step(UnitType.Melee, Phase.Attack);
+        // Killed.
+        assert(game.field_workers.is_empty());
+
+        let (mut game, hex, red) = worker_beside_enemy();
+        game.units.push(Unit.new(300, hex, Team.Blue, UnitType.Armored));
+        game.units[red].planned_attack = Option.Some(hex);
+        let _acted = game.resolve_step(UnitType.Melee, Phase.Attack);
+        // The escort took the hit.
+        assert(game.field_workers.len() == 1);
+    });
+}
+
+@test
+fn walls_stop_everyone_and_gates_stop_only_enemies() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let start = bare_tile(&game, 2);
+        let around = start.neighbors();
+        let mut open: Vec[Hex] = Vec.new();
+        for k in 0..6 { if game.grid.is_passable(around[k]) && game.city_at(around[k]).is_none() { open.push(around[k]); } }
+        let (wall, gate) = (open[0], open[1]);
+        let _w = game.barriers.insert(edge(start, wall), Structure { kind: StructureKind.Wall, team: Team.Blue });
+        let _g = game.barriers.insert(edge(start, gate), Structure { kind: StructureKind.Gate, team: Team.Blue });
+        // Both hexes stay open ground; only their edges with `start` close.
+        assert(game.can_enter(wall) && game.can_enter(gate));
+        assert(!game.can_cross(wall, start, Team.Blue));
+        let blue = game.reachable_hexes(start, 1, Team.Blue);
+        assert(!blue.contains(wall) && blue.contains(gate));
+        let red = game.reachable_hexes(start, 1, Team.Red);
+        assert(!red.contains(wall) && !red.contains(gate));
+
+        // A move planned into the gate anyway is turned back.
+        game.units.push(Unit.new(200, start, Team.Red, UnitType.Melee));
+        game.units[0].planned_move = Option.Some(gate);
+        let _acted = game.resolve_step(UnitType.Melee, Phase.Move);
+        assert(game.units[0].pos == start);
+    });
+}
+
+@test
+fn a_wall_goes_on_an_edge_built_from_the_side_nearer_the_city() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let city = game.cities[0].pos;
+        let mut pair: Option[(Hex, Hex)] = Option.None;
+        for hh in game.grid.hexes() {
+            let near = *hh;
+            if pair.is_some() || near.distance(city) != 2 || !game.grid.is_passable(near) { continue; }
+            let around = near.neighbors();
+            for k in 0..6 {
+                if pair.is_none() && around[k].distance(city) == 3 && game.grid.contains(around[k]) { pair = Option.Some((near, around[k])); }
+            }
+        }
+        let Option.Some((near, far)) = pair else { assert(false); return; };
+        game.arm_worker_job(JobKind.Wall);
+        assert(game.placing_job == Option.Some(JobKind.Wall));
+        assert(game.queue_barrier_at(far, near));
+        let job = game.cities[0].worker_jobs[0];
+        assert(job.hex == near && job.across == Option.Some(far));
+        // The same edge, either way round, or as a gate, isn't queued again.
+        assert(!game.queue_barrier_at(near, far));
+        game.placing_job = Option.Some(JobKind.Gate);
+        assert(!game.queue_barrier_at(far, near));
+        assert(game.cities[0].worker_jobs.len() == 1);
+
+        for _ in 0..4 { let _acted = game.resolve_workers(); }
+        let Option.Some(wall) = game.barriers.get(edge(near, far)) else { assert(false); return; };
+        assert(wall.kind == StructureKind.Wall && wall.team == Team.Blue);
+        // Nothing on the tiles themselves.
+        assert(game.structures.is_empty());
+    });
+}
+
+@test
+fn walls_around_a_tile_cut_its_goods_off() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let city = game.cities[0].pos;
+        let mut tile: Option[Hex] = Option.None;
+        for w in 0..game.cities[0].worked.len() {
+            let h = game.cities[0].worked[w];
+            if tile.is_none() && h.distance(city) == 1 { tile = Option.Some(h); }
+        }
+        let Option.Some(tile) = tile else { assert(false); return; };
+        assert(game.routes(0).costs.has(tile));
+        let around = tile.neighbors();
+        for k in 0..6 { let _w = game.barriers.insert(edge(tile, around[k]), Structure { kind: StructureKind.Wall, team: Team.Blue }); }
+        assert(!game.routes(0).costs.has(tile));
+    });
+}
+
+@test
+fn an_outpost_lets_its_owner_see_around_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.units.clear();
+        let fog = game.fog();
+        let mut far: Option[Hex] = Option.None;
+        for hh in game.grid.hexes() {
+            let h = *hh;
+            if far.is_some() || !game.grid.is_passable(h) || game.city_at(h).is_some() || fog.sees(h) { continue; }
+            let around = h.neighbors();
+            let mut hidden = true;
+            for k in 0..6 { if fog.sees(around[k]) { hidden = false; } }
+            if hidden { far = Option.Some(h); }
+        }
+        let Option.Some(far) = far else { assert(false); return; };
+        let _o = game.structures.insert(far, Structure { kind: StructureKind.Outpost, team: PLAYER_TEAM });
+        let fog = game.fog();
+        assert(fog.sees(far));
+        let around = far.neighbors();
+        for k in 0..6 { if game.grid.contains(around[k]) { assert(fog.sees(around[k])); } }
+    });
+}
+
+@test
+fn a_fort_shields_only_its_owner() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let hex = bare_tile(&game, 2);
+        let _f = game.structures.insert(hex, Structure { kind: StructureKind.Fort, team: Team.Blue });
+        let ground = game.grid.tile(hex).defense_multiplier();
+        let blue = Unit.new(1, hex, Team.Blue, UnitType.Melee);
+        let red = Unit.new(2, hex, Team.Red, UnitType.Melee);
+        assert(game.defense_multiplier(&blue) == ground * FORT_DEFENSE);
+        assert(game.defense_multiplier(&red) == ground);
+    });
+}
+
+@test
+fn a_finished_worker_joins_the_city_at_home() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        game.selected_city = Option.Some(0);
+        game.queue_selected_city_worker();
+        assert(game.cities[0].queue.len() == 1 && game.cities[0].queue[0] == Build.Worker);
+        game.debug_complete_current_production();
+        assert(game.cities[0].workers == 2);
+        assert(game.cities[0].queue.is_empty());
+    });
+}
+
+@test
+fn a_job_that_became_impossible_is_dropped() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let hex = bare_tile(&game, 2);
+        queue(&mut game, hex, JobKind.Improve);
+        let _old = game.sites.insert(hex, Site { team: Team.Red, food: 3, production: 0, kind: SiteKind.Farm });
+        let _acted = game.resolve_workers();
+        // Nothing left to go out for.
+        assert(game.field_workers.is_empty());
+        let Option.Some(site) = game.sites.get(hex) else { assert(false); return; };
+        assert(site.team == Team.Red);
+    });
+}
+
+@test
+fn the_ai_puts_its_workers_to_work() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let red = 1;
+        assert(game.cities[red].team == Team.Red);
+        game.plan_ai_turn(Team.Red);
+        assert(!game.cities[red].worker_jobs.is_empty());
+        let _acted = game.resolve_workers();
+        let mut out = false;
+        for w in 0..game.field_workers.len() { if game.field_workers[w].team == Team.Red { out = true; } }
+        assert(out);
+    });
+}
+
+@test
+fn jobs_wait_until_the_turn_has_played_out() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let hex = bare_tile(&game, 2);
+        game.pending_steps.push_back(TurnStep.Workers);
+        queue(&mut game, hex, JobKind.Road);
+        assert(game.cities[0].worker_jobs.is_empty());
+    });
+}

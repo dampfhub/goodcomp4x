@@ -36,6 +36,7 @@ impl GameState {
 
     /// Opens city `i`'s view and glides the camera to it.
     pub fn open_city(&mut self, i: i32) {
+        self.worker_mode = false;
         if self.selected_city != Option.Some(i) {
             self.city_queue_scroll = 0;
             // Site placement belongs to the open city. A building that finished while the view
@@ -215,6 +216,12 @@ impl GameState {
         for i in 0..self.units.len() {
             if self.is_player_controlled(i) && self.needs_orders(i) { self.units[i].holding = true; }
         }
+        // Idle workers rest, as unfinished units hold.
+        for c in 0..self.cities.len() {
+            if self.cities[c].team == PLAYER_TEAM && self.cities[c].worker_jobs.is_empty() { self.cities[c].workers_resting = true; }
+        }
+        self.worker_mode = false;
+        self.placing_job = Option.None;
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) {
                 self.open_city(i);

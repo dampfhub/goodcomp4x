@@ -1,0 +1,471 @@
+//! The map's buildings, workers and their structures: Barracks and building badges, planned
+//! sites, the manager's mark and route, the Barracks' delivery shares, walls, gates, outposts
+//! and forts, worker jobs, workers out on the map, the count of each city's workers at home,
+//! and worker mode's lit reach.
+
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.fmt.show_u64;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.linalg.vec2_from_angle;
+use std.math.tau;
+use std.str.Str;
+use std.str.to_owned;
+use renderer.pipelines.MeshVertex;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.text;
+use game.city.Build;
+use game.city.Building;
+use game.city.PLACEABLE;
+use game.city.BARRACKS_MAX_HP;
+use game.city.COASTAL_BATTERY_MAX_HP;
+use game.city.delivered_share;
+use game.fog.Fog;
+use game.font.push_glyph;
+use game.font.push_text;
+use game.font.world_text_width;
+use game.hex.HEX_SIZE;
+use game.hex.Hex;
+use game.hex.edge_corners;
+use game.mesh.Color;
+use game.mesh.polygon;
+use game.mesh.polygon_outline;
+use game.mesh.quad;
+use game.mesh.regular_polygon;
+use game.mesh.segment;
+use game.mesh.triangle;
+use game.unit_icons.UnitIcon;
+use game.unit_icons.push_pictogram;
+use game.workers.JobKind;
+use game.workers.StructureKind;
+use game.workers.WorkerJob;
+
+const LABEL_COLOR: Color = [0.05, 0.05, 0.05, 1.0];
+const ICON_OUTLINE_COLOR: Color = [0.03, 0.03, 0.04, 1.0];
+const ICON_OUTLINE_WIDTH: f32 = 0.06;
+const HEX_FILL_SCALE: f32 = 0.92;
+const WORKED_OUTLINE_RADIUS: f32 = HEX_SIZE * 0.84;
+const HEALTH_BAR_BG_COLOR: Color = [0.08, 0.08, 0.08, 1.0];
+const HEALTH_BAR_WIDTH: f32 = 0.9;
+const HEALTH_BAR_HEIGHT: f32 = 0.14;
+const HEALTH_BAR_OFFSET_Y: f32 = 0.78;
+/// Worker mode: the tiles the player's workers reach, lit; the rest, dimmed.
+pub const WORKER_REACH_TINT: Color = [0.95, 0.78, 0.42, 0.16];
+const OUT_OF_REACH_TINT: Color = [0.0, 0.0, 0.0, 0.45];
+/// A queued wall or gate, before it's built.
+pub const PLANNED_EDGE_COLOR: Color = [0.52, 0.42, 0.24, 1.0];
+/// Workers: tokens out on the map (smaller in a corner when a unit shares their hex), the
+/// player's queued jobs as faded named rings, and the tag on each of the player's cities
+/// counting the workers at home.
+const WORKER_SCALE: f32 = 0.7;
+const WORKER_BESIDE_SCALE: f32 = 0.45;
+const WORKER_BESIDE_UNIT: Vec2 = Vec2 { x: 0.45, y: -0.32 };
+const PLANNED_JOB_COLOR: Color = [0.95, 0.78, 0.42, 0.75];
+const PLANNED_JOB_COLOR_SOLID: Color = [0.95, 0.78, 0.42, 1.0];
+/// A job a worker is out on, brighter than one still queued.
+pub const JOB_UNDER_WAY_COLOR: Color = [1.0, 0.88, 0.52, 1.0];
+/// The armed worker job's preview on a tile where it can't go.
+const BLOCKED_JOB_COLOR: Color = [0.90, 0.30, 0.25, 1.0];
+const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2 { x: 0.0, y: 0.6 };
+const PLANNED_JOB_LABEL_HEIGHT: f32 = 0.12;
+const WORKER_TAG_MIN: Vec2 = Vec2 { x: -0.78, y: -0.58 };
+const WORKER_TAG_MAX: Vec2 = Vec2 { x: -0.3, y: -0.32 };
+const WORKER_TAG_COLOR: Color = [0.03, 0.03, 0.04, 0.92];
+const STONE_COLOR: Color = [0.24, 0.23, 0.21, 1.0];
+const BARRIER_WIDTH: f32 = 0.16;
+const MORTAR_COLOR: Color = [0.09, 0.085, 0.08, 1.0];
+const WOOD_COLOR: Color = [0.40, 0.20, 0.07, 1.0];
+/// Hovering the manager traces its goods' way to the city center.
+const MANAGER_ROUTE_WIDTH: f32 = 0.06;
+const MANAGER_ROUTE_COLOR: Color = [0.35, 0.82, 1.0, 0.9];
+const MANAGER_MARK_COLOR: Color = [1.0, 0.78, 0.20, 1.0];
+const BARRACKS_SHARE_COLOR: Color = [1.0, 0.70, 0.30, 1.0];
+const BARRACKS_SOURCE_COLOR: Color = [1.0, 0.62, 0.20, 0.9];
+const WORKER_SHOVEL: UnitIcon = UnitIcon.Shovel;
+/// A unit token's radius on the map, which a worker token is drawn a fraction of.
+const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.36;
+const CIVILIAN_TOKEN_SIZE: f32 = 0.95;
+
+/// A building's badge letter and color.
+pub fn building_badge(building: Building) -> (char, Color) {
+    match building {
+        Building.Barracks => ('B', [0.72, 0.35, 0.18, 1.0]),
+        Building.Mill => ('M', [0.35, 0.65, 0.28, 1.0]),
+        Building.Workshop => ('W', [0.38, 0.52, 0.82, 1.0]),
+        Building.CanoeHouse => ('C', [0.30, 0.65, 0.82, 1.0]),
+        Building.Forge => ('F', [0.82, 0.43, 0.22, 1.0]),
+        Building.Stable => ('S', [0.67, 0.49, 0.27, 1.0]),
+        Building.Watchpost => ('V', [0.78, 0.76, 0.35, 1.0]),
+        Building.FieldHospital => ('H', [0.80, 0.33, 0.36, 1.0]),
+        Building.Cannery => ('N', [0.44, 0.72, 0.47, 1.0]),
+        Building.WorkCamp => ('K', [0.67, 0.55, 0.36, 1.0]),
+        Building.Smelter => ('T', [0.82, 0.43, 0.29, 1.0]),
+        Building.Railhead => ('R', [0.47, 0.68, 0.79, 1.0]),
+        Building.Harbor => ('P', [0.34, 0.67, 0.90, 1.0]),
+        Building.CoastalBattery => ('D', [0.85, 0.57, 0.28, 1.0]),
+        Building.Granary => ('G', [0.85, 0.70, 0.30, 1.0]),
+    }
+}
+
+fn with_alpha(c: Color, a: f32) -> Color { [c[0], c[1], c[2], a] }
+
+fn lerp(a: Vec2, b: Vec2, t: f32) -> Vec2 { a.add(b.sub(a).scale(t)) }
+
+/// Short dashes show where goods go without looking like a road.
+pub fn push_dotted_segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    for index in 0..7 {
+        let start = (index as f32 + 0.18) / 7.0;
+        let end = (index as f32 + 0.62) / 7.0;
+        segment(lerp(a, b, start), lerp(a, b, end), width, color, out);
+    }
+}
+
+fn push_rounded_segment(a: Vec2, b: Vec2, width: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    segment(a, b, width, color, out);
+    regular_polygon(a, width / 2.0, 12, 0.0, color, out);
+    regular_polygon(b, width / 2.0, 12, 0.0, color, out);
+}
+
+/// `text` centered on `center`, `cap_height` tall.
+fn push_text_centered(center: Vec2, cap_height: f32, t: &str, color: Color, out: &mut Vec[MeshVertex]) {
+    let width = world_text_width(t, cap_height);
+    push_text(vec2(center.x - width / 2.0, center.y - cap_height / 2.0), cap_height, t, color, out);
+}
+
+/// Rectangles, each on a dark outline, the outlines all drawn first.
+fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec[MeshVertex]) {
+    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
+    let grow = vec2(ICON_OUTLINE_WIDTH, ICON_OUTLINE_WIDTH);
+    for k in 0..rects.len() {
+        let (min, max) = rects[k];
+        quad(min.sub(grow), max.add(grow), outline, out);
+    }
+    for k in 0..rects.len() {
+        let (min, max) = rects[k];
+        quad(min, max, color, out);
+    }
+}
+
+/// A health bar above `center`, `fraction` full, `scale` times its size.
+fn push_health_bar(center: Vec2, fraction: f32, scale: f32, out: &mut Vec[MeshVertex]) {
+    let half = HEALTH_BAR_WIDTH * scale / 2.0;
+    let top = center.y + HEALTH_BAR_OFFSET_Y * scale;
+    let min = vec2(center.x - half, top - HEALTH_BAR_HEIGHT * scale);
+    quad(min, vec2(center.x + half, top), HEALTH_BAR_BG_COLOR, out);
+    let f = if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction };
+    let color: Color = if f > 0.5 { [0.25, 0.85, 0.3, 1.0] } else if f > 0.25 { [0.95, 0.75, 0.2, 1.0] } else { [0.9, 0.2, 0.15, 1.0] };
+    quad(min, vec2(min.x + 2.0 * half * f, top), color, out);
+}
+
+/// A barracks: a small house (walls and a pitched roof) in `color`, its team's, marked B.
+fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec[MeshVertex]) {
+    let alpha = color[3];
+    let outline = with_alpha(ICON_OUTLINE_COLOR, alpha);
+    let (eave, peak, half) = (0.1, 0.4, 0.38);
+    let grow = ICON_OUTLINE_WIDTH * 1.6;
+    triangle(pos.add(vec2(-half - grow, eave - grow / 2.0)), pos.add(vec2(half + grow, eave - grow / 2.0)), pos.add(vec2(0.0, peak + grow)), outline, out);
+    push_outlined_rects(&[(pos.add(vec2(-0.28, -0.32)), pos.add(vec2(0.28, eave)))], color, out);
+    triangle(pos.add(vec2(-half, eave)), pos.add(vec2(half, eave)), pos.add(vec2(0.0, peak)), color, out);
+    push_glyph(pos.add(vec2(0.0, -0.09)), 0.26, 'B', with_alpha(LABEL_COLOR, alpha), out);
+}
+
+/// A wall or gate along the edge between `a` and `b`: a band of stone with mortar joints and
+/// posts in its team's color at both ends; a gate's middle is a door in the team's color.
+fn push_barrier(a: Hex, b: Hex, kind: StructureKind, team: Color, out: &mut Vec[MeshVertex]) {
+    let (start, end) = edge_corners(a, b);
+    segment(start, end, BARRIER_WIDTH + ICON_OUTLINE_WIDTH, ICON_OUTLINE_COLOR, out);
+    segment(start, end, BARRIER_WIDTH, STONE_COLOR, out);
+    let d = end.sub(start);
+    let length = d.length();
+    let across = if length > 0.0 { vec2(-d.y, d.x).scale(BARRIER_WIDTH / 2.0 / length) } else { vec2(0.0, 0.0) };
+    if kind == StructureKind.Gate {
+        let (d0, d1) = (lerp(start, end, 0.3), lerp(start, end, 0.7));
+        segment(d0, d1, BARRIER_WIDTH + ICON_OUTLINE_WIDTH, ICON_OUTLINE_COLOR, out);
+        segment(d0, d1, BARRIER_WIDTH, team, out);
+        let mid = lerp(start, end, 0.5);
+        segment(mid.sub(across), mid.add(across), 0.02, ICON_OUTLINE_COLOR, out);
+        let joints = [0.15, 0.85];
+        for k in 0..2 {
+            let p = lerp(start, end, joints[k]);
+            segment(p.sub(across), p.add(across), 0.02, MORTAR_COLOR, out);
+        }
+    } else {
+        let joints = [0.25, 0.5, 0.75];
+        for k in 0..3 {
+            let p = lerp(start, end, joints[k]);
+            segment(p.sub(across), p.add(across), 0.02, MORTAR_COLOR, out);
+        }
+    }
+    let ends = [start, end];
+    for k in 0..2 {
+        let p = ends[k];
+        let half = vec2(BARRIER_WIDTH * 0.62, BARRIER_WIDTH * 0.62);
+        let grow = vec2(ICON_OUTLINE_WIDTH / 2.0, ICON_OUTLINE_WIDTH / 2.0);
+        quad(p.sub(half).sub(grow), p.add(half).add(grow), ICON_OUTLINE_COLOR, out);
+        quad(p.sub(half), p.add(half), team, out);
+    }
+}
+
+/// A structure on a tile, in its team's color: an outpost (a watchtower) or a fort (a palisade
+/// of stakes). Walls and gates stand on hex edges (`push_barrier`).
+fn push_structure(center: Vec2, kind: StructureKind, team: Color, out: &mut Vec[MeshVertex]) {
+    match kind {
+        StructureKind.Wall | StructureKind.Gate => {}
+        StructureKind.Outpost => {
+            let legs = [(vec2(-0.16, -0.36), vec2(-0.09, 0.05)), (vec2(0.16, -0.36), vec2(0.09, 0.05))];
+            for k in 0..2 {
+                let (foot, top) = legs[k];
+                segment(center.add(foot), center.add(top), 0.09, ICON_OUTLINE_COLOR, out);
+                segment(center.add(foot), center.add(top), 0.05, WOOD_COLOR, out);
+            }
+            push_outlined_rects(&[(center.add(vec2(-0.15, 0.03)), center.add(vec2(0.15, 0.24)))], WOOD_COLOR, out);
+            triangle(center.add(vec2(-0.27, 0.21)), center.add(vec2(0.27, 0.21)), center.add(vec2(0.0, 0.48)), ICON_OUTLINE_COLOR, out);
+            triangle(center.add(vec2(-0.22, 0.24)), center.add(vec2(0.22, 0.24)), center.add(vec2(0.0, 0.44)), team, out);
+        }
+        StructureKind.Fort => {
+            // Stakes around the hex, points outward, over a ring in the team's color.
+            polygon_outline(center, 0.56, 0.05, 6, 0.0, team, out);
+            for i in 0..12 {
+                let dir = vec2_from_angle(i as f32 * tau() as f32 / 12.0);
+                let side = vec2(-dir.y, dir.x).scale(0.06);
+                let base = center.add(dir.scale(0.56));
+                let tip = center.add(dir.scale(0.74));
+                triangle(base.sub(side.scale(1.6)).sub(dir.scale(0.03)), base.add(side.scale(1.6)).sub(dir.scale(0.03)), tip.add(dir.scale(0.03)), ICON_OUTLINE_COLOR, out);
+                triangle(base.sub(side), base.add(side), tip, WOOD_COLOR, out);
+            }
+        }
+    }
+}
+
+/// The tag on a city counting its workers at home: a shovel and the count.
+fn push_worker_count(city: Vec2, count: u32, out: &mut Vec[MeshVertex]) {
+    let (min, max) = (city.add(WORKER_TAG_MIN), city.add(WORKER_TAG_MAX));
+    let grow = vec2(ICON_OUTLINE_WIDTH / 2.0, ICON_OUTLINE_WIDTH / 2.0);
+    quad(min.sub(grow), max.add(grow), ICON_OUTLINE_COLOR, out);
+    quad(min, max, WORKER_TAG_COLOR, out);
+    let middle = (min.y + max.y) / 2.0;
+    let height = max.y - min.y;
+    push_pictogram(vec2(min.x + height / 2.0, middle), height * 0.55, WORKER_SHOVEL, PLANNED_JOB_COLOR_SOLID, out);
+    let digits = text(fn() can {Out} { show_u64(count as u64); });
+    push_text_centered(vec2(max.x - height / 2.0, middle), height * 0.55, &digits, PLANNED_JOB_COLOR_SOLID, out);
+}
+
+/// A worker's token: a hollow disc in its team's color with a shovel, `scale` times a unit's.
+fn push_worker_token(center: Vec2, scale: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    let radius = UNIT_ICON_RADIUS * scale;
+    regular_polygon(center, radius + ICON_OUTLINE_WIDTH * scale, 32, 0.0, ICON_OUTLINE_COLOR, out);
+    polygon_outline(center, radius, radius * 0.3, 32, 0.0, color, out);
+    push_pictogram(center, radius * CIVILIAN_TOKEN_SIZE * 0.7, WORKER_SHOVEL, color, out);
+}
+
+impl GameState {
+    /// Everything this module draws that sits under the units: buildings, planned sites, the
+    /// manager's mark, structures, walls and gates, worker jobs and worker mode's reach.
+    pub fn push_structures(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
+        self.push_manager_marks(fog, out);
+        self.push_barracks_shares(fog, out);
+        self.push_buildings(fog, out);
+        self.push_planned_sites(out);
+        for k in 0..self.structures.len() {
+            let (Option.Some(h), Option.Some(s)) = (self.structures.key_at(k), self.structures.val_at(k)) else { continue; };
+            if s.team != PLAYER_TEAM && !fog.sees(h) { continue; }
+            push_structure(h.to_world(), s.kind, s.team.color(), out);
+        }
+        self.push_planned_jobs(out);
+        for k in 0..self.barriers.len() {
+            let (Option.Some(e), Option.Some(s)) = (self.barriers.key_at(k), self.barriers.val_at(k)) else { continue; };
+            if s.team != PLAYER_TEAM && !fog.sees(e.a) && !fog.sees(e.b) { continue; }
+            push_barrier(e.a, e.b, s.kind, s.team.color(), out);
+        }
+        self.push_hovered_job(out);
+        for c in 0..self.cities.len() {
+            if self.cities[c].team == PLAYER_TEAM { push_worker_count(self.cities[c].pos.to_world(), self.cities[c].workers, out); }
+        }
+    }
+
+    /// Worker mode: the tiles the player's workers can reach are lit, and the rest dimmed, so
+    /// the reach stands out.
+    pub fn push_worker_reach(&self, out: &mut Vec[MeshVertex]) {
+        if !self.worker_mode { return; }
+        let bases = self.worker_bases(PLAYER_TEAM);
+        for hh in self.grid.hexes() {
+            let hex = *hh;
+            if !self.is_explored(hex) { continue; }
+            let reach = self.grid.is_passable(hex) && self.in_reach_of(&bases, hex);
+            regular_polygon(hex.to_world(), HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, if reach { WORKER_REACH_TINT } else { OUT_OF_REACH_TINT }, out);
+        }
+    }
+
+    /// The open or hovered city's manager: an M on its tile, and hovering it traces the way its
+    /// goods travel to the city center, as the player knows the board.
+    fn push_manager_marks(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
+        let shown = match self.hovered_city { Option.Some(i) => Option.Some(i), Option.None => self.selected_city };
+        let Option.Some(i) = shown else { return; };
+        if self.cities[i].team != PLAYER_TEAM && !fog.sees(self.cities[i].pos) { return; }
+        if self.cities[i].worked.is_empty() || self.moving_manager == Option.Some(i) { return; }
+        let manager = self.cities[i].worked[0];
+        let routed = self.routes(i).costs.has(manager);
+        if routed {
+            polygon_outline(manager.to_world(), WORKED_OUTLINE_RADIUS, 0.06, 6, 0.0, MANAGER_MARK_COLOR, out);
+        }
+        push_glyph(manager.to_world(), 0.34, 'M', LABEL_COLOR, out);
+        if self.hovered_tile == Option.Some(manager) {
+            let path = self.known_routes(i, fog).path_from(manager);
+            for k in 1..path.len() {
+                push_dotted_segment(path[k - 1].to_world(), path[k].to_world(), MANAGER_ROUTE_WIDTH, MANAGER_ROUTE_COLOR, out);
+            }
+        }
+    }
+
+    /// The open Barracks: its own delivery shares, and dotted lines from its work group.
+    fn push_barracks_shares(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
+        let Option.Some(i) = self.selected_barracks else { return; };
+        let Option.Some(barracks) = self.cities[i].barracks else { return; };
+        let routes = self.known_routes_from(self.cities[i].team, barracks, fog);
+        for k in 0..routes.costs.len() {
+            let (Option.Some(hex), Option.Some(cost)) = (routes.costs.key_at(k), routes.costs.val_at(k)) else { continue; };
+            if !self.is_explored(hex) { continue; }
+            let label = text(fn() can {Out} { show_i64((delivered_share(cost) * 25) as i64); Out.put("%"); });
+            push_text(hex.to_world().add(vec2(-0.3, 0.52)), 0.18, &label, BARRACKS_SHARE_COLOR, out);
+        }
+        let worked = &self.cities[i].worked;
+        for w in 0..worked.len() {
+            push_dotted_segment(worked[w].to_world(), barracks.to_world(), 0.06, BARRACKS_SOURCE_COLOR, out);
+        }
+    }
+
+    /// Barracks (with their health) and the other placed buildings' badges, a Coastal
+    /// Battery's with its health: the player's own always, others' in sight.
+    fn push_buildings(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
+        for c in 0..self.cities.len() {
+            let city = &self.cities[c];
+            if let Option.Some(hex) = city.barracks {
+                if city.team == PLAYER_TEAM || fog.sees(hex) {
+                    push_barracks_marker(hex.to_world(), city.team.color(), out);
+                    push_health_bar(hex.to_world(), city.barracks_hp / BARRACKS_MAX_HP, 0.7, out);
+                }
+            }
+            for b in 0..14 {
+                let building = PLACEABLE[b];
+                if building == Building.Barracks { continue; }
+                let Option.Some(hex) = city.placed_site(building) else { continue; };
+                if city.team != PLAYER_TEAM && !fog.sees(hex) { continue; }
+                let (badge, color) = building_badge(building);
+                regular_polygon(hex.to_world(), 0.31, 4, 0.7853982, color, out);
+                push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
+                if building == Building.CoastalBattery {
+                    push_health_bar(hex.to_world(), city.coastal_battery_hp / COASTAL_BATTERY_MAX_HP, 0.62, out);
+                }
+            }
+        }
+    }
+
+    /// Planned sites stay visible until confirmation. An active placement also follows the map
+    /// hover before a site has been selected.
+    fn push_planned_sites(&self, out: &mut Vec[MeshVertex]) {
+        for i in 0..self.cities.len() {
+            if self.cities[i].team != PLAYER_TEAM { continue; }
+            for b in 0..14 {
+                let building = PLACEABLE[b];
+                let planned = self.cities[i].planned_sites.get(building);
+                let hovered = match (self.site_placement(), self.hovered_tile) {
+                    (Option.Some((c, placing)), Option.Some(h)) => if c == i && placing == building && self.site_available(i, building, h) { Option.Some(h) } else { Option.None },
+                    _ => Option.None,
+                };
+                let preview = if hovered.is_some() { hovered } else { planned };
+                let Option.Some(hex) = preview else { continue; };
+                let (badge, base) = building_badge(building);
+                let alpha = if self.hovered_tile == Option.Some(hex) { 0.95 } else { 0.55 };
+                polygon_outline(hex.to_world(), WORKED_OUTLINE_RADIUS, 0.09, 6, 0.0, with_alpha(base, alpha), out);
+                regular_polygon(hex.to_world(), 0.31, 4, 0.7853982, with_alpha(base, 0.48), out);
+                push_glyph(hex.to_world(), 0.30, badge, [0.08, 0.05, 0.03, 0.65], out);
+            }
+        }
+    }
+
+    /// The player's worker jobs: those under way, a solid ring (or edge) named with the job and,
+    /// once the worker is there working, the turns of work left; and those queued, a faded ring
+    /// on each tile, named.
+    fn push_planned_jobs(&self, out: &mut Vec[MeshVertex]) {
+        for w in 0..self.field_workers.len() {
+            let worker = self.field_workers[w];
+            if worker.team != PLAYER_TEAM || worker.recalled { continue; }
+            let Option.Some(job) = worker.job else { continue; };
+            let label: Str = match worker.work_left {
+                Option.Some(left) => if worker.pos == job.hex {
+                    text(fn() can {Out} { Out.put(self.job_name(job)); Out.put(" "); show_u64(left as u64); Out.put("T"); })
+                } else {
+                    to_owned(self.job_name(job))
+                },
+                Option.None => to_owned(self.job_name(job)),
+            };
+            let at = match job.across {
+                Option.Some(across) => {
+                    let (start, end) = edge_corners(job.hex, across);
+                    push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, JOB_UNDER_WAY_COLOR, out);
+                    start.add(end).scale(0.5).add(PLANNED_JOB_LABEL_OFFSET.scale(0.5))
+                }
+                Option.None => {
+                    polygon_outline(job.hex.to_world(), WORKED_OUTLINE_RADIUS, 0.06, 6, 0.0, JOB_UNDER_WAY_COLOR, out);
+                    job.hex.to_world().add(PLANNED_JOB_LABEL_OFFSET)
+                }
+            };
+            push_text_centered(at, PLANNED_JOB_LABEL_HEIGHT, &label, JOB_UNDER_WAY_COLOR, out);
+        }
+        for c in 0..self.cities.len() {
+            if self.cities[c].team != PLAYER_TEAM { continue; }
+            let jobs = &self.cities[c].worker_jobs;
+            for j in 0..jobs.len() {
+                let job = jobs[j];
+                if let Option.Some(across) = job.across {
+                    let (start, end) = edge_corners(job.hex, across);
+                    push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, PLANNED_EDGE_COLOR, out);
+                    continue;
+                }
+                let center = job.hex.to_world();
+                polygon_outline(center, WORKED_OUTLINE_RADIUS, 0.05, 6, 0.0, PLANNED_JOB_COLOR, out);
+                push_text_centered(center.add(PLANNED_JOB_LABEL_OFFSET), PLANNED_JOB_LABEL_HEIGHT, self.job_name(job), PLANNED_JOB_COLOR, out);
+            }
+        }
+    }
+
+    /// Where the armed worker job would go: an edge, or a ring on a tile, red where it can't.
+    fn push_hovered_job(&self, out: &mut Vec[MeshVertex]) {
+        let (Option.Some((hex, across)), Option.Some(kind)) = (self.hovered_job, self.placing_job) else { return; };
+        match across {
+            Option.Some(other) => {
+                let (start, end) = edge_corners(hex, other);
+                push_rounded_segment(start, end, BARRIER_WIDTH, PLANNED_JOB_COLOR_SOLID, out);
+            }
+            Option.None => {
+                let fine = self.job_unavailable(hex, kind).is_none() || self.job_taken(PLAYER_TEAM, WorkerJob.on_tile(hex, kind));
+                polygon_outline(hex.to_world(), WORKED_OUTLINE_RADIUS, 0.07, 6, 0.0, if fine { PLANNED_JOB_COLOR_SOLID } else { BLOCKED_JOB_COLOR }, out);
+            }
+        }
+    }
+
+    /// Workers out on the map that the player can see: small hollow tokens with a shovel,
+    /// tucked into a corner when a unit shares their hex, and for the player's own, a dotted
+    /// line to the job they're walking to.
+    pub fn push_field_workers(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
+        for w in 0..self.field_workers.len() {
+            let worker = self.field_workers[w];
+            if !fog.shows_worker(&worker) { continue; }
+            let mut shared = false;
+            for i in 0..self.units.len() { if self.units[i].pos == worker.pos && fog.shows(&self.units[i]) { shared = true; } }
+            let (center, scale) = if shared { (worker.pos.to_world().add(WORKER_BESIDE_UNIT), WORKER_BESIDE_SCALE) } else { (worker.pos.to_world(), WORKER_SCALE) };
+            if worker.team == PLAYER_TEAM {
+                if let Option.Some(job) = worker.job {
+                    if job.hex != worker.pos { push_dotted_segment(center, job.hex.to_world(), 0.05, PLANNED_JOB_COLOR, out); }
+                }
+            }
+            let base = worker.team.color();
+            let color = if self.recent_actors.contains(worker.id) { [min1(base[0] + 0.35), min1(base[1] + 0.35), min1(base[2] + 0.35), base[3]] } else { base };
+            push_worker_token(center, scale, color, out);
+        }
+    }
+}
+
+fn min1(v: f32) -> f32 { if v < 1.0 { v } else { 1.0 } }

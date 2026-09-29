@@ -18,6 +18,11 @@ use game.hex.HEX_SIZE;
 use game.hex.Hex;
 use game.map_icons.MapIcon;
 use game.mesh.Color;
+use game.draw_structures.WORKER_REACH_TINT;
+use game.draw_structures.PLANNED_EDGE_COLOR;
+use game.draw_structures.JOB_UNDER_WAY_COLOR;
+use game.workers.JobKind;
+use game.workers.WorkerJob;
 use game.tests.sandbox;
 use game.unit.Team;
 use game.unit.UnitType;
@@ -191,5 +196,66 @@ fn a_light_line_marks_where_remembered_hexes_meet_hexes_in_sight() {
         // With the fog lifted, nothing is remembered.
         game.toggle_fog();
         assert(count_color(&game.build_vertices(), FOG_EDGE_COLOR) == 0);
+    });
+}
+
+@test
+fn worker_mode_tints_the_tiles_in_reach() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.explore();
+        assert(count_color(&game.build_vertices(), WORKER_REACH_TINT) == 0);
+        game.toggle_worker_mode();
+        let tinted = count_color(&game.build_vertices(), WORKER_REACH_TINT);
+        let mut reachable = 0;
+        for hh in game.grid.hexes() {
+            let h = *hh;
+            if game.is_explored(h) && game.grid.is_passable(h) && game.in_worker_reach(PLAYER_TEAM, h) { reachable = reachable + 1; }
+        }
+        assert(reachable > 0);
+        // The same fill on each reachable tile.
+        assert(tinted % reachable == 0);
+        assert(tinted > 0);
+    });
+}
+
+@test
+fn queued_walls_are_drawn_with_round_ends() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        let around = game.cities[0].pos.neighbors();
+        game.cities[0].worker_jobs.push(WorkerJob { hex: around[0], kind: JobKind.Wall, across: Option.Some(around[1]) });
+        // A segment is two triangles; each round end is twelve more.
+        assert(count_color(&game.build_vertices(), PLANNED_EDGE_COLOR) == 6 + 2 * 12 * 3);
+    });
+}
+
+@test
+fn work_under_way_is_ringed_and_counts_its_turns_left() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.explore();
+        let city = game.cities[0].pos;
+        // Two hexes out: a turn walking, then at work.
+        let mut target: Option[Hex] = Option.None;
+        for hh in game.grid.hexes() {
+            let h = *hh;
+            if target.is_none() && h.distance(city) == 2 && game.job_unavailable(h, JobKind.Improve).is_none() { target = Option.Some(h); }
+        }
+        let Option.Some(hex) = target else { assert(false); return; };
+        game.placing_job = Option.Some(JobKind.Improve);
+        assert(game.place_job_at(hex, Option.None));
+        game.placing_job = Option.None;
+        // Only queued, not under way.
+        assert(count_color(&game.build_vertices(), JOB_UNDER_WAY_COLOR) == 0);
+        // Out and walking there: its name in solid gold.
+        let _acted = game.resolve_workers();
+        let walking = count_color(&game.build_vertices(), JOB_UNDER_WAY_COLOR);
+        assert(walking > 0);
+        assert(game.field_workers[0].pos != hex);
+        // At work: "IMPROVE 3T", more glyphs than "IMPROVE".
+        let _acted = game.resolve_workers();
+        assert(game.field_workers[0].work_left == Option.Some(3));
+        assert(count_color(&game.build_vertices(), JOB_UNDER_WAY_COLOR) > walking);
     });
 }

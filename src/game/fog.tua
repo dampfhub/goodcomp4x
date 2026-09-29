@@ -26,6 +26,8 @@ use game.city.BARRACKS_MAX_HP;
 use game.workers.Structure;
 use game.workers.StructureKind;
 use game.workers.OUTPOST_SIGHT;
+use game.workers.WORKER_SIGHT;
+use game.workers.FieldWorker;
 use game.hex.Hex;
 use game.terrain.Terrain;
 use game.unit.Team;
@@ -58,6 +60,9 @@ impl Fog {
 
     /// Whether to show `unit`: the player's own always, others in sight.
     pub fn shows(&self, unit: &Unit) -> bool { unit.team == PLAYER_TEAM || self.sees(unit.pos) }
+
+    /// Whether to show a worker out on the map, by the same rule.
+    pub fn shows_worker(&self, worker: &FieldWorker) -> bool { worker.team == PLAYER_TEAM || self.sees(worker.pos) }
 }
 
 /// A city or Barracks as the player last saw it.
@@ -152,6 +157,9 @@ impl GameState {
                 let hills = if self.grid.tile(post).hills { 1 } else { 0 };
                 self.look(post, WATCHPOST_SIGHT + hills, &mut seen);
             }
+        }
+        for w in 0..self.field_workers.len() {
+            if self.field_workers[w].team == PLAYER_TEAM { self.look(self.field_workers[w].pos, WORKER_SIGHT, &mut seen); }
         }
         for k in 0..self.structures.len() {
             let (Option.Some(hex), Option.Some(structure)) = (self.structures.key_at(k), self.structures.val_at(k)) else { continue; };
