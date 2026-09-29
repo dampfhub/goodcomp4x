@@ -595,10 +595,10 @@ every turn end.
   order** of food, wood and metal (Food, Wood, Metal to start; the AI's cities keep it). Citizens are placed one at a
   time, the first manager first, each on the open tile worth the most: its delivered food, wood and
   metal, the first good in the order ×9, the second ×3 and the third ×1, ties going to the lower
-  hex coordinates. The **food floor** holds whatever the order: until the food the city center
-  and the tiles already taken deliver covers the citizens' upkeep plus 1, food counts as first
-  and the other two keep their order. So the first manager, placed while the city is unfed, always
-  goes by food first. A citizen becomes a worker, beside a manager whose cluster has room (the
+  hex coordinates. The **food floor** holds whatever the order: until the food the city center,
+  its Cannery and the tiles already taken deliver covers the citizens' upkeep plus 1, food counts
+  as first and the other two keep their order. So the first manager, placed while the city is
+  unfed, goes by food first unless its Cannery already feeds it. A citizen becomes a worker, beside a manager whose cluster has room (the
   first such cluster takes it); once no manager has room or an open tile beside it, and the
   population allows another manager, it becomes a new manager on the best open land tile
   beside none of the others. A click assigns the same way: a tile beside a manager with room
@@ -606,7 +606,7 @@ every turn end.
   Changing the order (drag its chips, or click one to put it first)
   re-assigns. On growth or route disruption, reconciliation keeps valid manual assignments and
   fills an open slot the same way, by the order with the food floor, counting the food of the
-  tiles kept; a manual tile cut off by an enemy is remembered and returns
+  center, its Cannery and the tiles kept; a manual tile cut off by an enemy is remembered and returns
   when the route reopens, unless you changed it. A manager cut off is stood in for by the first
   of its workers that could manage, until its tile is back.
 - **Losing a citizen** (starving, or a Settler costing one): an idle citizen goes first; then
