@@ -78,6 +78,20 @@ impl InteriorFighter {
         apply_training_upgrade(&mut stats, self.training_upgrade);
         stats
     }
+
+    /// Whether `tile` is within a move of where it stands (or will), by its upgraded stats.
+    pub fn move_reaches(&self, tile: Hex) -> bool {
+        let move_range = self.stats().move_range;
+        self.planned_move.unwrap_or(self.pos).distance(tile) <= (if move_range > 1 { move_range } else { 1 })
+    }
+
+    /// Whether `tile` is within its attack range of where it stands (or will).
+    pub fn attack_reaches(&self, tile: Hex) -> bool {
+        self.planned_move.unwrap_or(self.pos).distance(tile) <= self.stats().attack_range
+    }
+
+    /// Its health as a share of its upgraded maximum.
+    pub fn health_fraction(&self) -> f32 { self.hp / self.stats().max_hp }
 }
 
 pub fn in_bounds(hex: Hex) -> bool { hex.distance(CENTER) <= 2 }
@@ -190,20 +204,18 @@ impl GameState {
             return;
         };
         let fighter = self.cities[city].interior.fighters[k];
-        let from = fighter.planned_move.unwrap_or(fighter.pos);
         let enemy = match clicked { Option.Some(c) => self.cities[city].interior.fighters[c].team != self.local_team, Option.None => false };
         let core_hp = self.cities[city].interior.core_hp;
         let core = tile == CENTER && self.cities[city].team != self.local_team && core_hp > 0.0;
-        let move_range = if fighter.stats().move_range > 1 { fighter.stats().move_range } else { 1 };
         if enemy || core {
-            if from.distance(tile) <= fighter.stats().attack_range {
+            if fighter.attack_reaches(tile) {
                 let f = &mut self.cities[city].interior.fighters[k];
                 f.planned_attack = if f.planned_attack != Option.Some(tile) { Option.Some(tile) } else { Option.None };
                 self.set_notice("INTERIOR ATTACK QUEUED");
             } else {
                 self.set_notice("TARGET OUT OF RANGE: MOVE THE COPY CLOSER FIRST");
             }
-        } else if clicked.is_none() && (tile != CENTER || core_hp <= 0.0) && from.distance(tile) <= move_range {
+        } else if clicked.is_none() && (tile != CENTER || core_hp <= 0.0) && fighter.move_reaches(tile) {
             let f = &mut self.cities[city].interior.fighters[k];
             f.planned_move = if f.planned_move != Option.Some(tile) { Option.Some(tile) } else { Option.None };
             f.planned_attack = Option.None;

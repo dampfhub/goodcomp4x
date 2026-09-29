@@ -26,6 +26,12 @@ use game.effects.Outcome;
 use game.hex.Hex;
 use game.orders.ClickMode;
 use game.tests.sandbox;
+use game.draw.MOVE_RANGE_COLOR;
+use game.hex.HEX_SIZE;
+use game.terrain.Resource;
+use game.unit.apply_training_upgrade;
+use renderer.pipelines.MeshVertex;
+use std.linalg.vec2;
 use game.turn.TurnPhase;
 use game.unit.Team;
 use game.unit.Unit;
@@ -469,4 +475,51 @@ fn barracks_is_tanky_but_does_not_return_fire() {
         assert(game.cities[1].barracks_hp < barracks_hp);
         assert(game.units[0].hp == unit_hp);
     });
+}
+
+/// A fighter's range highlight, its click and its health bar all use its upgraded stats (a
+/// Stable's Horses give a Melee a longer move; an Iron upgrade a larger maximum health).
+@test
+fn upgraded_interior_fighter_highlight_click_and_health_agree() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        let city = 1;
+        let source = 0;
+        game.interior_selected = Option.Some(source);
+        let k = game.cities[city].interior.index_of(source).unwrap_or(0);
+        let origin = game.cities[city].interior.fighters[k].pos;
+        assert(game.cities[city].interior.fighters[k].unit_type == UnitType.Melee);
+        // An open tile two steps from the fighter (a plain Melee moves one).
+        let mut target = origin;
+        for q in -2..3 { for r in -2..3 {
+            let h = Hex.new(q, r);
+            if target == origin && h.distance(Hex.new(0, 0)) <= 2 && h != Hex.new(0, 0) && origin.distance(h) == 2 && game.cities[city].interior.fighter_at(h).is_none() { target = h; }
+        } }
+        assert(target != origin);
+        assert(!highlighted(&game.build_interior_vertices(city), target));
+        game.cities[city].interior.fighters[k].training_upgrade = Option.Some(Resource.Horses);
+        assert(game.cities[city].interior.fighters[k].move_reaches(target));
+        assert(highlighted(&game.build_interior_vertices(city), target));
+        game.interior_click(target);
+        assert(game.cities[city].interior.fighters[k].planned_move == Option.Some(target));
+        // Health: full at the upgraded maximum, less than full at the plain one.
+        game.cities[city].interior.fighters[k].training_upgrade = Option.Some(Resource.Iron);
+        let mut upgraded = UnitType.Melee.stats();
+        apply_training_upgrade(&mut upgraded, Option.Some(Resource.Iron));
+        game.cities[city].interior.fighters[k].hp = upgraded.max_hp;
+        assert(game.cities[city].interior.fighters[k].health_fraction() == 1.0);
+        game.cities[city].interior.fighters[k].hp = UnitType.Melee.stats().max_hp;
+        assert(game.cities[city].interior.fighters[k].health_fraction() < 1.0);
+    });
+}
+
+/// Whether the hex \`target\` is drawn with the move-range highlight.
+fn highlighted(vertices: &Vec[MeshVertex], target: Hex) -> bool {
+    let center = target.to_world();
+    for i in 0..vertices.len() {
+        let v = &vertices[i];
+        let same = v.color[0] == MOVE_RANGE_COLOR[0] && v.color[1] == MOVE_RANGE_COLOR[1] && v.color[2] == MOVE_RANGE_COLOR[2] && v.color[3] == MOVE_RANGE_COLOR[3];
+        if same && vec2(v.pos[0], v.pos[1]).distance(center) < HEX_SIZE * 0.85 { return true; }
+    }
+    false
 }

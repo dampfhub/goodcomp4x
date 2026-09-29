@@ -1666,7 +1666,7 @@ pub fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec[MeshVe
 impl GameState {
     /// The city interior is a separate world map, drawn with the normal hex and unit primitives
     /// rather than as buttons in a screen-space panel.
-    fn build_interior_vertices(&self, index: i32) -> Vec[MeshVertex] {
+    pub fn build_interior_vertices(&self, index: i32) -> Vec[MeshVertex] {
         let mut out: Vec[MeshVertex] = Vec.new();
         let city = &self.cities[index];
         let interior = &city.interior;
@@ -1687,13 +1687,10 @@ impl GameState {
                 regular_polygon(at, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
                 let Option.Some(k) = selected else { continue; };
                 let fighter = interior.fighters[k];
-                let from = fighter.planned_move.unwrap_or(fighter.pos);
                 let occupied = interior.fighter_at(hex);
-                let stats = fighter.unit_type.stats();
-                let move_range = if stats.move_range > 1 { stats.move_range } else { 1 };
-                let can_move = occupied.is_none() && (hex != CENTER || interior.core_hp <= 0.0) && from.distance(hex) <= move_range;
+                let can_move = occupied.is_none() && (hex != CENTER || interior.core_hp <= 0.0) && fighter.move_reaches(hex);
                 let enemy_there = match occupied { Option.Some(o) => interior.fighters[o].team != fighter.team, Option.None => false };
-                let can_attack = (enemy_there || (hex == CENTER && city.team != fighter.team && interior.core_hp > 0.0)) && from.distance(hex) <= stats.attack_range;
+                let can_attack = (enemy_there || (hex == CENTER && city.team != fighter.team && interior.core_hp > 0.0)) && fighter.attack_reaches(hex);
                 if can_move || can_attack {
                     polygon_outline(at, HEX_SIZE * 0.82, 0.065, 6, 0.0, if can_attack { ATTACK_RANGE_COLOR } else { MOVE_RANGE_COLOR }, &mut out);
                 }
@@ -1729,7 +1726,7 @@ impl GameState {
             let fighter = interior.fighters[k];
             let at = fighter.pos.to_world();
             push_unit_icon(at, UnitLook { icon: UnitIcon.of(fighter.unit_type), civilian: false }, 1.0, fighter.team.color(), &mut out);
-            push_health_bar(at, fighter.hp / fighter.unit_type.stats().max_hp, 1.0, &mut out);
+            push_health_bar(at, fighter.health_fraction(), 1.0, &mut out);
         }
         out
     }
