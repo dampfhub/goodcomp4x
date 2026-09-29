@@ -24,7 +24,10 @@ const FIELD_SUPERSAMPLE: usize = 4;
 /// How many pixels a distance field reaches outside and inside the outline.
 const FIELD_SPREAD: usize = 6;
 
-const FONT_DATA: &[u8] = include_bytes!("../../assets/fonts/IBMPlexMono-SemiBold.ttf");
+/// The font's file: the classic UI's and the world's, and ImGui's where
+/// the system has no UI font of its own (`style_imgui`).
+pub(in crate::game) const FONT_DATA: &[u8] =
+    include_bytes!("../../assets/fonts/IBMPlexMono-SemiBold.ttf");
 
 const ATLAS_WIDTH: usize = 1024;
 const MIP_LEVELS: usize = 4;
@@ -32,9 +35,16 @@ const MIP_LEVELS: usize = 4;
 /// doesn't blend neighboring glyphs together.
 const PADDING: usize = 1 << (MIP_LEVELS - 1);
 
+/// The characters beyond printable ASCII that game text may use, which
+/// both presentations' fonts carry: this font (`characters`) and ImGui's
+/// (`IMGUI_GLYPHS`, `imgui.rs`). A new one goes here;
+/// `ui_text_uses_only_the_shared_glyphs` finds any the source uses that
+/// isn't.
+pub(in crate::game) const UI_PUNCTUATION: [char; 4] = ['·', '—', '×', '…'];
+
 /// Printable ASCII, plus a little punctuation for UI text.
 fn characters() -> impl Iterator<Item = char> {
-    (' '..='~').chain(['·', '—', '×', '…'])
+    (' '..='~').chain(UI_PUNCTUATION)
 }
 
 struct Glyph {

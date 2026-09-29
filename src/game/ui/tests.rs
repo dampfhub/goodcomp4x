@@ -4413,6 +4413,115 @@ fn imgui_view_controls_share_the_menu_line_and_leave_the_notice_the_bar() {
     );
 }
 
+/// The characters past ASCII in the string and character literals of Rust
+/// source `code` (its comments left out).
+fn literal_characters(code: &str) -> Vec<char> {
+    let chars: Vec<char> = code.chars().collect();
+    let mut found = Vec::new();
+    // Collects from `i` to the end of a literal closed by `end`, escapes
+    // skipped unless `raw`, and returns where it ends.
+    let mut literal = |mut i: usize, end: &[char], raw: bool| {
+        while i < chars.len() && !chars[i..].starts_with(end) {
+            if !raw && chars[i] == '\\' {
+                i += 1;
+            } else if !chars[i].is_ascii() {
+                found.push(chars[i]);
+            }
+            i += 1;
+        }
+        i + end.len()
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        let rest = &chars[i..];
+        if rest.starts_with(&['/', '/']) {
+            i += rest.iter().position(|&c| c == '\n').unwrap_or(rest.len());
+        } else if rest.starts_with(&['/', '*']) {
+            i += rest
+                .windows(2)
+                .position(|pair| pair == ['*', '/'])
+                .map_or(rest.len(), |at| at + 2);
+        } else if rest[0] == '"' {
+            i = literal(i + 1, &['"'], false);
+        } else if rest[0] == 'r'
+            && (i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_'))
+            && let Some(hashes) = rest[1..].iter().position(|&c| c != '#')
+            && rest[1 + hashes] == '"'
+        {
+            let end: Vec<char> = std::iter::once('"')
+                .chain(std::iter::repeat_n('#', hashes))
+                .collect();
+            i = literal(i + hashes + 2, &end, true);
+        } else if rest[0] == '\'' && (rest.get(1) == Some(&'\\') || rest.get(2) == Some(&'\'')) {
+            // A character literal, not a lifetime.
+            i = literal(i + 1, &['\''], false);
+        } else {
+            i += 1;
+        }
+    }
+    found
+}
+
+#[test]
+fn literal_characters_reads_only_literals() {
+    // Written with escapes, so this file's own literals stay in ASCII.
+    let code = "// \u{d7}\nlet a = \"\u{b7}\\\"\u{2014}\"; /* \u{e9} */ let b = '\u{2026}';\n\
+                fn f<'a>(x: &'a str) {}\nr#\"\u{b2}\"#; '\\'';";
+    assert_eq!(
+        literal_characters(code),
+        ['\u{b7}', '\u{2014}', '\u{2026}', '\u{b2}']
+    );
+}
+
+#[test]
+fn ui_text_uses_only_the_shared_glyphs() {
+    // #111: ImGui's fonts carried only U+0020-00FF, so an em dash drew as
+    // ImGui's fallback glyph. Game text may use past ASCII only the
+    // punctuation both presentations' fonts carry (and the map's icon
+    // characters, drawn as icons).
+    fn sources(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    sources(&src, &mut files);
+    assert!(files.len() > 50, "{files:?}");
+    for file in files {
+        let code = std::fs::read_to_string(&file).unwrap();
+        for ch in literal_characters(&code) {
+            assert!(
+                crate::game::font::UI_PUNCTUATION.contains(&ch)
+                    || crate::game::map_icons::inline_icon(ch).is_some(),
+                "{} uses {ch:?} (U+{:04X}): add it to UI_PUNCTUATION (font.rs) \
+                 or spell it in ASCII",
+                file.display(),
+                ch as u32
+            );
+        }
+    }
+    // Every font ImGui is given has a glyph of its own for each of them,
+    // with the system's UI font or without it.
+    let mut screen = ImGuiScreen::styled(SCREEN);
+    let fonts = screen.fonts;
+    let ui = screen.context.frame();
+    for font in fonts {
+        let _font = ui.push_font(font);
+        let raw = unsafe { ::imgui::sys::igGetFont() };
+        for ch in (' '..='~').chain(crate::game::font::UI_PUNCTUATION) {
+            let glyph = unsafe { ::imgui::sys::ImFont_FindGlyphNoFallback(raw, ch as _) };
+            assert!(!glyph.is_null(), "ImGui's font {font:?} has no {ch:?}");
+        }
+    }
+    screen.context.render();
+}
+
 /// Where the text and icons ImGui drew last frame in the window titled
 /// `window` run into each other, or past the side of what holds them (their
 /// window, or their button): a line each. What is scrolled out of sight
