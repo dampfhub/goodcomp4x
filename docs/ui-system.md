@@ -17,7 +17,7 @@ input capture. It is drawn at the end of the existing Vulkan render pass.
 Action buttons in both presentations show costs and work times but not their
 keyboard shortcuts, which are in their tooltips: hovering never changes a
 button's text. Debug buttons keep their keys visible.
-Unit orders and city labor focus use shared vector-icon toolbars; hovering an
+Unit orders and a city's priority chips use shared vector-icon toolbars; hovering an
 icon gives its action name, shortcut and explanation.
 `ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible
 windows without overlap. A window follows the dock as its content changes
@@ -192,7 +192,11 @@ button for removal. A queue panel's title is a `title_with_button` row
 (`Row::TitleWithButton`): the text, and its Clear button (`Target::ClearCityQueue`,
 `Target::ClearBarracksQueue`) at the right end of the same line, so it costs no queue row. Route row dragging through `GameState::start_queue_drag_at`,
 `update_queue_drag_at`, and `finish_queue_drag_at`, so the city and Barracks
-queues share the same hit-testing behavior.
+queues share the same hit-testing behavior. A row of buttons that reorder by
+dragging (`reorder_buttons`, `Row::Reorder`: the city tray's priority chips)
+registers each button as a drag region of its `QueueKind` too, so classic drags
+it the same way, and a press let go on the chip it started on is its click;
+ImGui gives each of its buttons a drag source and target (`render_buttons`).
 
 Cursor-following tooltips, button tooltips, and the selection box are
 overlays, so they use their own anchors (so is the centered settings menu). Ordinary status, control,

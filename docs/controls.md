@@ -120,8 +120,9 @@ orders shows disabled.
 | Click a tile in the city view | Assign a citizen there, or release one; where one of your units stands, click beside its token |
 | Click one of your units' tokens in the city or barracks view | Select the unit and close the view |
 | Click the manager (`M`), then a tile | Move the manager; workers follow where they can (once it's picked up, a click on a unit's token places it too) |
-| A | Auto-assign citizens by the city's labor focus |
-| Food / Wood / Metal / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
+| A | Auto-assign citizens by the city's priority order |
+| Drag a priority chip (wheat, log, ingot; its rank in the corner) onto another | Reorder the city's priorities (and re-assign) |
+| Click a priority chip | Put that good first (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile when work on it starts (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
 | 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |

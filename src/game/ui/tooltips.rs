@@ -1,5 +1,6 @@
 //! Button tooltips and the tile tooltip.
 
+use super::action_icons;
 use super::builder::PanelBuilder;
 use super::paint::draw_shape;
 use super::text::{ability_text, pending_text, price_hint, signed_quantity, turns_text, wrap};
@@ -528,10 +529,17 @@ impl GameState {
                     "STOPS PLACING, LEAVING THE CITY OPEN. NOTHING IS PLACED OR PAID.".into(),
                     None,
                 ),
-                Target::Focus(focus) => (
-                    format!("{} FOCUS", focus.name()),
-                    "AUTO".into(),
-                    "REASSIGNS THE CITIZENS.".into(),
+                Target::Priority(good) => (
+                    match action_icons::badge(&button.label) {
+                        Some(rank) => format!("{} · PRIORITY {rank}", good.name()),
+                        None => good.name().into(),
+                    },
+                    "CLICK · DRAG".into(),
+                    "CITIZENS WORK THE TILES WORTH THE MOST, EACH GOOD COUNTING BY ITS PLACE: \
+                     1ST ×9, 2ND ×3, 3RD ×1. FOOD COMES FIRST UNTIL THE CITY'S TILES FEED ITS \
+                     CITIZENS WITH 1 TO SPARE. CLICK: PUT IT FIRST. DRAG ONTO ANOTHER: MOVE IT \
+                     THERE. EITHER REASSIGNS THE CITIZENS."
+                        .into(),
                     None,
                 ),
                 Target::Scenario(scenario) => (

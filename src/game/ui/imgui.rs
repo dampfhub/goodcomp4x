@@ -1422,17 +1422,8 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
             }
             Row::Gap(gap) => gap + 6.0,
             Row::Bar(_) => 18.0,
-            Row::Buttons(buttons, compact) => {
-                if icon_row(buttons) {
-                    let columns =
-                        ((inner + 7.0) / (ICON_BUTTON_SIZE + 7.0)).floor().max(1.0) as usize;
-                    buttons.len().div_ceil(columns) as f32 * (ICON_BUTTON_SIZE + 6.0)
-                } else {
-                    let columns = ((inner + 7.0) / 135.0).floor().max(1.0) as usize;
-                    let rows = buttons.len().div_ceil(columns);
-                    rows as f32 * (if *compact { 34.0 } else { 54.0 })
-                }
-            }
+            Row::Buttons(buttons, compact) => measure_buttons(buttons, *compact, inner),
+            Row::Reorder(_, buttons) => measure_buttons(buttons, true, inner),
             Row::QueueItem(_) => 37.0,
             Row::TitleWithButton(..) => ui.frame_height_with_spacing(),
             Row::BuildingCatalog(_, buttons, ..) => {
@@ -1452,6 +1443,19 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
         };
     }
     height + 12.0
+}
+
+/// A row of buttons' height, as `render_buttons` wraps it in `inner` of
+/// width.
+fn measure_buttons(buttons: &[ButtonSpec], compact: bool, inner: f32) -> f32 {
+    if icon_row(buttons) {
+        let columns = ((inner + 7.0) / (ICON_BUTTON_SIZE + 7.0)).floor().max(1.0) as usize;
+        buttons.len().div_ceil(columns) as f32 * (ICON_BUTTON_SIZE + 6.0)
+    } else {
+        let columns = ((inner + 7.0) / 135.0).floor().max(1.0) as usize;
+        let rows = buttons.len().div_ceil(columns);
+        rows as f32 * (if compact { 34.0 } else { 54.0 })
+    }
 }
 
 /// The style's vertical item spacing and frame padding (`app.rs`), as
@@ -2400,6 +2404,116 @@ impl GameState {
         }
     }
 
+    /// A row of buttons (`Row::Buttons`), wrapping to the window's width;
+    /// with `reorder`, each can be dragged onto another to reorder that
+    /// queue, index by index (`Row::Reorder`), and a click is still its
+    /// own target.
+    #[allow(clippy::too_many_arguments)]
+    fn render_buttons(
+        &self,
+        ui: &Ui,
+        panel: &PanelBuilder,
+        buttons: &[ButtonSpec],
+        compact: bool,
+        reorder: Option<QueueKind>,
+        fonts: &[FontId; 3],
+        scope: Option<PinnedPanel>,
+        actions: &mut Vec<Action>,
+    ) {
+        if buttons.is_empty() {
+            return;
+        }
+        let available = ui.content_region_avail()[0];
+        let spacing = ui.clone_style().item_spacing[0];
+        let icons = icon_row(buttons);
+        let min_width = if icons { ICON_BUTTON_SIZE } else { 128.0 };
+        let columns = (((available + spacing) / (min_width + spacing)).floor() as usize)
+            .clamp(1, buttons.len());
+        let width = if icons {
+            ICON_BUTTON_SIZE
+        } else {
+            ((available - spacing * (columns - 1) as f32) / columns as f32).max(min_width)
+        };
+        for (index, spec) in buttons.iter().enumerate() {
+            if index % columns != 0 {
+                ui.same_line();
+            }
+            let _accent = match spec.state {
+                ButtonState::Queued => {
+                    Some(ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]))
+                }
+                _ if spec.armed => {
+                    Some(ui.push_style_color(StyleColor::Button, [0.24, 0.32, 0.24, 1.0]))
+                }
+                _ => None,
+            };
+            let disabled = spec.state == ButtonState::Disabled;
+            let _disabled = ui.begin_disabled(disabled);
+            let height = if icons {
+                ICON_BUTTON_SIZE
+            } else if compact {
+                28.0
+            } else {
+                48.0
+            };
+            let hint = visible_button_hint(&spec.hint, panel.faded);
+            let lines = if icons {
+                vec![String::new()]
+            } else if hint.is_empty() {
+                vec![spec.label.clone()]
+            } else if compact {
+                vec![format!("{}  {hint}", spec.label)]
+            } else {
+                vec![spec.label.clone(), hint.to_string()]
+            };
+            let id = format!("{:?}", spec.target);
+            if rich_button(ui, &id, &lines, [width, height], false) {
+                actions.push(Action::Button(scope, spec.target));
+            }
+            note_drawn_button(ui, spec.target);
+            if icons {
+                let icon = action_icons::for_button(spec.target, &spec.label).expect("icon row");
+                let color = match spec.state {
+                    ButtonState::Disabled => DIM_TEXT,
+                    ButtonState::Queued => GOLD_TEXT,
+                    ButtonState::Ready if spec.armed => BOOSTED_TEXT,
+                    ButtonState::Ready => TEXT,
+                };
+                draw_action_icon(
+                    ui,
+                    ui.item_rect_min(),
+                    ui.item_rect_max(),
+                    icon,
+                    color,
+                    action_icons::badge(&spec.label),
+                    fonts[0],
+                );
+            }
+            if let Some(kind) = reorder
+                && !disabled
+                && !self.is_resolving()
+            {
+                // Scoped to the panel, so one city's chips can't reorder
+                // another's.
+                let name = format!("{kind:?}-reorder-{scope:?}");
+                if let Some(source) = ui.drag_drop_source_config(&name).begin_payload(index) {
+                    rich_text(ui, &spec.label, TEXT);
+                    source.end();
+                }
+                if let Some(target) = ui.drag_drop_target() {
+                    if let Some(Ok(payload)) =
+                        target.accept_payload::<usize, _>(&name, DragDropFlags::empty())
+                        && payload.delivery
+                    {
+                        actions.push(Action::Reorder(scope, kind, payload.data, index));
+                    }
+                    target.pop();
+                }
+            }
+            self.button_tooltip(ui, spec);
+        }
+    }
+
     /// The tooltip of the panel button just drawn, while it's hovered (dimmed
     /// or not).
     fn button_tooltip(&self, ui: &Ui, spec: &ButtonSpec) {
@@ -2506,80 +2620,18 @@ impl GameState {
                         .build(ui);
                 }
                 Row::Buttons(buttons, compact) => {
-                    if buttons.is_empty() {
-                        continue;
-                    }
-                    let available = ui.content_region_avail()[0];
-                    let spacing = ui.clone_style().item_spacing[0];
-                    let icons = icon_row(buttons);
-                    let min_width = if icons { ICON_BUTTON_SIZE } else { 128.0 };
-                    let columns = (((available + spacing) / (min_width + spacing)).floor()
-                        as usize)
-                        .clamp(1, buttons.len());
-                    let width = if icons {
-                        ICON_BUTTON_SIZE
-                    } else {
-                        ((available - spacing * (columns - 1) as f32) / columns as f32)
-                            .max(min_width)
-                    };
-                    for (index, spec) in buttons.iter().enumerate() {
-                        if index % columns != 0 {
-                            ui.same_line();
-                        }
-                        let _accent = match spec.state {
-                            ButtonState::Queued => Some(
-                                ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]),
-                            ),
-                            _ if spec.armed => Some(
-                                ui.push_style_color(StyleColor::Button, [0.24, 0.32, 0.24, 1.0]),
-                            ),
-                            _ => None,
-                        };
-                        let _disabled = ui.begin_disabled(spec.state == ButtonState::Disabled);
-                        let height = if icons {
-                            ICON_BUTTON_SIZE
-                        } else if *compact {
-                            28.0
-                        } else {
-                            48.0
-                        };
-                        let hint = visible_button_hint(&spec.hint, panel.faded);
-                        let lines = if icons {
-                            vec![String::new()]
-                        } else if hint.is_empty() {
-                            vec![spec.label.clone()]
-                        } else if *compact {
-                            vec![format!("{}  {hint}", spec.label)]
-                        } else {
-                            vec![spec.label.clone(), hint.to_string()]
-                        };
-                        let id = format!("{:?}", spec.target);
-                        if rich_button(ui, &id, &lines, [width, height], false) {
-                            actions.push(Action::Button(scope, spec.target));
-                        }
-                        note_drawn_button(ui, spec.target);
-                        if icons {
-                            let icon = action_icons::for_button(spec.target, &spec.label)
-                                .expect("icon row");
-                            let color = match spec.state {
-                                ButtonState::Disabled => DIM_TEXT,
-                                ButtonState::Queued => GOLD_TEXT,
-                                ButtonState::Ready if spec.armed => BOOSTED_TEXT,
-                                ButtonState::Ready => TEXT,
-                            };
-                            draw_action_icon(
-                                ui,
-                                ui.item_rect_min(),
-                                ui.item_rect_max(),
-                                icon,
-                                color,
-                                action_icons::cooldown(&spec.label),
-                                fonts[0],
-                            );
-                        }
-                        self.button_tooltip(ui, spec);
-                    }
+                    self.render_buttons(ui, panel, buttons, *compact, None, fonts, scope, actions)
                 }
+                Row::Reorder(kind, buttons) => self.render_buttons(
+                    ui,
+                    panel,
+                    buttons,
+                    true,
+                    Some(*kind),
+                    fonts,
+                    scope,
+                    actions,
+                ),
                 Row::TitleWithButton(line, spec) => {
                     ui.align_text_to_frame_padding();
                     {
@@ -2711,6 +2763,7 @@ impl GameState {
                             QueueKind::City => "city-queue",
                             QueueKind::Barracks => "barracks-queue",
                             QueueKind::Workers => "worker-jobs",
+                            QueueKind::Priority => "priority",
                         };
                         let name = format!("{name}-{:?}", scope);
                         if let Some(source) =

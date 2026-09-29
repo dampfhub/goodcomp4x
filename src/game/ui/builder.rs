@@ -48,7 +48,9 @@ fn freeze_rows(rows: &mut [Row]) {
     };
     for row in rows {
         match row {
-            Row::Buttons(buttons, _) => buttons.iter_mut().for_each(freeze),
+            Row::Buttons(buttons, _) | Row::Reorder(_, buttons) => {
+                buttons.iter_mut().for_each(freeze)
+            }
             Row::TitleWithButton(_, button) => freeze(button),
             Row::BuildingCatalog(_, entries, ..) => {
                 for entry in entries {
@@ -155,6 +157,19 @@ pub(super) enum Row {
     /// text and whether keys go into it: ImGui draws a text box, classic a
     /// button that starts typing into it (`classic_rows`).
     Field(NetField, String, bool),
+    /// A row of one-line buttons (icons, if every one has one) that can be
+    /// dragged onto one another to reorder them, as `kind`'s queue rows
+    /// are, index by index; a click (not a drag) is the button's own
+    /// target. The open city's priority chips.
+    Reorder(QueueKind, Vec<ButtonSpec>),
+}
+
+impl Row {
+    /// Whether this is a row of buttons, whose borders, drawn just outside
+    /// it, need a gap from another such row.
+    pub(super) fn is_buttons(&self) -> bool {
+        matches!(self, Row::Buttons(..) | Row::Reorder(..))
+    }
 }
 
 #[derive(Clone)]
@@ -190,7 +205,7 @@ impl ScrollList {
         self.entries
             .iter()
             .map(|entry| {
-                let buttons = matches!(entry, Row::Buttons(..));
+                let buttons = entry.is_buttons();
                 let gap = if buttons && after_buttons { GAP } else { 0.0 };
                 after_buttons = buttons;
                 gap + PanelBuilder::row_height(entry)
@@ -248,7 +263,7 @@ static BUTTON_ROW_GAP: Row = Row::Gap(GAP);
 /// its windows scroll by themselves.
 pub(super) fn flat_rows(rows: &[Row]) -> Vec<&Row> {
     fn push<'a>(out: &mut Vec<&'a Row>, row: &'a Row) {
-        if matches!(row, Row::Buttons(..)) && matches!(out.last(), Some(Row::Buttons(..))) {
+        if row.is_buttons() && out.last().is_some_and(|last| last.is_buttons()) {
             out.push(&BUTTON_ROW_GAP);
         }
         out.push(row);
@@ -393,6 +408,13 @@ impl PanelBuilder {
         self.rows.push(Row::Buttons(buttons, true));
     }
 
+    /// A row of one-line buttons that drag onto one another to reorder
+    /// `kind` (`Row::Reorder`).
+    pub(super) fn reorder_buttons(&mut self, kind: QueueKind, buttons: Vec<ButtonSpec>) {
+        self.space_button_rows();
+        self.rows.push(Row::Reorder(kind, buttons));
+    }
+
     /// For a plan that can't change (a network game waiting for the others'):
     /// every button that would change it shows disabled, and queue rows
     /// lock (no dragging, no X). Both presentations call it on the panels
@@ -404,7 +426,7 @@ impl PanelBuilder {
     /// Button borders are drawn just outside their rows, so a row of buttons
     /// right under another needs a gap to keep them from overlapping.
     fn space_button_rows(&mut self) {
-        if matches!(self.rows.last(), Some(Row::Buttons(..))) {
+        if self.rows.last().is_some_and(Row::is_buttons) {
             self.rows.push(Row::Gap(GAP));
         }
     }
@@ -415,12 +437,8 @@ impl PanelBuilder {
             Row::Gap(height) => *height,
             Row::Bar(_) => GROWTH_BAR_HEIGHT,
             Row::QueueItem(_) => QUEUE_ITEM_HEIGHT,
-            Row::Buttons(buttons, _) if icon_row(buttons) => {
-                let rows = buttons.len().div_ceil(CLASSIC_ICON_COLUMNS);
-                rows as f32 * ICON_BUTTON_SIZE + rows.saturating_sub(1) as f32 * GAP
-            }
-            Row::Buttons(_, false) => BUTTON_HEIGHT,
-            Row::Buttons(_, true) => END_TURN_HEIGHT,
+            Row::Buttons(buttons, compact) => buttons_height(buttons, *compact),
+            Row::Reorder(_, buttons) => buttons_height(buttons, true),
             Row::TitleWithButton(..) => TITLE_ROW_HEIGHT,
             Row::Roster(_) => ROSTER_CHIP,
             Row::BuildingCatalog(_, buttons, _, visible) => {
@@ -446,15 +464,8 @@ impl PanelBuilder {
             Row::QueueItem(item) => {
                 font::ui(SMALL).width(&item.label) + 2.0 * BUTTON_PADDING + QUEUE_REMOVE_WIDTH
             }
-            Row::Buttons(buttons, compact) => {
-                if icon_row(buttons) {
-                    let columns = buttons.len().min(CLASSIC_ICON_COLUMNS);
-                    columns as f32 * ICON_BUTTON_SIZE + columns.saturating_sub(1) as f32 * GAP
-                } else {
-                    let width = button_width(buttons, *compact);
-                    buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
-                }
-            }
+            Row::Buttons(buttons, compact) => buttons_width(buttons, *compact),
+            Row::Reorder(_, buttons) => buttons_width(buttons, true),
             Row::ScrollList(list) => {
                 let widest = list.entries.iter().map(Self::row_width).fold(0.0, f32::max);
                 let (max_offset, _) = list.shown();
@@ -619,6 +630,33 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 body_max_x,
                 locked: item.locked,
             });
+        }
+        Row::Reorder(kind, buttons) => {
+            // The buttons, each also a drag region (index by index), which
+            // takes the press before the button would (`start_queue_drag_at`):
+            // let go where it started and it's the button's click.
+            let first = layout.buttons.len();
+            place_row(
+                layout,
+                Row::Buttons(buttons, true),
+                top_left,
+                inner_width,
+                faded,
+            );
+            let placed: Vec<_> = layout.buttons[first..]
+                .iter()
+                .map(|b| (b.min, b.max, b.state == ButtonState::Disabled))
+                .collect();
+            for (index, (min, max, locked)) in placed.into_iter().enumerate() {
+                layout.queue_items.push(QueueItemRegion {
+                    kind,
+                    index,
+                    min,
+                    max,
+                    body_max_x: max.x,
+                    locked,
+                });
+            }
         }
         Row::Buttons(buttons, compact) => {
             let icons = icon_row(&buttons);
@@ -809,14 +847,14 @@ fn place_scroll_list(
 /// them, their borders being drawn just outside them.
 fn buttons_at(row: &Row, first: bool) -> bool {
     match row {
-        Row::Buttons(..) => true,
+        Row::Buttons(..) | Row::Reorder(..) => true,
         Row::ScrollList(list) => {
             let edge = if first {
                 list.entries.first()
             } else {
                 list.entries.last()
             };
-            matches!(edge, Some(Row::Buttons(..)))
+            edge.is_some_and(Row::is_buttons)
         }
         _ => false,
     }
@@ -873,6 +911,30 @@ pub(super) fn classic_rows(rows: Vec<Row>) -> Vec<Row> {
         }
     }
     out
+}
+
+/// A row of buttons' height in classic: icon buttons wrap at
+/// `CLASSIC_ICON_COLUMNS`.
+fn buttons_height(buttons: &[ButtonSpec], compact: bool) -> f32 {
+    if icon_row(buttons) {
+        let rows = buttons.len().div_ceil(CLASSIC_ICON_COLUMNS);
+        rows as f32 * ICON_BUTTON_SIZE + rows.saturating_sub(1) as f32 * GAP
+    } else if compact {
+        END_TURN_HEIGHT
+    } else {
+        BUTTON_HEIGHT
+    }
+}
+
+/// A row of buttons' width in classic.
+fn buttons_width(buttons: &[ButtonSpec], compact: bool) -> f32 {
+    if icon_row(buttons) {
+        let columns = buttons.len().min(CLASSIC_ICON_COLUMNS);
+        columns as f32 * ICON_BUTTON_SIZE + columns.saturating_sub(1) as f32 * GAP
+    } else {
+        let width = button_width(buttons, compact);
+        buttons.len() as f32 * width + (buttons.len().saturating_sub(1)) as f32 * GAP
+    }
 }
 
 /// Width every button in a row shares: enough for the widest one.
