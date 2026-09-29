@@ -999,3 +999,41 @@ fn debug_completion_button_finishes_the_current_production() {
         assert(game.cities[city].queue.len() < queued || game.units.len() > units);
     });
 }
+
+/// The centered settings menu is drawn over the city's panels, the production catalogue's
+/// scrollbar among them (on a window narrow enough): where they overlap, a press belongs to the
+/// button and the catalogue doesn't scroll.
+@test
+fn a_menu_button_over_a_scrollbar_takes_the_press() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        game.settings_open = true;
+        let mut found = false;
+        let mut width = 500.0;
+        while !found && width < 1700.0 {
+            let size = vec2(width, 900.0);
+            width = width + 50.0;
+            let layout = game.layout(size);
+            for c in 0..layout.catalogs.len() {
+                let track = &layout.catalogs[c];
+                if track.max_offset <= 0 || found { continue; }
+                let before = game.cities[track.city].building_scroll;
+                for b in 0..layout.buttons.len() {
+                    let button = &layout.buttons[b];
+                    let lo = vec2(if button.min.x > track.track_min.x { button.min.x } else { track.track_min.x }, if button.min.y > track.track_min.y { button.min.y } else { track.track_min.y });
+                    let hi = vec2(if button.max.x < track.track_max.x { button.max.x } else { track.track_max.x }, if button.max.y < track.track_max.y { button.max.y } else { track.track_max.y });
+                    if found || !(lo.x < hi.x && lo.y < hi.y) { continue; }
+                    let point = lo.add(hi).scale(0.5);
+                    if layout.button_at(point).is_none() { continue; }
+                    found = true;
+                    // The press belongs to the button: the scrollbar under it lets it go by.
+                    let cursor = to_ui(point, size);
+                    assert(!game.drag_building_scrollbar_at(cursor, size, false));
+                    assert(!game.drag_queue_scrollbar_at(cursor, size, false));
+                    assert(game.cities[track.city].building_scroll == before);
+                }
+            }
+        }
+        assert(found);
+    });
+}

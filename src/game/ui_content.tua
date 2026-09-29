@@ -222,6 +222,9 @@ impl GameState {
         if self.imgui_ui { return false; }
         let point = to_ui(cursor, screen_size);
         let layout = self.layout(screen_size);
+        // A button (the centered settings menu's, drawn over the panels) takes the press before a
+        // scrollbar under it.
+        if !captured && layout.button_at(point).is_some() { return false; }
         for k in 0..layout.queue_scrollbars.len() {
             let s = &layout.queue_scrollbars[k];
             if !(captured || contains(s.track_min, s.track_max, point)) { continue; }
@@ -238,6 +241,7 @@ impl GameState {
         if self.imgui_ui { return false; }
         let point = to_ui(cursor, screen_size);
         let layout = self.layout(screen_size);
+        if !captured && layout.button_at(point).is_some() { return false; }
         for k in 0..layout.catalogs.len() {
             let c = &layout.catalogs[k];
             if c.max_offset <= 0 || !(captured || contains(c.track_min, c.track_max, point)) { continue; }
