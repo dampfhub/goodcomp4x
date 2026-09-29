@@ -206,8 +206,12 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   clouds for a flat grey. The fog is drawn behind the map, so explored terrain simply covers it
   as sight grows. Never-seen terrain and objects are not drawn beneath
   the clouds.
-- Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
-  remembered hexes from memory.
+- Enemy units out of sight are hidden, with their ghosts and hover info. An enemy in sight shows
+  a move's ghost only if its destination is in sight too, and a fight over a hex out of sight
+  doesn't turn it orange. Tile tooltips describe remembered hexes from memory. An enemy unit's
+  hover panel gives its stats and state, not the player's instructions (boarding, unloading) or
+  a landing craft's cargo. A command post breached or a city captured in its interior is
+  announced only for the player's own cities and cities in sight.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
   Terrain seen once is known for good (it never changes); a hex never seen counts as open ground
   for planning, whatever is really there, so a path planned into the fog goes straight through
@@ -219,9 +223,12 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   there is known of, and refusing it would give away that nobody is), and the attack misses if
   nobody is there when it comes.
 - What the map and panels show follows the same rule: yields, and which hexes a city's or
-  barracks' goods reach (badges, delivery percentages, tooltip), use remembered
+  barracks' goods reach (badges, delivery percentages, tooltip, a Work Camp's CONNECTED or
+  CUT OFF), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
-  is the player's own or in sight. The economy itself runs on the real board: an enemy out of
+  is the player's own or in sight. Hovering an enemy city in sight rings only the tiles it works
+  that are in sight, all as delivering: whether their goods arrive depends on its routes, which
+  the player doesn't know. The economy itself runs on the real board: an enemy out of
   sight on a route hex that isn't a worked tile still cuts the goods behind it, and that shows as
   lost income, a red disrupted-tile ring, and the city view's "NO OPEN ROUTE WITHIN LOGISTICS
   BUDGET" notice, while the enemy itself stays hidden. That much is accepted as fair, like
@@ -828,7 +835,8 @@ hostile to every side, and no side's AI plays it (World maps only).
   | A building | its turns (halved beside a Workshop) | the building, on its site |
 
 - **Going out:** in the Workers step, each city sends an idle worker (not a held one) out for
-  each job at the top of its list. A worker walks 1 hex a turn by the shortest way around
+  each job at the top of its list, but none while an enemy unit stands where it would set out from
+  (its city center or Work Camp); the job waits. A worker walks 1 hex a turn by the shortest way around
   impassable terrain, walls, others' gates, enemy units and enemy cities. Once on the tile it
   works the listed turns, less any work already in the job (starting the next turn), then takes
   the city's next job, or walks home when there is none. A job that became impossible is dropped
@@ -912,11 +920,13 @@ Every side but Blue is played by the AI, in `Team::ALL` order, and every side is
 every other. The AI plays under the fog (see Fog of war): it plans only on what its side sees and
 remembers, as the player does. An enemy unit or worker counts only while in sight; cities, ruins,
 walls and terrain count as last seen; ground never seen counts as open.
-Each AI unit picks, of the enemy units and workers in sight, the ruins its side knows of that no
-unit of its side holds or is heading for, and the enemy cities its side has seen, the one nearest
-on foot (walking distance around the terrain, walls and others' gates and cities it knows of; a
-city counts from its gates, and an enemy unit before a city as near). Knowing of none, it
-explores: it heads for the nearest ground its side has never seen. It steps onto ruins it can
+Each AI unit picks, of the enemy units in sight, the enemy workers alone in sight and ruins its
+side knows of that no unit of its side holds or is heading for, and the enemy cities its side has
+seen, the one nearest on foot (walking distance around the terrain, walls and others' gates and
+cities it knows of; a city counts from its gates, and an enemy unit before a city as near).
+Knowing of none, it explores: it heads for the nearest ground its side has never seen. With
+nothing left to explore either, it heads straight for the nearest enemy in sight it can hit: a
+ship on the water only if it's Ranged or Siege, which can shoot at one. It steps onto ruins it can
 reach, and then holds them until they're claimed, attacking enemies in range from there. It steps
 onto a worker it can reach this turn, capturing it; otherwise it attacks its target if already in
 range, or moves to the reachable hex with the shortest remaining walk (staying put on a tie),

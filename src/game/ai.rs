@@ -554,7 +554,13 @@ impl GameState {
                 fog,
                 unit.is_naval(),
             );
-            let dest = if !enemy_there && reachable.contains(&target) {
+            let claimed_by_ally = |hex: &Hex| {
+                self.units
+                    .iter()
+                    .any(|u| u.team == team && u.id != unit.id && u.planned_move == Some(*hex))
+            };
+            // One unit steps onto a hex; a second would bounce off the first.
+            let dest = if !enemy_there && reachable.contains(&target) && !claimed_by_ally(&target) {
                 target
             } else if enemy_there && unit.pos.distance(target) <= stats.attack_range {
                 unit.pos
@@ -569,11 +575,6 @@ impl GameState {
                 let steps_left = |hex: &Hex| match to_target {
                     Some(steps) => self.grid.index(*hex).map_or(NOT_FOUND, |i| steps[i]),
                     None => hex.distance(target),
-                };
-                let claimed_by_ally = |hex: &Hex| {
-                    self.units
-                        .iter()
-                        .any(|u| u.team == team && u.planned_move == Some(*hex))
                 };
                 // Staying put wins a tie, so a unit at a city's gates holds it.
                 reachable
@@ -684,13 +685,15 @@ impl GameState {
             .map(|enemy| enemy.pos)
     }
 
-    /// Where unit `idx` heads (see `plan_ai_turn`): of the enemy units and
-    /// workers in sight, the ruins no ally holds or is already heading for
-    /// and the enemy cities seen, the nearest on foot over the ground as
-    /// its side knows it (a city counting from its gates, and an enemy
-    /// before a city as near), ties to the lowest coordinates. With none
-    /// reachable, the nearest ground its side has never seen; with none
-    /// left, the enemy in sight nearest as the crow flies. A ship goes by
+    /// Where unit `idx` heads (see `plan_ai_turn`): of the enemy units in
+    /// sight, the enemy workers alone in sight and ruins that no ally holds
+    /// or is already heading for, and the enemy cities seen, the nearest on
+    /// foot over the ground as its side knows it (a city counting from its
+    /// gates, and an enemy before a city as near), ties to the lowest
+    /// coordinates. With none reachable, the nearest ground its side has
+    /// never seen; with none left, the enemy in sight nearest as the crow
+    /// flies that it could hit (a ship only for a unit that can shoot at
+    /// water). A ship goes by
     /// the crow's flight: to the nearest enemy in sight, else the nearest
     /// ground never seen.
     fn nearest_ai_target(&self, idx: usize, known: &Knowledge) -> Option<Hex> {
@@ -710,22 +713,30 @@ impl GameState {
                 )
             });
         }
-        let open_ruins: HashSet<Hex> = known
+        let claimed: HashSet<Hex> = self
+            .units
+            .iter()
+            .filter(|u| u.team == team && u.id != unit.id)
+            .filter_map(|u| u.planned_move)
+            .collect();
+        let held = |pos: Hex| self.units.iter().any(|u| u.team == team && u.pos == pos);
+        // An enemy troop in sight is fought, however many allies go for it;
+        // ruins, and an enemy worker alone (captured by stepping onto it),
+        // take one unit, so none an ally holds or already heads for.
+        let troop =
+            |pos: Hex| known.enemies.contains(&pos) && self.enemy_of_team_at(pos, team).is_some();
+        let targets: HashSet<Hex> = known
             .ruins
             .iter()
             .copied()
-            .filter(|&pos| {
-                !self
-                    .units
-                    .iter()
-                    .any(|u| u.team == team && (u.pos == pos || u.planned_move == Some(pos)))
-            })
+            .filter(|&pos| !held(pos))
+            .chain(known.enemies.iter().copied())
+            .filter(|&pos| troop(pos) || !claimed.contains(&pos))
             .collect();
-        let is_target = |hex: &Hex| known.enemies.contains(hex) || open_ruins.contains(hex);
+        let is_target = |hex: &Hex| targets.contains(hex);
         let lowest = |hexes: &mut dyn Iterator<Item = Hex>| hexes.min_by_key(|hex| (hex.q, hex.r));
         // With nothing known to go for, the nearest ground never seen is it.
-        let exploring =
-            known.enemies.is_empty() && open_ruins.is_empty() && known.cities.is_empty();
+        let exploring = targets.is_empty() && known.cities.is_empty();
         let mut unexplored = None;
         // A city is as far as its gates, plus one.
         let found = self.search_rings(unit.pos, known, |ring, last_ring| {
@@ -749,9 +760,16 @@ impl GameState {
             }
             None
         });
-        found
-            .or(unexplored)
-            .or_else(|| nearest(&mut known.enemies.iter().copied()))
+        // A ship is only worth chasing along the shore for one that can hit
+        // it there.
+        let can_hit = |hex: &Hex| {
+            unit.attacks_water()
+                || !(self.grid.contains(*hex) && self.grid.terrain(*hex).is_water())
+        };
+        found.or(unexplored).or_else(|| {
+            let enemies = targets.iter().copied();
+            nearest(&mut enemies.filter(|hex| known.enemies.contains(hex) && can_hit(hex)))
+        })
     }
 
     /// Searches outward from `start` ring by ring (each the hexes one more
@@ -1028,7 +1046,7 @@ mod tests {
     use super::*;
     use crate::game::city::City;
     use crate::game::hex::HexGrid;
-    use crate::game::terrain::Tile;
+    use crate::game::terrain::{Terrain, Tile};
     use crate::game::unit::{Unit, UnitType};
 
     #[test]
@@ -1257,6 +1275,143 @@ mod tests {
         let (dest, attack) = replan(&mut game);
         assert!(dest.is_some_and(|d| d.distance(at) > 2), "{dest:?}");
         assert_eq!(attack, None);
+    }
+
+    /// A Blue worker out on `at`, alone.
+    fn blue_worker_at(game: &mut GameState, at: Hex) {
+        use crate::game::workers::FieldWorker;
+        game.field_workers.push(FieldWorker {
+            id: 5,
+            team: Team::Blue,
+            home: 0,
+            base: at,
+            pos: at,
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
+    }
+
+    #[test]
+    fn one_ai_unit_goes_to_capture_a_worker_not_two() {
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        // Two Red melee either side of a lone Blue worker. Both used to
+        // plan onto it, bounce off each other and leave it free.
+        let worker = Hex::new(1, 0);
+        blue_worker_at(&mut game, worker);
+        game.units
+            .push(Unit::new(2, Hex::new(2, 0), Team::Red, UnitType::Melee));
+        game.plan_ai_turn(Team::Red);
+        let onto = |game: &GameState| {
+            game.units
+                .iter()
+                .filter(|u| u.planned_move == Some(worker))
+                .map(|u| u.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(onto(&game), vec![1]);
+        assert_eq!(game.units[1].planned_move, None, "nothing else to go for");
+        // Played out, the move step captures it.
+        let mut played = game.clone();
+        played.settings.instant_playback = true;
+        played.resolve_turn();
+        played.update(0.0);
+        assert!(played.field_workers.is_empty(), "captured");
+        assert_eq!(played.units[0].pos, worker);
+
+        // With an enemy troop there instead, both go for it.
+        game.field_workers.clear();
+        let blue = Hex::new(2, -2);
+        game.units
+            .push(Unit::new(3, blue, Team::Blue, UnitType::Melee));
+        for unit in &mut game.units {
+            unit.planned_move = None;
+        }
+        game.plan_ai_turn(Team::Red);
+        assert_eq!(game.units[0].planned_attack, Some(blue));
+        assert_eq!(game.units[1].planned_attack, Some(blue));
+        assert_ne!(game.units[0].planned_move, game.units[1].planned_move);
+    }
+
+    #[test]
+    fn an_ai_unit_leaves_ruins_an_ally_claimed() {
+        // Two Red melee beside the same ruins: one steps on, the other
+        // doesn't follow.
+        use crate::game::ruins::{Ruin, RuinReward};
+        let mut game = lone_red();
+        let ruin = Hex::new(1, 0);
+        game.ruins = vec![Ruin::new(ruin, RuinReward::Harvest)];
+        red_explores_the_rest(&mut game);
+        game.units
+            .push(Unit::new(2, Hex::new(2, 0), Team::Red, UnitType::Melee));
+        game.plan_ai_turn(Team::Red);
+        assert_eq!(game.units[0].planned_move, Some(ruin));
+        assert_ne!(game.units[1].planned_move, Some(ruin));
+    }
+
+    #[test]
+    fn a_unit_on_ruins_holds_them_and_fights_from_there() {
+        use crate::game::ruins::{Ruin, RuinReward};
+        let mut game = lone_red();
+        game.ruins = vec![Ruin::new(Hex::new(0, 0), RuinReward::Harvest)];
+        red_explores_the_rest(&mut game);
+        // An enemy two hexes off isn't chased off the ruins.
+        game.units
+            .push(Unit::new(2, Hex::new(2, 0), Team::Blue, UnitType::Melee));
+        assert_eq!(replan(&mut game), (None, None));
+        // One beside them is fought from there.
+        game.units[1].pos = Hex::new(1, 0);
+        assert_eq!(replan(&mut game), (None, Some(Hex::new(1, 0))));
+    }
+
+    #[test]
+    fn a_unit_at_its_citys_gates_holds_them_while_an_enemy_is_at_them() {
+        let mut game = lone_red();
+        game.cities = vec![City::new(0, Team::Red, Hex::new(0, 0))];
+        game.units[0].pos = Hex::new(1, 0);
+        red_explores_the_rest(&mut game);
+        // A Blue melee at another of the gates, out of the defender's
+        // reach: it stays where it is rather than go after it.
+        let blue = Hex::new(0, -1);
+        game.units
+            .push(Unit::new(2, blue, Team::Blue, UnitType::Melee));
+        assert_eq!(replan(&mut game), (None, None));
+        // Away from the gates, the same enemy is gone after.
+        game.units[1].pos = Hex::new(1, -3);
+        let (dest, _) = replan(&mut game);
+        assert!(dest.is_some(), "{dest:?}");
+    }
+
+    #[test]
+    fn targets_as_near_break_ties_by_coordinates_whatever_the_order() {
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        // Two lone Blue workers, each two steps off: the lower coordinates,
+        // (0, -2), win, whichever came first.
+        blue_worker_at(&mut game, Hex::new(0, 2));
+        blue_worker_at(&mut game, Hex::new(0, -2));
+        game.field_workers[1].id = 6;
+        let plan = replan(&mut game);
+        assert_eq!(plan, (Some(Hex::new(0, -1)), Some(Hex::new(0, -2))));
+        game.field_workers.reverse();
+        assert_eq!(replan(&mut game), plan);
+    }
+
+    #[test]
+    fn a_land_unit_chases_no_ship_it_cannot_hit() {
+        // A Blue galley on a lake two hexes off, in sight, and nothing else
+        // to go for. A melee used to follow it along the shore.
+        let mut game = lone_red();
+        let lake = Hex::new(2, 0);
+        game.grid = HexGrid::new(8, [(lake, Tile::from(Terrain::Lake))]);
+        red_explores_the_rest(&mut game);
+        game.units
+            .push(Unit::new(2, lake, Team::Blue, UnitType::PatrolGalley));
+        assert_eq!(replan(&mut game), (None, None));
+        // An archer can shoot it from the shore, and does.
+        game.units[0].unit_type = UnitType::Ranged;
+        assert_eq!(replan(&mut game), (None, Some(lake)));
     }
 
     #[test]

@@ -938,10 +938,20 @@ impl GameState {
                 let Some(job) = self.take_job(city) else {
                     break;
                 };
+                let base = self.work_base_for(city, job);
+                // An enemy standing where it would set out from (its city
+                // center, say, left there as the city changed hands) would
+                // capture it at the door: the job waits.
+                if self
+                    .enemy_of_team_at(base, self.cities[city].team)
+                    .is_some()
+                {
+                    self.cities[city].worker_jobs.insert(0, job);
+                    break;
+                }
                 self.cities[city].workers -= 1;
                 let id = self.next_unit_id;
                 self.next_unit_id += 1;
-                let base = self.work_base_for(city, job);
                 self.field_workers.push(FieldWorker {
                     id,
                     team: self.cities[city].team,
@@ -1557,6 +1567,28 @@ mod tests {
         game.resolve_workers();
         assert!(game.field_workers.is_empty());
         assert_eq!(game.cities[0].workers, 1);
+    }
+
+    #[test]
+    fn no_worker_sets_out_past_an_enemy_on_its_city_center() {
+        use crate::game::unit::Unit;
+        let mut game = cities();
+        let hex = bare_tile(&game, 2);
+        queue(&mut game, hex, JobKind::Improve);
+        // A Red troop left standing on the center (as when the city changed
+        // hands under it) would have captured the worker as it left.
+        let center = game.cities[0].pos;
+        game.units
+            .push(Unit::new(900, center, Team::Red, UnitType::Melee));
+        game.resolve_workers();
+        assert!(game.field_workers.is_empty());
+        assert_eq!(game.cities[0].workers, 1);
+        assert_eq!(game.cities[0].worker_jobs.len(), 1, "the job waits");
+        // Once it's gone, the worker goes.
+        game.units.clear();
+        game.resolve_workers();
+        assert_eq!(game.field_workers.len(), 1);
+        assert!(game.cities[0].worker_jobs.is_empty());
     }
 
     #[test]
