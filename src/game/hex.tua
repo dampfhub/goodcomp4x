@@ -130,6 +130,46 @@ pub enum GridShape {
 /// `a` sorts before `b` by `(q, r)`.
 pub struct Edge { a: Hex, b: Hex }
 
+/// Puts `v` in `(q, r)` order, so what is drawn or hashed from a map's keys does not depend on the
+/// order they went into it.
+pub fn sort_hexes(v: &mut Vec[Hex]) {
+    let mut i = 1;
+    while i < v.len() {
+        let mut k = i;
+        while k > 0 && (v[k - 1].q > v[k].q || (v[k - 1].q == v[k].q && v[k - 1].r > v[k].r)) {
+            let a = v[k - 1];
+            let b = v[k];
+            v[k - 1] = b;
+            v[k] = a;
+            k = k - 1;
+        }
+        i = i + 1;
+    }
+}
+
+/// The edges of `v` in `(a.q, a.r, b.q, b.r)` order.
+pub fn sort_edges(v: &mut Vec[Edge]) {
+    let mut i = 1;
+    while i < v.len() {
+        let mut k = i;
+        while k > 0 && edge_before(v[k], v[k - 1]) {
+            let a = v[k - 1];
+            let b = v[k];
+            v[k - 1] = b;
+            v[k] = a;
+            k = k - 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn edge_before(x: Edge, y: Edge) -> bool {
+    if x.a.q != y.a.q { return x.a.q < y.a.q; }
+    if x.a.r != y.a.r { return x.a.r < y.a.r; }
+    if x.b.q != y.b.q { return x.b.q < y.b.q; }
+    x.b.r < y.b.r
+}
+
 impl Eq for Edge {
     fn eq(self, other: Edge) -> bool { self.a == other.a && self.b == other.b }
 }

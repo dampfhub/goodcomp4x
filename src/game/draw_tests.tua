@@ -29,6 +29,13 @@ use game.draw_structures.MANAGER_ROUTE_COLOR;
 use game.draw_structures.BARRACKS_SHARE_COLOR;
 use game.city.Building;
 use game.unit.Unit;
+use game.unit.Team;
+use game.hex.Edge;
+use game.hex.edge;
+use game.workers.Structure;
+use game.workers.StructureKind;
+use std.collections.Map;
+use game.tests.sandbox;
 use game.fog_tests.remembered_route_hex;
 use game.tests.sandbox;
 use game.unit.Team;
@@ -391,5 +398,43 @@ fn barracks_delivery_labels_do_not_react_to_unseen_units() {
         assert(before > 0);
         game.units.push(Unit.new(51, far, Team.Red, UnitType.Melee));
         assert(count_color(&game.build_vertices(), BARRACKS_SHARE_COLOR) == before);
+    });
+}
+
+fn same_vertices(a: &Vec[MeshVertex], b: &Vec[MeshVertex]) -> bool {
+    if a.len() != b.len() { return false; }
+    for i in 0..a.len() {
+        let x = &a[i];
+        let y = &b[i];
+        if x.pos[0] != y.pos[0] || x.pos[1] != y.pos[1] || x.pos[2] != y.pos[2] { return false; }
+        for k in 0..4 { if x.color[k] != y.color[k] { return false; } }
+        if x.uv[0] != y.uv[0] || x.uv[1] != y.uv[1] { return false; }
+    }
+    true
+}
+
+/// Two walls of different sides share a corner post and overlap there: which is painted last
+/// must not depend on which was built first.
+@test
+fn shared_corner_walls_are_painted_in_the_same_order_whatever_was_built_first() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.fog_of_war = false;
+        let a = Hex.new(0, 0);
+        let b = Hex.new(1, 0);
+        let c = Hex.new(0, 1);
+        let blue = Structure { kind: StructureKind.Wall, team: Team.Blue };
+        let red = Structure { kind: StructureKind.Wall, team: Team.Red };
+        let mut forward: Map[Edge, Structure] = Map.new();
+        forward.insert(edge(a, b), blue);
+        forward.insert(edge(a, c), red);
+        game.barriers = forward;
+        let expected = game.build_vertices();
+        for _ in 0..3 { assert(same_vertices(&game.build_vertices(), &expected)); }
+        let mut backward: Map[Edge, Structure] = Map.new();
+        backward.insert(edge(a, c), red);
+        backward.insert(edge(a, b), blue);
+        game.barriers = backward;
+        assert(same_vertices(&game.build_vertices(), &expected));
     });
 }

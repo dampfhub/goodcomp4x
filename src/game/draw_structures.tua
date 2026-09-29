@@ -32,6 +32,8 @@ use game.font.push_text;
 use game.font.world_text_width;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
+use game.hex.sort_hexes;
+use game.hex.sort_edges;
 use game.hex.edge_corners;
 use game.mesh.Color;
 use game.mesh.polygon;
@@ -326,8 +328,14 @@ impl GameState {
         }
         self.push_planned_jobs(out);
         self.push_others_construction(fog, out);
-        for k in 0..self.barriers.len() {
-            let (Option.Some(e), Option.Some(s)) = (self.barriers.key_at(k), self.barriers.val_at(k)) else { continue; };
+        // Shared corner posts overlap: their painter order is by edge, whatever order the walls
+        // were built in.
+        let mut edges: Vec[Edge] = Vec.new();
+        for k in 0..self.barriers.len() { if let Option.Some(e) = self.barriers.key_at(k) { edges.push(e); } }
+        sort_edges(&mut edges);
+        for k in 0..edges.len() {
+            let e = edges[k];
+            let Option.Some(s) = self.barriers.get(e) else { continue; };
             if s.team != self.local_team && !fog.sees(e.a) && !fog.sees(e.b) { continue; }
             push_barrier(e.a, e.b, s.kind, s.team.color(), out);
         }

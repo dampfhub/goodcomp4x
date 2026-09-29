@@ -34,6 +34,8 @@ use game.font.world_text_width;
 use std.str.Str;
 use game.hex.HEX_SIZE;
 use game.hex.Hex;
+use game.hex.sort_hexes;
+use game.hex.sort_edges;
 use game.mesh.Color;
 use game.mesh.quad;
 use game.mesh.polygon;
@@ -605,9 +607,13 @@ impl GameState {
             let routes = self.known_routes(i, &fog);
             let real: Option[Routes] = if own { Option.Some(self.routes(i)) } else { Option.None };
             if self.yields_city() == Option.Some(i) {
-                for r in 0..routes.costs.len() {
-                    let Option.Some(h) = routes.costs.key_at(r) else { continue; };
-                    let Option.Some(cost) = routes.costs.val_at(r) else { continue; };
+                // Labels are laid down in hex order, whatever order the routes were found in.
+                let mut labeled: Vec[Hex] = Vec.new();
+                for r in 0..routes.costs.len() { if let Option.Some(h) = routes.costs.key_at(r) { labeled.push(h); } }
+                sort_hexes(&mut labeled);
+                for r in 0..labeled.len() {
+                    let h = labeled[r];
+                    let Option.Some(cost) = routes.costs.get(h) else { continue; };
                     // Nothing shows in the fog.
                     if !self.is_explored(h) { continue; }
                     let food_share = self.mill_food_share(i, h, cost);
