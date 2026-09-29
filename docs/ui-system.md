@@ -135,10 +135,17 @@ Each box has an X to remove the whole container. A dropped city, barracks,
 unit, group, or queue panel becomes a persistent window in that box; its
 controls stay live after selection changes. Its actions carry the structure
 or unit's stable ID and focus that entity before invoking the shared `Target`
-action. Debug is already persistent and docks directly. Moving a captured
+action (`focus_pin`): through the map's own entry points (`set_selection`,
+`open_city`, `open_barracks`, leaving any other view first), and not at all
+when it is already the selection or the open view, so an armed button stays
+armed and a second click disarms it; nothing while a turn plays out. Its
+button tooltips describe its own unit or city (a tooltip `Subject`), not the
+selection's. Debug is already persistent and docks directly. Moving a captured
 panel out of every box returns it to contextual behavior. Deleting a box
-releases its contents, and loading or changing scenarios clears captured
-panels while keeping the boxes. Every new always-visible ImGui window can dock
+releases its contents, and any new game clears captured panels while keeping
+the boxes: a scenario switch or load, by key or Debug button, or a network
+game (`GameState::generation`, checked at each frame's start), since a new
+game reuses city and unit ids. Every new always-visible ImGui window can dock
 in a box without special layout offsets. A new contextual panel needs a stable
 identity and a renderer for captured content, as the city, barracks, unit,
 group, and queue examples show.
