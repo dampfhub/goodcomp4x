@@ -3787,16 +3787,29 @@ fn classic_shortens_a_long_notice_rather_than_hiding_it() {
     )));
 }
 
+/// Where ImGui drew the End Turn button last frame.
+fn imgui_end_turn() -> ([f32; 2], [f32; 2]) {
+    imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+        drawn
+            .iter()
+            .find(|(target, ..)| *target == Target::EndTurn)
+            .map(|&(_, min, max)| (min, max))
+            .expect("ImGui shows End Turn")
+    })
+}
+
 #[test]
-fn imgui_shortens_a_long_notice_at_a_word_before_the_view_label() {
+fn imgui_shortens_a_long_notice_at_a_word_before_end_turn() {
     let mut game = city_view();
     game.notice = LONG_NOTICE.into();
-    let mut screen = ImGuiScreen::with_size(Vec2::new(1280.0, 720.0));
+    let mut screen = ImGuiScreen::with_size(Vec2::new(1024.0, 720.0));
     screen.settle(&mut game);
-    let (shown, end, view) = imgui::SHOWN_NOTICE.take();
+    let (shown, _, max, limit) = imgui::SHOWN_NOTICE.take();
     assert!(whole_words_of(&shown, LONG_NOTICE), "{shown}");
-    assert!(shown.ends_with('…'), "too long for 1280 px: {shown}");
-    assert!(end <= view, "clear of the VIEW label: {end} > {view}");
+    assert!(shown.ends_with('…'), "too long for 1024 px: {shown}");
+    assert!(max[0] <= limit, "within its room: {} > {limit}", max[0]);
+    let (end_turn, _) = imgui_end_turn();
+    assert!(limit < end_turn[0], "clear of End Turn");
     // One ImGui context at a time.
     drop(screen);
     let mut screen = ImGuiScreen::with_size(Vec2::new(2400.0, 900.0));
@@ -3805,5 +3818,78 @@ fn imgui_shortens_a_long_notice_at_a_word_before_the_view_label() {
         imgui::SHOWN_NOTICE.take().0,
         LONG_NOTICE,
         "with room, all of it"
+    );
+}
+
+/// The status bar's second line as ImGui drew it last frame.
+fn imgui_status_controls() -> Vec<imgui::DrawnControl> {
+    imgui::STATUS_CONTROLS.with_borrow(Clone::clone)
+}
+
+#[test]
+fn imgui_view_controls_share_the_menu_line_and_leave_the_notice_the_bar() {
+    // A typical long notice, 68 characters, fits in full at 1280 px.
+    const TYPICAL: &str = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE";
+    assert_eq!(TYPICAL.len(), 68);
+    let mut game = city_view();
+    game.notice = TYPICAL.into();
+    let mut screen = ImGuiScreen::with_size(Vec2::new(1280.0, 720.0));
+    screen.settle(&mut game);
+    let (shown, _, notice_max, _) = imgui::SHOWN_NOTICE.take();
+    assert_eq!(shown, TYPICAL, "all of it at 1280 px");
+    // Menu, then the view's label and controls, on the line below the
+    // notice, left to right without overlapping, short of End Turn.
+    let controls = imgui_status_controls();
+    let texts: Vec<&str> = controls.iter().map(|(text, ..)| text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "MENU",
+            "VIEW: CITY / BUILDING",
+            "EDIT VIEW",
+            "+ BOX",
+            "RESET"
+        ]
+    );
+    let (end_turn, _) = imgui_end_turn();
+    for pair in controls.windows(2) {
+        assert!(
+            pair[0].2[0] < pair[1].1[0],
+            "{} overlaps {}",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+    for (text, min, max) in &controls {
+        assert!(min[1] >= notice_max[1], "{text} is below the notice");
+        assert!(max[0] < end_turn[0], "{text} is clear of End Turn");
+    }
+    // They still work: EDIT VIEW switches to editing the outer boxes (which
+    // have no RESET), and + BOX makes a box.
+    let middle = |text: &str| {
+        let (_, min, max) = imgui_status_controls()
+            .into_iter()
+            .find(|(t, ..)| t == text)
+            .unwrap_or_else(|| panic!("no {text}"));
+        (Vec2::from(min) + Vec2::from(max)) / 2.0
+    };
+    let click = |screen: &mut ImGuiScreen, game: &mut GameState, at: Vec2| {
+        screen.frame(game, Some(at), false);
+        screen.frame(game, Some(at), true);
+        screen.frame(game, Some(at), false);
+        screen.settle(game);
+    };
+    click(&mut screen, &mut game, middle("EDIT VIEW"));
+    let texts: Vec<String> = imgui_status_controls().into_iter().map(|c| c.0).collect();
+    assert_eq!(
+        texts,
+        ["MENU", "VIEW: CITY / BUILDING", "EDIT OUTER", "+ BOX"]
+    );
+    assert!(!screen.layout.to_text().contains("\nbox "), "no box yet");
+    click(&mut screen, &mut game, middle("+ BOX"));
+    assert!(
+        screen.layout.to_text().contains("\nbox 1 outer "),
+        "{}",
+        screen.layout.to_text()
     );
 }
