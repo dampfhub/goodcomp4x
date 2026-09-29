@@ -484,7 +484,8 @@ Everyone in a step acts simultaneously:
   orders: a ghost and an attack arrow, no numbers.
 - When an attack resolves, the arrow shoots from attacker to target, then shows a burst on a hit,
   "MISS" on a hex with no enemy unit, worker or barracks, or "OUT OF RANGE" if the target moved
-  away. Every unit or structure hurt (retaliation included) shows a rising damage number, or
+  away. Every unit or structure hurt (retaliation, Coastal Battery fire and hits on a battery
+  included) shows a rising damage number, or
   "KILLED". Enemy attacks animate too.
 
 ## Abilities (`ability.rs`)
