@@ -4446,3 +4446,123 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
         }
     }
 }
+
+/// The text of every tooltip line for `button` (classic), joined.
+fn tooltip_text(game: &GameState, button: &Button) -> String {
+    game.tooltip_lines(button)
+        .into_iter()
+        .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
+        .collect()
+}
+
+#[test]
+fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_presentations() {
+    let mut game = city_view();
+    // Only the supply Blue's city gives (`city_view` funds it past that).
+    game.extra_supply = [0; Team::ALL.len()];
+    let (used, cap) = (game.supply_used(Team::Blue), game.supply_cap(Team::Blue));
+    assert!(used < cap);
+    // The top bar: the shared line, which the classic bar draws.
+    let status: String = game.status_line().into_iter().map(|(t, _)| t).collect();
+    assert!(
+        status.ends_with(&format!("SUPPLY {used}/{cap}")),
+        "{status}"
+    );
+    let count = format!("{used}/{cap}");
+    let drawn = |game: &GameState, count: &str| {
+        game.layout(SCREEN)
+            .shapes
+            .iter()
+            .any(|s| matches!(s, Shape::Text { line, .. } if line.iter().any(|(t, _)| t == count)))
+    };
+    assert!(drawn(&game, &count), "the classic top bar shows {count}");
+    // A troop card says what it uses.
+    let melee = find_button(&game, Target::Build(BuildUnit::Melee));
+    assert_eq!(melee.state, ButtonState::Ready);
+    let tooltip = tooltip_text(&game, &melee);
+    assert!(
+        tooltip
+            .replace(' ', "")
+            .contains(&format!("USES1SUPPLY:{used}OF{cap}USED")),
+        "{tooltip}"
+    );
+    // Full: the troop and Scout cards are dimmed and say why, and a click
+    // on a locked card queues nothing.
+    while game.supply_used(Team::Blue) < cap {
+        game.queue_selected_city_unit(BuildUnit::Melee);
+    }
+    let full = format!("SUPPLY FULL ({cap}/{cap})");
+    for target in [Target::Build(BuildUnit::Melee), Target::BuildScout] {
+        let card = find_button(&game, target);
+        assert_eq!(card.state, ButtonState::Disabled, "{target:?}");
+        assert_eq!(card.hint, full, "{target:?}");
+        let tooltip = tooltip_text(&game, &card).replace(' ', "");
+        assert!(tooltip.contains(&full.replace(' ', "")), "{tooltip}");
+    }
+    let queued = game.cities[0].queue.len();
+    let at = button_cursor(&game, Target::Build(BuildUnit::Melee));
+    game.handle_click(at, SCREEN, ClickMode::Normal);
+    assert_eq!(game.cities[0].queue.len(), queued);
+    // ImGui: the same card, locked, with the same reason.
+    let mut screen = ImGuiScreen::new();
+    let tooltips = screen.tooltips(&mut game, Target::Build(BuildUnit::Melee));
+    assert!(!tooltips.is_empty(), "ImGui shows the Melee card");
+    assert!(
+        tooltips
+            .iter()
+            .all(|t| t.replace(' ', "").contains(&full.replace(' ', ""))),
+        "{tooltips:?}"
+    );
+    screen.click(&mut game, Target::Build(BuildUnit::Melee));
+    assert_eq!(game.cities[0].queue.len(), queued);
+    drop(screen);
+    // The Barracks: its supply line, and its troops locked.
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    game.open_barracks(0);
+    let tray = panel_strings(|panel| game.barracks_tray(0, panel));
+    assert_shows(&tray, &format!("SUPPLY {cap}/{cap} · FULL"));
+    let ranged = find_button(&game, Target::BarracksBuild(BuildUnit::Ranged));
+    assert_eq!(ranged.state, ButtonState::Disabled);
+    assert_eq!(ranged.hint, "SUPPLY FULL");
+    assert!(
+        tooltip_text(&game, &ranged)
+            .replace(' ', "")
+            .contains(&full.replace(' ', ""))
+    );
+}
+
+#[test]
+fn a_queued_troop_the_supply_has_no_room_for_waits_for_supply() {
+    let mut game = city_view();
+    game.extra_supply = [0; Team::ALL.len()];
+    game.cities[0].population = 3;
+    while game.supply_used(Team::Blue) < game.supply_cap(Team::Blue) {
+        game.queue_selected_city_unit(BuildUnit::Melee);
+    }
+    game.cities[0].queue.truncate(1);
+    // Two citizens lost since it was queued: no room to start it.
+    assert!(game.remove_citizen(0) && game.remove_citizen(0));
+    let status = game.queue_status(0, crate::game::city::Lane::City);
+    assert_eq!(status.supply, [0]);
+    let rows: Vec<String> = {
+        let mut panel = PanelBuilder::default();
+        game.city_queue_panel(0, 4, &mut panel);
+        panel
+            .rows
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::QueueItem(item) => Some(item.label),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(rows[0].contains("WAITS FOR SUPPLY"), "{rows:?}");
+    let waits = "MELEE WAITS FOR SUPPLY: NO ROOM TO START IT";
+    assert_eq!(
+        game.head_waiting_text(0, crate::game::city::Lane::City, &status),
+        Some(waits.into())
+    );
+    let tray = panel_strings(|panel| game.city_tray(0, panel));
+    assert_shows(&tray, waits);
+}

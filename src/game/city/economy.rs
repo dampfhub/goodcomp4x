@@ -97,6 +97,9 @@ pub(in crate::game) struct LaneForecast {
     pub worked: Option<usize>,
     /// What the stockpile holds when this queue's turn to pay comes.
     pub stock: Stock,
+    /// The supply its side may still start items with then
+    /// (`supply_room`).
+    pub supply: i64,
 }
 
 /// Every queue of a side, as `GameState::forecast` sees this turn going.
@@ -353,10 +356,13 @@ impl GameState {
         }
     }
 
-    /// Tests: a stockpile big enough for anything a test queues.
+    /// Tests: a stockpile and supply (`city/supply.rs`) big enough for
+    /// anything a test queues. A test of the supply limit sets
+    /// `extra_supply` back to 0.
     #[cfg(test)]
     pub(in crate::game) fn fund(&mut self, team: Team) {
         *self.stock_mut(team) = Stock::whole(999, 999, 999);
+        self.extra_supply[team.index()] = 999;
     }
 
     /// Adds `build` to the end of `city`'s queue, unpaid, whatever the
@@ -391,15 +397,17 @@ impl GameState {
     }
 
     /// Which item of one of `city`'s queues it works with `stock` in the
-    /// stockpile: the first that's paid for or that `stock` can pay for,
-    /// with its price if it's still to be paid. Items before it wait, and
-    /// so does a Settler in a city short of citizens (`waits_for_citizens`),
-    /// paid or not.
+    /// stockpile and `supply` left to start items with (`supply_room`): the
+    /// first that's paid for, or that `stock` can pay for and `supply` has
+    /// room for, with its price if it's still to be paid. Items before it
+    /// wait, and so does a Settler in a city short of citizens
+    /// (`waits_for_citizens`), paid or not.
     pub(in crate::game) fn pick_item(
         &self,
         city: usize,
         lane: Lane,
         stock: Stock,
+        supply: i64,
     ) -> Option<(usize, Option<Stock>)> {
         (0..self.lane_len(city, lane)).find_map(|index| {
             if lane == Lane::City && self.waits_for_citizens(city, index) {
@@ -409,20 +417,34 @@ impl GameState {
                 return Some((index, None));
             }
             let price = self.item_price(city, lane, index);
-            stock.covers(price).then_some((index, Some(price)))
+            (stock.covers(price) && self.supply_fits(city, lane, index, supply))
+                .then_some((index, Some(price)))
         })
+    }
+
+    /// Whether `supply` left to start items with has room for item `index`
+    /// of one of `city`'s queues: always, for one that uses none.
+    fn supply_fits(&self, city: usize, lane: Lane, index: usize, supply: i64) -> bool {
+        let needs = self.item_supply(city, lane, index);
+        needs == 0 || i64::from(needs) <= supply
     }
 
     /// The turn's work on every queue, after income and upkeep. City by city
     /// in order, each city's queue before its Barracks', a queue works the
     /// item `pick_item` picks: pays for it if it's unpaid, and adds its
     /// city's work for the turn (`rates`, the city's and the Barracks'), up
-    /// to what it needs. Items it can't pay for wait in place, unpaid.
+    /// to what it needs. Items it can't pay for, or that its side's supply
+    /// has no room for (`supply_room`), wait in place, unpaid.
     pub(in crate::game) fn work_queues(&mut self, rates: &[(i32, i32)]) {
+        let mut supply = Team::ALL.map(|team| self.supply_room(team));
         for (city, &(rate, barracks_rate)) in rates.iter().enumerate() {
             for (lane, rate) in [(Lane::City, rate), (Lane::Barracks, barracks_rate)] {
                 let team = self.cities[city].team;
-                if let Some((index, price)) = self.pick_item(city, lane, self.stock(team)) {
+                let room = supply[team.index()];
+                if let Some((index, price)) = self.pick_item(city, lane, self.stock(team), room) {
+                    if price.is_some() {
+                        supply[team.index()] -= i64::from(self.item_supply(city, lane, index));
+                    }
                     self.work_item(city, lane, index, price, rate);
                 }
             }
@@ -449,6 +471,20 @@ impl GameState {
             Lane::City => c.queue[index].work_on(work, needed),
             Lane::Barracks => c.barracks_queue[index].work_on(work, needed),
         }
+        // Tests: training that starts past the side's supply, counted from
+        // scratch here, apart from the room `work_queues` keeps; the
+        // simulation checks there is none.
+        #[cfg(test)]
+        if price.is_some() && self.item_supply(city, lane, index) > 0 {
+            let (started, cap) = (self.supply_started(team), self.supply_cap(team));
+            if started > cap {
+                self.supply_overruns.push(format!(
+                    "{team:?} started a {:?} item in city {} past its supply: {started}/{cap}",
+                    lane,
+                    self.cities[city].id + 1
+                ));
+            }
+        }
     }
 
     /// What `team`'s stockpile will hold when this turn's economy reaches
@@ -465,18 +501,21 @@ impl GameState {
     /// changing nothing.
     pub(in crate::game) fn forecast(&self, team: Team) -> QueueForecast {
         let mut stock = self.expected_stock(team);
+        let mut supply = self.supply_room(team);
         let mut lanes = Vec::new();
         for city in (0..self.cities.len()).filter(|&i| self.cities[i].team == team) {
             for lane in [Lane::City, Lane::Barracks] {
-                let pick = self.pick_item(city, lane, stock);
+                let pick = self.pick_item(city, lane, stock, supply);
                 lanes.push(LaneForecast {
                     city,
                     lane,
                     worked: pick.map(|(index, _)| index),
                     stock,
+                    supply,
                 });
-                if let Some((_, Some(price))) = pick {
+                if let Some((index, Some(price))) = pick {
                     stock -= price;
+                    supply -= i64::from(self.item_supply(city, lane, index));
                 }
             }
         }
@@ -489,19 +528,36 @@ impl GameState {
     /// The items of a queue that wait for the stockpile, each with what the
     /// stockpile is short of for it: the unpaid ones ahead of the item it
     /// works, or all of them when it can pay for none. A Settler that waits
-    /// for citizens (`waits_for_citizens`) isn't one of them.
+    /// for citizens (`waits_for_citizens`) isn't one of them, and nor is an
+    /// item that waits for supply (`supply_waiting_items`).
     pub(in crate::game) fn waiting_items(&self, lane: LaneForecast) -> Vec<(usize, Stock)> {
-        let end = lane
-            .worked
-            .unwrap_or_else(|| self.lane_len(lane.city, lane.lane));
-        (0..end)
-            .filter(|&index| !self.lane_item(lane.city, lane.lane, index).0)
+        let supply = self.supply_waiting_items(lane);
+        self.unpaid_ahead(lane)
             .filter(|&index| lane.lane != Lane::City || !self.waits_for_citizens(lane.city, index))
+            .filter(|index| !supply.contains(index))
             .map(|index| {
                 let price = self.item_price(lane.city, lane.lane, index);
                 (index, lane.stock.shortfall(price))
             })
             .collect()
+    }
+
+    /// The items of a queue that wait for supply: the unpaid ones ahead of
+    /// the item it works (or all, if it works none) that its side's supply
+    /// has no room to start (`supply_room`), whatever the stockpile holds.
+    pub(in crate::game) fn supply_waiting_items(&self, lane: LaneForecast) -> Vec<usize> {
+        self.unpaid_ahead(lane)
+            .filter(|&index| !self.supply_fits(lane.city, lane.lane, index, lane.supply))
+            .collect()
+    }
+
+    /// The unpaid items of a queue ahead of the one it works, or all of
+    /// them when it works none.
+    fn unpaid_ahead(&self, lane: LaneForecast) -> impl Iterator<Item = usize> + '_ {
+        let end = lane
+            .worked
+            .unwrap_or_else(|| self.lane_len(lane.city, lane.lane));
+        (0..end).filter(move |&index| !self.lane_item(lane.city, lane.lane, index).0)
     }
 
     /// What `city` waits for, if the first item of either of its queues

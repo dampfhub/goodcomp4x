@@ -12,6 +12,7 @@ use crate::game::GameState;
 use crate::game::city::{Lane, MAX_CITY_POPULATION, Stock, turns_icon};
 use crate::game::font;
 use crate::game::scenario::Scenario;
+use crate::game::unit::Team;
 use glam::Vec2;
 
 impl GameState {
@@ -159,6 +160,48 @@ impl GameState {
         stock_spans(self.stock(self.local_team), change)
     }
 
+    /// `team`'s supply (`city/supply.rs`): what it uses of what its cities
+    /// give, red once it's all used.
+    pub(super) fn supply_spans(&self, team: Team) -> Line {
+        let (used, cap) = (self.supply_used(team), self.supply_cap(team));
+        let color = if used >= cap { REDUCED_TEXT } else { TEXT };
+        vec![
+            ("SUPPLY ".into(), LABEL_TEXT),
+            (format!("{used}/{cap}"), color),
+        ]
+    }
+
+    /// The supply line of a city's or Barracks' tray: `supply_spans`, and
+    /// once it's all used, that nothing new trains.
+    pub(super) fn supply_tray_line(&self, team: Team) -> Line {
+        let mut line = self.supply_spans(team);
+        if self.supply_used(team) >= self.supply_cap(team) {
+            line.push((
+                " · FULL: NO NEW TROOPS, SHIPS OR SCOUTS".into(),
+                REDUCED_TEXT,
+            ));
+        } else {
+            line.push((" · TROOPS, SHIPS AND SCOUTS USE IT".into(), DIM_TEXT));
+        }
+        line
+    }
+
+    /// The player's supply for the top bar (`supply_spans`).
+    pub(super) fn supply_line(&self) -> Line {
+        let mut line = self.supply_spans(self.local_team);
+        line[0].0.insert_str(0, "   ");
+        line
+    }
+
+    /// What the top bar shows beside the turn number, in both
+    /// presentations: the stockpile (`stockpile_line`), then the supply
+    /// (`supply_line`).
+    pub(super) fn status_line(&self) -> Line {
+        let mut line = self.stockpile_line();
+        line.extend(self.supply_line());
+        line
+    }
+
     /// The turn the top bar names: the one playing out, or the one being
     /// planned (still being planned while a network game waits for the
     /// others' plans, before it has begun to play out).
@@ -170,7 +213,7 @@ impl GameState {
         }
     }
 
-    /// Turn number and the stockpile on the left, the latest notice in the
+    /// Turn number, the stockpile and supply on the left, the latest notice in the
     /// middle, and on the right the End Turn button, which names whatever the turn is still
     /// waiting on (clicking it selects that).
     pub(super) fn top_bar(&self, size: Vec2, layout: &mut Layout) {
@@ -188,8 +231,8 @@ impl GameState {
             TITLE,
             vec![(turn_text, self.turn_number_color(TEXT))],
         );
-        // The player's stockpile beside the turn number.
-        let stockpile = self.stockpile_line();
+        // The player's stockpile and supply beside the turn number.
+        let stockpile = self.status_line();
         let stockpile_width: f32 = stockpile
             .iter()
             .map(|(text, _)| font::ui(BODY).width(text))

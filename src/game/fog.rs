@@ -592,10 +592,15 @@ pub(super) mod tests {
             .unwrap();
         let (start, sight) = (scout.pos, game.sight(scout));
         assert!(sight >= 3, "scouts see farther");
-        let far = Hex::new(start.q + sight, start.r);
         let fog = game.fog();
         assert!(fog.sees(start) && game.is_explored(start));
-        assert!(fog.sees(far) || !game.grid.contains(far));
+        // Mountains may block some lines, not all of them.
+        assert!(
+            game.grid
+                .all_hexes()
+                .any(|h| h.distance(start) == sight && fog.sees(h)),
+            "the scout sees {sight} hexes away"
+        );
         let distant = game
             .grid
             .all_hexes()

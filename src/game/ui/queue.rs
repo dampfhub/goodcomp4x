@@ -286,18 +286,27 @@ impl GameState {
 
     /// What one of `city`'s queues does this turn, for the panels. For the
     /// player's own cities it's `forecast`'s view: the item worked, and
-    /// which items wait for the stockpile. Other sides' stockpiles aren't
-    /// the player's to see, so their queues show only their first item.
+    /// which items wait for the stockpile or for supply. Other sides'
+    /// stockpiles aren't the player's to see, so their queues show only
+    /// their first item.
     pub(super) fn queue_status(&self, city: usize, lane: Lane) -> QueueStatus {
         let len = self.lane_len(city, lane);
         let forecast = (self.cities[city].team == self.local_team)
             .then(|| self.forecast(self.local_team).lane(city, lane))
             .flatten();
-        let (worked, waiting) = match forecast {
-            Some(forecast) => (forecast.worked, self.waiting_items(forecast)),
-            None => ((len > 0).then_some(0), Vec::new()),
+        let (worked, waiting, supply) = match forecast {
+            Some(forecast) => (
+                forecast.worked,
+                self.waiting_items(forecast),
+                self.supply_waiting_items(forecast),
+            ),
+            None => ((len > 0).then_some(0), Vec::new(), Vec::new()),
         };
-        QueueStatus { worked, waiting }
+        QueueStatus {
+            worked,
+            waiting,
+            supply,
+        }
     }
 
     /// Whether item `index` of one of `city`'s queues is a Settler waiting
@@ -347,6 +356,14 @@ impl GameState {
                 self.item_name(city, lane, 0)
             ));
         }
+        // Its side's units and started items leave no room for it: the
+        // supply has fallen since it was queued (`supply_waiting_items`).
+        if status.supply.contains(&0) {
+            return Some(format!(
+                "{} WAITS FOR SUPPLY: NO ROOM TO START IT",
+                self.item_name(city, lane, 0)
+            ));
+        }
         let short = status.head_waits()?;
         Some(format!(
             "{} WAITS FOR {}",
@@ -370,8 +387,10 @@ impl GameState {
         let prefix = if active { "> " } else { "  " };
         let waits = status.waits(index);
         let citizens = self.waits_for_citizens_at(city, lane, index);
+        let supply = status.supply.contains(&index);
         let mut state = match waits {
             _ if citizens => format!("WAITS FOR POP {SETTLER_MIN_POPULATION}"),
+            _ if supply => "WAITS FOR SUPPLY".into(),
             Some(short) => format!("WAITS {}", stock_icons(short)),
             None => match self.item_turns_left(city, lane, index) {
                 0 => "READY".into(),
@@ -387,7 +406,7 @@ impl GameState {
             index,
             label: format!("{prefix}{name} | {state}"),
             active,
-            waiting: waits.is_some() || citizens,
+            waiting: waits.is_some() || citizens || supply,
             dragging: drag.is_some_and(|drag| drag.source == index),
             drop_target: drag
                 .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
@@ -476,6 +495,8 @@ pub(super) struct QueueStatus {
     /// The items that wait for the stockpile, with what it's short of for
     /// each (`GameState::waiting_items`).
     pub(super) waiting: Vec<(usize, Stock)>,
+    /// The items that wait for supply (`GameState::supply_waiting_items`).
+    pub(super) supply: Vec<usize>,
 }
 
 impl QueueStatus {

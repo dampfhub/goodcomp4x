@@ -637,3 +637,16 @@ In Cities its metal stayed at 4 all game, and it trained no Cavalry or Armored.
 
 Checked with `cargo test` and `SIM_SEEDS=16 cargo test --release simulation` (every scenario's
 invariants hold, and the Cities check for a Cavalry or Armored passes with the half metal).
+
+## Round 8: the supply limit (#237)
+
+A hard cap on each side's army, which the user settled in #237: supply used against supply
+available, as in an RTS. Its cities give it (3 a city and 1 a citizen, for now), and every
+troop, ship and Scout uses 1. It only stops new training; the rule is in `game-rules.md`
+(Supply), the code in `city/supply.rs`.
+
+Measured against `main` at 5663dbc (60 turns, seeds 0-23, World with 4 to 6 AI sides): the
+first troop still comes at turn 9 and the army at turn 20 is 3.4 against 3.5, but the army at
+turn 40 falls from 6.4 to 5.0 and at turn 60 from 8.9 to 7.7. Growth is unchanged, and a
+capped Barracks leaves wood in the stockpile. The tables, and why 3 and 1, are in
+[economy/supply-237-tempo.md](economy/supply-237-tempo.md).

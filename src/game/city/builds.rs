@@ -5,6 +5,7 @@ use super::MAX_CITY_POPULATION;
 use super::barracks::CITY_TRAINING_SLOWDOWN;
 use super::economy::{Lane, Stock, WORK_PER_TURN, stock_icons, turns_icon};
 use super::founding::MIN_CITY_DISTANCE;
+use super::supply::build_supply;
 use crate::game::GameState;
 use crate::game::JobKind;
 use crate::game::hex::Hex;
@@ -396,6 +397,10 @@ impl GameState {
             );
             return;
         }
+        if let Some(why) = self.city_build_issue(city, Build::Unit(build)) {
+            self.notice = format!("{}: {why}", build.name());
+            return;
+        }
         self.queue_in_city(city, Build::Unit(build));
     }
 
@@ -513,9 +518,10 @@ impl GameState {
         self.queue_in_city(city, build);
     }
 
-    /// Why `city` can't queue `build` now, for the rules only its queue
-    /// has: a Settler needs `SETTLER_MIN_POPULATION` citizens, and a city
-    /// queues one Scout at a time.
+    /// Why `city` can't queue `build` now: a Settler needs
+    /// `SETTLER_MIN_POPULATION` citizens, a city queues one Scout at a time,
+    /// and a troop, ship or Scout needs room in its side's supply
+    /// (`supply_lock`).
     pub(in crate::game) fn city_build_issue(&self, city: usize, build: Build) -> Option<String> {
         let c = &self.cities[city];
         match build {
@@ -525,7 +531,7 @@ impl GameState {
             Build::Scout if c.queue.iter().any(|q| q.build == Build::Scout) => {
                 Some("ONE SCOUT AT A TIME".into())
             }
-            _ => None,
+            _ => self.supply_lock(c.team, build_supply(build)),
         }
     }
 
@@ -742,9 +748,10 @@ impl GameState {
             (None, None) => return,
         };
         let team = self.cities[city].team;
-        let Some((index, price)) = self.pick_item(city, lane, self.stock(team)) else {
+        let room = self.supply_room(team);
+        let Some((index, price)) = self.pick_item(city, lane, self.stock(team), room) else {
             if self.lane_len(city, lane) > 0 {
-                self.notice = "DEBUG: NOTHING QUEUED THE STOCKPILE CAN PAY FOR".into();
+                self.notice = "DEBUG: NOTHING QUEUED THE STOCKPILE AND SUPPLY ALLOW".into();
             }
             return;
         };

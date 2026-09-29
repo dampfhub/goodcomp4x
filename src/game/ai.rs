@@ -136,8 +136,11 @@ impl GameState {
     /// queue, and only what the side can pay for this turn, with what its
     /// other queues start (`forecast`'s `spare`), so everything it queues is
     /// paid and started this turn. A queue whose items all wait for the
-    /// stockpile (the income it counted on didn't come) is emptied, which
-    /// costs nothing, as they're unpaid, and planned again. The Barracks is
+    /// stockpile or for supply (the income it counted on didn't come, or a
+    /// city or citizens were lost) is emptied, which costs nothing, as
+    /// they're unpaid, and planned again. Nothing is queued past the side's
+    /// supply (`city/supply.rs`): at the cap the Barracks stays idle, and
+    /// the city grows or gathers instead. The Barracks is
     /// the military building (`city/barracks.rs`): an idle one trains
     /// Cavalry or Armored when its deposits allow and the side can pay, else
     /// Melee, or Ranged for one in three. A city's own queue trains a worker
@@ -249,7 +252,11 @@ impl GameState {
             // With nothing it can pay for, it gathers.
             choices.push(Build::Gather);
             for build in choices {
-                if build == Build::Grow && !self.can_grow(city) {
+                // Not past the population cap or the side's supply
+                // (`city_build_issue`): a troop or scout waits for room.
+                if (build == Build::Grow && !self.can_grow(city))
+                    || self.city_build_issue(city, build).is_some()
+                {
                     continue;
                 }
                 let price = self.queue_price(city, build);

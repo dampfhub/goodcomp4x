@@ -137,14 +137,14 @@ orders shows disabled.
 | 9 / Grow card | Queue one more citizen, paid in food when work on it starts (the city doesn't grow on its own) |
 | 0 / Gather card | Spend a turn gathering: free, and 1 food, 1 wood and half a metal come in when it's done |
 | A build card the stockpile can't pay for yet | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the city shows a badge over its tower with the missing resources' icons. Prices show as resource icons and amounts, turns after a clock |
-| A dimmed build card | It can't be queued: (Cavalry, Armored) the barracks has no deposit or its cap is used up, or (Grow) the city is full, (Settler) the city is below population 3, or (Scout) one is already queued; its tooltip says why |
+| A dimmed build card | It can't be queued: (a troop, ship or Scout) your supply is all used, saying SUPPLY FULL (the top bar shows SUPPLY used/available), (Cavalry, Armored) the barracks has no deposit or its cap is used up, (Grow) the city is full, (Settler) the city is below population 3, or (Scout) one is already queued; its tooltip says why |
 | Drag a queue row onto another | Reorder the queue; work stays with each build, and a paused build with work shows SAVED on its row |
 | Click a row's X | Remove it, refunding its price if it was paid for (work on it started); its work is lost |
 | Clear (beside a queue's title, city or barracks) | Empty that queue: every item comes off, refunded as its X would refund it (their work is lost) |
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
 | Backspace | Remove the first item in the queue |
 | PageDown | Swap the first two queue items |
-| See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types, and how many Cavalry and Armored its deposits still allow) |
+| See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types, how many Cavalry and Armored its deposits still allow, and your supply) |
 | Click the city center while in city view (beside any unit's token) | Enter that city's tactical interior map |
 | V / City Interior button | Open the selected or hovered city's interior; press again to return |
 | Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |
