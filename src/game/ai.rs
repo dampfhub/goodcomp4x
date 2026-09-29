@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 
 use super::GameState;
 use super::ability::{Ability, CHARGE_EXTRA_MOVE, DEPLOYED_EXTRA_RANGE};
+use super::animals::TERRITORY_RADIUS;
 use super::city::{Build, BuildUnit, Building, Lane, MIN_CITY_DISTANCE, Stock};
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, Sighting};
@@ -27,6 +28,10 @@ struct Knowledge {
     enemies: HashSet<Hex>,
     /// Ruins in sight, or remembered where they were last seen.
     ruins: HashSet<Hex>,
+    /// Animal dens (`animals.rs`) in sight, or remembered where they were
+    /// last seen: worth clearing, and their territory worth keeping
+    /// settlers and workers out of.
+    dens: HashSet<Hex>,
     /// Enemy city centers in sight or remembered.
     cities: HashSet<Hex>,
     /// The hexes around those cities.
@@ -49,6 +54,16 @@ struct Flood {
     /// found (yet).
     steps: Vec<i32>,
     frontier: VecDeque<Hex>,
+}
+
+impl Knowledge {
+    /// Whether `hex` is within the territory of a den the side knows of
+    /// (`animals.rs`), where its animal would attack.
+    fn in_den_territory(&self, hex: Hex) -> bool {
+        self.dens
+            .iter()
+            .any(|den| den.distance(hex) <= TERRITORY_RADIUS)
+    }
 }
 
 /// A hex a `Flood` hasn't reached.
@@ -382,7 +397,10 @@ impl GameState {
             .filter(|enemy| enemy.team != team && fog.sees(enemy.pos))
             .filter_map(|enemy| Some((enemy.pos, threat_reach(enemy)?)))
             .collect();
-        let safe = |hex: &Hex| threats.iter().all(|&(at, reach)| at.distance(*hex) > reach);
+        let safe = |hex: &Hex| {
+            threats.iter().all(|&(at, reach)| at.distance(*hex) > reach)
+                && !known.in_den_territory(*hex)
+        };
         let mut reachable: Vec<Hex> = self
             .known_reachable_for_domain(pos, unit.stats().move_range, team, fog, false)
             .into_iter()
@@ -457,6 +475,7 @@ impl GameState {
             && !self.grid.terrain(hex).is_water()
             && !known.ruins.contains(&hex)
             && !known.enemies.contains(&hex)
+            && !known.in_den_territory(hex)
             && own.iter().all(far)
             && known.cities.iter().all(far)
             && !self
@@ -479,20 +498,21 @@ impl GameState {
     }
 
     /// Each unit goes for the nearest on foot of the enemy units and workers
-    /// its side sees, the ruins nobody on its side holds (`ruins.rs`) and the
-    /// enemy cities its side has seen (`nearest_ai_target`); with none of
-    /// those, it explores, heading for the nearest ground its side has never
-    /// seen. An enemy it attacks if already in range, otherwise it moves as
-    /// close as it can and attacks if that brings it into range; ruins it
-    /// steps onto, and then holds until they're claimed; next to an enemy
-    /// city, its fighters go in through the gates (`city/interior.rs`). A
-    /// unit going elsewhere than an enemy attacks any enemy in range of
-    /// where it ends up. Units in a contested hex stay and fight. No
-    /// coordination beyond not sending two units to the same hex, and no
-    /// retreating, but for scouts, which scout and keep out of harm's way
-    /// instead (`plan_ai_scout`). It all goes by what the side knows
-    /// (`side_fog`), never the real board: an enemy out of sight isn't
-    /// there, and ground never seen is open.
+    /// its side sees (animals included), the ruins and animal dens nobody on
+    /// its side holds (`ruins.rs`, `animals.rs`) and the enemy cities its
+    /// side has seen (`nearest_ai_target`); with none of those, it explores,
+    /// heading for the nearest ground its side has never seen. An enemy it
+    /// attacks if already in range, otherwise it moves as close as it can
+    /// and attacks if that brings it into range; ruins it steps onto, and
+    /// then holds until they're claimed, and a den it steps onto to clear
+    /// it; next to an enemy city, its fighters go in through the gates
+    /// (`city/interior.rs`). A unit going elsewhere than an enemy attacks
+    /// any enemy in range of where it ends up. Units in a contested hex stay
+    /// and fight. No coordination beyond not sending two units to the same
+    /// hex, and no retreating, but for scouts, which scout and keep out of
+    /// harm's way instead (`plan_ai_scout`). It all goes by what the side
+    /// knows (`side_fog`), never the real board: an enemy out of sight
+    /// isn't there, and ground never seen is open.
     pub(super) fn plan_ai_turn(&mut self, team: Team) {
         let fog = self.side_fog(team);
         let known = self.knowledge(fog);
@@ -501,7 +521,7 @@ impl GameState {
         // plan: a city founded now plans its first build this turn.
         self.plan_ai_settlers(team, &known, &mut floods);
         self.plan_ai_cities(team, &known);
-        self.plan_ai_workers(team);
+        self.plan_ai_workers(team, |hex| known.in_den_territory(hex));
         let mut watched = HashSet::default();
         for idx in 0..self.units.len() {
             if self.units[idx].team != team
@@ -632,6 +652,13 @@ impl GameState {
             .filter(|&hex| fog.sees(hex))
             .chain(remembered(|seen, _| seen.ruin))
             .collect();
+        let dens = self
+            .dens
+            .iter()
+            .map(|den| den.pos)
+            .filter(|&hex| fog.sees(hex))
+            .chain(remembered(|seen, _| seen.den.is_some()))
+            .collect();
         let cities: HashSet<Hex> = self
             .cities
             .iter()
@@ -655,6 +682,7 @@ impl GameState {
             fog,
             enemies,
             ruins,
+            dens,
             cities,
             gates,
             closed,
@@ -686,16 +714,15 @@ impl GameState {
     }
 
     /// Where unit `idx` heads (see `plan_ai_turn`): of the enemy units in
-    /// sight, the enemy workers alone in sight and ruins that no ally holds
-    /// or is already heading for, and the enemy cities seen, the nearest on
-    /// foot over the ground as its side knows it (a city counting from its
-    /// gates, and an enemy before a city as near), ties to the lowest
-    /// coordinates. With none reachable, the nearest ground its side has
-    /// never seen; with none left, the enemy in sight nearest as the crow
-    /// flies that it could hit (a ship only for a unit that can shoot at
-    /// water). A ship goes by
-    /// the crow's flight: to the nearest enemy in sight, else the nearest
-    /// ground never seen.
+    /// sight, the enemy workers alone in sight, and ruins and animal dens
+    /// (`animals.rs`) that no ally holds or is already heading for, and the
+    /// enemy cities seen, the nearest on foot over the ground as its side
+    /// knows it (a city counting from its gates, and an enemy before a city
+    /// as near), ties to the lowest coordinates. With none reachable, the
+    /// nearest ground its side has never seen; with none left, the enemy in
+    /// sight nearest as the crow flies that it could hit (a ship only for a
+    /// unit that can shoot at water). A ship goes by the crow's flight: to
+    /// the nearest enemy in sight, else the nearest ground never seen.
     fn nearest_ai_target(&self, idx: usize, known: &Knowledge) -> Option<Hex> {
         let unit = &self.units[idx];
         let team = unit.team;
@@ -721,13 +748,15 @@ impl GameState {
             .collect();
         let held = |pos: Hex| self.units.iter().any(|u| u.team == team && u.pos == pos);
         // An enemy troop in sight is fought, however many allies go for it;
-        // ruins, and an enemy worker alone (captured by stepping onto it),
-        // take one unit, so none an ally holds or already heads for.
+        // ruins, a den to clear and an enemy worker alone (captured by
+        // stepping onto it) take one unit, so none an ally holds or already
+        // heads for.
         let troop =
             |pos: Hex| known.enemies.contains(&pos) && self.enemy_of_team_at(pos, team).is_some();
         let targets: HashSet<Hex> = known
             .ruins
             .iter()
+            .chain(&known.dens)
             .copied()
             .filter(|&pos| !held(pos))
             .chain(known.enemies.iter().copied())
@@ -870,7 +899,8 @@ impl GameState {
             .collect();
         let prey = |hex: Hex| {
             let worker = known.enemies.contains(&hex) && self.enemy_of_team_at(hex, team).is_none();
-            let ruins = known.ruins.contains(&hex) && !known.enemies.contains(&hex);
+            let ruins = (known.ruins.contains(&hex) || known.dens.contains(&hex))
+                && !known.enemies.contains(&hex);
             worker || ruins
         };
 
@@ -1124,6 +1154,61 @@ mod tests {
         let (dest, attack) = replan(&mut game);
         assert_eq!(dest.map(|d| d.distance(blue)), Some(1));
         assert_eq!(attack, Some(blue));
+    }
+
+    /// `lone_red`, with a wolf den at (5, 0) seen by Red and its wolf dead,
+    /// so the den stands empty.
+    fn red_knows_an_empty_den() -> GameState {
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        game.make_dens(&[Hex::new(5, 0)]);
+        game.units.retain(|u| !u.is_animal());
+        red_glances_from(&mut game, Hex::new(4, 0));
+        game
+    }
+
+    #[test]
+    fn an_ai_unit_goes_to_clear_a_den_its_side_knows_of() {
+        let mut game = red_knows_an_empty_den();
+        let (dest, _) = replan(&mut game);
+        assert_eq!(dest, Some(Hex::new(1, 0)), "toward it");
+        // Once there, it stands on the den, and its side clears it.
+        game.units[0].pos = Hex::new(4, 0);
+        let (dest, _) = replan(&mut game);
+        assert_eq!(dest, Some(Hex::new(5, 0)));
+        game.units[0].pos = Hex::new(5, 0);
+        game.resolve_dens();
+        assert!(game.dens.is_empty());
+    }
+
+    #[test]
+    fn an_ai_side_keeps_settlers_sites_and_workers_out_of_a_dens_territory() {
+        let mut game = red_knows_an_empty_den();
+        let fog = game.side_fog(Team::Red);
+        let known = game.knowledge(fog);
+        assert!(known.in_den_territory(Hex::new(2, 0)));
+        assert!(!known.in_den_territory(Hex::new(1, 0)));
+        // No city site within its reach.
+        let own = [];
+        assert!(!game.known_site(Team::Red, Hex::new(3, 1), &known, &own));
+        assert!(game.known_site(Team::Red, Hex::new(-3, 1), &known, &own));
+        // A settler heading east steps around it: its step stays out.
+        game.settlers.insert(1);
+        game.units[0].pos = Hex::new(1, 0);
+        let mut floods = HashMap::default();
+        let step = game.settler_step(0, Hex::new(8, 0), &known, &mut floods);
+        assert_ne!(step, Hex::new(2, 0), "the straight way is through it");
+        assert!(!known.in_den_territory(step), "{step:?}");
+        // A city working tiles on both sides improves only the safe one.
+        game.settlers.clear();
+        game.units.clear();
+        game.cities = vec![City::new(0, Team::Red, Hex::new(-1, 0))];
+        let (inside, outside) = (Hex::new(2, 0), Hex::new(-3, 0));
+        game.cities[0].clusters = crate::game::city::one_cluster(&[inside, outside]);
+        game.cities[0].population = 2;
+        game.plan_ai_workers(Team::Red, |hex| known.in_den_territory(hex));
+        let jobs: Vec<Hex> = game.cities[0].worker_jobs.iter().map(|j| j.hex).collect();
+        assert_eq!(jobs, [outside]);
     }
 
     #[test]

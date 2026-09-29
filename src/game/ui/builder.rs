@@ -48,9 +48,9 @@ fn freeze_rows(rows: &mut [Row]) {
     };
     for row in rows {
         match row {
-            Row::Buttons(buttons, _) | Row::Reorder(_, buttons) => {
-                buttons.iter_mut().for_each(freeze)
-            }
+            Row::Buttons(buttons, _)
+            | Row::Reorder(_, buttons)
+            | Row::LabeledButtons(_, buttons) => buttons.iter_mut().for_each(freeze),
             Row::TitleWithButton(_, button) => freeze(button),
             Row::BuildingCatalog(_, entries, ..) => {
                 for entry in entries {
@@ -162,13 +162,20 @@ pub(super) enum Row {
     /// are, index by index; a click (not a drag) is the button's own
     /// target. The open city's priority chips.
     Reorder(QueueKind, Vec<ButtonSpec>),
+    /// Classic only (`classic_rows` makes it of a setting): a line of text
+    /// at the row's left and compact buttons of equal width at its right
+    /// end.
+    LabeledButtons(Line, Vec<ButtonSpec>),
 }
 
 impl Row {
     /// Whether this is a row of buttons, whose borders, drawn just outside
     /// it, need a gap from another such row.
     pub(super) fn is_buttons(&self) -> bool {
-        matches!(self, Row::Buttons(..) | Row::Reorder(..))
+        matches!(
+            self,
+            Row::Buttons(..) | Row::Reorder(..) | Row::LabeledButtons(..)
+        )
     }
 }
 
@@ -440,6 +447,7 @@ impl PanelBuilder {
             Row::Buttons(buttons, compact) => buttons_height(buttons, *compact),
             Row::Reorder(_, buttons) => buttons_height(buttons, true),
             Row::TitleWithButton(..) => TITLE_ROW_HEIGHT,
+            Row::LabeledButtons(..) => END_TURN_HEIGHT,
             Row::Roster(_) => ROSTER_CHIP,
             Row::BuildingCatalog(_, buttons, _, visible) => {
                 let visible = buttons.len().clamp(1, *visible);
@@ -465,6 +473,9 @@ impl PanelBuilder {
                 font::ui(SMALL).width(&item.label) + 2.0 * BUTTON_PADDING + QUEUE_REMOVE_WIDTH
             }
             Row::Buttons(buttons, compact) => buttons_width(buttons, *compact),
+            Row::LabeledButtons(line, buttons) => {
+                line_width(font::ui(BODY), line) + GAP + buttons_width(buttons, true)
+            }
             Row::Reorder(_, buttons) => buttons_width(buttons, true),
             Row::ScrollList(list) => {
                 let widest = list.entries.iter().map(Self::row_width).fold(0.0, f32::max);
@@ -658,6 +669,18 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 });
             }
         }
+        Row::LabeledButtons(line, buttons) => {
+            push_text_row(layout, Vec2::new(left, top - height / 2.0), BODY, line);
+            // The buttons, as a compact row would place them, at the end.
+            let width = buttons_width(&buttons, true);
+            place_row(
+                layout,
+                Row::Buttons(buttons, true),
+                Vec2::new(left + inner_width - width, top),
+                width,
+                faded,
+            );
+        }
         Row::Buttons(buttons, compact) => {
             let icons = icon_row(&buttons);
             let width = if icons {
@@ -847,7 +870,7 @@ fn place_scroll_list(
 /// them, their borders being drawn just outside them.
 fn buttons_at(row: &Row, first: bool) -> bool {
     match row {
-        Row::Buttons(..) | Row::Reorder(..) => true,
+        Row::Buttons(..) | Row::Reorder(..) | Row::LabeledButtons(..) => true,
         Row::ScrollList(list) => {
             let edge = if first {
                 list.entries.first()

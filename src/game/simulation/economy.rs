@@ -17,6 +17,8 @@
 //!   map's seed, as a new game picks them) or `world<n>` (the world with `n` AI sides, 1 to 6).
 //!   Every side is the AI's, the player's included, so a `world<n>` game has `n + 1` sides.
 //! - `REPORT_JSON=<path>`: also writes the numbers to that file as JSON, for charts.
+//! - `REPORT_ANIMALS=<n>`: the worlds' Animals setting (`Settings::world_animals`): 0 for none,
+//!   1 for one den a side (the default), 2 for two.
 //! - `REPORT_ARMY_FIRST=1`: after the AI plans, a city queue that would only gather trains a
 //!   Melee instead when its side can pay for one (`spend_on_troops`): a side spending on troops
 //!   what the AI banks, for how fast an army can come.
@@ -28,7 +30,9 @@
 //! Resources are shown in whole units (the game keeps quarters). "Army" is every unit but
 //! scouts and settlers; "trained" counts the troops the queues turned out (ruins' Cavalry
 //! recruits are counted apart). Per-side numbers are over every side of every game, the
-//! eliminated ones included (as zeros).
+//! eliminated ones included (as zeros). Animals (`animals.rs`) are foes like any other: a
+//! side's fights and losses include those with animals, but an animal's own death is a hunt,
+//! counted apart with the dens cleared.
 
 use std::fmt::Write as _;
 use std::thread;
@@ -109,6 +113,9 @@ impl GameKind {
         start_with(self.scenario, seed, |settings| {
             if let Some(ai) = self.world_ai {
                 settings.world_ai = ai;
+            }
+            if let Some(animals) = env_number("REPORT_ANIMALS") {
+                settings.world_animals = animals as usize;
             }
         })
     }
@@ -217,6 +224,10 @@ struct GameLog {
     jobs: Vec<JobRecord>,
     /// Unpaid items the AI took off because they waited.
     abandoned: u32,
+    /// Animals killed (`animals.rs`), the dens the world began with, and
+    /// those left.
+    animals_killed: u32,
+    dens: (usize, usize),
 }
 
 /// A queue's first item being followed.
@@ -319,6 +330,8 @@ impl Observer {
                 builds: Vec::new(),
                 jobs: Vec::new(),
                 abandoned: 0,
+                animals_killed: 0,
+                dens: (game.dens.len(), game.dens.len()),
             },
             alive: HashMap::default(),
             settlers: game.settlers.clone(),
@@ -555,6 +568,11 @@ impl Observer {
             .map(|(_, &(team, _, _, troop))| (team, troop))
             .collect();
         for (team, troop) in lost {
+            // An animal is no side: its death is a hunt, not a loss.
+            if !team.is_side() {
+                self.log.animals_killed += 1;
+                continue;
+            }
             deaths += 1.0;
             self.fought(team, troop, turn);
             if let Some(side) = self.side(team) {
@@ -563,6 +581,7 @@ impl Observer {
             }
         }
         self.log.deaths.push(deaths);
+        self.log.dens.1 = game.dens.len();
         self.alive = now;
 
         for (i, city) in game.cities.iter().enumerate() {
@@ -1164,6 +1183,13 @@ impl KindReport {
             percentile(&mut deaths, 50.0),
             self.games.iter().map(|(_, g)| g.captures).sum::<u32>(),
             self.games.len()
+        );
+        let (killed, dens, left) = self.games.iter().fold((0, 0, 0), |(k, d, l), (_, g)| {
+            (k + g.animals_killed, d + g.dens.0, l + g.dens.1)
+        });
+        println!(
+            "  animals killed: {killed}; dens cleared: {} of {dens}",
+            dens - left
         );
 
         println!("\nSpent so far (food/wood/metal, mean per side), and Gather's yield:");

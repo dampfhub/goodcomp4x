@@ -6,7 +6,7 @@ use super::city::{BARRACKS_DEFENSE, Building};
 use super::effects::{Effect, Outcome};
 use super::fast_hash::HashMap;
 use super::hex::Hex;
-use super::unit::{Unit, UnitType};
+use super::unit::{Team, Unit, UnitType};
 use super::{GameState, combat};
 
 /// Seconds between steps while a turn plays out, and how long the units that
@@ -165,6 +165,8 @@ impl GameState {
             // Before the economy, so a city reward is spent (or capped) like
             // the turn's own income.
             self.resolve_ruins();
+            // Dens are cleared and their animals come back (`animals.rs`).
+            self.resolve_dens();
             self.resolve_economy();
             for unit in &mut self.units {
                 if unit.ability_queued && unit.ability() == Ability::Deploy {
@@ -682,6 +684,10 @@ impl GameState {
         }
 
         let mut damage = vec![0.0; self.units.len()];
+        // Blows that hit animals, by who struck them: (the animal, the
+        // side, the damage). The side that dealt one that dies the most
+        // gets its bounty (`animals.rs`).
+        let mut hunts: Vec<(usize, Team, f32)> = Vec::new();
         let mut barracks_damage = vec![0.0; self.cities.len()];
         for engagement in &engagements {
             let (a, d) = (engagement.attacker, engagement.defender);
@@ -702,6 +708,9 @@ impl GameState {
                 * engagement.damage_scale
                 * combat::damage(attacker, defender, defender_cover);
             damage[d] += hit;
+            if defender.is_animal() && attacker.team.is_side() {
+                hunts.push((d, attacker.team, hit));
+            }
             let attacker_note = combat::unit_note(attacker, &self.grid, self.in_fort(attacker));
             let defender_note = combat::unit_note(defender, &self.grid, self.in_fort(defender));
             let verb = if engagement.damage_scale < 1.0 {
@@ -722,6 +731,9 @@ impl GameState {
                     * combat::shore_scale(defender, attacker)
                     * combat::damage(defender, attacker, attacker_cover);
                 damage[a] += back;
+                if attacker.is_animal() && defender.team.is_side() {
+                    hunts.push((a, defender.team, back));
+                }
                 let verb = if reverse.is_some() {
                     "trades blows with"
                 } else {
@@ -839,6 +851,7 @@ impl GameState {
         for &a in attackers {
             self.units[a].planned_attack = None;
         }
+        self.reward_hunts(&hunts);
         self.units.retain(Unit::is_alive);
         self.discard_interior_copies_of_dead_units();
     }

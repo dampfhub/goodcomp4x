@@ -48,10 +48,18 @@ pub struct Settings {
     /// Each side in the next world starts with its city already founded,
     /// rather than a settler to found it with.
     pub world_start_city: bool,
+    /// Animal dens in the next world (`animals.rs`): `ANIMALS_OFF`, one a
+    /// side (`ANIMALS_FEW`) or two a side (`ANIMALS_MANY`).
+    pub world_animals: usize,
 }
 
 /// `Settings::world_ai` for 4 to 6 AI players, picked by the map's seed.
 pub const WORLD_AI_BY_SEED: usize = 0;
+
+/// `Settings::world_animals`: no animals, one den a side, or two.
+pub const ANIMALS_OFF: usize = 0;
+pub const ANIMALS_FEW: usize = 1;
+pub const ANIMALS_MANY: usize = 2;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -62,6 +70,7 @@ impl Default for Settings {
             cloud_fog: true,
             world_ai: WORLD_AI_BY_SEED,
             world_start_city: true,
+            world_animals: ANIMALS_FEW,
         }
     }
 }
@@ -86,6 +95,7 @@ pub enum Setting {
     FogStyle,
     WorldAi,
     WorldStart,
+    WorldAnimals,
 }
 
 /// How the settings menu changes a `Setting`.
@@ -108,13 +118,14 @@ impl Control {
 impl Setting {
     /// Every setting, in the order the menu lists them. Settings of one
     /// `group` are listed together, under its heading.
-    pub const ALL: [Setting; 6] = [
+    pub const ALL: [Setting; 7] = [
         Setting::TurnPlayback,
         Setting::TurnTransition,
         Setting::MaxQueuedTurns,
         Setting::FogStyle,
         Setting::WorldAi,
         Setting::WorldStart,
+        Setting::WorldAnimals,
     ];
 
     /// Its name in the saved settings file (`to_text`). Old files use
@@ -127,6 +138,7 @@ impl Setting {
             Setting::FogStyle => "fog",
             Setting::WorldAi => "world_ai",
             Setting::WorldStart => "world_start",
+            Setting::WorldAnimals => "world_animals",
         }
     }
 
@@ -139,6 +151,7 @@ impl Setting {
             Setting::FogStyle => "FOG",
             Setting::WorldAi => "AI PLAYERS",
             Setting::WorldStart => "START WITH",
+            Setting::WorldAnimals => "ANIMALS",
         }
     }
 
@@ -147,7 +160,7 @@ impl Setting {
         match self {
             Setting::TurnPlayback | Setting::TurnTransition | Setting::MaxQueuedTurns => "TURNS",
             Setting::FogStyle => "MAP",
-            Setting::WorldAi | Setting::WorldStart => "NEXT WORLD (F4)",
+            Setting::WorldAi | Setting::WorldStart | Setting::WorldAnimals => "NEXT WORLD (F4)",
         }
     }
 
@@ -156,7 +169,9 @@ impl Setting {
         match self {
             Setting::TurnPlayback | Setting::TurnTransition => Control::Toggle,
             Setting::MaxQueuedTurns => Control::Slider,
-            Setting::FogStyle | Setting::WorldAi | Setting::WorldStart => Control::Choice,
+            Setting::FogStyle | Setting::WorldAi | Setting::WorldStart | Setting::WorldAnimals => {
+                Control::Choice
+            }
         }
     }
 
@@ -171,6 +186,7 @@ impl Setting {
             Setting::FogStyle => "CLOUDS OR FLAT GREY OVER UNEXPLORED LAND.",
             Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4).",
             Setting::WorldStart => "START THE NEXT WORLD (F4) WITH A CITY OR A SETTLER.",
+            Setting::WorldAnimals => "ANIMAL DENS IN THE NEXT WORLD (F4): NONE, ONE OR TWO A SIDE.",
         }
     }
 
@@ -183,6 +199,7 @@ impl Setting {
             Setting::FogStyle => 0..=1,
             Setting::WorldAi => 0..=6,
             Setting::WorldStart => 0..=1,
+            Setting::WorldAnimals => ANIMALS_OFF as i32..=ANIMALS_MANY as i32,
         }
     }
 
@@ -198,6 +215,12 @@ impl Setting {
             Setting::WorldAi if value == WORLD_AI_BY_SEED as i32 => "4-6 BY MAP".into(),
             Setting::WorldAi => value.to_string(),
             Setting::WorldStart => if value == 1 { "CITY" } else { "SETTLER" }.into(),
+            Setting::WorldAnimals => match value as usize {
+                ANIMALS_OFF => "OFF",
+                ANIMALS_FEW => "FEW",
+                _ => "MANY",
+            }
+            .into(),
         }
     }
 }
@@ -212,6 +235,7 @@ impl Settings {
             Setting::FogStyle => self.cloud_fog as i32,
             Setting::WorldAi => self.world_ai as i32,
             Setting::WorldStart => self.world_start_city as i32,
+            Setting::WorldAnimals => self.world_animals as i32,
         }
     }
 
@@ -224,6 +248,7 @@ impl Settings {
             Setting::FogStyle => self.cloud_fog = value == 1,
             Setting::WorldAi => self.world_ai = value as usize,
             Setting::WorldStart => self.world_start_city = value == 1,
+            Setting::WorldAnimals => self.world_animals = value as usize,
         }
     }
 

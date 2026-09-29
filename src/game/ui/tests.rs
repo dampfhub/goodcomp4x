@@ -1241,7 +1241,7 @@ fn panel_strings(fill: impl FnOnce(&mut PanelBuilder)) -> Vec<String> {
     let mut panel = PanelBuilder::default();
     fill(&mut panel);
     line_strings(panel.rows.into_iter().filter_map(|row| match row {
-        Row::Text(_, line) => Some(line),
+        Row::Text(_, line) | Row::LabeledButtons(line, _) => Some(line),
         _ => None,
     }))
 }
@@ -2192,6 +2192,45 @@ fn the_classic_settings_menu_has_a_button_per_choice_and_steps_the_rest() {
     let grey = Target::SetSetting(Setting::FogStyle, 0);
     game.handle_click(button_cursor(&game, grey), SCREEN, ClickMode::Normal);
     assert!(!game.settings.cloud_fog);
+}
+
+#[test]
+fn classic_shows_each_setting_on_one_row_its_name_clear_of_its_buttons() {
+    let mut game = GameState::new();
+    game.clear_selection();
+    game.settings_open = true;
+    let layout = game.layout(Vec2::new(1280.0, 720.0));
+    for setting in Setting::ALL {
+        let buttons: Vec<&Button> = layout
+            .buttons
+            .iter()
+            .filter(|b| matches!(b.target, Target::SetSetting(s, _) if s == setting))
+            .collect();
+        let origin = layout
+            .shapes
+            .iter()
+            .find_map(|shape| match shape {
+                Shape::Text { origin, line, .. }
+                    if line.iter().any(|(t, _)| t.trim() == setting.name()) =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{setting:?}'s name"));
+        let name_end =
+            origin.x + crate::game::font::ui(BODY).width(&format!("{}  ", setting.name()));
+        for button in buttons {
+            assert!(
+                button.min.x >= name_end,
+                "{setting:?}: a button over its name"
+            );
+            assert!(
+                (button.min.y..=button.max.y).contains(&origin.y),
+                "{setting:?}: its buttons on another row"
+            );
+        }
+    }
 }
 
 #[test]
