@@ -30,6 +30,7 @@ use ui_win32.next_frame;
 use game.GameState;
 use game.city.Build;
 use game.city.Building;
+use game.city.LaborFocus;
 use game.hex.Hex;
 use game.settings.SETTINGS;
 use game.settings.Setting;
@@ -52,6 +53,7 @@ use game.imgui_layout.PinnedKind;
 use game.imgui_layout.PinnedPanel;
 use game.imgui_layout.layout_from_text;
 use game.imgui_layout.layout_state;
+use game.imgui_layout.box_space_name;
 use game.tests.sandbox;
 use game.ui.QueueKind;
 use game.ui.Target;
@@ -726,5 +728,53 @@ fn a_panel_dragged_onto_the_maps_drop_target_docks_and_stays_docked() {
         assert(again.ctx.is_docked("Debug"));
         let Option.Some(back) = again.ctx.window_rect("Debug") else { assert(false); return; };
         assert(back.min.x == docked.min.x && back.min.y == docked.min.y && back.max.x == docked.max.x);
+    });
+}
+
+@test
+fn a_panel_dragged_into_a_box_is_pinned_and_acts_on_its_own_city() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        let mut r = rig(game);
+        // A box of the shared layer, and Ctrl held so the panels have title bars.
+        r.st.layout.editing_outer = true;
+        r.st.layout.create_box(screen().scale(1.0));
+        r.st.input.mods = Mods { ctrl: true, shift: false, alt: false };
+        frames(&mut r, 3);
+        assert(r.st.layout.outer_boxes.len() == 1);
+        let box_id = r.st.layout.outer_boxes[0].id;
+        let space = box_space_name(box_id);
+        let Option.Some(root) = r.ctx.dock_root(&space) else { assert(false); return; };
+        let node = r.ctx.dock_node(root);
+        let c = vec2((node.rect.min.x + node.rect.max.x) / 2.0, (node.rect.min.y + node.rect.max.y) / 2.0);
+        let Option.Some(sel) = r.ctx.window_rect("Selection") else { assert(false); return; };
+        drag(&mut r, vec2(sel.min.x + 40.0, sel.min.y + 10.0), vec2(c.x - 26.0, c.y));
+        frames(&mut r, 5);
+        // The selection's panel is now the city's own pinned panel, docked in the box.
+        assert(r.st.layout.pinned.len() == 1);
+        let pin = r.st.layout.pinned[0];
+        assert(r.game.pinned_city_index(pin) == Option.Some(city));
+        let pin_title = pin.title();
+        assert(r.ctx.is_docked(&pin_title));
+        assert(r.st.layout.outer_box_for_window(&r.ctx, &pin_title) == Option.Some(box_id));
+        // Closing the city leaves the pinned panel in its box, its buttons still on that city.
+        r.game.leave_city_view();
+        r.st.input.mods = Mods { ctrl: false, shift: false, alt: false };
+        frames(&mut r, 4);
+        assert(r.game.selected_city.is_none());
+        assert(r.st.layout.pinned.len() == 1);
+        assert(r.st.layout.pin_visible(pin));
+        // (A button near the top: the box is smaller than the city's whole panel.)
+        click_target(&mut r, Target.Focus(LaborFocus.Production));
+        assert(r.game.cities[city].focus == LaborFocus.Production);
+        assert(r.game.selected_city == Option.Some(city));
+        // Removing the box floats what was in it and drops the pin.
+        r.st.layout.remove_outer_box(box_id, &mut r.ctx);
+        frames(&mut r, 3);
+        assert(r.st.layout.outer_boxes.is_empty());
+        assert(r.st.layout.pinned.is_empty());
+        assert(!r.ctx.is_docked(&pin_title));
     });
 }
