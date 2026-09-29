@@ -1,8 +1,60 @@
 //! Formatting helpers for numbers, stats and descriptions shown in the UI.
 
-use super::{BOOSTED_TEXT, Color, LABEL_TEXT, Line, REDUCED_TEXT, TEXT};
+use super::{
+    BOOSTED_TEXT, Color, DIM_TEXT, FOOD_TEXT, LABEL_TEXT, Line, METAL_TEXT, REDUCED_TEXT, TEXT,
+    WOOD_TEXT,
+};
 use crate::game::ability::Ability;
+use crate::game::city::{Stock, resource_icon, stock_icons, turns_icon};
 use crate::game::unit::Unit;
+
+/// A price in short form for a build card's hint: each resource's icon and
+/// whole amount, zeros left out (`stock_icons`), or FREE.
+pub(super) fn price_hint(price: Stock) -> String {
+    let icons = stock_icons(price);
+    if icons.is_empty() {
+        "FREE".into()
+    } else {
+        icons
+    }
+}
+
+/// A build card's hint: its price and, after the clock icon, its turns.
+pub(super) fn cost_hint(price: Stock, turns: i32) -> String {
+    format!("{} {}", price_hint(price), turns_icon(turns))
+}
+
+/// Each resource's color.
+pub(super) fn resource_color(name: &str) -> Color {
+    match name {
+        "FOOD" => FOOD_TEXT,
+        "WOOD" => WOOD_TEXT,
+        _ => METAL_TEXT,
+    }
+}
+
+/// A stockpile with its change a turn, each resource's icon, amount and
+/// change: changes green, red or dim.
+pub(super) fn stock_spans(stock: Stock, change: Stock) -> Line {
+    let mut line = Vec::new();
+    for (i, ((name, amount), (_, delta))) in
+        stock.parts().into_iter().zip(change.parts()).enumerate()
+    {
+        let separator = if i == 0 { "" } else { "   " };
+        line.push((
+            format!("{separator}{}", resource_icon(name)),
+            resource_color(name),
+        ));
+        line.push((quantity(amount), TEXT));
+        let delta_color = match delta.signum() {
+            1 => BOOSTED_TEXT,
+            -1 => REDUCED_TEXT,
+            _ => DIM_TEXT,
+        };
+        line.push((format!(" {}", signed_quantity(delta)), delta_color));
+    }
+    line
+}
 
 /// "LABEL value" pairs on one line, labels dim and values in their own color.
 pub(super) fn stat_spans(stats: &[(&str, String, Color)]) -> Line {
@@ -40,34 +92,22 @@ pub(super) fn signed_quantity(quarters: i32) -> String {
     format!("{sign}{}", quantity(quarters))
 }
 
-/// Turns required to finish a queue item at the delivery-adjusted rate shown
-/// in its structure panel. Completion is resolved on the next economy tick.
-pub(super) fn turns_at_rate(remaining: i32, per_turn: i32) -> String {
-    if per_turn <= 0 {
-        return "—".into();
-    }
-    let turns = (remaining.max(1) + per_turn - 1) / per_turn;
-    format!("{turns}T")
-}
-
 /// The End Turn button's label: the next thing the turn is waiting on, in
-/// the turn strip's order (production, idle workers, then units, as that's
-/// what clicking selects first), or "END TURN" once nothing is.
-pub(super) fn end_turn_label((units, cities, workers): (usize, usize, usize)) -> String {
-    match (units, cities, workers) {
-        (_, 1, _) => "CHOOSE PRODUCTION".into(),
-        (_, cities, _) if cities > 1 => format!("{cities} CITIES NEED PRODUCTION"),
-        (_, _, 1) => "WORKER NEEDS A JOB".into(),
-        (_, _, workers) if workers > 1 => format!("{workers} WORKERS NEED JOBS"),
-        (0, _, _) => "END TURN".into(),
-        (1, _, _) => "UNIT NEEDS ORDERS".into(),
-        (units, _, _) => format!("{units} UNITS NEED ORDERS"),
+/// the turn strip's order (production, then units, as that's what clicking
+/// selects first), or "END TURN" once nothing is.
+pub(super) fn end_turn_label((units, cities): (usize, usize)) -> String {
+    match (units, cities) {
+        (_, 1) => "CHOOSE PRODUCTION".into(),
+        (_, cities) if cities > 1 => format!("{cities} CITIES NEED PRODUCTION"),
+        (0, _) => "END TURN".into(),
+        (1, _) => "UNIT NEEDS ORDERS".into(),
+        (units, _) => format!("{units} UNITS NEED ORDERS"),
     }
 }
 
 /// What the turn is waiting on, like "2 UNITS AND 1 CITY NEED ORDERS", from
 /// `GameState::pending`; `None` once nothing is.
-pub(super) fn pending_text((units, cities, workers): (usize, usize, usize)) -> Option<String> {
+pub(super) fn pending_text((units, cities): (usize, usize)) -> Option<String> {
     let plural = |count: usize, one: &str, many: &str| {
         let word = if count == 1 { one } else { many };
         format!("{count} {word}")
@@ -79,21 +119,44 @@ pub(super) fn pending_text((units, cities, workers): (usize, usize, usize)) -> O
     if cities > 0 {
         parts.push(plural(cities, "CITY", "CITIES"));
     }
-    if workers > 0 {
-        parts.push(plural(workers, "WORKER", "WORKERS"));
-    }
-    let verb = if units + cities + workers == 1 {
-        "NEEDS"
-    } else {
-        "NEED"
-    };
+    let verb = if units + cities == 1 { "NEEDS" } else { "NEED" };
     (!parts.is_empty()).then(|| format!("{} {verb} ORDERS", parts.join(" AND ")))
 }
 
 pub(super) fn turns_text(turns: u32) -> String {
-    match turns {
-        1 => "1 TURN".to_string(),
-        _ => format!("{turns} TURNS"),
+    crate::game::city::turns_icon(turns as i32)
+}
+
+/// `text` if it fits in `max_width` (as `measure` measures a string);
+/// otherwise as many of its words as fit with "…" after them (a word cut
+/// short only when not even the first fits), or nothing if not even the
+/// ellipsis does. Both presentations' top bars fit the notice with it.
+pub(super) fn fit_text(text: &str, max_width: f32, measure: impl Fn(&str) -> f32) -> String {
+    if measure(text) <= max_width {
+        return text.to_string();
+    }
+    let with_ellipsis = |end: usize| {
+        // No dangling separator (" - ", ",", ":") before the ellipsis.
+        let kept = text[..end].trim_end_matches(|c: char| c.is_whitespace() || "-·,;:".contains(c));
+        format!("{kept}…")
+    };
+    // The longest cut at a char boundary that fits: widths only grow with
+    // the text, so search the boundaries.
+    let ends: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let longest = ends.partition_point(|&end| measure(&with_ellipsis(end)) <= max_width);
+    if longest == 0 {
+        return String::new();
+    }
+    let cut = ends[longest - 1];
+    // Back to the end of the last whole word, if there is one.
+    let word_end = if text[cut..].starts_with(char::is_whitespace) {
+        Some(cut)
+    } else {
+        text[..cut].rfind(char::is_whitespace)
+    };
+    match word_end {
+        Some(end) if !text[..end].trim().is_empty() => with_ellipsis(end),
+        _ => with_ellipsis(cut),
     }
 }
 

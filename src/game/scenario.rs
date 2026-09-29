@@ -10,7 +10,7 @@ use super::settings::Settings;
 use super::{GameRng, GameState};
 
 /// The test scenarios F1-F4 switch between.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Scenario {
     /// The original small combat map.
     Combat,
@@ -96,7 +96,22 @@ impl GameState {
     /// the same game.
     #[cfg(test)]
     pub(super) fn seed_rng(&mut self, seed: u64) {
+        self.reseed(seed);
+    }
+
+    /// Seeds the RNG with `seed`, remembering it (`rng_seed`).
+    pub(super) fn reseed(&mut self, seed: u64) {
         self.rng = rand::SeedableRng::seed_from_u64(seed);
+        self.rng_seed = seed;
+    }
+
+    /// Whether a debug action that changes the game on this machine alone is
+    /// off, as it is in a networked game (it would desync it); says so.
+    pub(super) fn refuses_debug(&mut self) -> bool {
+        if self.is_networked() {
+            self.notice = "NOT IN A NETWORK GAME".into();
+        }
+        self.is_networked()
     }
 
     /// F1-F4: starts `scenario` afresh (restarting it, if it's the current
@@ -104,16 +119,27 @@ impl GameState {
     /// player's settings (and whether their menu is open), the debug settings
     /// and the RNG (so a seeded game stays reproducible).
     pub fn switch_scenario(&mut self, scenario: Scenario) {
+        if self.refuses_debug() {
+            return;
+        }
         let savestate = self.savestate.take();
         let settings = std::mem::take(&mut self.settings);
         let (settings_open, fog_of_war) = (self.settings_open, self.fog_of_war);
+        let net_menu = std::mem::take(&mut self.net_menu);
+        let production_speedup = self.production_speedup;
+        let lifetime_special_cap = self.lifetime_special_cap;
+        let generation = self.generation.wrapping_add(1);
         let mut rng = self.rng.clone();
         *self = scenario.start(&mut rng, &settings);
         self.rng = rng;
+        self.generation = generation;
         self.savestate = savestate;
         self.settings = settings;
         self.settings_open = settings_open;
+        self.net_menu = net_menu;
         self.fog_of_war = fog_of_war;
+        self.production_speedup = production_speedup;
+        self.lifetime_special_cap = lifetime_special_cap;
     }
 
     /// F8: switches turn playback between one step at a time and all at once.
@@ -128,6 +154,9 @@ impl GameState {
 
     /// F6: saves a snapshot of the whole game, replacing any earlier one.
     pub fn save_state(&mut self) {
+        if self.refuses_debug() {
+            return;
+        }
         if self.is_resolving() {
             self.notice = "CAN'T SAVE WHILE A TURN PLAYS OUT".into();
             return;
@@ -145,6 +174,9 @@ impl GameState {
     /// F7: restores the saved snapshot, keeping it to load again. The camera
     /// stays where it is, unless the snapshot is from another scenario.
     pub fn load_state(&mut self) {
+        if self.refuses_debug() {
+            return;
+        }
         let Some(saved) = self.savestate.take() else {
             self.notice = "NOTHING SAVED YET - F6 SAVES".into();
             return;
@@ -155,10 +187,14 @@ impl GameState {
         }
         restored.settings = self.settings.clone();
         restored.settings_open = self.settings_open;
+        restored.net_menu = self.net_menu.clone();
         restored.fog_of_war = self.fog_of_war;
+        restored.production_speedup = self.production_speedup;
+        restored.lifetime_special_cap = self.lifetime_special_cap;
         // Rolls carry on from the current game rather than replaying the
         // saved ones, so retrying a save can go differently.
         restored.rng = self.rng.clone();
+        restored.generation = self.generation.wrapping_add(1);
         restored.savestate = Some(saved);
         restored.notice = format!("LOADED {}", restored.saved_summary().unwrap_or_default());
         *self = restored;
@@ -255,7 +291,9 @@ mod tests {
             // 4 to 6 AI sides, by the seed, and the player.
             let sides = 1 + 4 + (seed % 3) as usize;
             assert_eq!(game.cities.len(), sides, "seed {seed}");
-            assert_eq!(game.units.len(), sides, "a scout each");
+            let sides_units = game.units.iter().filter(|u| u.team.is_side()).count();
+            assert_eq!(sides_units, sides, "a scout each");
+            assert_eq!(game.dens.len(), sides, "a den each, by default");
             assert!(game.settlers.is_empty());
             for team in &Team::ALL[..sides] {
                 assert_eq!(game.cities.iter().filter(|c| c.team == *team).count(), 1);
@@ -293,7 +331,8 @@ mod tests {
         let game = GameState::world_scenario_with(9, &settings);
         assert!(game.cities.is_empty());
         assert_eq!(game.settlers.len(), 3, "the player's and two AI settlers");
-        assert_eq!(game.units.len(), 6, "and a scout each");
+        let sides_units = game.units.iter().filter(|u| u.team.is_side()).count();
+        assert_eq!(sides_units, 6, "and a scout each");
         let selected = &game.units[game.selected.unwrap()];
         assert!(game.settlers.contains(&selected.id), "the player's settler");
         assert_eq!(selected.team, PLAYER_TEAM);
@@ -332,7 +371,7 @@ mod tests {
                     .any(|n| !game.grid.terrain(n).is_water() && routes.costs.contains_key(&n));
                 assert!(land_beside, "seed {seed}: {hex:?} reached over water");
             }
-            let manager = game.cities[0].worked[0];
+            let manager = game.cities[0].clusters[0].manager;
             assert!(!game.grid.terrain(manager).is_water(), "manager on land");
             return;
         }
@@ -351,7 +390,7 @@ mod tests {
         );
         game.toggle_instant_playback();
 
-        while game.pending() != (0, 0, 0) {
+        while game.pending() != (0, 0) {
             game.hold_or_end_turn();
         }
         game.hold_or_end_turn();

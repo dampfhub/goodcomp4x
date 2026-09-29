@@ -1,6 +1,8 @@
 //! Workers: each city keeps a pool of workers at home, safe and off the map,
-//! and a queue of jobs the player orders from a tile: roads, tile
-//! improvements and structures. In the last step of every turn, after every
+//! and a queue of jobs: everything the city puts on the map, placed from its
+//! production list and paid from the stockpile when placed. Roads, tile
+//! improvements, structures and the city's buildings with a site are all
+//! built this way. In the last step of every turn, after every
 //! unit has moved and attacked, cities send idle workers out. Each walks to
 //! its job, works it for a few turns, then takes the city's next job or walks
 //! home. A worker out on the map is exposed: an enemy unit moving onto its
@@ -12,15 +14,16 @@
 //! Outposts (the owner sees around them) and forts (the owner's units in one
 //! defend better) stand on a tile.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use glam::Vec2;
 
-use super::city::Site;
+use super::GameState;
+use super::city::{Building, Site, Stock, stock_icons};
+use super::fast_hash::HashMap;
 use super::hex::{Hex, edge};
 use super::terrain::Terrain;
 use super::unit::{Team, Unit};
-use super::{GameState, PLAYER_TEAM};
 
 /// Hexes a worker walks per turn.
 pub(super) const WORKER_MOVE: usize = 1;
@@ -34,7 +37,7 @@ pub(super) const WORKER_SIGHT: i32 = 1;
 /// placeholder until forts get their real role.
 pub(super) const FORT_DEFENSE: f32 = 1.5;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum JobKind {
     Road,
     Improve,
@@ -42,6 +45,8 @@ pub enum JobKind {
     Gate,
     Outpost,
     Fort,
+    /// One of the city's buildings with a site (`Building::is_placeable`).
+    Build(Building),
 }
 
 impl JobKind {
@@ -62,6 +67,21 @@ impl JobKind {
             Self::Gate => "GATE",
             Self::Outpost => "OUTPOST",
             Self::Fort => "FORT",
+            Self::Build(building) => building.name(),
+        }
+    }
+
+    /// What placing it takes from the side's stockpile (`city/economy.rs`),
+    /// given back if it's taken off the list or dropped before it's done.
+    pub fn price(self) -> Stock {
+        match self {
+            Self::Road => Stock::whole(0, 2, 0),
+            Self::Improve => Stock::whole(0, 4, 0),
+            Self::Wall => Stock::whole(0, 3, 0),
+            Self::Gate => Stock::whole(0, 3, 2),
+            Self::Outpost => Stock::whole(0, 6, 0),
+            Self::Fort => Stock::whole(0, 8, 4),
+            Self::Build(building) => building.price(),
         }
     }
 
@@ -72,25 +92,25 @@ impl JobKind {
             Self::Improve => 3,
             Self::Gate | Self::Outpost => 3,
             Self::Fort => 4,
+            Self::Build(building) => building.turns() as u32,
         }
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Road => "LOWERS THE COST OF CARRYING GOODS THROUGH THIS TILE.",
-            Self::Improve => {
-                "A MINE ON HILLS (+2 PRODUCTION), LUMBER MILL IN FOREST OR JUNGLE (+1), FARM ELSEWHERE (+2 FOOD)."
-            }
-            Self::Wall => "ON A HEX EDGE: NO UNIT OR GOODS CROSS IT, YOURS INCLUDED.",
-            Self::Gate => "ON A HEX EDGE: YOUR UNITS AND GOODS CROSS IT; ENEMIES' DON'T.",
-            Self::Outpost => "YOU SEE 2 TILES AROUND IT.",
-            Self::Fort => "YOUR UNITS IN IT DEFEND 50% BETTER.",
+            Self::Road => "CHEAPER DELIVERY, AND WORKERS REACH ALONG IT.",
+            Self::Improve => "MINE ON HILLS, LUMBER MILL IN FOREST, ELSE A FARM.",
+            Self::Wall => "ON AN EDGE: NOBODY CROSSES.",
+            Self::Gate => "ON AN EDGE: ONLY YOUR SIDE CROSSES.",
+            Self::Outpost => "SEES 2 HEXES AROUND IT.",
+            Self::Fort => "+50% DEFENSE FOR YOUR UNITS IN IT.",
+            Self::Build(building) => building.description(),
         }
     }
 
     pub(super) fn structure(self) -> Option<StructureKind> {
         match self {
-            Self::Road | Self::Improve => None,
+            Self::Road | Self::Improve | Self::Build(_) => None,
             Self::Wall => Some(StructureKind::Wall),
             Self::Gate => Some(StructureKind::Gate),
             Self::Outpost => Some(StructureKind::Outpost),
@@ -130,13 +150,17 @@ impl Structure {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct WorkerJob {
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct WorkerJob {
     /// Where the worker stands to do it.
     pub hex: Hex,
     pub kind: JobKind,
     /// For a wall or gate, the hex across the edge it goes on.
     pub across: Option<Hex>,
+    /// Turns of work already put into it. It stays with the job when its
+    /// worker leaves (recalled, captured or killed), so whichever worker
+    /// takes it next only does the rest.
+    pub done: u32,
 }
 
 impl WorkerJob {
@@ -145,7 +169,14 @@ impl WorkerJob {
             hex,
             kind,
             across: None,
+            done: 0,
         }
+    }
+
+    /// The same job with no work put into it: what it is and where, which
+    /// tells two jobs apart.
+    pub fn fresh(self) -> Self {
+        Self { done: 0, ..self }
     }
 
     /// Whether two jobs would build on the same place: the same tile, or
@@ -184,9 +215,11 @@ pub(super) struct FieldWorker {
     pub pos: Hex,
     /// What it's out to do; `None` while it walks home.
     pub job: Option<WorkerJob>,
-    /// Turns of work left, once it stands on the job's tile.
+    /// Turns of work left, once it stands on the job's tile. Each turn of
+    /// work also adds to its job's `done`, which the job keeps if it leaves.
     pub work_left: Option<u32>,
-    /// Sent home by the player: it takes no job until it gets there.
+    /// Sent home by the player: it takes no job until it gets there, and
+    /// there it's held (`City::held_workers`) until the player releases it.
     pub recalled: bool,
 }
 
@@ -245,12 +278,11 @@ impl GameState {
             .min_by_key(|&i| (self.cities[i].pos.distance(hex), i))
     }
 
-    /// The player's city whose workers would take a job at `hex`: the open
-    /// city, or else the nearest one.
-    pub(super) fn job_city(&self, hex: Hex) -> Option<usize> {
+    /// The player's city whose workers build what's placed on the map: the
+    /// open city. Everything a worker builds is placed from its city.
+    pub(super) fn job_city(&self) -> Option<usize> {
         self.selected_city
-            .filter(|&city| self.cities[city].team == PLAYER_TEAM)
-            .or_else(|| self.nearest_city(PLAYER_TEAM, hex))
+            .filter(|&city| self.cities[city].team == self.local_team)
     }
 
     /// What `job` builds, as the player reads it: an improvement by its kind
@@ -264,7 +296,7 @@ impl GameState {
         }
     }
 
-    /// A job as the worker menu names it: what it builds, and the tile it's
+    /// A job as the city panel names it: what it builds, and the tile it's
     /// on, like "FARM · GRASSLAND" or "MINE · PLAINS HILLS".
     pub(super) fn job_title(&self, job: WorkerJob) -> String {
         format!(
@@ -280,19 +312,20 @@ impl GameState {
     fn improvement(&self, hex: Hex) -> Option<(i32, i32, &'static str)> {
         let tile = self.grid.tile(hex);
         let (food, production) = tile.yields();
-        if tile.hills {
+        if tile.terrain == Terrain::Snow {
+            None
+        } else if tile.hills {
             Some((food, production + 2, "MINE"))
         } else if tile.feature.is_some() {
             Some((food, production + 1, "LUMBER MILL"))
-        } else if tile.terrain == Terrain::Snow {
-            None
         } else {
             Some((food + 2, production, "FARM"))
         }
     }
 
-    /// Why `team`'s workers can't do `job`, or `None` if they can.
-    pub(super) fn job_problem(&self, team: Team, job: WorkerJob) -> Option<&'static str> {
+    /// Why city `city`'s workers can't do `job`, or `None` if they can.
+    pub(super) fn job_problem(&self, city: usize, job: WorkerJob) -> Option<&'static str> {
+        let team = self.cities[city].team;
         let hex = job.hex;
         if !self.grid.contains(hex) || !self.grid.is_passable(hex) {
             return Some("WORKERS CAN'T WORK THIS TERRAIN");
@@ -313,6 +346,15 @@ impl GameState {
         }
         if self.cities.iter().any(|c| c.pos == hex) {
             return Some("A CITY STANDS HERE");
+        }
+        if let JobKind::Build(building) = job.kind {
+            if self.cities[city].built.contains(&building) {
+                return Some("THIS CITY HAS ONE ALREADY");
+            }
+            if self.structures.contains_key(&hex) {
+                return Some("A STRUCTURE STANDS HERE");
+            }
+            return self.ai_site_issue(city, building, hex);
         }
         let building = self.cities.iter().any(|c| {
             crate::game::city::Building::PLACEABLE
@@ -362,7 +404,7 @@ impl GameState {
     }
 
     /// `in_worker_reach` with the bases worked out once, for checking many
-    /// hexes (worker mode's lit tiles).
+    /// hexes (the lit tiles while placing).
     pub(super) fn in_reach_of(&self, bases: &[Hex], hex: Hex) -> bool {
         bases.iter().any(|base| base.distance(hex) <= WORKER_REACH)
             || std::iter::once(hex)
@@ -370,99 +412,214 @@ impl GameState {
                 .any(|h| self.roads.contains(&h))
     }
 
-    /// W, or Worker Jobs in the city panel: opens or closes the worker menu.
-    pub fn toggle_worker_mode(&mut self) {
-        let on = !self.worker_mode;
-        self.set_worker_mode(on);
-    }
-
-    /// Workers at home in city `city` waiting for the player: none have a
-    /// job to go to and they aren't resting this turn.
-    pub(super) fn idle_workers(&self, city: usize) -> u32 {
-        let c = &self.cities[city];
-        if c.team == PLAYER_TEAM && c.worker_jobs.is_empty() && !c.workers_resting {
-            c.workers
-        } else {
-            0
-        }
-    }
-
-    /// The first of the player's cities with idle workers.
-    pub(super) fn next_idle_workers(&self) -> Option<usize> {
-        (0..self.cities.len()).find(|&i| self.idle_workers(i) > 0)
-    }
-
-    /// Opens the worker menu on city `city` (the turn strip's workers, and
-    /// the turn order).
-    pub(super) fn open_worker_menu(&mut self, city: usize) {
-        self.set_worker_mode(true);
-        if self.worker_mode {
-            self.worker_menu_city = Some(city);
-        }
-    }
-
-    /// The city whose worker jobs a queue row or its X acts on: the open
-    /// city, or else the worker menu's.
+    /// The city whose worker jobs a queue row or its X acts on: the open one.
     pub(super) fn worker_list_city(&self) -> Option<usize> {
         self.selected_city
-            .or(self.worker_menu_city.filter(|_| self.worker_mode))
     }
 
-    /// Sleep in the worker menu, or Space there: the menu city's idle
-    /// workers rest this turn, and the menu moves on to the next city with
-    /// idle workers; with none left, it closes and the turn moves on.
-    pub fn sleep_workers(&mut self) {
-        if self.is_resolving() {
-            return;
+    /// Player-facing reach uses the last observed roads. Turn resolution
+    /// continues to use `in_worker_reach` and the real board.
+    pub(super) fn known_worker_reach(&self, hex: Hex) -> bool {
+        let fog = self.fog();
+        let bases: Vec<_> = self
+            .cities
+            .iter()
+            .enumerate()
+            .filter(|(_, city)| city.team == self.local_team)
+            .flat_map(|(i, city)| {
+                let camp = city
+                    .placed_site(crate::game::city::Building::WorkCamp)
+                    .filter(|&h| self.known_routes(i, &fog).costs.contains_key(&h));
+                std::iter::once(city.pos).chain(camp)
+            })
+            .collect();
+        bases.iter().any(|base| base.distance(hex) <= WORKER_REACH)
+            || std::iter::once(hex).chain(hex.neighbors()).any(|h| {
+                if fog.sees(h) {
+                    self.roads.contains(&h)
+                } else {
+                    self.remembered(h).is_some_and(|seen| seen.road)
+                }
+            })
+    }
+
+    /// Player-facing job check for city `home`: unseen mutable objects come
+    /// from memory, never from the live enemy board.
+    fn known_job_problem(&self, home: usize, job: WorkerJob) -> Option<&'static str> {
+        let hex = job.hex;
+        let fog = self.fog();
+        if !self.grid.contains(hex) || !self.grid.is_passable(hex) {
+            return Some("WORKERS CAN'T WORK THIS TERRAIN");
         }
-        let Some(city) = self.worker_menu_city.filter(|_| self.worker_mode) else {
-            return;
+        if !self.known_worker_reach(hex) {
+            return Some(
+                "OUT OF REACH: WORKERS GO 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD",
+            );
+        }
+        if let Some(across) = job.across {
+            return if hex.distance(across) != 1 || !self.grid.contains(across) {
+                Some("WALLS AND GATES GO BETWEEN TWO TILES ON THE MAP")
+            } else if self.known_barrier(hex, across, &fog).is_some() {
+                Some("A WALL OR GATE STANDS HERE")
+            } else {
+                None
+            };
+        }
+        let visible = fog.sees(hex);
+        let remembered = self.remembered(hex);
+        let city = if visible {
+            self.cities.iter().any(|c| c.pos == hex)
+        } else {
+            remembered.is_some_and(|seen| seen.city.is_some())
+                || self
+                    .cities
+                    .iter()
+                    .any(|c| c.team == self.local_team && c.pos == hex)
         };
-        if self.idle_workers(city) > 0 {
-            self.cities[city].workers_resting = true;
-            self.notice = format!("CITY {}'S WORKERS REST THIS TURN", self.cities[city].id + 1);
+        if city {
+            return Some("A CITY STANDS HERE");
         }
-        match self.next_idle_workers() {
-            Some(next) => self.worker_menu_city = Some(next),
-            None => {
-                self.set_worker_mode(false);
-                self.select_next_or_end_turn(None);
+        let building = self
+            .cities
+            .iter()
+            .filter(|c| visible || c.team == self.local_team)
+            .any(|c| {
+                crate::game::city::Building::PLACEABLE
+                    .into_iter()
+                    .any(|b| c.placed_site(b) == Some(hex))
+            });
+        let road = if visible {
+            self.roads.contains(&hex)
+        } else {
+            remembered.is_some_and(|seen| seen.road)
+        };
+        let site = if visible {
+            self.sites.get(&hex).map(|site| site.team)
+        } else {
+            remembered.and_then(|seen| seen.site.map(|(_, team)| team))
+        };
+        let structure = if visible {
+            self.structures.contains_key(&hex)
+        } else {
+            remembered.is_some_and(|seen| seen.structure.is_some())
+        };
+        if let JobKind::Build(placed) = job.kind {
+            if self.cities[home].built.contains(&placed) {
+                return Some("THIS CITY HAS ONE ALREADY");
+            }
+            if building {
+                return Some("SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+            }
+            if structure {
+                return Some("A STRUCTURE STANDS HERE");
+            }
+            // The site's own rules, but not a claim the player can't see:
+            // that one drops the job (refunded) when a worker gets there.
+            return self
+                .ai_site_issue(home, placed, hex)
+                .filter(|&issue| issue != "SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+        }
+        match job.kind {
+            JobKind::Road if road => Some("THERE IS A ROAD HERE ALREADY"),
+            JobKind::Road => None,
+            JobKind::Improve if building => Some("A BUILDING STANDS HERE"),
+            JobKind::Improve => match site {
+                Some(owner) if owner != self.local_team => Some("THIS TILE BELONGS TO THE ENEMY"),
+                Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
+                None if self.improvement(hex).is_none() => Some("NOTHING GROWS ON SNOW"),
+                None => None,
+            },
+            _ if building => Some("A BUILDING STANDS HERE"),
+            _ if structure => Some("A STRUCTURE STANDS HERE"),
+            _ => None,
+        }
+    }
+
+    /// Whether city `city` has a worker, at home or out, to build what it
+    /// places.
+    pub(super) fn has_workers(&self, city: usize) -> bool {
+        self.cities[city].workers > 0 || self.workers_out(city) > 0
+    }
+
+    /// Whether `building` is among city `city`'s worker jobs, waiting or
+    /// under way.
+    pub(super) fn building_job_queued(&self, city: usize, building: Building) -> bool {
+        let kind = JobKind::Build(building);
+        self.cities[city].worker_jobs.iter().any(|j| j.kind == kind)
+            || self
+                .field_workers
+                .iter()
+                .any(|w| w.home == city && w.job.is_some_and(|j| j.kind == kind))
+    }
+
+    /// Pays for `job` from city `city`'s side and adds it to the city's
+    /// worker jobs, or returns what the side is short.
+    pub(super) fn try_queue_job(&mut self, city: usize, job: WorkerJob) -> Result<(), Stock> {
+        let price = job.kind.price();
+        let team = self.cities[city].team;
+        if !self.stock(team).covers(price) {
+            return Err(self.stock(team).shortfall(price));
+        }
+        *self.stock_mut(team) -= price;
+        self.cities[city].worker_jobs.push(job);
+        Ok(())
+    }
+
+    /// Gives `team` back what `job` cost: a job taken off the list, or
+    /// dropped before it was done.
+    fn refund_job(&mut self, team: Team, job: WorkerJob) {
+        *self.stock_mut(team) += job.kind.price();
+    }
+
+    /// Turns of work `job` takes once its worker stands on it: its kind's,
+    /// halved for a building beside one of its side's Workshops.
+    pub(super) fn job_turns(&self, team: Team, job: WorkerJob) -> u32 {
+        match job.kind {
+            JobKind::Build(_) if self.beside_workshop(team, job.hex) => {
+                job.kind.turns().div_ceil(2)
+            }
+            kind => kind.turns(),
+        }
+    }
+
+    /// Turns of work `job` still takes once a worker stands on it: what's
+    /// left of `job_turns` after the work already put in, and at least one.
+    pub(super) fn job_turns_left(&self, team: Team, job: WorkerJob) -> u32 {
+        self.job_turns(team, job).saturating_sub(job.done).max(1)
+    }
+
+    /// Why the open city `city` can't place `kind` anywhere right now: no
+    /// worker to build it, a building it has or has placed already, or the
+    /// price.
+    pub(super) fn job_kind_unavailable(&self, city: usize, kind: JobKind) -> Option<String> {
+        let c = &self.cities[city];
+        if let JobKind::Build(building) = kind {
+            if c.built.contains(&building) {
+                return Some(format!("{} ALREADY EXISTS IN THIS CITY", building.name()));
+            }
+            if self.building_job_queued(city, building) {
+                return Some(format!(
+                    "{} IS ALREADY PLACED FOR THIS CITY",
+                    building.name()
+                ));
+            }
+            if matches!(building, Building::Harbor | Building::CoastalBattery)
+                && !self.city_is_coastal(city)
+            {
+                return Some("ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS".into());
             }
         }
-    }
-
-    /// The worker menu: the only way to give workers jobs. The map shows
-    /// every tile the player's workers can reach; a job picked in the menu
-    /// (`arm_worker_job`) is placed with clicks and drags on the map. It
-    /// ends with W, Escape, Done, or selecting a unit or a city.
-    pub(super) fn set_worker_mode(&mut self, on: bool) {
-        if on == self.worker_mode || self.is_resolving() {
-            return;
+        if !self.has_workers(city) {
+            return Some("TRAIN A WORKER FIRST - WORKERS BUILD WHAT THE CITY PLACES".into());
         }
-        if on && !self.cities.iter().any(|c| c.team == PLAYER_TEAM) {
-            self.notice = "FOUND A CITY FIRST - ITS WORKERS DO THE WORK".into();
-            return;
-        }
-        if on {
-            self.leave_city_view();
-        }
-        self.selected = None;
-        self.group.clear();
-        self.placing_job = None;
-        self.hovered_job = None;
-        self.ui_click_mode = None;
-        self.worker_mode = on;
-        self.worker_menu_city = if on {
-            self.next_idle_workers()
-                .or_else(|| self.cities.iter().position(|c| c.team == PLAYER_TEAM))
-        } else {
-            None
-        };
-        self.notice = if on {
-            "WORKERS: PICK A JOB, THEN PLACE IT ON THE MAP - W WHEN DONE".into()
-        } else {
-            "DONE WITH WORKERS".into()
-        };
+        let stock = self.stock(c.team);
+        (!stock.covers(kind.price())).then(|| {
+            format!(
+                "{} - SHORT OF {}",
+                kind.name(),
+                stock_icons(stock.shortfall(kind.price()))
+            )
+        })
     }
 
     /// Whether `team` already has a job queued or under way in `job`'s place.
@@ -480,37 +637,29 @@ impl GameState {
             .any(|other| other.same_place(job))
     }
 
-    /// A job button in the worker menu, or R and I: arms `kind` for placing
-    /// on the map (opening the worker menu if it isn't open), or disarms it
-    /// if it's the one armed already.
+    /// A card in the open city's production list, or R and I: arms `kind`
+    /// for placing on the map, or disarms it if it's the one armed already.
     pub fn arm_worker_job(&mut self, kind: JobKind) {
         if self.is_resolving() {
             return;
         }
-        if !self.worker_mode {
-            self.set_worker_mode(true);
-            if !self.worker_mode {
-                return;
-            }
-        }
+        let Some(city) = self.job_city() else {
+            self.notice = "OPEN A CITY FIRST - ITS WORKERS BUILD WHAT IT PLACES".into();
+            return;
+        };
         if self.placing_job == Some(kind) {
             self.placing_job = None;
             self.hovered_job = None;
-            self.notice = "PICK A JOB TO PLACE - W WHEN DONE".into();
+            self.notice = format!("STOPPED PLACING {}", kind.name());
+            return;
+        }
+        if let Some(reason) = self.job_kind_unavailable(city, kind) {
+            self.notice = reason;
             return;
         }
         self.placing_job = Some(kind);
-        self.notice = if kind.on_edge() {
-            format!(
-                "CLICK OR DRAG ALONG HEX EDGES TO PLACE {}S - ESC TO STOP",
-                kind.name()
-            )
-        } else {
-            format!(
-                "CLICK OR DRAG OVER LIT TILES TO PLACE {}S - ESC TO STOP",
-                kind.name()
-            )
-        };
+        // Short, to fit the status bar; the city panel says how to place it.
+        self.notice = format!("PLACING {} - RIGHT-CLICK OR ESC TO CANCEL", kind.name());
     }
 
     /// With a job armed: where a map point would place it, as the tile the
@@ -536,7 +685,7 @@ impl GameState {
         if let Some(across) = across {
             return self.queue_barrier_at(hex, across);
         }
-        if self.job_taken(PLAYER_TEAM, WorkerJob::on_tile(hex, kind)) {
+        if self.job_taken(self.local_team, WorkerJob::on_tile(hex, kind)) {
             return false;
         }
         if let Some(reason) = self.job_unavailable(hex, kind) {
@@ -555,7 +704,7 @@ impl GameState {
         let Some(kind) = self.placing_job else {
             return false;
         };
-        let Some(city) = self.job_city(a) else {
+        let Some(city) = self.job_city() else {
             return false;
         };
         let pos = self.cities[city].pos;
@@ -571,15 +720,19 @@ impl GameState {
             hex,
             kind,
             across: Some(across),
+            done: 0,
         };
-        if self.job_taken(PLAYER_TEAM, job) {
+        if self.job_taken(self.local_team, job) {
             return false;
         }
-        if let Some(problem) = self.job_problem(PLAYER_TEAM, job) {
+        if let Some(problem) = self.known_job_problem(city, job) {
             self.notice = problem.into();
             return false;
         }
-        self.cities[city].worker_jobs.push(job);
+        if let Err(short) = self.try_queue_job(city, job) {
+            self.notice = format!("{} - SHORT OF {}", kind.name(), stock_icons(short));
+            return false;
+        }
         self.notice = format!(
             "{} QUEUED FOR CITY {} - {} JOBS WAITING - ESC TO STOP",
             kind.name(),
@@ -609,22 +762,26 @@ impl GameState {
     }
 
     /// Why the player can't queue `kind` at `hex` right now, if they can't.
-    /// Walls and gates only need a city: their edge is picked on the map.
+    /// Walls and gates only need their city: their edge is picked on the
+    /// map.
     pub(super) fn job_unavailable(&self, hex: Hex, kind: JobKind) -> Option<String> {
         let job = WorkerJob::on_tile(hex, kind);
-        if self.job_city(hex).is_none() {
-            Some("FOUND A CITY FIRST - ITS WORKERS DO THE WORK".into())
+        let Some(city) = self.job_city() else {
+            return Some("OPEN A CITY FIRST - ITS WORKERS BUILD WHAT IT PLACES".into());
+        };
+        if let Some(reason) = self.job_kind_unavailable(city, kind) {
+            Some(reason)
         } else if kind.on_edge() {
             None
         } else if !self.is_explored(hex) {
             Some("WORKERS CAN'T WORK AN UNEXPLORED TILE".into())
-        } else if let Some(problem) = self.job_problem(PLAYER_TEAM, job) {
+        } else if let Some(problem) = self.known_job_problem(city, job) {
             Some(problem.into())
-        } else if self.job_taken(PLAYER_TEAM, job) {
+        } else if self.job_taken(self.local_team, job) {
             Some(format!("{} IS QUEUED HERE ALREADY", kind.name()))
         } else {
             // A tile takes one job at a time.
-            self.tile_job_at(PLAYER_TEAM, hex)
+            self.tile_job_at(self.local_team, hex)
                 .map(|other| format!("{} IS QUEUED HERE - ONE JOB AT A TIME", other.name()))
         }
     }
@@ -651,15 +808,21 @@ impl GameState {
             self.notice = reason;
             return;
         }
-        let Some(city) = self.job_city(hex) else {
+        let Some(city) = self.job_city() else {
             return;
         };
-        self.cities[city]
-            .worker_jobs
-            .push(WorkerJob::on_tile(hex, kind));
+        if let Err(short) = self.try_queue_job(city, WorkerJob::on_tile(hex, kind)) {
+            self.notice = format!("{} - SHORT OF {}", kind.name(), stock_icons(short));
+            return;
+        }
+        // A city has one of each building: placed, it's done placing.
+        if matches!(kind, JobKind::Build(_)) {
+            self.placing_job = None;
+            self.hovered_job = None;
+        }
         let home = self.cities[city].workers;
         self.notice = format!(
-            "{} QUEUED FOR CITY {} - {home} WORKER{} AT HOME",
+            "{} PLACED FOR CITY {} - {home} WORKER{} AT HOME",
             kind.name(),
             self.cities[city].id + 1,
             if home == 1 { "" } else { "S" }
@@ -676,24 +839,30 @@ impl GameState {
         };
         if index < self.cities[city].worker_jobs.len() {
             let job = self.cities[city].worker_jobs.remove(index);
-            self.notice = format!("REMOVED {} FROM THE WORKER JOBS", job.kind.name());
+            self.refund_job(self.cities[city].team, job);
+            self.notice = format!(
+                "REMOVED {} FROM THE WORKER JOBS - REFUNDED",
+                job.kind.name()
+            );
         }
     }
 
-    /// A worker's row in the worker menu: the camera goes to the worker.
+    /// A worker's row in the city panel: the camera goes to the worker.
     pub fn show_worker(&mut self, id: u32) {
         if let Some(worker) = self
             .field_workers
             .iter()
-            .find(|w| w.id == id && w.team == PLAYER_TEAM)
+            .find(|w| w.id == id && w.team == self.local_team)
         {
             self.camera.focus_on(worker.pos.to_world());
         }
     }
 
     /// A Recall button: sends one of the player's workers out on the map
-    /// straight home, out of danger. Its job goes back to the top of its
-    /// city's list, and it takes no new one on the way.
+    /// straight home, out of danger. Its job, with the work already put into
+    /// it, goes back to the top of its city's list, and it takes no new one
+    /// on the way. Home, it stays there, held, until released
+    /// (`release_worker`).
     pub fn recall_worker(&mut self, id: u32) {
         if self.is_resolving() {
             return;
@@ -701,7 +870,7 @@ impl GameState {
         let Some(w) = self
             .field_workers
             .iter()
-            .position(|w| w.id == id && w.team == PLAYER_TEAM)
+            .position(|w| w.id == id && w.team == self.local_team)
         else {
             return;
         };
@@ -712,7 +881,7 @@ impl GameState {
         worker.work_left = None;
         worker.recalled = true;
         worker.base = self.cities[worker.home].pos;
-        self.notice = "WORKER RECALLED - IT HEADS HOME; ITS JOB WAITS ON THE LIST".into();
+        self.notice = "WORKER RECALLED - IT HEADS HOME TO STAY; ITS JOB WAITS ON THE LIST".into();
     }
 
     /// Takes the first job in `city`'s queue its workers can still do,
@@ -721,12 +890,12 @@ impl GameState {
         let team = self.cities[city].team;
         while !self.cities[city].worker_jobs.is_empty() {
             let job = self.cities[city].worker_jobs.remove(0);
-            match self.job_problem(team, job) {
-                None => return Some(job),
-                Some(problem) if team == PLAYER_TEAM => {
-                    self.notice = format!("{} DROPPED: {problem}", job.kind.name());
-                }
-                Some(_) => {}
+            let Some(problem) = self.job_problem(city, job) else {
+                return Some(job);
+            };
+            self.refund_job(team, job);
+            if team == self.local_team {
+                self.notice = format!("{} DROPPED, REFUNDED: {problem}", job.kind.name());
             }
         }
         None
@@ -764,14 +933,25 @@ impl GameState {
             }
         }
         for city in 0..self.cities.len() {
-            while self.cities[city].workers > 0 {
+            // Held workers stay home until released.
+            while self.cities[city].workers > self.cities[city].held_workers {
                 let Some(job) = self.take_job(city) else {
                     break;
                 };
+                let base = self.work_base_for(city, job);
+                // An enemy standing where it would set out from (its city
+                // center, say, left there as the city changed hands) would
+                // capture it at the door: the job waits.
+                if self
+                    .enemy_of_team_at(base, self.cities[city].team)
+                    .is_some()
+                {
+                    self.cities[city].worker_jobs.insert(0, job);
+                    break;
+                }
                 self.cities[city].workers -= 1;
                 let id = self.next_unit_id;
                 self.next_unit_id += 1;
-                let base = self.work_base_for(city, job);
                 self.field_workers.push(FieldWorker {
                     id,
                     team: self.cities[city].team,
@@ -797,9 +977,39 @@ impl GameState {
         }
         for w in home.into_iter().rev() {
             let worker = self.field_workers.remove(w);
-            self.cities[worker.home].workers += 1;
+            let city = &mut self.cities[worker.home];
+            city.workers += 1;
+            // Recalled, it stays home until the player releases it.
+            if worker.recalled {
+                city.held_workers += 1;
+            }
         }
         acted
+    }
+
+    /// The Release button in a city's panel: one of the open city's held
+    /// workers (recalled, and home) takes jobs again, going out in the
+    /// Workers step at the end of this turn.
+    pub fn release_worker(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
+        let Some(city) = self
+            .worker_list_city()
+            .filter(|&c| self.cities[c].team == self.local_team)
+        else {
+            return;
+        };
+        let c = &mut self.cities[city];
+        if c.held_workers == 0 {
+            return;
+        }
+        c.held_workers -= 1;
+        self.notice = if c.worker_jobs.is_empty() {
+            "WORKER RELEASED - IT TAKES THE NEXT JOB PLACED".into()
+        } else {
+            "WORKER RELEASED - IT TAKES THE NEXT JOB ON THE LIST".into()
+        };
     }
 
     /// One worker's turn. Returns whether it did anything, and whether it
@@ -810,19 +1020,31 @@ impl GameState {
             && worker.pos == job.hex
             && let Some(left) = worker.work_left
         {
-            if let Some(problem) = self.job_problem(worker.team, job) {
-                if worker.team == PLAYER_TEAM {
-                    self.notice = format!("{} ABANDONED: {problem}", job.kind.name());
+            let problem = match self.home_of(&worker) {
+                Some(home) => self.job_problem(home, job),
+                None => Some("ITS SIDE HAS NO CITY LEFT"),
+            };
+            if let Some(problem) = problem {
+                self.refund_job(worker.team, job);
+                if worker.team == self.local_team {
+                    self.notice = format!("{} ABANDONED, REFUNDED: {problem}", job.kind.name());
                 }
                 self.field_workers[w].job = None;
                 self.field_workers[w].work_left = None;
                 return (true, false);
             }
             if left > 1 {
-                self.field_workers[w].work_left = Some(left - 1);
+                let worker = &mut self.field_workers[w];
+                worker.work_left = Some(left - 1);
+                if let Some(job) = &mut worker.job {
+                    job.done += 1;
+                }
                 return (true, false);
             }
-            self.complete_job(worker.team, job);
+            let Some(home) = self.home_of(&worker) else {
+                return (false, false);
+            };
+            self.complete_job(home, job);
             let next = self.take_job(worker.home);
             if let Some(next_job) = next {
                 self.field_workers[w].base = self.work_base_for(worker.home, next_job);
@@ -841,12 +1063,11 @@ impl GameState {
             .map_or_else(|| self.return_base_for(&worker, home), |job| job.hex);
         let Some(path) = self.worker_path(worker.team, worker.pos, target) else {
             if let Some(job) = worker.job {
-                if worker.team == PLAYER_TEAM {
+                self.refund_job(worker.team, job);
+                if worker.team == self.local_team {
                     self.notice = format!(
-                        "A WORKER CAN'T REACH ITS {} AT ({}, {}) - IT'S COMING HOME",
-                        job.kind.name(),
-                        job.hex.q,
-                        job.hex.r
+                        "A WORKER CAN'T REACH ITS {} - IT'S COMING HOME, REFUNDED",
+                        self.job_title(job)
                     );
                 }
                 self.field_workers[w].job = None;
@@ -864,7 +1085,8 @@ impl GameState {
         }
         match worker.job {
             Some(job) => {
-                worker.work_left = Some(job.kind.turns());
+                let team = worker.team;
+                self.field_workers[w].work_left = Some(self.job_turns_left(team, job));
                 (true, false)
             }
             None => (true, true),
@@ -890,7 +1112,7 @@ impl GameState {
                 && self.enemy_of_team_at(hex, team).is_none()
                 && !self.cities.iter().any(|c| c.pos == hex && c.team != team)
         };
-        let mut came_from: HashMap<Hex, Hex> = HashMap::from([(from, from)]);
+        let mut came_from: HashMap<Hex, Hex> = HashMap::from_iter([(from, from)]);
         let mut queue = VecDeque::from([from]);
         while let Some(hex) = queue.pop_front() {
             if hex == to {
@@ -915,9 +1137,18 @@ impl GameState {
         None
     }
 
-    fn complete_job(&mut self, team: Team, job: WorkerJob) {
+    fn complete_job(&mut self, city: usize, job: WorkerJob) {
+        let team = self.cities[city].team;
         let hex = job.hex;
         match job.kind {
+            JobKind::Build(building) => {
+                let c = &mut self.cities[city];
+                c.set_placed_site(building, hex);
+                if building == Building::CoastalBattery {
+                    c.coastal_battery_hp = 150.0;
+                }
+                c.built.push(building);
+            }
             JobKind::Road => {
                 self.roads.insert(hex);
             }
@@ -950,13 +1181,14 @@ impl GameState {
             hex.q,
             hex.r
         );
-        if team == PLAYER_TEAM {
+        if team == self.local_team {
             self.notice = format!("WORKERS FINISHED: {}", self.job_title(job));
         }
     }
 
     /// A worker taken off the map with a job in hand leaves that job at the
-    /// front of its city's queue, for the next worker to try.
+    /// front of its city's queue, for the next worker to try. The job keeps
+    /// the work already put into it (`WorkerJob::done`).
     fn return_job(&mut self, worker: &FieldWorker) {
         if let Some(job) = worker.job
             && self.cities[worker.home].team == worker.team
@@ -967,7 +1199,7 @@ impl GameState {
 
     /// After a move step: every worker sharing a hex with an enemy unit is
     /// captured. It joins the captor's nearest city, or is lost if the captor
-    /// has no city.
+    /// has no city. An animal captures nobody: the worker is killed.
     pub(super) fn capture_workers(&mut self) {
         let mut w = 0;
         while w < self.field_workers.len() {
@@ -976,6 +1208,11 @@ impl GameState {
                 w += 1;
                 continue;
             };
+            if self.units[captor].is_animal() {
+                let id = worker.id;
+                self.kill_workers(&[id]);
+                continue;
+            }
             let captor_team = self.units[captor].team;
             let worker = self.field_workers.remove(w);
             self.return_job(&worker);
@@ -989,9 +1226,9 @@ impl GameState {
             if let Some(city) = self.nearest_city(captor_team, worker.pos) {
                 self.cities[city].workers += 1;
             }
-            if worker.team == PLAYER_TEAM {
+            if worker.team == self.local_team {
                 self.notice = "AN ENEMY CAPTURED ONE OF YOUR WORKERS".into();
-            } else if captor_team == PLAYER_TEAM {
+            } else if captor_team == self.local_team {
                 self.notice = "WORKER CAPTURED - IT JOINS YOUR NEAREST CITY".into();
             }
         }
@@ -1020,32 +1257,36 @@ impl GameState {
                 worker.pos.q,
                 worker.pos.r
             );
-            if worker.team == PLAYER_TEAM {
+            if worker.team == self.local_team {
                 self.notice = "ONE OF YOUR WORKERS WAS KILLED".into();
             }
         }
     }
 
     /// The AI's workers: each city with idle workers and nothing queued
-    /// improves the tiles it works, then puts roads on them.
-    pub(super) fn plan_ai_workers(&mut self, team: Team) {
+    /// improves the tiles it works, then puts roads on them, but none where
+    /// `unsafe_tile` says an animal would attack it (`animals.rs`).
+    pub(super) fn plan_ai_workers(&mut self, team: Team, unsafe_tile: impl Fn(Hex) -> bool) {
         for city in 0..self.cities.len() {
             let c = &self.cities[city];
             if c.team != team || c.workers == 0 || !c.worker_jobs.is_empty() {
                 continue;
             }
-            let worked = c.worked.clone();
+            let stock = self.stock(team);
+            let worked: Vec<Hex> = c.worked().filter(|&hex| !unsafe_tile(hex)).collect();
             let job = [JobKind::Improve, JobKind::Road]
                 .into_iter()
                 .find_map(|kind| {
                     worked.iter().find_map(|&hex| {
                         let job = WorkerJob::on_tile(hex, kind);
-                        (self.job_problem(team, job).is_none() && !self.job_taken(team, job))
-                            .then_some(job)
+                        (stock.covers(kind.price())
+                            && self.job_problem(city, job).is_none()
+                            && !self.job_taken(team, job))
+                        .then_some(job)
                     })
                 });
             if let Some(job) = job {
-                self.cities[city].worker_jobs.push(job);
+                let _ = self.try_queue_job(city, job);
             }
         }
     }
@@ -1054,16 +1295,19 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::PLAYER_TEAM;
     use crate::game::city::Build;
     use crate::game::turn::{Phase, Step};
     use crate::game::unit::UnitType;
 
     /// The Cities scenario with no units, the fog lifted, and Blue's city
-    /// (index 0, one worker at home) at (-4, 0).
+    /// (index 0, one worker at home) at (-4, 0), open.
     fn cities() -> GameState {
         let mut game = GameState::city_scenario();
         game.units.clear();
         game.selected = None;
+        // Jobs are placed from the open city.
+        game.selected_city = Some(0);
         game.fog_of_war = false;
         assert_eq!(game.cities[0].team, PLAYER_TEAM);
         assert_eq!(game.cities[0].workers, 1);
@@ -1085,6 +1329,73 @@ mod tests {
         game.placing_job = Some(kind);
         game.place_job_at(hex, None);
         game.placing_job = None;
+    }
+
+    #[test]
+    fn snow_hills_cannot_be_improved() {
+        use crate::game::hex::HexGrid;
+        use crate::game::terrain::Tile;
+
+        let mut game = cities();
+        let hex = bare_tile(&game, 1);
+        game.grid = HexGrid::new(
+            6,
+            [(
+                hex,
+                Tile {
+                    terrain: Terrain::Snow,
+                    hills: true,
+                    feature: None,
+                },
+            )],
+        );
+
+        assert_eq!(
+            game.job_problem(0, WorkerJob::on_tile(hex, JobKind::Improve)),
+            Some("NOTHING GROWS ON SNOW")
+        );
+    }
+
+    #[test]
+    fn hidden_enemy_road_and_farm_do_not_change_player_job_planning() {
+        use crate::game::city::Site;
+        use crate::game::unit::Unit;
+        let (mut game, _, far) = crate::game::fog::tests::remembered_route_hex();
+        let road = far
+            .neighbors()
+            .into_iter()
+            .find(|&h| game.grid.is_passable(h) && game.cities.iter().all(|c| c.pos != h))
+            .unwrap();
+        game.roads.insert(road);
+        game.units
+            .push(Unit::new(900, road, PLAYER_TEAM, UnitType::Scout));
+        game.explore();
+        game.units.clear();
+        assert!(!game.fog().sees(far));
+        assert!(game.known_worker_reach(far));
+        let before = game.job_unavailable(far, JobKind::Improve);
+        let reach_before: Vec<_> = game
+            .grid
+            .all_hexes()
+            .map(|h| (h, game.known_worker_reach(h)))
+            .collect();
+        game.roads.insert(far);
+        game.sites.insert(
+            far,
+            Site {
+                team: Team::Red,
+                food: 9,
+                production: 0,
+                label: "FARM",
+            },
+        );
+        assert_eq!(game.job_unavailable(far, JobKind::Improve), before);
+        let reach_after: Vec<_> = game
+            .grid
+            .all_hexes()
+            .map(|h| (h, game.known_worker_reach(h)))
+            .collect();
+        assert_eq!(reach_after, reach_before);
     }
 
     #[test]
@@ -1114,52 +1425,56 @@ mod tests {
     }
 
     #[test]
-    fn the_worker_menu_places_jobs_and_ends_with_escape_or_a_selection() {
+    fn jobs_are_placed_from_the_open_city_until_escape_or_leaving_it() {
         let mut game = GameState::city_scenario();
         game.explore();
-        game.select_city();
-        game.toggle_worker_mode();
-        assert!(game.worker_mode);
-        assert_eq!(game.selected_city, None, "the city view closes");
-        assert_eq!(game.selected, None);
-        assert_eq!(
-            game.worker_menu_city,
-            Some(0),
-            "on the city with idle workers"
-        );
+        // No city open: nothing to place from.
+        game.arm_worker_job(JobKind::Road);
+        assert_eq!(game.placing_job, None);
+        assert!(game.notice.contains("OPEN A CITY FIRST"), "{}", game.notice);
 
-        // R picks roads; Escape puts them down, and again closes the menu.
+        // R picks roads in the open city; Escape puts them down, keeping
+        // the city open.
+        game.open_city(0);
         game.arm_worker_job(JobKind::Road);
         assert_eq!(game.placing_job, Some(JobKind::Road));
         game.press_escape();
         assert_eq!(game.placing_job, None);
-        assert!(game.worker_mode);
-        game.press_escape();
-        assert!(!game.worker_mode);
-        assert!(!game.settings_open, "Escape closed the menu, not more");
-
-        // R with the menu closed opens it with roads picked.
+        assert_eq!(game.selected_city, Some(0));
+        // Leaving the city stops placing too.
         game.arm_worker_job(JobKind::Road);
-        assert!(game.worker_mode);
-        assert_eq!(game.placing_job, Some(JobKind::Road));
+        game.leave_city_view();
+        assert_eq!(game.placing_job, None);
 
-        // Selecting a unit ends it; so does opening a city.
-        let unit = game
-            .units
-            .iter()
-            .position(|u| u.team == PLAYER_TEAM)
-            .unwrap();
-        game.set_selection(vec![unit]);
-        assert!(!game.worker_mode);
-        game.toggle_worker_mode();
-        game.select_city();
-        assert!(!game.worker_mode);
+        // A city with no worker places nothing.
+        game.open_city(0);
+        game.cities[0].workers = 0;
+        game.arm_worker_job(JobKind::Road);
+        assert_eq!(game.placing_job, None);
+        assert_eq!(
+            game.notice,
+            "TRAIN A WORKER FIRST - WORKERS BUILD WHAT THE CITY PLACES"
+        );
+    }
 
-        // No city, no workers.
-        let mut game = GameState::new();
-        game.toggle_worker_mode();
-        assert!(!game.worker_mode);
-        assert!(game.notice.contains("FOUND A CITY"), "{}", game.notice);
+    #[test]
+    fn a_job_is_paid_when_placed_and_refunded_if_taken_off() {
+        let mut game = cities();
+        let tile = bare_tile(&game, 1);
+        let before = game.stock(PLAYER_TEAM);
+        queue(&mut game, tile, JobKind::Road);
+        assert_eq!(game.stock(PLAYER_TEAM), before - JobKind::Road.price());
+        game.remove_worker_job(0);
+        assert_eq!(game.stock(PLAYER_TEAM), before);
+        // Short of wood: nothing placed, and the notice says so.
+        *game.stock_mut(PLAYER_TEAM) = Stock::default();
+        queue(&mut game, tile, JobKind::Road);
+        assert!(game.cities[0].worker_jobs.is_empty());
+        assert!(
+            game.notice.starts_with("ROAD - SHORT OF"),
+            "{}",
+            game.notice
+        );
     }
 
     #[test]
@@ -1172,27 +1487,6 @@ mod tests {
         game.placing_job = Some(JobKind::Road);
         assert!(!game.place_job_at(unseen, None));
         assert_eq!(game.notice, "WORKERS CAN'T WORK AN UNEXPLORED TILE");
-    }
-
-    #[test]
-    fn sleeping_workers_rest_for_the_turn_and_wait_again_the_next() {
-        let mut game = GameState::city_scenario();
-        game.units.retain(|u| u.team != PLAYER_TEAM);
-        game.cities[0].queue.push(crate::game::city::Build::Worker);
-        assert_eq!(game.idle_workers(0), 1);
-        // The turn order comes to them: the worker menu opens.
-        game.select_next_or_end_turn(None);
-        assert!(game.worker_mode);
-        game.sleep_workers();
-        assert_eq!(game.idle_workers(0), 0);
-        assert!(!game.worker_mode, "nothing else idle: the menu closes");
-        // End the turn; next turn they wait again.
-        game.end_planning();
-        while game.is_resolving() {
-            game.update(1.0);
-        }
-        assert!(!game.cities[0].workers_resting);
-        assert_eq!(game.idle_workers(0), 1);
     }
 
     #[test]
@@ -1277,6 +1571,28 @@ mod tests {
     }
 
     #[test]
+    fn no_worker_sets_out_past_an_enemy_on_its_city_center() {
+        use crate::game::unit::Unit;
+        let mut game = cities();
+        let hex = bare_tile(&game, 2);
+        queue(&mut game, hex, JobKind::Improve);
+        // A Red troop left standing on the center (as when the city changed
+        // hands under it) would have captured the worker as it left.
+        let center = game.cities[0].pos;
+        game.units
+            .push(Unit::new(900, center, Team::Red, UnitType::Melee));
+        game.resolve_workers();
+        assert!(game.field_workers.is_empty());
+        assert_eq!(game.cities[0].workers, 1);
+        assert_eq!(game.cities[0].worker_jobs.len(), 1, "the job waits");
+        // Once it's gone, the worker goes.
+        game.units.clear();
+        game.resolve_workers();
+        assert_eq!(game.field_workers.len(), 1);
+        assert!(game.cities[0].worker_jobs.is_empty());
+    }
+
+    #[test]
     fn a_connected_work_camp_extends_the_reach() {
         let mut game = cities();
         // Five from Blue's city at (-4, 0), with no road by it.
@@ -1358,6 +1674,122 @@ mod tests {
         assert!(!game.structures.contains_key(&first));
     }
 
+    /// Blue's worker two turns into a four-turn fort next to its city,
+    /// with no other job listed. Returns the fort's tile.
+    fn fort_half_built(game: &mut GameState) -> Hex {
+        let hex = bare_tile(game, 1);
+        queue(game, hex, JobKind::Fort);
+        // Out and there in a turn, then two turns of work.
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].pos, hex);
+        assert_eq!(game.field_workers[0].work_left, Some(4));
+        game.resolve_workers();
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].work_left, Some(2));
+        assert_eq!(game.field_workers[0].job.map(|j| j.done), Some(2));
+        hex
+    }
+
+    #[test]
+    fn a_recalled_worker_leaves_its_work_on_the_job_and_picks_it_up_again() {
+        let mut game = cities();
+        let hex = fort_half_built(&mut game);
+        game.recall_worker(game.field_workers[0].id);
+        let job = game.cities[0].worker_jobs[0];
+        assert_eq!((job.hex, job.done), (hex, 2), "the work stays on the job");
+        assert_eq!(game.job_turns_left(PLAYER_TEAM, job), 2);
+        // Home the next turn and held there; released, out and back at
+        // the fort the turn after.
+        game.resolve_workers();
+        assert_eq!(game.cities[0].workers, 1);
+        game.release_worker();
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].pos, hex);
+        assert_eq!(game.field_workers[0].work_left, Some(2), "only the rest");
+        game.resolve_workers();
+        assert!(!game.structures.contains_key(&hex));
+        game.resolve_workers();
+        assert_eq!(game.structures[&hex].kind, StructureKind::Fort);
+    }
+
+    #[test]
+    fn a_recalled_worker_stays_home_until_released() {
+        let mut game = cities();
+        let hex = fort_half_built(&mut game);
+        game.recall_worker(game.field_workers[0].id);
+        game.resolve_workers();
+        assert!(game.field_workers.is_empty());
+        assert_eq!(
+            (game.cities[0].workers, game.cities[0].held_workers),
+            (1, 1)
+        );
+        // Held: it stays home however long its city's jobs wait.
+        for _ in 0..3 {
+            game.resolve_workers();
+            assert!(game.field_workers.is_empty());
+            assert_eq!(game.cities[0].worker_jobs.len(), 1);
+        }
+        // Another worker at home isn't held: it takes the job. Killed, it
+        // leaves the job back on the list.
+        game.cities[0].workers += 1;
+        game.resolve_workers();
+        assert_eq!(game.field_workers.len(), 1, "the other goes out");
+        assert_eq!(game.cities[0].held_workers, 1);
+        game.kill_workers(&[game.field_workers[0].id]);
+
+        // Released, it takes the job at the top of the list that turn.
+        game.release_worker();
+        assert_eq!(game.cities[0].held_workers, 0);
+        game.resolve_workers();
+        assert_eq!(game.cities[0].workers, 0);
+        assert_eq!(game.field_workers[0].job.map(|j| j.hex), Some(hex));
+        // Nothing left to release, and another side's city isn't the
+        // player's to release.
+        game.release_worker();
+        assert_eq!(game.cities[0].held_workers, 0);
+        game.cities[1].held_workers = 1;
+        game.selected_city = Some(1);
+        game.release_worker();
+        assert_eq!(game.cities[1].held_workers, 1);
+    }
+
+    #[test]
+    fn another_worker_finishes_a_job_whose_worker_was_killed() {
+        let mut game = cities();
+        game.cities[0].workers = 2;
+        let hex = fort_half_built(&mut game);
+        assert_eq!(game.cities[0].workers, 1, "one stayed home");
+        let id = game.field_workers[0].id;
+        game.kill_workers(&[id]);
+        assert_eq!(game.cities[0].worker_jobs[0].done, 2);
+        // The other goes out, and does only the two turns left.
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].pos, hex);
+        assert_ne!(game.field_workers[0].id, id);
+        assert_eq!(game.field_workers[0].work_left, Some(2));
+        game.resolve_workers();
+        game.resolve_workers();
+        assert_eq!(game.structures[&hex].kind, StructureKind::Fort);
+    }
+
+    #[test]
+    fn a_captured_workers_job_keeps_its_work() {
+        let (mut game, hex, red) = worker_beside_enemy();
+        game.units[red].planned_move = Some(hex);
+        game.resolve_step(UnitType::Melee, Phase::Move);
+        assert!(game.field_workers.is_empty(), "captured");
+        let job = game.cities[0].worker_jobs[0];
+        assert_eq!((job.hex, job.done), (hex, 1));
+        // Blue's worker at home takes it on; the Red melee must move off
+        // the tile first, or it would capture that one too.
+        game.units.remove(red);
+        for _ in 0..2 {
+            game.resolve_workers();
+        }
+        assert_eq!(game.field_workers[0].pos, hex);
+        assert_eq!(game.field_workers[0].work_left, Some(3), "three of four");
+    }
+
     #[test]
     fn workers_act_after_every_unit() {
         let mut game = cities();
@@ -1383,7 +1815,11 @@ mod tests {
             home: 0,
             base: game.cities[0].pos,
             pos: hex,
-            job: Some(WorkerJob::on_tile(hex, JobKind::Fort)),
+            // A turn into the fort's four.
+            job: Some(WorkerJob {
+                done: 1,
+                ..WorkerJob::on_tile(hex, JobKind::Fort)
+            }),
             work_left: Some(3),
             recalled: false,
         });
@@ -1514,9 +1950,7 @@ mod tests {
         let mut game = cities();
         let city = game.cities[0].pos;
         let tile = game.cities[0]
-            .worked
-            .iter()
-            .copied()
+            .worked()
             .find(|&h| h.distance(city) == 1)
             .expect("a worked tile next to the city");
         assert!(game.routes(0).costs.contains_key(&tile));
@@ -1580,7 +2014,10 @@ mod tests {
         let mut game = cities();
         game.selected_city = Some(0);
         game.queue_selected_city_worker();
-        assert_eq!(game.cities[0].queue, [Build::Worker]);
+        assert_eq!(
+            game.cities[0].queue,
+            [crate::game::city::Queued::new(Build::Worker)]
+        );
         game.debug_complete_current_production();
         assert_eq!(game.cities[0].workers, 2);
         assert!(game.cities[0].queue.is_empty());

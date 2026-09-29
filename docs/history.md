@@ -180,3 +180,75 @@ How the prototype got here, oldest first. Git history has the detail; this is th
     control that fits it instead of < > arrows: a checkbox for Instant Playback, a slider for
     the queue limit, buttons for Fog and Start With, and a drop-down list for AI Players, under
     Turns, Map and Next World headings, with tooltips. Classic (F11) shows the same as buttons.
+57. A stockpile economy, as an experiment (`claude/rts-economy`, `rts-economy.md`): each side
+    keeps one stockpile of food, wood and metal that its cities' tiles fill (a tile's production
+    splits into metal from hills, mines and quarries, and wood from the rest). Builds are paid
+    from it when queued, refunded when removed, and take a fixed number of turns; growth is a
+    Grow build bought with food instead of automatic, and citizens eat from the stockpile. The
+    top bar shows the stockpile, build cards their price and turns, dimmed when unaffordable. The
+    AI pays for its troops, workers and growth the same way. A Debug toggle lets a city's
+    production also speed its builds, to compare the two.
+58. Icons and Barracks (`claude/rts-economy`, `rts-economy.md`): the map's yield pips and the
+    tile tooltip show food, wood and metal (wheat, a log, an ingot), and prices, turns and the
+    stockpile show as those icons (and a clock) in both UI presentations, drawn inline from icon
+    characters in any UI text. The Barracks became the military building: it trains troops twice
+    as fast as a city center, whatever the manager does, and alone trains Cavalry and Armored,
+    3 per Horses or Iron deposit it draws on, counting those alive (a Debug toggle counts every
+    one ever trained instead). The AI builds a Barracks, on a deposit when it can, and trains
+    there.
+59. One mark for a count of turns (`claude/rts-economy`): every count of turns, in UI text and on
+    the map (a unit's queued-turns tag, work under way, worker jobs, build and training notices,
+    cooldowns, the order queue's limit, ruins), shows as the clock icon and a number instead of
+    "N TURNS" or "NT"; world text draws icon characters as UI text does. The text icons became
+    flat, one color each, and ImGui draws them unfeathered so they stay crisp at text size. The city's
+    building list shows each name on the left and its price flush right, so the prices line up
+    (the key is in the tooltip).
+60. Map and citizen fixes (`claude/map-yield-fixes`): no citizen works a city center (its yield
+    comes on its own) or a placed building's tile, whose yields no longer show. A picked-up
+    manager takes its workers off the map until it's placed. The worker menu shows its city's
+    yields and delivery percentages with yields on, and the percentages with Alt otherwise; a
+    job's name moves under a tile's percentage instead of over it. Remembered hexes beside
+    never-seen ones no longer darken twice at their shared corners. Buttons no longer show their
+    hotkey on hover (it's in the tooltip), so hovering never moves their text. With production
+    speeding builds, the manager beside the Barracks (not on it) speeds its training.
+61. Workers build what a city places (`claude/city-builds-by-workers`, `rts-economy.md`): the
+    worker menu is gone. A city's production list has WORKS (road, improve, wall, gate, outpost,
+    fort) beside its units and buildings; picking one, or a building with a site, places it on the
+    map within workers' reach, paid then and refunded if taken off, and a worker from the city
+    walks out and builds it. A city needs a worker to place anything. Buildings with a site no
+    longer go through the city queue, a site, and Confirm, and a Workshop halves a neighbor's
+    work. Idle workers no longer hold up the turn, and the AI's Barracks is built the same way.
+62. Shorter tooltips (`claude/city-builds-by-workers`): every button, tile and setting tooltip says
+    what the thing does, its price and turns, and why it's unavailable, and no more; building and
+    work descriptions are cut to a line.
+63. Gather, and no Granary (`claude/city-builds-by-workers`): a city can always Gather, a free
+    one-turn build that brings in 2 food, 2 wood and 1 metal, so a broke city still has a move and
+    an empty queue always waits for one. The Granary, the last building built in the city queue,
+    is gone; every building is now placed for workers. The AI gathers when it can't pay.
+64. A focus per resource, and crisp silhouettes (`claude/city-builds-by-workers`): the labor focus
+    is Food, Wood, Metal or Balanced (food until the citizens are fed, then wood and metal),
+    picking tiles by what they deliver of each; its buttons are a wheat ear, a log, an ingot and a
+    balance. ImGui draws every small silhouette (toolbar icons, the production list's unit
+    pictograms, text icons) unfeathered, so they're crisp instead of fuzzy and seamed.
+65. Multiplayer, first cut (`claude/multiplayer`, `multiplayer.md`): two players over the
+    network, host (`--host`) as Blue and guest (`--join` with the host's join code) as Red, on the
+    Cities scenario. Lockstep: each side's turn plan goes to the host, which sends every plan to
+    both, and each machine applies them to the turn's starting game and resolves it the same way,
+    with a checksum after each turn to catch a desync. "The player" became the local side, and the
+    AI plays the sides nobody does. Everything that arrives over the network is checked before it
+    touches the game, and a peer that sends anything malformed or hostile is dropped. The link
+    is encrypted and authenticated by the join code (SPAKE2, then ChaCha20-Poly1305 per
+    direction), and plans are checked strictly enough to stop free builds, added progress and
+    other cheats a modified client could try.
+66. Multiplayer on a world, for more (`claude/multiplayer`, `multiplayer.md`): a host
+    (`--host --players N`) and up to six guests share a generated world, each on their own side in
+    join order, with the AI on the world's other sides. The first turn waits for every seat; a guest
+    who leaves after it hands their side to the AI on every machine at once, and the rest play on.
+67. Multiplayer from the menu, and two fixes (`claude/multiplayer`, `multiplayer.md`): the
+    settings menu's Multiplayer page hosts or joins without command-line flags (joining connects
+    in the background, so the window keeps drawing). The first three-player test dropped both
+    guests: looking inside a city added the troops beside it to its interior on the looking
+    player's machine only, so the orders they then gave named troops the host didn't have, and
+    it refused their plans. In a network game those troops now stand inside from each turn's
+    start, on every machine. A guest leaving before the first turn plays out now frees their
+    seat, as it should have, and a dropped guest is told why.

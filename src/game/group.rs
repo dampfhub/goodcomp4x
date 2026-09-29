@@ -6,11 +6,10 @@
 //! range attack it. Members that can't get any closer, or reach, stay as they
 //! are. Shift-clicks queue orders for later turns (`order_queue.rs`).
 
-use std::collections::HashSet;
-
 use glam::Vec2;
 
 use super::GameState;
+use super::fast_hash::HashSet;
 use super::hex::Hex;
 use super::orders::ClickMode;
 
@@ -19,7 +18,7 @@ impl GameState {
     /// between `a` and `b` (window pixels, origin top-left). With `add`
     /// (Shift held), they join the current selection instead of replacing it.
     pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2, add: bool) {
-        if self.is_resolving() || self.interior_view.is_some() {
+        if self.is_playing_out() || self.interior_view.is_some() {
             return;
         }
         let (min, max) = (a.min(b), a.max(b));
@@ -73,9 +72,6 @@ impl GameState {
 
     /// Selects `units`: nothing, one unit as usual, or several as a group.
     pub(super) fn set_selection(&mut self, units: Vec<usize>) {
-        if !units.is_empty() {
-            self.worker_mode = false;
-        }
         self.ui_click_mode = None;
         if !units.is_empty() {
             self.leave_city_view();
@@ -98,7 +94,7 @@ impl GameState {
             ClickMode::Attack => self.group_attack(hex),
             ClickMode::Move | ClickMode::Normal => self.group_move(hex),
             ClickMode::QueueMove => {
-                self.queue_move(hex);
+                self.queue_or_unqueue_move(hex);
             }
             ClickMode::QueueAttack => {
                 self.queue_attack(hex);
@@ -111,13 +107,15 @@ impl GameState {
     /// it. Clicking a target all of them already attack calls it off. Being
     /// a new order, it replaces every member's queue.
     fn group_attack(&mut self, target: Hex) {
-        // Land, or water (for ships): anything on the map but mountains.
-        let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
-        if !(self.grid.is_passable(target) || water) {
+        // Land, or water (for ships): anything on the map but mountains, as
+        // the player knows it (a hex never seen may be attacked).
+        let fog = self.fog();
+        let water = self.explored_by(target, &fog) && self.grid.terrain(target).is_water();
+        if !(self.known_passable(target, false, &fog) || water) {
             return;
         }
         if let Some(&first) = self.group.first()
-            && self.empty_city_target(target, self.units[first].team)
+            && self.known_empty_city_target(target, self.units[first].team, &fog)
         {
             self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
             return;
@@ -131,8 +129,7 @@ impl GameState {
             .copied()
             .filter(|&i| {
                 let unit = &self.units[i];
-                unit.can_attack()
-                    && self.rival_of(i).is_none()
+                self.known_attack_target_legal(i, target, false, &fog)
                     && unit.planned_pos().distance(target) <= unit.stats().attack_range
             })
             .collect();
@@ -143,21 +140,23 @@ impl GameState {
         for i in able {
             let unit = &mut self.units[i];
             unit.planned_attack = (!already).then_some(target);
-            unit.guarding = false;
-            unit.holding = false;
+            unit.take_new_order();
         }
     }
 
-    /// Sends every member toward `target`, replacing their queued moves: each
-    /// takes the reachable hex nearest the target that nobody else on its
-    /// side is heading for, nearest members first. One that can't get any
-    /// closer stays put.
+    /// Sends every member toward `target`, replacing their moves, queues,
+    /// boarding and landing: each takes the reachable hex nearest the target
+    /// that nobody else on its side is heading for, nearest members first.
+    /// One that can't get any closer stays put.
     fn group_move(&mut self, target: Hex) {
         let mut members = self.group.clone();
         for &i in &members {
             self.cancel_swap(i);
-            self.units[i].planned_move = None;
-            self.units[i].cancel_queue();
+            let unit = &mut self.units[i];
+            unit.planned_move = None;
+            unit.planned_board = None;
+            unit.planned_unload = None;
+            unit.cancel_queue();
         }
         let team = self.units[members[0]].team;
         let mut claimed: HashSet<Hex> = self
@@ -188,8 +187,7 @@ impl GameState {
                 let unit = &mut self.units[i];
                 unit.planned_move = Some(dest);
                 unit.drop_unreachable_attack();
-                unit.guarding = false;
-                unit.holding = false;
+                unit.take_new_order();
             }
         }
     }
@@ -208,7 +206,7 @@ impl GameState {
             self.units[i].holding = true;
         }
         self.group.clear();
-        self.select_next_or_end_turn(None);
+        self.select_next_needing_attention(None);
     }
 
     /// G or Guard with a group: every member guards, or if they all already
@@ -218,10 +216,41 @@ impl GameState {
         for &i in &self.group {
             self.units[i].guarding = !all_guarding;
             self.units[i].cancel_queue();
+            if !all_guarding {
+                self.units[i].alert = false;
+            }
         }
         if !all_guarding {
             self.group.clear();
-            self.select_next_or_end_turn(None);
+            self.select_next_needing_attention(None);
+        }
+    }
+
+    /// E or Alert with a group: every member that can goes on alert, or if
+    /// they all already are, they all come off it. Members that can't
+    /// (`can_go_on_alert`) are left as they were.
+    pub(super) fn toggle_group_alert(&mut self) {
+        let able: Vec<usize> = self
+            .group
+            .iter()
+            .copied()
+            .filter(|&i| self.units[i].alert || self.can_go_on_alert(i))
+            .collect();
+        if able.is_empty() {
+            self.notice = super::orders::ALERT_NOTICE.into();
+            return;
+        }
+        let all_alert = able.iter().all(|&i| self.units[i].alert);
+        for &i in &able {
+            if all_alert {
+                self.units[i].alert = false;
+            } else if self.can_go_on_alert(i) {
+                self.go_on_alert(i);
+            }
+        }
+        if !all_alert {
+            self.group.clear();
+            self.select_next_needing_attention(None);
         }
     }
 
@@ -230,7 +259,7 @@ impl GameState {
         for i in self.group.clone() {
             self.cancel_swap(i);
             self.units[i].clear_orders();
-            self.units[i].guarding = false;
+            self.units[i].wake();
             self.units[i].holding = false;
         }
     }
@@ -337,6 +366,52 @@ mod tests {
             assert!(after <= before, "nobody ends up farther away");
         }
         assert!(!destinations.is_empty());
+    }
+
+    #[test]
+    fn melee_group_cannot_attack_a_ship() {
+        let mut game = GameState::naval_scenario();
+        game.units.clear();
+        game.cities.clear();
+        let target = game
+            .grid
+            .all_hexes()
+            .find(|&h| {
+                game.grid.terrain(h).is_water()
+                    && h.neighbors()
+                        .into_iter()
+                        .filter(|&n| game.grid.is_passable(n))
+                        .count()
+                        >= 2
+            })
+            .unwrap();
+        let land: Vec<_> = target
+            .neighbors()
+            .into_iter()
+            .filter(|&h| game.grid.is_passable(h))
+            .take(2)
+            .collect();
+        for (id, pos) in land.into_iter().enumerate() {
+            game.units.push(crate::game::unit::Unit::new(
+                id as u32,
+                pos,
+                Team::Blue,
+                UnitType::Melee,
+            ));
+        }
+        game.units.push(crate::game::unit::Unit::new(
+            9,
+            target,
+            Team::Red,
+            UnitType::PatrolGalley,
+        ));
+        game.set_selection(vec![0, 1]);
+        game.group_order(target, ClickMode::Attack);
+        assert!(
+            game.units[..2]
+                .iter()
+                .all(|unit| unit.planned_attack.is_none())
+        );
     }
 
     #[test]

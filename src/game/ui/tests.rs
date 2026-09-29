@@ -1,13 +1,72 @@
-use super::builder::{ButtonSpec, Row, classic_rows};
-use super::text::{end_turn_label, signed_quantity, wrap};
+use super::builder::{ButtonSpec, Row, classic_rows, flat_rows};
+use super::text::{
+    end_turn_label, fit_text, price_hint, quantity, signed_quantity, stock_spans, wrap,
+};
 use super::*;
 
 use crate::game::PLAYER_TEAM;
-use crate::game::city::Build;
+use crate::game::city::{Build, Good, Priorities, Queued, Stock, stock_icons};
+use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 use crate::game::orders::ClickMode;
 use crate::game::unit::{Team, Unit, UnitType};
 
 const SCREEN: Vec2 = Vec2::new(1600.0, 900.0);
+
+#[test]
+fn action_toolbar_is_compact_and_every_icon_keeps_its_click_target() {
+    let game = GameState::city_scenario();
+    let unit = game
+        .units
+        .iter()
+        .position(|u| u.team == PLAYER_TEAM && u.unit_type == UnitType::Melee)
+        .unwrap();
+    let targets: Vec<_> = game
+        .unit_buttons(unit)
+        .iter()
+        .map(|button| button.target)
+        .collect();
+    let mut panel = PanelBuilder::default();
+    panel.action_toolbar(game.unit_buttons(unit));
+    assert!(
+        panel.size().x <= 280.0,
+        "icon toolbar should fit five columns"
+    );
+    assert!(
+        panel.size().y <= 175.0,
+        "icons should use only two short rows"
+    );
+    let mut layout = Layout::default();
+    panel.place_bottom_left(Vec2::ZERO, &mut layout);
+    for target in targets {
+        let button = layout
+            .buttons
+            .iter()
+            .find(|button| button.target == target)
+            .unwrap();
+        assert_eq!(
+            button.max - button.min,
+            Vec2::splat(action_icons::ICON_BUTTON_SIZE)
+        );
+        assert_eq!(
+            layout
+                .button_at((button.min + button.max) / 2.0)
+                .map(|hit| hit.target),
+            Some(target)
+        );
+    }
+
+    let mut city_panel = PanelBuilder::default();
+    game.city_tray(0, &mut city_panel);
+    let chips = city_panel
+        .rows
+        .iter()
+        .find_map(|row| match row {
+            builder::Row::Reorder(QueueKind::Priority, buttons) => Some(buttons),
+            _ => None,
+        })
+        .expect("priority chips");
+    assert!(builder::icon_row(chips));
+}
 
 #[test]
 fn hovering_a_button_shows_its_tooltip() {
@@ -33,7 +92,7 @@ fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
         first
             .buttons
             .iter()
-            .any(|button| button.target == Target::Building(Building::Granary))
+            .any(|button| button.target == Target::Build(BuildUnit::Melee))
     );
     assert!(
         !first
@@ -41,7 +100,9 @@ fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
             .iter()
             .any(|button| button.target == Target::Building(Building::Railhead))
     );
-    assert!(game.scroll_buildings_at(cursor, SCREEN, -20.0));
+    // Past the units, most of the way down the buildings (the works
+    // follow them).
+    assert!(game.scroll_buildings_at(cursor, SCREEN, -16.0));
     let scrolled = game.layout(SCREEN);
     let card = scrolled
         .buttons
@@ -111,6 +172,23 @@ fn button_cursor(game: &GameState, target: Target) -> Vec2 {
     to_ui((button.min + button.max) / 2.0, SCREEN)
 }
 
+/// Scroll the shared city production catalogue until a requested card is visible.
+fn catalog_cursor(game: &mut GameState, target: Target) -> Vec2 {
+    let city = game.selected_city.expect("city view open");
+    for offset in 0..64 {
+        game.cities[city].building_scroll = offset;
+        if game
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == target)
+        {
+            return button_cursor(game, target);
+        }
+    }
+    panic!("production card not shown: {target:?}");
+}
+
 /// Where `hex` is drawn, in window pixels.
 fn hex_cursor(game: &GameState, hex: Hex) -> Vec2 {
     let camera = &game.camera;
@@ -164,6 +242,69 @@ fn hold_button_holds_the_selected_unit() {
 }
 
 #[test]
+fn alert_button_puts_the_selected_unit_on_alert_in_both_presentations() {
+    let alert = Target::Unit(UnitAction::Alert);
+    // Classic.
+    let mut game = GameState::new();
+    let first = game.selected.unwrap();
+    assert_eq!(game.units[first].unit_type, UnitType::Melee);
+    game.handle_click(button_cursor(&game, alert), SCREEN, ClickMode::Normal);
+    assert!(game.units[first].alert);
+    assert_ne!(game.selected, Some(first), "selection moves on");
+    // Reselected, it shows as on.
+    game.selected = Some(first);
+    let layout = game.layout(SCREEN);
+    let button = layout.buttons.iter().find(|b| b.target == alert).unwrap();
+    assert_eq!(button.state, ButtonState::Queued);
+    assert_eq!(
+        layout
+            .button_at((button.min + button.max) / 2.0)
+            .map(|b| b.target),
+        Some(alert)
+    );
+    // ImGui.
+    let mut game = GameState::new();
+    let first = game.selected.unwrap();
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, alert);
+    assert!(game.units[first].alert);
+}
+
+#[test]
+fn only_troops_that_can_go_on_alert_show_its_button() {
+    let mut game = GameState::city_scenario();
+    let targets = |game: &GameState, idx: usize| -> Vec<Target> {
+        game.unit_buttons(idx).iter().map(|b| b.target).collect()
+    };
+    let alert = Target::Unit(UnitAction::Alert);
+    let melee = game
+        .units
+        .iter()
+        .position(|u| u.team == PLAYER_TEAM && u.unit_type == UnitType::Melee)
+        .unwrap();
+    assert!(targets(&game, melee).contains(&alert));
+    game.units[melee].unit_type = UnitType::Scout;
+    assert!(!targets(&game, melee).contains(&alert));
+    // A siege shows it, unavailable until it's set up.
+    game.units[melee].unit_type = UnitType::Siege;
+    let state = |game: &GameState| {
+        game.unit_buttons(melee)
+            .into_iter()
+            .find(|b| b.target == alert)
+            .unwrap()
+            .state
+    };
+    assert_eq!(state(&game), ButtonState::Disabled);
+    game.units[melee].deployed = true;
+    assert_eq!(state(&game), ButtonState::Ready);
+    // A settler, never.
+    game.units[melee].unit_type = UnitType::Melee;
+    let id = game.units[melee].id;
+    game.settlers.insert(id);
+    assert!(!targets(&game, melee).contains(&alert));
+}
+
+#[test]
 fn debug_panel_saves_loads_and_switches_scenarios() {
     let mut game = GameState::new();
     let unit = game.selected.unwrap();
@@ -206,31 +347,33 @@ fn build_card_queues_its_unit() {
     let siege = Target::Build(BuildUnit::Siege);
     game.handle_click(button_cursor(&game, siege), SCREEN, ClickMode::Normal);
     let city = game.selected_city.unwrap();
-    assert_eq!(game.cities[city].queue, vec![Build::Unit(BuildUnit::Siege)]);
+    assert_eq!(
+        game.cities[city].queue,
+        [Queued::new(Build::Unit(BuildUnit::Siege))]
+    );
 }
 
 #[test]
 fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
     let mut game = GameState::naval_scenario();
+    game.fund(Team::Blue);
     game.select_city();
     for build in [
         BuildUnit::PatrolGalley,
         BuildUnit::LandingCraft,
         BuildUnit::BombardShip,
     ] {
-        let card = button_cursor(&game, Target::Build(build));
+        let card = catalog_cursor(&mut game, Target::Build(build));
         assert!(game.layout(SCREEN).button_at(to_ui(card, SCREEN)).is_some());
     }
-    game.handle_click(
-        button_cursor(&game, Target::Build(BuildUnit::LandingCraft)),
-        SCREEN,
-        ClickMode::Normal,
-    );
+    let landing_craft = catalog_cursor(&mut game, Target::Build(BuildUnit::LandingCraft));
+    game.handle_click(landing_craft, SCREEN, ClickMode::Normal);
     let city = game.selected_city.unwrap();
     assert!(
         game.cities[city]
             .queue
-            .contains(&Build::Unit(BuildUnit::LandingCraft))
+            .iter()
+            .any(|q| q.build == Build::Unit(BuildUnit::LandingCraft))
     );
 }
 
@@ -287,9 +430,45 @@ fn breached_post_panel_explicitly_prompts_occupation() {
     assert_shows(&home, "KEEP RED OFF THE CENTER TO PREVENT CAPTURE");
 }
 
-/// The city scenario with the player's city open and the camera settled on it.
+#[test]
+fn an_interior_fighter_is_named_as_its_troop_outside() {
+    let mut game = GameState::siege_scenario();
+    let fighter = game.cities[1].interior.fighters[0].clone();
+    let source = game.units.iter().find(|u| u.id == fighter.source_id);
+    let role = game.unit_role(source.unwrap());
+    game.interior_selected = Some(fighter.source_id);
+    let text = panel_strings(|panel| game.interior_tray(1, panel));
+    assert_shows(&text, &format!("{role}  {:.0} HP", fighter.hp));
+}
+
+#[test]
+fn the_hover_panel_of_another_sides_unit_gives_no_instructions() {
+    let mut game = GameState::city_scenario();
+    let notes = |game: &GameState, idx: usize| panel_strings(|panel| game.unit_info(idx, panel));
+    let told = |text: &[String]| text.iter().any(|s| s.contains("CLICK"));
+    for team in [PLAYER_TEAM, Team::Red] {
+        let land = game
+            .units
+            .iter()
+            .position(|u| u.team == team && !u.is_naval())
+            .unwrap();
+        assert_eq!(told(&notes(&game, land)), game.is_player_controlled(land));
+        game.units[land].unit_type = UnitType::LandingCraft;
+        let text = notes(&game, land);
+        assert_eq!(told(&text), team == PLAYER_TEAM, "{text:?}");
+        assert_eq!(
+            text.iter().any(|s| s.contains("CARGO")),
+            team == PLAYER_TEAM
+        );
+    }
+}
+
+/// The Cities scenario with city 0 open, the camera settled on it and its
+/// side rich.
 fn city_view() -> GameState {
     let mut game = GameState::city_scenario();
+    // Enough in the stockpile for whatever a test queues.
+    game.fund(Team::Blue);
     game.select_city();
     game.update(10.0);
     game
@@ -301,73 +480,88 @@ fn invalid_stable_site_click_reports_horses_instead_of_open_land() {
     game.units.clear();
     game.fog_of_war = false;
     let city = game.selected_city.unwrap();
-    let site = game
-        .grid
-        .all_hexes()
+    // Picked first, so the tile is found clear of the panels as they are
+    // when it's clicked.
+    game.queue_selected_city_building(Building::Stable);
+    let site = visible_sites(&game, city, 1)
+        .into_iter()
+        .chain(
+            game.grid
+                .all_hexes()
+                .filter(|&hex| visible_in_reach(&game, city, hex)),
+        )
         .find(|&hex| {
-            let cursor = hex_cursor(&game, hex);
-            cursor.x > 0.0
-                && cursor.x < SCREEN.x
-                && cursor.y > 0.0
-                && cursor.y < SCREEN.y
-                && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
-                && game.site_available(city, Building::Barracks, hex)
-                && game.site_issue(city, Building::Stable, hex)
+            game.site_available(city, Building::Barracks, hex)
+                && game.ai_site_issue(city, Building::Stable, hex)
                     == Some("NEEDS HORSES ON OR NEXT TO THE TILE")
         })
-        .expect("visible open tile away from horses");
-    game.queue_selected_city_building(Building::Stable);
+        .expect("visible open tile in reach away from horses");
     game.handle_click(hex_cursor(&game, site), SCREEN, ClickMode::Normal);
-    assert_eq!(game.notice, "STABLE NEEDS HORSES ON OR NEXT TO THE TILE");
-    assert_eq!(game.site_placement(), Some((city, Building::Stable)));
+    assert_eq!(game.notice, "NEEDS HORSES ON OR NEXT TO THE TILE");
+    assert_eq!(game.placing_job, Some(JobKind::Build(Building::Stable)));
+    assert!(game.cities[city].worker_jobs.is_empty());
+}
+
+/// Whether `hex` is on screen, clear of the panels, and in city `city`'s
+/// workers' reach: somewhere a click would place a building.
+fn visible_in_reach(game: &GameState, city: usize, hex: Hex) -> bool {
+    let cursor = hex_cursor(game, hex);
+    (0.0..SCREEN.x).contains(&cursor.x)
+        && (0.0..SCREEN.y).contains(&cursor.y)
+        && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
+        && game.in_worker_reach(game.cities[city].team, hex)
+}
+
+/// Up to `count` tiles a Barracks could go on where a click would place it.
+fn visible_sites(game: &GameState, city: usize, count: usize) -> Vec<Hex> {
+    let mut sites: Vec<Hex> = game
+        .grid
+        .all_hexes()
+        .filter(|&hex| {
+            game.site_available(city, Building::Barracks, hex) && visible_in_reach(game, city, hex)
+        })
+        .collect();
+    sites.sort_by_key(|h| (h.q, h.r));
+    sites.truncate(count);
+    sites
 }
 
 #[test]
-fn barracks_map_click_locks_site_and_exits_placement() {
+fn a_building_card_then_a_map_click_places_it_for_the_workers() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
-    let button = button_cursor(&game, Target::Building(Building::Barracks));
+    let button = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(button, SCREEN, ClickMode::Normal);
-    assert_eq!(game.placing_building, Some((city, Building::Barracks)));
+    assert_eq!(game.placing_job, Some(JobKind::Build(Building::Barracks)));
 
-    // Use visible map tiles so this exercises UI hit testing as well as
-    // city placement, rather than calling city_click directly.
-    let sites: Vec<_> = (-8..=8)
-        .flat_map(|q| (-8..=8).map(move |r| Hex::new(q, r)))
-        .filter(|&hex| {
-            let cursor = hex_cursor(&game, hex);
-            game.site_available(city, Building::Barracks, hex)
-                && (0.0..SCREEN.x).contains(&cursor.x)
-                && (0.0..SCREEN.y).contains(&cursor.y)
-                && !game.layout(SCREEN).covers(to_ui(cursor, SCREEN))
-        })
-        .take(2)
-        .collect();
+    // Visible map tiles, so this exercises UI hit testing as well as
+    // placing, rather than calling place_job_at directly.
+    let sites = visible_sites(&game, city, 2);
     assert_eq!(sites.len(), 2);
     game.handle_click(hex_cursor(&game, sites[0]), SCREEN, ClickMode::Normal);
-    assert_eq!(game.placing_building, None);
-    assert_eq!(
+    assert_eq!(game.placing_job, None, "one of each: done placing");
+    let placed = |game: &GameState| {
         game.cities[city]
-            .planned_sites
-            .get(&Building::Barracks)
-            .copied(),
-        Some(sites[0])
-    );
+            .worker_jobs
+            .iter()
+            .filter(|j| j.kind == JobKind::Build(Building::Barracks))
+            .map(|j| j.hex)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(placed(&game), vec![sites[0]]);
     game.update_hover(Some(hex_cursor(&game, sites[1])), SCREEN, 0.1);
     game.handle_click(hex_cursor(&game, sites[1]), SCREEN, ClickMode::Normal);
     assert_eq!(
-        game.cities[city]
-            .planned_sites
-            .get(&Building::Barracks)
-            .copied(),
-        Some(sites[0])
+        placed(&game),
+        vec![sites[0]],
+        "a later click doesn't move it"
     );
-    assert_eq!(game.placing_building, None);
 }
 
 /// The state of `building`'s card in the open city's tray.
-fn building_card(game: &GameState, building: Building) -> ButtonState {
+fn building_card(game: &mut GameState, building: Building) -> ButtonState {
+    catalog_cursor(game, Target::Building(building));
     game.layout(SCREEN)
         .buttons
         .iter()
@@ -386,153 +580,123 @@ fn play_turn(game: &mut GameState) {
 }
 
 #[test]
-fn ending_the_turn_while_choosing_a_site_leaves_no_preview_on_the_map() {
-    // #51: End Turn closed the city but kept its site placement, so the
-    // preview followed the cursor with no city open.
+fn ending_the_turn_while_placing_a_building_stops_placing_it() {
+    // #51: End Turn closed the city but kept placing, so the preview
+    // followed the cursor with no city open.
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
-    // Something else to build, so the city isn't left empty-handed.
+    // Something to build, so the city isn't left empty-handed.
     game.queue_selected_city_worker();
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
-    assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
+    assert!(game.placing_job.is_some());
     play_turn(&mut game);
     assert_eq!(game.selected_city, None);
-    assert_eq!(game.site_placement(), None);
-    assert_eq!(game.placing_building, None);
-    assert!(
-        !game.cities[city]
-            .queue
-            .contains(&Build::Building(Building::Barracks)),
-        "a Barracks with no site is taken back out of the queue"
-    );
+    assert_eq!(game.placing_job, None);
+    assert!(!game.building_job_queued(city, Building::Barracks));
 }
 
 #[test]
-fn a_building_finished_with_its_city_closed_picks_its_site_when_reopened() {
+fn end_turn_closes_the_barracks_view_in_both_presentations() {
+    // #114: End Turn cleared only the city view, so a Barracks tray (and a
+    // manager being moved, or a queue row being dragged) outlived the turn.
+    let mut screen = ImGuiScreen::new();
+    for imgui in [false, true] {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap();
+        game.queue_selected_city_worker();
+        game.cities[city].barracks = Some(Hex::new(-2, 0));
+        game.open_barracks(city);
+        game.moving_manager = Some((city, 0));
+        if imgui {
+            screen.click(&mut game, Target::EndTurn);
+        } else {
+            game.handle_click(
+                button_cursor(&game, Target::EndTurn),
+                SCREEN,
+                ClickMode::Normal,
+            );
+        }
+        assert!(game.is_resolving(), "imgui {imgui}: {}", game.notice);
+        assert_eq!(game.selected_barracks, None, "imgui {imgui}");
+        assert_eq!(game.moving_manager, None, "imgui {imgui}");
+        assert!(game.queue_drag.is_none(), "imgui {imgui}");
+        while game.is_resolving() {
+            game.update(10.0);
+        }
+        assert_eq!(game.selected_barracks, None, "imgui {imgui}");
+    }
+}
+
+#[test]
+fn a_building_card_shows_placing_then_placed_until_taken_off() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
-    // A Barracks queued with no site and not being placed (the queue of a
-    // save from before sites were required, say).
-    game.cities[city]
-        .queue
-        .push(Build::Building(Building::Barracks));
-    assert!(game.exit_structure_menu());
-    game.cities[city].production = Building::Barracks.cost();
-    play_turn(&mut game);
     assert_eq!(
-        game.cities[city].pending_building,
-        Some(Building::Barracks),
-        "paid for, the Barracks waits for a site"
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
     );
-    // #51: finishing it during the turn started placement with no city open.
-    assert_eq!(game.placing_building, None);
-    assert_eq!(game.site_placement(), None);
-
-    // Opening the city resumes choosing the site, and the card isn't dead.
-    game.open_city(city);
-    game.update(10.0);
-    assert_eq!(game.site_placement(), Some((city, Building::Barracks)));
-    assert_ne!(
-        building_card(&game, Building::Barracks),
-        ButtonState::Disabled
-    );
-    let site = Hex::new(-2, 0);
-    assert!(game.site_available(city, Building::Barracks, site));
-    game.city_click(site);
-    game.confirm_building(Building::Barracks);
-    assert_eq!(game.cities[city].barracks, Some(site));
-}
-
-#[test]
-fn escape_while_choosing_a_site_cancels_the_building() {
-    // #52, and after it: clicking the Barracks card and pressing Escape
-    // left the Barracks queued with no site, its card highlighted.
-    let mut game = city_view();
-    game.units.clear();
-    let city = game.selected_city.unwrap();
-    let barracks_queued = |game: &GameState| {
-        game.cities[city]
-            .queue
-            .contains(&Build::Building(Building::Barracks))
-    };
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
     game.handle_click(card, SCREEN, ClickMode::Normal);
-    assert!(barracks_queued(&game));
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Queued,
+        "gold while being placed"
+    );
 
-    // The first Escape only cancels choosing the site, and the Barracks.
+    // The first Escape only stops placing; the city stays open, and
+    // nothing was paid.
+    let stock = game.stock(PLAYER_TEAM);
     assert!(game.exit_structure_menu());
-    assert_eq!(game.selected_city, Some(city), "the city stays open");
-    assert_eq!(game.site_placement(), None);
-    assert!(!barracks_queued(&game));
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
-
-    // End Turn mid-placement cancels it, and the city, left with nothing to
-    // build, asks for something instead of ending the turn.
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
-    game.handle_click(card, SCREEN, ClickMode::Normal);
-    game.end_planning();
-    assert!(!game.is_resolving());
     assert_eq!(game.selected_city, Some(city));
-    assert!(!barracks_queued(&game));
-
-    // Closing the city mid-placement cancels it too.
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
-    game.handle_click(card, SCREEN, ClickMode::Normal);
-    game.leave_city_view();
-    game.open_city(city);
-    game.update(10.0);
-    assert!(!barracks_queued(&game));
-    assert_eq!(game.site_placement(), None);
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
-
-    // With its site chosen, the card is spent until the Barracks is removed.
-    let card = button_cursor(&game, Target::Building(Building::Barracks));
-    game.handle_click(card, SCREEN, ClickMode::Normal);
-    game.city_click(Hex::new(-2, 0));
-    assert!(game.exit_structure_menu());
-    assert_eq!(game.selected_city, None, "nothing to cancel: Escape closes");
-    assert!(
-        barracks_queued(&game),
-        "a Barracks with a site stays queued"
+    assert_eq!(game.placing_job, None);
+    assert_eq!(game.stock(PLAYER_TEAM), stock);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
     );
+
+    // Placed, the card stays gold until the job is taken off the list.
+    game.queue_selected_city_building(Building::Barracks);
+    assert!(game.place_job_at(Hex::new(-2, 0), None));
+    assert!(game.exit_structure_menu());
+    assert_eq!(game.selected_city, None, "nothing to stop: Escape closes");
     game.open_city(city);
     assert_eq!(
-        building_card(&game, Building::Barracks),
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Queued
+    );
+    game.remove_worker_job(0);
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
+        ButtonState::Ready
+    );
+    // With no worker, nothing can be placed: the card is dimmed.
+    game.cities[city].workers = 0;
+    assert_eq!(
+        building_card(&mut game, Building::Barracks),
         ButtonState::Disabled
     );
-    let at = game.cities[city]
-        .queue
-        .iter()
-        .position(|&b| b == Build::Building(Building::Barracks))
-        .unwrap();
-    game.remove_selected_city_queue_item(at);
-    assert_eq!(building_card(&game, Building::Barracks), ButtonState::Ready);
 }
 
 #[test]
-fn opening_another_view_drops_the_site_placement() {
+fn opening_another_view_stops_placing() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
     game.cities[city].barracks = Some(Hex::new(-2, 0));
     game.queue_selected_city_building(Building::Mill);
-    assert_eq!(game.site_placement(), Some((city, Building::Mill)));
+    assert_eq!(game.placing_job, Some(JobKind::Build(Building::Mill)));
     game.open_barracks(city);
-    assert_eq!(game.site_placement(), None);
-    assert_eq!(game.placing_building, None);
-    assert!(
-        !game.cities[city]
-            .queue
-            .contains(&Build::Building(Building::Mill))
-    );
+    assert_eq!(game.placing_job, None);
+    assert!(game.cities[city].worker_jobs.is_empty());
 }
 
 #[test]
-fn mill_and_workshop_cards_use_shared_placement_controls() {
+fn mill_and_workshop_cards_are_placed_the_same_way() {
     let mut game = city_view();
     game.units.clear();
     let city = game.selected_city.unwrap();
@@ -540,77 +704,19 @@ fn mill_and_workshop_cards_use_shared_placement_controls() {
         (Building::Mill, Hex::new(-2, 0)),
         (Building::Workshop, Hex::new(-1, 0)),
     ] {
-        game.cities[city].building_scroll = if building == Building::Mill { 1 } else { 2 };
-        game.handle_click(
-            button_cursor(&game, Target::Building(building)),
-            SCREEN,
-            ClickMode::Normal,
-        );
-        assert_eq!(game.placing_building, Some((city, building)));
-        game.city_click(site);
-        assert_eq!(game.cities[city].planned_sites.get(&building), Some(&site));
-        let layout = game.layout(SCREEN);
+        let card = catalog_cursor(&mut game, Target::Building(building));
+        game.handle_click(card, SCREEN, ClickMode::Normal);
+        assert_eq!(game.placing_job, Some(JobKind::Build(building)));
+        assert!(game.place_job_at(site, None));
         assert!(
-            !layout
-                .buttons
-                .iter()
-                .any(|b| b.target == Target::ConfirmBuilding(building))
+            game.cities[city]
+                .worker_jobs
+                .contains(&crate::game::workers::WorkerJob::on_tile(
+                    site,
+                    JobKind::Build(building)
+                ))
         );
     }
-}
-
-#[test]
-fn planned_building_badge_can_move_without_stealing_citizen_clicks() {
-    let mut game = city_view();
-    game.units.clear();
-    let city = game.selected_city.unwrap();
-    let worked = game.cities[city].worked[0];
-    game.queue_selected_city_building(Building::Mill);
-    game.city_click(worked);
-    let edge = game
-        .camera
-        .world_to_screen(worked.to_world() + Vec2::new(0.5, 0.0), SCREEN);
-    game.handle_click(edge, SCREEN, ClickMode::Normal);
-    assert_eq!(game.moving_manager, Some(city));
-    game.moving_manager = None;
-    game.handle_click(hex_cursor(&game, worked), SCREEN, ClickMode::Normal);
-    assert_eq!(game.placing_building, Some((city, Building::Mill)));
-    let revised = Hex::new(-2, 0);
-    game.handle_click(hex_cursor(&game, revised), SCREEN, ClickMode::Normal);
-    assert_eq!(
-        game.cities[city].planned_sites.get(&Building::Mill),
-        Some(&revised)
-    );
-}
-
-#[test]
-fn debug_completion_reveals_confirm_only_when_ready() {
-    let mut game = city_view();
-    let city = game.selected_city.unwrap();
-    game.queue_selected_city_building(Building::Workshop);
-    game.city_click(Hex::new(-2, 0));
-    assert!(
-        !game
-            .layout(SCREEN)
-            .buttons
-            .iter()
-            .any(|b| b.target == Target::ConfirmBuilding(Building::Workshop))
-    );
-    game.handle_click(
-        button_cursor(&game, Target::CompleteProduction),
-        SCREEN,
-        ClickMode::Normal,
-    );
-    assert_eq!(game.cities[city].pending_building, Some(Building::Workshop));
-    let confirm = Target::ConfirmBuilding(Building::Workshop);
-    assert!(
-        game.layout(SCREEN)
-            .buttons
-            .iter()
-            .any(|b| b.target == confirm && b.state == ButtonState::Ready)
-    );
-    game.handle_click(button_cursor(&game, confirm), SCREEN, ClickMode::Normal);
-    assert_eq!(game.cities[city].workshop, Some(Hex::new(-2, 0)));
 }
 
 #[test]
@@ -668,7 +774,7 @@ fn barracks_queue_uses_the_same_scroll_window() {
     let city = game.selected_city.unwrap();
     game.cities[city].barracks = Some(Hex::new(-2, 0));
     game.open_barracks(city);
-    game.cities[city].barracks_queue = vec![BuildUnit::Melee; 12];
+    game.cities[city].barracks_queue = vec![Queued::new(BuildUnit::Melee); 12];
     let layout = game.layout(SCREEN);
     let scroll = layout.queue_scrollbars.first().expect("barracks scrollbar");
     assert_eq!(scroll.kind, QueueKind::Barracks);
@@ -690,20 +796,66 @@ fn barracks_queue_uses_the_same_scroll_window() {
 }
 
 #[test]
-fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
+fn reordered_builds_show_saved_work_in_city_and_barracks_rows() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
     game.cities[city].queue = vec![
-        Build::Unit(BuildUnit::Melee),
-        Build::Unit(BuildUnit::Ranged),
-        Build::Unit(BuildUnit::Siege),
+        Queued::worked(Build::Unit(BuildUnit::Melee), 4),
+        Queued::new(Build::Unit(BuildUnit::Ranged)),
     ];
+    game.reorder_queue(QueueKind::City, 0, 1);
+    let mut panel = PanelBuilder::default();
+    game.city_queue_panel(city, 2, &mut panel);
+    assert!(panel.rows.iter().any(|row| matches!(
+        row,
+        Row::QueueItem(item) if item.index == 1 && item.label.contains("SAVED")
+    )));
+    assert_eq!(game.cities[city].queue[1].progress, 4);
+    let mut layout = Layout::default();
+    panel.place_bottom_left(Vec2::ZERO, &mut layout);
+    assert!(
+        layout
+            .queue_items
+            .iter()
+            .any(|row| { row.kind == QueueKind::City && row.index == 1 })
+    );
+
+    game.cities[city].barracks = Some(Hex::new(-2, 0));
+    game.cities[city].barracks_queue = vec![
+        Queued::worked(BuildUnit::Melee, 4),
+        Queued::new(BuildUnit::Ranged),
+    ];
+    game.reorder_queue(QueueKind::Barracks, 0, 1);
+    let mut panel = PanelBuilder::default();
+    game.barracks_queue_panel(city, 2, &mut panel);
+    assert!(panel.rows.iter().any(|row| matches!(
+        row,
+        Row::QueueItem(item) if item.index == 1 && item.label.contains("SAVED")
+    )));
+    assert_eq!(game.cities[city].barracks_queue[1].progress, 4);
+    let mut layout = Layout::default();
+    panel.place_bottom_left(Vec2::ZERO, &mut layout);
+    assert!(
+        layout
+            .queue_items
+            .iter()
+            .any(|row| { row.kind == QueueKind::Barracks && row.index == 1 })
+    );
+}
+
+#[test]
+fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].queue = [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
+        .map(|unit| Queued::new(Build::Unit(unit)))
+        .to_vec();
     let layout = game.layout(SCREEN);
     let row_cursor = |index| {
         let row = layout
             .queue_items
             .iter()
-            .find(|row| row.index == index)
+            .find(|row| row.kind == QueueKind::City && row.index == index)
             .unwrap();
         to_ui(
             Vec2::new(
@@ -719,7 +871,10 @@ fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
     game.update_queue_drag_at(to, SCREEN);
     assert_eq!(game.queue_drag.unwrap().target, Some(0));
     game.finish_queue_drag_at(to, SCREEN);
-    assert_eq!(game.cities[city].queue[0], Build::Unit(BuildUnit::Siege));
+    assert_eq!(
+        game.cities[city].queue[0].build,
+        Build::Unit(BuildUnit::Siege)
+    );
     assert!(game.queue_drag.is_none());
 
     let x = button_cursor(&game, Target::CityQueueRemove(1));
@@ -729,51 +884,21 @@ fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
 }
 
 #[test]
-fn ready_city_building_cannot_be_dragged_out_of_first_place() {
-    let mut game = city_view();
-    let city = game.selected_city.unwrap();
-    game.cities[city].queue = vec![
-        Build::Building(Building::Workshop),
-        Build::Unit(BuildUnit::Melee),
-    ];
-    game.cities[city].pending_building = Some(Building::Workshop);
-    let layout = game.layout(SCREEN);
-    let cursor = |index| {
-        let row = layout
-            .queue_items
-            .iter()
-            .find(|row| row.index == index)
-            .unwrap();
-        to_ui(
-            Vec2::new(
-                (row.min.x + row.body_max_x) / 2.0,
-                (row.min.y + row.max.y) / 2.0,
-            ),
-            SCREEN,
-        )
-    };
-    assert!(!game.start_queue_drag_at(cursor(0), SCREEN));
-    assert!(game.start_queue_drag_at(cursor(1), SCREEN));
-    game.finish_queue_drag_at(cursor(0), SCREEN);
-    assert_eq!(
-        game.cities[city].queue[0],
-        Build::Building(Building::Workshop)
-    );
-}
-
-#[test]
 fn barracks_queue_rows_use_the_same_drag_and_remove_targets() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
     game.cities[city].barracks = Some(Hex::new(-2, 0));
     game.open_barracks(city);
-    game.cities[city].barracks_queue = vec![BuildUnit::Melee, BuildUnit::Ranged];
+    game.cities[city].barracks_queue = vec![
+        Queued::new(BuildUnit::Melee),
+        Queued::new(BuildUnit::Ranged),
+    ];
     let layout = game.layout(SCREEN);
     let cursor = |index| {
         let row = layout
             .queue_items
             .iter()
-            .find(|row| row.index == index)
+            .find(|row| row.kind == QueueKind::Barracks && row.index == index)
             .unwrap();
         to_ui(
             Vec2::new(
@@ -785,11 +910,14 @@ fn barracks_queue_rows_use_the_same_drag_and_remove_targets() {
     };
     assert!(game.start_queue_drag_at(cursor(1), SCREEN));
     game.finish_queue_drag_at(cursor(0), SCREEN);
-    assert_eq!(game.cities[city].barracks_queue[0], BuildUnit::Ranged);
+    assert_eq!(game.cities[city].barracks_queue[0].build, BuildUnit::Ranged);
     let x = button_cursor(&game, Target::BarracksQueueRemove(1));
     assert!(!game.start_queue_drag_at(x, SCREEN));
     game.handle_click(x, SCREEN, ClickMode::Normal);
-    assert_eq!(game.cities[city].barracks_queue, vec![BuildUnit::Ranged]);
+    assert_eq!(
+        game.cities[city].barracks_queue,
+        [Queued::new(BuildUnit::Ranged)]
+    );
 }
 
 #[test]
@@ -874,7 +1002,7 @@ fn docked_panel_buttons_share_the_rendered_hit_box() {
 }
 
 #[test]
-fn city_clicks_do_not_select_units_without_exiting_city_view() {
+fn city_view_clicks_select_a_unit_only_on_its_token() {
     let mut game = city_view();
     // One of the player's units drawn clear of the top bar and the tray.
     let unit = (0..game.units.len())
@@ -885,13 +1013,18 @@ fn city_clicks_do_not_select_units_without_exiting_city_view() {
                 && (0.0..SCREEN.x).contains(&cursor.x)
         })
         .expect("a unit in view");
-    game.handle_click(
-        hex_cursor(&game, game.units[unit].pos),
-        SCREEN,
-        ClickMode::Normal,
-    );
+    let pos = game.units[unit].pos;
+    // Off the token, on its hex: the city keeps the click.
+    let off_token = game
+        .camera
+        .world_to_screen(pos.to_world() + Vec2::new(0.6, 0.0), SCREEN);
+    game.handle_click(off_token, SCREEN, ClickMode::Normal);
     assert!(game.selected_city.is_some());
     assert_ne!(game.selected, Some(unit));
+    // On the token (drawn in the middle of the hex): the unit.
+    game.handle_click(hex_cursor(&game, pos), SCREEN, ClickMode::Normal);
+    assert_eq!(game.selected_city, None);
+    assert_eq!(game.selected, Some(unit));
 }
 
 #[test]
@@ -914,6 +1047,12 @@ fn yields_show_only_for_the_open_city_and_toggle() {
     let mut game = city_view();
     let shown = game.build_vertices().len();
     game.handle_click(
+        button_cursor(&game, Target::OpenSettings),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(game.settings_open);
+    game.handle_click(
         button_cursor(&game, Target::ToggleYields),
         SCREEN,
         ClickMode::Normal,
@@ -922,6 +1061,7 @@ fn yields_show_only_for_the_open_city_and_toggle() {
     assert!(game.build_vertices().len() < shown, "badges hidden");
     game.toggle_yields();
     assert_eq!(game.build_vertices().len(), shown);
+    game.close_settings();
 
     // Hovering a city without opening it no longer shows its yields.
     let city = game.cities[game.selected_city.unwrap()].pos;
@@ -930,6 +1070,51 @@ fn yields_show_only_for_the_open_city_and_toggle() {
     assert!(game.hovered_city.is_some());
     assert_eq!(game.yields_city(), None);
     assert!(game.build_vertices().len() < shown);
+}
+
+#[test]
+fn a_menu_button_over_a_scrollbar_takes_the_click() {
+    // The centered settings menu is drawn over the city's panels, the
+    // production catalogue's scrollbar among them: where they overlap, the
+    // button is clicked and the catalogue doesn't scroll.
+    let mut game = city_view();
+    game.handle_click(
+        button_cursor(&game, Target::OpenSettings),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    let layout = game.layout(SCREEN);
+    let track = layout
+        .building_scrollbars
+        .iter()
+        .find(|region| region.max_offset > 0)
+        .expect("the catalogue scrolls");
+    let scroll = game.cities[0].building_scroll;
+    // Where a button and the scrollbar overlap, at a height where the bare
+    // scrollbar would scroll the catalogue.
+    let (button, point) = layout
+        .buttons
+        .iter()
+        .find_map(|button| {
+            let min = button.min.max(track.track_min);
+            let max = button.max.min(track.track_max);
+            let point = (min + max) / 2.0;
+            let mut probe = game.clone();
+            let scrolls = probe.drag_building_scrollbar_at(to_ui(point, SCREEN), SCREEN, false)
+                && probe.cities[0].building_scroll != scroll;
+            (min.x < max.x && min.y < max.y && scrolls).then_some((button.target, point))
+        })
+        .expect("a menu button over the scrollbar");
+    assert_eq!(layout.button_at(point).map(|b| b.target), Some(button));
+    let yields = game.show_yields;
+    game.handle_click(to_ui(point, SCREEN), SCREEN, ClickMode::Normal);
+    assert_eq!(
+        game.cities[0].building_scroll, scroll,
+        "the catalogue kept still"
+    );
+    if button == Target::ToggleYields {
+        assert_ne!(game.show_yields, yields, "the button was clicked");
+    }
 }
 
 #[test]
@@ -972,7 +1157,9 @@ fn hovering_an_enemy_city_or_barracks_out_of_sight_shows_no_live_panel() {
         );
         game.hovered_tile = Some(hex);
         let fogged = game.layout_with_hover(SCREEN, None).0.panels.len();
+        assert!(game.structure_inspect_panel(hex).is_none());
         game.fog_of_war = false;
+        assert!(game.structure_inspect_panel(hex).is_some());
         let clear = game.layout_with_hover(SCREEN, None).0.panels.len();
         game.fog_of_war = true;
         assert_eq!(clear, fogged + 1, "{hex:?}");
@@ -988,6 +1175,7 @@ fn hovering_an_enemy_city_or_barracks_out_of_sight_shows_no_live_panel() {
     game.explore();
     game.units.clear();
     assert!(game.is_explored(red_pos) && !game.fog().sees(red_pos));
+    assert!(game.structure_inspect_panel(red_pos).is_none());
     game.hovered_tile = Some(red_pos);
     let fogged = game.layout_with_hover(SCREEN, None).0.panels.len();
     game.hovered_tile = None;
@@ -1026,6 +1214,22 @@ fn the_tooltip_shows_an_unseen_hex_as_last_seen() {
     assert_eq!(read(&game), before);
 }
 
+#[test]
+fn a_work_camp_out_of_sight_is_connected_by_what_the_player_knows() {
+    let (mut game, city, far) = crate::game::fog::tests::remembered_route_hex();
+    game.cities[city].set_placed_site(crate::game::city::Building::WorkCamp, far);
+    let read =
+        |game: &GameState| line_strings(game.tile_tooltip_lines(far).into_iter().map(|(_, l)| l));
+    let before = read(&game);
+    assert!(before.iter().any(|s| s == "CONNECTED"), "{before:?}");
+
+    // Red cuts the camp off, out of sight.
+    game.units
+        .push(Unit::new(51, far, Team::Red, UnitType::Melee));
+    assert!(!game.routes(city).costs.contains_key(&far));
+    assert_eq!(read(&game), before);
+}
+
 fn line_strings(lines: impl IntoIterator<Item = Line>) -> Vec<String> {
     lines
         .into_iter()
@@ -1037,7 +1241,7 @@ fn panel_strings(fill: impl FnOnce(&mut PanelBuilder)) -> Vec<String> {
     let mut panel = PanelBuilder::default();
     fill(&mut panel);
     line_strings(panel.rows.into_iter().filter_map(|row| match row {
-        Row::Text(_, line) => Some(line),
+        Row::Text(_, line) | Row::LabeledButtons(line, _) => Some(line),
         _ => None,
     }))
 }
@@ -1050,42 +1254,180 @@ fn assert_shows(text: &[String], expected: &str) {
 }
 
 #[test]
-fn every_panel_shows_production_per_turn_in_displayed_units() {
+fn every_panel_shows_what_a_city_delivers_in_displayed_units() {
     let mut game = GameState::city_scenario();
-    // Nothing is left to see the barracks tile once the units are gone.
     game.fog_of_war = false;
     game.units.clear();
-    let manager = Hex::new(-1, 0);
-    game.cities[0].worked = vec![manager, Hex::new(-1, 1)];
-    game.cities[0].barracks = Some(manager);
-    let (_, city_income) = game.income(0);
-    let barracks_income = game.barracks_income(0);
+    // Wood first, so the city brings in more wood than its center alone.
+    game.cities[0].priorities = Priorities([Good::Wood, Good::Food, Good::Metal]);
+    game.auto_assign_city(0);
+    let income = game.income(0);
     // Stored in quarters: a raw value would read four times too high.
-    assert!(city_income > 4 && barracks_income > 4);
-    let city_rate = signed_quantity(city_income);
-    let barracks_rate = signed_quantity(barracks_income);
+    assert!(income.food > 4 && income.wood > 4);
+    // Net of the food the city's citizens eat, everywhere it shows.
+    let net = game.net_delivery(0);
+    assert_eq!(net.wood, income.wood);
+    assert!(net.food < income.food);
+    let short = price_hint(net);
+    assert!(short.contains(&format!("{FOOD_ICON}{}", quantity(net.food))));
 
     let tray = panel_strings(|panel| game.city_tray(0, panel));
-    assert_shows(&tray, &format!("{city_rate} PER TURN"));
+    assert_shows(&tray, &format!("{WOOD_ICON}{}", signed_quantity(net.wood)));
+    assert_shows(&tray, &format!("{FOOD_ICON}{}", signed_quantity(net.food)));
+    assert!(tray.iter().all(|line| !line.contains("EATS")), "{tray:?}");
     let hover = panel_strings(|panel| game.structure_hover_panel(0, false, panel));
-    assert_shows(&hover, &format!("{city_rate} PROD/T"));
+    assert_shows(&hover, &format!("DELIVERS {short}"));
     let city_tooltip = line_strings(
         game.tile_tooltip_lines(game.cities[0].pos)
             .into_iter()
             .map(|(_, line)| line),
     );
-    assert_shows(&city_tooltip, &format!("{city_rate} PRODUCTION"));
+    assert_shows(&city_tooltip, &format!("DELIVERS {short}"));
+}
 
-    let barracks_tray = panel_strings(|panel| game.barracks_tray(0, panel));
-    assert_shows(&barracks_tray, &format!("{barracks_rate} PROD/T"));
-    let barracks_hover = panel_strings(|panel| game.structure_hover_panel(0, true, panel));
-    assert_shows(&barracks_hover, &format!("{barracks_rate} PROD/T"));
-    let barracks_tooltip = line_strings(
-        game.tile_tooltip_lines(manager)
-            .into_iter()
-            .map(|(_, line)| line),
+#[test]
+fn a_manager_picked_up_takes_its_income_off_the_panels_at_once() {
+    let mut game = GameState::city_scenario();
+    game.fog_of_war = false;
+    game.units.clear();
+    game.auto_assign_city(0);
+    let team = game.cities[0].team;
+    game.local_team = team;
+    let carried = game.cluster_income(0, 0);
+    assert!(carried.food + carried.production() > 0);
+    let (before, side_before) = (game.net_delivery(0), game.stockpile_line());
+    game.moving_manager = Some((0, 0));
+    // Shown without the cluster, in the city panel and the top bar...
+    let net = game.net_delivery(0);
+    assert_eq!(net, before - carried);
+    let tray = panel_strings(|panel| game.city_tray(0, panel));
+    assert_shows(&tray, &format!("{FOOD_ICON}{}", signed_quantity(net.food)));
+    let expected = stock_spans(
+        game.stock(team),
+        Stock {
+            food: game.side_income(team).food - carried.food - game.upkeep(team),
+            wood: game.side_income(team).wood - carried.wood,
+            metal: game.side_income(team).metal - carried.metal,
+        },
     );
-    assert_shows(&barracks_tooltip, &format!("{barracks_rate} PROD/T"));
+    assert_eq!(game.stockpile_line(), expected);
+    assert_ne!(game.stockpile_line(), side_before);
+    // ...but the city still earns it: the economy never sees a carried
+    // manager, which is put back before any turn resolves.
+    assert_eq!(game.income(0), game.shown_income(0) + carried);
+    game.moving_manager = None;
+    assert_eq!(game.net_delivery(0), before);
+}
+
+#[test]
+fn the_stockpile_shows_in_the_top_bar_with_its_change_a_turn() {
+    let mut game = GameState::city_scenario();
+    game.stockpiles[Team::Blue.index()] = Stock::whole(12, 7, 3);
+    let income = game.side_income(Team::Blue);
+    let food_change = income.food - game.upkeep(Team::Blue);
+    let text: String = game
+        .stockpile_line()
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect();
+    assert!(text.starts_with(&format!("{FOOD_ICON}12 ")), "{text}");
+    assert!(text.contains(&format!("{WOOD_ICON}7 ")), "{text}");
+    assert!(text.contains(&format!("{METAL_ICON}3 ")), "{text}");
+    assert!(
+        text.contains(&signed_quantity(food_change)),
+        "net food in {text}"
+    );
+}
+
+/// The button for `target` in the classic layout.
+fn find_button(game: &GameState, target: Target) -> Button {
+    let layout = game.layout(SCREEN);
+    let button = layout.buttons.iter().find(|b| b.target == target);
+    let button = button.unwrap_or_else(|| panic!("{target:?} shown"));
+    Button {
+        target: button.target,
+        label: button.label.clone(),
+        hint: button.hint.clone(),
+        state: button.state,
+        armed: button.armed,
+        faded: button.faded,
+        min: button.min,
+        max: button.max,
+    }
+}
+
+#[test]
+fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
+    let mut game = GameState::city_scenario();
+    game.open_city(0);
+    let melee = find_button(&game, Target::Build(BuildUnit::Melee));
+    assert_eq!(melee.state, ButtonState::Ready);
+    let price = format!("{FOOD_ICON}3 {WOOD_ICON}9");
+    assert!(melee.hint.contains(&price), "{}", melee.hint);
+    // The city center takes twice a Barracks' turns.
+    assert!(
+        melee.hint.ends_with(&format!("{TIME_ICON}6")),
+        "{}",
+        melee.hint
+    );
+    let grow = find_button(&game, Target::Grow);
+    assert!(grow.label.starts_with("GROW TO 3"), "{}", grow.label);
+
+    game.stockpiles[Team::Blue.index()] = Stock::default();
+    let tooltip = |game: &GameState, card: &Button| -> String {
+        game.tooltip_lines(card)
+            .into_iter()
+            .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
+            .collect()
+    };
+    // A queue's cards can be queued whatever the stockpile holds; the
+    // tooltip says what it's short of this turn, and that it'll wait.
+    for target in [Target::Build(BuildUnit::Melee), Target::Grow] {
+        let card = find_button(&game, target);
+        assert_eq!(card.state, ButtonState::Ready, "{target:?}");
+        let text = tooltip(&game, &card);
+        assert!(
+            text.contains("SHORT OF") && text.contains("WAITS"),
+            "{target:?}: {text}"
+        );
+    }
+    // A building is still paid when placed: its card is dimmed.
+    game.cities[0].building_scroll = 5;
+    let card = find_button(&game, Target::Building(Building::Barracks));
+    assert_eq!(card.state, ButtonState::Disabled);
+    assert!(tooltip(&game, &card).contains("SHORT OF"));
+    game.cities[0].building_scroll = 0;
+
+    // Clicked, the card queues its unit, unpaid, and the row says what it
+    // waits for.
+    game.handle_click(
+        button_cursor(&game, Target::Build(BuildUnit::Melee)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(
+        game.cities[0].queue,
+        [Queued::new(Build::Unit(BuildUnit::Melee))]
+    );
+    assert_eq!(game.stock(Team::Blue), Stock::default());
+    let short = game
+        .expected_stock(Team::Blue)
+        .shortfall(BuildUnit::Melee.price());
+    let layout = game.layout(SCREEN);
+    let row = layout
+        .shapes
+        .iter()
+        .find_map(|shape| match shape {
+            Shape::QueueItem { label, waiting, .. } => Some((label.clone(), *waiting)),
+            _ => None,
+        })
+        .expect("the queue's row");
+    assert!(row.1, "tinted as waiting");
+    assert!(
+        row.0.contains(&format!("WAITS {}", stock_icons(short))),
+        "{}",
+        row.0
+    );
 }
 
 #[test]
@@ -1099,14 +1441,12 @@ fn clicks_on_a_panel_do_not_reach_the_map() {
 
 #[test]
 fn end_turn_button_names_what_is_waiting() {
-    // Production first, then idle workers, then units: the turn's order.
-    assert_eq!(end_turn_label((3, 1, 2)), "CHOOSE PRODUCTION");
-    assert_eq!(end_turn_label((0, 2, 0)), "2 CITIES NEED PRODUCTION");
-    assert_eq!(end_turn_label((3, 0, 1)), "WORKER NEEDS A JOB");
-    assert_eq!(end_turn_label((3, 0, 2)), "2 WORKERS NEED JOBS");
-    assert_eq!(end_turn_label((3, 0, 0)), "3 UNITS NEED ORDERS");
-    assert_eq!(end_turn_label((1, 0, 0)), "UNIT NEEDS ORDERS");
-    assert_eq!(end_turn_label((0, 0, 0)), "END TURN");
+    // Production first, then units: the turn's order.
+    assert_eq!(end_turn_label((3, 1)), "CHOOSE PRODUCTION");
+    assert_eq!(end_turn_label((0, 2)), "2 CITIES NEED PRODUCTION");
+    assert_eq!(end_turn_label((3, 0)), "3 UNITS NEED ORDERS");
+    assert_eq!(end_turn_label((1, 0)), "UNIT NEEDS ORDERS");
+    assert_eq!(end_turn_label((0, 0)), "END TURN");
 
     let game = GameState::new();
     let layout = game.layout(SCREEN);
@@ -1121,7 +1461,8 @@ fn wrap_breaks_between_words() {
 }
 
 /// An empty tile near Blue's city in the Cities scenario, with nothing
-/// selected, so a click on it opens its tile panel.
+/// selected. `open_city_zero` opens the city to place things for its
+/// workers.
 fn empty_tile_near_blue_city() -> (GameState, Hex) {
     let mut game = GameState::city_scenario();
     game.explore();
@@ -1138,47 +1479,53 @@ fn empty_tile_near_blue_city() -> (GameState, Hex) {
     (game, hex)
 }
 
+/// Opens Blue's city, where its workers' jobs are placed from, with the
+/// camera settled on it.
+fn open_city_zero(game: &mut GameState) {
+    game.open_city(0);
+    game.camera.update(10.0);
+}
+
+/// The state of the production card for `target` in the open city.
+fn card_state(game: &mut GameState, target: Target) -> ButtonState {
+    catalog_cursor(game, target);
+    game.layout(SCREEN)
+        .buttons
+        .iter()
+        .find(|b| b.target == target)
+        .expect("card shown")
+        .state
+}
+
 #[test]
-fn the_worker_menu_places_a_picked_job_on_the_map() {
+fn a_work_card_in_the_city_places_it_on_the_map() {
     let (mut game, hex) = empty_tile_near_blue_city();
-    game.toggle_worker_mode();
-    let layout = game.layout(SCREEN);
+    open_city_zero(&mut game);
     for kind in JobKind::ALL {
-        let button = layout
-            .buttons
-            .iter()
-            .find(|b| b.target == Target::WorkerJob(kind))
-            .expect("every job has a button");
-        assert!(
-            layout
-                .panels
-                .iter()
-                .any(|&(min, max)| contains(min, max, button.min) && contains(min, max, button.max)),
-            "{kind:?} sits inside its panel"
-        );
+        catalog_cursor(&mut game, Target::WorkerJob(kind));
     }
-    // With nothing picked, a map click places nothing. (The map clicks go
-    // straight to the map: the menu's panel may cover the tile.)
-    game.handle_map_click(hex_cursor(&game, hex), SCREEN, ClickMode::Normal);
-    assert!(game.cities[0].worker_jobs.is_empty());
     let road = Target::WorkerJob(JobKind::Road);
-    game.handle_click(button_cursor(&game, road), SCREEN, ClickMode::Normal);
+    let card = catalog_cursor(&mut game, road);
+    game.handle_click(card, SCREEN, ClickMode::Normal);
     assert_eq!(game.placing_job, Some(JobKind::Road));
-    let armed = |game: &GameState| {
-        game.layout(SCREEN)
-            .buttons
-            .iter()
-            .find(|b| b.target == road)
-            .is_some_and(|b| b.armed)
-    };
-    assert!(armed(&game), "the button shows it's picked");
+    assert_eq!(
+        card_state(&mut game, road),
+        ButtonState::Queued,
+        "the card shows it's picked"
+    );
+    // (The map click goes straight to the map: a panel may cover the tile.)
     game.handle_map_click(hex_cursor(&game, hex), SCREEN, ClickMode::Normal);
     assert_eq!(game.cities[0].worker_jobs.len(), 1);
     assert_eq!(game.cities[0].worker_jobs[0].hex, hex);
     assert_eq!(game.cities[0].worker_jobs[0].kind, JobKind::Road);
-    assert!(armed(&game), "still picked, for the next one");
+    assert_eq!(
+        game.placing_job,
+        Some(JobKind::Road),
+        "still picked, for the next one"
+    );
     // Picking it again puts it down.
-    game.handle_click(button_cursor(&game, road), SCREEN, ClickMode::Normal);
+    let card = catalog_cursor(&mut game, road);
+    game.handle_click(card, SCREEN, ClickMode::Normal);
     assert_eq!(game.placing_job, None);
 }
 
@@ -1193,26 +1540,19 @@ fn a_plain_click_on_an_empty_tile_opens_nothing() {
             .buttons
             .iter()
             .any(|b| matches!(b.target, Target::WorkerJob(_))),
-        "workers take orders from the worker menu only"
+        "what workers build is placed from its city"
     );
 }
 
 #[test]
 fn a_wall_is_placed_by_dragging_along_hex_edges() {
     let (mut game, hex) = empty_tile_near_blue_city();
-    game.toggle_worker_mode();
+    open_city_zero(&mut game);
     let wall = Target::WorkerJob(JobKind::Wall);
-    game.handle_click(button_cursor(&game, wall), SCREEN, ClickMode::Normal);
+    let card = catalog_cursor(&mut game, wall);
+    game.handle_click(card, SCREEN, ClickMode::Normal);
     assert_eq!(game.placing_job, Some(JobKind::Wall));
-    let armed = game
-        .layout(SCREEN)
-        .buttons
-        .into_iter()
-        .find(|b| b.target == wall);
-    assert!(
-        armed.is_some_and(|b| b.armed),
-        "the button shows it's armed"
-    );
+    assert_eq!(card_state(&mut game, wall), ButtonState::Queued);
 
     // Drag across the midpoints of three of the hex's edges, as the mouse
     // would pass over them.
@@ -1240,19 +1580,21 @@ fn a_wall_is_placed_by_dragging_along_hex_edges() {
     }
 
     // A press on the panel itself doesn't place anything through it.
-    assert!(!game.paint_job_at(button_cursor(&game, wall), SCREEN, true));
+    let card = catalog_cursor(&mut game, wall);
+    assert!(!game.paint_job_at(card, SCREEN, true));
 
-    // Escape stops placing but leaves the worker menu open.
+    // Escape stops placing but leaves the city open.
     game.press_escape();
     assert_eq!(game.placing_job, None);
-    assert!(game.worker_mode);
+    assert_eq!(game.selected_city, Some(0));
     let n = sides[0];
     assert!(!game.paint_job_at(edge_cursor(&game, n), SCREEN, false));
 }
 
 #[test]
-fn a_worker_out_can_be_recalled_from_the_worker_menu() {
+fn a_worker_out_can_be_recalled_and_released_from_the_city_panel() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     game.placing_job = Some(JobKind::Fort);
     assert!(game.place_job_at(hex, None));
     game.placing_job = None;
@@ -1262,7 +1604,6 @@ fn a_worker_out_can_be_recalled_from_the_worker_menu() {
     let id = game.field_workers[0].id;
     assert_eq!(game.field_workers[0].pos, hex);
 
-    game.toggle_worker_mode();
     let recall = Target::RecallWorker(id);
     game.handle_click(button_cursor(&game, recall), SCREEN, ClickMode::Normal);
     assert!(game.field_workers[0].recalled);
@@ -1274,6 +1615,36 @@ fn a_worker_out_can_be_recalled_from_the_worker_menu() {
             .any(|b| b.target == recall),
         "once recalled, there's nothing left to press"
     );
+
+    // Home, it's held there with a Release button in its city's panel.
+    let release = Target::ReleaseWorker;
+    let shown = |game: &GameState| {
+        game.layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == release)
+    };
+    game.resolve_workers();
+    assert!(!shown(&game), "still walking home");
+    game.resolve_workers();
+    assert!(game.field_workers.is_empty());
+    assert_eq!(game.cities[0].held_workers, 1);
+    let layout = game.layout(SCREEN);
+    let button = layout.buttons.iter().find(|b| b.target == release).unwrap();
+    assert_eq!(button.label, "HELD AT HOME - RELEASE");
+    assert!(
+        layout
+            .panels
+            .iter()
+            .any(|&(min, max)| contains(min, max, button.min) && contains(min, max, button.max))
+    );
+    game.resolve_workers();
+    assert!(game.field_workers.is_empty(), "held while its job waits");
+    game.handle_click(button_cursor(&game, release), SCREEN, ClickMode::Normal);
+    assert_eq!(game.cities[0].held_workers, 0);
+    assert!(!shown(&game), "released, nothing left to press");
+    game.resolve_workers();
+    assert_eq!(game.field_workers[0].job.map(|j| j.hex), Some(hex));
 }
 
 #[test]
@@ -1299,31 +1670,22 @@ fn the_disband_button_asks_then_removes_the_unit() {
 }
 
 #[test]
-fn the_worker_menu_lists_its_citys_jobs_and_removes_them() {
+fn the_city_panel_lists_its_jobs_and_removes_them() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     place_road_and_fort(&mut game, hex);
-    game.toggle_worker_mode();
+    let before = game.stock(PLAYER_TEAM);
     let remove = Target::WorkerJobRemove(0);
     game.handle_click(button_cursor(&game, remove), SCREEN, ClickMode::Normal);
     let jobs = &game.cities[0].worker_jobs;
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].kind, JobKind::Fort);
-
-    // The city panel still builds workers, and sends you to the menu.
-    game.toggle_worker_mode();
-    game.select_city();
+    assert_eq!(game.stock(PLAYER_TEAM), before + JobKind::Road.price());
+    // The panel builds workers too.
     game.queue_selected_city_worker();
-    assert_eq!(game.cities[0].queue.last(), Some(&Build::Worker));
-    let layout = game.layout(SCREEN);
-    for target in [Target::BuildWorker, Target::WorkerMode] {
-        assert!(
-            layout.buttons.iter().any(|b| b.target == target),
-            "{target:?}"
-        );
-    }
-    assert!(
-        !layout.buttons.iter().any(|b| b.target == remove),
-        "the city panel no longer lists jobs"
+    assert_eq!(
+        game.cities[0].queue.last(),
+        Some(&Queued::new(Build::Worker))
     );
 }
 
@@ -1344,70 +1706,18 @@ fn place_road_and_fort(game: &mut GameState, hex: Hex) {
 #[test]
 fn worker_jobs_reorder_by_dragging() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     place_road_and_fort(&mut game, hex);
-    game.toggle_worker_mode();
     game.reorder_queue(QueueKind::Workers, 1, 0);
     let kinds: Vec<_> = game.cities[0].worker_jobs.iter().map(|j| j.kind).collect();
     assert_eq!(kinds, [JobKind::Fort, JobKind::Road]);
 }
 
 #[test]
-fn the_city_panel_opens_the_worker_menu_and_done_closes_it() {
-    let mut game = GameState::city_scenario();
-    game.select_city();
-    game.handle_click(
-        button_cursor(&game, Target::WorkerMode),
-        SCREEN,
-        ClickMode::Normal,
-    );
-    assert!(game.worker_mode);
-    assert_eq!(game.selected_city, None);
-    let text = panel_strings(|panel| game.worker_menu(panel));
-    assert_shows(&text, "WORKERS");
-    assert_shows(&text, "3 TILES FROM A CITY");
-    game.handle_click(
-        button_cursor(&game, Target::WorkerMode),
-        SCREEN,
-        ClickMode::Normal,
-    );
-    assert!(!game.worker_mode);
-}
-
-#[test]
-fn idle_workers_wait_in_the_turn_order_until_they_get_a_job_or_sleep() {
-    let mut game = GameState::city_scenario();
-    game.explore();
-    let city = game.cities[0].id;
-    let workers = RosterKey::Workers(city);
-    assert!(roster_keys(&game).contains(&workers), "idle at home");
-    assert_eq!(game.pending().2, 1);
-    // Its chip opens the worker menu on its city.
-    game.handle_click(roster_cursor(&game, workers), SCREEN, ClickMode::Normal);
-    assert!(game.worker_mode);
-    assert_eq!(game.worker_menu_city, Some(0));
-    // Sleep rests them for the turn, and the menu closes.
-    game.handle_click(
-        button_cursor(&game, Target::SleepWorkers),
-        SCREEN,
-        ClickMode::Normal,
-    );
-    assert!(game.cities[0].workers_resting);
-    assert!(!game.worker_mode);
-    assert_eq!(game.pending().2, 0);
-    assert!(!roster_keys(&game).contains(&workers));
-    // A job does the same.
-    game.cities[0].workers_resting = false;
-    let hex = empty_tile_near_blue_city().1;
-    game.placing_job = Some(JobKind::Road);
-    assert!(game.place_job_at(hex, None));
-    assert_eq!(game.pending().2, 0);
-}
-
-#[test]
 fn clicking_a_worker_job_or_a_worker_shows_it_on_the_map() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     place_road_and_fort(&mut game, hex);
-    game.toggle_worker_mode();
     // A click on the road's row, not a drag, takes the camera to it.
     let layout = game.layout(SCREEN);
     let row = layout
@@ -1427,10 +1737,8 @@ fn clicking_a_worker_job_or_a_worker_shows_it_on_the_map() {
     assert_eq!(kinds, [JobKind::Road, JobKind::Fort], "nothing reordered");
 
     // A worker's row takes the camera to the worker.
-    game.toggle_worker_mode();
     game.resolve_workers();
     let worker = game.field_workers[0].clone();
-    game.toggle_worker_mode();
     game.handle_click(
         button_cursor(&game, Target::ShowWorker(worker.id)),
         SCREEN,
@@ -1444,17 +1752,16 @@ fn clicking_a_worker_job_or_a_worker_shows_it_on_the_map() {
 #[test]
 fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
     let (mut game, hex) = empty_tile_near_blue_city();
+    open_city_zero(&mut game);
     game.placing_job = Some(JobKind::Improve);
     assert!(game.place_job_at(hex, None));
     game.placing_job = None;
-    game.toggle_worker_mode();
     let mut panel = PanelBuilder::default();
-    game.worker_menu(&mut panel);
-    let labels: Vec<String> = panel
-        .rows
+    game.city_tray(0, &mut panel);
+    let labels: Vec<String> = flat_rows(&panel.rows)
         .into_iter()
         .filter_map(|row| match row {
-            Row::QueueItem(item) => Some(item.label),
+            Row::QueueItem(item) => Some(item.label.clone()),
             _ => None,
         })
         .collect();
@@ -1464,7 +1771,18 @@ fn worker_job_rows_name_the_build_its_tile_and_its_turns() {
     } else {
         "FARM"
     };
-    assert_eq!(labels, [format!("{build} · {tile} · 3T")]);
+    assert_eq!(labels, [format!("{build} · {tile} · \u{E003}3")]);
+    // A job a worker left partway says how much of it is done.
+    game.cities[0].worker_jobs[0].done = 2;
+    let mut panel = PanelBuilder::default();
+    game.city_tray(0, &mut panel);
+    let row = flat_rows(&panel.rows)
+        .into_iter()
+        .find_map(|row| match row {
+            Row::QueueItem(item) => Some(item.label.clone()),
+            _ => None,
+        });
+    assert_eq!(row, Some(format!("{build} · {tile} · 2 OF \u{E003}3 DONE")));
 }
 
 /// Where to click, in window pixels, on `key`'s chip in the turn strip.
@@ -1497,8 +1815,8 @@ fn roster_keys(game: &GameState) -> Vec<RosterKey> {
 
 #[test]
 fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
-    // The Cities scenario: Blue's city has nothing queued and a worker idle
-    // at home, and one unit of each military kind.
+    // The Cities scenario: Blue's city has nothing queued, and one unit of
+    // each military kind. Its worker idle at home waits for nothing.
     let mut game = GameState::city_scenario();
     let city = game
         .cities
@@ -1508,8 +1826,7 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
         .id;
     let keys = roster_keys(&game);
     assert_eq!(keys[0], RosterKey::Production(city), "{keys:?}");
-    assert_eq!(keys[1], RosterKey::Workers(city), "{keys:?}");
-    let groups: Vec<UnitType> = keys[2..]
+    let groups: Vec<UnitType> = keys[1..]
         .iter()
         .map(|key| match key {
             RosterKey::Group(unit_type, false) => *unit_type,
@@ -1533,7 +1850,7 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
     let settler = game.units[last].id;
     game.settlers.insert(settler);
     let unit_type = game.units[last].unit_type;
-    assert_eq!(roster_keys(&game)[2], RosterKey::Group(unit_type, true));
+    assert_eq!(roster_keys(&game)[1], RosterKey::Group(unit_type, true));
 
     // The production chip opens the city, and is framed while it's open.
     game.handle_click(
@@ -1546,7 +1863,9 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
     assert!(roster(&game)[0].1 && !roster(&game)[1].1 && !roster(&game)[2].1);
 
     // Once it has a build, it leaves the strip.
-    game.cities[open].queue.push(Build::Unit(BuildUnit::Melee));
+    game.cities[open]
+        .queue
+        .push(Queued::new(Build::Unit(BuildUnit::Melee)));
     let keys = roster_keys(&game);
     assert!(
         !keys.iter().any(|k| matches!(k, RosterKey::Production(_))),
@@ -1745,6 +2064,10 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
                 (center - screen / 2.0).abs().max_element() <= 1.0,
                 "{center}"
             );
+            assert!(
+                menu_rect.0.y >= 0.0 && menu_rect.1.y <= screen.y,
+                "the menu fits on a {screen} screen: {menu_rect:?}"
+            );
             for (i, &(a_min, a_max)) in docked.iter().enumerate() {
                 for &(b_min, b_max) in &docked[i + 1..] {
                     let apart = a_max.x <= b_min.x
@@ -1762,7 +2085,11 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
                 .filter(|b| {
                     matches!(
                         b.target,
-                        Target::SetSetting(..) | Target::CloseSettings | Target::Quit
+                        Target::SetSetting(..)
+                            | Target::ToggleYields
+                            | Target::CloseSettings
+                            | Target::Quit
+                            | Target::OpenMultiplayer
                     )
                 })
                 .collect();
@@ -1774,7 +2101,7 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
                     "{setting:?} has buttons"
                 );
             }
-            for target in [Target::CloseSettings, Target::Quit] {
+            for target in [Target::OpenMultiplayer, Target::CloseSettings, Target::Quit] {
                 assert!(menu_buttons.iter().any(|b| b.target == target));
             }
             // The menu is drawn as a layer over everything else: its panel
@@ -1868,6 +2195,45 @@ fn the_classic_settings_menu_has_a_button_per_choice_and_steps_the_rest() {
 }
 
 #[test]
+fn classic_shows_each_setting_on_one_row_its_name_clear_of_its_buttons() {
+    let mut game = GameState::new();
+    game.clear_selection();
+    game.settings_open = true;
+    let layout = game.layout(Vec2::new(1280.0, 720.0));
+    for setting in Setting::ALL {
+        let buttons: Vec<&Button> = layout
+            .buttons
+            .iter()
+            .filter(|b| matches!(b.target, Target::SetSetting(s, _) if s == setting))
+            .collect();
+        let origin = layout
+            .shapes
+            .iter()
+            .find_map(|shape| match shape {
+                Shape::Text { origin, line, .. }
+                    if line.iter().any(|(t, _)| t.trim() == setting.name()) =>
+                {
+                    Some(*origin)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{setting:?}'s name"));
+        let name_end =
+            origin.x + crate::game::font::ui(BODY).width(&format!("{}  ", setting.name()));
+        for button in buttons {
+            assert!(
+                button.min.x >= name_end,
+                "{setting:?}: a button over its name"
+            );
+            assert!(
+                (button.min.y..=button.max.y).contains(&origin.y),
+                "{setting:?}: its buttons on another row"
+            );
+        }
+    }
+}
+
+#[test]
 fn the_settings_menu_quit_button_asks_the_app_to_quit() {
     let mut game = GameState::new();
     game.clear_selection();
@@ -1931,4 +2297,2387 @@ fn the_settings_menu_shows_every_setting_under_its_heading() {
     assert!(!other.iter().any(|line| line.contains("ALREADY")));
     let past_the_end = tooltip(Target::SetSetting(Setting::MaxQueuedTurns, 0));
     assert_shows(&past_the_end, "ALREADY 6 TURNS");
+}
+
+#[test]
+fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
+    let mut game = city_view();
+    game.units.clear();
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    game.open_barracks(0);
+    let tray = panel_strings(|panel| game.barracks_tray(0, panel));
+    assert_shows(&tray, "CAVALRY: 3 OF 3 LEFT (1 HORSES DEPOSIT × 3)");
+    assert_shows(&tray, "ARMORED: LOCKED - PUT A BARRACKS ON IRON");
+    let cavalry = find_button(&game, Target::BarracksBuild(BuildUnit::Cavalry));
+    assert_eq!(cavalry.state, ButtonState::Ready);
+    let armored = find_button(&game, Target::BarracksBuild(BuildUnit::Armored));
+    assert_eq!(armored.state, ButtonState::Disabled);
+    let tooltip: String = game
+        .tooltip_lines(&armored)
+        .into_iter()
+        .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
+        .collect();
+    assert!(
+        tooltip.contains("NEEDS IRON UNDER THE BARRACKS"),
+        "{tooltip}"
+    );
+    // A Barracks trains at its own pace: a Melee's card shows its 3 turns.
+    let melee = find_button(&game, Target::BarracksBuild(BuildUnit::Melee));
+    assert!(
+        melee.hint.ends_with(&format!("{TIME_ICON}3")),
+        "{}",
+        melee.hint
+    );
+}
+
+#[test]
+fn the_multiplayer_page_hosts_and_joins_from_the_menu() {
+    use super::network_menu::NetField;
+    let mut game = GameState::new();
+    game.clear_selection();
+    game.press_escape();
+    let click = |game: &mut GameState, target| {
+        game.handle_click(button_cursor(game, target), SCREEN, ClickMode::Normal)
+    };
+    click(&mut game, Target::OpenMultiplayer);
+    // The page takes the settings' place, fits the screen, and every button
+    // on it takes its own clicks.
+    let targets = [
+        Target::NetPlayers(3),
+        Target::EditNetField(NetField::Port),
+        Target::HostGame,
+        Target::EditNetField(NetField::Address),
+        Target::EditNetField(NetField::Code),
+        Target::JoinGame,
+        Target::CloseMultiplayer,
+        Target::CloseSettings,
+    ];
+    for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        let layout = game.layout(screen);
+        let &(min, max) = layout.panels.last().unwrap();
+        assert!(min.cmpge(Vec2::ZERO).all() && max.cmple(screen).all());
+        assert!(
+            !layout
+                .buttons
+                .iter()
+                .any(|b| matches!(b.target, Target::SetSetting(..)))
+        );
+        for target in targets {
+            let button = layout.buttons.iter().find(|b| b.target == target);
+            let button = button.unwrap_or_else(|| panic!("{target:?} shown"));
+            assert!(contains(min, max, button.min) && contains(min, max, button.max));
+            let middle = (button.min + button.max) / 2.0;
+            assert_eq!(layout.button_at(middle).unwrap().target, target);
+        }
+    }
+
+    // Two to seven players.
+    click(&mut game, Target::NetPlayers(3));
+    assert_eq!(game.net_menu.players, 3);
+    game.activate_target(Target::NetPlayers(99));
+    assert_eq!(game.net_menu.players, crate::game::MAX_PLAYERS);
+    game.activate_target(Target::NetPlayers(3));
+
+    // Joining wants an address and a code, typed in: a click on a field
+    // starts typing, and any other button ends it.
+    click(&mut game, Target::JoinGame);
+    assert_eq!(game.take_net_request(), None);
+    assert!(!game.net_menu.status.is_empty());
+    click(&mut game, Target::EditNetField(NetField::Address));
+    assert_eq!(game.net_field_editing(), Some(NetField::Address));
+    game.type_net_text("192.168.1.20:55741x");
+    game.net_field_backspace();
+    click(&mut game, Target::EditNetField(NetField::Code));
+    assert_eq!(game.net_field_editing(), Some(NetField::Code));
+    game.type_net_text("k7m 2qx");
+    click(&mut game, Target::JoinGame);
+    assert_eq!(game.net_field_editing(), None);
+    assert_eq!(
+        game.take_net_request(),
+        Some(NetRequest::Join {
+            address: "192.168.1.20:55741".into(),
+            code: "K7M2QX".into(),
+        })
+    );
+
+    // Hosting wants a port that is one.
+    game.set_net_field(NetField::Port, "");
+    click(&mut game, Target::EditNetField(NetField::Port));
+    game.type_net_text("port 0");
+    assert_eq!(game.net_menu.port, "0");
+    click(&mut game, Target::HostGame);
+    assert_eq!(game.take_net_request(), None);
+    game.set_net_field(NetField::Port, "55741");
+    click(&mut game, Target::HostGame);
+    assert_eq!(
+        game.take_net_request(),
+        Some(NetRequest::Host {
+            port: 55741,
+            players: 3
+        })
+    );
+
+    // What's typed stays through a new game; the menu opens on the
+    // settings again next time.
+    game.switch_scenario(Scenario::Cities);
+    assert_eq!(game.net_menu.address, "192.168.1.20:55741");
+    click(&mut game, Target::CloseMultiplayer);
+    assert!(game.settings_open && !game.net_menu.open);
+    click(&mut game, Target::OpenMultiplayer);
+    game.press_escape();
+    assert!(!game.settings_open && !game.net_menu.open);
+}
+
+#[test]
+fn the_multiplayer_page_in_a_network_game_shows_the_code_and_leaves() {
+    let mut host = GameState::host_game(3, &crate::game::Settings::default());
+    host.settings_open = true;
+    host.activate_target(Target::OpenMultiplayer);
+    host.set_host_address(55741, Some("192.168.1.20".parse().unwrap()));
+    let text = network_page_text(&host);
+    let code = host.join_code().unwrap().to_string();
+    assert!(text.contains("HOSTING AS BLUE"), "{text}");
+    assert!(text.contains(&format!("JOIN CODE  {code}")), "{text}");
+    assert!(text.contains("YOUR ADDRESS  192.168.1.20:55741"), "{text}");
+    assert!(text.contains("YOUR PUBLIC"), "{text}");
+    assert!(text.contains("PORT 55741 FORWARDED"), "{text}");
+    assert!(text.contains("SEATS OPEN: RED, GREEN"), "{text}");
+    // The code and the address each copy, and their buttons sit in the
+    // menu at either screen size.
+    for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        let layout = host.layout(screen);
+        let &(min, max) = layout.panels.last().unwrap();
+        assert!(min.cmpge(Vec2::ZERO).all() && max.cmple(screen).all());
+        for target in [Target::CopyJoinCode, Target::CopyHostAddress] {
+            let button = layout.buttons.iter().find(|b| b.target == target);
+            let button = button.unwrap_or_else(|| panic!("{target:?} shown"));
+            assert!(contains(min, max, button.min) && contains(min, max, button.max));
+            assert_eq!(layout.button_at(button.min + 1.0).unwrap().target, target);
+        }
+    }
+    for (target, copied) in [
+        (Target::CopyJoinCode, code.as_str()),
+        (Target::CopyHostAddress, "192.168.1.20:55741"),
+    ] {
+        host.handle_click(button_cursor(&host, target), SCREEN, ClickMode::Normal);
+        assert_eq!(
+            host.take_net_request(),
+            Some(NetRequest::Copy(copied.into()))
+        );
+    }
+    // With no address on a local network, the page says so, and there's
+    // nothing to copy but the code.
+    host.set_host_address(55741, None);
+    let text = network_page_text(&host);
+    assert!(
+        text.contains("NO LOCAL NETWORK ADDRESS FOUND - PORT 55741"),
+        "{text}"
+    );
+    let layout = host.layout(SCREEN);
+    assert!(
+        layout
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::CopyJoinCode)
+    );
+    assert!(
+        !layout
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::CopyHostAddress)
+    );
+    assert!(
+        !host
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::HostGame)
+    );
+    host.handle_click(
+        button_cursor(&host, Target::LeaveGame),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(host.take_net_request(), Some(NetRequest::Leave));
+    assert_eq!(host.net_menu.host, None, "the next game isn't hosted yet");
+}
+
+/// The Multiplayer page's text, a row to a line.
+fn network_page_text(game: &GameState) -> String {
+    game.settings_panel_content()
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Text(_, line) | Row::TitleWithButton(line, _) => {
+                Some(line.iter().map(|(s, _)| s.as_str()).collect::<String>())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn classic_fields_paste_and_copy() {
+    use super::network_menu::NetField;
+    let mut game = GameState::new();
+    game.settings_open = true;
+    game.activate_target(Target::OpenMultiplayer);
+    // Nothing is typed into: a paste goes nowhere, and there's nothing to
+    // copy.
+    game.paste_net_text("K7M2QX");
+    assert_eq!(game.net_menu.code, "");
+    assert_eq!(game.copy_net_field(false), None);
+
+    // Whitespace around a code goes, and it's upper case.
+    game.activate_target(Target::EditNetField(NetField::Code));
+    game.paste_net_text("  k7m2qx\r\n");
+    assert_eq!(game.net_menu.code, "K7M2QX");
+    // A paste goes after what's there, no longer than the field takes.
+    game.paste_net_text("abcdefghijk");
+    assert_eq!(game.net_menu.code, "K7M2QXABCDEF");
+    assert_eq!(game.copy_net_field(false).as_deref(), Some("K7M2QXABCDEF"));
+    // Cutting copies and empties it.
+    assert_eq!(game.copy_net_field(true).as_deref(), Some("K7M2QXABCDEF"));
+    assert_eq!(game.net_menu.code, "");
+
+    // An address with its port, as the host copied it.
+    game.set_net_field(NetField::Address, "");
+    game.activate_target(Target::EditNetField(NetField::Address));
+    game.paste_net_text("\t192.168.1.20:55741 \n");
+    assert_eq!(game.net_menu.address, "192.168.1.20:55741");
+    let long = "a".repeat(100);
+    game.set_net_field(NetField::Address, "");
+    game.paste_net_text(&long);
+    assert_eq!(game.net_menu.address, long[..64]);
+
+    // A port takes digits only.
+    game.set_net_field(NetField::Port, "");
+    game.activate_target(Target::EditNetField(NetField::Port));
+    game.paste_net_text(" 55741\n");
+    assert_eq!(game.net_menu.port, "55741");
+    game.paste_net_text("9");
+    assert_eq!(game.net_menu.port, "55741", "five digits at most");
+}
+
+/// A clipboard for a headless ImGui context: the text it holds.
+struct TestClipboard(std::rc::Rc<std::cell::RefCell<String>>);
+
+impl ::imgui::ClipboardBackend for TestClipboard {
+    fn get(&mut self) -> Option<String> {
+        Some(self.0.borrow().clone())
+    }
+
+    fn set(&mut self, value: &str) {
+        *self.0.borrow_mut() = value.to_string();
+    }
+}
+
+#[test]
+fn imgui_fields_paste_copy_and_cut_through_the_clipboard() {
+    use super::network_menu::NetField;
+    use ::imgui::Key;
+    let mut game = GameState::new();
+    game.clear_selection();
+    game.press_escape();
+    game.activate_target(Target::OpenMultiplayer);
+    let mut screen = ImGuiScreen::new();
+    let clipboard = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    screen
+        .context
+        .set_clipboard_backend(TestClipboard(clipboard.clone()));
+
+    // A pasted code loses the whitespace and dash, and stops at the
+    // field's length, in the box as well as the menu.
+    *clipboard.borrow_mut() = "  k7m2qx-extra-long-code \n".into();
+    screen.click(&mut game, Target::EditNetField(NetField::Code));
+    screen.ctrl_key(&mut game, Key::V);
+    assert_eq!(game.net_menu.code, "K7M2QXEXTRAL");
+    // Select it all and copy it; cut it, and it's gone.
+    clipboard.borrow_mut().clear();
+    screen.ctrl_key(&mut game, Key::A);
+    screen.ctrl_key(&mut game, Key::C);
+    assert_eq!(*clipboard.borrow(), "K7M2QXEXTRAL");
+    clipboard.borrow_mut().clear();
+    screen.ctrl_key(&mut game, Key::A);
+    screen.ctrl_key(&mut game, Key::X);
+    assert_eq!(*clipboard.borrow(), "K7M2QXEXTRAL");
+    assert_eq!(game.net_menu.code, "");
+
+    // An address with its port, into an emptied box.
+    *clipboard.borrow_mut() = "\t203.0.113.9:55741\r\n".into();
+    screen.click(&mut game, Target::EditNetField(NetField::Address));
+    screen.ctrl_key(&mut game, Key::A);
+    screen.ctrl_key(&mut game, Key::V);
+    assert_eq!(game.net_menu.address, "203.0.113.9:55741");
+}
+
+#[test]
+fn imgui_copy_buttons_copy_the_code_and_address() {
+    let mut host = GameState::host_game(2, &crate::game::Settings::default());
+    host.settings_open = true;
+    host.activate_target(Target::OpenMultiplayer);
+    host.set_host_address(55741, Some("192.168.1.20".parse().unwrap()));
+    let code = host.join_code().unwrap().to_string();
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut host, Target::CopyJoinCode);
+    assert_eq!(host.take_net_request(), Some(NetRequest::Copy(code)));
+    screen.click(&mut host, Target::CopyHostAddress);
+    assert_eq!(
+        host.take_net_request(),
+        Some(NetRequest::Copy("192.168.1.20:55741".into()))
+    );
+}
+
+/// The ImGui presentation without a window: a context with a font, and the
+/// layout it keeps from frame to frame, as `App` has them.
+struct ImGuiScreen {
+    context: ::imgui::Context,
+    fonts: [::imgui::FontId; 3],
+    layout: ImGuiLayoutState,
+    /// The window's size.
+    size: Vec2,
+    /// Last, to drop after the context.
+    _one: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ImGuiScreen {
+    fn new() -> Self {
+        Self::with_size(SCREEN)
+    }
+
+    /// The same, in a window of `size`.
+    fn with_size(size: Vec2) -> Self {
+        Self::build(size, false)
+    }
+
+    /// The same with the game's fonts and style (`style_imgui`), so text
+    /// measures as it does in play: for tests of where text goes.
+    fn styled(size: Vec2) -> Self {
+        Self::build(size, true)
+    }
+
+    fn build(size: Vec2, styled: bool) -> Self {
+        let one = imgui::one_context_at_a_time();
+        let mut context = ::imgui::Context::create();
+        context.set_ini_filename(None);
+        context.io_mut().display_size = size.to_array();
+        context
+            .io_mut()
+            .config_flags
+            .insert(::imgui::ConfigFlags::DOCKING_ENABLE);
+        let fonts = if styled {
+            context.io_mut().config_windows_resize_from_edges = false;
+            style_imgui(&mut context)
+        } else {
+            let font = context
+                .fonts()
+                .add_font(&[::imgui::FontSource::DefaultFontData { config: None }]);
+            [font; 3]
+        };
+        context.fonts().build_rgba32_texture();
+        Self {
+            context,
+            fonts,
+            layout: ImGuiLayoutState::default(),
+            size,
+            _one: one,
+        }
+    }
+
+    /// Draws a frame with the mouse at `mouse` (window pixels; `None`: off
+    /// the window) and its left button `down`, carrying out what the panels
+    /// were asked to do, as `App` does.
+    fn frame(&mut self, game: &mut GameState, mouse: Option<Vec2>, down: bool) {
+        let io = self.context.io_mut();
+        io.delta_time = 1.0 / 60.0;
+        io.add_mouse_pos_event(mouse.map_or([f32::MIN; 2], |m| m.to_array()));
+        io.add_mouse_button_event(::imgui::MouseButton::Left, down);
+        imgui::DRAWN_BUTTONS.with_borrow_mut(Vec::clear);
+        imgui::DRAWN_MARKS.with_borrow_mut(Vec::clear);
+        let ui = self.context.frame();
+        game.draw_imgui(ui, self.size, mouse, &self.fonts, &mut self.layout);
+        self.context.render();
+    }
+
+    /// A few frames with the mouse away, for the panels to settle where
+    /// the dock puts them.
+    fn settle(&mut self, game: &mut GameState) {
+        for _ in 0..4 {
+            self.frame(game, None, false);
+        }
+    }
+
+    /// The middle of the button ImGui drew for `target` last frame.
+    fn button(&self, target: Target) -> Option<Vec2> {
+        imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+            drawn
+                .iter()
+                .find(|(drawn, ..)| *drawn == target)
+                .map(|&(_, min, max)| (Vec2::from(min) + Vec2::from(max)) / 2.0)
+        })
+    }
+
+    /// Moves the mouse onto `target`'s button and clicks it. Panics if
+    /// ImGui doesn't show that button.
+    fn click(&mut self, game: &mut GameState, target: Target) {
+        self.settle(game);
+        let at = self
+            .button(target)
+            .unwrap_or_else(|| panic!("ImGui shows no {target:?} button"));
+        self.frame(game, Some(at), false);
+        self.frame(game, Some(at), true);
+        self.frame(game, Some(at), false);
+    }
+
+    /// Presses Ctrl, or lets it go, with the mouse away: held, the panels
+    /// show their title bars and grips to be arranged.
+    fn hold_ctrl(&mut self, game: &mut GameState, down: bool) {
+        let io = self.context.io_mut();
+        io.add_key_event(::imgui::Key::ModCtrl, down);
+        io.add_key_event(::imgui::Key::LeftCtrl, down);
+        self.frame(game, None, false);
+    }
+
+    /// Drags with the left button from `from` to `to`, a few frames on the
+    /// way, and lets go.
+    fn drag(&mut self, game: &mut GameState, from: Vec2, to: Vec2) {
+        self.frame(game, Some(from), false);
+        self.frame(game, Some(from), true);
+        for step in 1..=4 {
+            self.frame(game, Some(from.lerp(to, step as f32 / 4.0)), true);
+        }
+        self.frame(game, Some(to), false);
+    }
+
+    /// Double-clicks at `at`, then moves the mouse away and lets the
+    /// panels settle.
+    fn double_click(&mut self, game: &mut GameState, at: Vec2) {
+        self.frame(game, Some(at), false);
+        for down in [true, false, true, false] {
+            self.frame(game, Some(at), down);
+        }
+        self.settle(game);
+    }
+
+    /// Presses and lets go of Ctrl+`key`, a frame each, with the mouse
+    /// away: a shortcut for the text box that has the keys.
+    fn ctrl_key(&mut self, game: &mut GameState, key: ::imgui::Key) {
+        for down in [true, false] {
+            let io = self.context.io_mut();
+            io.add_key_event(::imgui::Key::ModCtrl, down);
+            io.add_key_event(::imgui::Key::LeftCtrl, down);
+            io.add_key_event(key, down);
+            self.frame(game, None, false);
+        }
+    }
+
+    /// Captures `game`'s selection panel in a new outer box, as dragging it
+    /// there with Ctrl held does, and lets it dock.
+    fn capture_selection(&mut self, game: &mut GameState) {
+        self.layout.add_outer_box(self.size);
+        self.settle(game);
+        self.layout.capture_selection(game);
+        self.settle(game);
+        assert_eq!(self.layout.captured(), 1, "the panel stays in its box");
+    }
+
+    /// The tooltip of each button ImGui draws for `target`, as a line of
+    /// text, with the mouse on it.
+    fn tooltips(&mut self, game: &mut GameState, target: Target) -> Vec<String> {
+        self.settle(game);
+        let drawn: Vec<Vec2> = imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+            drawn
+                .iter()
+                .filter(|(drawn, ..)| *drawn == target)
+                .map(|&(_, min, max)| (Vec2::from(min) + Vec2::from(max)) / 2.0)
+                .collect()
+        });
+        drawn
+            .into_iter()
+            .map(|at| {
+                self.frame(game, Some(at), false);
+                imgui::SHOWN_TOOLTIPS.with_borrow_mut(Vec::clear);
+                self.frame(game, Some(at), false);
+                imgui::SHOWN_TOOLTIPS
+                    .with_borrow_mut(std::mem::take)
+                    .concat()
+                    .join(" ")
+            })
+            .collect()
+    }
+
+    /// Whether ImGui keeps a mouse press at `at` from the map (`App` then
+    /// doesn't pass it on).
+    fn captures_mouse_at(&mut self, game: &mut GameState, at: Vec2) -> bool {
+        self.frame(game, Some(at), false);
+        self.frame(game, Some(at), false);
+        self.context.io().want_capture_mouse
+    }
+}
+
+/// The player's units, by index.
+fn player_units(game: &GameState) -> Vec<usize> {
+    (0..game.units.len())
+        .filter(|&i| game.units[i].team == PLAYER_TEAM)
+        .collect()
+}
+
+#[test]
+fn imgui_captured_unit_tooltips_describe_that_unit() {
+    let mut game = GameState::new();
+    let units = player_units(&game);
+    let (other, captured) = (units[0], units[1]);
+    game.units[captured].ability_cooldown = 2;
+    game.set_selection(vec![captured]);
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    let ability = Target::Unit(UnitAction::Ability);
+    // Nothing selected: the captured panel's buttons still say what they
+    // would do for its unit.
+    game.set_selection(Vec::new());
+    let tips = screen.tooltips(&mut game, ability);
+    assert_eq!(tips.len(), 1, "{tips:?}");
+    assert!(tips[0].contains("READY IN"), "{tips:?}");
+    // Another unit selected: each panel describes its own.
+    game.set_selection(vec![other]);
+    let tips = screen.tooltips(&mut game, ability);
+    assert_eq!(tips.len(), 2, "{tips:?}");
+    assert_eq!(
+        tips.iter().filter(|tip| tip.contains("READY IN")).count(),
+        1,
+        "{tips:?}"
+    );
+}
+
+#[test]
+fn imgui_captured_unit_button_selects_its_unit() {
+    let mut game = GameState::city_scenario();
+    let unit = player_units(&game)[0];
+    game.set_selection(vec![unit]);
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    game.select_city();
+    screen.click(&mut game, Target::Unit(UnitAction::Move));
+    assert_eq!(game.selected, Some(unit));
+    assert_eq!(game.selected_city, None, "the city view closes");
+    assert_eq!(game.ui_click_mode, Some(ClickMode::Move));
+}
+
+#[test]
+fn imgui_captured_panels_clear_when_a_key_switches_the_scenario() {
+    let mut game = GameState::city_scenario();
+    game.select_city();
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    // What F2 does: not a Debug panel button.
+    game.switch_scenario(Scenario::Cities);
+    screen.settle(&mut game);
+    assert_eq!(screen.layout.captured(), 0);
+    // The box stays, and takes the new game's panel.
+    game.select_city();
+    screen.capture_selection(&mut game);
+}
+
+/// A map tile near the open city where a click lands on the map, not a
+/// panel: `covered` says whether a panel is at a point.
+fn open_map_tile(game: &GameState, mut covered: impl FnMut(Vec2) -> bool) -> Hex {
+    let city = game.cities[game.selected_city.expect("city view open")].pos;
+    let mut tiles: Vec<Hex> = game
+        .grid
+        .all_hexes()
+        .filter(|h| (2..=4).contains(&h.distance(city)))
+        .collect();
+    tiles.sort_by_key(|h| (h.distance(city), h.q, h.r));
+    tiles
+        .into_iter()
+        .find(|&h| {
+            let at = hex_cursor(game, h);
+            (0.0..SCREEN.x).contains(&at.x) && (0.0..SCREEN.y).contains(&at.y) && !covered(at)
+        })
+        .expect("an open tile on screen")
+}
+
+/// How many jobs the open city has placed for its workers, and what its
+/// side has in its stockpile: what stopping placing mustn't change.
+fn placed_and_paid(game: &GameState) -> (usize, Stock) {
+    let city = game.selected_city.expect("city view open");
+    (
+        game.cities[city].worker_jobs.len(),
+        game.stock(game.cities[city].team),
+    )
+}
+
+#[test]
+fn placing_shows_a_cancel_button_that_stops_it_with_nothing_placed() {
+    let mut game = city_view();
+    let before = placed_and_paid(&game);
+    let card = catalog_cursor(&mut game, Target::Building(Building::Barracks));
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert_eq!(game.placing_job, Some(JobKind::Build(Building::Barracks)));
+    // The picked card is gold, and the tray says how to stop.
+    let layout = game.layout(SCREEN);
+    let armed = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::Building(Building::Barracks))
+        .expect("the picked card stays in view");
+    assert_eq!(armed.state, ButtonState::Queued);
+    let cancel = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::CancelPlacing)
+        .expect("a cancel button while placing");
+    assert_eq!(cancel.label, "CANCEL PLACING BARRACKS");
+    assert_eq!(
+        layout
+            .button_at((cancel.min + cancel.max) / 2.0)
+            .map(|b| b.target),
+        Some(Target::CancelPlacing)
+    );
+    let tray = layout
+        .panels
+        .iter()
+        .find(|panel| {
+            contains(panel.0, panel.1, cancel.min) && contains(panel.0, panel.1, cancel.max)
+        })
+        .expect("inside the city tray");
+    assert!(
+        contains(tray.0, tray.1, armed.min),
+        "the same panel as the card"
+    );
+    let text = panel_strings(|p| game.city_tray(0, p));
+    assert_shows(
+        &text,
+        "PLACING BARRACKS: CLICK A LIT TILE · RIGHT-CLICK OR ESC TO CANCEL",
+    );
+    // Map clicks place rather than assign, so that hint makes way.
+    assert!(
+        !text
+            .iter()
+            .any(|line| line.contains("CLICK MANAGER TO MOVE"))
+    );
+    assert!(
+        game.notice.contains("RIGHT-CLICK OR ESC TO CANCEL"),
+        "{}",
+        game.notice
+    );
+    assert!(!game.notice.contains("BARRACKSS"), "{}", game.notice);
+    let tooltip = line_strings(game.tooltip_lines(cancel).into_iter().map(|(_, l)| l)).join(" ");
+    assert!(tooltip.contains("NOTHING IS PLACED OR PAID"), "{tooltip}");
+
+    game.handle_click(
+        button_cursor(&game, Target::CancelPlacing),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(game.placing_job, None);
+    assert_eq!(game.selected_city, Some(0), "the city stays open");
+    assert_eq!(placed_and_paid(&game), before);
+    assert_eq!(game.notice, "STOPPED PLACING BARRACKS");
+    assert!(
+        !game
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::CancelPlacing),
+        "gone once nothing is being placed"
+    );
+}
+
+#[test]
+fn imgui_queues_a_build_the_side_cannot_pay_for_and_shows_it_waiting() {
+    let mut game = city_view();
+    game.stockpiles[Team::Blue.index()] = Stock::default();
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::Build(BuildUnit::Siege));
+    let city = game.selected_city.unwrap();
+    assert_eq!(
+        game.cities[city].queue,
+        [Queued::new(Build::Unit(BuildUnit::Siege))]
+    );
+    assert!(game.notice.contains("WAITS FOR"), "{}", game.notice);
+    // The queue's row is drawn, from the shared content that marks it
+    // waiting; the tray says what the city waits for.
+    screen.settle(&mut game);
+    assert!(
+        screen
+            .button(Target::QueueItem(QueueKind::City, 0))
+            .is_some()
+    );
+    let mut queue = PanelBuilder::default();
+    game.city_queue_panel(city, usize::MAX, &mut queue);
+    let waiting: Vec<bool> = queue
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::QueueItem(item) => Some(item.waiting),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(waiting, [true]);
+    let mut tray = PanelBuilder::default();
+    game.city_tray(city, &mut tray);
+    let text = line_strings(tray.rows.iter().filter_map(|row| match row {
+        Row::Text(_, line) => Some(line.clone()),
+        _ => None,
+    }))
+    .join(" ");
+    assert!(text.contains("SIEGE WAITS FOR"), "{text}");
+    assert!(text.contains("NOTHING IT CAN PAY FOR"), "{text}");
+}
+
+#[test]
+fn the_imgui_cancel_button_stops_placing() {
+    let mut game = city_view();
+    let before = placed_and_paid(&game);
+    let mut screen = ImGuiScreen::new();
+    for target in [
+        Target::WorkerJob(JobKind::Road),
+        Target::WorkerJob(JobKind::Wall),
+        Target::Building(Building::Mill),
+    ] {
+        game.activate_target(target);
+        assert!(game.placing_job.is_some(), "{target:?}");
+        screen.settle(&mut game);
+        let at = screen.button(Target::CancelPlacing).expect("shown");
+        assert!(
+            screen.captures_mouse_at(&mut game, at),
+            "a right-click there is ImGui's, not the map's"
+        );
+        screen.click(&mut game, Target::CancelPlacing);
+        assert_eq!(game.placing_job, None, "{target:?}");
+        assert_eq!(game.selected_city, Some(0));
+        assert_eq!(placed_and_paid(&game), before);
+        screen.settle(&mut game);
+        assert_eq!(screen.button(Target::CancelPlacing), None);
+    }
+}
+
+#[test]
+fn escape_or_a_right_click_on_the_map_stops_placing_in_both_presentations() {
+    let mut game = city_view();
+    let before = placed_and_paid(&game);
+    let mut screen = ImGuiScreen::new();
+    for imgui in [false, true] {
+        for kind in [
+            JobKind::Road,
+            JobKind::Gate,
+            JobKind::Build(Building::Barracks),
+        ] {
+            // Escape: `App` calls `press_escape` in either presentation
+            // (unless a text box has the keys, and none is open here).
+            game.arm_worker_job(kind);
+            assert_eq!(game.placing_job, Some(kind));
+            game.press_escape();
+            assert_eq!(game.placing_job, None, "{kind:?}");
+            assert_eq!(game.selected_city, Some(0), "Escape stops placing first");
+            assert_eq!(game.notice, format!("STOPPED PLACING {}", kind.name()));
+
+            // A right-click on the map. ImGui keeps a click over one of its
+            // windows (`want_capture_mouse`); classic passes every
+            // right-click to `handle_context_click`.
+            game.arm_worker_job(kind);
+            let tile = if imgui {
+                screen.settle(&mut game);
+                let mut looking = game.clone();
+                let tile = open_map_tile(&game, |at| screen.captures_mouse_at(&mut looking, at));
+                let at = hex_cursor(&game, tile);
+                assert!(!screen.captures_mouse_at(&mut game, at));
+                tile
+            } else {
+                open_map_tile(&game, |at| game.layout(SCREEN).covers(to_ui(at, SCREEN)))
+            };
+            assert!(game.notice.starts_with("PLACING"), "{}", game.notice);
+            game.handle_context_click(hex_cursor(&game, tile), SCREEN, false, false);
+            assert_eq!(game.placing_job, None, "{kind:?}, imgui {imgui}");
+            assert_eq!(game.selected_city, Some(0));
+            // The status bar says so, as after Escape, rather than still
+            // telling the player how to cancel.
+            assert_eq!(game.notice, format!("STOPPED PLACING {}", kind.name()));
+            assert_eq!(placed_and_paid(&game), before, "{kind:?}");
+        }
+    }
+    // Escape again closes the city.
+    game.press_escape();
+    assert_eq!(game.selected_city, None);
+}
+
+#[test]
+fn escape_and_right_click_stop_placing_in_a_network_game() {
+    let mut host = GameState::host_game(2, &crate::game::Settings::default());
+    let (_, welcome) = host.welcome(&crate::game::NetMessage::Hello {
+        version: crate::game::PROTOCOL_VERSION,
+    });
+    let guest = GameState::join_game(&welcome).expect("joins");
+    for mut game in [host, guest] {
+        let team = game.local_team;
+        let city = game.cities.iter().position(|c| c.team == team).unwrap();
+        game.open_city(city);
+        game.update(10.0);
+        game.cities[city].workers = game.cities[city].workers.max(1);
+        game.fund(team);
+        let plan = game.team_plan(team);
+        game.arm_worker_job(JobKind::Road);
+        assert_eq!(game.placing_job, Some(JobKind::Road), "{}", game.notice);
+        game.press_escape();
+        assert_eq!(game.placing_job, None);
+        assert_eq!(game.selected_city, Some(city));
+        game.arm_worker_job(JobKind::Road);
+        let tile = open_map_tile(&game, |at| game.layout(SCREEN).covers(to_ui(at, SCREEN)));
+        game.handle_context_click(hex_cursor(&game, tile), SCREEN, false, false);
+        assert_eq!(game.placing_job, None);
+        assert_eq!(game.team_plan(team), plan, "nothing planned");
+    }
+}
+
+/// The classic layout's button for `target`, and the queue panel it's in:
+/// the panel (from `layout.panels`) holding the queue's rows.
+fn queue_panel_button(layout: &Layout, target: Target) -> (Rect, Rect) {
+    let button = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == target)
+        .unwrap_or_else(|| panic!("no {target:?} button"));
+    let row = layout
+        .queue_items
+        .iter()
+        .find(|row| row.kind != QueueKind::Priority)
+        .expect("queue rows");
+    let &(min, max) = layout
+        .panels
+        .iter()
+        .find(|&&(min, max)| contains(min, max, row.min) && contains(min, max, row.max))
+        .expect("the queue panel");
+    (
+        Rect {
+            min: button.min,
+            max: button.max,
+        },
+        Rect { min, max },
+    )
+}
+
+#[test]
+fn each_queue_panel_has_a_clear_button_that_refunds_everything() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    for _ in 0..6 {
+        game.queue_selected_city_unit(BuildUnit::Melee);
+    }
+    game.queue_selected_city_growth();
+    game.queue_selected_city_growth();
+    // As turns' economies would leave it: the head paid for and under way,
+    // and a Grow paid for.
+    game.cities[city].queue[0] = Queued::worked(Build::Unit(BuildUnit::Melee), 1);
+    game.cities[city].queue[6].paid = true;
+    let mut one_by_one = game.clone();
+    while !one_by_one.cities[city].queue.is_empty() {
+        one_by_one.remove_selected_city_queue_item(0);
+    }
+
+    // A long queue scrolls; its Clear button stays on the title's line,
+    // clear of the rows, their Xs and the scrollbar, wherever it's scrolled.
+    for scroll in [0, 3, 100] {
+        game.city_queue_scroll = scroll;
+        let layout = game.layout(SCREEN);
+        let (clear, panel) = queue_panel_button(&layout, Target::ClearCityQueue);
+        assert!(
+            contains(panel.min, panel.max, clear.min) && contains(panel.min, panel.max, clear.max)
+        );
+        let bar = layout.queue_scrollbars.first().expect("the queue scrolls");
+        assert!(!clear.overlaps(
+            Rect {
+                min: bar.track_min,
+                max: bar.track_max
+            },
+            0.0
+        ));
+        for row in &layout.queue_items {
+            assert!(!clear.overlaps(
+                Rect {
+                    min: row.min,
+                    max: row.max
+                },
+                0.0
+            ));
+        }
+        let middle = (clear.min + clear.max) / 2.0;
+        assert_eq!(
+            layout.button_at(middle).map(|b| b.target),
+            Some(Target::ClearCityQueue)
+        );
+        let first = layout
+            .queue_items
+            .iter()
+            .find(|row| row.kind == QueueKind::City);
+        assert!(clear.max.y > first.unwrap().max.y, "above the rows");
+    }
+    // Hover says what it does.
+    let tooltip = |game: &GameState, target| {
+        let layout = game.layout(SCREEN);
+        let button = layout.buttons.iter().find(|b| b.target == target).unwrap();
+        line_strings(game.tooltip_lines(button).into_iter().map(|(_, l)| l)).join(" ")
+    };
+    let text = tooltip(&game, Target::ClearCityQueue);
+    assert!(text.contains("EACH REFUNDED"), "{text}");
+
+    game.handle_click(
+        button_cursor(&game, Target::ClearCityQueue),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(game.cities[city].queue.is_empty());
+    assert_eq!(game.stock(Team::Blue), one_by_one.stock(Team::Blue));
+    assert_eq!(game.city_queue_scroll, 0);
+    assert!(
+        !game
+            .layout(SCREEN)
+            .buttons
+            .iter()
+            .any(|b| b.target == Target::ClearCityQueue),
+        "no queue, no panel"
+    );
+
+    // The Barracks queue, in its own view.
+    game.cities[city].barracks = Some(Hex::new(-2, 0));
+    game.open_barracks(city);
+    for build in [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege] {
+        game.queue_selected_barracks_unit(build);
+    }
+    game.cities[city].barracks_queue[0].paid = true;
+    let mut one_by_one = game.clone();
+    while !one_by_one.cities[city].barracks_queue.is_empty() {
+        one_by_one.remove_selected_barracks_queue_item(0);
+    }
+    let layout = game.layout(SCREEN);
+    let (clear, panel) = queue_panel_button(&layout, Target::ClearBarracksQueue);
+    assert!(contains(panel.min, panel.max, clear.min) && contains(panel.min, panel.max, clear.max));
+    game.handle_click(
+        button_cursor(&game, Target::ClearBarracksQueue),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(game.cities[city].barracks_queue.is_empty());
+    assert_eq!(game.stock(Team::Blue), one_by_one.stock(Team::Blue));
+}
+
+#[test]
+fn the_clear_button_is_dimmed_while_a_turn_plays_out() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.queue_selected_city_unit(BuildUnit::Melee);
+    game.resolve_turn();
+    assert!(game.is_resolving());
+    let layout = game.layout(SCREEN);
+    let clear = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::ClearCityQueue)
+        .expect("shown");
+    assert_eq!(clear.state, ButtonState::Disabled);
+    let why = line_strings(game.tooltip_lines(clear).into_iter().map(|(_, l)| l)).join(" ");
+    assert!(why.contains("NOT WHILE THE TURN PLAYS OUT"), "{why}");
+    game.activate_target(Target::ClearCityQueue);
+    assert_eq!(game.cities[city].queue.len(), 1);
+}
+
+#[test]
+fn the_imgui_clear_buttons_empty_their_queues() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    for _ in 0..4 {
+        game.queue_selected_city_unit(BuildUnit::Ranged);
+    }
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::ClearCityQueue);
+    assert!(game.cities[city].queue.is_empty());
+
+    game.cities[city].barracks = Some(Hex::new(-2, 0));
+    game.open_barracks(city);
+    game.queue_selected_barracks_unit(BuildUnit::Melee);
+    game.queue_selected_barracks_unit(BuildUnit::Melee);
+    screen.click(&mut game, Target::ClearBarracksQueue);
+    assert!(game.cities[city].barracks_queue.is_empty());
+    let stock = game.stock(Team::Blue);
+    assert_eq!(stock, Stock::whole(999, 999, 999), "all refunded");
+}
+
+/// A guest in a network game who has ended the first turn and waits for
+/// the host's plan, with a Barracks by its city (something in its queue)
+/// and something queued in the city: every kind of view has something to
+/// show.
+fn waiting_guest() -> GameState {
+    use crate::game::{NetMessage, PROTOCOL_VERSION, Settings};
+    let mut host = GameState::host_game(2, &Settings::default());
+    let (_, welcome) = host.welcome(&NetMessage::Hello {
+        version: PROTOCOL_VERSION,
+    });
+    let mut guest = GameState::join_game(&welcome).expect("joins");
+    guest.update(0.0);
+    let team = guest.local_team;
+    let city = guest.cities.iter().position(|c| c.team == team).unwrap();
+    let worked = guest.cities[city].worked().collect::<Vec<_>>();
+    let pos = guest.cities[city].pos;
+    let site = pos
+        .neighbors()
+        .into_iter()
+        .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h) && !worked.contains(&h))
+        .unwrap();
+    guest.cities[city].barracks = Some(site);
+    guest.cities[city].barracks_queue = vec![Queued::new(BuildUnit::Melee)];
+    guest.fund(team);
+    guest.open_city(city);
+    guest.queue_selected_city_gather();
+    guest.queue_selected_city_unit(BuildUnit::Ranged);
+    guest.end_planning();
+    assert!(guest.waiting_for_peers(), "{}", guest.notice);
+    guest
+}
+
+/// Every view a waiting player can open: their city, its Barracks and
+/// interior, and one of their units.
+const WAITING_VIEWS: [&str; 4] = ["city", "barracks", "interior", "unit"];
+
+/// Opens `view` (one of `WAITING_VIEWS`) on the player's first city or
+/// unit, from nothing open.
+fn open_view(game: &mut GameState, view: &str) {
+    let team = game.local_team;
+    let city = game.cities.iter().position(|c| c.team == team).unwrap();
+    let unit = game.units.iter().position(|u| u.team == team).unwrap();
+    game.leave_city_view();
+    game.set_selection(Vec::new());
+    match view {
+        "city" => game.open_city(city),
+        "barracks" => game.open_barracks(city),
+        "interior" => game.open_city_interior(city),
+        _ => game.set_selection(vec![unit]),
+    }
+}
+
+#[test]
+fn waiting_for_the_others_the_classic_panels_show_but_change_nothing() {
+    let mut game = waiting_guest();
+    let team = game.local_team;
+    let plan = game.team_plan(team);
+    // The turn still being planned is the one named, not the last.
+    let top = game.layout(SCREEN);
+    let turn = top
+        .shapes
+        .iter()
+        .any(|s| matches!(s, Shape::Text { line, .. } if line.iter().any(|(t, _)| t == "TURN 1")));
+    assert!(turn, "the turn being planned");
+    for view in WAITING_VIEWS {
+        open_view(&mut game, view);
+        let layout = game.layout(SCREEN);
+        let changing: Vec<&Button> = layout
+            .buttons
+            .iter()
+            .filter(|b| b.target.changes_plan())
+            .collect();
+        assert!(!changing.is_empty(), "{view}: something to refuse");
+        for button in &changing {
+            let target = button.target;
+            assert_eq!(button.state, ButtonState::Disabled, "{view}: {target:?}");
+            let why = line_strings(game.tooltip_lines(button).into_iter().map(|(_, l)| l));
+            assert!(
+                why.join(" ").contains(tooltips::PLAN_SENT),
+                "{view}: {target:?} says why: {why:?}"
+            );
+        }
+        // Looking stays open.
+        let looking = |t: Target| {
+            matches!(
+                t,
+                Target::OpenInterior
+                    | Target::OpenBarracks
+                    | Target::OpenCity
+                    | Target::ToggleYields
+            )
+        };
+        for button in layout.buttons.iter().filter(|b| looking(b.target)) {
+            let target = button.target;
+            assert_ne!(button.state, ButtonState::Disabled, "{view}: {target:?}");
+        }
+        // Clicking every button, or dragging a queue row, changes nothing.
+        let targets: Vec<Target> = changing.iter().map(|b| b.target).collect();
+        for target in targets {
+            let at = button_cursor(&game, target);
+            game.handle_click(at, SCREEN, ClickMode::Normal);
+            assert_eq!(game.team_plan(team), plan, "{view}: {target:?}");
+        }
+        if let Some(row) = layout.queue_items.first() {
+            let body = (row.min + Vec2::new(row.body_max_x, row.max.y)) / 2.0;
+            let at = to_ui(body, SCREEN);
+            assert!(!game.start_queue_drag_at(at, SCREEN), "{view}: no dragging");
+        }
+    }
+    assert!(game.waiting_for_peers());
+}
+
+#[test]
+fn waiting_for_the_others_the_imgui_panels_show_but_change_nothing() {
+    let mut game = waiting_guest();
+    let team = game.local_team;
+    let plan = game.team_plan(team);
+    let mut screen = ImGuiScreen::new();
+    for view in WAITING_VIEWS {
+        open_view(&mut game, view);
+        screen.settle(&mut game);
+        let drawn: Vec<Target> = imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+            drawn
+                .iter()
+                .map(|&(target, ..)| target)
+                .filter(|t| t.changes_plan())
+                .collect()
+        });
+        assert!(!drawn.is_empty(), "{view}: something to refuse");
+        for target in drawn {
+            // Some of a long list scroll out of sight as others are tried.
+            screen.settle(&mut game);
+            if screen.button(target).is_none() {
+                continue;
+            }
+            screen.click(&mut game, target);
+            assert_eq!(game.team_plan(team), plan, "{view}: {target:?}");
+        }
+        // Looking stays open: the city's interior button still works. (A
+        // click on a card half scrolled out of the catalog can land on the
+        // button under it, which may have opened the Barracks.)
+        if view == "city" {
+            open_view(&mut game, view);
+            screen.click(&mut game, Target::OpenInterior);
+            assert!(game.interior_view.is_some());
+        }
+    }
+    assert!(game.waiting_for_peers());
+}
+
+#[test]
+fn the_waiting_button_takes_the_turn_back_in_both_presentations() {
+    let mut game = waiting_guest();
+    let _sent = game.take_outbox();
+    let mut screen = ImGuiScreen::new();
+    for imgui in [false, true] {
+        // Classic: it names the wait, and offers to take the turn back.
+        let button = find_button(&game, Target::EndTurn);
+        assert_eq!(button.label, "WAITING FOR THE OTHERS");
+        assert_eq!(button.hint, "TAKE BACK");
+        assert_eq!(button.state, ButtonState::Ready);
+        let tip = line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l));
+        assert!(tip[0].starts_with("TAKE BACK END TURN"), "{tip:?}");
+        if imgui {
+            screen.click(&mut game, Target::EndTurn);
+        } else {
+            game.handle_click(
+                button_cursor(&game, Target::EndTurn),
+                SCREEN,
+                ClickMode::Normal,
+            );
+        }
+        assert!(!game.waiting_for_peers(), "{}", game.notice);
+        assert!(matches!(
+            &game.take_outbox()[..],
+            [crate::game::NetMessage::Withdraw { turn: 1 }]
+        ));
+        // The orders can change again: a Melee, and the turn ended again.
+        let team = game.local_team;
+        let city = game.cities.iter().position(|c| c.team == team).unwrap();
+        game.open_city(city);
+        let melee = find_button(&game, Target::Build(BuildUnit::Melee));
+        assert_ne!(melee.state, ButtonState::Disabled);
+        game.activate_target(Target::Build(BuildUnit::Melee));
+        game.activate_target(Target::EndTurn);
+        assert!(game.waiting_for_peers(), "{}", game.notice);
+        assert!(matches!(
+            &game.take_outbox()[..],
+            [crate::game::NetMessage::Plan(plan)]
+                if plan.cities[0].queue.iter().any(|q| q.build == Build::Unit(BuildUnit::Melee))
+        ));
+    }
+}
+
+/// City 0 open with `jobs` roads placed and waiting and `out` workers out
+/// on others, its side rich: a tray with a long list of workers and jobs.
+fn crowded_city(jobs: usize, out: u32) -> GameState {
+    let (mut game, _) = empty_tile_near_blue_city();
+    game.fund(Team::Blue);
+    open_city_zero(&mut game);
+    game.cities[0].workers = out;
+    let city = game.cities[0].pos;
+    let mut tiles: Vec<Hex> = game
+        .grid
+        .all_hexes()
+        .filter(|h| (1..=4).contains(&h.distance(city)))
+        .collect();
+    tiles.sort_by_key(|h| (h.distance(city), h.q, h.r));
+    game.placing_job = Some(JobKind::Road);
+    for hex in tiles {
+        if game.cities[0].worker_jobs.len() == out as usize + jobs {
+            break;
+        }
+        if game.job_unavailable(hex, JobKind::Road).is_none() {
+            assert!(game.place_job_at(hex, None));
+        }
+    }
+    game.placing_job = None;
+    // The workers take the first jobs; the rest wait.
+    game.resolve_workers();
+    assert_eq!(game.field_workers.len(), out as usize);
+    assert_eq!(game.cities[0].worker_jobs.len(), jobs);
+    game
+}
+
+/// The classic layout's panel holding the button for `target`.
+fn panel_with(layout: &Layout, target: Target) -> Option<Rect> {
+    let button = layout.buttons.iter().find(|b| b.target == target)?;
+    layout
+        .panels
+        .iter()
+        .find(|&&(min, max)| contains(min, max, button.min) && contains(min, max, button.max))
+        .map(|&(min, max)| Rect { min, max })
+}
+
+/// Whether `target`'s button is in the panel `tray` and a click on its
+/// middle lands on it.
+fn clickable_in(layout: &Layout, tray: Rect, target: Target) -> bool {
+    panel_with(layout, target).is_some_and(|panel| panel.min == tray.min)
+        && layout
+            .buttons
+            .iter()
+            .find(|b| b.target == target)
+            .is_some_and(|b| {
+                layout.button_at((b.min + b.max) / 2.0).map(|b| b.target) == Some(target)
+            })
+}
+
+/// The worker jobs whose rows the classic layout shows, by index.
+fn job_rows(layout: &Layout) -> Vec<usize> {
+    layout
+        .queue_items
+        .iter()
+        .filter(|item| item.kind == QueueKind::Workers)
+        .map(|item| item.index)
+        .collect()
+}
+
+/// The classic layout's scroll region for the open city's workers and jobs.
+fn worker_list(layout: &Layout) -> Option<&QueueScrollRegion> {
+    layout
+        .queue_scrollbars
+        .iter()
+        .find(|s| s.kind == QueueKind::Workers)
+}
+
+/// `button_cursor` on a window of size `screen`.
+fn button_cursor_at(game: &GameState, target: Target, screen: Vec2) -> Vec2 {
+    let layout = game.layout(screen);
+    let button = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == target)
+        .expect("button shown");
+    to_ui((button.min + button.max) / 2.0, screen)
+}
+
+#[test]
+fn a_crowded_city_tray_stays_docked_with_its_list_scrolling_inside_it() {
+    for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        for placing in [false, true] {
+            let mut game = crowded_city(10, 4);
+            if placing {
+                game.arm_worker_job(JobKind::Road);
+                assert_eq!(game.placing_job, Some(JobKind::Road));
+            }
+            let at = format!("{screen}, placing {placing}");
+            let layout = game.layout(screen);
+            let tray = panel_with(&layout, Target::OpenInterior)
+                .unwrap_or_else(|| panic!("the city tray docks at {at}"));
+            assert!(tray.min.cmpge(Vec2::splat(MARGIN)).all(), "{at}");
+            assert!(tray.max.y <= screen.y - TOP_BAR_HEIGHT, "{at}");
+            for &(min, max) in &layout.panels {
+                let other = Rect { min, max };
+                assert!(
+                    min == tray.min || !tray.overlaps(other, 0.0),
+                    "{at}: {other:?} over the tray"
+                );
+            }
+            // Its buttons, catalogue included, are inside it and clickable.
+            for target in [
+                Target::Build(BuildUnit::Melee),
+                Target::Priority(Good::Metal),
+                Target::OpenInterior,
+            ] {
+                assert!(clickable_in(&layout, tray, target), "{target:?} at {at}");
+            }
+            assert_eq!(
+                clickable_in(&layout, tray, Target::CancelPlacing),
+                placing,
+                "{at}"
+            );
+            let catalog = layout.building_scrollbars.first().expect("the catalogue");
+            assert!(contains(tray.min, tray.max, catalog.min), "{at}");
+            assert!(contains(tray.min, tray.max, catalog.max), "{at}");
+
+            // The workers and jobs scroll in a window of their own, with
+            // rows that click and drag as the full list's do.
+            let list = worker_list(&layout).unwrap_or_else(|| panic!("a scrollbar at {at}"));
+            assert!(contains(tray.min, tray.max, list.panel_min), "{at}");
+            assert!(contains(tray.min, tray.max, list.panel_max), "{at}");
+            let worker = game.field_workers[0].id;
+            assert!(
+                clickable_in(&layout, tray, Target::RecallWorker(worker)),
+                "{at}"
+            );
+            let shown = job_rows(&layout);
+            assert!(shown.len() < 10, "{at}: {shown:?}");
+
+            // Scrolled to the end: the last job, and its X removes it.
+            let wheel = to_ui((list.panel_min + list.panel_max) / 2.0, screen);
+            assert!(game.scroll_queue_at(wheel, screen, -100.0));
+            let layout = game.layout(screen);
+            assert_eq!(job_rows(&layout).last(), Some(&9), "{at}");
+            assert!(
+                !layout
+                    .buttons
+                    .iter()
+                    .any(|b| b.target == Target::RecallWorker(worker))
+            );
+            assert!(
+                clickable_in(&layout, tray, Target::WorkerJobRemove(9)),
+                "{at}"
+            );
+            let row = layout
+                .queue_items
+                .iter()
+                .find(|item| item.kind == QueueKind::Workers && item.index == 9)
+                .unwrap();
+            assert!(contains(list.panel_min, list.panel_max, row.min), "{at}");
+            assert!(row.max.x < list.track_min.x, "{at}: clear of the scrollbar");
+            let remove = button_cursor_at(&game, Target::WorkerJobRemove(9), screen);
+            game.handle_click(remove, screen, ClickMode::Normal);
+            assert_eq!(game.cities[0].worker_jobs.len(), 9, "{at}");
+
+            // Its scrollbar drags back to the top.
+            let layout = game.layout(screen);
+            let list = worker_list(&layout).unwrap();
+            let top = to_ui(Vec2::new(list.track_min.x + 1.0, list.track_max.y), screen);
+            assert!(game.drag_queue_scrollbar_at(top, screen, false));
+            assert_eq!(game.cities[0].worker_scroll, 0, "{at}");
+            let layout = game.layout(screen);
+            assert!(
+                clickable_in(&layout, tray, Target::RecallWorker(worker)),
+                "{at}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_tray_with_room_shows_its_whole_list_and_catalogue() {
+    let game = crowded_city(2, 1);
+    let layout = game.layout(SCREEN);
+    assert_eq!(job_rows(&layout), [0, 1]);
+    assert!(worker_list(&layout).is_none(), "nothing to scroll");
+    let catalog = layout.building_scrollbars.first().unwrap();
+    let cards = layout
+        .buttons
+        .iter()
+        .filter(|b| contains(catalog.min, catalog.max, b.min))
+        .count();
+    // Its heading, then cards.
+    assert_eq!(cards, BUILDING_LIST_VISIBLE - 1);
+}
+
+#[test]
+fn the_wheel_steps_back_from_the_end_of_a_list_left_scrolled_past_it() {
+    let mut game = crowded_city(10, 4);
+    // As if rows were taken off after scrolling to the end.
+    game.cities[0].worker_scroll = 100;
+    let layout = game.layout(SCREEN);
+    let list = worker_list(&layout).unwrap();
+    let last = list.max_offset;
+    assert_eq!(job_rows(&layout).last(), Some(&9));
+    let wheel = to_ui((list.panel_min + list.panel_max) / 2.0, SCREEN);
+    assert!(game.scroll_queue_at(wheel, SCREEN, 1.0));
+    assert_eq!(game.cities[0].worker_scroll, last - 1);
+}
+
+#[test]
+fn a_crowded_imgui_city_panel_scrolls_to_every_row() {
+    let on_screen = |at: Vec2, size: Vec2| at.cmpge(Vec2::ZERO).all() && at.cmple(size).all();
+    for size in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        let mut game = crowded_city(10, 4);
+        game.arm_worker_job(JobKind::Road);
+        let mut screen = ImGuiScreen::with_size(size);
+        screen.settle(&mut game);
+        // The top of the panel shows: how to stop placing, and the cards.
+        for target in [Target::CancelPlacing, Target::Build(BuildUnit::Melee)] {
+            let at = screen.button(target).expect("drawn");
+            assert!(on_screen(at, size), "{target:?} at {at} in {size}");
+        }
+        // Its window scrolls (the wheel over it, clear of the catalogue)
+        // down to the last job, whose X removes it.
+        let over = screen.button(Target::OpenInterior).unwrap();
+        for _ in 0..5 {
+            screen.context.io_mut().add_mouse_wheel_event([0.0, -5.0]);
+            screen.frame(&mut game, Some(over), false);
+        }
+        screen.settle(&mut game);
+        let last = screen.button(Target::WorkerJobRemove(9)).unwrap();
+        assert!(on_screen(last, size), "{last} in {size}");
+        screen.click(&mut game, Target::WorkerJobRemove(9));
+        assert_eq!(game.cities[0].worker_jobs.len(), 9, "{size}");
+    }
+}
+
+#[test]
+fn waiting_for_the_others_the_city_workers_list_changes_nothing() {
+    use crate::game::workers::{FieldWorker, WorkerJob};
+    let mut game = waiting_guest();
+    let team = game.local_team;
+    let city = game.cities.iter().position(|c| c.team == team).unwrap();
+    let pos = game.cities[city].pos;
+    // A worker held at home, one out on a road, and a road waiting: the
+    // city tray's scrolling list of workers and jobs has every kind of row.
+    let [out, waiting] = [pos.neighbors()[0], pos.neighbors()[3]];
+    game.cities[city].held_workers = 1;
+    game.cities[city].workers = game.cities[city].workers.max(1);
+    game.field_workers.push(FieldWorker {
+        id: 9_000,
+        team,
+        home: city,
+        base: pos,
+        pos: out,
+        job: Some(WorkerJob::on_tile(out, JobKind::Road)),
+        work_left: Some(2),
+        recalled: false,
+    });
+    game.cities[city]
+        .worker_jobs
+        .push(WorkerJob::on_tile(waiting, JobKind::Road));
+    let plan = game.team_plan(team);
+    game.open_city(city);
+    let changing = [
+        Target::ReleaseWorker,
+        Target::RecallWorker(9_000),
+        Target::WorkerJobRemove(0),
+    ];
+    // Classic: shown, disabled, and a click does nothing; the camera can
+    // still go to the worker.
+    for target in changing {
+        // The list may scroll: the job's row is its last.
+        game.cities[city].worker_scroll = if target == Target::WorkerJobRemove(0) {
+            99
+        } else {
+            0
+        };
+        assert_eq!(
+            find_button(&game, target).state,
+            ButtonState::Disabled,
+            "{target:?}"
+        );
+        game.handle_click(button_cursor(&game, target), SCREEN, ClickMode::Normal);
+        assert_eq!(game.team_plan(team), plan, "{target:?}");
+    }
+    game.cities[city].worker_scroll = 0;
+    let show = find_button(&game, Target::ShowWorker(9_000));
+    assert_ne!(show.state, ButtonState::Disabled);
+    // ImGui: the same.
+    let mut screen = ImGuiScreen::new();
+    for target in changing {
+        screen.click(&mut game, target);
+        assert_eq!(game.team_plan(team), plan, "{target:?}");
+    }
+    assert!(game.waiting_for_peers());
+}
+
+#[test]
+fn a_frozen_plan_locks_a_waiting_queue_row_like_any_other() {
+    let mut game = city_view();
+    game.stockpiles[Team::Blue.index()] = Stock::default();
+    let city = game.selected_city.unwrap();
+    game.queue_build(city, Build::Unit(BuildUnit::Siege));
+    game.queue_build(city, Build::Gather);
+    let mut panel = PanelBuilder::default();
+    game.city_queue_panel(city, usize::MAX, &mut panel);
+    // Waiting for the others' plans, nothing in the queue can change.
+    panel.freeze_plan();
+    let rows: Vec<(bool, bool)> = panel
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::QueueItem(item) => Some((item.waiting, item.locked)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows, [(true, true), (false, true)]);
+}
+
+/// The middle of each of the open city's priority chips, first to last,
+/// as the classic layout places them.
+fn priority_chips(game: &GameState) -> Vec<Vec2> {
+    let layout = game.layout(SCREEN);
+    let mut chips: Vec<_> = layout
+        .queue_items
+        .iter()
+        .filter(|item| item.kind == QueueKind::Priority)
+        .map(|item| (item.index, to_ui((item.min + item.max) / 2.0, SCREEN)))
+        .collect();
+    chips.sort_by_key(|&(index, _)| index);
+    chips.into_iter().map(|(_, at)| at).collect()
+}
+
+/// What the open city's citizens work once auto-assigned by `order`.
+fn assigned_by(game: &GameState, order: Priorities) -> Vec<Hex> {
+    let city = game.selected_city.expect("city view open");
+    let mut copy = game.clone();
+    copy.cities[city].priorities = order;
+    copy.auto_assign_city(city);
+    copy.cities[city].worked().collect::<Vec<_>>()
+}
+
+#[test]
+fn priority_chips_show_the_order_and_drag_or_click_to_change_it() {
+    use Good::{Food, Metal, Wood};
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Food, Wood, Metal])
+    );
+    // Three icon chips in the tray, in order, each with its rank in its
+    // corner and a drag region over it.
+    let layout = game.layout(SCREEN);
+    let tray = panel_with(&layout, Target::OpenInterior).expect("the city tray");
+    let chips = priority_chips(&game);
+    assert_eq!(chips.len(), 3);
+    for (rank, good) in [Food, Wood, Metal].into_iter().enumerate() {
+        let target = Target::Priority(good);
+        assert!(clickable_in(&layout, tray, target), "{good:?}");
+        let button = layout.button_at(to_ui(chips[rank], SCREEN)).unwrap();
+        assert_eq!(button.target, target);
+        assert_eq!(
+            action_icons::badge(&button.label),
+            Some(&*(rank + 1).to_string())
+        );
+        assert_eq!(
+            button.max - button.min,
+            Vec2::splat(action_icons::ICON_BUTTON_SIZE)
+        );
+        let tooltip = line_strings(game.tooltip_lines(button).into_iter().map(|(_, l)| l));
+        let tooltip = tooltip.join(" ");
+        assert!(
+            tooltip.contains(&format!("PRIORITY {}", rank + 1)),
+            "{tooltip}"
+        );
+        assert!(tooltip.contains("1ST ×9, 2ND ×3, 3RD ×1"), "{tooltip}");
+    }
+    // Metal dragged onto Food: gold while dragged, Food framed as where it
+    // lands; let go, Metal is first and the citizens are reassigned.
+    assert!(game.start_queue_drag_at(chips[2], SCREEN));
+    game.update_queue_drag_at(chips[0], SCREEN);
+    let dragging = game.layout(SCREEN);
+    let state = |target| {
+        let b = dragging
+            .buttons
+            .iter()
+            .find(|b| b.target == target)
+            .unwrap();
+        (b.state, b.armed)
+    };
+    assert_eq!(state(Target::Priority(Metal)), (ButtonState::Queued, false));
+    assert_eq!(state(Target::Priority(Food)), (ButtonState::Ready, true));
+    let expected = assigned_by(&game, Priorities([Metal, Food, Wood]));
+    game.finish_queue_drag_at(chips[0], SCREEN);
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Metal, Food, Wood])
+    );
+    assert_eq!(game.cities[city].worked().collect::<Vec<_>>(), expected);
+    assert_eq!(game.notice, "CITY PRIORITIES: METAL > FOOD > WOOD");
+    // A press and release on one chip (no drag) puts it first.
+    let chips = priority_chips(&game);
+    assert!(game.start_queue_drag_at(chips[2], SCREEN));
+    game.finish_queue_drag_at(chips[2], SCREEN);
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Wood, Metal, Food])
+    );
+    // A drag let go off the chips changes nothing.
+    assert!(game.start_queue_drag_at(chips[0], SCREEN));
+    game.finish_queue_drag_at(Vec2::new(SCREEN.x / 2.0, 10.0), SCREEN);
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Wood, Metal, Food])
+    );
+    // The button itself (as a pinned panel's would be) puts it first too.
+    game.handle_click(
+        button_cursor(&game, Target::Priority(Food)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Food, Wood, Metal])
+    );
+}
+
+#[test]
+fn imgui_priority_chips_click_to_put_first_and_drag_to_reorder() {
+    use Good::{Food, Metal, Wood};
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::Priority(Metal));
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Metal, Food, Wood])
+    );
+    // Wood (last) dragged onto Food (second): not a click, which would put
+    // it first.
+    screen.settle(&mut game);
+    let from = screen
+        .button(Target::Priority(Wood))
+        .expect("the wood chip");
+    let to = screen
+        .button(Target::Priority(Food))
+        .expect("the food chip");
+    screen.frame(&mut game, Some(from), false);
+    screen.frame(&mut game, Some(from), true);
+    for step in 1..=8 {
+        let at = from + (to - from) * step as f32 / 8.0;
+        screen.frame(&mut game, Some(at), true);
+    }
+    screen.frame(&mut game, Some(to), false);
+    screen.frame(&mut game, Some(to), false);
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Metal, Wood, Food])
+    );
+    let expected = assigned_by(&game, Priorities([Metal, Wood, Food]));
+    assert_eq!(game.cities[city].worked().collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn a_city_of_28_lists_its_four_clusters_and_its_tray_still_fits() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].population = 28;
+    game.auto_assign_city(city);
+    assert_eq!(game.cities[city].clusters.len(), 4);
+    let text = panel_strings(|p| game.city_tray(city, p));
+    assert_shows(&text, "POPULATION 28/28");
+    assert_shows(&text, "4 OF 4 MANAGERS");
+    // A line per cluster, marked as its manager is on the map.
+    for (k, cluster) in game.cities[city].clusters.iter().enumerate() {
+        let line = format!("M{} {}/6 WORKERS", k + 1, cluster.workers.len());
+        assert_shows(&text, &line);
+    }
+    // With one cluster, the citizens line says it all.
+    let mut small = game.clone();
+    small.cities[city].population = 5;
+    small.auto_assign_city(city);
+    let text = panel_strings(|p| small.city_tray(city, p));
+    assert!(!text.iter().any(|l| l.contains("WORKERS ")), "{text:?}");
+    // Classic, on a big and a small screen: the tray docks on screen, clear
+    // of the other panels, its buttons in it and clickable.
+    for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        let layout = game.layout(screen);
+        let tray = panel_with(&layout, Target::OpenInterior).expect("the tray docks");
+        assert!(tray.min.cmpge(Vec2::splat(MARGIN)).all(), "{screen}");
+        assert!(tray.max.y <= screen.y - TOP_BAR_HEIGHT, "{screen}");
+        for &(min, max) in &layout.panels {
+            let other = Rect { min, max };
+            assert!(min == tray.min || !tray.overlaps(other, 0.0), "{screen}");
+        }
+        for target in [
+            Target::Priority(Good::Food),
+            Target::Grow,
+            Target::OpenInterior,
+        ] {
+            assert!(
+                clickable_in(&layout, tray, target),
+                "{target:?} at {screen}"
+            );
+        }
+    }
+    // ImGui draws the same tray, its buttons with it.
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    for target in [Target::Priority(Good::Food), Target::Grow] {
+        assert!(screen.button(target).is_some(), "{target:?}");
+    }
+}
+
+#[test]
+fn scout_and_settler_cards_queue_from_the_city_and_say_why_when_they_cannot() {
+    let mut game = GameState::city_scenario();
+    game.open_city(0);
+    let tooltip = |game: &GameState, card: &Button| -> String {
+        line_strings(game.tooltip_lines(card).into_iter().map(|(_, l)| l)).join(" ")
+    };
+    // A city of 2 is too small for a Settler: the card is dimmed and
+    // says so, and its tooltip gives the rule.
+    catalog_cursor(&mut game, Target::BuildSettler);
+    let settler = find_button(&game, Target::BuildSettler);
+    assert_eq!(settler.state, ButtonState::Disabled);
+    assert_eq!(settler.hint, "NEEDS POPULATION 3");
+    let text = tooltip(&game, &settler);
+    assert!(text.contains("NEEDS POPULATION 3"), "{text}");
+    assert!(text.contains("TAKES A CITIZEN"), "{text}");
+
+    // The Scout card queues a scout, and then says it's one at a time.
+    let card = catalog_cursor(&mut game, Target::BuildScout);
+    let scout = find_button(&game, Target::BuildScout);
+    assert_eq!(scout.state, ButtonState::Ready);
+    assert!(
+        scout.hint.contains(&format!("{FOOD_ICON}2 {WOOD_ICON}4")),
+        "{}",
+        scout.hint
+    );
+    assert!(
+        scout.hint.ends_with(&format!("{TIME_ICON}2")),
+        "{}",
+        scout.hint
+    );
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert_eq!(game.cities[0].queue, [Queued::new(Build::Scout)]);
+    let scout = find_button(&game, Target::BuildScout);
+    assert_eq!(
+        (scout.state, scout.hint.as_str()),
+        (ButtonState::Disabled, "ONE SCOUT AT A TIME")
+    );
+
+    // Grown to 3, the Settler card queues one: 6 turns, city or not.
+    game.cities[0].population = 3;
+    let card = catalog_cursor(&mut game, Target::BuildSettler);
+    let settler = find_button(&game, Target::BuildSettler);
+    assert_eq!(settler.state, ButtonState::Ready);
+    assert!(
+        settler
+            .hint
+            .contains(&format!("{FOOD_ICON}30 {WOOD_ICON}10")),
+        "{}",
+        settler.hint
+    );
+    assert!(
+        settler.hint.ends_with(&format!("{TIME_ICON}6")),
+        "{}",
+        settler.hint
+    );
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert_eq!(
+        game.cities[0].queue,
+        [Queued::new(Build::Scout), Queued::new(Build::Settler)]
+    );
+}
+
+#[test]
+fn imgui_queues_a_scout_and_a_settler_from_their_cards() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].population = 3;
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::BuildScout);
+    screen.click(&mut game, Target::BuildSettler);
+    assert_eq!(
+        game.cities[city].queue,
+        [Queued::new(Build::Scout), Queued::new(Build::Settler)]
+    );
+}
+
+#[test]
+fn a_settler_waiting_for_citizens_says_so_in_its_row_and_the_tray() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].population = 2;
+    game.cities[city].queue = vec![Queued::new(Build::Settler)];
+    let mut queue = PanelBuilder::default();
+    game.city_queue_panel(city, usize::MAX, &mut queue);
+    let rows: Vec<(String, bool)> = queue
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::QueueItem(item) => Some((item.label.clone(), item.waiting)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].0.contains("WAITS FOR POP 3"), "{}", rows[0].0);
+    assert!(rows[0].1, "tinted as waiting");
+    let mut tray = PanelBuilder::default();
+    game.city_tray(city, &mut tray);
+    let text = line_strings(tray.rows.iter().filter_map(|row| match row {
+        Row::Text(_, line) => Some(line.clone()),
+        _ => None,
+    }))
+    .join(" ");
+    assert!(text.contains("SETTLER WAITS FOR POPULATION 3"), "{text}");
+}
+
+#[test]
+fn fit_text_keeps_whole_words_and_ends_in_an_ellipsis() {
+    // A monospaced measure: 10 px a char.
+    let measure = |t: &str| t.chars().count() as f32 * 10.0;
+    let text = "CLICK TILES TO ASSIGN - A AUTO ASSIGN";
+    assert_eq!(fit_text(text, 1000.0, measure), text, "fits as it is");
+    assert_eq!(fit_text(text, 120.0, measure), "CLICK TILES…");
+    // A separator left dangling goes.
+    assert_eq!(fit_text(text, 240.0, measure), "CLICK TILES TO ASSIGN…");
+    // A word cut short only when not even the first fits.
+    assert_eq!(fit_text(text, 40.0, measure), "CLI…");
+    assert_eq!(fit_text(text, 10.0, measure), "…");
+    assert_eq!(fit_text(text, 5.0, measure), "");
+    // Every fitted text fits.
+    for width in (0..400).step_by(7) {
+        let fitted = fit_text(text, width as f32, measure);
+        assert!(measure(&fitted) <= width as f32, "{fitted:?} in {width}");
+    }
+}
+
+/// The longest notice the game gives (`city_click`, `city/view.rs`).
+const LONG_NOTICE: &str = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE BESIDE A MANAGER TO ASSIGN";
+
+/// Whether `shown` is `notice`, or its first whole words then "…".
+fn whole_words_of(shown: &str, notice: &str) -> bool {
+    let Some(kept) = shown.strip_suffix('…') else {
+        return shown == notice;
+    };
+    !kept.is_empty() && notice.starts_with(kept) && notice[kept.len()..].starts_with([' ', ';'])
+}
+
+#[test]
+fn classic_shortens_a_long_notice_rather_than_hiding_it() {
+    let screen = Vec2::new(1280.0, 720.0);
+    let mut game = city_view();
+    game.notice = LONG_NOTICE.into();
+    let layout = game.layout(screen);
+    let (origin, shown) = layout
+        .shapes
+        .iter()
+        .find_map(|shape| match shape {
+            Shape::Text { origin, line, .. } if line.iter().all(|(_, c)| *c == NOTICE_TEXT) => {
+                Some((*origin, line_strings([line.clone()]).concat()))
+            }
+            _ => None,
+        })
+        .expect("the notice shows");
+    assert!(whole_words_of(&shown, LONG_NOTICE), "{shown}");
+    assert!(shown.ends_with('…'), "too long for 1280 px: {shown}");
+    let end = origin.x + crate::game::font::ui(BODY).width(&shown);
+    let end_turn = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::EndTurn)
+        .unwrap();
+    assert!(end <= end_turn.min.x, "clear of End Turn");
+    // With room, all of it.
+    let wide = game.layout(Vec2::new(2400.0, 900.0));
+    assert!(wide.shapes.iter().any(|shape| matches!(
+        shape,
+        Shape::Text { line, .. } if line_strings([line.clone()]).concat() == LONG_NOTICE
+    )));
+}
+
+/// Where ImGui drew the End Turn button last frame.
+fn imgui_end_turn() -> ([f32; 2], [f32; 2]) {
+    imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+        drawn
+            .iter()
+            .find(|(target, ..)| *target == Target::EndTurn)
+            .map(|&(_, min, max)| (min, max))
+            .expect("ImGui shows End Turn")
+    })
+}
+
+#[test]
+fn imgui_shortens_a_long_notice_at_a_word_before_end_turn() {
+    let mut game = city_view();
+    game.notice = LONG_NOTICE.into();
+    let mut screen = ImGuiScreen::with_size(Vec2::new(1024.0, 720.0));
+    screen.settle(&mut game);
+    let (shown, _, max, limit) = imgui::SHOWN_NOTICE.take();
+    assert!(whole_words_of(&shown, LONG_NOTICE), "{shown}");
+    assert!(shown.ends_with('…'), "too long for 1024 px: {shown}");
+    assert!(max[0] <= limit, "within its room: {} > {limit}", max[0]);
+    let (end_turn, _) = imgui_end_turn();
+    assert!(limit < end_turn[0], "clear of End Turn");
+    // One ImGui context at a time.
+    drop(screen);
+    let mut screen = ImGuiScreen::with_size(Vec2::new(2400.0, 900.0));
+    screen.settle(&mut game);
+    assert_eq!(
+        imgui::SHOWN_NOTICE.take().0,
+        LONG_NOTICE,
+        "with room, all of it"
+    );
+}
+
+#[test]
+fn the_tile_tooltip_puts_the_attack_preview_in_words() {
+    let target = Hex::new(1, 0);
+    let mut game = GameState::new();
+    game.cities.clear();
+    game.units = vec![
+        Unit::new(1, Hex::new(0, 0), Team::Blue, UnitType::Melee),
+        Unit::new(2, target, Team::Red, UnitType::Melee),
+    ];
+    game.selected = None;
+    game.explore();
+    let read = |game: &GameState| {
+        line_strings(
+            game.tile_tooltip_lines(target)
+                .into_iter()
+                .map(|(_, line)| line),
+        )
+    };
+    game.hovered_tile = Some(target);
+    assert!(!read(&game).iter().any(|s| s.contains("DAMAGE")));
+
+    game.selected = Some(0);
+    let preview = game.attack_preview().unwrap();
+    let lines = read(&game);
+    let (dealt, _) = preview.dealt();
+    assert!(lines.contains(&format!("{dealt:.0} DAMAGE")), "{lines:?}");
+    let back = preview.retaliation();
+    assert!(
+        lines.contains(&format!("RETALIATION {back:.0}")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|s| s == "IF IT STAYS"), "{lines:?}");
+
+    game.units[1].hp = 5.0;
+    let lines = read(&game);
+    assert!(
+        lines.contains(&format!("{dealt:.0} DAMAGE, LETHAL")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|s| s.starts_with("RETALIATION")),
+        "{lines:?}"
+    );
+}
+
+/// The status bar's second line as ImGui drew it last frame.
+fn imgui_status_controls() -> Vec<imgui::DrawnControl> {
+    imgui::STATUS_CONTROLS.with_borrow(Clone::clone)
+}
+
+#[test]
+fn imgui_view_controls_share_the_menu_line_and_leave_the_notice_the_bar() {
+    // A typical long notice, 68 characters, fits in full at 1280 px.
+    const TYPICAL: &str = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE";
+    assert_eq!(TYPICAL.len(), 68);
+    let mut game = city_view();
+    game.notice = TYPICAL.into();
+    let mut screen = ImGuiScreen::with_size(Vec2::new(1280.0, 720.0));
+    screen.settle(&mut game);
+    let (shown, _, notice_max, _) = imgui::SHOWN_NOTICE.take();
+    assert_eq!(shown, TYPICAL, "all of it at 1280 px");
+    // Menu, then the view's label and controls, on the line below the
+    // notice, left to right without overlapping, short of End Turn.
+    let controls = imgui_status_controls();
+    let texts: Vec<&str> = controls.iter().map(|(text, ..)| text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "MENU",
+            "VIEW: CITY / BUILDING",
+            "EDIT VIEW",
+            "+ BOX",
+            "RESET"
+        ]
+    );
+    let (end_turn, _) = imgui_end_turn();
+    for pair in controls.windows(2) {
+        assert!(
+            pair[0].2[0] < pair[1].1[0],
+            "{} overlaps {}",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+    for (text, min, max) in &controls {
+        assert!(min[1] >= notice_max[1], "{text} is below the notice");
+        assert!(max[0] < end_turn[0], "{text} is clear of End Turn");
+    }
+    // They still work: EDIT VIEW switches to editing the outer boxes (which
+    // have no RESET), and + BOX makes a box.
+    let middle = |text: &str| {
+        let (_, min, max) = imgui_status_controls()
+            .into_iter()
+            .find(|(t, ..)| t == text)
+            .unwrap_or_else(|| panic!("no {text}"));
+        (Vec2::from(min) + Vec2::from(max)) / 2.0
+    };
+    let click = |screen: &mut ImGuiScreen, game: &mut GameState, at: Vec2| {
+        screen.frame(game, Some(at), false);
+        screen.frame(game, Some(at), true);
+        screen.frame(game, Some(at), false);
+        screen.settle(game);
+    };
+    click(&mut screen, &mut game, middle("EDIT VIEW"));
+    let texts: Vec<String> = imgui_status_controls().into_iter().map(|c| c.0).collect();
+    assert_eq!(
+        texts,
+        ["MENU", "VIEW: CITY / BUILDING", "EDIT OUTER", "+ BOX"]
+    );
+    assert!(!screen.layout.to_text().contains("\nbox "), "no box yet");
+    click(&mut screen, &mut game, middle("+ BOX"));
+    assert!(
+        screen.layout.to_text().contains("\nbox 1 outer "),
+        "{}",
+        screen.layout.to_text()
+    );
+}
+
+/// Where the text and icons ImGui drew last frame in the window titled
+/// `window` run into each other, or past the side of what holds them (their
+/// window, or their button): a line each. What is scrolled out of sight
+/// counts only as far as it shows.
+fn crowded_marks(window: &str) -> Vec<String> {
+    // How far two spans overlap: a pixel's rounding is no overlap.
+    const SLACK: f32 = 0.5;
+    let marks: Vec<imgui::DrawnMark> = imgui::DRAWN_MARKS.with_borrow(|marks| {
+        marks
+            .iter()
+            .filter(|mark| mark.window == window)
+            .cloned()
+            .collect()
+    });
+    let shown = |mark: &imgui::DrawnMark| {
+        let min = Vec2::from(mark.min).max(Vec2::from(mark.clip_min));
+        let max = Vec2::from(mark.max).min(Vec2::from(mark.clip_max));
+        (max - min)
+            .cmpgt(Vec2::splat(SLACK))
+            .all()
+            .then_some((min, max))
+    };
+    let mut crowded = Vec::new();
+    for (index, mark) in marks.iter().enumerate() {
+        let Some((min, max)) = shown(mark) else {
+            continue;
+        };
+        if mark.min[0] < mark.clip_min[0] - SLACK || mark.max[0] > mark.clip_max[0] + SLACK {
+            crowded.push(format!(
+                "{:?} ({:?}-{:?}) runs out of {:?}-{:?}",
+                mark.what, mark.min, mark.max, mark.clip_min, mark.clip_max
+            ));
+        }
+        for other in &marks[index + 1..] {
+            let Some((other_min, other_max)) = shown(other) else {
+                continue;
+            };
+            let overlap = max.min(other_max) - min.max(other_min);
+            if overlap.cmpgt(Vec2::splat(SLACK)).all() {
+                crowded.push(format!(
+                    "{:?} ({:?}-{:?}) overlaps {:?} ({:?}-{:?})",
+                    mark.what, mark.min, mark.max, other.what, other.min, other.max
+                ));
+            }
+        }
+    }
+    crowded
+}
+
+#[test]
+fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
+    // #311: resized narrow, the city panel's Grow and Gather ran into each
+    // other, and the catalogue's unit icons into their names.
+    let size = Vec2::new(1600.0, 1200.0);
+    let height = size.y - 120.0;
+    let city = || {
+        let mut game = city_view();
+        game.cities[0].population = 3;
+        game.activate_target(Target::Build(BuildUnit::Melee));
+        game.activate_target(Target::BuildSettler);
+        game
+    };
+    let barracks = || {
+        let mut game = city_view();
+        game.units.clear();
+        game.cities[0].barracks = Some(Hex::new(-2, 0));
+        game.cities[0].built.push(Building::Barracks);
+        game.open_barracks(0);
+        game.activate_target(Target::BarracksBuild(BuildUnit::Melee));
+        game
+    };
+    let unit = || {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        game.set_selection(vec![units[0]]);
+        game
+    };
+    let group = || {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        game.set_selection(units[..3].to_vec());
+        game
+    };
+    let settings = || {
+        let mut game = GameState::new();
+        game.clear_selection();
+        game.press_escape();
+        game
+    };
+    let multiplayer = || {
+        let mut game = settings();
+        game.activate_target(Target::OpenMultiplayer);
+        game
+    };
+    let panels: [(&str, &str, &dyn Fn() -> GameState); 9] = [
+        ("city", "Selection", &city),
+        ("city queue", "Production Queue", &city),
+        ("barracks", "Selection", &barracks),
+        ("barracks queue", "Production Queue", &barracks),
+        ("unit", "Selection", &unit),
+        ("group", "Selection", &group),
+        ("debug", "Debug", &unit),
+        ("settings", "Settings", &settings),
+        ("multiplayer", "Settings", &multiplayer),
+    ];
+    let mut screen = ImGuiScreen::styled(size);
+    for (name, window, make) in panels {
+        let mut game = make();
+        screen.settle(&mut game);
+        // From the least width a panel can be resized to up, closely
+        // where the room runs out.
+        for width in (240..400).step_by(10).chain((400..=640).step_by(40)) {
+            let width = width as f32;
+            screen.layout.resize_panel(window, Vec2::new(width, height));
+            screen.settle(&mut game);
+            let drawn = imgui::DRAWN_MARKS
+                .with_borrow(|marks| marks.iter().filter(|mark| mark.window == window).count());
+            assert!(drawn > 3, "{name} at {width}: {window} shows its text");
+            let crowded = crowded_marks(window);
+            assert!(crowded.is_empty(), "{name} at {width}: {crowded:#?}");
+            // The catalogue's cards further down, scrolled to, then back.
+            let Some(card) = screen.button(Target::Build(BuildUnit::Melee)) else {
+                continue;
+            };
+            let before = screen.button(Target::BuildSettler);
+            for wheel in [-5.0, 5.0] {
+                for _ in 0..3 {
+                    screen.context.io_mut().add_mouse_wheel_event([0.0, wheel]);
+                    screen.frame(&mut game, Some(card), false);
+                }
+                screen.frame(&mut game, None, false);
+                if wheel < 0.0 {
+                    assert_ne!(screen.button(Target::BuildSettler), before, "scrolled");
+                }
+                let crowded = crowded_marks(window);
+                assert!(
+                    crowded.is_empty(),
+                    "{name} at {width}, scrolled: {crowded:#?}"
+                );
+            }
+        }
+    }
+}
+
+/// The text of every tooltip line for `button` (classic), joined.
+fn tooltip_text(game: &GameState, button: &Button) -> String {
+    game.tooltip_lines(button)
+        .into_iter()
+        .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
+        .collect()
+}
+
+#[test]
+fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_presentations() {
+    let mut game = city_view();
+    // Only the supply Blue's city gives (`city_view` funds it past that).
+    game.extra_supply = [0; Team::ALL.len()];
+    let (used, cap) = (game.supply_used(Team::Blue), game.supply_cap(Team::Blue));
+    assert!(used < cap);
+    // The top bar: the shared line, which the classic bar draws.
+    let status: String = game.status_line().into_iter().map(|(t, _)| t).collect();
+    assert!(
+        status.ends_with(&format!("SUPPLY {used}/{cap}")),
+        "{status}"
+    );
+    let count = format!("{used}/{cap}");
+    let drawn = |game: &GameState, count: &str| {
+        game.layout(SCREEN)
+            .shapes
+            .iter()
+            .any(|s| matches!(s, Shape::Text { line, .. } if line.iter().any(|(t, _)| t == count)))
+    };
+    assert!(drawn(&game, &count), "the classic top bar shows {count}");
+    // A troop card says what it uses.
+    let melee = find_button(&game, Target::Build(BuildUnit::Melee));
+    assert_eq!(melee.state, ButtonState::Ready);
+    let tooltip = tooltip_text(&game, &melee);
+    assert!(
+        tooltip
+            .replace(' ', "")
+            .contains(&format!("USES1SUPPLY:{used}OF{cap}USED")),
+        "{tooltip}"
+    );
+    // Full: the troop and Scout cards are dimmed and say why, and a click
+    // on a locked card queues nothing.
+    while game.supply_used(Team::Blue) < cap {
+        game.queue_selected_city_unit(BuildUnit::Melee);
+    }
+    let full = format!("SUPPLY FULL ({cap}/{cap})");
+    for target in [Target::Build(BuildUnit::Melee), Target::BuildScout] {
+        let card = find_button(&game, target);
+        assert_eq!(card.state, ButtonState::Disabled, "{target:?}");
+        assert_eq!(card.hint, full, "{target:?}");
+        let tooltip = tooltip_text(&game, &card).replace(' ', "");
+        assert!(tooltip.contains(&full.replace(' ', "")), "{tooltip}");
+    }
+    let queued = game.cities[0].queue.len();
+    let at = button_cursor(&game, Target::Build(BuildUnit::Melee));
+    game.handle_click(at, SCREEN, ClickMode::Normal);
+    assert_eq!(game.cities[0].queue.len(), queued);
+    // ImGui: the same card, locked, with the same reason.
+    let mut screen = ImGuiScreen::new();
+    let tooltips = screen.tooltips(&mut game, Target::Build(BuildUnit::Melee));
+    assert!(!tooltips.is_empty(), "ImGui shows the Melee card");
+    assert!(
+        tooltips
+            .iter()
+            .all(|t| t.replace(' ', "").contains(&full.replace(' ', ""))),
+        "{tooltips:?}"
+    );
+    screen.click(&mut game, Target::Build(BuildUnit::Melee));
+    assert_eq!(game.cities[0].queue.len(), queued);
+    drop(screen);
+    // The Barracks: its supply line, and its troops locked.
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    game.open_barracks(0);
+    let tray = panel_strings(|panel| game.barracks_tray(0, panel));
+    assert_shows(&tray, &format!("SUPPLY {cap}/{cap} · FULL"));
+    let ranged = find_button(&game, Target::BarracksBuild(BuildUnit::Ranged));
+    assert_eq!(ranged.state, ButtonState::Disabled);
+    assert_eq!(ranged.hint, "SUPPLY FULL");
+    assert!(
+        tooltip_text(&game, &ranged)
+            .replace(' ', "")
+            .contains(&full.replace(' ', ""))
+    );
+}
+
+#[test]
+fn a_queued_troop_the_supply_has_no_room_for_waits_for_supply() {
+    let mut game = city_view();
+    game.extra_supply = [0; Team::ALL.len()];
+    game.cities[0].population = 3;
+    while game.supply_used(Team::Blue) < game.supply_cap(Team::Blue) {
+        game.queue_selected_city_unit(BuildUnit::Melee);
+    }
+    game.cities[0].queue.truncate(1);
+    // Two citizens lost since it was queued: no room to start it.
+    assert!(game.remove_citizen(0) && game.remove_citizen(0));
+    let status = game.queue_status(0, crate::game::city::Lane::City);
+    assert_eq!(status.supply, [0]);
+    let rows: Vec<String> = {
+        let mut panel = PanelBuilder::default();
+        game.city_queue_panel(0, 4, &mut panel);
+        panel
+            .rows
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::QueueItem(item) => Some(item.label),
+                _ => None,
+            })
+            .collect()
+    };
+    assert!(rows[0].contains("WAITS FOR SUPPLY"), "{rows:?}");
+    let waits = "MELEE WAITS FOR SUPPLY: NO ROOM TO START IT";
+    assert_eq!(
+        game.head_waiting_text(0, crate::game::city::Lane::City, &status),
+        Some(waits.into())
+    );
+    let tray = panel_strings(|panel| game.city_tray(0, panel));
+    assert_shows(&tray, waits);
+}
+
+/// Where ImGui has the panel titled `title`, and how big.
+fn imgui_panel(title: &str) -> (Vec2, Vec2) {
+    let (pos, size, _) = imgui::native_geometry(title).unwrap_or_else(|| panic!("no {title}"));
+    (pos, size)
+}
+
+#[test]
+fn imgui_double_clicks_put_a_panel_back_where_and_as_big_as_the_layout_has_it() {
+    // #312: with Ctrl held, a double-click on a panel's resize grip gives it
+    // back its size, and one on its title bar its place, without collapsing.
+    let mut game = city_view();
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    let (home, size) = imgui_panel("Selection");
+    screen.hold_ctrl(&mut game, true);
+    screen.settle(&mut game);
+    assert_eq!(imgui_panel("Selection"), (home, size), "Ctrl moves nothing");
+    // Moved by its title bar into the map, and made bigger by its grip.
+    let title = |at: Vec2, size: Vec2| at + Vec2::new(size.x / 2.0, 8.0);
+    let grip = |at: Vec2, size: Vec2| at + size - Vec2::splat(4.0);
+    screen.drag(&mut game, title(home, size), Vec2::new(800.0, 300.0));
+    let (moved, _) = imgui_panel("Selection");
+    assert_ne!(moved, home, "dragged");
+    screen.drag(
+        &mut game,
+        grip(moved, size),
+        grip(moved, size) + Vec2::new(90.0, 40.0),
+    );
+    let (at, bigger) = imgui_panel("Selection");
+    assert_eq!(at, moved);
+    assert_ne!(bigger, size, "resized");
+    assert_eq!(screen.layout.chosen_by_player("Selection"), (true, true));
+    // The grip: the size the layout gives, where it is.
+    screen.double_click(&mut game, grip(moved, bigger));
+    assert_eq!(imgui_panel("Selection"), (moved, size));
+    assert_eq!(screen.layout.chosen_by_player("Selection"), (true, false));
+    // The title bar: the place the layout gives, still open.
+    screen.double_click(&mut game, title(moved, size));
+    assert_eq!(imgui_panel("Selection"), (home, size));
+    assert!(
+        !imgui::native_geometry("Selection").unwrap().2,
+        "not collapsed"
+    );
+    assert_eq!(screen.layout.chosen_by_player("Selection"), (false, false));
+    // Kept with the layout, so it lasts into the next session.
+    let saved = ImGuiLayoutState::from_text(&screen.layout.to_text());
+    assert_eq!(saved.chosen_by_player("Selection"), (false, false));
+    // Resized and double-clicked on the title only: the place goes back,
+    // the size the player chose stays.
+    screen.drag(
+        &mut game,
+        grip(home, size),
+        grip(home, size) + Vec2::new(60.0, 0.0),
+    );
+    let (at, wider) = imgui_panel("Selection");
+    screen.double_click(&mut game, title(at, wider));
+    assert_eq!(imgui_panel("Selection").1, wider);
+    assert_eq!(screen.layout.chosen_by_player("Selection"), (false, true));
+    // The arrow still collapses it.
+    let (at, _) = imgui_panel("Selection");
+    screen.frame(&mut game, Some(at + Vec2::new(10.0, 9.0)), false);
+    screen.frame(&mut game, Some(at + Vec2::new(10.0, 9.0)), true);
+    screen.frame(&mut game, Some(at + Vec2::new(10.0, 9.0)), false);
+    screen.frame(&mut game, None, false);
+    assert!(imgui::native_geometry("Selection").unwrap().2, "collapsed");
+}
+
+#[test]
+fn imgui_double_clicking_the_settings_title_centers_it_again() {
+    let mut game = GameState::new();
+    game.clear_selection();
+    game.press_escape();
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    let (home, size) = imgui_panel("Settings");
+    screen.hold_ctrl(&mut game, true);
+    screen.settle(&mut game);
+    let title = home + Vec2::new(size.x / 2.0, 8.0);
+    screen.drag(&mut game, title, title + Vec2::new(-300.0, 120.0));
+    let (moved, _) = imgui_panel("Settings");
+    assert_ne!(moved, home, "dragged");
+    screen.double_click(&mut game, moved + Vec2::new(size.x / 2.0, 8.0));
+    assert_eq!(imgui_panel("Settings"), (home, size), "centered");
 }

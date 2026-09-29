@@ -1,11 +1,13 @@
 //! Builds each frame's geometry from the game state.
 
-use std::collections::{HashMap, HashSet};
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 use glam::Vec2;
 
-use super::fog::{Fog, SeenBuilding};
+use super::city::{BARRACKS_MAX_HP, Building, COASTAL_BATTERY_MAX_HP, Stock, resource_icon};
+use super::combat::{AttackPreview, Hurt, Loss};
+use super::fast_hash::{HashMap, HashSet};
+use super::fog::{Fog, SeenBuilding, SeenJob};
 use super::hex::{HEX_SIZE, Hex, HexGrid, edge, edge_corners};
 use super::map_icons::{
     self, IMPROVEMENT_SPOT, LANDMARK_SCALE, LANDMARK_SPOT, MapIcon, RESOURCE_SPOT,
@@ -17,10 +19,10 @@ use super::turn::{Phase, step_rank};
 use super::unit::{Team, Unit, UnitStats};
 use super::unit_icons::{self, UnitIcon};
 use super::workers::{Structure, StructureKind, WorkerJob};
-use super::{GameState, PLAYER_TEAM, font, mesh};
+use super::{GameState, font, mesh};
 use crate::renderer::Vertex;
 
-type Color = [f32; 4];
+use super::mesh::Color;
 
 const BORDER_COLOR: Color = [0.10, 0.10, 0.13, 1.0];
 /// Each hex's fill as a share of its size; the rest is the border between hexes.
@@ -40,14 +42,26 @@ const FOG_EDGE_WIDTH: f32 = HEX_SIZE * (1.0 - HEX_FILL_SCALE) * 1.732_050_8;
 /// than the gap; otherwise a sliver of it would show on the side in sight.
 const FOG_RIVER_EDGE_WIDTH: f32 = RIVER_WIDTH + 0.02;
 const REMEMBERED_TINT: Color = [0.0, 0.0, 0.0, 0.58];
+/// The veil over a remembered hex's border where it faces a never-seen hex:
+/// the border's color already darkened by `REMEMBERED_TINT`, drawn opaque,
+/// because the bands of two hexes meeting a never-seen one overlap at their
+/// shared corner, and a translucent veil would darken twice there.
+const REMEMBERED_BORDER_COLOR: Color = [
+    BORDER_COLOR[0] * (1.0 - REMEMBERED_TINT[3]),
+    BORDER_COLOR[1] * (1.0 - REMEMBERED_TINT[3]),
+    BORDER_COLOR[2] * (1.0 - REMEMBERED_TINT[3]),
+    1.0,
+];
 /// The row of pips beside ruins counting the turns they've been held: where
 /// the first sits from the hex's center, and the step to the next.
 const RUIN_PIPS: Vec2 = Vec2::new(-0.06, -0.7);
 const RUIN_PIP_RADIUS: f32 = 0.05;
 const RUIN_PIP_GAP: f32 = 0.13;
-/// Thin rims inside hexes worth scouting for: special tiles and ruins.
+/// Thin rims inside hexes worth scouting for: special tiles and ruins, and
+/// animal dens.
 const SPECIAL_RIM_COLOR: Color = [0.95, 0.66, 0.12, 1.0];
 const RUIN_RIM_COLOR: Color = [0.62, 0.58, 0.50, 1.0];
+const DEN_RIM_COLOR: Color = [0.36, 0.20, 0.09, 1.0];
 const LANDMARK_RIM_WIDTH: f32 = 0.05;
 /// Distance between cloud banks, in world units (a hex is 1 from center to corner).
 const CLOUD_SPACING: f32 = 2.8;
@@ -84,7 +98,8 @@ const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
 const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
 const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
 const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
-/// Worker mode's tint over tiles the player's workers can reach...
+/// While something is being placed for a city's workers, the tint over tiles
+/// they can reach...
 const WORKER_REACH_TINT: Color = [0.95, 0.78, 0.42, 0.16];
 /// ...and over the explored tiles they can't.
 const OUT_OF_REACH_TINT: Color = [0.0, 0.0, 0.0, 0.45];
@@ -109,7 +124,7 @@ const CIVILIAN_TOKEN_SIZE: f32 = 0.95;
 /// terrain.
 const ICON_OUTLINE_COLOR: Color = [0.03, 0.03, 0.04, 1.0];
 const ICON_OUTLINE_WIDTH: f32 = 0.06;
-/// Tile yields: below the unit spot, food then production as die-face pips
+/// Tile yields: below the unit spot, food, wood then metal as die-face pips
 /// on a dark see-through pill.
 const YIELD_ROW_OFFSET: Vec2 = Vec2::new(0.0, -0.56);
 /// Distance between neighboring pips, across and up.
@@ -117,9 +132,11 @@ const YIELD_PIP_PITCH: Vec2 = Vec2::new(0.11, 0.15);
 const YIELD_ICON_SCALE: f32 = 0.8;
 /// How far a pip icon, at that scale, reaches from its center.
 const YIELD_ICON_HALF: Vec2 = Vec2::new(0.05, 0.076);
-/// Space between the food group and the production group.
+/// Space between neighboring groups (food, wood, metal).
 const YIELD_GROUP_GAP: f32 = 0.08;
 const YIELD_ROW_PADDING: Vec2 = Vec2::new(0.06, 0.035);
+/// The widest a yield pill may be, from its center, and stay inside the hex.
+const YIELD_ROW_MAX_HALF_WIDTH: f32 = 0.46;
 const YIELD_PIP_CORNER: f32 = 0.1;
 const YIELD_ROW_COLOR: Color = [0.005, 0.006, 0.007, 0.85];
 /// Past six, a yield is one icon and its amount.
@@ -138,19 +155,47 @@ const PLANNED_JOB_COLOR_SOLID: Color = [0.95, 0.78, 0.42, 1.0];
 const JOB_UNDER_WAY_COLOR: Color = [1.0, 0.88, 0.52, 1.0];
 /// The armed worker job's preview on a tile where it can't go.
 const BLOCKED_JOB_COLOR: Color = [0.90, 0.30, 0.25, 1.0];
-const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2::new(0.0, 0.6);
+/// A job on a tile is a hexagon nested inside the worked-tile ring
+/// (`WORKED_OUTLINE_RADIUS`), so a worked tile with a job shows both, and
+/// clear of a guard's outline and a fort's ring inside it. It is open along
+/// its top side, where the job's name goes.
+const JOB_RING_RADIUS: f32 = HEX_SIZE * 0.70;
+/// Where the job ring's open top side runs: its apothem.
+const JOB_RING_TOP: f32 = JOB_RING_RADIUS * 0.866_025_4;
+const JOB_RING_WIDTH: f32 = 0.06;
+const PLANNED_JOB_RING_WIDTH: f32 = 0.05;
+/// A job's name sits in its ring's open top...
+const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2::new(0.0, JOB_RING_TOP);
 const PLANNED_JOB_LABEL_HEIGHT: f32 = 0.12;
+/// ...on a dark plate reaching past the text by this much, so it reads over
+/// the ring and any ground.
+const JOB_LABEL_PADDING: Vec2 = Vec2::new(0.05, 0.03);
+const JOB_LABEL_PLATE_COLOR: Color = [0.01, 0.01, 0.012, 0.8];
+/// A tile's delivery share, atop the hex: its baseline's left end from the
+/// hex's center, and its capital height.
+const SHARE_LABEL_OFFSET: Vec2 = Vec2::new(-0.3, 0.52);
+const SHARE_LABEL_HEIGHT: f32 = 0.18;
+const SHARE_LABEL_COLOR: Color = [0.65, 0.85, 0.65, 1.0];
+/// A road's dot and the segments joining it to its neighbors.
+const ROAD_COLOR: Color = [0.65, 0.45, 0.24, 1.0];
+/// A job's name on a tile showing its delivery share: just under the share.
+const JOB_LABEL_UNDER_SHARE: Vec2 = Vec2::new(0.0, 0.40);
 const WORKER_TAG_MIN: Vec2 = Vec2::new(-0.78, -0.58);
 const WORKER_TAG_MAX: Vec2 = Vec2::new(-0.3, -0.32);
 const WORKER_TAG_COLOR: Color = [0.03, 0.03, 0.04, 0.92];
+/// A city waiting for the stockpile (`waiting_badge`): a tag over its tower,
+/// from this height up, an icon for each resource it lacks.
+const WAITING_TAG_BOTTOM: f32 = 0.44;
+const WAITING_TAG_HEIGHT: f32 = 0.3;
+const WAITING_ICON_PITCH: f32 = 0.21;
+const WAITING_ICON_HEIGHT: f32 = 0.21;
+const WAITING_TAG_RIM: Color = [0.98, 0.30, 0.20, 1.0];
 /// Structures workers build.
 const STONE_COLOR: Color = [0.24, 0.23, 0.21, 1.0];
 /// How thick a wall or gate is along its hex edge.
 const BARRIER_WIDTH: f32 = 0.16;
 const MORTAR_COLOR: Color = [0.09, 0.085, 0.08, 1.0];
 const WOOD_COLOR: Color = [0.40, 0.20, 0.07, 1.0];
-/// The granary marker beside a city.
-const GRANARY_COLOR: Color = [0.95, 0.72, 0.22, 1.0];
 /// Icon growth while a unit is highlighted for having just acted.
 const ACTED_SCALE: f32 = 1.35;
 
@@ -164,6 +209,13 @@ const DEPLOYED_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.18;
 const GUARD_OUTLINE_COLOR: Color = [0.92, 0.94, 0.98, 1.0];
 const GUARD_OUTLINE_RADIUS: f32 = UNIT_ICON_RADIUS * 1.5;
 const GUARD_OUTLINE_WIDTH: f32 = 0.05;
+/// A red reticle around a unit on alert: a ring outside any status rings,
+/// with four ticks on the diagonals (clear of the turn-order badges and the
+/// health bar).
+const ALERT_COLOR: Color = [0.96, 0.26, 0.16, 1.0];
+const ALERT_RING_RADIUS: f32 = UNIT_ICON_RADIUS * 1.45;
+const ALERT_TICK_SPAN: (f32, f32) = (UNIT_ICON_RADIUS * 1.2, UNIT_ICON_RADIUS * 1.95);
+const ALERT_WIDTH: f32 = 0.05;
 
 /// The two units sharing a contested hex are drawn at this scale, stacked
 /// vertically with Blue on top.
@@ -181,8 +233,26 @@ const ATTACK_ORDER_COLOR: Color = [1.00, 0.40, 0.35, 1.0];
 const HEALTH_BAR_WIDTH: f32 = 0.9;
 const HEALTH_BAR_HEIGHT: f32 = 0.14;
 const HEALTH_BAR_OFFSET_Y: f32 = 0.78;
+/// Structures' health bars, relative to a unit's.
+const BARRACKS_BAR_SCALE: f32 = 0.7;
+const BATTERY_BAR_SCALE: f32 = 0.62;
+const POST_BAR_SCALE: f32 = 1.1;
 
-/// Outline around each tile the hovered or selected city works.
+/// The attack preview on a health bar (`push_health_loss`): the HP it would
+/// lose pulses between these two, a lethal loss rims the bar in red, and the
+/// number sits over the bar, red for the target, gold for retaliation.
+const PREVIEW_LOSS_BRIGHT: Color = [1.0, 0.93, 0.80, 1.0];
+const PREVIEW_LOSS_DARK: Color = [0.80, 0.10, 0.06, 1.0];
+const PREVIEW_LETHAL_COLOR: Color = [1.0, 0.16, 0.10, 1.0];
+const PREVIEW_RIM: f32 = 0.05;
+const PREVIEW_DEALT_COLOR: Color = [1.0, 0.45, 0.36, 1.0];
+const PREVIEW_RETALIATION_COLOR: Color = [1.0, 0.82, 0.32, 1.0];
+const PREVIEW_LABEL_HEIGHT: f32 = 0.2;
+/// Pulses a second.
+const PREVIEW_PULSE_RATE: f32 = 1.6;
+
+/// Outline around each tile the hovered or selected city works; a job on the
+/// tile nests inside it (`JOB_RING_RADIUS`).
 const WORKED_OUTLINE_RADIUS: f32 = HEX_SIZE * 0.84;
 const WORKED_OUTLINE_WIDTH: f32 = 0.06;
 const WORKED_OUTLINE_RIM_WIDTH: f32 = 0.10;
@@ -253,11 +323,23 @@ struct Selection {
 impl GameState {
     /// The whole scene as a triangle list, back to front: hex grid, cities,
     /// fog, queued order markers, then units.
+    #[cfg(test)]
     pub fn build_vertices(&self) -> Vec<Vertex> {
+        self.build_scene(Vec::new())
+    }
+
+    /// `build_vertices` into `buffer`, reusing its memory: the app keeps one
+    /// from frame to frame, as a scene is a few megabytes.
+    pub fn build_vertices_into(&self, buffer: &mut Vec<Vertex>) {
+        *buffer = self.build_scene(std::mem::take(buffer));
+    }
+
+    fn build_scene(&self, mut out: Vec<Vertex>) -> Vec<Vertex> {
+        out.clear();
         if let Some(city) = self.interior_view {
-            return self.build_interior_vertices(city);
+            out.extend(self.build_interior_vertices(city));
+            return out;
         }
-        let mut out = Vec::new();
         let fog = self.fog();
 
         let selection = self.selected.map(|idx| {
@@ -280,7 +362,7 @@ impl GameState {
                         unit.is_naval(),
                     )
                 } else {
-                    HashSet::new()
+                    HashSet::default()
                 },
                 locked: self.rival_of(idx).is_some(),
                 swapping: self.ui_click_mode == Some(ClickMode::Swap),
@@ -321,10 +403,11 @@ impl GameState {
         }
 
         // Never-seen hexes aren't drawn at all: the background shows there.
+        // Of those, only what the camera may show.
         let explored: Vec<Hex> = self
             .grid
             .all_hexes()
-            .filter(|&h| self.is_explored(h))
+            .filter(|&h| self.may_show(h) && self.is_explored(h))
             .collect();
         // Every border first, each reaching across the whole gap: the fills
         // drawn next cover what lies inside an explored neighbor, leaving a
@@ -355,17 +438,22 @@ impl GameState {
                 map_icons::push_map_icon_scaled(spot, icon, LANDMARK_SCALE, &mut out);
             }
             self.push_known_ruin(hex, &fog, &mut out);
+            self.push_known_den(hex, &fog, &mut out);
         }
-        push_rivers(&self.grid, |h| self.is_explored(h), &mut out);
+        push_rivers(
+            &self.grid,
+            |h| self.may_show(h) && self.is_explored(h),
+            &mut out,
+        );
 
         self.push_city_map(&fog, &mut out);
         self.push_fog(&fog, &mut out);
-        // Worker mode: the tiles the player's workers can reach are lit, and
-        // the rest dimmed, so the reach stands out.
-        if self.worker_mode {
-            let bases = self.worker_bases(PLAYER_TEAM);
+        // Placing something for a city's workers: the tiles they can reach
+        // (as the player knows the board) are lit, and the rest dimmed, so
+        // the reach stands out.
+        if self.placing_job.is_some() {
             for hex in self.grid.all_hexes().filter(|&h| self.is_explored(h)) {
-                let reach = self.grid.is_passable(hex) && self.in_reach_of(&bases, hex);
+                let reach = self.grid.is_passable(hex) && self.known_worker_reach(hex);
                 let tint = if reach {
                     WORKER_REACH_TINT
                 } else {
@@ -381,13 +469,14 @@ impl GameState {
                 );
             }
         }
+        self.push_turn_dim(&mut out);
         self.push_order_markers(&fog, &mut out);
 
         for (idx, unit) in self.units.iter().enumerate() {
             if !fog.shows(unit) {
                 continue;
             }
-            let (center, scale) = self.unit_layout(idx);
+            let (center, scale) = self.drawn_unit_layout(idx);
             let (icon_scale, color) = if self.recent_actors.contains(&unit.id) {
                 (scale * ACTED_SCALE, brighten(unit.team.color()))
             } else {
@@ -401,7 +490,7 @@ impl GameState {
             }
             push_health_bar(center, unit.hp / unit.max_hp(), scale, &mut out);
             if unit.plans_later_turns() && self.is_player_controlled(idx) {
-                let text = format!("{}T", unit.plan_len());
+                let text = crate::game::city::turns_icon(unit.plan_len() as i32);
                 let at = center + QUEUE_TAG_OFFSET * scale;
                 push_turn_badge(
                     at,
@@ -412,8 +501,10 @@ impl GameState {
                 );
             }
         }
+        if let Some(preview) = self.attack_preview() {
+            self.push_attack_preview(&preview, &mut out);
+        }
         self.push_field_workers(&fog, &mut out);
-
         self.push_tile_yields(&fog, &mut out);
         self.push_effects(&mut out);
         out
@@ -452,16 +543,15 @@ impl GameState {
                 };
                 mesh::regular_polygon(at, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
                 if let Some(fighter) = selected {
-                    let from = fighter.planned_move.unwrap_or(fighter.pos);
                     let occupied = city.interior.fighters.iter().find(|f| f.pos == hex);
                     let can_move = occupied.is_none()
                         && (hex != center_hex || city.interior.core_hp <= 0.0)
-                        && from.distance(hex) <= fighter.unit_type.stats().move_range.max(1);
+                        && fighter.move_reaches(hex);
                     let can_attack = (occupied.is_some_and(|other| other.team != fighter.team)
                         || (hex == center_hex
                             && city.team != fighter.team
                             && city.interior.core_hp > 0.0))
-                        && from.distance(hex) <= fighter.unit_type.stats().attack_range;
+                        && fighter.attack_reaches(hex);
                     if can_move || can_attack {
                         mesh::polygon_outline(
                             at,
@@ -509,8 +599,12 @@ impl GameState {
             );
             font::push_text_centered(
                 post + Vec2::new(0.0, -0.14),
-                if city.team == PLAYER_TEAM { 0.17 } else { 0.23 },
-                if city.team == PLAYER_TEAM {
+                if city.team == self.local_team {
+                    0.17
+                } else {
+                    0.23
+                },
+                if city.team == self.local_team {
                     "DEFEND"
                 } else {
                     "TAKE"
@@ -530,7 +624,7 @@ impl GameState {
         push_health_bar(
             post,
             city.interior.core_hp / super::city::CORE_HP,
-            1.1,
+            POST_BAR_SCALE,
             &mut out,
         );
 
@@ -571,12 +665,25 @@ impl GameState {
                 fighter.team.color(),
                 &mut out,
             );
-            push_health_bar(
-                at,
-                fighter.hp / fighter.unit_type.stats().max_hp,
-                1.0,
-                &mut out,
-            );
+            push_health_bar(at, fighter.health_fraction(), 1.0, &mut out);
+        }
+        if let Some(preview) = self.attack_preview() {
+            let pulse = self.preview_pulse();
+            for loss in &preview.losses {
+                let (at, scale, max_hp) = match loss.hurt {
+                    Hurt::Post => (post, POST_BAR_SCALE, super::city::CORE_HP),
+                    Hurt::Fighter(id) => {
+                        let Some(fighter) =
+                            city.interior.fighters.iter().find(|f| f.source_id == id)
+                        else {
+                            continue;
+                        };
+                        (fighter.pos.to_world(), 1.0, fighter.stats().max_hp)
+                    }
+                    _ => continue,
+                };
+                push_health_loss(at, loss, max_hp, scale, pulse, &mut out);
+            }
         }
         out
     }
@@ -584,10 +691,21 @@ impl GameState {
     /// The world rectangle (min, max) the camera may show: its full height,
     /// and as wide as the widest window it's drawn in (`MAX_VIEW_ASPECT`),
     /// since the vertices are built without knowing the window's shape.
-    fn cloud_view(&self) -> (Vec2, Vec2) {
+    pub(super) fn cloud_view(&self) -> (Vec2, Vec2) {
         let half = self.camera.half_height;
         let reach = Vec2::new(half * MAX_VIEW_ASPECT, half);
         (self.camera.center - reach, self.camera.center + reach)
+    }
+
+    /// Whether anything drawn on `hex` may be on screen (`cloud_view`, with
+    /// room for what reaches past the hex, like its border and labels). The
+    /// map's per-hex layers skip the rest: a big map has far more hexes than
+    /// a view.
+    fn may_show(&self, hex: Hex) -> bool {
+        let (min, max) = self.cloud_view();
+        let margin = Vec2::splat(2.0 * HEX_SIZE);
+        let p = hex.to_world();
+        p.cmpge(min - margin).all() && p.cmple(max + margin).all()
     }
 
     /// Ruins on `hex` as the player knows them: in sight, with a pip for
@@ -617,6 +735,21 @@ impl GameState {
         }
     }
 
+    /// An animal den on `hex` as the player knows it (`animals.rs`): in
+    /// sight, or out of sight as last seen. A dark rim and a paw print.
+    fn push_known_den(&self, hex: Hex, fog: &Fog, out: &mut Vec<Vertex>) {
+        let known = if fog.sees(hex) {
+            self.den_at(hex).is_some()
+        } else {
+            self.memory.get(&hex).is_some_and(|seen| seen.den.is_some())
+        };
+        if known {
+            push_landmark_rim(hex.to_world(), DEN_RIM_COLOR, out);
+            let spot = hex.to_world() + LANDMARK_SPOT;
+            map_icons::push_map_icon_scaled(spot, MapIcon::Paw, LANDMARK_SCALE, out);
+        }
+    }
+
     /// Darkens remembered terrain and covers unexplored areas with clouds.
     /// Drawn over the map and cities but under units and orders.
     fn push_fog(&self, fog: &Fog, out: &mut Vec<Vertex>) {
@@ -626,7 +759,7 @@ impl GameState {
         let remembered: Vec<Hex> = self
             .grid
             .all_hexes()
-            .filter(|h| self.is_explored(*h) && !fog.sees(*h))
+            .filter(|&h| self.may_show(h) && self.is_explored(h) && !fog.sees(h))
             .collect();
         let blank = |h: Hex| !self.grid.contains(h) || !self.is_explored(h);
         for &hex in &remembered {
@@ -634,11 +767,12 @@ impl GameState {
             mesh::regular_polygon(center, HEX_SIZE, 6, 0.0, REMEMBERED_TINT, out);
             // Facing blank, the border reaches past the hex (see
             // OUTER_BORDER_RADIUS); veil that outer half too, so the band
-            // is one shade.
+            // is one shade: opaque, in the veiled border's own color, as
+            // the bands of neighbors overlap at their shared corners.
             for n in hex.neighbors().into_iter().filter(|&n| blank(n)) {
                 let (a, b) = edge_corners(hex, n);
                 let grow = |p: Vec2| center + (p - center) * (OUTER_BORDER_RADIUS / HEX_SIZE);
-                mesh::polygon(&[a, b, grow(b), grow(a)], REMEMBERED_TINT, out);
+                mesh::convex_polygon(&[a, b, grow(b), grow(a)], REMEMBERED_BORDER_COLOR, out);
             }
         }
         for &hex in &remembered {
@@ -777,18 +911,7 @@ fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
 /// keeps its lattice point's hash as it drifts, so the pattern moves whole.
 /// The work per puff is constant and cheap: no noise sampling per vertex.
 fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec<Vertex>) {
-    let Some((min, max)) =
-        grid.all_hexes()
-            .map(Hex::to_world)
-            .fold(None, |bounds: Option<(Vec2, Vec2)>, p| {
-                Some(match bounds {
-                    None => (p, p),
-                    Some((min, max)) => (min.min(p), max.max(p)),
-                })
-            })
-    else {
-        return;
-    };
+    let (min, max) = grid.bounds();
     // A bank reaches about two spacings from its lattice point.
     let reach = Vec2::splat(2.0 * CLOUD_SPACING);
     let (min, max) = (min.max(view.0 - reach), max.min(view.1 + reach));
@@ -805,29 +928,17 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec
     let mut puffs = Vec::new();
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            // Rows are offset by half a bank, and each bank wanders off its
-            // lattice point, so the lattice doesn't show.
-            let jitter = Vec2::new(
-                cloud_hash(x, y, 0xA341_316C) - 0.5,
-                cloud_hash(x, y, 0xC801_3EA4) - 0.5,
-            ) * 0.7;
-            let row_shift = if y.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
-            let bank = (Vec2::new(x as f32 + row_shift, y as f32) + jitter) * CLOUD_SPACING + drift;
-            let scale = CLOUD_SPACING * (0.8 + cloud_hash(x, y, 0xAD90_777D) * 0.5);
-            let (shape, count) = bank_shape(x, y);
-            for (i, &(place, size)) in shape[..count].iter().enumerate() {
-                let salt = (i as u32 + 1).wrapping_mul(0x9E37_79B9);
-                // Each puff billows at its own phase and pace.
-                let pace = 0.75 + cloud_hash(x, y, 0x2545_F491 ^ salt) * 0.5;
-                let phase = cloud_hash(x, y, 0x5851_F42D ^ salt) * TAU
-                    + time * pace * TAU / CLOUD_BILLOW_PERIOD;
+            let look = cached_bank(x, y);
+            let (bank, scale) = (look.place + drift, look.scale);
+            for puff in &look.puffs[..look.count] {
+                let phase = puff.phase + time * puff.pace * TAU / CLOUD_BILLOW_PERIOD;
                 let wander = Vec2::new(phase.cos(), (phase * 0.8).sin()) * CLOUD_WANDER;
-                let center = bank + place * scale + wander;
+                let center = bank + puff.place * scale + wander;
                 let alpha = edge_fade(grid, center);
                 if alpha <= 0.0 {
                     continue;
                 }
-                let radius = size * scale * 1.5 * (1.0 + CLOUD_BILLOW * (phase * 1.3).sin());
+                let radius = puff.size * scale * 1.5 * (1.0 + CLOUD_BILLOW * (phase * 1.3).sin());
                 puffs.push(Puff {
                     center,
                     radius,
@@ -841,16 +952,84 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec
             }
         }
     }
-    puffs.sort_by(|a, b| b.center.y.total_cmp(&a.center.y));
+    puffs.sort_unstable_by(|a, b| b.center.y.total_cmp(&a.center.y));
     out.reserve((shadows.len() + puffs.len()) * CLOUD_PUFF_VERTICES);
     for (center, alpha) in shadows {
         let color = with_alpha(CLOUD_SHADOW_COLOR, CLOUD_SHADOW_COLOR[3] * alpha);
-        push_soft_disc(center, Vec2::splat(0.62 * CLOUD_SPACING), color, color, out);
+        push_soft_disc(center, Vec2::splat(SHADOW_RADIUS), color, color, out);
     }
     for puff in &puffs {
         push_cloud_puff(puff, out);
     }
 }
+
+/// A cloud bank's fixed look, all from its lattice point's hash: where it
+/// sits, how big it is, and its puffs.
+#[derive(Clone, Copy)]
+struct Bank {
+    /// Its place before the wind moves it.
+    place: Vec2,
+    scale: f32,
+    puffs: [BankPuff; MAX_BANK_PUFFS],
+    count: usize,
+}
+
+/// A puff of a `Bank`: its place around the bank's center and radius, in
+/// units of the bank's scale, and how it billows (its pace, and its phase at
+/// time 0).
+#[derive(Clone, Copy, Default)]
+struct BankPuff {
+    place: Vec2,
+    size: f32,
+    pace: f32,
+    phase: f32,
+}
+
+fn bank(x: i32, y: i32) -> Bank {
+    // Rows are offset by half a bank, and each bank wanders off its lattice
+    // point, so the lattice doesn't show.
+    let jitter = Vec2::new(
+        cloud_hash(x, y, 0xA341_316C) - 0.5,
+        cloud_hash(x, y, 0xC801_3EA4) - 0.5,
+    ) * 0.7;
+    let row_shift = if y.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
+    let (shape, count) = bank_shape(x, y);
+    let mut puffs = [BankPuff::default(); MAX_BANK_PUFFS];
+    for (i, (puff, &(place, size))) in puffs.iter_mut().zip(&shape[..count]).enumerate() {
+        let salt = (i as u32 + 1).wrapping_mul(0x9E37_79B9);
+        // Each puff billows at its own phase and pace.
+        *puff = BankPuff {
+            place,
+            size,
+            pace: 0.75 + cloud_hash(x, y, 0x2545_F491 ^ salt) * 0.5,
+            phase: cloud_hash(x, y, 0x5851_F42D ^ salt) * TAU,
+        };
+    }
+    Bank {
+        place: (Vec2::new(x as f32 + row_shift, y as f32) + jitter) * CLOUD_SPACING,
+        scale: CLOUD_SPACING * (0.8 + cloud_hash(x, y, 0xAD90_777D) * 0.5),
+        puffs,
+        count,
+    }
+}
+
+/// `bank`, worked out once per lattice point: the clouds are rebuilt every
+/// frame and it's most of their cost. The wind brings new points into view
+/// slowly, so the cache is simply emptied if it ever gets big.
+fn cached_bank(x: i32, y: i32) -> Bank {
+    thread_local! {
+        static BANKS: std::cell::RefCell<HashMap<(i32, i32), Bank>> = Default::default();
+    }
+    BANKS.with_borrow_mut(|banks| {
+        if banks.len() > 20_000 {
+            banks.clear();
+        }
+        *banks.entry((x, y)).or_insert_with(|| bank(x, y))
+    })
+}
+
+/// A cloud bank's shadow's radius.
+const SHADOW_RADIUS: f32 = 0.62 * CLOUD_SPACING;
 
 /// Vertices in one cloud disc: a quad the shader rounds and feathers
 /// (`soft_disc_uv`).
@@ -916,10 +1095,16 @@ impl GameState {
             .collect();
 
         // Where each moving unit's ghost is drawn, for its attack arc.
-        let mut ghosts: HashMap<u32, Vec2> = HashMap::new();
+        let mut ghosts: HashMap<u32, Vec2> = HashMap::default();
+        // Another side's move shows only in sight at both ends: its units
+        // carry their moves while a turn plays out.
         let plain_moves = group_by_target(&self.units, |u| {
-            u.planned_move
-                .filter(|_| !swapping.contains(&u.id) && !u.plans_later_turns() && fog.shows(u))
+            u.planned_move.filter(|&dest| {
+                !swapping.contains(&u.id)
+                    && !u.plans_later_turns()
+                    && fog.shows(u)
+                    && (u.team == fog.team() || fog.sees(dest))
+            })
         });
         for (hex, movers) in plain_moves {
             for (i, unit) in movers.iter().enumerate() {
@@ -931,7 +1116,10 @@ impl GameState {
         }
 
         for (idx, unit) in self.units.iter().enumerate() {
-            if let Some(partner) = self.swap_partner(idx).filter(|&p| p > idx) {
+            if let Some(partner) = self
+                .swap_partner(idx)
+                .filter(|&p| p > idx && fog.shows(unit) && fog.shows(&self.units[p]))
+            {
                 let color = with_alpha(unit.team.color(), SWAP_LINK_ALPHA);
                 let (a, b) = (unit.pos.to_world(), self.units[partner].pos.to_world());
                 mesh::segment(a, b, SWAP_LINK_WIDTH, color, out);
@@ -999,6 +1187,30 @@ impl GameState {
         (center + Vec2::new(0.0, offset_y), CONTESTED_SCALE)
     }
 
+    /// Whether `point` (world space) is on unit `idx`'s token as
+    /// `build_vertices` draws it: at `unit_layout`'s center and scale (larger
+    /// while it's lit as having just acted), its disc or civilian hexagon
+    /// out to the edge of its dark outline. The city view uses it to tell a
+    /// click on a unit from a click on the tile under it.
+    pub(super) fn unit_token_contains(&self, idx: usize, point: Vec2) -> bool {
+        let unit = &self.units[idx];
+        let (center, mut scale) = self.unit_layout(idx);
+        if self.recent_actors.contains(&unit.id) {
+            scale *= ACTED_SCALE;
+        }
+        let (sides, rotation, size) = token_shape(self.unit_look(unit));
+        // As `mesh::polygon_outline` draws it: centered on the rim, its
+        // corners pushed out further than its edges.
+        let half_step = TAU / 2.0 / sides as f32;
+        let outer =
+            UNIT_ICON_RADIUS * scale * size + ICON_OUTLINE_WIDTH * scale / 2.0 / half_step.cos();
+        // Inside a regular polygon: within its apothem along the normal of
+        // the edge the point faces.
+        let offset = point - center;
+        let from_corner = (offset.to_angle() - rotation).rem_euclid(2.0 * half_step);
+        offset.length() * (from_corner - half_step).cos() <= outer * half_step.cos()
+    }
+
     /// The terrain's color, unless the hex is selected, contested, or in the
     /// selected unit's move or attack range. Mountains are never highlighted
     /// since nothing can move to or stand on them.
@@ -1012,7 +1224,8 @@ impl GameState {
         if in_group || selection.is_some_and(|sel| sel.pos == hex) {
             return SELECTED_COLOR;
         }
-        if self.is_contested(hex) {
+        // Only in sight: out of it, no unit is known to be anywhere.
+        if fog.sees(hex) && self.is_contested(hex) {
             return CONTESTED_COLOR;
         }
         let Some(sel) = selection else { return base };
@@ -1048,7 +1261,7 @@ impl GameState {
     fn push_city_map(&self, fog: &Fog, out: &mut Vec<Vertex>) {
         let view = self.map_view(fog);
         for &h in &view.roads {
-            mesh::regular_polygon(h.to_world(), 0.12, 8, 0.0, [0.65, 0.45, 0.24, 1.0], out);
+            mesh::regular_polygon(h.to_world(), 0.12, 8, 0.0, ROAD_COLOR, out);
         }
         // Road segments join roads to each other and to cities, even though a
         // city center is drawn as its larger marker.
@@ -1057,79 +1270,87 @@ impl GameState {
             for n in h.neighbors() {
                 let city = !view.roads.contains(&n);
                 if joins(n) && (city || (h.q, h.r) < (n.q, n.r)) {
-                    mesh::segment(
-                        h.to_world(),
-                        n.to_world(),
-                        0.09,
-                        [0.65, 0.45, 0.24, 1.0],
-                        out,
-                    );
+                    mesh::segment(h.to_world(), n.to_world(), 0.09, ROAD_COLOR, out);
                 }
             }
         }
+        // After the roads, which run through where a share sits (#215).
+        let shares = self.push_delivery_shares(fog, out);
         if let Some(i) = self
             .hovered_city
             .or(self.selected_city)
-            .filter(|&i| self.cities[i].team == PLAYER_TEAM || fog.sees(self.cities[i].pos))
+            .filter(|&i| self.cities[i].team == self.local_team || fog.sees(self.cities[i].pos))
         {
             // Delivery labels show routes as the player knows them; the
-            // worked-tile rings below show whether goods really arrive.
-            let routes = self.routes(i);
+            // worked-tile rings below show whether goods really arrive. Of
+            // another side's city, only the tiles it works in sight show,
+            // and not whether their goods arrive: its routes aren't known.
+            let own = self.cities[i].team == fog.team();
+            let shown = |h: Hex| own || fog.sees(h);
+            let routes = own.then(|| self.routes(i));
             let known_routes = self.known_routes(i, fog);
-            for (h, cost) in &known_routes.costs {
-                // Nothing is known of a tile never seen, delivery included.
-                if self.yields_city() != Some(i) || !self.is_explored(*h) {
+            // A manager picked up takes its cluster with it until it's
+            // placed: none show.
+            let clusters = &self.cities[i].clusters;
+            let several = clusters.len() > 1;
+            for (k, cluster) in clusters.iter().enumerate() {
+                if self.moving_manager == Some((i, k)) {
                     continue;
                 }
-                let food_share = self.mill_food_share(i, *h, *cost);
-                let production_share = super::city::delivered_share(*cost);
-                let label = if food_share == production_share {
-                    format!("{}%", food_share * 25)
-                } else {
-                    format!("F{} P{}", food_share * 25, production_share * 25)
-                };
-                font::push_text(
-                    h.to_world() + Vec2::new(-0.3, 0.52),
-                    0.18,
-                    &label,
-                    [0.65, 0.85, 0.65, 1.0],
-                    out,
-                );
-            }
-            let manager_is_moving = self.moving_manager == Some(i);
-            for (worker_index, h) in self.cities[i].worked.iter().enumerate() {
-                if manager_is_moving && worker_index == 0 {
-                    continue;
-                }
-                let color = if routes.costs.contains_key(h) {
-                    if worker_index == 0 {
-                        [1.0, 0.78, 0.20, 1.0]
-                    } else {
-                        [0.25, 1.0, 0.4, 1.0]
+                for (worker_index, h) in cluster.tiles().enumerate() {
+                    if !shown(h) {
+                        continue;
                     }
+                    let arrives = routes.as_ref().is_none_or(|r| r.costs.contains_key(&h));
+                    let color = if arrives {
+                        if worker_index == 0 {
+                            [1.0, 0.78, 0.20, 1.0]
+                        } else {
+                            [0.25, 1.0, 0.4, 1.0]
+                        }
+                    } else {
+                        [1.0, 0.25, 0.2, 1.0]
+                    };
+                    // A colored ring on a slightly wider dark one, just inside
+                    // the hex's fill so it doesn't blur into the grid lines.
+                    let center = h.to_world();
+                    let radius = WORKED_OUTLINE_RADIUS;
+                    let rim = WORKED_OUTLINE_RIM_COLOR;
+                    mesh::polygon_outline(
+                        center,
+                        radius,
+                        WORKED_OUTLINE_RIM_WIDTH,
+                        6,
+                        0.0,
+                        rim,
+                        out,
+                    );
+                    mesh::polygon_outline(center, radius, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
+                }
+                // The manager's mark: M, or with several clusters M1 to M4.
+                if !shown(cluster.manager) {
+                    continue;
+                }
+                let center = cluster.manager.to_world();
+                if several {
+                    let label = super::city::manager_label(k, clusters.len());
+                    font::push_text_centered(center, 0.34, &label, LABEL_COLOR, out);
                 } else {
-                    [1.0, 0.25, 0.2, 1.0]
-                };
-                // A colored ring on a slightly wider dark one, just inside the
-                // hex's fill so it doesn't blur into the grid lines.
-                let center = h.to_world();
-                let radius = WORKED_OUTLINE_RADIUS;
-                let rim = WORKED_OUTLINE_RIM_COLOR;
-                mesh::polygon_outline(center, radius, WORKED_OUTLINE_RIM_WIDTH, 6, 0.0, rim, out);
-                mesh::polygon_outline(center, radius, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
-                if worker_index == 0 {
                     font::push_glyph(center, 0.34, 'M', LABEL_COLOR, out);
                 }
-            }
-            if let Some(&manager) = self.cities[i].worked.first()
-                && !manager_is_moving
-                && self.hovered_tile == Some(manager)
-            {
-                // Hovering the manager traces the way its goods travel to the
-                // city center, as the player knows the board.
-                for leg in known_routes.path_from(manager).windows(2) {
-                    let (from, to) = (leg[0].to_world(), leg[1].to_world());
-                    push_dotted_segment(from, to, MANAGER_ROUTE_WIDTH, MANAGER_ROUTE_COLOR, out);
+                if self.hovered_tile == Some(cluster.manager) {
+                    // Hovering a manager traces the way its goods travel to
+                    // the city center, as the player knows the board.
+                    for leg in known_routes.path_from(cluster.manager).windows(2) {
+                        let (from, to) = (leg[0].to_world(), leg[1].to_world());
+                        push_dotted_segment(
+                            from,
+                            to,
+                            MANAGER_ROUTE_WIDTH,
+                            MANAGER_ROUTE_COLOR,
+                            out,
+                        );
+                    }
                 }
             }
         }
@@ -1137,16 +1358,22 @@ impl GameState {
             && let Some(barracks) = self.cities[i].barracks
         {
             let routes = self.known_routes_from(self.cities[i].team, barracks, fog);
-            for (hex, cost) in routes.costs.iter().filter(|(h, _)| self.is_explored(**h)) {
+            let mut costs: Vec<_> = routes
+                .costs
+                .iter()
+                .filter(|(h, _)| self.is_explored(**h))
+                .collect();
+            costs.sort_unstable_by_key(|(h, _)| (h.q, h.r));
+            for (hex, cost) in costs {
                 font::push_text(
-                    hex.to_world() + Vec2::new(-0.3, 0.52),
-                    0.18,
+                    hex.to_world() + SHARE_LABEL_OFFSET,
+                    SHARE_LABEL_HEIGHT,
                     &format!("{}%", super::city::delivered_share(*cost) * 25),
                     [1.0, 0.70, 0.30, 1.0],
                     out,
                 );
             }
-            for source in &self.cities[i].worked {
+            for source in self.cities[i].worked() {
                 push_dotted_segment(
                     source.to_world(),
                     barracks.to_world(),
@@ -1159,8 +1386,13 @@ impl GameState {
         for &(h, structure) in &view.structures {
             push_structure(h.to_world(), structure.kind, structure.team.color(), out);
         }
-        self.push_planned_jobs(out);
-        for (&(a, b), barrier) in &view.barriers {
+        self.push_planned_jobs(&shares, out);
+        self.push_others_construction(&view.construction, &shares, out);
+        // Shared corner posts overlap: choose their painter order by edge,
+        // independently of hash keys, capacity or insertion order.
+        let mut barriers: Vec<_> = view.barriers.iter().collect();
+        barriers.sort_unstable_by_key(|((a, b), _)| (a.q, a.r, b.q, b.r));
+        for (&(a, b), barrier) in barriers {
             push_barrier(a, b, barrier.kind, barrier.team.color(), out);
         }
         // Where the armed worker job would go: an edge, or a ring on a tile,
@@ -1173,21 +1405,13 @@ impl GameState {
                 }
                 None => {
                     let color = if self.job_unavailable(hex, kind).is_none()
-                        || self.job_taken(PLAYER_TEAM, WorkerJob::on_tile(hex, kind))
+                        || self.job_taken(self.local_team, WorkerJob::on_tile(hex, kind))
                     {
                         PLANNED_JOB_COLOR_SOLID
                     } else {
                         BLOCKED_JOB_COLOR
                     };
-                    mesh::polygon_outline(
-                        hex.to_world(),
-                        WORKED_OUTLINE_RADIUS,
-                        0.07,
-                        6,
-                        0.0,
-                        color,
-                        out,
-                    );
+                    push_job_ring(hex, JOB_RING_WIDTH, color, out);
                 }
             }
         }
@@ -1203,7 +1427,7 @@ impl GameState {
         }
         for (hex, barracks) in &view.barracks {
             push_barracks_marker(hex.to_world(), barracks.team.color(), out);
-            push_health_bar(hex.to_world(), barracks.health, 0.7, out);
+            push_health_bar(hex.to_world(), barracks.health, BARRACKS_BAR_SCALE, out);
         }
         for city in &self.cities {
             for building in super::city::Building::PLACEABLE {
@@ -1213,95 +1437,150 @@ impl GameState {
                 let Some(hex) = city.placed_site(building) else {
                     continue;
                 };
-                if city.team != PLAYER_TEAM && !fog.sees(hex) {
+                if city.team != self.local_team && !fog.sees(hex) {
                     continue;
                 }
                 let (badge, color) = building_badge(building);
                 mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, color, out);
                 font::push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
                 if building == super::city::Building::CoastalBattery {
-                    push_health_bar(hex.to_world(), city.coastal_battery_hp / 150.0, 0.62, out);
+                    let health = city.coastal_battery_hp / COASTAL_BATTERY_MAX_HP;
+                    push_health_bar(hex.to_world(), health, BATTERY_BAR_SCALE, out);
                 }
-            }
-        }
-        // Planned sites stay visible until confirmation. An active placement
-        // also follows the map hover before a site has been selected.
-        for (i, city) in self.cities.iter().enumerate() {
-            if city.team != PLAYER_TEAM {
-                continue;
-            }
-            for building in super::city::Building::PLACEABLE {
-                let planned = city.planned_sites.get(&building).copied();
-                let preview = if self.site_placement() == Some((i, building)) {
-                    self.hovered_tile
-                        .filter(|&h| self.site_available(i, building, h))
-                        .or(planned)
-                } else {
-                    planned
-                };
-                let Some(hex) = preview else {
-                    continue;
-                };
-                let (badge, mut color) = building_badge(building);
-                let is_hovered = self.hovered_tile == Some(hex);
-                color[3] = if is_hovered { 0.95 } else { 0.55 };
-                mesh::polygon_outline(
-                    hex.to_world(),
-                    WORKED_OUTLINE_RADIUS,
-                    0.09,
-                    6,
-                    0.0,
-                    color,
-                    out,
-                );
-                mesh::regular_polygon(
-                    hex.to_world(),
-                    0.31,
-                    4,
-                    FRAC_PI_4,
-                    [color[0], color[1], color[2], 0.48],
-                    out,
-                );
-                font::push_glyph(hex.to_world(), 0.30, badge, [0.08, 0.05, 0.03, 0.65], out);
             }
         }
         for (hex, city) in &view.cities {
             push_city_marker(hex.to_world(), city, out);
         }
-        for city in self.cities.iter().filter(|c| c.team == PLAYER_TEAM) {
+        for city in self.cities.iter().filter(|c| c.team == self.local_team) {
             push_worker_count(city.pos.to_world(), city.workers, out);
+        }
+        // The player's cities that wait for the stockpile: the first item of
+        // a queue can't be paid for this turn (`city_waits_for`).
+        let shown: Vec<usize> = (0..self.cities.len())
+            .filter(|&i| {
+                let city = &self.cities[i];
+                city.team == self.local_team
+                    && self.may_show(city.pos)
+                    && !(city.queue.is_empty() && city.barracks_queue.is_empty())
+            })
+            .collect();
+        if !shown.is_empty() {
+            let forecast = self.forecast(self.local_team);
+            for i in shown {
+                if let Some(short) = self.city_waits_for(&forecast, i) {
+                    push_waiting_badge(self.cities[i].pos.to_world(), short, out);
+                }
+            }
         }
     }
 
+    /// Each tile's delivery share to `shares_city` (the percentage atop
+    /// the hex), as the player knows the routes: every explored tile in
+    /// reach but those a building covers. Returns the tiles labeled, whose
+    /// job names then sit below the share.
+    fn push_delivery_shares(&self, fog: &Fog, out: &mut Vec<Vertex>) -> HashSet<Hex> {
+        let mut labeled = HashSet::default();
+        let Some(i) = self.shares_city() else {
+            return labeled;
+        };
+        let known_routes = self.known_routes(i, fog);
+        let mut costs: Vec<_> = known_routes.costs.iter().collect();
+        costs.sort_unstable_by_key(|(h, _)| (h.q, h.r));
+        for (h, cost) in costs {
+            // Nothing is known of a tile never seen, delivery included.
+            if !self.may_show(*h) || !self.is_explored(*h) || self.known_building_at(*h, fog) {
+                continue;
+            }
+            let food_share = self.mill_food_share(i, *h, *cost);
+            let production_share = super::city::delivered_share(*cost);
+            let label = if food_share == production_share {
+                format!("{}%", food_share * 25)
+            } else {
+                format!("F{} P{}", food_share * 25, production_share * 25)
+            };
+            font::push_text(
+                h.to_world() + SHARE_LABEL_OFFSET,
+                SHARE_LABEL_HEIGHT,
+                &label,
+                SHARE_LABEL_COLOR,
+                out,
+            );
+            labeled.insert(*h);
+        }
+        labeled
+    }
+
+    /// Whether the player knows of a city or placed building on `hex`, which
+    /// shows no yields (`closed_to_citizens`): their own always, anyone's in
+    /// sight, and a remembered city or barracks.
+    /// `known_building_at` but for city centers, which keep their chips:
+    /// their own yield comes in on its own.
+    fn known_building_at_off_center(&self, hex: Hex, fog: &Fog) -> bool {
+        let center = self.cities.iter().any(|c| c.pos == hex)
+            || self.remembered(hex).is_some_and(|seen| seen.city.is_some()) && !fog.sees(hex);
+        !center && self.known_building_at(hex, fog)
+    }
+
+    fn known_building_at(&self, hex: Hex, fog: &Fog) -> bool {
+        let own = self.cities.iter().any(|c| {
+            c.team == self.local_team
+                && (c.pos == hex
+                    || super::city::Building::PLACEABLE
+                        .iter()
+                        .any(|&b| c.placed_site(b) == Some(hex)))
+        });
+        if own || fog.sees(hex) {
+            return self.closed_to_citizens(hex);
+        }
+        self.remembered(hex)
+            .is_some_and(|seen| seen.city.is_some() || seen.barracks.is_some())
+    }
+
+    /// Where a job's name goes on its tile: atop the hex, or just under the
+    /// delivery share when the tile shows one.
+    fn job_label_at(hex: Hex, shares: &HashSet<Hex>) -> Vec2 {
+        let offset = if shares.contains(&hex) {
+            JOB_LABEL_UNDER_SHARE
+        } else {
+            PLANNED_JOB_LABEL_OFFSET
+        };
+        hex.to_world() + offset
+    }
+
     /// The player's worker jobs: those under way (`push_jobs_under_way`),
-    /// and those queued, a faded ring on each tile, named.
-    fn push_planned_jobs(&self, out: &mut Vec<Vertex>) {
-        self.push_jobs_under_way(out);
+    /// and those queued, a faded ring on each tile, named. A job partly
+    /// built (a worker left it) adds the turns of work it has left.
+    fn push_planned_jobs(&self, shares: &HashSet<Hex>, out: &mut Vec<Vertex>) {
+        self.push_jobs_under_way(shares, out);
         let queued = self
             .cities
             .iter()
-            .filter(|c| c.team == PLAYER_TEAM)
+            .filter(|c| c.team == self.local_team)
             .flat_map(|c| &c.worker_jobs);
         for job in queued {
+            let left = (job.done > 0).then(|| {
+                let left = self.job_turns_left(self.local_team, *job);
+                format!(
+                    "{} {}",
+                    self.job_name(*job),
+                    crate::game::city::turns_icon(left as i32)
+                )
+            });
             if let Some(across) = job.across {
                 let (start, end) = edge_corners(job.hex, across);
                 push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, PLANNED_EDGE_COLOR, out);
+                if let Some(label) = left {
+                    let at = (start + end) / 2.0 + PLANNED_JOB_LABEL_OFFSET * 0.5;
+                    let height = PLANNED_JOB_LABEL_HEIGHT;
+                    font::push_text_centered(at, height, &label, PLANNED_JOB_COLOR, out);
+                }
                 continue;
             }
-            let center = job.hex.to_world();
-            mesh::polygon_outline(
-                center,
-                WORKED_OUTLINE_RADIUS,
-                0.05,
-                6,
-                0.0,
-                PLANNED_JOB_COLOR,
-                out,
-            );
-            font::push_text_centered(
-                center + PLANNED_JOB_LABEL_OFFSET,
-                PLANNED_JOB_LABEL_HEIGHT,
-                self.job_name(*job),
+            push_job_ring(job.hex, PLANNED_JOB_RING_WIDTH, PLANNED_JOB_COLOR, out);
+            push_job_label(
+                Self::job_label_at(job.hex, shares),
+                left.as_deref().unwrap_or(self.job_name(*job)),
                 PLANNED_JOB_COLOR,
                 out,
             );
@@ -1310,16 +1589,20 @@ impl GameState {
 
     /// The jobs the player's workers are out on: a solid ring on the tile (or
     /// the edge, for a wall or gate) named with the job and, once the worker
-    /// is there working, the turns of work left, like "IMPROVE 2T".
-    fn push_jobs_under_way(&self, out: &mut Vec<Vertex>) {
+    /// is there working, the turns of work left, like "IMPROVE" and the clock with 2.
+    fn push_jobs_under_way(&self, shares: &HashSet<Hex>, out: &mut Vec<Vertex>) {
         let working = self
             .field_workers
             .iter()
-            .filter(|w| w.team == PLAYER_TEAM && !w.recalled);
+            .filter(|w| w.team == self.local_team && !w.recalled);
         for worker in working {
             let Some(job) = worker.job else { continue };
             let label = match worker.work_left.filter(|_| worker.pos == job.hex) {
-                Some(left) => format!("{} {left}T", self.job_name(job)),
+                Some(left) => format!(
+                    "{} {}",
+                    self.job_name(job),
+                    crate::game::city::turns_icon(left as i32)
+                ),
                 None => self.job_name(job).into(),
             };
             let at = match job.across {
@@ -1329,26 +1612,38 @@ impl GameState {
                     (start + end) / 2.0 + PLANNED_JOB_LABEL_OFFSET * 0.5
                 }
                 None => {
-                    let center = job.hex.to_world();
-                    mesh::polygon_outline(
-                        center,
-                        WORKED_OUTLINE_RADIUS,
-                        0.06,
-                        6,
-                        0.0,
-                        JOB_UNDER_WAY_COLOR,
-                        out,
-                    );
-                    center + PLANNED_JOB_LABEL_OFFSET
+                    push_job_ring(job.hex, JOB_RING_WIDTH, JOB_UNDER_WAY_COLOR, out);
+                    Self::job_label_at(job.hex, shares)
                 }
             };
-            font::push_text_centered(
-                at,
-                PLANNED_JOB_LABEL_HEIGHT,
-                &label,
-                JOB_UNDER_WAY_COLOR,
-                out,
-            );
+            push_job_label(at, &label, JOB_UNDER_WAY_COLOR, out);
+        }
+    }
+
+    /// Other sides' construction the player knows of (`MapView`): like the
+    /// player's own jobs under way, a ring on the tile (or the edge, for a
+    /// wall or gate) named with the job, but in the builder's color and
+    /// without the turns left, which would give away its Workshop.
+    fn push_others_construction(
+        &self,
+        jobs: &[SeenJob],
+        shares: &HashSet<Hex>,
+        out: &mut Vec<Vertex>,
+    ) {
+        for seen in jobs.iter().filter(|seen| self.may_show(seen.job.hex)) {
+            let color = seen.team.color();
+            let at = match seen.job.across {
+                Some(across) => {
+                    let (start, end) = edge_corners(seen.job.hex, across);
+                    push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, color, out);
+                    (start + end) / 2.0 + PLANNED_JOB_LABEL_OFFSET * 0.5
+                }
+                None => {
+                    push_job_ring(seen.job.hex, JOB_RING_WIDTH, color, out);
+                    Self::job_label_at(seen.job.hex, shares)
+                }
+            };
+            push_job_label(at, seen.name, color, out);
         }
     }
 
@@ -1370,7 +1665,8 @@ impl GameState {
             } else {
                 (worker.pos.to_world(), WORKER_SCALE)
             };
-            if worker.team == PLAYER_TEAM
+            let center = center + self.worker_glide(worker);
+            if worker.team == self.local_team
                 && let Some(job) = worker.job.filter(|job| job.hex != worker.pos)
             {
                 push_dotted_segment(center, job.hex.to_world(), 0.05, PLANNED_JOB_COLOR, out);
@@ -1405,13 +1701,12 @@ impl GameState {
                 .filter(|((a, b), _)| fog.sees(*a) || fog.sees(*b)),
         );
         for city in &self.cities {
-            let own = city.team == PLAYER_TEAM;
+            let own = city.team == self.local_team;
             let seen = |health| SeenBuilding {
                 team: city.team,
                 id: city.id,
                 health,
                 population: city.population,
-                granary: city.built.contains(&super::city::Building::Granary),
             };
             if own || fog.sees(city.pos) {
                 view.cities.push((city.pos, seen(1.0)));
@@ -1421,6 +1716,12 @@ impl GameState {
                 view.barracks.push((hex, seen(health)));
             }
         }
+        view.construction.extend(
+            self.field_workers
+                .iter()
+                .filter(|w| fog.sees(w.pos))
+                .filter_map(|w| self.others_construction(w, self.local_team)),
+        );
         if !self.fog_of_war {
             return view;
         }
@@ -1437,12 +1738,17 @@ impl GameState {
             for &(across, barrier) in seen.barriers.iter().filter(|(n, _)| !fog.sees(*n)) {
                 view.barriers.insert(edge(h, across), barrier);
             }
-            if let Some(city) = seen.city.filter(|c| c.team != PLAYER_TEAM) {
+            if let Some(city) = seen.city.filter(|c| c.team != self.local_team) {
                 view.cities.push((h, city));
             }
-            if let Some(barracks) = seen.barracks.filter(|b| b.team != PLAYER_TEAM) {
+            if let Some(barracks) = seen.barracks.filter(|b| b.team != self.local_team) {
                 view.barracks.push((h, barracks));
             }
+            view.construction.extend(
+                seen.construction
+                    .iter()
+                    .filter(|seen| seen.team != self.local_team),
+            );
         }
         view
     }
@@ -1459,6 +1765,29 @@ struct MapView {
     barriers: HashMap<(Hex, Hex), Structure>,
     cities: Vec<(Hex, SeenBuilding)>,
     barracks: Vec<(Hex, SeenBuilding)>,
+    /// Other sides' construction, by the tile its worker stands on.
+    construction: Vec<SeenJob>,
+}
+
+/// A job's ring on `hex` (`JOB_RING_RADIUS`): five sides of a hexagon, open
+/// along the top where its name goes.
+fn push_job_ring(hex: Hex, width: f32, color: Color, out: &mut Vec<Vertex>) {
+    let center = hex.to_world();
+    // From the top left corner around to the top right one, the long way.
+    let corners: [Vec2; 6] = std::array::from_fn(|i| {
+        center + Vec2::from_angle((i + 2) as f32 * TAU / 6.0) * JOB_RING_RADIUS
+    });
+    mesh::polyline(&corners, width, color, out);
+}
+
+/// A job's name centered on `at`, on a dark plate.
+fn push_job_label(at: Vec2, text: &str, color: Color, out: &mut Vec<Vertex>) {
+    let height = PLANNED_JOB_LABEL_HEIGHT;
+    let radius = height / 2.0 + JOB_LABEL_PADDING.y;
+    let reach =
+        (font::world_text_width(text, height) / 2.0 + JOB_LABEL_PADDING.x - radius).max(0.0);
+    push_pill(at, reach, radius, JOB_LABEL_PLATE_COLOR, out);
+    font::push_text_centered(at, height, text, color, out);
 }
 
 fn building_badge(building: super::city::Building) -> (char, Color) {
@@ -1477,7 +1806,6 @@ fn building_badge(building: super::city::Building) -> (char, Color) {
         super::city::Building::Railhead => ('R', [0.47, 0.68, 0.79, 1.0]),
         super::city::Building::Harbor => ('P', [0.34, 0.67, 0.90, 1.0]),
         super::city::Building::CoastalBattery => ('D', [0.85, 0.57, 0.28, 1.0]),
-        super::city::Building::Granary => unreachable!(),
     }
 }
 
@@ -1507,40 +1835,40 @@ impl GameState {
             return;
         }
         let reach = city.map(|city| (city, self.known_routes(city, fog)));
-        for hex in self
-            .grid
-            .all_hexes()
-            .filter(|h| self.grid.terrain(*h).is_workable() && self.is_explored(*h))
-        {
-            let in_reach = reach.as_ref().is_some_and(|(city, routes)| {
-                routes.costs.contains_key(&hex) || self.cities[*city].worked.contains(&hex)
-            });
-            if !in_reach && !self.show_details {
-                continue;
-            }
-            let (food, production) = self.known_yield(hex, fog);
-            push_yield_row(hex.to_world() + YIELD_ROW_OFFSET, food, production, out);
+        // The cheap tests first: most hexes fail one.
+        for hex in self.grid.all_hexes().filter(|&h| {
+            self.may_show(h)
+                && self.grid.terrain(h).is_workable()
+                && (self.show_details
+                    || reach.as_ref().is_some_and(|(city, routes)| {
+                        routes.costs.contains_key(&h) || self.cities[*city].works(h)
+                    }))
+                && self.is_explored(h)
+                && !self.known_building_at_off_center(h, fog)
+        }) {
+            let goods = self.known_yield(hex, fog);
+            push_yield_row(hex.to_world() + YIELD_ROW_OFFSET, goods, out);
         }
     }
 }
 
-/// A tile's yields on a dark pill: food then production, each laid out like
-/// the pips on a die, or as one icon and a number past six. Nothing for a
-/// tile yielding nothing.
-fn push_yield_row(center: Vec2, food: i32, production: i32, out: &mut Vec<Vertex>) {
-    let row = yield_row(food, production);
+/// A tile's yields on a dark pill: food, wood then metal (`raw_yield`),
+/// each laid out like the pips on a die, or as one icon and a number past
+/// six. Nothing for a tile yielding nothing.
+fn push_yield_row(center: Vec2, goods: (i32, i32, i32), out: &mut Vec<Vertex>) {
+    let row = yield_row(goods);
     if row.icons.is_empty() {
         return;
     }
     let pill = rounded_rect(center, row.half, YIELD_PIP_CORNER);
-    mesh::polygon(&pill, YIELD_ROW_COLOR, out);
+    mesh::convex_polygon(&pill, YIELD_ROW_COLOR, out);
     for (icon, at) in row.icons {
-        map_icons::push_map_icon_scaled(center + at, icon, YIELD_ICON_SCALE, out);
+        map_icons::push_map_icon_scaled(center + at, icon, YIELD_ICON_SCALE * row.scale, out);
     }
     for (text, at) in row.labels {
         font::push_text_centered(
             center + at,
-            YIELD_DIGIT_HEIGHT,
+            YIELD_DIGIT_HEIGHT * row.scale,
             &text,
             YIELD_DIGIT_COLOR,
             out,
@@ -1557,6 +1885,8 @@ struct YieldRow {
     labels: Vec<(String, Vec2)>,
     /// How far the pill reaches each way.
     half: Vec2,
+    /// How much the row was shrunk to fit its hex (1 if it fit).
+    scale: f32,
 }
 
 /// Where the pips for 1 to 6 go, in pip pitches, top row first: a die's
@@ -1586,42 +1916,49 @@ fn pip_spots(amount: i32) -> &'static [(f32, f32)] {
     }
 }
 
-/// Lays out a tile's food and production groups side by side, centered.
-fn yield_row(food: i32, production: i32) -> YieldRow {
+/// Lays out a tile's food, wood and metal groups side by side, centered.
+fn yield_row((food, wood, metal): (i32, i32, i32)) -> YieldRow {
     let mut row = YieldRow {
         icons: Vec::new(),
         labels: Vec::new(),
         half: Vec2::ZERO,
+        scale: 1.0,
     };
     // Each group's contents around its own center, and its half extent.
-    let groups: Vec<YieldRow> = [(MapIcon::Food, food), (MapIcon::Production, production)]
-        .into_iter()
-        .filter(|&(_, amount)| amount > 0)
-        .map(|(icon, amount)| {
-            let spots = pip_spots(amount);
-            if spots.is_empty() {
-                // Past six: one icon, then the number.
-                let text = amount.to_string();
-                let width = font::world_text_width(&text, YIELD_DIGIT_HEIGHT);
-                let half_x = YIELD_ICON_HALF.x + (YIELD_NUMBER_GAP + width) / 2.0;
-                return YieldRow {
-                    icons: vec![(icon, Vec2::new(YIELD_ICON_HALF.x - half_x, 0.0))],
-                    labels: vec![(text, Vec2::new(half_x - width / 2.0, 0.0))],
-                    half: Vec2::new(half_x, YIELD_ICON_HALF.y),
-                };
-            }
-            let spots: Vec<Vec2> = spots
-                .iter()
-                .map(|&(x, y)| Vec2::new(x, y) * YIELD_PIP_PITCH)
-                .collect();
-            let reach = spots.iter().fold(Vec2::ZERO, |m, s| m.max(s.abs()));
-            YieldRow {
-                icons: spots.into_iter().map(|at| (icon, at)).collect(),
-                labels: Vec::new(),
-                half: reach + YIELD_ICON_HALF,
-            }
-        })
-        .collect();
+    let groups: Vec<YieldRow> = [
+        (MapIcon::Food, food),
+        (MapIcon::Wood, wood),
+        (MapIcon::Metal, metal),
+    ]
+    .into_iter()
+    .filter(|&(_, amount)| amount > 0)
+    .map(|(icon, amount)| {
+        let spots = pip_spots(amount);
+        if spots.is_empty() {
+            // Past six: one icon, then the number.
+            let text = amount.to_string();
+            let width = font::world_text_width(&text, YIELD_DIGIT_HEIGHT);
+            let half_x = YIELD_ICON_HALF.x + (YIELD_NUMBER_GAP + width) / 2.0;
+            return YieldRow {
+                icons: vec![(icon, Vec2::new(YIELD_ICON_HALF.x - half_x, 0.0))],
+                labels: vec![(text, Vec2::new(half_x - width / 2.0, 0.0))],
+                half: Vec2::new(half_x, YIELD_ICON_HALF.y),
+                scale: 1.0,
+            };
+        }
+        let spots: Vec<Vec2> = spots
+            .iter()
+            .map(|&(x, y)| Vec2::new(x, y) * YIELD_PIP_PITCH)
+            .collect();
+        let reach = spots.iter().fold(Vec2::ZERO, |m, s| m.max(s.abs()));
+        YieldRow {
+            icons: spots.into_iter().map(|at| (icon, at)).collect(),
+            labels: Vec::new(),
+            half: reach + YIELD_ICON_HALF,
+            scale: 1.0,
+        }
+    })
+    .collect();
     if groups.is_empty() {
         return row;
     }
@@ -1642,6 +1979,18 @@ fn yield_row(food: i32, production: i32) -> YieldRow {
         left += 2.0 * group.half.x + YIELD_GROUP_GAP;
     }
     row.half = Vec2::new(width / 2.0, row.half.y) + YIELD_ROW_PADDING;
+    // Three full groups would reach past the hex: shrink the whole row.
+    if row.half.x > YIELD_ROW_MAX_HALF_WIDTH {
+        let shrink = YIELD_ROW_MAX_HALF_WIDTH / row.half.x;
+        for (_, at) in &mut row.icons {
+            *at *= shrink;
+        }
+        for (_, at) in &mut row.labels {
+            *at *= shrink;
+        }
+        row.half *= shrink;
+        row.scale = shrink;
+    }
     row
 }
 
@@ -1792,10 +2141,7 @@ fn wave(at: Vec2, width: f32, color: Color, out: &mut Vec<Vertex>) {
 fn push_rivers(grid: &HexGrid, explored: impl Fn(Hex) -> bool, out: &mut Vec<Vertex>) {
     for (a, b) in grid.rivers().filter(|(a, b)| explored(*a) || explored(*b)) {
         let (start, end) = edge_corners(a, b);
-        mesh::segment(start, end, RIVER_WIDTH, RIVER_COLOR, out);
-        for p in [start, end] {
-            mesh::regular_polygon(p, RIVER_WIDTH / 2.0, 12, 0.0, RIVER_COLOR, out);
-        }
+        push_rounded_segment(start, end, RIVER_WIDTH, RIVER_COLOR, out);
     }
 }
 
@@ -2051,16 +2397,22 @@ pub(super) fn push_unit_token(
     push_unit_icon(center, look, radius / UNIT_ICON_RADIUS, color, out);
 }
 
+/// A token's outline: its sides, rotation and size relative to a military
+/// unit's disc. Drawing and the city view's click test share it.
+fn token_shape(look: UnitLook) -> (u32, f32, f32) {
+    if look.civilian {
+        (6, FRAC_PI_2, CIVILIAN_TOKEN_SIZE)
+    } else {
+        (TOKEN_SIDES, 0.0, 1.0)
+    }
+}
+
 /// The unit's token in its team color with a dark outline, so it reads on
 /// any terrain, and its pictogram on top. Military units stand on a disc;
 /// civilians on a hollow pointy-top hexagon (a pale center inside a
 /// team-colored rim), unlike both the disc and the flat-top map hexes.
 fn push_unit_icon(center: Vec2, look: UnitLook, scale: f32, color: Color, out: &mut Vec<Vertex>) {
-    let (sides, rotation, size) = if look.civilian {
-        (6, FRAC_PI_2, CIVILIAN_TOKEN_SIZE)
-    } else {
-        (TOKEN_SIDES, 0.0, 1.0)
-    };
+    let (sides, rotation, size) = token_shape(look);
     let radius = UNIT_ICON_RADIUS * scale * size;
     let alpha = color[3];
     mesh::regular_polygon(center, radius, sides, rotation, color, out);
@@ -2090,9 +2442,9 @@ fn push_unit_icon(center: Vec2, look: UnitLook, scale: f32, color: Color, out: &
 /// Axis-aligned rectangles in `color` with a dark border, the border drawn
 /// first under all of them so shapes built from several rectangles get one
 /// clean outline.
-fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec<Vertex>) {
+fn push_outlined_rects(rects: &[(Vec2, Vec2)], scale: f32, color: Color, out: &mut Vec<Vertex>) {
     let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
-    let grow = Vec2::splat(ICON_OUTLINE_WIDTH);
+    let grow = Vec2::splat(ICON_OUTLINE_WIDTH * scale);
     for &(min, max) in rects {
         mesh::quad(min - grow, max + grow, outline, out);
     }
@@ -2102,7 +2454,7 @@ fn push_outlined_rects(rects: &[(Vec2, Vec2)], color: Color, out: &mut Vec<Verte
 }
 
 /// A city: a crenellated tower in its team's color with its population on
-/// it, and a small gold granary beside it once it has one.
+/// it.
 fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
     push_city_tower(pos, 1.0, city.team.color(), out);
     // Centered in the tower's body, below the merlons.
@@ -2113,19 +2465,6 @@ fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
         LABEL_COLOR,
         out,
     );
-    if city.granary {
-        let at = pos + Vec2::new(0.46, -0.42);
-        mesh::regular_polygon(
-            at,
-            0.15 + ICON_OUTLINE_WIDTH,
-            16,
-            0.0,
-            ICON_OUTLINE_COLOR,
-            out,
-        );
-        mesh::regular_polygon(at, 0.15, 16, 0.0, GRANARY_COLOR, out);
-        font::push_glyph(at, 0.16, 'G', LABEL_COLOR, out);
-    }
 }
 
 /// A city's crenellated tower in `color`, `scale` times its size on the map
@@ -2138,8 +2477,6 @@ pub(super) fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec
             pos + Vec2::new(x1, y1) * scale,
         )
     };
-    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
-    let grow = Vec2::splat(ICON_OUTLINE_WIDTH * scale);
     let rects = [
         rect(-0.42, -0.4, 0.42, 0.24),
         // Three merlons along the top.
@@ -2147,12 +2484,7 @@ pub(super) fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec
         rect(-0.09, 0.24, 0.09, 0.4),
         rect(0.24, 0.24, 0.42, 0.4),
     ];
-    for &(min, max) in &rects {
-        mesh::quad(min - grow, max + grow, outline, out);
-    }
-    for &(min, max) in &rects {
-        mesh::quad(min, max, color, out);
-    }
+    push_outlined_rects(&rects, scale, color, out);
 }
 
 /// How many workers a city has at home: a dark tag at the tower's lower
@@ -2178,6 +2510,34 @@ fn push_worker_count(city: Vec2, count: u32, out: &mut Vec<Vertex>) {
         PLANNED_JOB_COLOR_SOLID,
         out,
     );
+}
+
+/// What a city waiting for the stockpile lacks (`city_waits_for`): a dark
+/// tag over its tower, rimmed in red, with the icon of each resource it's
+/// short of (`map_icons`), food, wood then metal.
+fn push_waiting_badge(city: Vec2, short: Stock, out: &mut Vec<Vertex>) {
+    let icons: Vec<MapIcon> = short
+        .parts()
+        .into_iter()
+        .filter(|&(_, amount)| amount > 0)
+        .filter_map(|(name, _)| map_icons::inline_icon(resource_icon(name)))
+        .collect();
+    if icons.is_empty() {
+        return;
+    }
+    let width = WAITING_TAG_HEIGHT - WAITING_ICON_PITCH + icons.len() as f32 * WAITING_ICON_PITCH;
+    let min = city + Vec2::new(-width / 2.0, WAITING_TAG_BOTTOM);
+    let max = min + Vec2::new(width, WAITING_TAG_HEIGHT);
+    let edge = Vec2::splat(ICON_OUTLINE_WIDTH / 2.0);
+    mesh::quad(min - edge, max + edge, WAITING_TAG_RIM, out);
+    mesh::quad(min, max, WORKER_TAG_COLOR, out);
+    let middle = (min.y + max.y) / 2.0;
+    let first = min.x + WAITING_TAG_HEIGHT / 2.0;
+    for (k, icon) in icons.into_iter().enumerate() {
+        let center = Vec2::new(first + k as f32 * WAITING_ICON_PITCH, middle);
+        // The icons are laid out about a fifth of a hex tall.
+        map_icons::push_map_icon_scaled(center, icon, WAITING_ICON_HEIGHT * 5.0 / HEX_SIZE, out);
+    }
 }
 
 /// A wall or gate along the edge between `a` and `b`: a band of stone with
@@ -2256,7 +2616,7 @@ fn push_structure(center: Vec2, kind: StructureKind, team: Color, out: &mut Vec<
                 mesh::segment(foot, top, 0.09, ICON_OUTLINE_COLOR, out);
                 mesh::segment(foot, top, 0.05, WOOD_COLOR, out);
             }
-            push_outlined_rects(&[(at(-0.15, 0.03), at(0.15, 0.24))], WOOD_COLOR, out);
+            push_outlined_rects(&[(at(-0.15, 0.03), at(0.15, 0.24))], 1.0, WOOD_COLOR, out);
             let roof = [at(-0.22, 0.24), at(0.22, 0.24), at(0.0, 0.44)];
             mesh::polygon(
                 &[at(-0.27, 0.21), at(0.27, 0.21), at(0.0, 0.48)],
@@ -2305,7 +2665,7 @@ fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
     let (a, b, c) = roof(ICON_OUTLINE_WIDTH * 1.6);
     mesh::triangle(a, b, c, outline, out);
     let walls = (pos + Vec2::new(-0.28, -0.32), pos + Vec2::new(0.28, eave));
-    push_outlined_rects(&[walls], color, out);
+    push_outlined_rects(&[walls], 1.0, color, out);
     let (a, b, c) = roof(0.0);
     mesh::triangle(a, b, c, color, out);
     font::push_glyph(
@@ -2317,9 +2677,35 @@ fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
     );
 }
 
+/// The reticle of a unit on alert (`Unit::alert`): a red ring with a tick on
+/// each diagonal, unlike Guard's white hex.
+fn push_alert_reticle(center: Vec2, scale: f32, out: &mut Vec<Vertex>) {
+    mesh::polygon_outline(
+        center,
+        ALERT_RING_RADIUS * scale,
+        ALERT_WIDTH * scale,
+        32,
+        0.0,
+        ALERT_COLOR,
+        out,
+    );
+    let (inner, outer) = ALERT_TICK_SPAN;
+    for degrees in [45.0_f32, 135.0, 225.0, 315.0] {
+        let direction = Vec2::from_angle(degrees.to_radians());
+        mesh::segment(
+            center + direction * inner * scale,
+            center + direction * outer * scale,
+            ALERT_WIDTH * 1.4 * scale,
+            ALERT_COLOR,
+            out,
+        );
+    }
+}
+
 /// Status rings behind the icon. They're filled discs, so only the rim shows
 /// once the icon is drawn on top; the larger one goes first so both stay visible.
-/// A guarding unit also gets a hex outline around everything.
+/// A guarding unit also gets a hex outline around everything, and a unit on
+/// alert a red reticle.
 fn push_status_rings(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec<Vertex>) {
     if unit.guarding {
         mesh::polygon_outline(
@@ -2331,6 +2717,9 @@ fn push_status_rings(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec<Vertex
             GUARD_OUTLINE_COLOR,
             out,
         );
+    }
+    if unit.alert {
+        push_alert_reticle(center, scale, out);
     }
     if unit.ability_queued {
         mesh::regular_polygon(
@@ -2365,10 +2754,122 @@ fn push_order_badges(center: Vec2, unit: &Unit, look: UnitLook, scale: f32, out:
     let shown = if look.civilian { 1 } else { 2 };
     for (offset_x, phase, color) in badges.into_iter().take(shown) {
         let pos = center + Vec2::new(offset_x * scale, 0.0);
-        let digit = char::from_digit(step_rank(unit.unit_type, phase), 10).unwrap();
-        mesh::regular_polygon(pos, BADGE_RADIUS * scale, 12, 0.0, BADGE_BG_COLOR, out);
-        font::push_glyph(pos, BADGE_DIGIT_HEIGHT * scale, digit, color, out);
+        push_rank_badge(pos, step_rank(unit.unit_type, phase), scale, color, out);
     }
+}
+
+/// Preserve single-digit ink centering; future ranks also support multiple digits.
+fn push_rank_badge(pos: Vec2, rank: u32, scale: f32, color: Color, out: &mut Vec<Vertex>) {
+    let text = rank.to_string();
+    let height = BADGE_DIGIT_HEIGHT * scale;
+    let radius = (BADGE_RADIUS * scale).max(font::world_text_width(&text, height) / 2.0);
+    mesh::regular_polygon(pos, radius, 12, 0.0, BADGE_BG_COLOR, out);
+    if rank < 10 {
+        font::push_glyph(pos, height, char::from(b'0' + rank as u8), color, out);
+    } else {
+        font::push_text_centered(pos, height, &text, color, out);
+    }
+}
+
+impl GameState {
+    /// The attack preview's marks on the map's health bars: units' where
+    /// they're drawn, and the Barracks' and coastal batteries'.
+    fn push_attack_preview(&self, preview: &AttackPreview, out: &mut Vec<Vertex>) {
+        let pulse = self.preview_pulse();
+        for loss in &preview.losses {
+            let (at, scale, max_hp) = match loss.hurt {
+                Hurt::Unit(i) => {
+                    let (at, scale) = self.drawn_unit_layout(i);
+                    (at, scale, self.units[i].max_hp())
+                }
+                Hurt::Barracks(city) => match self.cities[city].barracks {
+                    Some(hex) => (hex.to_world(), BARRACKS_BAR_SCALE, BARRACKS_MAX_HP),
+                    None => continue,
+                },
+                Hurt::Battery(city) => {
+                    match self.cities[city].placed_site(Building::CoastalBattery) {
+                        Some(hex) => (hex.to_world(), BATTERY_BAR_SCALE, COASTAL_BATTERY_MAX_HP),
+                        None => continue,
+                    }
+                }
+                // Drawn with the interior (`build_interior_vertices`).
+                Hurt::Fighter(_) | Hurt::Post => continue,
+            };
+            push_health_loss(at, loss, max_hp, scale, pulse, out);
+        }
+    }
+
+    /// The preview's pulse, 0 to 1, on the presentation clock (still in a
+    /// screenshot, like the clouds).
+    fn preview_pulse(&self) -> f32 {
+        0.5 + 0.5 * (self.cloud_time * PREVIEW_PULSE_RATE * TAU).sin()
+    }
+}
+
+/// The color of the HP a preview shows lost, at `pulse` (0 to 1).
+fn preview_loss_color(pulse: f32) -> Color {
+    mix(PREVIEW_LOSS_DARK, PREVIEW_LOSS_BRIGHT, pulse)
+}
+
+/// `loss` marked on the health bar `push_health_bar` draws for `max_hp` at
+/// `unit_center`: the HP it would lose as a pulsing segment, a flashing red
+/// rim if it's lethal, and the number over the bar.
+fn push_health_loss(
+    unit_center: Vec2,
+    loss: &Loss,
+    max_hp: f32,
+    scale: f32,
+    pulse: f32,
+    out: &mut Vec<Vertex>,
+) {
+    let size = Vec2::new(HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT) * scale;
+    let min = unit_center + Vec2::new(0.0, HEALTH_BAR_OFFSET_Y * scale) - size / 2.0;
+    let max = min + size;
+    let from = ((loss.hp - loss.amount) / max_hp).clamp(0.0, 1.0);
+    let to = (loss.hp / max_hp).clamp(0.0, 1.0);
+    mesh::quad(
+        Vec2::new(min.x + size.x * from, min.y),
+        Vec2::new(min.x + size.x * to, max.y),
+        preview_loss_color(pulse),
+        out,
+    );
+    let lethal = loss.lethal();
+    if lethal {
+        let rim = PREVIEW_RIM * scale;
+        let color = with_alpha(PREVIEW_LETHAL_COLOR, 0.35 + 0.65 * pulse);
+        let (outer_min, outer_max) = (min - Vec2::splat(rim), max + Vec2::splat(rim));
+        mesh::quad(outer_min, Vec2::new(outer_max.x, min.y), color, out);
+        mesh::quad(Vec2::new(outer_min.x, max.y), outer_max, color, out);
+        mesh::quad(
+            Vec2::new(outer_min.x, min.y),
+            Vec2::new(min.x, max.y),
+            color,
+            out,
+        );
+        mesh::quad(
+            Vec2::new(max.x, min.y),
+            Vec2::new(outer_max.x, max.y),
+            color,
+            out,
+        );
+    }
+    let text = if lethal {
+        format!("-{:.0} LETHAL", loss.amount)
+    } else {
+        format!("-{:.0}", loss.amount)
+    };
+    let color = if loss.target_side {
+        PREVIEW_DEALT_COLOR
+    } else {
+        PREVIEW_RETALIATION_COLOR
+    };
+    // Legible however small the unit is drawn (a contested hex).
+    let height = PREVIEW_LABEL_HEIGHT * scale.max(0.75);
+    let radius = height * 0.85;
+    let at = Vec2::new(unit_center.x, max.y + PREVIEW_RIM * scale + radius);
+    let reach = (font::world_text_width(&text, height) / 2.0 + radius * 0.4 - radius).max(0.0);
+    push_pill(at, reach, radius, BADGE_BG_COLOR, out);
+    font::push_text_centered(at, height, &text, color, out);
 }
 
 fn push_health_bar(unit_center: Vec2, hp_fraction: f32, scale: f32, out: &mut Vec<Vertex>) {
@@ -2401,8 +2902,85 @@ fn with_alpha([r, g, b, _]: Color, a: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
+    use crate::game::PLAYER_TEAM;
+    use crate::game::fog::tests::{
+        behind_the_mountain, glance_at, remembered_route_hex, worked_tile_behind_the_mountain,
+    };
+    use crate::game::terrain::Resource;
     use crate::game::unit::{Unit, UnitType};
+
+    #[test]
+    fn upgraded_interior_fighter_highlight_click_and_health_agree() {
+        let mut game = GameState::siege_scenario();
+        let city = 1;
+        let source = 0;
+        game.interior_selected = Some(source);
+        let fighter = game.cities[city]
+            .interior
+            .fighters
+            .iter()
+            .find(|f| f.source_id == source)
+            .unwrap();
+        assert_eq!(fighter.unit_type, UnitType::Melee);
+        let origin = fighter.pos;
+        let target = (-2..=2)
+            .flat_map(|q| (-2..=2).map(move |r| Hex::new(q, r)))
+            .find(|&hex| {
+                hex.distance(Hex::new(0, 0)) <= 2
+                    && hex != Hex::new(0, 0)
+                    && origin.distance(hex) == 2
+                    && game.cities[city]
+                        .interior
+                        .fighters
+                        .iter()
+                        .all(|other| other.pos != hex)
+            })
+            .expect("an open tile two steps away");
+        let highlighted = |vertices: &[Vertex]| {
+            let center = target.to_world();
+            vertices.iter().any(|vertex| {
+                vertex.color == MOVE_RANGE_COLOR
+                    && Vec2::new(vertex.pos[0], vertex.pos[1]).distance(center) < HEX_SIZE * 0.85
+            })
+        };
+        assert!(!highlighted(&game.build_interior_vertices(city)));
+        let fighter = game.cities[city]
+            .interior
+            .fighters
+            .iter_mut()
+            .find(|f| f.source_id == source)
+            .unwrap();
+        fighter.training_upgrade = Some(Resource::Horses);
+        assert!(fighter.move_reaches(target));
+        assert!(highlighted(&game.build_interior_vertices(city)));
+        game.interior_click(target);
+        let fighter = game.cities[city]
+            .interior
+            .fighters
+            .iter_mut()
+            .find(|f| f.source_id == source)
+            .unwrap();
+        assert_eq!(fighter.planned_move, Some(target));
+
+        fighter.training_upgrade = Some(Resource::Iron);
+        let mut upgraded = UnitType::Melee.stats();
+        crate::game::unit::apply_training_upgrade(&mut upgraded, Some(Resource::Iron));
+        fighter.hp = upgraded.max_hp;
+        assert_eq!(fighter.health_fraction(), 1.0);
+        fighter.hp = UnitType::Melee.stats().max_hp;
+        assert!(fighter.health_fraction() < 1.0);
+    }
+
+    #[test]
+    fn order_badges_render_multidigit_ranks_without_panicking() {
+        for rank in [0, 9, 10, 100, u32::MAX] {
+            let mut vertices = Vec::new();
+            push_rank_badge(Vec2::ZERO, rank, 1.0, LABEL_COLOR, &mut vertices);
+            let glyphs = vertices.iter().filter(|v| v.color == LABEL_COLOR).count();
+            assert_eq!(glyphs, rank.to_string().len() * 6);
+            assert!(vertices.iter().all(|v| v.pos.iter().all(|x| x.is_finite())));
+        }
+    }
 
     #[test]
     fn breached_post_gains_a_distinct_world_marker() {
@@ -2423,15 +3001,71 @@ mod tests {
         let fog = game.fog();
         let mut vertices = Vec::new();
         game.push_fog(&fog, &mut vertices);
-        assert!(
-            vertices
-                .iter()
-                .all(|v| v.color == REMEMBERED_TINT || v.color == FOG_EDGE_COLOR)
-        );
+        assert!(vertices.iter().all(|v| {
+            [REMEMBERED_TINT, REMEMBERED_BORDER_COLOR, FOG_EDGE_COLOR].contains(&v.color)
+        }));
         game.fog_of_war = false;
         vertices.clear();
         game.push_fog(&game.fog(), &mut vertices);
         assert!(vertices.is_empty());
+    }
+
+    #[test]
+    fn remembered_hexes_meeting_the_unexplored_veil_their_shared_corner_once() {
+        let mut game = GameState::world_scenario(3);
+        game.memory.clear();
+        let fog = game.fog();
+        // Two neighbors remembered out of sight, and a third hex touching
+        // both never seen: their veils meet at the corner of all three.
+        let a = game
+            .grid
+            .all_hexes()
+            .find(|&h| {
+                !fog.sees(h)
+                    && h.neighbors()
+                        .iter()
+                        .all(|n| game.grid.contains(*n) && !fog.sees(*n))
+            })
+            .expect("a hex out of sight");
+        let b = a.neighbors()[0];
+        let c = *a
+            .neighbors()
+            .iter()
+            .find(|n| b.neighbors().contains(n))
+            .unwrap();
+        for hex in [a, b] {
+            game.memory
+                .insert(hex, super::super::fog::Sighting::default());
+        }
+        let corner = [edge_corners(a, c).0, edge_corners(a, c).1]
+            .into_iter()
+            .find(|p| {
+                let (p0, p1) = edge_corners(b, c);
+                p.distance(p0) < 1e-4 || p.distance(p1) < 1e-4
+            })
+            .unwrap();
+        let point = corner + (c.to_world() - corner).normalize() * 0.03;
+        // Only what the camera may show is drawn.
+        game.camera.center = a.to_world();
+        let mut vertices = Vec::new();
+        game.push_fog(&fog, &mut vertices);
+        let translucent_over = vertices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter(|t| t[0].color[3] < 1.0)
+            .filter(|t| {
+                let [p, q, r] = [0, 1, 2].map(|i| Vec2::new(t[i].pos[0], t[i].pos[1]));
+                let sides = [
+                    (q - p).perp_dot(point - p),
+                    (r - q).perp_dot(point - q),
+                    (p - r).perp_dot(point - r),
+                ];
+                sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0)
+            })
+            .count();
+        assert_eq!(translucent_over, 0, "no stacked veils past the corner");
+        assert_eq!(top_color(&vertices, point), Some(REMEMBERED_BORDER_COLOR));
     }
 
     /// A view taking in any map.
@@ -2532,19 +3166,18 @@ mod tests {
     }
 
     #[test]
-    fn worker_mode_tints_the_tiles_in_reach() {
+    fn placing_for_workers_tints_the_tiles_in_reach() {
         let mut game = GameState::city_scenario();
         game.explore();
+        game.open_city(0);
         assert_eq!(count_color(&game.build_vertices(), WORKER_REACH_TINT), 0);
-        game.toggle_worker_mode();
+        game.arm_worker_job(crate::game::workers::JobKind::Road);
         let tinted = count_color(&game.build_vertices(), WORKER_REACH_TINT);
         let reachable = game
             .grid
             .all_hexes()
             .filter(|&h| {
-                game.is_explored(h)
-                    && game.grid.is_passable(h)
-                    && game.in_worker_reach(PLAYER_TEAM, h)
+                game.is_explored(h) && game.grid.is_passable(h) && game.known_worker_reach(h)
             })
             .count();
         assert!(reachable > 0);
@@ -2567,6 +3200,7 @@ mod tests {
                 hex: a,
                 kind: crate::game::workers::JobKind::Wall,
                 across: Some(b),
+                done: 0,
             });
         let vertices = game.build_vertices();
         // A segment is two triangles; each round end is twelve more.
@@ -2579,7 +3213,7 @@ mod tests {
         game.explore();
         game.select_city();
         let city = game.selected_city.unwrap();
-        let label = [0.65, 0.85, 0.65, 1.0];
+        let label = SHARE_LABEL_COLOR;
         let seen = count_color(&game.build_vertices(), label);
         assert!(seen > 0, "labels on the explored tiles");
         // Forget an explored tile the known routes reach: its label goes.
@@ -2597,10 +3231,58 @@ mod tests {
         assert!(fewer < seen, "{fewer} vs {seen}");
     }
 
+    /// #215: a road through a tile runs where its share label sits, so the
+    /// label is drawn after the road, whole on top of it.
+    #[test]
+    fn a_share_label_is_drawn_over_a_road_through_its_tile() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.explore();
+        game.open_city(0);
+        // A road through a tile beside the city, on to the hex above it.
+        let center = game.cities[0].pos;
+        let tile = Hex::new(center.q + 1, center.r);
+        let above = Hex::new(tile.q, tile.r + 1);
+        game.roads.extend([tile, above]);
+        let fog = game.fog();
+        let mut out = Vec::new();
+        game.push_city_map(&fog, &mut out);
+
+        // The label's box, and the triangles of each color that touch it.
+        let cost = game.known_routes(0, &fog).costs[&tile];
+        let text = format!("{}%", super::super::city::delivered_share(cost) * 25);
+        let min = tile.to_world() + SHARE_LABEL_OFFSET;
+        let size = Vec2::new(
+            font::world_text_width(&text, SHARE_LABEL_HEIGHT),
+            SHARE_LABEL_HEIGHT,
+        );
+        let max = min + size;
+        let touches = |t: &[Vertex; 3]| {
+            let at = |v: &Vertex| Vec2::new(v.pos[0], v.pos[1]);
+            let lo = t.iter().fold(Vec2::MAX, |m, v| m.min(at(v)));
+            let hi = t.iter().fold(Vec2::MIN, |m, v| m.max(at(v)));
+            lo.x < max.x && hi.x > min.x && lo.y < max.y && hi.y > min.y
+        };
+        let triangles = out.as_chunks::<3>().0;
+        let indices = |color: Color| -> Vec<usize> {
+            (0..triangles.len())
+                .filter(|&i| triangles[i][0].color == color && touches(&triangles[i]))
+                .collect()
+        };
+        let (road, label) = (indices(ROAD_COLOR), indices(SHARE_LABEL_COLOR));
+        assert!(!road.is_empty(), "the road runs through the label");
+        assert!(!label.is_empty(), "the tile shows its share");
+        assert!(
+            road.iter().max() < label.iter().min(),
+            "the road's triangles {road:?} come before the label's {label:?}"
+        );
+    }
+
     #[test]
     fn work_under_way_is_ringed_and_counts_its_turns_left() {
         let mut game = GameState::city_scenario();
         game.explore();
+        game.open_city(0);
         let city = game.cities[0].pos;
         // Two hexes out: a turn walking, then at work.
         let hex = game
@@ -2622,10 +3304,184 @@ mod tests {
         let walking = solid(&game);
         assert!(walking > 0);
         assert_ne!(game.field_workers[0].pos, hex, "still walking");
-        // At work: "IMPROVE 3T", more glyphs than "IMPROVE".
+        // At work: the clock and 3 after "IMPROVE", more shapes.
         game.resolve_workers();
         assert_eq!(game.field_workers[0].work_left, Some(3));
         assert!(solid(&game) > walking);
+    }
+
+    #[test]
+    fn a_job_on_a_worked_tile_nests_inside_the_worked_ring() {
+        use crate::game::workers::{FieldWorker, JobKind};
+        let mut game = GameState::city_scenario();
+        game.explore();
+        game.open_city(0);
+        let (manager, worker) = (
+            game.cities[0].clusters[0].manager,
+            game.cities[0].clusters[0].workers[0],
+        );
+        // A job under way on the manager's tile, one queued on the worker's.
+        let job = WorkerJob::on_tile(manager, JobKind::Improve);
+        game.field_workers.push(FieldWorker {
+            id: 900,
+            team: game.cities[0].team,
+            home: 0,
+            base: game.cities[0].pos,
+            pos: manager,
+            job: Some(job),
+            work_left: Some(2),
+            recalled: false,
+        });
+        game.cities[0]
+            .worker_jobs
+            .push(WorkerJob::on_tile(worker, JobKind::Road));
+        let fog = game.fog();
+        let mut out = Vec::new();
+        game.push_city_map(&fog, &mut out);
+
+        // Each ring's line, below the tile's center (clear of labels), shows
+        // its own color on top: the job's doesn't cover the worked ring's.
+        let manager_gold = [1.0, 0.78, 0.20, 1.0];
+        let below = |hex: Hex, radius: f32| hex.to_world() - Vec2::new(0.0, radius * 0.866);
+        assert_eq!(
+            top_color(&out, below(manager, WORKED_OUTLINE_RADIUS)),
+            Some(manager_gold)
+        );
+        assert_eq!(
+            top_color(&out, below(manager, JOB_RING_RADIUS)),
+            Some(JOB_UNDER_WAY_COLOR)
+        );
+
+        // The shapes' radii: every corner of a job's ring (solid, not its
+        // name's glyphs) lies inside the worked ring's dark rim, on both tiles.
+        let distances = |hex: Hex, color: Color| {
+            out.iter()
+                .filter(|v| v.color == color && v.uv == crate::renderer::SOLID_UV)
+                .map(|v| Vec2::new(v.pos[0], v.pos[1]).distance(hex.to_world()))
+                .filter(|&d| d < HEX_SIZE)
+                .collect::<Vec<f32>>()
+        };
+        let rim_inside = |hex: Hex| {
+            distances(hex, WORKED_OUTLINE_RIM_COLOR)
+                .into_iter()
+                .fold(f32::MAX, f32::min)
+        };
+        for (hex, color) in [(manager, JOB_UNDER_WAY_COLOR), (worker, PLANNED_JOB_COLOR)] {
+            let ring = distances(hex, color);
+            assert!(!ring.is_empty());
+            let outermost = ring.into_iter().fold(0.0, f32::max);
+            assert!(
+                outermost < rim_inside(hex),
+                "{outermost} vs {}",
+                rim_inside(hex)
+            );
+        }
+    }
+
+    /// A worker of `team` at `job`'s tile: at work on it, or just arrived.
+    fn worker_at(team: Team, job: WorkerJob, working: bool) -> crate::game::workers::FieldWorker {
+        crate::game::workers::FieldWorker {
+            id: 77,
+            team,
+            home: 0,
+            base: job.hex,
+            pos: job.hex,
+            job: Some(job),
+            work_left: working.then_some(2),
+            recalled: false,
+        }
+    }
+
+    /// Vertices of `color` for a job's ring (or edge) and its name: what
+    /// another side's construction adds.
+    fn construction_vertices(job: WorkerJob, name: &str, color: Color) -> usize {
+        let mut out = Vec::new();
+        match job.across {
+            Some(across) => {
+                let (start, end) = edge_corners(job.hex, across);
+                push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, color, &mut out);
+            }
+            None => push_job_ring(job.hex, JOB_RING_WIDTH, color, &mut out),
+        }
+        push_job_label(Vec2::ZERO, name, color, &mut out);
+        count_color(&out, color)
+    }
+
+    #[test]
+    fn another_sides_construction_in_sight_shows_in_its_color_named_without_turns() {
+        use crate::game::city::Building;
+        use crate::game::workers::JobKind;
+        let (mut game, _, _) = behind_the_mountain();
+        game.camera.center = Vec2::ZERO;
+        let near = Hex::new(0, 1);
+        assert!(game.fog().sees(near));
+        let red = Team::Red.color();
+        let colored = |game: &GameState, color: Color| count_color(&game.build_vertices(), color);
+
+        // Red's worker just arrived shows only itself; at work, its
+        // Barracks going up too: a red ring named BARRACKS, no turns left.
+        let barracks = WorkerJob::on_tile(near, JobKind::Build(Building::Barracks));
+        game.field_workers = vec![worker_at(Team::Red, barracks, false)];
+        let idle = colored(&game, red);
+        game.field_workers = vec![worker_at(Team::Red, barracks, true)];
+        assert_eq!(
+            colored(&game, red) - idle,
+            construction_vertices(barracks, "BARRACKS", red)
+        );
+        assert_eq!(colored(&game, JOB_UNDER_WAY_COLOR), 0);
+
+        // A wall on one of the tile's edges: the edge, named.
+        let wall = WorkerJob {
+            hex: near,
+            kind: JobKind::Wall,
+            across: Some(Hex::new(1, 1)),
+            done: 0,
+        };
+        game.field_workers = vec![worker_at(Team::Red, wall, false)];
+        let idle = colored(&game, red);
+        game.field_workers = vec![worker_at(Team::Red, wall, true)];
+        assert_eq!(
+            colored(&game, red) - idle,
+            construction_vertices(wall, "WALL", red)
+        );
+
+        // The player's own job is drawn as before, in bright gold with its
+        // turns left, and not in team color.
+        let blue = game.local_team.color();
+        game.field_workers = vec![worker_at(game.local_team, barracks, false)];
+        let idle = colored(&game, blue);
+        game.field_workers = vec![worker_at(game.local_team, barracks, true)];
+        assert_eq!(colored(&game, blue), idle);
+        assert!(colored(&game, JOB_UNDER_WAY_COLOR) > 0);
+    }
+
+    #[test]
+    fn another_sides_construction_out_of_sight_shows_only_as_last_seen() {
+        use crate::game::workers::JobKind;
+        let (mut game, cavalry, hidden) = behind_the_mountain();
+        game.camera.center = Vec2::ZERO;
+        let red = Team::Red.color();
+        let job = WorkerJob::on_tile(hidden, JobKind::Fort);
+        let colored = |game: &GameState| count_color(&game.build_vertices(), red);
+
+        // Never seen: nothing of it shows.
+        let before = scene(&game);
+        game.field_workers = vec![worker_at(Team::Red, job, true)];
+        game.explore();
+        assert_eq!(scene(&game), before);
+
+        // Seen at work, then out of sight: it stays as last seen, even
+        // once the worker has gone.
+        glance_at(&mut game, cavalry, hidden);
+        let shown = construction_vertices(job, "FORT", red);
+        assert_eq!(colored(&game), shown);
+        game.field_workers.clear();
+        game.explore();
+        assert_eq!(colored(&game), shown);
+
+        // Seen again with nobody at work there: gone.
+        glance_at(&mut game, cavalry, hidden);
+        assert_eq!(colored(&game), 0);
     }
 
     /// The color of the last opaque triangle drawn over `point`.
@@ -2691,33 +3547,85 @@ mod tests {
     }
 
     #[test]
-    fn a_site_preview_follows_the_cursor_only_in_its_open_city() {
+    fn a_building_placed_for_workers_shows_its_name_on_its_tile() {
         let mut game = GameState::city_scenario();
         game.units.clear();
         game.selected = None;
         game.explore();
-        let city = game
-            .cities
-            .iter()
-            .position(|c| c.team == PLAYER_TEAM)
-            .unwrap();
-        let building = crate::game::city::Building::Barracks;
-        let site = game
-            .grid
-            .all_hexes()
-            .find(|&h| game.site_available(city, building, h))
-            .expect("an open site");
-        game.hovered_tile = Some(site);
-        let without = |game: &GameState| {
-            let mut plain = game.clone();
-            plain.placing_building = None;
-            scene(&plain)
+        let site = Hex::new(-2, 0);
+        let barracks = crate::game::city::Building::Barracks;
+        let before = count_color(&game.build_vertices(), PLANNED_JOB_COLOR);
+        game.open_city(0);
+        game.queue_selected_city_building(barracks);
+        assert!(game.place_job_at(site, None));
+        game.leave_city_view();
+        // A faded ring and its name, like any job waiting for a worker.
+        assert!(count_color(&game.build_vertices(), PLANNED_JOB_COLOR) > before);
+        let job = game.cities[0].worker_jobs[0];
+        assert_eq!(game.job_name(job), "BARRACKS");
+    }
+
+    #[test]
+    fn a_city_waiting_for_the_stockpile_shows_what_it_lacks_over_its_tower() {
+        use crate::game::city::{Build, BuildUnit, Queued};
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.selected = None;
+        let rim = |game: &GameState| count_color(&game.build_vertices(), WAITING_TAG_RIM);
+        assert_eq!(rim(&game), 0, "nothing queued");
+        // Broke: a Melee at the head of the queue waits for wood.
+        game.stockpiles[Team::Blue.index()] = Stock::default();
+        game.cities[0].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
+        let forecast = game.forecast(Team::Blue);
+        let short = game.city_waits_for(&forecast, 0).expect("it waits");
+        assert!(short.wood > 0, "{short:?}");
+        assert!(rim(&game) > 0, "the badge shows");
+        let one = rim(&game);
+        // A Gather behind it doesn't stop it waiting: the head still does.
+        game.cities[0].queue.push(Queued::new(Build::Gather));
+        assert_eq!(rim(&game), one);
+        // Paid for, the head no longer waits.
+        game.cities[0].queue[0].paid = true;
+        assert_eq!(rim(&game), 0);
+        // Another side's waiting city shows nothing: its stockpile isn't
+        // the player's to see.
+        game.stockpiles[Team::Red.index()] = Stock::default();
+        game.cities[1].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
+        game.explore();
+        assert_eq!(rim(&game), 0);
+    }
+
+    #[test]
+    fn shared_corner_walls_have_identical_unsorted_vertices_on_every_frame() {
+        let mut game = GameState::city_scenario();
+        game.fog_of_war = false;
+        let a = Hex::new(0, 0);
+        let b = Hex::new(1, 0);
+        let c = Hex::new(0, 1);
+        for (neighbor, team) in [(b, Team::Blue), (c, Team::Red)] {
+            game.barriers.insert(
+                edge(a, neighbor),
+                Structure {
+                    kind: StructureKind::Wall,
+                    team,
+                },
+            );
+        }
+        let vertices = |game: &GameState| {
+            game.build_vertices()
+                .into_iter()
+                .map(|v| (v.pos, v.color, v.uv))
+                .collect::<Vec<_>>()
         };
-        game.placing_building = Some((city, building));
-        game.selected_city = None;
-        assert_eq!(scene(&game), without(&game), "no city open: no preview");
-        game.selected_city = Some(city);
-        assert_ne!(scene(&game), without(&game), "its city open: a preview");
+        let expected = vertices(&game);
+        for _ in 0..20 {
+            assert_eq!(vertices(&game), expected);
+        }
+        // Rebuild with a different backing capacity and reversed insertion order.
+        let entries: Vec<_> = game.barriers.drain().collect();
+        game.barriers.reserve(100);
+        game.barriers.extend(entries.into_iter().rev());
+        assert_eq!(vertices(&game), expected);
     }
 
     /// Every vertex as plain data, sorted: labels over a route map come out
@@ -2889,7 +3797,7 @@ mod tests {
         let pill_vertices = count_color(
             &{
                 let mut out = Vec::new();
-                push_yield_row(Vec2::ZERO, 2, 1, &mut out);
+                push_yield_row(Vec2::ZERO, (2, 1, 0), &mut out);
                 out
             },
             YIELD_ROW_COLOR,
@@ -2908,7 +3816,7 @@ mod tests {
             .grid
             .all_hexes()
             .filter(|&h| game.grid.terrain(h).is_workable() && game.is_explored(h))
-            .filter(|&h| game.known_yield(h, &fog) != (0, 0))
+            .filter(|&h| game.known_yield(h, &fog) != (0, 0, 0))
             .count();
         assert!(yielding > in_reach);
         assert_eq!(rows(&game), yielding, "a row on every tile that yields");
@@ -2917,7 +3825,7 @@ mod tests {
     #[test]
     fn yields_up_to_six_are_die_pips_and_more_are_a_number() {
         let pips = |amount: i32| -> Vec<Vec2> {
-            let row = yield_row(amount, 0);
+            let row = yield_row((amount, 0, 0));
             assert!(row.labels.is_empty(), "{amount} needs no number");
             row.icons.into_iter().map(|(_, at)| at).collect()
         };
@@ -2949,33 +3857,151 @@ mod tests {
         assert_eq!(rows(&six), 2);
         assert_eq!(six.iter().filter(|s| s.y > 0.0).count(), 3);
 
-        let seven = yield_row(7, 0);
+        let seven = yield_row((7, 0, 0));
         assert_eq!(seven.icons.len(), 1);
         assert_eq!(seven.labels[0].0, "7");
         assert!(
             seven.labels[0].1.x > seven.icons[0].1.x,
             "the number follows the icon"
         );
-        assert!(yield_row(0, 0).icons.is_empty());
+        assert!(yield_row((0, 0, 0)).icons.is_empty());
     }
 
     #[test]
-    fn a_yield_row_puts_food_left_of_production_and_stays_inside_the_hex() {
-        for (food, production) in [(2, 1), (6, 6), (12, 5), (3, 0), (0, 4)] {
-            let row = yield_row(food, production);
-            let food_x = row.icons.iter().filter(|(i, _)| *i == MapIcon::Food);
-            let production_x = row.icons.iter().filter(|(i, _)| *i == MapIcon::Production);
-            let rightmost_food = food_x.map(|(_, at)| at.x).fold(f32::MIN, f32::max);
-            let leftmost_production = production_x.map(|(_, at)| at.x).fold(f32::MAX, f32::min);
-            assert!(rightmost_food < leftmost_production, "{food}/{production}");
+    fn a_yield_row_puts_food_wood_and_metal_left_to_right_and_stays_inside_the_hex() {
+        for goods in [
+            (2, 1, 0),
+            (6, 2, 0),
+            (12, 1, 5),
+            (3, 0, 0),
+            (0, 1, 3),
+            (1, 2, 1),
+            (4, 1, 4),
+        ] {
+            let row = yield_row(goods);
+            let span = |icon: MapIcon| {
+                let xs: Vec<f32> = row
+                    .icons
+                    .iter()
+                    .filter(|(i, _)| *i == icon)
+                    .map(|(_, at)| at.x)
+                    .collect();
+                (
+                    xs.iter().copied().fold(f32::MAX, f32::min),
+                    xs.iter().copied().fold(f32::MIN, f32::max),
+                )
+            };
+            let (food, wood, metal) = (
+                span(MapIcon::Food),
+                span(MapIcon::Wood),
+                span(MapIcon::Metal),
+            );
+            assert!(food.1 < wood.0 && food.1 < metal.0, "{goods:?}");
+            assert!(wood.1 < metal.0, "{goods:?}");
+            let count = |icon| row.icons.iter().filter(|(i, _)| *i == icon).count();
+            assert_eq!(count(MapIcon::Wood), goods.1.clamp(0, 6) as usize);
             // The pill's corners stay inside the hex's fill.
             let corner = (YIELD_ROW_OFFSET - row.half).abs();
             let fill = HEX_SIZE * HEX_FILL_SCALE * 3f32.sqrt();
-            assert!(
-                3f32.sqrt() * corner.x + corner.y <= fill,
-                "{food}/{production}"
-            );
+            assert!(3f32.sqrt() * corner.x + corner.y <= fill, "{goods:?}");
         }
+    }
+
+    #[test]
+    fn a_picked_up_manager_takes_its_citizens_off_the_map() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.explore();
+        game.open_city(0);
+        assert!(game.cities[0].working() > 1);
+        let citizen_ring = [0.25, 1.0, 0.4, 1.0];
+        assert!(count_color(&game.build_vertices(), citizen_ring) > 0);
+        let manager = game.cities[0].clusters[0].manager;
+        game.city_click(manager);
+        assert_eq!(game.moving_manager, Some((0, 0)));
+        assert_eq!(count_color(&game.build_vertices(), citizen_ring), 0);
+        // Cancelling puts them back.
+        game.city_click(manager);
+        assert!(count_color(&game.build_vertices(), citizen_ring) > 0);
+    }
+
+    #[test]
+    fn placing_shows_the_citys_shares_with_yields_on_or_alt() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.explore();
+        game.show_yields = true;
+        game.open_city(0);
+        game.arm_worker_job(crate::game::workers::JobKind::Road);
+        let city = 0;
+        assert_eq!(game.yields_city(), Some(city));
+        assert_eq!(game.shares_city(), Some(city));
+        let fog = game.fog();
+        let mut out = Vec::new();
+        assert!(!game.push_delivery_shares(&fog, &mut out).is_empty());
+        // Yields off: the shares only while Alt is held.
+        game.show_yields = false;
+        assert_eq!(game.shares_city(), None);
+        game.set_details(true);
+        assert_eq!(game.shares_city(), Some(city));
+        game.set_details(false);
+        game.press_escape();
+        assert_eq!(game.shares_city(), None, "stopped placing");
+    }
+
+    #[test]
+    fn a_building_hides_its_tiles_yields_and_a_job_name_clears_the_share() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.explore();
+        game.open_city(0);
+        let fog = game.fog();
+        let center = game.cities[0].pos;
+        let barracks = center.neighbors()[0];
+        let mut out = Vec::new();
+        assert!(
+            game.push_delivery_shares(&fog, &mut out)
+                .contains(&barracks)
+        );
+        game.cities[0].barracks = Some(barracks);
+        let mut out = Vec::new();
+        let shares = game.push_delivery_shares(&fog, &mut out);
+        assert!(!shares.contains(&barracks), "no share on a building");
+        assert!(game.known_building_at_off_center(barracks, &fog));
+        assert!(
+            !game.known_building_at_off_center(center, &fog),
+            "the center keeps its chips"
+        );
+        // A job's name on a tile with a share sits below it, clear of it.
+        let tile = *shares.iter().next().unwrap();
+        let label = GameState::job_label_at(tile, &shares);
+        let share_bottom = tile.to_world().y + SHARE_LABEL_OFFSET.y;
+        assert!(label.y + PLANNED_JOB_LABEL_HEIGHT / 2.0 < share_bottom);
+        let bare = GameState::job_label_at(tile, &HashSet::default());
+        assert_eq!(bare, tile.to_world() + PLANNED_JOB_LABEL_OFFSET);
+    }
+
+    #[test]
+    fn yield_chips_split_production_into_wood_and_metal() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        // Plains hills with a mine: a wood from the plains, the hill's and
+        // the mine's metal.
+        let mine = Hex::new(-2, 2);
+        assert_eq!(game.sites[&mine].label, "MINE");
+        let (food, wood, metal) = game.raw_yield(mine);
+        assert_eq!((food, wood + metal), game.tile_yield(mine));
+        assert_eq!(metal, 3);
+        assert_eq!(wood, 1);
+        // The city center: 2 food and 1 wood, whatever its ground.
+        assert_eq!(game.raw_yield(game.cities[0].pos), (2, 1, 0));
+        // A farm: food only.
+        let farm = Hex::new(-4, 1);
+        let (_, wood, metal) = game.raw_yield(farm);
+        assert_eq!((wood, metal), (0, 0));
+        let row = yield_row(game.raw_yield(mine));
+        let metal_pips = row.icons.iter().filter(|(i, _)| *i == MapIcon::Metal);
+        assert_eq!(metal_pips.count(), 3);
     }
 
     #[test]
@@ -3049,16 +4075,13 @@ mod tests {
             .copied()
             .filter(|&h| {
                 !game.grid.terrain(h).is_water()
-                    && !game.cities[city].worked.contains(&h)
+                    && !game.cities[city].works(h)
                     && routes.path_from(h).len() >= 3
             })
             .min_by_key(|h| (h.q, h.r))
             .expect("a land tile two legs from the city");
-        game.cities[city].worked[0] = manager;
-        assert!(
-            game.cities[city].worked.len() > 1,
-            "the manager has workers"
-        );
+        game.cities[city].clusters[0].manager = manager;
+        assert!(game.cities[city].working() > 1, "the manager has workers");
         let path = routes.path_from(manager);
         assert_eq!(path.first(), Some(&manager));
         assert_eq!(path.last(), Some(&game.cities[city].pos));
@@ -3083,10 +4106,10 @@ mod tests {
         game.hovered_tile = None;
         let with_workers = city_map(&game);
         assert!(route_vertices(&with_workers).is_empty());
-        let workers = game.cities[city].worked.len() - 1;
+        let workers = game.cities[city].working() - 1;
         let alone = {
             let mut alone = game.clone();
-            alone.cities[city].worked.truncate(1);
+            alone.cities[city].clusters[0].workers.clear();
             city_map(&alone)
         };
         let mut ring = Vec::new();
@@ -3095,7 +4118,7 @@ mod tests {
         assert_eq!(with_workers.len() - alone.len(), workers * ring.len());
 
         // Hovering another worked tile draws nothing either.
-        game.hovered_tile = Some(game.cities[city].worked[1]);
+        game.hovered_tile = Some(game.cities[city].clusters[0].workers[0]);
         assert!(route_vertices(&city_map(&game)).is_empty());
 
         // Hovering the manager: dashes along each leg of its route and
@@ -3120,7 +4143,7 @@ mod tests {
         }
 
         // Carrying the manager to a new tile hides the line.
-        game.moving_manager = Some(city);
+        game.moving_manager = Some((city, 0));
         assert!(route_vertices(&city_map(&game)).is_empty());
     }
 
@@ -3146,5 +4169,157 @@ mod tests {
         game.units
             .push(Unit::new(51, far, Team::Red, UnitType::Melee));
         assert_eq!(scene(&game), before);
+    }
+
+    #[test]
+    fn a_fight_out_of_sight_leaves_its_hex_uncolored() {
+        let drawn = |fight: bool| {
+            let (mut game, idx, hidden) = behind_the_mountain();
+            glance_at(&mut game, idx, hidden);
+            if fight {
+                for (id, team) in [(2, Team::Red), (3, Team::Green)] {
+                    game.units
+                        .push(Unit::new(id, hidden, team, UnitType::Melee));
+                }
+                assert!(game.is_contested(hidden));
+            }
+            scene(&game)
+        };
+        assert!(drawn(true) == drawn(false));
+
+        // In sight, the fight shows.
+        let (mut game, idx, _) = behind_the_mountain();
+        let near = Hex::new(0, 1);
+        game.units
+            .push(Unit::new(2, near, Team::Red, UnitType::Melee));
+        game.units[idx].pos = near;
+        game.selected = None;
+        game.explore();
+        assert!(count_color(&game.build_vertices(), CONTESTED_COLOR) > 0);
+    }
+
+    #[test]
+    fn another_sides_moves_show_only_in_sight_at_both_ends() {
+        // A Red unit in sight next to the hex behind the mountain, and two
+        // Red units out of sight: what they plan out of sight draws nothing.
+        let setup = || {
+            let (mut game, idx, hidden) = behind_the_mountain();
+            glance_at(&mut game, idx, hidden);
+            let fog = game.fog();
+            let near = hidden
+                .neighbors()
+                .into_iter()
+                .filter(|&h| fog.sees(h) && game.grid.terrain(h).is_passable())
+                .min_by_key(|h| (h.q, h.r))
+                .expect("a hex in sight next to the hidden one");
+            let unseen = hidden
+                .neighbors()
+                .into_iter()
+                .filter(|&h| !fog.sees(h) && game.grid.terrain(h).is_passable())
+                .min_by_key(|h| (h.q, h.r))
+                .expect("a hex out of sight next to the hidden one");
+            for (id, pos) in [(2, near), (3, hidden), (4, unseen)] {
+                game.units
+                    .push(Unit::new(id, pos, Team::Red, UnitType::Melee));
+            }
+            (game, near, hidden, unseen)
+        };
+        let (quiet, ..) = setup();
+        let quiet = scene(&quiet);
+
+        // Into the hidden hex, and two unseen units swapping places.
+        let (mut moving, _, hidden, unseen) = setup();
+        moving.units[1].planned_move = Some(hidden);
+        moving.units[2].planned_move = Some(unseen);
+        moving.units[3].planned_move = Some(hidden);
+        assert!(moving.swap_partner(2).is_some());
+        assert!(scene(&moving) == quiet);
+
+        // A move in sight at both ends still shows its ghost.
+        let (mut moving, near, _, _) = setup();
+        moving.units[1].planned_move = Some(Hex::new(0, 1));
+        assert!(moving.fog().sees(Hex::new(0, 1)) && moving.fog().sees(near));
+        assert!(scene(&moving) != quiet);
+    }
+
+    #[test]
+    fn a_hovered_enemy_city_rings_only_its_tiles_in_sight_and_not_their_routes() {
+        // The city of `worked_tile_behind_the_mountain`, now Red's, seen by
+        // two Blue scouts: one west of its center, one by the tile it works
+        // east of the mountain. `cut` puts Green, out of their sight, on
+        // both hexes that start the road home, so no goods arrive.
+        let drawn = |worked: Hex, cut: bool| {
+            let (mut game, city, _) = worked_tile_behind_the_mountain();
+            game.cities[city].team = Team::Red;
+            game.cities[city].clusters = crate::game::city::one_cluster(&[worked]);
+            game.cities[city].remembered = game.cities[city].clusters.clone();
+            for (id, pos) in [(50, Hex::new(-3, 0)), (51, Hex::new(6, 1))] {
+                game.units
+                    .push(Unit::new(id, pos, Team::Blue, UnitType::Scout));
+            }
+            let blockers = [Hex::new(1, 0), Hex::new(1, -1)];
+            if cut {
+                for (id, pos) in [(52, blockers[0]), (53, blockers[1])] {
+                    game.units
+                        .push(Unit::new(id, pos, Team::Green, UnitType::Melee));
+                }
+            }
+            game.explore();
+            let fog = game.fog();
+            assert!(fog.sees(game.cities[city].pos));
+            assert!(blockers.iter().all(|&h| !fog.sees(h)));
+            let arrives = game.routes(city).costs.contains_key(&worked);
+            assert!(arrives != cut || !fog.sees(worked));
+            game.hovered_city = Some(city);
+            game.hovered_tile = Some(game.cities[city].pos);
+            (fog.sees(worked), scene(&game))
+        };
+        let (seen, in_sight) = drawn(Hex::new(5, 0), false);
+        assert!(seen);
+        assert!(drawn(Hex::new(5, 0), true).1 == in_sight, "its routes");
+
+        let (seen, out_of_sight) = drawn(Hex::new(0, 5), false);
+        assert!(!seen && out_of_sight != in_sight);
+        assert!(
+            drawn(Hex::new(0, -5), false).1 == out_of_sight,
+            "which tile"
+        );
+        assert!(drawn(Hex::new(0, 5), true).1 == out_of_sight);
+    }
+
+    #[test]
+    fn the_attack_preview_marks_health_bars_only_while_its_target_is_hovered() {
+        let target = Hex::new(1, 0);
+        let mut game = GameState::new();
+        game.cities.clear();
+        game.units = vec![
+            Unit::new(1, Hex::new(0, 0), Team::Blue, UnitType::Melee),
+            Unit::new(2, target, Team::Red, UnitType::Melee),
+        ];
+        game.selected = Some(0);
+        let loss = preview_loss_color(game.preview_pulse());
+        let rim = with_alpha(PREVIEW_LETHAL_COLOR, 0.35 + 0.65 * game.preview_pulse());
+        let marks = |game: &GameState| {
+            let scene = game.build_vertices();
+            (count_color(&scene, loss), count_color(&scene, rim))
+        };
+
+        game.hovered_tile = None;
+        assert_eq!(marks(&game), (0, 0));
+        game.hovered_tile = Some(Hex::new(0, 1));
+        assert_eq!(marks(&game), (0, 0), "an empty hex is no target");
+        // The target's loss and the attacker's retaliation, neither lethal.
+        game.hovered_tile = Some(target);
+        let (segments, rims) = marks(&game);
+        assert!(segments > 0);
+        assert_eq!(rims, 0);
+        let one_bar = segments / 2;
+        // A lethal hit rims the target's bar, and draws no retaliation.
+        game.units[1].hp = 5.0;
+        let (segments, rims) = marks(&game);
+        assert_eq!(segments, one_bar);
+        assert!(rims > 0);
+        game.hovered_tile = None;
+        assert_eq!(marks(&game), (0, 0));
     }
 }

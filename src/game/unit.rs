@@ -6,9 +6,14 @@ use super::ability::{
 use super::hex::Hex;
 use super::terrain::Resource;
 
-/// A side. Blue is the player (`PLAYER_TEAM`); every other team is played
-/// by the AI, and every team is at war with every other.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+/// A side, or the wild. Blue is the player (`PLAYER_TEAM`); every other side
+/// is played by the AI, and every team is at war with every other. `Wild`
+/// owns the animals (`animals.rs`): it isn't a side, so it isn't in `ALL`
+/// and never has a seat, a stockpile, cities, fog or a plan; `index` must
+/// never be asked of it.
+#[derive(
+    Clone, Copy, PartialEq, Eq, Debug, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Team {
     Blue,
     Red,
@@ -17,9 +22,23 @@ pub enum Team {
     Purple,
     Teal,
     Orange,
+    /// The animals' owner (`animals.rs`): hostile to every side, and not one.
+    Wild,
 }
 
 impl Team {
+    /// Its place in `ALL`. Only for a side: arrays by side are `ALL`'s
+    /// length, so the wild has no place in them.
+    pub fn index(self) -> usize {
+        debug_assert!(self.is_side(), "the wild isn't a side");
+        self as usize
+    }
+
+    /// Whether it's a side (one of `ALL`), not the wild.
+    pub fn is_side(self) -> bool {
+        self != Team::Wild
+    }
+
     /// Every team, the player's first: the order AI teams plan their turns in
     /// and take the world's starts in.
     pub const ALL: [Team; 7] = [
@@ -41,6 +60,7 @@ impl Team {
             Team::Purple => [0.66, 0.40, 0.92, 1.0],
             Team::Teal => [0.22, 0.80, 0.78, 1.0],
             Team::Orange => [0.97, 0.52, 0.16, 1.0],
+            Team::Wild => [0.58, 0.44, 0.30, 1.0],
         }
     }
 }
@@ -57,6 +77,10 @@ pub enum UnitType {
     PatrolGalley,
     LandingCraft,
     BombardShip,
+    /// An animal (`animals.rs`): a wolf pack, fast and fierce but frail.
+    Wolf,
+    /// An animal: a bear, slow and tough.
+    Bear,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -87,9 +111,16 @@ impl UnitType {
         )
     }
 
+    /// Whether it's an animal (`animals.rs`), which only the wild owns.
+    pub fn is_animal(self) -> bool {
+        matches!(self, Self::Wolf | Self::Bear)
+    }
+
     /// Melee is the balanced baseline; ranged trades toughness for reach,
     /// cavalry trades defense for mobility, and siege hits hardest but folds
     /// once anything reaches it. Scouts give up fighting for speed and sight.
+    /// Of the animals, a wolf pack runs down scouts and settlers but folds
+    /// before troops, and a bear beats a lone melee troop.
     pub fn stats(self) -> UnitStats {
         let (max_hp, attack, defense, move_range, attack_range) = match self {
             UnitType::Melee => (100.0, 22.0, 20.0, 1, 1),
@@ -101,6 +132,8 @@ impl UnitType {
             UnitType::PatrolGalley => (115.0, 23.0, 17.0, 3, 1),
             UnitType::LandingCraft => (125.0, 8.0, 15.0, 2, 1),
             UnitType::BombardShip => (105.0, 30.0, 12.0, 2, 3),
+            UnitType::Wolf => (70.0, 20.0, 10.0, 2, 1),
+            UnitType::Bear => (130.0, 26.0, 18.0, 1, 1),
         };
         UnitStats {
             max_hp,
@@ -109,6 +142,15 @@ impl UnitType {
             move_range,
             attack_range,
         }
+    }
+
+    /// Whether units of this type go on alert: the land troops that fight
+    /// (siege only once set up, `Unit::alert_capable`).
+    pub fn takes_alert(self) -> bool {
+        matches!(
+            self,
+            Self::Melee | Self::Cavalry | Self::Armored | Self::Ranged | Self::Siege
+        )
     }
 
     /// How many hexes around it the unit sees through the fog of war.
@@ -121,7 +163,7 @@ impl UnitType {
 }
 
 /// One later turn in a unit's order queue (Shift-click, `order_queue.rs`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TurnOrder {
     /// Where the unit should stand when this turn starts. If it isn't there
     /// (its earlier move was blocked, say), the rest of the queue is dropped.
@@ -149,6 +191,9 @@ pub struct Unit {
     pub interior_hp: f32,
     /// A Forge or Stable upgrade earned when this troop was trained.
     pub training_upgrade: Option<Resource>,
+    /// The deposit kind a Barracks drew on to train this Cavalry or Armored:
+    /// it counts against its side's cap for that resource (`city/barracks.rs`).
+    pub drawn_from: Option<Resource>,
     /// Orders queued for this turn. The attack targets a hex rather than a
     /// unit: whichever enemy stands there when it resolves gets hit.
     pub planned_move: Option<Hex>,
@@ -165,6 +210,10 @@ pub struct Unit {
     /// Like `holding`, but lasting across turns: the unit stays put and is
     /// skipped in the turn order until it's given an order or unguarded.
     pub guarding: bool,
+    /// On alert: like `guarding` (it stays put and is skipped in the turn
+    /// order until it's given another order), but in its attack step it
+    /// attacks an enemy in range (`GameState::alert_target`, `turn.rs`).
+    pub alert: bool,
     /// Scout only: spent last turn on lookout, so it sees farther until the
     /// end of this one.
     pub lookout: bool,
@@ -174,11 +223,23 @@ pub struct Unit {
     /// This turn's orders came from a queue the player built with Shift, so
     /// the unit doesn't hold up ending the turn.
     pub following_queue: bool,
+    /// Where a queue built by Shift-clicks is going, in order: the hexes
+    /// clicked. Each turn the player's machine plans the queue again toward
+    /// them along the shortest way it knows (`replan_queues`), dropping each
+    /// once reached. Empty for a plan kept as it was built (one with a
+    /// queued attack).
+    pub waypoints: Vec<Hex>,
     /// Land units carried by a landing craft. Cargo is lost if it sinks.
     pub cargo: Vec<Unit>,
-    /// Boarding and landing resolve with the rest of the turn.
+    /// Boarding: the id of the adjacent friendly landing craft this land
+    /// troop boards after combat. Any other order drops it.
     pub planned_board: Option<u32>,
+    /// Landing craft only: the adjacent land its first passenger lands on
+    /// after combat. Any other order drops it.
     pub planned_unload: Option<Hex>,
+    /// An animal's den (`animals.rs`): it never leaves its territory, the
+    /// hexes within `TERRITORY_RADIUS` of it. `None` for everyone else.
+    pub home: Option<Hex>,
 }
 
 impl Unit {
@@ -191,6 +252,7 @@ impl Unit {
             hp: unit_type.stats().max_hp,
             interior_hp: unit_type.stats().max_hp,
             training_upgrade: None,
+            drawn_from: None,
             planned_move: None,
             planned_attack: None,
             ability_queued: false,
@@ -198,17 +260,31 @@ impl Unit {
             deployed: false,
             holding: false,
             guarding: false,
+            alert: false,
             lookout: false,
             queued: Vec::new(),
             following_queue: false,
+            waypoints: Vec::new(),
             cargo: Vec::new(),
             planned_board: None,
             planned_unload: None,
+            home: None,
         }
+    }
+
+    /// Whether it's an animal, owned by the wild (`animals.rs`).
+    pub fn is_animal(&self) -> bool {
+        self.team == Team::Wild
     }
 
     pub fn is_naval(&self) -> bool {
         self.unit_type.is_naval()
+    }
+
+    /// Whether it may attack a water hex: ships, and ranged and siege land
+    /// troops firing at them from the shore.
+    pub fn attacks_water(&self) -> bool {
+        self.is_naval() || matches!(self.unit_type, UnitType::Ranged | UnitType::Siege)
     }
 
     pub fn ability(&self) -> Ability {
@@ -285,13 +361,47 @@ impl Unit {
     }
 
     /// Whether the unit has anything Clear Orders would drop: a move, an
-    /// attack, a queue, a hold or a guard.
+    /// attack, a queue, boarding, landing, a hold, a guard or an alert.
     pub fn has_orders(&self) -> bool {
+        self.has_turn_orders() || self.holding || self.guarding || self.alert
+    }
+
+    /// Ends a guard or an alert: any order to the unit does.
+    pub fn wake(&mut self) {
+        self.guarding = false;
+        self.alert = false;
+    }
+
+    /// A new order to the unit (a move, attack, swap, queued turn, boarding
+    /// or landing) replaces its stance and its transport order: it ends a
+    /// hold, a guard and an alert, and drops a planned boarding or landing.
+    /// The caller sets the new order afterwards.
+    pub fn take_new_order(&mut self) {
+        self.wake();
+        self.holding = false;
+        self.planned_board = None;
+        self.planned_unload = None;
+    }
+
+    /// Whether its type can go on alert: the land troops that fight (melee,
+    /// cavalry, armored, ranged), and siege once set up (or setting up this
+    /// turn), not while packing up. Scouts and ships can't; nor can
+    /// settlers (`GameState::can_go_on_alert`).
+    pub fn alert_capable(&self) -> bool {
+        let deploying = self.ability_queued && self.ability() == Ability::Deploy;
+        self.unit_type.takes_alert()
+            && (self.unit_type != UnitType::Siege || self.deployed != deploying)
+    }
+
+    /// Whether the unit has an order this turn besides a stance: a move, an
+    /// attack, a queue, boarding or landing. An alert unit stays put, so
+    /// any of these ends its alert.
+    pub fn has_turn_orders(&self) -> bool {
         self.has_queue()
             || self.planned_move.is_some()
             || self.planned_attack.is_some()
-            || self.holding
-            || self.guarding
+            || self.planned_board.is_some()
+            || self.planned_unload.is_some()
     }
 
     /// Whether the unit's plan reaches past this turn, so the map shows it as
@@ -325,6 +435,14 @@ impl Unit {
         }
     }
 
+    /// The move planned for turn `turn` of the unit's plan (0 is this turn).
+    pub fn move_on_turn(&self, turn: usize) -> Option<Hex> {
+        match turn {
+            0 => self.planned_move,
+            n => self.queued.get(n - 1).and_then(|order| order.move_to),
+        }
+    }
+
     /// The attack planned for turn `turn` of the unit's plan (0 is this turn).
     pub fn attack_on_turn(&self, turn: usize) -> Option<Hex> {
         match turn {
@@ -344,6 +462,7 @@ impl Unit {
     pub fn cancel_queue(&mut self) {
         self.queued.clear();
         self.following_queue = false;
+        self.waypoints.clear();
     }
 
     /// Clears every order: this turn's, the queue, and a hold.
@@ -372,8 +491,10 @@ impl Unit {
             self.ability_cooldown = self.ability_cooldown.saturating_sub(1);
         }
         let queued = std::mem::take(&mut self.queued);
+        let waypoints = std::mem::take(&mut self.waypoints);
         self.clear_orders();
         self.queued = queued;
+        self.waypoints = waypoints;
     }
 
     pub fn max_hp(&self) -> f32 {

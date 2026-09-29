@@ -4,11 +4,13 @@
 
 mod ability;
 mod ai;
+mod animals;
 mod camera;
 mod city;
 mod combat;
 mod draw;
 mod effects;
+mod fast_hash;
 mod fog;
 mod font;
 mod group;
@@ -16,21 +18,27 @@ mod hex;
 mod map_icons;
 mod mapgen;
 mod mesh;
+mod multiplayer;
 mod order_queue;
 mod orders;
+#[cfg(test)]
+mod perf;
 mod ruins;
 mod scenario;
 mod settings;
 #[cfg(test)]
 mod simulation;
 mod terrain;
+mod transition;
 mod turn;
 mod ui;
 mod unit;
 mod unit_icons;
 mod workers;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use fast_hash::{HashMap, HashSet};
+
+use std::collections::VecDeque;
 
 use glam::Vec2;
 use rand::SeedableRng;
@@ -39,13 +47,17 @@ pub use camera::Camera;
 pub use city::{BuildUnit, Building};
 pub use font::atlas as font_atlas;
 use hex::{HEX_SIZE, Hex, HexGrid};
+pub use multiplayer::{
+    DEFAULT_PORT, HOST_SEAT, MAX_PLAYERS, Message as NetMessage, PROTOCOL_VERSION,
+};
 pub use orders::ClickMode;
 pub use scenario::Scenario;
 pub use settings::Settings;
 use terrain::Tile;
 use turn::Step;
-pub use ui::{ImGuiLayoutState, selection_box, ui_projection};
-use unit::{Team, Unit, UnitType};
+pub use ui::{ImGuiLayoutState, NetMenu, NetRequest, selection_box, style_imgui, ui_projection};
+pub use unit::Team;
+use unit::{Unit, UnitType};
 use unit_icons::UnitIcon;
 pub use workers::JobKind;
 
@@ -54,6 +66,8 @@ pub use workers::JobKind;
 type GameRng = rand::rngs::Xoshiro256PlusPlus;
 
 const GRID_RADIUS: i32 = 3;
+/// The side a single-player game gives the player, and the local side
+/// until a multiplayer game says otherwise (`GameState::local_team`).
 const PLAYER_TEAM: Team = Team::Blue;
 
 /// Logged at startup. It only says where the controls are: `docs/controls.md`
@@ -65,7 +79,29 @@ Rules: see docs/game-rules.md.";
 #[derive(Clone)]
 pub struct GameState {
     cities: Vec<city::City>,
-    sites: std::collections::HashMap<Hex, city::Site>,
+    /// Each side's food, wood and metal, indexed by `Team::index`
+    /// (`city/economy.rs`).
+    stockpiles: [city::Stock; Team::ALL.len()],
+    /// Debug setting: a city's production speeds its builds on top of the
+    /// fixed time (`work_rate`). Kept across scenario switches and loads.
+    production_speedup: bool,
+    /// Cavalry and Armored each side's Barracks have trained, by
+    /// `Resource::index`: what the cap counts under `lifetime_special_cap`
+    /// (`city/barracks.rs`).
+    special_trained: [[u32; 2]; Team::ALL.len()],
+    /// Debug setting: a deposit's cap counts every Cavalry or Armored ever
+    /// trained from it, not those alive. Kept across scenario switches and
+    /// loads.
+    lifetime_special_cap: bool,
+    /// Tests: each time training started past its side's supply
+    /// (`city/supply.rs`), which `simulation.rs` checks never happens.
+    #[cfg(test)]
+    supply_overruns: Vec<String>,
+    /// Tests: supply each side has on top of its cities' (`fund`), by
+    /// `Team::index`.
+    #[cfg(test)]
+    extra_supply: [u32; Team::ALL.len()],
+    sites: crate::game::fast_hash::HashMap<Hex, city::Site>,
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
     /// Barracks have their own production screen, separate from city labor.
@@ -73,13 +109,14 @@ pub struct GameState {
     /// City interior currently being inspected and ordered.
     interior_view: Option<usize>,
     interior_selected: Option<u32>,
+    /// The interior tile under the cursor while a city interior is open, for
+    /// the attack preview (`hovered_tile` is the map's, and `None` then).
+    hovered_interior: Option<Hex>,
     /// Preserve the exterior camera while the tactical city map is open.
     exterior_camera: Option<Camera>,
-    /// City whose manager has been picked up and awaits a destination click.
-    moving_manager: Option<usize>,
-    /// City and building whose site is being chosen. Only live while that
-    /// city's view is open: read it through `site_placement`.
-    placing_building: Option<(usize, city::Building)>,
+    /// The city and cluster whose manager has been picked up and awaits a
+    /// destination click.
+    moving_manager: Option<(usize, usize)>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
@@ -91,9 +128,9 @@ pub struct GameState {
     hovered_tile: Option<Hex>,
     hover_seconds: f32,
     ui_click_mode: Option<orders::ClickMode>,
-    /// The worker job armed in the worker menu (`workers.rs`): map clicks
-    /// and drags place it, on tiles or (a wall or gate) on hex edges, until
-    /// Escape or another pick.
+    /// What the open city is placing for its workers to build (`workers.rs`):
+    /// map clicks and drags place it, on tiles or (a wall or gate) on hex
+    /// edges, until Escape, another pick or leaving the city.
     placing_job: Option<workers::JobKind>,
     /// The unit whose Disband was pressed once, waiting for a second press.
     disband_armed: Option<u32>,
@@ -120,6 +157,11 @@ pub struct GameState {
     scenario: Scenario,
     /// A snapshot of the game saved for testing (F6), restored by F7.
     savestate: Option<Box<GameState>>,
+    /// Counts the games this one replaced: a scenario switch, a load (F7)
+    /// and a network game each take one more than the game before. What
+    /// keeps city or unit ids between frames (ImGui's captured panels)
+    /// checks it, since every new game reuses them.
+    generation: u32,
     /// Attack animations playing out, with how many seconds each has run.
     effects: Vec<(effects::Effect, f32)>,
     /// The player's options (`settings.rs`). Kept across scenario switches
@@ -128,39 +170,59 @@ pub struct GameState {
     /// Whether the settings menu (Escape) is open. Kept across scenario
     /// switches and loads, like the rest of the UI.
     settings_open: bool,
+    /// The settings menu's Multiplayer section: what's typed, and what it
+    /// asks the app to do (`ui/network_menu.rs`). Kept like the menu.
+    net_menu: ui::NetMenu,
     /// The settings menu's Quit button was clicked; the app closes the window.
     quit_requested: bool,
     /// Debug setting (F10): hide what the player's side can't see (`fog.rs`).
     /// Kept across scenario switches and loads.
     fog_of_war: bool,
-    /// Every hex the player's side has seen, as it last saw it.
+    /// Every hex the player's side has seen, as it last saw it: this
+    /// machine's view, updated every frame (`fog.rs`).
     memory: fog::Memory,
+    /// Every hex each side (by `Team::index`) has seen, as it last saw
+    /// it, as of the latest turn the AI planned for it (`side_fog`): game
+    /// state, the same on every machine, which the AI plans on.
+    side_memory: [std::sync::Arc<fog::Memory>; Team::ALL.len()],
     turn: u32,
     pub camera: Camera,
-    /// Damage rolls, and the F4 world's map seed. Seeded from entropy; tests
+    /// The F4 world's map seed (combat has no rolls). Seeded from entropy; tests
     /// seed it (`seed_rng`) so a game replays exactly. Kept across scenario
     /// switches (`scenario.rs`).
     rng: GameRng,
+    /// The seed the RNG last took (`reseed`): a networked game's host sends
+    /// it, so both machines roll the same dice.
+    rng_seed: u64,
+    /// A networked game's lockstep state (`multiplayer.rs`); `None` alone.
+    lockstep: Option<Box<multiplayer::Lockstep>>,
     /// Steps of the turn currently playing out, drained one at a time by `update`.
     pending_steps: VecDeque<Step>,
     step_timer: f32,
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec<u32>,
     highlight_timer: f32,
-    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.rs`).
+    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.rs`):
+    /// the presentation clock, which also pulses the attack preview.
     cloud_time: f32,
+    /// The turn transition playing: units and workers gliding to where a
+    /// turn left them, and the new turn's cue (`transition.rs`).
+    /// Presentation only: a copy of the game starts without it.
+    transition: transition::Transition,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: HashSet<u32>,
+    /// Sites where an AI side's settler was refused a city by the rules
+    /// (a city it hadn't seen stood too near), so its settlers look
+    /// elsewhere (`plan_ai_settlers`). Game state, like its memory.
+    refused_sites: Vec<(Team, Hex)>,
     /// The turn strip's group whose units it lists one by one, while one of
     /// them is selected (`ui/roster.rs`).
     roster_open: Option<ui::RosterKey>,
-    /// Worker mode (W): reachable tiles are shown, and map clicks open tile
-    /// panels for jobs (`workers.rs`).
-    worker_mode: bool,
-    /// The city whose workers and jobs the worker menu lists.
-    worker_menu_city: Option<usize>,
     /// Ruins not yet claimed (`ruins.rs`), in the order the map made them.
     ruins: Vec<ruins::Ruin>,
+    /// Animal dens not yet cleared (`animals.rs`), in the order the map made
+    /// them.
+    dens: Vec<animals::Den>,
     /// Workers out on the map; the ones at home are counted by their city
     /// (`workers.rs`).
     field_workers: Vec<workers::FieldWorker>,
@@ -171,6 +233,13 @@ pub struct GameState {
     barriers: HashMap<(Hex, Hex), workers::Structure>,
     /// Frontier sandbox units that the player may command despite being Red.
     player_controlled_units: HashSet<u32>,
+    /// The side played at this machine: whose orders the input gives, whose
+    /// fog, stockpile and notices show. Blue, unless a multiplayer game
+    /// seats this player elsewhere (`multiplayer.rs`).
+    local_team: Team,
+    /// The sides people play, here or across the network; the AI plays
+    /// the rest (`ai_teams`).
+    humans: Vec<Team>,
     next_unit_id: u32,
 }
 
@@ -210,15 +279,23 @@ impl GameState {
 
         let mut game = Self {
             cities: Vec::new(),
-            sites: std::collections::HashMap::new(),
-            roads: HashSet::new(),
+            stockpiles: [city::STARTING_STOCK; Team::ALL.len()],
+            production_speedup: false,
+            special_trained: [[0; 2]; Team::ALL.len()],
+            lifetime_special_cap: false,
+            #[cfg(test)]
+            supply_overruns: Vec::new(),
+            #[cfg(test)]
+            extra_supply: [0; Team::ALL.len()],
+            sites: crate::game::fast_hash::HashMap::default(),
+            roads: HashSet::default(),
             selected_city: None,
             selected_barracks: None,
             interior_view: None,
             interior_selected: None,
+            hovered_interior: None,
             exterior_camera: None,
             moving_manager: None,
-            placing_building: None,
             hovered_city: None,
             show_yields: true,
             show_details: false,
@@ -240,33 +317,46 @@ impl GameState {
             map_seed: None,
             scenario: Scenario::Combat,
             savestate: None,
+            generation: 0,
             effects: Vec::new(),
             settings: settings::Settings::default(),
             settings_open: false,
+            net_menu: ui::NetMenu::default(),
             quit_requested: false,
             fog_of_war: true,
-            memory: fog::Memory::new(),
+            memory: fog::Memory::default(),
+            side_memory: Default::default(),
             turn: 0,
             camera: Camera::new(Vec2::ZERO, (GRID_RADIUS as f32 + 1.5) * HEX_SIZE),
             rng: GameRng::seed_from_u64(rand::random()),
+            rng_seed: 0,
+            lockstep: None,
             pending_steps: VecDeque::new(),
             step_timer: 0.0,
             recent_actors: Vec::new(),
             highlight_timer: 0.0,
             cloud_time: 0.0,
-            settlers: HashSet::new(),
+            transition: transition::Transition::default(),
+            settlers: HashSet::default(),
+            refused_sites: Vec::new(),
             ruins: Vec::new(),
+            dens: Vec::new(),
             roster_open: None,
-            worker_mode: false,
-            worker_menu_city: None,
             field_workers: Vec::new(),
-            structures: HashMap::new(),
-            barriers: HashMap::new(),
-            player_controlled_units: HashSet::new(),
+            structures: HashMap::default(),
+            barriers: HashMap::default(),
+            player_controlled_units: HashSet::default(),
+            local_team: PLAYER_TEAM,
+            humans: vec![PLAYER_TEAM],
             next_unit_id: 8,
         };
-        game.select_next_or_end_turn(None);
+        game.select_next_needing_attention(None);
         game
+    }
+
+    #[cfg(test)]
+    pub(crate) fn map_seed(&self) -> Option<u32> {
+        self.map_seed
     }
 
     pub fn city_scenario() -> Self {
@@ -307,7 +397,10 @@ impl GameState {
             game.units.push(Unit::new(id, pos, Team::Blue, kind));
         }
         for city in &mut game.cities {
-            city.queue.push(city::Build::Unit(city::BuildUnit::Melee));
+            // Paid for already, as scenario setup: the queue skips the price.
+            city.queue.push(city::Queued::prepaid(city::Build::Unit(
+                city::BuildUnit::Melee,
+            )));
         }
         game.open_city_interior(1);
         game.notice = "SIEGE: FIGHT ON BOTH MAPS (V) - BREACH POST, THEN OCCUPY IT".into();
@@ -331,8 +424,8 @@ impl GameState {
         // Place both city centers on the shoreline, not two tiles inland.
         for (city, sign) in [(0, -1), (1, 1)] {
             game.cities[city].pos = Hex::new(sign * 2, 0);
-            game.cities[city].worked.clear();
-            game.cities[city].remembered_worked.clear();
+            game.cities[city].clusters.clear();
+            game.cities[city].remembered.clear();
         }
         game.units.clear();
         game.next_unit_id = 0;
@@ -363,7 +456,9 @@ impl GameState {
         }
         game.cities[0]
             .queue
-            .push(city::Build::Unit(city::BuildUnit::PatrolGalley));
+            .push(city::Queued::prepaid(city::Build::Unit(
+                city::BuildUnit::PatrolGalley,
+            )));
         game.start_on_whole_map();
         game.notice =
             "NAVAL TEST: SELECT TROOP THEN CLICK CRAFT TO BOARD; CRAFT THEN SHORE TO LAND".into();
@@ -426,7 +521,7 @@ impl GameState {
         game.camera = Camera::new(home.to_world(), game.camera.half_height);
         // What needs seeing to first, as every turn starts: the city's
         // production, or else the settler.
-        game.select_next_or_end_turn(None);
+        game.select_next_needing_attention(None);
         game
     }
 
@@ -442,8 +537,14 @@ impl GameState {
         (0..self.units.len()).filter(move |&i| self.units[i].pos == hex)
     }
 
+    /// Whether people play `team` (here or across the network) rather than
+    /// the AI.
+    pub(super) fn is_human(&self, team: Team) -> bool {
+        self.humans.contains(&team)
+    }
+
     fn is_player_controlled(&self, idx: usize) -> bool {
-        self.units[idx].team == PLAYER_TEAM
+        self.units[idx].team == self.local_team
             || self.player_controlled_units.contains(&self.units[idx].id)
     }
 
@@ -467,6 +568,8 @@ impl GameState {
                 UnitType::PatrolGalley => "PATROL GALLEY",
                 UnitType::LandingCraft => "LANDING CRAFT",
                 UnitType::BombardShip => "BOMBARD SHIP",
+                UnitType::Wolf => "WOLF PACK",
+                UnitType::Bear => "BEAR",
             }
         }
     }
@@ -479,6 +582,18 @@ impl GameState {
             (UnitIcon::of(unit.unit_type), false)
         };
         draw::UnitLook { icon, civilian }
+    }
+
+    /// A spawn may not materialize on an enemy city center or an uncaptured
+    /// enemy field worker, even though neither counts as a unit occupant.
+    fn spawn_clear_of_enemy_civilians(&self, hex: Hex, team: Team) -> bool {
+        self.cities
+            .iter()
+            .all(|city| city.pos != hex || city.team == team)
+            && self
+                .field_workers
+                .iter()
+                .all(|worker| worker.pos != hex || worker.team == team)
     }
 
     fn is_occupied(&self, hex: Hex) -> bool {
@@ -547,8 +662,10 @@ impl GameState {
     /// Hexes a unit of `team` can reach from `start` in at most `move_range`
     /// steps without passing through mountains, walls, others' gates or an
     /// occupied hex, so a line of units blocks the way. Includes `start`
-    /// itself. Workers don't block. This is the real board, as the AI sees
-    /// it; the player plans with `known_reachable_hexes` (`fog.rs`).
+    /// itself. Workers don't block. This is the real board, for tests to
+    /// compare with: the player and the AI plan with `known_reachable_hexes`
+    /// (`fog.rs`).
+    #[cfg(test)]
     fn reachable_hexes(&self, start: Hex, move_range: i32, team: Team) -> HashSet<Hex> {
         self.reachable_hexes_by(start, move_range, |from, to| {
             self.can_step(from, to, team) && !self.is_occupied(to)
@@ -563,7 +680,7 @@ impl GameState {
         move_range: i32,
         open: impl Fn(Hex, Hex) -> bool,
     ) -> HashSet<Hex> {
-        let mut visited = HashSet::from([start]);
+        let mut visited = HashSet::from_iter([start]);
         let mut frontier = vec![start];
 
         for _ in 0..move_range {
@@ -710,6 +827,8 @@ mod tests {
         // (0, -3) and (0, -2), and the mountain itself can't be entered.
         game.units[cavalry].pos = Hex::new(-1, -2);
         assert_eq!(game.grid.terrain(Hex::new(0, -2)), Terrain::Mountains);
+        // Pathing goes by what the player knows: the mountains in sight.
+        game.explore();
 
         game.try_queue_move(cavalry, Hex::new(0, -2));
         assert_eq!(game.units[cavalry].planned_move, None);
@@ -719,19 +838,15 @@ mod tests {
 
     #[test]
     fn hills_reduce_damage_taken() {
-        use rand::SeedableRng;
-        use rand::rngs::StdRng;
-
         let hill = Hex::new(1, 0);
         let plain = Hex::new(-1, 0);
         let grid = HexGrid::new(GRID_RADIUS, [(hill, Tile::HILLS)]);
 
-        // Same seed on both sides so both attacks roll the same variance.
         let damage_taken_at = |pos: Hex| {
             let siege = Unit::new(0, Hex::new(0, 0), Team::Blue, UnitType::Siege);
             let defender = Unit::new(1, pos, Team::Red, UnitType::Melee);
             let multiplier = grid.tile(pos).defense_multiplier();
-            combat::roll_damage(&siege, &defender, multiplier, &mut StdRng::seed_from_u64(7))
+            combat::damage(&siege, &defender, multiplier)
         };
 
         assert!(damage_taken_at(hill) < damage_taken_at(plain));
@@ -880,10 +995,12 @@ mod tests {
         use turn::step_rank;
         assert_eq!(step_rank(UnitType::Scout, Phase::Move), 1);
         assert_eq!(step_rank(UnitType::Cavalry, Phase::Move), 2);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 5);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 7);
         assert_eq!(step_rank(UnitType::Ranged, Phase::Attack), 1);
         assert_eq!(step_rank(UnitType::Scout, Phase::Attack), 2);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 5);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 7);
+        assert_eq!(step_rank(UnitType::Wolf, Phase::Move), 3);
+        assert_eq!(step_rank(UnitType::Bear, Phase::Attack), 6);
     }
 
     /// Selects `idx` and toggles its ability, as the button would.
@@ -1070,7 +1187,7 @@ mod tests {
             !game.is_resolving(),
             "holding the last unit doesn't end the turn"
         );
-        assert_eq!(game.pending(), (0, 0, 0));
+        assert_eq!(game.pending(), (0, 0));
         game.hold_or_end_turn();
         assert!(game.is_resolving());
     }
@@ -1083,7 +1200,7 @@ mod tests {
         game.toggle_guard();
         assert_ne!(game.selected, Some(melee), "guarding moves on");
 
-        while game.pending() != (0, 0, 0) {
+        while game.pending() != (0, 0) {
             game.hold_or_end_turn();
         }
         game.hold_or_end_turn();
@@ -1147,8 +1264,9 @@ mod tests {
         let mut game = GameState::city_scenario();
         game.units.retain(|u| u.team != Team::Blue);
         game.selected = None;
-        // A city with nothing to build, and its worker idle at home.
-        assert_eq!(game.pending(), (0, 1, 1));
+        // A city with nothing to build; its worker idle at home doesn't
+        // hold the turn up.
+        assert_eq!(game.pending(), (0, 1));
 
         // Space opens the city that needs a build instead of ending the turn.
         game.hold_or_end_turn();
@@ -1156,13 +1274,9 @@ mod tests {
         assert_eq!(game.selected_city, Some(0));
 
         game.queue_selected_city_unit(city::BuildUnit::Melee);
-        assert_eq!(game.pending(), (0, 0, 1));
-        // Then the worker menu, where Space lets the worker sleep.
+        assert_eq!(game.pending(), (0, 0));
+        // Space closes the city, and then ends the turn.
         game.hold_or_end_turn();
-        assert!(game.worker_mode && !game.is_resolving());
-        game.hold_or_end_turn();
-        assert!(!game.worker_mode);
-        assert_eq!(game.pending(), (0, 0, 0));
         game.hold_or_end_turn();
         assert!(game.is_resolving());
     }
@@ -1232,6 +1346,8 @@ mod tests {
     fn hitting_an_empty_enemy_barracks_is_a_hit_not_a_miss() {
         let mut game = GameState::city_scenario();
         game.units.clear();
+        // This test checks the attack outcome, so keep its distant shot visible.
+        game.fog_of_war = false;
         let target = game
             .cities
             .iter()

@@ -1,9 +1,22 @@
 # src/
 
 `main.rs` starts the logger, parses the command line (`cli.rs`: `--scenario`, `--seed`,
-`--screenshot`, `--size`) and runs the `winit` event loop; its exit code is `App::into_result`.
+`--screenshot`, `--size`, `--host`/`--port`, `--join`/`--code`), sets up a network game
+(`net/`: hosting listens; joining connects, runs the encrypted handshake and receives the game
+before the window opens), and
+runs the `winit` event loop; its exit code is `App::into_result`. `App` pumps the network
+session once a frame. Everything `net/` receives is untrusted: keep every message sealed
+(`net/secure.rs`) and the frame limit, and add a check in `GameState::receive` / `check_plan`
+for anything new a message carries, with a case in the randomized plan test
+(`docs/multiplayer.md`, Security). Don't hand-roll cryptography: use the RustCrypto crates.
 `app.rs` owns the window, the renderer and the `GameState`, turns input into `GameState` method
-calls, and builds each frame. `screenshot.rs` is screenshot mode. `persist.rs` keeps settings
+calls, and builds each frame. It also carries out what the settings menu's Multiplayer page asks
+(`GameState::take_net_request`: host, join on a thread of its own, leave, or copy to the
+clipboard), and while a text field has the keys (`App::typing`) they go to it, not the key map.
+`clipboard.rs` is the system clipboard as text (Win32 through `windows-sys` under
+`cfg(windows)`, a stub elsewhere); `App` uses it for the classic fields' Ctrl+V/C/X and the
+COPY buttons, and gives it to ImGui (`set_clipboard_backend`). The game never touches it, or
+the network: `App` finds the host's LAN address (`net::lan_address`) and passes it in. `screenshot.rs` is screenshot mode. `persist.rs` keeps settings
 and layout between sessions (`docs/architecture.md`, Between sessions); screenshot mode skips it. `icon_art.rs` draws the
 game's icon in code (std only); `icon.rs` hands it to the window (title bar and taskbar), and
 `build.rs` includes `icon_art.rs` to embed it in the Windows executable as a `.res` the MSVC
@@ -31,7 +44,11 @@ the window is created (it did once the window was minimized and restored).
   the selection; Ctrl swaps, or takes a clicked group member out). A longer drag that started
   on the map is a selection box: `select_in_box` (Shift adds). Only the middle button pans.
   Right clicks act on press: `handle_context_click` (attack; Shift queues, Ctrl clears).
-- Frame pacing: `about_to_wait` schedules redraws at 165 FPS with `ControlFlow::WaitUntil`.
+- Frame pacing: `about_to_wait` schedules redraws at the refresh rate of the window's monitor
+  (`frame_duration`, found again when the window moves), at most 165 FPS, with
+  `ControlFlow::WaitUntil`.
+- The world and classic UI vertex buffers live on `App` and are refilled each frame
+  (`build_vertices_into`, `build_ui_into`), keeping their memory.
 - The window opens at 80% of the primary monitor (or `--size`), centered; the city scenarios
   start with the camera on the whole map (`start_on_whole_map`). F5 toggles borderless
   fullscreen.

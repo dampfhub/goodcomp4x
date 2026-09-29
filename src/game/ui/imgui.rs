@@ -2,18 +2,98 @@
 //! Game rules and button actions remain shared with the classic UI.
 
 use ::imgui::{
-    Condition, DragDropFlags, FontId, ItemHoveredFlags, MouseButton as ImMouseButton, ProgressBar,
-    SliderFlags, StyleColor, StyleVar, Ui, WindowFlags,
+    Condition, DragDropFlags, FontId, InputTextCallback, InputTextCallbackHandler, InputTextFlags,
+    ItemHoveredFlags, MouseButton as ImMouseButton, ProgressBar, SliderFlags, StyleColor, StyleVar,
+    TextCallbackData, Ui, WindowFlags,
 };
 
-use super::builder::Row;
-use super::text::end_turn_label;
+use super::action_icons::{self, ICON_BUTTON_SIZE};
+use super::builder::{ButtonSpec, CatalogEntry, Row, flat_rows, icon_row, visible_button_hint};
+use super::network_menu::NetField;
+use super::text::{end_turn_label, fit_text};
+use super::tooltips::Subject;
 use super::*;
-use crate::game::PLAYER_TEAM;
+use crate::game::map_icons;
 use crate::game::settings::{Control, Setting};
+
+/// What ImGui's system font draws, as pairs of first and last code points:
+/// Basic Latin and Latin-1 (ImGui's default), and the punctuation beyond
+/// them that game text uses, as the classic font has it (`font.rs`): the
+/// em dash and the ellipsis a notice too long for the status bar ends in.
+const IMGUI_GLYPHS: &[u32] = &[0x20, 0xFF, 0x2014, 0x2014, 0x2026, 0x2026, 0];
+
+/// Gives `imgui` the game's fonts and style: `App`'s context, and the
+/// tests' headless one, so they measure text as the game does. Returns the
+/// small, body and title fonts; the body font is the default.
+pub fn style_imgui(imgui: &mut ::imgui::Context) -> [FontId; 3] {
+    use ::imgui::{FontConfig, FontGlyphRanges, FontSource};
+    // Use the host UI font when available. ImGui copies the bytes into its atlas.
+    let system_font = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf").ok();
+    let mut add_font = |size| {
+        if let Some(font) = &system_font {
+            imgui.fonts().add_font(&[FontSource::TtfData {
+                data: font,
+                size_pixels: size,
+                config: Some(FontConfig {
+                    glyph_ranges: FontGlyphRanges::from_slice(IMGUI_GLYPHS),
+                    ..FontConfig::default()
+                }),
+            }])
+        } else {
+            imgui.fonts().add_font(&[FontSource::DefaultFontData {
+                config: Some(FontConfig {
+                    size_pixels: size,
+                    ..FontConfig::default()
+                }),
+            }])
+        }
+    };
+    let body_font = add_font(18.0);
+    let small_font = add_font(15.0);
+    let title_font = add_font(22.0);
+    let style = imgui.style_mut();
+    style.window_padding = [12.0, 10.0];
+    style.frame_padding = [10.0, 6.0];
+    style.item_spacing = [7.0, 6.0];
+    style.window_rounding = 0.0;
+    style.frame_rounding = 0.0;
+    style.scrollbar_rounding = 0.0;
+    style.popup_rounding = 0.0;
+    style.child_rounding = 0.0;
+    style.grab_rounding = 0.0;
+    style.tab_rounding = 0.0;
+    style.window_border_size = 1.0;
+    style.frame_border_size = 1.0;
+    style.window_title_align = [0.0, 0.5];
+    style.button_text_align = [0.5, 0.5];
+    style.colors[StyleColor::Text as usize] = [0.91, 0.92, 0.91, 1.0];
+    style.colors[StyleColor::TextDisabled as usize] = [0.46, 0.48, 0.50, 1.0];
+    style.colors[StyleColor::WindowBg as usize] = [0.018, 0.022, 0.030, 0.96];
+    style.colors[StyleColor::PopupBg as usize] = [0.025, 0.030, 0.041, 0.98];
+    style.colors[StyleColor::Border as usize] = [0.29, 0.32, 0.38, 0.95];
+    style.colors[StyleColor::TitleBg as usize] = [0.030, 0.036, 0.050, 1.0];
+    style.colors[StyleColor::TitleBgActive as usize] = [0.055, 0.065, 0.086, 1.0];
+    style.colors[StyleColor::TitleBgCollapsed as usize] = [0.030, 0.036, 0.050, 0.96];
+    style.colors[StyleColor::FrameBg as usize] = [0.032, 0.039, 0.052, 1.0];
+    style.colors[StyleColor::FrameBgHovered as usize] = [0.073, 0.084, 0.108, 1.0];
+    style.colors[StyleColor::FrameBgActive as usize] = [0.12, 0.14, 0.18, 1.0];
+    style.colors[StyleColor::Button as usize] = [0.045, 0.053, 0.070, 1.0];
+    style.colors[StyleColor::ButtonHovered as usize] = [0.085, 0.10, 0.13, 1.0];
+    style.colors[StyleColor::ButtonActive as usize] = [0.13, 0.15, 0.19, 1.0];
+    style.colors[StyleColor::Header as usize] = [0.075, 0.090, 0.12, 1.0];
+    style.colors[StyleColor::HeaderHovered as usize] = [0.12, 0.15, 0.19, 1.0];
+    style.colors[StyleColor::ScrollbarBg as usize] = [0.024, 0.029, 0.039, 1.0];
+    style.colors[StyleColor::ScrollbarGrab as usize] = [0.21, 0.24, 0.28, 1.0];
+    style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.31, 0.35, 0.39, 1.0];
+    style.colors[StyleColor::PlotHistogram as usize] = [0.80, 0.69, 0.35, 1.0];
+    style.colors[StyleColor::DragDropTarget as usize] = [0.91, 0.77, 0.38, 1.0];
+    [small_font, body_font, title_font]
+}
 
 enum Action {
     Button(Option<PinnedPanel>, Target),
+    /// A typed field's new text.
+    Text(NetField, String),
     Reorder(Option<PinnedPanel>, QueueKind, usize, usize),
     CreateBox,
     ToggleLayoutLayer,
@@ -85,6 +165,18 @@ impl PinnedPanel {
     }
 }
 
+/// Captured group panels' members, by unit id, keyed by the group's pin id.
+type PinnedGroups = std::collections::HashMap<u32, Vec<u32>>;
+
+/// What a captured panel is for this frame, by index (`pin_focus`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PinFocus {
+    /// A unit, or a group's members still alive.
+    Units(Vec<usize>),
+    City(usize),
+    Barracks(usize),
+}
+
 #[derive(Clone, Copy)]
 struct OuterBox {
     id: u32,
@@ -104,6 +196,10 @@ impl OuterBox {
 }
 
 const PANEL_MARGIN: f32 = 14.0;
+/// Room kept between the status bar's notice and End Turn after it.
+const NOTICE_GAP: f32 = 16.0;
+/// Where the tooltip holding a shortened notice in full wraps.
+const NOTICE_TOOLTIP_WIDTH: f32 = 480.0;
 const PANEL_GAP: f32 = 8.0;
 const STATUS_HEIGHT: f32 = 52.0;
 /// The top status bar is a fixed strip: its second row of small buttons
@@ -263,6 +359,90 @@ fn opposite_dock_direction(direction: ::imgui::sys::ImGuiDir) -> ::imgui::sys::I
     }
 }
 
+/// Before `title`'s window begins with `flags`: whether this frame's click
+/// is the second of a double-click on its title bar, which puts the panel
+/// back where the layout would (`ImGuiLayoutState::reset_position`). ImGui
+/// would collapse the window on it, when nothing on it is hovered: this
+/// says something is, so the arrow alone collapses it.
+fn title_double_clicked(ui: &Ui, title: &str, flags: WindowFlags) -> bool {
+    if flags.contains(WindowFlags::NO_TITLE_BAR) || !ui.is_mouse_double_clicked(ImMouseButton::Left)
+    {
+        return false;
+    }
+    let native = native_window(title);
+    if native.is_null() {
+        return false;
+    }
+    let mouse = ui.io().mouse_pos;
+    // The title bar, as ImGui measures it (`TitleBarHeight`).
+    let height = ui.frame_height();
+    unsafe {
+        let context = &*::imgui::sys::igGetCurrentContext();
+        let window = &*native;
+        let on_title = mouse[0] >= window.Pos.x
+            && mouse[0] < window.Pos.x + window.Size.x
+            && mouse[1] >= window.Pos.y
+            && mouse[1] < window.Pos.y + height;
+        // As ImGui tests it: docked windows keep their title in the tab bar,
+        // and a hovered item (the collapse arrow) takes the click.
+        if !window.DockNode.is_null()
+            || context.HoveredWindow != native
+            || context.HoveredId != 0
+            || context.HoveredIdPreviousFrame != 0
+            || !on_title
+        {
+            return false;
+        }
+        ::imgui::sys::igSetHoveredID(window.MoveId);
+    }
+    true
+}
+
+/// After `title`'s window ends: whether this frame's click is the second of
+/// a double-click on its resize grip, which puts the panel back to the size
+/// the layout gives it (`ImGuiLayoutState::reset_size`).
+fn grip_double_clicked(ui: &Ui, title: &str) -> bool {
+    if !ui.is_mouse_double_clicked(ImMouseButton::Left) {
+        return false;
+    }
+    let native = native_window(title);
+    !native.is_null()
+        && unsafe {
+            (*native).DockNode.is_null()
+                && ::imgui::sys::igGetHoveredID()
+                    == ::imgui::sys::igGetWindowResizeCornerID(native, 0)
+        }
+}
+
+/// Moves and sizes `title`'s window now, as far as given, so the next
+/// frame reads it back (`sync_native_window`) where it was put.
+fn set_native_geometry(title: &str, pos: Option<Vec2>, size: Option<Vec2>) {
+    if unsafe { ::imgui::sys::igGetCurrentContext() }.is_null() {
+        return;
+    }
+    let native = native_window(title);
+    if native.is_null() {
+        return;
+    }
+    let always = ::imgui::sys::ImGuiCond_Always as i32;
+    unsafe {
+        if let Some(pos) = pos {
+            ::imgui::sys::igSetWindowPos_WindowPtr(
+                native,
+                ::imgui::sys::ImVec2::new(pos.x, pos.y),
+                always,
+            );
+        }
+        if let Some(size) = size {
+            ::imgui::sys::igSetWindowSize_WindowPtr(
+                native,
+                ::imgui::sys::ImVec2::new(size.x, size.y),
+                always,
+            );
+        }
+    }
+}
+
 /// A panel's window flags: movable and resizable only while arranging (Ctrl
 /// held), and titled then or when collapsed. Panels keep ImGui's saved
 /// settings, so their docking comes back next session (`app.rs`).
@@ -284,10 +464,24 @@ struct WindowGeometry {
     size: Vec2,
     floating_size: Vec2,
     floating_pos: Vec2,
+    /// Placed by the player: the layout keeps it where it is.
     manual: bool,
+    /// Sized by the player: it keeps `floating_size` rather than the size
+    /// its content measures. Set with `manual` when the player drags the
+    /// panel; the two part only when one is reset (double-clicking the
+    /// title bar or the resize grip, `reset_position`, `reset_size`).
+    sized: bool,
     docked: bool,
     collapsed: bool,
     content_height: f32,
+}
+
+impl WindowGeometry {
+    /// The player has moved or resized it: it stays as they left it.
+    fn place_by_player(&mut self) {
+        self.manual = true;
+        self.sized = true;
+    }
 }
 
 /// ImGui windows follow collision-free docks until the player drags a title
@@ -318,7 +512,7 @@ pub struct ImGuiLayoutState {
     pinned_geometry: std::collections::HashMap<PinnedPanel, WindowGeometry>,
     pinned_box: std::collections::HashMap<PinnedPanel, u32>,
     pinned_outside_frames: std::collections::HashMap<PinnedPanel, u8>,
-    pinned_groups: std::collections::HashMap<u32, Vec<u32>>,
+    pinned_groups: PinnedGroups,
     pending_pin_dock: Vec<(PinnedPanel, u32)>,
     outer_boxes: Vec<OuterBox>,
     next_outer_box_id: u32,
@@ -331,9 +525,99 @@ pub struct ImGuiLayoutState {
     debug_attached: bool,
     debug_reposition: bool,
     debug_outer_relation: Option<(PinnedPanel, QueueDockRelation)>,
+    /// Whether each panel was placed and sized by the player before the
+    /// click on its title bar or grip that began this double-click, if any
+    /// (`begin_frame`).
+    before_click: [Option<(bool, bool)>; SLOT_COUNT],
+    /// The game's `generation` at the last frame (`game_changed`).
+    game_generation: Option<u32>,
 }
 
 impl ImGuiLayoutState {
+    /// The player double-clicked `slot`'s title bar: it goes back where the
+    /// current view's layout puts it, keeping its size. That is the
+    /// automatic place, but for Debug in City / Building or Troop, where
+    /// RESET would put it: Default's placement (`debug_default`).
+    fn reset_position(&mut self, slot: usize) {
+        let inherited = self
+            .debug_default(slot)
+            .filter(|default| default.floating_pos != Vec2::ZERO);
+        // Sized as before the double-click's first click, which made it the
+        // player's (`begin_frame`).
+        let sized = self.before_click[slot].map(|(_, sized)| sized);
+        let window = &mut self.windows[slot];
+        window.sized = sized.unwrap_or(window.sized);
+        match inherited {
+            Some(default) => {
+                window.manual = true;
+                window.pos = default.floating_pos;
+                window.floating_pos = default.floating_pos;
+                set_native_geometry(SLOT_TITLES[slot], Some(default.floating_pos), None);
+            }
+            None => window.manual = false,
+        }
+        self.follow_default_debug(slot);
+    }
+
+    /// The player double-clicked `slot`'s resize grip: it goes back to the
+    /// size the current view's layout gives it, staying where it is. That
+    /// is the size its content measures, but for Debug in City / Building
+    /// or Troop, the size RESET would give it: Default's (`debug_default`).
+    fn reset_size(&mut self, slot: usize) {
+        let inherited = self
+            .debug_default(slot)
+            .filter(|default| default.floating_size != Vec2::ZERO);
+        // Placed as before the double-click's first click (`begin_frame`).
+        let manual = self.before_click[slot].map(|(manual, _)| manual);
+        let window = &mut self.windows[slot];
+        window.manual = manual.unwrap_or(window.manual);
+        match inherited {
+            Some(default) => {
+                window.sized = true;
+                window.size = default.floating_size;
+                window.floating_size = default.floating_size;
+                set_native_geometry(SLOT_TITLES[slot], None, Some(default.floating_size));
+            }
+            None => window.sized = false,
+        }
+        self.follow_default_debug(slot);
+    }
+
+    /// Debug's placement in Default, when `slot` is Debug in City /
+    /// Building or Troop: what that view's RESET restores
+    /// (`apply_pending_view_reset`).
+    fn debug_default(&self, slot: usize) -> Option<WindowGeometry> {
+        match self.debug_layout_scope {
+            Some(BoxScope::View(view)) if slot == DEBUG && view != ViewScope::Default => Some(
+                self.debug_view_geometry
+                    .get(&ViewScope::Default)
+                    .copied()
+                    .unwrap_or_default(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// After a reset of Debug in City / Building or Troop: once it's where
+    /// and as big as Default has it, that view follows Default's Debug
+    /// again, as after RESET.
+    fn follow_default_debug(&mut self, slot: usize) {
+        let (Some(default), Some(BoxScope::View(view))) =
+            (self.debug_default(slot), self.debug_layout_scope)
+        else {
+            return;
+        };
+        let window = self.windows[DEBUG];
+        let placed = |at: Vec2| at != Vec2::ZERO;
+        let same_place = window.manual == placed(default.floating_pos)
+            && (!window.manual || window.pos == default.floating_pos);
+        let same_size = window.sized == placed(default.floating_size)
+            && (!window.sized || window.floating_size == default.floating_size);
+        if same_place && same_size {
+            self.debug_view_overrides.remove(&view);
+        }
+    }
+
     pub fn request_reset_active_view(&mut self) -> bool {
         if self.editing_outer || self.active_view == ViewScope::Default {
             return false;
@@ -515,6 +799,16 @@ impl ImGuiLayoutState {
         }
     }
 
+    /// Whether the game is another than at the last frame (`generation`:
+    /// a scenario switched, by key or button, a load, or a network game),
+    /// noting it for the next.
+    fn game_changed(&mut self, generation: u32) -> bool {
+        self.game_generation
+            .replace(generation)
+            .is_some_and(|last| last != generation)
+    }
+
+    /// Releases every captured panel, keeping the boxes.
     fn clear_captured_panels(&mut self) {
         for pin in &self.pinned {
             let window = native_window(&pin.title());
@@ -603,6 +897,7 @@ impl ImGuiLayoutState {
                 floating_pos: pos,
                 floating_size: size,
                 manual: true,
+                sized: true,
                 ..Default::default()
             },
         });
@@ -705,7 +1000,7 @@ impl ImGuiLayoutState {
         if restored.floating_pos != Vec2::ZERO {
             restored.pos = restored.floating_pos;
             restored.size = restored.floating_size;
-            restored.manual = true;
+            restored.place_by_player();
         }
         self.windows[DEBUG] = restored;
         self.debug_reposition = true;
@@ -896,7 +1191,7 @@ impl ImGuiLayoutState {
         let native = unsafe { &*native };
         let docked = !native.DockNode.is_null();
         if self.windows[slot].docked && !docked {
-            self.windows[slot].manual = true;
+            self.windows[slot].place_by_player();
         }
         self.windows[slot].docked = docked;
         self.windows[slot].collapsed = native.Collapsed;
@@ -908,7 +1203,7 @@ impl ImGuiLayoutState {
                 if remembered != Vec2::ZERO {
                     self.windows[slot].pos = remembered;
                     self.windows[slot].size = self.windows[slot].floating_size;
-                    self.windows[slot].manual = true;
+                    self.windows[slot].place_by_player();
                 }
             } else if !(docked || (slot == DEBUG && self.defer_geometry)) {
                 self.windows[slot].floating_size = self.windows[slot].size;
@@ -940,6 +1235,7 @@ impl ImGuiLayoutState {
                 // ImGui may have removed the inactive split. Place this as a
                 // normal floater for the restoration frame, not over Queue.
                 restored.manual = false;
+                restored.sized = false;
                 restored.pos = Vec2::ZERO;
                 restored.size = restored.floating_size;
             }
@@ -962,8 +1258,15 @@ impl ImGuiLayoutState {
         if !arranging || !ui.is_mouse_clicked(ImMouseButton::Left) {
             return;
         }
+        // The second click of a double-click keeps what the first found:
+        // how the panel was before it (`reset_position`, `reset_size`).
+        let second = ui.is_mouse_double_clicked(ImMouseButton::Left);
+        if !second {
+            self.before_click = [None; SLOT_COUNT];
+        }
         let mouse = Vec2::from_array(ui.io().mouse_pos);
-        for (slot, window) in self.windows.iter_mut().enumerate() {
+        for slot in 0..SLOT_COUNT {
+            let window = &mut self.windows[slot];
             if window.size == Vec2::ZERO || window.docked {
                 continue;
             }
@@ -977,7 +1280,10 @@ impl ImGuiLayoutState {
                 && relative.y >= window.size.y - 20.0
                 && relative.y <= window.size.y;
             if title || grip {
-                window.manual = true;
+                if !second {
+                    self.before_click[slot] = Some((window.manual, window.sized));
+                }
+                window.place_by_player();
                 if slot == DEBUG
                     && let Some(BoxScope::View(view)) = self.debug_layout_scope
                     && view != ViewScope::Default
@@ -993,7 +1299,7 @@ impl ImGuiLayoutState {
         let window = self.windows[slot];
         let preferred = if window.docked && window.size != Vec2::ZERO {
             window.size
-        } else if window.manual {
+        } else if window.sized {
             if window.floating_size != Vec2::ZERO {
                 window.floating_size
             } else {
@@ -1149,7 +1455,7 @@ impl ImGuiLayoutState {
     fn record(&mut self, slot: usize, ui: &Ui, arranging: bool) {
         let docked = unsafe { ::imgui::sys::igIsWindowDocked() };
         if self.windows[slot].docked && !docked {
-            self.windows[slot].manual = true;
+            self.windows[slot].place_by_player();
         }
         self.windows[slot].pos = Vec2::from_array(ui.window_pos());
         self.windows[slot].size = Vec2::from_array(ui.window_size());
@@ -1197,7 +1503,8 @@ impl ImGuiLayoutState {
                 lines.push(format!("{key} {id}"));
             }
         }
-        if self.debug_outer_geometry.manual || self.debug_outer_geometry.docked {
+        let chosen = |g: &WindowGeometry| g.manual || g.sized || g.docked;
+        if chosen(&self.debug_outer_geometry) {
             lines.push(format!(
                 "debug_outer {}",
                 geometry_text(&self.debug_outer_geometry)
@@ -1208,7 +1515,7 @@ impl ImGuiLayoutState {
             // Only a placement the player chose: one the layout made is made
             // again, and restoring it would pin the panel (`switch_layout_scope`).
             if let Some(geometry) = self.debug_view_geometry.get(&view)
-                && (geometry.manual || geometry.docked)
+                && chosen(geometry)
             {
                 lines.push(format!("debug_view {name} {}", geometry_text(geometry)));
             }
@@ -1309,11 +1616,12 @@ impl ImGuiLayoutState {
 }
 
 /// A panel's saved geometry: position, size, floating position and size,
-/// and whether it's placed by the player, docked and collapsed.
+/// whether it's placed by the player, docked and collapsed, and whether it's
+/// sized by the player (last, so a file from before it still reads).
 fn geometry_text(geometry: &WindowGeometry) -> String {
     let g = geometry;
     format!(
-        "{} {} {} {} {} {} {} {} {} {} {}",
+        "{} {} {} {} {} {} {} {} {} {} {} {}",
         g.pos.x,
         g.pos.y,
         g.size.x,
@@ -1324,7 +1632,8 @@ fn geometry_text(geometry: &WindowGeometry) -> String {
         g.floating_size.y,
         u8::from(g.manual),
         u8::from(g.docked),
-        u8::from(g.collapsed)
+        u8::from(g.collapsed),
+        u8::from(g.sized)
     )
 }
 
@@ -1350,12 +1659,18 @@ fn geometry_from_text(values: &[&str]) -> Option<WindowGeometry> {
     else {
         return None;
     };
+    // Before the sized flag, placing a panel sized it too.
+    let sized = match values.get(11) {
+        Some(value) => *value != "0",
+        None => manual != 0.0,
+    };
     Some(WindowGeometry {
         pos: Vec2::new(px, py),
         size: Vec2::new(sx, sy),
         floating_pos: Vec2::new(fpx, fpy),
         floating_size: Vec2::new(fsx, fsy),
         manual: manual != 0.0,
+        sized,
         docked: docked != 0.0,
         collapsed: collapsed != 0.0,
         ..WindowGeometry::default()
@@ -1398,7 +1713,7 @@ fn panel_content_height(cursor_y: f32, padding_y: f32, title_height: Option<f32>
 fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32) -> f32 {
     let inner = (width - 45.0).max(100.0);
     let mut height = 26.0; // border and padding
-    for row in &panel.rows {
+    for row in flat_rows(&panel.rows) {
         height += match row {
             Row::Text(px, line) => {
                 let font = match *px {
@@ -1407,40 +1722,278 @@ fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], width: f32)
                     _ => fonts[1],
                 };
                 let _font = ui.push_font(font);
-                let text = line.iter().map(|(s, _)| s.as_str()).collect::<String>();
-                let measured = ui.calc_text_size(text);
-                let lines = if line.len() == 1 {
-                    (measured[0] / inner).ceil().max(1.0)
-                } else {
-                    1.0
-                };
-                measured[1] * lines + 7.0
+                let rows = wrap_spans(ui, line, inner).len();
+                ui.text_line_height() * rows as f32 + 7.0
             }
             Row::Gap(gap) => gap + 6.0,
             Row::Bar(_) => 18.0,
             Row::Buttons(buttons, compact) => {
-                let columns = ((inner + 7.0) / 135.0).floor().max(1.0) as usize;
-                let rows = buttons.len().div_ceil(columns);
-                rows as f32 * (if *compact { 34.0 } else { 54.0 })
+                measure_buttons(ui, buttons, *compact, panel.faded, inner)
             }
-            Row::QueueItem(_) => 37.0,
-            Row::BuildingCatalog(_, buttons, _) => (buttons.len().clamp(1, 4) as f32 * 34.0) + 18.0,
+            Row::Reorder(_, buttons) => measure_buttons(ui, buttons, true, panel.faded, inner),
+            Row::QueueItem(item) => {
+                let width = (inner - QUEUE_X_ROOM).max(QUEUE_ROW_MIN);
+                queue_row_height(ui, queue_row_lines(ui, item, width).len()) + 7.0
+            }
+            Row::TitleWithButton(line, spec) => {
+                let label = title_button_label(spec, panel.faded);
+                if title_button_fits(ui, line, &label, fonts[0], inner) {
+                    ui.frame_height_with_spacing()
+                } else {
+                    // The title's rows, then the button under them.
+                    let _font = ui.push_font(fonts[0]);
+                    let rows = wrap_spans(ui, line, inner).len() as f32;
+                    let title = rows * ui.text_line_height() + SPACING_Y;
+                    drop(_font);
+                    title + ui.frame_height_with_spacing()
+                }
+            }
+            Row::BuildingCatalog(_, buttons, ..) => {
+                (buttons.len().clamp(1, 5) as f32 * 34.0) + 18.0
+            }
             Row::Roster(_) => ROSTER_CHIP + 6.0,
+            Row::ScrollList(_) => unreachable!("flattened by flat_rows"),
+            Row::LabeledButtons(..) => unreachable!("classic only"),
             Row::Heading(_) => {
                 let _font = ui.push_font(fonts[0]);
                 // The text, the rule under it, and the spacing after each.
                 ui.calc_text_size("A")[1] + 2.0 * SPACING_Y + 1.0
             }
-            Row::Setting(..) => {
+            Row::Setting(..) | Row::Field(..) => {
                 let _font = ui.push_font(fonts[1]);
-                ui.calc_text_size("A")[1] + 2.0 * FRAME_PADDING_Y + SPACING_Y
+                let label_width = setting_label_width(ui, panel, fonts[1]);
+                let lines = match row {
+                    Row::Setting(setting, _) => {
+                        setting_fit(ui, *setting, label_width, inner).stacked
+                    }
+                    _ => field_stacked(label_width, inner),
+                };
+                let line = ui.calc_text_size("A")[1] + 2.0 * FRAME_PADDING_Y + SPACING_Y;
+                line * if lines { 2.0 } else { 1.0 }
             }
         };
     }
     height + 12.0
 }
 
-/// The style's vertical item spacing and frame padding (`app.rs`), as
+/// How a setting's row fits its width: whether its control goes on a line
+/// of its own under its name, and whether a choice shows as a drop-down
+/// list rather than a button per value.
+#[derive(Clone, Copy)]
+struct SettingFit {
+    stacked: bool,
+    combo: bool,
+}
+
+/// How `setting`'s row fits in `available` of width, its name taking
+/// `label_width`: the control beside the name if it fits there, else under
+/// it; a choice's buttons, if they fit either way, before a drop-down list.
+fn setting_fit(ui: &Ui, setting: Setting, label_width: f32, available: f32) -> SettingFit {
+    let count = setting.range().count();
+    let buttons = setting.control() == Control::Choice && count <= Control::MAX_BUTTONS;
+    let mut tries = Vec::new();
+    if buttons {
+        tries.push(false);
+    }
+    tries.push(setting.control() == Control::Choice);
+    for combo in tries {
+        let needs = control_width(ui, setting, combo);
+        for stacked in [false, true] {
+            let room = if stacked {
+                available
+            } else {
+                available - label_width
+            };
+            if needs <= room {
+                return SettingFit { stacked, combo };
+            }
+        }
+    }
+    SettingFit {
+        stacked: true,
+        combo: setting.control() == Control::Choice,
+    }
+}
+
+/// The least width `setting`'s control shows its values in: a drop-down
+/// list with `combo`.
+fn control_width(ui: &Ui, setting: Setting, combo: bool) -> f32 {
+    let style = ui.clone_style();
+    let pad = style.frame_padding[0];
+    let widest = setting
+        .range()
+        .map(|value| ui.calc_text_size(setting.value_text(value))[0])
+        .fold(0.0, f32::max);
+    match setting.control() {
+        Control::Toggle => ui.frame_height() + style.item_inner_spacing[0] + widest,
+        Control::Slider => widest + 4.0 * pad,
+        Control::Choice if combo => widest + 2.0 * pad + ui.frame_height(),
+        Control::Choice => {
+            let count = setting.range().count() as f32;
+            count * (widest + 2.0 * pad) + (count - 1.0) * style.item_spacing[0]
+        }
+    }
+}
+
+/// The least width of a typed field's text box beside its name.
+const FIELD_MIN_WIDTH: f32 = 120.0;
+
+/// Whether a typed field's text box goes under its name, `label_width`
+/// wide, for want of room beside it in `available`.
+fn field_stacked(label_width: f32, available: f32) -> bool {
+    available - label_width < FIELD_MIN_WIDTH
+}
+
+/// The room a queue row leaves its X button, and the least width of the
+/// row itself.
+const QUEUE_X_ROOM: f32 = 39.0;
+const QUEUE_ROW_MIN: f32 = 50.0;
+
+/// A queue row's lines in a button `width` wide: the drag handle and its
+/// label, broken between words when they don't fit on one line.
+fn queue_row_lines(ui: &Ui, item: &QueueItemSpec, width: f32) -> Vec<String> {
+    let text = format!("::  {}", item.label.trim_start_matches("> ").trim());
+    // The text starts a pad in from the left, and must end as far in.
+    let pad = ui.clone_style().frame_padding[0].max(width * 0.03);
+    wrap_spans(ui, &vec![(text, TEXT)], width - 2.0 * pad)
+        .into_iter()
+        .map(|row| row.into_iter().map(|(text, _)| text).collect())
+        .collect()
+}
+
+/// A queue row's height with `lines` of text.
+fn queue_row_height(ui: &Ui, lines: usize) -> f32 {
+    (lines as f32 * ui.text_line_height() + 6.0).max(30.0)
+}
+
+/// The text on a `Row::TitleWithButton`'s button: its label and hint.
+fn title_button_label(spec: &ButtonSpec, faded: bool) -> String {
+    let hint = visible_button_hint(&spec.hint, faded);
+    if hint.is_empty() {
+        spec.label.clone()
+    } else {
+        format!("{}  {hint}", spec.label)
+    }
+}
+
+/// Whether a `Row::TitleWithButton`'s title (`line`, in `font`) and its
+/// button (`label`) fit side by side in `available` of width; if not, the
+/// button goes on the line below.
+fn title_button_fits(ui: &Ui, line: &Line, label: &str, font: FontId, available: f32) -> bool {
+    let title: f32 = {
+        let _font = ui.push_font(font);
+        line.iter().map(|(text, _)| rich_width(ui, text)).sum()
+    };
+    let style = ui.clone_style();
+    let button = rich_width(ui, label) + 2.0 * style.frame_padding[0];
+    title + style.item_spacing[0] + button <= available
+}
+
+/// A row of buttons' height, as `render_buttons` lays it out in `inner` of
+/// width.
+fn measure_buttons(ui: &Ui, buttons: &[ButtonSpec], compact: bool, faded: bool, inner: f32) -> f32 {
+    let grid = button_grid(ui, buttons, compact, faded, inner);
+    buttons.len().div_ceil(grid.columns) as f32 * (grid.height + SPACING_Y)
+}
+
+/// How `render_buttons` lays out a row of buttons: in columns of equal
+/// buttons, each with its lines of text.
+struct ButtonGrid {
+    columns: usize,
+    width: f32,
+    height: f32,
+    /// Each button's lines, in the order of the buttons.
+    lines: Vec<Vec<String>>,
+}
+
+/// The least width of a button with text.
+const MIN_BUTTON_WIDTH: f32 = 128.0;
+
+/// Lays out `buttons` in `available` of width: as many columns as the
+/// widest button's text leaves room for, down to one. A compact button's
+/// label and hint share a line, and a full one's go on two; text that
+/// still doesn't fit its button breaks between words (a compact button's
+/// hint going under its label first), and the buttons grow to hold it.
+/// Icon buttons (`icon_row`) are squares.
+fn button_grid(
+    ui: &Ui,
+    buttons: &[ButtonSpec],
+    compact: bool,
+    faded: bool,
+    available: f32,
+) -> ButtonGrid {
+    let style = ui.clone_style();
+    let spacing = style.item_spacing[0];
+    let columns_of = |width: f32| {
+        (((available + spacing) / (width + spacing)).floor() as usize)
+            .clamp(1, buttons.len().max(1))
+    };
+    if icon_row(buttons) {
+        return ButtonGrid {
+            columns: columns_of(ICON_BUTTON_SIZE),
+            width: ICON_BUTTON_SIZE,
+            height: ICON_BUTTON_SIZE,
+            lines: vec![vec![String::new()]; buttons.len()],
+        };
+    }
+    let pad = style.frame_padding[0];
+    let text: Vec<(String, String)> = buttons
+        .iter()
+        .map(|spec| {
+            let hint = visible_button_hint(&spec.hint, faded).to_string();
+            (spec.label.clone(), hint)
+        })
+        .collect();
+    let one_line = |(label, hint): &(String, String)| {
+        if hint.is_empty() {
+            vec![label.clone()]
+        } else if compact {
+            vec![format!("{label}  {hint}")]
+        } else {
+            vec![label.clone(), hint.clone()]
+        }
+    };
+    let needs = |lines: &[String]| {
+        lines
+            .iter()
+            .map(|line| rich_width(ui, line))
+            .fold(0.0, f32::max)
+            + 2.0 * pad
+    };
+    let widest = text
+        .iter()
+        .map(|text| needs(&one_line(text)))
+        .fold(MIN_BUTTON_WIDTH, f32::max);
+    let columns = columns_of(widest);
+    let width = ((available - spacing * (columns - 1) as f32) / columns as f32).max(1.0);
+    let lines: Vec<Vec<String>> = text
+        .iter()
+        .map(|text| {
+            let mut lines = one_line(text);
+            if compact && needs(&lines) > width {
+                lines = vec![text.0.clone(), text.1.clone()];
+            }
+            lines
+                .iter()
+                .flat_map(|line| {
+                    wrap_spans(ui, &vec![(line.clone(), TEXT)], width - 2.0 * pad)
+                        .into_iter()
+                        .map(|row| row.into_iter().map(|(text, _)| text).collect::<String>())
+                })
+                .collect()
+        })
+        .collect();
+    let most = lines.iter().map(Vec::len).max().unwrap_or(1);
+    let least = if compact { 28.0 } else { 48.0 };
+    ButtonGrid {
+        columns,
+        width,
+        height: (most as f32 * ui.text_line_height()).max(least),
+        lines,
+    }
+}
+
+/// The style's vertical item spacing and frame padding (`style_imgui`), as
 /// `measure_panel` counts them for the settings menu's rows.
 const SPACING_Y: f32 = 6.0;
 const FRAME_PADDING_Y: f32 = 6.0;
@@ -1454,6 +2007,7 @@ fn setting_label_width(ui: &Ui, panel: &PanelBuilder, font: FontId) -> f32 {
         .iter()
         .filter_map(|row| match row {
             Row::Setting(setting, _) => Some(ui.calc_text_size(setting.name())[0]),
+            Row::Field(field, ..) => Some(ui.calc_text_size(field.name())[0]),
             _ => None,
         })
         .fold(0.0, f32::max)
@@ -1472,8 +2026,9 @@ fn setting_tooltip(ui: &Ui, setting: Setting) {
 }
 
 /// A setting's row in the settings menu: its name in the label column, then
-/// the control `Setting::control` names across the rest of the width. A
-/// change is a `Target::SetSetting` action.
+/// the control `Setting::control` names across the rest of the width, or
+/// under the name when it has no room there (`setting_fit`). A change is a
+/// `Target::SetSetting` action.
 fn render_setting(
     ui: &Ui,
     setting: Setting,
@@ -1494,10 +2049,14 @@ fn render_setting(
         }
     };
     let left = ui.cursor_pos()[0];
+    let fit = setting_fit(ui, setting, label_width, ui.content_region_avail()[0]);
     ui.align_text_to_frame_padding();
     ui.text_colored([0.82, 0.84, 0.86, 1.0], setting.name());
+    note_text_item(ui, setting.name());
     tooltip();
-    ui.same_line_with_pos(left + label_width);
+    if !fit.stacked {
+        ui.same_line_with_pos(left + label_width);
+    }
     let width = ui.content_region_avail()[0];
     let id = format!("##setting-{setting:?}");
     match setting.control() {
@@ -1506,6 +2065,7 @@ fn render_setting(
             if ui.checkbox(format!("{}{id}", setting.value_text(value)), &mut on) {
                 set(on as i32);
             }
+            note_text_item(ui, "checkbox");
             tooltip();
         }
         Control::Slider => {
@@ -1522,9 +2082,10 @@ fn render_setting(
             {
                 set(to);
             }
+            note_button_label(ui, &setting.value_text(value));
             tooltip();
         }
-        Control::Choice if range.clone().count() > Control::MAX_BUTTONS => {
+        Control::Choice if fit.combo => {
             ui.set_next_item_width(width);
             match ui.begin_combo(&id, setting.value_text(value)) {
                 Some(_combo) => {
@@ -1554,11 +2115,63 @@ fn render_setting(
                     )
                 });
                 let label = format!("{}{id}-{to}", setting.value_text(to));
-                if ui.button_with_size(label, [each, 0.0]) {
+                if ui.button_with_size(&label, [each, 0.0]) {
                     set(to);
                 }
+                note_button_label(ui, &label);
                 tooltip();
             }
+        }
+    }
+}
+
+/// A typed field's row (the Multiplayer section): its name in the label
+/// column, then a text box across the rest (under the name when there is
+/// no room beside it); an edit is an `Action::Text`.
+fn render_field(ui: &Ui, field: NetField, text: &str, label_width: f32, actions: &mut Vec<Action>) {
+    let left = ui.cursor_pos()[0];
+    let stacked = field_stacked(label_width, ui.content_region_avail()[0]);
+    ui.align_text_to_frame_padding();
+    ui.text_colored([0.82, 0.84, 0.86, 1.0], field.name());
+    note_text_item(ui, field.name());
+    if !stacked {
+        ui.same_line_with_pos(left + label_width);
+    }
+    ui.set_next_item_width(ui.content_region_avail()[0]);
+    let mut edited = text.to_string();
+    let flags = match field {
+        NetField::Port => InputTextFlags::CHARS_DECIMAL,
+        NetField::Code => InputTextFlags::CHARS_UPPERCASE | InputTextFlags::CHARS_NO_BLANK,
+        NetField::Address => InputTextFlags::CHARS_NO_BLANK,
+    };
+    // `flags` replaces imgui-rs's own, so it keeps the one that lets the
+    // text outgrow the string it started as (without it, an empty box took
+    // seven characters). Ctrl+C, X, V and A work through the clipboard
+    // `App` gives the context; the box keeps what's typed or pasted as the
+    // field does.
+    let changed = ui
+        .input_text(format!("##field-{field:?}"), &mut edited)
+        .flags(flags | InputTextFlags::CALLBACK_RESIZE)
+        .callback(InputTextCallback::EDIT, CleanField(field))
+        .build();
+    // The box is where classic's button to type into the field would be.
+    note_drawn_button(ui, Target::EditNetField(field));
+    if changed && edited != text {
+        actions.push(Action::Text(field, edited));
+    }
+}
+
+/// Keeps a field's text box to what the field takes (`NetField::clean`)
+/// while it's being edited, so a long paste shows cut to the field's length
+/// rather than until the box lets go.
+struct CleanField(NetField);
+
+impl InputTextCallbackHandler for CleanField {
+    fn on_edit(&mut self, mut data: TextCallbackData) {
+        let clean = self.0.clean(data.str());
+        if clean != data.str() {
+            data.clear();
+            data.push_str(&clean);
         }
     }
 }
@@ -1623,6 +2236,108 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
     }
 }
 
+fn draw_action_icon(
+    ui: &Ui,
+    min: [f32; 2],
+    max: [f32; 2],
+    icon: action_icons::ActionIcon,
+    color: Color,
+    cooldown: Option<&str>,
+    small_font: FontId,
+) {
+    let draw = ui.get_window_draw_list();
+    let mut center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
+    let mut vertices = Vec::new();
+    action_icons::push_icon(Vec2::ZERO, 14.0, icon, color, &mut vertices);
+    // The badge in the top-right corner: where it goes, and its text's size.
+    let badge = cooldown.map(|turns| {
+        let _font = ui.push_font(small_font);
+        let size = [ui.calc_text_size(turns)[0], ui.text_line_height()];
+        (turns, [max[0] - size[0] - 3.0, min[1] + 2.0], size)
+    });
+    if let Some((_, pos, size)) = badge {
+        // The icon moves left, then down, as far as it must and can to
+        // clear the badge.
+        let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        for vertex in &vertices {
+            let at = Vec2::new(vertex.pos[0], vertex.pos[1]);
+            low = low.min(at);
+            high = high.max(at);
+        }
+        let gap = 1.0;
+        let right = center[0] + high.x;
+        let top = center[1] - high.y;
+        let bottom = pos[1] + size[1];
+        if right + gap > pos[0] && top < bottom {
+            let room = (center[0] + low.x - min[0] - 3.0).max(0.0);
+            center[0] -= (right + gap - pos[0]).min(room);
+            if center[0] + high.x + gap > pos[0] {
+                let room = (max[1] - 3.0 - (center[1] - low.y)).max(0.0);
+                center[1] += (bottom + gap - top).min(room);
+            }
+        }
+    }
+    fill_shapes(&draw, center, &vertices);
+    if let Some((turns, pos, size)) = badge {
+        let _font = ui.push_font(small_font);
+        draw.add_rect(
+            [pos[0] - 2.0, pos[1] - 1.0],
+            [max[0] - 1.0, pos[1] + 13.0],
+            PANEL_BG,
+        )
+        .filled(true)
+        .build();
+        draw.add_text(pos, color, turns);
+        note_mark(turns, pos, [pos[0] + size[0], pos[1] + size[1]], None);
+    }
+}
+
+fn draw_production_icon(
+    ui: &Ui,
+    min: [f32; 2],
+    max: [f32; 2],
+    icon: crate::game::unit_icons::UnitIcon,
+) {
+    let center = [min[0] + CARD_ICON_CENTER, (min[1] + max[1]) / 2.0];
+    let mut vertices = Vec::new();
+    crate::game::unit_icons::push_pictogram(Vec2::ZERO, 12.0, icon, TEXT, &mut vertices);
+    fill_shapes(&ui.get_window_draw_list(), center, &vertices);
+}
+
+/// Fills shapes built Y-up around the origin (triangle lists, like the
+/// map's) into `draw`, the current window's draw list (ImGui allows one
+/// handle on it at a time), centered on `center` (ImGui's Y
+/// points down). ImGui feathers every filled triangle's edges by a pixel,
+/// the inner ones too, which leaves a small silhouette fuzzy and seamed:
+/// these are drawn unfeathered, crisp and whole.
+fn fill_shapes(draw: &::imgui::DrawListMut, center: [f32; 2], vertices: &[Vertex]) {
+    let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
+    let list = unsafe { ::imgui::sys::igGetWindowDrawList() };
+    let flags = unsafe { (*list).Flags };
+    let feathered = ::imgui::sys::ImDrawListFlags_AntiAliasedFill as ::imgui::sys::ImDrawListFlags;
+    unsafe { (*list).Flags = flags & !feathered };
+    for triangle in vertices.as_chunks::<3>().0 {
+        draw.add_triangle(
+            at(&triangle[0]),
+            at(&triangle[1]),
+            at(&triangle[2]),
+            triangle[0].color,
+        )
+        .filled(true)
+        .build();
+    }
+    unsafe { (*list).Flags = flags };
+    #[cfg(test)]
+    if !vertices.is_empty() {
+        let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for [x, y] in vertices.iter().map(at) {
+            min = [min[0].min(x), min[1].min(y)];
+            max = [max[0].max(x), max[1].max(y)];
+        }
+        note_mark("icon", min, max, None);
+    }
+}
+
 fn text_line(ui: &Ui, line: &Line) {
     for (index, (text, color)) in line.iter().enumerate() {
         if index != 0 {
@@ -1635,9 +2350,449 @@ fn text_line(ui: &Ui, line: &Line) {
         } else {
             *color
         };
-        ui.text_colored(readable, text);
+        rich_text(ui, text, readable);
     }
 }
+
+/// A panel's line of text: `text_line`, broken between words into as many
+/// rows as it takes to fit the panel's width (`wrap_spans`).
+fn panel_text_line(ui: &Ui, line: &Line) {
+    let rows = wrap_spans(ui, line, ui.content_region_avail()[0]);
+    let spacing = ui.clone_style().item_spacing;
+    for (index, row) in rows.iter().enumerate() {
+        // The rows of one line sit as close as a wrapped paragraph's.
+        let _tight = (index + 1 < rows.len())
+            .then(|| ui.push_style_var(StyleVar::ItemSpacing([spacing[0], 0.0])));
+        text_line(ui, row);
+    }
+}
+
+/// `line`'s spans broken between words into rows no wider than `width`,
+/// each span keeping its color; a word wider than `width` has a row of its
+/// own. A span ending in one space runs into the next, as a label into its
+/// value ("DEFENSE " and "20"), so the two stay on one row. The rows after
+/// the first drop the spaces they would start with.
+fn wrap_spans(ui: &Ui, line: &Line, width: f32) -> Vec<Line> {
+    fn push(row: &mut Line, text: &str, color: Color) {
+        match row.last_mut() {
+            Some((last, last_color)) if *last_color == color => last.push_str(text),
+            _ => row.push((text.to_string(), color)),
+        }
+    }
+    // The words, each its pieces of spans.
+    let mut words: Vec<Line> = Vec::new();
+    let mut word = Line::new();
+    for (text, color) in line {
+        let pieces: Vec<&str> = text.split_inclusive(' ').collect();
+        for (index, piece) in pieces.iter().enumerate() {
+            push(&mut word, piece, *color);
+            let joins_next = index + 1 == pieces.len() && piece.len() > 1;
+            if piece.ends_with(' ') && !joins_next {
+                words.push(std::mem::take(&mut word));
+            }
+        }
+    }
+    words.push(word);
+    let width_of =
+        |pieces: &Line| -> f32 { pieces.iter().map(|(text, _)| rich_width(ui, text)).sum() };
+    let mut rows: Vec<Line> = vec![Vec::new()];
+    let mut x = 0.0;
+    for mut word in words {
+        let mut shown = word.clone();
+        if let Some((last, _)) = shown.last_mut() {
+            *last = last.trim_end().to_string();
+        }
+        if x > 0.0 && x + width_of(&shown) > width + 0.5 {
+            rows.push(Vec::new());
+            x = 0.0;
+        }
+        if x == 0.0 && rows.len() > 1 {
+            // A new row starts at its first letter.
+            while let Some((first, _)) = word.first_mut() {
+                *first = first.trim_start().to_string();
+                if !first.is_empty() {
+                    break;
+                }
+                word.remove(0);
+            }
+        }
+        x += width_of(&word);
+        let row = rows.last_mut().expect("a row");
+        for (text, color) in word {
+            if !text.is_empty() {
+                push(row, &text, color);
+            }
+        }
+    }
+    // A row ends at its last letter: the spaces after it take no room.
+    for row in &mut rows {
+        while let Some((last, _)) = row.last_mut() {
+            let kept = last.trim_end().len();
+            last.truncate(kept);
+            if !last.is_empty() {
+                break;
+            }
+            row.pop();
+        }
+        // A line of nothing still takes its line.
+        if row.is_empty() {
+            row.push((String::new(), TEXT));
+        }
+    }
+    rows
+}
+
+/// Whether `text` holds any inline icon characters (`map_icons::inline_icon`).
+fn has_icons(text: &str) -> bool {
+    text.chars().any(|ch| map_icons::inline_icon(ch).is_some())
+}
+
+/// The room one inline icon takes, at the current font.
+fn icon_box(ui: &Ui) -> f32 {
+    ui.current_font_size() * 1.1
+}
+
+/// How wide `text` draws with its icons.
+fn rich_width(ui: &Ui, text: &str) -> f32 {
+    let mut width = 0.0;
+    let mut run = String::new();
+    for ch in text.chars() {
+        if map_icons::inline_icon(ch).is_some() {
+            width += ui.calc_text_size(&run)[0] + icon_box(ui);
+            run.clear();
+        } else {
+            run.push(ch);
+        }
+    }
+    width + ui.calc_text_size(&run)[0]
+}
+
+/// Draws `text` into the window's draw list with its top-left at `pos`, each
+/// icon character as its icon, the same pictures as the map's yield chips.
+/// A dimmed line's icons fade with it.
+fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
+    let draw = ui.get_window_draw_list();
+    let size = icon_box(ui);
+    let middle = pos[1] + ui.current_font_size() / 2.0;
+    let mut x = pos[0];
+    let mut run = String::new();
+    let flush = |run: &mut String, x: &mut f32| {
+        if !run.is_empty() {
+            draw.add_text([*x, pos[1]], color, run.as_str());
+            let size = ui.calc_text_size(run.as_str());
+            note_mark(run, [*x, pos[1]], [*x + size[0], pos[1] + size[1]], None);
+            *x += size[0];
+            run.clear();
+        }
+    };
+    for ch in text.chars() {
+        if map_icons::inline_icon(ch).is_none() {
+            run.push(ch);
+            continue;
+        }
+        flush(&mut run, &mut x);
+        let mut vertices = Vec::new();
+        map_icons::push_inline_icon(Vec2::ZERO, size * 0.85, ch, false, &mut vertices);
+        let center = [x + size / 2.0, middle];
+        // The icon is built Y-up around the origin; ImGui's Y points down.
+        if dim {
+            for vertex in &mut vertices {
+                vertex.color[3] *= 0.4;
+            }
+        }
+        fill_shapes(&draw, center, &vertices);
+        x += size;
+    }
+    flush(&mut run, &mut x);
+}
+
+/// `text` as a widget, with its icons drawn in: plain text when it has none.
+fn rich_text(ui: &Ui, text: &str, color: [f32; 4]) {
+    if !has_icons(text) {
+        ui.text_colored(color, text);
+        note_text_item(ui, text);
+        return;
+    }
+    let pos = ui.cursor_screen_pos();
+    ui.dummy([rich_width(ui, text), ui.text_line_height()]);
+    draw_rich(ui, pos, text, color, false);
+}
+
+/// Tests only: `imgui` allows one context at a time in the whole process,
+/// so a test holds this while it has one.
+#[cfg(test)]
+pub(super) fn one_context_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A test that failed holding it leaves nothing behind to protect.
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Tests only: a button ImGui drew, and its screen rectangle's corners.
+#[cfg(test)]
+pub(super) type DrawnButton = (Target, [f32; 2], [f32; 2]);
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: each panel button ImGui drew this thread, so a test can
+    /// move the mouse onto one and click.
+    pub(super) static DRAWN_BUTTONS: std::cell::RefCell<Vec<DrawnButton>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+#[cfg(test)]
+thread_local! {
+    /// Tests only: the text of each panel button tooltip ImGui showed this
+    /// thread, a line per string.
+    pub(super) static SHOWN_TOOLTIPS: std::cell::RefCell<Vec<Vec<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Tests only: the status bar's notice as ImGui last drew it, its
+    /// rectangle, and how far right it may reach (short of End Turn).
+    pub(super) static SHOWN_NOTICE: std::cell::RefCell<ShownNotice> =
+        const { std::cell::RefCell::new((String::new(), [0.0; 2], [0.0; 2], 0.0)) };
+    /// Tests only: the status bar's second line as ImGui last drew it:
+    /// each control's text and rectangle, from Menu on.
+    pub(super) static STATUS_CONTROLS: std::cell::RefCell<Vec<DrawnControl>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Tests only: a notice drawn, its rectangle and its limit.
+#[cfg(test)]
+pub(super) type ShownNotice = (String, [f32; 2], [f32; 2], f32);
+/// Tests only: a status bar control's text and rectangle.
+#[cfg(test)]
+pub(super) type DrawnControl = (String, [f32; 2], [f32; 2]);
+
+/// Tests only: notes the tooltip about to show.
+fn note_shown_tooltip(_lines: &[(u32, Line)]) {
+    #[cfg(test)]
+    SHOWN_TOOLTIPS.with_borrow_mut(|shown| {
+        shown.push(
+            _lines
+                .iter()
+                .map(|(_, line)| line.iter().map(|(text, _)| text.as_str()).collect())
+                .collect(),
+        )
+    });
+}
+
+/// Tests only: notes the notice just drawn.
+fn note_shown_notice(_notice: &str, _min: [f32; 2], _max: [f32; 2], _limit: f32) {
+    #[cfg(test)]
+    SHOWN_NOTICE.set((_notice.to_string(), _min, _max, _limit));
+}
+
+/// Tests only: notes the status bar control just drawn; Menu, the first,
+/// starts the list again.
+fn note_status_control(_ui: &Ui, _text: &str) {
+    #[cfg(test)]
+    STATUS_CONTROLS.with_borrow_mut(|drawn| {
+        if _text == "MENU" {
+            drawn.clear();
+        }
+        drawn.push((_text.to_string(), _ui.item_rect_min(), _ui.item_rect_max()));
+    });
+}
+
+/// Tests only: notes where the button for `target` just went.
+fn note_drawn_button(_ui: &Ui, _target: Target) {
+    #[cfg(test)]
+    DRAWN_BUTTONS
+        .with_borrow_mut(|drawn| drawn.push((_target, _ui.item_rect_min(), _ui.item_rect_max())));
+}
+
+/// Tests only: a piece of text or an icon ImGui drew.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(super) struct DrawnMark {
+    /// The panel (root window) it is in.
+    pub window: String,
+    /// Its text, or "icon".
+    pub what: String,
+    /// Its rectangle's corners.
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+    /// The corners of what it must stay inside: its window's clip
+    /// rectangle, cut down to its button's for a label.
+    pub clip_min: [f32; 2],
+    pub clip_max: [f32; 2],
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: each piece of text or icon ImGui drew this thread.
+    pub(super) static DRAWN_MARKS: std::cell::RefCell<Vec<DrawnMark>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Tests only: notes `_what` (text, or an icon), drawn from `_min` to `_max`
+/// in the current window, clipped as the window's draw list is now, and
+/// within `_inside` too if given (a button's label, its button).
+fn note_mark(_what: &str, _min: [f32; 2], _max: [f32; 2], _inside: Option<([f32; 2], [f32; 2])>) {
+    #[cfg(test)]
+    {
+        let (window, mut clip_min, mut clip_max) = unsafe {
+            let window = ::imgui::sys::igGetCurrentWindow();
+            let root = (*window).RootWindow;
+            let name = std::ffi::CStr::from_ptr((*root).Name)
+                .to_string_lossy()
+                .into_owned();
+            let list = ::imgui::sys::igGetWindowDrawList();
+            let mut min = ::imgui::sys::ImVec2::zero();
+            let mut max = ::imgui::sys::ImVec2::zero();
+            ::imgui::sys::ImDrawList_GetClipRectMin(&mut min, list);
+            ::imgui::sys::ImDrawList_GetClipRectMax(&mut max, list);
+            (name, [min.x, min.y], [max.x, max.y])
+        };
+        if let Some((min, max)) = _inside {
+            clip_min = [clip_min[0].max(min[0]), clip_min[1].max(min[1])];
+            clip_max = [clip_max[0].min(max[0]), clip_max[1].min(max[1])];
+        }
+        DRAWN_MARKS.with_borrow_mut(|drawn| {
+            drawn.push(DrawnMark {
+                window,
+                what: _what.to_string(),
+                min: _min,
+                max: _max,
+                clip_min,
+                clip_max,
+            })
+        });
+    }
+}
+
+/// Tests only: notes the text item just drawn (`ui.text` and the like),
+/// `_what`.
+fn note_text_item(_ui: &Ui, _what: &str) {
+    #[cfg(test)]
+    note_mark(_what, _ui.item_rect_min(), _ui.item_rect_max(), None);
+}
+
+/// Tests only: notes the label ImGui drew on the button just drawn: `text`,
+/// placed as `RenderTextClipped` places it (by the style's alignment, from
+/// the left when it doesn't fit), inside the button.
+fn note_button_label(_ui: &Ui, _text: &str) {
+    #[cfg(test)]
+    {
+        let ui = _ui;
+        let text = _text.split("##").next().unwrap_or_default();
+        if text.is_empty() {
+            return;
+        }
+        let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
+        let style = ui.clone_style();
+        let pad = style.frame_padding;
+        let align = style.button_text_align;
+        let size = ui.calc_text_size(text);
+        let x = min[0] + pad[0] + (max[0] - min[0] - 2.0 * pad[0] - size[0]).max(0.0) * align[0];
+        let y = min[1] + pad[1] + (max[1] - min[1] - 2.0 * pad[1] - size[1]).max(0.0) * align[1];
+        note_mark(text, [x, y], [x + size[0], y + size[1]], Some((min, max)));
+    }
+}
+
+/// A button whose lines may hold icons: ImGui's own button when they
+/// don't; otherwise a blank button with the lines drawn over it, centered,
+/// or from the left with `left` set.
+fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) -> bool {
+    if !lines.iter().any(|line| has_icons(line)) {
+        let label = lines.join("\n");
+        let clicked = ui.button_with_size(format!("{label}###{id}"), size);
+        note_button_label(ui, &label);
+        return clicked;
+    }
+    let clicked = ui.button_with_size(format!("###{id}"), size);
+    let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
+    let disabled = ui.clone_style().alpha < 1.0;
+    let color = ui.style_color(StyleColor::Text);
+    let line_height = ui.text_line_height();
+    let total = line_height * lines.len() as f32;
+    let top = min[1] + (max[1] - min[1] - total) / 2.0;
+    // Kept inside the button, as ImGui keeps its own labels.
+    clipped_to(min, max, || {
+        for (index, line) in lines.iter().enumerate() {
+            let width = rich_width(ui, line);
+            let x = if left {
+                min[0] + (max[0] - min[0]) * 0.03
+            } else {
+                min[0] + (max[0] - min[0] - width) / 2.0
+            };
+            let faded = [
+                color[0],
+                color[1],
+                color[2],
+                if disabled { 0.45 } else { 1.0 },
+            ];
+            draw_rich(
+                ui,
+                [x, top + line_height * index as f32],
+                line,
+                faded,
+                disabled,
+            );
+        }
+    });
+    clicked
+}
+
+/// Runs `draw` with what the window draws clipped to `min`..`max` too.
+fn clipped_to(min: [f32; 2], max: [f32; 2], draw: impl FnOnce()) {
+    unsafe {
+        ::imgui::sys::igPushClipRect(
+            ::imgui::sys::ImVec2::new(min[0], min[1]),
+            ::imgui::sys::ImVec2::new(max[0], max[1]),
+            true,
+        )
+    };
+    draw();
+    unsafe { ::imgui::sys::igPopClipRect() };
+}
+
+/// A one-line button with `left` from its left edge, after `indent` of room
+/// for an icon drawn there, and `right` flush with its right edge, so a list
+/// of them lines their right parts up (the building catalog's prices).
+/// When the two don't fit side by side with a gap between, `right` is left
+/// out (the button's tooltip gives it) and `left` shortened to what fits.
+fn split_button(ui: &Ui, id: &str, left: &str, indent: f32, right: &str, size: [f32; 2]) -> bool {
+    let clicked = ui.button_with_size(format!("###{id}"), size);
+    let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
+    let disabled = ui.clone_style().alpha < 1.0;
+    let color = ui.style_color(StyleColor::Text);
+    let color = [
+        color[0],
+        color[1],
+        color[2],
+        if disabled { 0.45 } else { 1.0 },
+    ];
+    let pad = ((max[0] - min[0]) * 0.03).max(SPLIT_PAD);
+    let left_x = min[0] + indent.max(pad);
+    let room = max[0] - pad - left_x;
+    let right_width = rich_width(ui, right);
+    let fits = rich_width(ui, left) + icon_box(ui) + right_width <= room;
+    let (left, right) = if fits {
+        (left.to_string(), right)
+    } else {
+        (fit_text(left, room, |t| rich_width(ui, t)), "")
+    };
+    let top = min[1] + (max[1] - min[1] - ui.text_line_height()) / 2.0;
+    clipped_to(min, max, || {
+        draw_rich(ui, [left_x, top], &left, color, disabled);
+        if !right.is_empty() {
+            draw_rich(
+                ui,
+                [max[0] - pad - right_width, top],
+                right,
+                color,
+                disabled,
+            );
+        }
+    });
+    clicked
+}
+
+/// The least room between a split button's text and its edges.
+const SPLIT_PAD: f32 = 6.0;
+/// A catalogue card's room for its unit's pictogram, centered
+/// `CARD_ICON_CENTER` from the card's left edge, before the name.
+const CARD_ICON_CENTER: f32 = 19.0;
+const CARD_ICON_ROOM: f32 = 2.0 * CARD_ICON_CENTER + 2.0;
 
 fn draw_game_dockspace(ui: &Ui, viewport: Vec2) {
     let _padding = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
@@ -1817,7 +2972,7 @@ impl GameState {
         }
         self.cities.iter().position(|city| {
             city.id == pin.city_id
-                && city.team == PLAYER_TEAM
+                && city.team == self.local_team
                 && (matches!(pin.kind, PinnedKind::City | PinnedKind::CityQueue)
                     || city.barracks.is_some())
         })
@@ -1828,7 +2983,7 @@ impl GameState {
             .then(|| {
                 self.units
                     .iter()
-                    .position(|unit| unit.id == pin.city_id && unit.team == PLAYER_TEAM)
+                    .position(|unit| unit.id == pin.city_id && unit.team == self.local_team)
             })
             .flatten()
     }
@@ -1839,36 +2994,111 @@ impl GameState {
             || pin.kind == PinnedKind::Group
     }
 
-    fn activate_pinned(&mut self, pin: PinnedPanel, target: Target) {
-        if let Some(unit) = self.pinned_unit_index(pin) {
-            self.selected = Some(unit);
-            self.selected_city = None;
-            self.selected_barracks = None;
-            self.group.clear();
-            self.activate_target(target);
-            return;
-        }
-        let Some(city) = self.pinned_city_index(pin) else {
-            return;
-        };
+    /// What captured panel `pin` is for this frame, found by its stable ids
+    /// (a group's members by `groups`, the layout's `pinned_groups`), if
+    /// anything of it is left.
+    fn pin_focus(&self, pin: PinnedPanel, groups: &PinnedGroups) -> Option<PinFocus> {
         match pin.kind {
-            PinnedKind::City | PinnedKind::CityQueue => self.open_city(city),
-            PinnedKind::Barracks | PinnedKind::BarracksQueue => self.open_barracks(city),
-            PinnedKind::Unit | PinnedKind::Group => unreachable!(),
+            PinnedKind::Unit => self
+                .pinned_unit_index(pin)
+                .map(|i| PinFocus::Units(vec![i])),
+            PinnedKind::Group => {
+                let members: Vec<_> = groups
+                    .get(&pin.city_id)?
+                    .iter()
+                    .filter_map(|id| {
+                        self.units
+                            .iter()
+                            .position(|u| u.id == *id && u.team == self.local_team)
+                    })
+                    .collect();
+                (!members.is_empty()).then_some(PinFocus::Units(members))
+            }
+            PinnedKind::City | PinnedKind::CityQueue => {
+                self.pinned_city_index(pin).map(PinFocus::City)
+            }
+            PinnedKind::Barracks | PinnedKind::BarracksQueue => {
+                self.pinned_city_index(pin).map(PinFocus::Barracks)
+            }
         }
-        self.activate_target(target);
     }
 
-    fn reorder_pinned(&mut self, pin: PinnedPanel, kind: QueueKind, source: usize, target: usize) {
-        let Some(city) = self.pinned_city_index(pin) else {
-            return;
-        };
-        match pin.kind {
-            PinnedKind::City | PinnedKind::CityQueue => self.open_city(city),
-            PinnedKind::Barracks | PinnedKind::BarracksQueue => self.open_barracks(city),
-            PinnedKind::Unit | PinnedKind::Group => return,
+    /// What a captured panel's tooltips describe its buttons for.
+    fn pin_subject(focus: &PinFocus) -> Subject {
+        match focus {
+            PinFocus::Units(units) => Subject {
+                unit: units.first().copied(),
+                city: None,
+            },
+            PinFocus::City(city) | PinFocus::Barracks(city) => Subject {
+                unit: None,
+                city: Some(*city),
+            },
         }
-        self.reorder_queue(kind, source, target);
+    }
+
+    /// Makes `focus` the selection or the open view, through the same entry
+    /// points as the map (`set_selection`, `open_city`, `open_barracks`),
+    /// unless it already is, so an armed button stays armed (and toggles
+    /// off) and the camera and notice stay put. Refuses, as selecting does,
+    /// while a turn plays out.
+    fn focus_pin(&mut self, focus: &PinFocus) -> bool {
+        if self.is_playing_out() {
+            return false;
+        }
+        let view_open = self.selected_city.is_some()
+            || self.selected_barracks.is_some()
+            || self.interior_view.is_some();
+        match focus {
+            PinFocus::Units(units) => {
+                let mut selected = self.selection();
+                let mut wanted = units.clone();
+                selected.sort_unstable();
+                wanted.sort_unstable();
+                if view_open || selected != wanted {
+                    self.set_selection(units.clone());
+                }
+            }
+            PinFocus::City(city) => {
+                if self.selected_city != Some(*city) || self.interior_view.is_some() {
+                    self.leave_city_view();
+                    self.open_city(*city);
+                }
+            }
+            PinFocus::Barracks(city) => {
+                if self.selected_barracks != Some(*city) || self.interior_view.is_some() {
+                    self.leave_city_view();
+                    self.open_barracks(*city);
+                }
+            }
+        }
+        true
+    }
+
+    /// A button of captured panel `pin`: focuses what the panel is for,
+    /// then does what the button does.
+    fn activate_pinned(&mut self, pin: PinnedPanel, groups: &PinnedGroups, target: Target) {
+        if let Some(focus) = self.pin_focus(pin, groups)
+            && self.focus_pin(&focus)
+        {
+            self.activate_target(target);
+        }
+    }
+
+    fn reorder_pinned(
+        &mut self,
+        pin: PinnedPanel,
+        groups: &PinnedGroups,
+        kind: QueueKind,
+        source: usize,
+        target: usize,
+    ) {
+        if let Some(focus @ (PinFocus::City(_) | PinFocus::Barracks(_))) =
+            self.pin_focus(pin, groups)
+            && self.focus_pin(&focus)
+        {
+            self.reorder_queue(kind, source, target);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1883,12 +3113,13 @@ impl GameState {
         arranging: bool,
         actions: &mut Vec<Action>,
     ) {
+        let Some(focus) = self.pin_focus(pin, &layout.pinned_groups) else {
+            return;
+        };
+        let subject = Self::pin_subject(&focus);
         let mut panel = PanelBuilder::default();
-        match pin.kind {
-            PinnedKind::City => {
-                let Some(city) = self.pinned_city_index(pin) else {
-                    return;
-                };
+        match (pin.kind, focus) {
+            (PinnedKind::City, PinFocus::City(city)) => {
                 self.city_tray(city, &mut panel);
                 let mut queue = PanelBuilder::default();
                 if !layout.pinned.contains(&PinnedPanel {
@@ -1902,10 +3133,7 @@ impl GameState {
                     panel.rows.extend(queue.rows);
                 }
             }
-            PinnedKind::Barracks => {
-                let Some(city) = self.pinned_city_index(pin) else {
-                    return;
-                };
+            (PinnedKind::Barracks, PinFocus::Barracks(city)) => {
                 self.barracks_tray(city, &mut panel);
                 let mut queue = PanelBuilder::default();
                 if !layout.pinned.contains(&PinnedPanel {
@@ -1919,43 +3147,20 @@ impl GameState {
                     panel.rows.extend(queue.rows);
                 }
             }
-            PinnedKind::Unit => {
-                let Some(unit) = self.pinned_unit_index(pin) else {
-                    return;
-                };
-                self.unit_info(unit, &mut panel);
-                panel.gap(GAP);
-                panel.buttons(self.unit_buttons(unit));
+            (PinnedKind::Unit, PinFocus::Units(units)) => {
+                self.unit_info(units[0], &mut panel);
+                panel.action_toolbar(self.unit_buttons(units[0]));
             }
-            PinnedKind::Group => {
-                let Some(ids) = layout.pinned_groups.get(&pin.city_id) else {
-                    return;
-                };
-                let members: Vec<_> = ids
-                    .iter()
-                    .filter_map(|id| {
-                        self.units
-                            .iter()
-                            .position(|u| u.id == *id && u.team == PLAYER_TEAM)
-                    })
-                    .collect();
-                if members.is_empty() {
-                    return;
-                }
+            (PinnedKind::Group, PinFocus::Units(members)) => {
                 self.group_tray_for(&members, &mut panel);
             }
-            PinnedKind::CityQueue => {
-                let Some(city) = self.pinned_city_index(pin) else {
-                    return;
-                };
+            (PinnedKind::CityQueue, PinFocus::City(city)) => {
                 self.city_queue_panel(city, usize::MAX, &mut panel);
             }
-            PinnedKind::BarracksQueue => {
-                let Some(city) = self.pinned_city_index(pin) else {
-                    return;
-                };
+            (PinnedKind::BarracksQueue, PinFocus::Barracks(city)) => {
                 self.barracks_queue_panel(city, usize::MAX, &mut panel);
             }
+            _ => unreachable!("pin_focus follows the pin's kind"),
         }
         let title = pin.title();
         let width = 370.0_f32.min(viewport.x - 2.0 * PANEL_MARGIN);
@@ -2028,7 +3233,7 @@ impl GameState {
                 );
         }
         window.build(|| {
-            self.render_imgui_panel(ui, &panel, fonts, Some(pin), actions);
+            self.render_imgui_panel(ui, &panel, fonts, Some(pin), subject, actions);
             geometry.pos = Vec2::from_array(ui.window_pos());
             geometry.size = Vec2::from_array(ui.window_size());
             geometry.docked = unsafe { ::imgui::sys::igIsWindowDocked() };
@@ -2084,12 +3289,13 @@ impl GameState {
             && old_size.y <= viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN;
         let size_condition = if restoring {
             Condition::Always
-        } else if layout.windows[slot].manual && fits {
+        } else if layout.windows[slot].sized && fits {
             Condition::FirstUseEver
         } else {
             Condition::Always
         };
         let flags = panel_chrome(arranging, layout.windows[slot].collapsed);
+        let title_reset = title_double_clicked(ui, title, flags);
         let mut window = ui.window(title).flags(flags);
         if slot == SETTINGS {
             // It opens over the other panels: keep their text from showing
@@ -2121,7 +3327,7 @@ impl GameState {
             if reset_scroll || ui.is_window_appearing() {
                 ui.set_scroll_y(0.0);
             }
-            self.render_imgui_panel(ui, panel, fonts, None, actions);
+            self.render_imgui_panel(ui, panel, fonts, None, self.selection_subject(), actions);
             layout.record(slot, ui, arranging);
         });
         // A collapsed window skips the build closure; native state is still
@@ -2130,30 +3336,164 @@ impl GameState {
             layout.debug_reposition = false;
         }
         layout.sync_native_window(slot, title);
+        // Double-clicked: the title bar puts the panel back
+        // where the layout would, the grip back to the size it would give.
+        if title_reset {
+            layout.reset_position(slot);
+        }
+        if grip_double_clicked(ui, title) {
+            layout.reset_size(slot);
+        }
         if context_changed && !layout.defer_geometry {
             layout.selection_geometry_changed = false;
         }
     }
 
+    /// A row of buttons (`Row::Buttons`), wrapping to the window's width;
+    /// with `reorder`, each can be dragged onto another to reorder that
+    /// queue, index by index (`Row::Reorder`), and a click is still its
+    /// own target.
+    #[allow(clippy::too_many_arguments)]
+    fn render_buttons(
+        &self,
+        ui: &Ui,
+        panel: &PanelBuilder,
+        buttons: &[ButtonSpec],
+        compact: bool,
+        reorder: Option<QueueKind>,
+        fonts: &[FontId; 3],
+        scope: Option<PinnedPanel>,
+        subject: Subject,
+        actions: &mut Vec<Action>,
+    ) {
+        if buttons.is_empty() {
+            return;
+        }
+        let available = ui.content_region_avail()[0];
+        let icons = icon_row(buttons);
+        let grid = button_grid(ui, buttons, compact, panel.faded, available);
+        let columns = grid.columns;
+        let size = [grid.width, grid.height];
+        for (index, spec) in buttons.iter().enumerate() {
+            if index % columns != 0 {
+                ui.same_line();
+            }
+            let _accent = match spec.state {
+                ButtonState::Queued => {
+                    Some(ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]))
+                }
+                _ if spec.armed => {
+                    Some(ui.push_style_color(StyleColor::Button, [0.24, 0.32, 0.24, 1.0]))
+                }
+                _ => None,
+            };
+            let disabled = spec.state == ButtonState::Disabled;
+            let _disabled = ui.begin_disabled(disabled);
+            let id = format!("{:?}", spec.target);
+            if rich_button(ui, &id, &grid.lines[index], size, false) {
+                actions.push(Action::Button(scope, spec.target));
+            }
+            note_drawn_button(ui, spec.target);
+            if icons {
+                let icon = action_icons::for_button(spec.target, &spec.label).expect("icon row");
+                let color = match spec.state {
+                    ButtonState::Disabled => DIM_TEXT,
+                    ButtonState::Queued => GOLD_TEXT,
+                    ButtonState::Ready if spec.armed => BOOSTED_TEXT,
+                    ButtonState::Ready => TEXT,
+                };
+                draw_action_icon(
+                    ui,
+                    ui.item_rect_min(),
+                    ui.item_rect_max(),
+                    icon,
+                    color,
+                    action_icons::badge(&spec.label),
+                    fonts[0],
+                );
+            }
+            if let Some(kind) = reorder
+                && !disabled
+                && !self.is_resolving()
+            {
+                // Scoped to the panel, so one city's chips can't reorder
+                // another's.
+                let name = format!("{kind:?}-reorder-{scope:?}");
+                if let Some(source) = ui.drag_drop_source_config(&name).begin_payload(index) {
+                    rich_text(ui, &spec.label, TEXT);
+                    source.end();
+                }
+                if let Some(target) = ui.drag_drop_target() {
+                    if let Some(Ok(payload)) =
+                        target.accept_payload::<usize, _>(&name, DragDropFlags::empty())
+                        && payload.delivery
+                    {
+                        actions.push(Action::Reorder(scope, kind, payload.data, index));
+                    }
+                    target.pop();
+                }
+            }
+            self.button_tooltip(ui, spec, subject);
+        }
+    }
+
+    /// The tooltip of the panel button just drawn, for the unit or city of
+    /// its panel (`subject`), while it's hovered (dimmed or not).
+    fn button_tooltip(&self, ui: &Ui, spec: &ButtonSpec, subject: Subject) {
+        if !ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
+            return;
+        }
+        let lines = self.subject_tooltip_lines(spec.target, &spec.label, subject);
+        if lines.is_empty() {
+            return;
+        }
+        note_shown_tooltip(&lines);
+        ui.tooltip(|| {
+            for (_, line) in &lines {
+                text_line(ui, line);
+            }
+        });
+    }
+
+    /// Draws `panel`'s rows. `scope` is the captured panel they're in, if
+    /// any, and `subject` the unit or city its buttons act on.
+    #[allow(clippy::too_many_arguments)]
     fn render_imgui_panel(
         &self,
         ui: &Ui,
         panel: &PanelBuilder,
         fonts: &[FontId; 3],
         scope: Option<PinnedPanel>,
+        subject: Subject,
         actions: &mut Vec<Action>,
     ) {
+        // With the plan sent, what would change it shows disabled, as the
+        // classic panels do (`Layout::dock_panel`).
+        let frozen;
+        let panel = if self.plan_frozen() {
+            let mut copy = panel.clone();
+            copy.freeze_plan();
+            frozen = copy;
+            &frozen
+        } else {
+            panel
+        };
         let label_width = setting_label_width(ui, panel, fonts[1]);
-        for row in &panel.rows {
+        for row in flat_rows(&panel.rows) {
             match row {
                 Row::Heading(text) => {
                     let _font = ui.push_font(fonts[0]);
                     ui.text_colored(GOLD_TEXT, text);
+                    note_text_item(ui, text);
                     ui.separator();
                 }
                 Row::Setting(setting, value) => {
                     let _font = ui.push_font(fonts[1]);
                     render_setting(ui, *setting, *value, label_width, scope, actions);
+                }
+                Row::Field(field, text, _) => {
+                    let _font = ui.push_font(fonts[1]);
+                    render_field(ui, *field, text, label_width, actions);
                 }
                 Row::Text(px, line) => {
                     let font = match *px {
@@ -2162,10 +3502,11 @@ impl GameState {
                         _ => fonts[1],
                     };
                     let _font = ui.push_font(font);
-                    let _wrap = (line.len() == 1).then(|| ui.push_text_wrap_pos());
-                    text_line(ui, line);
+                    panel_text_line(ui, line);
                 }
                 Row::Gap(height) => ui.dummy([0.0, height.max(0.0)]),
+                Row::ScrollList(_) => unreachable!("flattened by flat_rows"),
+                Row::LabeledButtons(..) => unreachable!("classic only"),
                 Row::Roster(chips) => {
                     let io = ui.io();
                     let mode = if io.key_shift {
@@ -2201,76 +3542,68 @@ impl GameState {
                         .overlay_text("")
                         .build(ui);
                 }
-                Row::Buttons(buttons, compact) => {
-                    if buttons.is_empty() {
-                        continue;
-                    }
-                    let available = ui.content_region_avail()[0];
-                    let spacing = ui.clone_style().item_spacing[0];
-                    let min_width = 128.0;
-                    let columns = (((available + spacing) / (min_width + spacing)).floor()
-                        as usize)
-                        .clamp(1, buttons.len());
-                    let width = ((available - spacing * (columns - 1) as f32) / columns as f32)
-                        .max(min_width);
-                    for (index, spec) in buttons.iter().enumerate() {
-                        if index % columns != 0 {
-                            ui.same_line();
-                        }
-                        let _accent = match spec.state {
-                            ButtonState::Queued => Some(
-                                ui.push_style_color(StyleColor::Button, [0.34, 0.30, 0.17, 1.0]),
-                            ),
-                            _ if spec.armed => Some(
-                                ui.push_style_color(StyleColor::Button, [0.24, 0.32, 0.24, 1.0]),
-                            ),
-                            _ => None,
-                        };
-                        let _disabled = ui.begin_disabled(spec.state == ButtonState::Disabled);
-                        let label = if *compact {
-                            if spec.hint.is_empty()
-                                || matches!(spec.hint.as_str(), "AUTO" | "CLICK")
-                            {
-                                spec.label.clone()
-                            } else {
-                                format!("{}  {}", spec.label, spec.hint)
-                            }
-                        } else if spec.hint.is_empty() {
-                            spec.label.clone()
+                Row::Buttons(buttons, compact) => self.render_buttons(
+                    ui, panel, buttons, *compact, None, fonts, scope, subject, actions,
+                ),
+                Row::Reorder(kind, buttons) => self.render_buttons(
+                    ui,
+                    panel,
+                    buttons,
+                    true,
+                    Some(*kind),
+                    fonts,
+                    scope,
+                    subject,
+                    actions,
+                ),
+                Row::TitleWithButton(line, spec) => {
+                    let label = title_button_label(spec, panel.faded);
+                    let width = rich_width(ui, &label) + 2.0 * ui.clone_style().frame_padding[0];
+                    let beside =
+                        title_button_fits(ui, line, &label, fonts[0], ui.content_region_avail()[0]);
+                    {
+                        let _font = ui.push_font(fonts[0]);
+                        if beside {
+                            ui.align_text_to_frame_padding();
+                            text_line(ui, line);
                         } else {
-                            format!("{}\n{}", spec.label, spec.hint)
-                        };
-                        let label = format!("{label}##{:?}", spec.target);
-                        if ui.button_with_size(label, [width, if *compact { 28.0 } else { 48.0 }]) {
-                            actions.push(Action::Button(scope, spec.target));
-                        }
-                        if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                            let tooltip = Button {
-                                target: spec.target,
-                                label: spec.label.clone(),
-                                hint: spec.hint.clone(),
-                                state: spec.state,
-                                armed: spec.armed,
-                                faded: false,
-                                min: Vec2::ZERO,
-                                max: Vec2::ZERO,
-                            };
-                            ui.tooltip(|| {
-                                for (_, line) in self.tooltip_lines(&tooltip) {
-                                    text_line(ui, &line);
-                                }
-                            });
+                            panel_text_line(ui, line);
                         }
                     }
+                    // At the right end of the title's line, or of the next
+                    // when the title leaves it no room.
+                    if beside {
+                        ui.same_line();
+                    }
+                    let room = ui.content_region_avail()[0] - width;
+                    if room > 0.0 {
+                        let [x, y] = ui.cursor_pos();
+                        ui.set_cursor_pos([x + room, y]);
+                    }
+                    let _disabled = ui.begin_disabled(spec.state == ButtonState::Disabled);
+                    let id = format!("{:?}", spec.target);
+                    if rich_button(ui, &id, &[label], [width, 0.0], false) {
+                        actions.push(Action::Button(scope, spec.target));
+                    }
+                    note_drawn_button(ui, spec.target);
+                    self.button_tooltip(ui, spec, subject);
                 }
-                Row::BuildingCatalog(city, buttons, _) => {
-                    let height = buttons.len().clamp(1, 4) as f32 * 34.0 + 18.0;
+                Row::BuildingCatalog(city, buttons, ..) => {
+                    let height = buttons.len().clamp(1, 5) as f32 * 34.0 + 18.0;
                     ui.child_window(format!("##building-catalog-{city}-{scope:?}"))
                         .size([0.0, height])
                         .border(true)
                         .build(|| {
                             let _align = ui.push_style_var(StyleVar::ButtonTextAlign([0.03, 0.5]));
-                            for spec in buttons {
+                            for entry in buttons {
+                                let CatalogEntry::Card(spec) = entry else {
+                                    if let CatalogEntry::Heading(label) = entry {
+                                        ui.text_colored(LABEL_TEXT, *label);
+                                        note_text_item(ui, label);
+                                        ui.dummy([1.0, 4.0]);
+                                    }
+                                    continue;
+                                };
                                 let _accent = match spec.state {
                                     ButtonState::Queued => Some(ui.push_style_color(
                                         StyleColor::Button,
@@ -2280,59 +3613,57 @@ impl GameState {
                                 };
                                 let _disabled =
                                     ui.begin_disabled(spec.state == ButtonState::Disabled);
-                                let label =
-                                    format!("{}  {}##{:?}", spec.label, spec.hint, spec.target);
                                 let width = ui.content_region_avail()[0].max(80.0);
-                                if ui.button_with_size(label, [width, 28.0]) {
+                                let hint = visible_button_hint(&spec.hint, false);
+                                let has_icon =
+                                    action_icons::production_unit_icon(spec.target).is_some();
+                                let indent = if has_icon { CARD_ICON_ROOM } else { 0.0 };
+                                let id = format!("{:?}", spec.target);
+                                if split_button(ui, &id, &spec.label, indent, hint, [width, 28.0]) {
                                     actions.push(Action::Button(scope, spec.target));
                                 }
-                                if ui.is_item_hovered_with_flags(
-                                    ItemHoveredFlags::ALLOW_WHEN_DISABLED,
-                                ) {
-                                    let tooltip = Button {
-                                        target: spec.target,
-                                        label: spec.label.clone(),
-                                        hint: spec.hint.clone(),
-                                        state: spec.state,
-                                        armed: spec.armed,
-                                        faded: false,
-                                        min: Vec2::ZERO,
-                                        max: Vec2::ZERO,
-                                    };
-                                    ui.tooltip(|| {
-                                        for (_, line) in self.tooltip_lines(&tooltip) {
-                                            text_line(ui, &line);
-                                        }
-                                    });
+                                note_drawn_button(ui, spec.target);
+                                if let Some(icon) = action_icons::production_unit_icon(spec.target)
+                                {
+                                    draw_production_icon(
+                                        ui,
+                                        ui.item_rect_min(),
+                                        ui.item_rect_max(),
+                                        icon,
+                                    );
                                 }
+                                self.button_tooltip(ui, spec, subject);
                             }
                         });
                 }
                 Row::QueueItem(item) => {
-                    let width = (ui.content_region_avail()[0] - 39.0).max(50.0);
+                    let width = (ui.content_region_avail()[0] - QUEUE_X_ROOM).max(QUEUE_ROW_MIN);
+                    let lines = queue_row_lines(ui, item, width);
                     let _align = ui.push_style_var(StyleVar::ButtonTextAlign([0.03, 0.5]));
                     let _background = ui.push_style_color(
                         StyleColor::Button,
                         if item.active {
                             [0.26, 0.24, 0.15, 1.0]
+                        } else if item.waiting {
+                            // Waits for the stockpile: a dull red.
+                            [0.24, 0.10, 0.08, 1.0]
                         } else {
                             [0.11, 0.14, 0.16, 1.0]
                         },
                     );
-                    if ui.button_with_size(
-                        format!(
-                            "::  {}##queue-{:?}-{}",
-                            item.label.trim_start_matches("> ").trim(),
-                            item.kind,
-                            item.index
-                        ),
-                        [width, 30.0],
+                    if rich_button(
+                        ui,
+                        &format!("queue-{:?}-{}", item.kind, item.index),
+                        &lines,
+                        [width, queue_row_height(ui, lines.len())],
+                        true,
                     ) {
                         actions.push(Action::Button(
                             scope,
                             Target::QueueItem(item.kind, item.index),
                         ));
                     }
+                    note_drawn_button(ui, Target::QueueItem(item.kind, item.index));
                     drop(_background);
                     drop(_align);
                     if !item.locked && !self.is_resolving() {
@@ -2340,12 +3671,13 @@ impl GameState {
                             QueueKind::City => "city-queue",
                             QueueKind::Barracks => "barracks-queue",
                             QueueKind::Workers => "worker-jobs",
+                            QueueKind::Priority => "priority",
                         };
                         let name = format!("{name}-{:?}", scope);
                         if let Some(source) =
                             ui.drag_drop_source_config(&name).begin_payload(item.index)
                         {
-                            ui.text(&item.label);
+                            rich_text(ui, &item.label, TEXT);
                             source.end();
                         }
                         if let Some(target) = ui.drag_drop_target() {
@@ -2366,9 +3698,13 @@ impl GameState {
                     ui.same_line();
                     let _remove_color =
                         ui.push_style_color(StyleColor::Button, [0.23, 0.13, 0.13, 1.0]);
+                    let _disabled = ui.begin_disabled(item.locked);
+                    let remove = item.kind.remove_target(item.index);
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
-                        actions.push(Action::Button(scope, item.kind.remove_target(item.index)));
+                        actions.push(Action::Button(scope, remove));
                     }
+                    note_button_label(ui, "X");
+                    note_drawn_button(ui, remove);
                 }
             }
         }
@@ -2387,6 +3723,10 @@ impl GameState {
         let viewport = Vec2::from_array(ui.io().display_size);
         let arranging = ui.io().key_ctrl;
         layout.begin_frame(ui, arranging);
+        // Pins are by city and unit id, which every new game reuses.
+        if layout.game_changed(self.generation) {
+            layout.clear_captured_panels();
+        }
         draw_game_dockspace(ui, viewport);
         // Dear ImGui applies a dock drop in NewFrame, before these windows are
         // submitted. Observe that new dock state now; otherwise our cached
@@ -2406,7 +3746,7 @@ impl GameState {
                     .any(|member| {
                         self.units
                             .iter()
-                            .any(|unit| unit.id == *member && unit.team == PLAYER_TEAM)
+                            .any(|unit| unit.id == *member && unit.team == self.local_team)
                     })
                     .then_some(*id)
             })
@@ -2419,32 +3759,55 @@ impl GameState {
             .pinned_geometry
             .retain(|pin, _| layout.pinned.contains(pin));
         let pending = self.pending();
-        let turn = if self.is_resolving() {
-            self.turn
-        } else {
-            self.turn + 1
-        };
+        let turn = self.shown_turn();
+        let mut stockpile = self.status_line();
+        if let Some((first, _)) = stockpile.first_mut() {
+            first.insert_str(0, "   ");
+        }
         ui.window("Status")
             .flags(STATUS_FLAGS)
             .position([0.0, 0.0], Condition::Always)
             .size([viewport.x, STATUS_HEIGHT], Condition::Always)
             .build(|| {
                 let end_width = 220.0;
-                ui.text(format!("TURN {turn}"));
-                ui.same_line();
-                let max_notice = (viewport.x - end_width - 520.0).max(0.0);
-                if ui.calc_text_size(self.shown_notice())[0] <= max_notice {
-                    ui.text_colored(NOTICE_TEXT, self.shown_notice());
-                } else {
-                    let mut shortened = self.shown_notice().to_string();
-                    while !shortened.is_empty() && ui.calc_text_size(&shortened)[0] > max_notice {
-                        shortened.pop();
-                    }
-                    ui.text_colored(NOTICE_TEXT, shortened);
+                let turn_color = self.turn_number_color(ui.style_color(StyleColor::Text));
+                rich_text(ui, &format!("TURN {turn}"), turn_color);
+                // The player's stockpile and supply, then the notice in
+                // what's left.
+                for (text, color) in &stockpile {
+                    ui.same_line_with_spacing(0.0, 0.0);
+                    rich_text(ui, text, *color);
                 }
-                ui.set_cursor_pos([(viewport.x - end_width - 365.0).max(8.0), 7.0]);
-                ui.text(format!("VIEW: {}", layout.active_view.label()));
-                ui.set_cursor_pos([(viewport.x - end_width - 365.0).max(8.0), 27.0]);
+                ui.same_line_with_spacing(0.0, 24.0);
+                // The notice has the rest of the line, up to End Turn,
+                // shortened to what fits; hovering shows all of it.
+                let end_x = (viewport.x - end_width).max(8.0);
+                let limit = end_x - NOTICE_GAP;
+                let notice = self.shown_notice();
+                let room = limit - ui.cursor_pos()[0];
+                let shown = fit_text(notice, room, |t| rich_width(ui, t));
+                if !shown.is_empty() {
+                    rich_text(ui, &shown, NOTICE_TEXT);
+                    note_shown_notice(&shown, ui.item_rect_min(), ui.item_rect_max(), limit);
+                    if shown != notice && ui.is_item_hovered() {
+                        ui.tooltip(|| {
+                            let _wrap = ui.push_text_wrap_pos_with_pos(NOTICE_TOOLTIP_WIDTH);
+                            rich_text(ui, notice, NOTICE_TEXT);
+                        });
+                    }
+                }
+                // The second line: Menu, then the view's layout controls,
+                // so the notice above has the width of the bar.
+                ui.set_cursor_pos([15.0, 27.0]);
+                if ui.small_button("MENU") {
+                    actions.push(Action::Button(None, Target::OpenSettings));
+                }
+                note_status_control(ui, "MENU");
+                ui.same_line_with_spacing(0.0, 24.0);
+                let view = format!("VIEW: {}", layout.active_view.label());
+                ui.text(&view);
+                note_status_control(ui, &view);
+                ui.same_line();
                 let layer = if layout.editing_outer {
                     "EDIT OUTER"
                 } else {
@@ -2453,28 +3816,43 @@ impl GameState {
                 if ui.small_button(layer) {
                     actions.push(Action::ToggleLayoutLayer);
                 }
+                note_status_control(ui, layer);
                 ui.same_line();
                 if ui.small_button("+ BOX") {
                     actions.push(Action::CreateBox);
                 }
+                note_status_control(ui, "+ BOX");
                 if layout.active_view != ViewScope::Default && !layout.editing_outer {
                     ui.same_line();
-                    if ui.small_button("RESET [CTRL+SHIFT+R]") {
+                    if ui.small_button("RESET") {
                         layout.request_reset_active_view();
                     }
+                    note_status_control(ui, "RESET");
                     if ui.is_item_hovered() {
-                        ui.tooltip_text("Restore this view's Debug placement from Default");
+                        ui.tooltip_text(
+                            "Ctrl+Shift+R: Restore this view's Debug placement from Default",
+                        );
                     }
                 }
-                ui.set_cursor_pos([(viewport.x - end_width).max(8.0), 7.0]);
+                ui.set_cursor_pos([end_x, 7.0]);
                 let label = if self.is_resolving() {
-                    "RESOLVING".into()
+                    self.resolving_label()
                 } else {
                     end_turn_label(pending)
                 };
-                let _disabled = ui.begin_disabled(self.is_resolving());
-                if ui.button_with_size(format!("{label}  [SPACE]"), [end_width - 15.0, 29.0]) {
+                // Waiting for the others' plans, it takes this side's back.
+                let _disabled = ui.begin_disabled(self.is_playing_out());
+                let end_size = [end_width - 15.0, 29.0];
+                if ui.button_with_size(format!("{label}###EndTurn"), end_size) {
                     actions.push(Action::Button(None, Target::EndTurn));
+                }
+                note_drawn_button(ui, Target::EndTurn);
+                if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
+                    ui.tooltip_text(if self.waiting_for_peers() {
+                        "Click: take back End Turn and change your orders"
+                    } else {
+                        "Space: End turn or select what still needs orders"
+                    });
                 }
             });
 
@@ -2495,12 +3873,9 @@ impl GameState {
             self.barracks_tray(city, &mut tray);
         } else if let Some(idx) = self.selected {
             self.unit_info(idx, &mut tray);
-            tray.gap(GAP);
-            tray.buttons(self.unit_buttons(idx));
+            tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
-        } else if self.worker_mode {
-            self.worker_menu(&mut tray);
         }
         let selection_context = if selection_is_pinned {
             String::new()
@@ -2514,8 +3889,6 @@ impl GameState {
             format!("unit-{}", self.units[unit].id)
         } else if !self.group.is_empty() {
             "group".into()
-        } else if self.worker_mode {
-            "workers".into()
         } else {
             String::new()
         };
@@ -2530,14 +3903,8 @@ impl GameState {
         let debug = self.debug_panel_content();
         let mut hover = PanelBuilder::default();
         if let Some(hex) = self.hovered_tile {
-            if let Some(city) = self.cities.iter().position(|city| city.pos == hex) {
-                self.structure_hover_panel(city, false, &mut hover);
-            } else if let Some(city) = self
-                .cities
-                .iter()
-                .position(|city| city.barracks == Some(hex))
-            {
-                self.structure_hover_panel(city, true, &mut hover);
+            if let Some(panel) = self.structure_inspect_panel(hex) {
+                hover = panel;
             } else if let Some(cursor) = cursor
                 && let Some(idx) = self.unit_at_screen(cursor, size)
                 && (Some(idx) != self.selected || self.selected_city.is_some())
@@ -2768,38 +4135,19 @@ impl GameState {
         layout.last_queue_outer_box = queue_box;
         for action in actions {
             match action {
-                Action::Button(Some(pin), target) if pin.kind == PinnedKind::Group => {
-                    if let Some(ids) = layout.pinned_groups.get(&pin.city_id) {
-                        let members: Vec<_> = ids
-                            .iter()
-                            .filter_map(|id| {
-                                self.units
-                                    .iter()
-                                    .position(|u| u.id == *id && u.team == PLAYER_TEAM)
-                            })
-                            .collect();
-                        if !members.is_empty() {
-                            self.group = members;
-                            self.selected = None;
-                            self.selected_city = None;
-                            self.selected_barracks = None;
-                            self.activate_target(target);
-                        }
-                    }
+                Action::Button(Some(pin), target) => {
+                    self.activate_pinned(pin, &layout.pinned_groups, target)
                 }
-                Action::Button(Some(pin), target) => self.activate_pinned(pin, target),
-                Action::Button(None, target) => {
-                    if matches!(target, Target::Scenario(_) | Target::LoadState) {
-                        layout.clear_captured_panels();
-                    }
-                    self.activate_target(target)
-                }
+                // A new scenario or a load clears the captured panels at the
+                // next frame's start (`ImGuiLayoutState::game_changed`).
+                Action::Button(None, target) => self.activate_target(target),
                 Action::Reorder(Some(pin), kind, source, target) => {
-                    self.reorder_pinned(pin, kind, source, target)
+                    self.reorder_pinned(pin, &layout.pinned_groups, kind, source, target)
                 }
                 Action::Reorder(None, kind, source, target) => {
                     self.reorder_queue(kind, source, target)
                 }
+                Action::Text(field, text) => self.set_net_field(field, &text),
                 Action::CreateBox => layout.create_box(viewport),
                 Action::ToggleLayoutLayer => layout.editing_outer = !layout.editing_outer,
                 Action::RemoveOuterBox(id) => layout.remove_outer_box(id),
@@ -2809,8 +4157,104 @@ impl GameState {
 }
 
 #[cfg(test)]
+impl ImGuiLayoutState {
+    /// Tests only: a new outer box, drawn once (`ImGuiScreen::frame`) before
+    /// anything is put in it.
+    pub(super) fn add_outer_box(&mut self, viewport: Vec2) {
+        let editing = std::mem::replace(&mut self.editing_outer, true);
+        self.create_box(viewport);
+        self.editing_outer = editing;
+    }
+
+    /// Tests only: captures `game`'s selection panel in the newest outer
+    /// box, as dragging it there with Ctrl held does.
+    pub(super) fn capture_selection(&mut self, game: &GameState) {
+        let box_id = self.outer_boxes.last().expect("an outer box").id;
+        let pin = game.selected_pin().expect("something selected");
+        if pin.kind == PinnedKind::Group {
+            self.pinned_groups.insert(
+                pin.city_id,
+                game.group.iter().map(|&i| game.units[i].id).collect(),
+            );
+        }
+        self.capture_panel(pin, box_id, "Selection");
+    }
+
+    /// Tests only: how many panels are captured.
+    pub(super) fn captured(&self) -> usize {
+        self.pinned.len()
+    }
+
+    /// Tests only: the player resizing the panel titled `title` to `size`,
+    /// as dragging its grip does. The panel must have been drawn.
+    pub(super) fn resize_panel(&mut self, title: &str, size: Vec2) {
+        let slot = SLOT_TITLES
+            .iter()
+            .position(|slot| *slot == title)
+            .expect("a panel's title");
+        let name = std::ffi::CString::new(title).expect("ImGui window title");
+        let native = unsafe { ::imgui::sys::igFindWindowByName(name.as_ptr()) };
+        assert!(!native.is_null(), "{title} has been drawn");
+        let full = ::imgui::sys::ImVec2::new(size.x, size.y);
+        unsafe {
+            (*native).SizeFull = full;
+            (*native).Size = full;
+        }
+        let window = &mut self.windows[slot];
+        window.place_by_player();
+        window.size = size;
+        window.floating_size = size;
+    }
+
+    /// Tests only: whether the panel titled `title` is placed by the player,
+    /// and whether it's sized by them.
+    pub(super) fn chosen_by_player(&self, title: &str) -> (bool, bool) {
+        let slot = SLOT_TITLES
+            .iter()
+            .position(|slot| *slot == title)
+            .expect("a panel's title");
+        (self.windows[slot].manual, self.windows[slot].sized)
+    }
+}
+
+/// Tests only: where the window titled `title` is, how big, and whether
+/// it's collapsed, as ImGui has it.
+#[cfg(test)]
+pub(super) fn native_geometry(title: &str) -> Option<(Vec2, Vec2, bool)> {
+    let native = native_window(title);
+    (!native.is_null()).then(|| unsafe {
+        let window = &*native;
+        (
+            Vec2::new(window.Pos.x, window.Pos.y),
+            Vec2::new(window.SizeFull.x, window.SizeFull.y),
+            window.Collapsed,
+        )
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::PLAYER_TEAM;
+
+    #[test]
+    fn hover_text_keeps_the_same_imgui_button_id() {
+        let _one = one_context_at_a_time();
+        let mut context = ::imgui::Context::create();
+        context.io_mut().display_size = [640.0, 480.0];
+        context.fonts().build_rgba32_texture();
+        let ui = context.frame();
+        ui.window("ID test").build(|| {
+            assert_eq!(
+                ui.new_id_str("MOVE###Unit(Move)"),
+                ui.new_id_str("MOVE\nM###Unit(Move)"),
+            );
+            assert_ne!(
+                ui.new_id_str("MOVE##Unit(Move)"),
+                ui.new_id_str("MOVE\nM##Unit(Move)"),
+            );
+        });
+    }
 
     #[test]
     fn default_debug_placement_flows_into_views_until_customized() {
@@ -2959,7 +4403,11 @@ mod tests {
             city_id: game.units[index].id,
         };
         game.selected = None;
-        game.activate_pinned(pin, Target::Unit(UnitAction::Hold));
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Unit(UnitAction::Hold),
+        );
         assert!(game.units[index].holding);
     }
 
@@ -2970,9 +4418,164 @@ mod tests {
         let pin = game.selected_pin().unwrap();
         game.leave_city_view();
         assert!(game.selected_city.is_none());
-        game.activate_pinned(pin, Target::Build(BuildUnit::Melee));
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Build(BuildUnit::Melee),
+        );
         assert_eq!(game.selected_city, game.pinned_city_index(pin));
         assert!(!game.cities[game.selected_city.unwrap()].queue.is_empty());
+    }
+
+    /// The player's units, by index.
+    fn player_units(game: &GameState) -> Vec<usize> {
+        (0..game.units.len())
+            .filter(|&i| game.units[i].team == PLAYER_TEAM)
+            .collect()
+    }
+
+    fn unit_pin(game: &GameState, unit: usize) -> PinnedPanel {
+        PinnedPanel {
+            kind: PinnedKind::Unit,
+            city_id: game.units[unit].id,
+        }
+    }
+
+    #[test]
+    fn a_captured_units_tooltips_describe_that_unit() {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        let (selected, pinned) = (units[0], units[1]);
+        game.units[pinned].ability_cooldown = 2;
+        let pin = unit_pin(&game, pinned);
+        let focus = game.pin_focus(pin, &PinnedGroups::default()).unwrap();
+        let tooltip = |game: &GameState, subject| {
+            game.subject_tooltip_lines(Target::Unit(UnitAction::Ability), "", subject)
+                .into_iter()
+                .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
+                .collect::<String>()
+        };
+        // Nothing selected: the panel's unit still has a tooltip.
+        assert!(tooltip(&game, GameState::pin_subject(&focus)).contains("READY IN"));
+        // Another unit selected: still the panel's unit's, not the selection's.
+        game.set_selection(vec![selected]);
+        assert!(tooltip(&game, GameState::pin_subject(&focus)).contains("READY IN"));
+        assert!(!tooltip(&game, game.selection_subject()).contains("READY IN"));
+    }
+
+    #[test]
+    fn a_captured_unit_is_selected_as_the_map_selects_it() {
+        let mut game = GameState::city_scenario();
+        let unit = player_units(&game)[0];
+        let pin = unit_pin(&game, unit);
+        game.select_city();
+        game.placing_job = Some(JobKind::Road);
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Unit(UnitAction::Move),
+        );
+        assert_eq!(game.selected, Some(unit));
+        assert!(game.group.is_empty());
+        assert_eq!(game.selected_city, None, "the city view closes");
+        assert_eq!(game.placing_job, None, "placing belongs to the city");
+        assert_eq!(game.ui_click_mode, Some(ClickMode::Move));
+    }
+
+    #[test]
+    fn a_captured_units_armed_button_toggles_off_while_it_is_selected() {
+        let mut game = GameState::new();
+        let unit = player_units(&game)[0];
+        let pin = unit_pin(&game, unit);
+        let groups = PinnedGroups::default();
+        game.activate_pinned(pin, &groups, Target::Unit(UnitAction::Move));
+        assert_eq!(game.ui_click_mode, Some(ClickMode::Move));
+        game.activate_pinned(pin, &groups, Target::Unit(UnitAction::Move));
+        assert_eq!(game.ui_click_mode, None, "the second click disarms it");
+    }
+
+    #[test]
+    fn a_captured_group_down_to_one_member_selects_it_as_one_unit() {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        let ids: Vec<u32> = units[..2].iter().map(|&i| game.units[i].id).collect();
+        let pin = PinnedPanel {
+            kind: PinnedKind::Group,
+            city_id: 7,
+        };
+        let mut groups = PinnedGroups::default();
+        groups.insert(7, ids.clone());
+        game.activate_pinned(pin, &groups, Target::Unit(UnitAction::Move));
+        assert_eq!(game.group, units[..2], "both members");
+        assert_eq!(game.selected, None);
+        // One member dies: the other is selected alone, as `set_selection`
+        // keeps it.
+        game.units.remove(units[0]);
+        let left = game.units.iter().position(|u| u.id == ids[1]).unwrap();
+        game.activate_pinned(pin, &groups, Target::Unit(UnitAction::Move));
+        assert_eq!(game.selected, Some(left));
+        assert!(game.group.is_empty());
+    }
+
+    #[test]
+    fn a_captured_city_already_open_is_not_opened_again() {
+        let mut game = GameState::city_scenario();
+        game.fund(crate::game::Team::Blue);
+        game.select_city();
+        let pin = game.selected_pin().unwrap();
+        game.camera.center += Vec2::new(3.0, 0.0);
+        let camera = game.camera.center;
+        game.notice = "SOMETHING TO KEEP".into();
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Build(BuildUnit::Melee),
+        );
+        assert_eq!(game.camera.center, camera, "no glide back to the city");
+        assert!(!game.notice.starts_with("CHOOSE WHAT"), "{}", game.notice);
+        // From a unit's selection it opens the city, as the map does.
+        let unit = player_units(&game)[0];
+        game.set_selection(vec![unit]);
+        game.activate_pinned(pin, &PinnedGroups::default(), Target::ToggleYields);
+        assert_eq!(game.selected_city, game.pinned_city_index(pin));
+        assert_eq!(game.selected, None);
+    }
+
+    #[test]
+    fn captured_panels_do_nothing_while_a_turn_plays_out() {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        game.set_selection(vec![units[0]]);
+        game.resolve_turn();
+        assert!(game.is_playing_out());
+        let pin = unit_pin(&game, units[1]);
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Unit(UnitAction::Hold),
+        );
+        assert!(!game.units[units[1]].holding);
+    }
+
+    #[test]
+    fn captured_panels_clear_whenever_the_game_changes() {
+        let mut game = GameState::city_scenario();
+        let mut layout = ImGuiLayoutState::default();
+        assert!(!layout.game_changed(game.generation), "the first frame");
+        assert!(!layout.game_changed(game.generation), "the same game");
+        // F1-F4 and F12 as the debug panel's buttons do: `switch_scenario`.
+        game.switch_scenario(Scenario::Cities);
+        assert!(layout.game_changed(game.generation));
+        assert!(!layout.game_changed(game.generation));
+        // F6 changes nothing; F7 loads another game, even the same one.
+        game.save_state();
+        assert!(!layout.game_changed(game.generation));
+        game.load_state();
+        assert!(layout.game_changed(game.generation));
+        // A network game (`App` keeps the menus of the one it replaces).
+        let mut joined = GameState::city_scenario();
+        joined.keep_menus_of(&game);
+        assert!(layout.game_changed(joined.generation));
     }
 
     #[test]
@@ -3041,7 +4644,7 @@ mod tests {
         layout.windows[SELECTION].content_height = arranging;
         assert_eq!(layout.size(SELECTION, measured, viewport), automatic);
 
-        layout.windows[SELECTION].manual = true;
+        layout.windows[SELECTION].place_by_player();
         layout.windows[SELECTION].floating_size = Vec2::new(340.0, 270.0);
         assert_eq!(
             layout.size(SELECTION, measured, viewport),
@@ -3057,6 +4660,8 @@ mod tests {
             floating_pos: Vec2::new(90.0, 70.0),
             floating_size: Vec2::new(400.0, 220.0),
             manual: true,
+            // Put back to the size its content measures (`reset_size`).
+            sized: false,
             docked: false,
             collapsed: true,
             // Recomputed every frame, so not saved.
@@ -3087,7 +4692,8 @@ mod tests {
                 && a.size == b.size
                 && a.floating_pos == b.floating_pos
                 && a.floating_size == b.floating_size
-                && (a.manual, a.docked, a.collapsed) == (b.manual, b.docked, b.collapsed)
+                && (a.manual, a.sized, a.docked, a.collapsed)
+                    == (b.manual, b.sized, b.docked, b.collapsed)
         };
         for slot in 0..SLOT_COUNT {
             assert!(
@@ -3115,6 +4721,54 @@ mod tests {
     }
 
     #[test]
+    fn a_reset_debug_panel_goes_where_its_view_would_put_it() {
+        // No ImGui windows to move: the layout's half only.
+        let _one = one_context_at_a_time();
+        let moved = WindowGeometry {
+            pos: Vec2::new(300.0, 300.0),
+            size: Vec2::new(500.0, 500.0),
+            floating_pos: Vec2::new(300.0, 300.0),
+            floating_size: Vec2::new(500.0, 500.0),
+            manual: true,
+            sized: true,
+            ..WindowGeometry::default()
+        };
+        // In Default: where and as big as the layout makes it.
+        let mut layout = ImGuiLayoutState {
+            debug_layout_scope: Some(BoxScope::View(ViewScope::Default)),
+            ..ImGuiLayoutState::default()
+        };
+        layout.windows[DEBUG] = moved;
+        layout.reset_position(DEBUG);
+        assert!(!layout.windows[DEBUG].manual && layout.windows[DEBUG].sized);
+        layout.reset_size(DEBUG);
+        assert!(!layout.windows[DEBUG].sized);
+        // In City / Building: where RESET would, Default's placement, and
+        // once both are back it follows Default again.
+        let default = WindowGeometry {
+            floating_pos: Vec2::new(900.0, 80.0),
+            floating_size: Vec2::new(330.0, 400.0),
+            ..moved
+        };
+        layout
+            .debug_view_geometry
+            .insert(ViewScope::Default, default);
+        layout.active_view = ViewScope::City;
+        layout.debug_layout_scope = Some(BoxScope::View(ViewScope::City));
+        layout.debug_view_overrides.insert(ViewScope::City);
+        layout.windows[DEBUG] = moved;
+        layout.reset_position(DEBUG);
+        let debug = layout.windows[DEBUG];
+        assert!(debug.manual);
+        assert_eq!(debug.pos, default.floating_pos);
+        assert_eq!(debug.floating_size, moved.floating_size, "size kept");
+        assert!(layout.debug_view_overrides.contains(&ViewScope::City));
+        layout.reset_size(DEBUG);
+        assert_eq!(layout.windows[DEBUG].floating_size, default.floating_size);
+        assert!(!layout.debug_view_overrides.contains(&ViewScope::City));
+    }
+
+    #[test]
     fn a_damaged_layout_file_still_loads() {
         let text = "window 9 1 2 3 4 5 6 7 8 1 0 0\nwindow 1 nope\nbox 2 sideways 0 0 0 0 0 0 0 0 0 0 0\nbox 5 outer 0 0 10 10 0 0 10 10 1 0 0\nnext_box 1\njunk\n";
         let layout = ImGuiLayoutState::from_text(text);
@@ -3125,6 +4779,10 @@ mod tests {
         assert_eq!(layout.outer_boxes.len(), 1);
         assert_eq!(layout.next_outer_box_id, 6, "past every box already there");
         assert_eq!(ImGuiLayoutState::from_text("").outer_boxes.len(), 0);
+        // A file from before the sized flag: a panel the player placed was
+        // sized by them too.
+        let old = ImGuiLayoutState::from_text("window 0 1 2 3 4 5 6 7 8 1 0 0");
+        assert!(old.windows[SELECTION].manual && old.windows[SELECTION].sized);
     }
 
     #[test]
@@ -3180,7 +4838,7 @@ mod tests {
         let mut layout = ImGuiLayoutState::default();
         layout.selection_changed("city-1");
         layout.windows[SELECTION].size = Vec2::new(600.0, 420.0);
-        layout.windows[SELECTION].manual = true;
+        layout.windows[SELECTION].place_by_player();
         layout.selection_changed("city-2");
         assert_eq!(layout.windows[SELECTION].size.y, 420.0);
         layout.selection_changed("unit-7");
@@ -3202,6 +4860,7 @@ mod tests {
             size: Vec2::new(340.0, 700.0),
             floating_size: Vec2::new(560.0, 390.0),
             manual: true,
+            sized: true,
             docked: true,
             ..WindowGeometry::default()
         };
@@ -3318,6 +4977,7 @@ mod tests {
             floating_size: sizes[DEBUG].unwrap(),
             floating_pos: Vec2::new(510.0, 80.0),
             manual: true,
+            sized: true,
             docked: false,
             collapsed: false,
             content_height: 0.0,
@@ -3369,6 +5029,7 @@ mod tests {
             floating_size: Vec2::new(560.0, 225.0),
             docked: true,
             manual: true,
+            sized: true,
             ..WindowGeometry::default()
         };
         assert_eq!(

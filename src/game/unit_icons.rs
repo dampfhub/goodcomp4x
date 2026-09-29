@@ -5,18 +5,19 @@
 
 use glam::Vec2;
 
+use super::fast_hash::HashMap;
 use super::mesh;
 use super::unit::UnitType;
 use crate::renderer::Vertex;
 
-type Color = [f32; 4];
+use super::mesh::Color;
 
 /// Token radius the shapes are laid out on.
 const DESIGN_RADIUS: f32 = 42.0;
 /// Sides of the polygons that stand in for circles.
 const CIRCLE_SIDES: u32 = 16;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum UnitIcon {
     /// Melee: an upright sword.
     Sword,
@@ -30,13 +31,20 @@ pub(super) enum UnitIcon {
     Spyglass,
     /// Armored: a heater shield.
     Shield,
+    /// Patrol galley: a narrow hull with oars.
     Galley,
+    /// Landing craft: a broad troop transport.
     LandingCraft,
+    /// Bombard ship: a hull carrying a cannon.
     BombardShip,
     /// Settler: a flag planted to found a city.
     Flag,
     /// Worker: a shovel.
     Shovel,
+    /// Wolf pack: a wolf's head, face on, ears up.
+    WolfHead,
+    /// Bear: a bear's head, face on, with round ears.
+    BearHead,
 }
 
 impl UnitIcon {
@@ -51,11 +59,15 @@ impl UnitIcon {
             UnitType::PatrolGalley => Self::Galley,
             UnitType::LandingCraft => Self::LandingCraft,
             UnitType::BombardShip => Self::BombardShip,
+            UnitType::Wolf => Self::WolfHead,
+            UnitType::Bear => Self::BearHead,
         }
     }
 }
 
 /// Draws `icon` in `color` centered on a token of `radius` at `center`.
+/// Each pictogram's triangles are worked out once (`build_pictogram`),
+/// then placed.
 pub(super) fn push_pictogram(
     center: Vec2,
     radius: f32,
@@ -63,11 +75,26 @@ pub(super) fn push_pictogram(
     color: Color,
     out: &mut Vec<Vertex>,
 ) {
+    thread_local! {
+        static MESHES: std::cell::RefCell<HashMap<UnitIcon, Vec<Vertex>>> = Default::default();
+    }
+    MESHES.with_borrow_mut(|meshes| {
+        let shape = meshes.entry(icon).or_insert_with(|| {
+            let mut shape = Vec::new();
+            build_pictogram(icon, &mut shape);
+            shape
+        });
+        mesh::place(shape, center, radius / DESIGN_RADIUS, Some(color), out);
+    });
+}
+
+/// `icon`'s triangles on a token of `DESIGN_RADIUS` at the origin.
+fn build_pictogram(icon: UnitIcon, out: &mut Vec<Vertex>) {
     let mut pen = Pen {
-        center,
-        scale: radius / DESIGN_RADIUS,
+        center: Vec2::ZERO,
+        scale: 1.0,
         turn: Vec2::X,
-        color,
+        color: [1.0; 4],
         out,
     };
     match icon {
@@ -179,6 +206,23 @@ pub(super) fn push_pictogram(
                 (-8.0, 13.0),
             ]);
         }
+        UnitIcon::WolfHead => pen.polygon(&[
+            (-20.0, -27.0),
+            (-11.0, -15.0),
+            (11.0, -15.0),
+            (20.0, -27.0),
+            (25.0, -5.0),
+            (16.0, 7.0),
+            (6.0, 27.0),
+            (-6.0, 27.0),
+            (-16.0, 7.0),
+            (-25.0, -5.0),
+        ]),
+        UnitIcon::BearHead => {
+            pen.circle(-15.0, -15.0, 8.0);
+            pen.circle(15.0, -15.0, 8.0);
+            pen.circle(0.0, 2.0, 22.0);
+        }
     }
 }
 
@@ -270,7 +314,7 @@ impl Pen<'_> {
 mod tests {
     use super::*;
 
-    const ICONS: [UnitIcon; 11] = [
+    const ICONS: [UnitIcon; 13] = [
         UnitIcon::Sword,
         UnitIcon::Bow,
         UnitIcon::HorseHead,
@@ -282,6 +326,8 @@ mod tests {
         UnitIcon::BombardShip,
         UnitIcon::Flag,
         UnitIcon::Shovel,
+        UnitIcon::WolfHead,
+        UnitIcon::BearHead,
     ];
 
     #[test]

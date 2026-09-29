@@ -7,10 +7,11 @@
 use glam::Vec2;
 
 use super::draw::{attack_arc_points, push_arrow};
+use super::hex::Hex;
 use super::{GameState, font, mesh};
 use crate::renderer::Vertex;
 
-type Color = [f32; 4];
+use super::mesh::Color;
 
 /// Seconds the arrow takes to reach its target.
 const SHOT_TRAVEL: f32 = 0.3;
@@ -65,9 +66,18 @@ impl Effect {
 }
 
 impl GameState {
-    /// Starts `effect` playing.
+    /// Starts an effect only when the local player can see it.
     pub(super) fn play(&mut self, effect: Effect) {
-        self.effects.push((effect, 0.0));
+        let fog = self.fog();
+        let visible = match &effect {
+            Effect::Shot { from, to, .. } => {
+                fog.sees(Hex::from_world(*from)) && fog.sees(Hex::from_world(*to))
+            }
+            Effect::Damage { at, .. } => fog.sees(Hex::from_world(*at)),
+        };
+        if visible {
+            self.effects.push((effect, 0.0));
+        }
     }
 
     /// Moves every effect `dt` seconds on, dropping finished ones.
@@ -106,12 +116,7 @@ fn push_shot(from: Vec2, to: Vec2, outcome: Outcome, age: f32, out: &mut Vec<Ver
         MISS_COLOR
     };
     let points = attack_arc_points(from, to, age / SHOT_TRAVEL);
-    push_arrow(
-        &points,
-        with_alpha(color, alpha),
-        with_alpha(OUTLINE_COLOR, alpha),
-        out,
-    );
+    push_arrow(&points, fade(color, alpha), fade(OUTLINE_COLOR, alpha), out);
     if arrived <= 0.0 {
         return;
     }
@@ -123,7 +128,7 @@ fn push_shot(from: Vec2, to: Vec2, outcome: Outcome, age: f32, out: &mut Vec<Ver
             0.08 * (1.0 - arrived) + 0.02,
             24,
             0.0,
-            with_alpha(BURST_COLOR, alpha),
+            fade(BURST_COLOR, alpha),
             out,
         ),
         Outcome::Miss => push_label(to + Vec2::new(0.0, 0.3), "MISS", MISS_COLOR, alpha, out),
@@ -144,16 +149,16 @@ fn push_damage(at: Vec2, amount: f32, fatal: bool, age: f32, out: &mut Vec<Verte
         format!("-{amount:.0}")
     };
     let position = at + Vec2::new(0.0, 0.55 + DAMAGE_RISE * t);
-    push_text_centered(position, DAMAGE_HEIGHT, &text, DAMAGE_COLOR, alpha, out);
+    push_shadowed_text(position, DAMAGE_HEIGHT, &text, DAMAGE_COLOR, alpha, out);
 }
 
 fn push_label(center: Vec2, text: &str, color: Color, alpha: f32, out: &mut Vec<Vertex>) {
-    push_text_centered(center, LABEL_HEIGHT, text, color, alpha, out);
+    push_shadowed_text(center, LABEL_HEIGHT, text, color, alpha, out);
 }
 
 /// World text centered on `center`, over a dark shadow so it reads on any
 /// terrain.
-fn push_text_centered(
+fn push_shadowed_text(
     center: Vec2,
     cap_height: f32,
     text: &str,
@@ -164,12 +169,12 @@ fn push_text_centered(
     let width = font::world_text_width(text, cap_height);
     let origin = center - Vec2::new(width / 2.0, cap_height / 2.0);
     let shadow = Vec2::new(0.02, -0.02);
-    let shadow_color = with_alpha(TEXT_SHADOW, alpha);
+    let shadow_color = fade(TEXT_SHADOW, alpha);
     font::push_text(origin + shadow, cap_height, text, shadow_color, out);
-    font::push_text(origin, cap_height, text, with_alpha(color, alpha), out);
+    font::push_text(origin, cap_height, text, fade(color, alpha), out);
 }
 
-fn with_alpha(color: Color, alpha: f32) -> Color {
+fn fade(color: Color, alpha: f32) -> Color {
     let [r, g, b, a] = color;
     [r, g, b, a * alpha.clamp(0.0, 1.0)]
 }

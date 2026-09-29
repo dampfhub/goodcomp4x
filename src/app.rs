@@ -1,8 +1,10 @@
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use glam::Vec2;
-use imgui::{ConfigFlags, Context as ImGuiContext, FontConfig, FontId, FontSource, StyleColor};
+use imgui::{ConfigFlags, Context as ImGuiContext, FontId};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -14,19 +16,36 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
 use crate::cli::Options;
+use crate::clipboard;
 use crate::game::Settings;
 use crate::game::{
-    ClickMode, GameState, ImGuiLayoutState, Scenario, font_atlas, selection_box, ui_projection,
+    ClickMode, GameState, ImGuiLayoutState, NetMenu, NetRequest, Scenario, font_atlas,
+    selection_box, style_imgui, ui_projection,
 };
 use crate::icon;
+use crate::net::{self, Session};
 use crate::persist;
-use crate::renderer::{DrawBatch, Renderer};
+use crate::renderer::{DrawBatch, Renderer, Vertex};
 use crate::screenshot::{self, Screenshot};
 
 /// Cap on the render loop's frame rate, so it doesn't load the GPU with
-/// frames the display can't show.
+/// frames the display can't show. Below it, frames come at the refresh rate
+/// of the monitor the window is on (`frame_duration`).
 const TARGET_FPS: u64 = 165;
 const FRAME_DURATION: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
+/// Never slower than this, whatever a monitor reports.
+const MIN_FPS: u32 = 30;
+
+/// The time between frames for `window`: its monitor's refresh rate, capped
+/// at `TARGET_FPS`.
+fn frame_duration(window: &Window) -> Duration {
+    let hertz = window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .map_or(TARGET_FPS as u32, |millihertz| millihertz.div_ceil(1000))
+        .clamp(MIN_FPS, TARGET_FPS as u32);
+    FRAME_DURATION.max(Duration::from_micros(1_000_000 / u64::from(hertz)))
+}
 const DRAG_THRESHOLD: f32 = 6.0;
 /// The window opens at this fraction of the primary monitor's size.
 const WINDOW_SCREEN_FRACTION: f32 = 0.8;
@@ -38,6 +57,9 @@ const WINDOW_SCREEN_FRACTION: f32 = 0.8;
 const SETTINGS_FILE: &str = "settings.txt";
 const LAYOUT_FILE: &str = "layout.txt";
 const IMGUI_FILE: &str = "imgui.ini";
+/// What the Multiplayer section last had typed in it (`NetMenu::to_text`),
+/// saved on hosting, joining and quitting.
+const NETWORK_FILE: &str = "network.txt";
 /// Window size when the monitor's size can't be found.
 const DEFAULT_WINDOW_SIZE: PhysicalSize<u32> = PhysicalSize::new(1600, 900);
 
@@ -54,19 +76,37 @@ pub struct App {
     renderer: Option<Renderer>,
     window: Option<Window>,
     game: GameState,
+    /// A multiplayer game's connection (`net/`), pumped every frame.
+    network: Option<Session>,
+    /// A join the Multiplayer section started, connecting on its own
+    /// thread so the window keeps drawing.
+    joining: Option<Receiver<anyhow::Result<(Session, GameState)>>>,
     imgui: Option<ImGuiContext>,
     imgui_platform: Option<WinitPlatform>,
     imgui_fonts: Option<[FontId; 3]>,
     imgui_layout: ImGuiLayoutState,
     use_imgui: bool,
+    /// The world's and the classic UI's vertices, kept between frames for
+    /// their memory (`redraw`).
+    world_vertices: Vec<Vertex>,
+    ui_vertices: Vec<Vertex>,
     last_frame: Option<Instant>,
+    /// The time between frames (`frame_duration`), found again when the
+    /// window moves, as it may have moved to another monitor.
+    frame_duration: Duration,
     minimized: bool,
     /// When to set the window's icons again (`ICON_REFRESH_DELAY` after it
     /// first shows), so the taskbar button picks them up.
     icon_refresh_at: Option<Instant>,
     cursor_pos: Option<Vec2>,
     panning: bool,
-    left_press: Option<(Vec2, ClickMode, bool)>,
+    /// A left press on the map, waiting for its release to be a click: where,
+    /// its modifiers, and whether the plan was out of the player's hands
+    /// (`is_resolving`) when it went down (`None`: a turn was playing out, so
+    /// no click). A release only clicks in the same phase, so a press while
+    /// a network game waits for the others' plans can't become an order in
+    /// the next turn's planning.
+    left_press: Option<(Vec2, ClickMode, Option<bool>)>,
     left_dragging: bool,
     /// The left button is down placing walls or gates on hex edges.
     painting_jobs: bool,
@@ -98,11 +138,15 @@ pub struct App {
     /// The window's size when last neither maximized nor fullscreen, to
     /// open at next time.
     normal_size: Option<PhysicalSize<u32>>,
+    /// A command-line size applies for this run without changing saved window preferences.
+    explicit_size: bool,
+    saved_maximized: bool,
 }
 
 /// What `LAYOUT_FILE` says about the window, beside the ImGui layout
 /// (`ImGuiLayoutState::from_text` skips these lines): the presentation, the
 /// window's size and whether it's maximized.
+#[derive(Debug, PartialEq, Eq)]
 struct SavedWindow {
     imgui: bool,
     size: Option<PhysicalSize<u32>>,
@@ -134,39 +178,114 @@ impl SavedWindow {
         }
         saved
     }
+
+    fn to_text(&self) -> String {
+        let mut text = format!(
+            "presentation {}\n",
+            if self.imgui { "imgui" } else { "classic" }
+        );
+        if let Some(size) = self.size {
+            text += &format!("window_size {} {}\n", size.width, size.height);
+        }
+        text += &format!("maximized {}\n", u8::from(self.maximized));
+        text
+    }
+}
+
+/// Choose a size and centered position. Saved sizes are bounded by the current
+/// monitor; an explicit --size stays exact, including for screenshots.
+fn initial_window_rect(
+    screen: PhysicalSize<u32>,
+    origin: PhysicalPosition<i32>,
+    requested: Option<PhysicalSize<u32>>,
+    saved: Option<PhysicalSize<u32>>,
+) -> (PhysicalSize<u32>, PhysicalPosition<i32>) {
+    let size = requested.unwrap_or_else(|| {
+        saved.map_or_else(
+            || {
+                PhysicalSize::new(
+                    (screen.width as f32 * WINDOW_SCREEN_FRACTION) as u32,
+                    (screen.height as f32 * WINDOW_SCREEN_FRACTION) as u32,
+                )
+            },
+            |size| PhysicalSize::new(size.width.min(screen.width), size.height.min(screen.height)),
+        )
+    });
+    let offset_x = i32::try_from(screen.width.saturating_sub(size.width) / 2).unwrap_or(i32::MAX);
+    let offset_y = i32::try_from(screen.height.saturating_sub(size.height) / 2).unwrap_or(i32::MAX);
+    let position = PhysicalPosition::new(
+        origin.x.saturating_add(offset_x),
+        origin.y.saturating_add(offset_y),
+    );
+    (size, position)
+}
+
+/// `game` is hosted on `port`: its Multiplayer page shows the address
+/// players on the local network join at, if this machine has one.
+fn show_hosting(game: &mut GameState, port: u16) {
+    game.set_net_status(String::new(), false);
+    game.set_host_address(port, net::lan_address());
+}
+
+/// The settings saved from the last session, or the defaults.
+pub fn saved_settings() -> Settings {
+    persist::read(SETTINGS_FILE).map_or_else(Settings::default, |text| Settings::from_text(&text))
 }
 
 impl App {
-    pub fn new(options: Options) -> Self {
+    pub fn new(options: Options, network: Option<(Session, GameState)>) -> Self {
+        Self::new_with_load(options, network, persist::read)
+    }
+
+    fn new_with_load(
+        options: Options,
+        network: Option<(Session, GameState)>,
+        read: impl Fn(&str) -> Option<String>,
+    ) -> Self {
         let screenshot = options.screenshot.map(Screenshot::new);
         let remember = screenshot.is_none();
-        let load = |name| if remember { persist::read(name) } else { None };
+        let load = |name| if remember { read(name) } else { None };
         let settings =
             load(SETTINGS_FILE).map_or_else(Settings::default, |text| Settings::from_text(&text));
         let layout = load(LAYOUT_FILE).unwrap_or_default();
         let saved = SavedWindow::from_text(&layout);
+        let explicit_size = options.size.is_some();
         let requested_size = options
             .size
             .or(screenshot.as_ref().map(|_| screenshot::DEFAULT_SIZE))
-            .map(|(width, height)| PhysicalSize::new(width, height))
-            .or(saved.size);
-        let mut game = match options.seed {
+            .map(|(width, height)| PhysicalSize::new(width, height));
+        let (network, game) = match network {
+            Some((session, game)) => (Some(session), Some(game)),
+            None => (None, None),
+        };
+        let mut game = game.unwrap_or_else(|| match options.seed {
             Some(seed) => GameState::world_scenario_with(seed, &settings),
             None => options.scenario.new_game(&settings),
-        };
+        });
         game.set_settings(settings);
+        if let Some(text) = load(NETWORK_FILE) {
+            game.set_net_menu(NetMenu::from_text(&text));
+        }
+        if let Some(port) = network.as_ref().and_then(Session::port) {
+            show_hosting(&mut game, port);
+        }
         Self {
             renderer: None,
             window: None,
             saved_settings: game.settings_text(),
             game,
+            network,
+            joining: None,
             imgui: None,
             imgui_platform: None,
             imgui_fonts: None,
             imgui_layout: ImGuiLayoutState::from_text(&layout),
+            world_vertices: Vec::new(),
+            ui_vertices: Vec::new(),
             use_imgui: saved.imgui,
 
             last_frame: None,
+            frame_duration: FRAME_DURATION,
             minimized: false,
             icon_refresh_at: None,
             cursor_pos: None,
@@ -184,8 +303,10 @@ impl App {
             failure: None,
             remember,
             imgui_ini: load(IMGUI_FILE),
-            start_maximized: remember && saved.maximized,
-            normal_size: requested_size,
+            start_maximized: remember && !explicit_size && saved.maximized,
+            normal_size: saved.size,
+            explicit_size,
+            saved_maximized: saved.maximized,
         }
     }
 
@@ -208,21 +329,157 @@ impl App {
             return;
         }
         self.save_settings_if_changed();
-        let mut layout = format!(
-            "presentation {}\n",
-            if self.use_imgui { "imgui" } else { "classic" }
-        );
-        if let Some(size) = self.normal_size {
-            layout += &format!("window_size {} {}\n", size.width, size.height);
-        }
-        let maximized = self.window.as_ref().is_some_and(Window::is_maximized);
-        layout += &format!("maximized {}\n", u8::from(maximized));
+        self.save_net_menu();
+        let saved = SavedWindow {
+            imgui: self.use_imgui,
+            size: self.normal_size,
+            maximized: if self.explicit_size {
+                self.saved_maximized
+            } else {
+                self.window.as_ref().is_some_and(Window::is_maximized)
+            },
+        };
+        let mut layout = saved.to_text();
         layout += &self.imgui_layout.to_text();
         persist::write(LAYOUT_FILE, &layout);
         if let Some(imgui) = &mut self.imgui {
             let mut ini = String::new();
             imgui.save_ini_settings(&mut ini);
             persist::write(IMGUI_FILE, &ini);
+        }
+    }
+
+    /// Keeps what the Multiplayer section has typed for next time.
+    fn save_net_menu(&self) {
+        if self.remember {
+            persist::write(NETWORK_FILE, &self.game.net_menu().to_text());
+        }
+    }
+
+    /// Carries out what the settings menu's Multiplayer section asked for:
+    /// hosting a new world, starting a join, or leaving a network game.
+    fn handle_net_request(&mut self) {
+        let Some(request) = self.game.take_net_request() else {
+            return;
+        };
+        match request {
+            NetRequest::Host { port, players } => {
+                match Session::host(port, players, self.game.settings()) {
+                    Ok((session, game)) => {
+                        self.start_network_game(session, game);
+                        show_hosting(&mut self.game, port);
+                    }
+                    Err(err) => {
+                        let status = format!("CAN'T HOST: {err:#}").to_uppercase();
+                        self.game.set_net_status(status, false);
+                    }
+                }
+            }
+            NetRequest::Join { address, code } => {
+                let (send, receive) = mpsc::channel();
+                self.game
+                    .set_net_status(format!("JOINING {address}..."), true);
+                thread::spawn(move || {
+                    let _ = send.send(Session::join(&address, &code));
+                });
+                self.joining = Some(receive);
+            }
+            NetRequest::Leave => {
+                self.network = None;
+                let mut game = Scenario::World.new_game(self.game.settings());
+                game.keep_menus_of(&self.game);
+                self.game = game;
+                self.game.set_net_status(String::new(), false);
+                self.game
+                    .set_ui_notice("LEFT THE NETWORK GAME - A NEW WORLD");
+            }
+            NetRequest::Copy(text) => self.copy(&text),
+        }
+    }
+
+    /// Puts `text` on the clipboard, with a notice saying so.
+    fn copy(&mut self, text: &str) {
+        let notice = if text.is_empty() {
+            "NOTHING TO COPY".to_string()
+        } else if clipboard::set_text(text) {
+            format!("COPIED {text}")
+        } else {
+            "CAN'T COPY: NO CLIPBOARD".to_string()
+        };
+        self.game.set_ui_notice(&notice);
+    }
+
+    /// Takes the game a join brought back, once it has.
+    fn poll_join(&mut self) {
+        let Some(joining) = &self.joining else {
+            return;
+        };
+        let result = match joining.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("the join stopped")),
+        };
+        self.joining = None;
+        match result {
+            Ok((session, game)) => {
+                self.start_network_game(session, game);
+                self.game.set_net_status(String::new(), false);
+            }
+            Err(err) => {
+                let status = format!("CAN'T JOIN: {err:#}").to_uppercase();
+                self.game.set_net_status(status, false);
+            }
+        }
+    }
+
+    /// Plays `game` over `session` from now on, with the menus as they were.
+    fn start_network_game(&mut self, session: Session, mut game: GameState) {
+        game.keep_menus_of(&self.game);
+        self.game = game;
+        self.network = Some(session);
+        self.save_net_menu();
+    }
+
+    /// Whether keys go into a text field rather than to the game: ImGui's
+    /// text box has them, or classic is typing into a Multiplayer field.
+    fn typing(&self) -> bool {
+        if self.use_imgui {
+            self.imgui
+                .as_ref()
+                .is_some_and(|ctx| ctx.io().want_text_input)
+        } else {
+            self.game.net_field_editing().is_some()
+        }
+    }
+
+    /// A key pressed while typing: ImGui has it already; classic types it
+    /// into the field, pastes into it (Ctrl+V) or copies it (Ctrl+C, and
+    /// Ctrl+X, which empties it), and Enter, Tab or Escape ends typing.
+    fn type_key(&mut self, event: &KeyEvent) {
+        if self.use_imgui {
+            return;
+        }
+        let ctrl = self.modifiers.state().control_key();
+        match event.physical_key {
+            PhysicalKey::Code(KeyCode::KeyV) if ctrl => {
+                if let Some(text) = clipboard::get_text() {
+                    self.game.paste_net_text(&text);
+                }
+            }
+            PhysicalKey::Code(key @ (KeyCode::KeyC | KeyCode::KeyX)) if ctrl => {
+                if let Some(text) = self.game.copy_net_field(key == KeyCode::KeyX) {
+                    self.copy(&text);
+                }
+            }
+            PhysicalKey::Code(KeyCode::Backspace) => self.game.net_field_backspace(),
+            PhysicalKey::Code(
+                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab | KeyCode::Escape,
+            ) => self.game.stop_typing(),
+            _ => {
+                if let Some(text) = &event.text {
+                    self.game.type_net_text(text);
+                }
+            }
         }
     }
 
@@ -243,6 +500,7 @@ impl App {
         if let Some(renderer) = &self.renderer {
             renderer.wait_idle();
         }
+        log::error!("{err:#}");
         self.failure.get_or_insert(err);
         event_loop.exit();
     }
@@ -264,13 +522,19 @@ impl App {
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
-        if self.minimized {
+        // Failed and on the way out: winit may ask for one more frame.
+        if self.minimized || self.failure.is_some() {
             return;
         }
 
         let now = Instant::now();
         let dt = now - self.last_frame.unwrap_or(now);
         self.last_frame = Some(now);
+        self.handle_net_request();
+        self.poll_join();
+        if let Some(network) = self.network.as_mut() {
+            network.pump(&mut self.game);
+        }
         self.game.update(dt.as_secs_f32());
         // A screenshot shows the clouds still, so the same arguments give the
         // same image.
@@ -300,12 +564,17 @@ impl App {
             self.game
                 .update_hover(self.cursor_pos, size, dt.as_secs_f32());
         }
-        let world = self.game.build_vertices();
-        let mut ui = if self.use_imgui {
-            Vec::new()
+        // The vertex buffers are kept from frame to frame: a scene is a few
+        // megabytes, and filling fresh memory each frame costs as much as
+        // building it.
+        let mut world = std::mem::take(&mut self.world_vertices);
+        self.game.build_vertices_into(&mut world);
+        let mut ui = std::mem::take(&mut self.ui_vertices);
+        if self.use_imgui {
+            ui.clear();
         } else {
-            self.game.build_ui(size, self.cursor_pos)
-        };
+            self.game.build_ui_into(size, self.cursor_pos, &mut ui);
+        }
         self.save_settings_if_changed();
         // The settings menu's Quit button.
         if self.game.quit_requested() {
@@ -358,6 +627,7 @@ impl App {
                 Some(shot) => shot.after_frame(renderer),
                 None => Ok(false),
             });
+        (self.world_vertices, self.ui_vertices) = (world, ui);
         match finished {
             Ok(false) => {}
             Ok(true) => {
@@ -380,6 +650,28 @@ impl App {
         window.set_fullscreen(fullscreen);
     }
 
+    fn cancel_drags(&mut self) {
+        self.painting_jobs = false;
+        self.left_press = None;
+        self.left_dragging = false;
+        self.queue_scroll_dragging = false;
+        self.building_scroll_dragging = false;
+        self.queue_item_dragging = false;
+        self.game.cancel_queue_drag();
+        self.panning = false;
+        self.box_start = None;
+    }
+
+    fn switch_presentation(&mut self) {
+        self.use_imgui = !self.use_imgui;
+        self.cancel_drags();
+        self.game.set_ui_notice(if self.use_imgui {
+            "IMGUI UI (F11 TO COMPARE)"
+        } else {
+            "CLASSIC UI (F11 TO COMPARE)"
+        });
+    }
+
     fn screen_size(&self) -> Option<Vec2> {
         let (width, height) = self.renderer.as_ref()?.window_size();
         Some(Vec2::new(width as f32, height as f32))
@@ -396,7 +688,11 @@ impl ApplicationHandler for App {
         // there's room for the map and the UI.
         let mut attributes = Window::default_attributes()
             .with_title("Hex Combat Sandbox")
-            .with_inner_size(self.requested_size.unwrap_or(DEFAULT_WINDOW_SIZE))
+            .with_inner_size(
+                self.requested_size
+                    .or(self.normal_size)
+                    .unwrap_or(DEFAULT_WINDOW_SIZE),
+            )
             .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)))
             // Created hidden and shown once it exists (below), so its icons are
             // set before the taskbar button is made. A screenshot needs no
@@ -411,14 +707,8 @@ impl ApplicationHandler for App {
         }
         if let Some(monitor) = event_loop.primary_monitor() {
             let (screen, origin) = (monitor.size(), monitor.position());
-            let size = self.requested_size.unwrap_or(PhysicalSize::new(
-                (screen.width as f32 * WINDOW_SCREEN_FRACTION) as u32,
-                (screen.height as f32 * WINDOW_SCREEN_FRACTION) as u32,
-            ));
-            let position = PhysicalPosition::new(
-                origin.x + (screen.width as i32 - size.width as i32) / 2,
-                origin.y + (screen.height as i32 - size.height as i32) / 2,
-            );
+            let (size, position) =
+                initial_window_rect(screen, origin, self.requested_size, self.normal_size);
             attributes = attributes.with_inner_size(size).with_position(position);
         }
         let window = event_loop
@@ -434,6 +724,8 @@ impl ApplicationHandler for App {
         }
 
         let mut imgui = ImGuiContext::create();
+        // Ctrl+C, X and V in its text boxes (the Multiplayer fields).
+        imgui.set_clipboard_backend(clipboard::ImGuiClipboard);
         // No file of its own: its docking data is kept with the rest of the
         // session (`save_session`) and loaded before the first frame.
         imgui.set_ini_filename(None);
@@ -448,63 +740,7 @@ impl ApplicationHandler for App {
         // The corner grip is reliable here; edge resizing conflicts with the
         // game's panel placement and offers no useful cursor feedback.
         imgui.io_mut().config_windows_resize_from_edges = false;
-        // Use the host UI font when available. ImGui copies the bytes into its atlas.
-        let system_font = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf").ok();
-        let mut add_font = |size| {
-            if let Some(font) = &system_font {
-                imgui.fonts().add_font(&[FontSource::TtfData {
-                    data: font,
-                    size_pixels: size,
-                    config: None,
-                }])
-            } else {
-                imgui.fonts().add_font(&[FontSource::DefaultFontData {
-                    config: Some(FontConfig {
-                        size_pixels: size,
-                        ..FontConfig::default()
-                    }),
-                }])
-            }
-        };
-        let body_font = add_font(18.0);
-        let small_font = add_font(15.0);
-        let title_font = add_font(22.0);
-        let style = imgui.style_mut();
-        style.window_padding = [12.0, 10.0];
-        style.frame_padding = [10.0, 6.0];
-        style.item_spacing = [7.0, 6.0];
-        style.window_rounding = 0.0;
-        style.frame_rounding = 0.0;
-        style.scrollbar_rounding = 0.0;
-        style.popup_rounding = 0.0;
-        style.child_rounding = 0.0;
-        style.grab_rounding = 0.0;
-        style.tab_rounding = 0.0;
-        style.window_border_size = 1.0;
-        style.frame_border_size = 1.0;
-        style.window_title_align = [0.0, 0.5];
-        style.button_text_align = [0.5, 0.5];
-        style.colors[StyleColor::Text as usize] = [0.91, 0.92, 0.91, 1.0];
-        style.colors[StyleColor::TextDisabled as usize] = [0.46, 0.48, 0.50, 1.0];
-        style.colors[StyleColor::WindowBg as usize] = [0.018, 0.022, 0.030, 0.96];
-        style.colors[StyleColor::PopupBg as usize] = [0.025, 0.030, 0.041, 0.98];
-        style.colors[StyleColor::Border as usize] = [0.29, 0.32, 0.38, 0.95];
-        style.colors[StyleColor::TitleBg as usize] = [0.030, 0.036, 0.050, 1.0];
-        style.colors[StyleColor::TitleBgActive as usize] = [0.055, 0.065, 0.086, 1.0];
-        style.colors[StyleColor::TitleBgCollapsed as usize] = [0.030, 0.036, 0.050, 0.96];
-        style.colors[StyleColor::FrameBg as usize] = [0.032, 0.039, 0.052, 1.0];
-        style.colors[StyleColor::FrameBgHovered as usize] = [0.073, 0.084, 0.108, 1.0];
-        style.colors[StyleColor::FrameBgActive as usize] = [0.12, 0.14, 0.18, 1.0];
-        style.colors[StyleColor::Button as usize] = [0.045, 0.053, 0.070, 1.0];
-        style.colors[StyleColor::ButtonHovered as usize] = [0.085, 0.10, 0.13, 1.0];
-        style.colors[StyleColor::ButtonActive as usize] = [0.13, 0.15, 0.19, 1.0];
-        style.colors[StyleColor::Header as usize] = [0.075, 0.090, 0.12, 1.0];
-        style.colors[StyleColor::HeaderHovered as usize] = [0.12, 0.15, 0.19, 1.0];
-        style.colors[StyleColor::ScrollbarBg as usize] = [0.024, 0.029, 0.039, 1.0];
-        style.colors[StyleColor::ScrollbarGrab as usize] = [0.21, 0.24, 0.28, 1.0];
-        style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.31, 0.35, 0.39, 1.0];
-        style.colors[StyleColor::PlotHistogram as usize] = [0.80, 0.69, 0.35, 1.0];
-        style.colors[StyleColor::DragDropTarget as usize] = [0.91, 0.77, 0.38, 1.0];
+        let [small_font, body_font, title_font] = style_imgui(&mut imgui);
         let mut imgui_platform = WinitPlatform::new(&mut imgui);
         imgui_platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
 
@@ -516,6 +752,7 @@ impl ApplicationHandler for App {
                 return;
             }
         }
+        self.frame_duration = frame_duration(&window);
         self.window = Some(window);
         self.imgui = Some(imgui);
         self.imgui_platform = Some(imgui_platform);
@@ -548,13 +785,18 @@ impl ApplicationHandler for App {
                 }
                 event_loop.exit();
             }
+            WindowEvent::Moved(_) => {
+                if let Some(window) = &self.window {
+                    self.frame_duration = frame_duration(window);
+                }
+            }
             WindowEvent::Resized(size) => {
                 self.minimized = size.width == 0 || size.height == 0;
                 let normal = self
                     .window
                     .as_ref()
                     .is_some_and(|w| !w.is_maximized() && w.fullscreen().is_none());
-                if normal && !self.minimized {
+                if normal && !self.minimized && !self.explicit_size {
                     self.normal_size = Some(size);
                 }
                 if let Some(renderer) = &mut self.renderer {
@@ -615,17 +857,10 @@ impl ApplicationHandler for App {
                 }
                 self.cursor_pos = Some(pos);
             }
-            WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
-                self.painting_jobs = false;
-                self.left_press = None;
-                self.left_dragging = false;
-                self.queue_scroll_dragging = false;
-                self.building_scroll_dragging = false;
-                self.queue_item_dragging = false;
-                self.game.cancel_queue_drag();
-                self.panning = false;
+            WindowEvent::Focused(false) => self.cancel_drags(),
+            WindowEvent::CursorLeft { .. } => {
+                self.cancel_drags();
                 self.cursor_pos = None;
-                self.box_start = None;
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers;
@@ -682,7 +917,8 @@ impl ApplicationHandler for App {
                         } else {
                             ClickMode::Normal
                         };
-                        self.left_press = Some((cursor, mode, !self.game.is_resolving()));
+                        let phase = (!self.game.is_playing_out()).then(|| self.game.is_resolving());
+                        self.left_press = Some((cursor, mode, phase));
                         self.left_dragging = self.panning;
                         // A drag from the map (not from a classic panel) selects
                         // the units inside its box.
@@ -724,9 +960,9 @@ impl ApplicationHandler for App {
                         self.left_dragging = false;
                         return;
                     }
-                    if let Some((origin, mode, may_click)) = self.left_press.take()
+                    if let Some((origin, mode, phase)) = self.left_press.take()
                         && !self.left_dragging
-                        && may_click
+                        && phase.is_some_and(|frozen| frozen == self.game.is_resolving())
                         && let Some(size) = self.screen_size()
                     {
                         if self.use_imgui {
@@ -787,6 +1023,12 @@ impl ApplicationHandler for App {
                     self.game.camera.zoom(steps);
                 }
             }
+            // While typing into a text field, keys are the field's.
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed && self.typing() =>
+            {
+                self.type_key(&event)
+            }
             // Escape closes the settings menu, a view or the selection first;
             // with nothing to close it opens the settings menu.
             WindowEvent::KeyboardInput {
@@ -837,7 +1079,6 @@ impl ApplicationHandler for App {
                     KeyCode::KeyX => self.game.choose_attack_action(),
                     KeyCode::KeyR => self.game.arm_worker_job(crate::game::JobKind::Road),
                     KeyCode::KeyI => self.game.arm_worker_job(crate::game::JobKind::Improve),
-                    KeyCode::KeyW => self.game.toggle_worker_mode(),
                     KeyCode::KeyF => self.game.found_city_selected(),
                     KeyCode::Digit1 => self
                         .game
@@ -848,9 +1089,8 @@ impl ApplicationHandler for App {
                     KeyCode::Digit3 => self
                         .game
                         .queue_selected_city_unit(crate::game::BuildUnit::Siege),
-                    KeyCode::Digit4 => self
-                        .game
-                        .queue_selected_city_building(crate::game::Building::Granary),
+                    KeyCode::Digit4 => self.game.queue_selected_city_scout(),
+                    KeyCode::KeyS => self.game.queue_selected_city_settler(),
                     KeyCode::Digit5 => self
                         .game
                         .queue_selected_city_building(crate::game::Building::Barracks),
@@ -864,6 +1104,8 @@ impl ApplicationHandler for App {
                         self.game.clear_selected_interior_orders()
                     }
                     KeyCode::Digit8 => self.game.queue_selected_city_worker(),
+                    KeyCode::Digit9 => self.game.queue_selected_city_growth(),
+                    KeyCode::Digit0 => self.game.queue_selected_city_gather(),
                     KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
                     KeyCode::Delete => self.game.disband_selected(),
                     KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
@@ -874,22 +1116,14 @@ impl ApplicationHandler for App {
                     KeyCode::F12 => self.game.switch_scenario(Scenario::Siege),
                     KeyCode::KeyY => self.game.toggle_yields(),
                     KeyCode::KeyG => self.game.toggle_guard(),
+                    KeyCode::KeyE => self.game.toggle_alert(),
                     KeyCode::F5 => self.toggle_fullscreen(),
                     KeyCode::F6 => self.game.save_state(),
                     KeyCode::F7 => self.game.load_state(),
                     KeyCode::F8 => self.game.toggle_instant_playback(),
                     KeyCode::F9 => self.game.debug_complete_current_production(),
                     KeyCode::F10 => self.game.toggle_fog(),
-                    KeyCode::F11 => {
-                        self.use_imgui = !self.use_imgui;
-                        self.left_press = None;
-                        self.game.cancel_queue_drag();
-                        self.game.set_ui_notice(if self.use_imgui {
-                            "IMGUI UI (F11 TO COMPARE)"
-                        } else {
-                            "CLASSIC UI (F11 TO COMPARE)"
-                        });
-                    }
+                    KeyCode::F11 => self.switch_presentation(),
                     _ => {}
                 }
             }
@@ -911,7 +1145,7 @@ impl ApplicationHandler for App {
 
         let next_frame_at = self
             .last_frame
-            .map_or_else(Instant::now, |t| t + FRAME_DURATION);
+            .map_or_else(Instant::now, |t| t + self.frame_duration);
         if Instant::now() >= next_frame_at {
             if self.screenshot.is_some() {
                 // A hidden window gets no redraw events, so draw right away.
@@ -937,4 +1171,101 @@ fn is_input(event: &WindowEvent) -> bool {
             | WindowEvent::KeyboardInput { .. }
             | WindowEvent::ModifiersChanged(_)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn focus_loss_keeps_the_cursor_and_switching_ui_cancels_every_drag() {
+        fn arm_drags(app: &mut App, cursor: Vec2) {
+            app.left_press = Some((cursor, ClickMode::Normal, Some(false)));
+            app.left_dragging = true;
+            app.painting_jobs = true;
+            app.queue_scroll_dragging = true;
+            app.building_scroll_dragging = true;
+            app.queue_item_dragging = true;
+            app.panning = true;
+            app.box_start = Some(cursor);
+        }
+
+        fn assert_no_drags(app: &App) {
+            assert!(app.left_press.is_none());
+            assert!(!app.left_dragging);
+            assert!(!app.painting_jobs);
+            assert!(!app.queue_scroll_dragging);
+            assert!(!app.building_scroll_dragging);
+            assert!(!app.queue_item_dragging);
+            assert!(!app.panning);
+            assert!(app.box_start.is_none());
+        }
+
+        let mut app = App::new_with_load(Options::default(), None, |_| None);
+        let cursor = Vec2::new(120.0, 240.0);
+        app.cursor_pos = Some(cursor);
+        arm_drags(&mut app, cursor);
+        app.cancel_drags(); // Focused(false), with no later CursorMoved.
+        assert_eq!(app.cursor_pos, Some(cursor));
+        assert_no_drags(&app);
+
+        arm_drags(&mut app, cursor);
+        let old_presentation = app.use_imgui;
+        app.switch_presentation(); // F11.
+        assert_ne!(app.use_imgui, old_presentation);
+        assert_eq!(app.cursor_pos, Some(cursor));
+        assert_no_drags(&app);
+    }
+
+    #[test]
+    fn saved_window_round_trips() {
+        let saved = SavedWindow {
+            imgui: false,
+            size: Some(PhysicalSize::new(1280, 720)),
+            maximized: true,
+        };
+        assert_eq!(SavedWindow::from_text(&saved.to_text()), saved);
+    }
+
+    #[test]
+    fn oversized_saved_window_stays_inside_monitor() {
+        let screen = PhysicalSize::new(800, 600);
+        let origin = PhysicalPosition::new(100, 50);
+        let (size, position) =
+            initial_window_rect(screen, origin, None, Some(PhysicalSize::new(2000, 1200)));
+        assert_eq!(size, screen);
+        assert!(position.x >= origin.x && position.y >= origin.y);
+        assert!(position.x + size.width as i32 <= origin.x + screen.width as i32);
+        assert!(position.y + size.height as i32 <= origin.y + screen.height as i32);
+    }
+
+    #[test]
+    fn explicit_size_ignores_saved_maximized_window_without_replacing_preferences() {
+        let options = Options {
+            size: Some((1280, 720)),
+            ..Options::default()
+        };
+        let app = App::new_with_load(options, None, |name| {
+            (name == LAYOUT_FILE).then(|| "window_size 1024 768\nmaximized 1\n".into())
+        });
+        assert_eq!(app.requested_size, Some(PhysicalSize::new(1280, 720)));
+        assert_eq!(app.normal_size, Some(PhysicalSize::new(1024, 768)));
+        assert!(app.explicit_size);
+        assert!(app.saved_maximized);
+        assert!(!app.start_maximized);
+    }
+
+    #[test]
+    fn screenshot_defaults_to_1600_by_900_without_loading_persisted_state() {
+        let options = Options {
+            scenario: Scenario::World,
+            seed: Some(42),
+            screenshot: Some("test.png".into()),
+            ..Options::default()
+        };
+        let app = App::new_with_load(options, None, |_| panic!("screenshot must not load state"));
+        assert_eq!(app.requested_size, Some(PhysicalSize::new(1600, 900)));
+        assert!(!app.remember);
+        assert_eq!(app.game.map_seed(), Some(42));
+    }
 }

@@ -3,7 +3,7 @@
 //! (e.g. the world through a camera, then UI in screen space on top).
 //! Triangles are vertex-colored, and can be masked by a single-channel
 //! coverage atlas (e.g. font glyphs) supplied once at startup. Edges are
-//! smoothed with multisampling, at the most samples the GPU supports.
+//! smoothed with multisampling, capped at 8 samples by default.
 
 mod buffer;
 mod device;
@@ -16,7 +16,7 @@ mod sync;
 mod texture;
 mod vertex;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ash::vk;
 use glam::Mat4;
 use imgui::{Context as ImGuiContext, DrawData};
@@ -55,6 +55,49 @@ struct DrawRange {
     count: u32,
 }
 
+/// All draw offsets must fit Vulkan's u32 vertex indices before any allocation.
+fn pack_batches(batches: &[DrawBatch]) -> Result<(Vec<DrawRange>, usize)> {
+    let mut ranges = Vec::with_capacity(batches.len());
+    let mut used = 0u32;
+    for batch in batches {
+        let count = u32::try_from(batch.vertices.len()).context("batch exceeds u32 vertices")?;
+        ranges.push(DrawRange {
+            view_proj: batch.view_proj,
+            first: used,
+            count,
+        });
+        used = used
+            .checked_add(count)
+            .context("frame exceeds u32 vertices")?;
+    }
+    Ok((ranges, used as usize))
+}
+
+/// The imgui backend rotates meshes only for non-empty draw data. Track its
+/// next mesh independently from the Vulkan frame slot, which rotates on every
+/// submitted frame (including classic-UI frames with no ImGui vertices).
+#[derive(Default)]
+struct ImGuiSlotUsage {
+    next_slot: usize,
+    last_frame: [Option<usize>; MAX_FRAMES_IN_FLIGHT],
+}
+
+impl ImGuiSlotUsage {
+    fn fence_to_wait(&self, frame: usize, nonempty: bool) -> Option<usize> {
+        nonempty
+            .then_some(self.last_frame[self.next_slot])
+            .flatten()
+            .filter(|&last_frame| last_frame != frame)
+    }
+
+    fn record(&mut self, frame: usize, nonempty: bool) {
+        if nonempty {
+            self.last_frame[self.next_slot] = Some(frame);
+            self.next_slot = (self.next_slot + 1) % MAX_FRAMES_IN_FLIGHT;
+        }
+    }
+}
+
 pub struct Renderer {
     _entry: ash::Entry,
     instance: ash::Instance,
@@ -71,7 +114,9 @@ pub struct Renderer {
 
     swapchain_loader: ash::khr::swapchain::Device,
     swapchain: SwapchainData,
-    /// Antialiasing samples per pixel: the most the GPU supports, up to 16.
+    /// Startup cap, retained across swapchain recreation.
+    sample_cap: u32,
+    /// Highest supported antialiasing count within the startup cap.
     samples: vk::SampleCountFlags,
     /// Multisampled image each frame is drawn into, then resolved into the
     /// swapchain image. Sized to match, so it's rebuilt with the swapchain.
@@ -86,7 +131,7 @@ pub struct Renderer {
 
     /// One vertex buffer per frame in flight, so the CPU can fill one while
     /// the GPU still reads another, each with its capacity in vertices.
-    vertex_buffers: Vec<(vk::Buffer, vk::DeviceMemory, usize)>,
+    vertex_buffers: Vec<VertexBuffer>,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -95,6 +140,7 @@ pub struct Renderer {
     /// The in-flight fence last used with each swapchain image.
     images_in_flight: Vec<vk::Fence>,
     current_frame: usize,
+    imgui_slots: ImGuiSlotUsage,
 
     window_size: (u32, u32),
     framebuffer_resized: bool,
@@ -142,8 +188,10 @@ impl Renderer {
                 surface,
                 queue_indices,
                 window_size,
+                vk::SwapchainKHR::null(),
             )
-        }?;
+        }?
+        .context("the initial surface has no drawable extent")?;
 
         let command_pool = unsafe { create_command_pool(&logical_device, queue_indices) }?;
         let texture = unsafe {
@@ -157,8 +205,15 @@ impl Renderer {
             )
         }?;
 
-        let samples =
-            unsafe { msaa::pick_samples(&vk_instance, physical_device, swapchain_data.format) };
+        let sample_cap = msaa::sample_cap();
+        let samples = unsafe {
+            msaa::pick_samples(
+                &vk_instance,
+                physical_device,
+                swapchain_data.format,
+                sample_cap,
+            )
+        }?;
         log::info!("antialiasing with {} samples per pixel", samples.as_raw());
         let color_target = unsafe {
             ColorTarget::new(
@@ -230,6 +285,7 @@ impl Renderer {
             swapchain_loader,
             swapchain: swapchain_data,
             samples,
+            sample_cap,
             color_target,
             render_pass,
             pipeline_layout,
@@ -243,6 +299,7 @@ impl Renderer {
             sync,
             images_in_flight,
             current_frame: 0,
+            imgui_slots: ImGuiSlotUsage::default(),
             window_size,
             framebuffer_resized: false,
             capture_requested: false,
@@ -320,6 +377,23 @@ impl Renderer {
         // vertex buffer and command buffer from last time around.
         let fence = self.sync.in_flight[self.current_frame];
         unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }?;
+        let imgui_nonempty = self.imgui_renderer.is_some()
+            && imgui_data.is_some_and(|data| data.total_vtx_count > 0);
+        if let Some(other_frame) = self
+            .imgui_slots
+            .fence_to_wait(self.current_frame, imgui_nonempty)
+        {
+            unsafe {
+                self.device
+                    .wait_for_fences(&[self.sync.in_flight[other_frame]], true, u64::MAX)
+            }?;
+        }
+        // A swapchain recreation that failed partway (`cleanup_swapchain`
+        // ran, the rest didn't) left nothing to draw with: try again rather
+        // than draw.
+        if self.command_buffers.is_empty() {
+            return unsafe { self.recreate_swapchain() };
+        }
         let ranges = unsafe { self.write_vertices(batches) }?;
         // Before acquiring, so a failure here doesn't strand an acquired
         // image. A swapchain rebuilt below makes it the wrong size, but then
@@ -362,6 +436,7 @@ impl Renderer {
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())?;
             self.record_command_buffer(command_buffer, image_index, &ranges, imgui_data)?;
         }
+        self.imgui_slots.record(self.current_frame, imgui_nonempty);
 
         let wait_semaphores = [image_available];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -396,7 +471,6 @@ impl Renderer {
         };
 
         if acquire_suboptimal || suboptimal || self.framebuffer_resized {
-            self.framebuffer_resized = false;
             unsafe { self.recreate_swapchain() }?;
         }
 
@@ -410,48 +484,32 @@ impl Renderer {
     /// room; the caller has already waited on this slot's fence, so the GPU is
     /// done with the old one.
     unsafe fn write_vertices(&mut self, batches: &[DrawBatch]) -> Result<Vec<DrawRange>> {
-        let mut ranges = Vec::with_capacity(batches.len());
-        let mut used = 0;
-        for batch in batches {
-            let count = batch.vertices.len();
-            ranges.push(DrawRange {
-                view_proj: batch.view_proj,
-                first: used as u32,
-                count: count as u32,
-            });
-            used += count;
-        }
+        let (ranges, used) = pack_batches(batches)?;
         if used == 0 {
             return Ok(ranges);
         }
 
-        let (buffer, memory, capacity) = self.vertex_buffers[self.current_frame];
+        let capacity = self.vertex_buffers[self.current_frame].capacity;
         if used > capacity {
             let capacity = used.next_power_of_two();
             log::info!("growing vertex buffer to {capacity} vertices");
             unsafe {
-                self.device.destroy_buffer(buffer, None);
-                self.device.free_memory(memory, None);
-                self.vertex_buffers[self.current_frame] = create_vertex_buffer(
+                let next = create_vertex_buffer(
                     &self.instance,
                     &self.device,
                     self.physical_device,
                     capacity,
                 )?;
+                let old = std::mem::replace(&mut self.vertex_buffers[self.current_frame], next);
+                old.destroy(&self.device);
             }
         }
-        let (_, memory, _) = self.vertex_buffers[self.current_frame];
-        let size = (used * size_of::<Vertex>()) as vk::DeviceSize;
+        let dst = self.vertex_buffers[self.current_frame].mapped;
         unsafe {
-            let dst = self
-                .device
-                .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?
-                .cast::<Vertex>();
             for (batch, range) in batches.iter().zip(&ranges) {
                 dst.add(range.first as usize)
                     .copy_from_nonoverlapping(batch.vertices.as_ptr(), range.count as usize);
             }
-            self.device.unmap_memory(memory);
         }
         Ok(ranges)
     }
@@ -511,7 +569,7 @@ impl Renderer {
             device.cmd_bind_vertex_buffers(
                 command_buffer,
                 0,
-                &[self.vertex_buffers[self.current_frame].0],
+                &[self.vertex_buffers[self.current_frame].buffer],
                 &[0],
             );
             device.cmd_set_viewport(command_buffer, 0, &[viewport]);
@@ -546,10 +604,11 @@ impl Renderer {
         }
 
         self.wait_idle();
-        let old_render_pass = self.render_pass;
-        unsafe {
-            self.cleanup_swapchain();
-            self.swapchain = swapchain::create_swapchain(
+        // Create the replacement before retiring the old handle. A minimized
+        // surface may have a 0x0 current extent despite a nonzero cached
+        // window size; in that case keep the existing resources for restore.
+        let Some(next) = (unsafe {
+            swapchain::create_swapchain(
                 &self.device,
                 &self.swapchain_loader,
                 &self.surface_loader,
@@ -557,53 +616,122 @@ impl Renderer {
                 self.surface,
                 self.queue_indices,
                 self.window_size,
-            )?;
-            self.color_target = ColorTarget::new(
+                self.swapchain.swapchain,
+            )
+        })?
+        else {
+            return Ok(());
+        };
+        let format_changed = next.format != self.swapchain.format;
+        let next_samples = if format_changed {
+            match unsafe {
+                msaa::pick_samples(
+                    &self.instance,
+                    self.physical_device,
+                    next.format,
+                    self.sample_cap,
+                )
+            } {
+                Ok(samples) => samples,
+                Err(error) => {
+                    let mut next = next;
+                    unsafe { next.destroy(&self.device, &self.swapchain_loader) };
+                    return Err(error);
+                }
+            }
+        } else {
+            self.samples
+        };
+        // This backend keeps its sample count in immutable options. Never
+        // make an incompatible ImGui pipeline if the surface's format changes
+        // its supported sample count.
+        if next_samples != self.samples {
+            let mut next = next;
+            unsafe { next.destroy(&self.device, &self.swapchain_loader) };
+            anyhow::bail!("the surface changed its MSAA sample count; restart the renderer");
+        }
+
+        unsafe { self.cleanup_swapchain() };
+        self.swapchain = next;
+        if format_changed {
+            unsafe { self.destroy_pipeline() };
+            let new_render_pass = unsafe {
+                pipeline::create_render_pass(&self.device, self.swapchain.format, next_samples)
+            }?;
+            if let Some(renderer) = &mut self.imgui_renderer
+                && let Err(err) = renderer.set_render_pass(new_render_pass)
+            {
+                unsafe { self.device.destroy_render_pass(new_render_pass, None) };
+                return Err(err.into());
+            }
+            let old_render_pass = std::mem::replace(&mut self.render_pass, new_render_pass);
+            if old_render_pass != vk::RenderPass::null() {
+                unsafe { self.device.destroy_render_pass(old_render_pass, None) };
+            }
+            (self.pipeline_layout, self.pipeline) = unsafe {
+                pipeline::create_graphics_pipeline(
+                    &self.device,
+                    self.render_pass,
+                    self.texture.set_layout,
+                    next_samples,
+                )
+            }?;
+            self.samples = next_samples;
+        }
+        self.color_target = unsafe {
+            ColorTarget::new(
                 &self.instance,
                 &self.device,
                 self.physical_device,
                 self.swapchain.format,
                 self.swapchain.extent,
                 self.samples,
-            )?;
-            self.render_pass =
-                pipeline::create_render_pass(&self.device, self.swapchain.format, self.samples)?;
-            if let Some(renderer) = &mut self.imgui_renderer {
-                renderer.set_render_pass(self.render_pass)?;
-            }
-            self.device.destroy_render_pass(old_render_pass, None);
-            (self.pipeline_layout, self.pipeline) = pipeline::create_graphics_pipeline(
-                &self.device,
-                self.render_pass,
-                self.texture.set_layout,
-                self.samples,
-            )?;
-            self.framebuffers = create_framebuffers(
+            )
+        }?;
+        self.framebuffers = unsafe {
+            create_framebuffers(
                 &self.device,
                 self.render_pass,
                 &self.swapchain,
                 &self.color_target,
-            )?;
-            self.command_buffers =
-                create_command_buffers(&self.device, self.command_pool, self.framebuffers.len())?;
-        }
+            )
+        }?;
+        self.command_buffers = unsafe {
+            create_command_buffers(&self.device, self.command_pool, self.framebuffers.len())
+        }?;
         self.images_in_flight = vec![vk::Fence::null(); self.swapchain.images.len()];
+        self.framebuffer_resized = false;
         Ok(())
     }
 
-    /// Destroys everything that depends on the swapchain's size or format.
+    /// Sized resources only: the render pass and pipelines stay valid when
+    /// the replacement surface keeps its format. Null/drain each destroyed
+    /// handle, since Drop also calls this after a failed recreation.
     unsafe fn cleanup_swapchain(&mut self) {
         unsafe {
             for framebuffer in self.framebuffers.drain(..) {
                 self.device.destroy_framebuffer(framebuffer, None);
             }
-            self.device
-                .free_command_buffers(self.command_pool, &self.command_buffers);
-            self.device.destroy_pipeline(self.pipeline, None);
-            self.device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
+            if !self.command_buffers.is_empty() {
+                self.device
+                    .free_command_buffers(self.command_pool, &self.command_buffers);
+                self.command_buffers.clear();
+            }
             self.color_target.destroy(&self.device);
             self.swapchain.destroy(&self.device, &self.swapchain_loader);
+        }
+    }
+
+    unsafe fn destroy_pipeline(&mut self) {
+        unsafe {
+            let pipeline = std::mem::replace(&mut self.pipeline, vk::Pipeline::null());
+            if pipeline != vk::Pipeline::null() {
+                self.device.destroy_pipeline(pipeline, None);
+            }
+            let layout = std::mem::replace(&mut self.pipeline_layout, vk::PipelineLayout::null());
+            if layout != vk::PipelineLayout::null() {
+                self.device.destroy_pipeline_layout(layout, None);
+            }
         }
     }
 }
@@ -614,15 +742,18 @@ impl Drop for Renderer {
         self.imgui_renderer.take();
         unsafe {
             self.cleanup_swapchain();
-            self.device.destroy_render_pass(self.render_pass, None);
+            self.destroy_pipeline();
+            let render_pass = std::mem::replace(&mut self.render_pass, vk::RenderPass::null());
+            if render_pass != vk::RenderPass::null() {
+                self.device.destroy_render_pass(render_pass, None);
+            }
             self.texture.destroy(&self.device);
             self.sync.destroy(&self.device);
             if let Some(readback) = self.readback.take() {
                 readback.destroy(&self.device);
             }
-            for &(buffer, memory, _) in &self.vertex_buffers {
-                self.device.destroy_buffer(buffer, None);
-                self.device.free_memory(memory, None);
+            for buffer in self.vertex_buffers.drain(..) {
+                buffer.destroy(&self.device);
             }
             self.device.destroy_command_pool(self.command_pool, None);
             self.device.destroy_device(None);
@@ -694,30 +825,119 @@ fn mat4_to_bytes(m: &Mat4) -> [u8; 64] {
     bytes
 }
 
+/// Mapped for its lifetime; only write after waiting on this frame slot's fence.
+struct VertexBuffer {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    capacity: usize,
+    mapped: *mut Vertex,
+}
+
+impl VertexBuffer {
+    /// The GPU must no longer reference this buffer.
+    unsafe fn destroy(self, device: &ash::Device) {
+        unsafe {
+            device.unmap_memory(self.memory);
+            device.destroy_buffer(self.buffer, None);
+            device.free_memory(self.memory, None);
+        }
+    }
+}
+
 /// A host-visible vertex buffer with room for `capacity` vertices.
 unsafe fn create_vertex_buffer(
     instance: &ash::Instance,
     device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     capacity: usize,
-) -> Result<(vk::Buffer, vk::DeviceMemory, usize)> {
+) -> Result<VertexBuffer> {
     let size = (capacity * size_of::<Vertex>()) as vk::DeviceSize;
-    let (buffer, memory) = unsafe {
-        buffer::create_buffer(
+    let (buffer, memory, _) = unsafe {
+        buffer::create_buffer_preferred(
             instance,
             device,
             physical_device,
             size,
             vk::BufferUsageFlags::VERTEX_BUFFER,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            &[vk::MemoryPropertyFlags::DEVICE_LOCAL],
         )
     }?;
-    Ok((buffer, memory, capacity))
+    let mapped = match unsafe { device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty()) } {
+        Ok(mapped) => mapped.cast::<Vertex>(),
+        Err(error) => {
+            unsafe {
+                device.destroy_buffer(buffer, None);
+                device.free_memory(memory, None);
+            }
+            return Err(error.into());
+        }
+    };
+    Ok(VertexBuffer {
+        buffer,
+        memory,
+        capacity,
+        mapped,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_packing_preserves_empty_batches_offsets_and_transforms() {
+        let vertex = Vertex {
+            pos: [0.0; 3],
+            color: [1.0; 4],
+            uv: SOLID_UV,
+        };
+        let vertices = [vertex; 6];
+        let transform = Mat4::from_scale(glam::Vec3::splat(2.0));
+        let batches = [
+            DrawBatch {
+                vertices: &vertices[..3],
+                view_proj: Mat4::IDENTITY,
+            },
+            DrawBatch {
+                vertices: &[],
+                view_proj: transform,
+            },
+            DrawBatch {
+                vertices: &vertices,
+                view_proj: transform,
+            },
+        ];
+        let (ranges, used) = pack_batches(&batches).unwrap();
+        assert_eq!(used, 9);
+        assert_eq!(
+            ranges
+                .iter()
+                .map(|r| (r.first, r.count))
+                .collect::<Vec<_>>(),
+            [(0, 3), (3, 0), (3, 6)]
+        );
+        assert_eq!(ranges[0].view_proj, Mat4::IDENTITY);
+        assert_eq!(ranges[2].view_proj, transform);
+        let (ranges, used) = pack_batches(&[]).unwrap();
+        assert!(ranges.is_empty());
+        assert_eq!(used, 0);
+    }
+
+    #[test]
+    fn imgui_mesh_slot_waits_for_the_other_frame_after_odd_empty_frames() {
+        let mut slots = ImGuiSlotUsage::default();
+        assert_eq!(slots.fence_to_wait(0, true), None);
+        slots.record(0, true);
+        assert_eq!(slots.fence_to_wait(1, true), None);
+        slots.record(1, true);
+        assert_eq!(slots.fence_to_wait(0, false), None);
+        slots.record(0, false);
+        // Renderer frame 0 ran without ImGui, while ImGui's next mesh stayed 0.
+        assert_eq!(slots.fence_to_wait(1, true), Some(0));
+        slots.record(1, true);
+        assert_eq!(slots.fence_to_wait(0, true), Some(1));
+    }
 
     #[test]
     fn mat4_bytes_are_the_columns_in_order() {

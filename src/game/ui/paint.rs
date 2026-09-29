@@ -1,12 +1,15 @@
 //! Turning laid-out shapes and buttons into vertices.
 
-use super::ChipIcon;
+use super::action_icons;
+use super::builder::visible_button_hint;
 use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
     BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,
     DISABLED_BG, DISABLED_TEXT, GAP, GOLD_TEXT, GROWTH_COLOR, LINE_GAP, PANEL_BG, QUEUED_BG,
-    QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, ROSTER_TOKEN_SHARE, SMALL, Shape, TEXT,
+    QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, REDUCED_TEXT, ROSTER_TOKEN_SHARE, SMALL, Shape,
+    TEXT,
 };
+use super::{ChipIcon, Target};
 use crate::game::draw::{push_city_tower, push_unit_token};
 use crate::game::font;
 use crate::game::mesh;
@@ -46,6 +49,7 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             max,
             label,
             active,
+            waiting,
             dragging,
             drop_target,
             locked,
@@ -59,6 +63,8 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
                 ARMED_BORDER_COLOR
             } else if *active {
                 GOLD_TEXT
+            } else if *waiting {
+                REDUCED_TEXT
             } else {
                 BORDER_COLOR
             };
@@ -75,6 +81,8 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
                     DIM_TEXT
                 } else if *active {
                     GOLD_TEXT
+                } else if *waiting {
+                    REDUCED_TEXT
                 } else {
                     TEXT
                 },
@@ -159,23 +167,69 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         [bg, border_color, text_color, hint_color].map(|color| fade(color, button.faded));
     draw_box(button.min, button.max, bg, border, border_color, out);
 
+    if let Some(icon) = action_icons::for_button(button.target, &button.label) {
+        let center = (button.min + button.max) / 2.0;
+        action_icons::push_icon(center, 14.0, icon, text_color, out);
+        if let Some(badge) = action_icons::badge(&button.label) {
+            let face = font::ui(SMALL);
+            face.push(
+                Vec2::new(
+                    button.max.x - face.width(badge) - 3.0,
+                    button.max.y - face.cap_height - 2.0,
+                ),
+                badge,
+                hint_color,
+                out,
+            );
+        }
+        return;
+    }
+
+    if let Some(icon) = action_icons::production_unit_icon(button.target) {
+        let center = Vec2::new(button.min.x + 20.0, (button.min.y + button.max.y) / 2.0);
+        crate::game::unit_icons::push_pictogram(center, 10.0, icon, text_color, out);
+        let hint = visible_button_hint(&button.hint, button.faded);
+        let face = font::ui(SMALL);
+        let label_x = button.min.x + 39.0;
+        let baseline = center.y - face.cap_height / 2.0;
+        face.push(Vec2::new(label_x, baseline), &button.label, text_color, out);
+        if !hint.is_empty() {
+            let hint_x = label_x + face.width(&button.label) + 8.0;
+            face.push(Vec2::new(hint_x, baseline), hint, hint_color, out);
+        }
+        return;
+    }
+
+    let hint = visible_button_hint(&button.hint, button.faded);
     let (label_face, hint_face) = (font::ui(BODY), font::ui(SMALL));
     let center = (button.min + button.max) / 2.0;
     let height = button.max.y - button.min.y;
-    if height < BUTTON_HEIGHT {
+    if height < BUTTON_HEIGHT && matches!(button.target, Target::Building(_)) {
+        // A building catalog row: the name from the left, the price flush
+        // right, so the rows' prices line up.
+        let pad = GAP * 2.0;
+        let baseline = center.y - label_face.cap_height / 2.0;
+        label_face.push(
+            Vec2::new(button.min.x + pad, baseline),
+            &button.label,
+            text_color,
+            out,
+        );
+        let hint_left = button.max.x - pad - hint_face.width(hint);
+        hint_face.push(Vec2::new(hint_left, baseline), hint, hint_color, out);
+    } else if height < BUTTON_HEIGHT {
         // One line: the label, then the hint beside it.
-        let gap = if button.hint.is_empty() { 0.0 } else { GAP };
-        let width = label_face.width(&button.label) + gap + hint_face.width(&button.hint);
+        let gap = if hint.is_empty() { 0.0 } else { GAP };
+        let width = label_face.width(&button.label) + gap + hint_face.width(hint);
         let left = center.x - width / 2.0;
         let baseline = center.y - label_face.cap_height / 2.0;
         label_face.push(Vec2::new(left, baseline), &button.label, text_color, out);
         let hint_left = left + label_face.width(&button.label) + gap;
-        hint_face.push(
-            Vec2::new(hint_left, baseline),
-            &button.hint,
-            hint_color,
-            out,
-        );
+        hint_face.push(Vec2::new(hint_left, baseline), hint, hint_color, out);
+    } else if hint.is_empty() {
+        let baseline = center.y - label_face.cap_height / 2.0;
+        let left = center.x - label_face.width(&button.label) / 2.0;
+        label_face.push(Vec2::new(left, baseline), &button.label, text_color, out);
     } else {
         // Two lines: the label, with the hint under it.
         let gap = LINE_GAP + 2.0;
@@ -183,19 +237,14 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         let label_baseline = center.y + block / 2.0 - label_face.cap_height;
         let hint_baseline = center.y - block / 2.0;
         let label_left = center.x - label_face.width(&button.label) / 2.0;
-        let hint_left = center.x - hint_face.width(&button.hint) / 2.0;
+        let hint_left = center.x - hint_face.width(hint) / 2.0;
         label_face.push(
             Vec2::new(label_left, label_baseline),
             &button.label,
             text_color,
             out,
         );
-        hint_face.push(
-            Vec2::new(hint_left, hint_baseline),
-            &button.hint,
-            hint_color,
-            out,
-        );
+        hint_face.push(Vec2::new(hint_left, hint_baseline), hint, hint_color, out);
     }
 }
 

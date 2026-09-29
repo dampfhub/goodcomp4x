@@ -17,12 +17,17 @@
 //! (unit, group, city and Barracks trays), `panels.rs` (top bar, debug panel,
 //! structure hover panel), `queue.rs` (queue panels, scrolling and dragging),
 //! `roster.rs` (the unit strip), `settings_menu.rs` (the settings menu),
+//! `network_menu.rs` (its Multiplayer section),
 //! `tooltips.rs`, `text.rs` (number and text
 //! formatting), `tests.rs`.
 
+mod action_icons;
 mod builder;
 mod dock;
 mod imgui;
+mod network_menu;
+pub(in crate::game) use network_menu::NetField;
+pub use network_menu::{NetMenu, NetRequest};
 mod paint;
 mod panels;
 mod queue;
@@ -35,7 +40,7 @@ mod trays;
 
 use glam::{Mat4, Vec2, Vec3};
 
-use super::city::{BuildUnit, Building, LaborFocus};
+use super::city::{BuildUnit, Building, Good};
 use super::draw::UnitLook;
 use super::hex::Hex;
 use super::orders::ClickMode;
@@ -46,10 +51,10 @@ use super::{GameState, mesh};
 use crate::renderer::Vertex;
 use builder::PanelBuilder;
 use dock::{Dock, Rect, Zone};
-pub use imgui::ImGuiLayoutState;
+pub use imgui::{ImGuiLayoutState, style_imgui};
 use paint::{draw_button, draw_chip_hover, draw_shape};
 
-const BUILDING_LIST_VISIBLE: usize = 2;
+const BUILDING_LIST_VISIBLE: usize = 5;
 use queue::queue_items_that_fit;
 
 type Color = [f32; 4];
@@ -83,6 +88,10 @@ const SCROLLBAR_WIDTH: f32 = 12.0;
 const QUEUE_ITEM_HEIGHT: f32 = 48.0;
 const QUEUE_ITEM_GAP: f32 = 4.0;
 const QUEUE_REMOVE_WIDTH: f32 = 34.0;
+/// A title with a button at its right end (a queue's title and its Clear
+/// button): the button's height, and the row's with the gap under it.
+const TITLE_BUTTON_HEIGHT: f32 = 30.0;
+const TITLE_ROW_HEIGHT: f32 = TITLE_BUTTON_HEIGHT + QUEUE_ITEM_GAP;
 /// A unit's square in the unit strip, and the space between squares.
 const ROSTER_CHIP: f32 = 44.0;
 const ROSTER_CHIP_GAP: f32 = 6.0;
@@ -120,6 +129,10 @@ const NOTICE_TEXT: Color = [0.95, 0.85, 0.55, 1.0];
 const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
 const BOOSTED_TEXT: Color = [0.55, 0.92, 0.50, 1.0];
 const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
+/// The stockpile's resources, wherever they're named.
+const FOOD_TEXT: Color = [0.62, 0.90, 0.40, 1.0];
+const WOOD_TEXT: Color = [0.85, 0.62, 0.36, 1.0];
+const METAL_TEXT: Color = [0.62, 0.74, 0.92, 1.0];
 const SELECTION_BOX_FILL: Color = [0.30, 0.55, 0.95, 0.12];
 const SELECTION_BOX_EDGE: Color = [0.55, 0.75, 1.00, 0.9];
 const SELECTION_BOX_BORDER: f32 = 2.0;
@@ -158,6 +171,7 @@ enum Target {
     Unit(UnitAction),
     Build(BuildUnit),
     ToggleYields,
+    OpenSettings,
     Building(Building),
     BarracksBuild(BuildUnit),
     OpenBarracks,
@@ -166,22 +180,33 @@ enum Target {
     InteriorClear,
     CityQueueRemove(usize),
     BarracksQueueRemove(usize),
+    /// A queue panel's Clear button: every item off, each refunded.
+    ClearCityQueue,
+    ClearBarracksQueue,
     /// A worker for the open city's pool.
     BuildWorker,
-    /// A job on the inspected tile, for the city whose workers would do it.
+    /// A scout from the open city's own queue.
+    BuildScout,
+    /// A settler from the open city's own queue.
+    BuildSettler,
+    /// One more citizen for the open city, bought with food.
+    Grow,
+    /// The open city spends a turn gathering.
+    Gather,
+    /// A card in the open city's production list for something its
+    /// workers build (a road, improvement or structure): arms it for
+    /// placing on the map.
     WorkerJob(JobKind),
-    /// Worker mode on or off (W): the city panel's Worker Jobs, and Done in
-    /// worker mode's panel.
-    WorkerMode,
-    /// The worker menu: list city `usize`'s workers and jobs.
-    WorkerCity(usize),
-    /// The worker menu's Sleep: its city's idle workers rest this turn.
-    SleepWorkers,
+    /// Shown while the open city is placing something: stops placing it
+    /// (like Escape or a right-click on the map), with nothing placed.
+    CancelPlacing,
     /// The X on one of the open city's worker jobs.
     WorkerJobRemove(usize),
-    /// Sends the worker with this id straight home.
+    /// Sends the worker with this id straight home, to stay until released.
     RecallWorker(u32),
-    /// A worker's row in the worker menu: the camera goes to it.
+    /// Lets one of the open city's held (recalled) workers take jobs again.
+    ReleaseWorker,
+    /// A worker's row in the city panel: the camera goes to it.
     ShowWorker(u32),
     /// A click on a queue row (not a drag): for a worker job, the camera
     /// goes to it.
@@ -192,8 +217,9 @@ enum Target {
     RosterSelect(RosterKey),
     RosterAdd(RosterKey),
     RosterRemove(RosterKey),
-    Focus(LaborFocus),
-    ConfirmBuilding(Building),
+    /// A chip of the open city's priority order: a click puts its good
+    /// first (dragging one onto another reorders them, `QueueKind::Priority`).
+    Priority(Good),
     EndTurn,
     /// Debug panel: scenario pages, the savestate, playback pacing and fog.
     Scenario(Scenario),
@@ -202,12 +228,96 @@ enum Target {
     CompleteProduction,
     TogglePlayback,
     ToggleFog,
+    /// Debug panel: production speeds builds, or builds take fixed time.
+    ToggleProductionSpeedup,
+    /// Debug panel: the Cavalry and Armored cap counts those alive, or every
+    /// one ever trained.
+    ToggleLifetimeCap,
     /// Settings menu: set a setting to a value (the nearer end of its range
     /// if outside it), from its checkbox, slider or choice.
     SetSetting(Setting, i32),
     CloseSettings,
     /// Settings menu: close the game.
     Quit,
+    /// Settings menu: the Multiplayer page, and back.
+    OpenMultiplayer,
+    CloseMultiplayer,
+    /// Multiplayer: how many people to host for.
+    NetPlayers(usize),
+    /// Multiplayer, classic: type into this field (again: stop).
+    EditNetField(NetField),
+    HostGame,
+    JoinGame,
+    /// Multiplayer: leave the network game.
+    LeaveGame,
+    /// Multiplayer, hosting: put the join code, or this machine's address
+    /// on the local network, on the clipboard.
+    CopyJoinCode,
+    CopyHostAddress,
+}
+
+impl Target {
+    /// Whether what the button does changes the player's plan for the turn
+    /// (an order, a build, a citizen or worker), which a network game can't
+    /// once the plan is sent: while it waits for the others', these show
+    /// disabled (`PanelBuilder::freeze_plan`). Looking (opening views,
+    /// selecting, the camera) and the settings don't. End Turn has its own
+    /// state.
+    fn changes_plan(self) -> bool {
+        match self {
+            Target::Unit(_)
+            | Target::Build(_)
+            | Target::Building(_)
+            | Target::BarracksBuild(_)
+            | Target::InteriorClear
+            | Target::CityQueueRemove(_)
+            | Target::BarracksQueueRemove(_)
+            | Target::ClearCityQueue
+            | Target::ClearBarracksQueue
+            | Target::BuildWorker
+            | Target::BuildScout
+            | Target::BuildSettler
+            | Target::Grow
+            | Target::Gather
+            | Target::WorkerJob(_)
+            | Target::CancelPlacing
+            | Target::WorkerJobRemove(_)
+            | Target::RecallWorker(_)
+            | Target::ReleaseWorker
+            | Target::Priority(_) => true,
+            Target::ToggleYields
+            | Target::OpenSettings
+            | Target::OpenBarracks
+            | Target::OpenCity
+            | Target::OpenInterior
+            | Target::ShowWorker(_)
+            | Target::QueueItem(..)
+            | Target::RosterSelect(_)
+            | Target::RosterAdd(_)
+            | Target::RosterRemove(_)
+            | Target::EndTurn
+            | Target::Scenario(_)
+            | Target::SaveState
+            | Target::LoadState
+            | Target::CompleteProduction
+            | Target::TogglePlayback
+            | Target::ToggleFog
+            | Target::ToggleProductionSpeedup
+            | Target::ToggleLifetimeCap
+            | Target::SetSetting(..)
+            | Target::CloseSettings
+            | Target::Quit
+            | Target::OpenMultiplayer
+            | Target::CloseMultiplayer
+            | Target::NetPlayers(_)
+            | Target::EditNetField(_)
+            | Target::HostGame
+            | Target::JoinGame
+            | Target::LeaveGame
+            | Target::CopyJoinCode
+            | Target::CopyHostAddress => false,
+        }
+    }
 }
 
 /// An order for the selected unit.
@@ -219,9 +329,11 @@ enum UnitAction {
     Ability,
     Hold,
     Guard,
+    /// Stay put and attack enemies that come in range (`toggle_alert`).
+    Alert,
     Settle,
     Disband,
-    /// Drops every order, queue, hold and guard (Ctrl-right-click).
+    /// Drops every order, queue, hold, guard and alert (Ctrl-right-click).
     ClearOrders,
 }
 
@@ -294,6 +406,7 @@ enum Shape {
         max: Vec2,
         label: String,
         active: bool,
+        waiting: bool,
         dragging: bool,
         drop_target: bool,
         locked: bool,
@@ -333,6 +446,9 @@ pub(super) enum QueueKind {
     Barracks,
     /// The open city's worker jobs, listed in its tray.
     Workers,
+    /// The open city's priority order: its food, wood and metal chips
+    /// (`Row::Reorder`), which never scroll or come off.
+    Priority,
 }
 
 impl QueueKind {
@@ -342,6 +458,7 @@ impl QueueKind {
             QueueKind::City => Target::CityQueueRemove(index),
             QueueKind::Barracks => Target::BarracksQueueRemove(index),
             QueueKind::Workers => Target::WorkerJobRemove(index),
+            QueueKind::Priority => unreachable!("priority chips have no X"),
         }
     }
 }
@@ -359,8 +476,12 @@ struct QueueItemSpec {
     index: usize,
     label: String,
     active: bool,
+    /// Its item waits for the stockpile (`waiting_items`): tinted.
+    waiting: bool,
     dragging: bool,
     drop_target: bool,
+    /// Can't be dragged or taken off: shown dim, its X disabled (a plan
+    /// that can't change, `PanelBuilder::freeze_plan`).
     locked: bool,
 }
 
@@ -406,6 +527,9 @@ struct Layout {
     /// The unit strip's tokens and the unit id each one stands for.
     roster_chips: Vec<(Vec2, Vec2, RosterKey)>,
     dock: Option<Dock>,
+    /// The player's plan can't change (a network game waiting for the
+    /// others'): docked panels show what would change it disabled.
+    plan_frozen: bool,
     /// Where the settings menu's shapes and buttons start, while it's open:
     /// `build_ui` draws them after everything before them, buttons
     /// included, so no other panel's buttons show through it.
@@ -427,7 +551,10 @@ impl Layout {
 
     /// Place a measured panel in a screen zone. All docked panels compose with
     /// one another and keep their rendering and hit boxes at the same rect.
-    fn dock_panel(&mut self, panel: PanelBuilder, zone: Zone) -> Option<Rect> {
+    fn dock_panel(&mut self, mut panel: PanelBuilder, zone: Zone) -> Option<Rect> {
+        if self.plan_frozen {
+            panel.freeze_plan();
+        }
         let rect = self.dock.as_mut()?.place(panel.size(), zone)?;
         panel.place_bottom_left(rect.min, self);
         Some(rect)
@@ -476,12 +603,21 @@ fn roster_target(key: RosterKey, mode: ClickMode) -> Target {
 impl GameState {
     /// The UI as a triangle list in UI pixels. `cursor` is in window pixels
     /// with the origin at the top-left.
+    #[cfg(test)]
     pub fn build_ui(&self, screen_size: Vec2, cursor: Option<Vec2>) -> Vec<Vertex> {
+        let mut out = Vec::new();
+        self.build_ui_into(screen_size, cursor, &mut out);
+        out
+    }
+
+    /// `build_ui` into `out`, cleared first, reusing its memory from frame
+    /// to frame.
+    pub fn build_ui_into(&self, screen_size: Vec2, cursor: Option<Vec2>, out: &mut Vec<Vertex>) {
+        out.clear();
         let (layout, over_ui) = self.layout_with_hover(screen_size, cursor);
         let point = cursor.map(|c| to_ui(c, screen_size));
         let hovered = point.and_then(|p| layout.button_at(p)).map(|b| b.target);
 
-        let mut out = Vec::new();
         // The settings menu (and anything placed after it) is a layer of
         // its own over the rest.
         let (shapes_split, buttons_split) = layout
@@ -490,7 +626,7 @@ impl GameState {
         let (under_shapes, over_shapes) = layout.shapes.split_at(shapes_split);
         let (under_buttons, over_buttons) = layout.buttons.split_at(buttons_split);
         for shape in under_shapes {
-            draw_shape(shape, &mut out);
+            draw_shape(shape, out);
         }
         if let Some(&(min, max, _)) = point.and_then(|p| {
             layout
@@ -498,27 +634,26 @@ impl GameState {
                 .iter()
                 .find(|&&(min, max, _)| contains(min, max, p))
         }) {
-            draw_chip_hover(min, max, &mut out);
+            draw_chip_hover(min, max, out);
         }
         for button in under_buttons {
-            draw_button(button, hovered == Some(button.target), &mut out);
+            draw_button(button, hovered == Some(button.target), out);
         }
         for shape in over_shapes {
-            draw_shape(shape, &mut out);
+            draw_shape(shape, out);
         }
         for button in over_buttons {
-            draw_button(button, hovered == Some(button.target), &mut out);
+            draw_button(button, hovered == Some(button.target), out);
         }
         if let Some(button) = hovered.and_then(|t| layout.buttons.iter().find(|b| b.target == t)) {
-            self.draw_tooltip(button, &layout, screen_size, &mut out);
+            self.draw_tooltip(button, &layout, screen_size, out);
         }
         if let (Some(point), Some(hex)) = (point, self.hovered_tile)
             && self.hover_seconds >= TILE_TOOLTIP_DELAY
             && !over_ui
         {
-            self.draw_tile_tooltip(hex, point, screen_size, &mut out);
+            self.draw_tile_tooltip(hex, point, screen_size, out);
         }
-        out
     }
 
     /// Build persistent and hover panels through the same dock, so visible
@@ -546,32 +681,28 @@ impl GameState {
             self.unit_info(idx, &mut panel);
             layout.dock_panel(panel, Zone::TopRight);
         }
-        // A structure's live panel is only for one the player can see now:
-        // their own, or one in sight.
-        let fog = self.fog();
-        let known =
-            |city: &super::city::City, hex: Hex| city.team == super::PLAYER_TEAM || fog.sees(hex);
-        if !over_ui && let Some(hex) = self.hovered_tile {
-            if let Some(city) = self
-                .cities
-                .iter()
-                .position(|city| city.pos == hex && known(city, hex))
-            {
-                let mut panel = PanelBuilder::default();
-                self.structure_hover_panel(city, false, &mut panel);
-                layout.dock_panel(panel, Zone::BottomLeft);
-            } else if let Some(city) = self
-                .cities
-                .iter()
-                .position(|city| city.barracks == Some(hex) && known(city, hex))
-            {
-                let mut panel = PanelBuilder::default();
-                self.structure_hover_panel(city, true, &mut panel);
-                layout.dock_panel(panel, Zone::BottomLeft);
-            }
+        if !over_ui
+            && let Some(hex) = self.hovered_tile
+            && let Some(panel) = self.structure_inspect_panel(hex)
+        {
+            layout.dock_panel(panel, Zone::BottomLeft);
         }
 
         (layout, over_ui)
+    }
+
+    /// Shared visibility-filtered structure inspection for both UI presentations.
+    fn structure_inspect_panel(&self, hex: Hex) -> Option<PanelBuilder> {
+        let fog = self.fog();
+        let known = |city: &super::city::City| city.team == self.local_team || fog.sees(hex);
+        let (city, barracks) = self.cities.iter().enumerate().find_map(|(idx, city)| {
+            (known(city) && city.pos == hex)
+                .then_some((idx, false))
+                .or_else(|| (known(city) && city.barracks == Some(hex)).then_some((idx, true)))
+        })?;
+        let mut panel = PanelBuilder::default();
+        self.structure_hover_panel(city, barracks, &mut panel);
+        Some(panel)
     }
 
     /// Handles a click on the UI, returning whether it hit anything (in which
@@ -582,13 +713,14 @@ impl GameState {
     pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) -> bool {
         let point = to_ui(cursor, screen_size);
         let layout = self.layout_with_hover(screen_size, Some(cursor)).0;
-        if self.drag_queue_scrollbar_at(cursor, screen_size, false)
-            || self.drag_building_scrollbar_at(cursor, screen_size, false)
+        // A button (the centered settings menu's, drawn over the panels)
+        // takes the click before a scrollbar or a chip under it.
+        if layout.button_at(point).is_none()
+            && (self.drag_queue_scrollbar_at(cursor, screen_size, false)
+                || self.drag_building_scrollbar_at(cursor, screen_size, false))
         {
             return true;
         }
-        // A button (the centered settings menu's, drawn over the strip) takes
-        // the click before a chip under it.
         if layout.button_at(point).is_none()
             && let Some(key) = layout.roster_chip_at(point)
         {
@@ -606,6 +738,10 @@ impl GameState {
     }
 
     fn activate_target(&mut self, target: Target) {
+        // Any other button ends typing into a field.
+        if !matches!(target, Target::EditNetField(_)) {
+            self.stop_typing();
+        }
         match target {
             Target::Unit(action) => match action {
                 UnitAction::Move => self.choose_move_action(),
@@ -614,6 +750,7 @@ impl GameState {
                 UnitAction::Ability => self.toggle_selected_ability(),
                 UnitAction::Hold => self.hold_selected_unit(),
                 UnitAction::Guard => self.toggle_guard(),
+                UnitAction::Alert => self.toggle_alert(),
                 UnitAction::Settle => self.found_city_selected(),
                 UnitAction::Disband => self.disband_selected(),
                 UnitAction::ClearOrders => self.handle_right_click(),
@@ -622,16 +759,22 @@ impl GameState {
             Target::RosterAdd(id) => self.roster_add(id),
             Target::RosterRemove(id) => self.roster_remove(id),
             Target::BuildWorker => self.queue_selected_city_worker(),
+            Target::BuildScout => self.queue_selected_city_scout(),
+            Target::BuildSettler => self.queue_selected_city_settler(),
+            Target::Grow => self.queue_selected_city_growth(),
+            Target::Gather => self.queue_selected_city_gather(),
             Target::WorkerJob(kind) => self.arm_worker_job(kind),
-            Target::WorkerMode => self.toggle_worker_mode(),
-            Target::WorkerCity(city) => self.worker_menu_city = Some(city),
-            Target::SleepWorkers => self.sleep_workers(),
+            Target::CancelPlacing => {
+                self.stop_placing();
+            }
             Target::WorkerJobRemove(index) => self.remove_worker_job(index),
             Target::RecallWorker(id) => self.recall_worker(id),
+            Target::ReleaseWorker => self.release_worker(),
             Target::ShowWorker(id) => self.show_worker(id),
             Target::QueueItem(kind, index) => self.queue_item_clicked(kind, index),
             Target::Build(build) => self.queue_selected_city_unit(build),
             Target::ToggleYields => self.toggle_yields(),
+            Target::OpenSettings => self.settings_open = true,
             Target::Building(building) => self.queue_selected_city_building(building),
             Target::BarracksBuild(build) => self.queue_selected_barracks_unit(build),
             Target::OpenBarracks => {
@@ -644,8 +787,12 @@ impl GameState {
             Target::InteriorClear => self.clear_selected_interior_orders(),
             Target::CityQueueRemove(index) => self.remove_selected_city_queue_item(index),
             Target::BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
-            Target::Focus(focus) => self.set_selected_city_focus(focus),
-            Target::ConfirmBuilding(building) => self.confirm_building(building),
+            Target::ClearCityQueue => self.clear_selected_city_queue(),
+            Target::ClearBarracksQueue => self.clear_selected_barracks_queue(),
+            Target::Priority(good) => self.prioritize_selected_city(good),
+            // While a network game waits for the others' plans, End Turn
+            // takes this side's back.
+            Target::EndTurn if self.waiting_for_peers() => self.take_back_turn(),
             Target::EndTurn => self.end_planning(),
             Target::Scenario(scenario) => self.switch_scenario(scenario),
             Target::SaveState => self.save_state(),
@@ -653,9 +800,20 @@ impl GameState {
             Target::CompleteProduction => self.debug_complete_current_production(),
             Target::TogglePlayback => self.toggle_instant_playback(),
             Target::ToggleFog => self.toggle_fog(),
+            Target::ToggleProductionSpeedup => self.toggle_production_speedup(),
+            Target::ToggleLifetimeCap => self.toggle_lifetime_special_cap(),
             Target::SetSetting(setting, value) => self.set_setting(setting, value),
             Target::CloseSettings => self.close_settings(),
             Target::Quit => self.quit_requested = true,
+            Target::OpenMultiplayer
+            | Target::CloseMultiplayer
+            | Target::NetPlayers(_)
+            | Target::EditNetField(_)
+            | Target::HostGame
+            | Target::JoinGame
+            | Target::LeaveGame
+            | Target::CopyJoinCode
+            | Target::CopyHostAddress => self.activate_network_target(target),
         }
     }
 
@@ -663,16 +821,13 @@ impl GameState {
     /// it has rested there, for city hover outlines and the tile tooltip.
     /// `cursor` is in window pixels with the origin at the top-left.
     pub fn update_hover(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
-        if self.interior_view.is_some() {
-            self.hovered_tile = None;
-            self.hovered_city = None;
-            self.hover_seconds = 0.0;
-            return;
-        }
         let layout = self.layout(screen_size);
         let hex = cursor
             .filter(|&c| !layout.covers(to_ui(c, screen_size)))
             .and_then(|c| self.hex_at_screen(c, screen_size));
+        if self.hover_interior(hex) {
+            return;
+        }
         if hex == self.hovered_tile {
             self.hover_seconds += dt;
         } else {
@@ -684,13 +839,10 @@ impl GameState {
     }
 
     pub fn update_hover_imgui(&mut self, cursor: Option<Vec2>, screen_size: Vec2, dt: f32) {
-        if self.interior_view.is_some() {
-            self.hovered_tile = None;
-            self.hovered_city = None;
-            self.hover_seconds = 0.0;
+        let hex = cursor.and_then(|c| self.hex_at_screen(c, screen_size));
+        if self.hover_interior(hex) {
             return;
         }
-        let hex = cursor.and_then(|c| self.hex_at_screen(c, screen_size));
         if hex == self.hovered_tile {
             self.hover_seconds += dt;
         } else {
@@ -701,11 +853,31 @@ impl GameState {
         self.hover_edge(hex.and(cursor), screen_size);
     }
 
+    /// In a city interior, `hex` (an interior tile) is the hovered one, for
+    /// the attack preview, and there's no map hover; says whether it is.
+    fn hover_interior(&mut self, hex: Option<Hex>) -> bool {
+        let inside = self.interior_view.is_some();
+        self.hovered_interior = hex.filter(|_| inside);
+        if inside {
+            self.hovered_tile = None;
+            self.hovered_city = None;
+            self.hover_seconds = 0.0;
+        }
+        inside
+    }
+
     /// With a wall or gate armed, the hex edge under `cursor` (over the map,
     /// not the UI), for its highlight.
     fn hover_edge(&mut self, cursor: Option<Vec2>, screen_size: Vec2) {
         self.hovered_job =
             cursor.and_then(|c| self.job_target_at(self.camera.screen_to_world(c, screen_size)));
+    }
+
+    /// While a network game waits for the others' plans: this side's is
+    /// sent, so the panels show everything that would change it disabled,
+    /// though they still show and open what there is to look at.
+    fn plan_frozen(&self) -> bool {
+        self.waiting_for_peers()
     }
 
     pub fn set_ui_notice(&mut self, notice: &str) {
@@ -714,6 +886,7 @@ impl GameState {
 
     fn layout(&self, screen_size: Vec2) -> Layout {
         let mut layout = Layout::for_screen(screen_size);
+        layout.plan_frozen = self.plan_frozen();
         self.top_bar(screen_size, &mut layout);
 
         let mut tray = PanelBuilder::default();
@@ -725,18 +898,18 @@ impl GameState {
             self.barracks_tray(city, &mut tray);
         } else if let Some(idx) = self.selected {
             self.unit_info(idx, &mut tray);
-            tray.gap(GAP);
-            tray.buttons(self.unit_buttons(idx));
+            tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
-        } else if self.worker_mode {
-            self.worker_menu(&mut tray);
         } else {
             self.debug_panel(&mut layout);
             self.dock_roster(&mut layout);
             self.place_settings(screen_size, &mut layout);
             return layout;
         }
+        // A tray taller than the screen wouldn't dock at all: what scrolls
+        // in it (a city's workers and jobs, its catalogue) shows less.
+        tray.fit_height(layout.remaining_height(Zone::BottomLeft, tray.size().x));
         let tray_size = tray.size();
         layout.dock_panel(tray, Zone::BottomLeft);
         let queue_visible =

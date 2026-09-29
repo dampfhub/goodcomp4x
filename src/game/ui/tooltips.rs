@@ -1,25 +1,111 @@
 //! Button tooltips and the tile tooltip.
 
+use super::action_icons;
 use super::builder::PanelBuilder;
 use super::paint::draw_shape;
-use super::text::{
-    ability_text, pending_text, quantity, signed_quantity, stat_spans, turns_text, wrap,
-};
+use super::text::{ability_text, pending_text, price_hint, signed_quantity, turns_text, wrap};
 use super::{
-    BODY, BOOSTED_TEXT, BORDER, Button, DIM_TEXT, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN,
-    REDUCED_TEXT, SMALL, TEXT, TILE_TOOLTIP_OFFSET, TOOLTIP_GAP, TOOLTIP_WRAP, Target, UnitAction,
-    contains,
+    BODY, BORDER, Button, DIM_TEXT, FOOD_TEXT, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN,
+    METAL_TEXT, REDUCED_TEXT, SMALL, TEXT, TILE_TOOLTIP_OFFSET, TOOLTIP_GAP, TOOLTIP_WRAP, Target,
+    UnitAction, WOOD_TEXT, contains,
 };
 use crate::game::GameState;
-use crate::game::city::{Building, WORKER_COST, WORKER_SHORTCUT, delivered_share};
+use crate::game::city::{
+    Build, Building, GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, Lane, MAX_CITY_POPULATION,
+    MIN_CITY_DISTANCE, SCOUT_SHORTCUT, SETTLER_MIN_POPULATION, SETTLER_SHORTCUT, UNITS_PER_DEPOSIT,
+    WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
+};
 use crate::game::hex::Hex;
+use crate::game::map_icons::{FOOD_ICON, METAL_ICON, WOOD_ICON};
 use crate::game::scenario::Scenario;
 use crate::game::unit::Unit;
 use crate::game::workers::JobKind;
 use crate::renderer::Vertex;
 use glam::Vec2;
 
+/// Why a button that would change the plan is off while a network game
+/// waits for the others' plans.
+pub(super) const PLAN_SENT: &str = "YOUR ORDERS ARE SENT - THE WAITING BUTTON TAKES THEM BACK";
+
+/// What a button's tooltip describes it for: the unit (a group's first
+/// member) and the city (or Barracks) of the panel the button is in. The
+/// selection's for the classic tray and ImGui's Selection panel
+/// (`selection_subject`); a captured ImGui panel's own unit or city
+/// (`imgui.rs`), whatever is selected.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Subject {
+    pub unit: Option<usize>,
+    pub city: Option<usize>,
+}
+
 impl GameState {
+    /// The selection as a tooltip's `Subject`.
+    pub(super) fn selection_subject(&self) -> Subject {
+        Subject {
+            unit: self.selected.or(self.group.first().copied()),
+            city: self.selected_city.or(self.selected_barracks),
+        }
+    }
+
+    /// What `build` queued in `city`'s queue (or its Barracks', with
+    /// `barracks`) costs from the stockpile when work on it starts, and how
+    /// long it takes there: the price's icons, then the clock and the turns.
+    fn price_text(&self, build: Build, barracks: bool, city: Option<usize>) -> String {
+        let price = city.map_or_else(|| build.price(), |city| self.queue_price(city, build));
+        let turns = match city {
+            Some(city) if !barracks => self.city_build_turns(city, build),
+            _ => build.turns(),
+        };
+        format!("{} {}", stock_icons(price), turns_icon(turns))
+    }
+
+    /// For a troop that needs Horses or Iron, how many more its side may
+    /// train (`city/barracks.rs`): " · 2 OF 3 LEFT".
+    fn special_note(&self, build: crate::game::BuildUnit) -> String {
+        let Some(resource) = build.required_resource() else {
+            return String::new();
+        };
+        let cap = self.special_cap(self.local_team, resource);
+        let left = cap.saturating_sub(self.special_used(self.local_team, resource));
+        format!(" · {left} OF {cap} LEFT")
+    }
+
+    /// What the stockpile is short of to pay for `build` in `city` this
+    /// turn, on top of what its queues start (`forecast`'s `spare`), if
+    /// anything: queued, it waits until the side can pay.
+    fn shortfall_text(&self, build: Build, city: Option<usize>) -> Option<String> {
+        let city = city?;
+        let short = self
+            .forecast(self.local_team)
+            .spare
+            .shortfall(self.queue_price(city, build));
+        (short != Default::default()).then(|| {
+            format!(
+                "SHORT OF {} THIS TURN: QUEUED, IT WAITS UNTIL PAID",
+                stock_icons(short)
+            )
+        })
+    }
+
+    /// Why `city` can't queue `build` (`city_build_issue`: supply, a
+    /// Scout at a time, a Settler's citizens), or else what the stockpile
+    /// is short of for it (`shortfall_text`).
+    fn city_build_unavailable(&self, build: Build, city: Option<usize>) -> Option<String> {
+        city.and_then(|city| self.city_build_issue(city, build))
+            .or_else(|| self.shortfall_text(build, city))
+    }
+
+    /// What one of `city`'s queues works, by name, for a tile's tooltip:
+    /// `empty` if it holds nothing.
+    fn queue_word(&self, city: usize, lane: Lane, empty: &'static str) -> &'static str {
+        let status = self.queue_status(city, lane);
+        match self.worked_item(city, lane, &status) {
+            Some((name, ..)) => name,
+            None if self.lane_len(city, lane) == 0 => empty,
+            None => "NOTHING IT CAN PAY FOR",
+        }
+    }
+
     /// Everything about a map hex: terrain, what it yields, and what's on it.
     pub(super) fn tile_tooltip_lines(&self, hex: Hex) -> Vec<(u32, Line)> {
         if !self.is_explored(hex) {
@@ -30,8 +116,7 @@ impl GameState {
         let memory = if seen_now { None } else { self.remembered(hex) };
         let tile = self.grid.tile(hex);
         let terrain = tile.terrain;
-        let visible =
-            |city: &&crate::game::city::City| seen_now || city.team == crate::game::PLAYER_TEAM;
+        let visible = |city: &&crate::game::city::City| seen_now || city.team == self.local_team;
         let city = self.cities.iter().filter(visible).find(|c| c.pos == hex);
         let barracks = self
             .cities
@@ -44,9 +129,8 @@ impl GameState {
                 .find(|&b| b != Building::Barracks && c.placed_site(b) == Some(hex))
                 .map(|b| (c, b))
         });
-        let seen_city = memory.and_then(|m| m.city.filter(|c| c.team != crate::game::PLAYER_TEAM));
-        let seen_barracks =
-            memory.and_then(|m| m.barracks.filter(|b| b.team != crate::game::PLAYER_TEAM));
+        let seen_city = memory.and_then(|m| m.city.filter(|c| c.team != self.local_team));
+        let seen_barracks = memory.and_then(|m| m.barracks.filter(|b| b.team != self.local_team));
         let title = match (city, barracks, seen_city, seen_barracks) {
             (Some(city), ..) => (
                 format!("{:?} CITY {}", city.team, city.id + 1).to_uppercase(),
@@ -71,70 +155,75 @@ impl GameState {
             (None, None, None, None) => (tile.name(), TEXT),
         };
         let mut lines = vec![(BODY, vec![title])];
+        if self.hovered_tile == Some(hex) {
+            lines.extend(self.attack_preview_lines());
+        }
 
         if !terrain.is_workable() {
             lines.push((SMALL, vec![("IMPASSABLE".into(), DIM_TEXT)]));
             return lines;
         }
-        let (food, production) = self.known_yield(hex, &fog);
+        let (food, wood, metal) = self.known_yield(hex, &fog);
         lines.push((
             SMALL,
-            stat_spans(&[
-                ("FOOD", food.to_string(), BOOSTED_TEXT),
-                ("PRODUCTION", production.to_string(), GOLD_TEXT),
-            ]),
+            vec![
+                (format!("{FOOD_ICON}{food}"), FOOD_TEXT),
+                (format!("   {WOOD_ICON}{wood}"), WOOD_TEXT),
+                (format!("   {METAL_ICON}{metal}"), METAL_TEXT),
+            ],
         ));
+        // Another side's economy (what a city delivers, what its queues
+        // work) depends on tiles, routes and plans the player can't see: of
+        // its city or Barracks, only what's in sight (population, health),
+        // or what the memory kept of it.
+        let pop_line = |population: usize| {
+            let text = format!("POP {population}/{MAX_CITY_POPULATION}");
+            (SMALL, vec![(text, GOLD_TEXT)])
+        };
+        let hp_line = |hp: f32| {
+            let text = format!("HP {hp:.0}/{:.0}", crate::game::city::BARRACKS_MAX_HP);
+            (SMALL, vec![(text, GOLD_TEXT)])
+        };
         if let Some(city) = city {
-            let city_index = self.cities.iter().position(|c| c.pos == hex).unwrap();
-            let (growth, _, _) = self.growth_status(city_index);
-            let (_, production_per_turn) = self.income(city_index);
-            let queue = city.queue.first().map_or("NOTHING", |build| build.name());
-            lines.push((
-                SMALL,
-                vec![(
-                    format!(
-                        "GROWTH {growth}% · {} PRODUCTION",
-                        signed_quantity(production_per_turn)
-                    ),
-                    GOLD_TEXT,
-                )],
-            ));
-            lines.push((SMALL, vec![(format!("BUILDING {queue}"), DIM_TEXT)]));
+            if city.team == self.local_team {
+                let city_index = self.cities.iter().position(|c| c.pos == hex).unwrap();
+                let queue = self.queue_word(city_index, Lane::City, "NOTHING");
+                lines.push((
+                    SMALL,
+                    vec![(
+                        format!(
+                            "POP {}/{MAX_CITY_POPULATION} · DELIVERS {}",
+                            city.population,
+                            price_hint(self.net_delivery(city_index))
+                        ),
+                        GOLD_TEXT,
+                    )],
+                ));
+                lines.push((SMALL, vec![(format!("BUILDING {queue}"), DIM_TEXT)]));
+            } else {
+                lines.push(pop_line(city.population));
+            }
+        } else if let (None, Some(seen)) = (barracks, seen_city) {
+            lines.push(pop_line(seen.population));
         }
         if let Some(city) = barracks {
-            let city_index = self
-                .cities
-                .iter()
-                .position(|c| c.barracks == Some(hex))
-                .unwrap();
-            let active = city.worked.first() == Some(&hex);
-            let production_per_turn = if active {
-                self.barracks_income(city_index)
-            } else {
-                0
-            };
-            let queue = city
-                .barracks_queue
-                .first()
-                .map_or("EMPTY", |build| build.name());
-            lines.push((
-                SMALL,
-                vec![(
-                    format!(
-                        "HP {:.0}/{:.0} · {} PROD/T",
-                        city.barracks_hp,
-                        crate::game::city::BARRACKS_MAX_HP,
-                        signed_quantity(production_per_turn)
-                    ),
-                    GOLD_TEXT,
-                )],
-            ));
-            lines.push((SMALL, vec![(format!("TRAINING: {queue}"), DIM_TEXT)]));
+            lines.push(hp_line(city.barracks_hp));
+            if city.team == self.local_team {
+                let index = self
+                    .cities
+                    .iter()
+                    .position(|c| std::ptr::eq(c, city))
+                    .unwrap();
+                let queue = self.queue_word(index, Lane::Barracks, "EMPTY");
+                lines.push((SMALL, vec![(format!("TRAINING: {queue}"), DIM_TEXT)]));
+            }
+        } else if let (None, None, Some(seen)) = (city, seen_city, seen_barracks) {
+            lines.push(hp_line(seen.health * crate::game::city::BARRACKS_MAX_HP));
         }
 
         let mut notes = Vec::new();
         if self.grid.has_fresh_water(hex) {
-            notes.push("FRESH WATER: +1 FOOD".into());
+            notes.push("FRESH WATER +1 FOOD".into());
         }
         if let Some((owner, building)) = placed {
             notes.push(building.description().into());
@@ -144,41 +233,33 @@ impl GameState {
             let city_index = self.cities.iter().position(|c| c.id == owner.id).unwrap();
             match building {
                 Building::WorkCamp => notes.push(
-                    if self.routes(city_index).costs.contains_key(&hex) {
-                        "WORK CAMP CONNECTED: NEARBY JOBS USE THIS BASE"
+                    if self.known_routes(city_index, &fog).costs.contains_key(&hex) {
+                        "CONNECTED"
                     } else {
-                        "WORK CAMP CUT OFF: WORKERS START AT CITY"
+                        "CUT OFF FROM ITS CITY"
                     }
                     .into(),
                 ),
-                Building::Smelter => notes.push(format!(
-                    "SMELTER {} PRODUCTION/T",
+                // Another side's Smelter makes what its city's worked tiles
+                // and routes give it: not known.
+                Building::Smelter if owner.team == self.local_team => notes.push(format!(
+                    "{} METAL A TURN",
                     signed_quantity(self.smelter_income(city_index))
                 )),
                 Building::Railhead => notes.push(
                     if self.rail_connected(city_index, Some(&fog)) {
-                        "RAIL LINK OPEN: CITY-RING TROOPS CAN MOVE HERE"
+                        "RAIL LINK OPEN"
                     } else {
-                        "RAIL LINK CUT: BUILD A CONTINUOUS ROAD"
+                        "RAIL LINK CUT: NEEDS A ROAD TO THE CITY"
                     }
                     .into(),
                 ),
                 _ => {}
             }
         }
-        if let Some(open) = self.selected_city
-            && let Some(building) = Building::PLACEABLE
-                .into_iter()
-                .find(|building| self.cities[open].planned_sites.get(building) == Some(&hex))
-        {
-            notes.push(format!(
-                "{} PLANNED: CLICK CENTER BADGE TO MOVE",
-                building.name()
-            ));
-        }
         if tile.defense_multiplier() != 1.0 {
             let bonus = (tile.defense_multiplier() - 1.0) * 100.0;
-            notes.push(format!("+{bonus:.0}% DEFENSE FOR UNITS HERE"));
+            notes.push(format!("+{bonus:.0}% DEFENSE"));
         }
         let (site, road) = match memory {
             Some(seen) => (seen.site, seen.road),
@@ -191,10 +272,10 @@ impl GameState {
             notes.push(format!("{team:?} {label}").to_uppercase());
         }
         if road {
-            notes.push("ROAD: GOODS TRAVEL CHEAPER".into());
+            notes.push("ROAD".into());
         }
         if let Some(resource) = self.grid.resource(hex) {
-            notes.push(format!("{} RESOURCE", resource.name()));
+            notes.push(resource.name().into());
         }
         if let Some(special) = self.grid.special(hex) {
             let (food, production) = special.bonus();
@@ -203,19 +284,11 @@ impl GameState {
                 .filter(|&(amount, _)| amount > 0)
                 .map(|(amount, what)| format!("+{amount} {what}"))
                 .collect();
-            notes.push(format!(
-                "{}: {} WHEN WORKED",
-                special.name(),
-                gains.join(" ")
-            ));
+            notes.push(format!("{} {}", special.name(), gains.join(" ")));
         }
         notes.extend(self.ruin_notes(hex, memory.is_some()));
-        if let Some(worker) = self
-            .cities
-            .iter()
-            .filter(visible)
-            .find(|c| c.worked.contains(&hex))
-        {
+        notes.extend(self.den_notes(hex, memory.is_some()));
+        if let Some(worker) = self.cities.iter().filter(visible).find(|c| c.works(hex)) {
             notes.push(format!("WORKED BY CITY {}", worker.id + 1));
         }
         if let Some(open) = self.selected_city
@@ -223,12 +296,20 @@ impl GameState {
         {
             let city = &self.cities[open];
             match self.known_routes(open, &fog).costs.get(&hex) {
-                Some(&cost) => notes.push(format!(
-                    "FOOD {}% / PRODUCTION {}% REACHES CITY {}",
-                    self.mill_food_share(open, hex, cost) * 25,
-                    delivered_share(cost) * 25,
-                    city.id + 1
-                )),
+                Some(&cost) => {
+                    let (food, rest) =
+                        (self.mill_food_share(open, hex, cost), delivered_share(cost));
+                    notes.push(if food == rest {
+                        format!("{}% REACHES CITY {}", rest * 25, city.id + 1)
+                    } else {
+                        format!(
+                            "FOOD {}%, REST {}% REACHES CITY {}",
+                            food * 25,
+                            rest * 25,
+                            city.id + 1
+                        )
+                    })
+                }
                 None => notes.push(format!("OUT OF CITY {}'S REACH", city.id + 1)),
             }
         }
@@ -250,6 +331,33 @@ impl GameState {
                 .into_iter()
                 .map(|note| (SMALL, vec![(note, DIM_TEXT)])),
         );
+        lines
+    }
+
+    /// The attack preview in words (`attack_preview`), for the hovered
+    /// tile's tooltip: the damage the target would take, the retaliation,
+    /// and that it holds only if an enemy target stays and does nothing.
+    pub(super) fn attack_preview_lines(&self) -> Vec<(u32, Line)> {
+        let Some(preview) = self.attack_preview() else {
+            return Vec::new();
+        };
+        let lethal = |lethal: bool| if lethal { ", LETHAL" } else { "" };
+        let (dealt, kills) = preview.dealt();
+        let mut lines = vec![(
+            SMALL,
+            vec![(format!("{dealt:.0} DAMAGE{}", lethal(kills)), REDUCED_TEXT)],
+        )];
+        let back = preview.retaliation();
+        if back > 0.0 {
+            let dies = preview.losses.iter().any(|l| !l.target_side && l.lethal());
+            lines.push((
+                SMALL,
+                vec![(format!("RETALIATION {back:.0}{}", lethal(dies)), GOLD_TEXT)],
+            ));
+        }
+        if preview.if_it_stays {
+            lines.push((SMALL, vec![("IF IT STAYS".into(), DIM_TEXT)]));
+        }
         lines
     }
 
@@ -319,14 +427,27 @@ impl GameState {
         }
     }
 
-    /// A tooltip's title (with the shortcut), description, and why the
-    /// button is unavailable, if it is.
+    /// A classic button's tooltip: `subject_tooltip_lines` for the
+    /// selection.
     pub(super) fn tooltip_lines(&self, button: &Button) -> Vec<(u32, Line)> {
+        self.subject_tooltip_lines(button.target, &button.label, self.selection_subject())
+    }
+
+    /// A tooltip's title (with the shortcut), description, and why the
+    /// button for `target` (labelled `label`) is unavailable, if it is, for
+    /// the unit or city `subject` names.
+    pub(super) fn subject_tooltip_lines(
+        &self,
+        target: Target,
+        label: &str,
+        subject: Subject,
+    ) -> Vec<(u32, Line)> {
+        let city = subject.city;
         let (title, shortcut, description, unavailable): (String, String, String, Option<String>) =
-            match button.target {
+            match target {
                 Target::Unit(action) => {
                     // A group's buttons are described for its first member.
-                    let Some(idx) = self.selected.or(self.group.first().copied()) else {
+                    let Some(idx) = subject.unit else {
                         return Vec::new();
                     };
                     let (title, shortcut, description, unavailable) =
@@ -337,68 +458,81 @@ impl GameState {
                     build.name().into(),
                     build.shortcut().to_string(),
                     format!(
-                        "{}. {} PRODUCTION.",
+                        "{}. {}{}",
                         build.description(),
-                        quantity(build.cost())
+                        self.price_text(Build::Unit(build), false, city),
+                        self.supply_note(Build::Unit(build))
                     ),
-                    None,
+                    self.city_build_unavailable(Build::Unit(build), city),
                 ),
                 Target::Building(building) => (
                     building.name().into(),
-                    if building.shortcut() == ' ' { "CITY BUILD MENU".into() } else { building.shortcut().to_string() },
+                    if building.shortcut() == ' ' {
+                        "CITY BUILD MENU".into()
+                    } else {
+                        building.shortcut().to_string()
+                    },
                     format!(
-                        "{} COSTS {} PRODUCTION. ONE PER CITY.",
+                        "{} {} {}",
                         building.description(),
-                        quantity(building.cost())
+                        stock_icons(building.price()),
+                        turns_icon(building.turns())
                     ),
-                    None,
+                    city.and_then(|city| self.job_kind_unavailable(city, JobKind::Build(building))),
                 ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
                     "BARRACKS".into(),
                     format!(
-                        "{} COSTS {} PRODUCTION FROM THE ACTIVE MANAGER'S WORK GROUP.",
+                        "{}. {}{}{}",
                         build.description(),
-                        quantity(build.cost())
+                        self.price_text(Build::Unit(build), true, city),
+                        self.special_note(build),
+                        self.supply_note(Build::Unit(build))
                     ),
-                    None,
+                    city.and_then(|city| self.barracks_lock(city, build))
+                        .or_else(|| self.shortfall_text(Build::Unit(build), city)),
                 ),
                 Target::OpenBarracks => (
                     "SEE BARRACKS".into(),
                     "CLICK".into(),
-                    "OPENS THE BARRACKS' OWN TRAINING AND QUEUE PANEL.".into(),
+                    "ITS TRAINING AND QUEUE.".into(),
                     None,
                 ),
                 Target::OpenCity => (
                     "OPEN CITY".into(),
                     "CLICK".into(),
-                    "RETURNS TO THIS CITY'S LABOR AND MAIN PRODUCTION PANEL.".into(),
+                    "BACK TO THE CITY.".into(),
                     None,
                 ),
                 Target::OpenInterior => (
                     "CITY INTERIOR".into(),
                     "V".into(),
-                    "ENTER THE CITY'S TACTICAL MAP. YOU CAN ALSO CLICK ITS CENTER HEX FROM CITY VIEW.".into(),
+                    "THE CITY'S TACTICAL MAP.".into(),
                     None,
                 ),
                 Target::InteriorClear => (
                     "CLEAR INTERIOR ORDERS".into(),
                     "BACKSPACE".into(),
-                    "REMOVES THE SELECTED COPY'S MOVE AND ATTACK FOR THIS TURN.".into(),
+                    "DROPS THIS COPY'S ORDERS.".into(),
                     None,
                 ),
                 Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => (
                     "REMOVE".into(),
                     "CLICK".into(),
-                    "REMOVING THE ACTIVE ITEM LOSES ITS PRODUCTION.".into(),
+                    "REFUNDED IF IT WAS PAID FOR (WORK ON IT STARTED). ITS WORK IS LOST.".into(),
                     None,
                 ),
-                Target::WorkerJobRemove(_) => (
-                    "REMOVE".into(),
+                Target::ClearCityQueue | Target::ClearBarracksQueue => (
+                    "CLEAR QUEUE".into(),
                     "CLICK".into(),
-                    "TAKES THIS JOB OFF THE CITY'S WORKER LIST.".into(),
-                    None,
+                    "TAKES EVERY ITEM OFF, EACH REFUNDED AS ITS X WOULD. THEIR WORK IS LOST.".into(),
+                    self.is_resolving()
+                        .then(|| "NOT WHILE THE TURN PLAYS OUT".into()),
                 ),
+                Target::WorkerJobRemove(_) => {
+                    ("REMOVE".into(), "CLICK".into(), "REFUNDED.".into(), None)
+                }
                 // Unit strip tokens aren't buttons: their help is in the strip.
                 Target::RosterSelect(_) | Target::RosterAdd(_) | Target::RosterRemove(_) => {
                     return Vec::new();
@@ -406,19 +540,25 @@ impl GameState {
                 Target::ShowWorker(_) => (
                     "WORKER".into(),
                     "CLICK".into(),
-                    "SHOW THIS WORKER ON THE MAP.".into(),
+                    "SHOW IT ON THE MAP.".into(),
                     None,
                 ),
                 Target::QueueItem(..) => (
                     "QUEUED".into(),
                     "CLICK · DRAG".into(),
-                    "CLICK TO SHOW IT ON THE MAP; DRAG TO REORDER.".into(),
+                    "CLICK: SHOW IT. DRAG: REORDER.".into(),
                     None,
                 ),
                 Target::RecallWorker(_) => (
                     "RECALL".into(),
                     "CLICK".into(),
-                    "THE WORKER HEADS STRAIGHT HOME, 1 TILE A TURN, WHERE IT'S SAFE. ITS JOB GOES BACK ON TOP OF THE CITY'S LIST."
+                    "SENDS IT HOME TO STAY UNTIL RELEASED. ITS JOB WAITS ON THE LIST.".into(),
+                    None,
+                ),
+                Target::ReleaseWorker => (
+                    "RELEASE".into(),
+                    "CLICK".into(),
+                    "A WORKER HELD AT HOME GOES BACK TO WORK: IT TAKES THE NEXT JOB ON THE LIST."
                         .into(),
                     None,
                 ),
@@ -426,8 +566,43 @@ impl GameState {
                     "WORKER".into(),
                     WORKER_SHORTCUT.to_string(),
                     format!(
-                        "JOINS THE CITY'S WORKERS, WHO GO OUT TO BUILD WHAT YOU ORDER FROM A TILE. {} PRODUCTION.",
-                        quantity(WORKER_COST)
+                        "BUILDS WHAT THE CITY PLACES. {}",
+                        self.price_text(Build::Worker, false, city)
+                    ),
+                    self.shortfall_text(Build::Worker, city),
+                ),
+                Target::BuildScout => (
+                    "SCOUT".into(),
+                    SCOUT_SHORTCUT.to_string(),
+                    format!(
+                        "SEES FAR, MOVES FAST; NOT A TROOP, SO NO BARRACKS. ONE AT A TIME. {}{}",
+                        self.price_text(Build::Scout, false, city),
+                        self.supply_note(Build::Scout)
+                    ),
+                    self.city_build_unavailable(Build::Scout, city),
+                ),
+                Target::BuildSettler => (
+                    "SETTLER".into(),
+                    SETTLER_SHORTCUT.to_string(),
+                    format!(
+                        "FOUNDS A CITY (F) {MIN_CITY_DISTANCE} HEXES OR MORE FROM ANY OTHER. \
+                         NEEDS POPULATION {SETTLER_MIN_POPULATION}, AND TAKES A CITIZEN WHEN DONE. {}",
+                        self.price_text(Build::Settler, false, city)
+                    ),
+                    self.city_build_unavailable(Build::Settler, city),
+                ),
+                Target::Grow => (
+                    "GROW".into(),
+                    GROW_SHORTCUT.to_string(),
+                    format!("ONE MORE CITIZEN. {}", self.price_text(Build::Grow, false, city)),
+                    self.shortfall_text(Build::Grow, city),
+                ),
+                Target::Gather => (
+                    "GATHER".into(),
+                    GATHER_SHORTCUT.to_string(),
+                    format!(
+                        "SPEND A TURN GATHERING: {}. FREE.",
+                        stock_icons(GATHER_YIELD)
                     ),
                     None,
                 ),
@@ -439,23 +614,30 @@ impl GameState {
                         _ => "CLICK".into(),
                     },
                     format!(
-                        "{} {} TURN{} OF WORK ONCE A WORKER GETS THERE.",
+                        "{} {} {}",
                         kind.description(),
-                        kind.turns(),
-                        if kind.turns() == 1 { "" } else { "S" }
+                        stock_icons(kind.price()),
+                        turns_icon(kind.turns() as i32)
                     ),
+                    city.and_then(|city| self.job_kind_unavailable(city, kind)),
+                ),
+                Target::CancelPlacing => (
+                    "CANCEL PLACING".into(),
+                    "ESC · RIGHT-CLICK".into(),
+                    "STOPS PLACING, LEAVING THE CITY OPEN. NOTHING IS PLACED OR PAID.".into(),
                     None,
                 ),
-                Target::Focus(focus) => (
-                    format!("{} FOCUS", focus.name()),
-                    "AUTO".into(),
-                    "REASSIGNS CITY LABOR WITH THIS AS ITS DEFAULT PRIORITY.".into(),
-                    None,
-                ),
-                Target::ConfirmBuilding(building) => (
-                    format!("CONFIRM {}", building.name()),
-                    "CLICK".into(),
-                    "FINALIZES THE SELECTED BUILDING SITE.".into(),
+                Target::Priority(good) => (
+                    match action_icons::badge(label) {
+                        Some(rank) => format!("{} · PRIORITY {rank}", good.name()),
+                        None => good.name().into(),
+                    },
+                    "CLICK · DRAG".into(),
+                    "CITIZENS WORK THE TILES WORTH THE MOST, EACH GOOD COUNTING BY ITS PLACE: \
+                     1ST ×9, 2ND ×3, 3RD ×1. FOOD COMES FIRST UNTIL THE CITY'S TILES FEED ITS \
+                     CITIZENS WITH 1 TO SPARE. CLICK: PUT IT FIRST. DRAG ONTO ANOTHER: MOVE IT \
+                     THERE. EITHER REASSIGNS THE CITIZENS."
+                        .into(),
                     None,
                 ),
                 Target::Scenario(scenario) => (
@@ -465,9 +647,9 @@ impl GameState {
                         Scenario::Combat => "FOUR UNITS A SIDE ACROSS A MOUNTAIN PASS.",
                         Scenario::Cities => "TWO ESTABLISHED CITIES WITH ARMIES.",
                         Scenario::Frontier => "A SETTLER AND A SCOUT EACH. BOTH SCOUTS ARE YOURS.",
-                        Scenario::World => "A NEW RANDOM CONTINENT EVERY PRESS, YOURS ALONE: NO AI OPPONENT.",
-                        Scenario::Siege => "OPPOSING FIELD TROOPS ALREADY FIGHT INSIDE A CITY.",
-                        Scenario::Naval => "COASTAL CITIES, SHIPS AND BATTERIES FOR NAVAL PLAYTESTING.",
+                        Scenario::World => "A NEW RANDOM WORLD EVERY PRESS.",
+                        Scenario::Siege => "A FIGHT ALREADY INSIDE A CITY.",
+                        Scenario::Naval => "COASTAL CITIES, SHIPS AND BATTERIES.",
                     }
                     .into(),
                     None,
@@ -475,7 +657,7 @@ impl GameState {
                 Target::SaveState => (
                     "SAVE".into(),
                     "F6".into(),
-                    "SNAPSHOTS THE WHOLE GAME UNTIL IT CLOSES.".into(),
+                    "SNAPSHOTS THE GAME.".into(),
                     self.is_resolving()
                         .then(|| "NOT WHILE A TURN PLAYS OUT".to_string()),
                 ),
@@ -488,19 +670,32 @@ impl GameState {
                         .then(|| "NOTHING SAVED YET".to_string()),
                 ),
                 Target::CompleteProduction => (
-                    "COMPLETE PRODUCTION".into(),
+                    "FINISH BUILD".into(),
                     "F9".into(),
-                    "INSTANTLY FINISHES THE CURRENT CITY BUILD OR BARRACKS UNIT FOR TESTING."
-                        .into(),
+                    "FINISHES THE CURRENT BUILD NOW.".into(),
                     None,
                 ),
                 Target::TogglePlayback => (
                     "PLAYBACK".into(),
                     "F8".into(),
-                    "STEP BY STEP OR ALL AT ONCE. THE OUTCOME IS THE SAME.".into(),
+                    "STEP BY STEP OR ALL AT ONCE.".into(),
                     None,
                 ),
                 Target::ToggleFog => ("FOG OF WAR".into(), "F10".into(), String::new(), None),
+                Target::ToggleProductionSpeedup => (
+                    "PRODUCTION SPEEDS BUILDS".into(),
+                    "DEBUG".into(),
+                    "ON: A CITY'S WOOD AND METAL INCOME SPEEDS ITS QUEUE.".into(),
+                    None,
+                ),
+                Target::ToggleLifetimeCap => (
+                    "CAVALRY AND ARMORED CAP".into(),
+                    "DEBUG".into(),
+                    format!(
+                        "{UNITS_PER_DEPOSIT} PER DEPOSIT. ALIVE: COUNTS LIVING ONES. EVER: COUNTS ALL TRAINED."
+                    ),
+                    None,
+                ),
                 Target::SetSetting(setting, value) => {
                     let current = self.settings.get(setting);
                     let valid = setting.range().contains(&value);
@@ -516,40 +711,86 @@ impl GameState {
                             .then(|| format!("ALREADY {}", setting.value_text(current))),
                     )
                 }
-                Target::WorkerMode => (
-                    "WORKERS".into(),
-                    "W".into(),
-                    "THE WORKER MENU: PICK A JOB, THEN PLACE IT ON THE MAP WHERE YOUR WORKERS REACH.".into(),
-                    None,
-                ),
-                Target::WorkerCity(city) => (
-                    format!("CITY {}", self.cities.get(city).map_or(0, |c| c.id + 1)),
+                Target::OpenSettings => (
+                    "SETTINGS".into(),
                     String::new(),
-                    "LIST THIS CITY'S WORKERS AND JOBS.".into(),
+                    "GAME OPTIONS.".into(),
                     None,
                 ),
-                Target::SleepWorkers => (
-                    "SLEEP".into(),
-                    "SPACE".into(),
-                    "THIS CITY'S IDLE WORKERS REST THIS TURN, AND THE TURN MOVES ON.".into(),
-                    None,
-                ),
-                Target::CloseSettings => (
-                    "CLOSE SETTINGS".into(),
-                    "ESC".into(),
+                Target::CloseSettings => {
+                    ("CLOSE SETTINGS".into(), "ESC".into(), String::new(), None)
+                }
+                Target::Quit => ("QUIT".into(), String::new(), String::new(), None),
+                Target::OpenMultiplayer => (
+                    "MULTIPLAYER".into(),
                     String::new(),
+                    "HOST A GAME ON THE NETWORK, OR JOIN ONE.".into(),
                     None,
                 ),
-                Target::Quit => (
-                    "QUIT".into(),
+                Target::CloseMultiplayer => (
+                    "BACK".into(),
                     String::new(),
-                    "CLOSES THE GAME.".into(),
+                    "BACK TO THE SETTINGS.".into(),
+                    None,
+                ),
+                Target::NetPlayers(players) => (
+                    "PLAYERS".into(),
+                    players.to_string(),
+                    "HOW MANY PEOPLE PLAY, YOU INCLUDED. THE AI PLAYS THE OTHER SIDES.".into(),
+                    None,
+                ),
+                Target::EditNetField(field) => (
+                    field.name().into(),
+                    "CLICK".into(),
+                    "CLICK, THEN TYPE OR PASTE (CTRL+V). ENTER WHEN DONE.".into(),
+                    None,
+                ),
+                Target::HostGame => (
+                    "HOST GAME".into(),
+                    String::new(),
+                    "STARTS A NEW WORLD FOR THIS MANY PLAYERS AND SHOWS THE JOIN CODE TO GIVE THEM. THEY NEED YOUR ADDRESS AND THE PORT OPEN.".into(),
+                    self.net_menu.busy.then(|| "JOINING A GAME".into()),
+                ),
+                Target::JoinGame => (
+                    "JOIN GAME".into(),
+                    String::new(),
+                    "JOINS THE GAME HOSTED AT THIS ADDRESS (HOST OR HOST:PORT) WITH THE CODE IT SHOWS.".into(),
+                    self.net_menu.busy.then(|| "ALREADY JOINING".into()),
+                ),
+                Target::LeaveGame => (
+                    "LEAVE GAME".into(),
+                    String::new(),
+                    if self.join_code().is_some() {
+                        "ENDS THE GAME FOR EVERYONE AND STARTS A NEW ONE OF YOUR OWN.".into()
+                    } else {
+                        "THE AI PLAYS YOUR SIDE; YOU START A NEW GAME OF YOUR OWN.".into()
+                    },
+                    None,
+                ),
+                Target::CopyJoinCode => (
+                    "COPY JOIN CODE".into(),
+                    String::new(),
+                    "PUTS THE JOIN CODE ON THE CLIPBOARD, TO SEND TO THE OTHER PLAYERS.".into(),
+                    None,
+                ),
+                Target::CopyHostAddress => (
+                    "COPY ADDRESS".into(),
+                    String::new(),
+                    "PUTS YOUR ADDRESS ON THE LOCAL NETWORK ON THE CLIPBOARD. PLAYERS OVER THE INTERNET NEED YOUR PUBLIC IP INSTEAD.".into(),
                     None,
                 ),
                 Target::ToggleYields => (
                     "YIELDS".into(),
                     "Y".into(),
-                    "TILE YIELDS AROUND THIS CITY, AND THE SHARE THAT REACHES IT.".into(),
+                    "TILE YIELDS AND DELIVERY SHARES.".into(),
+                    None,
+                ),
+                Target::EndTurn if self.waiting_for_peers() => (
+                    "TAKE BACK END TURN".into(),
+                    "CLICK".into(),
+                    "YOUR ORDERS ARE SENT. TAKE THEM BACK TO CHANGE THEM, THEN END THE TURN AGAIN: \
+                     UNTIL EVERYONE HAS ENDED IT."
+                        .into(),
                     None,
                 ),
                 Target::EndTurn => (
@@ -563,6 +804,13 @@ impl GameState {
                     None,
                 ),
             };
+        // With the plan sent, this is why a button that would change it is
+        // off, whatever else might be.
+        let unavailable = if self.plan_frozen() && target.changes_plan() {
+            Some(PLAN_SENT.to_string())
+        } else {
+            unavailable
+        };
 
         let mut lines = vec![(
             BODY,
@@ -592,18 +840,13 @@ impl GameState {
             UnitAction::Move => (
                 "MOVE".into(),
                 "M OR CLICK",
-                "NEXT CLICK ON A GREEN HEX MOVES THERE. CLICK IT AGAIN TO CANCEL. \
-                 SHIFT-CLICK QUEUES A MOVE FOR ONE MORE TURN."
-                    .into(),
+                "CLICK A GREEN HEX. SHIFT-CLICK QUEUES LATER TURNS.".into(),
                 cannot_move,
             ),
             UnitAction::Attack => (
                 "ATTACK".into(),
                 "X OR RIGHT-CLICK",
-                "NEXT CLICK ATTACKS A HEX IN RANGE, HITTING WHOEVER IS THERE WHEN IT LANDS. \
-                 RANGE COUNTS FROM WHERE THE UNIT ENDS ITS MOVE. SHIFT-RIGHT-CLICK QUEUES \
-                 AN ATTACK FOR A LATER TURN."
-                    .into(),
+                "CLICK A HEX IN RANGE OF WHERE IT ENDS ITS MOVE.".into(),
                 if locked {
                     Some("LOCKED IN A CONTESTED HEX".into())
                 } else if !unit.can_attack() {
@@ -615,7 +858,7 @@ impl GameState {
             UnitAction::Swap => (
                 "SWAP".into(),
                 "CTRL-CLICK",
-                "NEXT CLICK ON AN ADJACENT ALLY SWAPS PLACES WITH IT.".into(),
+                "CLICK AN ADJACENT ALLY.".into(),
                 if locked {
                     Some("LOCKED IN A CONTESTED HEX".into())
                 } else {
@@ -626,44 +869,267 @@ impl GameState {
                 let (name, description) = ability_text(unit);
                 let description = match unit.ability().cooldown() {
                     0 => format!("{description}."),
-                    turns => format!("{description}. COOLDOWN {}.", turns_text(turns)),
+                    turns => format!("{description}. COOLDOWN {}", turns_text(turns)),
                 };
                 let unavailable = (unit.ability_cooldown > 0)
                     .then(|| format!("READY IN {}", turns_text(unit.ability_cooldown)));
                 (name.into(), "Q", description, unavailable)
             }
-            UnitAction::Hold => (
-                "HOLD".into(),
-                "SPACE",
-                "SKIPS THIS UNIT FOR THE TURN, KEEPING ANY QUEUED ORDERS. PRESS AGAIN ON A HOLDING UNIT TO PUT IT BACK IN THE TURN ORDER; ANY NEW ORDER ENDS THE HOLD TOO.".into(),
-                None,
-            ),
+            UnitAction::Hold => ("HOLD".into(), "SPACE", "SKIP IT THIS TURN.".into(), None),
             UnitAction::Guard => (
                 "GUARD".into(),
                 "G",
-                "SKIPS THIS UNIT EVERY TURN UNTIL IT'S GIVEN AN ORDER.".into(),
+                "SKIP IT UNTIL IT'S GIVEN AN ORDER.".into(),
                 None,
             ),
-            UnitAction::Disband => (
-                "DISBAND".into(),
-                "DEL",
-                "REMOVES THIS UNIT FOR GOOD. PRESS TWICE: THE FIRST PRESS ASKS TO CONFIRM.".into(),
-                None,
+            UnitAction::Alert => (
+                "ALERT".into(),
+                "E",
+                "STAYS PUT AND ATTACKS THE NEAREST ENEMY IN RANGE EACH TURN, UNTIL IT'S GIVEN \
+                 AN ORDER."
+                    .into(),
+                if unit.alert || self.can_go_on_alert(idx) {
+                    None
+                } else if unit.unit_type == crate::game::unit::UnitType::Siege {
+                    Some("SET IT UP FIRST".into())
+                } else {
+                    Some("ONLY TROOPS THAT FIGHT ON LAND".into())
+                },
             ),
+            UnitAction::Disband => ("DISBAND".into(), "DEL", "REMOVES IT FOR GOOD.".into(), None),
             UnitAction::Settle => (
                 "FOUND CITY".into(),
                 "F",
-                "AT LEAST 3 HEXES FROM ANY OTHER CITY.".into(),
+                format!(
+                    "HERE: OPEN LAND, NOT RUINS, {MIN_CITY_DISTANCE} OR MORE HEXES FROM ANY CITY."
+                ),
                 None,
             ),
             UnitAction::ClearOrders => (
                 "CLEAR ORDERS".into(),
                 "CTRL-RIGHT-CLICK",
-                "DROPS EVERY SELECTED UNIT'S ORDERS: MOVES, ATTACKS, QUEUED TURNS, HOLD AND \
-                 GUARD."
-                    .into(),
+                "DROPS ALL ITS ORDERS AND QUEUED TURNS.".into(),
                 None,
             ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::builder::{PanelBuilder, Row};
+    use super::super::text::price_hint;
+    use crate::game::GameState;
+    use crate::game::city::{Build, BuildUnit, Building, Lane, Queued, Site};
+    use crate::game::hex::Hex;
+    use crate::game::unit::{Team, Unit, UnitType};
+
+    /// The words of a tile's tooltip and, for a city or Barracks, its
+    /// hover panel: what the player is shown of `hex`.
+    fn shown(game: &GameState, hex: Hex) -> Vec<String> {
+        let mut words: Vec<String> = game
+            .tile_tooltip_lines(hex)
+            .into_iter()
+            .map(|(_, line)| line.into_iter().map(|(s, _)| s).collect())
+            .collect();
+        let structure = game.cities.iter().enumerate().find_map(|(i, c)| {
+            (c.pos == hex)
+                .then_some((i, false))
+                .or_else(|| (c.barracks == Some(hex)).then_some((i, true)))
+        });
+        if let Some((city, barracks)) = structure {
+            let mut panel = PanelBuilder::default();
+            game.structure_hover_panel(city, barracks, &mut panel);
+            words.extend(panel.rows.into_iter().filter_map(|row| match row {
+                Row::Text(_, line) => Some(line.into_iter().map(|(s, _)| s).collect()),
+                _ => None,
+            }));
+        }
+        words
+    }
+
+    /// The Cities scenario with no units, Red's city given a Smelter and a
+    /// Barracks beside it and a mine for the Smelter, and a Blue Scout that
+    /// sees the city, Smelter and Barracks but neither the mine nor a tile
+    /// the city works. Returns the game, Red's city, the Smelter, the
+    /// Barracks, the mine and the worked tile out of sight.
+    fn enemy_city_half_in_sight() -> (GameState, usize, Hex, Hex, Hex, Hex) {
+        let mut base = GameState::city_scenario();
+        base.units.clear();
+        base.selected = None;
+        base.selected_city = None;
+        base.memory.clear();
+        let red = base
+            .cities
+            .iter()
+            .position(|c| c.team == Team::Red)
+            .unwrap();
+        let pos = base.cities[red].pos;
+        let open = |game: &GameState, h: Hex| {
+            game.grid.contains(h)
+                && game.grid.terrain(h).is_workable()
+                && !game.sites.contains_key(&h)
+                && !game.cities.iter().any(|c| c.pos == h || c.works(h))
+        };
+        let hexes: Vec<Hex> = base.grid.all_hexes().collect();
+        let near: Vec<Hex> = pos
+            .neighbors()
+            .into_iter()
+            .filter(|&h| open(&base, h))
+            .collect();
+        for (smelter, barracks) in near.iter().flat_map(|&s| near.iter().map(move |&b| (s, b))) {
+            if smelter == barracks {
+                continue;
+            }
+            for &scout in &hexes {
+                if !open(&base, scout) || scout == smelter || scout == barracks {
+                    continue;
+                }
+                let mut game = base.clone();
+                game.cities[red].set_placed_site(Building::Smelter, smelter);
+                game.cities[red].set_placed_site(Building::Barracks, barracks);
+                game.units
+                    .push(Unit::new(50, scout, Team::Blue, UnitType::Scout));
+                game.explore();
+                let fog = game.fog();
+                if ![pos, smelter, barracks].iter().all(|&h| fog.sees(h)) {
+                    continue;
+                }
+                let Some(worked) = game.cities[red].worked().find(|&h| !fog.sees(h)) else {
+                    continue;
+                };
+                let routes = game.routes_from(Team::Red, smelter);
+                let Some(mine) = hexes.iter().copied().find(|&h| {
+                    open(&game, h)
+                        && !fog.sees(h)
+                        && (1..=3).contains(&smelter.distance(h))
+                        && routes.costs.contains_key(&h)
+                }) else {
+                    continue;
+                };
+                game.sites.insert(
+                    mine,
+                    Site {
+                        team: Team::Red,
+                        food: 0,
+                        production: 4,
+                        label: "MINE",
+                    },
+                );
+                assert!(game.smelter_income(red) > 0);
+                return (game, red, smelter, barracks, mine, worked);
+            }
+        }
+        panic!("no place for a Scout that sees Red's city but not all its tiles");
+    }
+
+    #[test]
+    fn an_enemy_citys_tooltips_do_not_change_with_what_the_player_cant_see() {
+        let (game, red, smelter, barracks, mine, worked) = enemy_city_half_in_sight();
+        let pos = game.cities[red].pos;
+        let read = |game: &GameState| [pos, smelter, barracks].map(|h| shown(game, h));
+        let before = read(&game);
+        let real = |game: &GameState| {
+            (
+                game.net_delivery(red),
+                game.smelter_income(red),
+                game.queue_word(red, Lane::City, "NOTHING"),
+                game.queue_word(red, Lane::Barracks, "EMPTY"),
+            )
+        };
+        // What the player can see still shows.
+        let pop = format!("POP {}/", game.cities[red].population);
+        assert!(before[0].iter().any(|s| s.starts_with(&pop)), "{before:?}");
+        assert!(before[2].iter().any(|s| s.starts_with("HP ")), "{before:?}");
+
+        // An unseen Green unit on the worked tile, another on the mine: goods
+        // from neither get through.
+        let mut blocked = game.clone();
+        for (id, hex) in [(60, worked), (61, mine)] {
+            blocked
+                .units
+                .push(Unit::new(id, hex, Team::Green, UnitType::Melee));
+        }
+        // The worked tile out of sight yields more.
+        let mut richer = game.clone();
+        richer.sites.insert(
+            worked,
+            Site {
+                team: Team::Red,
+                food: 9,
+                production: 9,
+                label: "FARM",
+            },
+        );
+        // Red queues something in each queue.
+        let mut queued = game.clone();
+        queued.cities[red]
+            .queue
+            .push(Queued::prepaid(Build::Unit(BuildUnit::Melee)));
+        queued.cities[red]
+            .barracks_queue
+            .push(Queued::prepaid(BuildUnit::Ranged));
+
+        let (delivers, smelts, building, training) = real(&game);
+        let (blocked_delivers, blocked_smelts, ..) = real(&blocked);
+        assert_ne!(blocked_delivers, delivers);
+        assert_ne!(blocked_smelts, smelts);
+        assert_ne!(real(&richer).0, delivers);
+        let (.., queued_building, queued_training) = real(&queued);
+        assert_ne!(queued_building, building);
+        assert_ne!(queued_training, training);
+        for (name, hidden) in [("blocked", blocked), ("richer", richer), ("queued", queued)] {
+            assert_eq!(read(&hidden), before, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_enemy_city_out_of_sight_shows_the_population_it_was_seen_with() {
+        let (mut game, red, _, barracks, ..) = enemy_city_half_in_sight();
+        let pos = game.cities[red].pos;
+        let population = game.cities[red].population;
+        // The Scout leaves; the city grows and its Barracks is hurt.
+        game.units.clear();
+        game.explore();
+        assert!(!game.fog().sees(pos) && !game.fog().sees(barracks));
+        game.cities[red].population += 3;
+        game.cities[red].barracks_hp /= 2.0;
+        let city = shown(&game, pos);
+        let pop = format!("POP {population}/");
+        assert!(city.iter().any(|s| s.starts_with(&pop)), "{city:?}");
+        let max = crate::game::city::BARRACKS_MAX_HP;
+        let hp = format!("HP {max:.0}/{max:.0}");
+        let seen = shown(&game, barracks);
+        assert!(seen.iter().any(|s| s == &hp), "{seen:?}");
+    }
+
+    #[test]
+    fn the_players_own_city_tooltips_still_show_its_economy() {
+        let (mut game, red, smelter, barracks, ..) = enemy_city_half_in_sight();
+        // The same city, now the player's.
+        game.local_team = Team::Red;
+        game.cities[red]
+            .queue
+            .push(Queued::prepaid(Build::Unit(BuildUnit::Melee)));
+        let city = shown(&game, game.cities[red].pos);
+        let delivers = format!("DELIVERS {}", price_hint(game.net_delivery(red)));
+        for expected in [delivers.as_str(), "BUILDING ", "QUEUE: "] {
+            assert!(
+                city.iter().any(|s| s.contains(expected)),
+                "{expected} {city:?}"
+            );
+        }
+        let smelts = shown(&game, smelter);
+        assert!(
+            smelts.iter().any(|s| s.ends_with("METAL A TURN")),
+            "{smelts:?}"
+        );
+        let trains = shown(&game, barracks);
+        for expected in ["TRAINING: ", "QUEUE: "] {
+            assert!(
+                trains.iter().any(|s| s.contains(expected)),
+                "{expected} {trains:?}"
+            );
         }
     }
 }

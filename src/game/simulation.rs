@@ -1,18 +1,31 @@
 //! Whole-game simulation tests: both teams planned by the AI, every turn resolved through the
 //! same path the game uses, and the board's invariants checked after each turn.
 //!
-//! Every game is seeded (`GameState::seed_rng`: damage rolls and the F4 world's map), so a
+//! Every game is seeded (`GameState::seed_rng`: the F4 world's map; combat has no rolls), so a
 //! failure names its scenario, seed and turn, and replays exactly:
 //! `SIM_SEED=<seed> cargo test simulation`. `SIM_SEEDS=<n>` plays seeds `0..n` instead of
-//! `DEFAULT_SEEDS`, to hunt for failures.
+//! `DEFAULT_SEEDS`, to hunt for failures. `SIM_SPEEDUP=1` plays them with production speeding
+//! builds (the stockpile economy's variant, `docs/rts-economy.md`), `SIM_LIFETIME_CAP=1` with
+//! the Cavalry and Armored cap counting every one ever trained. `economy_report` (in
+//! `economy.rs`, ignored by default) measures how the stockpile economy runs, and says how to
+//! run it.
 
-use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use super::city::{Build, CORE_HP, MAX_CITY_POPULATION};
+mod economy;
+
+use super::animals::{DEN_RETURN_TURNS, TERRITORY_RADIUS};
+use super::city::{
+    Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, MIN_CITY_DISTANCE, Queued,
+    WORKERS_PER_MANAGER,
+};
+use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
+use super::settings::Settings;
+use super::terrain::{Resource, Terrain};
 use super::unit::Team;
 use super::{GameState, PLAYER_TEAM};
 
@@ -38,10 +51,21 @@ fn env_number(name: &str) -> Option<u64> {
     Some(number.unwrap_or_else(|_| panic!("{name}={value:?} is not a whole number")))
 }
 
-/// A fresh game of `scenario` with its RNG seeded, playing every step at once.
+/// A fresh game of `scenario` with its RNG seeded, playing every step at once, and with
+/// production speeding builds if `SIM_SPEEDUP` is set to a number above 0, and the Cavalry
+/// and Armored cap counting every one ever trained if `SIM_LIFETIME_CAP` is.
 fn start(scenario: Scenario, seed: u64) -> GameState {
+    start_with(scenario, seed, |_| {})
+}
+
+/// Like `start`, with `settings` changing the options the scenario starts with first (a
+/// world's AI sides, say).
+fn start_with(scenario: Scenario, seed: u64, settings: impl FnOnce(&mut Settings)) -> GameState {
     let mut game = GameState::new();
     game.settings.instant_playback = true;
+    settings(&mut game.settings);
+    game.production_speedup = env_number("SIM_SPEEDUP").is_some_and(|n| n > 0);
+    game.lifetime_special_cap = env_number("SIM_LIFETIME_CAP").is_some_and(|n| n > 0);
     game.seed_rng(seed);
     game.switch_scenario(scenario);
     game
@@ -105,6 +129,46 @@ fn play_queued_turn(game: &mut GameState) -> usize {
     game.units.iter().filter(|u| u.following_queue).count()
 }
 
+/// Like `play_turn`, but the player's troops with even ids go on alert (`go_on_alert`, as
+/// the Alert button does) whenever they can, in place of what the AI planned for them, and
+/// stay on it; the AI plans the rest. Checks that every unit on alert as the turn resolves
+/// stays put and stays on alert, and returns how many of them had an enemy in range then.
+fn play_alert_turn(game: &mut GameState, context: &str) -> usize {
+    game.selected = None;
+    game.group.clear();
+    game.plan_ai_turn(PLAYER_TEAM);
+    for idx in 0..game.units.len() {
+        let unit = &game.units[idx];
+        if unit.team != PLAYER_TEAM || unit.id % 2 == 1 {
+            continue;
+        }
+        if game.can_go_on_alert(idx) {
+            game.go_on_alert(idx);
+        } else {
+            // A siege the AI packs up: its order ends the alert.
+            game.units[idx].alert = false;
+        }
+    }
+    let on_alert: Vec<(u32, Hex)> = game
+        .units
+        .iter()
+        .filter(|u| u.alert)
+        .map(|u| (u.id, u.pos))
+        .collect();
+    let ready = (0..game.units.len())
+        .filter(|&i| game.alert_target(i).is_some())
+        .count();
+    game.resolve_turn();
+    game.update(0.0);
+    for (id, pos) in on_alert {
+        if let Some(unit) = game.units.iter().find(|u| u.id == id) {
+            assert_eq!(unit.pos, pos, "{context}: {unit} moved while on alert");
+            assert!(unit.alert, "{context}: {unit} came off alert by itself");
+        }
+    }
+    ready
+}
+
 /// Prints how to replay a game if it panics, whether from a failed check or inside the game.
 struct ReplayHint {
     scenario: Scenario,
@@ -166,9 +230,22 @@ fn check_invariants(game: &GameState, context: &str) {
             ruin.held > 0,
             "{context}: ruins with a count but no holder, or the reverse"
         );
+        assert!(
+            ruin.holder.is_none_or(Team::is_side),
+            "{context}: the wild holds ruins"
+        );
     }
-    let mut ids = HashSet::new();
-    let mut occupants: HashMap<_, Vec<Team>> = HashMap::new();
+    // The supply limit (`city/supply.rs`): no training started past its
+    // side's supply, counted as each item started (`work_item`). A side
+    // over it after losing a city or citizens keeps its units, and trains
+    // nothing new until it has room.
+    assert!(
+        game.supply_overruns.is_empty(),
+        "{context}: training started past the side's supply: {:?}",
+        game.supply_overruns
+    );
+    let mut ids = HashSet::default();
+    let mut occupants: HashMap<_, Vec<Team>> = HashMap::default();
     for (idx, unit) in game.units.iter().enumerate() {
         assert!(
             ids.insert(unit.id),
@@ -193,6 +270,14 @@ fn check_invariants(game: &GameState, context: &str) {
                 game.can_enter(unit.pos)
             },
             "{context}: {unit} stands on an impassable or off-map hex"
+        );
+        // Nobody walks onto another side's city center, and a city changing
+        // hands pushes its old owner's units off (`push_off_city_center`).
+        assert!(
+            game.cities
+                .iter()
+                .all(|city| city.pos != unit.pos || city.team == unit.team),
+            "{context}: {unit} stands on another side's city center"
         );
         assert!(unit.cargo.len() <= 4, "{context}: craft over capacity");
         assert!(
@@ -230,6 +315,54 @@ fn check_invariants(game: &GameState, context: &str) {
             !unit.has_queue() || game.is_player_controlled(idx),
             "{context}: {unit} follows a queue but isn't the player's"
         );
+        // On alert only a troop that can be, with no other order.
+        assert!(
+            !unit.alert || (game.can_go_on_alert(idx) && !unit.has_turn_orders()),
+            "{context}: {unit} is on alert but can't be"
+        );
+        // Animals are the wild's alone, and each stays in its territory.
+        assert_eq!(
+            unit.is_animal(),
+            unit.unit_type.is_animal(),
+            "{context}: {unit} is an animal of a side, or the wild's troop"
+        );
+        assert_eq!(
+            unit.is_animal(),
+            unit.home.is_some(),
+            "{context}: {unit} has a den but isn't an animal, or the reverse"
+        );
+        if let Some(home) = unit.home {
+            assert!(
+                unit.pos.distance(home) <= TERRITORY_RADIUS,
+                "{context}: {unit} is {} hexes from its den",
+                unit.pos.distance(home)
+            );
+            assert!(
+                game.cities.iter().all(|c| c.pos != unit.pos),
+                "{context}: {unit} stands in a city"
+            );
+        }
+    }
+    for den in &game.dens {
+        assert!(
+            game.grid.is_passable(den.pos) && den.kind.is_animal(),
+            "{context}: a den of {:?} on impassable ground",
+            den.kind
+        );
+        assert!(
+            game.cities.iter().all(|c| c.pos != den.pos),
+            "{context}: a city on a den"
+        );
+        // A den counts down to its next animal only while it has none.
+        let alive = game.units.iter().any(|u| u.home == Some(den.pos));
+        assert_eq!(
+            alive,
+            den.returns_in.is_none(),
+            "{context}: the {} at {:?} counts down with its animal alive, or the reverse",
+            den.name(),
+            den.pos
+        );
+        assert!(den.returns_in.is_none_or(|t| t <= DEN_RETURN_TURNS));
     }
     for worker in &game.field_workers {
         assert!(
@@ -260,6 +393,35 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: a worker's home city is another side's"
         );
     }
+    // Only workers at home are held, and only by a player: the AI never
+    // recalls one.
+    for city in &game.cities {
+        assert!(
+            city.held_workers <= city.workers,
+            "{context}: city {} holds {} of its {} workers at home",
+            city.id + 1,
+            city.held_workers,
+            city.workers
+        );
+        assert!(
+            city.held_workers == 0 || game.is_human(city.team),
+            "{context}: the AI's city {} holds workers",
+            city.id + 1
+        );
+    }
+    // Work kept on a job is short of finishing it: the last turn of work
+    // finishes it.
+    let jobs = game.cities.iter().flat_map(|c| &c.worker_jobs);
+    for job in jobs.chain(game.field_workers.iter().filter_map(|w| w.job.as_ref())) {
+        assert!(
+            job.done < job.kind.turns(),
+            "{context}: a {} at {:?} has {} turns of work in it, of {}",
+            job.kind.name(),
+            job.hex,
+            job.done,
+            job.kind.turns()
+        );
+    }
     for hex in game.structures.keys() {
         assert!(
             game.cities.iter().all(|c| c.pos != *hex),
@@ -274,7 +436,9 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: {hex:?} holds {teams:?}"
         );
     }
+    let mut all_worked_tiles = HashSet::default();
     for city in &game.cities {
+        assert!(city.team.is_side(), "{context}: a city of the wild");
         assert!(
             (1..=MAX_CITY_POPULATION).contains(&city.population),
             "{context}: city {} has population {}",
@@ -282,20 +446,73 @@ fn check_invariants(game: &GameState, context: &str) {
             city.population
         );
         assert!(
-            city.worked.len() <= city.population,
+            city.working() <= city.population,
             "{context}: city {} works {} tiles with population {}",
             city.id,
-            city.worked.len(),
+            city.working(),
             city.population
         );
+        // Up to four managers, one for each seven citizens or part of that,
+        // on land and beside none of the others; each worker beside its own
+        // manager, six at most to a manager.
+        assert!(
+            city.clusters.len() <= MAX_MANAGERS && city.clusters.len() <= city.managers_allowed(),
+            "{context}: city {} has {} managers with population {}",
+            city.id,
+            city.clusters.len(),
+            city.population
+        );
+        for (k, cluster) in city.clusters.iter().enumerate() {
+            let manager = cluster.manager;
+            assert!(
+                !game.grid.terrain(manager).is_water(),
+                "{context}: city {} manager {} on water at {manager:?}",
+                city.id,
+                k + 1
+            );
+            assert!(
+                city.clusters[..k]
+                    .iter()
+                    .all(|other| other.manager.distance(manager) > 1),
+                "{context}: city {} manager {} beside another",
+                city.id,
+                k + 1
+            );
+            assert!(
+                cluster.workers.len() <= WORKERS_PER_MANAGER,
+                "{context}: city {} manager {} runs {} workers",
+                city.id,
+                k + 1,
+                cluster.workers.len()
+            );
+            for &worker in &cluster.workers {
+                assert_eq!(
+                    manager.distance(worker),
+                    1,
+                    "{context}: city {} worker is not adjacent to its manager",
+                    city.id
+                );
+            }
+        }
+        for hex in city.worked() {
+            assert!(
+                game.cities.iter().all(|other| other.pos != hex),
+                "{context}: city {} works a city center at {hex:?}",
+                city.id
+            );
+            assert!(
+                all_worked_tiles.insert(hex),
+                "{context}: worked tile claimed by multiple citizens"
+            );
+        }
         assert!(
             (0.0..=CORE_HP).contains(&city.interior.core_hp),
             "{context}: city {} command post has {} HP",
             city.id,
             city.interior.core_hp
         );
-        let mut sources = HashSet::new();
-        let mut tiles = HashSet::new();
+        let mut sources = HashSet::default();
+        let mut tiles = HashSet::default();
         for fighter in &city.interior.fighters {
             assert!(
                 sources.insert(fighter.source_id),
@@ -309,60 +526,226 @@ fn check_invariants(game: &GameState, context: &str) {
                 fighter.pos.distance(Hex::new(0, 0)) <= 2,
                 "{context}: fighter outside interior"
             );
+            let source = game
+                .units
+                .iter()
+                .find(|unit| unit.id == fighter.source_id)
+                .unwrap_or_else(|| panic!("{context}: interior fighter lacks source"));
             assert!(
-                fighter.hp > 0.0 && fighter.hp <= fighter.unit_type.stats().max_hp,
+                fighter.hp > 0.0 && fighter.hp <= source.max_hp(),
                 "{context}: interior fighter has invalid HP"
             );
-            assert!(
-                game.units
-                    .iter()
-                    .any(|unit| unit.id == fighter.source_id && unit.interior_hp == fighter.hp),
+            assert_eq!(
+                source.interior_hp, fighter.hp,
                 "{context}: interior copy and source health differ"
             );
             assert!(
-                game.units.iter().any(|unit| unit.id == fighter.source_id
-                    && unit.team == fighter.team
-                    && unit.pos.distance(city.pos) == 1),
+                source.team == fighter.team && source.pos.distance(city.pos) == 1,
                 "{context}: interior fighter lacks adjacent source"
+            );
+            assert!(
+                !source.is_animal(),
+                "{context}: an animal in a city's interior"
             );
         }
     }
     for (i, city) in game.cities.iter().enumerate() {
-        // A paid-for unit at the head of the queue is one waiting for an open hex, and the
-        // city banks nothing more behind it (#54). A city earning a unit's cost in a turn
-        // could have that much left over, so it isn't checked.
-        let Some(&Build::Unit(unit)) = city.queue.first() else {
+        // Paid for as work starts (`work_queues`): an unpaid item has no work
+        // done, and no item more than it needs, so none is banked.
+        for lane in [Lane::City, Lane::Barracks] {
+            for index in 0..game.lane_len(i, lane) {
+                let (paid, progress, work) = game.lane_item(i, lane, index);
+                assert!(
+                    (0..=work).contains(&progress) && (paid || progress == 0),
+                    "{context}: city {} {lane:?} item {index}: paid {paid}, work {progress} of {work}",
+                    city.id
+                );
+            }
+        }
+        // A finished unit waits, done, only while no safe spawn is open.
+        let finished = city.queue.iter().find(|q| {
+            matches!(q.build, Build::Unit(_)) && q.progress >= game.city_build_work(i, q.build)
+        });
+        let Some(&Queued {
+            build: Build::Unit(unit),
+            ..
+        }) = finished
+        else {
             continue;
         };
-        if city.production < unit.cost() || game.income(i).1 >= unit.cost() {
-            continue;
-        }
-        assert_eq!(
-            city.production,
-            unit.cost(),
-            "{context}: city {} banked production behind a finished {}",
-            city.id,
-            unit.name()
-        );
-        assert!(
+        let naval = unit.unit_type().is_naval();
+        let origin = if naval {
+            city.placed_site(Building::Harbor).unwrap_or(city.pos)
+        } else {
             city.pos
-                .neighbors()
-                .into_iter()
-                .all(|hex| !game.grid.is_passable(hex) || game.is_occupied(hex)),
+        };
+        assert!(
+            origin.neighbors().into_iter().all(|hex| {
+                let open_ground = if naval {
+                    game.grid.contains(hex)
+                        && matches!(game.grid.terrain(hex), Terrain::Coast | Terrain::Ocean)
+                } else {
+                    game.grid.is_passable(hex) && !game.field_workers.iter().any(|w| w.pos == hex)
+                };
+                !open_ground
+                    || !game.spawn_clear_of_enemy_civilians(hex, city.team)
+                    || game.is_occupied(hex)
+            }),
             "{context}: city {} holds a finished {} beside an open hex",
             city.id,
             unit.name()
         );
     }
+    for team in Team::ALL {
+        let stock = game.stock(team);
+        assert!(
+            stock.food >= 0 && stock.wood >= 0 && stock.metal >= 0,
+            "{context}: {team:?}'s stockpile went negative: {stock:?}"
+        );
+    }
+}
+
+/// Every city founded in play (those after the first `starting`, which the scenario set up
+/// wherever it liked) stands by the founding rules (`founding_issue`): at least
+/// `MIN_CITY_DISTANCE` from every other city.
+fn check_founding(game: &GameState, starting: usize, context: &str) {
+    for (i, city) in game.cities.iter().enumerate().skip(starting) {
+        for other in &game.cities[..i] {
+            let apart = other.pos.distance(city.pos);
+            assert!(
+                apart >= MIN_CITY_DISTANCE,
+                "{context}: city {} was founded {apart} hexes from city {}",
+                city.id + 1,
+                other.id + 1
+            );
+        }
+    }
+}
+
+/// What the stockpile economy bought over a game: troops that appeared (trained, or ruins'
+/// recruits), whether any city grew past the size it started at (or was founded at),
+/// whether any side built a Barracks, and whether any side used all its supply
+/// (`city/supply.rs`). It also checks the Cavalry and Armored cap
+/// (`city/barracks.rs`) as the game goes: a side never has more troops drawn from a
+/// resource alive (or, with the lifetime cap, ever trained) than the most its deposits
+/// allowed at any point, since a troop is only queued within the cap of the moment.
+struct EconomyWatch {
+    seen: HashSet<u32>,
+    start_population: HashMap<u32, usize>,
+    trained: usize,
+    grew: bool,
+    barracks: bool,
+    /// The highest cap seen, by `Team::index` and `Resource::index`.
+    max_cap: [[usize; 2]; Team::ALL.len()],
+    /// Whether a side's supply (`city/supply.rs`) was ever all used, so
+    /// the limit held something back.
+    supply_full: bool,
+}
+
+impl EconomyWatch {
+    fn new(game: &GameState) -> Self {
+        let mut watch = Self {
+            seen: game.units.iter().map(|u| u.id).collect(),
+            start_population: game.cities.iter().map(|c| (c.id, c.population)).collect(),
+            trained: 0,
+            grew: false,
+            barracks: false,
+            max_cap: [[0; 2]; Team::ALL.len()],
+            supply_full: false,
+        };
+        watch.watch(game, "at start");
+        watch
+    }
+
+    fn watch(&mut self, game: &GameState, context: &str) {
+        for unit in &game.units {
+            if self.seen.insert(unit.id) && !game.settlers.contains(&unit.id) && !unit.is_animal() {
+                self.trained += 1;
+            }
+            if let Some(resource) = unit.drawn_from {
+                assert_eq!(
+                    unit.unit_type,
+                    match resource {
+                        Resource::Horses => super::unit::UnitType::Cavalry,
+                        Resource::Iron => super::unit::UnitType::Armored,
+                    },
+                    "{context}: a {:?} drew on {resource:?}",
+                    unit.unit_type
+                );
+            }
+        }
+        self.grew |= game
+            .cities
+            .iter()
+            .any(|c| c.population > self.start_population.get(&c.id).copied().unwrap_or(1));
+        self.barracks |= game.cities.iter().any(|c| c.barracks.is_some());
+        self.supply_full |= Team::ALL.into_iter().any(|team| {
+            let cap = game.supply_cap(team);
+            cap > 0 && game.supply_used(team) >= cap
+        });
+        for team in Team::ALL {
+            for resource in Resource::ALL {
+                let max = &mut self.max_cap[team.index()][resource.index()];
+                *max = (*max).max(game.special_cap(team, resource));
+                let alive = game
+                    .units
+                    .iter()
+                    .filter(|u| u.team == team && u.drawn_from == Some(resource))
+                    .count();
+                let ever = game.special_trained[team.index()][resource.index()] as usize;
+                let counted = if game.lifetime_special_cap {
+                    ever
+                } else {
+                    alive
+                };
+                assert!(
+                    counted <= *max,
+                    "{context}: {team:?} has {counted} troops drawn on {resource:?}, over the \
+                     most its deposits ever allowed ({max})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn interior_hp_uses_the_source_unit_upgrade() {
+    let mut game = GameState::siege_scenario();
+    let fighter = &mut game.cities[1].interior.fighters[0];
+    fighter.training_upgrade = Some(Resource::Iron);
+    let source = game
+        .units
+        .iter_mut()
+        .find(|unit| unit.id == fighter.source_id)
+        .unwrap();
+    source.training_upgrade = Some(Resource::Iron);
+    source.hp = source.max_hp();
+    source.interior_hp = source.max_hp();
+    fighter.hp = source.max_hp();
+    assert!(fighter.hp > fighter.unit_type.stats().max_hp);
+    check_invariants(&game, "upgraded interior fighter");
 }
 
 #[test]
 fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
+    // Animals killed and dens cleared, over every world.
+    let (killed, cleared) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    // Games where a side used all its supply.
+    let supply_full = AtomicUsize::new(0);
     for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
         let mut game = start(scenario, seed);
         let name = format!("{} seed {seed}", scenario.name());
         check_invariants(&game, &format!("{name} at start"));
+        let starting = game.cities.len();
         let ruins_at_start = game.ruins.len();
+        let dens_at_start = game.dens.len();
+        let animals: Vec<u32> = game
+            .units
+            .iter()
+            .filter(|u| u.is_animal())
+            .map(|u| u.id)
+            .collect();
+        let mut economy = EconomyWatch::new(&game);
         for turn in 1..=TURNS {
             let ruins_before = game.ruins.len();
             play_turn(&mut game);
@@ -377,6 +760,8 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 "{context}: ruins appeared"
             );
             check_invariants(&game, &context);
+            check_founding(&game, starting, &context);
+            economy.watch(&game, &context);
         }
         // Anti-vacuity: the AI goes for the world's ruins, and claims some.
         if scenario == Scenario::World {
@@ -385,7 +770,43 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 "{name}: no ruins claimed in {TURNS} turns ({ruins_at_start} on the map)"
             );
         }
+        // Anti-vacuity: the world's animals fight: one of them was hurt, or died.
+        if scenario == Scenario::World {
+            let fought = animals.iter().any(|&id| {
+                game.units
+                    .iter()
+                    .find(|u| u.id == id)
+                    .is_none_or(|u| u.hp < u.max_hp())
+            });
+            assert!(fought, "{name}: no animal fought in {TURNS} turns");
+            let dead = animals
+                .iter()
+                .filter(|&&id| game.units.iter().all(|u| u.id != id));
+            killed.fetch_add(dead.count(), Ordering::Relaxed);
+            cleared.fetch_add(dens_at_start - game.dens.len(), Ordering::Relaxed);
+        }
+        // Anti-vacuity: with cities, the AI buys both troops and growth from its stockpile.
+        if matches!(scenario, Scenario::Cities | Scenario::World) {
+            assert!(economy.trained > 0, "{name}: no city trained a unit");
+            assert!(economy.grew, "{name}: no city grew in {TURNS} turns");
+            assert!(economy.barracks, "{name}: no side built a Barracks");
+        }
+        // The Cities map puts Horses and Iron beside both cities: their Barracks use them.
+        if scenario == Scenario::Cities {
+            let special: u32 = game.special_trained.iter().flatten().sum();
+            assert!(special > 0, "{name}: no Cavalry or Armored trained");
+        }
+        supply_full.fetch_add(usize::from(economy.supply_full), Ordering::Relaxed);
     });
+    // Anti-vacuity: the supply limit holds some side back somewhere.
+    let supply_full = supply_full.into_inner();
+    eprintln!("games where a side used all its supply: {supply_full}");
+    assert!(supply_full > 0, "no side ever used all its supply");
+    // Anti-vacuity: the AI hunts, killing animals and clearing dens.
+    let (killed, cleared) = (killed.into_inner(), cleared.into_inner());
+    eprintln!("worlds: {killed} animals killed, {cleared} dens cleared");
+    assert!(killed > 0, "no side killed an animal in any world");
+    assert!(cleared > 0, "no side cleared a den in any world");
 }
 
 #[test]
@@ -405,6 +826,7 @@ fn a_crowded_world_of_settlers_keeps_the_board_consistent() {
         for turn in 1..=TURNS {
             play_turn(&mut game);
             check_invariants(&game, &format!("{name} turn {turn}"));
+            check_founding(&game, 0, &format!("{name} turn {turn}"));
             if turn == 1 {
                 // Every side founded its city on its start.
                 for team in Team::ALL {
@@ -423,15 +845,64 @@ fn queued_orders_against_the_ai_keep_the_board_consistent() {
     for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
         let mut game = start(scenario, seed);
         let name = format!("{} seed {seed}", scenario.name());
+        let starting = game.cities.len();
         let mut followed = 0;
         for turn in 1..=TURNS {
             followed += play_queued_turn(&mut game);
             let context = format!("{name} queued turn {turn}");
             assert!(!game.is_resolving(), "{context}: the turn did not finish");
             check_invariants(&game, &context);
+            check_founding(&game, starting, &context);
         }
         // Anti-vacuity: queues were actually carried from turn to turn.
         assert!(followed > 0, "{name}: no unit ever followed a queued turn");
+    });
+}
+
+#[test]
+fn troops_on_alert_against_the_ai_keep_the_board_consistent() {
+    let ready = AtomicUsize::new(0);
+    for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
+        let mut game = start(scenario, seed);
+        let name = format!("{} seed {seed}", scenario.name());
+        let starting = game.cities.len();
+        for turn in 1..=TURNS {
+            let context = format!("{name} alert turn {turn}");
+            ready.fetch_add(play_alert_turn(&mut game, &context), Ordering::Relaxed);
+            assert!(!game.is_resolving(), "{context}: the turn did not finish");
+            check_invariants(&game, &context);
+            check_founding(&game, starting, &context);
+        }
+    });
+    // Anti-vacuity: units on alert did have enemies to fire at.
+    assert!(
+        ready.into_inner() > 0,
+        "no unit on alert ever had an enemy in range"
+    );
+}
+
+/// Turns a world plays for its sides to expand: a city reaches population 4 by about turn 23,
+/// and a side's second city comes by about turn 45, a few sides not by 60 (`economy_report`).
+const EXPANSION_TURNS: u32 = 80;
+
+#[test]
+fn ai_sides_expand_with_settlers() {
+    // Anti-vacuity: the AI trains Settlers from its cities' queues and founds new cities with
+    // them (`plan_ai_settlers`), by the founding rules, in a long game of a two-side world.
+    for_every_game(&[Scenario::World], &seeds(), |scenario, seed| {
+        let mut game = start_with(scenario, seed, |settings| settings.world_ai = 1);
+        let name = format!("two-side world seed {seed}");
+        let starting = game.cities.len();
+        for turn in 1..=EXPANSION_TURNS {
+            play_turn(&mut game);
+            let context = format!("{name} turn {turn}");
+            check_invariants(&game, &context);
+            check_founding(&game, starting, &context);
+        }
+        assert!(
+            game.cities.len() > starting,
+            "{name}: no side founded a city in {EXPANSION_TURNS} turns"
+        );
     });
 }
 
@@ -456,6 +927,81 @@ fn ai_against_ai_combat_ends_with_fewer_units() {
             "only the combat scenario's two teams exist"
         );
     });
+}
+
+/// Scouts' mean turns alive (of `TURNS`, for each side's first scout) and the mean share of the
+/// map their sides have seen by the end, for which the AI's scouts (`plan_ai_scout`) must
+/// beat what they did when they fought like any troop: 24 turns, and 11% of the map (seeds
+/// 0 to 15). Scouts that keep out of reach and go where their side hasn't seen live nearly to
+/// the end (38 turns) and see half as much again (16%).
+const SCOUT_MIN_LIFE: f64 = 30.0;
+const SCOUT_MIN_SEEN: f64 = 0.12;
+
+#[test]
+fn ai_sides_find_each_other_through_the_fog() {
+    // Anti-vacuity: the AI plans only on what its side has seen (`ai.rs`), so it must find its
+    // enemies itself, exploring and heading for the cities it has seen. A world game still
+    // comes to blows: some troop dies (a settler founding a city isn't one). Its scouts live
+    // long and see far (`SCOUT_MIN_LIFE`, `SCOUT_MIN_SEEN`).
+    let scouts = std::sync::Mutex::new(Vec::new());
+    for_every_game(&[Scenario::World], &seeds(), |scenario, seed| {
+        let mut game = start(scenario, seed);
+        let first_scouts: Vec<(u32, Team)> = game
+            .units
+            .iter()
+            .filter(|u| u.unit_type == super::unit::UnitType::Scout)
+            .map(|u| (u.id, u.team))
+            .collect();
+        let mut lived: HashMap<u32, u32> = HashMap::default();
+        let mut troops: HashSet<u32> = HashSet::default();
+        for turn in 1..=TURNS {
+            troops.extend(
+                game.units
+                    .iter()
+                    .filter(|u| !game.settlers.contains(&u.id))
+                    .map(|u| u.id),
+            );
+            play_turn(&mut game);
+            for &(id, _) in &first_scouts {
+                if game.units.iter().any(|u| u.id == id) {
+                    lived.insert(id, turn);
+                }
+            }
+        }
+        let died = troops
+            .iter()
+            .filter(|&&id| game.units.iter().all(|u| u.id != id))
+            .count();
+        assert!(
+            died > 0,
+            "seed {seed}: nobody died in {TURNS} turns of a world"
+        );
+        let map = game.grid.all_hexes().count() as f64;
+        scouts
+            .lock()
+            .unwrap()
+            .extend(first_scouts.iter().map(|&(id, team)| {
+                let life = lived.get(&id).copied().unwrap_or(0) as f64;
+                (life, game.side_memory[team.index()].len() as f64 / map)
+            }));
+    });
+    let scouts = scouts.into_inner().unwrap();
+    assert!(
+        !scouts.is_empty(),
+        "every world starts each side with a scout"
+    );
+    let count = scouts.len() as f64;
+    let life = scouts.iter().map(|s| s.0).sum::<f64>() / count;
+    let seen = scouts.iter().map(|s| s.1).sum::<f64>() / count;
+    assert!(
+        life >= SCOUT_MIN_LIFE,
+        "scouts lived {life:.1} turns on average"
+    );
+    assert!(
+        seen >= SCOUT_MIN_SEEN,
+        "sides with a scout saw {:.1}% of the map on average",
+        seen * 100.0
+    );
 }
 
 /// What a replay must reproduce: the map, every unit and every city.
@@ -497,11 +1043,17 @@ fn the_same_seed_replays_the_same_game() {
             scenario.name()
         );
     });
-    // Anti-vacuity: the seed does drive the rolls. The armies meet on turn 2 and are gone
-    // within a few more, so compare right after the first clash.
+    // Anti-vacuity: the seed does drive the game, through the world's map.
     assert_ne!(
+        fingerprint(Scenario::World, 1, 2),
+        fingerprint(Scenario::World, 2, 2),
+        "two seeds played the same world"
+    );
+    // Combat has no random spread, so the fixed scenarios play the same on any seed. The
+    // armies meet on turn 2 and are gone within a few more: compare right after the clash.
+    assert_eq!(
         fingerprint(Scenario::Combat, 1, 2),
         fingerprint(Scenario::Combat, 2, 2),
-        "two seeds played the same combat"
+        "combat drew from the seeded RNG"
     );
 }

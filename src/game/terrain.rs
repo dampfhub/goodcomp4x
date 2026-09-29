@@ -38,6 +38,14 @@ pub enum Resource {
 }
 
 impl Resource {
+    #[cfg(test)]
+    pub const ALL: [Resource; 2] = [Resource::Horses, Resource::Iron];
+
+    /// Its place in `ALL`.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Horses => "HORSES",
@@ -145,7 +153,7 @@ impl Feature {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Tile {
     pub terrain: Terrain,
-    /// Raised ground: more production, better defense, harder hauling.
+    /// Raised ground: more production, better defense.
     pub hills: bool,
     pub feature: Option<Feature>,
 }
@@ -212,17 +220,6 @@ impl Tile {
         (food, production)
     }
 
-    /// Logistics cost of carrying goods into this hex off-road, in half-hex
-    /// units (a road costs 1): 2 on open ground, 3 on snow or marsh, and one
-    /// more each for hills and forest or jungle.
-    pub fn route_cost(self) -> i32 {
-        let ground = match self.terrain {
-            Terrain::Snow | Terrain::Marsh => 3,
-            _ => 2,
-        };
-        ground + i32::from(self.hills) + i32::from(self.feature.is_some())
-    }
-
     /// Multiplier on the defense of a unit standing here: +25% on hills and
     /// +15% under forest or jungle, added together.
     pub fn defense_multiplier(self) -> f32 {
@@ -256,7 +253,6 @@ mod tests {
             feature: Some(Feature::Forest),
         };
         assert_eq!(forested_hills.yields(), (1, 3));
-        assert_eq!(forested_hills.route_cost(), 4);
         assert!((forested_hills.defense_multiplier() - 1.4).abs() < 1e-6);
         assert_eq!(forested_hills.name(), "PLAINS HILLS + FOREST");
         let jungle = Tile {

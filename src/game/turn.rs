@@ -1,13 +1,12 @@
 //! Turn resolution: queued orders play out step by step, in an order set by
 //! each unit type's role. All units in a step act simultaneously.
 
-use std::collections::HashMap;
-
 use super::ability::{Ability, VOLLEY_DAMAGE};
-use super::city::{BARRACKS_DEFENSE, Building};
+use super::city::{BARRACKS_DEFENSE, Building, COASTAL_BATTERY_DEFENSE};
 use super::effects::{Effect, Outcome};
+use super::fast_hash::HashMap;
 use super::hex::Hex;
-use super::unit::{Unit, UnitType};
+use super::unit::{Team, Unit, UnitType};
 use super::{GameState, combat};
 
 /// Seconds between steps while a turn plays out, and how long the units that
@@ -28,14 +27,20 @@ pub(super) enum Phase {
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-const RESOLUTION_ORDER: [(UnitType, Phase); 18] = [
+/// - Animals (`animals.rs`) act beside their like: wolves after cavalry,
+///   bears after melee.
+pub(super) const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
+    (UnitType::Wolf, Phase::Move),
     (UnitType::Melee, Phase::Move),
+    (UnitType::Bear, Phase::Move),
     (UnitType::Ranged, Phase::Attack),
     (UnitType::Scout, Phase::Attack),
     (UnitType::Cavalry, Phase::Attack),
+    (UnitType::Wolf, Phase::Attack),
     (UnitType::Melee, Phase::Attack),
+    (UnitType::Bear, Phase::Attack),
     (UnitType::Ranged, Phase::Move),
     (UnitType::Siege, Phase::Move),
     (UnitType::Siege, Phase::Attack),
@@ -68,27 +73,46 @@ pub(super) fn step_rank(unit_type: UnitType, phase: Phase) -> u32 {
     rank as u32 + 1
 }
 
+/// Whether `unit_type`'s move step comes before its attack step, so it
+/// attacks from where its move takes it (ranged shoot, then move).
+pub(super) fn moves_before_attacking(unit_type: UnitType) -> bool {
+    let at = |phase| {
+        RESOLUTION_ORDER
+            .iter()
+            .position(|&step| step == (unit_type, phase))
+    };
+    at(Phase::Move) < at(Phase::Attack)
+}
+
 impl GameState {
+    /// Whether the turn is out of the player's hands: resolving, or (in a
+    /// networked game) waiting for the other player's plan. Input waits.
     pub fn is_resolving(&self) -> bool {
-        !self.pending_steps.is_empty()
+        !self.pending_steps.is_empty() || self.waiting_for_peers()
     }
 
     /// Plans every AI team's turn, then queues every step for `update` to
     /// play out.
     /// Called after the player explicitly ends planning.
     pub(super) fn resolve_turn(&mut self) {
-        if self.is_resolving() {
+        if !self.pending_steps.is_empty() {
             return;
         }
         self.turn += 1;
         log::info!("=== resolving turn {} ===", self.turn);
-        // Indices shift as units die, so nothing stays selected.
+        // Indices shift as units die, so nothing stays selected, and nothing
+        // armed while planning (an action for the next map click, a Disband
+        // to confirm, a click to repeat to replace a queue) outlives the turn.
         self.selected = None;
         self.group.clear();
+        self.ui_click_mode = None;
+        self.disband_armed = None;
+        self.queue_replace_armed = None;
 
         for team in self.ai_teams() {
             self.plan_ai_turn(team);
         }
+        self.end_broken_alerts();
         self.pending_steps.extend(
             RESOLUTION_ORDER
                 .into_iter()
@@ -106,6 +130,7 @@ impl GameState {
         self.explore();
         self.camera.update(dt);
         self.age_effects(dt);
+        self.age_transition(dt);
         self.highlight_timer -= dt;
         if self.highlight_timer <= 0.0 {
             self.recent_actors.clear();
@@ -124,6 +149,8 @@ impl GameState {
         if self.settings.instant_playback {
             self.recent_actors.clear();
         }
+        // Where everything is drawn now, for what moves to glide from.
+        let before = self.before_steps();
         while let Some(step) = self.pending_steps.pop_front() {
             let actors = match step {
                 Step::Units(unit_type, phase) => self.resolve_step(unit_type, phase),
@@ -141,13 +168,16 @@ impl GameState {
             }
         }
 
-        if !self.is_resolving() {
+        let turn_over = !self.is_resolving();
+        if turn_over {
             self.resolve_coastal_batteries();
             self.resolve_transport();
             self.resolve_city_interiors();
             // Before the economy, so a city reward is spent (or capped) like
             // the turn's own income.
             self.resolve_ruins();
+            // Dens are cleared and their animals come back (`animals.rs`).
+            self.resolve_dens();
             self.resolve_economy();
             for unit in &mut self.units {
                 if unit.ability_queued && unit.ability() == Ability::Deploy {
@@ -157,16 +187,21 @@ impl GameState {
                 unit.end_turn();
             }
             self.advance_queues();
-            for city in &mut self.cities {
-                city.workers_resting = false;
-            }
             log::info!("=== turn {} resolved ===", self.turn);
-            self.select_next_or_end_turn(None);
+            self.finish_lockstep_turn();
+            // Planning begins: the player's queues go on from what they now
+            // know. After the network turn's start snapshot, so it's planning.
+            self.replan_queues();
+            self.select_next_needing_attention(None);
         }
+        self.start_transition(before, turn_over);
     }
 
-    /// Cargo remains the same logical unit, with its exterior and interior HP.
-    /// It does not occupy a map tile while embarked, and goes down with the ship.
+    /// Every Coastal Battery fires at the nearest enemy ship within two
+    /// hexes; each ship hit shows its damage (or KILLED), as an attack's
+    /// target does. Cargo remains the same logical unit, with its exterior
+    /// and interior HP. It does not occupy a map tile while embarked, and
+    /// goes down with the ship.
     fn resolve_coastal_batteries(&mut self) {
         let batteries: Vec<_> = self
             .cities
@@ -174,11 +209,11 @@ impl GameState {
             .filter_map(|city| {
                 city.placed_site(Building::CoastalBattery)
                     .filter(|_| city.coastal_battery_hp > 0.0)
-                    .map(|site| (site, city.team))
+                    .map(|site| (site, city.team, city.id))
             })
             .collect();
         let mut hits = vec![0.0; self.units.len()];
-        for (site, team) in batteries {
+        for (site, team, city_id) in batteries {
             if let Some((index, target)) = self
                 .units
                 .iter()
@@ -188,17 +223,34 @@ impl GameState {
                 })
                 .min_by_key(|(_, unit)| (site.distance(unit.pos), unit.id))
             {
-                hits[index] +=
-                    combat::roll_damage_against(28.0, target.stats().defense, &mut self.rng);
+                let hit = combat::damage_against(28.0, target.stats().defense);
+                hits[index] += hit;
+                log::info!(
+                    "city {}'s coastal battery hits {target} for {hit:.0}",
+                    city_id + 1
+                );
+                let to = target.pos.to_world();
                 self.play(Effect::Shot {
                     from: site.to_world(),
-                    to: target.pos.to_world(),
+                    to,
                     outcome: Outcome::Hit,
                 });
             }
         }
+        for (i, &taken) in hits.iter().enumerate() {
+            if taken > 0.0 {
+                self.play(Effect::Damage {
+                    at: self.unit_layout(i).0,
+                    amount: taken,
+                    fatal: self.units[i].hp <= taken,
+                });
+            }
+        }
         for (unit, hit) in self.units.iter_mut().zip(hits) {
-            unit.hp = (unit.hp - hit).max(0.0);
+            if hit > 0.0 {
+                unit.hp = (unit.hp - hit).max(0.0);
+                log::info!("  {unit}: {}", combat::hp_status(unit));
+            }
         }
         self.units.retain(Unit::is_alive);
         self.discard_interior_copies_of_dead_units();
@@ -229,6 +281,8 @@ impl GameState {
                 self.units.push(passenger);
             }
         }
+        // Landing on an enemy worker captures it, as stepping onto one does.
+        self.capture_workers();
         let mut boarders: Vec<usize> = self
             .units
             .iter()
@@ -259,6 +313,13 @@ impl GameState {
 
     /// Resolves one step, returning the ids of the units that acted in it.
     pub(super) fn resolve_step(&mut self, unit_type: UnitType, phase: Phase) -> Vec<u32> {
+        // Animals decide as their step begins, on the board as it is then.
+        if unit_type.is_animal() {
+            match phase {
+                Phase::Move => self.plan_animal_moves(unit_type),
+                Phase::Attack => self.plan_animal_attacks(unit_type),
+            }
+        }
         let of_type = |i: &usize| self.units[*i].unit_type == unit_type;
         let actors: Vec<usize> = match phase {
             Phase::Move => {
@@ -277,10 +338,15 @@ impl GameState {
                 }
                 movers
             }
-            // Units in a contested hex fight whether or not they have orders.
+            // Units in a contested hex fight whether or not they have orders,
+            // and units on alert fire at an enemy in range.
             Phase::Attack => (0..self.units.len())
                 .filter(of_type)
-                .filter(|&i| self.units[i].planned_attack.is_some() || self.rival_of(i).is_some())
+                .filter(|&i| {
+                    self.units[i].planned_attack.is_some()
+                        || self.rival_of(i).is_some()
+                        || self.alert_target(i).is_some()
+                })
                 .collect(),
         };
         if actors.is_empty() {
@@ -294,6 +360,50 @@ impl GameState {
             Phase::Attack => self.resolve_attacks(&actors),
         }
         ids
+    }
+
+    /// Where unit `idx`, on alert, fires in its attack step: at an enemy
+    /// unit within its attack range as the step starts, on the real board
+    /// (the same on every machine, whatever each player sees). So it hits
+    /// whatever ended an earlier move step in range, this turn or before.
+    /// Only units, never a city, barracks, battery or worker, and only ones
+    /// it may attack (`attack_target_legal`: a ship only by a troop that
+    /// can hit ships). The nearest, then the weakest (fewest HP), then the
+    /// lowest (q, r). `None` if it isn't on alert, has an attack planned,
+    /// can't attack this step (locked in a contested hex, setting up) or
+    /// has nobody in range.
+    pub(super) fn alert_target(&self, idx: usize) -> Option<Hex> {
+        let unit = &self.units[idx];
+        if !unit.alert || unit.planned_attack.is_some() || !self.can_go_on_alert(idx) {
+            return None;
+        }
+        let range = unit.stats().attack_range;
+        self.units
+            .iter()
+            .filter(|other| other.team != unit.team && unit.pos.distance(other.pos) <= range)
+            .filter(|other| self.attack_target_legal(idx, other.pos, false))
+            .min_by(|a, b| {
+                unit.pos
+                    .distance(a.pos)
+                    .cmp(&unit.pos.distance(b.pos))
+                    .then(a.hp.total_cmp(&b.hp))
+                    .then((a.pos.q, a.pos.r, a.id).cmp(&(b.pos.q, b.pos.r, b.id)))
+            })
+            .map(|other| other.pos)
+    }
+
+    /// As the turn starts to resolve, ends the alert of any unit with
+    /// another order this turn (an alert unit stays put; the AI, playing a
+    /// side a player left, gives orders without knowing of alerts) or that
+    /// can no longer keep it (a siege packing up). The same on every
+    /// machine, like the rest of resolution.
+    fn end_broken_alerts(&mut self) {
+        for i in 0..self.units.len() {
+            if self.units[i].alert && (self.units[i].has_turn_orders() || !self.can_go_on_alert(i))
+            {
+                self.units[i].alert = false;
+            }
+        }
     }
 
     /// Moves `movers` simultaneously:
@@ -337,7 +447,7 @@ impl GameState {
             .collect();
         let mut moving = moving;
 
-        let mut claims: HashMap<Hex, Vec<usize>> = HashMap::new();
+        let mut claims: HashMap<Hex, Vec<usize>> = HashMap::default();
         for (m, &dest) in dests.iter().enumerate().filter(|&(m, _)| moving[m]) {
             claims.entry(dest).or_default().push(m);
         }
@@ -467,6 +577,9 @@ impl GameState {
         // Each attack's animation, played once the step's damage is known.
         let mut shots: Vec<Effect> = Vec::new();
         for &a in attackers {
+            if !self.units[a].can_attack() {
+                continue;
+            }
             let attacker = &self.units[a];
             let from = self.unit_layout(a).0;
             if let Some(rival) = self.rival_of(a) {
@@ -485,7 +598,31 @@ impl GameState {
                 continue;
             }
 
-            let target = attacker.planned_attack.unwrap();
+            let target = match attacker.planned_attack {
+                Some(target) => target,
+                None => {
+                    let Some(target) = self.alert_target(a) else {
+                        continue;
+                    };
+                    log::info!(
+                        "{attacker} is on alert and fires at ({}, {})",
+                        target.q,
+                        target.r
+                    );
+                    target
+                }
+            };
+            if self.empty_city_target(target, attacker.team) {
+                shots.push(Effect::Shot {
+                    from,
+                    to: target.to_world(),
+                    outcome: Outcome::Miss,
+                });
+                continue;
+            }
+            if !self.attack_target_legal(a, target, false) {
+                continue;
+            }
             let to = target.to_world();
             if attacker.pos.distance(target) > attacker.stats().attack_range {
                 log::info!("{attacker}'s attack canceled: target out of range after moves");
@@ -558,6 +695,10 @@ impl GameState {
         }
 
         let mut damage = vec![0.0; self.units.len()];
+        // Blows that hit animals, by who struck them: (the animal, the
+        // side, the damage). The side that dealt one that dies the most
+        // gets its bounty (`animals.rs`).
+        let mut hunts: Vec<(usize, Team, f32)> = Vec::new();
         let mut barracks_damage = vec![0.0; self.cities.len()];
         for engagement in &engagements {
             let (a, d) = (engagement.attacker, engagement.defender);
@@ -574,21 +715,13 @@ impl GameState {
                 self.defense_multiplier(attacker),
                 self.defense_multiplier(defender),
             );
-            let shore_scale = if !attacker.is_naval() && defender.is_naval() {
-                match attacker.unit_type {
-                    UnitType::Ranged => 0.4,
-                    UnitType::Siege => 0.6,
-                    _ => 0.0,
-                }
-            } else if attacker.unit_type == UnitType::PatrolGalley && !defender.is_naval() {
-                0.35
-            } else {
-                1.0
-            };
-            let hit = shore_scale
+            let hit = combat::shore_scale(attacker, defender)
                 * engagement.damage_scale
-                * combat::roll_damage(attacker, defender, defender_cover, &mut self.rng);
+                * combat::damage(attacker, defender, defender_cover);
             damage[d] += hit;
+            if defender.is_animal() && attacker.team.is_side() {
+                hunts.push((d, attacker.team, hit));
+            }
             let attacker_note = combat::unit_note(attacker, &self.grid, self.in_fort(attacker));
             let defender_note = combat::unit_note(defender, &self.grid, self.in_fort(defender));
             let verb = if engagement.damage_scale < 1.0 {
@@ -599,18 +732,19 @@ impl GameState {
 
             let retaliation_scale = match reverse {
                 Some(reverse) => Some(reverse.damage_scale),
-                None if combat::draws_retaliation(attacker)
-                    && attacker.is_naval() == defender.is_naval()
-                    && defender.hp > hit =>
-                {
-                    Some(1.0)
-                }
+                None if combat::retaliates(attacker, defender, hit) => Some(1.0),
                 None => None,
             };
             if let Some(back_scale) = retaliation_scale {
+                // Across the waterline only in an exchange of blows, where
+                // the shore scales the blow back as it would its own attack.
                 let back = back_scale
-                    * combat::roll_damage(defender, attacker, attacker_cover, &mut self.rng);
+                    * combat::shore_scale(defender, attacker)
+                    * combat::damage(defender, attacker, attacker_cover);
                 damage[a] += back;
+                if attacker.is_animal() && defender.team.is_side() {
+                    hunts.push((a, defender.team, back));
+                }
                 let verb = if reverse.is_some() {
                     "trades blows with"
                 } else {
@@ -628,18 +762,23 @@ impl GameState {
 
         for (attacker, city, scale) in barracks_hits {
             let attack = self.units[attacker].stats().attack;
-            let hit = scale * combat::roll_damage_against(attack, BARRACKS_DEFENSE, &mut self.rng);
+            let hit = scale * combat::damage_against(attack, BARRACKS_DEFENSE);
             barracks_damage[city] += hit;
         }
 
         let mut battery_damage = vec![0.0; self.cities.len()];
         for (attacker, city, scale) in battery_hits {
-            battery_damage[city] += scale
-                * combat::roll_damage_against(
+            let hit = scale
+                * combat::damage_against(
                     self.units[attacker].stats().attack,
-                    18.0,
-                    &mut self.rng,
+                    COASTAL_BATTERY_DEFENSE,
                 );
+            battery_damage[city] += hit;
+            log::info!(
+                "{} hits city {}'s coastal battery for {hit:.0}",
+                self.units[attacker],
+                self.cities[city].id + 1
+            );
         }
 
         for shot in shots {
@@ -683,7 +822,6 @@ impl GameState {
                 if city.barracks_hp == 0.0 {
                     city.barracks = None;
                     city.barracks_queue.clear();
-                    city.barracks_production = 0;
                     // Gone from the map, so the city may build another.
                     city.built.retain(|&b| b != Building::Barracks);
                     if self.selected_barracks == Some(i) {
@@ -692,10 +830,26 @@ impl GameState {
                 }
             }
         }
-        for (city, taken) in self.cities.iter_mut().zip(battery_damage) {
+        for (i, taken) in battery_damage.into_iter().enumerate() {
             if taken > 0.0 {
+                let Some(site) = self.cities[i].placed_site(Building::CoastalBattery) else {
+                    continue;
+                };
+                self.play(Effect::Damage {
+                    at: site.to_world(),
+                    amount: taken,
+                    fatal: self.cities[i].coastal_battery_hp <= taken,
+                });
+                let city = &mut self.cities[i];
                 city.coastal_battery_hp = (city.coastal_battery_hp - taken).max(0.0);
-                if city.coastal_battery_hp == 0.0 {
+                if city.coastal_battery_hp > 0.0 {
+                    log::info!(
+                        "  city {}'s coastal battery: {:.0} hp",
+                        city.id + 1,
+                        city.coastal_battery_hp
+                    );
+                } else {
+                    log::info!("  city {}'s coastal battery: destroyed", city.id + 1);
                     city.extra_buildings.remove(&Building::CoastalBattery);
                     city.built.retain(|&b| b != Building::CoastalBattery);
                 }
@@ -712,6 +866,7 @@ impl GameState {
         for &a in attackers {
             self.units[a].planned_attack = None;
         }
+        self.reward_hunts(&hunts);
         self.units.retain(Unit::is_alive);
         self.discard_interior_copies_of_dead_units();
     }
@@ -736,6 +891,50 @@ impl Engagement {
 }
 
 #[cfg(test)]
+mod effect_tests {
+    use super::*;
+    use crate::game::unit::Team;
+
+    fn ai_fight(witness: bool) -> GameState {
+        let mut game = GameState::new();
+        game.units.clear();
+        let from = Hex::new(0, 0);
+        let to = Hex::new(1, 0);
+        let mut attacker = Unit::new(90, from, Team::Red, UnitType::Melee);
+        attacker.planned_attack = Some(to);
+        game.units.push(attacker);
+        game.units
+            .push(Unit::new(91, to, Team::Green, UnitType::Melee));
+        if witness {
+            game.units
+                .push(Unit::new(92, Hex::new(1, -1), Team::Blue, UnitType::Scout));
+        }
+        assert_eq!(game.fog().sees(from), witness);
+        assert_eq!(game.fog().sees(to), witness);
+        game.resolve_attacks(&[0]);
+        game
+    }
+
+    #[test]
+    fn ai_fights_only_play_effects_when_the_player_can_see_them() {
+        let hidden = ai_fight(false);
+        assert!(hidden.effects.is_empty());
+        let visible = ai_fight(true);
+        assert!(
+            visible
+                .effects
+                .iter()
+                .any(|(effect, _)| matches!(effect, Effect::Shot { .. }))
+        );
+        assert!(
+            visible
+                .effects
+                .iter()
+                .any(|(effect, _)| matches!(effect, Effect::Damage { .. }))
+        );
+    }
+}
+#[cfg(test)]
 mod naval_tests {
     use super::*;
     use crate::game::city::{Build, BuildUnit};
@@ -744,10 +943,12 @@ mod naval_tests {
     #[test]
     fn harbor_produces_a_ship_on_water_and_it_cannot_walk_ashore() {
         let mut g = GameState::naval_scenario();
-        g.cities[0].production = BuildUnit::PatrolGalley.cost();
+        g.cities[0].queue[0].progress = BuildUnit::PatrolGalley.work();
         let before = g.units.len();
         g.complete_builds();
         assert_eq!(g.units.len(), before + 1);
+        // The ship plans on what the player knows: the coast in sight.
+        g.explore();
         let ship = g.units.last().unwrap();
         assert_eq!(ship.unit_type, UnitType::PatrolGalley);
         assert!(g.grid.terrain(ship.pos).is_water());
@@ -757,8 +958,24 @@ mod naval_tests {
         assert!(
             !g.cities[0]
                 .queue
-                .contains(&Build::Unit(BuildUnit::PatrolGalley))
+                .iter()
+                .any(|q| q.build == Build::Unit(BuildUnit::PatrolGalley))
         );
+    }
+
+    #[test]
+    fn resolution_skips_an_invalid_landing_craft_attack() {
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.cities.clear();
+        let mut craft = Unit::new(90, Hex::new(0, 0), Team::Blue, UnitType::LandingCraft);
+        craft.planned_attack = Some(Hex::new(1, 0));
+        game.units.push(craft);
+        game.units
+            .push(Unit::new(91, Hex::new(1, 0), Team::Red, UnitType::Melee));
+        let hp = game.units[1].hp;
+        game.resolve_attacks(&[0]);
+        assert_eq!(game.units[1].hp, hp);
     }
 
     #[test]
@@ -803,6 +1020,35 @@ mod naval_tests {
     }
 
     #[test]
+    fn landing_on_an_enemy_worker_captures_it() {
+        let mut g = GameState::naval_scenario();
+        g.units.clear();
+        g.field_workers.clear();
+        let mut craft = Unit::new(90, Hex::new(-1, 0), Team::Blue, UnitType::LandingCraft);
+        craft
+            .cargo
+            .push(Unit::new(91, Hex::new(-1, 0), Team::Blue, UnitType::Melee));
+        let shore = Hex::new(-2, 1);
+        craft.planned_unload = Some(shore);
+        g.units.push(craft);
+        g.field_workers.push(crate::game::workers::FieldWorker {
+            id: 10_000,
+            team: Team::Red,
+            home: 1,
+            base: g.cities[1].pos,
+            pos: shore,
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
+        let workers = g.cities[0].workers;
+        g.resolve_transport();
+        assert_eq!(g.units[1].pos, shore, "the passenger lands");
+        assert!(g.field_workers.is_empty(), "and captures the worker");
+        assert_eq!(g.cities[0].workers, workers + 1);
+    }
+
+    #[test]
     fn coastal_battery_hits_ships_and_can_be_destroyed() {
         let mut g = GameState::naval_scenario();
         g.units.clear();
@@ -823,5 +1069,316 @@ mod naval_tests {
         g.cities[1].coastal_battery_hp = 1.0;
         g.resolve_attacks(&[0]);
         assert_eq!(g.cities[1].placed_site(Building::CoastalBattery), None);
+    }
+
+    /// The damage numbers playing: where, how much, and whether fatal.
+    fn damage_shown(g: &GameState) -> Vec<(glam::Vec2, f32, bool)> {
+        g.effects
+            .iter()
+            .filter_map(|(effect, _)| match *effect {
+                Effect::Damage { at, amount, fatal } => Some((at, amount, fatal)),
+                Effect::Shot { .. } => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn coastal_battery_hits_show_damage_numbers_both_ways() {
+        // #159: a battery's hits on ships, and hits on a battery, played a
+        // shot but no damage number.
+        let mut g = GameState::naval_scenario();
+        g.fog_of_war = false;
+        g.units.clear();
+        g.effects.clear();
+        let ship_at = Hex::new(-1, 0);
+        g.units
+            .push(Unit::new(300, ship_at, Team::Red, UnitType::PatrolGalley));
+        let initial = g.units[0].hp;
+        g.resolve_coastal_batteries();
+        let lost = initial - g.units[0].hp;
+        assert!(lost > 0.0);
+        // The number shown is the hit; `lost` is it after rounding in the
+        // subtraction from the ship's HP, so they agree only closely.
+        assert!(
+            matches!(damage_shown(&g)[..], [(at, amount, false)]
+                if at == ship_at.to_world() && (amount - lost).abs() < 1e-3),
+            "{:?}",
+            damage_shown(&g)
+        );
+
+        // A ship with less left than the hit shows KILLED.
+        g.effects.clear();
+        g.units[0].hp = 1.0;
+        g.resolve_coastal_batteries();
+        assert!(g.units.is_empty());
+        assert!(matches!(damage_shown(&g)[..], [(_, _, true)]));
+
+        // A hit on a battery shows at its site; the last one is fatal.
+        g.effects.clear();
+        let site = g.cities[1].placed_site(Building::CoastalBattery).unwrap();
+        let mut ship = Unit::new(301, Hex::new(1, 0), Team::Blue, UnitType::BombardShip);
+        ship.planned_attack = Some(site);
+        g.units.push(ship);
+        g.resolve_attacks(&[0]);
+        let lost = 150.0 - g.cities[1].coastal_battery_hp;
+        assert!(lost > 0.0);
+        assert!(
+            matches!(damage_shown(&g)[..], [(at, amount, false)]
+                if at == site.to_world() && (amount - lost).abs() < 1e-3),
+            "{:?}",
+            damage_shown(&g)
+        );
+        g.effects.clear();
+        g.cities[1].coastal_battery_hp = 1.0;
+        g.units[0].planned_attack = Some(site);
+        g.resolve_attacks(&[0]);
+        assert!(
+            matches!(damage_shown(&g)[..], [(at, _, true)] if at == site.to_world()),
+            "{:?}",
+            damage_shown(&g)
+        );
+    }
+}
+
+#[cfg(test)]
+mod alert_tests {
+    use super::*;
+    use crate::game::city::City;
+    use crate::game::unit::Team;
+
+    /// An open field with `units` on it, no cities, fog off, and both sides
+    /// planned by hand (no AI), each unit placed as given.
+    fn field(units: &[(Team, UnitType, Hex)]) -> GameState {
+        let mut game = GameState::city_scenario();
+        game.fog_of_war = false;
+        game.units.clear();
+        game.cities.clear();
+        game.field_workers.clear();
+        game.selected = None;
+        game.group.clear();
+        game.humans = vec![Team::Blue, Team::Red];
+        game.settings.instant_playback = true;
+        for (n, &(team, unit_type, pos)) in units.iter().enumerate() {
+            assert!(game.grid.is_passable(pos), "{pos:?}");
+            game.units
+                .push(Unit::new(100 + n as u32, pos, team, unit_type));
+        }
+        game
+    }
+
+    fn play_turn(game: &mut GameState) {
+        game.resolve_turn();
+        while game.is_resolving() {
+            game.update(1.0);
+        }
+    }
+
+    fn by_id(game: &GameState, id: u32) -> &Unit {
+        game.units.iter().find(|u| u.id == id).expect("alive")
+    }
+
+    #[test]
+    fn an_alert_unit_attacks_an_enemy_that_moves_into_range_and_stays_put() {
+        let mut game = field(&[
+            (Team::Blue, UnitType::Melee, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-2, 0)),
+        ]);
+        game.units[0].alert = true;
+        // Out of reach as planning ends: nothing to plan an attack on.
+        assert_eq!(game.alert_target(0), None);
+        game.units[1].planned_move = Some(Hex::new(-3, 0));
+        play_turn(&mut game);
+
+        let (blue, red) = (by_id(&game, 100), by_id(&game, 101));
+        assert_eq!(red.pos, Hex::new(-3, 0));
+        assert!(red.hp < red.max_hp(), "hit in the melee attack step");
+        assert!(blue.hp < blue.max_hp(), "a melee attack draws retaliation");
+        assert_eq!(blue.pos, Hex::new(-4, 0), "it stays put");
+        assert!(blue.alert, "still on alert next turn");
+
+        // And again the next turn, with the enemy still in range.
+        let red_hp = red.hp;
+        play_turn(&mut game);
+        assert!(by_id(&game, 101).hp < red_hp);
+    }
+
+    #[test]
+    fn without_alert_nothing_fires() {
+        let mut game = field(&[
+            (Team::Blue, UnitType::Ranged, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-3, 0)),
+        ]);
+        play_turn(&mut game);
+        assert_eq!(by_id(&game, 101).hp, by_id(&game, 101).max_hp());
+    }
+
+    #[test]
+    fn an_alert_unit_picks_the_nearest_then_the_weakest() {
+        let mut game = field(&[
+            (Team::Blue, UnitType::Ranged, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-2, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-3, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-4, 1)),
+        ]);
+        game.units[0].alert = true;
+        // The one two hexes off is the weakest, but the adjacent ones are
+        // nearer; of those, the weaker.
+        game.units[1].hp = 5.0;
+        game.units[2].hp = 60.0;
+        game.units[3].hp = 50.0;
+        assert_eq!(game.alert_target(0), Some(Hex::new(-4, 1)));
+        // A tie goes to the lower (q, r).
+        game.units[3].hp = 60.0;
+        assert_eq!(game.alert_target(0), Some(Hex::new(-4, 1)));
+        game.units.truncate(2);
+        assert_eq!(game.alert_target(0), Some(Hex::new(-2, 0)));
+        // Allies are never targets.
+        game.units[1].team = Team::Blue;
+        assert_eq!(game.alert_target(0), None);
+    }
+
+    #[test]
+    fn an_alert_unit_never_fires_at_a_city_or_its_barracks() {
+        let mut game = field(&[(Team::Blue, UnitType::Ranged, Hex::new(-4, 0))]);
+        let mut city = City::new(0, Team::Red, Hex::new(-3, 0));
+        city.barracks = Some(Hex::new(-4, 1));
+        game.cities.push(city);
+        game.units[0].alert = true;
+        assert_eq!(game.alert_target(0), None);
+        play_turn(&mut game);
+        assert_eq!(
+            game.cities[0].barracks_hp,
+            City::new(0, Team::Red, Hex::new(0, 0)).barracks_hp
+        );
+        assert_eq!(game.cities[0].pos, Hex::new(-3, 0));
+        // A unit standing on the city center is a unit, and is fired at.
+        game.units
+            .push(Unit::new(200, Hex::new(-3, 0), Team::Red, UnitType::Melee));
+        assert_eq!(game.alert_target(0), Some(Hex::new(-3, 0)));
+    }
+
+    #[test]
+    fn only_troops_that_can_hit_ships_fire_at_them() {
+        let mut game = GameState::naval_scenario();
+        game.units.clear();
+        game.humans = vec![Team::Blue, Team::Red];
+        let (land, water) = game
+            .grid
+            .all_hexes()
+            .filter(|&h| game.grid.is_passable(h))
+            .find_map(|h| {
+                h.neighbors()
+                    .into_iter()
+                    .find(|&n| game.grid.contains(n) && game.grid.terrain(n).is_water())
+                    .map(|w| (h, w))
+            })
+            .expect("a shore");
+        game.units
+            .push(Unit::new(1, land, Team::Blue, UnitType::Melee));
+        game.units
+            .push(Unit::new(2, water, Team::Red, UnitType::PatrolGalley));
+        game.units[0].alert = true;
+        assert_eq!(game.alert_target(0), None, "melee can't hit a ship");
+        game.units[0].unit_type = UnitType::Ranged;
+        assert_eq!(game.alert_target(0), Some(water));
+    }
+
+    #[test]
+    fn siege_on_alert_fires_only_once_set_up() {
+        let mut game = field(&[
+            (Team::Blue, UnitType::Siege, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-2, 0)),
+        ]);
+        game.units[0].alert = true;
+        assert_eq!(game.alert_target(0), None, "packed up");
+        // Setting up this turn: it may go on alert, but can't fire yet.
+        game.units[0].ability_queued = true;
+        assert!(game.can_go_on_alert(0));
+        assert_eq!(game.alert_target(0), None);
+        play_turn(&mut game);
+        let siege = by_id(&game, 100);
+        assert!(siege.deployed && siege.alert);
+        assert_eq!(by_id(&game, 101).hp, by_id(&game, 101).max_hp());
+        // Set up, with its extra range, it fires.
+        play_turn(&mut game);
+        assert!(by_id(&game, 101).hp < by_id(&game, 101).max_hp());
+    }
+
+    #[test]
+    fn an_alert_unit_given_another_order_moves_and_stops_being_alert() {
+        // What a player's machine never sends, but the AI (playing a side
+        // a player left) may plan: a move for a unit on alert.
+        let mut game = field(&[
+            (Team::Blue, UnitType::Melee, Hex::new(-4, 0)),
+            (Team::Red, UnitType::Melee, Hex::new(-4, 2)),
+        ]);
+        game.units[0].alert = true;
+        game.units[0].planned_move = Some(Hex::new(-3, 0));
+        play_turn(&mut game);
+        let blue = by_id(&game, 100);
+        assert_eq!(blue.pos, Hex::new(-3, 0));
+        assert!(!blue.alert);
+        assert_eq!(by_id(&game, 101).hp, by_id(&game, 101).max_hp());
+    }
+}
+
+#[cfg(test)]
+mod combat_tests {
+    use rand::RngExt;
+
+    use super::*;
+    use crate::game::hex::HexGrid;
+    use crate::game::terrain::Terrain;
+    use crate::game::unit::Team;
+
+    /// A game with only `units` on the board, and water at `water`.
+    fn board(units: Vec<Unit>, water: &[Hex]) -> GameState {
+        let mut game = GameState::new();
+        game.grid = HexGrid::new(3, water.iter().map(|&hex| (hex, Terrain::Coast)));
+        game.cities.clear();
+        game.units = units;
+        game
+    }
+
+    #[test]
+    fn damage_is_the_formula_with_no_spread() {
+        assert_eq!(combat::damage_against(20.0, 20.0), 30.0);
+        assert_eq!(combat::damage_against(0.0, 200.0), 1.0);
+        assert_eq!(combat::damage_against(200.0, 0.0), 100.0);
+        let blow = combat::damage_against(24.0, 17.0);
+        assert!((blow - 30.0 * (7.0f32 * 0.04).exp()).abs() < 1e-4);
+        assert_eq!(combat::damage_against(24.0, 17.0), blow);
+    }
+
+    #[test]
+    fn resolving_a_fight_draws_nothing_from_the_rng() {
+        let mut attacker = Unit::new(90, Hex::new(0, 0), Team::Blue, UnitType::Melee);
+        attacker.planned_attack = Some(Hex::new(1, 0));
+        let defender = Unit::new(91, Hex::new(1, 0), Team::Red, UnitType::Melee);
+        let mut game = board(vec![attacker.clone(), defender.clone()], &[]);
+        let mut untouched = game.rng.clone();
+        game.resolve_attacks(&[0]);
+        assert_eq!(game.rng.random::<u64>(), untouched.random::<u64>());
+
+        // And it dealt exactly the formula's damage, both ways.
+        let hit = combat::damage(&attacker, &defender, 1.0);
+        let back = combat::damage(&defender, &attacker, 1.0);
+        assert_eq!(game.units[1].hp, defender.hp - hit);
+        assert_eq!(game.units[0].hp, attacker.hp - back);
+    }
+
+    #[test]
+    fn blows_traded_across_the_waterline_are_shore_scaled_both_ways() {
+        let (shore, sea) = (Hex::new(0, 0), Hex::new(1, 0));
+        let mut archer = Unit::new(90, shore, Team::Blue, UnitType::Ranged);
+        archer.planned_attack = Some(sea);
+        let mut galley = Unit::new(91, sea, Team::Red, UnitType::PatrolGalley);
+        galley.planned_attack = Some(shore);
+        let mut game = board(vec![archer.clone(), galley.clone()], &[sea]);
+        game.resolve_attacks(&[0, 1]);
+        let to_galley = 0.4 * combat::damage(&archer, &galley, 1.0);
+        let to_archer = 0.35 * combat::damage(&galley, &archer, 1.0);
+        assert_eq!(game.units[1].hp, galley.hp - to_galley);
+        assert_eq!(game.units[0].hp, archer.hp - to_archer);
     }
 }

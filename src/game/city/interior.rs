@@ -1,18 +1,23 @@
 //! A small tactical board inside each city. Field units on the six neighboring
 //! hexes project independent fighters through the corresponding gates.
 
-use std::collections::HashSet;
-
+use crate::game::combat::{AttackPreview, Hurt};
+use crate::game::fast_hash::HashSet;
 use crate::game::hex::Hex;
+use crate::game::multiplayer::WAITING_NOTICE;
 use crate::game::terrain::Resource;
 use crate::game::unit::{Team, UnitStats, UnitType, apply_training_upgrade};
-use crate::game::{Camera, GameState, PLAYER_TEAM, combat};
+use crate::game::{Camera, GameState, combat};
 
 pub(in crate::game) const CORE_HP: f32 = 80.0;
 const CORE_DEFENSE: f32 = 18.0;
 const CORE_ATTACK: f32 = 12.0;
 const CORE_ATTACK_RANGE: i32 = 2;
 const CENTER: Hex = Hex::new(0, 0);
+/// How far from a captured city's center a unit of another side is pushed
+/// off it (`push_off_city_center`): to the nearest free hex within this many
+/// hexes, or it is lost.
+pub(in crate::game) const PUSH_OFF_RANGE: i32 = 2;
 
 #[derive(Clone)]
 pub(in crate::game) struct Interior {
@@ -42,14 +47,26 @@ pub(in crate::game) struct InteriorFighter {
 }
 
 impl InteriorFighter {
-    fn stats(&self) -> UnitStats {
+    pub(in crate::game) fn stats(&self) -> UnitStats {
         let mut stats = self.unit_type.stats();
         apply_training_upgrade(&mut stats, self.training_upgrade);
         stats
     }
+
+    pub(in crate::game) fn move_reaches(&self, tile: Hex) -> bool {
+        self.planned_move.unwrap_or(self.pos).distance(tile) <= self.stats().move_range.max(1)
+    }
+
+    pub(in crate::game) fn attack_reaches(&self, tile: Hex) -> bool {
+        self.planned_move.unwrap_or(self.pos).distance(tile) <= self.stats().attack_range
+    }
+
+    pub(in crate::game) fn health_fraction(&self) -> f32 {
+        self.hp / self.stats().max_hp
+    }
 }
 
-pub(super) fn in_bounds(hex: Hex) -> bool {
+pub(in crate::game) fn in_bounds(hex: Hex) -> bool {
     hex.distance(CENTER) <= 2
 }
 
@@ -58,7 +75,13 @@ impl GameState {
         self.interior_view.is_some()
     }
 
+    /// Backspace or the Clear Orders button inside a city: the selected
+    /// troop's interior orders go. Not once the turn is out of the player's
+    /// hands (playing out, or a network game's plan sent).
     pub fn clear_selected_interior_orders(&mut self) {
+        if self.is_resolving() {
+            return;
+        }
         let (Some(city), Some(source)) = (self.interior_view, self.interior_selected) else {
             return;
         };
@@ -66,7 +89,7 @@ impl GameState {
             .interior
             .fighters
             .iter_mut()
-            .find(|f| f.source_id == source && f.team == PLAYER_TEAM)
+            .find(|f| f.source_id == source && f.team == self.local_team)
         {
             fighter.planned_move = None;
             fighter.planned_attack = None;
@@ -77,7 +100,7 @@ impl GameState {
     /// V opens the city under the pointer, the selected city, or the closest
     /// city to the selected field unit. The interior is a separate order view.
     pub fn toggle_city_interior(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if self.interior_view.is_some() {
@@ -91,7 +114,7 @@ impl GameState {
                 self.hovered_tile.and_then(|hex| {
                     self.cities
                         .iter()
-                        .position(|c| c.pos == hex && (c.team == PLAYER_TEAM || fog.sees(hex)))
+                        .position(|c| c.pos == hex && (c.team == self.local_team || fog.sees(hex)))
                 })
             })
             .or_else(|| {
@@ -99,7 +122,7 @@ impl GameState {
                     self.cities
                         .iter()
                         .enumerate()
-                        .filter(|(_, city)| city.team == PLAYER_TEAM || fog.sees(city.pos))
+                        .filter(|(_, city)| city.team == self.local_team || fog.sees(city.pos))
                         .min_by_key(|(_, city)| (city.pos.distance(self.units[unit].pos), city.id))
                         .map(|(i, _)| i)
                 })
@@ -115,7 +138,12 @@ impl GameState {
         if self.interior_view.is_none() {
             self.exterior_camera = Some(self.camera.clone());
         }
-        self.sync_city_interiors();
+        // Looking doesn't change the game: in a network game the troops
+        // stand inside from the turn's start (`begin_lockstep_turn`), on
+        // every machine at once.
+        if !self.is_networked() {
+            self.sync_city_interiors();
+        }
         self.interior_view = Some(city);
         self.interior_selected = None;
         self.selected_city = None;
@@ -125,7 +153,12 @@ impl GameState {
         self.ui_click_mode = None;
         // Leave room for the command panel on the left and Debug on the right.
         self.camera = Camera::new(glam::Vec2::new(-1.35, 0.0), 6.0);
-        self.notice = "CITY INTERIOR: CLICK A BLUE TROOP, THEN A TILE OR ENEMY; ESC RETURNS".into();
+        self.notice = if self.waiting_for_peers() {
+            WAITING_NOTICE
+        } else {
+            "CITY INTERIOR: CLICK A BLUE TROOP, THEN A TILE OR ENEMY; ESC RETURNS"
+        }
+        .into();
     }
 
     pub(in crate::game) fn close_city_interior(&mut self) {
@@ -136,7 +169,7 @@ impl GameState {
             self.camera = camera;
         }
         self.interior_selected = None;
-        self.selected_city = (self.cities[city].team == PLAYER_TEAM).then_some(city);
+        self.selected_city = (self.cities[city].team == self.local_team).then_some(city);
         self.hovered_tile = None;
         self.hovered_city = None;
         self.notice = if self.selected_city.is_some() {
@@ -147,19 +180,25 @@ impl GameState {
     }
 
     /// Clicking a tile in the interior view selects a copy or gives it an
-    /// independent tactical order. The source field unit is unchanged.
+    /// independent tactical order. The source field unit is unchanged. With
+    /// the plan sent (a network game waiting for the others'), it only
+    /// selects.
     pub(in crate::game) fn interior_click(&mut self, tile: Hex) {
         let Some(city) = self.interior_view else {
             return;
         };
-        if self.is_resolving() || !in_bounds(tile) {
+        if self.is_playing_out() || !in_bounds(tile) {
             return;
         }
         let interior = &self.cities[city].interior;
         let clicked = interior.fighters.iter().find(|f| f.pos == tile);
-        if let Some(fighter) = clicked.filter(|f| f.team == PLAYER_TEAM) {
+        if let Some(fighter) = clicked.filter(|f| f.team == self.local_team) {
             self.interior_selected =
                 (self.interior_selected != Some(fighter.source_id)).then_some(fighter.source_id);
+            return;
+        }
+        if self.is_resolving() {
+            self.interior_selected = None;
             return;
         }
         let Some(source) = self.interior_selected else {
@@ -170,13 +209,12 @@ impl GameState {
             self.interior_selected = None;
             return;
         };
-        let from = fighter.planned_move.unwrap_or(fighter.pos);
-        let enemy = clicked.is_some_and(|f| f.team != PLAYER_TEAM);
+        let enemy = clicked.is_some_and(|f| f.team != self.local_team);
         let core = tile == CENTER
-            && self.cities[city].team != PLAYER_TEAM
+            && self.cities[city].team != self.local_team
             && self.cities[city].interior.core_hp > 0.0;
         if enemy || core {
-            if from.distance(tile) <= fighter.stats().attack_range {
+            if fighter.attack_reaches(tile) {
                 let fighter = self.cities[city]
                     .interior
                     .fighters
@@ -190,7 +228,7 @@ impl GameState {
             }
         } else if clicked.is_none()
             && (tile != CENTER || self.cities[city].interior.core_hp <= 0.0)
-            && from.distance(tile) <= fighter.stats().move_range.max(1)
+            && fighter.move_reaches(tile)
         {
             let fighter = self.cities[city]
                 .interior
@@ -220,6 +258,7 @@ impl GameState {
                     unit.pos.distance(city.pos) == 1
                         && !unit.is_naval()
                         && !self.settlers.contains(&unit.id)
+                        && !unit.is_animal()
                 })
                 .collect();
             let ids: HashSet<_> = adjacent.iter().map(|unit| unit.id).collect();
@@ -294,12 +333,77 @@ impl GameState {
         }
     }
 
+    /// The attack preview inside `city` (`GameState::attack_preview`): the
+    /// player's fighters' attacks on the hovered tile this turn, the
+    /// selected one's included if it could attack there, and, when the
+    /// target is the post, the post's shot at one of them.
+    pub(in crate::game) fn interior_attack_preview(&self, city: usize) -> Option<AttackPreview> {
+        let target = self.hovered_interior?;
+        let owner = self.cities[city].team;
+        let interior = &self.cities[city].interior;
+        let defender = interior
+            .fighters
+            .iter()
+            .find(|f| f.pos == target && f.team != self.local_team);
+        let post = target == CENTER && owner != self.local_team && interior.core_hp > 0.0;
+        if defender.is_none() && !post {
+            return None;
+        }
+        let mut preview = AttackPreview::default();
+        let mut attackers = Vec::new();
+        for fighter in &interior.fighters {
+            let aims = fighter.planned_attack == Some(target)
+                || self.interior_selected == Some(fighter.source_id);
+            if fighter.team != self.local_team || !aims || !fighter.attack_reaches(target) {
+                continue;
+            }
+            attackers.push(fighter.source_id);
+            let attack = fighter.stats().attack;
+            match defender {
+                Some(defender) => {
+                    let hit = combat::damage_against(attack, defender.stats().defense);
+                    preview.add(Hurt::Fighter(defender.source_id), hit, defender.hp, true);
+                }
+                None => {
+                    let hit = combat::damage_against(attack, CORE_DEFENSE);
+                    preview.add(Hurt::Post, hit, interior.core_hp, true);
+                }
+            }
+        }
+        if attackers.is_empty() {
+            return None;
+        }
+        // The post fires at the lowest-numbered hostile fighter in its range
+        // once the moves are made: the player's fighters where their moves
+        // take them, anyone else where they stand.
+        if post
+            && let Some(shot) = interior
+                .fighters
+                .iter()
+                .filter(|f| {
+                    let pos = match f.team == self.local_team {
+                        true => f.planned_move.unwrap_or(f.pos),
+                        false => f.pos,
+                    };
+                    f.team != owner && pos.distance(CENTER) <= CORE_ATTACK_RANGE
+                })
+                .min_by_key(|f| f.source_id)
+                .filter(|f| attackers.contains(&f.source_id))
+        {
+            let back = combat::damage_against(CORE_ATTACK, shot.stats().defense);
+            preview.add(Hurt::Fighter(shot.source_id), back, shot.hp, false);
+        }
+        preview.if_it_stays = defender.is_some();
+        Some(preview)
+    }
+
     fn plan_interior_ai(&mut self, city: usize) {
         let owner = self.cities[city].team;
         let core_breached = self.cities[city].interior.core_hp <= 0.0;
         let snapshot = self.cities[city].interior.fighters.clone();
+        let humans = self.humans.clone();
         for fighter in &mut self.cities[city].interior.fighters {
-            if fighter.team == PLAYER_TEAM {
+            if humans.contains(&fighter.team) {
                 continue;
             }
             let target = if fighter.team != owner {
@@ -337,6 +441,90 @@ impl GameState {
         }
     }
 
+    /// Whether the player hears of what happens in `city`'s interior: their
+    /// own city, or one in sight.
+    fn hears_of_city(&self, city: usize) -> bool {
+        let city = &self.cities[city];
+        city.team == self.local_team || self.fog().sees(city.pos)
+    }
+
+    /// After `city` changes hands, moves every unit not of its new owner
+    /// (its old owner's, stepped onto it as it fell) off its center: to the
+    /// nearest free hex (`push_off_hex`), or, with none, the unit is lost.
+    /// Lowest id first, so each one pushed takes its hex before the next
+    /// looks, the same on every machine.
+    pub(in crate::game) fn push_off_city_center(&mut self, city: usize) {
+        let (center, owner) = (self.cities[city].pos, self.cities[city].team);
+        let mut ids: Vec<u32> = self
+            .units
+            .iter()
+            .filter(|unit| unit.pos == center && unit.team != owner)
+            .map(|unit| unit.id)
+            .collect();
+        ids.sort_unstable();
+        for id in ids {
+            let Some(index) = self.units.iter().position(|unit| unit.id == id) else {
+                continue;
+            };
+            let unit = &self.units[index];
+            match self.push_off_hex(center, unit.team, unit.is_naval()) {
+                Some(hex) => {
+                    let unit = &mut self.units[index];
+                    unit.pos = hex;
+                    // Displaced: whatever it was doing there is over.
+                    unit.wake();
+                    unit.clear_orders();
+                    log::info!(
+                        "{unit} is pushed off city {}'s center to ({}, {})",
+                        self.cities[city].id + 1,
+                        hex.q,
+                        hex.r
+                    );
+                }
+                None => {
+                    let unit = self.units.remove(index);
+                    self.settlers.remove(&unit.id);
+                    self.player_controlled_units.remove(&unit.id);
+                    log::info!(
+                        "{unit} is lost: no free hex to push it to off city {}'s center",
+                        self.cities[city].id + 1
+                    );
+                }
+            }
+        }
+        self.discard_interior_copies_of_dead_units();
+    }
+
+    /// Where a unit of `team` (a ship, if `naval`) pushed off the city
+    /// center `center` goes: the nearest hex within `PUSH_OFF_RANGE` it
+    /// could stand on (land, or water for a ship), with no unit, no city
+    /// center and no other side's worker, ties broken by coordinates. Walls
+    /// don't matter: it's pushed, not walking.
+    fn push_off_hex(&self, center: Hex, team: Team, naval: bool) -> Option<Hex> {
+        let range = PUSH_OFF_RANGE;
+        (-range..=range)
+            .flat_map(|dq| {
+                ((-range).max(-dq - range)..=range.min(-dq + range))
+                    .map(move |dr| Hex::new(center.q + dq, center.r + dr))
+            })
+            .filter(|&hex| hex != center)
+            .filter(|&hex| {
+                if naval {
+                    self.grid.contains(hex) && self.grid.terrain(hex).is_water()
+                } else {
+                    self.can_enter(hex)
+                }
+            })
+            .filter(|&hex| !self.is_occupied(hex))
+            .filter(|&hex| self.cities.iter().all(|city| city.pos != hex))
+            .filter(|&hex| {
+                self.field_workers
+                    .iter()
+                    .all(|worker| worker.pos != hex || worker.team == team)
+            })
+            .min_by_key(|&hex| (center.distance(hex), hex.q, hex.r))
+    }
+
     fn resolve_one_interior(&mut self, city: usize) {
         let owner = self.cities[city].team;
         let interior = &mut self.cities[city].interior;
@@ -372,9 +560,9 @@ impl GameState {
                 .find(|(_, other)| other.pos == target && other.team != fighter.team)
             {
                 let defense = defender.stats().defense;
-                damage[index] += combat::roll_damage_against(attack, defense, &mut self.rng);
+                damage[index] += combat::damage_against(attack, defense);
             } else if target == CENTER && fighter.team != owner && interior.core_hp > 0.0 {
-                core_damage += combat::roll_damage_against(attack, CORE_DEFENSE, &mut self.rng);
+                core_damage += combat::damage_against(attack, CORE_DEFENSE);
             }
         }
         if interior.core_hp > 0.0
@@ -384,18 +572,11 @@ impl GameState {
                 .filter(|(_, f)| f.team != owner && f.pos.distance(CENTER) <= CORE_ATTACK_RANGE)
                 .min_by_key(|(_, f)| f.source_id)
         {
-            damage[index] +=
-                combat::roll_damage_against(CORE_ATTACK, fighter.stats().defense, &mut self.rng);
+            damage[index] += combat::damage_against(CORE_ATTACK, fighter.stats().defense);
         }
         interior.core_hp = (interior.core_hp - core_damage).max(0.0);
-        if core_damage > 0.0 && interior.core_hp <= 0.0 {
-            self.notice = if owner == PLAYER_TEAM {
-                "YOUR POST BREACHED - KEEP RED OFF THE CENTER"
-            } else {
-                "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE"
-            }
-            .into();
-        }
+        let breached = core_damage > 0.0 && interior.core_hp <= 0.0;
+        let player_inside = snapshot.iter().any(|f| f.team == self.local_team);
         for (fighter, amount) in interior.fighters.iter_mut().zip(damage) {
             fighter.hp = (fighter.hp - amount).max(0.0);
             fighter.planned_move = None;
@@ -422,18 +603,39 @@ impl GameState {
             })
             .flatten()
             .map(|f| f.team);
+        if breached && self.hears_of_city(city) {
+            let player = self.local_team;
+            let id = self.cities[city].id + 1;
+            self.notice = if owner == player {
+                "YOUR POST BREACHED - KEEP THE ENEMY OFF THE CENTER".into()
+            } else if player_inside {
+                format!("ENEMY POST BREACHED - MOVE A {player:?} TROOP ONTO THE CENTER TO CAPTURE")
+                    .to_uppercase()
+            } else {
+                format!("{owner:?} CITY {id}'S POST BREACHED").to_uppercase()
+            };
+        }
         if let Some(team) = conqueror {
+            let player = self.local_team;
+            let id = self.cities[city].id + 1;
+            if team == player {
+                self.notice = format!("CITY {id} CAPTURED IN THE INTERIOR");
+            } else if self.hears_of_city(city) {
+                self.notice = if owner == player {
+                    format!("CITY {id} LOST: {team:?} TOOK ITS COMMAND POST")
+                } else {
+                    format!("{team:?} CAPTURED {owner:?} CITY {id}")
+                }
+                .to_uppercase();
+            }
             let city_ref = &mut self.cities[city];
             city_ref.team = team;
             city_ref.interior.core_hp = CORE_HP;
             city_ref.queue.clear();
-            city_ref.production = 0;
-            city_ref.pending_building = None;
-            city_ref.planned_sites.clear();
             city_ref.barracks_queue.clear();
-            city_ref.barracks_production = 0;
             city_ref.worker_jobs.clear();
-            self.notice = format!("CITY {} CAPTURED IN THE INTERIOR", city_ref.id + 1);
+            // Its workers at home serve the new owner, none of them held.
+            city_ref.held_workers = 0;
             log::info!("{}: {team:?} captures its command post", city_ref.id + 1);
             for index in 0..self.field_workers.len() {
                 if self.field_workers[index].home != city {
@@ -445,15 +647,20 @@ impl GameState {
                     self.field_workers[index].home = new_home;
                 } else {
                     // Without a friendly city to return to, an outlying worker
-                    // follows the captured city's new owner.
+                    // follows the captured city's new owner. It isn't
+                    // recalled (held once home): it takes that city's jobs.
                     let worker = &mut self.field_workers[index];
                     worker.team = team;
                     worker.job = None;
                     worker.work_left = None;
                     worker.home = city;
-                    worker.recalled = true;
+                    worker.recalled = false;
                 }
             }
+            self.push_off_city_center(city);
+            // A worker changing sides may share its hex with an old-side unit;
+            // capture it immediately, as by a move.
+            self.capture_workers();
             self.auto_assign_city(city);
         }
         for (source, hp) in health_after_battle {
@@ -481,6 +688,81 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::unit::Unit;
+
+    /// The siege position with a Red cavalry (id 900, holding and
+    /// guarding) on Red's city center as Blue's fighter takes the breached post.
+    fn capture_under_a_red_unit(prepare: impl FnOnce(&mut GameState)) -> GameState {
+        let mut game = GameState::siege_scenario();
+        let center = game.cities[1].pos;
+        assert_eq!(game.cities[1].team, Team::Red);
+        let mut unit = Unit::new(900, center, Team::Red, UnitType::Cavalry);
+        unit.holding = true;
+        unit.guarding = true;
+        game.units.push(unit);
+        prepare(&mut game);
+        game.cities[1].interior.core_hp = 0.0;
+        let copy = game.cities[1]
+            .interior
+            .fighters
+            .iter_mut()
+            .find(|f| f.source_id == 0)
+            .unwrap();
+        copy.pos = Hex::new(-1, 0);
+        copy.planned_move = Some(CENTER);
+        game.resolve_one_interior(1);
+        assert_eq!(game.cities[1].team, Team::Blue);
+        game
+    }
+
+    /// #289: the old owner's unit on the center is pushed to the nearest
+    /// free hex, ties broken by coordinates, and its orders end.
+    #[test]
+    fn capture_pushes_the_old_owners_unit_off_the_center() {
+        let center = GameState::siege_scenario().cities[1].pos;
+        // Blue troops hold all six gates, so the nearest free hexes are two
+        // away; the lowest q, then r, of those is (center.q - 2, center.r).
+        let first = Hex::new(center.q - 2, center.r);
+        let game = capture_under_a_red_unit(|game| {
+            assert!(center.neighbors().iter().all(|&h| game.is_occupied(h)));
+            assert!(game.can_enter(first) && !game.is_occupied(first));
+        });
+        let unit = game.units.iter().find(|u| u.id == 900).unwrap();
+        assert_eq!(unit.pos, first);
+        assert!(!unit.holding && !unit.guarding && !unit.has_orders());
+
+        // With that hex taken, the next one by coordinates.
+        let game = capture_under_a_red_unit(|game| {
+            let id = game.next_unit_id;
+            game.next_unit_id += 1;
+            game.units
+                .push(Unit::new(id, first, Team::Red, UnitType::Melee));
+        });
+        let unit = game.units.iter().find(|u| u.id == 900).unwrap();
+        assert_eq!(unit.pos, Hex::new(center.q - 2, center.r + 1));
+    }
+
+    /// #289: with no free hex within `PUSH_OFF_RANGE`, the unit is lost.
+    #[test]
+    fn a_unit_with_nowhere_to_be_pushed_is_lost() {
+        let game = capture_under_a_red_unit(|game| {
+            let center = game.cities[1].pos;
+            let around: Vec<Hex> = game
+                .grid
+                .all_hexes()
+                .filter(|&h| h != center && h.distance(center) <= PUSH_OFF_RANGE)
+                .collect();
+            for hex in around {
+                game.grid
+                    .set_tile(hex, crate::game::terrain::Terrain::Mountains);
+            }
+            game.settlers.insert(900);
+        });
+        assert!(game.units.iter().all(|u| u.id != 900));
+        assert!(!game.settlers.contains(&900));
+        let center = game.cities[1].pos;
+        assert!(game.units.iter().all(|u| u.pos != center));
+    }
 
     #[test]
     fn wounded_copy_keeps_its_health_after_leaving_and_reentering() {
@@ -524,6 +806,35 @@ mod tests {
                 .hp,
             wounded
         );
+    }
+
+    #[test]
+    fn the_interior_preview_is_the_damage_the_turn_deals() {
+        let mut game = GameState::siege_scenario();
+        // The ranged copy alone in the post's range, so the post fires at it.
+        game.units.retain(|unit| unit.id != 0);
+        game.discard_interior_copies_of_dead_units();
+        game.open_city_interior(1);
+        game.hovered_interior = Some(CENTER);
+        assert_eq!(game.attack_preview(), None, "nothing selected or planned");
+        game.interior_selected = Some(1);
+        let preview = game
+            .attack_preview()
+            .expect("the ranged copy reaches the post");
+        assert!(!preview.if_it_stays);
+        let post = *preview.loss(Hurt::Post).unwrap();
+        let shot = *preview.loss(Hurt::Fighter(1)).expect("the post fires back");
+        assert!(post.target_side && !shot.target_side);
+
+        let hp = |game: &GameState| {
+            let fighters = &game.cities[1].interior.fighters;
+            fighters.iter().find(|f| f.source_id == 1).unwrap().hp
+        };
+        let (core, fighter) = (game.cities[1].interior.core_hp, hp(&game));
+        game.interior_click(CENTER);
+        game.resolve_one_interior(1);
+        assert!((core - game.cities[1].interior.core_hp - post.amount).abs() < 1e-3);
+        assert!((fighter - hp(&game) - shot.amount).abs() < 1e-3);
     }
 
     #[test]
@@ -683,6 +994,9 @@ mod tests {
             work_left: None,
             recalled: false,
         });
+        // Red held its worker at home.
+        assert_eq!(game.cities[1].workers, 1);
+        game.cities[1].held_workers = 1;
         game.cities[1].interior.core_hp = 0.0;
         game.resolve_one_interior(1);
         assert_eq!(game.cities[1].team, Team::Red);
@@ -700,6 +1014,56 @@ mod tests {
         assert!(game.cities[1].queue.is_empty());
         assert_eq!(game.field_workers[0].team, Team::Blue);
         assert_eq!(game.field_workers[0].home, 1);
+        // Blue's now: nothing held, and the worker out free to take jobs.
+        assert_eq!(game.cities[1].held_workers, 0);
+        assert!(!game.field_workers[0].recalled);
+    }
+
+    #[test]
+    fn city_capture_resolves_a_stranded_worker_on_an_old_side_unit() {
+        let mut game = GameState::siege_scenario();
+        let worker_pos = game
+            .grid
+            .all_hexes()
+            .find(|&hex| {
+                game.grid.is_passable(hex)
+                    && hex.distance(game.cities[1].pos) >= 3
+                    && game.units.iter().all(|unit| unit.pos != hex)
+            })
+            .unwrap();
+        game.field_workers.push(crate::game::workers::FieldWorker {
+            id: 10_001,
+            team: Team::Red,
+            home: 1,
+            base: game.cities[1].pos,
+            pos: worker_pos,
+            job: None,
+            work_left: None,
+            recalled: false,
+        });
+        game.units.push(crate::game::unit::Unit::new(
+            10_002,
+            worker_pos,
+            Team::Red,
+            UnitType::Melee,
+        ));
+        game.cities[1].interior.core_hp = 0.0;
+        let copy = game.cities[1]
+            .interior
+            .fighters
+            .iter_mut()
+            .find(|f| f.source_id == 0)
+            .unwrap();
+        copy.pos = Hex::new(-1, 0);
+        copy.planned_move = Some(CENTER);
+        game.resolve_one_interior(1);
+        assert_eq!(game.cities[1].team, Team::Blue);
+        assert!(
+            game.field_workers
+                .iter()
+                .all(|worker| { game.enemy_of_team_at(worker.pos, worker.team).is_none() })
+        );
+        assert!(game.field_workers.iter().all(|worker| worker.id != 10_001));
     }
 
     #[test]
@@ -754,7 +1118,85 @@ mod tests {
             .planned_attack = Some(CENTER);
         game.resolve_one_interior(1);
         assert_eq!(game.cities[1].interior.core_hp, 0.0);
-        assert!(game.notice.contains("POST BREACHED"));
+        assert_eq!(
+            game.notice,
+            "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE"
+        );
+    }
+
+    /// The siege of Red's city 2 by Blue, with the player on Green, which
+    /// sees only what a scout on `watch` sees: the post breached, then Blue
+    /// onto the center. What the player was told of each.
+    fn a_siege_watched_by_green(watch: Option<Hex>) -> (String, String) {
+        let mut game = GameState::siege_scenario();
+        let red = 1;
+        assert_eq!(game.cities[red].team, Team::Red);
+        game.local_team = Team::Green;
+        if let Some(pos) = watch {
+            game.units.push(crate::game::unit::Unit::new(
+                90,
+                pos,
+                Team::Green,
+                UnitType::Scout,
+            ));
+        }
+        game.notice.clear();
+        fn blue(game: &mut GameState, red: usize) -> &mut InteriorFighter {
+            game.cities[red]
+                .interior
+                .fighters
+                .iter_mut()
+                .find(|fighter| fighter.source_id == 1)
+                .unwrap()
+        }
+        game.cities[red].interior.core_hp = 1.0;
+        blue(&mut game, red).planned_attack = Some(CENTER);
+        game.resolve_one_interior(red);
+        assert_eq!(game.cities[red].interior.core_hp, 0.0);
+        let breach = std::mem::take(&mut game.notice);
+
+        game.cities[red]
+            .interior
+            .fighters
+            .retain(|fighter| fighter.team != Team::Red);
+        blue(&mut game, red).pos = CENTER;
+        game.resolve_one_interior(red);
+        assert_eq!(game.cities[red].team, Team::Blue);
+        (breach, game.notice)
+    }
+
+    #[test]
+    fn only_a_city_the_player_owns_or_sees_makes_news() {
+        assert_eq!(a_siege_watched_by_green(None), Default::default());
+        let city = GameState::siege_scenario().cities[1].pos;
+        let (breach, capture) = a_siege_watched_by_green(Some(city.neighbors()[0]));
+        assert_eq!(breach, "RED CITY 2'S POST BREACHED");
+        assert_eq!(capture, "BLUE CAPTURED RED CITY 2");
+    }
+
+    #[test]
+    fn the_players_own_city_lost_or_taken_is_worded_by_side() {
+        let mut game = GameState::siege_scenario();
+        game.cities[1].interior.core_hp = 0.0;
+        game.cities[1]
+            .interior
+            .fighters
+            .retain(|fighter| fighter.team != Team::Red);
+        game.cities[1].interior.fighters[0].pos = CENTER;
+        game.resolve_one_interior(1);
+        assert_eq!(game.notice, "CITY 2 CAPTURED IN THE INTERIOR");
+
+        // Played from Red's side, the same capture is a loss.
+        let mut game = GameState::siege_scenario();
+        game.local_team = Team::Red;
+        game.cities[1].interior.core_hp = 0.0;
+        game.cities[1]
+            .interior
+            .fighters
+            .retain(|fighter| fighter.team != Team::Red);
+        game.cities[1].interior.fighters[0].pos = CENTER;
+        game.resolve_one_interior(1);
+        assert_eq!(game.notice, "CITY 2 LOST: BLUE TOOK ITS COMMAND POST");
     }
 
     #[test]
@@ -777,7 +1219,7 @@ mod tests {
             let snapshot = game.cities[1].interior.fighters.clone();
             let core_breached = game.cities[1].interior.core_hp <= 0.0;
             let occupied: HashSet<_> = snapshot.iter().map(|fighter| fighter.pos).collect();
-            let mut claimed = HashSet::new();
+            let mut claimed = HashSet::default();
             for fighter in &mut game.cities[1].interior.fighters {
                 if fighter.team != Team::Blue {
                     continue;

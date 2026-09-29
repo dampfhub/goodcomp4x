@@ -6,3 +6,8 @@ docs/building-ideas.local.md
 
 # board.mjs whole-board read cache (10-minute TTL; regenerated on demand)
 tools/board/cache.json
+# ImGui writes its window layout next to the game when run from here.
+/imgui.ini
+
+# Agent worktrees (Claude Code) live inside the checkout.
+/.claude/worktrees/

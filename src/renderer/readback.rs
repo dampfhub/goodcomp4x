@@ -23,6 +23,7 @@ pub struct Readback {
     memory: vk::DeviceMemory,
     extent: vk::Extent2D,
     bgra: bool,
+    coherent: bool,
 }
 
 impl Readback {
@@ -37,14 +38,19 @@ impl Readback {
     ) -> Result<Self> {
         let bgra = is_bgra(format)?;
         let size = extent.width as vk::DeviceSize * extent.height as vk::DeviceSize * 4;
-        let (buffer, memory) = unsafe {
-            buffer::create_buffer(
+        let (buffer, memory, properties) = unsafe {
+            buffer::create_buffer_preferred(
                 instance,
                 device,
                 physical_device,
                 size,
                 vk::BufferUsageFlags::TRANSFER_DST,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                vk::MemoryPropertyFlags::HOST_VISIBLE,
+                &[
+                    vk::MemoryPropertyFlags::HOST_CACHED | vk::MemoryPropertyFlags::HOST_COHERENT,
+                    vk::MemoryPropertyFlags::HOST_CACHED,
+                    vk::MemoryPropertyFlags::HOST_COHERENT,
+                ],
             )
         }?;
         Ok(Self {
@@ -52,6 +58,7 @@ impl Readback {
             memory,
             extent,
             bgra,
+            coherent: properties.contains(vk::MemoryPropertyFlags::HOST_COHERENT),
         })
     }
 
@@ -139,6 +146,15 @@ impl Readback {
             let data = device
                 .map_memory(self.memory, 0, vk::WHOLE_SIZE, vk::MemoryMapFlags::empty())?
                 .cast::<u8>();
+            if !self.coherent {
+                let range = vk::MappedMemoryRange::default()
+                    .memory(self.memory)
+                    .size(vk::WHOLE_SIZE);
+                if let Err(error) = device.invalidate_mapped_memory_ranges(&[range]) {
+                    device.unmap_memory(self.memory);
+                    return Err(error.into());
+                }
+            }
             let rgba = to_rgba(std::slice::from_raw_parts(data, len), self.bgra);
             device.unmap_memory(self.memory);
             rgba
@@ -171,15 +187,14 @@ fn is_bgra(format: vk::Format) -> Result<bool> {
 /// Reorders 4-byte pixels to RGBA and makes them opaque (the swapchain is
 /// presented opaque, so its alpha means nothing).
 fn to_rgba(pixels: &[u8], bgra: bool) -> Vec<u8> {
-    pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .flat_map(|&[first, green, third, _]| {
-            let (red, blue) = if bgra { (third, first) } else { (first, third) };
-            [red, green, blue, u8::MAX]
-        })
-        .collect()
+    let mut rgba = pixels.to_vec();
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        if bgra {
+            pixel.swap(0, 2);
+        }
+        pixel[3] = u8::MAX;
+    }
+    rgba
 }
 
 #[cfg(test)]

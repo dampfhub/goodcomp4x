@@ -37,6 +37,8 @@ impl Ability {
             UnitType::PatrolGalley | UnitType::LandingCraft | UnitType::BombardShip => {
                 Ability::Lookout
             }
+            // Never queued: nobody orders an animal (`animals.rs`).
+            UnitType::Wolf | UnitType::Bear => Ability::Lookout,
         }
     }
 

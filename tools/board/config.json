@@ -6,18 +6,20 @@
   "defaultBranch": "main",
   "selectFields": {
     "Status": ["Todo", "In Progress", "Done"],
-    "Area": ["COMBAT", "CITY", "AI", "UI", "RENDER", "MAP", "TOOLING", "DOCS"],
+    "Area": ["COMBAT", "ORDERS", "CITY", "WORKERS", "AI", "UI", "RENDER", "MAP", "PLATFORM", "TOOLING", "DOCS"],
     "Difficulty": ["S", "M", "L", "XL"],
-    "Risk": ["Low", "Medium", "High"]
+    "Risk": ["Low", "Medium", "High"],
+    "Priority": ["P0", "P1", "P2"]
   },
-  "textFields": ["Acceptance", "Files"],
-  "requiredOnFile": ["Acceptance"],
-  "listColumns": ["Status", "Area", "Difficulty", "Risk"],
+  "textFields": ["Acceptance", "Files", "Branch"],
+  "requiredOnFile": ["Acceptance", "Area", "Difficulty", "Risk", "Priority"],
+  "listColumns": ["Status", "Priority", "Area", "Difficulty", "Risk"],
   "labels": {
     "enhancement": "New feature or request",
     "bug": "Something isn't working",
     "follow-up": "Work discovered while doing another item",
     "question": "Further information is requested",
-    "documentation": "Improvements or additions to documentation"
+    "documentation": "Improvements or additions to documentation",
+    "refactor": "Behavior-preserving restructuring: no rules, controls or docs/rules change; test count unchanged"
   }
 }

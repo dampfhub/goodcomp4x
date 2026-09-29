@@ -15,9 +15,10 @@ Everything project-specific lives in the config: `repo`, `projectOwner` (+ `proj
 `user` or `organization`), `projectNumber`, `defaultBranch`, the `selectFields` and `textFields`,
 which fields `file` requires (`requiredOnFile`), the `list` columns, and the labels. Each field
 becomes a flag: lowercase, spaces as dashes (`Area` → `--area`). `board.mjs setup` compares the
-live project and repo against the config; `setup --apply` links the repo and creates missing fields
-and labels (it never deletes, renames, or adds options to an existing select; those it reports as
-MANUAL).
+live project and repo against the config; `setup --apply` links the repo, creates missing fields
+and labels, and adds missing options to an existing select, keeping every existing option's id so
+no item loses its value. It never deletes or renames anything; what it can't fix it reports as
+MANUAL.
 
 ## Before filing: triage
 
@@ -30,8 +31,11 @@ dependency, not prose).
 
 ## Working an item
 
-1. `claim <#>` before reading code. It sets In Progress, which is what makes `fences` see you.
-   `show <#>` / `deps <#>` carry `Acceptance`, `Files`, and what blocks it.
+1. When claiming an item, post `note <#> --body-file <f>` with one to a few sentences
+   explaining the work you are starting, then `claim <#>` before reading code. This sets
+   In Progress and leaves context in the issue's history.
+   Once your branch exists, `set <#> --branch <name>`. `show <#>` / `deps <#>` carry
+   `Acceptance`, `Files`, and what blocks it. Pick work by `list --open --priority P0`, then P1.
 2. `fences` before your first edit and again after any board change. The conflict unit is the file.
    Record your neighbours' `Files` when you claim; the value of a later re-read is the diff.
 3. Keep `Files` equal to `git diff --name-only <default-branch>...HEAD` (three dots)
@@ -69,7 +73,9 @@ dependency, not prose).
 
 Type is a **label**, from the config's `labels`: `enhancement` (planned work), `bug`, `follow-up`
 (found while doing another item), `question` (an open design or rules question, like those listed
-at the end of `docs/game-rules.md`), `documentation`.
+at the end of `docs/game-rules.md`), `documentation`, `refactor` (behavior-preserving
+restructuring such as a file split: no rules, controls or `docs/rules` change, and the test count
+is unchanged, so AGENTS.md rule 3's doc updates don't apply beyond paths that moved).
 
 - `Status`: Todo · In Progress · Done. No "blocked" or "in review": blocking is a native dependency,
   and work under review is still In Progress.
@@ -78,9 +84,36 @@ at the end of `docs/game-rules.md`), `documentation`.
 - `Files`: `;`-separated paths, required if the item is ready to start. Name files, not globs:
   `fences` compares paths by prefix, so a glob matches nothing and hides every clash beneath it. A
   `(note)` after a path is ignored. A pure tracking parent says `(tracking only)`.
-- `Area`: COMBAT · CITY · AI · UI · RENDER · MAP · TOOLING · DOCS
-- `Difficulty`: S · M · L · XL
-- `Risk`: Low · Medium · High
+- `Priority` (required by `file`): what to pick up next. `list --priority P1` filters by it.
+  - **P0**: main is broken, a crash or data loss players can hit, or it blocks agents working
+    on the board. Drop other work for it.
+  - **P1**: next up: a rule, fog or UI bug players see, or tooling that speeds up every agent.
+  - **P2**: backlog: cleanups, polish, measured-small performance, decisions nobody waits on.
+
+  A blocked item takes the priority it will have once unblocked; `deps <#>` shows the blockers.
+- `Area` (required by `file`): where the fix lands, by the table below. An item spanning areas
+  takes the one holding most of its `Files`.
+- `Difficulty` (required by `file`), in agent terms: **S** one file, one sitting; **M** a few
+  files, one session; **L** one PR across a subsystem; **XL** too big for one agent: split it
+  into sub-issues (`sub`) before anyone claims it.
+- `Risk` (required by `file`): Low · Medium · High, how likely the change breaks something
+  its tests don't cover.
+- `Branch`: the branch doing the work, `set <#> --branch <name>` when you claim; it links a
+  stale In Progress item to its code.
+
+| Area | Where |
+|---|---|
+| COMBAT | `src/game/combat.rs`, `ability.rs`, `unit.rs`, `effects.rs`; naval combat and batteries |
+| ORDERS | `src/game/orders.rs`, `order_queue.rs`, `group.rs`, `turn.rs` (planning and resolution) |
+| CITY | `src/game/city/` (economy, builds, citizens, interior, founding, rail) |
+| WORKERS | `src/game/workers.rs` (Worker units, jobs, roads, structures, passability) |
+| AI | `src/game/ai.rs` |
+| UI | `src/game/ui/`, `city/view.rs`, `camera.rs`, `settings.rs`, `scenario.rs` (F-key scenes, snapshots) |
+| RENDER | `src/renderer/`, `shaders/`, `src/game/draw.rs`, `mesh.rs`, `font.rs`, `map_icons.rs`, `unit_icons.rs` |
+| MAP | `src/game/hex.rs`, `terrain.rs`, `mapgen.rs`, `fog.rs`, `ruins.rs` |
+| PLATFORM | `src/app.rs`, `main.rs`, `cli.rs`, `persist.rs`, `icon.rs`, `icon_art.rs`, `screenshot.rs`, `build.rs` (window, input, key map, CLI, saved files) |
+| TOOLING | `tools/`, `.github/`, `.agents/`, `.claude/`, `Cargo.toml`, `src/game/simulation.rs` and test support |
+| DOCS | `docs/`, `README.md`, the `AGENTS.md` files, when the change is only docs |
 
 Body template (`--body-file`): what and why, with the observation that motivates it; how to check it
 is done; what could regress; what is deliberately left out.

@@ -3,14 +3,16 @@
 use super::builder::{ButtonSpec, PanelBuilder, push_text_row, single_line_button_width};
 use super::dock::Zone;
 use super::paint::fade;
-use super::text::{end_turn_label, signed_quantity, turns_at_rate};
+use super::text::{end_turn_label, fit_text, price_hint, stock_spans};
 use super::{
-    BODY, Button, ButtonState, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout,
-    MARGIN, NOTICE_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
+    BODY, Button, ButtonState, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, Line,
+    MARGIN, NOTICE_TEXT, REDUCED_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
 };
 use crate::game::GameState;
+use crate::game::city::{Lane, MAX_CITY_POPULATION, Stock, turns_icon};
 use crate::game::font;
 use crate::game::scenario::Scenario;
+use crate::game::unit::Team;
 use glam::Vec2;
 
 impl GameState {
@@ -85,16 +87,26 @@ impl GameState {
         let can_complete = if let Some(city) = self.selected_barracks {
             !self.cities[city].barracks_queue.is_empty()
         } else if let Some(city) = self.selected_city {
-            !self.cities[city].queue.is_empty() && self.cities[city].pending_building.is_none()
+            !self.cities[city].queue.is_empty()
         } else {
             false
         };
-        panel.compact_buttons(vec![debug_button(
-            Target::CompleteProduction,
-            "COMPLETE PRODUCTION",
-            "F9",
-            ButtonState::new(false, self.is_resolving() || !can_complete),
-        )]);
+        // Beside it, how the Cavalry and Armored cap counts
+        // (`city/barracks.rs`): those alive, or every one ever trained.
+        let cap = if self.lifetime_special_cap {
+            "UNIT CAP: EVER"
+        } else {
+            "UNIT CAP: ALIVE"
+        };
+        panel.compact_buttons(vec![
+            debug_button(
+                Target::CompleteProduction,
+                "FINISH BUILD",
+                "F9",
+                ButtonState::new(false, self.is_resolving() || !can_complete),
+            ),
+            debug_button(Target::ToggleLifetimeCap, cap, "", ButtonState::Ready),
+        ]);
         if let Some(saved) = self.saved_summary() {
             panel.text(
                 SMALL,
@@ -118,17 +130,91 @@ impl GameState {
             "F8",
             ButtonState::Ready,
         )]);
-        panel.compact_buttons(vec![debug_button(
-            Target::ToggleFog,
-            fog,
-            "F10",
-            ButtonState::Ready,
-        )]);
+        // Beside fog, the economy experiment's variant
+        // (`docs/rts-economy.md`): production speeds builds.
+        let speedup = if self.production_speedup {
+            "PROD SPEEDUP: ON"
+        } else {
+            "PROD SPEEDUP: OFF"
+        };
+        panel.compact_buttons(vec![
+            debug_button(Target::ToggleFog, fog, "F10", ButtonState::Ready),
+            debug_button(
+                Target::ToggleProductionSpeedup,
+                speedup,
+                "",
+                ButtonState::Ready,
+            ),
+        ]);
         panel
     }
 
-    /// Turn number on the left, the latest notice in the middle, and on the
-    /// right the End Turn button, which names whatever the turn is still
+    /// The player's stockpile and its change a turn (every city's delivery,
+    /// less the citizens' food), for the top bar in both presentations.
+    pub(super) fn stockpile_line(&self) -> Line {
+        let income = self.shown_side_income(self.local_team);
+        let change = Stock {
+            food: income.food - self.upkeep(self.local_team),
+            ..income
+        };
+        stock_spans(self.stock(self.local_team), change)
+    }
+
+    /// `team`'s supply (`city/supply.rs`): what it uses of what its cities
+    /// give, red once it's all used.
+    pub(super) fn supply_spans(&self, team: Team) -> Line {
+        let (used, cap) = (self.supply_used(team), self.supply_cap(team));
+        let color = if used >= cap { REDUCED_TEXT } else { TEXT };
+        vec![
+            ("SUPPLY ".into(), LABEL_TEXT),
+            (format!("{used}/{cap}"), color),
+        ]
+    }
+
+    /// The supply line of a city's or Barracks' tray: `supply_spans`, and
+    /// once it's all used, that nothing new trains.
+    pub(super) fn supply_tray_line(&self, team: Team) -> Line {
+        let mut line = self.supply_spans(team);
+        if self.supply_used(team) >= self.supply_cap(team) {
+            line.push((
+                " · FULL: NO NEW TROOPS, SHIPS OR SCOUTS".into(),
+                REDUCED_TEXT,
+            ));
+        } else {
+            line.push((" · TROOPS, SHIPS AND SCOUTS USE IT".into(), DIM_TEXT));
+        }
+        line
+    }
+
+    /// The player's supply for the top bar (`supply_spans`).
+    pub(super) fn supply_line(&self) -> Line {
+        let mut line = self.supply_spans(self.local_team);
+        line[0].0.insert_str(0, "   ");
+        line
+    }
+
+    /// What the top bar shows beside the turn number, in both
+    /// presentations: the stockpile (`stockpile_line`), then the supply
+    /// (`supply_line`).
+    pub(super) fn status_line(&self) -> Line {
+        let mut line = self.stockpile_line();
+        line.extend(self.supply_line());
+        line
+    }
+
+    /// The turn the top bar names: the one playing out, or the one being
+    /// planned (still being planned while a network game waits for the
+    /// others' plans, before it has begun to play out).
+    pub(super) fn shown_turn(&self) -> u32 {
+        if self.is_playing_out() {
+            self.turn
+        } else {
+            self.turn + 1
+        }
+    }
+
+    /// Turn number, the stockpile and supply on the left, the latest notice in the
+    /// middle, and on the right the End Turn button, which names whatever the turn is still
     /// waiting on (clicking it selects that).
     pub(super) fn top_bar(&self, size: Vec2, layout: &mut Layout) {
         let min = Vec2::new(0.0, size.y - TOP_BAR_HEIGHT);
@@ -136,36 +222,53 @@ impl GameState {
         let middle = min.y + TOP_BAR_HEIGHT / 2.0;
 
         let pending = self.pending();
-        let turn = if self.is_resolving() {
-            self.turn
-        } else {
-            self.turn + 1
-        };
+        let turn = self.shown_turn();
         let turn_text = format!("TURN {turn}");
-        let left_end = MARGIN + font::ui(TITLE).width(&turn_text);
+        let turn_end = MARGIN + font::ui(TITLE).width(&turn_text);
         push_text_row(
             layout,
             Vec2::new(MARGIN, middle),
             TITLE,
-            vec![(turn_text, TEXT)],
+            vec![(turn_text, self.turn_number_color(TEXT))],
         );
+        // The player's stockpile and supply beside the turn number.
+        let stockpile = self.status_line();
+        let stockpile_width: f32 = stockpile
+            .iter()
+            .map(|(text, _)| font::ui(BODY).width(text))
+            .sum();
+        push_text_row(
+            layout,
+            Vec2::new(turn_end + 2.0 * GAP, middle),
+            BODY,
+            stockpile,
+        );
+        let left_end = turn_end + 2.0 * GAP + stockpile_width;
 
         let label = if self.is_resolving() {
-            "RESOLVING".to_string()
+            self.resolving_label()
         } else {
             end_turn_label(pending)
         };
-        let hint = "SPACE".to_string();
+        // While waiting for the others, a click takes the turn back.
+        let hint = if self.waiting_for_peers() {
+            "TAKE BACK"
+        } else {
+            "SPACE"
+        }
+        .to_string();
         let width = single_line_button_width(&label, &hint);
         let button_min = Vec2::new(size.x - MARGIN - width, middle - END_TURN_HEIGHT / 2.0);
         let end_turn = Button {
             target: Target::EndTurn,
             label,
             hint,
-            state: if self.is_resolving() {
+            state: if self.is_playing_out() {
                 ButtonState::Disabled
+            } else if self.waiting_for_peers() {
+                ButtonState::Ready
             } else {
-                ButtonState::new(pending == (0, 0, 0), false)
+                ButtonState::new(pending == (0, 0), false)
             },
             armed: false,
             faded: false,
@@ -173,38 +276,53 @@ impl GameState {
             max: (button_min + Vec2::new(width, END_TURN_HEIGHT)).round(),
         };
 
-        // The notice sits centered in the space left between the two.
-        let notice = self.shown_notice();
+        let menu_width = single_line_button_width("MENU", "");
+        let menu_min = Vec2::new(left_end + GAP * 2.0, middle - END_TURN_HEIGHT / 2.0);
+        layout.buttons.push(Button {
+            target: Target::OpenSettings,
+            label: "MENU".into(),
+            hint: String::new(),
+            state: ButtonState::Ready,
+            armed: false,
+            faded: false,
+            min: menu_min.round(),
+            max: (menu_min + Vec2::new(menu_width, END_TURN_HEIGHT)).round(),
+        });
+        let left_end = menu_min.x + menu_width;
+
+        // The notice sits centered in the space left between the two,
+        // shortened to what fits.
+        let face = font::ui(BODY);
+        let space = (left_end + 2.0 * GAP, end_turn.min.x - 2.0 * GAP);
+        let notice = fit_text(self.shown_notice(), space.1 - space.0, |t| face.width(t));
         if !notice.is_empty() {
-            let width = font::ui(BODY).width(notice);
-            let space = (left_end + 2.0 * GAP, end_turn.min.x - 2.0 * GAP);
+            let width = face.width(&notice);
             let left = ((space.0 + space.1 - width) / 2.0).max(space.0);
-            if left + width <= space.1 {
-                let line = vec![(notice.to_string(), NOTICE_TEXT)];
-                push_text_row(layout, Vec2::new(left, middle), BODY, line);
-            }
+            let line = vec![(notice, NOTICE_TEXT)];
+            push_text_row(layout, Vec2::new(left, middle), BODY, line);
         }
         layout.buttons.push(end_turn);
     }
 
-    /// The open city: population, stores and income, growth, what it's
-    /// building, and a card for each unit it can build.
+    /// A queue's line in the hover panel: the item worked (`worked_item`)
+    /// and its turns left, or why there's none.
+    fn hover_queue_text(&self, worked: Option<(&str, i32, f32)>, empty: bool) -> String {
+        match worked {
+            Some((name, turns, _)) => format!("{name} · {} LEFT", turns_icon(turns)),
+            None if empty => "EMPTY".into(),
+            None => "NOTHING IT CAN PAY FOR".into(),
+        }
+    }
+
+    /// A hovered city or Barracks: population and what the city delivers,
+    /// or the Barracks' health, and what either is building. Of another
+    /// side's, only what's in sight: its population or health, not what it
+    /// delivers or works, which hang on tiles, routes and plans the player
+    /// can't see.
     pub(super) fn structure_hover_panel(&self, i: usize, barracks: bool, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
+        let own = city.team == self.local_team;
         if barracks {
-            let tile = city.barracks.unwrap();
-            let active = city.worked.first() == Some(&tile);
-            let production = if active { self.barracks_income(i) } else { 0 };
-            let queue = city.barracks_queue.first().map_or_else(
-                || "EMPTY".into(),
-                |build| {
-                    format!(
-                        "{} · {} LEFT",
-                        build.name(),
-                        turns_at_rate(build.cost() - city.barracks_production, production)
-                    )
-                },
-            );
             panel.text(
                 TITLE,
                 vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
@@ -213,52 +331,61 @@ impl GameState {
                 SMALL,
                 vec![(
                     format!(
-                        "HP {:.0}/{:.0} · {} PROD/T",
+                        "HP {:.0}/{:.0}",
                         city.barracks_hp,
                         crate::game::city::BARRACKS_MAX_HP,
-                        signed_quantity(production)
+                    ),
+                    GOLD_TEXT,
+                )],
+            );
+            if !own {
+                return;
+            }
+            let status = self.queue_status(i, Lane::Barracks);
+            let worked = self.worked_item(i, Lane::Barracks, &status);
+            let queue = self.hover_queue_text(worked, city.barracks_queue.is_empty());
+            panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
+            if let Some((_, _, done)) = worked {
+                panel.bar(done);
+            }
+            if let Some(waiting) = self.head_waiting_text(i, Lane::Barracks, &status) {
+                panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
+            }
+        } else {
+            panel.text(
+                TITLE,
+                vec![(format!("CITY {}", city.id + 1), city.team.color())],
+            );
+            if !own {
+                panel.text(
+                    SMALL,
+                    vec![(
+                        format!("POP {}/{MAX_CITY_POPULATION}", city.population),
+                        GOLD_TEXT,
+                    )],
+                );
+                return;
+            }
+            let status = self.queue_status(i, Lane::City);
+            let worked = self.worked_item(i, Lane::City, &status);
+            let queue = self.hover_queue_text(worked, city.queue.is_empty());
+            panel.text(
+                SMALL,
+                vec![(
+                    format!(
+                        "POP {}/{MAX_CITY_POPULATION} · DELIVERS {}",
+                        city.population,
+                        price_hint(self.net_delivery(i))
                     ),
                     GOLD_TEXT,
                 )],
             );
             panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
-            if let Some(build) = city.barracks_queue.first() {
-                panel.bar((city.barracks_production as f32 / build.cost() as f32).clamp(0.0, 1.0));
+            if let Some((_, _, done)) = worked {
+                panel.bar(done);
             }
-        } else {
-            let (growth, _, _) = self.growth_status(i);
-            let (_, production) = self.income(i);
-            let queue = city.queue.first().map_or_else(
-                || "EMPTY".into(),
-                |build| {
-                    format!(
-                        "{} · {} LEFT",
-                        build.name(),
-                        turns_at_rate(
-                            self.city_build_cost(i, *build) - city.production,
-                            production
-                        )
-                    )
-                },
-            );
-            panel.text(
-                TITLE,
-                vec![(format!("CITY {}", city.id + 1), city.team.color())],
-            );
-            panel.text(
-                SMALL,
-                vec![(
-                    format!("POP {growth}% · {} PROD/T", signed_quantity(production)),
-                    GOLD_TEXT,
-                )],
-            );
-            panel.bar(growth as f32 / 100.0);
-            panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
-            if let Some(build) = city.queue.first() {
-                panel.bar(
-                    (city.production as f32 / self.city_build_cost(i, *build) as f32)
-                        .clamp(0.0, 1.0),
-                );
+            if let Some(waiting) = self.head_waiting_text(i, Lane::City, &status) {
+                panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
             }
         }
     }

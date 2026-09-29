@@ -1,18 +1,18 @@
-//! Production queue panels (city and Barracks): scrolling, drag to reorder, X to remove.
+//! Production queue panels (city and Barracks): scrolling, drag to reorder, X to remove, Clear
+//! to empty.
 
-use super::builder::PanelBuilder;
-use super::text::{quantity, turns_at_rate};
+use super::builder::{ButtonSpec, PanelBuilder};
 use super::{
-    LABEL_TEXT, LINE_GAP, PADDING, QUEUE_ITEM_HEIGHT, QueueDrag, QueueItemSpec, QueueKind, SMALL,
-    contains, to_ui,
+    ButtonState, LABEL_TEXT, PADDING, QUEUE_ITEM_HEIGHT, QueueDrag, QueueItemSpec, QueueKind,
+    TITLE_ROW_HEIGHT, Target, contains, to_ui,
 };
 use crate::game::GameState;
-use crate::game::font;
+use crate::game::city::{Lane, SETTLER_MIN_POPULATION, Stock, stock_icons, turns_icon};
 use glam::Vec2;
 
 pub(super) fn queue_items_that_fit(available_height: f32) -> usize {
-    let text_row = font::ui(SMALL).line_height + LINE_GAP;
-    let fixed = 2.0 * PADDING + text_row;
+    // The title, with the Clear button at its end (`queue_title`).
+    let fixed = 2.0 * PADDING + TITLE_ROW_HEIGHT;
     let item = QUEUE_ITEM_HEIGHT;
     let mut visible = 1;
     while (fixed + (visible + 1) as f32 * item).round() <= available_height.round() {
@@ -72,8 +72,12 @@ impl GameState {
         match kind {
             QueueKind::City => self.city_queue_scroll = offset,
             QueueKind::Barracks => self.barracks_queue_scroll = offset,
-            // Worker jobs are listed in full; they don't scroll.
-            QueueKind::Workers => {}
+            QueueKind::Workers => {
+                if let Some(city) = self.worker_list_city() {
+                    self.cities[city].worker_scroll = offset;
+                }
+            }
+            QueueKind::Priority => {}
         }
     }
 
@@ -120,8 +124,13 @@ impl GameState {
         let current = match scroll.kind {
             QueueKind::City => self.city_queue_scroll,
             QueueKind::Barracks => self.barracks_queue_scroll,
-            QueueKind::Workers => 0,
-        };
+            QueueKind::Workers => self
+                .worker_list_city()
+                .map_or(0, |city| self.cities[city].worker_scroll),
+            QueueKind::Priority => 0,
+        }
+        // Kept past the end (by removing rows), it steps back from the end.
+        .min(scroll.max_offset);
         let delta = steps.abs().ceil() as usize;
         let next = if steps > 0.0 {
             current.saturating_sub(delta)
@@ -184,8 +193,16 @@ impl GameState {
     }
 
     /// A click on queue row `index`, rather than a drag: the camera goes to a
-    /// worker job's tile (or edge). City and barracks rows do nothing.
+    /// worker job's tile (or edge), and a priority chip's good goes first.
+    /// City and barracks rows do nothing.
     pub(super) fn queue_item_clicked(&mut self, kind: QueueKind, index: usize) {
+        if kind == QueueKind::Priority
+            && let Some(city) = self.selected_city
+            && let Some(&good) = self.cities[city].priorities.0.get(index)
+        {
+            self.prioritize_selected_city(good);
+            return;
+        }
         if kind != QueueKind::Workers {
             return;
         }
@@ -203,7 +220,7 @@ impl GameState {
     }
 
     pub(super) fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {
-        if source == target {
+        if source == target || self.is_resolving() {
             return;
         }
         let city = match kind {
@@ -215,10 +232,6 @@ impl GameState {
         };
         match kind {
             QueueKind::City => {
-                if self.cities[city].pending_building.is_some() && (source == 0 || target == 0) {
-                    self.notice = "CONFIRM OR REMOVE THE READY BUILDING FIRST".into();
-                    return;
-                }
                 let queue = &mut self.cities[city].queue;
                 if source < queue.len() && target < queue.len() {
                     let item = queue.remove(source);
@@ -242,6 +255,12 @@ impl GameState {
                     self.notice = "WORKER JOBS REORDERED".into();
                 }
             }
+            QueueKind::Priority => {
+                if self.selected_city == Some(city) {
+                    let priorities = self.cities[city].priorities.moved(source, target);
+                    self.set_selected_city_priorities(priorities);
+                }
+            }
         }
     }
 
@@ -249,12 +268,158 @@ impl GameState {
         self.queue_drag = None;
     }
 
+    /// A queue panel's title, with its Clear button (`clear`) at the end of
+    /// the line: every item off, refunded. Dimmed while a turn plays out,
+    /// when the queue can't change.
+    fn queue_title(&self, title: &str, clear: Target, panel: &mut PanelBuilder) {
+        panel.title_with_button(
+            vec![(title.into(), LABEL_TEXT)],
+            ButtonSpec {
+                target: clear,
+                label: "CLEAR".into(),
+                hint: String::new(),
+                state: ButtonState::new(false, self.is_resolving()),
+                armed: false,
+            },
+        );
+    }
+
+    /// What one of `city`'s queues does this turn, for the panels. For the
+    /// player's own cities it's `forecast`'s view: the item worked, and
+    /// which items wait for the stockpile or for supply. Other sides'
+    /// stockpiles aren't the player's to see, so their queues show only
+    /// their first item.
+    pub(super) fn queue_status(&self, city: usize, lane: Lane) -> QueueStatus {
+        let len = self.lane_len(city, lane);
+        let forecast = (self.cities[city].team == self.local_team)
+            .then(|| self.forecast(self.local_team).lane(city, lane))
+            .flatten();
+        let (worked, waiting, supply) = match forecast {
+            Some(forecast) => (
+                forecast.worked,
+                self.waiting_items(forecast),
+                self.supply_waiting_items(forecast),
+            ),
+            None => ((len > 0).then_some(0), Vec::new(), Vec::new()),
+        };
+        QueueStatus {
+            worked,
+            waiting,
+            supply,
+        }
+    }
+
+    /// Whether item `index` of one of `city`'s queues is a Settler waiting
+    /// for citizens (`waits_for_citizens`).
+    fn waits_for_citizens_at(&self, city: usize, lane: Lane, index: usize) -> bool {
+        lane == Lane::City
+            && index < self.lane_len(city, lane)
+            && self.waits_for_citizens(city, index)
+    }
+
+    /// The name of item `index` of one of `city`'s queues.
+    fn item_name(&self, city: usize, lane: Lane, index: usize) -> &'static str {
+        match lane {
+            Lane::City => self.cities[city].queue[index].build.name(),
+            Lane::Barracks => self.cities[city].barracks_queue[index].build.name(),
+        }
+    }
+
+    /// The item one of `city`'s queues works (`status`): its name, the
+    /// turns it has left and how far along it is (0 to 1).
+    pub(super) fn worked_item(
+        &self,
+        city: usize,
+        lane: Lane,
+        status: &QueueStatus,
+    ) -> Option<(&'static str, i32, f32)> {
+        let index = status.worked?;
+        let (_, progress, work) = self.lane_item(city, lane, index);
+        Some((
+            self.item_name(city, lane, index),
+            self.item_turns_left(city, lane, index),
+            (progress as f32 / work as f32).clamp(0.0, 1.0),
+        ))
+    }
+
+    /// "MELEE WAITS FOR [wood]3" when the first item of one of `city`'s
+    /// queues waits for the stockpile (`status`).
+    pub(super) fn head_waiting_text(
+        &self,
+        city: usize,
+        lane: Lane,
+        status: &QueueStatus,
+    ) -> Option<String> {
+        if self.waits_for_citizens_at(city, lane, 0) {
+            return Some(format!(
+                "{} WAITS FOR POPULATION {SETTLER_MIN_POPULATION}",
+                self.item_name(city, lane, 0)
+            ));
+        }
+        // Its side's units and started items leave no room for it: the
+        // supply has fallen since it was queued (`supply_waiting_items`).
+        if status.supply.contains(&0) {
+            return Some(format!(
+                "{} WAITS FOR SUPPLY: NO ROOM TO START IT",
+                self.item_name(city, lane, 0)
+            ));
+        }
+        let short = status.head_waits()?;
+        Some(format!(
+            "{} WAITS FOR {}",
+            self.item_name(city, lane, 0),
+            stock_icons(short)
+        ))
+    }
+
+    /// Row `index` of one of `city`'s queues: the item's `name` and the
+    /// turns it has left, or what it waits for (and it's tinted). The item
+    /// the city works is marked.
+    fn queue_row(
+        &self,
+        (city, lane, index): (usize, Lane, usize),
+        name: &str,
+        status: &QueueStatus,
+        drag: Option<QueueDrag>,
+        kind: QueueKind,
+    ) -> QueueItemSpec {
+        let active = status.worked == Some(index);
+        let prefix = if active { "> " } else { "  " };
+        let waits = status.waits(index);
+        let citizens = self.waits_for_citizens_at(city, lane, index);
+        let supply = status.supply.contains(&index);
+        let mut state = match waits {
+            _ if citizens => format!("WAITS FOR POP {SETTLER_MIN_POPULATION}"),
+            _ if supply => "WAITS FOR SUPPLY".into(),
+            Some(short) => format!("WAITS {}", stock_icons(short)),
+            None => match self.item_turns_left(city, lane, index) {
+                0 => "READY".into(),
+                turns => format!("{} LEFT", turns_icon(turns)),
+            },
+        };
+        let (_, progress, _) = self.lane_item(city, lane, index);
+        if !active && progress > 0 {
+            state.push_str(" · SAVED");
+        }
+        QueueItemSpec {
+            kind,
+            index,
+            label: format!("{prefix}{name} | {state}"),
+            active,
+            waiting: waits.is_some() || citizens || supply,
+            dragging: drag.is_some_and(|drag| drag.source == index),
+            drop_target: drag
+                .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
+            locked: false,
+        }
+    }
+
     pub(super) fn barracks_queue_panel(&self, i: usize, visible: usize, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if city.barracks_queue.is_empty() {
             return;
         }
-        let production = self.barracks_income(i);
+        let status = self.queue_status(i, Lane::Barracks);
         let offset = self
             .barracks_queue_scroll
             .min(city.barracks_queue.len().saturating_sub(visible));
@@ -266,43 +431,28 @@ impl GameState {
                 visible,
             ));
         }
-        panel.text(
-            SMALL,
-            vec![("BARRACKS QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
+        self.queue_title(
+            "BARRACKS QUEUE - DRAG TO REORDER",
+            Target::ClearBarracksQueue,
+            panel,
         );
-        for (index, build) in city
+        let drag = self
+            .queue_drag
+            .filter(|drag| drag.kind == QueueKind::Barracks);
+        for (index, item) in city
             .barracks_queue
             .iter()
-            .copied()
             .enumerate()
             .skip(offset)
             .take(visible)
         {
-            let prefix = if index == 0 { "> " } else { "  " };
-            let remaining = build.cost()
-                - if index == 0 {
-                    city.barracks_production
-                } else {
-                    0
-                };
-            let drag = self
-                .queue_drag
-                .filter(|drag| drag.kind == QueueKind::Barracks);
-            panel.queue_item(QueueItemSpec {
-                kind: QueueKind::Barracks,
-                index,
-                label: format!(
-                    "{prefix}{} | {} PROD | {} LEFT",
-                    build.name(),
-                    quantity(build.cost()),
-                    turns_at_rate(remaining, production)
-                ),
-                active: index == 0,
-                dragging: drag.is_some_and(|drag| drag.source == index),
-                drop_target: drag
-                    .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
-                locked: false,
-            });
+            panel.queue_item(self.queue_row(
+                (i, Lane::Barracks, index),
+                item.build.name(),
+                &status,
+                drag,
+                QueueKind::Barracks,
+            ));
         }
     }
 
@@ -313,46 +463,54 @@ impl GameState {
         if city.queue.is_empty() {
             return;
         }
-        let (_, production) = self.income(i);
+        let status = self.queue_status(i, Lane::City);
         let offset = self
             .city_queue_scroll
             .min(city.queue.len().saturating_sub(visible));
         if city.queue.len() > visible {
             panel.scrollbar = Some((QueueKind::City, offset, city.queue.len(), visible));
         }
-        if !city.queue.is_empty() {
-            panel.text(
-                SMALL,
-                vec![("CITY QUEUE - DRAG TO REORDER".into(), LABEL_TEXT)],
-            );
-            for (index, build) in city
-                .queue
-                .iter()
-                .copied()
-                .enumerate()
-                .skip(offset)
-                .take(visible)
-            {
-                let prefix = if index == 0 { "> " } else { "  " };
-                let cost = self.city_build_cost(i, build);
-                let remaining = cost - if index == 0 { city.production } else { 0 };
-                let drag = self.queue_drag.filter(|drag| drag.kind == QueueKind::City);
-                panel.queue_item(QueueItemSpec {
-                    kind: QueueKind::City,
-                    index,
-                    label: format!(
-                        "{prefix}{} | {} PROD | {} LEFT",
-                        build.name(),
-                        quantity(cost),
-                        turns_at_rate(remaining, production)
-                    ),
-                    active: index == 0,
-                    dragging: drag.is_some_and(|drag| drag.source == index),
-                    drop_target: drag
-                        .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
-                    locked: index == 0 && city.pending_building.is_some(),
-                });
-            }
+        self.queue_title(
+            "CITY QUEUE - DRAG TO REORDER",
+            Target::ClearCityQueue,
+            panel,
+        );
+        let drag = self.queue_drag.filter(|drag| drag.kind == QueueKind::City);
+        for (index, item) in city.queue.iter().enumerate().skip(offset).take(visible) {
+            panel.queue_item(self.queue_row(
+                (i, Lane::City, index),
+                item.build.name(),
+                &status,
+                drag,
+                QueueKind::City,
+            ));
         }
+    }
+}
+
+/// What a queue does this turn (`GameState::queue_status`).
+pub(super) struct QueueStatus {
+    /// The item its city works, if it can pay for any.
+    pub(super) worked: Option<usize>,
+    /// The items that wait for the stockpile, with what it's short of for
+    /// each (`GameState::waiting_items`).
+    pub(super) waiting: Vec<(usize, Stock)>,
+    /// The items that wait for supply (`GameState::supply_waiting_items`).
+    pub(super) supply: Vec<usize>,
+}
+
+impl QueueStatus {
+    /// What item `index` waits for, if it waits.
+    pub(super) fn waits(&self, index: usize) -> Option<Stock> {
+        self.waiting
+            .iter()
+            .find(|&&(waiting, _)| waiting == index)
+            .map(|&(_, short)| short)
+    }
+
+    /// What the first item waits for, if it waits: its city shows the
+    /// missing resources' badge.
+    pub(super) fn head_waits(&self) -> Option<Stock> {
+        self.waits(0)
     }
 }

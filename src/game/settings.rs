@@ -31,6 +31,10 @@ pub struct Settings {
     /// Play a turn's steps all at once instead of one every
     /// `STEP_INTERVAL` (`turn.rs`). The outcome is the same. F8 toggles it.
     pub instant_playback: bool,
+    /// As a turn resolves, units and workers glide to their new hexes and
+    /// the new turn is cued (`transition.rs`), rather than everything
+    /// snapping into place. Presentation only.
+    pub turn_transition: bool,
     /// The most turns a unit's plan holds, this one included: Shift-clicks
     /// (`order_queue.rs`) queue no turns past it. A hex farther away is
     /// queued as far along the way as the limit allows.
@@ -44,19 +48,29 @@ pub struct Settings {
     /// Each side in the next world starts with its city already founded,
     /// rather than a settler to found it with.
     pub world_start_city: bool,
+    /// Animal dens in the next world (`animals.rs`): `ANIMALS_OFF`, one a
+    /// side (`ANIMALS_FEW`) or two a side (`ANIMALS_MANY`).
+    pub world_animals: usize,
 }
 
 /// `Settings::world_ai` for 4 to 6 AI players, picked by the map's seed.
 pub const WORLD_AI_BY_SEED: usize = 0;
 
+/// `Settings::world_animals`: no animals, one den a side, or two.
+pub const ANIMALS_OFF: usize = 0;
+pub const ANIMALS_FEW: usize = 1;
+pub const ANIMALS_MANY: usize = 2;
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             instant_playback: true,
+            turn_transition: true,
             max_queued_turns: 6,
             cloud_fog: true,
             world_ai: WORLD_AI_BY_SEED,
             world_start_city: true,
+            world_animals: ANIMALS_FEW,
         }
     }
 }
@@ -76,10 +90,12 @@ impl Settings {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Setting {
     TurnPlayback,
+    TurnTransition,
     MaxQueuedTurns,
     FogStyle,
     WorldAi,
     WorldStart,
+    WorldAnimals,
 }
 
 /// How the settings menu changes a `Setting`.
@@ -102,12 +118,14 @@ impl Control {
 impl Setting {
     /// Every setting, in the order the menu lists them. Settings of one
     /// `group` are listed together, under its heading.
-    pub const ALL: [Setting; 5] = [
+    pub const ALL: [Setting; 7] = [
         Setting::TurnPlayback,
+        Setting::TurnTransition,
         Setting::MaxQueuedTurns,
         Setting::FogStyle,
         Setting::WorldAi,
         Setting::WorldStart,
+        Setting::WorldAnimals,
     ];
 
     /// Its name in the saved settings file (`to_text`). Old files use
@@ -115,10 +133,12 @@ impl Setting {
     pub fn key(self) -> &'static str {
         match self {
             Setting::TurnPlayback => "turn_playback",
+            Setting::TurnTransition => "turn_transition",
             Setting::MaxQueuedTurns => "queue_limit",
             Setting::FogStyle => "fog",
             Setting::WorldAi => "world_ai",
             Setting::WorldStart => "world_start",
+            Setting::WorldAnimals => "world_animals",
         }
     }
 
@@ -126,51 +146,47 @@ impl Setting {
     pub fn name(self) -> &'static str {
         match self {
             Setting::TurnPlayback => "INSTANT PLAYBACK",
+            Setting::TurnTransition => "TURN TRANSITION",
             Setting::MaxQueuedTurns => "QUEUE LIMIT",
             Setting::FogStyle => "FOG",
             Setting::WorldAi => "AI PLAYERS",
             Setting::WorldStart => "START WITH",
+            Setting::WorldAnimals => "ANIMALS",
         }
     }
 
     /// The heading it's listed under in the menu.
     pub fn group(self) -> &'static str {
         match self {
-            Setting::TurnPlayback | Setting::MaxQueuedTurns => "TURNS",
+            Setting::TurnPlayback | Setting::TurnTransition | Setting::MaxQueuedTurns => "TURNS",
             Setting::FogStyle => "MAP",
-            Setting::WorldAi | Setting::WorldStart => "NEXT WORLD (F4)",
+            Setting::WorldAi | Setting::WorldStart | Setting::WorldAnimals => "NEXT WORLD (F4)",
         }
     }
 
     /// How the menu changes it.
     pub fn control(self) -> Control {
         match self {
-            Setting::TurnPlayback => Control::Toggle,
+            Setting::TurnPlayback | Setting::TurnTransition => Control::Toggle,
             Setting::MaxQueuedTurns => Control::Slider,
-            Setting::FogStyle | Setting::WorldAi | Setting::WorldStart => Control::Choice,
+            Setting::FogStyle | Setting::WorldAi | Setting::WorldStart | Setting::WorldAnimals => {
+                Control::Choice
+            }
         }
     }
 
     /// What it does, for its tooltip.
     pub fn description(self) -> &'static str {
         match self {
-            Setting::TurnPlayback => {
-                "ON: A TURN PLAYS OUT ALL AT ONCE. OFF: ONE STEP AT A TIME. THE OUTCOME IS \
-                 THE SAME. F8 SWITCHES IT TOO."
+            Setting::TurnPlayback => "PLAY EACH TURN OUT AT ONCE (F8).",
+            Setting::TurnTransition => {
+                "UNITS GLIDE TO THEIR NEW HEXES AND THE NEW TURN FLASHES AS A TURN RESOLVES."
             }
-            Setting::MaxQueuedTurns => {
-                "THE MOST TURNS A UNIT CAN HAVE QUEUED, THIS ONE INCLUDED. SHIFT-CLICKING A HEX \
-                 FARTHER AWAY QUEUES THE MOVE AS FAR AS THE LIMIT GOES."
-            }
-            Setting::FogStyle => "HOW UNEXPLORED LAND IS HIDDEN: UNDER CLOUDS, OR A FLAT GREY.",
-            Setting::WorldAi => {
-                "HOW MANY AI PLAYERS THE NEXT WORLD (F4) HAS. THE MAP GROWS WITH THEM. BY MAP \
-                 PICKS 4 TO 6 FROM THE MAP'S SEED."
-            }
-            Setting::WorldStart => {
-                "WHETHER EVERY SIDE IN THE NEXT WORLD (F4) STARTS WITH ITS CITY, OR A SETTLER \
-                 TO FOUND IT WITH."
-            }
+            Setting::MaxQueuedTurns => "THE MOST TURNS A UNIT CAN QUEUE.",
+            Setting::FogStyle => "CLOUDS OR FLAT GREY OVER UNEXPLORED LAND.",
+            Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4).",
+            Setting::WorldStart => "START THE NEXT WORLD (F4) WITH A CITY OR A SETTLER.",
+            Setting::WorldAnimals => "ANIMAL DENS IN THE NEXT WORLD (F4): NONE, ONE OR TWO A SIDE.",
         }
     }
 
@@ -178,23 +194,33 @@ impl Setting {
     pub fn range(self) -> RangeInclusive<i32> {
         match self {
             Setting::TurnPlayback => 0..=1,
+            Setting::TurnTransition => 0..=1,
             Setting::MaxQueuedTurns => 1..=20,
             Setting::FogStyle => 0..=1,
             Setting::WorldAi => 0..=6,
             Setting::WorldStart => 0..=1,
+            Setting::WorldAnimals => ANIMALS_OFF as i32..=ANIMALS_MANY as i32,
         }
     }
 
     /// How the menu shows `value`.
     pub fn value_text(self, value: i32) -> String {
         match self {
-            Setting::TurnPlayback => if value == 1 { "ON" } else { "OFF" }.into(),
+            Setting::TurnPlayback | Setting::TurnTransition => {
+                if value == 1 { "ON" } else { "OFF" }.into()
+            }
             Setting::MaxQueuedTurns if value == 1 => "1 TURN".into(),
             Setting::MaxQueuedTurns => format!("{value} TURNS"),
             Setting::FogStyle => if value == 1 { "CLOUDS" } else { "SOLID GREY" }.into(),
             Setting::WorldAi if value == WORLD_AI_BY_SEED as i32 => "4-6 BY MAP".into(),
             Setting::WorldAi => value.to_string(),
             Setting::WorldStart => if value == 1 { "CITY" } else { "SETTLER" }.into(),
+            Setting::WorldAnimals => match value as usize {
+                ANIMALS_OFF => "OFF",
+                ANIMALS_FEW => "FEW",
+                _ => "MANY",
+            }
+            .into(),
         }
     }
 }
@@ -204,10 +230,12 @@ impl Settings {
     pub fn get(&self, setting: Setting) -> i32 {
         match setting {
             Setting::TurnPlayback => self.instant_playback as i32,
+            Setting::TurnTransition => self.turn_transition as i32,
             Setting::MaxQueuedTurns => self.max_queued_turns as i32,
             Setting::FogStyle => self.cloud_fog as i32,
             Setting::WorldAi => self.world_ai as i32,
             Setting::WorldStart => self.world_start_city as i32,
+            Setting::WorldAnimals => self.world_animals as i32,
         }
     }
 
@@ -215,10 +243,12 @@ impl Settings {
     fn set(&mut self, setting: Setting, value: i32) {
         match setting {
             Setting::TurnPlayback => self.instant_playback = value == 1,
+            Setting::TurnTransition => self.turn_transition = value == 1,
             Setting::MaxQueuedTurns => self.max_queued_turns = value as usize,
             Setting::FogStyle => self.cloud_fog = value == 1,
             Setting::WorldAi => self.world_ai = value as usize,
             Setting::WorldStart => self.world_start_city = value == 1,
+            Setting::WorldAnimals => self.world_animals = value as usize,
         }
     }
 
@@ -267,12 +297,18 @@ impl GameState {
     }
 
     /// Takes on the player's settings, e.g. saved in an earlier session.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
     pub fn set_settings(&mut self, settings: Settings) {
         self.settings = settings;
     }
 
     pub(super) fn close_settings(&mut self) {
         self.settings_open = false;
+        self.stop_typing();
+        self.close_multiplayer_page();
     }
 
     /// Whether the settings menu's Quit button was clicked: the app then
@@ -282,17 +318,15 @@ impl GameState {
     }
 
     /// A press of Escape. It closes one thing, in this order: the settings
-    /// menu, then a city view, interior or site being chosen
-    /// (`exit_structure_menu`), then a worker job being placed, then the
-    /// worker menu, then the selection (`clear_selection`).
+    /// menu, then something being placed from a city, then a city view or
+    /// interior (`exit_structure_menu`), then the selection
+    /// (`clear_selection`).
     /// With nothing to close it opens the settings menu, which has the Quit
     /// button.
     pub fn press_escape(&mut self) {
         if self.settings_open {
-            self.settings_open = false;
+            self.close_settings();
         } else if self.exit_structure_menu() {
-        } else if self.worker_mode && self.placing_job.is_none() {
-            self.set_worker_mode(false);
         } else if !self.clear_selection() {
             self.settings_open = true;
         }

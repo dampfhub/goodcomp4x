@@ -1,9 +1,9 @@
 //! Logistics: delivery routes from a city or a placed building, how much of a
 //! worked tile's yield each route delivers, and the resulting income.
-use std::collections::{HashMap, HashSet};
 
-use super::Building;
+use super::{Building, Stock};
 use crate::game::GameState;
+use crate::game::fast_hash::{HashMap, HashSet};
 use crate::game::hex::Hex;
 use crate::game::unit::Team;
 
@@ -28,6 +28,16 @@ impl Routes {
     }
 }
 
+/// Route costs count half hexes: goods moving one hex cost `HEX_STEP`,
+/// whatever the terrain, and a road step (onto a road or a city, or along a
+/// Canoe House river) costs `ROAD_STEP`, half a hex.
+pub(in crate::game) const HEX_STEP: i32 = 2;
+pub(in crate::game) const ROAD_STEP: i32 = 1;
+/// The longest route: four hexes off-road.
+pub(in crate::game) const MAX_ROUTE_COST: i32 = 4 * HEX_STEP;
+
+/// The quarters of a tile's goods that reach the end of a route costing
+/// `cost`: all of them one hex away, 3/4 at two, 1/2 at three, 1/4 at four.
 pub(in crate::game) fn delivered_share(cost: i32) -> i32 {
     match cost {
         0..=2 => 4,
@@ -65,14 +75,22 @@ impl GameState {
     pub(in crate::game) fn is_road_hex(&self, hex: Hex) -> bool {
         self.roads.contains(&hex) || self.cities.iter().any(|city| city.pos == hex)
     }
-    /// What `hex` produces when worked: a city center's own yield, a site's,
-    /// or its terrain's.
-    pub(in crate::game) fn raw_yield(&self, hex: Hex) -> (i32, i32) {
+    /// What `hex` produces when worked, as whole food, wood and metal: a
+    /// city center's own 2 food and 1 wood, or its tile's (`tile_goods`).
+    pub(in crate::game) fn raw_yield(&self, hex: Hex) -> (i32, i32, i32) {
         if self.cities.iter().any(|c| c.pos == hex) {
-            (2, 1)
+            (2, 1, 0)
         } else {
-            self.tile_yield(hex)
+            self.tile_goods(hex)
         }
+    }
+
+    /// A worked tile's food, wood and metal: its yield (`tile_yield`), with
+    /// production split into metal (`metal_yield`) and wood.
+    pub(in crate::game) fn tile_goods(&self, hex: Hex) -> (i32, i32, i32) {
+        let (food, production) = self.tile_yield(hex);
+        let metal = self.metal_yield(hex, production);
+        (food, production - metal, metal)
     }
 
     pub(in crate::game) fn routes(&self, city: usize) -> Routes {
@@ -99,7 +117,7 @@ impl GameState {
 
     /// Like `routes_from`, with `blocked` deciding which hexes goods can't
     /// cross, `crossable` which hex edges they can (walls and others' gates
-    /// stop them) and `road` which carry them cheaply: the real board for the
+    /// stop them) and `road` which steps count as half a hex: the real board for the
     /// economy, or what the player knows of it for what's shown to them
     /// (`known_routes`).
     pub(in crate::game) fn routes_from_by(
@@ -110,14 +128,14 @@ impl GameState {
         road: impl Fn(Hex, Hex) -> bool,
     ) -> Routes {
         let mut result = Routes {
-            costs: HashMap::new(),
-            toward_origin: HashMap::new(),
+            costs: HashMap::default(),
+            toward_origin: HashMap::default(),
         };
         if blocked(origin) {
             return result;
         }
         result.costs.insert(origin, 0);
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         loop {
             let next = result
                 .costs
@@ -139,13 +157,10 @@ impl GameState {
                 {
                     continue;
                 }
-                let step = if road(hex, n) {
-                    1
-                } else {
-                    self.grid.tile(n).route_cost()
-                };
+                // Only hexes travelled count, never the terrain they cross.
+                let step = if road(hex, n) { ROAD_STEP } else { HEX_STEP };
                 let total = cost + step;
-                if total <= 8 && result.costs.get(&n).is_none_or(|old| total < *old) {
+                if total <= MAX_ROUTE_COST && result.costs.get(&n).is_none_or(|old| total < *old) {
                     result.costs.insert(n, total);
                     result.toward_origin.insert(n, hex);
                 }
@@ -156,18 +171,22 @@ impl GameState {
 
     pub(in crate::game) fn barracks_income(&self, city: usize) -> i32 {
         let c = &self.cities[city];
-        let Some(barracks) = c.barracks.filter(|tile| c.worked.first() == Some(tile)) else {
+        let Some(barracks) = c.barracks else {
             return 0;
         };
         let routes = self.routes_from(c.team, barracks);
-        c.worked
+        // Each cluster whose manager is beside the Barracks (no citizen
+        // works a building's tile, so beside it will do) adds its tiles'.
+        c.clusters
             .iter()
+            .filter(|cluster| cluster.manager.distance(barracks) == 1)
+            .flat_map(|cluster| cluster.tiles())
             .map(|tile| {
-                let (_, production) = self.tile_yield(*tile);
+                let (_, production) = self.tile_yield(tile);
                 production
                     * routes
                         .costs
-                        .get(tile)
+                        .get(&tile)
                         .map_or(0, |cost| delivered_share(*cost))
             })
             .sum()
@@ -224,7 +243,7 @@ impl GameState {
                         Building::Smelter => site.label != "MINE" || site.production <= 0,
                         _ => unreachable!(),
                     }
-                    || self.cities.iter().any(|other| other.worked.contains(&hex))
+                    || self.cities.iter().any(|other| other.works(hex))
                 {
                     return None;
                 }
@@ -263,31 +282,52 @@ impl GameState {
         output.into_iter().take(3).map(|(value, _)| value).sum()
     }
 
-    pub(in crate::game) fn income(&self, city: usize) -> (i32, i32) {
+    /// What `city` delivers to its side's stockpile a turn, before upkeep:
+    /// the center's 2 food and 1 wood, each worked tile's
+    /// food, wood and metal (`metal_yield`) times its delivery share, and the
+    /// Cannery's food and Smelter's metal.
+    pub(in crate::game) fn income(&self, city: usize) -> Stock {
         let routes = self.routes(city);
-        let granary_food = if self.cities[city].built.contains(&Building::Granary) {
-            8
-        } else {
-            0
+        let center = Stock {
+            food: 8,
+            wood: 4,
+            metal: 0,
         };
-        let worked =
-            self.cities[city]
-                .worked
-                .iter()
-                .fold((8 + granary_food, 4), |(food, prod), hex| {
-                    let (food_share, production_share) =
-                        routes.costs.get(hex).map_or((0, 0), |&cost| {
-                            (
-                                self.mill_food_share(city, *hex, cost),
-                                delivered_share(cost),
-                            )
-                        });
-                    let (f, p) = self.tile_yield(*hex);
-                    (food + f * food_share, prod + p * production_share)
-                });
-        (
-            worked.0 + self.cannery_income(city),
-            worked.1 + self.smelter_income(city),
-        )
+        center
+            + self.tiles_income(city, &routes, self.cities[city].worked())
+            + Stock {
+                food: self.cannery_income(city),
+                wood: 0,
+                metal: self.smelter_income(city),
+            }
+    }
+
+    /// What one of `city`'s clusters delivers a turn: its tiles' part of
+    /// `income`.
+    pub(in crate::game) fn cluster_income(&self, city: usize, cluster: usize) -> Stock {
+        let routes = self.routes(city);
+        let tiles = self.cities[city].clusters[cluster].tiles();
+        self.tiles_income(city, &routes, tiles)
+    }
+
+    /// What `tiles`, worked by `city`'s citizens, deliver to it along
+    /// `routes`: each one's food, wood and metal times its delivery share.
+    fn tiles_income(
+        &self,
+        city: usize,
+        routes: &Routes,
+        tiles: impl Iterator<Item = Hex>,
+    ) -> Stock {
+        tiles.fold(Stock::default(), |sum, hex| {
+            let (food_share, share) = routes.costs.get(&hex).map_or((0, 0), |&cost| {
+                (self.mill_food_share(city, hex, cost), delivered_share(cost))
+            });
+            let (food, wood, metal) = self.tile_goods(hex);
+            sum + Stock {
+                food: food * food_share,
+                wood: wood * share,
+                metal: metal * share,
+            }
+        })
     }
 }

@@ -40,6 +40,13 @@ Shaders are GLSL in `/shaders`. `build.rs` compiles every `.vert`/`.frag`/... th
 `OUT_DIR/<name>.spv`, and `pipeline.rs` embeds them with `include_bytes!`. Adding a shader stage
 needs no build change; using it needs a pipeline change here.
 
+## Buffer memory
+
+Each frame slot keeps its vertex buffer mapped until growth or teardown. Writes wait
+for that slot's fence. Vertex memory prefers host-visible coherent device-local
+memory, falling back to host-visible coherent memory. Readback prefers host-cached
+memory and invalidates noncoherent mappings after the GPU finishes.
+
 ## Invariants and gotchas
 
 - Copy SPIR-V from `include_bytes!` into a `Vec<u32>` (`create_shader_module` does). The bytes
@@ -57,6 +64,32 @@ needs no build change; using it needs a pipeline change here.
   signal again once its image is acquired again. Acquire semaphores and fences stay per frame.
   An acquire that returns suboptimal still signals its semaphore, so that frame is drawn and
   presented before the swapchain is rebuilt; only `ERROR_OUT_OF_DATE_KHR` skips the frame.
-- MSAA uses the highest supported count from `PREFERRED_SAMPLES` (16, then 8), falling back to 4.
+- Swapchain recreation skips zero-size surfaces, creates the replacement before releasing the old
+  resources, and keeps the render pass/pipeline when the format is unchanged. Destroy methods
+  null or drain handles so teardown remains safe after a partial recreation failure.
+- MSAA uses the highest supported count up to 8 by default. `RENDER_MSAA=2|4|8|16|32|64`
+  overrides the cap at startup (PowerShell: `$env:RENDER_MSAA="4"`). Invalid values warn
+  and use 8; unsupported caps return a setup error. A 1-sample override is unsupported
+  because this render pass requires a multisampled resolve source. Target allocation
+  size is logged at startup and resize; the cap is retained across recreation.
 - Validation runs only in debug builds (`cfg!(debug_assertions)`). Check `cargo run` output for
   validation errors after any change here.
+
+## Device choices and atlas validation
+
+Prefer BGRA sRGB, then RGBA sRGB, and warn if the surface forces another format.
+Composite alpha uses a supported mode, preferring opaque. Atlas dimensions must be
+nonzero; mip chains stop at 1x1 and clamp each axis to at least one texel. Uploads
+align mip offsets to four bytes. These choices, extent clamping, batch offsets and
+sample selection are exercised by `cargo test renderer` without a GPU.
+
+## Synchronization validation
+
+For shared-target and swapchain changes, enable synchronization validation in a debug
+run. In PowerShell, set `$env:VK_VALIDATION_VALIDATE_SYNC="true"`, then run
+`cargo run -- --screenshot out.png --scenario cities --size 1280x720`.
+Also resize a running debug window and check that neither run logs `SYNC-HAZARD-*`
+or other validation errors. Clear the variable afterwards with
+`Remove-Item Env:VK_VALIDATION_VALIDATE_SYNC`. The incoming render-pass dependency
+orders color attachment writes to the shared MSAA target between frames as well as
+waiting for the acquired swapchain image; UNDEFINED only discards contents.

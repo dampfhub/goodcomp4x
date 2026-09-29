@@ -51,6 +51,7 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 |---|---|---|
 | `src/app.rs`, `src/main.rs` | window, input and key map, frame loop | `src/AGENTS.md` |
 | `src/cli.rs`, `src/screenshot.rs` | command-line flags; screenshot mode | `src/AGENTS.md` |
+| `src/net/` | a network game's link: TCP, encrypted and authenticated by the join code (`secure.rs`); everything arriving is untrusted | `docs/multiplayer.md` |
 | `src/renderer/` | general 2D Vulkan renderer; knows nothing about the game | `src/renderer/AGENTS.md` |
 | `src/game/` | all game state, rules, AI, drawing and UI | `src/game/AGENTS.md` |
 | `src/game/ui/` | screen-space UI, both presentations (ImGui and classic) | `src/game/ui/AGENTS.md` |
@@ -87,15 +88,18 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 
 Work is tracked on https://github.com/users/dampfhub/projects/1 through
 `node tools/board/board.mjs` (no arguments prints usage; the `board` skill has the workflow).
-Claim an item before starting, keep its `Files` current, and run `fences` before working in
-parallel with another agent. Check `list --open` before filing something new.
+Pick unblocked work by Priority (`list --open --priority P0`, then P1). Claim an item before
+starting, keep its `Files` current, and run `fences` before working in parallel with another
+agent. Check `list --open` before filing something new.
 
 ## Commits and PRs
 
 - One PR per change, using the PR template: what changed, how it was verified, what it closes.
-- A PR merges itself: CI's `merge` job merges it once `rust`, `msrv` and `tools` pass, deletes
-  its branch, then runs CI on `main`. To keep a PR open (for review, or while still working), open it as a draft
-  (`gh pr create --draft`, or `gh pr ready --undo <#>`); marking it ready runs CI and merges it.
+- Open PRs ready for auto-merge by default. Use a draft only for a specific reason to
+  hold it back, and explain that reason. Passing CI merges the PR and deletes its branch.
+- After every PR creation or push, watch CI until all required checks pass for the latest
+  head; investigate and fix failures. After merging, watch `main` CI too before marking
+  the board item Done. Report any blocker instead of leaving pending or failed CI unnoticed.
 - Put `Closes #N` on one line: the merge job closes the issues a merged PR links that way. A line ending in `fix`/`close`/`resolve` (any tense) followed by a
   line starting `#N` also closes #N; `node tools/commit-msg-lint.mjs` catches that in commit
   messages, and CI runs it on every PR's commits.
