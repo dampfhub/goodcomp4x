@@ -4491,7 +4491,11 @@ fn imgui_status_bar_keeps_its_parts_apart_at_every_width() {
     };
     let rich = || {
         let mut game = city();
-        *game.stock_mut(Team::Blue) = Stock::whole(12345, 23456, 34567);
+        *game.stock_mut(Team::Blue) = Stock {
+            food: 4 * 12345 + 1,
+            wood: 4 * 23456 + 2,
+            metal: 4 * 34567 + 3,
+        };
         game
     };
     let map = || {
@@ -4529,15 +4533,15 @@ fn imgui_status_bar_keeps_its_parts_apart_at_every_width() {
                 texts.iter().any(|text| text.starts_with("TURN ")),
                 "{name} at {width}: {texts:?}"
             );
-            // The stockpile and supply, dropped from their end only when
-            // there's no room: with the game's font all of them at every
-            // width, with ImGui's own (no system font) from 800 px.
             let icons = texts.iter().filter(|text| *text == "icon").count();
-            let supply = texts.iter().any(|text| text.contains("SUPPLY"));
-            assert!(icons >= 1, "{name} at {width}: {texts:?}");
-            if width >= 800.0 {
-                assert!(icons == 3 && supply, "{name} at {width}: {texts:?}");
-            }
+            assert_eq!(
+                icons, 3,
+                "{name} at {width}: the stockpile's icons in {texts:?}"
+            );
+            assert!(
+                texts.iter().any(|text| text.contains("SUPPLY")),
+                "{name} at {width}: {texts:?}"
+            );
             let controls = imgui_status_controls();
             let labels: Vec<&str> = controls.iter().map(|(text, ..)| text.as_str()).collect();
             let mut wanted = vec!["MENU", "EDIT VIEW", "+ BOX"];

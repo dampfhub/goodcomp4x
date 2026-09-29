@@ -7,7 +7,7 @@ use glam::Vec2;
 use imgui::{ConfigFlags, Context as ImGuiContext, FontId};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{
     ElementState, Event, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent,
 };
@@ -19,8 +19,8 @@ use crate::cli::Options;
 use crate::clipboard;
 use crate::game::Settings;
 use crate::game::{
-    ClickMode, GameState, ImGuiLayoutState, MIN_WINDOW_SIZE, NetMenu, NetRequest, Scenario,
-    font_atlas, selection_box, style_imgui, ui_projection,
+    ClickMode, GameState, ImGuiLayoutState, NetMenu, NetRequest, Scenario, font_atlas,
+    selection_box, style_imgui, ui_projection,
 };
 use crate::icon;
 use crate::net::{self, Session};
@@ -693,8 +693,6 @@ impl ApplicationHandler for App {
                     .or(self.normal_size)
                     .unwrap_or(DEFAULT_WINDOW_SIZE),
             )
-            // Room for the status bar's controls (`MIN_WINDOW_SIZE`).
-            .with_min_inner_size(LogicalSize::new(MIN_WINDOW_SIZE[0], MIN_WINDOW_SIZE[1]))
             .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)))
             // Created hidden and shown once it exists (below), so its icons are
             // set before the taskbar button is made. A screenshot needs no

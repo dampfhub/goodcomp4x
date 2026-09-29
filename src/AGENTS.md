@@ -49,7 +49,9 @@ the window is created (it did once the window was minimized and restored).
   `ControlFlow::WaitUntil`.
 - The world and classic UI vertex buffers live on `App` and are refilled each frame
   (`build_vertices_into`, `build_ui_into`), keeping their memory.
-- The window opens at 80% of the primary monitor (or `--size`), centered; the city scenarios
+- The window opens at 80% of the primary monitor (or `--size`), centered, and can't be
+  made smaller than `MIN_WINDOW_SIZE` (logical pixels, `game/ui/mod.rs`), which the ImGui
+  status bar fits; the city scenarios
   start with the camera on the whole map (`start_on_whole_map`). F5 toggles borderless
   fullscreen.
 - Screenshot mode (`--screenshot out.png`): the window is created hidden, which gets no

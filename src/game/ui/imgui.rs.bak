@@ -206,8 +206,6 @@ pub(super) const STATUS_HEIGHT: f32 = 52.0;
 /// Menu, before the view's layout controls.
 const STATUS_MENU_X: f32 = 15.0;
 const STATUS_MENU_GAP: f32 = 24.0;
-/// Room before the notice, after the stockpile.
-const STATUS_NOTICE_GAP: f32 = 24.0;
 /// The top status bar is a fixed strip: its second row of small buttons
 /// reaches a few pixels past `STATUS_HEIGHT` with the window padding, which
 /// must not turn into a scrollbar.
@@ -3800,10 +3798,8 @@ impl GameState {
                     .iter()
                     .find(|line| x + line_width(line) <= limit)
                     .unwrap_or(&status_lines[1]);
-                let mut cut = false;
                 for (text, color) in stockpile {
                     if x + rich_width(ui, text) > limit {
-                        cut = true;
                         break;
                     }
                     ui.same_line_with_spacing(0.0, 0.0);
@@ -3812,14 +3808,9 @@ impl GameState {
                     x = ui.item_rect_max()[0] - left;
                 }
                 // The notice has the rest of the line, up to End Turn,
-                // shortened to what fits (none if the stockpile was cut);
-                // hovering shows all of it.
+                // shortened to what fits; hovering shows all of it.
                 let notice = self.shown_notice();
-                let room = if cut {
-                    0.0
-                } else {
-                    limit - x - STATUS_NOTICE_GAP
-                };
+                let room = limit - x - STATUS_NOTICE_GAP;
                 let shown = fit_text(notice, room, |t| rich_width(ui, t));
                 if !shown.is_empty() {
                     ui.same_line_with_spacing(0.0, STATUS_NOTICE_GAP);
@@ -3856,8 +3847,7 @@ impl GameState {
                 let view = [format!("VIEW: {name}"), name.to_string()]
                     .into_iter()
                     .find(|view| controls + ui.calc_text_size(view)[0] + spacing <= limit);
-                let second_line = (first_bottom - ui.window_pos()[1] + 2.0).ceil();
-                ui.set_cursor_pos([STATUS_MENU_X, second_line]);
+                ui.set_cursor_pos([STATUS_MENU_X, (first_bottom + 2.0).ceil()]);
                 if ui.small_button("MENU") {
                     actions.push(Action::Button(None, Target::OpenSettings));
                 }
