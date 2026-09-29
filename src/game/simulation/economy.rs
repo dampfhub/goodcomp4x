@@ -254,8 +254,9 @@ fn whole(stock: Stock) -> [f64; 3] {
 
 fn spending(build: Build) -> Option<usize> {
     match build {
-        Build::Unit(_) => Some(0),
-        Build::Grow => Some(1),
+        // Scouts count with the troops, Settlers (expansion) with growth.
+        Build::Unit(_) | Build::Scout => Some(0),
+        Build::Grow | Build::Settler => Some(1),
         Build::Worker => Some(2),
         Build::Gather => None,
     }
@@ -514,6 +515,8 @@ impl Observer {
     fn after_turn(&mut self, game: &GameState) {
         let turn = game.turn;
         let now = Self::units(game);
+        // Settlers trained this turn: not troops, and not lost when they found.
+        self.settlers.extend(game.settlers.iter().copied());
         let mut deaths = 0.0;
         for (id, &(team, hp, interior, troop)) in &now {
             if let Some(&(_, before, before_interior, _)) = self.alive.get(id) {
@@ -528,6 +531,10 @@ impl Observer {
             let Some(unit) = game.units.iter().find(|u| u.id == *id) else {
                 continue;
             };
+            // Scouts from a city's queue aren't one of `KINDS`.
+            if unit.unit_type == UnitType::Scout {
+                continue;
+            }
             let kind = kind(unit);
             let Some(side) = self.side(team) else {
                 continue;

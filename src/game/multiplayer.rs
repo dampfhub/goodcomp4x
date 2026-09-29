@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use super::GameState;
 use super::camera::Camera;
 use super::city::{
-    Build, BuildUnit, Building, City, MAX_CITY_POPULATION, Priorities, Queued, Stock, grow_price,
-    in_interior,
+    Build, BuildUnit, Building, MAX_CITY_POPULATION, MIN_CITY_DISTANCE, Priorities, Queued,
+    SETTLER_MIN_POPULATION, Stock, grow_price, in_interior,
 };
 use super::hex::Hex;
 use super::settings::Settings;
@@ -33,7 +33,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -925,6 +925,7 @@ impl GameState {
         }
         // Cities: its own, or one a settler of its founded where it stood.
         let mut seen = std::collections::HashSet::new();
+        let mut new_cities = Vec::new();
         for city in &plan.cities {
             if !on_map(city.pos) || !seen.insert((city.pos.q, city.pos.r)) {
                 return bad("A CITY OFF THE MAP, OR TWICE".into());
@@ -947,6 +948,22 @@ impl GameState {
                     "A CITY AT ({}, {}) NOT ITS OWN",
                     city.pos.q, city.pos.r
                 ));
+            }
+            // Founded by the rules (`founding_issue`): on open land, and far
+            // enough from every city, those it founds this turn included.
+            if founded
+                && (start.founding_issue(city.pos).is_some()
+                    || new_cities
+                        .iter()
+                        .any(|&other: &Hex| other.distance(city.pos) < MIN_CITY_DISTANCE))
+            {
+                return bad(format!(
+                    "A CITY AT ({}, {}) WHERE NONE CAN BE FOUNDED",
+                    city.pos.q, city.pos.r
+                ));
+            }
+            if founded {
+                new_cities.push(city.pos);
             }
             let jobs_on_map = city
                 .worker_jobs
@@ -994,7 +1011,9 @@ impl GameState {
                 return bad(format!("{at}: WORKERS IT DIDN'T HOLD"));
             }
             // Its queue holds what a city trains: no Cavalry or Armored,
-            // ships only with a Harbor, no growing past the cap.
+            // ships only with a Harbor, no growing past the cap, one Scout
+            // at a time, and no new Settler below the population it needs
+            // (one it had queued may wait for citizens).
             let harbor = before.is_some_and(|c| c.placed_site(Building::Harbor).is_some());
             let trainable = |item: &Queued<Build>| match item.build {
                 Build::Unit(unit) => {
@@ -1002,8 +1021,16 @@ impl GameState {
                 }
                 _ => true,
             };
-            let grows = city.queue.iter().filter(|q| q.build == Build::Grow).count();
-            if !city.queue.iter().all(trainable) || population + grows > MAX_CITY_POPULATION {
+            let count = |queue: &[Queued<Build>], build: Build| {
+                queue.iter().filter(|q| q.build == build).count()
+            };
+            let grows = count(&city.queue, Build::Grow);
+            let new_settlers = count(&city.queue, Build::Settler) > count(queue, Build::Settler);
+            if !city.queue.iter().all(trainable)
+                || population + grows > MAX_CITY_POPULATION
+                || count(&city.queue, Build::Scout) > 1
+                || (new_settlers && population < SETTLER_MIN_POPULATION)
+            {
                 return bad(format!("{at}: A BUILD IT CAN'T MAKE"));
             }
             let barracks = before.is_some_and(|c| c.barracks.is_some());
@@ -1377,8 +1404,20 @@ impl GameState {
     pub(super) fn apply_plan(&mut self, plan: &TeamPlan) {
         let team = plan.team;
         *self.stock_mut(team) = plan.stock;
+        // A city founded this turn too close to one another side's plan
+        // founded before it (`check_plan` saw only the turn's start) isn't
+        // founded, and its settler stays.
+        let refused: Vec<u32> = plan
+            .cities
+            .iter()
+            .filter(|c| !self.cities.iter().any(|o| o.pos == c.pos))
+            .filter_map(|c| {
+                c.founded_by
+                    .filter(|_| self.founding_issue(c.pos).is_some())
+            })
+            .collect();
         // Its units not in the plan were disbanded, or founded a city.
-        let kept = |id: u32| plan.units.iter().any(|u| u.id == id);
+        let kept = |id: u32| plan.units.iter().any(|u| u.id == id) || refused.contains(&id);
         let gone: Vec<u32> = self
             .units
             .iter()
@@ -1414,14 +1453,13 @@ impl GameState {
             unit.planned_unload = unit_plan.planned_unload;
         }
         for city_plan in &plan.cities {
-            let index = match self.cities.iter().position(|c| c.pos == city_plan.pos) {
-                Some(index) => index,
-                None if city_plan.founded_by.is_some() => {
-                    let id = self.cities.len() as u32;
-                    self.cities.push(City::new(id, team, city_plan.pos));
-                    self.cities.len() - 1
+            let existing = self.cities.iter().position(|c| c.pos == city_plan.pos);
+            let index = match (existing, city_plan.founded_by) {
+                (Some(index), _) => index,
+                (None, Some(settler)) if !refused.contains(&settler) => {
+                    self.found_city(settler, team, city_plan.pos)
                 }
-                None => continue,
+                (None, _) => continue,
             };
             let city = &mut self.cities[index];
             if city.team != team {
@@ -1790,6 +1828,8 @@ mod tests {
         guest.queue_selected_city_gather();
         guest.queue_selected_city_growth();
         guest.queue_selected_city_worker();
+        guest.queue_selected_city_scout();
+        guest.queue_selected_city_settler();
         guest.queue_selected_city_building(Building::Mill);
         guest.move_selected_city_queue_item(0, false);
         guest.remove_selected_city_queue_item(0);
@@ -2354,6 +2394,148 @@ mod tests {
     }
 
     #[test]
+    fn scouts_and_settlers_go_in_the_plan_by_the_city_rules() {
+        let (mut host, mut guest) = pair();
+        let city = city_of(&guest, GUEST_SEAT);
+        guest.open_city(city);
+        guest.queue_selected_city_scout();
+        let plan = guest.team_plan(GUEST_SEAT);
+        assert_eq!(plan.cities[0].queue, [Queued::new(Build::Scout)]);
+        assert_eq!(
+            roundtrip(&Message::Plan(plan.clone())),
+            Message::Plan(plan.clone())
+        );
+        assert_eq!(host.check_plan(&plan), Ok(()));
+        // A second Scout, or a Settler in a city too small for one.
+        let refused = |host: &GameState, plan: &TeamPlan| {
+            let why = host.check_plan(plan).expect_err("refused");
+            assert!(why.contains("A BUILD IT CAN'T MAKE"), "{why}");
+        };
+        let mut two = plan.clone();
+        two.cities[0].queue.push(Queued::new(Build::Scout));
+        refused(&host, &two);
+        let mut settler = plan.clone();
+        settler.cities[0].queue.push(Queued::new(Build::Settler));
+        refused(&host, &settler);
+        // Grown to 3 as the turn began, it may.
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        start.cities[city].population = SETTLER_MIN_POPULATION;
+        assert_eq!(host.check_plan(&settler), Ok(()));
+        // One it had queued may stay, waiting, whatever its population.
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        start.cities[city].queue = vec![Queued::new(Build::Settler)];
+        start.cities[city].population = 1;
+        let mut kept = plan.clone();
+        kept.cities[0].queue = vec![Queued::new(Build::Settler)];
+        assert_eq!(host.check_plan(&kept), Ok(()));
+    }
+
+    /// A settler of `team` with id `id` on `pos` as `game`'s turn began.
+    fn settler_at_start(game: &mut GameState, id: u32, team: Team, pos: Hex) {
+        use super::super::unit::{Unit, UnitType};
+        let start = game.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        start.units.push(Unit::new(id, pos, team, UnitType::Melee));
+        start.settlers.insert(id);
+    }
+
+    /// A city a plan founds on `pos` with settler `settler`.
+    fn founded(pos: Hex, settler: u32) -> CityPlan {
+        CityPlan {
+            pos,
+            founded_by: Some(settler),
+            queue: Vec::new(),
+            barracks_queue: Vec::new(),
+            worked: Vec::new(),
+            remembered_worked: Vec::new(),
+            priorities: Priorities::default(),
+            worker_jobs: Vec::new(),
+            held_workers: 0,
+        }
+    }
+
+    /// Two hexes of `game` where the rules allow a city, nearer each other
+    /// than they allow two.
+    fn two_sites_near_each_other(game: &GameState) -> (Hex, Hex) {
+        let legal: Vec<Hex> = game
+            .grid
+            .all_hexes()
+            .filter(|&h| game.founding_issue(h).is_none() && !game.is_occupied(h))
+            .collect();
+        let site = legal[0];
+        let near = *legal
+            .iter()
+            .find(|h| (1..MIN_CITY_DISTANCE).contains(&h.distance(site)))
+            .expect("two sites near each other");
+        (site, near)
+    }
+
+    #[test]
+    fn a_plan_founds_cities_only_by_the_founding_rules() {
+        let (mut host, guest) = pair();
+        let start = host.lockstep.as_ref().unwrap().turn_start.clone().unwrap();
+        let (site, near) = two_sites_near_each_other(&start);
+        let own = start.cities[city_of(&start, GUEST_SEAT)].pos;
+        let too_close = start
+            .grid
+            .all_hexes()
+            .find(|&h| h.distance(own) == 2 && start.grid.is_passable(h) && !start.is_occupied(h))
+            .unwrap();
+        for (id, pos) in [(900, site), (901, near), (902, too_close)] {
+            settler_at_start(&mut host, id, GUEST_SEAT, pos);
+        }
+        let good = guest.team_plan(GUEST_SEAT);
+        let founding = |cities: &[(Hex, u32)]| {
+            let mut plan = good.clone();
+            plan.cities
+                .extend(cities.iter().map(|&(pos, id)| founded(pos, id)));
+            plan
+        };
+        let plan = founding(&[(site, 900)]);
+        assert_eq!(host.check_plan(&plan), Ok(()));
+        // Two too near each other, or one too near a city.
+        for bad in [
+            founding(&[(site, 900), (near, 901)]),
+            founding(&[(too_close, 902)]),
+        ] {
+            let why = host.check_plan(&bad).expect_err("refused");
+            assert!(why.contains("WHERE NONE CAN BE FOUNDED"), "{why}");
+        }
+        // Founded, the city has no worker: its side has a city already.
+        let mut game = (**host.lockstep.as_ref().unwrap().turn_start.as_ref().unwrap()).clone();
+        game.apply_plan(&plan);
+        let city = game.cities.iter().find(|c| c.pos == site).expect("founded");
+        assert_eq!((city.team, city.workers), (GUEST_SEAT, 0));
+        assert!(!game.settlers.contains(&900));
+    }
+
+    #[test]
+    fn a_city_founded_too_near_one_another_plan_founded_first_is_not() {
+        let (mut host, guest) = pair();
+        let start = host.lockstep.as_ref().unwrap().turn_start.clone().unwrap();
+        let (site, near) = two_sites_near_each_other(&start);
+        // Both sides found this turn, each where the rules allowed as the
+        // turn began; Blue's plan applies first.
+        settler_at_start(&mut host, 900, HOST_SEAT, site);
+        settler_at_start(&mut host, 901, GUEST_SEAT, near);
+        let mut game = (**host.lockstep.as_ref().unwrap().turn_start.as_ref().unwrap()).clone();
+        let mut blue = host.team_plan(HOST_SEAT);
+        blue.cities.push(founded(site, 900));
+        let mut red = guest.team_plan(GUEST_SEAT);
+        red.cities.push(founded(near, 901));
+        game.apply_plan(&blue);
+        game.apply_plan(&red);
+        assert!(
+            game.cities
+                .iter()
+                .any(|c| c.pos == site && c.team == HOST_SEAT)
+        );
+        assert!(game.cities.iter().all(|c| c.pos != near));
+        // Red's settler stays, to found elsewhere.
+        assert!(game.settlers.contains(&901));
+        assert!(game.units.iter().any(|u| u.id == 901));
+    }
+
+    #[test]
     fn planning_keeps_what_was_paid_and_pays_for_nothing() {
         let (mut host, mut guest) = pair();
         let city = paid_queues(&mut host, &mut guest);
@@ -2695,6 +2877,8 @@ mod tests {
             Build::Worker,
             Build::Grow,
             Build::Gather,
+            Build::Scout,
+            Build::Settler,
         ];
         let kinds = super::super::JobKind::ALL;
         let mut rng = rand::rngs::StdRng::seed_from_u64(7);
