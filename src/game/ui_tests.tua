@@ -207,12 +207,19 @@ fn a_click_on_a_unit_keeps_the_city_view_open() {
 }
 
 @test
-fn clicking_the_open_city_again_closes_it() {
+fn clicking_the_open_city_enters_interior_and_escape_returns() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = city_view();
+        let exterior = game.camera;
         let city = game.cities[game.selected_city.unwrap_or(0 - 1)].pos;
         game.handle_click(hex_cursor(&game, city), screen(), ClickMode.Normal);
-        assert(game.selected_city == Option.None);
+        assert(game.interior_view == Option.Some(0));
+        assert(game.selected_city.is_none());
+        assert(game.exit_structure_menu());
+        assert(game.interior_view.is_none());
+        assert(game.selected_city == Option.Some(0));
+        assert(game.camera.center.x == exterior.center.x && game.camera.center.y == exterior.center.y);
+        assert(game.camera.half_height == exterior.half_height);
     });
 }
 

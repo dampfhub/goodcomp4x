@@ -1,0 +1,402 @@
+//! City interiors and the siege: copies of the troops beside a city fight on its board, their
+//! health and deaths shared with their sources, and a breached command post falls to a troop
+//! standing on it. Also the exterior rules the interiors bring: an enemy city's center can't be
+//! attacked or entered from outside, and its Barracks can.
+
+use std.collections.Set;
+use std.core.Keep;
+use std.rand.Rand;
+use std.rand.seed;
+use std.str.contains;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.city.BARRACKS_MAX_HP;
+use game.city.CENTER;
+use game.city.CORE_HP;
+use game.city.interior.in_bounds;
+use game.effects.Effect;
+use game.effects.Outcome;
+use game.hex.Hex;
+use game.orders.ClickMode;
+use game.tests.sandbox;
+use game.turn.Phase;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+use game.workers.FieldWorker;
+
+fn unit_index(g: &GameState, id: u32) -> i32 {
+    for i in 0..g.units.len() { if g.units[i].id == id { return i; } }
+    0 - 1
+}
+
+fn copy_of(g: &GameState, city: i32, source: u32) -> i32 {
+    match g.cities[city].interior.index_of(source) { Option.Some(k) => k, Option.None => 0 - 1 }
+}
+
+fn notice_has(g: &GameState, want: str) -> bool {
+    let n = &g.notice;
+    contains(n, want)
+}
+
+@test
+fn wounded_copy_keeps_its_health_after_leaving_and_reentering() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        // Leave only the ranged attacker in range of the post so its new range-two shot must
+        // hurt that fighter.
+        game.remove_unit(0);
+        game.discard_interior_copies_of_dead_units();
+        let exterior_hp = game.units[unit_index(&game, 1)].hp;
+        game.resolve_one_interior(1);
+        let wounded = game.units[unit_index(&game, 1)].interior_hp;
+        assert(wounded < UnitType.Ranged.stats().max_hp);
+        assert(game.units[unit_index(&game, 1)].hp == exterior_hp);
+
+        let archer = unit_index(&game, 1);
+        game.units[archer].pos = Hex.new(2, 0);
+        game.sync_city_interiors();
+        assert(copy_of(&game, 1, 1) < 0);
+        game.units[archer].pos = Hex.new(3, 1);
+        game.sync_city_interiors();
+        assert(game.cities[1].interior.fighters[copy_of(&game, 1, 1)].hp == wounded);
+    });
+}
+
+@test
+fn interior_death_kills_its_exterior_source() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        game.remove_unit(0);
+        game.discard_interior_copies_of_dead_units();
+        let k = copy_of(&game, 1, 1);
+        game.cities[1].interior.fighters[k].hp = 1.0;
+        game.resolve_one_interior(1);
+        assert(unit_index(&game, 1) < 0);
+        assert(copy_of(&game, 1, 1) < 0);
+    });
+}
+
+@test
+fn disbanding_an_exterior_unit_removes_its_interior_copy() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        game.selected = Option.Some(unit_index(&game, 0));
+        game.disband_selected();
+        game.disband_selected();
+        assert(unit_index(&game, 0) < 0);
+        assert(copy_of(&game, 1, 0) < 0);
+    });
+}
+
+@test
+fn exterior_death_removes_its_interior_copy_in_the_attack_step() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        let melee = unit_index(&game, 0);
+        game.units[melee].hp = 1.0;
+        let target = game.units[melee].pos;
+        let archer = unit_index(&game, 5);
+        game.units[archer].planned_attack = Option.Some(target);
+        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        assert(unit_index(&game, 0) < 0);
+        assert(copy_of(&game, 1, 0) < 0);
+        game.resolve_city_interiors();
+        assert(unit_index(&game, 0) < 0);
+        for c in 0..game.cities.len() { assert(game.cities[c].interior.index_of(0).is_none()); }
+    });
+}
+
+@test
+fn exterior_unit_cannot_walk_onto_enemy_city_and_lose_its_interior_copy() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        let archer = unit_index(&game, 1);
+        let city = game.cities[1].pos;
+        assert(game.units[archer].pos.distance(city) == 1);
+        assert(!game.can_step(game.units[archer].pos, city, Team.Blue));
+        let fog = game.fog();
+        assert(!game.known_reachable_hexes(game.units[archer].pos, game.units[archer].stats().move_range, Team.Blue, &fog).contains(city));
+
+        // Even a stale order from before the city was revealed cannot bypass the check when the
+        // move actually resolves.
+        game.units[archer].planned_move = Option.Some(city);
+        let start = game.units[archer].pos;
+        let _acted = game.resolve_step(UnitType.Ranged, Phase.Move);
+        assert(game.units[archer].pos == start);
+        game.sync_city_interiors();
+        assert(copy_of(&game, 1, 1) >= 0);
+    });
+}
+
+@test
+fn interior_orders_do_not_change_the_source_unit() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        game.interior_click(Hex.new(-2, 0));
+        game.interior_click(Hex.new(-1, 0));
+        let copy = game.cities[1].interior.fighters[copy_of(&game, 1, 0)];
+        assert(copy.planned_move == Option.Some(Hex.new(-1, 0)));
+        let source = unit_index(&game, 0);
+        assert(game.units[source].planned_move.is_none());
+        assert(game.units[source].planned_attack.is_none());
+    });
+}
+
+@test
+fn nonfatal_exterior_damage_leaves_interior_health_unchanged() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        let target = game.units[unit_index(&game, 0)].pos;
+        let archer = unit_index(&game, 5);
+        game.units[archer].planned_attack = Option.Some(target);
+        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        let source = unit_index(&game, 0);
+        assert(game.units[source].hp < game.units[source].max_hp());
+        assert(game.units[source].interior_hp == game.units[source].max_hp());
+        assert(game.cities[1].interior.fighters[copy_of(&game, 1, 0)].hp == game.units[source].max_hp());
+    });
+}
+
+@test
+fn capture_requires_occupying_the_breached_command_post() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        game.field_workers.push(FieldWorker { id: 10000, team: Team.Red, home: 1, base: game.cities[1].pos, pos: game.cities[1].pos, job: Option.None, work_left: Option.None, recalled: false });
+        game.cities[1].interior.core_hp = 0.0;
+        game.resolve_one_interior(1);
+        assert(game.cities[1].team == Team.Red);
+        let k = copy_of(&game, 1, 0);
+        game.cities[1].interior.fighters[k].pos = Hex.new(-1, 0);
+        game.cities[1].interior.fighters[k].planned_move = Option.Some(CENTER);
+        game.resolve_one_interior(1);
+        assert(game.cities[1].team == Team.Blue);
+        assert(game.cities[1].interior.core_hp == CORE_HP);
+        assert(game.cities[1].queue.is_empty());
+        assert(game.field_workers[0].team == Team.Blue);
+        assert(game.field_workers[0].home == 1);
+    });
+}
+
+@test
+fn post_click_changes_from_attack_to_capture_move_after_breach() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        game.interior_click(Hex.new(-2, 2));
+        game.interior_click(CENTER);
+        assert(game.cities[1].interior.fighters[copy_of(&game, 1, 1)].planned_attack == Option.Some(CENTER));
+
+        game.cities[1].interior.core_hp = 0.0;
+        let k = copy_of(&game, 1, 0);
+        game.cities[1].interior.fighters[k].pos = Hex.new(-1, 0);
+        game.interior_click(Hex.new(-1, 0));
+        game.interior_click(CENTER);
+        assert(game.cities[1].interior.fighters[copy_of(&game, 1, 0)].planned_move == Option.Some(CENTER));
+        assert(notice_has(&game, "CAPTURE MOVE QUEUED"));
+    });
+}
+
+@test
+fn breaching_post_announces_the_capture_step() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        game.cities[1].interior.core_hp = 1.0;
+        let k = copy_of(&game, 1, 1);
+        game.cities[1].interior.fighters[k].planned_attack = Option.Some(CENTER);
+        game.resolve_one_interior(1);
+        assert(game.cities[1].interior.core_hp == 0.0);
+        assert(notice_has(&game, "POST BREACHED"));
+    });
+}
+
+/// The siege from a seeded game, Blue playing a direct assault: the turn it captures the city
+/// on (from 1), 0 if it hasn't after twelve, or -1 if the siege didn't start with six fighters
+/// on the board.
+fn direct_assault_capture_turn(s: u64) -> i32 {
+    let mut g = seed(s);
+    let mut captured = 0;
+    handle {
+        handle {
+            let mut game = GameState.siege_scenario();
+            if game.cities[1].interior.fighters.len() != 6 { captured = 0 - 1; }
+            for turn in 0..12 {
+                if captured != 0 { continue; }
+                blue_assault_orders(&mut game);
+                game.resolve_turn();
+                game.update(10.0);
+                if game.cities[1].team == Team.Blue { captured = turn + 1; }
+            }
+        } with Rand { rand() => { resume g.next() } }
+    } with Log {
+        enabled(level) => { resume false }
+        record(level, text) => { resume }
+    }
+    captured
+}
+
+/// Blue's orders for one siege turn: each interior copy attacks the weakest Red copy in range,
+/// else the intact post, else steps toward the center; each field troop attacks the weakest
+/// Red unit in range.
+fn blue_assault_orders(game: &mut GameState) {
+    let snapshot = game.cities[1].interior.snapshot();
+    let breached = snapshot.core_hp <= 0.0;
+    let mut claimed: Set[Hex] = Set.new();
+    for k in 0..snapshot.fighters.len() {
+        let fighter = snapshot.fighters[k];
+        if fighter.team != Team.Blue { continue; }
+        let range = fighter.stats().attack_range;
+        let mut enemy: Option[i32] = Option.None;
+        for o in 0..snapshot.fighters.len() {
+            let other = snapshot.fighters[o];
+            if other.team != Team.Red || fighter.pos.distance(other.pos) > range { continue; }
+            let better = match enemy {
+                Option.None => true,
+                Option.Some(b) => {
+                    let (hp, bhp) = (other.hp as i32, snapshot.fighters[b].hp as i32);
+                    hp < bhp || (hp == bhp && other.source_id < snapshot.fighters[b].source_id)
+                }
+            };
+            if better { enemy = Option.Some(o); }
+        }
+        if let Option.Some(e) = enemy {
+            game.cities[1].interior.fighters[k].planned_attack = Option.Some(snapshot.fighters[e].pos);
+        } else if !breached && fighter.pos.distance(CENTER) <= range {
+            game.cities[1].interior.fighters[k].planned_attack = Option.Some(CENTER);
+        } else {
+            let around = fighter.pos.neighbors();
+            let mut next: Option[Hex] = Option.None;
+            for n in 0..6 {
+                let h = around[n];
+                if !in_bounds(h) || snapshot.fighter_at(h).is_some() || claimed.contains(h) || (h == CENTER && !breached) { continue; }
+                let better = match next {
+                    Option.None => true,
+                    Option.Some(b) => {
+                        let (d, bd) = (h.distance(CENTER), b.distance(CENTER));
+                        d < bd || (d == bd && (h.q < b.q || (h.q == b.q && h.r < b.r)))
+                    }
+                };
+                if better { next = Option.Some(h); }
+            }
+            if let Option.Some(step) = next {
+                game.cities[1].interior.fighters[k].planned_move = Option.Some(step);
+                let _new = claimed.insert(step);
+            }
+        }
+    }
+    for i in 0..game.units.len() {
+        if game.units[i].team != Team.Blue { continue; }
+        let mut target: Option[i32] = Option.None;
+        for e in 0..game.units.len() {
+            let enemy = &game.units[e];
+            if enemy.team != Team.Red || game.units[i].pos.distance(enemy.pos) > game.units[i].stats().attack_range { continue; }
+            let better = match target {
+                Option.None => true,
+                Option.Some(b) => {
+                    let (hp, bhp) = (enemy.hp as i32, game.units[b].hp as i32);
+                    hp < bhp || (hp == bhp && enemy.id < game.units[b].id)
+                }
+            };
+            if better { target = Option.Some(e); }
+        }
+        game.units[i].planned_attack = match target { Option.Some(t) => Option.Some(game.units[t].pos), Option.None => Option.None };
+    }
+}
+
+@test
+fn siege_scenario_can_capture_with_a_direct_assault() {
+    // Every one of sixteen seeds takes the city within eight turns.
+    for s in 0..16 {
+        let turn = direct_assault_capture_turn(s as u64);
+        assert(turn > 0 && turn <= 8);
+    }
+}
+
+@test
+fn empty_city_center_rejects_exterior_attacks() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.units.clear();
+        let pos = game.cities[1].pos;
+        assert(game.cities[1].team == Team.Red);
+        game.units.push(Unit.new(900, pos.neighbors()[0], Team.Blue, UnitType.Ranged));
+        game.try_queue_attack(0, pos);
+        assert(game.units[0].planned_attack.is_none());
+        game.selected = Option.Some(0);
+        assert(!game.queue_attack(pos));
+        game.selected = Option.None;
+        game.group.push(0);
+        game.group_order(pos, ClickMode.Attack);
+        assert(game.units[0].planned_attack.is_none());
+        game.group.clear();
+
+        // An old or externally supplied order cannot damage the city either.
+        game.units[0].planned_attack = Option.Some(pos);
+        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        let mut missed = false;
+        for e in 0..game.effects.len() {
+            if let Effect.Shot(_, _, Outcome.Miss) = game.effects[e].animation { missed = true; }
+        }
+        assert(missed);
+        assert(game.units[0].hp == game.units[0].max_hp());
+    });
+}
+
+@test
+fn unit_on_city_center_remains_attackable() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.units.clear();
+        let city = game.cities[1].pos;
+        game.units.push(Unit.new(901, city, Team.Red, UnitType.Melee));
+        game.units.push(Unit.new(902, city.neighbors()[0], Team.Blue, UnitType.Ranged));
+        game.try_queue_attack(1, city);
+        assert(game.units[1].planned_attack == Option.Some(city));
+        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        assert(game.units[0].hp < game.units[0].max_hp());
+    });
+}
+
+@test
+fn hitting_an_empty_enemy_barracks_is_a_hit_not_a_miss() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.units.clear();
+        let barracks = game.cities[1].pos.neighbors()[0];
+        game.cities[1].barracks = Option.Some(barracks);
+        game.units.push(Unit.new(902, Hex.new(barracks.q, barracks.r + 2), Team.Blue, UnitType.Ranged));
+        game.units[0].planned_attack = Option.Some(barracks);
+        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        let mut shots = 0;
+        let mut hits = 0;
+        for e in 0..game.effects.len() {
+            match game.effects[e].animation {
+                Effect.Shot(_, _, outcome) => {
+                    shots = shots + 1;
+                    if match outcome { Outcome.Hit => true, _ => false } { hits = hits + 1; }
+                }
+                _ => {}
+            }
+        }
+        assert(shots == 1 && hits == 1);
+        assert(game.cities[1].barracks_hp < BARRACKS_MAX_HP);
+    });
+}
+
+@test
+fn barracks_is_tanky_but_does_not_return_fire() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.units.clear();
+        let barracks = game.cities[1].pos.neighbors()[0];
+        game.cities[1].barracks = Option.Some(barracks);
+        game.units.push(Unit.new(901, barracks.neighbors()[0], Team.Blue, UnitType.Ranged));
+        let (barracks_hp, unit_hp) = (game.cities[1].barracks_hp, game.units[0].hp);
+        game.try_queue_attack(0, barracks);
+        let _acted = game.resolve_step(UnitType.Ranged, Phase.Attack);
+        assert(game.cities[1].barracks_hp < barracks_hp);
+        assert(game.units[0].hp == unit_hp);
+    });
+}

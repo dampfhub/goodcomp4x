@@ -20,7 +20,7 @@ impl GameState {
     /// (window pixels, origin top-left). With `add` (Shift held), they join the current
     /// selection instead of replacing it.
     pub fn select_in_box(&mut self, a: Vec2, b: Vec2, screen_size: Vec2, add: bool) {
-        if self.is_resolving() { return; }
+        if self.is_resolving() || self.interior_view.is_some() { return; }
         let (min, max) = (a.min(b), a.max(b));
         let mut members: Vec[i32] = if add { self.selection() } else { Vec.new() };
         for i in 0..self.units.len() {
@@ -93,6 +93,10 @@ impl GameState {
         // Land, or water (for ships): anything on the map but mountains.
         let water = self.grid.contains(target) && self.grid.terrain(target).is_water();
         if !(self.grid.is_passable(target) || water) { return; }
+        if !self.group.is_empty() && self.empty_city_target(target, self.units[self.group[0]].team) {
+            self.set_notice("CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR");
+            return;
+        }
         for m in 0..self.group.len() {
             let i = self.group[m];
             self.units[i].cancel_queue();

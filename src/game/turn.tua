@@ -172,6 +172,9 @@ impl GameState {
         if !self.is_resolving() {
             self.resolve_coastal_batteries();
             self.resolve_transport();
+            self.resolve_city_interiors();
+            // Before the economy, so a city reward is spent (or capped) like the turn's own
+            // income.
             self.resolve_ruins();
             self.resolve_economy();
             for i in 0..self.units.len() {
@@ -224,6 +227,7 @@ impl GameState {
             self.units[i].hp = if hp > 0.0 { hp } else { 0.0 };
         }
         handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume u.is_alive() } }
+        self.discard_interior_copies_of_dead_units();
     }
 
     /// After combat: each landing craft told to unload puts its first passenger on the open
@@ -661,6 +665,7 @@ impl GameState {
         // The attacks have happened, so their planned arrows give way to the animations.
         for k in 0..attackers.len() { self.units[attackers[k]].planned_attack = Option.None; }
         handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume u.is_alive() } }
+        self.discard_interior_copies_of_dead_units();
     }
 }
 

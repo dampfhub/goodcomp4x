@@ -116,6 +116,10 @@ impl GameState {
     /// A click on the map, once the UI has had its turn at it.
     pub fn handle_map_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) can {Log, Rand} {
         if self.is_resolving() { return; }
+        if self.interior_view.is_some() {
+            if let Option.Some(tile) = self.hex_at_screen(cursor, screen_size) { self.interior_click(tile); }
+            return;
+        }
         if self.paint_job_at(cursor, screen_size, false) { return; }
         // In the worker menu, clicks place the armed job (`paint_job_at`, above); with none
         // armed, they do nothing.
@@ -376,6 +380,7 @@ impl GameState {
         info(fn() can {Out} { unit.show(); Out.put(" disbanded"); });
         let role = self.unit_role(&unit).name();
         self.notice = text(fn() can {Out} { Out.put(role); Out.put(" DISBANDED"); });
+        self.discard_interior_copies_of_dead_units();
         // Indices after it shifted down, so nothing else stays selected.
         self.selected = Option.None;
         self.group.clear();
@@ -404,7 +409,7 @@ impl GameState {
     /// have them, without holding the current one.
     pub fn select_next_unit(&mut self) {
         if self.is_resolving() { return; }
-        self.selected_city = Option.None;
+        self.leave_city_view();
         let next = match self.next_unit_needing_orders(self.selected) {
             Option.Some(i) => Option.Some(i),
             Option.None => self.next_player_unit(self.selected),
@@ -518,6 +523,14 @@ impl GameState {
     /// orders instead. With an action armed, right-click just disarms it.
     pub fn handle_context_click(&mut self, cursor: Vec2, screen_size: Vec2, clear: bool, queue: bool) {
         if self.is_resolving() { return; }
+        if self.interior_view.is_some() {
+            if clear {
+                self.clear_selected_interior_orders();
+            } else if let Option.Some(tile) = self.hex_at_screen(cursor, screen_size) {
+                self.interior_click(tile);
+            }
+            return;
+        }
         if self.ui_click_mode.is_some() {
             self.ui_click_mode = Option.None;
             return;
@@ -561,7 +574,8 @@ impl GameState {
     pub fn hex_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option[Hex] {
         if screen_size.x <= 0.0 || screen_size.y <= 0.0 { return Option.None; }
         let hex = Hex.from_world(self.camera.screen_to_world(cursor, screen_size));
-        if self.grid.contains(hex) { Option.Some(hex) } else { Option.None }
+        let on_board = if self.interior_view.is_some() { hex.distance(Hex.new(0, 0)) <= 2 } else { self.grid.contains(hex) };
+        if on_board { Option.Some(hex) } else { Option.None }
     }
 
     /// Toggles a move to `dest`, if there's a path to it within range and no other friendly
@@ -599,6 +613,10 @@ impl GameState {
             return;
         }
         if unable || !(self.grid.is_passable(target) || water) { return; }
+        if self.empty_city_target(target, self.units[idx].team) {
+            self.set_notice("CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR");
+            return;
+        }
         let unit = &mut self.units[idx];
         if unit.planned_pos().distance(target) <= unit.stats().attack_range {
             unit.planned_attack = if unit.planned_attack == Option.Some(target) { Option.None } else { Option.Some(target) };

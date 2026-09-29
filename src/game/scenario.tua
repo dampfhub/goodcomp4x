@@ -36,12 +36,14 @@ pub enum Scenario {
     /// The player and 4-6 AI sides on a randomly generated map (`mapgen.tua`).
     World,
     /// A strait between two coastal cities, with ships already out.
+    /// A ready-to-play attack on the Red city's interior.
+    Siege,
     Naval,
 }
 
 /// How many scenarios there are.
-pub const SCENARIO_COUNT: i32 = 5;
-pub const SCENARIOS: [Scenario; 5] = [Scenario.Combat, Scenario.Cities, Scenario.Frontier, Scenario.World, Scenario.Naval];
+pub const SCENARIO_COUNT: i32 = 6;
+pub const SCENARIOS: [Scenario; 6] = [Scenario.Combat, Scenario.Cities, Scenario.Frontier, Scenario.World, Scenario.Siege, Scenario.Naval];
 
 impl Eq for Scenario {
     fn eq(self, other: Scenario) -> bool { self.index() == other.index() }
@@ -54,13 +56,14 @@ impl Scenario {
             Scenario.Cities => "CITIES",
             Scenario.Frontier => "FRONTIER",
             Scenario.World => "WORLD",
+            Scenario.Siege => "SIEGE",
             Scenario.Naval => "NAVAL",
         }
     }
 
     /// Its place in `SCENARIOS`.
     pub fn index(self) -> i32 {
-        match self { Scenario.Combat => 0, Scenario.Cities => 1, Scenario.Frontier => 2, Scenario.World => 3, Scenario.Naval => 4 }
+        match self { Scenario.Combat => 0, Scenario.Cities => 1, Scenario.Frontier => 2, Scenario.World => 3, Scenario.Siege => 4, Scenario.Naval => 5 }
     }
 
     /// The function key that switches to it.
@@ -70,6 +73,7 @@ impl Scenario {
             Scenario.Cities => "F2",
             Scenario.Frontier => "F3",
             Scenario.World => "F4",
+            Scenario.Siege => "F12",
             Scenario.Naval => "DEBUG",
         }
     }
@@ -82,6 +86,7 @@ impl Scenario {
             Scenario.Cities => GameState.city_scenario(),
             Scenario.Frontier => GameState.frontier_scenario(),
             Scenario.World => GameState.world_scenario_with(draw().shr(32) as u32, settings),
+            Scenario.Siege => GameState.siege_scenario(),
             Scenario.Naval => GameState.naval_scenario(),
         }
     }
@@ -204,6 +209,9 @@ impl GameState {
             recent_actors: copy_vec(&self.recent_actors),
             highlight_timer: self.highlight_timer,
             selected_barracks: self.selected_barracks,
+            interior_view: self.interior_view,
+            interior_selected: self.interior_selected,
+            exterior_camera: self.exterior_camera,
             moving_manager: self.moving_manager,
             placing_building: self.placing_building,
             city_queue_scroll: self.city_queue_scroll,

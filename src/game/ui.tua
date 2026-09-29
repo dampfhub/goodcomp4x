@@ -48,6 +48,8 @@ use game.city.BARRACKS_UNITS;
 use game.city.BARRACKS_MAX_HP;
 use game.city.WORKER_COST;
 use game.city.WORKER_SHORTCUT;
+use game.city.CORE_HP;
+use game.Role;
 use game.workers.JobKind;
 use game.workers.JOB_KINDS;
 use game.city.BuildUnit;
@@ -170,6 +172,9 @@ pub enum Target {
     WorkerJobRemove(i32),
     RecallWorker(u32),
     ShowWorker(u32),
+    /// City interior: open or leave it, clear the selected fighter's orders.
+    OpenInterior,
+    InteriorClear,
     /// Barracks tray: train a troop, take a queued one out, back to the city.
     BarracksBuild(BuildUnit),
     BarracksQueueRemove(i32),
@@ -200,6 +205,7 @@ impl Eq for Target {
             (Target.BarracksBuild(a), Target.BarracksBuild(b)) => a == b,
             (Target.WorkerJob(a), Target.WorkerJob(b)) => a == b,
             (Target.WorkerMode, Target.WorkerMode) | (Target.SleepWorkers, Target.SleepWorkers) => true,
+            (Target.OpenInterior, Target.OpenInterior) | (Target.InteriorClear, Target.InteriorClear) => true,
             (Target.WorkerCity(a), Target.WorkerCity(b)) => a == b,
             (Target.WorkerJobRemove(a), Target.WorkerJobRemove(b)) => a == b,
             (Target.RecallWorker(a), Target.RecallWorker(b)) => a == b,
@@ -441,6 +447,8 @@ impl GameState {
             Target.BarracksBuild(build) => self.queue_selected_barracks_unit(build),
             Target.BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
             Target.OpenCity => self.open_selected_city_from_barracks(),
+            Target.OpenInterior => self.toggle_city_interior(),
+            Target.InteriorClear => self.clear_selected_interior_orders(),
             Target.WorkerJob(kind) => self.arm_worker_job(kind),
             Target.WorkerMode => self.toggle_worker_mode(),
             Target.WorkerCity(city) => { self.worker_menu_city = Option.Some(city); }
@@ -484,7 +492,9 @@ impl GameState {
 
         let mut tray = panel_builder(false);
         let mut shown = true;
-        if let Option.Some(city) = self.selected_city {
+        if let Option.Some(city) = self.interior_view {
+            self.interior_tray(city, &mut tray);
+        } else if let Option.Some(city) = self.selected_city {
             self.city_tray(city, &mut tray);
         } else if let Option.Some(city) = self.selected_barracks {
             self.barracks_tray(city, &mut tray);
@@ -872,6 +882,7 @@ impl GameState {
         panel.gap(GAP);
         panel.begin_buttons();
         panel.button(Target.ToggleYields, "YIELDS", "Y", button_state(self.show_yields, false), false);
+        panel.button(Target.OpenInterior, "CITY INTERIOR", "V", ButtonState.Ready, false);
         panel.button(Target.WorkerMode, "WORKER JOBS", "W", ButtonState.Ready, false);
         panel.end_buttons(false);
         panel.gap(GAP);
@@ -924,6 +935,51 @@ impl GameState {
                 panel.end_buttons(false);
             }
         }
+    }
+
+    /// City `i`'s interior: the command post's health, the troops on the board, the selected
+    /// one, and what to do next.
+    fn interior_tray(&self, i: i32, panel: &mut PanelBuilder) {
+        let city = &self.cities[i];
+        let interior = &city.interior;
+        let (id, team, core_hp) = (city.id, city.team, interior.core_hp);
+        let breached = core_hp <= 0.0;
+        panel.text_owned(TextSize.Title, text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" INTERIOR"); }), team.color());
+        let post = if breached {
+            text(fn() can {Out} { Out.put("POST BREACHED  0/"); show_rounded(CORE_HP); Out.put(" HP"); })
+        } else {
+            text(fn() can {Out} { Out.put("COMMAND POST  "); show_rounded(core_hp); Out.put("/"); show_rounded(CORE_HP); Out.put(" HP"); })
+        };
+        panel.text_owned(TextSize.Body, post, if breached { REDUCED_TEXT } else { GOLD_TEXT });
+        panel.bar(core_hp / CORE_HP);
+        if breached {
+            panel.text(TextSize.Small, if team == PLAYER_TEAM { "KEEP RED OFF THE CENTER TO PREVENT CAPTURE" } else { "MOVE A BLUE TROOP ONTO THE POST TO CAPTURE" }, BOOSTED_TEXT);
+        }
+        let mut blue = 0;
+        for k in 0..interior.fighters.len() { if interior.fighters[k].team == PLAYER_TEAM { blue = blue + 1; } }
+        let red = interior.fighters.len() - blue;
+        panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("BLUE "); show_i64(blue as i64); Out.put(" / RED "); show_i64(red as i64); Out.put(" TROOPS"); }), DIM_TEXT);
+        let selected = match self.interior_selected { Option.Some(source) => interior.index_of(source), Option.None => Option.None };
+        match selected {
+            Option.Some(k) => {
+                let fighter = interior.fighters[k];
+                panel.gap(GAP);
+                panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(Role.Troop(fighter.unit_type).name()); Out.put("  "); show_rounded(fighter.hp); Out.put(" HP"); }), BOOSTED_TEXT);
+                panel.text(TextSize.Small, "GREEN: MOVE  RED: ATTACK", LABEL_TEXT);
+            }
+            Option.None => panel.text(TextSize.Small, "CLICK A BLUE TROOP ON THE MAP", LABEL_TEXT),
+        }
+        panel.gap(GAP);
+        let next = if breached {
+            if team == PLAYER_TEAM { "POST OPEN: DEFEND THE CENTER" } else { "POST OPEN: CLICK A BLUE TROOP, THEN THE CENTER" }
+        } else {
+            "BREACH POST, THEN OCCUPY CENTER"
+        };
+        panel.text(TextSize.Small, next, GOLD_TEXT);
+        panel.begin_buttons();
+        panel.button(Target.InteriorClear, "CLEAR ORDERS", "BACKSPACE", button_state(false, self.interior_selected.is_none()), false);
+        panel.button(Target.OpenInterior, if team == PLAYER_TEAM { "RETURN TO CITY" } else { "LEAVE INTERIOR" }, "V / ESC", ButtonState.Ready, false);
+        panel.end_buttons(true);
     }
 
     /// City `i`'s workers: how many are home and out, what those out are doing (a button showing
@@ -1249,6 +1305,16 @@ impl GameState {
                 description = to_owned("FINALIZES THE SELECTED BUILDING SITE.");
             }
             Target.QueueUp(_) | Target.QueueRemove(_) | Target.BarracksQueueRemove(_) => { return false; }
+            Target.OpenInterior => {
+                title = to_owned("CITY INTERIOR");
+                shortcut = to_owned("V");
+                description = to_owned("ENTER THE CITY'S TACTICAL MAP. YOU CAN ALSO CLICK ITS CENTER HEX FROM CITY VIEW.");
+            }
+            Target.InteriorClear => {
+                title = to_owned("CLEAR INTERIOR ORDERS");
+                shortcut = to_owned("BACKSPACE");
+                description = to_owned("DROPS THE SELECTED INTERIOR TROOP'S MOVE AND ATTACK.");
+            }
             Target.WorkerJobRemove(_) => {
                 title = to_owned("REMOVE");
                 shortcut = to_owned("CLICK");
@@ -1295,6 +1361,7 @@ impl GameState {
                     Scenario.Cities => "TWO CITIES WITH FARMS, MINES, ROADS AND ARMIES, TO TEST THE ECONOMY AND FIGHTING OVER IT.",
                     Scenario.Frontier => "A SETTLER AND A WARRIOR EACH AND NO CITIES YET. BOTH WARRIORS ARE YOURS TO MOVE.",
                     Scenario.World => "A NEW RANDOM MAP WITH THE PLAYER AND 4 TO 6 AI SIDES, EACH WITH A CITY AND A SCOUT, AND RUINS BETWEEN THEM.",
+                    Scenario.Siege => "OPPOSING FIELD TROOPS ALREADY FIGHT INSIDE A CITY.",
                     Scenario.Naval => "A STRAIT BETWEEN TWO COASTAL CITIES, EACH SIDE WITH A TROOP ASHORE, A LANDING CRAFT, A PATROL GALLEY AND A BOMBARD SHIP.",
                 };
                 description = text(fn() can {Out} { Out.put(what); Out.put(" STARTS IT FRESH, OR RESTARTS IT IF IT'S THE CURRENT ONE; THE SAVESTATE IS KEPT."); });

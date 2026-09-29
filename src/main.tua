@@ -222,6 +222,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
             'R' => game.arm_worker_job(JobKind.Road),
             'I' => game.arm_worker_job(JobKind.Improve),
             'W' => game.toggle_worker_mode(),
+            'V' => game.toggle_city_interior(),
             'F' => game.found_city_selected(),
             'Y' => game.toggle_yields(),
             'G' => game.toggle_guard(),
@@ -232,6 +233,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
             2 => game.switch_scenario(Scenario.Cities),
             3 => game.switch_scenario(Scenario.Frontier),
             4 => game.switch_scenario(Scenario.World),
+            12 => game.switch_scenario(Scenario.Siege),
             6 => game.save_state(),
             7 => game.load_state(),
             8 => game.toggle_instant_playback(),
@@ -250,7 +252,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
             8 => game.queue_selected_city_worker(),
             _ => {}
         },
-        Key.Backspace => game.remove_selected_city_queue_head(),
+        Key.Backspace => if game.is_in_city_interior() { game.clear_selected_interior_orders(); } else { game.remove_selected_city_queue_head(); },
         // Page Down.
         Key.Other(0x22) => game.move_selected_city_queue_head(false),
         _ => {}

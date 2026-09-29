@@ -353,5 +353,6 @@ impl GameState {
                 treated.push(id);
             }
         }
+        self.sync_interior_health(&treated);
     }
 }

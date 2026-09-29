@@ -3,6 +3,7 @@
 //! screen-space UI in `ui`.
 
 use std.collections.Deque;
+use std.core.Keep;
 use std.collections.Map;
 use std.collections.Set;
 use std.fmt.Out;
@@ -110,6 +111,12 @@ pub struct GameState {
     selected_city: Option[i32],
     /// Barracks have their own production screen, separate from city labor.
     selected_barracks: Option[i32],
+    /// City interior currently being inspected and ordered, and its selected fighter (by its
+    /// source unit's id).
+    interior_view: Option[i32],
+    interior_selected: Option[u32],
+    /// The exterior camera, kept while the tactical city map is open.
+    exterior_camera: Option[Camera],
     /// City whose manager has been picked up and awaits a destination click.
     moving_manager: Option[i32],
     /// City and building whose site is being chosen. Only live while that city's view is open:
@@ -248,6 +255,9 @@ impl GameState {
             show_details: false,
             ui_click_mode: Option.None,
             selected_barracks: Option.None,
+            interior_view: Option.None,
+            interior_selected: Option.None,
+            exterior_camera: Option.None,
             moving_manager: Option.None,
             placing_building: Option.None,
             city_queue_scroll: 0,
@@ -299,6 +309,32 @@ impl GameState {
         game.scenario = Scenario.Cities;
         game.setup_cities();
         game.start_on_whole_map();
+        game
+    }
+
+    /// A playable siege: Blue surrounds four gates with enough force to breach the defended
+    /// command post.
+    pub fn siege_scenario() -> GameState can {Log} {
+        let mut game = GameState.city_scenario();
+        game.scenario = Scenario.Siege;
+        let posts = [(0, Hex.new(3, 0)), (1, Hex.new(3, 1)), (4, Hex.new(5, 0)), (5, Hex.new(4, -1))];
+        for k in 0..4 {
+            let (id, pos) = posts[k];
+            for i in 0..game.units.len() { if game.units[i].id == id { game.units[i].pos = pos; } }
+        }
+        // Keep the practice battle at the gates. The Cities scenario's other troops would
+        // require unrelated orders and Red's roamers would arrive mid-siege, changing the
+        // intended four-on-two test.
+        handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.id != 2 && u.id != 3 && u.id != 6 && u.id != 7 } }
+        let extra = [(Hex.new(5, -1), UnitType.Siege), (Hex.new(4, 1), UnitType.Melee)];
+        for k in 0..2 {
+            let (pos, kind) = extra[k];
+            let id = game.take_unit_id();
+            game.units.push(Unit.new(id, pos, Team.Blue, kind));
+        }
+        for c in 0..game.cities.len() { game.cities[c].queue.push(Build.Unit(BuildUnit.Melee)); }
+        game.open_city_interior(1);
+        game.set_notice("SIEGE: FIGHT ON BOTH MAPS (V) - BREACH POST, THEN OCCUPY IT");
         game
     }
 
@@ -478,6 +514,12 @@ impl GameState {
     /// Battery.
     pub fn has_enemy_target_at(&self, hex: Hex, team: Team) -> bool {
         self.enemy_of_team_at(hex, team).is_some() || self.enemy_barracks_at(hex, team).is_some() || self.enemy_coastal_battery_at(hex, team).is_some()
+    }
+
+    /// An empty city center is not an exterior attack target. Units and workers standing there
+    /// can still be attacked normally.
+    pub fn empty_city_target(&self, hex: Hex, team: Team) -> bool {
+        self.city_at(hex).is_some() && self.enemy_of_team_at(hex, team).is_none() && self.enemy_workers_at(hex, team).is_empty()
     }
 
     /// Whether two enemies are fighting over this hex.

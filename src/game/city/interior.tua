@@ -1,0 +1,474 @@
+//! A small tactical board inside each city. Field units on the six neighbouring hexes project
+//! independent fighters through the corresponding gates.
+
+use std.collections.Map;
+use std.collections.Set;
+use std.core.Keep;
+use std.fmt.Out;
+use std.fmt.Show;
+use std.fmt.show_u64;
+use std.linalg.vec2;
+use std.rand.Rand;
+use log.Log;
+use log.info;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.text;
+use game.camera.Camera;
+use game.combat.roll_damage_against;
+use game.hex.Hex;
+use game.terrain.Resource;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitStats;
+use game.unit.UnitType;
+use game.unit.apply_training_upgrade;
+
+pub const CORE_HP: f32 = 80.0;
+const CORE_DEFENSE: f32 = 18.0;
+const CORE_ATTACK: f32 = 12.0;
+const CORE_ATTACK_RANGE: i32 = 2;
+/// The command post, at the middle of the board.
+pub const CENTER: Hex = Hex { q: 0, r: 0 };
+
+pub struct Interior { core_hp: f32, fighters: Vec[InteriorFighter] }
+
+pub fn interior() -> Interior { Interior { core_hp: CORE_HP, fighters: Vec.new() } }
+
+impl Interior {
+    /// A copy of the board, for a savestate.
+    pub fn snapshot(&self) -> Interior {
+        let mut fighters: Vec[InteriorFighter] = Vec.new();
+        for k in 0..self.fighters.len() { fighters.push(self.fighters[k]); }
+        Interior { core_hp: self.core_hp, fighters }
+    }
+
+    /// Where the fighter projected by unit `source` stands in the list, if it is on the board.
+    pub fn index_of(&self, source: u32) -> Option[i32] {
+        for k in 0..self.fighters.len() { if self.fighters[k].source_id == source { return Option.Some(k); } }
+        Option.None
+    }
+
+    /// The fighter on `hex`, if any.
+    pub fn fighter_at(&self, hex: Hex) -> Option[i32] {
+        for k in 0..self.fighters.len() { if self.fighters[k].pos == hex { return Option.Some(k); } }
+        Option.None
+    }
+}
+
+/// A field unit's copy on a city's board: its own position, health and orders.
+pub struct InteriorFighter {
+    source_id: u32,
+    team: Team,
+    unit_type: UnitType,
+    training_upgrade: Option[Resource],
+    pos: Hex,
+    hp: f32,
+    planned_move: Option[Hex],
+    planned_attack: Option[Hex],
+}
+
+impl InteriorFighter {
+    pub fn stats(&self) -> UnitStats {
+        let mut stats = self.unit_type.stats();
+        apply_training_upgrade(&mut stats, self.training_upgrade);
+        stats
+    }
+}
+
+pub fn in_bounds(hex: Hex) -> bool { hex.distance(CENTER) <= 2 }
+
+impl GameState {
+    pub fn is_in_city_interior(&self) -> bool { self.interior_view.is_some() }
+
+    /// Backspace or Clear Orders in the interior: the selected fighter's orders go.
+    pub fn clear_selected_interior_orders(&mut self) {
+        let (Option.Some(city), Option.Some(source)) = (self.interior_view, self.interior_selected) else { return; };
+        let Option.Some(k) = self.cities[city].interior.index_of(source) else { return; };
+        if self.cities[city].interior.fighters[k].team != PLAYER_TEAM { return; }
+        self.cities[city].interior.fighters[k].planned_move = Option.None;
+        self.cities[city].interior.fighters[k].planned_attack = Option.None;
+        self.set_notice("INTERIOR ORDERS CLEARED");
+    }
+
+    /// V opens the selected city, the city under the pointer, or the closest city to the
+    /// selected field unit. The interior is a separate order view.
+    pub fn toggle_city_interior(&mut self) {
+        if self.is_resolving() { return; }
+        if self.interior_view.is_some() {
+            self.close_city_interior();
+            return;
+        }
+        let fog = self.fog();
+        let mut city: Option[i32] = self.selected_city;
+        if city.is_none() {
+            if let Option.Some(hex) = self.hovered_tile {
+                for c in 0..self.cities.len() {
+                    if city.is_none() && self.cities[c].pos == hex && (self.cities[c].team == PLAYER_TEAM || fog.sees(hex)) { city = Option.Some(c); }
+                }
+            }
+        }
+        if city.is_none() {
+            if let Option.Some(unit) = self.selected {
+                let at = self.units[unit].pos;
+                for c in 0..self.cities.len() {
+                    let x = &self.cities[c];
+                    if x.team != PLAYER_TEAM && !fog.sees(x.pos) { continue; }
+                    let closer = match city {
+                        Option.None => true,
+                        Option.Some(b) => {
+                            let (d, bd) = (x.pos.distance(at), self.cities[b].pos.distance(at));
+                            d < bd || (d == bd && x.id < self.cities[b].id)
+                        }
+                    };
+                    if closer { city = Option.Some(c); }
+                }
+            }
+        }
+        match city {
+            Option.Some(c) => self.open_city_interior(c),
+            Option.None => self.set_notice("HOVER A CITY OR SELECT A UNIT, THEN PRESS V"),
+        }
+    }
+
+    pub fn open_city_interior(&mut self, city: i32) {
+        if self.interior_view.is_none() { self.exterior_camera = Option.Some(self.camera); }
+        self.sync_city_interiors();
+        self.interior_view = Option.Some(city);
+        self.interior_selected = Option.None;
+        self.selected_city = Option.None;
+        self.selected_barracks = Option.None;
+        self.selected = Option.None;
+        self.group.clear();
+        self.ui_click_mode = Option.None;
+        // Room for the command panel on the left and Debug on the right.
+        self.camera = Camera.new(vec2(-1.35, 0.0), 6.0);
+        self.set_notice("CITY INTERIOR: CLICK A BLUE TROOP, THEN A TILE OR ENEMY; ESC RETURNS");
+    }
+
+    pub fn close_city_interior(&mut self) {
+        let Option.Some(city) = self.interior_view else { return; };
+        self.interior_view = Option.None;
+        if let Option.Some(camera) = self.exterior_camera { self.camera = camera; }
+        self.exterior_camera = Option.None;
+        self.interior_selected = Option.None;
+        self.selected_city = if self.cities[city].team == PLAYER_TEAM { Option.Some(city) } else { Option.None };
+        self.hovered_tile = Option.None;
+        self.hovered_city = Option.None;
+        self.set_notice(if self.selected_city.is_some() { "CITY VIEW: CLICK THE CITY CENTER TO RE-ENTER THE INTERIOR" } else { "EXTERIOR MAP: HOVER THE CITY AND PRESS V TO RE-ENTER" });
+    }
+
+    /// Clicking a tile in the interior view selects a copy or gives it an independent tactical
+    /// order. The source field unit is unchanged.
+    pub fn interior_click(&mut self, tile: Hex) {
+        let Option.Some(city) = self.interior_view else { return; };
+        if self.is_resolving() || !in_bounds(tile) { return; }
+        let clicked = self.cities[city].interior.fighter_at(tile);
+        if let Option.Some(k) = clicked {
+            let fighter = self.cities[city].interior.fighters[k];
+            if fighter.team == PLAYER_TEAM {
+                self.interior_selected = if self.interior_selected != Option.Some(fighter.source_id) { Option.Some(fighter.source_id) } else { Option.None };
+                return;
+            }
+        }
+        let Option.Some(source) = self.interior_selected else {
+            self.set_notice("SELECT A BLUE INTERIOR UNIT FIRST");
+            return;
+        };
+        let Option.Some(k) = self.cities[city].interior.index_of(source) else {
+            self.interior_selected = Option.None;
+            return;
+        };
+        let fighter = self.cities[city].interior.fighters[k];
+        let from = fighter.planned_move.unwrap_or(fighter.pos);
+        let enemy = match clicked { Option.Some(c) => self.cities[city].interior.fighters[c].team != PLAYER_TEAM, Option.None => false };
+        let core_hp = self.cities[city].interior.core_hp;
+        let core = tile == CENTER && self.cities[city].team != PLAYER_TEAM && core_hp > 0.0;
+        let move_range = if fighter.stats().move_range > 1 { fighter.stats().move_range } else { 1 };
+        if enemy || core {
+            if from.distance(tile) <= fighter.stats().attack_range {
+                let f = &mut self.cities[city].interior.fighters[k];
+                f.planned_attack = if f.planned_attack != Option.Some(tile) { Option.Some(tile) } else { Option.None };
+                self.set_notice("INTERIOR ATTACK QUEUED");
+            } else {
+                self.set_notice("TARGET OUT OF RANGE: MOVE THE COPY CLOSER FIRST");
+            }
+        } else if clicked.is_none() && (tile != CENTER || core_hp <= 0.0) && from.distance(tile) <= move_range {
+            let f = &mut self.cities[city].interior.fighters[k];
+            f.planned_move = if f.planned_move != Option.Some(tile) { Option.Some(tile) } else { Option.None };
+            f.planned_attack = Option.None;
+            self.set_notice(if tile == CENTER && core_hp <= 0.0 { "CAPTURE MOVE QUEUED - END TURN TO TAKE THE CITY" } else { "INTERIOR MOVE QUEUED" });
+        } else {
+            self.set_notice("CHOOSE AN OPEN TILE IN MOVE RANGE, OR AN ENEMY IN ATTACK RANGE");
+        }
+    }
+
+    /// Every city's board takes the land troops beside it now: a copy of each new one comes in
+    /// at the free tile nearest its gate, and the copy of one gone is dropped.
+    pub fn sync_city_interiors(&mut self) {
+        for c in 0..self.cities.len() {
+            let pos = self.cities[c].pos;
+            let mut adjacent: Vec[i32] = Vec.new();
+            for i in 0..self.units.len() {
+                let unit = &self.units[i];
+                if unit.pos.distance(pos) == 1 && !unit.is_naval() && !self.settlers.contains(unit.id) { adjacent.push(i); }
+            }
+            let mut ids: Set[i64] = Set.new();
+            for a in 0..adjacent.len() { let _new = ids.insert(self.units[adjacent[a]].id as i64); }
+            handle { self.cities[c].interior.fighters.retain(); } with Keep[InteriorFighter] { keep(f) => { resume ids.contains(f.source_id as i64) } }
+            for a in 0..adjacent.len() {
+                let unit = &self.units[adjacent[a]];
+                if self.cities[c].interior.index_of(unit.id).is_some() { continue; }
+                let gate = Hex.new((unit.pos.q - pos.q) * 2, (unit.pos.r - pos.r) * 2);
+                let mut best: Option[Hex] = Option.None;
+                for q in -2..=2 {
+                    for r in -2..=2 {
+                        let h = Hex.new(q, r);
+                        if !in_bounds(h) || h == CENTER || self.cities[c].interior.fighter_at(h).is_some() { continue; }
+                        let better = match best {
+                            Option.None => true,
+                            Option.Some(b) => {
+                                let (d, bd) = (h.distance(gate), b.distance(gate));
+                                d < bd || (d == bd && (h.q < b.q || (h.q == b.q && h.r < b.r)))
+                            }
+                        };
+                        if better { best = Option.Some(h); }
+                    }
+                }
+                let Option.Some(at) = best else { continue; };
+                let copy = InteriorFighter { source_id: unit.id, team: unit.team, unit_type: unit.unit_type, training_upgrade: unit.training_upgrade, pos: at, hp: unit.interior_hp, planned_move: Option.None, planned_attack: Option.None };
+                self.cities[c].interior.fighters.push(copy);
+            }
+            sort_by_source(&mut self.cities[c].interior.fighters);
+        }
+    }
+
+    /// Exterior combat may remove a source before the interior phase. Its tactical copy
+    /// disappears as part of that same death, not at next entry.
+    pub fn discard_interior_copies_of_dead_units(&mut self) {
+        let mut living: Set[i64] = Set.new();
+        for i in 0..self.units.len() { let _new = living.insert(self.units[i].id as i64); }
+        for c in 0..self.cities.len() {
+            handle { self.cities[c].interior.fighters.retain(); } with Keep[InteriorFighter] { keep(f) => { resume living.contains(f.source_id as i64) } }
+        }
+        if let Option.Some(source) = self.interior_selected {
+            if !living.contains(source as i64) { self.interior_selected = Option.None; }
+        }
+    }
+
+    /// The units in `treated` were healed in both layers: their copies take the new health.
+    pub fn sync_interior_health(&mut self, treated: &Vec[u32]) {
+        for c in 0..self.cities.len() {
+            for k in 0..self.cities[c].interior.fighters.len() {
+                let source = self.cities[c].interior.fighters[k].source_id;
+                if !treated.contains(source) { continue; }
+                for i in 0..self.units.len() {
+                    if self.units[i].id == source { self.cities[c].interior.fighters[k].hp = self.units[i].interior_hp; }
+                }
+            }
+        }
+    }
+
+    /// Interior orders resolve once per global turn, after the field battle. Moves and damage
+    /// are simultaneous within the interior layer.
+    pub fn resolve_city_interiors(&mut self) can {Log, Rand} {
+        self.sync_city_interiors();
+        for c in 0..self.cities.len() {
+            self.plan_interior_ai(c);
+            self.resolve_one_interior(c);
+        }
+        if let Option.Some(source) = self.interior_selected {
+            let mut on_a_board = false;
+            for c in 0..self.cities.len() { if self.cities[c].interior.index_of(source).is_some() { on_a_board = true; } }
+            if !on_a_board { self.interior_selected = Option.None; }
+        }
+    }
+
+    /// Every fighter the player doesn't command: an attacker heads for the post, a defender for
+    /// the nearest enemy, attacking once in range.
+    fn plan_interior_ai(&mut self, city: i32) {
+        let owner = self.cities[city].team;
+        let core_breached = self.cities[city].interior.core_hp <= 0.0;
+        let snapshot = self.cities[city].interior.snapshot();
+        for k in 0..snapshot.fighters.len() {
+            let fighter = snapshot.fighters[k];
+            if fighter.team == PLAYER_TEAM { continue; }
+            let mut target: Option[Hex] = Option.None;
+            if fighter.team != owner {
+                target = Option.Some(CENTER);
+            } else {
+                let mut best: Option[i32] = Option.None;
+                for o in 0..snapshot.fighters.len() {
+                    let other = snapshot.fighters[o];
+                    if other.team == fighter.team { continue; }
+                    let better = match best {
+                        Option.None => true,
+                        Option.Some(b) => {
+                            let (d, bd) = (fighter.pos.distance(other.pos), fighter.pos.distance(snapshot.fighters[b].pos));
+                            d < bd || (d == bd && other.source_id < snapshot.fighters[b].source_id)
+                        }
+                    };
+                    if better { best = Option.Some(o); }
+                }
+                if let Option.Some(b) = best { target = Option.Some(snapshot.fighters[b].pos); }
+            }
+            let Option.Some(target) = target else { continue; };
+            let range = fighter.stats().attack_range;
+            if fighter.pos.distance(target) <= range && !(target == CENTER && fighter.team != owner && core_breached) {
+                self.cities[city].interior.fighters[k].planned_attack = Option.Some(target);
+                continue;
+            }
+            let around = fighter.pos.neighbors();
+            let mut next: Option[Hex] = Option.None;
+            for n in 0..6 {
+                let h = around[n];
+                if !in_bounds(h) || (h == CENTER && fighter.team != owner && !core_breached) || snapshot.fighter_at(h).is_some() { continue; }
+                let better = match next {
+                    Option.None => true,
+                    Option.Some(b) => {
+                        let (d, bd) = (h.distance(target), b.distance(target));
+                        d < bd || (d == bd && (h.q < b.q || (h.q == b.q && h.r < b.r)))
+                    }
+                };
+                if better { next = Option.Some(h); }
+            }
+            self.cities[city].interior.fighters[k].planned_move = next;
+            if let Option.Some(step) = next {
+                if step.distance(target) <= range { self.cities[city].interior.fighters[k].planned_attack = Option.Some(target); }
+            }
+        }
+    }
+
+    /// City `city`'s board plays its turn: moves, then attacks and the post's own shot, all
+    /// simultaneous; a breached post falls to an attacker standing on it; each copy's health
+    /// goes back to its source, and a copy that dies takes its source with it.
+    pub fn resolve_one_interior(&mut self, city: i32) can {Log, Rand} {
+        let owner = self.cities[city].team;
+        let before = self.cities[city].interior.snapshot();
+        for k in 0..before.fighters.len() {
+            let fighter = before.fighters[k];
+            let Option.Some(dest) = fighter.planned_move else { continue; };
+            let mut claims = 0;
+            for o in 0..before.fighters.len() { if before.fighters[o].planned_move == Option.Some(dest) { claims = claims + 1; } }
+            let open = in_bounds(dest)
+                && (dest != CENTER || fighter.team == owner || before.core_hp <= 0.0)
+                && before.fighter_at(dest).is_none()
+                && claims == 1;
+            if open { self.cities[city].interior.fighters[k].pos = dest; }
+        }
+        let snapshot = self.cities[city].interior.snapshot();
+        let mut damage: Vec[f32] = Vec.new();
+        for _ in 0..snapshot.fighters.len() { damage.push(0.0); }
+        let mut core_damage: f32 = 0.0;
+        for k in 0..snapshot.fighters.len() {
+            let fighter = snapshot.fighters[k];
+            let Option.Some(target) = fighter.planned_attack else { continue; };
+            if fighter.pos.distance(target) > fighter.stats().attack_range { continue; }
+            let attack = fighter.stats().attack;
+            let mut defender: Option[i32] = Option.None;
+            for o in 0..snapshot.fighters.len() {
+                if defender.is_none() && snapshot.fighters[o].pos == target && snapshot.fighters[o].team != fighter.team { defender = Option.Some(o); }
+            }
+            if let Option.Some(d) = defender {
+                damage[d] = damage[d] + roll_damage_against(attack, snapshot.fighters[d].stats().defense);
+            } else if target == CENTER && fighter.team != owner && snapshot.core_hp > 0.0 {
+                core_damage = core_damage + roll_damage_against(attack, CORE_DEFENSE);
+            }
+        }
+        if snapshot.core_hp > 0.0 {
+            // The post fires on the attacker in its range with the lowest source id.
+            let mut shot: Option[i32] = Option.None;
+            for k in 0..snapshot.fighters.len() {
+                let f = snapshot.fighters[k];
+                if f.team == owner || f.pos.distance(CENTER) > CORE_ATTACK_RANGE { continue; }
+                let better = match shot { Option.None => true, Option.Some(b) => f.source_id < snapshot.fighters[b].source_id };
+                if better { shot = Option.Some(k); }
+            }
+            if let Option.Some(k) = shot { damage[k] = damage[k] + roll_damage_against(CORE_ATTACK, snapshot.fighters[k].stats().defense); }
+        }
+        let core_left = self.cities[city].interior.core_hp - core_damage;
+        self.cities[city].interior.core_hp = if core_left > 0.0 { core_left } else { 0.0 };
+        if core_damage > 0.0 && self.cities[city].interior.core_hp <= 0.0 {
+            self.set_notice(if owner == PLAYER_TEAM { "YOUR POST BREACHED - KEEP RED OFF THE CENTER" } else { "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE" });
+        }
+        let mut casualties: Vec[u32] = Vec.new();
+        let mut health_after: Vec[(u32, f32)] = Vec.new();
+        for k in 0..self.cities[city].interior.fighters.len() {
+            let f = &mut self.cities[city].interior.fighters[k];
+            let hp = f.hp - damage[k];
+            f.hp = if hp > 0.0 { hp } else { 0.0 };
+            f.planned_move = Option.None;
+            f.planned_attack = Option.None;
+            if f.hp <= 0.0 { casualties.push(f.source_id); }
+            health_after.push((f.source_id, f.hp));
+        }
+        handle { self.cities[city].interior.fighters.retain(); } with Keep[InteriorFighter] { keep(f) => { resume f.hp > 0.0 } }
+        let mut conqueror: Option[Team] = Option.None;
+        if self.cities[city].interior.core_hp <= 0.0 {
+            let fighters = &self.cities[city].interior.fighters;
+            for k in 0..fighters.len() {
+                if conqueror.is_none() && fighters[k].pos == CENTER && fighters[k].team != owner { conqueror = Option.Some(fighters[k].team); }
+            }
+        }
+        if let Option.Some(team) = conqueror { self.capture_city(city, team); }
+        for h in 0..health_after.len() {
+            let (source, hp) = health_after[h];
+            for i in 0..self.units.len() { if self.units[i].id == source { self.units[i].interior_hp = hp; } }
+            for c in 0..self.cities.len() {
+                if let Option.Some(k) = self.cities[c].interior.index_of(source) { self.cities[c].interior.fighters[k].hp = hp; }
+            }
+        }
+        if !casualties.is_empty() {
+            handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume !casualties.contains(u.id) } }
+            self.discard_interior_copies_of_dead_units();
+        }
+    }
+
+    /// `team` takes city `city` through its interior: the post is rebuilt, what the city was
+    /// making is dropped, and its workers out on the map follow a city of their own side or,
+    /// with none left, the new owner.
+    fn capture_city(&mut self, city: i32, team: Team) can {Log} {
+        let c = &mut self.cities[city];
+        c.team = team;
+        c.interior.core_hp = CORE_HP;
+        c.queue.clear();
+        c.production = 0;
+        c.pending_building = Option.None;
+        c.planned_sites = Map.new();
+        c.barracks_queue.clear();
+        c.barracks_production = 0;
+        c.worker_jobs.clear();
+        let id = c.id;
+        self.notice = text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" CAPTURED IN THE INTERIOR"); });
+        info(fn() can {Out} { show_u64((id + 1) as u64); Out.put(": "); team.show(); Out.put(" captures its command post"); });
+        for w in 0..self.field_workers.len() {
+            if self.field_workers[w].home != city { continue; }
+            let (worker_team, worker_pos) = (self.field_workers[w].team, self.field_workers[w].pos);
+            match self.nearest_city(worker_team, worker_pos) {
+                Option.Some(new_home) => { self.field_workers[w].home = new_home; }
+                Option.None => {
+                    // Without a friendly city to return to, an outlying worker follows the
+                    // captured city's new owner.
+                    let worker = &mut self.field_workers[w];
+                    worker.team = team;
+                    worker.job = Option.None;
+                    worker.work_left = Option.None;
+                    worker.home = city;
+                    worker.recalled = true;
+                }
+            }
+        }
+        self.auto_assign_city(city);
+    }
+}
+
+/// Sorts a board's fighters by their source's id.
+fn sort_by_source(fighters: &mut Vec[InteriorFighter]) {
+    for i in 1..fighters.len() {
+        let mut j = i;
+        while j > 0 && fighters[j].source_id < fighters[j - 1].source_id {
+            fighters.swap_at(j, j - 1);
+            j = j - 1;
+        }
+    }
+}

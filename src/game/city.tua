@@ -31,6 +31,8 @@ use game.ruins.ruin;
 use game.ruins.RUIN_REWARDS;
 use game.settings.Settings;
 use game.workers.WorkerJob;
+use game.city.interior.Interior;
+use game.city.interior.interior;
 use game.scenario.copy_vec;
 use game.scenario.copy_map;
 use std.math.min;
@@ -46,6 +48,8 @@ pub use game.city.builds.WORKER_SHORTCUT;
 pub use game.city.logistics.Routes;
 pub use game.city.logistics.RouteBoard;
 pub use game.city.logistics.delivered_share;
+pub use game.city.interior.CORE_HP;
+pub use game.city.interior.CENTER;
 
 /// Camera zoom the city scenarios start at: most of the radius-six map in view.
 const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
@@ -109,6 +113,8 @@ pub struct City {
     /// Barracks production is independent of the city's main queue.
     barracks_queue: Vec[BuildUnit],
     barracks_production: i32,
+    /// A separate tactical board. Adjacent field troops project copies here.
+    interior: Interior,
     /// Workers at home, safe and off the map (`workers.tua`).
     workers: u32,
     /// Jobs waiting for a worker, first to go first.
@@ -144,6 +150,7 @@ impl City {
             planned_sites: Map.new(),
             barracks_queue: Vec.new(),
             barracks_production: 0,
+            interior: interior(),
             workers: 1,
             worker_jobs: Vec.new(),
             workers_resting: false,
@@ -200,6 +207,7 @@ impl City {
             planned_sites: copy_map(&self.planned_sites),
             barracks_queue: copy_vec(&self.barracks_queue),
             barracks_production: self.barracks_production,
+            interior: self.interior.snapshot(),
             workers: self.workers,
             worker_jobs: copy_vec(&self.worker_jobs),
             workers_resting: self.workers_resting,

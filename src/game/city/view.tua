@@ -37,6 +37,7 @@ impl GameState {
     /// Opens city `i`'s view and glides the camera to it.
     pub fn open_city(&mut self, i: i32) {
         self.worker_mode = false;
+        self.close_city_interior();
         if self.selected_city != Option.Some(i) {
             self.city_queue_scroll = 0;
             // Site placement belongs to the open city. A building that finished while the view
@@ -69,6 +70,7 @@ impl GameState {
     }
 
     pub fn leave_city_view(&mut self) {
+        self.close_city_interior();
         self.selected_city = Option.None;
         self.selected_barracks = Option.None;
         self.moving_manager = Option.None;
@@ -79,6 +81,10 @@ impl GameState {
     /// opening the settings menu. While a building site is being chosen, the first press only
     /// cancels that (and the unsited building) and keeps the city open.
     pub fn exit_structure_menu(&mut self) -> bool {
+        if self.interior_view.is_some() {
+            self.close_city_interior();
+            return true;
+        }
         if self.selected_city.is_none() && self.selected_barracks.is_none() { return false; }
         if self.site_placement().is_some() {
             let _was = self.abandon_site_placement();
@@ -91,6 +97,7 @@ impl GameState {
 
     /// Opens city `city`'s Barracks view and glides the camera to it.
     pub fn open_barracks(&mut self, city: i32) {
+        self.close_city_interior();
         let Option.Some(barracks) = self.cities[city].barracks else { return; };
         if self.selected_barracks != Option.Some(city) { self.barracks_queue_scroll = 0; }
         self.selected_city = Option.None;
@@ -113,6 +120,10 @@ impl GameState {
     /// it; with a city open, the click places a building being sited, picks up or puts down the
     /// manager, or assigns or releases a citizen. Answers whether the click was theirs.
     pub fn city_click(&mut self, hex: Hex) -> bool {
+        if self.interior_view.is_some() {
+            self.interior_click(hex);
+            return true;
+        }
         if self.selected_barracks.is_some() {
             self.set_notice("BARRACKS MENU - PRESS ESC OR SPACE TO EXIT");
             return true;
@@ -150,7 +161,7 @@ impl GameState {
             return true;
         }
         if hex == self.cities[i].pos {
-            self.exit_to_units();
+            self.open_city_interior(i);
             return true;
         }
         // City management owns map clicks: it is dismissed with Escape or Space before units are
@@ -195,14 +206,6 @@ impl GameState {
             self.set_notice("CITIZEN ASSIGNED");
         }
         true
-    }
-
-    /// Clicking the open city's own hex: back to the units, selecting the next one that needs
-    /// orders.
-    fn exit_to_units(&mut self) {
-        if self.is_resolving() { return; }
-        self.leave_city_view();
-        self.select_next_unit();
     }
 
     /// Space (once nothing needs orders) or the End Turn button: resolves the turn, unless a
