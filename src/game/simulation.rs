@@ -1,7 +1,7 @@
 //! Whole-game simulation tests: both teams planned by the AI, every turn resolved through the
 //! same path the game uses, and the board's invariants checked after each turn.
 //!
-//! Every game is seeded (`GameState::seed_rng`: damage rolls and the F4 world's map), so a
+//! Every game is seeded (`GameState::seed_rng`: the F4 world's map; combat has no rolls), so a
 //! failure names its scenario, seed and turn, and replays exactly:
 //! `SIM_SEED=<seed> cargo test simulation`. `SIM_SEEDS=<n>` plays seeds `0..n` instead of
 //! `DEFAULT_SEEDS`, to hunt for failures. `SIM_SPEEDUP=1` plays them with production speeding
@@ -928,11 +928,17 @@ fn the_same_seed_replays_the_same_game() {
             scenario.name()
         );
     });
-    // Anti-vacuity: the seed does drive the rolls. The armies meet on turn 2 and are gone
-    // within a few more, so compare right after the first clash.
+    // Anti-vacuity: the seed does drive the game, through the world's map.
     assert_ne!(
+        fingerprint(Scenario::World, 1, 2),
+        fingerprint(Scenario::World, 2, 2),
+        "two seeds played the same world"
+    );
+    // Combat has no random spread, so the fixed scenarios play the same on any seed. The
+    // armies meet on turn 2 and are gone within a few more: compare right after the clash.
+    assert_eq!(
         fingerprint(Scenario::Combat, 1, 2),
         fingerprint(Scenario::Combat, 2, 2),
-        "two seeds played the same combat"
+        "combat drew from the seeded RNG"
     );
 }

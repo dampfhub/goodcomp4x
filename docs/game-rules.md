@@ -511,9 +511,12 @@ every turn end.
 
 ## Combat (`combat.rs`)
 
-- Damage = `30 * e^((attack - defense) * 0.04) * random(0.8..1.2)`, clamped to 1..100. Defense
-  includes terrain and Shield Wall; attack includes Charge.
-- Melee attacks (base range 1) draw retaliation from a defender that survives the hit.
+- Damage = `30 * e^((attack - defense) * 0.04)`, clamped to 1..100, with no random spread: the
+  same fight always deals the same damage. Defense includes terrain and Shield Wall; attack
+  includes Charge. Volley (60%) and attacks across the waterline (above) scale the result.
+- Melee attacks (base range 1) draw retaliation from a defender that survives the hit (that
+  one hit, not the step's sum). Two units trading blows across the waterline each take the
+  other's shore-scaled damage.
 - **Cities** cannot be attacked on the exterior map; capture happens by breaching and occupying
   the command post inside. **Barracks** have 220 HP and 25 defense and are removed (with their queue) at 0 HP; the city
   can then build a new one, at full HP. A structure is hit only when the attack hits no enemy unit
