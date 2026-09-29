@@ -68,11 +68,11 @@ fn screen() -> Vec2 { vec2(SCREEN_W, SCREEN_H) }
 
 /// A game, the library's context over the game's fonts and the UI's state, kept together so a
 /// helper is handed one thing.
-struct Rig { game: GameState, ctx: Context, st: UiState }
+pub struct Rig { game: GameState, ctx: Context, st: UiState }
 
 /// The library's context over the game's fonts, with `saved` windows restored; whether the fonts
 /// rasterized (else a box font stands in).
-fn context(saved: Option[Str]) -> (Context, bool) {
+pub fn context(saved: Option[Str]) -> (Context, bool) {
     let mut built: Option[FontAtlas] = Option.None;
     let rc = handle { built = Option.Some(ui_atlas()); 0 } with FontError { fail(c) => { abort c } };
     let real = rc == 0 && built.is_some();

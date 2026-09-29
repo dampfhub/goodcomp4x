@@ -1,0 +1,90 @@
+//! The library UI under a long run of arbitrary input: the mouse wandering, pressing and
+//! releasing across every panel, Ctrl coming and going, panels opened and scenarios switched
+//! under it, on screens of several sizes and scales. Nothing may abort, and what the layout
+//! remembers stays a number a window can have.
+
+use std.linalg.vec2;
+use std.rand.Rand;
+use std.rand.below;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use ui.input.Mods;
+use ui_win32.next_frame;
+use game.GameState;
+use game.imgui.UiState;
+use game.imgui_tests.Rig;
+use game.imgui_tests.context;
+use game.imgui_layout.layout_state;
+use game.imgui.run_ui;
+use game.imgui.ui_state;
+use game.imgui_layout.SLOT_COUNT;
+use game.scenario.SCENARIOS;
+use game.tests.sandbox;
+
+const PANELS: [str; 6] = ["city", "queue", "unit", "group", "workers", "settings"];
+
+/// Whether every remembered window is finite and no bigger than a screen could be.
+fn sane(st: &UiState) -> bool {
+    for k in 0..SLOT_COUNT {
+        let w = st.layout.windows[k];
+        let numbers = [w.pos.x, w.pos.y, w.size.x, w.size.y, w.floating_pos.x, w.floating_pos.y, w.floating_size.x, w.floating_size.y];
+        for i in 0..8 {
+            if numbers[i] != numbers[i] || numbers[i] > 100000.0 || numbers[i] < -100000.0 { return false; }
+        }
+    }
+    true
+}
+
+/// `frames` frames of arbitrary input on a `width` by `height` window at `scale`.
+fn soak(width: f32, height: f32, scale: f32, frames: i32) can {Log, Rand, Assert} {
+    let mut game = GameState.city_scenario();
+    game.imgui_ui = true;
+    let (ctx, _real) = context(Option.None);
+    let mut r = Rig { game, ctx, st: ui_state(layout_state(), vec2(width / scale, height / scale)) };
+    let mut ok = true;
+    let mut over_ui = 0;
+    let mut moved_panels = false;
+    for f in 0..frames {
+        // The mouse wanders, sometimes off the window altogether.
+        let roll = below(100);
+        if roll < 6 {
+            r.st.input.mouse = Option.None;
+        } else if roll < 70 {
+            r.st.input.mouse = Option.Some(vec2((below((width as i32) as u64) as i32) as f32 / scale, (below((height as i32) as u64) as i32) as f32 / scale));
+        }
+        if below(100) < 12 { r.st.input.down[0] = !r.st.input.down[0]; }
+        if below(100) < 3 { r.st.input.down[1] = !r.st.input.down[1]; }
+        if below(100) < 5 { r.st.input.mods = Mods { ctrl: !r.st.input.mods.ctrl, shift: below(2) == 1, alt: false }; }
+        // The world changes under the panels now and then.
+        if f % 97 == 96 { r.game.switch_scenario(SCENARIOS[below(6) as i32]); }
+        if f % 53 == 52 { let _opened = r.game.open_panel(PANELS[below(6) as i32]); }
+        if f % 71 == 70 { r.game.set_selection(Vec.new()); r.game.leave_city_view(); }
+        let cursor = r.st.input.mouse;
+        let size = vec2(width, height);
+        run_ui(&mut r.game, &mut r.ctx, &mut r.st, size, scale, 0.016, cursor);
+        r.st.input = next_frame(r.st.input);
+        if !sane(&r.st) { ok = false; }
+        if r.st.wants_mouse { over_ui = over_ui + 1; }
+        for k in 0..SLOT_COUNT { if r.st.layout.windows[k].manual { moved_panels = true; } }
+    }
+    assert(ok);
+    // The run did reach the panels, and the mouse did move some.
+    assert(over_ui > frames / 20);
+    assert(moved_panels);
+}
+
+@test
+fn a_long_run_of_arbitrary_input_aborts_nothing_at_scale_one() {
+    sandbox(fn() can {Log, Rand, Assert} { soak(1600.0, 900.0, 1.0, 2000); });
+}
+
+@test
+fn a_long_run_of_arbitrary_input_aborts_nothing_on_a_scaled_small_screen() {
+    sandbox(fn() can {Log, Rand, Assert} { soak(1280.0, 720.0, 2.0, 2000); });
+}
+
+@test
+fn a_long_run_of_arbitrary_input_aborts_nothing_on_a_big_fractionally_scaled_one() {
+    sandbox(fn() can {Log, Rand, Assert} { soak(2560.0, 1440.0, 1.25, 2000); });
+}
