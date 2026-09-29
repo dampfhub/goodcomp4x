@@ -1051,7 +1051,14 @@ mod naval_tests {
         g.resolve_coastal_batteries();
         let lost = initial - g.units[0].hp;
         assert!(lost > 0.0);
-        assert_eq!(damage_shown(&g), vec![(ship_at.to_world(), lost, false)]);
+        // The number shown is the hit; `lost` is it after rounding in the
+        // subtraction from the ship's HP, so they agree only closely.
+        assert!(
+            matches!(damage_shown(&g)[..], [(at, amount, false)]
+                if at == ship_at.to_world() && (amount - lost).abs() < 1e-3),
+            "{:?}",
+            damage_shown(&g)
+        );
 
         // A ship with less left than the hit shows KILLED.
         g.effects.clear();
