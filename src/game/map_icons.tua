@@ -5,6 +5,8 @@
 //! coordinates of the mockups they were designed in: a hex of radius 100 with Y pointing down,
 //! centered on the icon's spot.
 
+use std.fmt.Out;
+use std.str.chars;
 use std.linalg.Vec2;
 use std.linalg.vec2;
 use std.linalg.vec2_from_angle;
@@ -21,6 +23,7 @@ use game.mesh.polyline;
 use game.mesh.regular_polygon;
 use game.terrain.Resource;
 use game.terrain.Special;
+use game.text;
 
 /// Hex radius the shapes are laid out on.
 const DESIGN_HEX_RADIUS: f32 = 100.0;
@@ -75,6 +78,16 @@ pub fn inline_icon(ch: char) -> Option[MapIcon] {
     else if ch == METAL_ICON { Option.Some(MapIcon.Metal) }
     else if ch == TIME_ICON { Option.Some(MapIcon.Clock) }
     else { Option.None }
+}
+
+/// The letter that stands in for an icon character where no text renderer draws the icon.
+pub fn icon_letter(ch: char) -> char {
+    if ch == FOOD_ICON { 'F' } else if ch == WOOD_ICON { 'W' } else if ch == METAL_ICON { 'M' } else if ch == TIME_ICON { 'T' } else { ch }
+}
+
+/// `t` with its icon characters written as letters.
+pub fn plain_icons(t: &str) -> Str {
+    text(fn() can {Out} { for ch in chars(t) { Out.put_char(icon_letter(*ch)); } })
 }
 
 /// Whether `ch` stands for an icon in UI text.

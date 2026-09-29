@@ -36,6 +36,7 @@ use game.settings.SETTINGS;
 use game.settings.Setting;
 use game.show_rounded;
 use game.text;
+use game.map_icons.plain_icons;
 use game.ability.Ability;
 use game.city.Build;
 use game.city.Building;
@@ -1985,9 +1986,9 @@ impl PanelBuilder {
 
     pub fn begin_line(&mut self) { self.line_from = self.spans.len(); }
 
-    pub fn span(&mut self, t: &str, color: Color) { self.spans.push(Span { text: to_owned(t), color }); }
+    pub fn span(&mut self, t: &str, color: Color) { self.spans.push(Span { text: plain_icons(t), color }); }
 
-    pub fn span_owned(&mut self, t: Str, color: Color) { self.spans.push(Span { text: t, color }); }
+    pub fn span_owned(&mut self, t: Str, color: Color) { self.spans.push(Span { text: plain_icons(&t), color }); }
 
     /// A "LABEL value" pair on the line in progress: the label dim, the value in its own
     /// colour, three spaces before every pair but the first.
@@ -2010,7 +2011,7 @@ impl PanelBuilder {
     pub fn begin_buttons(&mut self) { self.buttons_from = self.specs.len(); }
 
     pub fn button(&mut self, target: Target, label: &str, hint: &str, state: ButtonState, armed: bool) {
-        self.specs.push(ButtonSpec { target, label: to_owned(label), hint: to_owned(hint), state, armed });
+        self.specs.push(ButtonSpec { target, label: plain_icons(label), hint: plain_icons(hint), state, armed });
     }
 
     /// Ends a row of equally wide buttons; `compact` ones are one line each.
