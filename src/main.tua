@@ -165,7 +165,9 @@ pub fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, sc
     // The library reads the mouse and the modifiers; the keys are the game's alone (the UI has
     // no text to type, and its Tab and Space focus would fight the game's hotkeys).
     let is_key = match e { Event.KeyDown(_, _) | Event.KeyUp(_) | Event.Char(_) => true, _ => false };
-    if !is_key { ui.input = feed(ui.input, e, scale); }
+    // Keys reach the library only for the Multiplayer page's text boxes.
+    let typing = game.imgui_ui && game.settings_open && game.net_menu.open;
+    if !is_key || typing { ui.input = feed(ui.input, e, scale); }
     // The library UI gets the events first; what it took (a panel under the cursor, a widget
     // with the focus) the game leaves alone.
     let over_ui = game.imgui_ui && ui.wants_mouse;

@@ -28,6 +28,7 @@ use std.str.push_byte;
 use log.Log;
 use ui.Ui;
 use ui.Clipboard;
+use ui.context.KeyboardPolicy;
 use ui.input_text;
 use ui_win32.with_system_clipboard;
 use game.net_menu.NetField;
@@ -257,6 +258,9 @@ pub fn game_style() -> Style {
 /// `Context.save_settings` wrote in an earlier session.
 pub fn ui_context(atlas: FontAtlas, saved: Option[Str]) -> Context {
     let mut ctx = create_context(atlas, game_style());
+    // Tab, Space, Enter and the arrows are the game's hotkeys: the library takes no key until a
+    // text box has the focus (the Multiplayer page's).
+    ctx.set_keyboard_policy(KeyboardPolicy.FocusOnly);
     if let &Option.Some(t) = &saved { ctx.load_settings(&t); }
     ctx
 }
