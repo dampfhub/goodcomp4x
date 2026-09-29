@@ -33,6 +33,8 @@ use game.workers.JobKind;
 use game.hex.Edge;
 use game.effects.Playing;
 use game.multiplayer.Lockstep;
+use game.net_menu.NetMenu;
+use game.net_menu.default_net_menu;
 use game.multiplayer.no_lockstep;
 use game.scenario.Scenario;
 use game.ruins.Ruin;
@@ -279,6 +281,8 @@ pub struct GameState {
     effects: Vec[Playing],
     /// A networked game's lockstep state (`multiplayer.tua`); inactive in a game of one's own.
     lockstep: Lockstep,
+    /// The settings menu's Multiplayer page: what is typed, and what it asks (`net_menu.tua`).
+    net_menu: NetMenu,
 }
 
 impl GameState {
@@ -387,6 +391,7 @@ impl GameState {
             disband_armed: Option.None,
             effects: Vec.new(),
             lockstep: no_lockstep(),
+            net_menu: default_net_menu(),
         };
         game.select_next_needing_attention(Option.None);
         game

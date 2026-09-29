@@ -1,0 +1,220 @@
+//! The Multiplayer page (`net_menu.tua`): what its fields keep, what its buttons ask for, and what
+//! the page shows in and out of a network game.
+
+use std.rand.Rand;
+use std.str.Str;
+use std.str.eq as str_eq;
+use std.str.push;
+use std.str.contains;
+use std.str.len;
+use std.str.to_owned;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.multiplayer.MAX_PLAYERS;
+use game.net_menu.NetField;
+use game.net_menu.NetMenu;
+use game.net_menu.NetRequest;
+use game.net_menu.default_net_menu;
+use game.tests.sandbox;
+use game.ui.ButtonState;
+use game.ui.PanelBuilder;
+use game.ui.panel_builder;
+use game.ui.RowKind;
+use game.ui.Target;
+use link.table.lobby;
+
+fn slen(s: &Str) -> i64 { len(s) }
+
+fn scontains(s: &Str, part: &str) -> bool { contains(s, part) }
+
+fn spush(dst: &mut Str, s: &Str) { push(dst, s); }
+
+fn same(a: &Str, want: &str) -> bool { str_eq(a, want) }
+
+fn shown(g: &GameState) -> Vec[Str] {
+    let panel = g.settings_panel_content();
+    let mut lines: Vec[Str] = Vec.new();
+    for r in 0..panel.rows.len() {
+        let row = panel.rows[r];
+        if row.kind == RowKind.Text {
+            let mut line = to_owned("");
+            for i in row.from..row.to { spush(&mut line, &panel.spans[i].text); }
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+fn has_line(lines: &Vec[Str], part: &str) -> bool {
+    for i in 0..lines.len() {
+        let l = &lines[i];
+        if scontains(l, part) { return true; }
+    }
+    false
+}
+
+fn has_button(g: &GameState, target: Target) -> bool {
+    let panel = g.settings_panel_content();
+    for i in 0..panel.specs.len() { if panel.specs[i].target == target { return true; } }
+    false
+}
+
+fn button_disabled(g: &GameState, target: Target) -> bool {
+    let panel = g.settings_panel_content();
+    for i in 0..panel.specs.len() {
+        if panel.specs[i].target == target { return panel.specs[i].state == ButtonState.Disabled; }
+    }
+    false
+}
+
+fn fields_of(g: &GameState) -> i32 {
+    let panel = g.settings_panel_content();
+    panel.fields.len()
+}
+
+@test
+fn each_field_keeps_only_what_it_can_hold() {
+    // A port is digits, five at most; a code is upper-case letters and digits, twelve at most; an
+    // address is graphic characters, sixty-four at most, and whitespace goes from all of them.
+    assert(same(&NetField.Port.clean(" 55a741 999"), "55741"));
+    assert(same(&NetField.Code.clean("k7m2 qx\n"), "K7M2QX"));
+    assert(same(&NetField.Code.clean("K7M2QXABCDEFGH"), "K7M2QXABCDEF"));
+    assert(same(&NetField.Address.clean("  192.168.1.20:55741 \n"), "192.168.1.20:55741"));
+    let mut long = to_owned("");
+    for _ in 0..100 { push(&mut long, "a"); }
+    assert(slen(&NetField.Address.clean(&long)) == 64);
+}
+
+@test
+fn what_was_typed_is_kept_for_next_time_but_not_the_code() {
+    let mut menu = default_net_menu();
+    menu.port = to_owned("55741");
+    menu.address = to_owned("203.0.113.9:55741");
+    menu.code = to_owned("K7M2QX");
+    menu.players = 4;
+    let saved = menu.to_text();
+    let kept = NetMenu.from_text(&saved);
+    assert(same(&kept.port, "55741") && same(&kept.address, "203.0.113.9:55741") && same(&kept.code, ""));
+    assert(kept.players == 4);
+    // A file edited by hand can't get past what the fields take.
+    let odd = NetMenu.from_text("players 99\nport 12a34567\naddress a b\n");
+    assert(odd.players == MAX_PLAYERS);
+    assert(same(&odd.port, "12345"));
+    assert(same(&odd.address, "ab"));
+    assert(same(&NetMenu.from_text("").port, "7777"));
+}
+
+@test
+fn hosting_and_joining_ask_only_with_what_they_need() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        // A port that is no port, then a good one: the page asks to host, for that many people.
+        g.set_net_field(NetField.Port, "70000");
+        g.activate_target(Target.HostGame);
+        assert(g.take_net_request().is_none());
+        assert(slen(&g.net_menu.status) > 0);
+        g.set_net_field(NetField.Port, "55741");
+        g.activate_target(Target.NetPlayers(3));
+        g.activate_target(Target.HostGame);
+        match g.take_net_request() {
+            Option.Some(NetRequest.Host(port, players)) => { assert(port == 55741 && players == 3); }
+            _ => { assert(false); }
+        }
+        assert(g.take_net_request().is_none());
+        // The player count keeps to 2 and the sides.
+        g.activate_target(Target.NetPlayers(1));
+        assert(g.net_menu.players == 2);
+        g.activate_target(Target.NetPlayers(99));
+        assert(g.net_menu.players == MAX_PLAYERS);
+        // Joining needs an address and a code.
+        g.activate_target(Target.JoinGame);
+        assert(g.take_net_request().is_none() && scontains(&g.net_menu.status, "ADDRESS"));
+        g.set_net_field(NetField.Address, "192.168.1.20:55741");
+        g.activate_target(Target.JoinGame);
+        assert(g.take_net_request().is_none() && scontains(&g.net_menu.status, "JOIN CODE"));
+        g.set_net_field(NetField.Code, "k7m2qx");
+        g.activate_target(Target.JoinGame);
+        match g.take_net_request() {
+            Option.Some(NetRequest.Join(address, code)) => { assert(same(&address, "192.168.1.20:55741") && same(&code, "K7M2QX")); }
+            _ => { assert(false); }
+        }
+        // While a join is under way nothing more is asked.
+        g.set_net_status(to_owned("JOINING..."), true);
+        g.activate_target(Target.JoinGame);
+        g.activate_target(Target.HostGame);
+        assert(g.take_net_request().is_none());
+    });
+}
+
+@test
+fn the_page_shows_the_fields_out_of_a_game_and_the_code_in_one() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.activate_target(Target.OpenMultiplayer);
+        assert(g.net_menu.open);
+        assert(fields_of(&g) == 3);
+        assert(has_button(&g, Target.HostGame) && has_button(&g, Target.JoinGame) && has_button(&g, Target.CloseMultiplayer));
+        assert(!has_button(&g, Target.LeaveGame) && !has_button(&g, Target.CopyJoinCode));
+        g.activate_target(Target.CloseMultiplayer);
+        assert(has_button(&g, Target.OpenMultiplayer));
+        // Hosting, it shows the join code with a COPY button, the seats still open, and how to leave.
+        let mut t = lobby(2, 4, 4242);
+        t.host.activate_target(Target.OpenMultiplayer);
+        assert(fields_of(&t.host) == 0);
+        assert(has_button(&t.host, Target.LeaveGame) && has_button(&t.host, Target.CopyJoinCode));
+        assert(has_line(&shown(&t.host), "JOIN CODE  K7M2QX"));
+        assert(has_line(&shown(&t.host), "HOSTING AS BLUE"));
+        // A guest sees its side and no code.
+        t.games[0].activate_target(Target.OpenMultiplayer);
+        assert(has_line(&shown(&t.games[0]), "PLAYING AS RED"));
+        assert(!has_button(&t.games[0], Target.CopyJoinCode));
+        // COPY asks for the code on the clipboard; Leave asks to leave.
+        t.host.activate_target(Target.CopyJoinCode);
+        match t.host.take_net_request() {
+            Option.Some(NetRequest.Copy(text)) => { assert(same(&text, "K7M2QX")); }
+            _ => { assert(false); }
+        }
+        t.host.activate_target(Target.LeaveGame);
+        match t.host.take_net_request() {
+            Option.Some(NetRequest.Leave) => {}
+            _ => { assert(false); }
+        }
+    });
+}
+
+/// Waiting for the others' plans, every button that would change the plan is disabled and the
+/// queue rows lock; looking (End Turn, the roster, opening a city) stays possible.
+@test
+fn a_network_game_waiting_for_the_others_freezes_the_plan_buttons() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = lobby(1, 1, 4242);
+        let mut own = 0 - 1;
+        for i in 0..t.games[0].cities.len() { if own < 0 && t.games[0].cities[i].team == t.games[0].local_team { own = i; } }
+        t.games[0].open_city(own);
+        t.games[0].queue_selected_city_gather();
+        let open = panel_of_tray(&t.games[0]);
+        t.games[0].submit_plan();
+        t.games[0].open_city(own);
+        let frozen = panel_of_tray(&t.games[0]);
+        assert(frozen.specs.len() > 0 && disabled_count(&frozen) > disabled_count(&open));
+        for i in 0..frozen.specs.len() {
+            let target = frozen.specs[i].target;
+            if target.changes_plan() { assert(frozen.specs[i].state == ButtonState.Disabled); }
+        }
+    });
+}
+
+fn panel_of_tray(g: &GameState) -> PanelBuilder {
+    let mut tray = panel_builder(false);
+    if let Option.Some(city) = g.selected_city { g.city_tray(city, &mut tray); }
+    if g.waiting_for_peers() { tray.freeze_plan(); }
+    tray
+}
+
+fn disabled_count(p: &PanelBuilder) -> i32 {
+    let mut n = 0;
+    for i in 0..p.specs.len() { if p.specs[i].state == ButtonState.Disabled { n = n + 1; } }
+    n
+}

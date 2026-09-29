@@ -1,0 +1,363 @@
+//! The settings menu's Multiplayer page: host a game or join one without command-line flags
+//! (`docs/multiplayer.md`). Outside a network game it has the players and port to host with, the
+//! address and join code to join with, and a button for each; in one, who this machine plays and
+//! the join code, and a button to leave; a host also gets a COPY button for the code. The game
+//! only asks: Host, Join, Leave and COPY leave a `NetRequest` for the frame loop to carry out with
+//! the network and the clipboard, which reports back through `set_net_status`.
+//!
+//! The typed fields are text boxes of the library UI (`imgui.tua`); the classic panels list the
+//! page's buttons and show the fields as text (`R15011`).
+
+use std.core.Eq;
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.str.Str;
+use std.str.to_owned;
+use std.str.push_char;
+use std.str.len;
+use std.str.eq as str_eq;
+use std.str.push;
+use std.mem.swap;
+use std.str.byte_at;
+use std.str.split_once;
+use std.str.sub;
+use std.str.substring;
+use std.str.parse_u64;
+use game.GameState;
+use game.text;
+use game.multiplayer.DEFAULT_PORT;
+use game.multiplayer.MAX_PLAYERS;
+use game.font.TextSize;
+use game.mesh.Color;
+use game.ui.ButtonState;
+use game.ui.PanelBuilder;
+use game.ui.Target;
+use game.ui.button_state;
+use game.ui.panel_builder;
+
+const GAP: f32 = 10.0;
+const LABEL_TEXT: Color = [0.30, 0.32, 0.38, 1.0];
+const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
+const TEXT: Color = [0.95, 0.95, 0.95, 1.0];
+
+/// The characters a line of the status takes before it wraps.
+const STATUS_WRAP: i32 = 44;
+
+/// A typed field of the page.
+pub enum NetField { Port, Address, Code }
+
+impl Eq for NetField {
+    fn eq(self, other: NetField) -> bool { self.index() == other.index() }
+}
+
+impl NetField {
+    pub fn index(self) -> i32 { match self { NetField.Port => 0, NetField.Address => 1, NetField.Code => 2 } }
+
+    pub fn name(self) -> str {
+        match self { NetField.Port => "PORT", NetField.Address => "HOST ADDRESS", NetField.Code => "JOIN CODE" }
+    }
+
+    /// The longest text it takes: past any real port, address or code.
+    pub fn max_len(self) -> i32 { match self { NetField.Port => 5, NetField.Address => 64, NetField.Code => 12 } }
+
+    /// \`text\` as the field keeps it: characters it can hold, up to its length. A join code is
+    /// upper case; a port is digits. Whitespace goes, so a pasted code or address loses the spaces
+    /// and line end around it.
+    pub fn clean(self, text: &str) -> Str {
+        let mut out = to_owned("");
+        let mut kept = 0;
+        for i in 0..len(text) {
+            let b = byte_at(text, i).unwrap_or(0);
+            let digit = b >= 48 && b <= 57;
+            let upper = b >= 65 && b <= 90;
+            let lower = b >= 97 && b <= 122;
+            let ok = match self {
+                NetField.Port => digit,
+                NetField.Address => b > 32 && b < 127,
+                NetField.Code => digit || upper || lower,
+            };
+            if !ok || kept >= self.max_len() { continue; }
+            let shown = match self { NetField.Code => if lower { b - 32 } else { b }, _ => b };
+            push_char(&mut out, shown as u8 as char);
+            kept = kept + 1;
+        }
+        out
+    }
+}
+
+/// What the page asks the frame loop to do.
+pub enum NetRequest {
+    /// Host a new world for \`players\` people on \`port\`.
+    Host(i32, i32),
+    /// Join the game at \`address\` with \`code\`.
+    Join(Str, Str),
+    /// Leave the network game for a new game of one's own.
+    Leave,
+    /// Put this text on the clipboard (a COPY button).
+    Copy(Str),
+}
+
+/// The page's state: what is typed, and what is asked. It is this machine's, not the game's, and
+/// survives new games like the menu.
+pub struct NetMenu {
+    port: Str,
+    address: Str,
+    code: Str,
+    players: i32,
+    /// The menu shows the Multiplayer page, not the settings.
+    open: bool,
+    /// The last thing to report: an error, or joining under way.
+    status: Str,
+    /// A join is under way: nothing more until it ends.
+    busy: bool,
+    /// Hosting: the port this machine listens on.
+    host_port: Option[i32],
+    request: Option[NetRequest],
+}
+
+pub fn default_net_menu() -> NetMenu {
+    NetMenu {
+        port: text(fn() can {Out} { show_i64(DEFAULT_PORT as i64); }), address: to_owned(""), code: to_owned(""), players: 2,
+        open: false, status: to_owned(""), busy: false, host_port: Option.None, request: Option.None,
+    }
+}
+
+impl NetMenu {
+    /// What was typed last time (the frame loop keeps it between sessions): \`port\`, \`address\` and
+    /// \`players\` lines; not the code, which is one game's.
+    pub fn to_text(&self) -> Str {
+        let (port, address, players) = (to_owned_of(&self.port), to_owned_of(&self.address), self.players);
+        text(fn() can {Out} { Out.put("port "); Out.put(&port); Out.put("\naddress "); Out.put(&address); Out.put("\nplayers "); show_i64(players as i64); Out.put("\n"); })
+    }
+
+    /// The page as \`to_text\` kept it: a file edited by hand can't get past what the fields take.
+    pub fn from_text(t: &str) -> NetMenu {
+        let mut menu = default_net_menu();
+        let mut at: i64 = 0;
+        let n = len(t);
+        while at < n {
+            let mut end = at;
+            while end < n && byte_at(t, end).unwrap_or(10) != 10 { end = end + 1; }
+            if let Option.Some(line) = substring(t, at, end) {
+                let l = sub(t, line);
+                if let Option.Some(sp) = split_once(l, " ") {
+                    let key = substring(l, 0, sp.lo);
+                    let value = substring(l, sp.hi, len(l));
+                    if let (Option.Some(k), Option.Some(v)) = (key, value) {
+                        let key_text = sub(l, k);
+                        let value_text = sub(l, v);
+                        if str_eq_(key_text, "port") { menu.port = NetField.Port.clean(value_text); }
+                        else if str_eq_(key_text, "address") { menu.address = NetField.Address.clean(value_text); }
+                        else if str_eq_(key_text, "players") {
+                            if let Option.Some(p) = parse_u64(value_text) {
+                                let mut players = p as i32;
+                                if players < 2 { players = 2; }
+                                if players > MAX_PLAYERS { players = MAX_PLAYERS; }
+                                menu.players = players;
+                            }
+                        }
+                    }
+                }
+            }
+            at = end + 1;
+        }
+        menu
+    }
+
+    fn field(&self, field: NetField) -> Str {
+        match field { NetField.Port => to_owned_of(&self.port), NetField.Address => to_owned_of(&self.address), NetField.Code => to_owned_of(&self.code) }
+    }
+}
+
+fn to_owned_of(s: &Str) -> Str { to_owned(s) }
+
+fn str_eq_(a: &str, b: &str) -> bool { str_eq(a, b) }
+
+impl GameState {
+    /// The page, in place of the settings while it is open.
+    pub fn network_panel_content(&self) -> PanelBuilder {
+        let mut panel = panel_builder(false);
+        panel.text(TextSize.Title, "MULTIPLAYER", TEXT);
+        panel.gap(GAP);
+        self.network_rows(&mut panel);
+        panel.gap(GAP);
+        panel.begin_buttons();
+        panel.button(Target.CloseMultiplayer, "BACK", "", ButtonState.Ready, false);
+        panel.button(Target.CloseSettings, "CLOSE", "ESC", ButtonState.Ready, false);
+        panel.end_buttons(true);
+        panel
+    }
+
+    /// The page's rows: hosting and joining, or the game under way.
+    fn network_rows(&self, panel: &mut PanelBuilder) {
+        let menu = &self.net_menu;
+        if self.is_networked() {
+            let side = self.local_team.name();
+            match self.join_code() {
+                Option.Some(code) => {
+                    panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put("HOSTING AS "); Out.put(side); }), TEXT);
+                    panel.begin_buttons();
+                    panel.button(Target.CopyJoinCode, "COPY", "", ButtonState.Ready, false);
+                    panel.end_buttons(true);
+                    panel.text_owned(TextSize.Title, text(fn() can {Out} { Out.put("JOIN CODE  "); Out.put(&code); }), GOLD_TEXT);
+                    if let Option.Some(port) = menu.host_port {
+                        panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("PORT "); show_i64(port as i64); Out.put(" - PLAYERS OVER THE INTERNET NEED YOUR PUBLIC IP AND THAT PORT FORWARDED"); }), LABEL_TEXT);
+                    }
+                }
+                Option.None => {
+                    panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put("PLAYING AS "); Out.put(side); }), TEXT);
+                }
+            }
+            let open = self.open_seats();
+            if !open.is_empty() {
+                let mut names = to_owned("SEATS OPEN: ");
+                for i in 0..open.len() {
+                    if i > 0 { push(&mut names, ", "); }
+                    push(&mut names, open[i].name());
+                }
+                panel.text_owned(TextSize.Body, names, LABEL_TEXT);
+            }
+            self.status_lines(panel);
+            panel.begin_buttons();
+            panel.button(Target.LeaveGame, "LEAVE GAME", "", ButtonState.Ready, false);
+            panel.end_buttons(true);
+            return;
+        }
+        let players = menu.players;
+        panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put("PLAYERS  "); show_i64(players as i64); }), GOLD_TEXT);
+        panel.begin_buttons();
+        panel.button(Target.NetPlayers(players - 1), "<", "", button_state(false, players <= 2), false);
+        panel.button(Target.NetPlayers(players + 1), ">", "", button_state(false, players >= MAX_PLAYERS), false);
+        panel.end_buttons(true);
+        panel.field(NetField.Port, menu.field(NetField.Port));
+        panel.begin_buttons();
+        panel.button(Target.HostGame, "HOST GAME", "", button_state(false, menu.busy), false);
+        panel.end_buttons(true);
+        panel.gap(GAP);
+        panel.field(NetField.Address, menu.field(NetField.Address));
+        panel.field(NetField.Code, menu.field(NetField.Code));
+        panel.begin_buttons();
+        panel.button(Target.JoinGame, "JOIN GAME", "", button_state(false, menu.busy), false);
+        panel.end_buttons(true);
+        self.status_lines(panel);
+    }
+
+    /// What the frame loop reported, a line at a time: an error can be long.
+    fn status_lines(&self, panel: &mut PanelBuilder) {
+        let status = to_owned_of(&self.net_menu.status);
+        let n = len(&status);
+        let mut at: i64 = 0;
+        while at < n {
+            let mut end = at + STATUS_WRAP as i64;
+            if end >= n {
+                end = n;
+            } else {
+                // Break at the last space in reach, when there is one.
+                let mut k = end;
+                while k > at && byte_at(&status, k).unwrap_or(0) != 32 { k = k - 1; }
+                if k > at { end = k; }
+            }
+            if let Option.Some(sp) = substring(&status, at, end) {
+                panel.text_owned(TextSize.Body, to_owned(sub(&status, sp)), LABEL_TEXT);
+            }
+            at = end;
+            while at < n && byte_at(&status, at).unwrap_or(0) == 32 { at = at + 1; }
+        }
+    }
+
+    /// The page's buttons.
+    pub fn activate_network_target(&mut self, target: Target) {
+        let code = self.join_code();
+        match target {
+            Target.OpenMultiplayer => { self.net_menu.open = true; }
+            Target.CloseMultiplayer => { self.net_menu.open = false; }
+            Target.NetPlayers(p) => {
+                let mut players = p;
+                if players < 2 { players = 2; }
+                if players > MAX_PLAYERS { players = MAX_PLAYERS; }
+                self.net_menu.players = players;
+            }
+            Target.HostGame => {
+                if self.net_menu.busy { return; }
+                let port = &self.net_menu.port;
+                match parse_u64(port) {
+                    Option.Some(p) => {
+                        if p > 0 && p < 65536 {
+                            self.net_menu.status = to_owned("");
+                            self.net_menu.request = Option.Some(NetRequest.Host(p as i32, self.net_menu.players));
+                        } else {
+                            self.net_menu.status = to_owned("THE PORT IS A NUMBER FROM 1 TO 65535");
+                        }
+                    }
+                    Option.None => { self.net_menu.status = to_owned("THE PORT IS A NUMBER FROM 1 TO 65535"); }
+                }
+            }
+            Target.JoinGame => {
+                if self.net_menu.busy { return; }
+                let address = &self.net_menu.address;
+                let code_typed = &self.net_menu.code;
+                let address_len = len(address);
+                let code_len = len(code_typed);
+                if address_len == 0 {
+                    self.net_menu.status = to_owned("TYPE THE HOST'S ADDRESS FIRST");
+                } else if code_len == 0 {
+                    self.net_menu.status = to_owned("TYPE THE JOIN CODE THE HOST SHOWS");
+                } else {
+                    self.net_menu.request = Option.Some(NetRequest.Join(to_owned_of(&self.net_menu.address), to_owned_of(&self.net_menu.code)));
+                }
+            }
+            Target.LeaveGame => {
+                self.net_menu.status = to_owned("");
+                self.net_menu.host_port = Option.None;
+                self.net_menu.request = Option.Some(NetRequest.Leave);
+            }
+            Target.CopyJoinCode => {
+                self.net_menu.request = match code { Option.Some(c) => Option.Some(NetRequest.Copy(c)), Option.None => Option.None };
+            }
+            _ => {}
+        }
+    }
+
+    /// A field's text box now holds \`text\`.
+    pub fn set_net_field(&mut self, field: NetField, text: &str) {
+        let cleaned = field.clean(text);
+        match field {
+            NetField.Port => { self.net_menu.port = cleaned; }
+            NetField.Address => { self.net_menu.address = cleaned; }
+            NetField.Code => { self.net_menu.code = cleaned; }
+        }
+    }
+
+    /// Hosting on \`port\`: the page shows it.
+    pub fn set_host_port(&mut self, port: i32) { self.net_menu.host_port = Option.Some(port); }
+
+    /// What the Multiplayer page asked for, for the frame loop to do.
+    pub fn take_net_request(&mut self) -> Option[NetRequest] {
+        let mut out: Option[NetRequest] = Option.None;
+        swap(&mut out, &mut self.net_menu.request);
+        out
+    }
+
+    /// What the frame loop has to report: an error, or how joining goes. \`busy\` while a join is
+    /// under way.
+    pub fn set_net_status(&mut self, status: Str, busy: bool) {
+        self.net_menu.status = status;
+        self.net_menu.busy = busy;
+    }
+
+    /// The page as it was kept (`NetMenu.from_text`): what a new session starts with.
+    pub fn set_net_menu(&mut self, menu: NetMenu) { self.net_menu = menu; }
+
+    /// What the page keeps between sessions.
+    pub fn net_menu_text(&self) -> Str { self.net_menu.to_text() }
+
+    /// Starts this new game with \`old\`'s menus as they were: the settings, whether the menu is
+    /// open, and what is typed on its Multiplayer page.
+    pub fn keep_net_menu_of(&mut self, old: &GameState) {
+        self.net_menu = NetMenu {
+            port: to_owned_of(&old.net_menu.port), address: to_owned_of(&old.net_menu.address), code: to_owned_of(&old.net_menu.code),
+            players: old.net_menu.players, open: old.net_menu.open, status: to_owned_of(&old.net_menu.status), busy: old.net_menu.busy,
+            host_port: old.net_menu.host_port, request: Option.None,
+        };
+    }
+}

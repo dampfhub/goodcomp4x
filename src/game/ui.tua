@@ -30,6 +30,8 @@ use std.str.to_owned;
 use log.Log;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
+use game.net_menu.NetField;
+use game.multiplayer.MAX_PLAYERS;
 use game.settings.Control;
 use game.settings.MAX_BUTTONS;
 use game.settings.SETTINGS;
@@ -246,6 +248,30 @@ pub enum Target {
     SetSetting(Setting, i32),
     CloseSettings,
     Quit,
+    /// Settings menu, Multiplayer page: open it and go back, set how many people play, host, join,
+    /// leave the network game and copy the join code (`net_menu.tua`).
+    OpenMultiplayer,
+    CloseMultiplayer,
+    NetPlayers(i32),
+    HostGame,
+    JoinGame,
+    LeaveGame,
+    CopyJoinCode,
+}
+
+impl Target {
+    /// Whether pressing it changes the plan a side sends (orders, queues, citizens, jobs): what a
+    /// network game's waiting for the others' plans disables (`PanelBuilder.freeze_plan`).
+    pub fn changes_plan(self) -> bool {
+        match self {
+            Target.EndTurn | Target.ToggleYields | Target.Scenario(_) | Target.SaveState | Target.LoadState | Target.TogglePlayback
+                | Target.ToggleFog | Target.CompleteProduction | Target.QueueItem(_, _) | Target.RosterSelect(_) | Target.RosterAdd(_)
+                | Target.RosterRemove(_) | Target.OpenBarracks | Target.OpenCity | Target.OpenInterior | Target.ShowWorker(_)
+                | Target.SetSetting(_, _) | Target.CloseSettings | Target.Quit | Target.OpenMultiplayer | Target.CloseMultiplayer
+                | Target.NetPlayers(_) | Target.HostGame | Target.JoinGame | Target.LeaveGame | Target.CopyJoinCode => false,
+            _ => true,
+        }
+    }
 }
 
 impl Eq for Target {
@@ -263,6 +289,9 @@ impl Eq for Target {
                 | (Target.CompleteProduction, Target.CompleteProduction) | (Target.ToggleFog, Target.ToggleFog) => true,
             (Target.SetSetting(a, x), Target.SetSetting(b, y)) => a == b && x == y,
             (Target.CloseSettings, Target.CloseSettings) | (Target.Quit, Target.Quit) => true,
+            (Target.OpenMultiplayer, Target.OpenMultiplayer) | (Target.CloseMultiplayer, Target.CloseMultiplayer) | (Target.HostGame, Target.HostGame)
+                | (Target.JoinGame, Target.JoinGame) | (Target.LeaveGame, Target.LeaveGame) | (Target.CopyJoinCode, Target.CopyJoinCode) => true,
+            (Target.NetPlayers(a), Target.NetPlayers(b)) => a == b,
             (Target.Priority(a), Target.Priority(b)) => a == b,
             (Target.BuildWorker, Target.BuildWorker) | (Target.OpenBarracks, Target.OpenBarracks) | (Target.OpenCity, Target.OpenCity) => true,
             (Target.Grow, Target.Grow) | (Target.Gather, Target.Gather) | (Target.BuildScout, Target.BuildScout) | (Target.BuildSettler, Target.BuildSettler) => true,
@@ -350,6 +379,9 @@ pub struct QueueScrollRegion { kind: QueueKind, panel_min: Vec2, panel_max: Vec2
 
 /// A setting row in the settings menu: the setting at its current value.
 pub struct SettingRow { setting: Setting, value: i32 }
+
+/// A typed field of the Multiplayer page and what it holds.
+pub struct FieldRow { field: NetField, value: Str }
 
 pub enum ButtonState {
     Ready,
@@ -624,7 +656,9 @@ impl GameState {
             },
             Target.Build(build) => self.queue_selected_city_unit(build),
             Target.ToggleYields => self.toggle_yields(),
-            Target.EndTurn => self.end_planning(),
+            // Waiting for the others' plans, End Turn takes the plan back.
+            Target.EndTurn => { if self.waiting_for_peers() { self.take_back_turn(); } else { self.end_planning(); } }
+            Target.OpenMultiplayer | Target.CloseMultiplayer | Target.NetPlayers(_) | Target.HostGame | Target.JoinGame | Target.LeaveGame | Target.CopyJoinCode => self.activate_network_target(target),
             Target.Scenario(scenario) => self.switch_scenario(scenario),
             Target.SaveState => self.save_state(),
             Target.LoadState => self.load_state(),
@@ -713,6 +747,7 @@ impl GameState {
         // The order is the priority: the command tray first, then the debug panel, then the
         // turn strip.
         if shown {
+            if self.waiting_for_peers() { tray.freeze_plan(); }
             let tray_size = tray.size();
             let _placed = layout.dock_panel(tray, DockZone.BottomLeft);
             // The queue takes what room is left above the tray; a longer one scrolls.
@@ -723,6 +758,7 @@ impl GameState {
             } else if let Option.Some(city) = self.selected_barracks {
                 self.barracks_queue_panel(city, visible, &mut queue);
             }
+            if self.waiting_for_peers() { queue.freeze_plan(); }
             if !queue.rows.is_empty() { let _queued = layout.dock_panel(queue, DockZone.BottomLeft); }
         }
         let _debug = layout.dock_panel(self.debug_panel_content(), DockZone.TopLeft);
@@ -886,7 +922,7 @@ impl GameState {
         let middle = min.y + TOP_BAR_HEIGHT / 2.0;
 
         let (units, cities) = self.pending();
-        let turn = if self.is_resolving() { self.turn } else { self.turn + 1 };
+        let turn = if self.is_playing_out() { self.turn } else { self.turn + 1 };
         let turn_text = text(fn() can {Out} { Out.put("TURN "); show_u64(turn as u64); });
         let turn_end = MARGIN + ui(TextSize.Title).width(&turn_text);
         let mut spans: Vec[Span] = Vec.new();
@@ -899,11 +935,11 @@ impl GameState {
         layout.text_row(vec2(turn_end + 2.0 * GAP, middle), TextSize.Body, status);
         let left_end = turn_end + 2.0 * GAP + status_width;
 
-        let label = if self.is_resolving() { to_owned("RESOLVING") } else { end_turn_label(units, cities) };
-        let hint = to_owned("SPACE");
+        let label = if self.is_resolving() { self.resolving_label() } else { end_turn_label(units, cities) };
+        let hint = to_owned(if self.waiting_for_peers() { "TAKE BACK" } else { "SPACE" });
         let width = single_line_button_width(&label, &hint);
         let button_min = vec2(size.x - MARGIN - width, middle - END_TURN_HEIGHT / 2.0);
-        let state = if self.is_resolving() { ButtonState.Disabled } else { button_state(units == 0 && cities == 0, false) };
+        let state = if self.is_playing_out() { ButtonState.Disabled } else if self.waiting_for_peers() { ButtonState.Ready } else { button_state(units == 0 && cities == 0, false) };
         let end_turn = Button {
             target: Target.EndTurn,
             label,
@@ -1924,6 +1960,33 @@ impl GameState {
                 title = to_owned("QUIT");
                 description = to_owned("CLOSES THE GAME.");
             }
+            Target.OpenMultiplayer => {
+                title = to_owned("MULTIPLAYER");
+                description = to_owned("HOST A GAME OR JOIN ONE ON THE NETWORK.");
+                if self.is_resolving() { unavailable = Option.Some(to_owned("NOT WHILE A TURN PLAYS OUT")); }
+            }
+            Target.CloseMultiplayer => { title = to_owned("BACK TO THE SETTINGS"); }
+            Target.NetPlayers(p) => {
+                title = to_owned("PLAYERS");
+                description = to_owned("HOW MANY PEOPLE PLAY, YOU INCLUDED.");
+                if p < 2 || p > MAX_PLAYERS { unavailable = Option.Some(to_owned("2 TO 7 PEOPLE")); }
+            }
+            Target.HostGame => {
+                title = to_owned("HOST GAME");
+                description = to_owned("STARTS A NEW WORLD AND WAITS FOR THE OTHER PLAYERS TO JOIN WITH ITS CODE.");
+            }
+            Target.JoinGame => {
+                title = to_owned("JOIN GAME");
+                description = to_owned("JOINS THE HOST AT THE ADDRESS WITH THE CODE IT SHOWS.");
+            }
+            Target.LeaveGame => {
+                title = to_owned("LEAVE GAME");
+                description = to_owned("LEAVES THE NETWORK GAME FOR A NEW ONE OF YOUR OWN. IF YOU HOST, THE GAME ENDS FOR EVERYONE.");
+            }
+            Target.CopyJoinCode => {
+                title = to_owned("COPY");
+                description = to_owned("PUTS THE JOIN CODE ON THE CLIPBOARD, TO SEND TO THE OTHER PLAYERS.");
+            }
             Target.CompleteProduction => {
                 title = to_owned("COMPLETE PRODUCTION");
                 shortcut = to_owned("F9");
@@ -2099,6 +2162,8 @@ pub enum RowKind {
     Heading,
     /// Setting row `from` of the builder's.
     Setting,
+    /// A typed field of the Multiplayer page: field `from` of the builder's.
+    Field,
     /// Queue row `from` of the builder's.
     QueueItem,
     /// Chips `from..to` of the builder's, in one row.
@@ -2122,6 +2187,7 @@ pub struct PanelBuilder {
     spans: Vec[Span],
     specs: Vec[ButtonSpec],
     settings: Vec[SettingRow],
+    fields: Vec[FieldRow],
     queue_items: Vec[QueueItemSpec],
     chips: Vec[RosterChip],
     /// A scrollbar down the panel's right edge, for a queue longer than its room.
@@ -2135,7 +2201,7 @@ pub struct PanelBuilder {
 }
 
 pub fn panel_builder(faded: bool) -> PanelBuilder {
-    PanelBuilder { rows: Vec.new(), spans: Vec.new(), specs: Vec.new(), settings: Vec.new(), queue_items: Vec.new(), chips: Vec.new(), scrollbar: Option.None, line_from: 0, buttons_from: 0, faded }
+    PanelBuilder { rows: Vec.new(), spans: Vec.new(), specs: Vec.new(), settings: Vec.new(), fields: Vec.new(), queue_items: Vec.new(), chips: Vec.new(), scrollbar: Option.None, line_from: 0, buttons_from: 0, faded }
 }
 
 impl PanelBuilder {
@@ -2207,6 +2273,22 @@ impl PanelBuilder {
         self.rows.push(Row { kind: RowKind.Setting, size: TextSize.Body, value: 0.0, from, to: from + 1, offset: 0 });
     }
 
+    /// Disables every button that would change the plan, and locks the queue rows, for a network
+    /// game waiting on the others' plans: the plan is sent, so nothing may change it.
+    pub fn freeze_plan(&mut self) {
+        for i in 0..self.specs.len() {
+            if self.specs[i].target.changes_plan() { self.specs[i].state = ButtonState.Disabled; }
+        }
+        for i in 0..self.queue_items.len() { self.queue_items[i].locked = true; }
+    }
+
+    /// A typed field of the Multiplayer page, holding `value`.
+    pub fn field(&mut self, field: NetField, value: Str) {
+        let from = self.fields.len();
+        self.fields.push(FieldRow { field, value });
+        self.rows.push(Row { kind: RowKind.Field, size: TextSize.Body, value: 0.0, from, to: from + 1, offset: 0 });
+    }
+
     pub fn queue_item(&mut self, item: QueueItemSpec) {
         let from = self.queue_items.len();
         self.queue_items.push(item);
@@ -2233,7 +2315,7 @@ impl PanelBuilder {
                 let visible = if n < 1 { 1 } else if n > BUILDING_LIST_VISIBLE { BUILDING_LIST_VISIBLE } else { n };
                 visible as f32 * CATALOG_ROW + (visible + 1) as f32 * CATALOG_INSET
             }
-            RowKind.Text => ui(row.size).line_height + LINE_GAP,
+            RowKind.Text | RowKind.Field => ui(row.size).line_height + LINE_GAP,
             RowKind.Gap => row.value,
             RowKind.Bar => GROWTH_BAR_HEIGHT,
             RowKind.Buttons => BUTTON_HEIGHT,
@@ -2246,6 +2328,13 @@ impl PanelBuilder {
 
     pub fn row_width(&self, row: Row) -> f32 {
         match row.kind {
+            RowKind.Field => {
+                let f = &self.fields[row.from];
+                let name = f.field.name();
+                let value = copy_str(&f.value);
+                let shown = text(fn() can {Out} { Out.put(name); Out.put("  "); Out.put(&value); });
+                ui(row.size).width(&shown)
+            }
             RowKind.Text => {
                 let face = ui(row.size);
                 let mut w: f32 = 0.0;
@@ -2357,6 +2446,15 @@ impl PanelBuilder {
                     layout.text_row(vec2(left, middle), row.size, spans);
                 }
                 RowKind.Gap | RowKind.Heading | RowKind.Setting => {}
+                // The classic panels show a field as text; the library UI's has a text box.
+                RowKind.Field => {
+                    let middle = top - (height - LINE_GAP) / 2.0;
+                    let f = &self.fields[row.from];
+                    let mut spans: Vec[Span] = Vec.new();
+                    spans.push(Span { text: text(fn() can {Out} { Out.put(f.field.name()); Out.put("  "); }), color: LABEL_TEXT });
+                    spans.push(Span { text: copy_str(&f.value), color: TEXT });
+                    layout.text_row(vec2(left, middle), row.size, spans);
+                }
                 RowKind.QueueItem => {
                     let item = &self.queue_items[row.from];
                     let rmin = vec2(left, top - height + QUEUE_ITEM_GAP).round();

@@ -558,6 +558,10 @@ impl GameState {
         self.show_yields = old.show_yields;
         self.fog_of_war = old.fog_of_war;
         self.imgui_ui = old.imgui_ui;
+        self.keep_net_menu_of(old);
+        // Whatever it was doing (joining, most likely) is done.
+        self.net_menu.busy = false;
+        self.net_menu.status = to_owned("");
     }
 
     /// The sides whose plan the checks refused in the bundle just applied, once: the host drops

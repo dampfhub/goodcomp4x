@@ -23,6 +23,11 @@ use link.link.close_link;
 use link.link.address_of;
 use link.link.host_started;
 use link.link.guest_started;
+use ui.Clipboard;
+use ui_win32.with_system_clipboard;
+use game.net_menu.NetMenu;
+use game.net_menu.NetRequest;
+use game.scenario.Scenario;
 use log.Level;
 use log.Log;
 use log.error;
@@ -409,12 +414,54 @@ fn on_frame(game: &mut GameState, net: &mut NetLink, input: &Controls, ctx: &mut
     if game.imgui_ui {
         run_ui(game, ctx, ui, size, scale, dt, input.cursor);
         game.ui_captured = ui.wants_mouse;
+        serve_net_request(game, net, Clock.now_nanos());
     } else {
         ui.wants_mouse = false;
         ui.wants_keyboard = false;
     }
     ui.input = next_frame(ui.input);
     FrameOut { keep: true, ui: take_ui_data(ui) }
+}
+
+/// What the Multiplayer page asked for, if it did: hosting starts a new world on the network, joining
+/// starts a session that replaces the game when the host's welcome arrives, leaving goes back to a
+/// world of one's own, and COPY puts a text on the clipboard.
+fn serve_net_request(game: &mut GameState, net: &mut NetLink, now: i64) can {Log, Rand, Net, Entropy} {
+    let Option.Some(request) = game.take_net_request() else { return; };
+    match request {
+        NetRequest.Host(port, players) => {
+            let (hosted, started) = host_started(players, &game.settings, &ipv4(0, 0, 0, 0, port), now);
+            if net.adopt(started) {
+                let mut next = hosted;
+                next.keep_menus_of(&*game);
+                next.set_host_port(net.port().unwrap_or(port));
+                *game = next;
+            } else {
+                game.set_net_status(net.failure(), false);
+            }
+        }
+        NetRequest.Join(address, code) => {
+            match address_of(&address, DEFAULT_PORT) {
+                Option.Some(addr) => {
+                    if net.adopt(guest_started(&addr, &code)) {
+                        game.set_net_status(to_owned("JOINING..."), true);
+                    } else {
+                        game.set_net_status(net.failure(), false);
+                    }
+                }
+                Option.None => { game.set_net_status(to_owned("THE HOST ADDRESS IS HOST OR HOST:PORT (AN IPV4 ADDRESS OR LOCALHOST)"), false); }
+            }
+        }
+        NetRequest.Leave => {
+            net.stop();
+            let mut next = Scenario.World.start(&game.settings);
+            next.keep_menus_of(&*game);
+            *game = next;
+        }
+        NetRequest.Copy(text) => {
+            with_system_clipboard(fn() can {Clipboard} { Clipboard.set(&text); });
+        }
+    }
 }
 
 /// A game hosted or joined from the command line replaces the local one: the exit code to give
@@ -425,7 +472,8 @@ fn start_network(options: &Options, game: &mut GameState, net: &mut NetLink) -> 
         let addr = if options.interact_mp { ipv4(127, 0, 0, 1, options.port) } else { ipv4(0, 0, 0, 0, options.port) };
         let (hosted, started) = host_started(options.players, &default_settings(), &addr, Clock.now_nanos());
         *game = hosted;
-        if let Option.Some(why) = net.adopt(started) {
+        if !net.adopt(started) {
+            let why = net.failure();
             error(fn() can {Out} { Out.put(&why); });
             return 3;
         }
@@ -439,7 +487,8 @@ fn start_network(options: &Options, game: &mut GameState, net: &mut NetLink) -> 
             error(fn() can {Out} { Out.put("the host address is not HOST or HOST:PORT (an IPv4 address or localhost)"); });
             return 4;
         };
-        if let Option.Some(why) = net.adopt(guest_started(&addr, &code_text)) {
+        if !net.adopt(guest_started(&addr, &code_text)) {
+            let why = net.failure();
             error(fn() can {Out} { Out.put(&why); });
             return 4;
         }
@@ -478,6 +527,8 @@ const SETTINGS_FILE: str = "settings.txt";
 /// Where the panels were put (`imgui_layout.tua`) and the library window and dock state.
 const LAYOUT_FILE: str = "layout.txt";
 const IMGUI_FILE: str = "imgui.txt";
+/// What the Multiplayer page had typed in it: the port, the address and the players.
+const NETWORK_FILE: str = "network.txt";
 
 fn play(options: &Options, mb: &Mailbox) -> i32 can {Log, Clock, Fs, Env, Net, Entropy} {
     let mut rng = seed(Clock.now_nanos() as u64);
@@ -527,6 +578,9 @@ fn play(options: &Options, mb: &Mailbox) -> i32 can {Log, Clock, Fs, Env, Net, E
         let saved = if remember { read(SETTINGS_FILE) } else { Option.None };
         if let &Option.Some(t) = &saved { let view = &t; game.set_settings(settings_from_text(view)); }
         game.imgui_ui = !options.classic;
+        if remember {
+            if let Option.Some(t) = read(NETWORK_FILE) { let view = &t; game.set_net_menu(NetMenu.from_text(view)); }
+        }
         if let &Option.Some(name) = &options.open { let _opened = game.open_panel(&name); }
         let mut ctx = ui_context(ctx_font, if remember { read(IMGUI_FILE) } else { Option.None });
         let saved_layout = if remember { read(LAYOUT_FILE) } else { Option.None };
@@ -569,6 +623,7 @@ fn play(options: &Options, mb: &Mailbox) -> i32 can {Log, Clock, Fs, Env, Net, E
             // Where the player put the panels, and the library's dock trees.
             write(LAYOUT_FILE, &ui.layout.to_text());
             write(IMGUI_FILE, &ctx.save_settings());
+            write(NETWORK_FILE, &game.net_menu_text());
         }
         let written = match &shot { &Option.Some(s) => s.is_written(), &Option.None => true };
         close_link(net);

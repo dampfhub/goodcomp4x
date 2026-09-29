@@ -11,3 +11,10 @@ tools/board/cache.json
 
 # Agent worktrees (Claude Code) live inside the checkout.
 /.claude/worktrees/
+
+# What a run leaves next to the executable: the player's settings, panel layout, dock state and the
+# Multiplayer page.
+/settings.txt
+/layout.txt
+/imgui.txt
+/network.txt

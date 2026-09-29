@@ -24,8 +24,13 @@ use std.str.sub;
 use std.str.Span as TextSpan;
 use std.str.to_owned;
 use std.str.push;
+use std.str.push_byte;
 use log.Log;
 use ui.Ui;
+use ui.Clipboard;
+use ui.input_text;
+use ui_win32.with_system_clipboard;
+use game.net_menu.NetField;
 use ui.Dir;
 use ui.dock_into;
 use ui.cursor_screen;
@@ -269,6 +274,8 @@ pub enum Action {
     ResetView,
     /// A widget laid out this frame and where: `UiState.seen`.
     Seen(Target, Rect),
+    /// A text box of the Multiplayer page holds this text now: its bytes (at most 64) and how many.
+    NetText(NetField, [u8; 64], i32),
 }
 
 /// The UI's state between frames, besides the library's `Context`.
@@ -309,7 +316,9 @@ pub struct Panels {
     turn: u32,
     /// The turn number's color: flashing gold as a new turn begins (`transition.tua`).
     turn_color: Color,
+    /// A turn is playing out: End Turn can do nothing (waiting for the others, it takes the plan back).
     resolving: bool,
+    waiting: bool,
     end_label: Str,
     notice: Str,
 }
@@ -355,7 +364,7 @@ fn measure_panel(panel: &PanelBuilder, width: f32) -> f32 can {Ui} {
                 f.pop();
                 h
             }
-            RowKind.Setting => {
+            RowKind.Setting | RowKind.Field => {
                 let f = push_font(font_of(TextSize.Body));
                 let h = text_size("A").y + 2.0 * FRAME_PADDING_Y + SPACING_Y;
                 f.pop();
@@ -645,7 +654,7 @@ fn queue_drag_name(kind: QueueKind, scope: Option[PinnedPanel]) -> Str {
 }
 
 /// The rows of one panel, top to bottom.
-fn render_rows(game: &GameState, panel: &PanelBuilder, scope: Option[PinnedPanel], actions: &mut Vec[Action]) can {Ui} {
+fn render_rows(game: &GameState, panel: &PanelBuilder, scope: Option[PinnedPanel], actions: &mut Vec[Action]) can {Ui, Clipboard} {
     let label_width = setting_label_width(panel);
     for r in 0..panel.rows.len() {
         let row = panel.rows[r];
@@ -661,6 +670,22 @@ fn render_rows(game: &GameState, panel: &PanelBuilder, scope: Option[PinnedPanel
                 let f = push_font(font_of(TextSize.Body));
                 let s = &panel.settings[row.from];
                 render_setting(s.setting, s.value, label_width, scope, actions);
+                f.pop();
+            }
+            RowKind.Field => {
+                let f = push_font(font_of(TextSize.Body));
+                let field = &panel.fields[row.from];
+                let mut typed = copy_text(&field.value);
+                text_colored(lc(LABEL_TEXT), field.field.name());
+                same_line();
+                let id = text(fn() can {Out} { Out.put("##net-"); Out.put(field.field.name()); });
+                let event = input_text(&id, &mut typed);
+                if event.changed {
+                    let mut bytes: [u8; 64] = [0; 64];
+                    let n = if str_len(&typed) > 64 { 64 } else { str_len(&typed) as i32 };
+                    for i in 0..n { bytes[i] = byte_at(&typed, i as i64).unwrap_or(0) as u8; }
+                    actions.push(Action.NetText(field.field, bytes, n));
+                }
                 f.pop();
             }
             RowKind.Text => {
@@ -957,6 +982,7 @@ pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Opt
     } else if !game.group.is_empty() {
         game.group_tray(&mut tray);
     }
+    if game.waiting_for_peers() { tray.freeze_plan(); }
     let context = if selection_is_pinned { to_owned("") } else { game.selection_context_text() };
     let reset_selection_scroll = layout.selection_changed(&context);
     let mut queue = panel_builder(false);
@@ -966,6 +992,7 @@ pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Opt
     } else if let Option.Some(city) = game.selected_barracks {
         game.barracks_queue_panel(city, ALL_ROWS, &mut queue);
     }
+    if game.waiting_for_peers() { queue.freeze_plan(); }
     let debug = game.debug_panel_content();
     let mut hover = panel_builder(false);
     let mut tile_tip: Option[PanelBuilder] = Option.None;
@@ -992,12 +1019,12 @@ pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Opt
     let units = game.roster_panel();
     let settings: Option[PanelBuilder] = if game.settings_open { Option.Some(game.settings_panel_content()) } else { Option.None };
     let resolving = game.is_resolving();
-    let turn = if resolving { game.turn } else { game.turn + 1 };
+    let turn = if game.is_playing_out() { game.turn } else { game.turn + 1 };
     let (u, c) = game.pending();
-    let end_label = if resolving { to_owned("RESOLVING") } else { end_turn_label(u, c) };
+    let end_label = if resolving { game.resolving_label() } else { end_turn_label(u, c) };
     let notice = game.shown_notice();
     let turn_color = game.turn_number_color(TEXT);
-    Panels { tray, queue, debug, hover, units, settings, tile_tip, reset_selection_scroll, turn, turn_color, resolving, end_label, notice }
+    Panels { tray, queue, debug, hover, units, settings, tile_tip, reset_selection_scroll, turn, turn_color, resolving: game.is_playing_out(), waiting: game.waiting_for_peers(), end_label, notice }
 }
 
 fn vec_of_one(i: i32) -> Vec[i32] {
@@ -1009,7 +1036,7 @@ fn vec_of_one(i: i32) -> Vec[i32] {
 fn has_rows(p: &PanelBuilder) -> bool { !p.rows.is_empty() }
 
 /// The panel in `slot`, drawn as a window at `position` (logical pixels) of `size`.
-fn render_slot(game: &GameState, layout: &mut ImGuiLayoutState, slot: i32, position: Vec2, size: Vec2, viewport: Vec2, panel: &PanelBuilder, arranging: bool, reset_scroll: bool, actions: &mut Vec[Action]) can {Ui} {
+fn render_slot(game: &GameState, layout: &mut ImGuiLayoutState, slot: i32, position: Vec2, size: Vec2, viewport: Vec2, panel: &PanelBuilder, arranging: bool, reset_scroll: bool, actions: &mut Vec[Action]) can {Ui, Clipboard} {
     let title = SLOT_TITLES[slot];
     let context_changed = slot == SELECTION && layout.selection_geometry_changed;
     let restoring = context_changed || (slot == DEBUG && layout.debug_reposition);
@@ -1056,7 +1083,8 @@ fn render_status(layout: &mut ImGuiLayoutState, panels: &Panels, viewport: Vec2,
     // End Turn is as wide as its label needs and takes the bar's right end; the notice has the
     // rest of the top row, and the layout controls run along the bottom one.
     let end_label = &panels.end_label;
-    let label = text(fn() can {Out} { Out.put(end_label); Out.put("  [SPACE]"); });
+    let waiting = panels.waiting;
+    let label = text(fn() can {Out} { Out.put(end_label); Out.put(if waiting { "  [TAKE BACK]" } else { "  [SPACE]" }); });
     let end_width = min_f(text_size(&label).x + 50.0, viewport.x * 0.45);
     let turn = panels.turn;
     let turn_label = text(fn() can {Out} { Out.put("TURN "); show_u64(turn as u64); });
@@ -1110,7 +1138,7 @@ fn cut_last(s: &Str) -> Str {
 
 /// Every window of one frame: the dock space, the status bar and the six panels placed by
 /// `plan`.
-fn frame_body(game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, actions: &mut Vec[Action], viewport: Vec2, arranging: bool) can {Ui} {
+fn frame_body(game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, actions: &mut Vec[Action], viewport: Vec2, arranging: bool) can {Ui, Clipboard} {
     // The body font is the default, as the panels' text is set in it unless a row says otherwise.
     let base = push_font(font_of(TextSize.Body));
     dockspace(GAME_SPACE, Rect { min: vec2(0.0, STATUS_HEIGHT), max: vec2(viewport.x, max_f(viewport.y, STATUS_HEIGHT + 1.0)) });
@@ -1186,7 +1214,9 @@ fn frame_body(game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, 
 /// The library's frame over the panels: the closure lives in this function, so the loans it
 /// takes end when it returns.
 fn draw_frame(ctx: &mut Context, inp: Input, out: &mut DrawData, game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, actions: &mut Vec[Action], viewport: Vec2, arranging: bool) {
-    frame_into(ctx, inp, out, fn() can {Ui} { frame_body(game, layout, panels, actions, viewport, arranging); });
+    with_system_clipboard(fn() can {Clipboard} {
+        frame_into(ctx, inp, out, fn() can {Ui, Clipboard} { frame_body(game, layout, panels, actions, viewport, arranging); });
+    });
 }
 
 fn clamp_f(x: f32, lo: f32, hi: f32) -> f32 { if x < lo { lo } else if x > hi { hi } else { x } }
@@ -1236,6 +1266,8 @@ pub fn run_ui(game: &mut GameState, ctx: &mut Context, st: &mut UiState, size: V
     for k in 0..actions.len() { apply_action(game, ctx, st, viewport, actions[k]); }
 }
 
+fn copy_text(s: &Str) -> Str { to_owned(s) }
+
 fn apply_action(game: &mut GameState, ctx: &mut Context, st: &mut UiState, viewport: Vec2, action: Action) can {Log, Rand} {
     match action {
         Action.Button(target) => {
@@ -1251,6 +1283,11 @@ fn apply_action(game: &mut GameState, ctx: &mut Context, st: &mut UiState, viewp
         Action.RemoveOuterBox(id) => st.layout.remove_outer_box(id, ctx),
         Action.ResetView => { let _ok = st.layout.request_reset_active_view(); }
         Action.Seen(target, rect) => { st.seen.push(SeenWidget { target, rect }); }
+        Action.NetText(field, bytes, n) => {
+            let mut typed = to_owned("");
+            for i in 0..n { push_byte(&mut typed, bytes[i] as i64); }
+            game.set_net_field(field, &typed);
+        }
     }
 }
 
@@ -1360,7 +1397,7 @@ fn append_rows(to: &mut PanelBuilder, from: &PanelBuilder) {
 
 /// A pinned panel's window: a floating one the player dragged into a box, kept there while
 /// its city, unit or group is not the selection.
-fn render_pin(game: &GameState, layout: &mut ImGuiLayoutState, pin: PinnedPanel, index: i32, viewport: Vec2, arranging: bool, actions: &mut Vec[Action]) can {Ui} {
+fn render_pin(game: &GameState, layout: &mut ImGuiLayoutState, pin: PinnedPanel, index: i32, viewport: Vec2, arranging: bool, actions: &mut Vec[Action]) can {Ui, Clipboard} {
     let queue_pin = match pin.kind {
         PinnedKind.City => PinnedPanel { kind: PinnedKind.CityQueue, city_id: pin.city_id },
         _ => PinnedPanel { kind: PinnedKind.BarracksQueue, city_id: pin.city_id },

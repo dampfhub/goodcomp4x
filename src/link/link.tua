@@ -35,13 +35,13 @@ use link.session.close_session;
 use link.session.start_guest;
 use link.session.start_host;
 
-pub linear struct NetLink { session: Option[Session] }
+pub linear struct NetLink { session: Option[Session], words: Str }
 
-pub fn no_link() -> NetLink { NetLink { session: Option.None } }
+pub fn no_link() -> NetLink { NetLink { session: Option.None, words: to_owned("") } }
 
 /// Ends whatever session there is.
 pub fn close_link(l: NetLink) can {Net} {
-    let NetLink { session } = l;
+    let NetLink { session, words } = l;
     match session { Option.Some(s) => { close_session(s); } Option.None => {} }
 }
 
@@ -78,16 +78,19 @@ fn host_with_port(host: &Str, port: i32) -> Str {
 impl NetLink {
     pub fn is_active(&self) -> bool { match &self.session { &Option.Some(s) => true, &Option.None => false } }
 
-    /// Ends the session there is, if any, and holds `started` in its place. The words of a failure
-    /// come back.
-    pub fn adopt(&mut self, started: Started) -> Option[Str] can {Net} {
+    /// Ends the session there is, if any, and holds `started` in its place: whether it started.
+    /// The words of a failure are `failure`.
+    pub fn adopt(&mut self, started: Started) -> bool can {Net} {
         let old = replace(&mut self.session, Option.None);
         match old { Option.Some(s) => { close_session(s); } Option.None => {} }
         match started {
-            Started.Ok(s) => { self.session = Option.Some(s); Option.None }
-            Started.Failed(why) => Option.Some(why),
+            Started.Ok(s) => { self.session = Option.Some(s); true }
+            Started.Failed(why) => { self.words = why; false }
         }
     }
+
+    /// Why the last `adopt` failed.
+    pub fn failure(&self) -> Str { copy_str(&self.words) }
 
     /// Ends the session there is, if any.
     pub fn stop(&mut self) can {Net} {
@@ -111,6 +114,8 @@ impl NetLink {
                     let words = to_owned(&why);
                     info(fn() can {Out} { Out.put("the network session ended: "); Out.put(&words); });
                 } else {
+                    let words = to_owned(&why);
+                    game.set_net_status(words, false);
                     game.notice = why;
                 }
                 close_session(s);
@@ -132,3 +137,5 @@ pub fn host_started(players: i32, settings: &Settings, addr: &SocketAddr, now: i
 
 /// Joins the game at `addr` with the `code` entered.
 pub fn guest_started(addr: &SocketAddr, code: &str) -> Started can {Net} { start_guest(addr, code) }
+
+fn copy_str(s: &Str) -> Str { to_owned(s) }

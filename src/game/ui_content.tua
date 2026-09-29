@@ -546,6 +546,7 @@ impl GameState {
 
     /// The settings menu's content: the settings under a heading per group, then Close and Quit.
     pub fn settings_panel_content(&self) -> PanelBuilder {
+        if self.net_menu.open { return self.network_panel_content(); }
         let mut panel = panel_builder(false);
         panel.text(TextSize.Title, "SETTINGS", TEXT);
         let mut group = "";
@@ -561,6 +562,7 @@ impl GameState {
         }
         panel.gap(GAP);
         panel.begin_buttons();
+        panel.button(Target.OpenMultiplayer, "MULTIPLAYER", "", button_state(false, self.is_playing_out()), false);
         panel.button(Target.CloseSettings, "CLOSE", "ESC", ButtonState.Ready, false);
         panel.button(Target.Quit, "QUIT", "", ButtonState.Ready, false);
         panel.end_buttons(true);
