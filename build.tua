@@ -17,6 +17,8 @@
     // The font the text is drawn in, read by `src/game/glyphs.tua` at build time.
     Build.root("fonts");
     Build.exe("hex.exe");
+    // `tua build . --profile release` optimizes, as the Rust game is played with `--release`.
+    if Build.profile_is("release") { Build.optimize(true); }
     grant "src/renderer/pipelines.tua" {Fs, Proc};
     grant "src/game/glyphs.tua" {Fs, Cpu};
 }

@@ -598,13 +598,15 @@ impl GameState {
         if city.is_none() && !self.show_details { return; }
         let fog = self.fog();
         let (view_min, view_max) = self.view_rect();
+        // The open city's routes, worked out once for every hex.
+        let routes = match city { Option.Some(c) => Option.Some(self.known_routes(c, &fog)), Option.None => Option.None };
         for h in self.grid.hexes() {
             let hex = *h;
             let center = hex.to_world();
             if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
             if !self.grid.terrain(hex).is_workable() || !self.is_explored(hex) { continue; }
             let in_reach = match city {
-                Option.Some(c) => self.known_routes(c, &fog).costs.has(hex) || self.cities[c].worked.contains(hex),
+                Option.Some(c) => match &routes { &Option.Some(r) => r.costs.has(hex) || self.cities[c].worked.contains(hex), &Option.None => false },
                 Option.None => false,
             };
             if !in_reach && !self.show_details { continue; }

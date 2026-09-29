@@ -455,3 +455,49 @@ fn clear_orders_and_disband_buttons_act_on_the_selection() {
         for i in 0..game.units.len() { assert(game.units[i].id != id); }
     });
 }
+
+/// One frame as the app plays it (`on_frame`), with the cursor at `cursor`.
+fn play_frame(game: &mut GameState, cursor: Vec2) can {Log, Rand} {
+    game.update(0.016);
+    game.animate_clouds(0.016);
+    game.update_hover(Option.Some(cursor), screen(), 0.016);
+    let _world = game.build_vertices();
+    let _ui = game.build_ui(screen(), Option.Some(cursor));
+}
+
+@test
+fn clicking_the_city_opens_it_and_frames_keep_coming() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        for _ in 0..3 { play_frame(&mut game, vec2(10.0, 10.0)); }
+        let at = hex_cursor(&game, game.cities[0].pos);
+        game.handle_click(at, screen(), ClickMode.Normal);
+        assert(game.selected_city == Option.Some(0));
+        // Long enough for the tile tooltip under the cursor to appear.
+        for _ in 0..60 { play_frame(&mut game, at); }
+        assert(game.selected_city == Option.Some(0));
+    });
+}
+
+@test
+fn every_city_tray_button_can_be_hovered_and_clicked() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        let at = hex_cursor(&game, game.cities[0].pos);
+        game.handle_click(at, screen(), ClickMode.Normal);
+        let buttons = game.layout(screen()).buttons.len();
+        // The tray has more than the top bar's and debug panel's buttons.
+        assert(buttons > 10);
+        for b in 0..buttons {
+            let mut fresh = GameState.city_scenario();
+            fresh.handle_click(at, screen(), ClickMode.Normal);
+            let layout = fresh.layout(screen());
+            if b >= layout.buttons.len() { continue; }
+            let button = &layout.buttons[b];
+            let cursor = to_ui(button.min.add(button.max).scale(0.5), screen());
+            for _ in 0..2 { play_frame(&mut fresh, cursor); }
+            fresh.handle_click(cursor, screen(), ClickMode.Normal);
+            for _ in 0..2 { play_frame(&mut fresh, cursor); }
+        }
+    });
+}
