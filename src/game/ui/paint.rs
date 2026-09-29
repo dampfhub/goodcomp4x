@@ -151,7 +151,7 @@ pub(super) fn draw_chip_hover(min: Vec2, max: Vec2, out: &mut Vec<Vertex>) {
 }
 
 pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>) {
-    let (bg, text_color, hint_color) = match (button.state, hovered) {
+    let (bg, text_color, hint_color) = match (button.state(), hovered) {
         (ButtonState::Ready, false) => (BUTTON_BG, TEXT, DIM_TEXT),
         (ButtonState::Ready, true) => (BUTTON_HOVER_BG, TEXT, DIM_TEXT),
         (ButtonState::Queued, false) => (QUEUED_BG, QUEUED_TEXT, QUEUED_HINT_TEXT),

@@ -14,7 +14,7 @@
 use super::builder::{ButtonSpec, PanelBuilder, Row};
 use glam::Vec2;
 
-use super::{BODY, ButtonState, GAP, GOLD_TEXT, LABEL_TEXT, Layout, TEXT, TITLE, Target};
+use super::{BODY, GAP, GOLD_TEXT, LABEL_TEXT, Layout, TEXT, TITLE, Target};
 use crate::game::GameState;
 use crate::game::settings::{Control, Setting};
 
@@ -53,41 +53,19 @@ impl GameState {
         }
         panel.gap(GAP);
         panel.text(BODY, vec![("CITY OVERLAYS".into(), LABEL_TEXT)]);
-        panel.compact_buttons(vec![ButtonSpec {
-            target: Target::ToggleYields,
-            label: if self.show_yields {
-                "CITY YIELDS: ON"
-            } else {
-                "CITY YIELDS: OFF"
-            }
-            .into(),
-            hint: "Y".into(),
-            state: ButtonState::new(self.show_yields, false),
-            armed: false,
-        }]);
+        let yields = if self.show_yields {
+            "CITY YIELDS: ON"
+        } else {
+            "CITY YIELDS: OFF"
+        };
+        panel.compact_buttons(vec![
+            ButtonSpec::new(Target::ToggleYields, yields, "Y").queued(self.show_yields),
+        ]);
         panel.gap(GAP);
         panel.compact_buttons(vec![
-            ButtonSpec {
-                target: Target::OpenMultiplayer,
-                label: "MULTIPLAYER".into(),
-                hint: String::new(),
-                state: ButtonState::Ready,
-                armed: false,
-            },
-            ButtonSpec {
-                target: Target::CloseSettings,
-                label: "CLOSE".into(),
-                hint: "ESC".into(),
-                state: ButtonState::Ready,
-                armed: false,
-            },
-            ButtonSpec {
-                target: Target::Quit,
-                label: "QUIT".into(),
-                hint: String::new(),
-                state: ButtonState::Ready,
-                armed: false,
-            },
+            ButtonSpec::new(Target::OpenMultiplayer, "MULTIPLAYER", ""),
+            ButtonSpec::new(Target::CloseSettings, "CLOSE", "ESC"),
+            ButtonSpec::new(Target::Quit, "QUIT", ""),
         ]);
         panel
     }
@@ -107,37 +85,22 @@ pub(super) fn steps_in_classic(setting: Setting) -> bool {
 /// name (and its value, if stepped) and then the buttons that set it.
 pub(super) fn classic_setting_rows(setting: Setting, value: i32) -> Vec<Row> {
     let range = setting.range();
-    let button = |to: i32, label: String, state| ButtonSpec {
-        target: Target::SetSetting(setting, to),
-        label,
-        hint: String::new(),
-        state,
-        armed: false,
+    let button =
+        |to: i32, label: String| ButtonSpec::new(Target::SetSetting(setting, to), label, "");
+    // A step past either end of the range: already there.
+    let at_end = |end: bool, which: &str| {
+        end.then(|| format!("ALREADY THE {which}: {}", setting.value_text(value)))
     };
     let mut label = vec![(format!("{}  ", setting.name()), LABEL_TEXT)];
     let buttons = if steps_in_classic(setting) {
         label.push((setting.value_text(value), GOLD_TEXT));
         vec![
-            button(
-                value - 1,
-                "<".into(),
-                ButtonState::new(false, value <= *range.start()),
-            ),
-            button(
-                value + 1,
-                ">".into(),
-                ButtonState::new(false, value >= *range.end()),
-            ),
+            button(value - 1, "<".into()).unavailable(at_end(value <= *range.start(), "LOWEST")),
+            button(value + 1, ">".into()).unavailable(at_end(value >= *range.end(), "HIGHEST")),
         ]
     } else {
         range
-            .map(|to| {
-                button(
-                    to,
-                    setting.value_text(to),
-                    ButtonState::new(to == value, false),
-                )
-            })
+            .map(|to| button(to, setting.value_text(to)).queued(to == value))
             .collect()
     };
     // One row a setting, so the menu fits a short screen.

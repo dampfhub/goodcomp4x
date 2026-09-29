@@ -5,8 +5,8 @@ use super::text::{
     ability_text, compare, cost_hint, resource_color, signed_quantity, stat_spans, turns_text,
 };
 use super::{
-    BODY, BOOSTED_TEXT, ButtonState, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, QueueItemSpec,
-    QueueKind, REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
+    BODY, BOOSTED_TEXT, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, QueueItemSpec, QueueKind,
+    REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
 };
 use crate::game::GameState;
 use crate::game::city::{
@@ -107,26 +107,18 @@ impl GameState {
                 GOLD_TEXT,
             )],
         );
+        let leave = if city.team == self.local_team {
+            "RETURN TO CITY"
+        } else {
+            "LEAVE INTERIOR"
+        };
         panel.compact_buttons(vec![
-            ButtonSpec {
-                target: Target::InteriorClear,
-                label: "CLEAR ORDERS".into(),
-                hint: "BACKSPACE".into(),
-                state: ButtonState::new(false, self.interior_selected.is_none()),
-                armed: false,
-            },
-            ButtonSpec {
-                target: Target::OpenInterior,
-                label: if city.team == self.local_team {
-                    "RETURN TO CITY"
-                } else {
-                    "LEAVE INTERIOR"
-                }
-                .into(),
-                hint: "V / ESC".into(),
-                state: ButtonState::Ready,
-                armed: false,
-            },
+            ButtonSpec::new(Target::InteriorClear, "CLEAR ORDERS", "BACKSPACE").unavailable(
+                self.interior_selected
+                    .is_none()
+                    .then(|| "SELECT A TROOP ON THE MAP FIRST".into()),
+            ),
+            ButtonSpec::new(Target::OpenInterior, leave, "V / ESC"),
         ]);
     }
 
@@ -284,93 +276,99 @@ impl GameState {
         }
     }
 
+    /// Why unit `idx` can't take `action` now, if it can't: its order
+    /// button is then disabled (`unit_buttons`), and a group's when none of
+    /// its members can (`group_action_unavailable`).
+    pub(super) fn unit_action_unavailable(&self, action: UnitAction, idx: usize) -> Option<String> {
+        let unit = &self.units[idx];
+        let locked =
+            (self.rival_of(idx).is_some()).then(|| "LOCKED IN A CONTESTED HEX".to_string());
+        let cannot_move =
+            (unit.stats().move_range == 0).then(|| "CANNOT MOVE THIS TURN".to_string());
+        match action {
+            UnitAction::Move => cannot_move,
+            UnitAction::Attack => locked
+                .or_else(|| (!unit.can_attack()).then(|| "BUSY WITH ITS ABILITY THIS TURN".into())),
+            UnitAction::Swap => locked.or(cannot_move),
+            UnitAction::Ability => (unit.ability_cooldown > 0)
+                .then(|| format!("READY IN {}", turns_text(unit.ability_cooldown))),
+            UnitAction::Alert if unit.alert || self.can_go_on_alert(idx) => None,
+            UnitAction::Alert if unit.unit_type == crate::game::unit::UnitType::Siege => {
+                Some("SET IT UP FIRST".into())
+            }
+            UnitAction::Alert => Some("ONLY TROOPS THAT FIGHT ON LAND".into()),
+            UnitAction::ClearOrders => (!unit.has_orders()).then(|| "NO ORDERS TO CLEAR".into()),
+            UnitAction::Hold | UnitAction::Guard | UnitAction::Settle | UnitAction::Disband => None,
+        }
+    }
+
+    /// Why none of `group` can take `action`, if none can: the reason
+    /// they share, or that none can. `None` when any member can.
+    pub(super) fn group_action_unavailable(
+        &self,
+        action: UnitAction,
+        group: &[usize],
+    ) -> Option<String> {
+        let mut reasons = group
+            .iter()
+            .map(|&i| self.unit_action_unavailable(action, i));
+        let first = reasons.next()??;
+        let mut same = true;
+        for reason in reasons {
+            same &= reason.as_ref() == Some(&first);
+            reason.as_ref()?;
+        }
+        Some(if same {
+            first
+        } else {
+            "NONE OF THEM CAN NOW".into()
+        })
+    }
+
     /// The selected unit's order buttons: what it can do depends on whether
     /// it's a fighter, a settler or a worker.
     pub(super) fn unit_buttons(&self, idx: usize) -> Vec<ButtonSpec> {
         let unit = &self.units[idx];
-        let can_move = unit.stats().move_range > 0;
-        let locked = self.rival_of(idx).is_some();
         let swapping = self.swap_partner(idx).is_some();
         let settler = self.settlers.contains(&unit.id);
         let armed = |mode| self.selected == Some(idx) && self.ui_click_mode == Some(mode);
+        let order = |action, label: &str, hint: &str| {
+            ButtonSpec::unit(action, label, hint)
+                .unavailable(self.unit_action_unavailable(action, idx))
+        };
 
-        let mut buttons = vec![ButtonSpec {
-            target: Target::Unit(UnitAction::Move),
-            label: "MOVE".into(),
-            hint: "M".into(),
-            state: ButtonState::new(unit.planned_move.is_some() && !swapping, !can_move),
-            armed: armed(ClickMode::Move),
-        }];
-        buttons.push(ButtonSpec {
-            target: Target::Unit(UnitAction::Attack),
-            label: "ATTACK".into(),
-            hint: "X · RMB".into(),
-            state: ButtonState::new(unit.planned_attack.is_some(), !unit.can_attack() || locked),
-            armed: armed(ClickMode::Attack),
-        });
-        buttons.push(ButtonSpec {
-            target: Target::Unit(UnitAction::Swap),
-            label: "SWAP".into(),
-            hint: "CTRL".into(),
-            state: ButtonState::new(swapping, !can_move || locked),
-            armed: armed(ClickMode::Swap),
-        });
+        let mut buttons = vec![
+            order(UnitAction::Move, "MOVE", "M")
+                .queued(unit.planned_move.is_some() && !swapping)
+                .armed(armed(ClickMode::Move)),
+            order(UnitAction::Attack, "ATTACK", "X · RMB")
+                .queued(unit.planned_attack.is_some())
+                .armed(armed(ClickMode::Attack)),
+            order(UnitAction::Swap, "SWAP", "CTRL")
+                .queued(swapping)
+                .armed(armed(ClickMode::Swap)),
+        ];
         if settler {
-            buttons.push(ButtonSpec::plain(UnitAction::Settle, "FOUND CITY", "F"));
+            buttons.push(order(UnitAction::Settle, "FOUND CITY", "F"));
         } else {
             let (name, _) = ability_text(unit);
             let label = match unit.ability_cooldown {
                 0 => name.to_string(),
                 turns => format!("{name} ({turns})"),
             };
-            buttons.push(ButtonSpec {
-                target: Target::Unit(UnitAction::Ability),
-                label,
-                hint: "Q".into(),
-                state: ButtonState::new(unit.ability_queued, unit.ability_cooldown > 0),
-                armed: false,
-            });
+            buttons.push(order(UnitAction::Ability, &label, "Q").queued(unit.ability_queued));
         }
-        buttons.push(ButtonSpec {
-            target: Target::Unit(UnitAction::Hold),
-            label: "HOLD".into(),
-            hint: "SPACE".into(),
-            state: ButtonState::new(unit.holding, false),
-            armed: false,
-        });
-        buttons.push(ButtonSpec {
-            target: Target::Unit(UnitAction::Guard),
-            label: "GUARD".into(),
-            hint: "G".into(),
-            state: ButtonState::new(unit.guarding, false),
-            armed: false,
-        });
+        buttons.push(order(UnitAction::Hold, "HOLD", "SPACE").queued(unit.holding));
+        buttons.push(order(UnitAction::Guard, "GUARD", "G").queued(unit.guarding));
         // Only for troops that could ever go on alert; a siege not set up
         // shows it unavailable.
         if !settler && unit.unit_type.takes_alert() {
-            buttons.push(ButtonSpec {
-                target: Target::Unit(UnitAction::Alert),
-                label: "ALERT".into(),
-                hint: "E".into(),
-                state: ButtonState::new(unit.alert, !unit.alert && !self.can_go_on_alert(idx)),
-                armed: false,
-            });
+            buttons.push(order(UnitAction::Alert, "ALERT", "E").queued(unit.alert));
         }
-        buttons.push(ButtonSpec {
-            target: Target::Unit(UnitAction::ClearOrders),
-            label: "CLEAR ORDERS".into(),
-            hint: "CTRL-RMB".into(),
-            state: ButtonState::new(false, !unit.has_orders()),
-            armed: false,
-        });
+        buttons.push(order(UnitAction::ClearOrders, "CLEAR ORDERS", "CTRL-RMB"));
         let confirming = self.disband_armed == Some(unit.id);
-        buttons.push(ButtonSpec {
-            target: Target::Unit(UnitAction::Disband),
-            label: if confirming { "CONFIRM?" } else { "DISBAND" }.into(),
-            hint: "DEL".into(),
-            state: ButtonState::Ready,
-            armed: confirming,
-        });
+        let disband = if confirming { "CONFIRM?" } else { "DISBAND" };
+        buttons.push(order(UnitAction::Disband, disband, "DEL").armed(confirming));
         buttons
     }
 
@@ -412,7 +410,6 @@ impl GameState {
         }
         let armed = |mode| self.group == group && self.ui_click_mode == Some(mode);
         let all_guarding = group.iter().all(|&i| self.units[i].guarding);
-        let any_orders = group.iter().any(|&i| self.units[i].has_orders());
         // Alert acts on the members that can go on alert (or are on it).
         let alert_able: Vec<usize> = group
             .iter()
@@ -420,43 +417,18 @@ impl GameState {
             .filter(|&i| self.units[i].alert || self.can_go_on_alert(i))
             .collect();
         let all_alert = !alert_able.is_empty() && alert_able.iter().all(|&i| self.units[i].alert);
+        // Each order is off only when no member can take it.
+        let order = |action, label: &str, hint: &str| {
+            ButtonSpec::unit(action, label, hint)
+                .unavailable(self.group_action_unavailable(action, group))
+        };
         panel.action_toolbar(vec![
-            ButtonSpec {
-                target: Target::Unit(UnitAction::Move),
-                label: "MOVE".into(),
-                hint: "M".into(),
-                state: ButtonState::Ready,
-                armed: armed(ClickMode::Move),
-            },
-            ButtonSpec {
-                target: Target::Unit(UnitAction::Attack),
-                label: "ATTACK".into(),
-                hint: "X · RMB".into(),
-                state: ButtonState::Ready,
-                armed: armed(ClickMode::Attack),
-            },
-            ButtonSpec::plain(UnitAction::Hold, "HOLD", "SPACE"),
-            ButtonSpec {
-                target: Target::Unit(UnitAction::Guard),
-                label: "GUARD".into(),
-                hint: "G".into(),
-                state: ButtonState::new(all_guarding, false),
-                armed: false,
-            },
-            ButtonSpec {
-                target: Target::Unit(UnitAction::Alert),
-                label: "ALERT".into(),
-                hint: "E".into(),
-                state: ButtonState::new(all_alert, alert_able.is_empty()),
-                armed: false,
-            },
-            ButtonSpec {
-                target: Target::Unit(UnitAction::ClearOrders),
-                label: "CLEAR ORDERS".into(),
-                hint: "CTRL-RMB".into(),
-                state: ButtonState::new(false, !any_orders),
-                armed: false,
-            },
+            order(UnitAction::Move, "MOVE", "M").armed(armed(ClickMode::Move)),
+            order(UnitAction::Attack, "ATTACK", "X · RMB").armed(armed(ClickMode::Attack)),
+            order(UnitAction::Hold, "HOLD", "SPACE"),
+            order(UnitAction::Guard, "GUARD", "G").queued(all_guarding),
+            order(UnitAction::Alert, "ALERT", "E").queued(all_alert),
+            order(UnitAction::ClearOrders, "CLEAR ORDERS", "CTRL-RMB"),
         ]);
     }
 
@@ -559,12 +531,11 @@ impl GameState {
                 .0
                 .into_iter()
                 .enumerate()
-                .map(|(rank, good)| ButtonSpec {
-                    target: Target::Priority(good),
-                    label: format!("{} ({})", good.name(), rank + 1),
-                    hint: String::new(),
-                    state: ButtonState::new(drag.is_some_and(|d| d.source == rank), false),
-                    armed: drag.is_some_and(|d| d.target == Some(rank) && d.source != rank),
+                .map(|(rank, good)| {
+                    let label = format!("{} ({})", good.name(), rank + 1);
+                    ButtonSpec::new(Target::Priority(good), label, "")
+                        .queued(drag.is_some_and(|d| d.source == rank))
+                        .armed(drag.is_some_and(|d| d.target == Some(rank) && d.source != rank))
                 })
                 .collect(),
         );
@@ -576,13 +547,8 @@ impl GameState {
         // says.
         let card = |target, label: String, build: Build, head: bool| {
             let price = self.queue_price(i, build);
-            ButtonSpec {
-                target,
-                label,
-                hint: cost_hint(price, self.city_build_turns(i, build)),
-                state: ButtonState::new(head, false),
-                armed: false,
-            }
+            let hint = cost_hint(price, self.city_build_turns(i, build));
+            ButtonSpec::new(target, label, hint).queued(head)
         };
         let queued_grows = city.queue.iter().filter(|q| q.build == Build::Grow).count();
         let first = city.queue.first().map(|q| q.build);
@@ -599,26 +565,23 @@ impl GameState {
                 ..grow
             }
         } else {
-            ButtonSpec {
-                target: Target::Grow,
-                label: "GROW".into(),
-                hint: format!("{GROW_SHORTCUT} · FULL"),
-                state: ButtonState::Disabled,
-                armed: false,
-            }
+            ButtonSpec::new(Target::Grow, "GROW", format!("{GROW_SHORTCUT} · FULL")).unavailable(
+                Some(format!(
+                    "FULL: {MAX_CITY_POPULATION} CITIZENS, COUNTING THE GROWTH QUEUED"
+                )),
+            )
         };
         // Gathering is free: a city can always do it.
-        let gather = ButtonSpec {
-            target: Target::Gather,
-            label: "GATHER".into(),
-            hint: format!(
+        let gather = ButtonSpec::new(
+            Target::Gather,
+            "GATHER",
+            format!(
                 "{GATHER_SHORTCUT} · +{} {}",
                 stock_icons(GATHER_YIELD),
                 turns_icon(Build::Gather.turns())
             ),
-            state: ButtonState::new(first == Some(Build::Gather), false),
-            armed: false,
-        };
+        )
+        .queued(first == Some(Build::Gather));
         panel.compact_buttons(vec![grow, gather]);
 
         panel.gap(GAP);
@@ -650,10 +613,10 @@ impl GameState {
             let card = card(target, build.name().into(), build, first == Some(build));
             match self.city_build_issue(i, build) {
                 Some(why) => ButtonSpec {
-                    hint: why,
-                    state: ButtonState::Disabled,
+                    hint: why.clone(),
                     ..card
-                },
+                }
+                .unavailable(Some(why)),
                 None => card,
             }
         };
@@ -674,13 +637,11 @@ impl GameState {
                 first == Some(Build::Worker),
             )])
             .collect();
-        panel.buttons(vec![ButtonSpec {
-            target: Target::OpenInterior,
-            label: "CITY INTERIOR".into(),
-            hint: "V".into(),
-            state: ButtonState::Ready,
-            armed: false,
-        }]);
+        panel.buttons(vec![ButtonSpec::new(
+            Target::OpenInterior,
+            "CITY INTERIOR",
+            "V",
+        )]);
         panel.gap(GAP);
         // While placing, map clicks and Escape are placing's: its own lines
         // (below) take this one's place.
@@ -707,33 +668,31 @@ impl GameState {
                 // (`job_kind_unavailable`).
                 let kind = JobKind::Build(building);
                 let placed = self.building_job_queued(i, building);
-                let state = ButtonState::new(
-                    placed || self.placing_job == Some(kind),
-                    !placed && self.job_kind_unavailable(i, kind).is_some(),
-                );
-                ButtonSpec {
-                    target: Target::Building(building),
-                    label: building.name().into(),
-                    // The price alone, which the row lines up on the right;
-                    // the key is in the tooltip.
-                    hint: cost_hint(building.price(), building.turns()),
-                    state,
-                    armed: false,
-                }
+                // The price alone, which the row lines up on the right; the
+                // key is in the tooltip.
+                let hint = cost_hint(building.price(), building.turns());
+                ButtonSpec::new(Target::Building(building), building.name(), hint)
+                    .queued(placed || self.placing_job == Some(kind))
+                    .unavailable(
+                        (!placed)
+                            .then(|| self.job_kind_unavailable(i, kind))
+                            .flatten(),
+                    )
             })
             .collect();
         // Roads, improvements and structures: armed to place on the map.
         let work_buttons: Vec<_> = JobKind::ALL
             .into_iter()
-            .map(|kind| ButtonSpec {
-                target: Target::WorkerJob(kind),
-                label: kind.name().into(),
-                hint: cost_hint(kind.price(), kind.turns() as i32),
-                state: ButtonState::new(
-                    self.placing_job == Some(kind),
-                    self.placing_job != Some(kind) && self.job_kind_unavailable(i, kind).is_some(),
-                ),
-                armed: false,
+            .map(|kind| {
+                let placing = self.placing_job == Some(kind);
+                let hint = cost_hint(kind.price(), kind.turns() as i32);
+                ButtonSpec::new(Target::WorkerJob(kind), kind.name(), hint)
+                    .queued(placing)
+                    .unavailable(
+                        (!placing)
+                            .then(|| self.job_kind_unavailable(i, kind))
+                            .flatten(),
+                    )
             })
             .collect();
         if let Some(kind) = self.placing_job {
@@ -756,13 +715,11 @@ impl GameState {
             );
             // Its armed card is gold too, and clicking it again also stops,
             // but that's easy to miss: say it plainly.
-            panel.compact_buttons(vec![ButtonSpec {
-                target: Target::CancelPlacing,
-                label: format!("CANCEL PLACING {}", kind.name()),
-                hint: String::new(),
-                state: ButtonState::Ready,
-                armed: false,
-            }]);
+            panel.compact_buttons(vec![ButtonSpec::new(
+                Target::CancelPlacing,
+                format!("CANCEL PLACING {}", kind.name()),
+                "",
+            )]);
             panel.text(
                 SMALL,
                 vec![(
@@ -795,13 +752,11 @@ impl GameState {
             };
             panel.gap(GAP);
             panel.text(SMALL, vec![training]);
-            panel.buttons(vec![ButtonSpec {
-                target: Target::OpenBarracks,
-                label: "SEE BARRACKS".into(),
-                hint: "CLICK".into(),
-                state: ButtonState::new(false, false),
-                armed: false,
-            }]);
+            panel.buttons(vec![ButtonSpec::new(
+                Target::OpenBarracks,
+                "SEE BARRACKS",
+                "",
+            )]);
         }
     }
 
@@ -821,13 +776,7 @@ impl GameState {
             LABEL_TEXT,
         )];
         panel.text(SMALL, line);
-        let button = |target, label| ButtonSpec {
-            target,
-            label,
-            hint: String::new(),
-            state: ButtonState::Ready,
-            armed: false,
-        };
+        let button = |target, label: String| ButtonSpec::new(target, label, "");
         let mut list = Vec::new();
         // Recalled workers stay home until released, one a click.
         if city.held_workers > 0 && city.team == self.local_team {
@@ -993,29 +942,18 @@ impl GameState {
                     // waits.
                     let lock = self.barracks_lock(i, build);
                     let supply_full = lock.is_some() && self.deposit_lock(i, build).is_none();
-                    ButtonSpec {
-                        target: Target::BarracksBuild(build),
-                        label: build.name().into(),
-                        hint: if supply_full {
-                            SUPPLY_FULL_HINT.into()
-                        } else {
-                            cost_hint(build.price(), build.turns())
-                        },
-                        state: ButtonState::new(
-                            city.barracks_queue.first().map(|q| q.build) == Some(build),
-                            lock.is_some(),
-                        ),
-                        armed: false,
-                    }
+                    let hint = if supply_full {
+                        SUPPLY_FULL_HINT.into()
+                    } else {
+                        cost_hint(build.price(), build.turns())
+                    };
+                    let head = city.barracks_queue.first().map(|q| q.build) == Some(build);
+                    ButtonSpec::new(Target::BarracksBuild(build), build.name(), hint)
+                        .queued(head)
+                        .unavailable(lock)
                 })
                 .collect(),
         );
-        panel.buttons(vec![ButtonSpec {
-            target: Target::OpenCity,
-            label: "OPEN CITY".into(),
-            hint: "CLICK".into(),
-            state: ButtonState::new(false, false),
-            armed: false,
-        }]);
+        panel.buttons(vec![ButtonSpec::new(Target::OpenCity, "OPEN CITY", "")]);
     }
 }

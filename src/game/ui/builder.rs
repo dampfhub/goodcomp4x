@@ -3,6 +3,7 @@
 use super::action_icons::{self, CLASSIC_ICON_COLUMNS, ICON_BUTTON_SIZE};
 use super::network_menu::NetField;
 use super::settings_menu::classic_setting_rows;
+use super::tooltips::PLAN_SENT;
 use super::{
     BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
     BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GOLD_TEXT, GROWTH_BAR_HEIGHT,
@@ -15,24 +16,76 @@ use crate::game::font::{self, Face};
 use crate::game::settings::Setting;
 use glam::Vec2;
 
-/// A button before it's placed.
+/// A button before it's placed. Built with `new` and the builder methods:
+/// `ButtonSpec::new(target, label, hint).queued(q).unavailable(why)`. A
+/// button is disabled exactly when it has a reason it's `unavailable`, which
+/// its tooltip gives, so the two can't disagree.
 #[derive(Clone)]
 pub(super) struct ButtonSpec {
     pub(super) target: Target,
     pub(super) label: String,
     pub(super) hint: String,
-    pub(super) state: ButtonState,
+    /// Already queued or chosen: drawn gold.
+    pub(super) queued: bool,
+    /// Why it can't be pressed now, if it can't: it's drawn disabled, and
+    /// its tooltip says this.
+    pub(super) unavailable: Option<String>,
     pub(super) armed: bool,
 }
 
 impl ButtonSpec {
-    pub(super) fn plain(action: UnitAction, label: &str, hint: &str) -> Self {
+    /// A button for `target`, ready to press, showing `label` and `hint`.
+    pub(super) fn new(target: Target, label: impl Into<String>, hint: impl Into<String>) -> Self {
         Self {
-            target: Target::Unit(action),
+            target,
             label: label.into(),
             hint: hint.into(),
-            state: ButtonState::Ready,
+            queued: false,
+            unavailable: None,
             armed: false,
+        }
+    }
+
+    /// A unit order's button (`Target::Unit`).
+    pub(super) fn unit(action: UnitAction, label: impl Into<String>, hint: &str) -> Self {
+        Self::new(Target::Unit(action), label, hint)
+    }
+
+    /// Whether it's queued or chosen (gold).
+    pub(super) fn queued(mut self, queued: bool) -> Self {
+        self.queued = queued;
+        self
+    }
+
+    /// Why it can't be pressed, if it can't (then disabled).
+    pub(super) fn unavailable(mut self, why: Option<String>) -> Self {
+        self.unavailable = why;
+        self
+    }
+
+    /// Whether its action is what the next map click will do.
+    pub(super) fn armed(mut self, armed: bool) -> Self {
+        self.armed = armed;
+        self
+    }
+
+    /// How it's drawn: disabled when unavailable, else gold when queued.
+    pub(super) fn state(&self) -> ButtonState {
+        ButtonState::new(self.queued, self.unavailable.is_some())
+    }
+
+    /// The button placed from `min` to `max`, see-through if `faded`.
+    pub(super) fn place(self, min: Vec2, max: Vec2, faded: bool) -> Button {
+        Button {
+            target: self.target,
+            label: self.label,
+            hint: self.hint,
+            queued: self.queued,
+            unavailable: self.unavailable,
+            armed: self.armed,
+            faded,
+            min,
+            max,
         }
     }
 }
@@ -42,7 +95,7 @@ impl ButtonSpec {
 fn freeze_rows(rows: &mut [Row]) {
     let freeze = |spec: &mut ButtonSpec| {
         if spec.target.changes_plan() {
-            spec.state = ButtonState::Disabled;
+            spec.unavailable = Some(PLAN_SENT.into());
             spec.armed = false;
         }
     };
@@ -86,11 +139,7 @@ pub(super) fn visible_button_hint(hint: &str, reveal_shortcut: bool) -> &str {
             return if is_shortcut(rest) { "" } else { rest };
         }
     }
-    if is_shortcut(hint) || matches!(hint, "AUTO" | "CLICK") {
-        ""
-    } else {
-        hint
-    }
+    if is_shortcut(hint) { "" } else { hint }
 }
 
 pub(super) fn icon_row(buttons: &[ButtonSpec]) -> bool {
@@ -593,16 +642,11 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
             push_text_row(layout, Vec2::new(left, middle), SMALL, line);
             let width = single_line_button_width(&spec.label, &spec.hint);
             let right = left + inner_width;
-            layout.buttons.push(Button {
-                target: spec.target,
-                label: spec.label,
-                hint: spec.hint,
-                state: spec.state,
-                armed: spec.armed,
+            layout.buttons.push(spec.place(
+                Vec2::new(right - width, top - TITLE_BUTTON_HEIGHT).round(),
+                Vec2::new(right, top).round(),
                 faded,
-                min: Vec2::new(right - width, top - TITLE_BUTTON_HEIGHT).round(),
-                max: Vec2::new(right, top).round(),
-            });
+            ));
         }
         Row::Bar(fraction) => layout.shapes.push(Shape::Bar {
             min: Vec2::new(left, top - height),
@@ -623,16 +667,11 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 drop_target: item.drop_target,
                 locked: item.locked,
             });
-            layout.buttons.push(Button {
-                target: item.kind.remove_target(item.index),
-                label: "X".into(),
-                hint: String::new(),
-                state: ButtonState::new(false, item.locked),
-                armed: false,
-                faded,
-                min: Vec2::new(body_max_x, min.y),
-                max,
-            });
+            let remove = ButtonSpec::new(item.kind.remove_target(item.index), "X", "")
+                .unavailable(item.locked.then(|| PLAN_SENT.into()));
+            layout
+                .buttons
+                .push(remove.place(Vec2::new(body_max_x, min.y), max, faded));
             layout.queue_items.push(QueueItemRegion {
                 kind: item.kind,
                 index: item.index,
@@ -656,7 +695,7 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
             );
             let placed: Vec<_> = layout.buttons[first..]
                 .iter()
-                .map(|b| (b.min, b.max, b.state == ButtonState::Disabled))
+                .map(|b| (b.min, b.max, b.unavailable.is_some()))
                 .collect();
             for (index, (min, max, locked)) in placed.into_iter().enumerate() {
                 layout.queue_items.push(QueueItemRegion {
@@ -705,16 +744,9 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                         Vec2::new(width, height),
                     )
                 };
-                layout.buttons.push(Button {
-                    target: spec.target,
-                    label: spec.label,
-                    hint: spec.hint,
-                    state: spec.state,
-                    armed: spec.armed,
-                    faded,
-                    min: min.round(),
-                    max: (min + size).round(),
-                });
+                layout
+                    .buttons
+                    .push(spec.place(min.round(), (min + size).round(), faded));
             }
         }
         Row::ScrollList(list) => place_scroll_list(layout, list, top_left, inner_width, faded),
@@ -736,16 +768,7 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 let max = Vec2::new(left + 4.0 + list_width, y).round();
                 let min = Vec2::new(left + 4.0, y - 30.0).round();
                 match entry {
-                    CatalogEntry::Card(spec) => layout.buttons.push(Button {
-                        target: spec.target,
-                        label: spec.label,
-                        hint: spec.hint,
-                        state: spec.state,
-                        armed: spec.armed,
-                        faded,
-                        min,
-                        max,
-                    }),
+                    CatalogEntry::Card(spec) => layout.buttons.push(spec.place(min, max, faded)),
                     CatalogEntry::Heading(label) => push_text_row(
                         layout,
                         Vec2::new(min.x + 4.0, (min.y + max.y) / 2.0),
@@ -919,13 +942,9 @@ pub(super) fn classic_rows(rows: Vec<Row>) -> Vec<Row> {
                 push(
                     &mut out,
                     Row::Buttons(
-                        vec![ButtonSpec {
-                            target: Target::EditNetField(field),
-                            label: shown,
-                            hint: String::new(),
-                            state: ButtonState::new(editing, false),
-                            armed: false,
-                        }],
+                        vec![
+                            ButtonSpec::new(Target::EditNetField(field), shown, "").queued(editing),
+                        ],
                         true,
                     ),
                 );

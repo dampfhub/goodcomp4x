@@ -19,7 +19,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use super::builder::{ButtonSpec, PanelBuilder, Row};
 use super::text::wrap;
-use super::{BODY, ButtonState, GAP, GOLD_TEXT, LABEL_TEXT, SMALL, TEXT, TITLE, Target};
+use super::{BODY, GAP, GOLD_TEXT, LABEL_TEXT, SMALL, TEXT, TITLE, Target};
 use crate::game::GameState;
 
 /// The characters a line of the status takes before it wraps.
@@ -191,13 +191,7 @@ impl GameState {
         panel.gap(GAP);
         self.network_rows(&mut panel);
         panel.gap(GAP);
-        let button = |target, label: &str, hint: &str| ButtonSpec {
-            target,
-            label: label.into(),
-            hint: hint.into(),
-            state: ButtonState::Ready,
-            armed: false,
-        };
+        let button = |target, label: &str, hint: &str| ButtonSpec::new(target, label, hint);
         panel.compact_buttons(vec![
             button(Target::CloseMultiplayer, "BACK", ""),
             button(Target::CloseSettings, "CLOSE", "ESC"),
@@ -209,13 +203,10 @@ impl GameState {
     /// way.
     fn network_rows(&self, panel: &mut PanelBuilder) {
         let menu = &self.net_menu;
-        let button = |target, label: &str, state| ButtonSpec {
-            target,
-            label: label.into(),
-            hint: String::new(),
-            state,
-            armed: false,
+        let button = |target, label: &str, unavailable: Option<String>| {
+            ButtonSpec::new(target, label, "").unavailable(unavailable)
         };
+        let busy = || menu.busy.then(|| "ALREADY JOINING A GAME".to_string());
         let field = |panel: &mut PanelBuilder, field: NetField| {
             panel.rows.push(Row::Field(
                 field,
@@ -250,11 +241,7 @@ impl GameState {
                 );
             }
             status(panel);
-            panel.compact_buttons(vec![button(
-                Target::LeaveGame,
-                "LEAVE GAME",
-                ButtonState::Ready,
-            )]);
+            panel.compact_buttons(vec![button(Target::LeaveGame, "LEAVE GAME", None)]);
             return;
         }
         panel.text(
@@ -268,28 +255,20 @@ impl GameState {
             button(
                 Target::NetPlayers(menu.players.saturating_sub(1)),
                 "<",
-                ButtonState::new(false, menu.players <= 2),
+                (menu.players <= 2).then(|| "A NETWORK GAME NEEDS 2 PLAYERS OR MORE".into()),
             ),
             button(
                 Target::NetPlayers(menu.players + 1),
                 ">",
-                ButtonState::new(false, menu.players >= MAX_PLAYERS),
+                (menu.players >= MAX_PLAYERS).then(|| format!("{MAX_PLAYERS} PLAYERS AT MOST")),
             ),
         ]);
         field(panel, NetField::Port);
-        panel.compact_buttons(vec![button(
-            Target::HostGame,
-            "HOST GAME",
-            ButtonState::new(false, menu.busy),
-        )]);
+        panel.compact_buttons(vec![button(Target::HostGame, "HOST GAME", busy())]);
         panel.gap(GAP);
         field(panel, NetField::Address);
         field(panel, NetField::Code);
-        panel.compact_buttons(vec![button(
-            Target::JoinGame,
-            "JOIN GAME",
-            ButtonState::new(false, menu.busy),
-        )]);
+        panel.compact_buttons(vec![button(Target::JoinGame, "JOIN GAME", busy())]);
         status(panel);
     }
 
@@ -297,13 +276,7 @@ impl GameState {
     /// the join `code`, and this machine's address on the local network;
     /// then what players over the internet need instead.
     fn host_rows(&self, panel: &mut PanelBuilder, code: &str) {
-        let copy = |target| ButtonSpec {
-            target,
-            label: "COPY".into(),
-            hint: String::new(),
-            state: ButtonState::Ready,
-            armed: false,
-        };
+        let copy = |target| ButtonSpec::new(target, "COPY", "");
         panel.title_with_button(
             vec![("JOIN CODE  ".into(), LABEL_TEXT), (code.into(), GOLD_TEXT)],
             copy(Target::CopyJoinCode),
