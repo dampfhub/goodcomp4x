@@ -32,6 +32,18 @@ Options:
   --interact           play a fixed script of clicks and keys through the window's
                        own message queue (nothing takes the focus), and exit 0 if
                        the game answered each; see src/interact.tua
+  --host               host a network game on a new world and wait for the
+                       other players to join; you play Blue
+  --players <N>        with --host: how many people play, you included (2-7,
+                       2 unless given)
+  --port <N>           the port --host listens on (default 7777)
+  --join <ADDRESS>     join a hosted game at HOST or HOST:PORT; you get the
+                       next open side
+  --code <CODE>        the join code the host shows (needed with --join)
+  --interact-mp        with --host or --join: play a few turns of clicks and keys
+                       through the window's own message queue, log each turn's
+                       state checksum, and exit 0 if the game agreed; see
+                       tools/interact-mp.ps1
   --validate           run under the Khronos validation layer; exit 83 if it
                        reports anything
   -h, --help           print this and exit
@@ -57,10 +69,22 @@ pub struct Options {
     classic: bool,
     /// A panel to open before the first frame (`GameState.open_panel`).
     open: Option[Str],
+    /// `--host`: host a network game for `players` people on `port`.
+    host: bool,
+    players: i32,
+    port: i32,
+    /// `--join`: the host's address, and its join code.
+    join: Option[Str],
+    code: Option[Str],
+    /// Play the multiplayer interaction script (`interact.tua`).
+    interact_mp: bool,
 }
 
+/// The port a host listens on unless told another.
+pub const DEFAULT_PORT: i32 = 7777;
+
 pub fn default_options() -> Options {
-    Options { scenario: Scenario.Cities, seed: Option.None, screenshot: Option.None, size: Option.None, help: false, frames: 0, validate: false, interact: false, classic: false, open: Option.None }
+    Options { scenario: Scenario.Cities, seed: Option.None, screenshot: Option.None, size: Option.None, help: false, frames: 0, validate: false, interact: false, classic: false, open: Option.None, host: false, players: 2, port: DEFAULT_PORT, join: Option.None, code: Option.None, interact_mp: false }
 }
 
 /// A refusal's text: `message`, then the usage.
@@ -128,10 +152,12 @@ fn parse_size(text: &str) -> Option[(u32, u32)] {
 /// Parses the arguments after the program name.
 pub fn parse(args: &Vec[Str]) -> Result[Options, Str] {
     let mut options = default_options();
+    let mut players_given = false;
+    let mut port_given = false;
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
-        let needs_value = str_eq(arg, "--scenario") || str_eq(arg, "--seed") || str_eq(arg, "--screenshot") || str_eq(arg, "--size") || str_eq(arg, "--open");
+        let needs_value = str_eq(arg, "--scenario") || str_eq(arg, "--seed") || str_eq(arg, "--screenshot") || str_eq(arg, "--size") || str_eq(arg, "--open") || str_eq(arg, "--players") || str_eq(arg, "--port") || str_eq(arg, "--join") || str_eq(arg, "--code");
         if needs_value && i + 1 >= args.len() {
             return Result.Err(with_usage(text2(arg, " needs a value")));
         }
@@ -176,6 +202,34 @@ pub fn parse(args: &Vec[Str]) -> Result[Options, Str] {
         } else if str_eq(arg, "--interact") {
             options.interact = true;
             i = i + 1;
+        } else if str_eq(arg, "--host") {
+            options.host = true;
+            i = i + 1;
+        } else if str_eq(arg, "--interact-mp") {
+            options.interact_mp = true;
+            i = i + 1;
+        } else if str_eq(arg, "--players") {
+            let text = &args[i + 1];
+            match number(text, 7) {
+                Option.Some(n) => { if n < 2 { return Result.Err(text3("--players wants 2 to 7, not \"", text, "\"")); } options.players = n as i32; players_given = true; }
+                Option.None => { return Result.Err(text3("--players wants 2 to 7, not \"", text, "\"")); }
+            }
+            i = i + 2;
+        } else if str_eq(arg, "--port") {
+            let text = &args[i + 1];
+            match number(text, 65535) {
+                Option.Some(n) => { options.port = n as i32; port_given = true; }
+                Option.None => { return Result.Err(text3("--port wants a port number, not \"", text, "\"")); }
+            }
+            i = i + 2;
+        } else if str_eq(arg, "--join") {
+            let target = &args[i + 1];
+            options.join = Option.Some(to_owned(target));
+            i = i + 2;
+        } else if str_eq(arg, "--code") {
+            let entered = &args[i + 1];
+            options.code = Option.Some(to_owned(entered));
+            i = i + 2;
         } else if str_eq(arg, "--validate") {
             options.validate = true;
             i = i + 1;
@@ -190,6 +244,17 @@ pub fn parse(args: &Vec[Str]) -> Result[Options, Str] {
     if options.seed.is_some() && options.scenario != Scenario.World {
         return Result.Err(to_owned("--seed only applies to --scenario world"));
     }
+    if options.host && options.join.is_some() { return Result.Err(to_owned("--host and --join can't go together")); }
+    if options.host && options.code.is_some() { return Result.Err(to_owned("--code only applies to --join")); }
+    if !options.host && options.join.is_none() {
+        if options.code.is_some() { return Result.Err(to_owned("--code only applies to --join")); }
+        if port_given { return Result.Err(to_owned("--port only applies to --host")); }
+        if options.interact_mp { return Result.Err(to_owned("--interact-mp needs --host or --join")); }
+    }
+    if options.join.is_some() && options.code.is_none() { return Result.Err(to_owned("--join needs --code: the join code the host shows")); }
+    if players_given && !options.host { return Result.Err(to_owned("--players only applies to --host")); }
+    if (options.host || options.join.is_some()) && options.screenshot.is_some() { return Result.Err(to_owned("--host and --join need the visible window, not --screenshot")); }
+    if options.interact_mp && options.interact { return Result.Err(to_owned("--interact-mp replaces --interact")); }
     if options.interact && options.screenshot.is_some() {
         return Result.Err(to_owned("--interact needs the visible window, not --screenshot"));
     }

@@ -11,6 +11,18 @@ use std.rand.seed;
 use std.time.Clock;
 use std.time.with_system_clock;
 use std.env.Env;
+use std.net.Net;
+use std.net.default_net;
+use std.rand.Entropy;
+use std.thread.yield_now;
+use crypto.entropy.os_entropy;
+use netlib.addr.ipv4;
+use link.link.NetLink;
+use link.link.no_link;
+use link.link.close_link;
+use link.link.address_of;
+use link.link.host_started;
+use link.link.guest_started;
 use log.Level;
 use log.Log;
 use log.error;
@@ -24,6 +36,7 @@ use win32.events.Modifiers;
 use win32.primary_monitor;
 use win32.claim_app_id;
 use log.warn;
+use log.info;
 use win32.cmdline.arguments_of;
 use std.io.Fs;
 use std.io.default_fs;
@@ -87,6 +100,9 @@ use std.thread.scope;
 use std.thread.spawn;
 
 const TITLE: str = "Hex Combat Sandbox";
+/// How long a guest waits for the host's game before giving up.
+const JOIN_WAIT_NS: i64 = 15000000000;
+const DEFAULT_PORT: i32 = 7777;
 /// The game's application id on Windows (`claim_app_id`).
 const APP_USER_MODEL_ID: str = "dampfhub.riskofcivlike";
 /// The window opens at this fraction of the primary monitor's size, centered on it.
@@ -357,7 +373,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
 /// Plays one frame: advances the game by `dt` seconds and lays out the world and the UI as
 /// two batches. Answers whether to keep running: not once the window was closed, the
 /// screenshot written, or its time run out.
-fn on_frame(game: &mut GameState, input: &Controls, ctx: &mut Context, ui: &mut UiState, shot: &mut Option[Screenshot], script: &mut Driver, mb: &Mailbox, interact: bool, w: u32, h: u32, dt: f32, scale: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> FrameOut can {Log, Rand, Clock} {
+fn on_frame(game: &mut GameState, net: &mut NetLink, input: &Controls, ctx: &mut Context, ui: &mut UiState, shot: &mut Option[Screenshot], script: &mut Driver, mb: &Mailbox, interact: bool, w: u32, h: u32, dt: f32, scale: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> FrameOut can {Log, Rand, Clock, Net, Entropy} {
     // The interaction script looks at the game and posts its next input before the frame plays.
     if interact && !drive(script, mb, &*game, &*ui, &*ctx, vec2(w as f32, h as f32), scale, Clock.now_nanos(), input.closed) { return FrameOut { keep: false, ui: draw_data() }; }
     if input.closed || game.quit_requested() { return FrameOut { keep: false, ui: draw_data() }; }
@@ -372,6 +388,7 @@ fn on_frame(game: &mut GameState, input: &Controls, ctx: &mut Context, ui: &mut 
         }
         s.after_frame(now);
     }
+    net.pump(Clock.now_nanos(), game);
     game.update(dt);
     // A screenshot keeps the clouds where they start, so two shots of one scene match.
     if !shooting { game.animate_clouds(dt); }
@@ -400,6 +417,50 @@ fn on_frame(game: &mut GameState, input: &Controls, ctx: &mut Context, ui: &mut 
     FrameOut { keep: true, ui: take_ui_data(ui) }
 }
 
+/// A game hosted or joined from the command line replaces the local one: the exit code to give
+/// when it could not be (0 when there is nothing to do or it is done). A guest gets its game from
+/// the host's welcome before its window opens.
+fn start_network(options: &Options, game: &mut GameState, net: &mut NetLink) -> i32 can {Log, Clock, Net, Entropy, Rand} {
+    if options.host {
+        let addr = if options.interact_mp { ipv4(127, 0, 0, 1, options.port) } else { ipv4(0, 0, 0, 0, options.port) };
+        let (hosted, started) = host_started(options.players, &default_settings(), &addr, Clock.now_nanos());
+        *game = hosted;
+        if let Option.Some(why) = net.adopt(started) {
+            error(fn() can {Out} { Out.put(&why); });
+            return 3;
+        }
+        let port = net.port().unwrap_or(options.port);
+        let code = game.join_code().unwrap_or(to_owned(""));
+        info(fn() can {Out} { Out.put("hosting on port "); show_i64(port as i64); Out.put(" for more players; they join with code "); Out.put(&code); });
+    }
+    if let &Option.Some(target) = &options.join {
+        let code_text = match &options.code { &Option.Some(c) => copy_text(&c), &Option.None => to_owned("") };
+        let Option.Some(addr) = address_of(&target, DEFAULT_PORT) else {
+            error(fn() can {Out} { Out.put("the host address is not HOST or HOST:PORT (an IPv4 address or localhost)"); });
+            return 4;
+        };
+        if let Option.Some(why) = net.adopt(guest_started(&addr, &code_text)) {
+            error(fn() can {Out} { Out.put(&why); });
+            return 4;
+        }
+        let started_at = Clock.now_nanos();
+        while !game.is_networked() && net.is_active() && Clock.now_nanos() - started_at < JOIN_WAIT_NS {
+            net.pump(Clock.now_nanos(), game);
+            yield_now();
+        }
+        if !game.is_networked() {
+            let why = copy_text(&game.notice);
+            error(fn() can {Out} { Out.put("couldn't join: "); Out.put(&why); });
+            return 4;
+        }
+        let side = game.local_team.name();
+        info(fn() can {Out} { Out.put("joined the game as "); Out.put(side); });
+    }
+    0
+}
+
+fn copy_text(s: &Str) -> Str { to_owned(s) }
+
 /// The game in a window for `frames` frames (0 for until it is closed).
 /// Most of the primary monitor, centered, so there's room for the map and the UI.
 fn window_spec() -> WindowPlace {
@@ -418,7 +479,7 @@ const SETTINGS_FILE: str = "settings.txt";
 const LAYOUT_FILE: str = "layout.txt";
 const IMGUI_FILE: str = "imgui.txt";
 
-fn play(options: &Options, mb: &Mailbox) -> i32 can {Log, Clock, Fs, Env} {
+fn play(options: &Options, mb: &Mailbox) -> i32 can {Log, Clock, Fs, Env, Net, Entropy} {
     let mut rng = seed(Clock.now_nanos() as u64);
     let hidden = options.screenshot.is_some();
     let mut spec = window_spec();
@@ -458,8 +519,11 @@ fn play(options: &Options, mb: &Mailbox) -> i32 can {Log, Clock, Fs, Env} {
             Option.Some(s) => GameState.world_scenario_with(s, &default_settings()),
             Option.None => options.scenario.start(&default_settings()),
         };
+        let mut net = no_link();
+        let started = start_network(options, &mut game, &mut net);
+        if started != 0 { net.stop(); close_link(net); return started; }
         // Everywhere but a screenshot keeps the player's settings between sessions.
-        let remember = !hidden && !options.interact;
+        let remember = !hidden && !options.interact && !options.interact_mp;
         let saved = if remember { read(SETTINGS_FILE) } else { Option.None };
         if let &Option.Some(t) = &saved { let view = &t; game.set_settings(settings_from_text(view)); }
         game.imgui_ui = !options.classic;
@@ -484,14 +548,14 @@ fn play(options: &Options, mb: &Mailbox) -> i32 can {Log, Clock, Fs, Env} {
             mods: Modifiers { shift: false, control: false, alt: false },
             closed: false,
         };
-        let mut script = driver();
+        let mut script = driver(options.interact_mp);
         let rc = handle { run(TITLE, spec, &icons, &atlas, &ui_font, frames, validate) } with Scene {
             // A screenshot shows the scenario as it starts, whatever the mouse and keyboard do.
             input(e, scale) => { resume if hidden { WindowRequest.Nothing } else { on_event(&mut game, &mut input, &mut ui, scale, e) } }
             frame(w, h, dt, scale, vertices, batches) => {
-                resume on_frame(&mut game, &input, &mut ctx, &mut ui, &mut shot, &mut script, mb, options.interact, w, h, dt, scale, vertices, batches)
+                resume on_frame(&mut game, &mut net, &input, &mut ctx, &mut ui, &mut shot, &mut script, mb, options.interact || options.interact_mp, w, h, dt, scale, vertices, batches)
             }
-            opened(hwnd) => { mb.hwnd.store(hwnd as i64); resume options.interact }
+            opened(hwnd) => { mb.hwnd.store(hwnd as i64); resume options.interact || options.interact_mp }
             capture() => { resume match &shot { &Option.Some(s) => s.capture_this_frame(), &Option.None => false } }
             captured(w, h, rgba) => {
                 if let &mut Option.Some(s) = &mut shot { let _ok = s.captured(w, h, rgba); }
@@ -507,7 +571,8 @@ fn play(options: &Options, mb: &Mailbox) -> i32 can {Log, Clock, Fs, Env} {
             write(IMGUI_FILE, &ctx.save_settings());
         }
         let written = match &shot { &Option.Some(s) => s.is_written(), &Option.None => true };
-        if options.interact && rc == 0 { return verdict(&script); }
+        close_link(net);
+        if (options.interact || options.interact_mp) && rc == 0 { return verdict(&script); }
         if rc == 0 && !written {
             error(fn() can {Out} { Out.put("the window closed before the screenshot was written"); });
             1
@@ -531,10 +596,14 @@ fn main() -> i32 can {Env} {
     with_env_level("HEX_LOG", Level.Info, fn() -> i32 can {Log, Env} {
         with_system_clock(fn() -> i32 can {Log, Clock, Env} {
             default_fs(fn() -> i32 can {Log, Clock, Fs, Env} {
-                // The interaction script's poster runs beside the game and ends with the script.
-                scope(fn(s: &Scope) -> i32 can {Log, Clock, Fs, Env} {
-                    if options.interact { spawn(s, fn() -> i32 { poster(&mb) }); }
-                    play(&options, &mb)
+                default_net(fn() -> i32 can {Log, Clock, Fs, Env, Net} {
+                    os_entropy(fn() -> i32 can {Log, Clock, Fs, Env, Net, Entropy} {
+                        // The interaction script's poster runs beside the game and ends with the script.
+                        scope(fn(s: &Scope) -> i32 can {Log, Clock, Fs, Env, Net, Entropy} {
+                            if options.interact || options.interact_mp { spawn(s, fn() -> i32 { poster(&mb) }); }
+                            play(&options, &mb)
+                        })
+                    })
                 })
             })
         })

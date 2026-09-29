@@ -1,0 +1,134 @@
+//! What the frame loop holds of the network: at most one session, hosting or joined, that it
+//! pumps once a frame. A session that fails (the host went away, a wrong code) is closed and its
+//! words go to the game's notice.
+
+use std.core.Option;
+use std.mem.replace;
+use std.net.Net;
+use std.rand.Entropy;
+use std.rand.Rand;
+use std.str.Str;
+use std.str.to_owned;
+use std.str.rfind_char;
+use std.str.substring;
+use std.str.sub;
+use std.str.len;
+use std.str.parse_u64;
+use std.str.eq as str_eq;
+use std.str.push;
+use std.rand.draw;
+use netlib.addr.parse as parse_addr;
+use game.text;
+use netlib.addr.SocketAddr;
+use netlib.addr.ipv4;
+use log.Log;
+use log.info;
+use std.fmt.Out;
+use std.fmt.show_i64;
+use game.GameState;
+use game.multiplayer.fresh_join_code;
+use game.settings.Settings;
+use link.hub.open_hub;
+use link.session.Session;
+use link.session.Started;
+use link.session.close_session;
+use link.session.start_guest;
+use link.session.start_host;
+
+pub linear struct NetLink { session: Option[Session] }
+
+pub fn no_link() -> NetLink { NetLink { session: Option.None } }
+
+/// Ends whatever session there is.
+pub fn close_link(l: NetLink) can {Net} {
+    let NetLink { session } = l;
+    match session { Option.Some(s) => { close_session(s); } Option.None => {} }
+}
+
+/// `HOST` or `HOST:PORT` (an IPv4 address or `localhost`) as an address; the default port when
+/// none is given.
+pub fn address_of(text: &str, default_port: i32) -> Option[SocketAddr] {
+    let mut host = to_owned(text);
+    let mut port = default_port;
+    match rfind_char(text, ':') {
+        Option.Some(at) => {
+            let Option.Some(h) = substring(text, 0, at) else { return Option.None; };
+            let Option.Some(p) = substring(text, at + 1, len(text)) else { return Option.None; };
+            host = to_owned(sub(text, h));
+            match parse_u64(sub(text, p)) {
+                Option.Some(n) => { if n < 1 || n > 65535 { return Option.None; } port = n as i32; }
+                Option.None => { return Option.None; }
+            }
+        }
+        Option.None => {}
+    }
+    if str_eq(&host, "localhost") { return Option.Some(ipv4(127, 0, 0, 1, port)); }
+    let joined = host_with_port(&host, port);
+    parse_addr(&joined)
+}
+
+fn host_with_port(host: &Str, port: i32) -> Str {
+    let mut out = to_owned(host);
+    push(&mut out, ":");
+    let digits = text(fn() can {Out} { show_i64(port as i64); });
+    push(&mut out, &digits);
+    out
+}
+
+impl NetLink {
+    pub fn is_active(&self) -> bool { match &self.session { &Option.Some(s) => true, &Option.None => false } }
+
+    /// Ends the session there is, if any, and holds `started` in its place. The words of a failure
+    /// come back.
+    pub fn adopt(&mut self, started: Started) -> Option[Str] can {Net} {
+        let old = replace(&mut self.session, Option.None);
+        match old { Option.Some(s) => { close_session(s); } Option.None => {} }
+        match started {
+            Started.Ok(s) => { self.session = Option.Some(s); Option.None }
+            Started.Failed(why) => Option.Some(why),
+        }
+    }
+
+    /// Ends the session there is, if any.
+    pub fn stop(&mut self) can {Net} {
+        let old = replace(&mut self.session, Option.None);
+        match old { Option.Some(s) => { close_session(s); } Option.None => {} }
+    }
+
+    /// The port a hosting session listens on.
+    pub fn port(&self) -> Option[i32] {
+        match &self.session { &Option.Some(s) => Option.Some(s.port()), &Option.None => Option.None }
+    }
+
+    /// Once a frame: the session polled and its messages moved. A session that failed is closed.
+    pub fn pump(&mut self, now: i64, game: &mut GameState) can {Net, Entropy, Log, Rand} {
+        let taken = replace(&mut self.session, Option.None);
+        let Option.Some(mut s) = taken else { return; };
+        s.pump(now, game);
+        match s.failure() {
+            Option.Some(why) => {
+                if s.is_host() {
+                    let words = to_owned(&why);
+                    info(fn() can {Out} { Out.put("the network session ended: "); Out.put(&words); });
+                } else {
+                    game.notice = why;
+                }
+                close_session(s);
+            }
+            Option.None => { self.session = Option.Some(s); }
+        }
+    }
+}
+
+/// Hosts a game for `players` people on `addr`: the game, and the session that runs it (or why not).
+pub fn host_started(players: i32, settings: &Settings, addr: &SocketAddr, now: i64) -> (GameState, Started) can {Net, Log, Rand} {
+    let code = fresh_join_code();
+    let seed = (draw() >> 32) as u32;
+    let mut game = GameState.host_game(players, settings, seed, to_owned(&code));
+    let hub = open_hub(players, now, &mut game);
+    let started = start_host(addr, &code, hub);
+    (game, started)
+}
+
+/// Joins the game at `addr` with the `code` entered.
+pub fn guest_started(addr: &SocketAddr, code: &str) -> Started can {Net} { start_guest(addr, code) }

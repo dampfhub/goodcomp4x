@@ -23,6 +23,7 @@ use std.linalg.Vec2;
 use std.linalg.vec2;
 use std.fmt.Out;
 use std.fmt.show_i64;
+use std.fmt.show_u64;
 use std.str.Str;
 use std.str.to_owned;
 use log.Log;
@@ -75,10 +76,13 @@ const MK_LBUTTON: u64 = 1;
 const VK_CONTROL: u32 = 17;
 const VK_ESCAPE: u32 = 27;
 const VK_SPACE: u32 = 32;
+const VK_C: u32 = 67;
 /// `lParam` of a key going up: repeat count 1, previous state down, transition up.
 const KEY_UP_LPARAM: u64 = 3221225473;
-/// The pause between the messages of one gesture, in milliseconds; a frame is about 16.
-const GESTURE_MS: u32 = 40;
+/// The pause between the messages of one gesture, in milliseconds. Two windows drawing at once
+/// (the multiplayer test) take up to 60 ms a frame, and a press and its release must fall in
+/// different frames to be a click.
+const GESTURE_MS: u32 = 100;
 /// The mouse moves a drag is made of.
 const DRAG_MOVES: i64 = 8;
 
@@ -225,20 +229,52 @@ const HOLD_UNIT: i32 = 13;
 const END_TURN_1: i32 = 14;
 const END_TURN_3: i32 = 16;
 const CLICK_CITY_AGAIN: i32 = 17;
-const STEP_COUNT: i32 = 19;
-const STEP_NAMES: [str; 19] = [
+const CLOSE: i32 = 18;
+/// The multiplayer script's own steps: wait until every seat has a player, and queue a gather.
+const WAIT_SEATS: i32 = 19;
+const QUEUE_GATHER: i32 = 20;
+const STEP_NAMES: [str; 21] = [
     "warm up", "click a city", "queue a unit", "leave the city", "click a unit", "clear the selection", "open settings",
     "close settings", "hold Control", "drag the debug panel", "release Control", "hover the city", "click a unit again", "hold it", "end turn 1", "end turn 2",
-    "end turn 3", "click the city again", "close",
+    "end turn 3", "click the city again", "close", "wait for every seat", "queue a gather",
 ];
+
+/// The single-player script, then the multiplayer one: a few turns of ordering a city and ending
+/// the turn, played out beside a second process (`tools/interact-mp.ps1`).
+fn script_of(mp: bool) -> Vec[i32] {
+    let mut out: Vec[i32] = Vec.new();
+    if mp {
+        out.push(WARM_UP);
+        out.push(WAIT_SEATS);
+        for round in 0..MP_TURNS {
+            out.push(CLICK_CITY);
+            out.push(if round == 0 { QUEUE_UNIT } else { QUEUE_GATHER });
+            out.push(LEAVE_CITY);
+            out.push(END_TURN_1);
+        }
+        out.push(CLOSE);
+    } else {
+        for step in 0..19 { out.push(step); }
+    }
+    out
+}
+
+/// The turns the multiplayer script plays. The last bundle carries the checksum of the one before,
+/// so a guest sees a desync on the turn after it happened: four turns check three.
+const MP_TURNS: i32 = 4;
 /// The frames a step's check may take to come true (a turn plays out over many).
 const CHECK_FRAMES: i32 = 120;
 const TURN_FRAMES: i32 = 1500;
 /// Frames the frame loop waits after an order is done, so its effect reaches the game.
 const SETTLE_FRAMES: i32 = 3;
+/// Frames after which a lost order is given again.
+const RETRY_FRAMES: i32 = 40;
 
 /// The script's state between frames.
 pub struct Driver {
+    /// Which step ids to run, in order, and where the script is in them.
+    script: Vec[i32],
+    mp: bool,
     step: i32,
     /// 0: the step is not started; 1: its order is out; 2: the order is done and the check runs.
     phase: i32,
@@ -252,10 +288,12 @@ pub struct Driver {
     last_frame_nanos: i64,
     longest_gap_nanos: i64,
     frames: i32,
+    /// The step's order has been given a second time (a click that did not land).
+    retried: bool,
 }
 
-pub fn driver() -> Driver {
-    Driver { step: 0, phase: 0, seq: 0, waited: 0, before: 0, before_pos: vec2(0.0, 0.0), failure: 0, last_frame_nanos: 0, longest_gap_nanos: 0, frames: 0 }
+pub fn driver(mp: bool) -> Driver {
+    Driver { script: script_of(mp), mp: mp, step: 0, phase: 0, seq: 0, waited: 0, before: 0, before_pos: vec2(0.0, 0.0), failure: 0, last_frame_nanos: 0, longest_gap_nanos: 0, frames: 0, retried: false }
 }
 
 fn center(r: Rect) -> Vec2 { vec2((r.min.x + r.max.x) / 2.0, (r.min.y + r.max.y) / 2.0) }
@@ -268,9 +306,9 @@ fn widget(ui: &UiState, target: Target, scale: f32) -> Option[Vec2] {
     Option.None
 }
 
-/// The first city of the player's.
+/// The first city of the local side's.
 fn own_city(game: &GameState) -> Option[i32] {
-    for i in 0..game.cities.len() { if game.cities[i].team == PLAYER_TEAM { return Option.Some(i); } }
+    for i in 0..game.cities.len() { if game.cities[i].team == game.local_team { return Option.Some(i); } }
     Option.None
 }
 
@@ -311,16 +349,32 @@ fn issue(d: &mut Driver, step: i32, g: &GameState, ui: &UiState, ctx: &Context, 
     let city = own_city(g);
     if step == WARM_UP { return Gesture.Nothing; }
     if step == CLICK_CITY || step == CLICK_CITY_AGAIN {
+        // A turn's planning begins with the city that needs a build already open; C opens it
+        // otherwise (a click on the city's hex may land on a troop standing in it).
+        if d.mp && selected_is(g.selected_city, city) { return Gesture.Nothing; }
+        // The second try is a click on the city's hex: a key does not reach the game while a
+        // button the last click pressed still holds the library's keyboard focus.
+        if d.mp && !d.retried { return Gesture.Key(VK_C); }
         return match city { Option.Some(c) => Gesture.Click(hex_on_screen(g, g.cities[c].pos, size)), Option.None => Gesture.Missing };
     }
     if step == QUEUE_UNIT {
         let Option.Some(c) = city else { return Gesture.Missing; };
         d.before = g.cities[c].queue.len() as i64;
+        if d.mp && !g.city_needs_build(c) { return Gesture.Nothing; }
         return match widget(ui, Target.Build(BuildUnit.Melee), scale) { Option.Some(p) => Gesture.Click(p), Option.None => Gesture.Missing };
     }
     if step == CLICK_UNIT || step == CLICK_UNIT_AGAIN {
         return match field_unit(g) { Option.Some((_i, hex)) => Gesture.Click(hex_on_screen(g, hex, size)), Option.None => Gesture.Missing };
     }
+    if step == WAIT_SEATS { return Gesture.Nothing; }
+    if step == QUEUE_GATHER {
+        let Option.Some(c) = city else { return Gesture.Missing; };
+        d.before = g.cities[c].queue.len() as i64;
+        if !g.city_needs_build(c) { return Gesture.Nothing; }
+        return match widget(ui, Target.Gather, scale) { Option.Some(p) => Gesture.Click(p), Option.None => Gesture.Missing };
+    }
+    // Some orders (a gather) close the city on their own: another Escape would open the menu.
+    if d.mp && step == LEAVE_CITY && g.selected_city.is_none() && g.selected.is_none() { return Gesture.Nothing; }
     if step == LEAVE_CITY || step == CLEAR_SELECTION || step == OPEN_SETTINGS { return Gesture.Key(VK_ESCAPE); }
     if step == CLOSE_SETTINGS {
         return match widget(ui, Target.CloseSettings, scale) { Option.Some(p) => Gesture.Click(p), Option.None => Gesture.Missing };
@@ -351,10 +405,16 @@ fn issue(d: &mut Driver, step: i32, g: &GameState, ui: &UiState, ctx: &Context, 
 /// Whether what step `step` did shows in the game.
 fn check(d: &Driver, step: i32, g: &GameState, ui: &UiState, ctx: &Context, closed: bool) -> bool {
     let city = own_city(g);
-    if step == WARM_UP { return d.frames >= 12 && panel_open(ctx, "Debug") && panel_open(ctx, "Units"); }
+    // The panels settle into place over the first frames; a world's take a few more.
+    if step == WARM_UP { return d.frames >= (if d.mp { 60 } else { 12 }) && panel_open(ctx, "Debug") && panel_open(ctx, "Units"); }
     if step == CLICK_CITY || step == CLICK_CITY_AGAIN { return selected_is(g.selected_city, city) && panel_open(ctx, "Selection"); }
     if step == QUEUE_UNIT {
+        if d.mp { return match city { Option.Some(c) => !g.city_needs_build(c), Option.None => false }; }
         return match city { Option.Some(c) => (g.cities[c].queue.len() as i64) > d.before && panel_open(ctx, "Production Queue"), Option.None => false };
+    }
+    if step == WAIT_SEATS { return g.open_seats().is_empty(); }
+    if step == QUEUE_GATHER {
+        return match city { Option.Some(c) => !g.city_needs_build(c), Option.None => false };
     }
     if step == LEAVE_CITY || step == CLEAR_SELECTION { return g.selected.is_none() && g.selected_city.is_none() && !g.settings_open; }
     if step == CLICK_UNIT || step == CLICK_UNIT_AGAIN { return g.selected.is_some() && g.selected_city.is_none(); }
@@ -390,7 +450,7 @@ fn hand_over(mb: &Mailbox, d: &mut Driver, kind: i64, a: Vec2, b: Vec2) {
 }
 
 fn fail(d: &mut Driver, mb: &Mailbox, why: &str) can {Log} {
-    let step = d.step;
+    let step = d.script[d.step];
     error(fn() can {Out} { Out.put("interaction step "); show_i64(step as i64); Out.put(" ("); Out.put(STEP_NAMES[step]); Out.put("): "); Out.put(why); });
     d.failure = EXIT_STEP + step;
     mb.finished.store(1);
@@ -404,8 +464,10 @@ pub fn drive(d: &mut Driver, mb: &Mailbox, g: &GameState, ui: &UiState, ctx: &Co
     if d.last_frame_nanos > 0 && now - d.last_frame_nanos > d.longest_gap_nanos { d.longest_gap_nanos = now - d.last_frame_nanos; }
     d.last_frame_nanos = now;
     if d.failure != 0 { return false; }
-    if d.step >= STEP_COUNT { return true; }
-    let step = d.step;
+    if d.step >= d.script.len() { return true; }
+    let step = d.script[d.step];
+    // Two machines that resolved a turn differently say so, whichever hears it first.
+    if d.mp && g.lockstep.desync.is_some() { fail(d, mb, "the machines' game states disagree (desync)"); return false; }
     if d.phase == 0 {
         let order = issue(d, step, g, ui, ctx, size, scale);
         match order {
@@ -428,16 +490,33 @@ pub fn drive(d: &mut Driver, mb: &Mailbox, g: &GameState, ui: &UiState, ctx: &Co
     }
     d.waited = d.waited + 1;
     // The close is checked as soon as it is done: the loop ends the frame it is heard in.
-    if d.waited < SETTLE_FRAMES && step != STEP_COUNT - 1 { return true; }
+    if d.waited < SETTLE_FRAMES && step != CLOSE { return true; }
     if check(&*d, step, g, ui, ctx, closed) {
         let frames = d.frames;
         info(fn() can {Out} { Out.put("interaction step "); show_i64(step as i64); Out.put(" ("); Out.put(STEP_NAMES[step]); Out.put(") ok at frame "); show_i64(frames as i64); });
-        d.step = step + 1;
+        // What a turn left, for the harness to compare with the other machine's.
+        if d.mp && step >= END_TURN_1 && step <= END_TURN_3 {
+            let sum = g.checksum();
+            let turn = g.turn;
+            info(fn() can {Out} { Out.put("interaction checksum after turn "); show_i64(turn as i64); Out.put(": "); show_u64(sum); });
+        }
+        d.step = d.step + 1;
         d.phase = 0;
-        if d.step >= STEP_COUNT { mb.finished.store(1); }
+        d.retried = false;
+        if d.step >= d.script.len() { mb.finished.store(1); }
+        return true;
+    }
+    // With two windows drawing, an order that landed between frames may be lost: the orders that
+    // are safe to repeat (not End Turn, which a second click takes back) are given once more.
+    let repeatable = step == CLICK_CITY || step == QUEUE_UNIT || step == QUEUE_GATHER || step == LEAVE_CITY;
+    if d.mp && repeatable && !d.retried && d.waited > RETRY_FRAMES {
+        d.retried = true;
+        d.phase = 0;
         return true;
     }
     if d.waited > frames_allowed(step) {
+        let (sc, res, out, set) = (g.selected_city.unwrap_or(0 - 1), g.is_resolving(), g.is_playing_out(), g.settings_open);
+        info(fn() can {Out} { Out.put("state: selected city "); show_i64(sc as i64); Out.put(if res { " resolving" } else { " planning" }); Out.put(if out { " playing" } else { "" }); Out.put(if set { " settings" } else { "" }); });
         fail(d, mb, "its effect never showed in the game");
         return false;
     }
@@ -447,9 +526,11 @@ pub fn drive(d: &mut Driver, mb: &Mailbox, g: &GameState, ui: &UiState, ctx: &Co
 /// The script's exit code once the window is gone: 0 only when every step passed.
 pub fn verdict(d: &Driver) -> i32 can {Log} {
     if d.failure != 0 { return d.failure; }
-    if d.step < STEP_COUNT {
-        let step = d.step;
-        error(fn() can {Out} { Out.put("the window closed at interaction step "); show_i64(step as i64); Out.put(" of "); show_i64(STEP_COUNT as i64); });
+    if d.step < d.script.len() {
+        let step = d.script[d.step];
+        let at = d.step;
+        let of = d.script.len();
+        error(fn() can {Out} { Out.put("the window closed at interaction step "); show_i64(at as i64); Out.put(" of "); show_i64(of as i64); });
         return EXIT_STEP + step;
     }
     let gap = d.longest_gap_nanos / 1000000;
