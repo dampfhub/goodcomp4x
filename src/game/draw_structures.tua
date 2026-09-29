@@ -9,6 +9,7 @@ use std.fmt.show_u64;
 use std.linalg.Vec2;
 use std.linalg.vec2;
 use std.linalg.vec2_from_angle;
+use std.math.max;
 use std.math.tau;
 use std.str.Str;
 use std.str.to_owned;
@@ -25,6 +26,8 @@ use game.city.manager_label;
 use game.city.turns_icon;
 use game.fog.Fog;
 use game.font.push_glyph;
+use game.draw.push_pill;
+
 use game.font.push_text;
 use game.font.world_text_width;
 use game.hex.HEX_SIZE;
@@ -32,6 +35,7 @@ use game.hex.Hex;
 use game.hex.edge_corners;
 use game.mesh.Color;
 use game.mesh.polygon;
+use game.mesh.polyline;
 use game.mesh.polygon_outline;
 use game.mesh.quad;
 use game.mesh.regular_polygon;
@@ -69,7 +73,20 @@ const PLANNED_JOB_COLOR_SOLID: Color = [0.95, 0.78, 0.42, 1.0];
 pub const JOB_UNDER_WAY_COLOR: Color = [1.0, 0.88, 0.52, 1.0];
 /// The armed worker job's preview on a tile where it can't go.
 const BLOCKED_JOB_COLOR: Color = [0.90, 0.30, 0.25, 1.0];
-const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2 { x: 0.0, y: 0.6 };
+/// A job on a tile is a hexagon nested inside the worked-tile ring (`WORKED_OUTLINE_RADIUS`), so a
+/// worked tile with a job shows both, and clear of a guard's outline and a fort's ring inside
+/// it. It is open along its top side, where the job's name goes.
+const JOB_RING_RADIUS: f32 = 0.70;
+/// Where the job ring's open top side runs: its apothem.
+const JOB_RING_TOP: f32 = 0.6062178;
+const JOB_RING_WIDTH: f32 = 0.06;
+const PLANNED_JOB_RING_WIDTH: f32 = 0.05;
+/// A job's name sits in its ring's open top...
+const PLANNED_JOB_LABEL_OFFSET: Vec2 = Vec2 { x: 0.0, y: 0.6062178 };
+/// ...on a dark plate reaching past the text by this much, so it reads over the ring and any
+/// ground.
+const JOB_LABEL_PADDING: Vec2 = Vec2 { x: 0.05, y: 0.03 };
+const JOB_LABEL_PLATE_COLOR: Color = [0.01, 0.01, 0.012, 0.8];
 const PLANNED_JOB_LABEL_HEIGHT: f32 = 0.12;
 const WORKER_TAG_MIN: Vec2 = Vec2 { x: -0.78, y: -0.58 };
 const WORKER_TAG_MAX: Vec2 = Vec2 { x: -0.3, y: -0.32 };
@@ -260,6 +277,25 @@ fn push_worker_token(center: Vec2, scale: f32, color: Color, out: &mut Vec[MeshV
     push_pictogram(center, radius * CIVILIAN_TOKEN_SIZE * 0.7, WORKER_SHOVEL, color, out);
 }
 
+/// A job's ring on `hex` (`JOB_RING_RADIUS`): five sides of a hexagon, open along the top where
+/// its name goes.
+fn push_job_ring(hex: Hex, width: f32, color: Color, out: &mut Vec[MeshVertex]) {
+    let center = hex.to_world();
+    // From the top left corner around to the top right one, the long way.
+    let mut corners: Vec[Vec2] = Vec.new();
+    for i in 0..6 { corners.push(center.add(vec2_from_angle((i + 2) as f32 * 6.2831855 / 6.0).scale(JOB_RING_RADIUS))); }
+    polyline(&corners, width, color, out);
+}
+
+/// A job's name centered on `at`, on a dark plate.
+fn push_job_label(at: Vec2, label: &str, color: Color, out: &mut Vec[MeshVertex]) {
+    let height = PLANNED_JOB_LABEL_HEIGHT;
+    let radius = height / 2.0 + JOB_LABEL_PADDING.y;
+    let reach = max(world_text_width(label, height) / 2.0 + JOB_LABEL_PADDING.x - radius, 0.0);
+    push_pill(at, reach, radius, JOB_LABEL_PLATE_COLOR, out);
+    push_text_centered(at, height, label, color, out);
+}
+
 /// Another side's job on the ground: its ring (or edge) and name in `color`.
 pub fn push_seen_job(job: WorkerJob, name: str, color: Color, out: &mut Vec[MeshVertex]) {
     let at = match job.across {
@@ -269,11 +305,11 @@ pub fn push_seen_job(job: WorkerJob, name: str, color: Color, out: &mut Vec[Mesh
             start.add(end).scale(0.5).add(PLANNED_JOB_LABEL_OFFSET.scale(0.5))
         }
         Option.None => {
-            polygon_outline(job.hex.to_world(), WORKED_OUTLINE_RADIUS, 0.06, 6, 0.0, color, out);
+            push_job_ring(job.hex, JOB_RING_WIDTH, color, out);
             job.hex.to_world().add(PLANNED_JOB_LABEL_OFFSET)
         }
     };
-    push_text_centered(at, PLANNED_JOB_LABEL_HEIGHT, name, color, out);
+    push_job_label(at, name, color, out);
 }
 
 impl GameState {
@@ -410,11 +446,11 @@ impl GameState {
                     start.add(end).scale(0.5).add(PLANNED_JOB_LABEL_OFFSET.scale(0.5))
                 }
                 Option.None => {
-                    polygon_outline(job.hex.to_world(), WORKED_OUTLINE_RADIUS, 0.06, 6, 0.0, JOB_UNDER_WAY_COLOR, out);
+                    push_job_ring(job.hex, JOB_RING_WIDTH, JOB_UNDER_WAY_COLOR, out);
                     job.hex.to_world().add(PLANNED_JOB_LABEL_OFFSET)
                 }
             };
-            push_text_centered(at, PLANNED_JOB_LABEL_HEIGHT, &label, JOB_UNDER_WAY_COLOR, out);
+            push_job_label(at, &label, JOB_UNDER_WAY_COLOR, out);
         }
         for c in 0..self.cities.len() {
             if self.cities[c].team != self.local_team { continue; }
@@ -427,7 +463,7 @@ impl GameState {
                     continue;
                 }
                 let center = job.hex.to_world();
-                polygon_outline(center, WORKED_OUTLINE_RADIUS, 0.05, 6, 0.0, PLANNED_JOB_COLOR, out);
+                push_job_ring(job.hex, PLANNED_JOB_RING_WIDTH, PLANNED_JOB_COLOR, out);
                 // A job partly built (a worker left it) adds the turns of work it has left.
                 let label: Str = if job.done > 0 {
                     let left = self.job_turns_left(self.local_team, job);
@@ -436,7 +472,7 @@ impl GameState {
                 } else {
                     to_owned(self.job_name(job))
                 };
-                push_text_centered(center.add(PLANNED_JOB_LABEL_OFFSET), PLANNED_JOB_LABEL_HEIGHT, &label, PLANNED_JOB_COLOR, out);
+                push_job_label(center.add(PLANNED_JOB_LABEL_OFFSET), &label, PLANNED_JOB_COLOR, out);
             }
         }
     }
@@ -472,7 +508,7 @@ impl GameState {
             }
             Option.None => {
                 let fine = self.job_unavailable(hex, kind).is_none() || self.job_taken(self.local_team, WorkerJob.on_tile(hex, kind));
-                polygon_outline(hex.to_world(), WORKED_OUTLINE_RADIUS, 0.07, 6, 0.0, if fine { PLANNED_JOB_COLOR_SOLID } else { BLOCKED_JOB_COLOR }, out);
+                push_job_ring(hex, JOB_RING_WIDTH, if fine { PLANNED_JOB_COLOR_SOLID } else { BLOCKED_JOB_COLOR }, out);
             }
         }
     }

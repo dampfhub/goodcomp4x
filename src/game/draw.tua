@@ -1212,7 +1212,7 @@ fn push_turn_badge(center: Vec2, label: &Str, scale: f32, rim: Color, out: &mut 
 }
 
 /// A horizontal pill: discs of `radius` `reach` either side of `center`, joined by a band.
-fn push_pill(center: Vec2, reach: f32, radius: f32, color: Color, out: &mut Vec[MeshVertex]) {
+pub fn push_pill(center: Vec2, reach: f32, radius: f32, color: Color, out: &mut Vec[MeshVertex]) {
     regular_polygon(center.sub(vec2(reach, 0.0)), radius, 20, 0.0, color, out);
     regular_polygon(center.add(vec2(reach, 0.0)), radius, 20, 0.0, color, out);
     if reach > 0.0 {
