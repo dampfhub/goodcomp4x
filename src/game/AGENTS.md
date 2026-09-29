@@ -54,7 +54,7 @@ behavior.
 | `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
 | `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs`, `ui/network_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling, drag to reorder and a Clear button, and each row's turns left or what it waits for (`queue_status`); the turn strip of everything needing orders (cities, unit groups); the settings menu (a heading per group, a control per `Setting`) and its Multiplayer page (host, join, leave; typed fields) |
-| `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, and `subject_tooltip_lines` for a given unit or city, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
+| `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, and `subject_tooltip_lines` for a given unit or city, `unit_action_text`; `classic_tooltip_at` picks classic's); number and text formatting (`quantity`, `ability_text`, `wrap`) |
 | `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
 | `mesh.rs`, `font.rs` | shape helpers (`polygon` ear-clips concave outlines); TrueType text and the glyph atlas |

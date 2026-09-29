@@ -2561,6 +2561,20 @@ pub(super) type ShownNotice = (String, [f32; 2], [f32; 2], f32);
 #[cfg(test)]
 pub(super) type DrawnControl = (String, [f32; 2], [f32; 2]);
 
+/// Shows `lines` (`subject_tooltip_lines`) as the hovered item's tooltip,
+/// the same lines classic shows; nothing if there are none.
+fn show_tooltip(ui: &Ui, lines: &[(u32, Line)]) {
+    if lines.is_empty() {
+        return;
+    }
+    note_shown_tooltip(lines);
+    ui.tooltip(|| {
+        for (_, line) in lines {
+            text_line(ui, line);
+        }
+    });
+}
+
 /// Tests only: notes the tooltip about to show.
 fn note_shown_tooltip(_lines: &[(u32, Line)]) {
     #[cfg(test)]
@@ -3443,16 +3457,10 @@ impl GameState {
         if !ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
             return;
         }
-        let lines = self.subject_tooltip_lines(spec.target, &spec.label, subject);
-        if lines.is_empty() {
-            return;
-        }
-        note_shown_tooltip(&lines);
-        ui.tooltip(|| {
-            for (_, line) in &lines {
-                text_line(ui, line);
-            }
-        });
+        show_tooltip(
+            ui,
+            &self.subject_tooltip_lines(spec.target, &spec.label, subject),
+        );
     }
 
     /// Draws `panel`'s rows. `scope` is the captured panel they're in, if
@@ -3526,11 +3534,13 @@ impl GameState {
                         );
                         let hovered = ui.is_item_hovered();
                         draw_roster_chip(ui, ui.item_rect_min(), ui.item_rect_max(), chip, hovered);
+                        note_drawn_button(ui, Target::RosterSelect(chip.key));
                         if clicked {
                             actions.push(Action::Button(scope, roster_target(chip.key, mode)));
                         }
                         if hovered {
-                            ui.tooltip_text(self.roster_hint(chip.key));
+                            let target = Target::RosterSelect(chip.key);
+                            show_tooltip(ui, &self.subject_tooltip_lines(target, "", subject));
                         }
                     }
                 }
@@ -3663,7 +3673,12 @@ impl GameState {
                             Target::QueueItem(item.kind, item.index),
                         ));
                     }
-                    note_drawn_button(ui, Target::QueueItem(item.kind, item.index));
+                    let row = Target::QueueItem(item.kind, item.index);
+                    note_drawn_button(ui, row);
+                    // Not while it is pressed or dragged: its payload shows then.
+                    if ui.is_item_hovered() && !ui.is_item_active() {
+                        show_tooltip(ui, &self.subject_tooltip_lines(row, "", subject));
+                    }
                     drop(_background);
                     drop(_align);
                     if !item.locked && !self.is_resolving() {
@@ -3705,6 +3720,9 @@ impl GameState {
                     }
                     note_button_label(ui, "X");
                     note_drawn_button(ui, remove);
+                    if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
+                        show_tooltip(ui, &self.subject_tooltip_lines(remove, "X", subject));
+                    }
                 }
             }
         }
@@ -3760,6 +3778,8 @@ impl GameState {
             .retain(|pin, _| layout.pinned.contains(pin));
         let pending = self.pending();
         let turn = self.shown_turn();
+        // The status bar's buttons act on no unit or city.
+        let no_subject = Subject::default();
         let mut stockpile = self.status_line();
         if let Some((first, _)) = stockpile.first_mut() {
             first.insert_str(0, "   ");
@@ -3803,6 +3823,12 @@ impl GameState {
                     actions.push(Action::Button(None, Target::OpenSettings));
                 }
                 note_status_control(ui, "MENU");
+                note_drawn_button(ui, Target::OpenSettings);
+                if ui.is_item_hovered() {
+                    let lines =
+                        self.subject_tooltip_lines(Target::OpenSettings, "MENU", no_subject);
+                    show_tooltip(ui, &lines);
+                }
                 ui.same_line_with_spacing(0.0, 24.0);
                 let view = format!("VIEW: {}", layout.active_view.label());
                 ui.text(&view);
@@ -3848,11 +3874,8 @@ impl GameState {
                 }
                 note_drawn_button(ui, Target::EndTurn);
                 if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                    ui.tooltip_text(if self.waiting_for_peers() {
-                        "Click: take back End Turn and change your orders"
-                    } else {
-                        "Space: End turn or select what still needs orders"
-                    });
+                    let lines = self.subject_tooltip_lines(Target::EndTurn, &label, no_subject);
+                    show_tooltip(ui, &lines);
                 }
             });
 

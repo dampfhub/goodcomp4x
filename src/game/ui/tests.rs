@@ -2852,6 +2852,86 @@ fn imgui_captured_unit_tooltips_describe_that_unit() {
 }
 
 #[test]
+fn queue_rows_turn_strip_chips_and_end_turn_have_the_same_tooltip_in_both_presentations() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].queue = vec![
+        Queued::worked(Build::Unit(BuildUnit::Melee), 4),
+        Queued::new(Build::Unit(BuildUnit::Ranged)),
+    ];
+    let chip = *roster_keys(&game).first().expect("a turn strip chip");
+    let targets = [
+        Target::QueueItem(QueueKind::City, 0),
+        Target::QueueItem(QueueKind::City, 1),
+        Target::CityQueueRemove(0),
+        Target::RosterSelect(chip),
+        Target::EndTurn,
+        Target::OpenSettings,
+    ];
+    // Classic: the tooltip over the middle of each.
+    let layout = game.layout(SCREEN);
+    let classic: Vec<String> = targets
+        .iter()
+        .map(|&target| {
+            let (min, max) = match target {
+                Target::RosterSelect(key) => layout
+                    .roster_chips
+                    .iter()
+                    .find(|chip| chip.2 == key)
+                    .map(|&(min, max, _)| (min, max)),
+                Target::QueueItem(kind, index) => layout
+                    .queue_items
+                    .iter()
+                    .find(|row| row.kind == kind && row.index == index)
+                    .map(|row| (row.min, Vec2::new(row.body_max_x, row.max.y))),
+                _ => layout
+                    .buttons
+                    .iter()
+                    .find(|b| b.target == target)
+                    .map(|b| (b.min, b.max)),
+            }
+            .unwrap_or_else(|| panic!("classic shows no {target:?}"));
+            let (lines, _) = game
+                .classic_tooltip_at(&layout, (min + max) / 2.0)
+                .unwrap_or_else(|| panic!("no classic tooltip on {target:?}"));
+            line_strings(lines.into_iter().map(|(_, l)| l)).join(" ")
+        })
+        .collect();
+    assert!(classic[0].contains("DRAG"), "{classic:?}");
+    assert!(classic[2].contains("ITS WORK IS LOST"), "{classic:?}");
+    assert!(classic[3].contains("CLICK: SELECT"), "{classic:?}");
+    assert!(classic[4].starts_with("END TURN"), "{classic:?}");
+    // ImGui shows the same.
+    let mut screen = ImGuiScreen::new();
+    for (target, classic) in targets.into_iter().zip(classic) {
+        assert_eq!(screen.tooltips(&mut game, target), [classic], "{target:?}");
+    }
+}
+
+#[test]
+fn classic_hides_a_queue_rows_tooltip_while_a_row_is_dragged() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].queue = vec![
+        Queued::new(Build::Unit(BuildUnit::Melee)),
+        Queued::new(Build::Unit(BuildUnit::Ranged)),
+    ];
+    let layout = game.layout(SCREEN);
+    let row = layout
+        .queue_items
+        .iter()
+        .find(|row| row.kind == QueueKind::City && row.index == 0)
+        .unwrap();
+    let at = Vec2::new(
+        (row.min.x + row.body_max_x) / 2.0,
+        (row.min.y + row.max.y) / 2.0,
+    );
+    assert!(game.classic_tooltip_at(&layout, at).is_some());
+    assert!(game.start_queue_drag_at(to_ui(at, SCREEN), SCREEN));
+    assert!(game.classic_tooltip_at(&layout, at).is_none());
+}
+
+#[test]
 fn imgui_captured_unit_button_selects_its_unit() {
     let mut game = GameState::city_scenario();
     let unit = player_units(&game)[0];
