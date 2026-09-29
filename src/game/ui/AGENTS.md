@@ -53,7 +53,7 @@ file holds.
   "N TURNS" or "NT"; world text (`font::push_text`) draws the icons too.
 - **New kind of turn task** (research, say): a `RosterKey` variant, its place in
   `roster_tasks` (civilian tasks before the unit groups), its chip in `roster_chip`, what a
-  click does in `roster_select`, and its hint in `roster_hint` (`roster.rs`).
+  click does in `roster_select`, and its tooltip in `roster_tooltip` (`roster.rs`).
 
 ## Recipes
 

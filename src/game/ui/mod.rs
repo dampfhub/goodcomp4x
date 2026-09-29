@@ -645,8 +645,8 @@ impl GameState {
         for button in over_buttons {
             draw_button(button, hovered == Some(button.target), out);
         }
-        if let Some(button) = hovered.and_then(|t| layout.buttons.iter().find(|b| b.target == t)) {
-            self.draw_tooltip(button, &layout, screen_size, out);
+        if let Some((lines, rect)) = point.and_then(|p| self.classic_tooltip_at(&layout, p)) {
+            self.draw_tooltip(lines, rect, &layout, screen_size, out);
         }
         if let (Some(point), Some(hex)) = (point, self.hovered_tile)
             && self.hover_seconds >= TILE_TOOLTIP_DELAY

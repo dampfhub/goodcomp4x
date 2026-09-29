@@ -7,8 +7,9 @@
 //! group's units to the selection, Ctrl-click takes them out. A group of
 //! several that's selected opens a second row with each of its units, to
 //! pick from or take out one at a time. Selected units and the open city are
-//! framed. Both presentations draw it from `roster_panel`, so the chips and
-//! their actions are the same in each; research joins it once there is any
+//! framed. Both presentations draw it from `roster_panel`, so the chips, their
+//! actions and their tooltips (`roster_tooltip`) are the same in each;
+//! research joins it once there is any
 //! (a `RosterKey` variant and its place in `roster_tasks`).
 
 use super::builder::PanelBuilder;
@@ -237,21 +238,28 @@ impl GameState {
         }
     }
 
-    /// What hovering a chip says, for the ImGui tooltip.
-    pub(super) fn roster_hint(&self, key: RosterKey) -> String {
-        let city_name = |id: u32| format!("CITY {}", id + 1);
+    /// What a chip's tooltip says, in both presentations
+    /// (`subject_tooltip_lines`): its title, the clicks it takes, and what
+    /// they do.
+    pub(super) fn roster_tooltip(&self, key: RosterKey) -> (String, &'static str, String) {
+        const CLICKS: &str = "CLICK · SHIFT · CTRL";
         match key {
-            RosterKey::Production(id) => {
-                format!("{} HAS NOTHING TO BUILD - CLICK: OPEN IT", city_name(id))
-            }
+            RosterKey::Production(id) => (
+                format!("CITY {}", id + 1),
+                "CLICK",
+                "HAS NOTHING TO BUILD. CLICK: OPEN IT.".into(),
+            ),
             RosterKey::Group(..) => {
                 let units = self.roster_key_units(key);
                 let role = units
                     .first()
                     .map_or("", |&i| self.unit_role(&self.units[i]));
-                format!(
-                    "{role} x{} - CLICK: SELECT ALL · SHIFT: ADD · CTRL: REMOVE",
-                    units.len()
+                (
+                    format!("{role} x{}", units.len()),
+                    CLICKS,
+                    "NEED ORDERS. CLICK: SELECT THEM ALL. SHIFT-CLICK: ADD THEM TO THE \
+                     SELECTION. CTRL-CLICK: DESELECT THEM."
+                        .into(),
                 )
             }
             RosterKey::Unit(id) => {
@@ -260,7 +268,13 @@ impl GameState {
                     .iter()
                     .find(|u| u.id == id)
                     .map_or("", |u| self.unit_role(u));
-                format!("{role} - CLICK: SELECT · SHIFT: ADD · CTRL: REMOVE")
+                (
+                    role.into(),
+                    CLICKS,
+                    "CLICK: SELECT IT. SHIFT-CLICK: ADD IT TO THE SELECTION. CTRL-CLICK: \
+                     DESELECT IT."
+                        .into(),
+                )
             }
         }
     }
