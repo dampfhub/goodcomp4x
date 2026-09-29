@@ -1,6 +1,6 @@
 //! City and Barracks views: opening and leaving them, map clicks while one is
 //! open, and ending planning (which waits on cities with nothing to build).
-use super::MAX_CITY_POPULATION;
+use super::{CLUSTER_SIZE, Cluster, MAX_MANAGERS};
 use crate::game::GameState;
 use crate::game::hex::Hex;
 use crate::game::multiplayer::WAITING_NOTICE;
@@ -252,44 +252,64 @@ impl GameState {
             self.notice = "UNEXPLORED - SCOUT IT FIRST".into();
             return true;
         }
-        if self.moving_manager == Some(i) {
-            if self.cities[i].worked.first() == Some(&hex) {
+        if let Some((city, cluster)) = self.moving_manager
+            && city == i
+        {
+            if self.cities[i].clusters[cluster].manager == hex {
                 self.moving_manager = None;
                 self.notice = "MANAGER MOVE CANCELLED".into();
             } else if self.closed_to_citizens(hex) {
                 self.notice = "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT".into();
-            } else if self.may_be_manager(i, hex) {
+            } else if self.may_be_manager(i, cluster, hex) {
                 self.moving_manager = None;
-                self.move_manager(i, hex);
+                self.move_manager(i, cluster, hex);
             } else {
-                self.notice = "MANAGER NEEDS A REACHABLE, UNCLAIMED TILE".into();
+                self.notice =
+                    "MANAGER NEEDS A REACHABLE, UNCLAIMED LAND TILE CLEAR OF THE OTHER MANAGERS"
+                        .into();
             }
             return true;
         }
-        if let Some(at) = self.cities[i].worked.iter().position(|h| *h == hex) {
-            if at == 0 {
-                self.moving_manager = Some(i);
+        let city = &self.cities[i];
+        if let Some(cluster) = city.cluster_of(hex) {
+            if city.clusters[cluster].manager == hex {
+                self.moving_manager = Some((i, cluster));
                 self.notice = "MANAGER PICKED UP - CLICK A DESTINATION".into();
                 return true;
             }
-            self.cities[i].worked.remove(at);
-            self.cities[i].remembered_worked.retain(|h| *h != hex);
+            let city = &mut self.cities[i];
+            city.clusters[cluster].workers.retain(|h| *h != hex);
+            for remembered in &mut city.remembered {
+                remembered.workers.retain(|h| *h != hex);
+            }
             self.notice = "CITIZEN UNASSIGNED".into();
         } else if self.closed_to_citizens(hex) {
             self.notice = "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT".into();
-        } else if !self.may_assign(i, hex) {
-            self.notice = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN ADJACENT TILE TO ASSIGN".into();
+        } else if !self.is_open(i, hex) {
+            self.notice = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE BESIDE A MANAGER TO ASSIGN".into();
         } else if !self.routes(i).costs.contains_key(&hex) {
             self.notice = "NO OPEN ROUTE WITHIN LOGISTICS BUDGET".into();
-        } else if !self.may_manage_or_work(i, hex) {
-            self.notice = "THE FIRST CITIZEN MANAGES THE OTHERS AND MUST WORK LAND".into();
-        } else if self.cities[i].worked.len() >= self.cities[i].population.min(MAX_CITY_POPULATION)
-        {
+        } else if city.working() >= city.capacity() {
             self.notice = "ALL CITIZENS BUSY - RELEASE A WORKED TILE FIRST".into();
-        } else {
-            self.cities[i].worked.push(hex);
-            self.cities[i].remembered_worked = self.cities[i].worked.clone();
+        } else if let Some(cluster) = self.cluster_with_room(i, hex) {
+            self.cities[i].clusters[cluster].workers.push(hex);
+            self.cities[i].remembered = self.cities[i].clusters.clone();
             self.notice = "CITIZEN ASSIGNED".into();
+        } else if city.clusters.len() >= city.managers_allowed() {
+            self.notice = if city.clusters.len() >= MAX_MANAGERS {
+                format!("A CITY HAS AT MOST {MAX_MANAGERS} MANAGERS - CLICK A TILE BESIDE ONE")
+            } else {
+                format!(
+                    "ANOTHER MANAGER AT {} CITIZENS - CLICK A TILE BESIDE A MANAGER WITH ROOM",
+                    city.clusters.len() * CLUSTER_SIZE + 1
+                )
+            };
+        } else if !self.clear_of_managers(i, hex, None) {
+            self.notice = "A MANAGER WORKS LAND, NOT BESIDE ANOTHER MANAGER".into();
+        } else {
+            self.cities[i].clusters.push(Cluster::new(hex));
+            self.cities[i].remembered = self.cities[i].clusters.clone();
+            self.notice = "MANAGER ASSIGNED - A NEW CLUSTER".into();
         }
         true
     }

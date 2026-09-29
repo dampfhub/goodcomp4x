@@ -26,12 +26,16 @@ use crate::game::fast_hash::HashMap;
 
 pub(in crate::game) use barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 pub use builds::{Build, BuildUnit, Building};
-pub(in crate::game) use builds::{GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, WORKER_SHORTCUT};
+pub(in crate::game) use builds::{
+    GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, SCOUT_SHORTCUT, SETTLER_MIN_POPULATION,
+    SETTLER_SHORTCUT, WORKER_SHORTCUT,
+};
 pub(in crate::game) use economy::{
     FOOD_PER_CITIZEN, Lane, STARTING_STOCK, grow_price, resource_icon, stock_icons, stock_words,
     turns_icon,
 };
 pub use economy::{Queued, Stock};
+pub(in crate::game) use founding::MIN_CITY_DISTANCE;
 pub(super) use interior::CORE_HP;
 pub(super) use interior::Interior;
 pub(in crate::game) use interior::in_bounds as in_interior;
@@ -39,29 +43,167 @@ pub(super) use logistics::{Routes, delivered_share};
 
 /// Camera zoom the city scenarios start at: most of the radius-six map in view.
 const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
-/// One manager and up to six nearby workers.
-pub(super) const MAX_CITY_POPULATION: usize = 7;
+/// Workers each manager has at most, on the tiles around it.
+pub(super) const WORKERS_PER_MANAGER: usize = 6;
+/// Managers a city has at most, each starting a cluster of itself and up
+/// to `WORKERS_PER_MANAGER` workers.
+pub(super) const MAX_MANAGERS: usize = 4;
+/// A cluster's citizens: its manager and its workers.
+pub(super) const CLUSTER_SIZE: usize = 1 + WORKERS_PER_MANAGER;
+/// Four clusters of a manager and six workers.
+pub(super) const MAX_CITY_POPULATION: usize = MAX_MANAGERS * CLUSTER_SIZE;
 pub(super) const BARRACKS_MAX_HP: f32 = 220.0;
 pub(super) const BARRACKS_DEFENSE: f32 = 25.0;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-pub enum LaborFocus {
+/// A good a city's citizens bring in, as its priority order ranks them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub enum Good {
     Food,
     Wood,
     Metal,
-    Balanced,
 }
-impl LaborFocus {
-    pub const ALL: [Self; 4] = [Self::Food, Self::Wood, Self::Metal, Self::Balanced];
+
+impl Good {
+    pub const ALL: [Self; 3] = [Self::Food, Self::Wood, Self::Metal];
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Food => "FOOD",
             Self::Wood => "WOOD",
             Self::Metal => "METAL",
-            Self::Balanced => "BALANCED",
         }
     }
+
+    /// This good's amount in a tile's `(food, wood, metal)`.
+    fn of(self, (food, wood, metal): (i32, i32, i32)) -> i32 {
+        match self {
+            Self::Food => food,
+            Self::Wood => wood,
+            Self::Metal => metal,
+        }
+    }
+}
+
+/// A city's priority order: food, wood and metal, first to last, each
+/// once. Auto-assign weighs a tile's delivered goods by their places
+/// (`WEIGHTS`), with food first until the city is fed (`score`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Priorities(pub [Good; 3]);
+
+impl Default for Priorities {
+    fn default() -> Self {
+        Self(Good::ALL)
+    }
+}
+
+impl Priorities {
+    /// What the first, second and third good count for: the first
+    /// dominates, and ties go down the list.
+    pub const WEIGHTS: [i32; 3] = [9, 3, 1];
+
+    /// Whether this is an order of the three goods, each once (a network
+    /// plan's may not be).
+    pub fn is_order(self) -> bool {
+        Good::ALL.iter().all(|good| self.0.contains(good))
+    }
+
+    /// Where `good` stands, 0 first.
+    pub fn rank(self, good: Good) -> usize {
+        self.0.iter().position(|&g| g == good).unwrap_or(0)
+    }
+
+    /// The same order with `good` moved to the front, the others keeping
+    /// theirs.
+    pub fn with_first(self, good: Good) -> Self {
+        self.moved(self.rank(good), 0)
+    }
+
+    /// The same order with the good at `from` taken out and put back at
+    /// `to` (a chip dragged onto another).
+    pub fn moved(self, from: usize, to: usize) -> Self {
+        let mut goods = self.0;
+        if from < goods.len() && to < goods.len() {
+            if from < to {
+                goods[from..=to].rotate_left(1);
+            } else {
+                goods[to..=from].rotate_right(1);
+            }
+        }
+        Self(goods)
+    }
+
+    /// A tile's worth to auto-assign: its delivered `(food, wood, metal)`,
+    /// each times its place's weight. Until the city is `fed` (the food
+    /// floor: its tiles' food covers its upkeep and one more), food counts
+    /// as first whatever the order, the others keeping theirs.
+    pub fn score(self, goods: (i32, i32, i32), fed: bool) -> i32 {
+        let order = if fed {
+            self
+        } else {
+            self.with_first(Good::Food)
+        };
+        order
+            .0
+            .iter()
+            .zip(Self::WEIGHTS)
+            .map(|(good, weight)| good.of(goods) * weight)
+            .sum()
+    }
+
+    /// "FOOD > WOOD > METAL".
+    pub fn text(self) -> String {
+        self.0.map(Good::name).join(" > ")
+    }
+}
+
+/// A manager and the workers it runs, each on a tile beside it. A city's
+/// citizens work in up to `MAX_MANAGERS` of these; a tile belongs to one
+/// city and one cluster.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct Cluster {
+    /// On land, and never beside another of its city's managers.
+    pub manager: Hex,
+    /// Up to `WORKERS_PER_MANAGER`, each beside the manager.
+    pub workers: Vec<Hex>,
+}
+
+impl Cluster {
+    pub fn new(manager: Hex) -> Self {
+        Self {
+            manager,
+            workers: Vec::new(),
+        }
+    }
+
+    /// Its tiles: the manager's, then its workers'.
+    pub fn tiles(&self) -> impl Iterator<Item = Hex> + '_ {
+        std::iter::once(self.manager).chain(self.workers.iter().copied())
+    }
+
+    /// Its citizens: the manager and its workers.
+    pub fn citizens(&self) -> usize {
+        1 + self.workers.len()
+    }
+}
+
+/// The managers a city of `population` may have (`City::managers_allowed`).
+pub(super) fn managers_for(population: usize) -> usize {
+    population.min(MAX_CITY_POPULATION).div_ceil(CLUSTER_SIZE)
+}
+
+/// How cluster `cluster` of `clusters` marks its manager, on the map and in
+/// the city tray: M, or with several clusters M1 to M4.
+pub(in crate::game) fn manager_label(cluster: usize, clusters: usize) -> String {
+    if clusters > 1 {
+        format!("M{}", cluster + 1)
+    } else {
+        "M".into()
+    }
+}
+
+/// Every tile `clusters` work, cluster by cluster.
+pub(super) fn cluster_tiles(clusters: &[Cluster]) -> impl Iterator<Item = Hex> + '_ {
+    clusters.iter().flat_map(Cluster::tiles)
 }
 
 #[derive(Clone)]
@@ -72,11 +214,16 @@ pub(super) struct City {
     pub population: usize,
     pub barracks_hp: f32,
     pub coastal_battery_hp: f32,
-    pub worked: Vec<Hex>,
-    /// Manual tiles displaced by a blocked logistics route. They return when
-    /// available unless the player changes the assignment.
-    pub remembered_worked: Vec<Hex>,
-    pub focus: LaborFocus,
+    /// The tiles its citizens work, as up to `MAX_MANAGERS` clusters (a
+    /// manager and its workers), first to last (`citizens.rs`).
+    pub clusters: Vec<Cluster>,
+    /// The clusters as last assigned (auto-assign, a click, a manager
+    /// moved): tiles a blocked route or a claim displaced come back from
+    /// here when they're free again, unless the player changes the
+    /// assignment (`reconcile_citizens`).
+    pub remembered: Vec<Cluster>,
+    /// What auto-assign favors for its citizens (`Priorities`).
+    pub priorities: Priorities,
     /// Units, workers, Grows and Gathers, each with whether it's paid and
     /// the work done on it (`Queued`). Each turn the city works the first
     /// item that's paid for or that the stockpile can pay for
@@ -108,7 +255,9 @@ pub(super) struct City {
 }
 
 impl City {
-    /// A newly founded city: one citizen and one worker.
+    /// A city as a scenario starts it: one citizen and one worker. A city
+    /// founded in play starts without the worker unless it is its side's
+    /// first (`found_city`).
     pub fn new(id: u32, team: Team, pos: Hex) -> Self {
         Self {
             id,
@@ -117,9 +266,9 @@ impl City {
             population: 1,
             barracks_hp: BARRACKS_MAX_HP,
             coastal_battery_hp: 150.0,
-            worked: Vec::new(),
-            remembered_worked: Vec::new(),
-            focus: LaborFocus::Balanced,
+            clusters: Vec::new(),
+            remembered: Vec::new(),
+            priorities: Priorities::default(),
             queue: Vec::new(),
             built: Vec::new(),
             barracks: None,
@@ -134,6 +283,40 @@ impl City {
             held_workers: 0,
             worker_jobs: Vec::new(),
         }
+    }
+
+    /// Every tile its citizens work, cluster by cluster, each manager
+    /// before its workers.
+    pub fn worked(&self) -> impl Iterator<Item = Hex> + '_ {
+        cluster_tiles(&self.clusters)
+    }
+
+    /// Whether one of its citizens works `hex`.
+    pub fn works(&self, hex: Hex) -> bool {
+        self.worked().any(|h| h == hex)
+    }
+
+    /// How many of its citizens work a tile.
+    pub fn working(&self) -> usize {
+        self.clusters.iter().map(Cluster::citizens).sum()
+    }
+
+    /// The cluster `hex` is worked in, if one is.
+    pub fn cluster_of(&self, hex: Hex) -> Option<usize> {
+        self.clusters
+            .iter()
+            .position(|c| c.tiles().any(|h| h == hex))
+    }
+
+    /// How many of its citizens can work: all of them, up to the cap.
+    pub fn capacity(&self) -> usize {
+        self.population.min(MAX_CITY_POPULATION)
+    }
+
+    /// How many managers it may have: one for each `CLUSTER_SIZE`
+    /// citizens or part of that (citizens 1, 8, 15 and 22 start a cluster).
+    pub fn managers_allowed(&self) -> usize {
+        managers_for(self.population)
     }
 
     pub fn placed_site(&self, building: Building) -> Option<Hex> {
@@ -306,4 +489,18 @@ impl GameState {
         };
         self.notice = format!("WORLD SEED {seed} - {ai} AI - {founding} - F4 FOR A NEW MAP");
     }
+}
+
+/// Tests: one cluster of `tiles`, the first its manager.
+#[cfg(test)]
+pub(super) fn one_cluster(tiles: &[Hex]) -> Vec<Cluster> {
+    tiles
+        .split_first()
+        .map(|(&manager, workers)| {
+            vec![Cluster {
+                manager,
+                workers: workers.to_vec(),
+            }]
+        })
+        .unwrap_or_default()
 }

@@ -124,6 +124,9 @@ more citizens and everything else that eats it (troops, workers).
 Basic troops are food and wood, so an early army needs no hills; metal is what advanced troops,
 ships and some buildings are gated by. Workers cost food: they are people.
 
+Round 7 (option B) has since raised the land troops' prices and turns, the Grow price and cut the
+Gather yield; its table has the current values, and `game-rules.md` all of them.
+
 ## Variant: production speeds builds
 
 Debug panel toggle **PROD SPEEDUP** (beside fog of war; off by default; kept across scenario
@@ -297,6 +300,12 @@ sides bank less metal (40 against 87 at turn 40).
 
 A playtest found the game moving too fast. This round measures the tempo and changes no rule.
 
+The full report the user decided from is kept in `docs/economy/`:
+[round6-tempo-report.md](economy/round6-tempo-report.md) (findings, options and questions),
+[round6-how-it-works.md](economy/round6-how-it-works.md) (the rules then, from the code) and
+[round6-knobs.md](economy/round6-knobs.md) (what each knob changed, and every knob in every
+setting). This section is its summary.
+
 `economy_report` (`src/game/simulation/economy.rs`) now measures, over many seeds:
 - units trained by type and turn, army size, population and when each growth step lands;
 - stockpiles, income, and where the resources go;
@@ -446,4 +455,185 @@ What the knobs did:
   - The stockpile grows faster either way, so a cap needs a resource sink beside it.
 
 Open for the user to choose (#239): the target tempo, and which knobs to turn. The measurement
-code stays, so a retune can be checked against these tables.
+code stays, so a retune can be checked against these tables. The user chose option B, an early
+game: Round 7.
+
+## Round 7: option B ("an early game")
+
+The user chose option B from Round 6 (#239), as an experiment: the measured `combo-slow-all`
+knob. That is land troop prices x1.5, troop turns +1, Grow x2 and Gather halved. It is now the
+game's tuning, in commit 4acc76b. The Round 6 report it was chosen from is kept in
+[economy/round6-tempo-report.md](economy/round6-tempo-report.md), with the exact edit of every
+other knob in [economy/round6-knobs.md](economy/round6-knobs.md), so another option can be tried
+later.
+
+### What changed
+
+Prices are food / wood / metal. Turns are at a Barracks. Files are under `src/game/`.
+
+| Constant | File | Old | New |
+|---|---|---|---|
+| `BuildUnit::price`, Melee | `city/builds.rs` | 2 / 6 / 0 | 3 / 9 / 0 |
+| `BuildUnit::price`, Ranged | `city/builds.rs` | 2 / 7 / 0 | 3 / 11 / 0 |
+| `BuildUnit::price`, Cavalry | `city/builds.rs` | 3 / 4 / 3 | 5 / 6 / 5 |
+| `BuildUnit::price`, Siege | `city/builds.rs` | 1 / 8 / 4 | 2 / 12 / 6 |
+| `BuildUnit::price`, Armored | `city/builds.rs` | 3 / 2 / 7 | 5 / 3 / 11 |
+| `LIGHT_TROOP_TURNS` (Melee, Ranged; new, was a literal in `BuildUnit::turns`) | `city/builds.rs` | 2 | 3 |
+| `HEAVY_TROOP_TURNS` (Cavalry, Siege, Armored; new, was a literal shared with the Patrol Galley) | `city/builds.rs` | 3 | 4 |
+| `GROW_BASE` | `city/economy.rs` | 5 | 10 |
+| `GROW_PER_CITIZEN` | `city/economy.rs` | 5 | 10 |
+| `GATHER_YIELD` | `city/builds.rs` | 2 / 2 / 1 (`Stock::whole(2, 2, 1)`) | 1 / 1 / 0.5 (in quarters, 4 / 4 / 2) |
+| `PROTOCOL_VERSION` | `multiplayer.rs` | 16 | 17 |
+
+- **x1.5 rounds halves up**, as the knob run did: Ranged's 10.5 wood is 11, Cavalry's 4.5 food
+  and metal are 5, Siege's 1.5 food is 2, Armored's 4.5 food is 5 and its 10.5 metal is 11.
+- **Troop turns +1 is at the Barracks.** `CITY_TRAINING_SLOWDOWN` (`city/barracks.rs`) stays 2,
+  so a city center takes twice the new turns: 6 for a Melee or Ranged, 8 for a Siege. The Patrol
+  Galley keeps its 3 turns, and ships keep their prices.
+- **Grow** costs 10 + 10 x pop food, so growing from 1 to 7 costs 270 food instead of 135.
+- **Gather's half metal differs from the knob run.** The run rounded it down to none, because
+  `Stock::whole` takes whole units. The stockpile keeps quarters, so the game gives the exact
+  half.
+  - In the Cities scenario, neither city works a metal tile, so Gather is its only metal.
+  - At none, a Cities side's metal stays at the 4 it starts with. That is below a Cavalry's
+    new 5 and an Armored's 11, so it can never train either. Round 6's run shows it too: Cities
+    metal at turn 40 was 4.
+  - `simulation.rs` checks that Cities trains a Cavalry or Armored, and that check failed.
+  - In the World the half metal changes nothing that matters: see "Gather 1 / 1 / 0" below.
+- **Unchanged:** every other price and time, `STARTING_STOCK`, `FOOD_PER_CITIZEN`, the
+  Barracks, the population cap of 7, and the AI.
+- **The rules docs follow:** `game-rules.md` (prices and turns, Grow, Gather) and
+  `controls.md` (the Gather card). So do the tests that pinned a Melee's price and turns
+  (`build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet`,
+  `the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked`).
+  `economy_ticks_once_into_the_stockpile_and_preserves_quarters` now tops up the stockpile for
+  its Siege, which costs more than the Cities scenario starts with.
+
+**To revert**, run `git revert 4acc76b`. It will conflict on `PROTOCOL_VERSION`: set that to
+main's value plus one. Don't set it back to 16, because builds with option B already use 17. Or
+set by hand:
+- the five troop prices back to the Old column;
+- `LIGHT_TROOP_TURNS` = 2 and `HEAVY_TROOP_TURNS` = 3 (the Patrol Galley keeps its own 3);
+- `GROW_BASE` = `GROW_PER_CITIZEN` = 5;
+- `GATHER_YIELD` = `Stock::whole(2, 2, 1)`;
+- the numbers in `game-rules.md` and `controls.md`, and the two UI tests' pinned Melee price and
+  turns.
+
+To try one of Round 6's other options instead, [round6-knobs.md](economy/round6-knobs.md) says
+which constants each touched.
+
+### Measured
+
+Commands (60 turns, seeds 0-23; the same games as the Round 6 knob runs, so `world` is the World
+with 4 to 6 AI sides):
+
+```
+SIM_SEEDS=24 REPORT_GAMES=cities,world1,world cargo test --release economy_report -- --ignored --nocapture
+SIM_SEEDS=24 REPORT_GAMES=cities,world1,world REPORT_ARMY_FIRST=1 cargo test --release economy_report -- --ignored --nocapture
+SIM_SEEDS=24 REPORT_TURNS=100 REPORT_GAMES=cities,world cargo test --release economy_report -- --ignored --nocapture
+```
+
+**The baseline moved.** `main` has changed since Round 6:
+- the AI plans only on what its side has seen (#235);
+- its scouts explore and keep out of harm's way (#234);
+- a city's priority order replaced the labor focus (#247), which moved these numbers by a tenth
+  or two at most.
+
+So each run was also made on `main` just before this change was merged in, at 718acad, as "main
+before". There, fights start later (turn 12 instead of 10) and fewer troops die, so armies grow
+larger: 11.9 alive at turn 60 instead of 7.1.
+
+The columns:
+- **R6 base:** Round 6's baseline, at 6f5c4c8.
+- **R6 combo:** Round 6's `combo-slow-all` run, the prediction.
+- **main before:** `main` at 718acad.
+- **option B:** this round, merged with 718acad.
+
+World, 4 to 6 AI sides, per side. Turns are medians; "never" is the share of sides that don't
+get there by turn 60.
+
+| The AI as it plays | R6 base | R6 combo | main before | option B |
+|---|---|---|---|---|
+| First troop | 7 | 9 | 7 | 9 |
+| Army at turn 10 / 20 | 2.2 / 5.4 | 1.3 / 3.4 | 2.1 / 6.0 | 1.3 / 3.7 |
+| Army at turn 40 / 60 | 6.7 / 7.1 | 4.7 / 4.6 | 10.4 / 11.9 | 6.8 / 7.7 |
+| Troops trained by turn 60 | 22.3 | 14.9 | 23.1 | 15.0 |
+| Army of 5 | 17 | 23 | 17 | 23 |
+| Army of 10 (never) | 31 (54%) | 43 (90%) | 28 (19%) | 42 (52%) |
+| Population at turn 20 | 5.4 | 3.5 | 4.9 | 3.1 |
+| City full at 7 (never) | 27 (1%) | 43 (20%) | 30 (9%) | 47 (42%) |
+| Stockpile f / w / m at turn 40 | 92 / 107 / 96 | 41 / 58 / 64 | 60 / 86 / 91 | 29 / 41 / 66 |
+| Stockpile f / w / m at turn 60 | 242 / 205 / 178 | 131 / 130 / 123 | 169 / 174 / 171 | 82 / 98 / 129 |
+| First fight between troops | 10 | 11 | 12 | 14 |
+
+| Army first (`REPORT_ARMY_FIRST=1`) | R6 base | R6 combo | main before | option B |
+|---|---|---|---|---|
+| First troop | 7 | 9 | 7 | 9 |
+| Army at turn 10 / 20 | 2.2 / 6.4 | 1.3 / 3.6 | 2.3 / 6.9 | 1.3 / 3.7 |
+| Army at turn 40 / 60 | 9.8 / 11.0 | 5.6 / 6.7 | 13.9 / 16.8 | 7.5 / 9.5 |
+| Troops trained by turn 60 | 31.0 | 18.7 | 30.4 | 17.7 |
+| Army of 5 | 15 | 23 | 15 | 23 |
+| Army of 10 (never) | 27 (25%) | 39 (67%) | 25 (5%) | 38 (39%) |
+| City full at 7 (never) | 32 (5%) | 46 (37%) | 35 (19%) | 48 (55%) |
+| Stockpile f / w / m at turn 40 | 59 / 31 / 75 | 47 / 17 / 59 | 39 / 18 / 70 | 39 / 10 / 57 |
+| Stockpile f / w / m at turn 60 | 165 / 64 / 142 | 107 / 48 / 115 | 111 / 42 / 135 | 71 / 27 / 113 |
+| First fight between troops | 10 | 11 | 12 | 14 |
+
+100 turns, World with 4 to 6 AI sides, the AI as it plays. The Round 6 column is its `final-100`
+run, at 6f5c4c8:
+
+| | R6 base | main before | option B |
+|---|---|---|---|
+| Army at turn 60 / 100 | 7.1 / 8.1 | 11.9 / 12.3 | 7.7 / 8.0 |
+| Troops trained by turn 100 | 38.6 | 39.8 | 26.6 |
+| City full at 7 (never by turn 100) | 28 (1%) | 30 (6%) | 52 (20%) |
+| Stockpile f / w / m at turn 100 | 598 / 425 / 349 | 420 / 377 / 340 | 276 / 254 / 266 |
+
+The other games, the AI as it plays, main before → option B:
+- **World with 1 AI side:**
+  - first troop 7 → 9;
+  - army at turns 20 / 60: 5.9 / 11.6 → 3.7 / 8.4;
+  - city full 26 → 40 (23% never);
+  - first troop fight 22 → 26.
+- **Cities:**
+  - first troop 8 → 9;
+  - army at turns 20 / 60: 4.4 / 8.9 → 3.5 / 8.5;
+  - city full 27 → 45;
+  - troops still fight on turn 2, and a city still falls in 22 of the 24 games, at turn 10
+    (11 before), so half the sides never fill a city.
+
+**Gather 1 / 1 / 0**, the exact knob, was measured too, in the World with 4 to 6 AI sides. Both
+runs here are on `main` at a054502, before #247. Against option B's half metal:
+- army at turn 60: 8.0 against 7.5;
+- trained by turn 60: 15.0 against 15.0;
+- city full: 46 against 46;
+- metal at turn 60: 121 against 136.
+
+In Cities its metal stayed at 4 all game, and it trained no Cavalry or Armored.
+
+### What it shows
+
+- **The early game lands where Round 6 predicted.**
+  - The first troop comes at turn 9.
+  - The army is 3.7 at turn 20 (the prediction: 3.4) and reaches 5 at turn 23 (23).
+  - Troops first fight at turn 14.
+  - Round 6's target for option B was 2-3 troops at turn 20, an army of 5 around turns 25-30,
+    and full cities around turn 45. The army at 20 is a little above that, and the army of 5 a
+    little early.
+- **The cut in troops matches too.** Trained by turn 60 falls 35% from main before (the
+  prediction: 33% from Round 6's baseline).
+- **Late armies are larger than predicted, because the baseline moved, not option B.**
+  - Since #235 and #234, troops fight later and die less.
+  - Option B brings the army at turn 60 from 11.9 to 7.7, about where Round 6's baseline was.
+  - The prediction was 4.6, from a baseline of 7.1.
+- **Growth is slower than predicted.**
+  - Cities are full at turn 47, with 42% short of 7 at turn 60 (the prediction: 43, and 20%).
+  - By turn 100, 20% are still short.
+  - Main before also grows slower than Round 6 did: population 4.9 at turn 20 against 5.4.
+- **The stockpile still only grows,** at about half the rate. At turn 60 it holds 82 food, 98
+  wood and 129 metal, and at turn 100, 276 / 254 / 266. Metal piles up most. The late game still
+  has nothing to spend on; Settlers (#249) and the larger population cap (#250) are meant to be
+  that.
+
+Checked with `cargo test` and `SIM_SEEDS=16 cargo test --release simulation` (every scenario's
+invariants hold, and the Cities check for a Cavalry or Armored passes with the half metal).

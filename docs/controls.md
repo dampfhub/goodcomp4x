@@ -38,7 +38,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds, guards and alerts |
 | Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
-| F / Found City button | Found a city with the selected settler |
+| F / Found City button | Found a city with the selected settler, where it stands: on open land, not ruins, and at least 6 hexes from every other city (the notice says why not) |
 | Escape | Let go of the selected unit or group |
 
 A unit can queue a move and an attack; it attacks from the hex it moves to. Units can't move
@@ -117,11 +117,12 @@ orders shows disabled.
 | --- | --- |
 | C | Open a city needing a build (or your first city); from a barracks view, its city |
 | Left-click your city | Open its city view |
-| Click a tile in the city view | Assign a citizen there, or release one; where one of your units stands, click beside its token |
+| Click a tile in the city view | Assign a citizen there (a worker beside a manager with room, or a new manager on open land clear of the others while the population allows one), or release one; where one of your units stands, click beside its token |
 | Click one of your units' tokens in the city or barracks view | Select the unit and close the view |
-| Click the manager (`M`), then a tile | Move the manager; workers follow where they can (once it's picked up, a click on a unit's token places it too) |
-| A | Auto-assign citizens by the city's labor focus |
-| Food / Wood / Metal / Balanced buttons (wheat, log, ingot, scale) | Set the labor focus (and re-assign) |
+| Click a manager (`M`, or `M1` to `M4`), then a tile | Move that manager; its workers follow where they can, the other clusters stay (once it's picked up, a click on a unit's token places it too) |
+| A | Auto-assign citizens by the city's priority order |
+| Drag a priority chip (wheat, log, ingot; its rank in the corner) onto another | Reorder the city's priorities (and re-assign) |
+| Click a priority chip | Put that good first (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
 | 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile when work on it starts (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
 | 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |
@@ -131,10 +132,12 @@ orders shows disabled.
 | Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
+| 4 / Scout card | Queue a scout from the city (not a Barracks): 2 food and 4 wood, 2 turns; one at a time (the card is dimmed while one is queued) |
+| S / Settler card | Queue a settler: 30 food and 10 wood, 6 turns, and a citizen when it's done; only a city of population 3 or more (the card is dimmed, saying NEEDS POPULATION 3, below that). Below 3 a queued settler waits (WAITS FOR POP 3) and the queue works the next item |
 | 9 / Grow card | Queue one more citizen, paid in food when work on it starts (the city doesn't grow on its own) |
-| 0 / Gather card | Spend a turn gathering: free, and 2 food, 2 wood and 1 metal come in when it's done |
+| 0 / Gather card | Spend a turn gathering: free, and 1 food, 1 wood and half a metal come in when it's done |
 | A build card the stockpile can't pay for yet | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the city shows a badge over its tower with the missing resources' icons. Prices show as resource icons and amounts, turns after a clock |
-| A dimmed build card | It can't be queued: (Cavalry, Armored) the barracks has no deposit or its cap is used up, or (Grow) the city is full; its tooltip says why |
+| A dimmed build card | It can't be queued: (Cavalry, Armored) the barracks has no deposit or its cap is used up, or (Grow) the city is full, (Settler) the city is below population 3, or (Scout) one is already queued; its tooltip says why |
 | Drag a queue row onto another | Reorder the queue; work stays with each build, and a paused build with work shows SAVED on its row |
 | Click a row's X | Remove it, refunding its price if it was paid for (work on it started); its work is lost |
 | Clear (beside a queue's title, city or barracks) | Empty that queue: every item comes off, refunded as its X would refund it (their work is lost) |
@@ -248,7 +251,8 @@ of players are kept between sessions (`network.txt`); the join code isn't.
 Settings are also kept between sessions, saved as soon as one changes. On quitting, the game
 also saves the window's size (and whether it's maximized), the UI presentation (F11), and the
 ImGui panels as you arranged them: where each is, its size, which are docked or collapsed, and
-the boxes. The next session opens the same way. They're kept in `%APPDATA%\riskofcivlike`
+the boxes. The next session opens the same way. An explicit `--size` sets only this run's window size;
+it does not replace the saved size or maximized state. They're kept in `%APPDATA%\riskofcivlike`
 (`~/.config/riskofcivlike` elsewhere); delete that folder to start over from the defaults.
 Screenshot mode (`--screenshot`) ignores it.
 
@@ -320,7 +324,7 @@ them.
 - Fog of war: never-seen hexes are under clouds; hexes you've seen but can't see now are under a
   grey veil and show the cities, improvements, roads, structures and other sides' construction
   that were there when you last looked, but no units or workers.
-- In the city view, green outlines are worked tiles (red if cut off), the gold ring marked `M` is
-  the manager; hovering the manager draws a dotted line along the way its goods travel to the
+- In the city view, green outlines are worked tiles (red if cut off), each gold ring marked `M` (or `M1` to `M4`) is
+  a manager; hovering a manager draws a dotted line along the way its goods travel to the
   city. Green grain and amber hammers show food and production, with the share that reaches the
   city.

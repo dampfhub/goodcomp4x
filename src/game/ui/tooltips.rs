@@ -1,5 +1,6 @@
 //! Button tooltips and the tile tooltip.
 
+use super::action_icons;
 use super::builder::PanelBuilder;
 use super::paint::draw_shape;
 use super::text::{ability_text, pending_text, price_hint, signed_quantity, turns_text, wrap};
@@ -11,7 +12,8 @@ use super::{
 use crate::game::GameState;
 use crate::game::city::{
     Build, Building, GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, Lane, MAX_CITY_POPULATION,
-    UNITS_PER_DEPOSIT, WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
+    MIN_CITY_DISTANCE, SCOUT_SHORTCUT, SETTLER_MIN_POPULATION, SETTLER_SHORTCUT, UNITS_PER_DEPOSIT,
+    WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
 };
 use crate::game::hex::Hex;
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, WOOD_ICON};
@@ -65,6 +67,14 @@ impl GameState {
                 stock_icons(short)
             )
         })
+    }
+
+    /// Why the open city can't queue a Scout or Settler (`city_build_issue`),
+    /// or else what the stockpile is short of for it (`shortfall_text`).
+    fn civilian_unavailable(&self, build: Build) -> Option<String> {
+        self.selected_city
+            .and_then(|city| self.city_build_issue(city, build))
+            .or_else(|| self.shortfall_text(build))
     }
 
     /// What one of `city`'s queues works, by name, for a tile's tooltip:
@@ -242,12 +252,7 @@ impl GameState {
             notes.push(format!("{} {}", special.name(), gains.join(" ")));
         }
         notes.extend(self.ruin_notes(hex, memory.is_some()));
-        if let Some(worker) = self
-            .cities
-            .iter()
-            .filter(visible)
-            .find(|c| c.worked.contains(&hex))
-        {
+        if let Some(worker) = self.cities.iter().filter(visible).find(|c| c.works(hex)) {
             notes.push(format!("WORKED BY CITY {}", worker.id + 1));
         }
         if let Some(open) = self.selected_city
@@ -491,6 +496,25 @@ impl GameState {
                     ),
                     self.shortfall_text(Build::Worker),
                 ),
+                Target::BuildScout => (
+                    "SCOUT".into(),
+                    SCOUT_SHORTCUT.to_string(),
+                    format!(
+                        "SEES FAR, MOVES FAST; NOT A TROOP, SO NO BARRACKS. ONE AT A TIME. {}",
+                        self.price_text(Build::Scout, false)
+                    ),
+                    self.civilian_unavailable(Build::Scout),
+                ),
+                Target::BuildSettler => (
+                    "SETTLER".into(),
+                    SETTLER_SHORTCUT.to_string(),
+                    format!(
+                        "FOUNDS A CITY (F) {MIN_CITY_DISTANCE} HEXES OR MORE FROM ANY OTHER. \
+                         NEEDS POPULATION {SETTLER_MIN_POPULATION}, AND TAKES A CITIZEN WHEN DONE. {}",
+                        self.price_text(Build::Settler, false)
+                    ),
+                    self.civilian_unavailable(Build::Settler),
+                ),
                 Target::Grow => (
                     "GROW".into(),
                     GROW_SHORTCUT.to_string(),
@@ -528,10 +552,17 @@ impl GameState {
                     "STOPS PLACING, LEAVING THE CITY OPEN. NOTHING IS PLACED OR PAID.".into(),
                     None,
                 ),
-                Target::Focus(focus) => (
-                    format!("{} FOCUS", focus.name()),
-                    "AUTO".into(),
-                    "REASSIGNS THE CITIZENS.".into(),
+                Target::Priority(good) => (
+                    match action_icons::badge(&button.label) {
+                        Some(rank) => format!("{} · PRIORITY {rank}", good.name()),
+                        None => good.name().into(),
+                    },
+                    "CLICK · DRAG".into(),
+                    "CITIZENS WORK THE TILES WORTH THE MOST, EACH GOOD COUNTING BY ITS PLACE: \
+                     1ST ×9, 2ND ×3, 3RD ×1. FOOD COMES FIRST UNTIL THE CITY'S TILES FEED ITS \
+                     CITIZENS WITH 1 TO SPARE. CLICK: PUT IT FIRST. DRAG ONTO ANOTHER: MOVE IT \
+                     THERE. EITHER REASSIGNS THE CITIZENS."
+                        .into(),
                     None,
                 ),
                 Target::Scenario(scenario) => (
@@ -782,7 +813,9 @@ impl GameState {
             UnitAction::Settle => (
                 "FOUND CITY".into(),
                 "F",
-                "3 OR MORE HEXES FROM ANY CITY.".into(),
+                format!(
+                    "HERE: OPEN LAND, NOT RUINS, {MIN_CITY_DISTANCE} OR MORE HEXES FROM ANY CITY."
+                ),
                 None,
             ),
             UnitAction::ClearOrders => (

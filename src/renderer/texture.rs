@@ -7,7 +7,7 @@ use ash::vk;
 use super::buffer;
 
 /// A single-channel (coverage) image and its mip chain, largest level first.
-/// Each level is `width >> i` by `height >> i` bytes, rows top to bottom.
+/// Each level is `max(1, width >> i)` by `max(1, height >> i)` bytes.
 pub struct Atlas {
     pub width: u32,
     pub height: u32,
@@ -34,12 +34,8 @@ impl Texture {
         queue: vk::Queue,
         atlas: &Atlas,
     ) -> Result<Self> {
+        validate_atlas(atlas)?;
         let mip_levels = atlas.levels.len() as u32;
-        ensure!(mip_levels > 0, "atlas has no image data");
-        for (i, level) in atlas.levels.iter().enumerate() {
-            let expected = (atlas.width >> i) as usize * (atlas.height >> i) as usize;
-            ensure!(level.len() == expected, "atlas mip {i} has the wrong size");
-        }
 
         let format = vk::Format::R8_UNORM;
         let image_info = vk::ImageCreateInfo::default()
@@ -172,7 +168,7 @@ unsafe fn upload(
     image: vk::Image,
     atlas: &Atlas,
 ) -> Result<()> {
-    let total: usize = atlas.levels.iter().map(Vec::len).sum();
+    let (regions, total) = atlas_regions(atlas);
     let (staging, staging_memory) = unsafe {
         buffer::create_buffer(
             instance,
@@ -184,7 +180,6 @@ unsafe fn upload(
         )
     }?;
 
-    let mut regions = Vec::with_capacity(atlas.levels.len());
     unsafe {
         let dst = device
             .map_memory(
@@ -194,26 +189,9 @@ unsafe fn upload(
                 vk::MemoryMapFlags::empty(),
             )?
             .cast::<u8>();
-        let mut offset = 0;
-        for (i, level) in atlas.levels.iter().enumerate() {
-            dst.add(offset)
+        for (level, region) in atlas.levels.iter().zip(&regions) {
+            dst.add(region.buffer_offset as usize)
                 .copy_from_nonoverlapping(level.as_ptr(), level.len());
-            regions.push(
-                vk::BufferImageCopy::default()
-                    .buffer_offset(offset as vk::DeviceSize)
-                    .image_subresource(
-                        vk::ImageSubresourceLayers::default()
-                            .aspect_mask(vk::ImageAspectFlags::COLOR)
-                            .mip_level(i as u32)
-                            .layer_count(1),
-                    )
-                    .image_extent(vk::Extent3D {
-                        width: atlas.width >> i,
-                        height: atlas.height >> i,
-                        depth: 1,
-                    }),
-            );
-            offset += level.len();
         }
         device.unmap_memory(staging_memory);
     }
@@ -286,4 +264,125 @@ unsafe fn upload(
         device.free_memory(staging_memory, None);
     }
     Ok(())
+}
+
+fn validate_atlas(atlas: &Atlas) -> Result<()> {
+    ensure!(
+        atlas.width > 0 && atlas.height > 0,
+        "atlas dimensions must be nonzero"
+    );
+    ensure!(!atlas.levels.is_empty(), "atlas has no image data");
+    let max_levels = atlas.width.max(atlas.height).ilog2() as usize + 1;
+    ensure!(
+        atlas.levels.len() <= max_levels,
+        "atlas has too many mip levels"
+    );
+    for (i, level) in atlas.levels.iter().enumerate() {
+        let expected = u64::from((atlas.width >> i).max(1)) * u64::from((atlas.height >> i).max(1));
+        ensure!(
+            level.len() as u64 == expected,
+            "atlas mip {i} has the wrong size"
+        );
+    }
+    Ok(())
+}
+
+/// Called only after validation. Align each upload offset to four bytes,
+/// including odd-sized R8 mip levels.
+fn atlas_regions(atlas: &Atlas) -> (Vec<vk::BufferImageCopy>, usize) {
+    let mut total = 0usize;
+    let regions = atlas
+        .levels
+        .iter()
+        .enumerate()
+        .map(|(i, level)| {
+            total = total.next_multiple_of(4);
+            let region = vk::BufferImageCopy::default()
+                .buffer_offset(total as vk::DeviceSize)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(i as u32)
+                        .layer_count(1),
+                )
+                .image_extent(vk::Extent3D {
+                    width: (atlas.width >> i).max(1),
+                    height: (atlas.height >> i).max(1),
+                    depth: 1,
+                });
+            total += level.len();
+            region
+        })
+        .collect();
+    (regions, total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rectangular_atlas_clamps_each_axis_and_bounds_the_chain() {
+        let mut atlas = Atlas {
+            width: 8,
+            height: 2,
+            levels: vec![vec![0; 16], vec![0; 4], vec![0; 2], vec![0; 1]],
+        };
+        validate_atlas(&atlas).unwrap();
+        let (regions, total) = atlas_regions(&atlas);
+        assert_eq!(
+            regions
+                .iter()
+                .map(|r| (r.image_extent.width, r.image_extent.height))
+                .collect::<Vec<_>>(),
+            [(8, 2), (4, 1), (2, 1), (1, 1)]
+        );
+        assert_eq!(
+            regions.iter().map(|r| r.buffer_offset).collect::<Vec<_>>(),
+            [0, 16, 20, 24]
+        );
+        assert_eq!(total, 25);
+        atlas.levels.push(Vec::new());
+        assert!(validate_atlas(&atlas).is_err());
+        atlas.levels.pop();
+        atlas.levels[2].clear();
+        assert!(validate_atlas(&atlas).is_err());
+    }
+    #[test]
+    fn atlas_rejects_empty_or_malformed_data_before_upload() {
+        for atlas in [
+            Atlas {
+                width: 0,
+                height: 1,
+                levels: vec![vec![]],
+            },
+            Atlas {
+                width: 1,
+                height: 0,
+                levels: vec![vec![]],
+            },
+            Atlas {
+                width: 1,
+                height: 1,
+                levels: vec![],
+            },
+            Atlas {
+                width: 1,
+                height: 1,
+                levels: vec![vec![0], vec![]],
+            },
+            Atlas {
+                width: 2,
+                height: 2,
+                levels: vec![vec![0; 3]],
+            },
+        ] {
+            assert!(validate_atlas(&atlas).is_err());
+        }
+        validate_atlas(&Atlas {
+            width: 1,
+            height: 1,
+            levels: vec![vec![0]],
+        })
+        .unwrap();
+    }
 }

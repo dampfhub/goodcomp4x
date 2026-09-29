@@ -34,7 +34,9 @@ use std::fmt::Write as _;
 use std::thread;
 
 use super::super::GameState;
-use super::super::city::{Build, BuildUnit, Lane, Stock};
+use super::super::city::{
+    Build, BuildUnit, CLUSTER_SIZE, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, Stock,
+};
 use super::super::fast_hash::{HashMap, HashSet};
 use super::super::hex::Hex;
 use super::super::unit::{Team, Unit, UnitType};
@@ -146,7 +148,7 @@ struct SideEvents {
     barracks_placed: Option<u32>,
     barracks_built: Option<u32>,
     /// The turn its first city reached each population (index), if it did.
-    capital_pop: [Option<u32>; 8],
+    capital_pop: [Option<u32>; MAX_CITY_POPULATION + 1],
     /// The turn its army first reached each of `ARMY_STEPS`.
     army: [Option<u32>; ARMY_STEPS.len()],
     first_contact: Option<u32>,
@@ -254,8 +256,9 @@ fn whole(stock: Stock) -> [f64; 3] {
 
 fn spending(build: Build) -> Option<usize> {
     match build {
-        Build::Unit(_) => Some(0),
-        Build::Grow => Some(1),
+        // Scouts count with the troops, Settlers (expansion) with growth.
+        Build::Unit(_) | Build::Scout => Some(0),
+        Build::Grow | Build::Settler => Some(1),
         Build::Worker => Some(2),
         Build::Gather => None,
     }
@@ -514,6 +517,8 @@ impl Observer {
     fn after_turn(&mut self, game: &GameState) {
         let turn = game.turn;
         let now = Self::units(game);
+        // Settlers trained this turn: not troops, and not lost when they found.
+        self.settlers.extend(game.settlers.iter().copied());
         let mut deaths = 0.0;
         for (id, &(team, hp, interior, troop)) in &now {
             if let Some(&(_, before, before_interior, _)) = self.alive.get(id) {
@@ -528,6 +533,10 @@ impl Observer {
             let Some(unit) = game.units.iter().find(|u| u.id == *id) else {
                 continue;
             };
+            // Scouts from a city's queue aren't one of `KINDS`.
+            if unit.unit_type == UnitType::Scout {
+                continue;
+            }
             let kind = kind(unit);
             let Some(side) = self.side(team) else {
                 continue;
@@ -630,7 +639,7 @@ impl Observer {
                 && game.cities[capital].team == team
             {
                 let pop = game.cities[capital].population;
-                for reached in &mut events.capital_pop[..=pop.min(7)] {
+                for reached in &mut events.capital_pop[..=pop.min(MAX_CITY_POPULATION)] {
                     first(reached, turn);
                 }
             }
@@ -911,7 +920,8 @@ impl KindReport {
         side_event("first troop".into(), &|e| e.first_troop);
         side_event("Barracks placed".into(), &|e| e.barracks_placed);
         side_event("Barracks built".into(), &|e| e.barracks_built);
-        for pop in 2..=7 {
+        // Each step of the first cluster, then each cluster's last citizen.
+        for pop in (2..=CLUSTER_SIZE).chain((2..=MAX_MANAGERS).map(|n| n * CLUSTER_SIZE)) {
             side_event(format!("first city at pop {pop}"), &|e| e.capital_pop[pop]);
         }
         for (i, step) in ARMY_STEPS.iter().enumerate() {

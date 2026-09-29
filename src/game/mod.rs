@@ -102,8 +102,9 @@ pub struct GameState {
     interior_selected: Option<u32>,
     /// Preserve the exterior camera while the tactical city map is open.
     exterior_camera: Option<Camera>,
-    /// City whose manager has been picked up and awaits a destination click.
-    moving_manager: Option<usize>,
+    /// The city and cluster whose manager has been picked up and awaits a
+    /// destination click.
+    moving_manager: Option<(usize, usize)>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
@@ -192,6 +193,10 @@ pub struct GameState {
     transition: transition::Transition,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: HashSet<u32>,
+    /// Sites where an AI side's settler was refused a city by the rules
+    /// (a city it hadn't seen stood too near), so its settlers look
+    /// elsewhere (`plan_ai_settlers`). Game state, like its memory.
+    refused_sites: Vec<(Team, Hex)>,
     /// The turn strip's group whose units it lists one by one, while one of
     /// them is selected (`ui/roster.rs`).
     roster_open: Option<ui::RosterKey>,
@@ -306,6 +311,7 @@ impl GameState {
             cloud_time: 0.0,
             transition: transition::Transition::default(),
             settlers: HashSet::default(),
+            refused_sites: Vec::new(),
             ruins: Vec::new(),
             roster_open: None,
             field_workers: Vec::new(),
@@ -318,6 +324,11 @@ impl GameState {
         };
         game.select_next_or_end_turn(None);
         game
+    }
+
+    #[cfg(test)]
+    pub(crate) fn map_seed(&self) -> Option<u32> {
+        self.map_seed
     }
 
     pub fn city_scenario() -> Self {
@@ -385,8 +396,8 @@ impl GameState {
         // Place both city centers on the shoreline, not two tiles inland.
         for (city, sign) in [(0, -1), (1, 1)] {
             game.cities[city].pos = Hex::new(sign * 2, 0);
-            game.cities[city].worked.clear();
-            game.cities[city].remembered_worked.clear();
+            game.cities[city].clusters.clear();
+            game.cities[city].remembered.clear();
         }
         game.units.clear();
         game.next_unit_id = 0;

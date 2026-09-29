@@ -201,6 +201,18 @@ mod tests {
         }
     }
     #[test]
+    fn sample_choice_prefers_the_highest_supported_multisample_count() {
+        use vk::SampleCountFlags as S;
+        assert_eq!(best_samples(S::TYPE_4, 16).unwrap(), S::TYPE_4);
+        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_8, 16).unwrap(), S::TYPE_8);
+        assert_eq!(
+            best_samples(S::TYPE_4 | S::TYPE_8 | S::TYPE_16, 16).unwrap(),
+            S::TYPE_16
+        );
+        assert_eq!(best_samples(S::TYPE_4 | S::TYPE_64, 16).unwrap(), S::TYPE_4);
+    }
+
+    #[test]
     fn sample_cap_parses_without_changing_process_environment() {
         assert_eq!(parse_sample_cap(None), Some(8));
         for n in [2, 4, 8, 16, 32, 64] {

@@ -49,13 +49,7 @@ pub unsafe fn create_render_pass(
         .resolve_attachments(&resolve_refs)];
 
     let dependencies = [
-        // Don't write to the swapchain image until presentation has released it.
-        vk::SubpassDependency::default()
-            .src_subpass(vk::SUBPASS_EXTERNAL)
-            .dst_subpass(0)
-            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
-            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE),
+        incoming_color_dependency(),
         // Let a copy after the pass read the resolved image (`readback.rs`).
         vk::SubpassDependency::default()
             .src_subpass(0)
@@ -181,4 +175,34 @@ unsafe fn create_shader_module(device: &ash::Device, spirv: &[u8]) -> Result<vk:
 
     let create_info = vk::ShaderModuleCreateInfo::default().code(&code);
     Ok(unsafe { device.create_shader_module(&create_info, None) }?)
+}
+
+/// Includes earlier frames' writes to the shared MSAA attachment. UNDEFINED
+/// discards contents but does not eliminate its write-after-write hazard.
+fn incoming_color_dependency() -> vk::SubpassDependency {
+    vk::SubpassDependency::default()
+        .src_subpass(vk::SUBPASS_EXTERNAL)
+        .dst_subpass(0)
+        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+        .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_target_writes_are_ordered_between_render_passes() {
+        let dependency = incoming_color_dependency();
+        assert_eq!(dependency.src_subpass, vk::SUBPASS_EXTERNAL);
+        assert_eq!(dependency.dst_subpass, 0);
+        for stages in [dependency.src_stage_mask, dependency.dst_stage_mask] {
+            assert!(stages.contains(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT));
+        }
+        for access in [dependency.src_access_mask, dependency.dst_access_mask] {
+            assert!(access.contains(vk::AccessFlags::COLOR_ATTACHMENT_WRITE));
+        }
+    }
 }
