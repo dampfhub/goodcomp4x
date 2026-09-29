@@ -133,7 +133,7 @@ orders shows disabled.
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
 | 9 / Grow card | Queue one more citizen, paid in food when work on it starts (the city doesn't grow on its own) |
-| 0 / Gather card | Spend a turn gathering: free, and 2 food, 2 wood and 1 metal come in when it's done |
+| 0 / Gather card | Spend a turn gathering: free, and 1 food, 1 wood and half a metal come in when it's done |
 | A build card the stockpile can't pay for yet | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the city shows a badge over its tower with the missing resources' icons. Prices show as resource icons and amounts, turns after a clock |
 | A dimmed build card | It can't be queued: (Cavalry, Armored) the barracks has no deposit or its cap is used up, or (Grow) the city is full; its tooltip says why |
 | Drag a queue row onto another | Reorder the queue; work stays with each build, and a paused build with work shows SAVED on its row |

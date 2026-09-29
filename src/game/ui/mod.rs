@@ -701,13 +701,14 @@ impl GameState {
     pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) -> bool {
         let point = to_ui(cursor, screen_size);
         let layout = self.layout_with_hover(screen_size, Some(cursor)).0;
-        if self.drag_queue_scrollbar_at(cursor, screen_size, false)
-            || self.drag_building_scrollbar_at(cursor, screen_size, false)
+        // A button (the centered settings menu's, drawn over the panels)
+        // takes the click before a scrollbar or a chip under it.
+        if layout.button_at(point).is_none()
+            && (self.drag_queue_scrollbar_at(cursor, screen_size, false)
+                || self.drag_building_scrollbar_at(cursor, screen_size, false))
         {
             return true;
         }
-        // A button (the centered settings menu's, drawn over the strip) takes
-        // the click before a chip under it.
         if layout.button_at(point).is_none()
             && let Some(key) = layout.roster_chip_at(point)
         {
