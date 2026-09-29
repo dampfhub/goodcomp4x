@@ -3,7 +3,7 @@ use super::text::{end_turn_label, price_hint, quantity, signed_quantity, wrap};
 use super::*;
 
 use crate::game::PLAYER_TEAM;
-use crate::game::city::{Build, Queued, Stock, stock_icons};
+use crate::game::city::{Build, Good, Priorities, Queued, Stock, stock_icons};
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 use crate::game::orders::ClickMode;
 use crate::game::unit::{Team, Unit, UnitType};
@@ -55,19 +55,15 @@ fn action_toolbar_is_compact_and_every_icon_keeps_its_click_target() {
 
     let mut city_panel = PanelBuilder::default();
     game.city_tray(0, &mut city_panel);
-    let focus = city_panel
+    let chips = city_panel
         .rows
         .iter()
         .find_map(|row| match row {
-            builder::Row::Buttons(buttons, _)
-                if buttons.iter().any(|b| matches!(b.target, Target::Focus(_))) =>
-            {
-                Some(buttons)
-            }
+            builder::Row::Reorder(QueueKind::Priority, buttons) => Some(buttons),
             _ => None,
         })
-        .expect("labor focus buttons");
-    assert!(builder::icon_row(focus));
+        .expect("priority chips");
+    assert!(builder::icon_row(chips));
 }
 
 #[test]
@@ -791,7 +787,7 @@ fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
         let row = layout
             .queue_items
             .iter()
-            .find(|row| row.index == index)
+            .find(|row| row.kind == QueueKind::City && row.index == index)
             .unwrap();
         to_ui(
             Vec2::new(
@@ -834,7 +830,7 @@ fn barracks_queue_rows_use_the_same_drag_and_remove_targets() {
         let row = layout
             .queue_items
             .iter()
-            .find(|row| row.index == index)
+            .find(|row| row.kind == QueueKind::Barracks && row.index == index)
             .unwrap();
         to_ui(
             Vec2::new(
@@ -1133,6 +1129,9 @@ fn every_panel_shows_what_a_city_delivers_in_displayed_units() {
     let mut game = GameState::city_scenario();
     game.fog_of_war = false;
     game.units.clear();
+    // Wood first, so the city brings in more wood than its center alone.
+    game.cities[0].priorities = Priorities([Good::Wood, Good::Food, Good::Metal]);
+    game.auto_assign_city(0);
     let income = game.income(0);
     // Stored in quarters: a raw value would read four times too high.
     assert!(income.food > 4 && income.wood > 4);
@@ -2618,7 +2617,11 @@ fn queue_panel_button(layout: &Layout, target: Target) -> (Rect, Rect) {
         .iter()
         .find(|b| b.target == target)
         .unwrap_or_else(|| panic!("no {target:?} button"));
-    let row = layout.queue_items.first().expect("queue rows");
+    let row = layout
+        .queue_items
+        .iter()
+        .find(|row| row.kind != QueueKind::Priority)
+        .expect("queue rows");
     let &(min, max) = layout
         .panels
         .iter()
@@ -2682,7 +2685,11 @@ fn each_queue_panel_has_a_clear_button_that_refunds_everything() {
             layout.button_at(middle).map(|b| b.target),
             Some(Target::ClearCityQueue)
         );
-        assert!(clear.max.y > layout.queue_items[0].max.y, "above the rows");
+        let first = layout
+            .queue_items
+            .iter()
+            .find(|row| row.kind == QueueKind::City);
+        assert!(clear.max.y > first.unwrap().max.y, "above the rows");
     }
     // Hover says what it does.
     let tooltip = |game: &GameState, target| {
@@ -3076,7 +3083,7 @@ fn a_crowded_city_tray_stays_docked_with_its_list_scrolling_inside_it() {
             // Its buttons, catalogue included, are inside it and clickable.
             for target in [
                 Target::Build(BuildUnit::Melee),
-                Target::Focus(LaborFocus::Balanced),
+                Target::Priority(Good::Metal),
                 Target::OpenInterior,
             ] {
                 assert!(clickable_in(&layout, tray, target), "{target:?} at {at}");
@@ -3283,4 +3290,149 @@ fn a_frozen_plan_locks_a_waiting_queue_row_like_any_other() {
         })
         .collect();
     assert_eq!(rows, [(true, true), (false, true)]);
+}
+
+/// The middle of each of the open city's priority chips, first to last,
+/// as the classic layout places them.
+fn priority_chips(game: &GameState) -> Vec<Vec2> {
+    let layout = game.layout(SCREEN);
+    let mut chips: Vec<_> = layout
+        .queue_items
+        .iter()
+        .filter(|item| item.kind == QueueKind::Priority)
+        .map(|item| (item.index, to_ui((item.min + item.max) / 2.0, SCREEN)))
+        .collect();
+    chips.sort_by_key(|&(index, _)| index);
+    chips.into_iter().map(|(_, at)| at).collect()
+}
+
+/// What the open city's citizens work once auto-assigned by `order`.
+fn assigned_by(game: &GameState, order: Priorities) -> Vec<Hex> {
+    let city = game.selected_city.expect("city view open");
+    let mut copy = game.clone();
+    copy.cities[city].priorities = order;
+    copy.auto_assign_city(city);
+    copy.cities[city].worked.clone()
+}
+
+#[test]
+fn priority_chips_show_the_order_and_drag_or_click_to_change_it() {
+    use Good::{Food, Metal, Wood};
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Food, Wood, Metal])
+    );
+    // Three icon chips in the tray, in order, each with its rank in its
+    // corner and a drag region over it.
+    let layout = game.layout(SCREEN);
+    let tray = panel_with(&layout, Target::OpenInterior).expect("the city tray");
+    let chips = priority_chips(&game);
+    assert_eq!(chips.len(), 3);
+    for (rank, good) in [Food, Wood, Metal].into_iter().enumerate() {
+        let target = Target::Priority(good);
+        assert!(clickable_in(&layout, tray, target), "{good:?}");
+        let button = layout.button_at(to_ui(chips[rank], SCREEN)).unwrap();
+        assert_eq!(button.target, target);
+        assert_eq!(
+            action_icons::badge(&button.label),
+            Some(&*(rank + 1).to_string())
+        );
+        assert_eq!(
+            button.max - button.min,
+            Vec2::splat(action_icons::ICON_BUTTON_SIZE)
+        );
+        let tooltip = line_strings(game.tooltip_lines(button).into_iter().map(|(_, l)| l));
+        let tooltip = tooltip.join(" ");
+        assert!(
+            tooltip.contains(&format!("PRIORITY {}", rank + 1)),
+            "{tooltip}"
+        );
+        assert!(tooltip.contains("1ST ×9, 2ND ×3, 3RD ×1"), "{tooltip}");
+    }
+    // Metal dragged onto Food: gold while dragged, Food framed as where it
+    // lands; let go, Metal is first and the citizens are reassigned.
+    assert!(game.start_queue_drag_at(chips[2], SCREEN));
+    game.update_queue_drag_at(chips[0], SCREEN);
+    let dragging = game.layout(SCREEN);
+    let state = |target| {
+        let b = dragging
+            .buttons
+            .iter()
+            .find(|b| b.target == target)
+            .unwrap();
+        (b.state, b.armed)
+    };
+    assert_eq!(state(Target::Priority(Metal)), (ButtonState::Queued, false));
+    assert_eq!(state(Target::Priority(Food)), (ButtonState::Ready, true));
+    let expected = assigned_by(&game, Priorities([Metal, Food, Wood]));
+    game.finish_queue_drag_at(chips[0], SCREEN);
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Metal, Food, Wood])
+    );
+    assert_eq!(game.cities[city].worked, expected);
+    assert_eq!(game.notice, "CITY PRIORITIES: METAL > FOOD > WOOD");
+    // A press and release on one chip (no drag) puts it first.
+    let chips = priority_chips(&game);
+    assert!(game.start_queue_drag_at(chips[2], SCREEN));
+    game.finish_queue_drag_at(chips[2], SCREEN);
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Wood, Metal, Food])
+    );
+    // A drag let go off the chips changes nothing.
+    assert!(game.start_queue_drag_at(chips[0], SCREEN));
+    game.finish_queue_drag_at(Vec2::new(SCREEN.x / 2.0, 10.0), SCREEN);
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Wood, Metal, Food])
+    );
+    // The button itself (as a pinned panel's would be) puts it first too.
+    game.handle_click(
+        button_cursor(&game, Target::Priority(Food)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Food, Wood, Metal])
+    );
+}
+
+#[test]
+fn imgui_priority_chips_click_to_put_first_and_drag_to_reorder() {
+    use Good::{Food, Metal, Wood};
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::Priority(Metal));
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Metal, Food, Wood])
+    );
+    // Wood (last) dragged onto Food (second): not a click, which would put
+    // it first.
+    screen.settle(&mut game);
+    let from = screen
+        .button(Target::Priority(Wood))
+        .expect("the wood chip");
+    let to = screen
+        .button(Target::Priority(Food))
+        .expect("the food chip");
+    screen.frame(&mut game, Some(from), false);
+    screen.frame(&mut game, Some(from), true);
+    for step in 1..=8 {
+        let at = from + (to - from) * step as f32 / 8.0;
+        screen.frame(&mut game, Some(at), true);
+    }
+    screen.frame(&mut game, Some(to), false);
+    screen.frame(&mut game, Some(to), false);
+    assert_eq!(
+        game.cities[city].priorities,
+        Priorities([Metal, Wood, Food])
+    );
+    let expected = assigned_by(&game, Priorities([Metal, Wood, Food]));
+    assert_eq!(game.cities[city].worked, expected);
 }

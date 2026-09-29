@@ -50,7 +50,7 @@ UNIT CAP) are off in a network game.
 Every machine runs the whole game (`src/game/multiplayer.rs`). Turns are simultaneous, so a
 player's planning stays on their machine until they end it. Then their side's **plan**
 (`TeamPlan`) goes to the host: their units' orders and queues, their cities' queues, citizens
-and focus, their placed jobs and recalled workers, their troops' orders inside city interiors,
+and priority order, their placed jobs and recalled workers, their troops' orders inside city interiors,
 and their stockpile; a unit missing from it was disbanded, and a city new since the turn began
 was founded by the settler that stood there. Once the host has every human side's plan, it
 sends them all to every guest (`Resolve`). Each machine applies them, in side order, to a copy of
