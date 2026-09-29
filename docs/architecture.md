@@ -116,7 +116,7 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    sets or clears Lookout, and clears its orders; `advance_queues` (`order_queue.rs`) gives each
    unit with a queue its next turn's orders, dropping queues that no longer fit; then selection
    moves to the first unit needing orders, or else the first city needing a build
-   (`select_next_or_end_turn`). Last, the turn cue starts (`start_transition`, see A frame).
+   (`select_next_needing_attention`). Last, the turn cue starts (`start_transition`, see A frame).
 
 The rules each step applies are in `game-rules.md`.
 

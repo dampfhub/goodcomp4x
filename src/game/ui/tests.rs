@@ -598,6 +598,39 @@ fn ending_the_turn_while_placing_a_building_stops_placing_it() {
 }
 
 #[test]
+fn end_turn_closes_the_barracks_view_in_both_presentations() {
+    // #114: End Turn cleared only the city view, so a Barracks tray (and a
+    // manager being moved, or a queue row being dragged) outlived the turn.
+    let mut screen = ImGuiScreen::new();
+    for imgui in [false, true] {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap();
+        game.queue_selected_city_worker();
+        game.cities[city].barracks = Some(Hex::new(-2, 0));
+        game.open_barracks(city);
+        game.moving_manager = Some((city, 0));
+        if imgui {
+            screen.click(&mut game, Target::EndTurn);
+        } else {
+            game.handle_click(
+                button_cursor(&game, Target::EndTurn),
+                SCREEN,
+                ClickMode::Normal,
+            );
+        }
+        assert!(game.is_resolving(), "imgui {imgui}: {}", game.notice);
+        assert_eq!(game.selected_barracks, None, "imgui {imgui}");
+        assert_eq!(game.moving_manager, None, "imgui {imgui}");
+        assert!(game.queue_drag.is_none(), "imgui {imgui}");
+        while game.is_resolving() {
+            game.update(10.0);
+        }
+        assert_eq!(game.selected_barracks, None, "imgui {imgui}");
+    }
+}
+
+#[test]
 fn a_building_card_shows_placing_then_placed_until_taken_off() {
     let mut game = city_view();
     game.units.clear();

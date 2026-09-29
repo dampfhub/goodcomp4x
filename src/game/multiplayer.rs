@@ -480,7 +480,7 @@ impl GameState {
         if let Some(home) = home {
             self.camera = Camera::new(home.to_world(), self.camera.half_height);
         }
-        self.select_next_or_end_turn(None);
+        self.select_next_needing_attention(None);
     }
 
     /// The turns resolved so far.
@@ -662,13 +662,14 @@ impl GameState {
                 lockstep.outbox.push(Message::Plan(plan));
             }
         }
-        // The player may go on looking (the selection and open views stay),
-        // but nothing armed to change the plan outlives it.
+        // As in a local game, the city and Barracks views close and the
+        // selection is let go. The player may go on looking (selecting and
+        // opening views again), but nothing armed to change the plan
+        // outlives it.
+        self.close_views_on_end_turn();
         self.ui_click_mode = None;
         self.placing_job = None;
         self.hovered_job = None;
-        self.moving_manager = None;
-        self.queue_drag = None;
         self.queue_replace_armed = None;
         self.disband_armed = None;
         self.notice = WAITING_NOTICE.into();
@@ -1824,7 +1825,7 @@ mod tests {
 
         // A unit, selected by clicking it; a click elsewhere only lets go.
         let away = open(&guest, pos);
-        guest.press_escape();
+        assert_eq!(guest.selected_city, None, "End Turn closed the city view");
         click(&mut guest, pos, ClickMode::Normal);
         assert_eq!(guest.selected, Some(unit), "{}", guest.notice);
         click(&mut guest, away, ClickMode::Normal);
@@ -2022,6 +2023,63 @@ mod tests {
         assert_eq!(host.turn, 1);
         assert_eq!(host.checksum(), guest.checksum());
         assert_eq!(guest.units_queued(HOST_SEAT, BuildUnit::Melee), 1);
+    }
+
+    #[test]
+    fn end_turn_closes_the_city_and_barracks_views_as_in_a_local_game() {
+        // #301: End Turn closes them and lets go of the selection while it
+        // waits for the others, as a local game's End Turn does.
+        let (mut host, mut guest) = pair();
+        let team = GUEST_SEAT;
+        let city = city_of(&guest, team);
+        let city_pos = guest.cities[city].pos;
+        let worked = guest.cities[city].worked().collect::<Vec<_>>();
+        let barracks = city_pos
+            .neighbors()
+            .into_iter()
+            .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h) && !worked.contains(&h))
+            .unwrap();
+        for game in [&mut host, &mut guest] {
+            game.cities[city].barracks = Some(barracks);
+            game.finish_lockstep_turn();
+            let _ = game.take_outbox();
+        }
+
+        // The city view.
+        end_turn_building(&mut guest, None);
+        assert!(guest.waiting_for_peers(), "{}", guest.notice);
+        assert_eq!(guest.selected_city, None, "the city view closes");
+        // Taken back, the Barracks view.
+        guest.take_back_turn();
+        guest.open_barracks(city);
+        assert_eq!(guest.selected_barracks, Some(city));
+        guest.end_planning();
+        assert!(guest.waiting_for_peers(), "{}", guest.notice);
+        assert_eq!(guest.selected_barracks, None, "the Barracks view closes");
+        // Taken back, a unit selected.
+        guest.take_back_turn();
+        let unit = (0..guest.units.len())
+            .find(|&i| guest.units[i].team == team)
+            .unwrap();
+        guest.set_selection(vec![unit]);
+        guest.end_planning();
+        assert!(guest.waiting_for_peers(), "{}", guest.notice);
+        assert_eq!(guest.selection(), Vec::<usize>::new(), "the unit is let go");
+
+        // Waiting, the player may look again, and the turn plays out alike.
+        let plan = guest.team_plan(team);
+        guest.open_city(city);
+        assert_eq!(guest.selected_city, Some(city));
+        assert_eq!(guest.team_plan(team), plan, "looking changes nothing");
+        exchange(&mut host, &mut guest);
+        host.submit_plan();
+        exchange(&mut host, &mut guest);
+        play_out(&mut host);
+        play_out(&mut guest);
+        exchange(&mut host, &mut guest);
+        assert_eq!(host.turn, guest.turn);
+        assert_eq!(host.checksum(), guest.checksum());
+        assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
     }
 
     #[test]

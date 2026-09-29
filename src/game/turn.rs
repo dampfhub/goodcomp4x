@@ -83,9 +83,14 @@ impl GameState {
         }
         self.turn += 1;
         log::info!("=== resolving turn {} ===", self.turn);
-        // Indices shift as units die, so nothing stays selected.
+        // Indices shift as units die, so nothing stays selected, and nothing
+        // armed while planning (an action for the next map click, a Disband
+        // to confirm, a click to repeat to replace a queue) outlives the turn.
         self.selected = None;
         self.group.clear();
+        self.ui_click_mode = None;
+        self.disband_armed = None;
+        self.queue_replace_armed = None;
 
         for team in self.ai_teams() {
             self.plan_ai_turn(team);
@@ -168,7 +173,7 @@ impl GameState {
             // Planning begins: the player's queues go on from what they now
             // know. After the network turn's start snapshot, so it's planning.
             self.replan_queues();
-            self.select_next_or_end_turn(None);
+            self.select_next_needing_attention(None);
         }
         self.start_transition(before, turn_over);
     }

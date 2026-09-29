@@ -322,7 +322,7 @@ impl GameState {
             humans: vec![PLAYER_TEAM],
             next_unit_id: 8,
         };
-        game.select_next_or_end_turn(None);
+        game.select_next_needing_attention(None);
         game
     }
 
@@ -493,7 +493,7 @@ impl GameState {
         game.camera = Camera::new(home.to_world(), game.camera.half_height);
         // What needs seeing to first, as every turn starts: the city's
         // production, or else the settler.
-        game.select_next_or_end_turn(None);
+        game.select_next_needing_attention(None);
         game
     }
 
