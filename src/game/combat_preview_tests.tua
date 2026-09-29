@@ -1,0 +1,282 @@
+//! The attack preview: what hovering an enemy shows, and that it is the damage the turn deals.
+
+use std.collections.Map;
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.combat.AttackPreview;
+use game.combat.Hurt;
+use game.combat.damage;
+use game.draw.preview_lethal_color;
+use game.draw.preview_loss_color;
+use game.hex.Hex;
+use game.hex.HexGrid;
+use game.mesh.Color;
+use game.orders.ClickMode;
+use game.terrain.Terrain;
+use game.terrain.Tile;
+use game.tests.sandbox;
+use game.turn.RESOLUTION_ORDER;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+use renderer.pipelines.MeshVertex;
+
+/// A game with only `units` on a small plain board, with `tiles` set.
+fn board(units: Vec[Unit], tiles: &[(Hex, Tile)]) -> GameState can {Log} {
+    let mut game = GameState.new();
+    game.grid = HexGrid.new(3, tiles);
+    game.cities.clear();
+    game.units = units;
+    game.selected = Option.None;
+    game.group.clear();
+    game
+}
+
+/// Resolves every unit step of the turn, in order, planning nothing.
+fn resolve_every_step(game: &mut GameState) can {Log, Rand} {
+    for i in 0..22 {
+        let (unit_type, phase) = RESOLUTION_ORDER[i];
+        let _acted = game.resolve_step(unit_type, phase);
+    }
+}
+
+fn units_of(items: &[Unit]) -> Vec[Unit] {
+    let mut out: Vec[Unit] = Vec.new();
+    for k in 0..items.len() { out.push(items[k].snapshot()); }
+    out
+}
+
+fn hills() -> Tile { Tile { terrain: Terrain.Plains, hills: true, feature: Option.None } }
+
+fn close(a: f32, b: f32) -> bool { let d = a - b; d < 0.001 && d > 0.0 - 0.001 }
+
+@test
+fn the_preview_is_the_damage_the_turn_deals() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // A group of a ranged unit and a cavalry, and a melee already attacking, on an armored
+        // unit on hills: three steps, two blows back.
+        let target = Hex.new(1, 0);
+        let mut melee = Unit.new(3, Hex.new(1, 0 - 1), Team.Blue, UnitType.Melee);
+        melee.planned_attack = Option.Some(target);
+        let mut units: Vec[Unit] = Vec.new();
+        units.push(Unit.new(1, Hex.new(0 - 1, 0), Team.Blue, UnitType.Ranged));
+        units.push(Unit.new(2, Hex.new(0, 0), Team.Blue, UnitType.Cavalry));
+        units.push(melee);
+        units.push(Unit.new(4, target, Team.Red, UnitType.Armored));
+        let mut game = board(units, &[(target, hills())]);
+        let mut group: Vec[i32] = Vec.new();
+        group.push(0);
+        group.push(1);
+        game.set_selection(group);
+        game.hovered_tile = Option.Some(target);
+        let Option.Some(preview) = game.attack_preview() else { assert(false); return; };
+        assert(preview.if_it_stays);
+        assert(preview.retaliation() > 0.0);
+        let mut before: Vec[f32] = Vec.new();
+        for i in 0..game.units.len() { before.push(game.units[i].hp); }
+        let mut shown: Vec[f32] = Vec.new();
+        for i in 0..game.units.len() {
+            shown.push(match preview.loss(Hurt.Unit(i)) {
+                Option.Some(k) => if preview.losses[k].amount < before[i] { preview.losses[k].amount } else { before[i] },
+                Option.None => 0.0,
+            });
+        }
+        game.group_order(target, ClickMode.Attack);
+        resolve_every_step(&mut game);
+        for i in 0..4 {
+            let now = if i < game.units.len() { game.units[i].hp } else { 0.0 };
+            assert(close(before[i] - now, shown[i]));
+        }
+    });
+}
+
+@test
+fn a_lethal_hit_draws_no_retaliation() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let target = Hex.new(1, 0);
+        let mut weak = Unit.new(2, target, Team.Red, UnitType.Melee);
+        weak.hp = 5.0;
+        let mut units: Vec[Unit] = Vec.new();
+        units.push(Unit.new(1, Hex.new(0, 0), Team.Blue, UnitType.Melee));
+        units.push(weak);
+        let mut game = board(units, &[]);
+        game.selected = Option.Some(0);
+        game.hovered_tile = Option.Some(target);
+        let Option.Some(preview) = game.attack_preview() else { assert(false); return; };
+        let Option.Some(k) = preview.loss(Hurt.Unit(1)) else { assert(false); return; };
+        assert(preview.losses[k].lethal());
+        assert(preview.dealt().1);
+        assert(preview.retaliation() == 0.0);
+        assert(preview.loss(Hurt.Unit(0)).is_none());
+        let before = game.units[0].hp;
+        game.try_queue_attack(0, target);
+        resolve_every_step(&mut game);
+        assert(game.units.len() == 1);
+        assert(game.units[0].hp == before);
+    });
+}
+
+fn preview_of(attacker: Unit, target: Hex) -> AttackPreview can {Log} {
+    let shore = Hex.new(1, 0);
+    let sea = Hex.new(2, 0);
+    let defender = Unit.new(9, shore, Team.Red, UnitType.Melee);
+    let mut units: Vec[Unit] = Vec.new();
+    units.push(attacker);
+    units.push(defender);
+    let mut game = board(units, &[(sea, Tile.of(Terrain.Coast))]);
+    game.selected = Option.Some(0);
+    game.hovered_tile = Option.Some(target);
+    game.attack_preview().unwrap_or(AttackPreview.new())
+}
+
+@test
+fn only_melee_on_its_own_side_of_the_waterline_draws_retaliation() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let shore = Hex.new(1, 0);
+        let sea = Hex.new(2, 0);
+        let melee = preview_of(Unit.new(1, Hex.new(0, 0), Team.Blue, UnitType.Melee), shore);
+        let Option.Some(k) = melee.loss(Hurt.Unit(0)) else { assert(false); return; };
+        assert(!melee.losses[k].target_side);
+        let ranged = preview_of(Unit.new(1, Hex.new(0 - 1, 0), Team.Blue, UnitType.Ranged), shore);
+        assert(ranged.retaliation() == 0.0);
+        // A galley's melee blow lands ashore at 35%, and nothing comes back across the water.
+        let galley = Unit.new(1, sea, Team.Blue, UnitType.PatrolGalley);
+        let defender = Unit.new(9, shore, Team.Red, UnitType.Melee);
+        let full = damage(&galley, &defender, 1.0);
+        let preview = preview_of(Unit.new(1, sea, Team.Blue, UnitType.PatrolGalley), shore);
+        assert(preview.retaliation() == 0.0);
+        assert(close(preview.dealt().0, 0.35 * full));
+    });
+}
+
+@test
+fn the_preview_shows_only_what_the_player_knows() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let far = Hex.new(3, 0);
+        let near = Hex.new(0 - 2, 1);
+        let mut shielded = Unit.new(3, near, Team.Red, UnitType.Melee);
+        shielded.ability_queued = true;
+        let mut blue = Unit.new(1, Hex.new(0 - 3, 1), Team.Blue, UnitType.Melee);
+        // An attack already planned on a hex out of sight shows nothing.
+        blue.planned_attack = Option.Some(far);
+        let mut units: Vec[Unit] = Vec.new();
+        units.push(blue);
+        units.push(Unit.new(2, far, Team.Red, UnitType.Melee));
+        units.push(shielded);
+        let mut game = board(units, &[]);
+        game.fog_of_war = true;
+        game.memory = Map.new();
+        assert(!game.fog().sees(far));
+        game.hovered_tile = Option.Some(far);
+        assert(game.attack_preview().is_none());
+
+        // An enemy in sight: its planned Shield Wall isn't known, so the preview assumes it
+        // does nothing, and says so.
+        game.units[0].planned_attack = Option.None;
+        game.selected = Option.Some(0);
+        game.hovered_tile = Option.Some(near);
+        let Option.Some(preview) = game.attack_preview() else { assert(false); return; };
+        assert(preview.if_it_stays);
+        let mut plain = game.units[2].snapshot();
+        plain.ability_queued = false;
+        let expected = damage(&game.units[0], &plain, 1.0);
+        assert(expected > damage(&game.units[0], &game.units[2], 1.0));
+        let Option.Some(k) = preview.loss(Hurt.Unit(2)) else { assert(false); return; };
+        assert(preview.losses[k].amount == expected);
+    });
+}
+
+@test
+fn the_preview_of_a_barracks_is_its_damage() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.units.clear();
+        let mut city = 0;
+        for c in 0..game.cities.len() { if game.cities[c].team == Team.Red { city = c; } }
+        let barracks = game.cities[city].pos.neighbors()[0];
+        game.cities[city].barracks = Option.Some(barracks);
+        let from = barracks.neighbors()[0];
+        game.units.push(Unit.new(901, from, Team.Blue, UnitType.Ranged));
+        game.selected = Option.Some(0);
+        game.hovered_tile = Option.Some(barracks);
+        let Option.Some(preview) = game.attack_preview() else { assert(false); return; };
+        assert(!preview.if_it_stays);
+        let Option.Some(k) = preview.loss(Hurt.Barracks(city)) else { assert(false); return; };
+        let amount = preview.losses[k].amount;
+        let hp = game.cities[city].barracks_hp;
+        game.try_queue_attack(0, barracks);
+        resolve_every_step(&mut game);
+        assert(close(hp - game.cities[city].barracks_hp, amount));
+    });
+}
+
+@test
+fn no_preview_without_an_attack_or_a_target() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let target = Hex.new(1, 0);
+        let mut units: Vec[Unit] = Vec.new();
+        units.push(Unit.new(1, Hex.new(0 - 2, 0), Team.Blue, UnitType.Melee));
+        units.push(Unit.new(2, target, Team.Red, UnitType.Melee));
+        let mut game = board(units, &[]);
+        game.hovered_tile = Option.Some(target);
+        // Nothing selected, nothing planned.
+        assert(game.attack_preview().is_none());
+        // Selected, but out of reach this turn.
+        game.selected = Option.Some(0);
+        assert(game.attack_preview().is_none());
+        // Hovering an empty hex.
+        game.units[0].pos = Hex.new(0, 0);
+        game.hovered_tile = Option.Some(Hex.new(0, 1));
+        assert(game.attack_preview().is_none());
+        game.hovered_tile = Option.Some(target);
+        assert(game.attack_preview().is_some());
+    });
+}
+
+fn count_color(vertices: &Vec[MeshVertex], color: Color) -> i32 {
+    let mut n = 0;
+    for v in 0..vertices.len() {
+        let c = vertices[v].color;
+        if c[0] == color[0] && c[1] == color[1] && c[2] == color[2] && c[3] == color[3] { n = n + 1; }
+    }
+    n
+}
+
+@test
+fn the_attack_preview_marks_health_bars_only_while_its_target_is_hovered() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let target = Hex.new(1, 0);
+        let mut units: Vec[Unit] = Vec.new();
+        units.push(Unit.new(1, Hex.new(0, 0), Team.Blue, UnitType.Melee));
+        units.push(Unit.new(2, target, Team.Red, UnitType.Melee));
+        let mut game = board(units, &[]);
+        game.selected = Option.Some(0);
+        let loss = preview_loss_color(game.preview_pulse());
+        let rim = preview_lethal_color(game.preview_pulse());
+        game.hovered_tile = Option.None;
+        let scene = game.build_vertices();
+        assert(count_color(&scene, loss) == 0 && count_color(&scene, rim) == 0);
+        game.hovered_tile = Option.Some(Hex.new(0, 1));
+        let scene = game.build_vertices();
+        // An empty hex is no target.
+        assert(count_color(&scene, loss) == 0 && count_color(&scene, rim) == 0);
+        // The target's loss and the attacker's retaliation, neither lethal.
+        game.hovered_tile = Option.Some(target);
+        let scene = game.build_vertices();
+        let segments = count_color(&scene, loss);
+        assert(segments > 0);
+        assert(count_color(&scene, rim) == 0);
+        let one_bar = segments / 2;
+        // A lethal hit rims the target's bar, and draws no retaliation.
+        game.units[1].hp = 5.0;
+        let scene = game.build_vertices();
+        assert(count_color(&scene, loss) == one_bar);
+        assert(count_color(&scene, rim) > 0);
+        game.hovered_tile = Option.None;
+        let scene = game.build_vertices();
+        assert(count_color(&scene, loss) == 0 && count_color(&scene, rim) == 0);
+    });
+}

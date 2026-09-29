@@ -3,12 +3,23 @@
 //! spread: the same fight always deals the same damage, so the attack preview (drawn on the
 //! health bars) calls these same functions.
 
+use std.core.Eq;
 use std.fmt.show_f64_fixed;
 use std.math.Float;
 use std.math.clamp;
+use game.GameState;
 use game.ability.Ability;
+use game.ability.VOLLEY_DAMAGE;
+use game.city.BARRACKS_DEFENSE;
+use game.city.COASTAL_BATTERY_DEFENSE;
+use game.fog.Fog;
+use game.hex.Hex;
 use game.hex.HexGrid;
+use game.turn.Phase;
+use game.turn.moves_before_attacking;
+use game.turn.step_rank;
 use game.unit.Unit;
+use game.unit.UnitType;
 
 /// Damage `attacker` deals to `target` in one blow, with `defense_multiplier` the terrain and fort
 /// bonus on the target (`GameState.defense_multiplier`).
@@ -24,8 +35,27 @@ pub fn damage_against(attack: f32, defense: f32) -> f32 {
     clamp(30.0 * ((attack - defense) * 0.04).exp(), 1.0, 100.0)
 }
 
+/// The share of `attacker`'s damage that reaches `defender` across the waterline: land melee
+/// can't reach ships at all, and a galley's guns do little to troops ashore. 1 for a fight on one
+/// side of it.
+pub fn shore_scale(attacker: &Unit, defender: &Unit) -> f32 {
+    if !attacker.is_naval() && defender.is_naval() {
+        match attacker.unit_type { UnitType.Ranged => 0.4, UnitType.Siege => 0.6, _ => 0.0 }
+    } else if attacker.unit_type == UnitType.PatrolGalley && !defender.is_naval() {
+        0.35
+    } else {
+        1.0
+    }
+}
+
 /// Melee attacks draw retaliation from a surviving defender; ranged ones don't.
 pub fn draws_retaliation(attacker: &Unit) -> bool { attacker.unit_type.stats().attack_range == 1 }
+
+/// Whether `defender`, hit by `attacker` for `hit`, strikes back: a melee attack it survives, with
+/// both on the same side of the waterline.
+pub fn retaliates(attacker: &Unit, defender: &Unit, hit: f32) -> bool {
+    draws_retaliation(attacker) && attacker.is_naval() == defender.is_naval() && defender.hp > hit
+}
 
 /// Combat-relevant conditions on `unit`, like ` (on hills, shield wall)`, for combat log lines.
 /// Renders nothing when there are none.
@@ -62,5 +92,235 @@ pub fn show_hp(unit: &Unit) can {Out} {
         Out.put(" hp");
     } else {
         Out.put("destroyed");
+    }
+}
+
+/// Something the attack preview shows losing HP.
+pub enum Hurt {
+    /// A unit on the map, by index into `GameState.units`.
+    Unit(i32),
+    /// A city's Barracks, by city index.
+    Barracks(i32),
+    /// A city's coastal battery, by city index.
+    Battery(i32),
+}
+
+impl Eq for Hurt {
+    fn eq(self, other: Hurt) -> bool {
+        match (self, other) {
+            (Hurt.Unit(a), Hurt.Unit(b)) => a == b,
+            (Hurt.Barracks(a), Hurt.Barracks(b)) => a == b,
+            (Hurt.Battery(a), Hurt.Battery(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// One thing's HP loss in the preview.
+pub struct Loss {
+    hurt: Hurt,
+    /// The HP it would lose.
+    amount: f32,
+    /// Its HP now.
+    hp: f32,
+    /// On the target's side, rather than one of the attackers'.
+    target_side: bool,
+}
+
+impl Loss {
+    /// Whether the loss would kill it (or destroy it).
+    pub fn lethal(&self) -> bool { self.amount >= self.hp }
+}
+
+/// What the attacks on the hovered hex would do this turn, as the player knows the board
+/// (`GameState.attack_preview`): every attack on it the selection would make, and those the
+/// player's other units already plan.
+pub struct AttackPreview {
+    losses: Vec[Loss],
+    /// The target is an enemy unit, whose own plan (a move, an ability) the player can't know:
+    /// the preview assumes it stays and does nothing.
+    if_it_stays: bool,
+}
+
+impl AttackPreview {
+    pub fn new() -> AttackPreview { AttackPreview { losses: Vec.new(), if_it_stays: false } }
+
+    /// A copy, for reading the board as a step began while the step's blows are added.
+    fn copy(&self) -> AttackPreview {
+        let mut losses: Vec[Loss] = Vec.new();
+        for k in 0..self.losses.len() {
+            let l = &self.losses[k];
+            losses.push(Loss { hurt: l.hurt, amount: l.amount, hp: l.hp, target_side: l.target_side });
+        }
+        AttackPreview { losses, if_it_stays: self.if_it_stays }
+    }
+
+    /// The loss of `hurt`, if it has one.
+    pub fn loss(&self, hurt: Hurt) -> Option[i32] {
+        for k in 0..self.losses.len() { if self.losses[k].hurt == hurt { return Option.Some(k); } }
+        Option.None
+    }
+
+    /// Adds `amount` to `hurt`'s loss, starting it at `hp`.
+    fn add(&mut self, hurt: Hurt, amount: f32, hp: f32, target_side: bool) {
+        match self.loss(hurt) {
+            Option.Some(k) => { self.losses[k].amount = self.losses[k].amount + amount; }
+            Option.None => { self.losses.push(Loss { hurt, amount, hp, target_side }); }
+        }
+    }
+
+    /// `hurt`'s HP left, from `hp`, once the losses so far land.
+    fn hp_left(&self, hurt: Hurt, hp: f32) -> f32 {
+        match self.loss(hurt) { Option.Some(k) => hp - self.losses[k].amount, Option.None => hp }
+    }
+
+    /// The target side's total loss, and whether any of it is lethal.
+    pub fn dealt(&self) -> (f32, bool) {
+        let mut total = 0.0;
+        let mut lethal = false;
+        for k in 0..self.losses.len() {
+            if self.losses[k].target_side {
+                total = total + self.losses[k].amount;
+                if self.losses[k].lethal() { lethal = true; }
+            }
+        }
+        (total, lethal)
+    }
+
+    /// The attackers' total loss to retaliation.
+    pub fn retaliation(&self) -> f32 {
+        let mut total = 0.0;
+        for k in 0..self.losses.len() { if !self.losses[k].target_side { total = total + self.losses[k].amount; } }
+        total
+    }
+
+    /// Whether any of the attackers' losses is lethal.
+    pub fn retaliation_kills(&self) -> bool {
+        for k in 0..self.losses.len() { if !self.losses[k].target_side && self.losses[k].lethal() { return true; } }
+        false
+    }
+}
+
+/// One attack of the player's that would reach the target: the attacker, the hex it attacks and
+/// where it attacks from.
+struct PlannedAttack { unit: i32, aim: Hex, from: Hex, rank: u32 }
+
+impl GameState {
+    /// The attack preview for the hovered hex, or None if no attack of the player's this turn
+    /// would hit anything there the player knows of. Only the hovered hex is ever computed.
+    pub fn attack_preview(&self) -> Option[AttackPreview] {
+        if self.is_resolving() { return Option.None; }
+        let target = self.hovered_tile?;
+        // The cheap test first: most hexes hold nothing to attack.
+        if !self.has_enemy_target_at(target, self.local_team) { return Option.None; }
+        // Only what's in sight: units aren't remembered, so out of sight nobody can say what an
+        // attack there would hit.
+        let fog = self.fog();
+        if !fog.sees(target) { return Option.None; }
+        let selection = self.selection();
+        let mut attacks: Vec[PlannedAttack] = Vec.new();
+        for i in 0..self.units.len() {
+            if !self.is_player_controlled(i) || !self.units[i].can_attack() || self.rival_of(i).is_some() { continue; }
+            let unit = &self.units[i];
+            let range = unit.stats().attack_range;
+            // What a right-click would order, as `try_queue_attack` and `group_attack` decide
+            // it; else the attack it already plans.
+            let ordered = selection.contains(i)
+                && self.known_attack_target_legal(i, target, false, &fog)
+                && unit.planned_pos().distance(target) <= range;
+            let aim = if ordered {
+                target
+            } else if let Option.Some(planned) = unit.planned_attack {
+                planned
+            } else {
+                continue;
+            };
+            let volley = unit.ability_queued && unit.ability() == Ability.Volley;
+            if aim != target && !(volley && aim.distance(target) == 1) { continue; }
+            let from = if moves_before_attacking(unit.unit_type) { unit.planned_pos() } else { unit.pos };
+            if from.distance(aim) <= range {
+                attacks.push(PlannedAttack { unit: i, aim, from, rank: step_rank(unit.unit_type, Phase.Attack) });
+            }
+        }
+        if attacks.is_empty() { return Option.None; }
+        // Step by step in resolution order: each step sees the board as it stood when the step
+        // began.
+        let mut sorted: Vec[PlannedAttack] = Vec.new();
+        for k in 0..attacks.len() {
+            let a = attacks[k];
+            let mut at = sorted.len();
+            while at > 0 && (sorted[at - 1].rank > a.rank || (sorted[at - 1].rank == a.rank && sorted[at - 1].unit > a.unit)) { at = at - 1; }
+            sorted.insert(at, a);
+        }
+        let mut preview = AttackPreview.new();
+        let mut start = 0;
+        while start < sorted.len() {
+            let mut end = start;
+            while end < sorted.len() && sorted[end].rank == sorted[start].rank { end = end + 1; }
+            let before = preview.copy();
+            for k in start..end { self.preview_attack(sorted[k].unit, sorted[k].aim, sorted[k].from, &before, &mut preview, &fog); }
+            start = end;
+        }
+        for i in 0..self.units.len() {
+            if self.units[i].pos != target || self.is_player_controlled(i) { continue; }
+            if let Option.Some(k) = preview.loss(Hurt.Unit(i)) { if preview.losses[k].target_side { preview.if_it_stays = true; } }
+        }
+        Option.Some(preview)
+    }
+
+    /// Adds what `a`'s attack on `aim` from `from` would do to `preview`, with everything's HP as
+    /// `before` leaves it (the step's start).
+    fn preview_attack(&self, a: i32, aim: Hex, from: Hex, before: &AttackPreview, preview: &mut AttackPreview, fog: &Fog) {
+        let mut attacker = self.units[a].snapshot();
+        attacker.pos = from;
+        let volley = attacker.ability_queued && attacker.ability() == Ability.Volley;
+        let mut hexes: Vec[Hex] = Vec.new();
+        hexes.push(aim);
+        let scale = if volley {
+            let around = aim.neighbors();
+            for k in 0..6 { hexes.push(around[k]); }
+            VOLLEY_DAMAGE
+        } else {
+            1.0
+        };
+        let mut defenders: Vec[i32] = Vec.new();
+        for h in 0..hexes.len() {
+            if !fog.sees(hexes[h]) { continue; }
+            if let Option.Some(d) = self.enemy_of_team_at(hexes[h], attacker.team) {
+                if before.hp_left(Hurt.Unit(d), self.units[d].hp) > 0.0 { defenders.push(d); }
+            }
+        }
+        // A structure is hit only when no enemy unit is.
+        if defenders.is_empty() {
+            let attack = attacker.stats().attack;
+            if let Option.Some(city) = self.enemy_barracks_at(aim, attacker.team) {
+                if before.hp_left(Hurt.Barracks(city), self.cities[city].barracks_hp) > 0.0 {
+                    let hit = scale * damage_against(attack, BARRACKS_DEFENSE);
+                    preview.add(Hurt.Barracks(city), hit, self.cities[city].barracks_hp, true);
+                    return;
+                }
+            }
+            if let Option.Some(city) = self.enemy_coastal_battery_at(aim, attacker.team) {
+                if before.hp_left(Hurt.Battery(city), self.cities[city].coastal_battery_hp) > 0.0 {
+                    let hit = scale * damage_against(attack, COASTAL_BATTERY_DEFENSE);
+                    preview.add(Hurt.Battery(city), hit, self.cities[city].coastal_battery_hp, true);
+                }
+            }
+            return;
+        }
+        let attacker_cover = self.defense_multiplier(&attacker);
+        for k in 0..defenders.len() {
+            let d = defenders[k];
+            let mut defender = self.units[d].snapshot();
+            // Its ability is part of its plan, which the player can't know.
+            if !self.is_player_controlled(d) { defender.ability_queued = false; }
+            defender.hp = before.hp_left(Hurt.Unit(d), defender.hp);
+            let hit = shore_scale(&attacker, &defender) * scale * damage(&attacker, &defender, self.defense_multiplier(&defender));
+            preview.add(Hurt.Unit(d), hit, self.units[d].hp, true);
+            if retaliates(&attacker, &defender, hit) {
+                let back = shore_scale(&defender, &attacker) * damage(&defender, &attacker, attacker_cover);
+                preview.add(Hurt.Unit(a), back, self.units[a].hp, false);
+            }
+        }
     }
 }

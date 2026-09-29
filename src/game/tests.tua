@@ -1,6 +1,7 @@
 //! The rules as played: pathing, contested hexes, swaps, simultaneous resolution, the four
 //! abilities, selection and the turn loop. Each test starts from `GameState.new()`'s layout.
 
+use std.linalg.Vec2;
 use std.core.Keep;
 use std.core.Option;
 use std.linalg.vec2;
@@ -739,5 +740,64 @@ fn coastal_battery_hits_ships_and_can_be_destroyed() {
         g.cities[1].coastal_battery_hp = 1.0;
         let _acted = g.resolve_step(UnitType.BombardShip, Phase.Attack);
         assert(g.cities[1].placed_site(Building.CoastalBattery).is_none());
+    });
+}
+
+/// The damage numbers playing: how many, and whether the last one is fatal.
+fn damage_numbers(g: &GameState) -> (i32, bool, Vec2) {
+    let mut n = 0;
+    let mut fatal = false;
+    let mut at = vec2(0.0, 0.0);
+    for k in 0..g.effects.len() {
+        if let Effect.Damage(where_, _, was_fatal) = g.effects[k].animation {
+            n = n + 1;
+            fatal = was_fatal;
+            at = where_;
+        }
+    }
+    (n, fatal, at)
+}
+
+/// A battery's hits on ships, and hits on a battery, play a damage number as an attack's target
+/// does, KILLED (fatal) when it sinks or is destroyed.
+@test
+fn coastal_battery_hits_show_damage_numbers_both_ways() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.naval_scenario();
+        g.fog_of_war = false;
+        g.units.clear();
+        g.effects.clear();
+        let ship_at = Hex.new(-1, 0);
+        g.units.push(Unit.new(300, ship_at, Team.Red, UnitType.PatrolGalley));
+        g.resolve_coastal_batteries();
+        let (n, fatal, at) = damage_numbers(&g);
+        assert(n == 1 && !fatal && at.x == ship_at.to_world().x && at.y == ship_at.to_world().y);
+
+        // A ship with less left than the hit shows KILLED.
+        g.effects.clear();
+        g.units.clear();
+        let mut weak = Unit.new(302, ship_at, Team.Red, UnitType.PatrolGalley);
+        weak.hp = 1.0;
+        g.units.push(weak);
+        g.resolve_coastal_batteries();
+        assert(g.units.is_empty());
+        let (n, fatal, _) = damage_numbers(&g);
+        assert(n == 1 && fatal);
+
+        // A hit on a battery shows at its site; the last one is fatal.
+        g.effects.clear();
+        let Option.Some(site) = g.cities[1].placed_site(Building.CoastalBattery) else { assert(false); return; };
+        let mut ship = Unit.new(301, Hex.new(1, 0), Team.Blue, UnitType.BombardShip);
+        ship.planned_attack = Option.Some(site);
+        g.units.push(ship);
+        let _acted = g.resolve_step(UnitType.BombardShip, Phase.Attack);
+        let (n, fatal, at) = damage_numbers(&g);
+        assert(n == 1 && !fatal && at.x == site.to_world().x);
+        g.effects.clear();
+        g.cities[1].coastal_battery_hp = 1.0;
+        g.units[0].planned_attack = Option.Some(site);
+        let _acted = g.resolve_step(UnitType.BombardShip, Phase.Attack);
+        let (n, fatal, _) = damage_numbers(&g);
+        assert(n == 1 && fatal);
     });
 }

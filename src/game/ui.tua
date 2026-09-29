@@ -1452,6 +1452,21 @@ impl GameState {
         panel.button(Target.OpenCity, "OPEN CITY", "CLICK", ButtonState.Ready, false);
         panel.end_buttons(false);
     }
+    /// The attack preview in words (`attack_preview`), for the hovered tile's tooltip: the damage
+    /// the target would take, the retaliation, and that it holds only if an enemy target stays
+    /// and does nothing.
+    pub fn attack_preview_lines(&self, panel: &mut PanelBuilder) {
+        let Option.Some(preview) = self.attack_preview() else { return; };
+        let (dealt, kills) = preview.dealt();
+        panel.text_owned(TextSize.Small, text(fn() can {Out} { show_rounded(dealt); Out.put(" DAMAGE"); if kills { Out.put(", LETHAL"); } }), REDUCED_TEXT);
+        let back = preview.retaliation();
+        if back > 0.0 {
+            let dies = preview.retaliation_kills();
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("RETALIATION "); show_rounded(back); if dies { Out.put(", LETHAL"); } }), GOLD_TEXT);
+        }
+        if preview.if_it_stays { panel.text(TextSize.Small, "IF IT STAYS", DIM_TEXT); }
+    }
+
     /// Everything about a map hex: terrain, what it yields, and what's on it.
     pub fn tile_tooltip(&self, hex: Hex, panel: &mut PanelBuilder) {
         let tile = self.grid.tile(hex);
@@ -1464,6 +1479,7 @@ impl GameState {
             }
             Option.None => panel.text_owned(TextSize.Body, tile.name(), TEXT),
         }
+        if self.hovered_tile == Option.Some(hex) { self.attack_preview_lines(panel); }
         if !terrain.is_passable() {
             panel.text(TextSize.Small, "IMPASSABLE", DIM_TEXT);
             return;

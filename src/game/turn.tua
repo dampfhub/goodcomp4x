@@ -19,7 +19,8 @@ use game.city.Building;
 use game.AI_TEAM;
 use game.ability.Ability;
 use game.ability.VOLLEY_DAMAGE;
-use game.combat.draws_retaliation;
+use game.combat.retaliates;
+use game.combat.shore_scale;
 use game.combat.damage as blow_damage;
 use game.combat.damage_against;
 use game.combat.show_hp;
@@ -78,6 +79,19 @@ pub const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
     (UnitType.LandingCraft, Phase.Attack),
     (UnitType.BombardShip, Phase.Attack),
 ];
+
+/// Whether `unit_type`'s move step comes before its attack step, so it attacks from where its
+/// move takes it (ranged shoot, then move).
+pub fn moves_before_attacking(unit_type: UnitType) -> bool {
+    let mut move_at = 99;
+    let mut attack_at = 99;
+    for i in 0..22 {
+        let (t, p) = RESOLUTION_ORDER[i];
+        if t != unit_type { continue; }
+        if p == Phase.Move { move_at = i; } else { attack_at = i; }
+    }
+    move_at < attack_at
+}
 
 /// One step of a turn: a unit type's moves or attacks, or, after all of those, the workers'
 /// (`workers.tua`). Workers go last so they're exposed: they walk and work only once every unit
@@ -253,7 +267,7 @@ impl GameState {
 
     /// After the steps: each standing Coastal Battery fires at the nearest hostile ship within 2
     /// tiles, the lowest id among equals.
-    pub fn resolve_coastal_batteries(&mut self) can {Rand} {
+    pub fn resolve_coastal_batteries(&mut self) can {Rand, Log} {
         let mut hits: Vec[f32] = Vec.new();
         for _ in 0..self.units.len() { hits.push(0.0); }
         let mut shots: Vec[Effect] = Vec.new();
@@ -276,13 +290,30 @@ impl GameState {
                 if better { target = Option.Some(i); }
             }
             let Option.Some(t) = target else { continue; };
-            hits[t] = hits[t] + damage_against(BATTERY_ATTACK, self.units[t].stats().defense);
+            let hit = damage_against(BATTERY_ATTACK, self.units[t].stats().defense);
+            hits[t] = hits[t] + hit;
+            {
+                let id = self.cities[c].id;
+                let target = &self.units[t];
+                info(fn() can {Out} { Out.put("city "); show_u64((id + 1) as u64); Out.put("'s coastal battery hits "); target.show(); Out.put(" for "); show_f64_fixed(hit as f64, 0); });
+            }
             shots.push(Effect.Shot(site.to_world(), self.units[t].pos.to_world(), Outcome.Hit));
         }
         for s in 0..shots.len() { self.play(shots[s]); }
         for i in 0..self.units.len() {
-            let hp = self.units[i].hp - hits[i];
-            self.units[i].hp = if hp > 0.0 { hp } else { 0.0 };
+            if hits[i] > 0.0 {
+                let at = self.unit_layout(i).0;
+                let fatal = self.units[i].hp <= hits[i];
+                self.play(Effect.Damage(at, hits[i], fatal));
+            }
+        }
+        for i in 0..self.units.len() {
+            if hits[i] > 0.0 {
+                let hp = self.units[i].hp - hits[i];
+                self.units[i].hp = if hp > 0.0 { hp } else { 0.0 };
+                let unit = &self.units[i];
+                info(fn() can {Out} { Out.put("  "); unit.show(); Out.put(": "); show_hp(unit); });
+            }
         }
         handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume u.is_alive() } }
         self.discard_interior_copies_of_dead_units();
@@ -639,27 +670,22 @@ impl GameState {
             if reverse.is_some() && d < a { continue; }
             let attacker = &self.units[a];
             let defender = &self.units[d];
-            let shore_scale = if !attacker.is_naval() && defender.is_naval() {
-                match attacker.unit_type { UnitType.Ranged => 0.4, UnitType.Siege => 0.6, _ => 0.0 }
-            } else if attacker.unit_type == UnitType.PatrolGalley && !defender.is_naval() {
-                0.35
-            } else {
-                1.0
-            };
-            let hit = shore_scale * engagement.damage_scale * blow_damage(attacker, defender, self.defense_multiplier(defender));
+            let hit = shore_scale(attacker, defender) * engagement.damage_scale * blow_damage(attacker, defender, self.defense_multiplier(defender));
             damage[d] = damage[d] + hit;
             if defender.is_animal() && attacker.team.is_side() { hunts.push(Hunt { animal: d, team: attacker.team, dealt: hit }); }
             let verb = if engagement.damage_scale < 1.0 { "volleys" } else { "hits" };
 
             let retaliation_scale = match reverse {
                 Option.Some(scale) => Option.Some(scale),
-                Option.None if draws_retaliation(attacker) && attacker.is_naval() == defender.is_naval() && defender.hp > hit => Option.Some(1.0),
+                Option.None if retaliates(attacker, defender, hit) => Option.Some(1.0),
                 Option.None => Option.None,
             };
             let grid = &self.grid;
             let (attacker_fort, defender_fort) = (self.in_fort(attacker), self.in_fort(defender));
             if let Option.Some(back_scale) = retaliation_scale {
-                let back = back_scale * blow_damage(defender, attacker, self.defense_multiplier(attacker));
+                // Across the waterline only in an exchange of blows, where the shore scales the
+                // blow back as it would its own attack.
+                let back = back_scale * shore_scale(defender, attacker) * blow_damage(defender, attacker, self.defense_multiplier(attacker));
                 damage[a] = damage[a] + back;
                 if attacker.is_animal() && defender.team.is_side() { hunts.push(Hunt { animal: a, team: defender.team, dealt: back }); }
                 let verb = if reverse.is_some() { "trades blows with" } else { verb };
@@ -690,7 +716,11 @@ impl GameState {
         for h in 0..battery_hits.len() {
             let (attacker, city, scale) = battery_hits[h];
             let attack = self.units[attacker].stats().attack;
-            battery_damage[city] = battery_damage[city] + scale * damage_against(attack, BATTERY_DEFENSE);
+            let hit = scale * damage_against(attack, BATTERY_DEFENSE);
+            battery_damage[city] = battery_damage[city] + hit;
+            let unit = &self.units[attacker];
+            let id = self.cities[city].id;
+            info(fn() can {Out} { unit.show(); Out.put(" hits city "); show_u64((id + 1) as u64); Out.put("'s coastal battery for "); show_f64_fixed(hit as f64, 0); });
         }
 
         for s in 0..shots.len() { self.play(shots[s]); }
@@ -721,9 +751,21 @@ impl GameState {
         for c in 0..self.cities.len() {
             let taken = battery_damage[c];
             if taken <= 0.0 { continue; }
+            if let Option.Some(site) = self.cities[c].placed_site(Building.CoastalBattery) {
+                let fatal = self.cities[c].coastal_battery_hp <= taken;
+                self.play(Effect.Damage(site.to_world(), taken, fatal));
+            }
             let city = &mut self.cities[c];
             let hp = city.coastal_battery_hp - taken;
             city.coastal_battery_hp = if hp > 0.0 { hp } else { 0.0 };
+            {
+                let id = city.id;
+                let left = city.coastal_battery_hp;
+                info(fn() can {Out} {
+                    Out.put("  city "); show_u64((id + 1) as u64); Out.put("'s coastal battery: ");
+                    if left > 0.0 { show_f64_fixed(left as f64, 0); Out.put(" hp"); } else { Out.put("destroyed"); }
+                });
+            }
             if city.coastal_battery_hp == 0.0 {
                 let _gone = city.extra_buildings.remove(Building.CoastalBattery);
                 handle { city.built.retain(); } with Keep[Building] { keep(b) => { resume *b != Building.CoastalBattery } }

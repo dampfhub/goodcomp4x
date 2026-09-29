@@ -17,7 +17,13 @@ use std.math.tau;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.text;
+use game.city.BARRACKS_MAX_HP;
+use game.city.COASTAL_BATTERY_MAX_HP;
+use game.city.Building;
 use game.city.delivered_share;
+use game.combat.AttackPreview;
+use game.combat.Hurt;
+use game.combat.Loss;
 use game.city.PLACEABLE;
 use game.city.CENTER;
 use game.city.CORE_HP;
@@ -186,6 +192,22 @@ const ATTACK_ORDER_COLOR: Color = [1.00, 0.40, 0.35, 1.0];
 const HEALTH_BAR_WIDTH: f32 = 0.9;
 const HEALTH_BAR_HEIGHT: f32 = 0.14;
 const HEALTH_BAR_OFFSET_Y: f32 = 0.78;
+/// Structures' health bars, relative to a unit's.
+const BARRACKS_BAR_SCALE: f32 = 0.7;
+const BATTERY_BAR_SCALE: f32 = 0.62;
+
+/// The attack preview on a health bar (`push_health_loss`): the HP it would lose pulses between
+/// these two, a lethal loss rims the bar in red, and the number sits over the bar, red for the
+/// target, gold for retaliation.
+const PREVIEW_LOSS_BRIGHT: Color = [1.0, 0.93, 0.80, 1.0];
+const PREVIEW_LOSS_DARK: Color = [0.80, 0.10, 0.06, 1.0];
+const PREVIEW_LETHAL_COLOR: Color = [1.0, 0.16, 0.10, 1.0];
+const PREVIEW_RIM: f32 = 0.05;
+const PREVIEW_DEALT_COLOR: Color = [1.0, 0.45, 0.36, 1.0];
+const PREVIEW_RETALIATION_COLOR: Color = [1.0, 0.82, 0.32, 1.0];
+const PREVIEW_LABEL_HEIGHT: f32 = 0.2;
+/// Pulses a second.
+const PREVIEW_PULSE_RATE: f32 = 1.6;
 
 /// Outline around each tile the hovered or selected city works.
 const WORKED_OUTLINE_RADIUS: f32 = HEX_SIZE * 0.84;
@@ -378,6 +400,7 @@ impl GameState {
             }
         }
 
+        if let Option.Some(preview) = self.attack_preview() { self.push_attack_preview(&preview, &mut out); }
         self.push_field_workers(&fog, &mut out);
 
         self.push_tile_yields(&mut out);
@@ -1298,6 +1321,90 @@ fn push_order_badges(center: Vec2, unit: &Unit, scale: f32, out: &mut Vec[MeshVe
         regular_polygon(pos, BADGE_RADIUS * scale, 12, 0.0, BADGE_BG_COLOR, out);
         push_glyph(pos, BADGE_DIGIT_HEIGHT * scale, digit, color, out);
     }
+}
+
+impl GameState {
+    /// The attack preview's marks on the map's health bars: units' where they're drawn, and the
+    /// Barracks' and coastal batteries'.
+    fn push_attack_preview(&self, preview: &AttackPreview, out: &mut Vec[MeshVertex]) {
+        let pulse = self.preview_pulse();
+        for k in 0..preview.losses.len() {
+            let loss = &preview.losses[k];
+            match loss.hurt {
+                Hurt.Unit(i) => {
+                    let (at, scale) = self.unit_layout(i);
+                    push_health_loss(at, loss, self.units[i].max_hp(), scale, pulse, out);
+                }
+                Hurt.Barracks(city) => {
+                    if let Option.Some(hex) = self.cities[city].barracks {
+                        push_health_loss(hex.to_world(), loss, BARRACKS_MAX_HP, BARRACKS_BAR_SCALE, pulse, out);
+                    }
+                }
+                Hurt.Battery(city) => {
+                    if let Option.Some(hex) = self.cities[city].placed_site(Building.CoastalBattery) {
+                        push_health_loss(hex.to_world(), loss, COASTAL_BATTERY_MAX_HP, BATTERY_BAR_SCALE, pulse, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The preview's pulse, 0 to 1, on the presentation clock (still in a screenshot, like the
+    /// clouds).
+    pub fn preview_pulse(&self) -> f32 {
+        0.5 + 0.5 * (self.cloud_time * PREVIEW_PULSE_RATE * tau() as f32).sin()
+    }
+}
+
+/// The color of the HP a preview shows lost, at `pulse` (0 to 1).
+pub fn preview_loss_color(pulse: f32) -> Color { mix(PREVIEW_LOSS_DARK, PREVIEW_LOSS_BRIGHT, pulse) }
+
+/// The rim color of a lethal preview, at `pulse`.
+pub fn preview_lethal_color(pulse: f32) -> Color { with_alpha(PREVIEW_LETHAL_COLOR, 0.35 + 0.65 * pulse) }
+
+/// `loss` marked on the health bar `push_health_bar` draws for `max_hp` at `unit_center`: the HP
+/// it would lose as a pulsing segment, a flashing red rim if it's lethal, and the number over
+/// the bar.
+fn push_health_loss(unit_center: Vec2, loss: &Loss, max_hp: f32, scale: f32, pulse: f32, out: &mut Vec[MeshVertex]) {
+    let size = vec2(HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT).scale(scale);
+    let min = unit_center.add(vec2(0.0, HEALTH_BAR_OFFSET_Y * scale)).sub(size.scale(0.5));
+    let max = min.add(size);
+    let lo = clamp_unit((loss.hp - loss.amount) / max_hp);
+    let hi = clamp_unit(loss.hp / max_hp);
+    quad(vec2(min.x + size.x * lo, min.y), vec2(min.x + size.x * hi, max.y), preview_loss_color(pulse), out);
+    let lethal = loss.lethal();
+    if lethal {
+        let rim = PREVIEW_RIM * scale;
+        let color = preview_lethal_color(pulse);
+        let (outer_min, outer_max) = (min.sub(vec2(rim, rim)), max.add(vec2(rim, rim)));
+        quad(outer_min, vec2(outer_max.x, min.y), color, out);
+        quad(vec2(outer_min.x, max.y), outer_max, color, out);
+        quad(vec2(outer_min.x, min.y), vec2(min.x, max.y), color, out);
+        quad(vec2(max.x, min.y), vec2(outer_max.x, max.y), color, out);
+    }
+    let label = text(fn() can {Out} {
+        Out.put("-"); show_i64(round_i(loss.amount) as i64);
+        if lethal { Out.put(" LETHAL"); }
+    });
+    let color = if loss.target_side { PREVIEW_DEALT_COLOR } else { PREVIEW_RETALIATION_COLOR };
+    // Legible however small the unit is drawn (a contested hex).
+    let height = PREVIEW_LABEL_HEIGHT * (if scale > 0.75 { scale } else { 0.75 });
+    let radius = height * 0.85;
+    let at = vec2(unit_center.x, max.y + PREVIEW_RIM * scale + radius);
+    let width = world_text_width(&label, height);
+    let spread = width / 2.0 + radius * 0.4 - radius;
+    push_pill(at, if spread > 0.0 { spread } else { 0.0 }, radius, BADGE_BG_COLOR, out);
+    push_text(at.sub(vec2(width / 2.0, height / 2.0)), height, &label, color, out);
+}
+
+fn clamp_unit(x: f32) -> f32 { if x < 0.0 { 0.0 } else if x > 1.0 { 1.0 } else { x } }
+
+/// `x` rounded to a whole number, a half to the even neighbour as Rust's `{:.0}` does.
+fn round_i(x: f32) -> i32 {
+    let floor = x.floor();
+    let mut r = x.round();
+    if x - floor == 0.5 && (r as i64) % 2 != 0 { r = r - 1.0; }
+    r as i32
 }
 
 fn push_health_bar(unit_center: Vec2, hp_fraction: f32, scale: f32, out: &mut Vec[MeshVertex]) {
