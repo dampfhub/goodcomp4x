@@ -199,11 +199,12 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   clouds for a flat grey. The fog is drawn behind the map, so explored terrain simply covers it
   as sight grows. Never-seen terrain and objects are not drawn beneath
   the clouds.
-- Enemy units out of sight are hidden, with their ghosts and hover info; tile tooltips describe
-  remembered hexes from memory. An enemy unit's hover panel gives its stats and state, not the
-  player's instructions (boarding, unloading) or a landing craft's cargo. A command post
-  breached or a city captured in its interior is announced only for the player's own cities and
-  cities in sight.
+- Enemy units out of sight are hidden, with their ghosts and hover info. An enemy in sight shows
+  a move's ghost only if its destination is in sight too, and a fight over a hex out of sight
+  doesn't turn it orange. Tile tooltips describe remembered hexes from memory. An enemy unit's
+  hover panel gives its stats and state, not the player's instructions (boarding, unloading) or
+  a landing craft's cargo. A command post breached or a city captured in its interior is
+  announced only for the player's own cities and cities in sight.
 - The player plans from what they know: in sight, the board as it is; out of sight, the memory.
   Terrain seen once is known for good (it never changes); a hex never seen counts as open ground
   for planning, whatever is really there, so a path planned into the fog goes straight through
@@ -218,7 +219,9 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   barracks' goods reach (badges, delivery percentages, tooltip, a Work Camp's CONNECTED or
   CUT OFF), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
-  is the player's own or in sight. The economy itself runs on the real board: an enemy out of
+  is the player's own or in sight. Hovering an enemy city in sight rings only the tiles it works
+  that are in sight, all as delivering: whether their goods arrive depends on its routes, which
+  the player doesn't know. The economy itself runs on the real board: an enemy out of
   sight on a route hex that isn't a worked tile still cuts the goods behind it, and that shows as
   lost income, a red disrupted-tile ring, and the city view's "NO OPEN ROUTE WITHIN LOGISTICS
   BUDGET" notice, while the enemy itself stays hidden. That much is accepted as fair, like

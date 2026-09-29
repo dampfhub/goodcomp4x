@@ -31,7 +31,9 @@ dependency, not prose).
 
 ## Working an item
 
-1. `claim <#>` before reading code. It sets In Progress, which is what makes `fences` see you.
+1. When claiming an item, post `note <#> --body-file <f>` with one to a few sentences
+   explaining the work you are starting, then `claim <#>` before reading code. This sets
+   In Progress and leaves context in the issue's history.
    Once your branch exists, `set <#> --branch <name>`. `show <#>` / `deps <#>` carry
    `Acceptance`, `Files`, and what blocks it. Pick work by `list --open --priority P0`, then P1.
 2. `fences` before your first edit and again after any board change. The conflict unit is the file.
