@@ -2662,3 +2662,19 @@ fn no_city_is_founded_on_water_or_ruins() {
     }
     assert_eq!(g.founding_issue(Hex::new(-6, 0)), None);
 }
+
+/// #289: a settler sharing its hex with an enemy (both stepped in at once)
+/// can't found a city there, or the enemy would stand on its center.
+#[test]
+fn no_city_is_founded_in_a_contested_hex() {
+    use crate::game::unit::{Unit, UnitType};
+    let mut g = lone_city_on(|_| Tile::default());
+    let site = Hex::new(-6, 0);
+    g.units
+        .push(Unit::new(100, site, Team::Blue, UnitType::Melee));
+    g.settlers.insert(100);
+    assert_eq!(g.founding_issue(site), None);
+    g.units
+        .push(Unit::new(101, site, Team::Red, UnitType::Melee));
+    assert!(g.founding_issue(site).is_some());
+}
