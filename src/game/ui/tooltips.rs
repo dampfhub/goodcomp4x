@@ -200,7 +200,7 @@ impl GameState {
             let city_index = self.cities.iter().position(|c| c.id == owner.id).unwrap();
             match building {
                 Building::WorkCamp => notes.push(
-                    if self.routes(city_index).costs.contains_key(&hex) {
+                    if self.known_routes(city_index, &fog).costs.contains_key(&hex) {
                         "CONNECTED"
                     } else {
                         "CUT OFF FROM ITS CITY"
