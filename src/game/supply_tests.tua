@@ -1,0 +1,437 @@
+//! The military supply limit, and the Settlers and Scouts that come out of a city's queue:
+//! their prices, the population a Settler takes, and where a city may be founded.
+
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.city.Build;
+use game.city.Building;
+use game.city.BuildUnit;
+use game.city.City;
+use game.city.Lane;
+use game.city.MIN_CITY_DISTANCE;
+use game.city.Queued;
+use game.city.SETTLER_MIN_POPULATION;
+use game.city.Stock;
+use game.city.WORK_PER_TURN;
+use game.city.queues_supply;
+use game.city.supply.SUPPLY_PER_CITIZEN;
+use game.city.supply.SUPPLY_PER_CITY;
+use game.city.supply.build_supply;
+use game.city.supply.unit_type_supply;
+use game.city.supply_from_cities;
+use game.hex.Hex;
+use game.tests.sandbox;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+use std.str.eq as str_eq;
+use std.str.contains;
+use std.fmt.Out;
+use std.fmt.show_i64;
+use game.text;
+
+fn notice_is(g: &GameState, want: &str) -> bool {
+    let n = &g.notice;
+    str_eq(n, want)
+}
+
+fn notice_eq(g: &GameState, want: &Str) -> bool {
+    let n = &g.notice;
+    str_eq(n, want)
+}
+
+/// The Cities scenario with Blue's city open, a stockpile for anything and only the supply its
+/// city gives.
+fn blue_city() -> GameState can {Log} {
+    let mut g = GameState.city_scenario();
+    g.fund(Team.Blue);
+    for k in 0..g.extra_supply.len() { g.extra_supply[k] = 0; }
+    g.selected_city = Option.Some(0);
+    g
+}
+
+/// Queues Melee in Blue's city until its supply is all used.
+fn fill_supply(g: &mut GameState) can {Log, Assert} {
+    for _ in 0..g.supply_cap(Team.Blue) {
+        if g.supply_used(Team.Blue) < g.supply_cap(Team.Blue) { g.queue_selected_city_unit(BuildUnit.Melee); }
+    }
+    assert(g.supply_used(Team.Blue) == g.supply_cap(Team.Blue));
+}
+
+fn ints(values: [i32; 2]) -> Vec[i32] {
+    let mut v: Vec[i32] = Vec.new();
+    v.push(values[0]);
+    v.push(values[1]);
+    v
+}
+
+@test
+fn supply_is_a_base_per_city_and_an_amount_per_citizen() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let none: Vec[i32] = Vec.new();
+        assert(supply_from_cities(&none) == 0);
+        let mut one: Vec[i32] = Vec.new();
+        one.push(1);
+        assert(supply_from_cities(&one) == SUPPLY_PER_CITY + SUPPLY_PER_CITIZEN);
+        assert(supply_from_cities(&ints([2, 5])) == 2 * SUPPLY_PER_CITY + 7 * SUPPLY_PER_CITIZEN);
+        let mut g = blue_city();
+        let cap = g.supply_cap(Team.Blue);
+        let mut pop: Vec[i32] = Vec.new();
+        pop.push(g.cities[0].population);
+        assert(cap == supply_from_cities(&pop));
+        g.cities[0].population = g.cities[0].population + 1;
+        assert(g.supply_cap(Team.Blue) == cap + SUPPLY_PER_CITIZEN);
+    });
+}
+
+@test
+fn troops_ships_and_scouts_use_supply_but_settlers_and_workers_do_not() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let kinds = [UnitType.Melee, UnitType.Ranged, UnitType.Cavalry, UnitType.Siege, UnitType.Armored, UnitType.Scout, UnitType.PatrolGalley, UnitType.LandingCraft, UnitType.BombardShip];
+        for k in 0..9 { assert(unit_type_supply(kinds[k]) == 1); }
+        assert(build_supply(Build.Scout) == 1);
+        let free = [Build.Settler, Build.Worker, Build.Grow, Build.Gather];
+        for k in 0..4 { assert(build_supply(free[k]) == 0); }
+        let mut g = blue_city();
+        handle { g.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team != Team.Blue } }
+        assert(g.supply_used(Team.Blue) == 0);
+        let settler = Unit.new(100, Hex.new(-3, 5), Team.Blue, UnitType.Melee);
+        g.settlers.insert(settler.id);
+        let mut craft = Unit.new(101, Hex.new(-2, 5), Team.Blue, UnitType.LandingCraft);
+        craft.cargo.push(Unit.new(102, Hex.new(-2, 5), Team.Blue, UnitType.Melee));
+        g.units.push(settler);
+        g.units.push(craft);
+        g.units.push(Unit.new(103, Hex.new(-1, 5), Team.Blue, UnitType.Scout));
+        // The craft, its passenger and the scout; not the settler.
+        assert(g.units_supply(Team.Blue) == 3);
+        // Queued items count, paid or not; only those paid have started.
+        g.cities[0].queue.clear();
+        g.cities[0].queue.push(Queued.new(Build.Unit(BuildUnit.Melee)));
+        g.cities[0].queue.push(Queued.prepaid(Build.Scout));
+        g.cities[0].queue.push(Queued.new(Build.Settler));
+        g.cities[0].queue.push(Queued.new(Build.Worker));
+        g.cities[0].barracks_queue.clear();
+        g.cities[0].barracks_queue.push(Queued.new(BuildUnit.Siege));
+        assert(g.supply_used(Team.Blue) == 6);
+        assert(g.supply_started(Team.Blue) == 4);
+    });
+}
+
+@test
+fn nothing_that_uses_supply_is_queued_past_the_cap() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = blue_city();
+        g.cities[0].population = 3;
+        g.cities[0].barracks = Option.Some(Hex.new(-2, 0));
+        g.cities[0].built.push(Building.Barracks);
+        fill_supply(&mut g);
+        let used = g.supply_used(Team.Blue);
+        let cap = g.supply_cap(Team.Blue);
+        let queued = g.cities[0].queue.len();
+        g.queue_selected_city_unit(BuildUnit.Melee);
+        assert(notice_eq(&g, &full_notice("MELEE", used, cap)));
+        g.queue_selected_city_scout();
+        assert(notice_eq(&g, &full_notice("SCOUT", used, cap)));
+        assert(g.cities[0].queue.len() == queued);
+        // The Barracks too; its deposit cap still says why first.
+        g.queue_selected_barracks_unit(BuildUnit.Ranged);
+        assert(notice_eq(&g, &full_notice("RANGED", used, cap)));
+        assert(g.cities[0].barracks_queue.is_empty());
+        assert(g.deposit_lock(0, BuildUnit.Armored).is_some());
+        assert(g.barracks_lock(0, BuildUnit.Armored).is_some());
+        // A Settler, a Worker and growth use none.
+        g.queue_selected_city_settler();
+        g.queue_selected_city_worker();
+        g.queue_selected_city_growth();
+        assert(g.cities[0].queue.len() == queued + 3);
+        // Losing a troop makes room.
+        let mut blue = 0;
+        for i in 0..g.units.len() { if g.units[i].team == Team.Blue { blue = i; } }
+        let _gone = g.units.remove(blue);
+        g.queue_selected_barracks_unit(BuildUnit.Ranged);
+        assert(g.cities[0].barracks_queue.len() == 1);
+    });
+}
+
+fn full_notice(name: str, used: i32, cap: i32) -> Str {
+    text(fn() can {Out} { Out.put(name); Out.put(": SUPPLY FULL ("); show_i64(used as i64); Out.put("/"); show_i64(cap as i64); Out.put(")"); })
+}
+
+@test
+fn an_item_queued_before_the_cap_fell_waits_for_supply_in_place() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = blue_city();
+        g.cities[0].population = 3;
+        fill_supply(&mut g);
+        g.cities[0].queue.truncate(1);
+        g.queue_selected_city_worker();
+        let melee = Build.Unit(BuildUnit.Melee);
+        let units = g.units.len();
+        // Citizens lost: Blue is over its cap, and keeps its units.
+        assert(g.remove_citizen(0) && g.remove_citizen(0));
+        assert(g.supply_used(Team.Blue) > g.supply_cap(Team.Blue));
+        assert(g.supply_room(Team.Blue) == 0);
+        assert(g.units.len() == units);
+        let forecast = g.forecast(Team.Blue);
+        let Option.Some(lane) = forecast.lane(0, Lane.City) else { assert(false); return; };
+        // The Worker behind it goes ahead.
+        assert(lane.worked == Option.Some(1));
+        let waiting = g.supply_waiting_items(lane);
+        assert(waiting.len() == 1 && waiting[0] == 0);
+        // Not waiting for the stockpile.
+        assert(g.waiting_items(lane).is_empty());
+        g.resolve_economy();
+        // It waits, unpaid.
+        assert(!g.cities[0].queue[0].paid);
+        assert(g.cities[0].queue[0].build == melee);
+        assert(g.cities[0].queue[1].paid);
+        // A troop lost makes room, and it starts.
+        let mut blue = 0;
+        for i in 0..g.units.len() { if g.units[i].team == Team.Blue { blue = i; } }
+        let _gone = g.units.remove(blue);
+        let Option.Some(lane) = g.forecast(Team.Blue).lane(0, Lane.City) else { assert(false); return; };
+        assert(lane.worked == Option.Some(0));
+        g.resolve_economy();
+        assert(g.cities[0].queue[0].paid);
+        assert(g.supply_overruns.is_empty());
+    });
+}
+
+@test
+fn a_troop_started_before_the_cap_fell_finishes() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = blue_city();
+        g.cities[0].population = 3;
+        fill_supply(&mut g);
+        g.cities[0].queue.truncate(1);
+        g.resolve_economy();
+        assert(g.cities[0].queue[0].paid);
+        assert(g.remove_citizen(0) && g.remove_citizen(0));
+        assert(g.supply_started(Team.Blue) > g.supply_cap(Team.Blue));
+        let before = blue_troops(&g);
+        for _ in 0..12 {
+            if g.cities[0].queue.is_empty() { break; }
+            g.resolve_economy();
+        }
+        // The Melee came out.
+        assert(g.cities[0].queue.is_empty());
+        assert(blue_troops(&g) == before + 1);
+        assert(g.supply_used(Team.Blue) > g.supply_cap(Team.Blue));
+        assert(g.supply_overruns.is_empty());
+    });
+}
+
+fn blue_troops(g: &GameState) -> i32 {
+    let mut n = 0;
+    for i in 0..g.units.len() { if g.units[i].team == Team.Blue { n = n + 1; } }
+    n
+}
+
+@test
+fn the_ai_queues_no_troop_or_scout_past_its_supply() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        for k in 0..2 {
+            let population = k + 1;
+            let room = k == 1;
+            let mut g = GameState.city_scenario();
+            g.fog_of_war = false;
+            let red = 1;
+            assert(g.cities[red].team == Team.Red);
+            g.cities[red].population = population;
+            g.auto_assign_city(red);
+            g.cities[red].barracks = Option.Some(Hex.new(2, 0));
+            g.cities[red].built.push(Building.Barracks);
+            g.set_stock(Team.Red, Stock.whole(999, 999, 999));
+            let full = g.supply_used(Team.Red) >= g.supply_cap(Team.Red);
+            assert(full == !room);
+            g.plan_ai_turn(Team.Red);
+            let queued = queues_supply(&g.cities[red].queue, &g.cities[red].barracks_queue);
+            if room {
+                // With room, it trains.
+                assert(queued > 0);
+            } else {
+                assert(queued == 0);
+                // It grows or gathers instead.
+                assert(!g.cities[red].queue.is_empty());
+            }
+            assert(g.supply_used(Team.Red) <= g.supply_cap(Team.Red));
+        }
+    });
+}
+
+@test
+fn settlers_and_scouts_have_their_prices_and_the_city_queue_trains_them_at_full_pace() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        assert(Build.Settler.price() == Stock.whole(30, 10, 0));
+        assert(Build.Settler.turns() == 6);
+        assert(Build.Scout.price() == Stock.whole(2, 4, 0));
+        assert(Build.Scout.turns() == 2);
+        let g = GameState.city_scenario();
+        // Not troops: a city center isn't slower at them than a Barracks.
+        assert(g.city_build_turns(0, Build.Settler) == Build.Settler.turns());
+        assert(g.city_build_turns(0, Build.Scout) == Build.Scout.turns());
+    });
+}
+
+@test
+fn a_settler_needs_a_city_of_three_and_a_city_queues_one_scout_at_a_time() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        assert(g.cities[0].population == 2);
+        g.queue_selected_city_settler();
+        assert(g.cities[0].queue.is_empty());
+        let want = text(fn() can {Out} { Out.put("SETTLER: NEEDS POPULATION "); show_i64(SETTLER_MIN_POPULATION as i64); });
+        assert(notice_eq(&g, &want));
+        g.cities[0].population = SETTLER_MIN_POPULATION;
+        g.queue_selected_city_settler();
+        assert(g.cities[0].queue.len() == 1 && g.cities[0].queue[0].build == Build.Settler);
+
+        g.queue_selected_city_scout();
+        g.queue_selected_city_scout();
+        assert(g.cities[0].queue.len() == 2 && g.cities[0].queue[1].build == Build.Scout);
+        assert(notice_is(&g, "SCOUT: ONE SCOUT AT A TIME"));
+    });
+}
+
+@test
+fn a_finished_settler_takes_a_citizen_and_a_scout_takes_none() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.cities[0].population = 3;
+        g.auto_assign_city(0);
+        assert(g.cities[0].working() == 3);
+        g.cities[0].queue.clear();
+        g.cities[0].queue.push(Queued.worked(Build.Settler, Build.Settler.work()));
+        g.complete_builds();
+        assert(g.cities[0].queue.is_empty());
+        // The settler took a citizen.
+        assert(g.cities[0].population == 2);
+        assert(g.cities[0].working() == 2);
+        let last = g.units.len() - 1;
+        assert(g.settlers.contains(g.units[last].id));
+        assert(g.units[last].team == Team.Blue);
+        assert(g.units[last].pos.distance(g.cities[0].pos) == 1);
+
+        g.cities[0].queue.push(Queued.worked(Build.Scout, Build.Scout.work()));
+        g.complete_builds();
+        let last = g.units.len() - 1;
+        assert(g.units[last].unit_type == UnitType.Scout);
+        assert(!g.settlers.contains(g.units[last].id));
+        assert(g.cities[0].population == 2);
+    });
+}
+
+@test
+fn a_settler_below_the_population_it_needs_waits_and_keeps_its_work() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.fund(Team.Blue);
+        // Paid and half done when the city starved down to two.
+        let half = Build.Settler.work() / 2;
+        g.cities[0].queue.clear();
+        g.cities[0].queue.push(Queued.worked(Build.Settler, half));
+        g.cities[0].queue.push(Queued.new(Build.Gather));
+        assert(g.waits_for_citizens(0, 0));
+        let forecast = g.forecast(Team.Blue);
+        let Option.Some(lane) = forecast.lane(0, Lane.City) else { assert(false); return; };
+        // The queue works what comes next.
+        assert(lane.worked == Option.Some(1));
+        // Not waiting for the stockpile.
+        assert(g.waiting_items(lane).is_empty());
+        let mut rates: Vec[(i32, i32)] = Vec.new();
+        rates.push((WORK_PER_TURN, WORK_PER_TURN));
+        rates.push((0, 0));
+        g.work_queues(&rates);
+        assert(g.cities[0].queue[0] == Queued.worked(Build.Settler, half));
+        // Even finished, it waits for the citizen it takes.
+        g.cities[0].queue[0].progress = Build.Settler.work();
+        g.complete_builds();
+        assert(g.cities[0].queue.len() == 1 && g.cities[0].queue[0].build == Build.Settler);
+        assert(g.settlers.len() == 0);
+        // With a third citizen, out it comes.
+        g.cities[0].population = 3;
+        g.complete_builds();
+        assert(g.cities[0].queue.is_empty());
+        assert(g.settlers.len() == 1);
+        assert(g.cities[0].population == 2);
+    });
+}
+
+/// The Cities scenario with a Blue settler selected on `pos`, and nothing else on the map.
+fn settler_on(pos: Hex) -> GameState can {Log} {
+    let mut g = GameState.city_scenario();
+    g.units.clear();
+    g.units.push(Unit.new(900, pos, Team.Blue, UnitType.Melee));
+    g.settlers.insert(900);
+    g.selected = Option.Some(0);
+    g
+}
+
+@test
+fn a_city_is_founded_six_hexes_from_any_other_and_without_a_worker() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        assert(MIN_CITY_DISTANCE == 6);
+        // Blue's city stands at (-4, 0), Red's at (4, 0).
+        let (blue, red) = (Hex.new(-4, 0), Hex.new(4, 0));
+        let close = [(Hex.new(-4, 5), blue), (Hex.new(4, -5), red)];
+        for k in 0..2 {
+            let (pos, near) = close[k];
+            assert(pos.distance(near) == MIN_CITY_DISTANCE - 1);
+            let mut g = settler_on(pos);
+            g.found_city_selected();
+            // Too close.
+            assert(g.cities.len() == 2);
+            let n = &g.notice;
+            assert(contains(n, "TOO CLOSE"));
+            assert(g.settlers.len() == 1);
+        }
+        let far = [(Hex.new(-4, 6), blue), (Hex.new(4, -6), red)];
+        for k in 0..2 {
+            let (pos, near) = far[k];
+            assert(pos.distance(near) == MIN_CITY_DISTANCE);
+            let mut g = settler_on(pos);
+            g.found_city_selected();
+            assert(g.cities.len() == 3);
+            let city = &g.cities[2];
+            assert(city.pos == pos && city.team == Team.Blue && city.population == 1);
+            // A new city starts without a worker.
+            assert(city.workers == 0);
+            assert(g.settlers.len() == 0 && g.units.is_empty());
+            assert(g.selected_city == Option.Some(2));
+        }
+    });
+}
+
+@test
+fn a_side_s_first_city_comes_with_a_worker() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.frontier_scenario();
+        g.found_city_selected();
+        assert(g.cities.len() == 1);
+        assert(g.cities[0].workers == 1);
+    });
+}
+
+/// A settler sharing its hex with an enemy (both stepped in at once) can't found a city there, or
+/// the enemy would stand on its center.
+@test
+fn no_city_is_founded_in_a_contested_hex() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.cities.clear();
+        let site = Hex.new(-6, 0);
+        g.units.push(Unit.new(100, site, Team.Blue, UnitType.Melee));
+        g.settlers.insert(100);
+        assert(g.founding_issue(site).is_none());
+        g.units.push(Unit.new(101, site, Team.Red, UnitType.Melee));
+        assert(g.founding_issue(site).is_some());
+    });
+}
