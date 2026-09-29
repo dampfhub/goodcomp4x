@@ -275,11 +275,11 @@ pub struct UiLayout {
     catalogs: Vec[CatalogRegion],
     /// Where the settings menu's shapes and buttons start, while it's open: drawn over
     /// everything else, and its buttons take clicks before any underneath.
-    overlay: Option[Overlay],
+    overlay: Option[HoverOverlay],
 }
 
 /// The first shape and the first button of the settings menu.
-pub struct Overlay { shapes: i32, buttons: i32 }
+pub struct HoverOverlay { shapes: i32, buttons: i32 }
 
 fn empty_layout() -> UiLayout { UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new(), catalogs: Vec.new(), overlay: Option.None } }
 
@@ -521,7 +521,7 @@ impl GameState {
         let panel = self.settings_panel();
         let size = panel.size();
         let top_left = vec2((screen_size.x - size.x) / 2.0, (screen_size.y + size.y) / 2.0);
-        layout.overlay = Option.Some(Overlay { shapes: layout.shapes.len(), buttons: layout.buttons.len() });
+        layout.overlay = Option.Some(HoverOverlay { shapes: layout.shapes.len(), buttons: layout.buttons.len() });
         panel.place_top_left(top_left, layout);
     }
 

@@ -45,7 +45,7 @@ use screenshot.screenshot;
 use renderer.DrawBatch;
 use renderer.Icons;
 use renderer.WindowRequest;
-use renderer.WindowSpec;
+use renderer.WindowPlace;
 use renderer.Scene;
 use renderer.run;
 use renderer.pipelines.MeshVertex;
@@ -82,7 +82,7 @@ const DRAG_THRESHOLD: f32 = 6.0;
 struct Press { origin: Vec2, mode: ClickMode, may_click: bool }
 
 /// The input state the frame loop keeps between events.
-struct Input {
+struct Controls {
     cursor: Option[Vec2],
     size: Vec2,
     panning: bool,
@@ -97,7 +97,7 @@ struct Input {
 }
 
 /// Losing focus or the cursor: a release may never arrive, so every gesture in progress ends.
-fn forget_gestures(input: &mut Input) {
+fn forget_gestures(input: &mut Controls) {
     input.left_press = Option.None;
     input.left_dragging = false;
     input.panning = false;
@@ -107,7 +107,7 @@ fn forget_gestures(input: &mut Input) {
 }
 
 /// Applies one window event to the game, answering what the window should do about it.
-fn on_event(game: &mut GameState, input: &mut Input, e: Event) -> WindowRequest can {Log, Clock, Rand} {
+fn on_event(game: &mut GameState, input: &mut Controls, e: Event) -> WindowRequest can {Log, Clock, Rand} {
     match e {
         Event.CloseRequested => { input.closed = true; }
         Event.Resized(w, h) => { input.size = vec2(w as f32, h as f32); }
@@ -262,7 +262,7 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
 /// Plays one frame: advances the game by `dt` seconds and lays out the world and the UI as
 /// two batches. Answers whether to keep running: not once the window was closed, the
 /// screenshot written, or its time run out.
-fn on_frame(game: &mut GameState, input: &Input, shot: &mut Option[Screenshot], w: u32, h: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool can {Log, Rand, Clock} {
+fn on_frame(game: &mut GameState, input: &Controls, shot: &mut Option[Screenshot], w: u32, h: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool can {Log, Rand, Clock} {
     if input.closed || game.quit_requested() { return false; }
     let shooting = shot.is_some();
     if let &mut Option.Some(s) = shot {
@@ -296,14 +296,14 @@ fn on_frame(game: &mut GameState, input: &Input, shot: &mut Option[Screenshot], 
 
 /// The game in a window for `frames` frames (0 for until it is closed).
 /// Most of the primary monitor, centered, so there's room for the map and the UI.
-fn window_spec() -> WindowSpec {
+fn window_spec() -> WindowPlace {
     let screen = primary_monitor();
     if screen.width <= 0 || screen.height <= 0 {
-        return WindowSpec { x: 100, y: 100, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, hidden: false };
+        return WindowPlace { x: 100, y: 100, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, hidden: false };
     }
     let width = (screen.width as f32 * WINDOW_SCREEN_FRACTION) as i32;
     let height = (screen.height as f32 * WINDOW_SCREEN_FRACTION) as i32;
-    WindowSpec { x: screen.x + (screen.width - width) / 2, y: screen.y + (screen.height - height) / 2, width, height, hidden: false }
+    WindowPlace { x: screen.x + (screen.width - width) / 2, y: screen.y + (screen.height - height) / 2, width, height, hidden: false }
 }
 
 /// The file the player's settings are kept in between sessions (`persist.tua`).
@@ -341,7 +341,7 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
         let remember = !hidden;
         let saved = if remember { read(SETTINGS_FILE) } else { Option.None };
         if let &Option.Some(t) = &saved { let view = &t; game.set_settings(settings_from_text(view)); }
-        let mut input = Input {
+        let mut input = Controls {
             cursor: Option.None,
             size: vec2(spec.width as f32, spec.height as f32),
             panning: false,

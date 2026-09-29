@@ -231,7 +231,7 @@ pub struct DrawBatch { view_proj: [[f32; 4]; 4], first: u32, count: u32 }
 
 /// Where the window opens: its outer top-left corner on the desktop and its client size, in
 /// pixels; a hidden one is never shown, and its frames are drawn to be read back.
-pub struct WindowSpec { x: i32, y: i32, width: i32, height: i32, hidden: bool }
+pub struct WindowPlace { x: i32, y: i32, width: i32, height: i32, hidden: bool }
 
 /// The window's icons: a small one for its title bar and a big one for the taskbar, each a
 /// square of RGBA pixels `size` a side.
@@ -433,7 +433,7 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, icons: &Icons
     }
 }
 
-fn run_on_device(family: u32, title: &str, spec: WindowSpec, icons: &Icons, atlas: &Atlas, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} {
+fn run_on_device(family: u32, title: &str, spec: WindowPlace, icons: &Icons, atlas: &Atlas, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} {
     let (width, height) = (spec.width, spec.height);
     let mut run = Run { budget: frames, drawn: 0, stop: 0, pace: pacer(TARGET_FPS), vertices: Vec.new(), batches: Vec.new(), hidden: spec.hidden, icon_refresh_at: Option.None };
     let rc = handle { handle {
@@ -515,7 +515,7 @@ fn report_validation(ring: &mut MessageRing) can {Log} {
 /// under the Khronos validation layer, logs what it reported at `warn`, and fails when it
 /// reported anything. The exit code:
 /// 0, or `100 - code` for a negative `VkResult` or library code.
-pub fn run(title: &str, spec: WindowSpec, icons: &Icons, atlas: &Atlas, frames: i32, validate: bool) -> i32 can {Scene, Clock, Log} {
+pub fn run(title: &str, spec: WindowPlace, icons: &Icons, atlas: &Atlas, frames: i32, validate: bool) -> i32 can {Scene, Clock, Log} {
     handle {
         with_instance(true, validate, fn() -> i32 can {VkError, Vk, Scene, Clock, Log} {
             if validate && !validation_layer_present() { VkError.fail(HL_ERROR_NO_LAYER) }

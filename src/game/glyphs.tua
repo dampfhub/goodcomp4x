@@ -35,7 +35,7 @@ pub const EXTRA: [char; 4] = ['·', '—', '×', '…'];
 /// Where a character's glyph for one size sits: its bitmap's place in the atlas (`x`, `y`, `w`,
 /// `h`, rows from the top) and the bitmap's bottom-left relative to the pen on the baseline
 /// (`xmin`, `ymin`, Y up).
-pub struct Placed { x: i32, y: i32, w: i32, h: i32, xmin: i32, ymin: i32 }
+pub struct GlyphPlace { x: i32, y: i32, w: i32, h: i32, xmin: i32, ymin: i32 }
 
 /// The characters drawn, in the order the atlas lays them out.
 pub fn characters() -> Vec[char] {
@@ -63,7 +63,7 @@ pub fn characters() -> Vec[char] {
     Eye.emit(Code.parse_items(&text));
 }
 
-/// Appends the atlas layout's source: `PLACED`, one `Placed` per size and character in the
+/// Appends the atlas layout's source: `PLACED`, one `GlyphPlace` per size and character in the
 /// order the atlas packs them, `CAP_HEIGHTS` (the height of `H` at each size) and
 /// `ATLAS_HEIGHT`, rounded so every mip level halves evenly.
 fn layout(d: &[u8], cs: &Vec[char], out: &mut Str) can {FontError} {
@@ -77,7 +77,7 @@ fn layout(d: &[u8], cs: &Vec[char], out: &mut Str) can {FontError} {
             let m = font.metrics(cs[i], px);
             let (x, y) = p.place(m.width, m.height);
             render(&mut placed, fn() can {Out} {
-                Out.put("    Placed { x: "); show_i64(x as i64); Out.put(", y: "); show_i64(y as i64);
+                Out.put("    GlyphPlace { x: "); show_i64(x as i64); Out.put(", y: "); show_i64(y as i64);
                 Out.put(", w: "); show_i64(m.width as i64); Out.put(", h: "); show_i64(m.height as i64);
                 Out.put(", xmin: "); show_i64(m.xmin as i64); Out.put(", ymin: "); show_i64(m.ymin as i64); Out.put(" },\n");
             });
@@ -87,7 +87,7 @@ fn layout(d: &[u8], cs: &Vec[char], out: &mut Str) can {FontError} {
     }
     let height = p.height(1 << (MIP_LEVELS - 1));
     render(out, fn() can {Out} {
-        Out.put("pub const PLACED: [Placed; "); show_i64((4 * cs.len()) as i64); Out.put("] = [\n"); Out.put(&placed); Out.put("];\n");
+        Out.put("pub const PLACED: [GlyphPlace; "); show_i64((4 * cs.len()) as i64); Out.put("] = [\n"); Out.put(&placed); Out.put("];\n");
         Out.put("pub const CAP_HEIGHTS: [i32; 4] = ["); Out.put(&caps); Out.put("];\n");
         Out.put("pub const ATLAS_HEIGHT: i32 = "); show_i64(height as i64); Out.put(";\n");
     });
