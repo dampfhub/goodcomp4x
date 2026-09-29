@@ -39,11 +39,10 @@ use game.ui.RowKind;
 use game.ui.TILE_TOOLTIP_DELAY;
 use game.ui.panel_builder;
 use game.unit.UnitType;
-use game.imgui_layout.INSPECT;
-use game.imgui_layout.is_zero;
 use game.city.BuildUnit;
 use game.font.ui_atlas;
 use game.imgui.UiState;
+use game.imgui.build_panels;
 use game.imgui.run_ui;
 use game.imgui.status_flags;
 use game.imgui.ui_context;
@@ -441,6 +440,9 @@ fn a_group_chip_counts_its_units_and_opens_a_row_of_them() {
         assert(one.len() == 1 && one[0] == blue[2]);
         // The row stays while one of its units is selected.
         assert(strip(&r.game).len() == 5);
+        // Ctrl-clicking the only selected unit leaves it selected.
+        click_chip(&mut r, third, false, true);
+        assert(r.game.selection().len() == 1);
         // Shift-clicking another group adds all of it; Ctrl-clicking takes it out.
         click_chip(&mut r, siege, true, false);
         let added = r.game.selection();
@@ -575,7 +577,10 @@ fn hex_cursor(game: &GameState, hex: Hex) -> Vec2 {
 }
 
 /// Whether the Inspect panel has been shown in `r`.
-fn inspecting(r: &Rig) -> bool { !is_zero(r.st.layout.windows[INSPECT].size) }
+fn inspecting(r: &mut Rig) -> bool {
+    let panels = build_panels(&r.game, &mut r.st.layout, r.st.input.mouse, screen(), false);
+    !panels.hover.rows.is_empty()
+}
 
 @test
 fn hovering_an_enemy_out_of_sight_shows_nothing() {
@@ -592,11 +597,11 @@ fn hovering_an_enemy_out_of_sight_shows_nothing() {
         move_to(&mut r, cursor);
         r.game.update_hover(Option.Some(cursor), screen(), 0.0);
         frames(&mut r, 3);
-        assert(!inspecting(&r));
+        assert(!inspecting(&mut r));
         // In sight, the same hover describes it.
         r.game.fog_of_war = false;
         frames(&mut r, 3);
-        assert(inspecting(&r));
+        assert(inspecting(&mut r));
     });
 }
 
@@ -649,4 +654,42 @@ fn rows_show(panel: &PanelBuilder, needle: &str) -> bool {
         }
     }
     false
+}
+
+@test
+fn hovering_an_enemy_city_or_barracks_out_of_sight_shows_no_live_panel() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.units.clear();
+        game.selected = Option.None;
+        let mut red: i32 = 0 - 1;
+        let mut blue: i32 = 0 - 1;
+        for i in 0..game.cities.len() {
+            if red < 0 && game.cities[i].team == Team.Red { red = i; }
+            if blue < 0 && game.cities[i].team == Team.Blue { blue = i; }
+        }
+        assert(red >= 0 && blue >= 0);
+        let barracks = game.cities[red].pos.neighbors()[0];
+        game.cities[red].barracks = Option.Some(barracks);
+        let red_pos = game.cities[red].pos;
+        let mut r = rig(game);
+        for k in 0..2 {
+            let hex = if k == 0 { red_pos } else { barracks };
+            // Only Blue's city sees, and not this far.
+            assert(!r.game.fog().sees(hex));
+            r.game.hovered_tile = Option.Some(hex);
+            frames(&mut r, 3);
+            assert(!inspecting(&mut r));
+            // In sight, it has its panel.
+            r.game.fog_of_war = false;
+            frames(&mut r, 3);
+            assert(inspecting(&mut r));
+            r.game.fog_of_war = true;
+        }
+        // The player's own city always has its panel.
+        let own = r.game.cities[blue].pos;
+        r.game.hovered_tile = Option.Some(own);
+        frames(&mut r, 3);
+        assert(inspecting(&mut r));
+    });
 }

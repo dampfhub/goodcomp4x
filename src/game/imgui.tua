@@ -293,7 +293,7 @@ pub fn ui_state(layout: ImGuiLayoutState, display: Vec2) -> UiState {
 }
 
 /// The panels of one frame, built from the game before the frame starts.
-struct Panels {
+pub struct Panels {
     tray: PanelBuilder,
     queue: PanelBuilder,
     debug: PanelBuilder,
@@ -893,7 +893,7 @@ impl GameState {
 }
 
 /// The content of every panel this frame, from the game and the layout's pins.
-fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Option[Vec2], size: Vec2, wants_mouse: bool) -> Panels {
+pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Option[Vec2], size: Vec2, wants_mouse: bool) -> Panels {
     let selected_pin = game.selected_pin();
     let selection_is_pinned = match selected_pin { Option.Some(p) => layout.is_pinned(p), Option.None => false };
     let queue_pin = game.selected_queue_pin();
