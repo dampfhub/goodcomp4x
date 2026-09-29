@@ -30,22 +30,38 @@ use crate::screenshot::{self, Screenshot};
 
 /// Cap on the render loop's frame rate, so it doesn't load the GPU with
 /// frames the display can't show. Below it, frames come at the refresh rate
-/// of the monitor the window is on (`frame_duration`).
-const TARGET_FPS: u64 = 165;
-const FRAME_DURATION: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
-/// Never slower than this, whatever a monitor reports.
+/// of the monitor the window is on (`frame_interval`).
+const TARGET_FPS: u32 = 165;
+/// Never slower than this while focused, whatever a monitor reports.
 const MIN_FPS: u32 = 30;
+/// The frame rate while the window is in the background: enough for turn
+/// playback and a network game to keep moving, without drawing at the
+/// monitor's rate for a window nobody is looking at.
+const UNFOCUSED_FPS: u32 = 30;
 
-/// The time between frames for `window`: its monitor's refresh rate, capped
-/// at `TARGET_FPS`.
-fn frame_duration(window: &Window) -> Duration {
-    let hertz = window
+/// The time between frames. Focused, the refresh rate of the window's
+/// monitor (`refresh_mhz`, in millihertz as winit reports it; unknown means
+/// `TARGET_FPS`), kept between `MIN_FPS` and `TARGET_FPS`. Unfocused,
+/// `UNFOCUSED_FPS`.
+fn frame_interval(refresh_mhz: Option<u32>, focused: bool) -> Duration {
+    let hertz = if focused {
+        refresh_mhz
+            .map_or(TARGET_FPS, |millihertz| millihertz.div_ceil(1000))
+            .clamp(MIN_FPS, TARGET_FPS)
+    } else {
+        UNFOCUSED_FPS
+    };
+    Duration::from_micros(1_000_000 / u64::from(hertz))
+}
+
+/// The refresh rate of the monitor `window` is on, in millihertz, if winit
+/// can tell.
+fn monitor_refresh_mhz(window: &Window) -> Option<u32> {
+    window
         .current_monitor()
         .and_then(|monitor| monitor.refresh_rate_millihertz())
-        .map_or(TARGET_FPS as u32, |millihertz| millihertz.div_ceil(1000))
-        .clamp(MIN_FPS, TARGET_FPS as u32);
-    FRAME_DURATION.max(Duration::from_micros(1_000_000 / u64::from(hertz)))
 }
+
 const DRAG_THRESHOLD: f32 = 6.0;
 /// The window opens at this fraction of the primary monitor's size.
 const WINDOW_SCREEN_FRACTION: f32 = 0.8;
@@ -91,9 +107,13 @@ pub struct App {
     world_vertices: Vec<Vertex>,
     ui_vertices: Vec<Vertex>,
     last_frame: Option<Instant>,
-    /// The time between frames (`frame_duration`), found again when the
-    /// window moves, as it may have moved to another monitor.
-    frame_duration: Duration,
+    /// The refresh rate of the window's monitor (`monitor_refresh_mhz`),
+    /// found again when the window moves or changes scale, as it may be on
+    /// another monitor. With `focused` it sets the time between frames
+    /// (`frame_interval`).
+    refresh_mhz: Option<u32>,
+    /// Whether the window has the keyboard focus (`WindowEvent::Focused`).
+    focused: bool,
     minimized: bool,
     /// When to set the window's icons again (`ICON_REFRESH_DELAY` after it
     /// first shows), so the taskbar button picks them up.
@@ -285,7 +305,8 @@ impl App {
             use_imgui: saved.imgui,
 
             last_frame: None,
-            frame_duration: FRAME_DURATION,
+            refresh_mhz: None,
+            focused: true,
             minimized: false,
             icon_refresh_at: None,
             cursor_pos: None,
@@ -752,7 +773,7 @@ impl ApplicationHandler for App {
                 return;
             }
         }
-        self.frame_duration = frame_duration(&window);
+        self.refresh_mhz = monitor_refresh_mhz(&window);
         self.window = Some(window);
         self.imgui = Some(imgui);
         self.imgui_platform = Some(imgui_platform);
@@ -785,9 +806,9 @@ impl ApplicationHandler for App {
                 }
                 event_loop.exit();
             }
-            WindowEvent::Moved(_) => {
+            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = &self.window {
-                    self.frame_duration = frame_duration(window);
+                    self.refresh_mhz = monitor_refresh_mhz(window);
                 }
             }
             WindowEvent::Resized(size) => {
@@ -857,7 +878,12 @@ impl ApplicationHandler for App {
                 }
                 self.cursor_pos = Some(pos);
             }
-            WindowEvent::Focused(false) => self.cancel_drags(),
+            WindowEvent::Focused(focused) => {
+                self.focused = focused;
+                if !focused {
+                    self.cancel_drags();
+                }
+            }
             WindowEvent::CursorLeft { .. } => {
                 self.cancel_drags();
                 self.cursor_pos = None;
@@ -1143,9 +1169,10 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let next_frame_at = self
-            .last_frame
-            .map_or_else(Instant::now, |t| t + self.frame_duration);
+        // A screenshot's hidden window never has the focus: it draws at the full rate.
+        let focused = self.focused || self.screenshot.is_some();
+        let interval = frame_interval(self.refresh_mhz, focused);
+        let next_frame_at = self.last_frame.map_or_else(Instant::now, |t| t + interval);
         if Instant::now() >= next_frame_at {
             if self.screenshot.is_some() {
                 // A hidden window gets no redraw events, so draw right away.
@@ -1176,6 +1203,27 @@ fn is_input(event: &WindowEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frames_come_at_the_monitor_rate_up_to_165_and_at_30_in_the_background() {
+        let fps = |refresh_mhz, focused| {
+            (1_000_000.0 / frame_interval(refresh_mhz, focused).as_micros() as f64).round()
+        };
+        // Focused: the monitor's rate (59.94 Hz rounds up), capped at 165.
+        assert_eq!(fps(Some(60_000), true), 60.0);
+        assert_eq!(fps(Some(59_940), true), 60.0);
+        assert_eq!(fps(Some(144_000), true), 144.0);
+        assert_eq!(fps(Some(165_000), true), 165.0);
+        assert_eq!(fps(Some(240_000), true), 165.0);
+        // An unknown rate draws at the cap; a nonsense one at no less than 30.
+        assert_eq!(fps(None, true), 165.0);
+        assert_eq!(fps(Some(0), true), 30.0);
+        assert_eq!(fps(Some(10_000), true), 30.0);
+        // In the background, 30 whatever the monitor.
+        for refresh_mhz in [None, Some(0), Some(60_000), Some(240_000)] {
+            assert_eq!(fps(refresh_mhz, false), 30.0);
+        }
+    }
 
     #[test]
     fn focus_loss_keeps_the_cursor_and_switching_ui_cancels_every_drag() {
