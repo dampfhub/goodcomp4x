@@ -1256,9 +1256,9 @@ fn apply_action(game: &mut GameState, ctx: &mut Context, st: &mut UiState, viewp
 
 // ---- boxes and pinned panels ---------------------------------------------------------------
 
-/// The share of a box a panel docked into it takes: the library's dock space keeps a central node
-/// that holds no window, so a first panel cannot fill the box.
-const BOX_DOCK_RATIO: f32 = 0.95;
+/// The share of a box a panel docked into it takes: all of it, as the library's dock space gives
+/// a lone window (a ratio of 1.0) the whole space.
+const BOX_DOCK_RATIO: f32 = 1.0;
 
 /// The boxes of the layer being shown: each a window holding a dock space the player can drag
 /// panels into.
