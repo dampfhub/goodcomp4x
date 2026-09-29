@@ -233,7 +233,10 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   barracks' goods reach (badges, delivery percentages, tooltip, a Work Camp's CONNECTED or
   CUT OFF), use remembered
   cities and roads out of sight, and no units. A city or barracks shows its live hover panel only if it
-  is the player's own or in sight. Hovering an enemy city in sight rings only the tiles it works
+  is the player's own or in sight. Of another side's city or barracks, the panel and the tile tooltip give
+  only what's in sight (its population, a barracks' HP), or out of sight what the memory kept: not
+  what the city delivers, what a Smelter makes or what its queues build, which hang on tiles,
+  routes and plans the player can't see. Hovering an enemy city in sight rings only the tiles it works
   that are in sight, all as delivering: whether their goods arrive depends on its routes, which
   the player doesn't know. The economy itself runs on the real board: an enemy out of
   sight on a route hex that isn't a worked tile still cuts the goods behind it, and that shows as
@@ -954,7 +957,8 @@ hostile to every side, and no side's AI plays it (World maps only).
   queued order turns its button gold, an unusable one is dimmed. Every button has a hover tooltip.
 - **Hover:** hovering a unit shows its stats at the top-right; hovering a city or barracks shows
   a structure panel at the bottom-left instead (barracks HP; a city's population and what it delivers;
-  the build worked and its turns left, and what the first item waits for, if it waits). Hovering a city also outlines its worked tiles, without yield badges. After the
+  the build worked and its turns left, and what the first item waits for, if it waits; of another side's,
+  only its population or HP). Hovering a city also outlines its worked tiles, without yield badges. After the
   cursor rests on a hex for 0.75 s, a tooltip shows terrain or city, yields, defense, site, road,
   which city works it, its delivery share to the open city, and units on it.
 - **City view:** C opens the first city needing a build (or your first city), and left-clicking

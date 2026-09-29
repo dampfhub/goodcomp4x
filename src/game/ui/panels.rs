@@ -315,13 +315,14 @@ impl GameState {
     }
 
     /// A hovered city or Barracks: population and what the city delivers,
-    /// or the Barracks' health, and what either is building.
+    /// or the Barracks' health, and what either is building. Of another
+    /// side's, only what's in sight: its population or health, not what it
+    /// delivers or works, which hang on tiles, routes and plans the player
+    /// can't see.
     pub(super) fn structure_hover_panel(&self, i: usize, barracks: bool, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
+        let own = city.team == self.local_team;
         if barracks {
-            let status = self.queue_status(i, Lane::Barracks);
-            let worked = self.worked_item(i, Lane::Barracks, &status);
-            let queue = self.hover_queue_text(worked, city.barracks_queue.is_empty());
             panel.text(
                 TITLE,
                 vec![(format!("CITY {} BARRACKS", city.id + 1), city.team.color())],
@@ -337,6 +338,12 @@ impl GameState {
                     GOLD_TEXT,
                 )],
             );
+            if !own {
+                return;
+            }
+            let status = self.queue_status(i, Lane::Barracks);
+            let worked = self.worked_item(i, Lane::Barracks, &status);
+            let queue = self.hover_queue_text(worked, city.barracks_queue.is_empty());
             panel.text(SMALL, vec![(format!("QUEUE: {queue}"), DIM_TEXT)]);
             if let Some((_, _, done)) = worked {
                 panel.bar(done);
@@ -345,13 +352,23 @@ impl GameState {
                 panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
             }
         } else {
-            let status = self.queue_status(i, Lane::City);
-            let worked = self.worked_item(i, Lane::City, &status);
-            let queue = self.hover_queue_text(worked, city.queue.is_empty());
             panel.text(
                 TITLE,
                 vec![(format!("CITY {}", city.id + 1), city.team.color())],
             );
+            if !own {
+                panel.text(
+                    SMALL,
+                    vec![(
+                        format!("POP {}/{MAX_CITY_POPULATION}", city.population),
+                        GOLD_TEXT,
+                    )],
+                );
+                return;
+            }
+            let status = self.queue_status(i, Lane::City);
+            let worked = self.worked_item(i, Lane::City, &status);
+            let queue = self.hover_queue_text(worked, city.queue.is_empty());
             panel.text(
                 SMALL,
                 vec![(
