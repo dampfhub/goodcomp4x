@@ -1267,7 +1267,13 @@ impl GameState {
             && let Some(barracks) = self.cities[i].barracks
         {
             let routes = self.known_routes_from(self.cities[i].team, barracks, fog);
-            for (hex, cost) in routes.costs.iter().filter(|(h, _)| self.is_explored(**h)) {
+            let mut costs: Vec<_> = routes
+                .costs
+                .iter()
+                .filter(|(h, _)| self.is_explored(**h))
+                .collect();
+            costs.sort_unstable_by_key(|(h, _)| (h.q, h.r));
+            for (hex, cost) in costs {
                 font::push_text(
                     hex.to_world() + SHARE_LABEL_OFFSET,
                     SHARE_LABEL_HEIGHT,
@@ -1291,7 +1297,11 @@ impl GameState {
         }
         self.push_planned_jobs(&shares, out);
         self.push_others_construction(&view.construction, &shares, out);
-        for (&(a, b), barrier) in &view.barriers {
+        // Shared corner posts overlap: choose their painter order by edge,
+        // independently of hash keys, capacity or insertion order.
+        let mut barriers: Vec<_> = view.barriers.iter().collect();
+        barriers.sort_unstable_by_key(|((a, b), _)| (a.q, a.r, b.q, b.r));
+        for (&(a, b), barrier) in barriers {
             push_barrier(a, b, barrier.kind, barrier.team.color(), out);
         }
         // Where the armed worker job would go: an edge, or a ring on a tile,
@@ -1383,7 +1393,9 @@ impl GameState {
             return labeled;
         };
         let known_routes = self.known_routes(i, fog);
-        for (h, cost) in &known_routes.costs {
+        let mut costs: Vec<_> = known_routes.costs.iter().collect();
+        costs.sort_unstable_by_key(|(h, _)| (h.q, h.r));
+        for (h, cost) in costs {
             // Nothing is known of a tile never seen, delivery included.
             if !self.may_show(*h) || !self.is_explored(*h) || self.known_building_at(*h, fog) {
                 continue;
@@ -3308,6 +3320,39 @@ mod tests {
         game.cities[1].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
         game.explore();
         assert_eq!(rim(&game), 0);
+    }
+
+    #[test]
+    fn shared_corner_walls_have_identical_unsorted_vertices_on_every_frame() {
+        let mut game = GameState::city_scenario();
+        game.fog_of_war = false;
+        let a = Hex::new(0, 0);
+        let b = Hex::new(1, 0);
+        let c = Hex::new(0, 1);
+        for (neighbor, team) in [(b, Team::Blue), (c, Team::Red)] {
+            game.barriers.insert(
+                edge(a, neighbor),
+                Structure {
+                    kind: StructureKind::Wall,
+                    team,
+                },
+            );
+        }
+        let vertices = |game: &GameState| {
+            game.build_vertices()
+                .into_iter()
+                .map(|v| (v.pos, v.color, v.uv))
+                .collect::<Vec<_>>()
+        };
+        let expected = vertices(&game);
+        for _ in 0..20 {
+            assert_eq!(vertices(&game), expected);
+        }
+        // Rebuild with a different backing capacity and reversed insertion order.
+        let entries: Vec<_> = game.barriers.drain().collect();
+        game.barriers.reserve(100);
+        game.barriers.extend(entries.into_iter().rev());
+        assert_eq!(vertices(&game), expected);
     }
 
     /// Every vertex as plain data, sorted: labels over a route map come out
