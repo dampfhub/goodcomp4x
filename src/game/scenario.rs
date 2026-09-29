@@ -128,9 +128,11 @@ impl GameState {
         let net_menu = std::mem::take(&mut self.net_menu);
         let production_speedup = self.production_speedup;
         let lifetime_special_cap = self.lifetime_special_cap;
+        let generation = self.generation.wrapping_add(1);
         let mut rng = self.rng.clone();
         *self = scenario.start(&mut rng, &settings);
         self.rng = rng;
+        self.generation = generation;
         self.savestate = savestate;
         self.settings = settings;
         self.settings_open = settings_open;
@@ -192,6 +194,7 @@ impl GameState {
         // Rolls carry on from the current game rather than replaying the
         // saved ones, so retrying a save can go differently.
         restored.rng = self.rng.clone();
+        restored.generation = self.generation.wrapping_add(1);
         restored.savestate = Some(saved);
         restored.notice = format!("LOADED {}", restored.saved_summary().unwrap_or_default());
         *self = restored;

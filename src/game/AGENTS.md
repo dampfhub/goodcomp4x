@@ -32,7 +32,7 @@ behavior.
 | `city/founding.rs` | settlers founding cities: the founding rules (`founding_issue`, `MIN_CITY_DISTANCE`) and a new city (`found_city`, a worker only for a side's first) |
 | `workers.rs` | workers: each city's pool and job list (everything the city places on the map, buildings with a site included: `JobKind`, placed from the open city's production list with `arm_worker_job`, paid when placed with `try_queue_job` and refunded if taken off or dropped), the Workshop speedup (`job_turns`), Work Camp bases, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
 | `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click_at`: a click on one of the player's unit tokens, hit as `draw.rs` draws it (`unit_token_contains`), selects the unit and closes the view; anywhere else is `city_click`), stopping placing (`stop_placing`), the yields toggle, `end_planning` |
-| `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture |
+| `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture (pushing units of other sides off the center: `push_off_city_center`) |
 | `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, and tiles, rivers, resources and specials in flat arrays over the shape's bounding box); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `fast_hash.rs` | the `HashMap` and `HashSet` the game uses: std's, with a fast fixed hasher (rustc's) for its small keys |
@@ -53,7 +53,7 @@ behavior.
 | `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
 | `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs`, `ui/network_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling, drag to reorder and a Clear button, and each row's turns left or what it waits for (`queue_status`); the turn strip of everything needing orders (cities, unit groups); the settings menu (a heading per group, a control per `Setting`) and its Multiplayer page (host, join, leave; typed fields) |
-| `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
+| `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, and `subject_tooltip_lines` for a given unit or city, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
 | `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
 | `mesh.rs`, `font.rs` | shape helpers (`polygon` ear-clips concave outlines); TrueType text and the glyph atlas |

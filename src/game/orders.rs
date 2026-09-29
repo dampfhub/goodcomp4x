@@ -338,7 +338,7 @@ impl GameState {
         if let Some(idx) = self.selected {
             self.units[idx].holding = true;
         }
-        self.select_next_or_end_turn(self.selected);
+        self.select_next_needing_attention(self.selected);
     }
 
     /// G or the Guard button: the selected unit stays put and is skipped in
@@ -358,7 +358,7 @@ impl GameState {
         if unit.guarding {
             // Guard and Alert are two stances; one ends the other.
             unit.alert = false;
-            self.select_next_or_end_turn(Some(idx));
+            self.select_next_needing_attention(Some(idx));
         }
     }
 
@@ -387,7 +387,7 @@ impl GameState {
             return;
         }
         self.go_on_alert(idx);
-        self.select_next_or_end_turn(Some(idx));
+        self.select_next_needing_attention(Some(idx));
     }
 
     /// Whether unit `idx` can go on alert: a troop that fights on land
@@ -450,7 +450,7 @@ impl GameState {
         self.selected = None;
         self.group.clear();
         self.ui_click_mode = None;
-        self.select_next_or_end_turn(idx.checked_sub(1));
+        self.select_next_needing_attention(idx.checked_sub(1));
     }
 
     /// How many of the player's units still need orders, and how many of
@@ -480,27 +480,28 @@ impl GameState {
     }
 
     /// Once the selected unit has nothing left to plan, moves on to whatever
-    /// needs seeing to next (`select_next_or_end_turn`).
+    /// needs seeing to next (`select_next_needing_attention`).
     pub(super) fn advance_selection_if_done(&mut self) {
         if let Some(idx) = self.selected
             && !self.needs_orders(idx)
         {
-            self.select_next_or_end_turn(Some(idx));
+            self.select_next_needing_attention(Some(idx));
         }
     }
 
     /// Moves on to what needs seeing to next, in the turn strip's order: a
     /// city with nothing to build, opened; or else the next unit after
     /// `after` that still needs orders (`next_unit_needing_orders`). With
-    /// neither, clears the selection and waits for the player to end the turn.
-    pub(super) fn select_next_or_end_turn(&mut self, after: Option<usize>) {
+    /// neither, lets go of the selection (and any action armed for it) and
+    /// waits for the player to end the turn; it never ends the turn itself.
+    pub(super) fn select_next_needing_attention(&mut self, after: Option<usize>) {
         // In the turn strip's order: production first, then the units.
         if let Some(city) = (0..self.cities.len()).find(|&i| self.city_needs_build(i)) {
             self.open_city(city);
         } else if let Some(next) = self.next_unit_needing_orders(after) {
             self.select_and_focus(Some(next));
         } else {
-            self.selected = None;
+            self.set_selection(Vec::new());
         }
     }
 
@@ -1261,5 +1262,49 @@ mod tests {
         g.disband_selected();
         assert!(g.units.iter().all(|u| u.id != 90));
         assert!(!g.settlers.contains(&91), "the passenger goes with it");
+    }
+
+    /// Ends the turn and plays it out to the next turn's planning.
+    fn play_turn(g: &mut GameState) {
+        g.end_planning();
+        assert!(g.is_resolving(), "{}", g.notice);
+        while g.is_resolving() {
+            g.update(10.0);
+        }
+    }
+
+    #[test]
+    fn nothing_armed_while_planning_outlives_the_turn() {
+        // #161: a Disband armed turns earlier removed the unit in one press.
+        let mut g = alert_field(UnitType::Melee);
+        let id = g.units[0].id;
+        g.disband_selected();
+        assert_eq!(g.disband_armed, Some(id));
+        g.selected = Some(0);
+        g.choose_move_action();
+        assert_eq!(g.ui_click_mode, Some(ClickMode::Move));
+        play_turn(&mut g);
+        assert_eq!(g.disband_armed, None);
+        assert_eq!(g.ui_click_mode, None);
+        assert_eq!(g.queue_replace_armed, None);
+        let idx = g.units.iter().position(|u| u.id == id).unwrap();
+        g.selected = Some(idx);
+        g.disband_selected();
+        assert!(
+            g.units.iter().any(|u| u.id == id),
+            "one press only asks again"
+        );
+    }
+
+    #[test]
+    fn with_nobody_left_to_order_an_armed_action_is_let_go() {
+        let mut g = alert_field(UnitType::Melee);
+        g.units[1].holding = true;
+        g.choose_attack_action();
+        assert_eq!(g.ui_click_mode, Some(ClickMode::Attack));
+        g.hold_selected_unit();
+        assert_eq!(g.selected, None, "nobody else needs orders");
+        assert_eq!(g.ui_click_mode, None, "nothing is left armed");
+        assert!(!g.is_resolving(), "the turn waits to be ended");
     }
 }

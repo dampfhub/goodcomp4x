@@ -375,8 +375,22 @@ impl GameState {
                 self.auto_assign_city(i);
             }
         }
-        self.selected_city = None;
+        self.close_views_on_end_turn();
         self.notice = "RESOLVING ORDERS".into();
         self.resolve_turn();
+    }
+
+    /// What ending the turn lets go of, in a local game and a network one
+    /// alike: the city and Barracks views close, a manager being moved or a
+    /// queue row being dragged is let go, and so is the unit selection (a
+    /// local game's `resolve_turn` drops it too, as indices shift). A city
+    /// interior stays open (a Siege begins inside one).
+    pub(in crate::game) fn close_views_on_end_turn(&mut self) {
+        self.selected_city = None;
+        self.selected_barracks = None;
+        self.moving_manager = None;
+        self.queue_drag = None;
+        self.selected = None;
+        self.group.clear();
     }
 }

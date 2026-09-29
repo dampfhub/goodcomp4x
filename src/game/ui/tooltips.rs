@@ -27,12 +27,30 @@ use glam::Vec2;
 /// waits for the others' plans.
 pub(super) const PLAN_SENT: &str = "YOUR ORDERS ARE SENT - THE WAITING BUTTON TAKES THEM BACK";
 
+/// What a button's tooltip describes it for: the unit (a group's first
+/// member) and the city (or Barracks) of the panel the button is in. The
+/// selection's for the classic tray and ImGui's Selection panel
+/// (`selection_subject`); a captured ImGui panel's own unit or city
+/// (`imgui.rs`), whatever is selected.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Subject {
+    pub unit: Option<usize>,
+    pub city: Option<usize>,
+}
+
 impl GameState {
-    /// What `build` queued in the open city (or Barracks, with `barracks`)
-    /// costs from the stockpile when work on it starts, and how long it
-    /// takes there: the price's icons, then the clock and the turns.
-    fn price_text(&self, build: Build, barracks: bool) -> String {
-        let city = self.selected_city.or(self.selected_barracks);
+    /// The selection as a tooltip's `Subject`.
+    pub(super) fn selection_subject(&self) -> Subject {
+        Subject {
+            unit: self.selected.or(self.group.first().copied()),
+            city: self.selected_city.or(self.selected_barracks),
+        }
+    }
+
+    /// What `build` queued in `city`'s queue (or its Barracks', with
+    /// `barracks`) costs from the stockpile when work on it starts, and how
+    /// long it takes there: the price's icons, then the clock and the turns.
+    fn price_text(&self, build: Build, barracks: bool, city: Option<usize>) -> String {
         let price = city.map_or_else(|| build.price(), |city| self.queue_price(city, build));
         let turns = match city {
             Some(city) if !barracks => self.city_build_turns(city, build),
@@ -52,11 +70,11 @@ impl GameState {
         format!(" · {left} OF {cap} LEFT")
     }
 
-    /// What the stockpile is short of to pay for `build` in the open city
-    /// this turn, on top of what its queues start (`forecast`'s `spare`),
-    /// if anything: queued, it waits until the side can pay.
-    fn shortfall_text(&self, build: Build) -> Option<String> {
-        let city = self.selected_city.or(self.selected_barracks)?;
+    /// What the stockpile is short of to pay for `build` in `city` this
+    /// turn, on top of what its queues start (`forecast`'s `spare`), if
+    /// anything: queued, it waits until the side can pay.
+    fn shortfall_text(&self, build: Build, city: Option<usize>) -> Option<String> {
+        let city = city?;
         let short = self
             .forecast(self.local_team)
             .spare
@@ -69,12 +87,11 @@ impl GameState {
         })
     }
 
-    /// Why the open city can't queue a Scout or Settler (`city_build_issue`),
-    /// or else what the stockpile is short of for it (`shortfall_text`).
-    fn civilian_unavailable(&self, build: Build) -> Option<String> {
-        self.selected_city
-            .and_then(|city| self.city_build_issue(city, build))
-            .or_else(|| self.shortfall_text(build))
+    /// Why `city` can't queue a Scout or Settler (`city_build_issue`), or
+    /// else what the stockpile is short of for it (`shortfall_text`).
+    fn civilian_unavailable(&self, build: Build, city: Option<usize>) -> Option<String> {
+        city.and_then(|city| self.city_build_issue(city, build))
+            .or_else(|| self.shortfall_text(build, city))
     }
 
     /// What one of `city`'s queues works, by name, for a tile's tooltip:
@@ -365,14 +382,27 @@ impl GameState {
         }
     }
 
-    /// A tooltip's title (with the shortcut), description, and why the
-    /// button is unavailable, if it is.
+    /// A classic button's tooltip: `subject_tooltip_lines` for the
+    /// selection.
     pub(super) fn tooltip_lines(&self, button: &Button) -> Vec<(u32, Line)> {
+        self.subject_tooltip_lines(button.target, &button.label, self.selection_subject())
+    }
+
+    /// A tooltip's title (with the shortcut), description, and why the
+    /// button for `target` (labelled `label`) is unavailable, if it is, for
+    /// the unit or city `subject` names.
+    pub(super) fn subject_tooltip_lines(
+        &self,
+        target: Target,
+        label: &str,
+        subject: Subject,
+    ) -> Vec<(u32, Line)> {
+        let city = subject.city;
         let (title, shortcut, description, unavailable): (String, String, String, Option<String>) =
-            match button.target {
+            match target {
                 Target::Unit(action) => {
                     // A group's buttons are described for its first member.
-                    let Some(idx) = self.selected.or(self.group.first().copied()) else {
+                    let Some(idx) = subject.unit else {
                         return Vec::new();
                     };
                     let (title, shortcut, description, unavailable) =
@@ -385,9 +415,9 @@ impl GameState {
                     format!(
                         "{}. {}",
                         build.description(),
-                        self.price_text(Build::Unit(build), false)
+                        self.price_text(Build::Unit(build), false, city)
                     ),
-                    self.shortfall_text(Build::Unit(build)),
+                    self.shortfall_text(Build::Unit(build), city),
                 ),
                 Target::Building(building) => (
                     building.name().into(),
@@ -402,8 +432,7 @@ impl GameState {
                         stock_icons(building.price()),
                         turns_icon(building.turns())
                     ),
-                    self.selected_city
-                        .and_then(|city| self.job_kind_unavailable(city, JobKind::Build(building))),
+                    city.and_then(|city| self.job_kind_unavailable(city, JobKind::Build(building))),
                 ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
@@ -411,13 +440,11 @@ impl GameState {
                     format!(
                         "{}. {}{}",
                         build.description(),
-                        self.price_text(Build::Unit(build), true),
+                        self.price_text(Build::Unit(build), true, city),
                         self.special_note(build)
                     ),
-                    self.selected_barracks
-                        .or(self.selected_city)
-                        .and_then(|city| self.barracks_lock(city, build))
-                        .or_else(|| self.shortfall_text(Build::Unit(build))),
+                    city.and_then(|city| self.barracks_lock(city, build))
+                        .or_else(|| self.shortfall_text(Build::Unit(build), city)),
                 ),
                 Target::OpenBarracks => (
                     "SEE BARRACKS".into(),
@@ -493,18 +520,18 @@ impl GameState {
                     WORKER_SHORTCUT.to_string(),
                     format!(
                         "BUILDS WHAT THE CITY PLACES. {}",
-                        self.price_text(Build::Worker, false)
+                        self.price_text(Build::Worker, false, city)
                     ),
-                    self.shortfall_text(Build::Worker),
+                    self.shortfall_text(Build::Worker, city),
                 ),
                 Target::BuildScout => (
                     "SCOUT".into(),
                     SCOUT_SHORTCUT.to_string(),
                     format!(
                         "SEES FAR, MOVES FAST; NOT A TROOP, SO NO BARRACKS. ONE AT A TIME. {}",
-                        self.price_text(Build::Scout, false)
+                        self.price_text(Build::Scout, false, city)
                     ),
-                    self.civilian_unavailable(Build::Scout),
+                    self.civilian_unavailable(Build::Scout, city),
                 ),
                 Target::BuildSettler => (
                     "SETTLER".into(),
@@ -512,15 +539,15 @@ impl GameState {
                     format!(
                         "FOUNDS A CITY (F) {MIN_CITY_DISTANCE} HEXES OR MORE FROM ANY OTHER. \
                          NEEDS POPULATION {SETTLER_MIN_POPULATION}, AND TAKES A CITIZEN WHEN DONE. {}",
-                        self.price_text(Build::Settler, false)
+                        self.price_text(Build::Settler, false, city)
                     ),
-                    self.civilian_unavailable(Build::Settler),
+                    self.civilian_unavailable(Build::Settler, city),
                 ),
                 Target::Grow => (
                     "GROW".into(),
                     GROW_SHORTCUT.to_string(),
-                    format!("ONE MORE CITIZEN. {}", self.price_text(Build::Grow, false)),
-                    self.shortfall_text(Build::Grow),
+                    format!("ONE MORE CITIZEN. {}", self.price_text(Build::Grow, false, city)),
+                    self.shortfall_text(Build::Grow, city),
                 ),
                 Target::Gather => (
                     "GATHER".into(),
@@ -544,8 +571,7 @@ impl GameState {
                         stock_icons(kind.price()),
                         turns_icon(kind.turns() as i32)
                     ),
-                    self.selected_city
-                        .and_then(|city| self.job_kind_unavailable(city, kind)),
+                    city.and_then(|city| self.job_kind_unavailable(city, kind)),
                 ),
                 Target::CancelPlacing => (
                     "CANCEL PLACING".into(),
@@ -554,7 +580,7 @@ impl GameState {
                     None,
                 ),
                 Target::Priority(good) => (
-                    match action_icons::badge(&button.label) {
+                    match action_icons::badge(label) {
                         Some(rank) => format!("{} · PRIORITY {rank}", good.name()),
                         None => good.name().into(),
                     },
@@ -720,7 +746,7 @@ impl GameState {
             };
         // With the plan sent, this is why a button that would change it is
         // off, whatever else might be.
-        let unavailable = if self.plan_frozen() && button.target.changes_plan() {
+        let unavailable = if self.plan_frozen() && target.changes_plan() {
             Some(PLAN_SENT.to_string())
         } else {
             unavailable

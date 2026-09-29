@@ -32,8 +32,9 @@ the host's firewall.
 
 Everyone plays their turn at once, as ever; the first turn waits until every seat is filled.
 Ending the turn sends your plan, and the End Turn button waits (the host's names who it's
-waiting for) until everyone has ended theirs; then the turn plays out on every machine. While
-you wait you can look around as you like: select units and cities, open city, Barracks and
+waiting for) until everyone has ended theirs; then the turn plays out on every machine. As in a
+game of one's own, ending the turn closes the city or Barracks view and lets go of the selected
+units. While you wait you can look around as you like: select units and cities, open city, Barracks and
 interior views, and read their panels and tooltips; everything that would change your orders
 is disabled, since they're sent. To change them, click the End Turn button while it waits (TAKE
 BACK): you plan on, and end the turn again. That works until the host has everyone's plan; a

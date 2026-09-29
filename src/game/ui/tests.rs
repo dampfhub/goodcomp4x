@@ -598,6 +598,39 @@ fn ending_the_turn_while_placing_a_building_stops_placing_it() {
 }
 
 #[test]
+fn end_turn_closes_the_barracks_view_in_both_presentations() {
+    // #114: End Turn cleared only the city view, so a Barracks tray (and a
+    // manager being moved, or a queue row being dragged) outlived the turn.
+    let mut screen = ImGuiScreen::new();
+    for imgui in [false, true] {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap();
+        game.queue_selected_city_worker();
+        game.cities[city].barracks = Some(Hex::new(-2, 0));
+        game.open_barracks(city);
+        game.moving_manager = Some((city, 0));
+        if imgui {
+            screen.click(&mut game, Target::EndTurn);
+        } else {
+            game.handle_click(
+                button_cursor(&game, Target::EndTurn),
+                SCREEN,
+                ClickMode::Normal,
+            );
+        }
+        assert!(game.is_resolving(), "imgui {imgui}: {}", game.notice);
+        assert_eq!(game.selected_barracks, None, "imgui {imgui}");
+        assert_eq!(game.moving_manager, None, "imgui {imgui}");
+        assert!(game.queue_drag.is_none(), "imgui {imgui}");
+        while game.is_resolving() {
+            game.update(10.0);
+        }
+        assert_eq!(game.selected_barracks, None, "imgui {imgui}");
+    }
+}
+
+#[test]
 fn a_building_card_shows_placing_then_placed_until_taken_off() {
     let mut game = city_view();
     game.units.clear();
@@ -2516,6 +2549,41 @@ impl ImGuiScreen {
         self.frame(game, Some(at), false);
     }
 
+    /// Captures `game`'s selection panel in a new outer box, as dragging it
+    /// there with Ctrl held does, and lets it dock.
+    fn capture_selection(&mut self, game: &mut GameState) {
+        self.layout.add_outer_box(self.size);
+        self.settle(game);
+        self.layout.capture_selection(game);
+        self.settle(game);
+        assert_eq!(self.layout.captured(), 1, "the panel stays in its box");
+    }
+
+    /// The tooltip of each button ImGui draws for `target`, as a line of
+    /// text, with the mouse on it.
+    fn tooltips(&mut self, game: &mut GameState, target: Target) -> Vec<String> {
+        self.settle(game);
+        let drawn: Vec<Vec2> = imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+            drawn
+                .iter()
+                .filter(|(drawn, ..)| *drawn == target)
+                .map(|&(_, min, max)| (Vec2::from(min) + Vec2::from(max)) / 2.0)
+                .collect()
+        });
+        drawn
+            .into_iter()
+            .map(|at| {
+                self.frame(game, Some(at), false);
+                imgui::SHOWN_TOOLTIPS.with_borrow_mut(Vec::clear);
+                self.frame(game, Some(at), false);
+                imgui::SHOWN_TOOLTIPS
+                    .with_borrow_mut(std::mem::take)
+                    .concat()
+                    .join(" ")
+            })
+            .collect()
+    }
+
     /// Whether ImGui keeps a mouse press at `at` from the map (`App` then
     /// doesn't pass it on).
     fn captures_mouse_at(&mut self, game: &mut GameState, at: Vec2) -> bool {
@@ -2523,6 +2591,69 @@ impl ImGuiScreen {
         self.frame(game, Some(at), false);
         self.context.io().want_capture_mouse
     }
+}
+
+/// The player's units, by index.
+fn player_units(game: &GameState) -> Vec<usize> {
+    (0..game.units.len())
+        .filter(|&i| game.units[i].team == PLAYER_TEAM)
+        .collect()
+}
+
+#[test]
+fn imgui_captured_unit_tooltips_describe_that_unit() {
+    let mut game = GameState::new();
+    let units = player_units(&game);
+    let (other, captured) = (units[0], units[1]);
+    game.units[captured].ability_cooldown = 2;
+    game.set_selection(vec![captured]);
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    let ability = Target::Unit(UnitAction::Ability);
+    // Nothing selected: the captured panel's buttons still say what they
+    // would do for its unit.
+    game.set_selection(Vec::new());
+    let tips = screen.tooltips(&mut game, ability);
+    assert_eq!(tips.len(), 1, "{tips:?}");
+    assert!(tips[0].contains("READY IN"), "{tips:?}");
+    // Another unit selected: each panel describes its own.
+    game.set_selection(vec![other]);
+    let tips = screen.tooltips(&mut game, ability);
+    assert_eq!(tips.len(), 2, "{tips:?}");
+    assert_eq!(
+        tips.iter().filter(|tip| tip.contains("READY IN")).count(),
+        1,
+        "{tips:?}"
+    );
+}
+
+#[test]
+fn imgui_captured_unit_button_selects_its_unit() {
+    let mut game = GameState::city_scenario();
+    let unit = player_units(&game)[0];
+    game.set_selection(vec![unit]);
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    game.select_city();
+    screen.click(&mut game, Target::Unit(UnitAction::Move));
+    assert_eq!(game.selected, Some(unit));
+    assert_eq!(game.selected_city, None, "the city view closes");
+    assert_eq!(game.ui_click_mode, Some(ClickMode::Move));
+}
+
+#[test]
+fn imgui_captured_panels_clear_when_a_key_switches_the_scenario() {
+    let mut game = GameState::city_scenario();
+    game.select_city();
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    // What F2 does: not a Debug panel button.
+    game.switch_scenario(Scenario::Cities);
+    screen.settle(&mut game);
+    assert_eq!(screen.layout.captured(), 0);
+    // The box stays, and takes the new game's panel.
+    game.select_city();
+    screen.capture_selection(&mut game);
 }
 
 /// A map tile near the open city where a click lands on the map, not a
@@ -3826,16 +3957,29 @@ fn classic_shortens_a_long_notice_rather_than_hiding_it() {
     )));
 }
 
+/// Where ImGui drew the End Turn button last frame.
+fn imgui_end_turn() -> ([f32; 2], [f32; 2]) {
+    imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+        drawn
+            .iter()
+            .find(|(target, ..)| *target == Target::EndTurn)
+            .map(|&(_, min, max)| (min, max))
+            .expect("ImGui shows End Turn")
+    })
+}
+
 #[test]
-fn imgui_shortens_a_long_notice_at_a_word_before_the_view_label() {
+fn imgui_shortens_a_long_notice_at_a_word_before_end_turn() {
     let mut game = city_view();
     game.notice = LONG_NOTICE.into();
-    let mut screen = ImGuiScreen::with_size(Vec2::new(1280.0, 720.0));
+    let mut screen = ImGuiScreen::with_size(Vec2::new(1024.0, 720.0));
     screen.settle(&mut game);
-    let (shown, end, view) = imgui::SHOWN_NOTICE.take();
+    let (shown, _, max, limit) = imgui::SHOWN_NOTICE.take();
     assert!(whole_words_of(&shown, LONG_NOTICE), "{shown}");
-    assert!(shown.ends_with('…'), "too long for 1280 px: {shown}");
-    assert!(end <= view, "clear of the VIEW label: {end} > {view}");
+    assert!(shown.ends_with('…'), "too long for 1024 px: {shown}");
+    assert!(max[0] <= limit, "within its room: {} > {limit}", max[0]);
+    let (end_turn, _) = imgui_end_turn();
+    assert!(limit < end_turn[0], "clear of End Turn");
     // One ImGui context at a time.
     drop(screen);
     let mut screen = ImGuiScreen::with_size(Vec2::new(2400.0, 900.0));
@@ -3844,5 +3988,78 @@ fn imgui_shortens_a_long_notice_at_a_word_before_the_view_label() {
         imgui::SHOWN_NOTICE.take().0,
         LONG_NOTICE,
         "with room, all of it"
+    );
+}
+
+/// The status bar's second line as ImGui drew it last frame.
+fn imgui_status_controls() -> Vec<imgui::DrawnControl> {
+    imgui::STATUS_CONTROLS.with_borrow(Clone::clone)
+}
+
+#[test]
+fn imgui_view_controls_share_the_menu_line_and_leave_the_notice_the_bar() {
+    // A typical long notice, 68 characters, fits in full at 1280 px.
+    const TYPICAL: &str = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE";
+    assert_eq!(TYPICAL.len(), 68);
+    let mut game = city_view();
+    game.notice = TYPICAL.into();
+    let mut screen = ImGuiScreen::with_size(Vec2::new(1280.0, 720.0));
+    screen.settle(&mut game);
+    let (shown, _, notice_max, _) = imgui::SHOWN_NOTICE.take();
+    assert_eq!(shown, TYPICAL, "all of it at 1280 px");
+    // Menu, then the view's label and controls, on the line below the
+    // notice, left to right without overlapping, short of End Turn.
+    let controls = imgui_status_controls();
+    let texts: Vec<&str> = controls.iter().map(|(text, ..)| text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "MENU",
+            "VIEW: CITY / BUILDING",
+            "EDIT VIEW",
+            "+ BOX",
+            "RESET"
+        ]
+    );
+    let (end_turn, _) = imgui_end_turn();
+    for pair in controls.windows(2) {
+        assert!(
+            pair[0].2[0] < pair[1].1[0],
+            "{} overlaps {}",
+            pair[0].0,
+            pair[1].0
+        );
+    }
+    for (text, min, max) in &controls {
+        assert!(min[1] >= notice_max[1], "{text} is below the notice");
+        assert!(max[0] < end_turn[0], "{text} is clear of End Turn");
+    }
+    // They still work: EDIT VIEW switches to editing the outer boxes (which
+    // have no RESET), and + BOX makes a box.
+    let middle = |text: &str| {
+        let (_, min, max) = imgui_status_controls()
+            .into_iter()
+            .find(|(t, ..)| t == text)
+            .unwrap_or_else(|| panic!("no {text}"));
+        (Vec2::from(min) + Vec2::from(max)) / 2.0
+    };
+    let click = |screen: &mut ImGuiScreen, game: &mut GameState, at: Vec2| {
+        screen.frame(game, Some(at), false);
+        screen.frame(game, Some(at), true);
+        screen.frame(game, Some(at), false);
+        screen.settle(game);
+    };
+    click(&mut screen, &mut game, middle("EDIT VIEW"));
+    let texts: Vec<String> = imgui_status_controls().into_iter().map(|c| c.0).collect();
+    assert_eq!(
+        texts,
+        ["MENU", "VIEW: CITY / BUILDING", "EDIT OUTER", "+ BOX"]
+    );
+    assert!(!screen.layout.to_text().contains("\nbox "), "no box yet");
+    click(&mut screen, &mut game, middle("+ BOX"));
+    assert!(
+        screen.layout.to_text().contains("\nbox 1 outer "),
+        "{}",
+        screen.layout.to_text()
     );
 }

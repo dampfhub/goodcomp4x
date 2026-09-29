@@ -104,8 +104,9 @@ nested Selection+Queue group as well as beside Selection alone.
 Beside the turn number, the status bar (and the classic top bar) shows the
 player's stockpile from `GameState::stockpile_line`, one shared line of
 colored spans, so both presentations read the same. The latest notice
-follows in the room left (classic: between Menu and End Turn; ImGui: up to
-the VIEW label); a notice too long for it is cut after its last whole word
+follows in the room left (classic: between Menu and End Turn; ImGui: the
+rest of the first line, up to End Turn, since Menu and the view controls
+share the second line); a notice too long for it is cut after its last whole word
 that fits, ending in "…" (`fit_text`, `text.rs`), and ImGui shows all of it
 when the notice is hovered. ImGui's fonts carry the ellipsis and em dash
 beyond Latin-1 (`IMGUI_GLYPHS`, `app.rs`).
@@ -116,8 +117,9 @@ ImGui (`rich_text`, `rich_width`, `rich_button` in `imgui.rs`, drawing the
 icon's triangles into the window draw list) both draw as the map's own
 icons. ImGui buttons with icons are drawn blank with the lines laid over
 them; a dimmed button dims its icons too.
-The status bar names the active **Default**, **City / Building**, or **Troop**
-view. **EDIT VIEW** means panel placement and **+ BOX** belong to that view;
+On its second line, after Menu, the ImGui status bar names the active
+**Default**, **City / Building**, or **Troop** view (VIEW: ...), followed by
+its layout controls. **EDIT VIEW** means panel placement and **+ BOX** belong to that view;
 switching to **EDIT OUTER** creates boxes shared by all views and makes a moved
 floating Debug panel use the same placement everywhere. A view box is hidden
 outside its view, while its docked panels and layout remain available when
@@ -135,10 +137,17 @@ Each box has an X to remove the whole container. A dropped city, barracks,
 unit, group, or queue panel becomes a persistent window in that box; its
 controls stay live after selection changes. Its actions carry the structure
 or unit's stable ID and focus that entity before invoking the shared `Target`
-action. Debug is already persistent and docks directly. Moving a captured
+action (`focus_pin`): through the map's own entry points (`set_selection`,
+`open_city`, `open_barracks`, leaving any other view first), and not at all
+when it is already the selection or the open view, so an armed button stays
+armed and a second click disarms it; nothing while a turn plays out. Its
+button tooltips describe its own unit or city (a tooltip `Subject`), not the
+selection's. Debug is already persistent and docks directly. Moving a captured
 panel out of every box returns it to contextual behavior. Deleting a box
-releases its contents, and loading or changing scenarios clears captured
-panels while keeping the boxes. Every new always-visible ImGui window can dock
+releases its contents, and any new game clears captured panels while keeping
+the boxes: a scenario switch or load, by key or Debug button, or a network
+game (`GameState::generation`, checked at each frame's start), since a new
+game reuses city and unit ids. Every new always-visible ImGui window can dock
 in a box without special layout offsets. A new contextual panel needs a stable
 identity and a renderer for captured content, as the city, barracks, unit,
 group, and queue examples show.

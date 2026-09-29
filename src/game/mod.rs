@@ -146,6 +146,11 @@ pub struct GameState {
     scenario: Scenario,
     /// A snapshot of the game saved for testing (F6), restored by F7.
     savestate: Option<Box<GameState>>,
+    /// Counts the games this one replaced: a scenario switch, a load (F7)
+    /// and a network game each take one more than the game before. What
+    /// keeps city or unit ids between frames (ImGui's captured panels)
+    /// checks it, since every new game reuses them.
+    generation: u32,
     /// Attack animations playing out, with how many seconds each has run.
     effects: Vec<(effects::Effect, f32)>,
     /// The player's options (`settings.rs`). Kept across scenario switches
@@ -171,7 +176,7 @@ pub struct GameState {
     side_memory: [std::sync::Arc<fog::Memory>; Team::ALL.len()],
     turn: u32,
     pub camera: Camera,
-    /// Damage rolls, and the F4 world's map seed. Seeded from entropy; tests
+    /// The F4 world's map seed (combat has no rolls). Seeded from entropy; tests
     /// seed it (`seed_rng`) so a game replays exactly. Kept across scenario
     /// switches (`scenario.rs`).
     rng: GameRng,
@@ -295,6 +300,7 @@ impl GameState {
             map_seed: None,
             scenario: Scenario::Combat,
             savestate: None,
+            generation: 0,
             effects: Vec::new(),
             settings: settings::Settings::default(),
             settings_open: false,
@@ -327,7 +333,7 @@ impl GameState {
             humans: vec![PLAYER_TEAM],
             next_unit_id: 8,
         };
-        game.select_next_or_end_turn(None);
+        game.select_next_needing_attention(None);
         game
     }
 
@@ -498,7 +504,7 @@ impl GameState {
         game.camera = Camera::new(home.to_world(), game.camera.half_height);
         // What needs seeing to first, as every turn starts: the city's
         // production, or else the settler.
-        game.select_next_or_end_turn(None);
+        game.select_next_needing_attention(None);
         game
     }
 
@@ -815,19 +821,15 @@ mod tests {
 
     #[test]
     fn hills_reduce_damage_taken() {
-        use rand::SeedableRng;
-        use rand::rngs::StdRng;
-
         let hill = Hex::new(1, 0);
         let plain = Hex::new(-1, 0);
         let grid = HexGrid::new(GRID_RADIUS, [(hill, Tile::HILLS)]);
 
-        // Same seed on both sides so both attacks roll the same variance.
         let damage_taken_at = |pos: Hex| {
             let siege = Unit::new(0, Hex::new(0, 0), Team::Blue, UnitType::Siege);
             let defender = Unit::new(1, pos, Team::Red, UnitType::Melee);
             let multiplier = grid.tile(pos).defense_multiplier();
-            combat::roll_damage(&siege, &defender, multiplier, &mut StdRng::seed_from_u64(7))
+            combat::damage(&siege, &defender, multiplier)
         };
 
         assert!(damage_taken_at(hill) < damage_taken_at(plain));

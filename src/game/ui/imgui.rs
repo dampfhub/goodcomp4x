@@ -10,6 +10,7 @@ use super::action_icons::{self, ICON_BUTTON_SIZE};
 use super::builder::{ButtonSpec, CatalogEntry, Row, flat_rows, icon_row, visible_button_hint};
 use super::network_menu::NetField;
 use super::text::{end_turn_label, fit_text};
+use super::tooltips::Subject;
 use super::*;
 use crate::game::map_icons;
 use crate::game::settings::{Control, Setting};
@@ -89,6 +90,18 @@ impl PinnedPanel {
     }
 }
 
+/// Captured group panels' members, by unit id, keyed by the group's pin id.
+type PinnedGroups = std::collections::HashMap<u32, Vec<u32>>;
+
+/// What a captured panel is for this frame, by index (`pin_focus`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PinFocus {
+    /// A unit, or a group's members still alive.
+    Units(Vec<usize>),
+    City(usize),
+    Barracks(usize),
+}
+
 #[derive(Clone, Copy)]
 struct OuterBox {
     id: u32,
@@ -108,7 +121,7 @@ impl OuterBox {
 }
 
 const PANEL_MARGIN: f32 = 14.0;
-/// Room kept between the status bar's notice and the VIEW label after it.
+/// Room kept between the status bar's notice and End Turn after it.
 const NOTICE_GAP: f32 = 16.0;
 /// Where the tooltip holding a shortened notice in full wraps.
 const NOTICE_TOOLTIP_WIDTH: f32 = 480.0;
@@ -326,7 +339,7 @@ pub struct ImGuiLayoutState {
     pinned_geometry: std::collections::HashMap<PinnedPanel, WindowGeometry>,
     pinned_box: std::collections::HashMap<PinnedPanel, u32>,
     pinned_outside_frames: std::collections::HashMap<PinnedPanel, u8>,
-    pinned_groups: std::collections::HashMap<u32, Vec<u32>>,
+    pinned_groups: PinnedGroups,
     pending_pin_dock: Vec<(PinnedPanel, u32)>,
     outer_boxes: Vec<OuterBox>,
     next_outer_box_id: u32,
@@ -339,6 +352,8 @@ pub struct ImGuiLayoutState {
     debug_attached: bool,
     debug_reposition: bool,
     debug_outer_relation: Option<(PinnedPanel, QueueDockRelation)>,
+    /// The game's `generation` at the last frame (`game_changed`).
+    game_generation: Option<u32>,
 }
 
 impl ImGuiLayoutState {
@@ -523,6 +538,16 @@ impl ImGuiLayoutState {
         }
     }
 
+    /// Whether the game is another than at the last frame (`generation`:
+    /// a scenario switched, by key or button, a load, or a network game),
+    /// noting it for the next.
+    fn game_changed(&mut self, generation: u32) -> bool {
+        self.game_generation
+            .replace(generation)
+            .is_some_and(|last| last != generation)
+    }
+
+    /// Releases every captured panel, keeping the boxes.
     fn clear_captured_panels(&mut self) {
         for pin in &self.pinned {
             let window = native_window(&pin.title());
@@ -1846,19 +1871,58 @@ thread_local! {
     pub(super) static DRAWN_BUTTONS: std::cell::RefCell<Vec<DrawnButton>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
-
 #[cfg(test)]
 thread_local! {
-    /// Tests only: the status bar's notice as ImGui last drew it, where it
-    /// ended, and where the VIEW label after it starts.
-    pub(super) static SHOWN_NOTICE: std::cell::RefCell<(String, f32, f32)> =
-        const { std::cell::RefCell::new((String::new(), 0.0, 0.0)) };
+    /// Tests only: the text of each panel button tooltip ImGui showed this
+    /// thread, a line per string.
+    pub(super) static SHOWN_TOOLTIPS: std::cell::RefCell<Vec<Vec<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Tests only: the status bar's notice as ImGui last drew it, its
+    /// rectangle, and how far right it may reach (short of End Turn).
+    pub(super) static SHOWN_NOTICE: std::cell::RefCell<ShownNotice> =
+        const { std::cell::RefCell::new((String::new(), [0.0; 2], [0.0; 2], 0.0)) };
+    /// Tests only: the status bar's second line as ImGui last drew it:
+    /// each control's text and rectangle, from Menu on.
+    pub(super) static STATUS_CONTROLS: std::cell::RefCell<Vec<DrawnControl>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Tests only: a notice drawn, its rectangle and its limit.
+#[cfg(test)]
+pub(super) type ShownNotice = (String, [f32; 2], [f32; 2], f32);
+/// Tests only: a status bar control's text and rectangle.
+#[cfg(test)]
+pub(super) type DrawnControl = (String, [f32; 2], [f32; 2]);
+
+/// Tests only: notes the tooltip about to show.
+fn note_shown_tooltip(_lines: &[(u32, Line)]) {
+    #[cfg(test)]
+    SHOWN_TOOLTIPS.with_borrow_mut(|shown| {
+        shown.push(
+            _lines
+                .iter()
+                .map(|(_, line)| line.iter().map(|(text, _)| text.as_str()).collect())
+                .collect(),
+        )
+    });
 }
 
 /// Tests only: notes the notice just drawn.
-fn note_shown_notice(_notice: &str, _end: f32, _view: f32) {
+fn note_shown_notice(_notice: &str, _min: [f32; 2], _max: [f32; 2], _limit: f32) {
     #[cfg(test)]
-    SHOWN_NOTICE.set((_notice.to_string(), _end, _view));
+    SHOWN_NOTICE.set((_notice.to_string(), _min, _max, _limit));
+}
+
+/// Tests only: notes the status bar control just drawn; Menu, the first,
+/// starts the list again.
+fn note_status_control(_ui: &Ui, _text: &str) {
+    #[cfg(test)]
+    STATUS_CONTROLS.with_borrow_mut(|drawn| {
+        if _text == "MENU" {
+            drawn.clear();
+        }
+        drawn.push((_text.to_string(), _ui.item_rect_min(), _ui.item_rect_max()));
+    });
 }
 
 /// Tests only: notes where the button for `target` just went.
@@ -2128,36 +2192,111 @@ impl GameState {
             || pin.kind == PinnedKind::Group
     }
 
-    fn activate_pinned(&mut self, pin: PinnedPanel, target: Target) {
-        if let Some(unit) = self.pinned_unit_index(pin) {
-            self.selected = Some(unit);
-            self.selected_city = None;
-            self.selected_barracks = None;
-            self.group.clear();
-            self.activate_target(target);
-            return;
-        }
-        let Some(city) = self.pinned_city_index(pin) else {
-            return;
-        };
+    /// What captured panel `pin` is for this frame, found by its stable ids
+    /// (a group's members by `groups`, the layout's `pinned_groups`), if
+    /// anything of it is left.
+    fn pin_focus(&self, pin: PinnedPanel, groups: &PinnedGroups) -> Option<PinFocus> {
         match pin.kind {
-            PinnedKind::City | PinnedKind::CityQueue => self.open_city(city),
-            PinnedKind::Barracks | PinnedKind::BarracksQueue => self.open_barracks(city),
-            PinnedKind::Unit | PinnedKind::Group => unreachable!(),
+            PinnedKind::Unit => self
+                .pinned_unit_index(pin)
+                .map(|i| PinFocus::Units(vec![i])),
+            PinnedKind::Group => {
+                let members: Vec<_> = groups
+                    .get(&pin.city_id)?
+                    .iter()
+                    .filter_map(|id| {
+                        self.units
+                            .iter()
+                            .position(|u| u.id == *id && u.team == self.local_team)
+                    })
+                    .collect();
+                (!members.is_empty()).then_some(PinFocus::Units(members))
+            }
+            PinnedKind::City | PinnedKind::CityQueue => {
+                self.pinned_city_index(pin).map(PinFocus::City)
+            }
+            PinnedKind::Barracks | PinnedKind::BarracksQueue => {
+                self.pinned_city_index(pin).map(PinFocus::Barracks)
+            }
         }
-        self.activate_target(target);
     }
 
-    fn reorder_pinned(&mut self, pin: PinnedPanel, kind: QueueKind, source: usize, target: usize) {
-        let Some(city) = self.pinned_city_index(pin) else {
-            return;
-        };
-        match pin.kind {
-            PinnedKind::City | PinnedKind::CityQueue => self.open_city(city),
-            PinnedKind::Barracks | PinnedKind::BarracksQueue => self.open_barracks(city),
-            PinnedKind::Unit | PinnedKind::Group => return,
+    /// What a captured panel's tooltips describe its buttons for.
+    fn pin_subject(focus: &PinFocus) -> Subject {
+        match focus {
+            PinFocus::Units(units) => Subject {
+                unit: units.first().copied(),
+                city: None,
+            },
+            PinFocus::City(city) | PinFocus::Barracks(city) => Subject {
+                unit: None,
+                city: Some(*city),
+            },
         }
-        self.reorder_queue(kind, source, target);
+    }
+
+    /// Makes `focus` the selection or the open view, through the same entry
+    /// points as the map (`set_selection`, `open_city`, `open_barracks`),
+    /// unless it already is, so an armed button stays armed (and toggles
+    /// off) and the camera and notice stay put. Refuses, as selecting does,
+    /// while a turn plays out.
+    fn focus_pin(&mut self, focus: &PinFocus) -> bool {
+        if self.is_playing_out() {
+            return false;
+        }
+        let view_open = self.selected_city.is_some()
+            || self.selected_barracks.is_some()
+            || self.interior_view.is_some();
+        match focus {
+            PinFocus::Units(units) => {
+                let mut selected = self.selection();
+                let mut wanted = units.clone();
+                selected.sort_unstable();
+                wanted.sort_unstable();
+                if view_open || selected != wanted {
+                    self.set_selection(units.clone());
+                }
+            }
+            PinFocus::City(city) => {
+                if self.selected_city != Some(*city) || self.interior_view.is_some() {
+                    self.leave_city_view();
+                    self.open_city(*city);
+                }
+            }
+            PinFocus::Barracks(city) => {
+                if self.selected_barracks != Some(*city) || self.interior_view.is_some() {
+                    self.leave_city_view();
+                    self.open_barracks(*city);
+                }
+            }
+        }
+        true
+    }
+
+    /// A button of captured panel `pin`: focuses what the panel is for,
+    /// then does what the button does.
+    fn activate_pinned(&mut self, pin: PinnedPanel, groups: &PinnedGroups, target: Target) {
+        if let Some(focus) = self.pin_focus(pin, groups)
+            && self.focus_pin(&focus)
+        {
+            self.activate_target(target);
+        }
+    }
+
+    fn reorder_pinned(
+        &mut self,
+        pin: PinnedPanel,
+        groups: &PinnedGroups,
+        kind: QueueKind,
+        source: usize,
+        target: usize,
+    ) {
+        if let Some(focus @ (PinFocus::City(_) | PinFocus::Barracks(_))) =
+            self.pin_focus(pin, groups)
+            && self.focus_pin(&focus)
+        {
+            self.reorder_queue(kind, source, target);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2172,12 +2311,13 @@ impl GameState {
         arranging: bool,
         actions: &mut Vec<Action>,
     ) {
+        let Some(focus) = self.pin_focus(pin, &layout.pinned_groups) else {
+            return;
+        };
+        let subject = Self::pin_subject(&focus);
         let mut panel = PanelBuilder::default();
-        match pin.kind {
-            PinnedKind::City => {
-                let Some(city) = self.pinned_city_index(pin) else {
-                    return;
-                };
+        match (pin.kind, focus) {
+            (PinnedKind::City, PinFocus::City(city)) => {
                 self.city_tray(city, &mut panel);
                 let mut queue = PanelBuilder::default();
                 if !layout.pinned.contains(&PinnedPanel {
@@ -2191,10 +2331,7 @@ impl GameState {
                     panel.rows.extend(queue.rows);
                 }
             }
-            PinnedKind::Barracks => {
-                let Some(city) = self.pinned_city_index(pin) else {
-                    return;
-                };
+            (PinnedKind::Barracks, PinFocus::Barracks(city)) => {
                 self.barracks_tray(city, &mut panel);
                 let mut queue = PanelBuilder::default();
                 if !layout.pinned.contains(&PinnedPanel {
@@ -2208,42 +2345,20 @@ impl GameState {
                     panel.rows.extend(queue.rows);
                 }
             }
-            PinnedKind::Unit => {
-                let Some(unit) = self.pinned_unit_index(pin) else {
-                    return;
-                };
-                self.unit_info(unit, &mut panel);
-                panel.action_toolbar(self.unit_buttons(unit));
+            (PinnedKind::Unit, PinFocus::Units(units)) => {
+                self.unit_info(units[0], &mut panel);
+                panel.action_toolbar(self.unit_buttons(units[0]));
             }
-            PinnedKind::Group => {
-                let Some(ids) = layout.pinned_groups.get(&pin.city_id) else {
-                    return;
-                };
-                let members: Vec<_> = ids
-                    .iter()
-                    .filter_map(|id| {
-                        self.units
-                            .iter()
-                            .position(|u| u.id == *id && u.team == self.local_team)
-                    })
-                    .collect();
-                if members.is_empty() {
-                    return;
-                }
+            (PinnedKind::Group, PinFocus::Units(members)) => {
                 self.group_tray_for(&members, &mut panel);
             }
-            PinnedKind::CityQueue => {
-                let Some(city) = self.pinned_city_index(pin) else {
-                    return;
-                };
+            (PinnedKind::CityQueue, PinFocus::City(city)) => {
                 self.city_queue_panel(city, usize::MAX, &mut panel);
             }
-            PinnedKind::BarracksQueue => {
-                let Some(city) = self.pinned_city_index(pin) else {
-                    return;
-                };
+            (PinnedKind::BarracksQueue, PinFocus::Barracks(city)) => {
                 self.barracks_queue_panel(city, usize::MAX, &mut panel);
             }
+            _ => unreachable!("pin_focus follows the pin's kind"),
         }
         let title = pin.title();
         let width = 370.0_f32.min(viewport.x - 2.0 * PANEL_MARGIN);
@@ -2316,7 +2431,7 @@ impl GameState {
                 );
         }
         window.build(|| {
-            self.render_imgui_panel(ui, &panel, fonts, Some(pin), actions);
+            self.render_imgui_panel(ui, &panel, fonts, Some(pin), subject, actions);
             geometry.pos = Vec2::from_array(ui.window_pos());
             geometry.size = Vec2::from_array(ui.window_size());
             geometry.docked = unsafe { ::imgui::sys::igIsWindowDocked() };
@@ -2409,7 +2524,7 @@ impl GameState {
             if reset_scroll || ui.is_window_appearing() {
                 ui.set_scroll_y(0.0);
             }
-            self.render_imgui_panel(ui, panel, fonts, None, actions);
+            self.render_imgui_panel(ui, panel, fonts, None, self.selection_subject(), actions);
             layout.record(slot, ui, arranging);
         });
         // A collapsed window skips the build closure; native state is still
@@ -2437,6 +2552,7 @@ impl GameState {
         reorder: Option<QueueKind>,
         fonts: &[FontId; 3],
         scope: Option<PinnedPanel>,
+        subject: Subject,
         actions: &mut Vec<Action>,
     ) {
         if buttons.is_empty() {
@@ -2529,39 +2645,38 @@ impl GameState {
                     target.pop();
                 }
             }
-            self.button_tooltip(ui, spec);
+            self.button_tooltip(ui, spec, subject);
         }
     }
 
-    /// The tooltip of the panel button just drawn, while it's hovered (dimmed
-    /// or not).
-    fn button_tooltip(&self, ui: &Ui, spec: &ButtonSpec) {
+    /// The tooltip of the panel button just drawn, for the unit or city of
+    /// its panel (`subject`), while it's hovered (dimmed or not).
+    fn button_tooltip(&self, ui: &Ui, spec: &ButtonSpec, subject: Subject) {
         if !ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
             return;
         }
-        let tooltip = Button {
-            target: spec.target,
-            label: spec.label.clone(),
-            hint: spec.hint.clone(),
-            state: spec.state,
-            armed: spec.armed,
-            faded: false,
-            min: Vec2::ZERO,
-            max: Vec2::ZERO,
-        };
+        let lines = self.subject_tooltip_lines(spec.target, &spec.label, subject);
+        if lines.is_empty() {
+            return;
+        }
+        note_shown_tooltip(&lines);
         ui.tooltip(|| {
-            for (_, line) in self.tooltip_lines(&tooltip) {
-                text_line(ui, &line);
+            for (_, line) in &lines {
+                text_line(ui, line);
             }
         });
     }
 
+    /// Draws `panel`'s rows. `scope` is the captured panel they're in, if
+    /// any, and `subject` the unit or city its buttons act on.
+    #[allow(clippy::too_many_arguments)]
     fn render_imgui_panel(
         &self,
         ui: &Ui,
         panel: &PanelBuilder,
         fonts: &[FontId; 3],
         scope: Option<PinnedPanel>,
+        subject: Subject,
         actions: &mut Vec<Action>,
     ) {
         // With the plan sent, what would change it shows disabled, as the
@@ -2639,9 +2754,9 @@ impl GameState {
                         .overlay_text("")
                         .build(ui);
                 }
-                Row::Buttons(buttons, compact) => {
-                    self.render_buttons(ui, panel, buttons, *compact, None, fonts, scope, actions)
-                }
+                Row::Buttons(buttons, compact) => self.render_buttons(
+                    ui, panel, buttons, *compact, None, fonts, scope, subject, actions,
+                ),
                 Row::Reorder(kind, buttons) => self.render_buttons(
                     ui,
                     panel,
@@ -2650,6 +2765,7 @@ impl GameState {
                     Some(*kind),
                     fonts,
                     scope,
+                    subject,
                     actions,
                 ),
                 Row::TitleWithButton(line, spec) => {
@@ -2678,7 +2794,7 @@ impl GameState {
                         actions.push(Action::Button(scope, spec.target));
                     }
                     note_drawn_button(ui, spec.target);
-                    self.button_tooltip(ui, spec);
+                    self.button_tooltip(ui, spec, subject);
                 }
                 Row::BuildingCatalog(city, buttons, ..) => {
                     let height = buttons.len().clamp(1, 5) as f32 * 34.0 + 18.0;
@@ -2724,25 +2840,7 @@ impl GameState {
                                         icon,
                                     );
                                 }
-                                if ui.is_item_hovered_with_flags(
-                                    ItemHoveredFlags::ALLOW_WHEN_DISABLED,
-                                ) {
-                                    let tooltip = Button {
-                                        target: spec.target,
-                                        label: spec.label.clone(),
-                                        hint: spec.hint.clone(),
-                                        state: spec.state,
-                                        armed: spec.armed,
-                                        faded: false,
-                                        min: Vec2::ZERO,
-                                        max: Vec2::ZERO,
-                                    };
-                                    ui.tooltip(|| {
-                                        for (_, line) in self.tooltip_lines(&tooltip) {
-                                            text_line(ui, &line);
-                                        }
-                                    });
-                                }
+                                self.button_tooltip(ui, spec, subject);
                             }
                         });
                 }
@@ -2834,6 +2932,10 @@ impl GameState {
         let viewport = Vec2::from_array(ui.io().display_size);
         let arranging = ui.io().key_ctrl;
         layout.begin_frame(ui, arranging);
+        // Pins are by city and unit id, which every new game reuses.
+        if layout.game_changed(self.generation) {
+            layout.clear_captured_panels();
+        }
         draw_game_dockspace(ui, viewport);
         // Dear ImGui applies a dock drop in NewFrame, before these windows are
         // submitted. Observe that new dock state now; otherwise our cached
@@ -2885,15 +2987,16 @@ impl GameState {
                     rich_text(ui, text, *color);
                 }
                 ui.same_line_with_spacing(0.0, 24.0);
-                // The notice runs up to the VIEW label on the same line,
+                // The notice has the rest of the line, up to End Turn,
                 // shortened to what fits; hovering shows all of it.
-                let view_x = (viewport.x - end_width - 365.0).max(8.0);
+                let end_x = (viewport.x - end_width).max(8.0);
+                let limit = end_x - NOTICE_GAP;
                 let notice = self.shown_notice();
-                let room = view_x - NOTICE_GAP - ui.cursor_pos()[0];
+                let room = limit - ui.cursor_pos()[0];
                 let shown = fit_text(notice, room, |t| rich_width(ui, t));
                 if !shown.is_empty() {
                     rich_text(ui, &shown, NOTICE_TEXT);
-                    note_shown_notice(&shown, ui.item_rect_max()[0], view_x);
+                    note_shown_notice(&shown, ui.item_rect_min(), ui.item_rect_max(), limit);
                     if shown != notice && ui.is_item_hovered() {
                         ui.tooltip(|| {
                             let _wrap = ui.push_text_wrap_pos_with_pos(NOTICE_TOOLTIP_WIDTH);
@@ -2901,13 +3004,18 @@ impl GameState {
                         });
                     }
                 }
+                // The second line: Menu, then the view's layout controls,
+                // so the notice above has the width of the bar.
                 ui.set_cursor_pos([15.0, 27.0]);
                 if ui.small_button("MENU") {
                     actions.push(Action::Button(None, Target::OpenSettings));
                 }
-                ui.set_cursor_pos([view_x, 7.0]);
-                ui.text(format!("VIEW: {}", layout.active_view.label()));
-                ui.set_cursor_pos([view_x, 27.0]);
+                note_status_control(ui, "MENU");
+                ui.same_line_with_spacing(0.0, 24.0);
+                let view = format!("VIEW: {}", layout.active_view.label());
+                ui.text(&view);
+                note_status_control(ui, &view);
+                ui.same_line();
                 let layer = if layout.editing_outer {
                     "EDIT OUTER"
                 } else {
@@ -2916,22 +3024,25 @@ impl GameState {
                 if ui.small_button(layer) {
                     actions.push(Action::ToggleLayoutLayer);
                 }
+                note_status_control(ui, layer);
                 ui.same_line();
                 if ui.small_button("+ BOX") {
                     actions.push(Action::CreateBox);
                 }
+                note_status_control(ui, "+ BOX");
                 if layout.active_view != ViewScope::Default && !layout.editing_outer {
                     ui.same_line();
                     if ui.small_button("RESET") {
                         layout.request_reset_active_view();
                     }
+                    note_status_control(ui, "RESET");
                     if ui.is_item_hovered() {
                         ui.tooltip_text(
                             "Ctrl+Shift+R: Restore this view's Debug placement from Default",
                         );
                     }
                 }
-                ui.set_cursor_pos([(viewport.x - end_width).max(8.0), 7.0]);
+                ui.set_cursor_pos([end_x, 7.0]);
                 let label = if self.is_resolving() {
                     self.resolving_label()
                 } else {
@@ -3232,34 +3343,14 @@ impl GameState {
         layout.last_queue_outer_box = queue_box;
         for action in actions {
             match action {
-                Action::Button(Some(pin), target) if pin.kind == PinnedKind::Group => {
-                    if let Some(ids) = layout.pinned_groups.get(&pin.city_id) {
-                        let members: Vec<_> = ids
-                            .iter()
-                            .filter_map(|id| {
-                                self.units
-                                    .iter()
-                                    .position(|u| u.id == *id && u.team == self.local_team)
-                            })
-                            .collect();
-                        if !members.is_empty() {
-                            self.group = members;
-                            self.selected = None;
-                            self.selected_city = None;
-                            self.selected_barracks = None;
-                            self.activate_target(target);
-                        }
-                    }
+                Action::Button(Some(pin), target) => {
+                    self.activate_pinned(pin, &layout.pinned_groups, target)
                 }
-                Action::Button(Some(pin), target) => self.activate_pinned(pin, target),
-                Action::Button(None, target) => {
-                    if matches!(target, Target::Scenario(_) | Target::LoadState) {
-                        layout.clear_captured_panels();
-                    }
-                    self.activate_target(target)
-                }
+                // A new scenario or a load clears the captured panels at the
+                // next frame's start (`ImGuiLayoutState::game_changed`).
+                Action::Button(None, target) => self.activate_target(target),
                 Action::Reorder(Some(pin), kind, source, target) => {
-                    self.reorder_pinned(pin, kind, source, target)
+                    self.reorder_pinned(pin, &layout.pinned_groups, kind, source, target)
                 }
                 Action::Reorder(None, kind, source, target) => {
                     self.reorder_queue(kind, source, target)
@@ -3270,6 +3361,36 @@ impl GameState {
                 Action::RemoveOuterBox(id) => layout.remove_outer_box(id),
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl ImGuiLayoutState {
+    /// Tests only: a new outer box, drawn once (`ImGuiScreen::frame`) before
+    /// anything is put in it.
+    pub(super) fn add_outer_box(&mut self, viewport: Vec2) {
+        let editing = std::mem::replace(&mut self.editing_outer, true);
+        self.create_box(viewport);
+        self.editing_outer = editing;
+    }
+
+    /// Tests only: captures `game`'s selection panel in the newest outer
+    /// box, as dragging it there with Ctrl held does.
+    pub(super) fn capture_selection(&mut self, game: &GameState) {
+        let box_id = self.outer_boxes.last().expect("an outer box").id;
+        let pin = game.selected_pin().expect("something selected");
+        if pin.kind == PinnedKind::Group {
+            self.pinned_groups.insert(
+                pin.city_id,
+                game.group.iter().map(|&i| game.units[i].id).collect(),
+            );
+        }
+        self.capture_panel(pin, box_id, "Selection");
+    }
+
+    /// Tests only: how many panels are captured.
+    pub(super) fn captured(&self) -> usize {
+        self.pinned.len()
     }
 }
 
@@ -3444,7 +3565,11 @@ mod tests {
             city_id: game.units[index].id,
         };
         game.selected = None;
-        game.activate_pinned(pin, Target::Unit(UnitAction::Hold));
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Unit(UnitAction::Hold),
+        );
         assert!(game.units[index].holding);
     }
 
@@ -3455,9 +3580,164 @@ mod tests {
         let pin = game.selected_pin().unwrap();
         game.leave_city_view();
         assert!(game.selected_city.is_none());
-        game.activate_pinned(pin, Target::Build(BuildUnit::Melee));
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Build(BuildUnit::Melee),
+        );
         assert_eq!(game.selected_city, game.pinned_city_index(pin));
         assert!(!game.cities[game.selected_city.unwrap()].queue.is_empty());
+    }
+
+    /// The player's units, by index.
+    fn player_units(game: &GameState) -> Vec<usize> {
+        (0..game.units.len())
+            .filter(|&i| game.units[i].team == PLAYER_TEAM)
+            .collect()
+    }
+
+    fn unit_pin(game: &GameState, unit: usize) -> PinnedPanel {
+        PinnedPanel {
+            kind: PinnedKind::Unit,
+            city_id: game.units[unit].id,
+        }
+    }
+
+    #[test]
+    fn a_captured_units_tooltips_describe_that_unit() {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        let (selected, pinned) = (units[0], units[1]);
+        game.units[pinned].ability_cooldown = 2;
+        let pin = unit_pin(&game, pinned);
+        let focus = game.pin_focus(pin, &PinnedGroups::default()).unwrap();
+        let tooltip = |game: &GameState, subject| {
+            game.subject_tooltip_lines(Target::Unit(UnitAction::Ability), "", subject)
+                .into_iter()
+                .flat_map(|(_, line)| line.into_iter().map(|(text, _)| text))
+                .collect::<String>()
+        };
+        // Nothing selected: the panel's unit still has a tooltip.
+        assert!(tooltip(&game, GameState::pin_subject(&focus)).contains("READY IN"));
+        // Another unit selected: still the panel's unit's, not the selection's.
+        game.set_selection(vec![selected]);
+        assert!(tooltip(&game, GameState::pin_subject(&focus)).contains("READY IN"));
+        assert!(!tooltip(&game, game.selection_subject()).contains("READY IN"));
+    }
+
+    #[test]
+    fn a_captured_unit_is_selected_as_the_map_selects_it() {
+        let mut game = GameState::city_scenario();
+        let unit = player_units(&game)[0];
+        let pin = unit_pin(&game, unit);
+        game.select_city();
+        game.placing_job = Some(JobKind::Road);
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Unit(UnitAction::Move),
+        );
+        assert_eq!(game.selected, Some(unit));
+        assert!(game.group.is_empty());
+        assert_eq!(game.selected_city, None, "the city view closes");
+        assert_eq!(game.placing_job, None, "placing belongs to the city");
+        assert_eq!(game.ui_click_mode, Some(ClickMode::Move));
+    }
+
+    #[test]
+    fn a_captured_units_armed_button_toggles_off_while_it_is_selected() {
+        let mut game = GameState::new();
+        let unit = player_units(&game)[0];
+        let pin = unit_pin(&game, unit);
+        let groups = PinnedGroups::default();
+        game.activate_pinned(pin, &groups, Target::Unit(UnitAction::Move));
+        assert_eq!(game.ui_click_mode, Some(ClickMode::Move));
+        game.activate_pinned(pin, &groups, Target::Unit(UnitAction::Move));
+        assert_eq!(game.ui_click_mode, None, "the second click disarms it");
+    }
+
+    #[test]
+    fn a_captured_group_down_to_one_member_selects_it_as_one_unit() {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        let ids: Vec<u32> = units[..2].iter().map(|&i| game.units[i].id).collect();
+        let pin = PinnedPanel {
+            kind: PinnedKind::Group,
+            city_id: 7,
+        };
+        let mut groups = PinnedGroups::default();
+        groups.insert(7, ids.clone());
+        game.activate_pinned(pin, &groups, Target::Unit(UnitAction::Move));
+        assert_eq!(game.group, units[..2], "both members");
+        assert_eq!(game.selected, None);
+        // One member dies: the other is selected alone, as `set_selection`
+        // keeps it.
+        game.units.remove(units[0]);
+        let left = game.units.iter().position(|u| u.id == ids[1]).unwrap();
+        game.activate_pinned(pin, &groups, Target::Unit(UnitAction::Move));
+        assert_eq!(game.selected, Some(left));
+        assert!(game.group.is_empty());
+    }
+
+    #[test]
+    fn a_captured_city_already_open_is_not_opened_again() {
+        let mut game = GameState::city_scenario();
+        game.fund(crate::game::Team::Blue);
+        game.select_city();
+        let pin = game.selected_pin().unwrap();
+        game.camera.center += Vec2::new(3.0, 0.0);
+        let camera = game.camera.center;
+        game.notice = "SOMETHING TO KEEP".into();
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Build(BuildUnit::Melee),
+        );
+        assert_eq!(game.camera.center, camera, "no glide back to the city");
+        assert!(!game.notice.starts_with("CHOOSE WHAT"), "{}", game.notice);
+        // From a unit's selection it opens the city, as the map does.
+        let unit = player_units(&game)[0];
+        game.set_selection(vec![unit]);
+        game.activate_pinned(pin, &PinnedGroups::default(), Target::ToggleYields);
+        assert_eq!(game.selected_city, game.pinned_city_index(pin));
+        assert_eq!(game.selected, None);
+    }
+
+    #[test]
+    fn captured_panels_do_nothing_while_a_turn_plays_out() {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        game.set_selection(vec![units[0]]);
+        game.resolve_turn();
+        assert!(game.is_playing_out());
+        let pin = unit_pin(&game, units[1]);
+        game.activate_pinned(
+            pin,
+            &PinnedGroups::default(),
+            Target::Unit(UnitAction::Hold),
+        );
+        assert!(!game.units[units[1]].holding);
+    }
+
+    #[test]
+    fn captured_panels_clear_whenever_the_game_changes() {
+        let mut game = GameState::city_scenario();
+        let mut layout = ImGuiLayoutState::default();
+        assert!(!layout.game_changed(game.generation), "the first frame");
+        assert!(!layout.game_changed(game.generation), "the same game");
+        // F1-F4 and F12 as the debug panel's buttons do: `switch_scenario`.
+        game.switch_scenario(Scenario::Cities);
+        assert!(layout.game_changed(game.generation));
+        assert!(!layout.game_changed(game.generation));
+        // F6 changes nothing; F7 loads another game, even the same one.
+        game.save_state();
+        assert!(!layout.game_changed(game.generation));
+        game.load_state();
+        assert!(layout.game_changed(game.generation));
+        // A network game (`App` keeps the menus of the one it replaces).
+        let mut joined = GameState::city_scenario();
+        joined.keep_menus_of(&game);
+        assert!(layout.game_changed(joined.generation));
     }
 
     #[test]

@@ -257,7 +257,6 @@ impl GameState {
                     unit.pos.distance(city.pos) == 1
                         && !unit.is_naval()
                         && !self.settlers.contains(&unit.id)
-                        && !unit.is_animal()
                 })
                 .collect();
             let ids: HashSet<_> = adjacent.iter().map(|unit| unit.id).collect();
@@ -495,9 +494,9 @@ impl GameState {
                 .find(|(_, other)| other.pos == target && other.team != fighter.team)
             {
                 let defense = defender.stats().defense;
-                damage[index] += combat::damage_against(attack, defense);
+                damage[index] += combat::roll_damage_against(attack, defense, &mut self.rng);
             } else if target == CENTER && fighter.team != owner && interior.core_hp > 0.0 {
-                core_damage += combat::damage_against(attack, CORE_DEFENSE);
+                core_damage += combat::roll_damage_against(attack, CORE_DEFENSE, &mut self.rng);
             }
         }
         if interior.core_hp > 0.0
@@ -507,7 +506,8 @@ impl GameState {
                 .filter(|(_, f)| f.team != owner && f.pos.distance(CENTER) <= CORE_ATTACK_RANGE)
                 .min_by_key(|(_, f)| f.source_id)
         {
-            damage[index] += combat::damage_against(CORE_ATTACK, fighter.stats().defense);
+            damage[index] +=
+                combat::roll_damage_against(CORE_ATTACK, fighter.stats().defense, &mut self.rng);
         }
         interior.core_hp = (interior.core_hp - core_damage).max(0.0);
         let breached = core_damage > 0.0 && interior.core_hp <= 0.0;
@@ -625,8 +625,8 @@ mod tests {
     use super::*;
     use crate::game::unit::Unit;
 
-    /// The siege position with a Red cavalry (id 900, holding and
-    /// guarding) on Red's city center as Blue's fighter takes the breached post.
+    /// The siege position with a Red cavalry (id 900, holding and with a
+    /// queue) on Red's city center as Blue's fighter takes the breached post.
     fn capture_under_a_red_unit(prepare: impl FnOnce(&mut GameState)) -> GameState {
         let mut game = GameState::siege_scenario();
         let center = game.cities[1].pos;
