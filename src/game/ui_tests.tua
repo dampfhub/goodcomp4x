@@ -55,12 +55,27 @@ fn hovering_a_button_shows_its_tooltip() {
 @test
 fn hovering_an_enemy_describes_it() {
     sandbox(fn() can {Log, Rand, Assert} {
-        let game = GameState.new();
+        let mut game = GameState.new();
+        game.fog_of_war = false;
         let enemy = find(&game, Team.Red, UnitType.Melee);
         let empty = hex_cursor(&game, Hex.new(0, 1));
         let plain = game.build_ui(screen(), Option.Some(empty)).len();
         let hovered = game.build_ui(screen(), Option.Some(hex_cursor(&game, game.units[enemy].pos)));
         assert(hovered.len() > plain);
+    });
+}
+
+@test
+fn hovering_an_enemy_out_of_sight_shows_nothing_in_the_classic_panels() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let game = GameState.new();
+        let enemy = find(&game, Team.Red, UnitType.Melee);
+        // The combat map starts with Red unseen.
+        assert(!game.fog().sees(game.units[enemy].pos));
+        let empty = hex_cursor(&game, Hex.new(0, 1));
+        let plain = game.build_ui(screen(), Option.Some(empty)).len();
+        let hovered = game.build_ui(screen(), Option.Some(hex_cursor(&game, game.units[enemy].pos)));
+        assert(hovered.len() == plain);
     });
 }
 
