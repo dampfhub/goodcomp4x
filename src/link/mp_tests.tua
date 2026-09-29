@@ -24,6 +24,13 @@ use game.city.Priorities;
 use game.city.Good;
 use game.city.Stock;
 use game.hex.Hex;
+use game.city.interior.in_bounds;
+use game.hex.HexGrid;
+use game.terrain.Tile;
+use game.unit.IdSet;
+use game.unit.Unit;
+use game.unit.UnitType;
+use std.collections.Map;
 use game.workers.JobKind;
 use game.multiplayer.HOST_SEAT;
 use game.orders.ClickMode;
@@ -638,4 +645,162 @@ fn cluster_hexes(game: &GameState, city: i32) -> Vec[Hex] {
 /// The plan, the game and the waiting are as they were.
 fn unchanged(game: &GameState, team: Team, plan: &TeamPlan, checksum: u64) -> bool {
     plans_equal(&game.team_plan(team), plan) && game.checksum() == checksum && game.waiting_for_peers()
+}
+
+/// The AI plays every seat, as a player could: every plan must pass the checks (no plan of a
+/// player is dropped), and every machine must play the same game. Players look inside their cities
+/// too, which must change nothing.
+@test
+fn plans_the_ai_makes_for_a_player_pass_the_checks() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = lobby(2, 4, 4242);
+        for turn in 0..10 {
+            // The AI plans each machine's own side; a worker already out on the map keeps the job
+            // it had (planning may only recall it, `check_plan`).
+            ai_plans(&mut t.host);
+            for i in 0..t.games.len() { ai_plans(&mut t.games[i]); }
+            play_turn(&mut t);
+            assert(t.host.turn == turn + 1);
+            assert(t.games[0].checksum() == t.host.checksum());
+            assert(t.games[1].checksum() == t.host.checksum());
+            assert(t.is_alive(0) && t.is_alive(1));
+            assert(t.host.lockstep.desync.is_none());
+        }
+    });
+}
+
+/// \`game\`'s side planned by the AI, after its player has looked inside every city.
+fn ai_plans(game: &mut GameState) can {Log, Rand} {
+    let team = game.local_team;
+    for c in 0..game.cities.len() {
+        if game.cities[c].team == team {
+            game.open_city_interior(c);
+            game.close_city_interior();
+        }
+    }
+    game.plan_ai_turn(team);
+    let started = match &game.lockstep.turn_start { &Option.Some(s) => s.snapshot(), &Option.None => return };
+    for w in 0..game.field_workers.len() {
+        if game.field_workers[w].team != team { continue; }
+        for b in 0..started.field_workers.len() {
+            if started.field_workers[b].id == game.field_workers[w].id {
+                game.field_workers[w].job = started.field_workers[b].job;
+                game.field_workers[w].work_left = started.field_workers[b].work_left;
+                game.field_workers[w].base = started.field_workers[b].base;
+                game.field_workers[w].recalled = started.field_workers[b].recalled;
+            }
+        }
+    }
+}
+
+/// Two lanes across open ground make progress an invariant of this fixture: a queue of moves
+/// through the fog is planned again each turn, on both machines, toward where it was sent.
+@test
+fn queues_planned_again_each_turn_keep_both_machines_in_step() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        // An open map with one Melee troop a side, on both machines, from the turn's start.
+        for k in 0..2 {
+            let game = if k == 0 { &mut t.host } else { &mut t.games[0] };
+            let no_tiles: [(Hex, Tile); 0] = [];
+            game.grid = HexGrid.new(12, &no_tiles);
+            game.units.clear();
+            game.cities.clear();
+            game.dens.clear();
+            game.ruins.clear();
+            game.settlers = IdSet.new();
+            game.units.push(Unit.new(0, Hex.new(0 - 6, 0 - 3), HOST_SEAT, UnitType.Melee));
+            game.units.push(Unit.new(1, Hex.new(0 - 6, 3), GUEST_SEAT, UnitType.Melee));
+            game.memory = Map.new();
+            for s in 0..game.side_memory.len() { game.side_memory[s] = Map.new(); }
+            game.begin_lockstep_turn();
+        }
+        let mut goals: Vec[(u32, Hex, Hex)] = Vec.new();
+        for k in 0..2 {
+            let game = if k == 0 { &mut t.host } else { &mut t.games[0] };
+            let mut unit = 0;
+            for i in 0..game.units.len() { if game.units[i].team == game.local_team { unit = i; } }
+            let from = game.units[unit].pos;
+            let target = Hex.new(0, from.r);
+            assert(from.distance(target) == 6);
+            assert(!game.is_explored(target));
+            game.selected = Option.Some(unit);
+            assert(game.queue_move(target));
+            assert(game.units[unit].waypoints.len() == 1);
+            goals.push((game.units[unit].id, from, target));
+        }
+        for _ in 0..4 {
+            t.games[0].submit_plan();
+            t.exchange();
+            t.host.submit_plan();
+            t.exchange();
+            play_out(&mut t.host);
+            play_out(&mut t.games[0]);
+            t.exchange();
+            assert(t.host.checksum() == t.games[0].checksum());
+            assert(t.host.lockstep.desync.is_none());
+            assert(t.games[0].lockstep.dropped.is_none());
+        }
+        // Both queues went on toward where they were sent, on both machines.
+        for g in 0..goals.len() {
+            let (id, from, target) = goals[g];
+            for k in 0..2 {
+                let game = if k == 0 { &t.host } else { &t.games[0] };
+                let mut nearer = false;
+                for i in 0..game.units.len() { if game.units[i].id == id && game.units[i].pos.distance(target) < from.distance(target) { nearer = true; } }
+                assert(nearer);
+            }
+        }
+    });
+}
+
+/// A Red troop beside a city stands in its interior from the turn's start, on every machine;
+/// Red looks inside and orders it to an open tile, and the plan that carries the order is sound:
+/// every machine plays the same turn.
+@test
+fn looking_inside_a_city_and_ordering_a_troop_there_is_a_sound_plan() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = lobby(2, 4, 4242);
+        let mut city = 0 - 1;
+        let mut fighter: u32 = 0;
+        for c in 0..t.games[0].cities.len() {
+            for i in 0..t.games[0].units.len() {
+                let u = &t.games[0].units[i];
+                if city < 0 && u.team == Team.Red && u.pos.distance(t.games[0].cities[c].pos) == 1 && !u.is_naval() && !t.games[0].settlers.contains(u.id) {
+                    city = c;
+                    fighter = u.id;
+                }
+            }
+        }
+        assert(city >= 0);
+        for k in 0..3 {
+            let game = if k == 0 { &t.host } else if k == 1 { &t.games[0] } else { &t.games[1] };
+            assert(game.cities[city].interior.index_of(fighter).is_some());
+        }
+        // Looking inside changes nothing.
+        let before = t.host.checksum();
+        t.host.open_city_interior(city);
+        t.host.close_city_interior();
+        assert(t.host.checksum() == before);
+        // Red looks inside and orders its troop to an open tile.
+        t.games[0].open_city_interior(city);
+        let at = t.games[0].cities[city].interior.fighters[t.games[0].cities[city].interior.index_of(fighter).unwrap_or(0)].pos;
+        t.games[0].interior_click(at);
+        let mut open = at;
+        for q in -2..3 { for r in -2..3 {
+            let h = Hex.new(q, r);
+            if open == at && in_bounds(h) && h != Hex.new(0, 0) && t.games[0].cities[city].interior.fighter_at(h).is_none() && at.distance(h) == 1 { open = h; }
+        } }
+        assert(open != at);
+        t.games[0].interior_click(open);
+        t.games[0].close_city_interior();
+        let plan = t.games[0].team_plan(Team.Red);
+        let mut ordered = false;
+        for i in 0..plan.fighters.len() { if plan.fighters[i].planned_move == Option.Some(open) { ordered = true; } }
+        assert(ordered);
+        // Every machine plays the same turn.
+        play_turn(&mut t);
+        assert(t.games[0].checksum() == t.host.checksum() && t.games[1].checksum() == t.host.checksum());
+        assert(t.host.turn == 1);
+    });
 }
