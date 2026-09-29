@@ -1609,7 +1609,7 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::city::Good;
+    use crate::game::city::{City, Good};
 
     /// The seat the first guest gets.
     const GUEST_SEAT: Team = Team::Red;
@@ -2488,27 +2488,33 @@ mod tests {
         }
     }
 
-    /// Two hexes of `game` where the rules allow a city, nearer each other
-    /// than they allow two.
-    fn two_sites_near_each_other(game: &GameState) -> (Hex, Hex) {
-        let legal: Vec<Hex> = game
-            .grid
-            .all_hexes()
-            .filter(|&h| game.founding_issue(h).is_none() && !game.is_occupied(h))
-            .collect();
-        let site = legal[0];
-        let near = *legal
-            .iter()
-            .find(|h| (1..MIN_CITY_DISTANCE).contains(&h.distance(site)))
-            .expect("two sites near each other");
-        (site, near)
+    /// An open map with existing cities far from the two adjacent founding sites.
+    fn founding_pair() -> (GameState, GameState) {
+        let mut host = GameState::new();
+        host.grid = crate::game::hex::HexGrid::new(12, [] as [(Hex, crate::game::Tile); 0]);
+        host.units.clear();
+        host.cities = vec![
+            City::new(0, HOST_SEAT, Hex::new(-10, 0)),
+            City::new(1, GUEST_SEAT, Hex::new(10, 0)),
+        ];
+        host.side_memory = Default::default();
+        let mut guest = host.clone();
+        let humans = vec![HOST_SEAT, GUEST_SEAT];
+        host.seat_players(Role::Host, HOST_SEAT, humans.clone(), 0);
+        guest.seat_players(Role::Guest, GUEST_SEAT, humans.clone(), 0);
+        host.lockstep.as_mut().unwrap().seated = humans;
+        for site in [Hex::new(0, 0), Hex::new(1, 0)] {
+            assert!(host.founding_issue(site).is_none());
+            assert!(!host.is_occupied(site));
+        }
+        (host, guest)
     }
 
     #[test]
     fn a_plan_founds_cities_only_by_the_founding_rules() {
-        let (mut host, guest) = pair();
+        let (mut host, guest) = founding_pair();
         let start = host.lockstep.as_ref().unwrap().turn_start.clone().unwrap();
-        let (site, near) = two_sites_near_each_other(&start);
+        let (site, near) = (Hex::new(0, 0), Hex::new(1, 0));
         let own = start.cities[city_of(&start, GUEST_SEAT)].pos;
         let too_close = start
             .grid
@@ -2545,9 +2551,8 @@ mod tests {
 
     #[test]
     fn a_city_founded_too_near_one_another_plan_founded_first_is_not() {
-        let (mut host, guest) = pair();
-        let start = host.lockstep.as_ref().unwrap().turn_start.clone().unwrap();
-        let (site, near) = two_sites_near_each_other(&start);
+        let (mut host, guest) = founding_pair();
+        let (site, near) = (Hex::new(0, 0), Hex::new(1, 0));
         // Both sides found this turn, each where the rules allowed as the
         // turn began; Blue's plan applies first.
         settler_at_start(&mut host, 900, HOST_SEAT, site);
