@@ -14,7 +14,8 @@
 //!    a small island of at most `MAX_ISLAND` hexes.
 //! 2. Mountain ranges (`raise_ranges`) where plates of crust push together:
 //!    long chains one hex wide along most of the borders between plates,
-//!    only about 4-5% of the land, broken by passes, off the shore.
+//!    only about 5% of the land, broken by passes (one where ranges meet),
+//!    off the shore.
 //! 3. Hills (`roll_hills`): foothills along the ranges, and rolling uplands.
 //!    Hills are a modifier, so whatever ground the climate gives them stays
 //!    hilly.
@@ -326,10 +327,11 @@ const PASS_CHANCE: f32 = 0.1;
 /// in three borders rise, each by its own amount, and the hexes along a
 /// border (one hex wide, on one side of it) are the ridge: the rising
 /// borders first, the others only where those fall short. Only the highest
-/// 4-6% of the land (varying per map) becomes mountains, so ridges come in long,
-/// thin chains that break off where they're lowest; a hex here and there
-/// stays open as a pass, and ranges keep a hex back from the shore. A lone
-/// peak or two may rise elsewhere.
+/// 4.8-6.8% of the land (varying per map) becomes mountains, so ridges come
+/// in long, thin chains that break off where they're lowest; a hex here and
+/// there stays open as a pass, as does the hex where three ranges meet, and
+/// ranges keep a hex back from the shore. A lone peak or two may rise
+/// elsewhere.
 fn raise_ranges(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) {
     let (warp_x, warp_y, wear) = (Noise(rng.next()), Noise(rng.next()), Noise(rng.next()));
     let extent = draft.extent;
@@ -393,11 +395,21 @@ fn raise_ranges(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) {
         b.1.total_cmp(&a.1)
             .then((a.0.q, a.0.r).cmp(&(b.0.q, b.0.r)))
     });
-    let share = 0.04 + 0.02 * rng.unit();
+    let share = 0.048 + 0.02 * rng.unit();
     let wanted = (land.len() as f32 * share) as usize;
     for &(h, _) in ridge.iter().take(wanted) {
         let pass = rng.unit() < PASS_CHANCE;
         draft.set(h, if pass { Tile::HILLS } else { Tile::MOUNTAINS });
+    }
+    // Where three ranges meet, the hex they meet on opens as a pass, so
+    // ranges don't knot together into a lump.
+    let knots: Vec<Hex> = land
+        .iter()
+        .copied()
+        .filter(|&h| draft.is_mountain(h) && range_arms(draft, h) >= 3)
+        .collect();
+    for h in knots {
+        draft.set(h, Tile::HILLS);
     }
     // What the passes and the lowest ridges leave of a range as a lone hex
     // wears down to a hill.
@@ -414,6 +426,17 @@ fn raise_ranges(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) {
             draft.set(h, Tile::MOUNTAINS);
         }
     }
+}
+
+/// How many separate runs of mountains `hex`'s neighbors form, going round
+/// it: 2 in the middle of a range, 3 or more where ranges meet.
+fn range_arms(draft: &Draft, hex: Hex) -> usize {
+    let around = hex
+        .neighbors()
+        .map(|n| draft.on_map(n) && draft.is_mountain(n));
+    (0..6)
+        .filter(|&i| around[i] && !around[(i + 5) % 6])
+        .count()
 }
 
 /// The chance that open land beside a mountain is a foothill.

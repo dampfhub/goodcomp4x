@@ -913,7 +913,9 @@ impl GameState {
 
         let mut attack = None;
         let dest = if safe.is_empty() {
-            // Out of reach of as many as it can, as far as it can get.
+            // Out of reach of as many as it can, as far as it can get, and
+            // toward home: two scouts fleeing each other from one hex would
+            // otherwise pick the same way, and meet again.
             let nearest_threat = |hex: Hex| {
                 threats
                     .iter()
@@ -921,12 +923,13 @@ impl GameState {
                     .min()
                     .unwrap_or(i32::MAX)
             };
+            let to_home = |hex: Hex| homes.iter().map(|&c| c.distance(hex)).min().unwrap_or(0);
             let dest = reachable
                 .iter()
                 .copied()
                 .min_by_key(|&hex| {
                     let far = Reverse(nearest_threat(hex));
-                    (threatened(hex), far, hex != pos, hex.q, hex.r)
+                    (threatened(hex), far, to_home(hex), hex != pos, hex.q, hex.r)
                 })
                 .unwrap_or(pos);
             // Cornered, with an enemy still beside it: it fights back.
@@ -977,10 +980,11 @@ impl GameState {
 
     /// How much a scout standing on `hex` would see that `known`'s side
     /// wants seen (`unscouted`), and no other scout of its sees this turn
-    /// (`watched`). By range alone, mountains aside.
+    /// (`watched`): what's in range and not behind a mountain.
     fn scouting_value(&self, hex: Hex, known: &Knowledge, watched: &HashSet<Hex>) -> u32 {
         within(hex, self.sight_at(UnitType::Scout, hex))
             .filter(|h| self.grid.contains(*h) && !watched.contains(h))
+            .filter(|&h| self.in_line_of_sight(hex, h))
             .map(|h| self.unscouted(h, known))
             .sum()
     }
@@ -1521,6 +1525,18 @@ mod tests {
         game.units
             .push(Unit::new(2, blue, Team::Blue, UnitType::Melee));
         assert_eq!(replan(&mut game), (None, Some(blue)));
+    }
+
+    #[test]
+    fn a_scout_flees_an_enemy_scout_on_its_hex_toward_home() {
+        // Two scouts met on one hex. Each flees as far as it can, toward its
+        // own city, so they part rather than run the same way together.
+        let mut game = red_scout();
+        let home = Hex::new(6, 0);
+        game.cities = vec![City::new(0, Team::Red, home)];
+        game.units
+            .push(Unit::new(2, Hex::new(0, 0), Team::Blue, UnitType::Scout));
+        assert_eq!(replan(&mut game), (Some(Hex::new(3, 0)), None));
     }
 
     #[test]

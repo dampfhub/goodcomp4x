@@ -491,7 +491,7 @@ fn check_mountains(seed: u32, map: &GeneratedMap, totals: &mut Totals) {
         .count();
     let share = mountains as f32 / land as f32;
     assert!(
-        (0.03..0.07).contains(&share),
+        (0.035..0.07).contains(&share),
         "seed {seed}: mountains are {share} of the land"
     );
     for cluster in components(&all, |h| grid.terrain(h) == Terrain::Mountains) {
@@ -618,7 +618,7 @@ fn golden_maps_stay_the_same() {
     let hashes = [golden_hash(&generate(7, 5)), golden_hash(&generate(42, 7))];
     assert_eq!(
         hashes,
-        [16546110019411421274, 3624537242313206384],
+        [2842294083612938709, 10229998027441873641],
         "the maps changed: if on purpose, update the hashes and bump PROTOCOL_VERSION"
     );
 }

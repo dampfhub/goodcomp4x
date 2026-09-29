@@ -99,10 +99,11 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
   with its own RNG, so a seed and side count always rebuild the same map, on every machine (the
   seed shows in the debug panel; `--seed N` on the command line picks one). A Pangea: 42-52%
   sea, one continent plus islets of at most 12 hexes, built in stages:
-  - **Mountains** are about 4-5% of the land, in ranges: long chains one hex wide where plates of
+  - **Mountains** are about 5% of the land, in ranges: long chains one hex wide where plates of
     crust meet (the map is split among a dozen or more warped plates, and about two in three of
     their borders rise). A range stays a hex back from the shore, breaks off where it runs low, and
-    has an open hex (a pass, on hills) about one in ten; a lone peak or two may stand apart.
+    has an open hex (a pass, on hills) about one in ten; where three ranges meet, the hex they meet
+    on is a pass too. A lone peak or two may stand apart.
     Mountains never wall land off: if a range cuts off a stretch of open land, the mountains on
     the shortest way out become hills.
   - **Hills** are 12-17% of the land: foothills beside about half of the mountain hexes' open
@@ -1012,13 +1013,15 @@ An AI scout gathers what its side knows and stays alive, rather than fight:
 - Of the safe hexes it can reach, it takes the nearest with an enemy worker alone on it
   (captured: a worker can't hit back) or ruins (which it holds while they stay safe).
 - Otherwise it takes the one that brings the most into its sight that its side has never seen
-  (counting double) or hasn't seen for 10 turns. Hills count, as they see farther. On a tie it
-  takes the one farthest from its side's cities, and a side's scouts don't count what another of
-  them already heads to see, so they fan out. With nothing like that within reach, it heads for
+  (counting double) or hasn't seen for 10 turns. Hills count, as they see farther, and hexes
+  behind a mountain don't, as it wouldn't see them. On a tie it takes the one farthest from its
+  side's cities, and a side's scouts don't count what another of them already heads to see, so
+  they fan out. With nothing like that within reach, it heads for
   the nearest such ground.
 - With no safe hex it's cornered: it gets out of reach of as many enemies as it can, as far as
-  it can. Only if an enemy is still beside it does it attack, the nearest in range. It even
-  slips out of a contested hex.
+  it can, and of those hexes the nearest its side's cities (so two scouts that meet on a hex part
+  ways). Only if an enemy is still beside it does it attack, the nearest in range. It even slips
+  out of a contested hex.
 
 What a scout sees goes into its side's memory, which every AI decision plans on.
 AI cities auto-assign citizens
