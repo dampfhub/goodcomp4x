@@ -519,16 +519,15 @@ impl GameState {
                 };
                 mesh::regular_polygon(at, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
                 if let Some(fighter) = selected {
-                    let from = fighter.planned_move.unwrap_or(fighter.pos);
                     let occupied = city.interior.fighters.iter().find(|f| f.pos == hex);
                     let can_move = occupied.is_none()
                         && (hex != center_hex || city.interior.core_hp <= 0.0)
-                        && from.distance(hex) <= fighter.unit_type.stats().move_range.max(1);
+                        && fighter.move_reaches(hex);
                     let can_attack = (occupied.is_some_and(|other| other.team != fighter.team)
                         || (hex == center_hex
                             && city.team != fighter.team
                             && city.interior.core_hp > 0.0))
-                        && from.distance(hex) <= fighter.unit_type.stats().attack_range;
+                        && fighter.attack_reaches(hex);
                     if can_move || can_attack {
                         mesh::polygon_outline(
                             at,
@@ -642,12 +641,7 @@ impl GameState {
                 fighter.team.color(),
                 &mut out,
             );
-            push_health_bar(
-                at,
-                fighter.hp / fighter.unit_type.stats().max_hp,
-                1.0,
-                &mut out,
-            );
+            push_health_bar(at, fighter.health_fraction(), 1.0, &mut out);
         }
         out
     }
@@ -2730,7 +2724,70 @@ mod tests {
     use super::*;
     use crate::game::PLAYER_TEAM;
     use crate::game::fog::tests::{behind_the_mountain, glance_at, remembered_route_hex};
+    use crate::game::terrain::Resource;
     use crate::game::unit::{Unit, UnitType};
+
+    #[test]
+    fn upgraded_interior_fighter_highlight_click_and_health_agree() {
+        let mut game = GameState::siege_scenario();
+        let city = 1;
+        let source = 0;
+        game.interior_selected = Some(source);
+        let fighter = game.cities[city]
+            .interior
+            .fighters
+            .iter()
+            .find(|f| f.source_id == source)
+            .unwrap();
+        assert_eq!(fighter.unit_type, UnitType::Melee);
+        let origin = fighter.pos;
+        let target = (-2..=2)
+            .flat_map(|q| (-2..=2).map(move |r| Hex::new(q, r)))
+            .find(|&hex| {
+                hex.distance(Hex::new(0, 0)) <= 2
+                    && hex != Hex::new(0, 0)
+                    && origin.distance(hex) == 2
+                    && game.cities[city]
+                        .interior
+                        .fighters
+                        .iter()
+                        .all(|other| other.pos != hex)
+            })
+            .expect("an open tile two steps away");
+        let highlighted = |vertices: &[Vertex]| {
+            let center = target.to_world();
+            vertices.iter().any(|vertex| {
+                vertex.color == MOVE_RANGE_COLOR
+                    && Vec2::new(vertex.pos[0], vertex.pos[1]).distance(center) < HEX_SIZE * 0.85
+            })
+        };
+        assert!(!highlighted(&game.build_interior_vertices(city)));
+        let fighter = game.cities[city]
+            .interior
+            .fighters
+            .iter_mut()
+            .find(|f| f.source_id == source)
+            .unwrap();
+        fighter.training_upgrade = Some(Resource::Horses);
+        assert!(fighter.move_reaches(target));
+        assert!(highlighted(&game.build_interior_vertices(city)));
+        game.interior_click(target);
+        let fighter = game.cities[city]
+            .interior
+            .fighters
+            .iter_mut()
+            .find(|f| f.source_id == source)
+            .unwrap();
+        assert_eq!(fighter.planned_move, Some(target));
+
+        fighter.training_upgrade = Some(Resource::Iron);
+        let mut upgraded = UnitType::Melee.stats();
+        crate::game::unit::apply_training_upgrade(&mut upgraded, Some(Resource::Iron));
+        fighter.hp = upgraded.max_hp;
+        assert_eq!(fighter.health_fraction(), 1.0);
+        fighter.hp = UnitType::Melee.stats().max_hp;
+        assert!(fighter.health_fraction() < 1.0);
+    }
 
     #[test]
     fn order_badges_render_multidigit_ranks_without_panicking() {
