@@ -142,6 +142,41 @@ impl ViewScope {
     }
 }
 
+/// What the Selection panel is showing, by kind: each remembers its own
+/// Debug docking beside Selection, and belongs to one layout view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SelectionKind {
+    /// A city's interior map, open.
+    Interior,
+    City,
+    Barracks,
+    Unit,
+    Group,
+}
+
+impl SelectionKind {
+    /// The name that starts its selection context ("city-3"), under which
+    /// saved layouts keep its Selection geometry (`selection <name>` lines).
+    fn name(self) -> &'static str {
+        match self {
+            Self::Interior => "interior",
+            Self::City => "city",
+            Self::Barracks => "barracks",
+            Self::Unit => "unit",
+            Self::Group => "group",
+        }
+    }
+
+    /// The layout view it's shown in, whose reset (Ctrl+Shift+R) clears
+    /// its Debug docking.
+    fn view(self) -> ViewScope {
+        match self {
+            Self::Interior | Self::City | Self::Barracks => ViewScope::City,
+            Self::Unit | Self::Group => ViewScope::Troop,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BoxScope {
     Outer,
@@ -549,8 +584,8 @@ pub struct ImGuiLayoutState {
     last_selection_outer_box: Option<u32>,
     last_queue_outer_box: Option<u32>,
     inspector_snapshot: Option<PanelBuilder>,
-    debug_context: Option<String>,
-    debug_context_relations: std::collections::HashMap<String, QueueDockRelation>,
+    debug_context: Option<SelectionKind>,
+    debug_context_relations: std::collections::HashMap<SelectionKind, QueueDockRelation>,
     debug_restore_attempts: u8,
     debug_attached: bool,
     debug_reposition: bool,
@@ -660,14 +695,10 @@ impl ImGuiLayoutState {
         self.debug_view_overrides.remove(&view);
         self.debug_view_geometry.remove(&view);
         self.debug_view_boxes.remove(&view);
-        let contexts: &[&str] = match view {
-            ViewScope::Default => &[],
-            ViewScope::City => &["city", "barracks"],
-            ViewScope::Troop => &["unit", "group"],
-        };
-        for context in contexts {
-            self.debug_context_relations.remove(*context);
-        }
+        // Every kind of selection shown in the view: in City / Building,
+        // an open interior as well as a city and a Barracks.
+        self.debug_context_relations
+            .retain(|kind, _| kind.view() != view);
     }
 
     fn apply_pending_view_reset(&mut self) {
@@ -1092,22 +1123,22 @@ impl ImGuiLayoutState {
         self.debug_reposition = true;
     }
 
-    fn maintain_debug_scope(&mut self, context: Option<&str>) {
+    fn maintain_debug_scope(&mut self, context: Option<SelectionKind>) {
         if self.outer_box_for_window("Debug").is_some() {
             self.debug_context_relations.clear();
-            self.debug_context = context.map(str::to_owned);
+            self.debug_context = context;
             self.debug_attached = false;
             self.debug_restore_attempts = 0;
             return;
         }
-        if self.debug_context.as_deref() != context {
+        if self.debug_context != context {
             if self.debug_attached {
                 self.release_debug_from_context();
             }
             self.debug_attached = false;
-            self.debug_context = context.map(str::to_owned);
+            self.debug_context = context;
             self.debug_restore_attempts = context
-                .filter(|kind| self.debug_context_relations.contains_key(*kind))
+                .filter(|kind| self.debug_context_relations.contains_key(kind))
                 .map_or(0, |_| 2);
             return;
         }
@@ -1118,17 +1149,21 @@ impl ImGuiLayoutState {
             return;
         };
         if let Some(relation) = dock_relation("Selection", "Debug") {
-            self.debug_context_relations
-                .insert(context.into(), relation);
+            self.debug_context_relations.insert(context, relation);
             self.debug_restore_attempts = 0;
             self.debug_attached = true;
             return;
         }
         if self.debug_restore_attempts > 0 {
+            // A view reset (Ctrl+Shift+R) may have forgotten the relation
+            // since the restoring began: then there's nothing to restore.
+            let Some(relation) = self.debug_context_relations.get(&context).copied() else {
+                self.debug_restore_attempts = 0;
+                return;
+            };
             let selection = native_window("Selection");
             let debug = native_window("Debug");
             if !selection.is_null() && !debug.is_null() {
-                let relation = self.debug_context_relations[context];
                 unsafe {
                     let mut target_node = (*selection).DockNode;
                     if relation.anchor_group {
@@ -1151,7 +1186,7 @@ impl ImGuiLayoutState {
             }
         } else if self.debug_attached {
             // An explicit undock while this menu is open replaces its remembered layout.
-            self.debug_context_relations.remove(context);
+            self.debug_context_relations.remove(&context);
             self.debug_attached = false;
         }
     }
@@ -2950,17 +2985,35 @@ fn draw_outer_boxes(
 }
 
 impl GameState {
-    fn layout_view(&self) -> ViewScope {
-        if self.selected_city.is_some()
-            || self.selected_barracks.is_some()
-            || self.interior_view.is_some()
-        {
-            ViewScope::City
-        } else if self.selected.is_some() || !self.group.is_empty() {
-            ViewScope::Troop
+    /// What the Selection panel shows, if anything: its kind, and its
+    /// context, the kind's name and which one ("city-3"; a group has no
+    /// number).
+    fn selection_kind(&self) -> Option<(SelectionKind, String)> {
+        let (kind, which) = if let Some(city) = self.interior_view {
+            (SelectionKind::Interior, Some(city))
+        } else if let Some(city) = self.selected_city {
+            (SelectionKind::City, Some(city))
+        } else if let Some(city) = self.selected_barracks {
+            (SelectionKind::Barracks, Some(city))
+        } else if let Some(unit) = self.selected {
+            (SelectionKind::Unit, Some(self.units[unit].id as usize))
+        } else if !self.group.is_empty() {
+            (SelectionKind::Group, None)
         } else {
-            ViewScope::Default
-        }
+            return None;
+        };
+        let context = match which {
+            Some(which) => format!("{}-{which}", kind.name()),
+            None => kind.name().into(),
+        };
+        Some((kind, context))
+    }
+
+    /// The layout view: the one the selection's kind belongs to, or
+    /// Default.
+    fn layout_view(&self) -> ViewScope {
+        self.selection_kind()
+            .map_or(ViewScope::Default, |(kind, _)| kind.view())
     }
 
     fn selected_pin(&self) -> Option<PinnedPanel> {
@@ -4001,21 +4054,11 @@ impl GameState {
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         }
-        let selection_context = if selection_is_pinned {
-            String::new()
-        } else if let Some(city) = self.interior_view {
-            format!("interior-{city}")
-        } else if let Some(city) = self.selected_city {
-            format!("city-{city}")
-        } else if let Some(city) = self.selected_barracks {
-            format!("barracks-{city}")
-        } else if let Some(unit) = self.selected {
-            format!("unit-{}", self.units[unit].id)
-        } else if !self.group.is_empty() {
-            "group".into()
-        } else {
-            String::new()
-        };
+        // A pinned structure's own window has its controls, not Selection.
+        let selection = self.selection_kind().filter(|_| !selection_is_pinned);
+        let selection_context = selection
+            .as_ref()
+            .map_or_else(String::new, |(_, context)| context.clone());
         let reset_selection_scroll = layout.selection_changed(&selection_context);
         let mut queue = PanelBuilder::default();
         if selection_is_pinned || queue_is_pinned {
@@ -4224,12 +4267,8 @@ impl GameState {
             );
         }
         layout.maintain_queue_dock(pair_visible);
-        let contextual = selection_context
-            .split('-')
-            .next()
-            .filter(|kind| !kind.is_empty());
         if !layout.editing_outer {
-            layout.maintain_debug_scope(contextual);
+            layout.maintain_debug_scope(selection.map(|(kind, _)| kind));
         }
         layout.track_captured_panels();
         let selection_box = layout.outer_box_for_window("Selection");
@@ -4424,21 +4463,123 @@ mod tests {
             default.floating_pos
         );
         layout.debug_view_boxes.insert(ViewScope::City, 42);
-        layout.debug_context_relations.insert(
-            "city".into(),
-            QueueDockRelation {
-                direction: ::imgui::sys::ImGuiDir_Right,
-                fraction: 0.5,
-                anchor_group: false,
-            },
-        );
+        layout
+            .debug_context_relations
+            .insert(SelectionKind::City, beside());
         layout.clear_view_debug_override(ViewScope::City);
         assert_eq!(
             layout.debug_geometry_for_view(ViewScope::City).floating_pos,
             default.floating_pos
         );
         assert!(!layout.debug_view_boxes.contains_key(&ViewScope::City));
-        assert!(!layout.debug_context_relations.contains_key("city"));
+        assert!(
+            !layout
+                .debug_context_relations
+                .contains_key(&SelectionKind::City)
+        );
+    }
+
+    /// Debug docked to the right of Selection, half and half.
+    fn beside() -> QueueDockRelation {
+        QueueDockRelation {
+            direction: ::imgui::sys::ImGuiDir_Right,
+            fraction: 0.5,
+            anchor_group: false,
+        }
+    }
+
+    #[test]
+    fn a_view_reset_forgets_the_debug_docking_of_every_selection_shown_in_it() {
+        // #109: Ctrl+Shift+R in City / Building left an open interior's
+        // Debug docking behind.
+        let kinds = [
+            SelectionKind::Interior,
+            SelectionKind::City,
+            SelectionKind::Barracks,
+            SelectionKind::Unit,
+            SelectionKind::Group,
+        ];
+        let docked = || {
+            let mut layout = ImGuiLayoutState::default();
+            for kind in kinds {
+                layout.debug_context_relations.insert(kind, beside());
+            }
+            layout
+        };
+        for view in [ViewScope::Default, ViewScope::City, ViewScope::Troop] {
+            let mut layout = docked();
+            layout.clear_view_debug_override(view);
+            for kind in kinds {
+                assert_eq!(
+                    layout.debug_context_relations.contains_key(&kind),
+                    kind.view() != view,
+                    "{kind:?} after resetting {view:?}"
+                );
+            }
+        }
+        // Each is the kind of what the game shows, in the view the game
+        // is in: an open interior is City / Building's.
+        let mut game = GameState::city_scenario();
+        let city = game
+            .cities
+            .iter()
+            .position(|city| city.team == PLAYER_TEAM)
+            .unwrap();
+        game.open_city_interior(city);
+        let (kind, context) = game.selection_kind().unwrap();
+        assert_eq!(kind, SelectionKind::Interior);
+        assert_eq!(context, format!("interior-{city}"));
+        assert_eq!(game.layout_view(), ViewScope::City);
+        let mut layout = docked();
+        layout.clear_view_debug_override(game.layout_view());
+        assert!(!layout.debug_context_relations.contains_key(&kind));
+        game.close_city_interior();
+        game.clear_selection();
+        game.set_selection(vec![
+            game.units
+                .iter()
+                .position(|unit| unit.team == PLAYER_TEAM)
+                .unwrap(),
+        ]);
+        let (kind, _) = game.selection_kind().unwrap();
+        assert_eq!(kind, SelectionKind::Unit);
+        assert_eq!(game.layout_view(), kind.view());
+        game.clear_selection();
+        assert_eq!(game.selection_kind(), None);
+        assert_eq!(game.layout_view(), ViewScope::Default);
+    }
+
+    #[test]
+    fn restoring_a_debug_docking_a_reset_forgot_stops_instead_of_panicking() {
+        // A reset can forget the relation Debug is being docked back by
+        // while that's under way.
+        let _one = one_context_at_a_time();
+        let mut context = ::imgui::Context::create();
+        context
+            .io_mut()
+            .config_flags
+            .insert(::imgui::ConfigFlags::DOCKING_ENABLE);
+        context.io_mut().display_size = [1280.0, 720.0];
+        context.fonts().build_rgba32_texture();
+        let mut layout = ImGuiLayoutState::default();
+        layout
+            .debug_context_relations
+            .insert(SelectionKind::Interior, beside());
+        let ui = context.frame();
+        // Both windows there, apart.
+        ui.window("Selection")
+            .position([20.0, 100.0], ::imgui::Condition::Always)
+            .build(|| {});
+        ui.window("Debug")
+            .position([900.0, 100.0], ::imgui::Condition::Always)
+            .build(|| {});
+        // Interior opens: two tries to dock Debug beside Selection again.
+        layout.maintain_debug_scope(Some(SelectionKind::Interior));
+        assert_eq!(layout.debug_restore_attempts, 2);
+        layout.clear_view_debug_override(ViewScope::City);
+        layout.maintain_debug_scope(Some(SelectionKind::Interior));
+        assert_eq!(layout.debug_restore_attempts, 0, "nothing to restore");
+        context.render();
     }
 
     #[test]
