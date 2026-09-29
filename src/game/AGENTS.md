@@ -12,7 +12,7 @@ behavior.
 | Module | Concern |
 |---|---|
 | `mod.rs` | `GameState` fields, scenario setup (`new`, `city_scenario`, `frontier_scenario`, `world_scenario`, `naval_scenario`), shared queries (`units_at`, `rival_of`, `swap_partner`, `reachable_hexes`), `CONTROLS_HELP` (a startup pointer to `docs/controls.md`), the main tests |
-| `orders.rs` | player input and order planning: `ClickMode`, click (move), right-click (attack), swap, ability toggle, hold, guard, alert (`toggle_alert`, `can_go_on_alert`) |
+| `orders.rs` | player input and order planning: `ClickMode`, click (move), right-click (attack), swap, boarding and landing (`try_board`, `try_land`), ability toggle, hold, guard, alert (`toggle_alert`, `can_go_on_alert`), disband. Every new order calls `Unit::take_new_order` (it ends a hold, guard or alert and drops boarding and landing) |
 | `order_queue.rs` | multi-turn order queues: Shift-click adds turns (`queue_move`, `queue_attack`, equal lengths for a group) or, on a planned stop, takes a move off (`unqueue_move`), `advance_queues` at each turn's end (real board only), and `replan_queues` as the player's planning begins (steered queues planned again toward their `waypoints` on what the player knows) |
 | `group.rs` | multi-unit selection (drag a box, Shift-click adds, Ctrl-click removes) and group orders |
 | `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks, and units on alert firing: `alert_target`), coastal battery fire and ship boarding |

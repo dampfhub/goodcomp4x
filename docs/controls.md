@@ -24,7 +24,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Clear Orders button | Clear the selected unit's (or group's) orders, queue, hold, guard and alert, like Ctrl-right-click |
 | G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
 | E / Alert button | Alert: stay put, be skipped every turn, and in its attack step attack the nearest enemy in range, until given another order (E again takes it off). Melee, cavalry, armored, ranged, and siege once set up (Q first); with a group, every member that can |
-| Delete / Disband button, twice | Remove the selected unit for good (the first press asks to confirm) |
+| Delete / Disband button, twice | Remove the selected unit for good (the first press asks to confirm; a loaded Landing Craft takes its passengers with it, and the first press says how many) |
 | Tab | Look at the next unit without holding this one; leave the city or barracks view |
 | Left-drag a box on the map | Select every one of your units inside it (two or more become a group) |
 | Shift-left-drag a box | Add the units inside it to the selection |
@@ -128,8 +128,8 @@ orders shows disabled.
 | 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |
 | Scroll inside the city production list | Browse unit, building and work cards in one list; coastal cards appear only in eligible cities |
 | Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
-| Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers) |
-| Select a Landing Craft, then click adjacent open land | Land its first passenger after combat |
+| Select a land troop, then click an adjacent friendly Landing Craft | Board it after combat (maximum four passengers), replacing the troop's other orders; any other order calls it off |
+| Select a Landing Craft, then click adjacent open land | Land its first passenger after combat; the craft stays where it is, and any other order calls it off |
 | Click a green Railhead while selecting a troop beside its city | Queue a one-turn transfer there if its road link is open |
 | 8 | Queue a worker |
 | 4 / Scout card | Queue a scout from the city (not a Barracks): 2 food and 4 wood, 2 turns; one at a time (the card is dimmed while one is queued) |
