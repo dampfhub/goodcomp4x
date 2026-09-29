@@ -3454,27 +3454,33 @@ mod tests {
 
     #[test]
     fn queues_planned_again_each_turn_keep_both_machines_in_step() {
-        let (mut host, mut guest) = pair();
-        // Each side Shift-queues a unit of its own to a hex far off in the
-        // fog; each turn its machine plans the queue again from what it
-        // knows, and that goes in its plan.
+        use crate::game::{Tile, Unit, UnitType};
+        // Two open, separated lanes make progress an invariant of this fixture.
+        // A random world's nearest fog target can require a detour (or be
+        // unreachable), so "closer in four turns" was not a valid assertion there.
+        let mut host = GameState::new();
+        host.grid = crate::game::hex::HexGrid::new(12, [] as [(Hex, Tile); 0]);
+        host.units = vec![
+            Unit::new(0, Hex::new(-6, -3), HOST_SEAT, UnitType::Melee),
+            Unit::new(1, Hex::new(-6, 3), GUEST_SEAT, UnitType::Melee),
+        ];
+        host.side_memory = Default::default();
+        let mut guest = host.clone();
+        let humans = vec![HOST_SEAT, GUEST_SEAT];
+        host.seat_players(Role::Host, HOST_SEAT, humans.clone(), 0);
+        guest.seat_players(Role::Guest, GUEST_SEAT, humans.clone(), 0);
+        host.lockstep.as_mut().unwrap().seated = humans;
         let mut queued = Vec::new();
         for game in [&mut host, &mut guest] {
-            let team = game.local_team;
             let unit = game
                 .units
                 .iter()
-                .position(|u| u.team == team && !game.settlers.contains(&u.id))
+                .position(|u| u.team == game.local_team)
                 .unwrap();
             let from = game.units[unit].pos;
-            let target = game
-                .grid
-                .all_hexes()
-                .filter(|&h| {
-                    game.grid.is_passable(h) && !game.is_explored(h) && from.distance(h) >= 6
-                })
-                .min_by_key(|&h| (from.distance(h), h.q, h.r))
-                .expect("somewhere far in the fog");
+            let target = Hex::new(0, from.r);
+            assert_eq!(from.distance(target), 6);
+            assert!(!game.is_explored(target), "queue must cross into the fog");
             game.selected = Some(unit);
             assert!(game.queue_move(target));
             assert_eq!(game.units[unit].waypoints, vec![target]);
