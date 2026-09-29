@@ -8,8 +8,8 @@
 //! ImGui draws each control as a widget (`imgui.rs`): a checkbox, a slider,
 //! or a button per choice (a drop-down list past `Control::MAX_BUTTONS`).
 //! Classic has no such widgets, so `classic_setting_rows` lays a setting out
-//! as buttons: OFF / ON for a switch, one per choice (the current one gold),
-//! and < > for a slider or a longer list of choices.
+//! as its name and buttons on one row: OFF / ON for a switch, one per choice
+//! (the current one gold), and < > for a slider or a longer list of choices.
 
 use super::builder::{ButtonSpec, PanelBuilder, Row};
 use glam::Vec2;
@@ -103,8 +103,8 @@ pub(super) fn steps_in_classic(setting: Setting) -> bool {
     }
 }
 
-/// How the classic presentation shows `setting` at `value`: a line with its
-/// name (and its value, if stepped), then a row of buttons that set it.
+/// How the classic presentation shows `setting` at `value`: one row, its
+/// name (and its value, if stepped) and then the buttons that set it.
 pub(super) fn classic_setting_rows(setting: Setting, value: i32) -> Vec<Row> {
     let range = setting.range();
     let button = |to: i32, label: String, state| ButtonSpec {
@@ -140,10 +140,6 @@ pub(super) fn classic_setting_rows(setting: Setting, value: i32) -> Vec<Row> {
             })
             .collect()
     };
-    // The gap keeps the name clear of the buttons above it.
-    vec![
-        Row::Gap(GAP / 2.0),
-        Row::Text(BODY, label),
-        Row::Buttons(buttons, true),
-    ]
+    // One row a setting, so the menu fits a short screen.
+    vec![Row::LabeledButtons(label, buttons)]
 }

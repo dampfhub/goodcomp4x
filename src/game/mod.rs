@@ -4,6 +4,7 @@
 
 mod ability;
 mod ai;
+mod animals;
 mod camera;
 mod city;
 mod combat;
@@ -148,6 +149,11 @@ pub struct GameState {
     scenario: Scenario,
     /// A snapshot of the game saved for testing (F6), restored by F7.
     savestate: Option<Box<GameState>>,
+    /// Counts the games this one replaced: a scenario switch, a load (F7)
+    /// and a network game each take one more than the game before. What
+    /// keeps city or unit ids between frames (ImGui's captured panels)
+    /// checks it, since every new game reuses them.
+    generation: u32,
     /// Attack animations playing out, with how many seconds each has run.
     effects: Vec<(effects::Effect, f32)>,
     /// The player's options (`settings.rs`). Kept across scenario switches
@@ -206,6 +212,9 @@ pub struct GameState {
     roster_open: Option<ui::RosterKey>,
     /// Ruins not yet claimed (`ruins.rs`), in the order the map made them.
     ruins: Vec<ruins::Ruin>,
+    /// Animal dens not yet cleared (`animals.rs`), in the order the map made
+    /// them.
+    dens: Vec<animals::Den>,
     /// Workers out on the map; the ones at home are counted by their city
     /// (`workers.rs`).
     field_workers: Vec<workers::FieldWorker>,
@@ -296,6 +305,7 @@ impl GameState {
             map_seed: None,
             scenario: Scenario::Combat,
             savestate: None,
+            generation: 0,
             effects: Vec::new(),
             settings: settings::Settings::default(),
             settings_open: false,
@@ -318,6 +328,7 @@ impl GameState {
             settlers: HashSet::default(),
             refused_sites: Vec::new(),
             ruins: Vec::new(),
+            dens: Vec::new(),
             roster_open: None,
             field_workers: Vec::new(),
             structures: HashMap::default(),
@@ -545,6 +556,8 @@ impl GameState {
                 UnitType::PatrolGalley => "PATROL GALLEY",
                 UnitType::LandingCraft => "LANDING CRAFT",
                 UnitType::BombardShip => "BOMBARD SHIP",
+                UnitType::Wolf => "WOLF PACK",
+                UnitType::Bear => "BEAR",
             }
         }
     }
@@ -970,10 +983,12 @@ mod tests {
         use turn::step_rank;
         assert_eq!(step_rank(UnitType::Scout, Phase::Move), 1);
         assert_eq!(step_rank(UnitType::Cavalry, Phase::Move), 2);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 5);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 7);
         assert_eq!(step_rank(UnitType::Ranged, Phase::Attack), 1);
         assert_eq!(step_rank(UnitType::Scout, Phase::Attack), 2);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 5);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 7);
+        assert_eq!(step_rank(UnitType::Wolf, Phase::Move), 3);
+        assert_eq!(step_rank(UnitType::Bear, Phase::Attack), 6);
     }
 
     /// Selects `idx` and toggles its ability, as the button would.

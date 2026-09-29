@@ -18,7 +18,8 @@ behavior.
 | `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks, and units on alert firing: `alert_target`), coastal battery fire and ship boarding |
 | `combat.rs` | damage formula (no random spread), retaliation, combat log helpers; the attack preview (`attack_preview`: what the attacks on the hovered hex would do this turn, stepped in resolution order on what the player knows; the interior's is `interior_attack_preview`) |
 | `ability.rs` | the abilities and their tuning constants |
-| `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
+| `unit.rs` | `Team` (the sides, and `Team::Wild`, the animals' owner, which is no side), `UnitType`, base stats, `Unit` and its state-aware `stats()` |
+| `animals.rs` | animals (wolf packs, bears) and their dens: territorial behaviour, decided as each animal step begins (`plan_animal_moves`, `plan_animal_attacks`); a kill's bounty (`reward_hunts`), clearing dens and their animals coming back (`resolve_dens`, at each turn's end) |
 | `ai.rs` | the AI, playing every side but the player's (`ai_teams`) |
 | `multiplayer.rs` | network play in lockstep (`docs/multiplayer.md`): the `Message`s, a side's `TeamPlan` (`team_plan`, `apply_plan`), hosting a world and seating players (`host_game`, `welcome`, `join_game`, `open_seats`, `seat_left`), `receive` and `check_plan` (every message checked before it touches the game), `checksum` |
 | `city/mod.rs` | `City` (its citizens as `Cluster`s: a manager and its workers), `Site`, `Good` and `Priorities` (a city's priority order), city tuning constants (barracks HP and defense, the population cap as `MAX_MANAGERS` clusters of `CLUSTER_SIZE`), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
@@ -36,7 +37,7 @@ behavior.
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, and tiles, rivers, resources and specials in flat arrays over the shape's bounding box); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `fast_hash.rs` | the `HashMap` and `HashSet` the game uses: std's, with a fast fixed hasher (rustc's) for its small keys |
 | `perf.rs` | tests only: `perf_report` (ignored; run with `--release -- --ignored --nocapture`) times a frame's and a turn's stages on a busy world |
-| `mapgen.rs`, `mapgen/` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map, on every machine), a function per stage (its module comment lists them): land and sea, mountain ranges, hills, lakes, passes, rivers, climate; then balanced starts for any number of sides, horses and iron by each start, and special tiles and ruins on contested ground. `mapgen/tests.rs` holds its tests (a golden hash pins two seeds' maps); `mapgen/preview.rs` (tests only) draws whole maps as PNGs and measures many (`map_previews`, `map_stats`, run by hand) |
+| `mapgen.rs`, `mapgen/` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map, on every machine), a function per stage (its module comment lists them): land and sea, mountain ranges, hills, lakes, passes, rivers, climate; then balanced starts for any number of sides, horses and iron by each start, special tiles and ruins on contested ground, and animal dens away from every start. `mapgen/tests.rs` holds its tests (a golden hash pins two seeds' maps); `mapgen/preview.rs` (tests only) draws whole maps as PNGs and measures many (`map_previews`, `map_stats`, run by hand) |
 | `ruins.rs` | ruins: holding them for `RUIN_HOLD_TURNS` claims a reward (`resolve_ruins`, at each turn's end before the economy) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes (this machine's view), each side's own memory (`side_fog`, game state, which the AI plans on), and the `known_*` queries that answer for either (`Fog` says which) |
 | `scenario.rs` | scenarios (F1-F4, F12, Debug Naval), savestate (F6/F7), instant playback (F8) |
@@ -52,7 +53,7 @@ behavior.
 | `ui/mod.rs` | screen-space UI entry points (`build_ui`, `click_ui`, `update_hover`, `layout`), its shared constants and types (`Target`, `UnitAction`, `Button`, `Shape`, `Layout`) |
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
 | `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs`, `ui/network_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling, drag to reorder and a Clear button, and each row's turns left or what it waits for (`queue_status`); the turn strip of everything needing orders (cities, unit groups); the settings menu (a heading per group, a control per `Setting`) and its Multiplayer page (host, join, leave; typed fields) |
-| `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
+| `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, and `subject_tooltip_lines` for a given unit or city, `unit_action_text`); number and text formatting (`quantity`, `ability_text`, `wrap`) |
 | `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
 | `mesh.rs`, `font.rs` | shape helpers (`polygon` ear-clips concave outlines); TrueType text and the glyph atlas |
@@ -74,6 +75,11 @@ behavior.
   that changes the plan refuses while `is_resolving` (true then, and while a turn plays out),
   and one that only looks (selecting, opening a view) refuses only while `is_playing_out`.
 
+- `Team::Wild` owns the animals (`animals.rs`) and is no side: it isn't in `Team::ALL`, has no
+  seat, stockpile, fog or plan, and `Team::index` must never be asked of it (arrays by side are
+  `Team::ALL`'s length). Code that gives something to "the unit's side" (a reward, a capture,
+  holding ruins, a city interior) must skip animals (`Unit::is_animal`), and anything a network
+  message names as a side must be one (`Team::is_side`).
 - `units` holds living units only. Dead units are removed with `retain` at the end of an attack
   step, which shifts indices, so code that spans a removal uses unit `id`s, not indices.
   `selected` and `group` are cleared before a turn resolves for the same reason.

@@ -128,9 +128,11 @@ impl GameState {
         let net_menu = std::mem::take(&mut self.net_menu);
         let production_speedup = self.production_speedup;
         let lifetime_special_cap = self.lifetime_special_cap;
+        let generation = self.generation.wrapping_add(1);
         let mut rng = self.rng.clone();
         *self = scenario.start(&mut rng, &settings);
         self.rng = rng;
+        self.generation = generation;
         self.savestate = savestate;
         self.settings = settings;
         self.settings_open = settings_open;
@@ -192,6 +194,7 @@ impl GameState {
         // Rolls carry on from the current game rather than replaying the
         // saved ones, so retrying a save can go differently.
         restored.rng = self.rng.clone();
+        restored.generation = self.generation.wrapping_add(1);
         restored.savestate = Some(saved);
         restored.notice = format!("LOADED {}", restored.saved_summary().unwrap_or_default());
         *self = restored;
@@ -288,7 +291,9 @@ mod tests {
             // 4 to 6 AI sides, by the seed, and the player.
             let sides = 1 + 4 + (seed % 3) as usize;
             assert_eq!(game.cities.len(), sides, "seed {seed}");
-            assert_eq!(game.units.len(), sides, "a scout each");
+            let sides_units = game.units.iter().filter(|u| u.team.is_side()).count();
+            assert_eq!(sides_units, sides, "a scout each");
+            assert_eq!(game.dens.len(), sides, "a den each, by default");
             assert!(game.settlers.is_empty());
             for team in &Team::ALL[..sides] {
                 assert_eq!(game.cities.iter().filter(|c| c.team == *team).count(), 1);
@@ -326,7 +331,8 @@ mod tests {
         let game = GameState::world_scenario_with(9, &settings);
         assert!(game.cities.is_empty());
         assert_eq!(game.settlers.len(), 3, "the player's and two AI settlers");
-        assert_eq!(game.units.len(), 6, "and a scout each");
+        let sides_units = game.units.iter().filter(|u| u.team.is_side()).count();
+        assert_eq!(sides_units, 6, "and a scout each");
         let selected = &game.units[game.selected.unwrap()];
         assert!(game.settlers.contains(&selected.id), "the player's settler");
         assert_eq!(selected.team, PLAYER_TEAM);

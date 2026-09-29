@@ -105,6 +105,8 @@ pub(super) struct Sighting {
     pub yields: (i32, i32, i32),
     /// Unclaimed ruins (`ruins.rs`).
     pub ruin: bool,
+    /// An animal den not yet cleared (`animals.rs`), by the animal it keeps.
+    pub den: Option<UnitType>,
     /// What other sides' workers standing here were building: on the
     /// tile, or a wall or gate on one of its edges.
     pub construction: Vec<SeenJob>,
@@ -322,6 +324,7 @@ impl GameState {
                 .collect(),
             yields: self.raw_yield(hex),
             ruin: self.ruin_at(hex).is_some(),
+            den: self.den_at(hex).map(|d| d.kind),
             construction: self
                 .field_workers
                 .iter()
@@ -1040,7 +1043,7 @@ pub(super) mod tests {
     fn every_world_starts_its_scouts_on_hills() {
         for seed in 0..6 {
             let game = GameState::world_scenario(seed);
-            for unit in &game.units {
+            for unit in game.units.iter().filter(|u| !u.is_animal()) {
                 let hills = game.grid.tile(unit.pos).hills;
                 let scout = unit.unit_type == UnitType::Scout;
                 assert_eq!(hills, scout, "seed {seed}: {unit}");

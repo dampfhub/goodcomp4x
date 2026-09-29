@@ -94,7 +94,8 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    (`take_back_turn`) until the host resolves the turn.
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each unit step resolves one unit type's moves or attacks
-   simultaneously; `effects.rs` animates attacks; `transition.rs` glides what moved; dead units are removed at the end of an attack
+   simultaneously; an animal step (`animals.rs`) first decides where the wild's animals of that
+   type go or attack, on the board as it stands; `effects.rs` animates attacks; `transition.rs` glides what moved; dead units are removed at the end of an attack
    step, and enemy workers caught by a move are captured. `city/rail.rs` checks road connectivity
    for one-turn transfers from a city ring to its remote Railhead; a blocked line fails at this
    step. The last step, `resolve_workers`

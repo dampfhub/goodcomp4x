@@ -1199,7 +1199,7 @@ impl GameState {
 
     /// After a move step: every worker sharing a hex with an enemy unit is
     /// captured. It joins the captor's nearest city, or is lost if the captor
-    /// has no city.
+    /// has no city. An animal captures nobody: the worker is killed.
     pub(super) fn capture_workers(&mut self) {
         let mut w = 0;
         while w < self.field_workers.len() {
@@ -1208,6 +1208,11 @@ impl GameState {
                 w += 1;
                 continue;
             };
+            if self.units[captor].is_animal() {
+                let id = worker.id;
+                self.kill_workers(&[id]);
+                continue;
+            }
             let captor_team = self.units[captor].team;
             let worker = self.field_workers.remove(w);
             self.return_job(&worker);
@@ -1259,15 +1264,16 @@ impl GameState {
     }
 
     /// The AI's workers: each city with idle workers and nothing queued
-    /// improves the tiles it works, then puts roads on them.
-    pub(super) fn plan_ai_workers(&mut self, team: Team) {
+    /// improves the tiles it works, then puts roads on them, but none where
+    /// `unsafe_tile` says an animal would attack it (`animals.rs`).
+    pub(super) fn plan_ai_workers(&mut self, team: Team, unsafe_tile: impl Fn(Hex) -> bool) {
         for city in 0..self.cities.len() {
             let c = &self.cities[city];
             if c.team != team || c.workers == 0 || !c.worker_jobs.is_empty() {
                 continue;
             }
             let stock = self.stock(team);
-            let worked: Vec<Hex> = c.worked().collect();
+            let worked: Vec<Hex> = c.worked().filter(|&hex| !unsafe_tile(hex)).collect();
             let job = [JobKind::Improve, JobKind::Road]
                 .into_iter()
                 .find_map(|kind| {

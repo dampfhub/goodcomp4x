@@ -25,7 +25,7 @@ use super::city::{
     grow_price, in_interior, managers_for,
 };
 use super::hex::Hex;
-use super::settings::Settings;
+use super::settings::{ANIMALS_MANY, Settings};
 use super::terrain::Resource;
 use super::unit::{Team, TurnOrder};
 use super::workers::WorkerJob;
@@ -34,7 +34,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 26;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -65,8 +65,9 @@ pub enum Message {
     /// opens with the host's join code, `src/net/secure.rs`).
     Hello { version: u32 },
     /// Host to guest: the game to build, the same on every machine: the
-    /// world (its map seed, and how many AI sides it has and whether they
-    /// start with a city), the human sides and the guest's seat among them.
+    /// world (its map seed, how many AI sides it has, whether they start
+    /// with a city, and its animals), the human sides and the guest's seat
+    /// among them.
     Welcome {
         version: u32,
         seat: Team,
@@ -74,6 +75,8 @@ pub enum Message {
         map_seed: u32,
         world_ai: usize,
         world_start_city: bool,
+        /// How many animal dens it has (`Settings::world_animals`).
+        world_animals: usize,
         rng_seed: u64,
         production_speedup: bool,
         lifetime_special_cap: bool,
@@ -266,7 +269,7 @@ pub(super) struct Lockstep {
     /// Host: the human sides with a player (its own, and each guest's).
     seated: Vec<Team>,
     /// Host: the world's settings, for guests to build the same one.
-    world: (usize, bool),
+    world: (usize, bool, usize),
     /// Host: the code a guest must give to join (`host_game`): the key to
     /// the encrypted channel.
     join_code: String,
@@ -292,7 +295,7 @@ impl Lockstep {
             late: (0, Vec::new()),
             sent: Vec::new(),
             seated: Vec::new(),
-            world: (0, false),
+            world: (0, false, 0),
             join_code: String::new(),
             checksums: Vec::new(),
             desync: None,
@@ -311,6 +314,7 @@ fn world_settings(settings: &Settings, map_seed: u32, players: usize) -> Setting
             .max(players.saturating_sub(1))
             .min(MAX_PLAYERS - 1),
         world_start_city: settings.world_start_city,
+        world_animals: settings.world_animals,
         ..Settings::default()
     }
 }
@@ -334,7 +338,7 @@ impl GameState {
         if let Some(lockstep) = game.lockstep.as_mut() {
             lockstep.join_code = code;
             lockstep.seated = vec![HOST_SEAT];
-            lockstep.world = (world.world_ai, world.world_start_city);
+            lockstep.world = (world.world_ai, world.world_start_city, world.world_animals);
         }
         game
     }
@@ -383,7 +387,7 @@ impl GameState {
             return refuse("NOT HOSTING");
         };
         lockstep.seated.push(seat);
-        let (world_ai, world_start_city) = lockstep.world;
+        let (world_ai, world_start_city, world_animals) = lockstep.world;
         let start = lockstep.turn_start.as_ref().expect("planning");
         let welcome = Message::Welcome {
             version: PROTOCOL_VERSION,
@@ -392,6 +396,7 @@ impl GameState {
             map_seed: start.map_seed.expect("a world"),
             world_ai,
             world_start_city,
+            world_animals,
             rng_seed: self.rng_seed,
             production_speedup: start.production_speedup,
             lifetime_special_cap: start.lifetime_special_cap,
@@ -416,6 +421,7 @@ impl GameState {
                 map_seed,
                 world_ai,
                 world_start_city,
+                world_animals,
                 rng_seed,
                 production_speedup,
                 lifetime_special_cap,
@@ -432,18 +438,21 @@ impl GameState {
                 unique.dedup();
                 if humans.len() < 2
                     || humans.len() > MAX_PLAYERS
+                    || !humans.iter().all(|t| t.is_side())
                     || unique.len() != humans.len()
                     || humans[0] != HOST_SEAT
                     || *seat == HOST_SEAT
                     || !humans.contains(seat)
                     || *world_ai + 1 < humans.len()
                     || *world_ai >= MAX_PLAYERS
+                    || *world_animals > ANIMALS_MANY
                 {
                     return Err("THE HOST OFFERED A GAME THAT DOESN'T ADD UP".into());
                 }
                 let world = Settings {
                     world_ai: *world_ai,
                     world_start_city: *world_start_city,
+                    world_animals: *world_animals,
                     ..Settings::default()
                 };
                 let mut game = GameState::world_scenario_with(*map_seed, &world);
@@ -1540,9 +1549,9 @@ impl GameState {
 
     /// A fingerprint of the game's state, the same on every machine that
     /// resolved the same turns the same way: units, cities, the stockpiles,
-    /// workers, what's built on the map and how much of it each side's own
-    /// memory holds (`side_fog`, which the AI plans on). Views (camera, the
-    /// player's fog memory, panels) aren't in it.
+    /// workers, what's built on the map, the animals' dens and how much of
+    /// it each side's own memory holds (`side_fog`, which the AI plans on).
+    /// Views (camera, the player's fog memory, panels) aren't in it.
     pub fn checksum(&self) -> u64 {
         let mut h = DefaultHasher::new();
         self.turn.hash(&mut h);
@@ -1551,7 +1560,7 @@ impl GameState {
         for u in units {
             (u.id, u.team, u.pos, u.hp.to_bits(), u.interior_hp.to_bits()).hash(&mut h);
             (u.ability_cooldown, u.deployed, u.cargo.len()).hash(&mut h);
-            u.alert.hash(&mut h);
+            (u.alert, u.home).hash(&mut h);
         }
         for c in &self.cities {
             (c.id, c.team, c.pos, c.population, c.workers).hash(&mut h);
@@ -1600,6 +1609,9 @@ impl GameState {
             .collect();
         structures.sort_by_key(|(hex, ..)| (hex.q, hex.r));
         structures.hash(&mut h);
+        for den in &self.dens {
+            den.pos.hash(&mut h);
+        }
         for memory in &self.side_memory {
             memory.len().hash(&mut h);
         }
@@ -2841,6 +2853,27 @@ mod tests {
         let blue = host.units.iter().find(|u| u.team == HOST_SEAT).unwrap();
         plan.units[0].id = blue.id;
         refused(&mut host, plan);
+        // Orders for an animal, as one of its own or added, and a plan for
+        // the wild, which is no side.
+        let animal = host
+            .units
+            .iter()
+            .find(|u| u.is_animal())
+            .expect("animals")
+            .id;
+        let mut plan = good.clone();
+        plan.units[0].id = animal;
+        refused(&mut host, plan);
+        let mut plan = good.clone();
+        let mut order = plan.units[0].clone();
+        order.id = animal;
+        order.planned_move = None;
+        plan.units.push(order);
+        let why = refused(&mut host, plan);
+        assert!(why.contains(&format!("UNIT {}", animal)), "{why}");
+        let mut plan = good.clone();
+        plan.team = Team::Wild;
+        refused(&mut host, plan);
         // A plan for the host's side.
         let mut plan = good.clone();
         plan.team = HOST_SEAT;
@@ -3274,12 +3307,27 @@ mod tests {
         assert!(tweak(&|m| if let Message::Welcome { humans, .. } = m {
             humans.push(Team::Red);
         }));
+        // The wild is no side: nobody plays it.
+        assert!(tweak(&|m| if let Message::Welcome { humans, .. } = m {
+            humans.push(Team::Wild);
+        }));
+        assert!(tweak(
+            &|m| if let Message::Welcome { seat, humans, .. } = m {
+                humans[1] = Team::Wild;
+                *seat = Team::Wild;
+            }
+        ));
         assert!(tweak(&|m| if let Message::Welcome { world_ai, .. } = m {
             *world_ai = 99;
         }));
         assert!(tweak(&|m| if let Message::Welcome { world_ai, .. } = m {
             *world_ai = 0;
         }));
+        assert!(tweak(
+            &|m| if let Message::Welcome { world_animals, .. } = m {
+                *world_animals = 9;
+            }
+        ));
         assert_eq!(humans.len(), 2);
     }
 

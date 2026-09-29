@@ -102,12 +102,12 @@ impl GameState {
     }
 
     /// The side holding `hex` with military units, alone: `None` if it's
-    /// empty, contested, or held only by a settler.
+    /// empty, contested, or held only by a settler. Animals hold nothing.
     fn sole_holder(&self, hex: Hex) -> Option<Option<Team>> {
         let mut teams = self
             .units
             .iter()
-            .filter(|u| u.pos == hex && !self.settlers.contains(&u.id))
+            .filter(|u| u.pos == hex && !self.settlers.contains(&u.id) && !u.is_animal())
             .map(|u| u.team);
         let first = teams.next();
         match first {

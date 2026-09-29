@@ -485,6 +485,10 @@ impl GameState {
             self.next_unit_id += 1;
             self.units.push(Unit::new(id, scout, team, UnitType::Scout));
         }
+        // As many dens as the Animals setting asks for, each with its
+        // animal: one a side, or two.
+        let dens = map.dens.len().min(settings.world_animals * (1 + ai));
+        self.make_dens(&map.dens[..dens]);
         let founding = if settings.world_start_city {
             "C OPENS YOUR CITY"
         } else {

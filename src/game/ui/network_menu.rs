@@ -371,8 +371,9 @@ impl GameState {
 
     /// Starts this new game with `old`'s menus as they were: the settings,
     /// whether the menu is open, and what's typed in its Multiplayer
-    /// section.
+    /// section. Being another game, it's `old`'s next `generation`.
     pub fn keep_menus_of(&mut self, old: &GameState) {
+        self.generation = old.generation.wrapping_add(1);
         self.settings = old.settings.clone();
         self.settings_open = old.settings_open;
         self.show_yields = old.show_yields;

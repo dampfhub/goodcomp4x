@@ -6,7 +6,7 @@ use super::city::{BARRACKS_DEFENSE, Building, COASTAL_BATTERY_DEFENSE};
 use super::effects::{Effect, Outcome};
 use super::fast_hash::HashMap;
 use super::hex::Hex;
-use super::unit::{Unit, UnitType};
+use super::unit::{Team, Unit, UnitType};
 use super::{GameState, combat};
 
 /// Seconds between steps while a turn plays out, and how long the units that
@@ -27,14 +27,20 @@ pub(super) enum Phase {
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-pub(super) const RESOLUTION_ORDER: [(UnitType, Phase); 18] = [
+/// - Animals (`animals.rs`) act beside their like: wolves after cavalry,
+///   bears after melee.
+pub(super) const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
+    (UnitType::Wolf, Phase::Move),
     (UnitType::Melee, Phase::Move),
+    (UnitType::Bear, Phase::Move),
     (UnitType::Ranged, Phase::Attack),
     (UnitType::Scout, Phase::Attack),
     (UnitType::Cavalry, Phase::Attack),
+    (UnitType::Wolf, Phase::Attack),
     (UnitType::Melee, Phase::Attack),
+    (UnitType::Bear, Phase::Attack),
     (UnitType::Ranged, Phase::Move),
     (UnitType::Siege, Phase::Move),
     (UnitType::Siege, Phase::Attack),
@@ -170,6 +176,8 @@ impl GameState {
             // Before the economy, so a city reward is spent (or capped) like
             // the turn's own income.
             self.resolve_ruins();
+            // Dens are cleared and their animals come back (`animals.rs`).
+            self.resolve_dens();
             self.resolve_economy();
             for unit in &mut self.units {
                 if unit.ability_queued && unit.ability() == Ability::Deploy {
@@ -305,6 +313,13 @@ impl GameState {
 
     /// Resolves one step, returning the ids of the units that acted in it.
     pub(super) fn resolve_step(&mut self, unit_type: UnitType, phase: Phase) -> Vec<u32> {
+        // Animals decide as their step begins, on the board as it is then.
+        if unit_type.is_animal() {
+            match phase {
+                Phase::Move => self.plan_animal_moves(unit_type),
+                Phase::Attack => self.plan_animal_attacks(unit_type),
+            }
+        }
         let of_type = |i: &usize| self.units[*i].unit_type == unit_type;
         let actors: Vec<usize> = match phase {
             Phase::Move => {
@@ -680,6 +695,10 @@ impl GameState {
         }
 
         let mut damage = vec![0.0; self.units.len()];
+        // Blows that hit animals, by who struck them: (the animal, the
+        // side, the damage). The side that dealt one that dies the most
+        // gets its bounty (`animals.rs`).
+        let mut hunts: Vec<(usize, Team, f32)> = Vec::new();
         let mut barracks_damage = vec![0.0; self.cities.len()];
         for engagement in &engagements {
             let (a, d) = (engagement.attacker, engagement.defender);
@@ -700,6 +719,9 @@ impl GameState {
                 * engagement.damage_scale
                 * combat::damage(attacker, defender, defender_cover);
             damage[d] += hit;
+            if defender.is_animal() && attacker.team.is_side() {
+                hunts.push((d, attacker.team, hit));
+            }
             let attacker_note = combat::unit_note(attacker, &self.grid, self.in_fort(attacker));
             let defender_note = combat::unit_note(defender, &self.grid, self.in_fort(defender));
             let verb = if engagement.damage_scale < 1.0 {
@@ -720,6 +742,9 @@ impl GameState {
                     * combat::shore_scale(defender, attacker)
                     * combat::damage(defender, attacker, attacker_cover);
                 damage[a] += back;
+                if attacker.is_animal() && defender.team.is_side() {
+                    hunts.push((a, defender.team, back));
+                }
                 let verb = if reverse.is_some() {
                     "trades blows with"
                 } else {
@@ -841,6 +866,7 @@ impl GameState {
         for &a in attackers {
             self.units[a].planned_attack = None;
         }
+        self.reward_hunts(&hunts);
         self.units.retain(Unit::is_alive);
         self.discard_interior_copies_of_dead_units();
     }

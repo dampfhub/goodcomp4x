@@ -78,8 +78,10 @@ beside it a checkbox (`Control::Toggle`), a slider showing `value_text`
 (`Control::Choice`; a combo box past `Control::MAX_BUTTONS` values), with
 the setting's description as the tooltip. Classic expands the two rows
 (`builder::classic_rows`, `settings_menu::classic_setting_rows`) into a
-gold heading line, the name, and compact buttons: one per value (OFF / ON
-for a switch), or < and > beside the value for a slider or long list.
+gold heading line and, for each setting, one row
+(`Row::LabeledButtons`, classic only) of its name and compact buttons at
+the row's end: one per value (OFF / ON for a switch), or < and > beside
+the value for a slider or long list.
 Every control acts through `Target::SetSetting(setting, value)`, which
 clamps to the range. A new setting therefore needs no UI code: add it in
 `game/settings.rs` as its module comment describes, and both presentations
@@ -135,10 +137,17 @@ Each box has an X to remove the whole container. A dropped city, barracks,
 unit, group, or queue panel becomes a persistent window in that box; its
 controls stay live after selection changes. Its actions carry the structure
 or unit's stable ID and focus that entity before invoking the shared `Target`
-action. Debug is already persistent and docks directly. Moving a captured
+action (`focus_pin`): through the map's own entry points (`set_selection`,
+`open_city`, `open_barracks`, leaving any other view first), and not at all
+when it is already the selection or the open view, so an armed button stays
+armed and a second click disarms it; nothing while a turn plays out. Its
+button tooltips describe its own unit or city (a tooltip `Subject`), not the
+selection's. Debug is already persistent and docks directly. Moving a captured
 panel out of every box returns it to contextual behavior. Deleting a box
-releases its contents, and loading or changing scenarios clears captured
-panels while keeping the boxes. Every new always-visible ImGui window can dock
+releases its contents, and any new game clears captured panels while keeping
+the boxes: a scenario switch or load, by key or Debug button, or a network
+game (`GameState::generation`, checked at each frame's start), since a new
+game reuses city and unit ids. Every new always-visible ImGui window can dock
 in a box without special layout offsets. A new contextual panel needs a stable
 identity and a renderer for captured content, as the city, barracks, unit,
 group, and queue examples show.
