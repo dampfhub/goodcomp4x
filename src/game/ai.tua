@@ -1,9 +1,20 @@
 //! A deliberately minimal AI, playing every team but the player's.
+//!
+//! It plays under the same fog as the player (`fog.tua`): each side plans on what it sees and
+//! remembers (`side_fog`), never on the real board. Enemy units and workers count only in sight;
+//! cities, ruins and terrain as last seen; ground never seen as open.
 
 use std.collections.Deque;
 use std.collections.Map;
 use std.collections.Set;
+use std.mem.swap;
+use std.math.Abs;
 use game.GameState;
+use game.ability.Ability;
+use game.ability.CHARGE_EXTRA_MOVE;
+use game.ability.DEPLOYED_EXTRA_RANGE;
+use game.animals.TERRITORY_RADIUS;
+use game.fog.Fog;
 use game.hex.Hex;
 use game.workers.JobKind;
 use game.workers.WorkerJob;
@@ -16,35 +27,185 @@ use game.city.MIN_CITY_DISTANCE;
 use game.city.Stock;
 use game.city.no_stock;
 use game.unit.UnitType;
+use game.unit.Unit;
 use game.unit.Team;
 use game.unit.TEAMS;
 
-/// A distance no reachable hex has.
-const UNREACHED: i32 = 2147483647;
+/// A distance no reachable hex has, and what a `Flood` has for a hex it hasn't reached.
+const NOT_FOUND: i32 = 2147483647;
+
+/// Turns after which a hex its side has seen is worth a scout's look again.
+const SCOUT_STALE_TURNS: u32 = 10;
 
 /// Units (scouts and settlers aside) the AI wants for each of its cities before it spends on
 /// growth.
 const AI_ARMY_PER_CITY: i32 = 2;
 /// The population from which an AI city trains a Settler to expand.
-const AI_SETTLE_POPULATION: i32 = 4;
+pub const AI_SETTLE_POPULATION: i32 = 4;
 /// How far from its side's nearest city an AI settler founds a new one: at most this many hexes
 /// (and at least `MIN_CITY_DISTANCE`, as the rules say).
-const AI_SITE_MAX_DISTANCE: i32 = 10;
+pub const AI_SITE_MAX_DISTANCE: i32 = 10;
 /// How many steps on foot from a settler (or its city) the AI looks for a site.
 const AI_SITE_STEPS: i32 = 14;
 /// What each step on foot to a site takes off its value (`site_value`).
 const AI_SITE_STEP_COST: i32 = 2;
 /// How near a site the rules refused (a city its side hadn't seen was too close) the AI won't try
 /// again.
-const AI_REFUSED_RADIUS: i32 = 2;
+pub const AI_REFUSED_RADIUS: i32 = 2;
 /// How far around a site its land counts toward its value.
 const AI_SITE_RADIUS: i32 = 2;
+
+/// What an AI side knows as it plans its units: its fog, and what's worth going for in it. Sets,
+/// not lists, as searches ask of every hex they pass; whatever picks from one breaks ties by hex
+/// coordinates, so their order never counts.
+pub struct Knowledge {
+    fog: Fog,
+    /// Enemy units and workers in sight.
+    enemies: Set[Hex],
+    /// Ruins in sight, or remembered where they were last seen.
+    ruins: Set[Hex],
+    /// Animal dens (`animals.tua`) in sight, or remembered where they were last seen: worth
+    /// clearing, and their territory worth keeping settlers and workers out of.
+    dens: Set[Hex],
+    /// Enemy city centers in sight or remembered.
+    cities: Set[Hex],
+    /// The hexes around those cities.
+    gates: Set[Hex],
+    /// Whether its land units know they can't step onto each hex (`known_step`), by
+    /// `HexGrid.index`: ground seen to be impassable, and enemy cities. An array, as searches ask
+    /// of every hex they pass.
+    closed: Vec[bool],
+    /// Whether it may know of a wall or gate anywhere, so steps must be checked for them.
+    walls: bool,
+}
+
+impl Knowledge {
+    /// Whether `hex` is within the territory of a den the side knows of (`animals.tua`), where
+    /// its animal would attack.
+    pub fn in_den_territory(&self, hex: Hex) -> bool { near_a_den(&self.dens, hex) }
+}
+
+/// Whether `hex` is within the territory of one of `dens`.
+pub fn near_a_den(dens: &Set[Hex], hex: Hex) -> bool {
+    let mut near = false;
+    for d in dens.each() { if d.distance(hex) <= TERRITORY_RADIUS { near = true; } }
+    near
+}
+
+/// Steps on foot to one target from the hexes around it (`steps_to`), found outward from the
+/// target as far as asked so far: units of a side heading for the same target share it, each
+/// searching on only as far as it needs.
+pub struct Flood {
+    /// Steps to the target by `HexGrid.index`, `NOT_FOUND` where not found (yet).
+    steps: Vec[i32],
+    frontier: Deque[Hex],
+}
+
+/// The floods of one side's planning, by target.
+pub struct Floods {
+    at: Map[Hex, i32],
+    all: Vec[Flood],
+}
+
+/// A search outward from a start hex, ring by ring (each the hexes one more step on foot away).
+struct Rings {
+    seen: Vec[bool],
+    ring: Vec[Hex],
+    last: Vec[Hex],
+}
 
 /// Whether `(steps, hex)` sorts before `(best_steps, best)` by steps, then `q`, then `r`.
 fn closer(steps: i32, hex: Hex, best_steps: i32, best: Hex) -> bool {
     if steps != best_steps { return steps < best_steps; }
-    if hex.q != best.q { return hex.q < best.q; }
-    hex.r < best.r
+    lower(hex, best)
+}
+
+/// Whether `a` sorts before `b` by `q`, then `r`.
+fn lower(a: Hex, b: Hex) -> bool {
+    if a.q != b.q { return a.q < b.q; }
+    a.r < b.r
+}
+
+/// A sort key of four numbers, smaller first.
+struct Key4 { a: i32, b: i32, q: i32, r: i32 }
+
+impl Key4 {
+    fn before(self, o: Key4) -> bool {
+        if self.a != o.a { return self.a < o.a; }
+        if self.b != o.b { return self.b < o.b; }
+        if self.q != o.q { return self.q < o.q; }
+        self.r < o.r
+    }
+}
+
+fn flag(b: bool) -> i32 { if b { 1 } else { 0 } }
+
+/// `hexes` sorted by `(q, r)`.
+fn sorted_by_coordinates(hexes: Vec[Hex]) -> Vec[Hex] {
+    let mut out = hexes;
+    for i in 1..out.len() {
+        let mut j = i;
+        while j > 0 && lower(out[j], out[j - 1]) {
+            out.swap_at(j, j - 1);
+            j = j - 1;
+        }
+    }
+    out
+}
+
+/// The lowest of `hexes` by `(q, r)`.
+fn lowest(hexes: &Vec[Hex]) -> Option[Hex] {
+    let mut best: Option[Hex] = Option.None;
+    for k in 0..hexes.len() {
+        let better = match best { Option.None => true, Option.Some(b) => lower(hexes[k], b) };
+        if better { best = Option.Some(hexes[k]); }
+    }
+    best
+}
+
+/// Of `hexes`, the one nearest `from`, ties by coordinates.
+fn nearest_of(from: Hex, hexes: &Vec[Hex]) -> Option[Hex] {
+    let mut best: Option[Hex] = Option.None;
+    for k in 0..hexes.len() {
+        let better = match best { Option.None => true, Option.Some(b) => closer(from.distance(hexes[k]), hexes[k], from.distance(b), b) };
+        if better { best = Option.Some(hexes[k]); }
+    }
+    best
+}
+
+/// How far from where it stands `enemy` could attack next turn: its move (and a Charge's extra
+/// hex), then its range (and a deployed siege engine's extra one). By its type, not its orders,
+/// which are its own side's. `None` for one that can't attack.
+pub fn threat_reach(enemy: &Unit) -> Option[i32] {
+    if enemy.unit_type == UnitType.LandingCraft { return Option.None; }
+    let stats = enemy.unit_type.stats();
+    let extra = match Ability.of(enemy.unit_type) {
+        Ability.Charge => CHARGE_EXTRA_MOVE,
+        Ability.Deploy => DEPLOYED_EXTRA_RANGE,
+        _ => 0,
+    };
+    Option.Some(stats.move_range + stats.attack_range + extra)
+}
+
+/// The hexes within `radius` of `center`, on the map or not.
+fn within(center: Hex, radius: i32) -> Vec[Hex] {
+    let mut out: Vec[Hex] = Vec.new();
+    for dq in -radius..=radius {
+        for dr in -radius..=radius {
+            if (dq + dr).abs() <= radius { out.push(Hex.new(center.q + dq, center.r + dr)); }
+        }
+    }
+    out
+}
+
+/// How many of `threats` (a hex and a reach) reach `hex`.
+fn threats_at(threats: &Vec[(Hex, i32)], hex: Hex) -> i32 {
+    let mut n = 0;
+    for k in 0..threats.len() {
+        let (at, reach) = threats[k];
+        if at.distance(hex) <= reach { n = n + 1; }
+    }
+    n
 }
 
 impl GameState {
@@ -63,96 +224,182 @@ impl GameState {
         out
     }
 
-    /// Each unit closes on its nearest enemy, or on ruins nobody on its side holds
-    /// (`ruins.tua`) if those are nearer: it attacks if already in range, otherwise moves as
-    /// close as it can and attacks if that brings it into range; ruins it steps onto, and then
-    /// holds until they're claimed. Units in a contested hex stay and fight. No coordination
-    /// beyond not sending two units to the same hex, and no retreating.
+    /// Each unit goes for the nearest on foot of the enemy units and workers its side sees
+    /// (animals included), the ruins and animal dens nobody on its side holds (`ruins.tua`,
+    /// `animals.tua`) and the enemy cities its side has seen (`nearest_ai_target`); with none of
+    /// those, it explores, heading for the nearest ground its side has never seen. An enemy it
+    /// attacks if already in range, otherwise it moves as close as it can and attacks if that
+    /// brings it into range; ruins it steps onto, and then holds until they're claimed, and a den
+    /// it steps onto to clear it; next to an enemy city, its fighters go in through the gates
+    /// (`city/interior.tua`). A unit going elsewhere than an enemy attacks any enemy in range of
+    /// where it ends up. Units in a contested hex stay and fight. No coordination beyond not
+    /// sending two units to the same hex, and no retreating, but for scouts, which scout and keep
+    /// out of harm's way instead (`plan_ai_scout`). It all goes by what the side knows
+    /// (`side_fog`), never the real board: an enemy out of sight isn't there, and ground never
+    /// seen is open.
     pub fn plan_ai_turn(&mut self, team: Team) {
+        let fog = self.side_fog(team);
+        let known = self.knowledge(fog);
+        let mut floods = Floods { at: Map.new(), all: Vec.new() };
         // Settlers found their cities, or head for a site, before the cities plan: a city founded
         // now plans its first build this turn.
-        self.plan_ai_settlers(team);
-        self.plan_ai_cities(team);
-        self.plan_ai_workers(team);
+        self.plan_ai_settlers(team, &known, &mut floods);
+        self.plan_ai_cities(team, &known);
+        self.plan_ai_workers(team, &known.dens);
+        let mut watched: Set[Hex] = Set.new();
         for idx in 0..self.units.len() {
             let id = self.units[idx].id;
-            if self.units[idx].team != team
-                || self.rival_of(idx).is_some()
-                || self.player_controlled_units.contains(id)
-                || self.settlers.contains(id)
-            {
+            if self.units[idx].team != team || self.player_controlled_units.contains(id) || self.settlers.contains(id) { continue; }
+            // A scout even slips out of a contested hex.
+            if self.units[idx].unit_type == UnitType.Scout {
+                self.plan_ai_scout(idx, &known, &mut floods, &mut watched);
                 continue;
             }
-            // A defender beside its city while enemies stand beside it too holds and fights; so
-            // does a unit holding ruins until they're claimed.
-            if self.gate_under_attack(idx) || self.ruin_at(self.units[idx].pos).is_some() {
-                self.units[idx].planned_attack = self.nearest_enemy_in_range(idx);
+            if self.rival_of(idx).is_some() { continue; }
+            let pos = self.units[idx].pos;
+            // A defender already holding a city gate should keep projecting its interior copy
+            // while enemy troops contest the surrounding ring; so does a unit holding ruins until
+            // they're claimed: it stays, and fights from there.
+            if self.gate_under_attack(pos, team, &known.fog) || self.ruin_at(pos).is_some() {
+                self.units[idx].planned_attack = self.ai_attack_from(idx, pos, &known.fog);
                 continue;
             }
-            let Option.Some(target) = self.nearest_ai_target(idx) else { continue; };
+            let Option.Some(target) = self.nearest_ai_target(idx, &known) else { continue; };
 
-            let unit = &self.units[idx];
-            let stats = unit.stats();
-            // Ruins are captured by moving onto them. Ships keep their water-only movement.
-            let capture = self.enemy_of_team_at(target, team).is_none();
-            let reachable = if unit.is_naval() { self.reachable_water(unit.pos, stats.move_range) } else { self.reachable_hexes(unit.pos, stats.move_range, unit.team) };
-            let dest = if capture && reachable.contains(target) {
+            let stats = self.units[idx].stats();
+            let naval = self.units[idx].is_naval();
+            // An enemy it knows is there is fought. Anything else (a worker, ruins, ground never
+            // seen) is stepped onto, and a city closed on.
+            let enemy_there = known.fog.sees(target) && self.enemy_of_team_at(target, team).is_some();
+            // Ships keep their water-only movement domain while land units use roads and gates.
+            let reachable = self.known_reachable_for_domain(pos, stats.move_range, team, &known.fog, naval);
+            // One unit steps onto a hex; a second would bounce off the first.
+            let dest = if !enemy_there && reachable.contains(target) && !self.claimed_by_other(team, id, target) {
                 target
-            } else if !capture && unit.pos.distance(target) <= stats.attack_range {
-                unit.pos
+            } else if enemy_there && pos.distance(target) <= stats.attack_range {
+                pos
             } else {
-                let to_target = if unit.is_naval() { Map.new() } else { self.steps_to(target, team, &reachable) };
+                let mut flood = 0;
+                if !naval {
+                    flood = self.flood_index(&mut floods, target);
+                    self.steps_to(&mut floods.all[flood], &known, &reachable);
+                }
+                // Staying put wins a tie, so a unit at a city's gates holds it.
                 let mut best: Option[Hex] = Option.None;
-                let mut best_steps = UNREACHED;
+                let mut best_rank = Key4 { a: 0, b: 0, q: 0, r: 0 };
                 for hh in reachable.each() {
                     let hex = *hh;
-                    if self.claimed_by(team, hex) { continue; }
-                    let steps = if unit.is_naval() { hex.distance(target) } else { to_target.get(hex).unwrap_or(UNREACHED) };
-                    let better = match best { Option.None => true, Option.Some(b) => closer(steps, hex, best_steps, b) };
-                    if better {
+                    if self.claimed_by_other(team, id, hex) { continue; }
+                    let left = if naval { hex.distance(target) } else { self.steps_from(&floods.all[flood], hex) };
+                    let rank = Key4 { a: left, b: flag(hex != pos), q: hex.q, r: hex.r };
+                    if best.is_none() || rank.before(best_rank) {
                         best = Option.Some(hex);
-                        best_steps = steps;
+                        best_rank = rank;
                     }
                 }
-                best.unwrap_or(unit.pos)
+                best.unwrap_or(pos)
             };
 
-            let pos = self.units[idx].pos;
             if dest != pos { self.units[idx].planned_move = Option.Some(dest); }
-            let ruins = self.ruin_at(target).is_some() && !self.is_occupied(target);
-            let can_attack = self.units[idx].can_attack();
-            if can_attack && !ruins && dest != target && dest.distance(target) <= stats.attack_range {
-                self.units[idx].planned_attack = Option.Some(target);
-            }
+            let attack = if known.enemies.contains(target) {
+                let in_reach = dest != target && dest.distance(target) <= stats.attack_range && self.known_attack_target_legal(idx, target, false, &known.fog);
+                if in_reach { Option.Some(target) } else { Option.None }
+            } else {
+                self.ai_attack_from(idx, dest, &known.fog)
+            };
+            self.units[idx].planned_attack = attack;
         }
     }
 
-    /// Whether unit `idx` stands beside one of its side's cities while an enemy stands beside it
-    /// too.
-    fn gate_under_attack(&self, idx: i32) -> bool {
-        let unit = &self.units[idx];
+    /// Whether a unit of `team` at `pos` stands beside one of its side's cities while an enemy
+    /// in sight stands beside it too.
+    fn gate_under_attack(&self, pos: Hex, team: Team, fog: &Fog) -> bool {
         for c in 0..self.cities.len() {
             let city = &self.cities[c];
-            if city.team != unit.team || unit.pos.distance(city.pos) != 1 { continue; }
+            if city.team != team || pos.distance(city.pos) != 1 { continue; }
             for e in 0..self.units.len() {
-                if self.units[e].team != unit.team && self.units[e].pos.distance(city.pos) == 1 { return true; }
+                let enemy = &self.units[e];
+                if enemy.team != team && fog.sees(enemy.pos) && enemy.pos.distance(city.pos) == 1 { return true; }
             }
         }
         false
     }
 
-    /// The enemy nearest unit `idx` within its attack range, lowest id first among equals.
-    fn nearest_enemy_in_range(&self, idx: i32) -> Option[Hex] {
+    /// Whether a unit of `team` other than `id` is already heading for `hex`.
+    fn claimed_by_other(&self, team: Team, id: u32, hex: Hex) -> bool {
+        for i in 0..self.units.len() {
+            let u = &self.units[i];
+            if u.team == team && u.id != id && u.planned_move == Option.Some(hex) { return true; }
+        }
+        false
+    }
+
+    /// What `fog`'s side knows is worth going for: the enemy units and workers in sight, and the
+    /// ruins, dens and enemy cities in sight or remembered.
+    pub fn knowledge(&self, fog: Fog) -> Knowledge {
+        let team = fog.team();
+        let mut enemies: Set[Hex] = Set.new();
+        for u in 0..self.units.len() {
+            if self.units[u].team != team && fog.sees(self.units[u].pos) { let _new = enemies.insert(self.units[u].pos); }
+        }
+        for w in 0..self.field_workers.len() {
+            if self.field_workers[w].team != team && fog.sees(self.field_workers[w].pos) { let _new = enemies.insert(self.field_workers[w].pos); }
+        }
+        let mut ruins: Set[Hex] = Set.new();
+        for r in 0..self.ruins.len() { if fog.sees(self.ruins[r].pos) { let _new = ruins.insert(self.ruins[r].pos); } }
+        let mut dens: Set[Hex] = Set.new();
+        for d in 0..self.dens.len() { if fog.sees(self.dens[d].pos) { let _new = dens.insert(self.dens[d].pos); } }
+        let mut cities: Set[Hex] = Set.new();
+        for c in 0..self.cities.len() {
+            if self.cities[c].team != team && fog.sees(self.cities[c].pos) { let _new = cities.insert(self.cities[c].pos); }
+        }
+        // Out of sight, as last seen; the memory's order doesn't count.
+        let mut closed: Vec[bool] = Vec.new();
+        for _ in 0..self.grid.cells() { closed.push(false); }
+        let mut walls = !self.barriers.is_empty();
+        for i in 0..self.recalled_len(&fog) {
+            let Option.Some((hex, seen)) = self.recalled_at(i, &fog) else { continue; };
+            if !fog.sees(hex) {
+                if seen.ruin { let _new = ruins.insert(hex); }
+                if seen.den.is_some() { let _new = dens.insert(hex); }
+                if let Option.Some(city) = seen.city { if city.team != team { let _new = cities.insert(hex); } }
+            }
+            // Everything in sight is in the memory too (`side_fog`), and ground never seen is
+            // open.
+            if !self.known_step(hex, hex, team, &fog, false) {
+                if let Option.Some(k) = self.grid.index(hex) { closed[k] = true; }
+            }
+            for b in 0..6 { if seen.barriers[b].is_some() { walls = true; } }
+        }
+        let mut gates: Set[Hex] = Set.new();
+        for c in cities.each() {
+            let around = c.neighbors();
+            for k in 0..6 { let _new = gates.insert(around[k]); }
+        }
+        Knowledge { fog, enemies, ruins, dens, cities, gates, closed, walls }
+    }
+
+    /// `known_step` for a land unit of `known`'s side, from what it knows gathered up front, as a
+    /// search takes many steps.
+    fn ai_step(&self, from: Hex, to: Hex, known: &Knowledge) -> bool {
+        let Option.Some(i) = self.grid.index(to) else { return false; };
+        !known.closed[i] && self.grid.contains(to) && (!known.walls || self.known_can_cross(from, to, known.fog.team(), &known.fog))
+    }
+
+    /// The enemy in `fog`'s sight that unit `idx` would attack from `from`: the nearest in range
+    /// it may attack, ties to the lowest id.
+    fn ai_attack_from(&self, idx: i32, from: Hex, fog: &Fog) -> Option[Hex] {
         let unit = &self.units[idx];
         let range = unit.stats().attack_range;
         let mut best: Option[i32] = Option.None;
         for e in 0..self.units.len() {
             let enemy = &self.units[e];
-            if enemy.team == unit.team || unit.pos.distance(enemy.pos) > range { continue; }
+            if enemy.team == unit.team || !fog.sees(enemy.pos) { continue; }
+            if from.distance(enemy.pos) > range || !self.known_attack_target_legal(idx, enemy.pos, false, fog) { continue; }
             let better = match best {
                 Option.None => true,
                 Option.Some(b) => {
-                    let (d, bd) = (unit.pos.distance(enemy.pos), unit.pos.distance(self.units[b].pos));
+                    let (d, bd) = (from.distance(enemy.pos), from.distance(self.units[b].pos));
                     d < bd || (d == bd && enemy.id < self.units[b].id)
                 }
             };
@@ -177,7 +424,7 @@ impl GameState {
     /// or queued, trains one after the worker. A city of `AI_SETTLE_POPULATION` or more expands,
     /// before it grows: it trains a Settler when its side has none out or queued and knows a site
     /// for a city (`ai_city_site`).
-    fn plan_ai_cities(&mut self, team: Team) {
+    fn plan_ai_cities(&mut self, team: Team, known: &Knowledge) {
         let mut scouting = false;
         let mut settling = false;
         for c in 0..self.cities.len() {
@@ -212,7 +459,7 @@ impl GameState {
         for k in 0..cities.len() {
             let city = cities[k];
             let stock = self.stock(team);
-            self.place_ai_barracks(city);
+            self.place_ai_barracks(city, &known.fog);
             // A job is paid when placed.
             spare = spare.minus(stock.minus(self.stock(team)));
             if self.cities[city].barracks.is_some() && self.cities[city].barracks_queue.is_empty() {
@@ -235,7 +482,7 @@ impl GameState {
             if c.workers == 0 && self.workers_out(city) == 0 { choices.push(Build.Worker); }
             if !scouting { choices.push(Build.Scout); }
             if c.barracks.is_none() && army < AI_ARMY_PER_CITY * cities.len() { choices.push(melee); }
-            if !settling && c.population >= AI_SETTLE_POPULATION && spare.covers(Build.Settler.price()) && self.ai_city_site(team, c.pos, false).is_some() {
+            if !settling && c.population >= AI_SETTLE_POPULATION && spare.covers(Build.Settler.price()) && self.ai_city_site(team, c.pos, known, false).is_some() {
                 choices.push(Build.Settler);
             }
             choices.push(Build.Grow);
@@ -274,9 +521,9 @@ impl GameState {
 
     /// City `city` of the AI, with a worker and no Barracks built or placed, places one for its
     /// workers to build (`ai_barracks_site`), if its side can pay.
-    fn place_ai_barracks(&mut self, city: i32) {
+    fn place_ai_barracks(&mut self, city: i32, fog: &Fog) {
         if self.cities[city].barracks.is_some() || self.building_job_queued(city, Building.Barracks) || !self.has_workers(city) { return; }
-        if let Option.Some(site) = self.ai_barracks_site(city) {
+        if let Option.Some(site) = self.ai_barracks_site(city, fog) {
             let job = WorkerJob.on_tile(site, JobKind.Build(Building.Barracks));
             let team = self.cities[city].team;
             if self.job_problem(city, job).is_none() && self.tile_job_at(team, site).is_none() {
@@ -287,8 +534,9 @@ impl GameState {
 
     /// Where city `city` of the AI puts its Barracks: on a Horses or Iron deposit within 3 hexes,
     /// of a kind its side has none of yet if it can, else on the nearest open, unworked tile
-    /// within 2; ties by distance, then hex coordinates.
-    fn ai_barracks_site(&self, city: i32) -> Option[Hex] {
+    /// within 2; ties by distance, then hex coordinates. Open means no enemy in sight (`fog`)
+    /// stands on it.
+    fn ai_barracks_site(&self, city: i32, fog: &Fog) -> Option[Hex] {
         let c = &self.cities[city];
         let team = c.team;
         let mut near: Vec[Hex] = Vec.new();
@@ -296,7 +544,7 @@ impl GameState {
         for h in 0..all.len() {
             let hex = all[h];
             let d = hex.distance(c.pos);
-            if d >= 1 && d <= 3 && self.ai_site_issue(city, Building.Barracks, hex).is_none() { near.push(hex); }
+            if d >= 1 && d <= 3 && self.ai_site_issue(city, Building.Barracks, hex).is_none() && !(fog.sees(hex) && self.enemy_of_team_at(hex, team).is_some()) { near.push(hex); }
         }
         // Sorted by distance, then coordinates.
         for i in 1..near.len() {
@@ -323,10 +571,12 @@ impl GameState {
     /// `team`'s settlers found cities, or head for where they will. A settler founds where it
     /// stands when that's its site (`ai_city_site`) and the rules allow it (`founding_issue`);
     /// with no city yet, its side founds wherever the rules allow, at once, as a starting city.
-    /// Else it walks toward its site. A site the rules refuse goes on its side's list
+    /// Else it walks toward its site, keeping out of the reach of enemies in sight where it can.
+    /// A site the rules refuse (a city its side hadn't seen is too near) goes on its side's list
     /// (`refused_sites`) and it looks again. A settler with no city to found and no site known
-    /// founds its side's first city where it stands; any other waits.
-    fn plan_ai_settlers(&mut self, team: Team) {
+    /// founds its side's first city where it stands, closer than the rules allow if it must; any
+    /// other waits for its side to see more.
+    fn plan_ai_settlers(&mut self, team: Team, known: &Knowledge, floods: &mut Floods) {
         let mut settlers: Vec[u32] = Vec.new();
         for u in 0..self.units.len() {
             let unit = &self.units[u];
@@ -344,86 +594,102 @@ impl GameState {
                 let _city = self.found_city(id, team, pos);
                 continue;
             }
-            let mut site = self.ai_city_site(team, pos, first);
+            let mut site = self.ai_city_site(team, pos, known, first);
             if site == Option.Some(pos) {
                 if self.founding_issue(pos).is_none() {
                     let _city = self.found_city(id, team, pos);
                     continue;
                 }
                 self.refused_sites.push((team, pos));
-                site = self.ai_city_site(team, pos, first);
+                site = self.ai_city_site(team, pos, known, first);
             }
             let Option.Some(target) = site else {
                 let open_land = self.grid.is_passable(pos) && !self.grid.terrain(pos).is_water() && self.ruin_at(pos).is_none() && self.den_at(pos).is_none();
                 if first && open_land { let _city = self.found_city(id, team, pos); }
                 continue;
             };
-            let stats = self.units[idx].stats();
-            let reachable = self.reachable_hexes(pos, stats.move_range, team);
-            let to_target = self.steps_to(target, team, &reachable);
-            let mut best: Option[Hex] = Option.None;
-            let mut best_steps = UNREACHED;
-            for hh in reachable.each() {
-                let hex = *hh;
-                if hex != pos && self.claimed_by(team, hex) { continue; }
-                let steps = to_target.get(hex).unwrap_or(UNREACHED);
-                let better = match best { Option.None => true, Option.Some(b) => closer(steps, hex, best_steps, b) };
-                if better { best = Option.Some(hex); best_steps = steps; }
-            }
-            let dest = best.unwrap_or(pos);
+            let dest = self.settler_step(idx, target, known, floods);
             self.units[idx].planned_move = if dest != pos { Option.Some(dest) } else { Option.None };
             self.units[idx].planned_attack = Option.None;
         }
     }
 
-    /// Where a settler of `team` at `from` would found a city: of the hexes within
-    /// `AI_SITE_STEPS` steps on foot, one the rules would allow, within `AI_SITE_MAX_DISTANCE` of
-    /// its nearest city unless it has none. With a city, the best by its land (`site_value`) less
-    /// `AI_SITE_STEP_COST` a step; with none (`first`), the nearest. Ties by hex coordinates.
-    fn ai_city_site(&self, team: Team, from: Hex, first: bool) -> Option[Hex] {
+    /// Where settler `idx` steps toward `site`: of the hexes it can reach that no ally has
+    /// claimed, those no enemy in sight could attack next turn (`threat_reach`) if there are any,
+    /// the nearest `site` on foot.
+    pub fn settler_step(&self, idx: i32, site: Hex, known: &Knowledge, floods: &mut Floods) -> Hex {
+        let unit = &self.units[idx];
+        let (team, pos) = (unit.team, unit.pos);
+        let move_range = unit.stats().move_range;
+        let fog = &known.fog;
+        let mut threats: Vec[(Hex, i32)] = Vec.new();
+        for e in 0..self.units.len() {
+            let enemy = &self.units[e];
+            if enemy.team == team || !fog.sees(enemy.pos) { continue; }
+            if let Option.Some(reach) = threat_reach(enemy) { threats.push((enemy.pos, reach)); }
+        }
+        let reach = self.known_reachable_for_domain(pos, move_range, team, fog, false);
+        let mut reachable: Vec[Hex] = Vec.new();
+        for hh in reach.each() {
+            let hex = *hh;
+            let mut claimed = false;
+            for u in 0..self.units.len() {
+                if self.units[u].team == team && self.units[u].planned_move == Option.Some(hex) { claimed = true; }
+            }
+            if hex == pos || !claimed { reachable.push(hex); }
+        }
+        let reachable = sorted_by_coordinates(reachable);
+        let mut safe: Vec[Hex] = Vec.new();
+        for k in 0..reachable.len() {
+            if threats_at(&threats, reachable[k]) == 0 && !known.in_den_territory(reachable[k]) { safe.push(reachable[k]); }
+        }
+        let options = if safe.is_empty() { reachable } else { safe };
+        self.step_toward(site, pos, &options, known, floods)
+    }
+
+    /// Where a settler of `team` at `from` would found a city, as its side knows the map: of the
+    /// hexes within `AI_SITE_STEPS` steps on foot, one it has seen that the rules would allow as
+    /// far as it knows (`known_site`), within `AI_SITE_MAX_DISTANCE` of its nearest city unless it
+    /// has none. With a city, the best by its land (`site_value`) less `AI_SITE_STEP_COST` a step;
+    /// with none (`first`), the nearest. Ties by hex coordinates.
+    pub fn ai_city_site(&self, team: Team, from: Hex, known: &Knowledge, first: bool) -> Option[Hex] {
         let mut own: Vec[Hex] = Vec.new();
         for c in 0..self.cities.len() { if self.cities[c].team == team { own.push(self.cities[c].pos); } }
         let mut best: Option[(i32, Hex)] = Option.None;
-        let mut seen: Set[Hex] = Set.new();
-        let _new = seen.insert(from);
-        let mut ring: Vec[Hex] = Vec.new();
-        ring.push(from);
         let mut steps = 0;
-        while !ring.is_empty() && steps <= AI_SITE_STEPS {
-            for k in 0..ring.len() {
-                let hex = ring[k];
+        let mut rings = self.rings_from(from);
+        while self.rings_left(&rings) {
+            for k in 0..rings.ring.len() {
+                let hex = rings.ring[k];
                 let mut near_home = false;
                 for o in 0..own.len() { if own[o].distance(hex) <= AI_SITE_MAX_DISTANCE { near_home = true; } }
-                if !(first || near_home) || !self.known_site(team, hex, &own) { continue; }
-                let score = if first { -steps } else { self.site_value(hex) - AI_SITE_STEP_COST * steps };
+                if !(first || near_home) || !self.known_site(team, hex, known, &own) { continue; }
+                let score = if first { -steps } else { self.site_value(hex, &known.fog) - AI_SITE_STEP_COST * steps };
                 let better = match best {
                     Option.None => true,
-                    Option.Some((top, at)) => score > top || (score == top && (hex.q < at.q || (hex.q == at.q && hex.r < at.r))),
+                    Option.Some((top, at)) => score > top || (score == top && lower(hex, at)),
                 };
                 if better { best = Option.Some((score, hex)); }
             }
-            if first && best.is_some() { break; }
-            let mut next: Vec[Hex] = Vec.new();
-            for k in 0..ring.len() {
-                let around = ring[k].neighbors();
-                for n in 0..6 {
-                    let h = around[n];
-                    if self.grid.contains(h) && self.grid.is_passable(h) && seen.insert(h) { next.push(h); }
-                }
-            }
-            ring = next;
             steps = steps + 1;
+            // Stop: far enough, or (for a first city) the nearest found.
+            if steps > AI_SITE_STEPS || (first && best.is_some()) { break; }
+            self.rings_advance(&mut rings, known);
         }
         match best { Option.Some((_, hex)) => Option.Some(hex), Option.None => Option.None }
     }
 
-    /// Whether `team` knows of nothing against founding a city on `hex` (`founding_issue`):
-    /// open land, no ruins on it, `MIN_CITY_DISTANCE` from every city, and not near a site the
-    /// rules refused it (`AI_REFUSED_RADIUS`).
-    fn known_site(&self, team: Team, hex: Hex, own: &Vec[Hex]) -> bool {
-        if !self.grid.is_passable(hex) || self.grid.terrain(hex).is_water() || self.ruin_at(hex).is_some() { return false; }
+    /// Whether `team` knows of nothing against founding a city on `hex` (`founding_issue`, as its
+    /// side knows the map): seen, open land, no ruins or enemy in sight on it, `MIN_CITY_DISTANCE`
+    /// from its cities (`own`) and the enemy cities it knows of, and not near a site the rules
+    /// refused it (`AI_REFUSED_RADIUS`).
+    pub fn known_site(&self, team: Team, hex: Hex, known: &Knowledge, own: &Vec[Hex]) -> bool {
+        if !self.explored_by(hex, &known.fog) || !self.grid.is_passable(hex) || self.grid.terrain(hex).is_water() { return false; }
+        if known.ruins.contains(hex) || known.enemies.contains(hex) || known.in_den_territory(hex) { return false; }
         for o in 0..own.len() { if own[o].distance(hex) < MIN_CITY_DISTANCE { return false; } }
-        for c in 0..self.cities.len() { if self.cities[c].pos.distance(hex) < MIN_CITY_DISTANCE { return false; } }
+        let mut crowded = false;
+        for c in known.cities.each() { if c.distance(hex) < MIN_CITY_DISTANCE { crowded = true; } }
+        if crowded { return false; }
         for r in 0..self.refused_sites.len() {
             let (side, at) = self.refused_sites[r];
             if side == team && at.distance(hex) <= AI_REFUSED_RADIUS { return false; }
@@ -431,20 +697,21 @@ impl GameState {
         true
     }
 
-    /// What a city on `hex` would have around it: each hex within `AI_SITE_RADIUS`'s food twice,
-    /// and its wood and metal once.
-    fn site_value(&self, hex: Hex) -> i32 {
+    /// What a city on `hex` would have around it, as `fog`'s side knows the land: each seen hex
+    /// within `AI_SITE_RADIUS`'s food twice, and its wood and metal once. Ground never seen counts
+    /// nothing.
+    fn site_value(&self, hex: Hex, fog: &Fog) -> i32 {
+        let around = within(hex, AI_SITE_RADIUS);
         let mut total = 0;
-        for dq in -AI_SITE_RADIUS..=AI_SITE_RADIUS {
-            for dr in -AI_SITE_RADIUS..=AI_SITE_RADIUS {
-                let h = Hex.new(hex.q + dq, hex.r + dr);
-                if h.distance(hex) > AI_SITE_RADIUS || !self.grid.contains(h) { continue; }
-                let (food, wood, metal) = self.raw_yield(h);
-                total = total + 2 * food + wood + metal;
-            }
+        for k in 0..around.len() {
+            let h = around[k];
+            if !self.grid.contains(h) || !self.explored_by(h, fog) { continue; }
+            let (food, wood, metal) = self.known_yield(h, fog);
+            total = total + 2 * food + wood + metal;
         }
         total
     }
+
     /// Whether a unit of `team` is already heading for `hex`.
     fn claimed_by(&self, team: Team, hex: Hex) -> bool {
         for i in 0..self.units.len() {
@@ -453,107 +720,356 @@ impl GameState {
         false
     }
 
-    /// Where unit `idx` heads: the enemy unit, or the ruins no ally holds or is already heading
-    /// for, closest on foot (routing around terrain; ties go to the lowest coordinates). With
-    /// none reachable, the enemy nearest as the crow flies.
-    fn nearest_ai_target(&self, idx: i32) -> Option[Hex] {
+    /// Where unit `idx` heads (see `plan_ai_turn`): of the enemy units in sight, the enemy
+    /// workers alone in sight, and ruins and animal dens (`animals.tua`) that no ally holds or is
+    /// already heading for, and the enemy cities seen, the nearest on foot over the ground as its
+    /// side knows it (a city counting from its gates, and an enemy before a city as near), ties to
+    /// the lowest coordinates. With none reachable, the nearest ground its side has never seen;
+    /// with none left, the enemy in sight nearest as the crow flies that it could hit (a ship
+    /// only for a unit that can shoot at water). A ship goes by the crow's flight: to the nearest
+    /// enemy in sight, else the nearest ground never seen.
+    fn nearest_ai_target(&self, idx: i32, known: &Knowledge) -> Option[Hex] {
         let unit = &self.units[idx];
         let team = unit.team;
-        let mut enemies: Set[Hex] = Set.new();
-        for i in 0..self.units.len() {
-            if self.units[i].team != team { let _new = enemies.insert(self.units[i].pos); }
+        let fog = &known.fog;
+        if unit.is_naval() {
+            let mut enemies: Vec[Hex] = Vec.new();
+            for e in known.enemies.each() { enemies.push(*e); }
+            if let Option.Some(hex) = nearest_of(unit.pos, &enemies) { return Option.Some(hex); }
+            let mut unseen: Vec[Hex] = Vec.new();
+            let all = self.grid.hex_list();
+            for k in 0..all.len() { if !self.explored_by(all[k], fog) { unseen.push(all[k]); } }
+            return nearest_of(unit.pos, &unseen);
         }
-        let mut nearest_enemy: Option[Hex] = Option.None;
-        for i in 0..self.units.len() {
-            let p = self.units[i].pos;
-            if self.units[i].team == team { continue; }
-            let better = match nearest_enemy { Option.None => true, Option.Some(b) => closer(unit.pos.distance(p), p, unit.pos.distance(b), b) };
-            if better { nearest_enemy = Option.Some(p); }
+        // An enemy troop in sight is fought, however many allies go for it; ruins, a den to
+        // clear and an enemy worker alone (captured by stepping onto it) take one unit, so none
+        // an ally holds or already heads for.
+        let mut targets: Set[Hex] = Set.new();
+        for r in known.ruins.each() { if !self.held_by(team, *r) { let _new = targets.insert(*r); } }
+        for d in known.dens.each() { if !self.held_by(team, *d) { let _new = targets.insert(*d); } }
+        for e in known.enemies.each() { let _new = targets.insert(*e); }
+        let mut kept: Set[Hex] = Set.new();
+        for t in targets.each() {
+            let troop = known.enemies.contains(*t) && self.enemy_of_team_at(*t, team).is_some();
+            if troop || !self.claimed_by_other(team, unit.id, *t) { let _new = kept.insert(*t); }
         }
-        if unit.is_naval() { return nearest_enemy; }
-        let mut open_ruins: Set[Hex] = Set.new();
-        for r in 0..self.ruins.len() {
-            let pos = self.ruins[r].pos;
-            let mut taken = false;
-            for i in 0..self.units.len() {
-                let u = &self.units[i];
-                if u.team == team && (u.pos == pos || u.planned_move == Option.Some(pos)) { taken = true; }
-            }
-            if !taken { let _new = open_ruins.insert(pos); }
-        }
-        // Search outward ring by ring, stopping at the first ring with a target.
-        let mut seen: Set[Hex] = Set.new();
-        let _new = seen.insert(unit.pos);
-        let mut ring: Vec[Hex] = Vec.new();
-        ring.push(unit.pos);
-        while !ring.is_empty() {
-            let mut found: Option[Hex] = Option.None;
-            for k in 0..ring.len() {
-                let hex = ring[k];
-                if enemies.contains(hex) || open_ruins.contains(hex) {
-                    let better = match found { Option.None => true, Option.Some(b) => hex.q < b.q || (hex.q == b.q && hex.r < b.r) };
-                    if better { found = Option.Some(hex); }
+        let targets = kept;
+        // With nothing known to go for, the nearest ground never seen is it.
+        let exploring = targets.is_empty() && known.cities.is_empty();
+        let mut unexplored: Option[Hex] = Option.None;
+        let mut found: Option[Hex] = Option.None;
+        // A city is as far as its gates, plus one.
+        let mut rings = self.rings_from(unit.pos);
+        while found.is_none() && self.rings_left(&rings) {
+            let mut here: Vec[Hex] = Vec.new();
+            for k in 0..rings.ring.len() { if targets.contains(rings.ring[k]) { here.push(rings.ring[k]); } }
+            found = lowest(&here);
+            if found.is_none() {
+                let mut cities: Vec[Hex] = Vec.new();
+                for k in 0..rings.last.len() {
+                    if !known.gates.contains(rings.last[k]) { continue; }
+                    let around = rings.last[k].neighbors();
+                    for n in 0..6 { if known.cities.contains(around[n]) { cities.push(around[n]); } }
                 }
+                found = lowest(&cities);
             }
-            if found.is_some() { return found; }
-            let mut next: Vec[Hex] = Vec.new();
-            for k in 0..ring.len() {
-                let around = ring[k].neighbors();
-                for n in 0..6 {
-                    if self.can_step(ring[k], around[n], team) && seen.insert(around[n]) { next.push(around[n]); }
-                }
+            if found.is_none() && unexplored.is_none() {
+                let mut unseen: Vec[Hex] = Vec.new();
+                for k in 0..rings.ring.len() { if !self.explored_by(rings.ring[k], fog) { unseen.push(rings.ring[k]); } }
+                unexplored = lowest(&unseen);
+                if exploring { found = unexplored; }
             }
-            ring = next;
+            if found.is_none() { self.rings_advance(&mut rings, known); }
         }
-        nearest_enemy
+        if found.is_some() { return found; }
+        if unexplored.is_some() { return unexplored; }
+        // A ship is only worth chasing along the shore for one that can hit it there.
+        let mut hittable: Vec[Hex] = Vec.new();
+        for t in targets.each() {
+            let water = self.grid.contains(*t) && self.grid.terrain(*t).is_water();
+            if known.enemies.contains(*t) && (unit.attacks_water() || !water) { hittable.push(*t); }
+        }
+        nearest_of(unit.pos, &hittable)
     }
 
-    /// Steps on foot for `team` from each of `wanted` to `target`, around impassable terrain,
-    /// walls and others' gates but ignoring units, since those will have moved by the time anyone
-    /// gets there. Searches outward from `target` only until every one of `wanted` is found; any
-    /// it can't reach are left out.
-    fn steps_to(&self, target: Hex, team: Team, wanted: &Set[Hex]) -> Map[Hex, i32] {
-        let mut distances: Map[Hex, i32] = Map.new();
-        let _old = distances.insert(target, 0);
-        let mut queue: Deque[Hex] = Deque.new();
-        queue.push_back(target);
-        let mut left = wanted.len();
-        if wanted.contains(target) { left = left - 1; }
-        while let Option.Some(hex) = queue.pop_front() {
-            if left == 0 { break; }
-            let next_distance = distances.get(hex).unwrap_or(0) + 1;
+    /// Whether a unit of `team` stands on `hex`.
+    fn held_by(&self, team: Team, hex: Hex) -> bool {
+        for i in 0..self.units.len() { if self.units[i].team == team && self.units[i].pos == hex { return true; } }
+        false
+    }
+
+    /// A search outward from `start` over the ground as a side knows it (`rings_advance`).
+    fn rings_from(&self, start: Hex) -> Rings {
+        let mut seen: Vec[bool] = Vec.new();
+        for _ in 0..self.grid.cells() { seen.push(false); }
+        if let Option.Some(i) = self.grid.index(start) { seen[i] = true; }
+        let mut ring: Vec[Hex] = Vec.new();
+        ring.push(start);
+        Rings { seen, ring, last: Vec.new() }
+    }
+
+    /// Whether `rings` has a ring, or the one before it, still to pick from.
+    fn rings_left(&self, rings: &Rings) -> bool { !rings.ring.is_empty() || !rings.last.is_empty() }
+
+    /// The next ring: the hexes one more step on foot away over the ground as `known`'s side
+    /// knows it.
+    fn rings_advance(&self, rings: &mut Rings, known: &Knowledge) {
+        let mut next: Vec[Hex] = Vec.new();
+        for k in 0..rings.ring.len() {
+            let hex = rings.ring[k];
             let around = hex.neighbors();
-            for k in 0..6 {
-                let neighbor = around[k];
-                if self.can_step(hex, neighbor, team) && !distances.has(neighbor) {
-                    let _old = distances.insert(neighbor, next_distance);
-                    queue.push_back(neighbor);
+            for n in 0..6 {
+                let neighbor = around[n];
+                if self.ai_step(hex, neighbor, known) {
+                    if let Option.Some(i) = self.grid.index(neighbor) {
+                        if !rings.seen[i] {
+                            rings.seen[i] = true;
+                            next.push(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+        swap(&mut rings.ring, &mut next);
+        rings.last = next;
+    }
+
+    /// Scout `idx` of the AI gathers what its side knows and stays alive, rather than fight. It
+    /// never ends a move where an enemy in sight could reach and attack it next turn
+    /// (`threat_reach`) if it can help it; hurt (under half health), it keeps a hex farther off
+    /// still, and heads home to its side's nearest city. Of the safe hexes it can reach it takes,
+    /// first, the nearest with an enemy worker alone (captured, since a worker can't hit back),
+    /// ruins or a den (held or cleared while safe); else the one that brings the most into sight
+    /// that its side has never seen or not seen for a while (`scouting_value`; hills see
+    /// farther), farthest from its side's cities on a tie, so scouts fan out; with nothing new
+    /// within reach, it heads for the nearest ground that has (`nearest_unscouted`). With no safe
+    /// hex it's cornered: it takes the least threatened, and fights back from there. `watched` is
+    /// what the side's scouts planned so far this turn will see, which the next one doesn't count
+    /// again.
+    fn plan_ai_scout(&mut self, idx: i32, known: &Knowledge, floods: &mut Floods, watched: &mut Set[Hex]) {
+        let unit = &self.units[idx];
+        let (team, pos) = (unit.team, unit.pos);
+        let move_range = unit.stats().move_range;
+        let fog = &known.fog;
+        let hurt = unit.hp < unit.max_hp() / 2.0;
+        let mut threats: Vec[(Hex, i32)] = Vec.new();
+        for e in 0..self.units.len() {
+            let enemy = &self.units[e];
+            if enemy.team == team || !fog.sees(enemy.pos) { continue; }
+            if let Option.Some(reach) = threat_reach(enemy) { threats.push((enemy.pos, reach + flag(hurt))); }
+        }
+        let reach = self.known_reachable_for_domain(pos, move_range, team, fog, false);
+        let mut all: Vec[Hex] = Vec.new();
+        for hh in reach.each() {
+            let hex = *hh;
+            if hex == pos || !self.claimed_by(team, hex) { all.push(hex); }
+        }
+        let reachable = sorted_by_coordinates(all);
+        let mut safe: Vec[Hex] = Vec.new();
+        for k in 0..reachable.len() { if threats_at(&threats, reachable[k]) == 0 { safe.push(reachable[k]); } }
+        let mut homes: Vec[Hex] = Vec.new();
+        for c in 0..self.cities.len() { if self.cities[c].team == team { homes.push(self.cities[c].pos); } }
+
+        let mut attack: Option[Hex] = Option.None;
+        let mut dest = pos;
+        if safe.is_empty() {
+            // Out of reach of as many as it can, as far as it can get.
+            let mut best: Option[Hex] = Option.None;
+            let mut best_rank = Key4 { a: 0, b: 0, q: 0, r: 0 };
+            for k in 0..reachable.len() {
+                let hex = reachable[k];
+                let far = nearest_threat(&threats, hex);
+                let rank = Key4 { a: threats_at(&threats, hex), b: -far, q: hex.q, r: hex.r };
+                // Stay-put ranks ahead of a move on a tie, then coordinates.
+                let better = best.is_none() || tie_rank(rank, hex != pos).before(tie_rank(best_rank, best.unwrap_or(pos) != pos));
+                if better { best = Option.Some(hex); best_rank = rank; }
+            }
+            dest = best.unwrap_or(pos);
+            // Cornered, with an enemy still beside it: it fights back.
+            if nearest_threat(&threats, dest) <= 1 { attack = self.ai_attack_from(idx, dest, fog); }
+        } else {
+            // The nearest safe hex holding prey, if any.
+            let mut prey: Vec[Hex] = Vec.new();
+            for k in 0..safe.len() { if self.scout_prey(known, safe[k], team) { prey.push(safe[k]); } }
+            if let Option.Some(hex) = nearest_of(pos, &prey) {
+                dest = hex;
+            } else if hurt && !homes.is_empty() {
+                let home = nearest_of(pos, &homes).unwrap_or(pos);
+                dest = self.step_toward(home, pos, &safe, known, floods);
+            } else {
+                let mut best: Option[Hex] = Option.None;
+                let mut best_value = 0;
+                let mut best_rank = Key4 { a: 0, b: 0, q: 0, r: 0 };
+                for k in 0..safe.len() {
+                    let hex = safe[k];
+                    let value = self.scouting_value(hex, known, &*watched);
+                    let mut from_home = 0;
+                    for h in 0..homes.len() {
+                        let d = homes[h].distance(hex);
+                        if h == 0 || d < from_home { from_home = d; }
+                    }
+                    // Most seen, then farthest from home, then the lowest coordinates.
+                    let rank = Key4 { a: -value, b: -from_home, q: hex.q, r: hex.r };
+                    if best.is_none() || rank.before(best_rank) { best = Option.Some(hex); best_value = value; best_rank = rank; }
+                }
+                if best.is_some() && best_value > 0 {
+                    dest = best.unwrap_or(pos);
+                } else {
+                    match self.nearest_unscouted(pos, known, &*watched) {
+                        Option.Some(goal) => { dest = self.step_toward(goal, pos, &safe, known, floods); }
+                        // Nothing left to see: the nearest safe hex, which is where it stands if
+                        // that's safe.
+                        Option.None => { dest = nearest_of(pos, &safe).unwrap_or(pos); }
+                    }
+                }
+            }
+        }
+        let seen_from = within(dest, self.sight_at(UnitType.Scout, dest));
+        for k in 0..seen_from.len() { let _new = watched.insert(seen_from[k]); }
+        let unit = &mut self.units[idx];
+        unit.planned_move = if dest != pos { Option.Some(dest) } else { Option.None };
+        unit.planned_attack = attack;
+    }
+
+    /// Whether a scout may go for `hex`: an enemy worker alone there (captured, since a worker
+    /// can't hit back), or ruins or a den with nobody there.
+    fn scout_prey(&self, known: &Knowledge, hex: Hex, team: Team) -> bool {
+        let worker = known.enemies.contains(hex) && self.enemy_of_team_at(hex, team).is_none();
+        let ruins = (known.ruins.contains(hex) || known.dens.contains(hex)) && !known.enemies.contains(hex);
+        worker || ruins
+    }
+
+    /// How much a scout standing on `hex` would see that `known`'s side wants seen (`unscouted`),
+    /// and no other scout of its sees this turn (`watched`). By range alone, mountains aside.
+    fn scouting_value(&self, hex: Hex, known: &Knowledge, watched: &Set[Hex]) -> i32 {
+        let around = within(hex, self.sight_at(UnitType.Scout, hex));
+        let mut total = 0;
+        for k in 0..around.len() {
+            let h = around[k];
+            if self.grid.contains(h) && !watched.contains(h) { total = total + self.unscouted(h, known); }
+        }
+        total
+    }
+
+    /// How much `known`'s side wants `hex` seen: 2 if it never has been, 1 if not for
+    /// `SCOUT_STALE_TURNS`, else 0.
+    fn unscouted(&self, hex: Hex, known: &Knowledge) -> i32 {
+        match self.recalled(hex, &known.fog) {
+            Option.None => 2,
+            Option.Some(seen) => if self.turn >= seen.turn && self.turn - seen.turn >= SCOUT_STALE_TURNS { 1 } else { 0 },
+        }
+    }
+
+    /// The nearest ground on foot from `from` that `known`'s side wants seen (`unscouted`) and no
+    /// scout of its sees this turn, ties to the lowest coordinates.
+    fn nearest_unscouted(&self, from: Hex, known: &Knowledge, watched: &Set[Hex]) -> Option[Hex] {
+        let mut rings = self.rings_from(from);
+        while self.rings_left(&rings) {
+            let mut wanted: Vec[Hex] = Vec.new();
+            for k in 0..rings.ring.len() {
+                let h = rings.ring[k];
+                if !watched.contains(h) && self.unscouted(h, known) > 0 { wanted.push(h); }
+            }
+            if let Option.Some(hex) = lowest(&wanted) { return Option.Some(hex); }
+            self.rings_advance(&mut rings, known);
+        }
+        Option.None
+    }
+
+    /// Of `options`, where a unit at `pos` gets nearest `goal` on foot (`steps_to`), staying put
+    /// on a tie, then by coordinates.
+    fn step_toward(&self, goal: Hex, pos: Hex, options: &Vec[Hex], known: &Knowledge, floods: &mut Floods) -> Hex {
+        let flood = self.flood_index(floods, goal);
+        let mut wanted: Set[Hex] = Set.new();
+        for k in 0..options.len() { let _new = wanted.insert(options[k]); }
+        self.steps_to(&mut floods.all[flood], known, &wanted);
+        let mut best: Option[Hex] = Option.None;
+        let mut best_rank = Key4 { a: 0, b: 0, q: 0, r: 0 };
+        for k in 0..options.len() {
+            let hex = options[k];
+            let rank = Key4 { a: self.steps_from(&floods.all[flood], hex), b: flag(hex != pos), q: hex.q, r: hex.r };
+            if best.is_none() || rank.before(best_rank) { best = Option.Some(hex); best_rank = rank; }
+        }
+        best.unwrap_or(pos)
+    }
+
+    /// The steps on foot `flood` has found from `hex` to its target, `NOT_FOUND` if none yet.
+    fn steps_from(&self, flood: &Flood, hex: Hex) -> i32 {
+        match self.grid.index(hex) { Option.Some(i) => flood.steps[i], Option.None => NOT_FOUND }
+    }
+
+    /// The flood for `target` in `floods`, started if there is none.
+    fn flood_index(&self, floods: &mut Floods, target: Hex) -> i32 {
+        if let Option.Some(k) = floods.at.get(target) { return k; }
+        let k = floods.all.len();
+        floods.all.push(self.flood_from(target));
+        let _old = floods.at.insert(target, k);
+        k
+    }
+
+    /// A flood from `target` that has found nothing but the target.
+    fn flood_from(&self, target: Hex) -> Flood {
+        let mut steps: Vec[i32] = Vec.new();
+        for _ in 0..self.grid.cells() { steps.push(NOT_FOUND); }
+        if let Option.Some(i) = self.grid.index(target) { steps[i] = 0; }
+        let mut frontier: Deque[Hex] = Deque.new();
+        frontier.push_back(target);
+        Flood { steps, frontier }
+    }
+
+    /// Carries `flood` on until it has the steps on foot from each of `wanted` to its target, for
+    /// a unit of `known`'s side: around the terrain, walls and others' gates and cities it knows
+    /// of, ground never seen counting as open, but ignoring units, since those will have moved by
+    /// the time anyone gets there. Any of `wanted` it can't reach are left out.
+    fn steps_to(&self, flood: &mut Flood, known: &Knowledge, wanted: &Set[Hex]) {
+        let mut left = 0;
+        for w in wanted.each() {
+            if self.steps_from(&*flood, *w) == NOT_FOUND { left = left + 1; }
+        }
+        while left > 0 {
+            let Option.Some(hex) = flood.frontier.pop_front() else { break; };
+            let next = match self.grid.index(hex) { Option.Some(i) => flood.steps[i] + 1, Option.None => 1 };
+            let around = hex.neighbors();
+            for n in 0..6 {
+                let neighbor = around[n];
+                if !self.ai_step(hex, neighbor, known) { continue; }
+                let Option.Some(i) = self.grid.index(neighbor) else { continue; };
+                if flood.steps[i] == NOT_FOUND {
+                    flood.steps[i] = next;
+                    flood.frontier.push_back(neighbor);
                     if wanted.contains(neighbor) { left = left - 1; }
                 }
             }
         }
-        distances
     }
+}
 
-    /// Water hexes a ship can reach from `start` in `move_range` steps, around land and occupied
-    /// hexes.
-    fn reachable_water(&self, start: Hex, move_range: i32) -> Set[Hex] {
-        let mut visited: Set[Hex] = Set.new();
-        let _new = visited.insert(start);
-        let mut frontier: Vec[Hex] = Vec.new();
-        frontier.push(start);
-        for _ in 0..move_range {
-            let mut next: Vec[Hex] = Vec.new();
-            for f in 0..frontier.len() {
-                let around = frontier[f].neighbors();
-                for k in 0..6 {
-                    let n = around[k];
-                    let open = self.grid.contains(n) && self.grid.terrain(n).is_water() && !self.is_occupied(n);
-                    if open && visited.insert(n) { next.push(n); }
-                }
-            }
-            frontier = next;
-        }
-        visited
+/// How far `hex` is from the nearest of `threats`.
+fn nearest_threat(threats: &Vec[(Hex, i32)], hex: Hex) -> i32 {
+    let mut best = NOT_FOUND;
+    for k in 0..threats.len() {
+        let (at, _reach) = threats[k];
+        let d = at.distance(hex);
+        if d < best { best = d; }
+    }
+    best
+}
+
+/// `rank` with staying put (`moves` false) ahead of a move on a tie: the flag goes between the
+/// scores and the coordinates.
+fn tie_rank(rank: Key4, moves: bool) -> Key5 {
+    Key5 { a: rank.a, b: rank.b, c: flag(moves), q: rank.q, r: rank.r }
+}
+
+/// A sort key of five numbers, smaller first.
+struct Key5 { a: i32, b: i32, c: i32, q: i32, r: i32 }
+
+impl Key5 {
+    fn before(self, o: Key5) -> bool {
+        if self.a != o.a { return self.a < o.a; }
+        if self.b != o.b { return self.b < o.b; }
+        if self.c != o.c { return self.c < o.c; }
+        if self.q != o.q { return self.q < o.q; }
+        self.r < o.r
     }
 }

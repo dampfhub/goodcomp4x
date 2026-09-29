@@ -120,6 +120,13 @@ fn starting_stockpiles() -> Vec[Stock] {
 }
 
 /// `n` zeros.
+/// One empty memory for each of the eight teams (`Team.index`).
+fn empty_side_memory() -> Vec[Map[Hex, Sighting]] {
+    let mut out: Vec[Map[Hex, Sighting]] = Vec.new();
+    for _ in 0..8 { out.push(Map.new()); }
+    out
+}
+
 fn zeros(n: i32) -> Vec[i32] {
     let mut out: Vec[i32] = Vec.new();
     for _ in 0..n { out.push(0); }
@@ -251,6 +258,9 @@ pub struct GameState {
     ui_captured: bool,
     /// Every hex the player's side has seen, as it last saw it.
     memory: Map[Hex, Sighting],
+    /// What each side (`Team.index`) has seen, as it last saw it: game state, brought up to date
+    /// as the AI plans that side's turn (`side_fog`).
+    side_memory: Vec[Map[Hex, Sighting]],
     /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.tua`).
     cloud_time: f32,
     /// A click that would replace the selection's queue, waiting to be repeated
@@ -361,6 +371,7 @@ impl GameState {
             imgui_ui: false,
             ui_captured: false,
             memory: Map.new(),
+            side_memory: empty_side_memory(),
             cloud_time: 0.0,
             queue_replace_armed: Option.None,
             disband_armed: Option.None,

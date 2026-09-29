@@ -18,6 +18,8 @@ use game.GameState;
 use game.text;
 use game.city.City;
 use game.hex.HexGrid;
+use game.hex.Hex;
+use game.fog.Sighting;
 use game.turn.TurnStep;
 use game.unit.UnitType;
 use game.settings.Settings;
@@ -212,6 +214,7 @@ impl GameState {
             imgui_ui: self.imgui_ui,
             ui_captured: false,
             memory: copy_map(&self.memory),
+            side_memory: copy_side_memory(&self.side_memory),
             cloud_time: self.cloud_time,
             queue_replace_armed: Option.None,
             disband_armed: Option.None,
@@ -262,6 +265,12 @@ fn copy_units(units: &Vec[Unit]) -> Vec[Unit] {
 pub fn copy_vec[T](v: &Vec[T]) -> Vec[T] {
     let mut out: Vec[T] = Vec.new();
     for i in 0..v.len() { out.push(v[i]); }
+    out
+}
+
+pub fn copy_side_memory(memory: &Vec[Map[Hex, Sighting]]) -> Vec[Map[Hex, Sighting]] {
+    let mut out: Vec[Map[Hex, Sighting]] = Vec.new();
+    for i in 0..memory.len() { out.push(copy_map(&memory[i])); }
     out
 }
 

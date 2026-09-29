@@ -279,6 +279,29 @@ impl HexGrid {
         }
     }
 
+    /// The bounding box's half sizes in q and r: `hexes` walks this box, filtered to the shape.
+    fn box_half(&self) -> (i32, i32) {
+        match self.shape {
+            GridShape.Hexagon(radius) => (radius, radius),
+            GridShape.Rectangle(cols, rows) => (cols, rows + cols / 2 + 1),
+        }
+    }
+
+    /// How many places a flat array over the grid has: the shape's bounding box. A search can
+    /// keep its own flags in an array this long, by `index`.
+    pub fn cells(&self) -> i32 {
+        let (q_max, r_max) = self.box_half();
+        (2 * q_max + 1) * (2 * r_max + 1)
+    }
+
+    /// Where `hex` is kept in such an array, if it is inside the shape's bounding box.
+    pub fn index(&self, hex: Hex) -> Option[i32] {
+        let (q_max, r_max) = self.box_half();
+        let (q, r) = (hex.q + q_max, hex.r + r_max);
+        let height = 2 * r_max + 1;
+        if q >= 0 && q < 2 * q_max + 1 && r >= 0 && r < height { Option.Some(q * height + r) } else { Option.None }
+    }
+
     /// A copy of the grid, for a savestate.
     pub fn snapshot(&self) -> HexGrid {
         let mut out = HexGrid.from_tiles(self.shape, Map.new());

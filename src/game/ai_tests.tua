@@ -1,0 +1,696 @@
+//! The AI under the fog: what each side plans on is what it has seen and remembers, scouts, dens,
+//! worker claims and expansion.
+
+use std.collections.Map;
+use std.core.Keep;
+use std.rand.Rand;
+use std.test.assert;
+use std.test.assert_eq;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.ai.AI_REFUSED_RADIUS;
+use game.ai.AI_SETTLE_POPULATION;
+use game.ai.AI_SITE_MAX_DISTANCE;
+use game.ai.Floods;
+use game.ai.threat_reach;
+use game.city.Build;
+use game.city.City;
+use game.city.MIN_CITY_DISTANCE;
+use game.city.one_cluster;
+use game.fog.Sighting;
+use game.hex.Hex;
+use game.hex.HexGrid;
+use game.ruins.ruin as new_ruin;
+use game.ruins.RuinReward;
+use game.terrain.MOUNTAINS;
+use game.terrain.Terrain;
+use game.terrain.Tile;
+use game.tests.sandbox;
+use game.unit.IdSet;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+use game.workers.FieldWorker;
+
+/// A Sighting of open ground with nothing on it.
+fn blank() -> Sighting {
+    Sighting {
+        city: Option.None, barracks: Option.None, site: Option.None, road: false, structure: Option.None,
+        barriers: [Option.None, Option.None, Option.None, Option.None, Option.None, Option.None],
+        yields: (0, 0, 0), ruin: false, den: Option.None, turn: 0,
+    }
+}
+
+fn hexes(v: &[Hex]) -> Vec[Hex] {
+    let mut out: Vec[Hex] = Vec.new();
+    for i in 0..v.len() { out.push(v[i]); }
+    out
+}
+
+/// A lone Red unit of `unit_type` at the origin of open plains of radius 8, with no cities, ruins
+/// or memory.
+fn lone_red_unit(unit_type: UnitType) -> GameState can {Log} {
+    let mut game = GameState.new();
+    game.grid = HexGrid.new(8, &[(Hex.new(0, 0), Tile.of(Terrain.Plains))]);
+    game.units.clear();
+    game.units.push(Unit.new(1, Hex.new(0, 0), Team.Red, unit_type));
+    game.cities.clear();
+    game.ruins.clear();
+    game
+}
+
+fn lone_red() -> GameState can {Log} { lone_red_unit(UnitType.Melee) }
+
+/// Red has seen every hex of the map it hasn't already, as open ground with nothing on it.
+fn red_explores_the_rest(game: &mut GameState) {
+    let all = game.grid.hex_list();
+    let side = Team.Red.index();
+    for k in 0..all.len() {
+        if !game.side_memory[side].has(all[k]) { let _old = game.side_memory[side].insert(all[k], blank()); }
+    }
+}
+
+/// A Red unit at `at` looks around for a moment, and leaves.
+fn red_glances_from(game: &mut GameState, at: Hex) can {Log} {
+    game.units.push(Unit.new(99, at, Team.Red, UnitType.Melee));
+    let _fog = game.side_fog(Team.Red);
+    let _gone = game.units.pop();
+}
+
+/// Red's first unit replanned: where it moves and what it attacks.
+struct Plan { dest: Option[Hex], attack: Option[Hex] }
+
+fn replan(game: &mut GameState) -> Plan can {Log, Rand} {
+    game.units[0].planned_move = Option.None;
+    game.units[0].planned_attack = Option.None;
+    game.plan_ai_turn(Team.Red);
+    Plan { dest: game.units[0].planned_move, attack: game.units[0].planned_attack }
+}
+
+fn nothing(p: &Plan) -> bool { p.dest.is_none() && p.attack.is_none() }
+
+fn distance_is(hex: Option[Hex], to: Hex, n: i32) -> bool {
+    match hex { Option.Some(h) => h.distance(to) == n, Option.None => false }
+}
+
+fn blue_worker_at(game: &mut GameState, at: Hex) {
+    let id = 5 + game.field_workers.len() as u32;
+    game.field_workers.push(FieldWorker { id, team: Team.Blue, home: 0, base: at, pos: at, job: Option.None, work_left: Option.None, recalled: false });
+}
+
+@test
+fn gate_defense_never_orders_a_landing_craft_to_attack() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        game.units.clear();
+        game.cities.clear();
+        game.cities.push(City.new(0, Team.Red, Hex.new(0, 0)));
+        game.ruins.clear();
+        game.units.push(Unit.new(90, Hex.new(1, 0), Team.Red, UnitType.LandingCraft));
+        game.units.push(Unit.new(91, Hex.new(0, 1), Team.Blue, UnitType.Melee));
+        game.plan_ai_turn(Team.Red);
+        assert(game.units[0].planned_attack.is_none());
+    });
+}
+
+@test
+fn an_ai_unit_ignores_an_enemy_out_of_sight() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        // Blue stands five hexes off, out of a melee's sight of 2: the AI knows of nothing to go
+        // for.
+        game.units.push(Unit.new(2, Hex.new(5, 0), Team.Blue, UnitType.Melee));
+        assert(nothing(&replan(&mut game)));
+        // In sight, it closes and attacks.
+        let blue = Hex.new(2, 0);
+        game.units[1].pos = blue;
+        let plan = replan(&mut game);
+        assert(distance_is(plan.dest, blue, 1));
+        assert(plan.attack == Option.Some(blue));
+    });
+}
+
+/// `lone_red`, with a wolf den at (5, 0) seen by Red and its wolf dead, so the den stands empty.
+fn red_knows_an_empty_den() -> GameState can {Log} {
+    let mut game = lone_red();
+    red_explores_the_rest(&mut game);
+    game.make_dens(&hexes(&[Hex.new(5, 0)]));
+    handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume !u.is_animal() } }
+    red_glances_from(&mut game, Hex.new(4, 0));
+    game
+}
+
+@test
+fn an_ai_unit_goes_to_clear_a_den_its_side_knows_of() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_knows_an_empty_den();
+        let plan = replan(&mut game);
+        assert(plan.dest == Option.Some(Hex.new(1, 0)));
+        // Once there, it stands on the den, and its side clears it.
+        game.units[0].pos = Hex.new(4, 0);
+        let plan = replan(&mut game);
+        assert(plan.dest == Option.Some(Hex.new(5, 0)));
+        game.units[0].pos = Hex.new(5, 0);
+        game.resolve_dens();
+        assert(game.dens.is_empty());
+    });
+}
+
+@test
+fn an_ai_side_keeps_settlers_sites_and_workers_out_of_a_dens_territory() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_knows_an_empty_den();
+        let fog = game.side_fog(Team.Red);
+        let known = game.knowledge(fog);
+        assert(known.in_den_territory(Hex.new(2, 0)));
+        assert(!known.in_den_territory(Hex.new(1, 0)));
+        // No city site within its reach.
+        let own: Vec[Hex] = Vec.new();
+        assert(!game.known_site(Team.Red, Hex.new(3, 1), &known, &own));
+        assert(game.known_site(Team.Red, Hex.new(-3, 1), &known, &own));
+        // A settler heading east steps around it: its step stays out.
+        let _new = game.settlers.insert(1);
+        game.units[0].pos = Hex.new(1, 0);
+        let mut floods = Floods { at: Map.new(), all: Vec.new() };
+        let step = game.settler_step(0, Hex.new(8, 0), &known, &mut floods);
+        assert(step != Hex.new(2, 0));
+        assert(!known.in_den_territory(step));
+        // A city working tiles on both sides improves only the safe one.
+        game.settlers = IdSet.new();
+        game.units.clear();
+        game.cities.clear();
+        game.cities.push(City.new(0, Team.Red, Hex.new(-1, 0)));
+        let (inside, outside) = (Hex.new(2, 0), Hex.new(-3, 0));
+        game.cities[0].clusters = one_cluster(&hexes(&[inside, outside]));
+        game.cities[0].population = 2;
+        game.plan_ai_workers(Team.Red, &known.dens);
+        assert_eq(game.cities[0].worker_jobs.len(), 1);
+        assert(game.cities[0].worker_jobs[0].hex == outside);
+    });
+}
+
+@test
+fn an_ai_unit_heads_for_an_enemy_city_only_once_its_side_has_seen_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = lone_red();
+        let city = Hex.new(6, 0);
+        game.cities.push(City.new(0, Team.Blue, city));
+        // Knowing of nothing, it explores: the nearest ground never seen, ties to the lowest
+        // coordinates, is away west.
+        let plan = replan(&mut game);
+        assert(plan.dest == Option.Some(Hex.new(-1, 0)));
+        red_explores_the_rest(&mut game);
+        assert(nothing(&replan(&mut game)));
+
+        // Once seen, it goes for it, and keeps going by its memory even after the city is gone
+        // out of its sight.
+        red_glances_from(&mut game, Hex.new(4, 0));
+        let plan = replan(&mut game);
+        assert(distance_is(plan.dest, city, 5));
+        game.cities.clear();
+        let plan = replan(&mut game);
+        assert(distance_is(plan.dest, city, 5));
+    });
+}
+
+@test
+fn an_ai_unit_counts_ground_its_side_has_never_seen_as_open() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Mountains down the column q = 3 wall Red off from a Blue city at (6, 0), but for a gap
+        // at the map's southern edge, (3, 5).
+        let mut game = lone_red();
+        let mut wall: Vec[(Hex, Tile)] = Vec.new();
+        for r in -8..=4 { wall.push((Hex.new(3, r), MOUNTAINS)); }
+        game.grid = HexGrid.new(8, &wall);
+        let city = Hex.new(6, 0);
+        game.cities.push(City.new(0, Team.Blue, city));
+        // Red has seen the city (from the far side), but not the wall.
+        red_glances_from(&mut game, Hex.new(7, -1));
+        assert(!game.side_memory[Team.Red.index()].has(Hex.new(3, 0)));
+        // Straight at it, as far as it knows.
+        let plan = replan(&mut game);
+        assert(distance_is(plan.dest, city, 5));
+        assert(!game.side_memory[Team.Red.index()].has(Hex.new(3, 0)));
+
+        // Once it has seen the wall, it goes around, south for the gap.
+        red_explores_the_rest(&mut game);
+        let plan = replan(&mut game);
+        assert(plan.dest == Option.Some(Hex.new(0, 1)));
+    });
+}
+
+/// The orders of every unit after every AI side has planned.
+fn orders(game: &mut GameState) -> Vec[(u32, Option[Hex], Option[Hex])] can {Log, Rand} {
+    let teams = game.ai_teams();
+    for t in 0..teams.len() { game.plan_ai_turn(teams[t]); }
+    let mut out: Vec[(u32, Option[Hex], Option[Hex])] = Vec.new();
+    for u in 0..game.units.len() { out.push((game.units[u].id, game.units[u].planned_move, game.units[u].planned_attack)); }
+    out
+}
+
+@test
+fn the_ai_plans_the_same_whatever_this_machine_sees() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // What a side knows is game state: the player's view (F10, which side this machine
+        // plays, what it has seen) changes nothing.
+        let mut game = GameState.world_scenario(2);
+        game.settings.instant_playback = true;
+        for _ in 0..6 {
+            game.resolve_turn();
+            game.update(0.0);
+        }
+        let mut other = game.snapshot();
+        other.toggle_fog();
+        other.memory = Map.new();
+        other.local_team = Team.Green;
+        let mine = orders(&mut game);
+        let theirs = orders(&mut other);
+        let mut moves = false;
+        for k in 0..mine.len() { if mine[k].1.is_some() { moves = true; } }
+        assert(moves);
+        assert_eq(mine.len(), theirs.len());
+        for k in 0..mine.len() {
+            assert(mine[k].0 == theirs[k].0 && mine[k].1 == theirs[k].1 && mine[k].2 == theirs[k].2);
+        }
+    });
+}
+
+/// A lone Red scout at the origin, its side having seen the whole map.
+fn red_scout() -> GameState can {Log} {
+    let mut game = lone_red_unit(UnitType.Scout);
+    red_explores_the_rest(&mut game);
+    game
+}
+
+/// Red's memory without the hexes `keep` says to drop.
+fn forget_red_east_of(game: &mut GameState, q: i32) {
+    let all = game.grid.hex_list();
+    let side = Team.Red.index();
+    let mut memory: Map[Hex, Sighting] = Map.new();
+    for k in 0..all.len() {
+        if all[k].q < q { if let Option.Some(seen) = game.side_memory[side].get(all[k]) { let _old = memory.insert(all[k], seen); } }
+    }
+    game.side_memory[side] = memory;
+}
+
+@test
+fn a_scout_keeps_out_of_reach_of_an_enemy_it_sees() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_scout();
+        // A Blue melee two hexes off could step in and hit it next turn.
+        let blue = Hex.new(2, 0);
+        game.units.push(Unit.new(2, blue, Team.Blue, UnitType.Melee));
+        let plan = replan(&mut game);
+        let reach = threat_reach(&game.units[1]).unwrap_or(0);
+        assert_eq(reach, 2);
+        assert(match plan.dest { Option.Some(d) => d.distance(blue) > reach, Option.None => false });
+        assert(plan.attack.is_none());
+    });
+}
+
+@test
+fn a_scout_heads_for_ground_its_side_has_never_seen() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_scout();
+        // Nothing east of q = 4 has been seen.
+        forget_red_east_of(&mut game, 5);
+        let plan = replan(&mut game);
+        assert(match plan.dest { Option.Some(d) => d.q == 3, Option.None => false });
+    });
+}
+
+@test
+fn a_scout_looks_again_where_its_side_has_not_for_a_while() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_scout();
+        // All seen, but the west long ago.
+        game.turn = 30;
+        let side = Team.Red.index();
+        let all = game.grid.hex_list();
+        for k in 0..all.len() {
+            let mut seen = blank();
+            seen.turn = if all[k].q < -4 { 1 } else { 30 };
+            let _old = game.side_memory[side].insert(all[k], seen);
+        }
+        let plan = replan(&mut game);
+        assert(match plan.dest { Option.Some(d) => d.q == -3, Option.None => false });
+        // With everything freshly seen, there's nothing to go for.
+        for k in 0..all.len() {
+            let mut seen = blank();
+            seen.turn = 30;
+            let _old = game.side_memory[side].insert(all[k], seen);
+        }
+        assert(nothing(&replan(&mut game)));
+    });
+}
+
+@test
+fn a_scout_captures_a_lone_worker_but_attacks_no_troop() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_scout();
+        let at = Hex.new(2, 0);
+        blue_worker_at(&mut game, at);
+        // A worker can't hit back: the scout steps onto it.
+        let plan = replan(&mut game);
+        assert(plan.dest == Option.Some(at) && plan.attack.is_none());
+        // With a Blue troop guarding it, the scout keeps away.
+        game.units.push(Unit.new(2, at, Team.Blue, UnitType.Melee));
+        let plan = replan(&mut game);
+        assert(match plan.dest { Option.Some(d) => d.distance(at) > 2, Option.None => false });
+        assert(plan.attack.is_none());
+    });
+}
+
+@test
+fn one_ai_unit_goes_to_capture_a_worker_not_two() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        // Two Red melee either side of a lone Blue worker.
+        let worker = Hex.new(1, 0);
+        blue_worker_at(&mut game, worker);
+        game.units.push(Unit.new(2, Hex.new(2, 0), Team.Red, UnitType.Melee));
+        game.plan_ai_turn(Team.Red);
+        let mut onto: Vec[u32] = Vec.new();
+        for u in 0..game.units.len() { if game.units[u].planned_move == Option.Some(worker) { onto.push(game.units[u].id); } }
+        assert_eq(onto.len(), 1);
+        assert_eq(onto[0], 1);
+        assert(game.units[1].planned_move.is_none());
+        // Played out, the move step captures it.
+        let mut played = game.snapshot();
+        played.settings.instant_playback = true;
+        played.resolve_turn();
+        played.update(0.0);
+        assert(played.field_workers.is_empty());
+        assert(played.units[0].pos == worker);
+
+        // With an enemy troop there instead, both go for it.
+        game.field_workers.clear();
+        let blue = Hex.new(2, -2);
+        game.units.push(Unit.new(3, blue, Team.Blue, UnitType.Melee));
+        for u in 0..game.units.len() { game.units[u].planned_move = Option.None; }
+        game.plan_ai_turn(Team.Red);
+        assert(game.units[0].planned_attack == Option.Some(blue));
+        assert(game.units[1].planned_attack == Option.Some(blue));
+        assert(game.units[0].planned_move != game.units[1].planned_move);
+    });
+}
+
+@test
+fn an_ai_unit_leaves_ruins_an_ally_claimed() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Two Red melee beside the same ruins: one steps on, the other doesn't follow.
+        let mut game = lone_red();
+        let ruin = Hex.new(1, 0);
+        game.ruins.push(new_ruin(ruin, RuinReward.Harvest));
+        red_explores_the_rest(&mut game);
+        game.units.push(Unit.new(2, Hex.new(2, 0), Team.Red, UnitType.Melee));
+        game.plan_ai_turn(Team.Red);
+        assert(game.units[0].planned_move == Option.Some(ruin));
+        assert(game.units[1].planned_move != Option.Some(ruin));
+    });
+}
+
+@test
+fn a_unit_on_ruins_holds_them_and_fights_from_there() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = lone_red();
+        game.ruins.push(new_ruin(Hex.new(0, 0), RuinReward.Harvest));
+        red_explores_the_rest(&mut game);
+        // An enemy two hexes off isn't chased off the ruins.
+        game.units.push(Unit.new(2, Hex.new(2, 0), Team.Blue, UnitType.Melee));
+        assert(nothing(&replan(&mut game)));
+        // One beside them is fought from there.
+        game.units[1].pos = Hex.new(1, 0);
+        let plan = replan(&mut game);
+        assert(plan.dest.is_none() && plan.attack == Option.Some(Hex.new(1, 0)));
+    });
+}
+
+@test
+fn a_unit_at_its_citys_gates_holds_them_while_an_enemy_is_at_them() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = lone_red();
+        game.cities.push(City.new(0, Team.Red, Hex.new(0, 0)));
+        game.units[0].pos = Hex.new(1, 0);
+        red_explores_the_rest(&mut game);
+        // A Blue melee at another of the gates, out of the defender's reach: it stays where it is
+        // rather than go after it.
+        game.units.push(Unit.new(2, Hex.new(0, -1), Team.Blue, UnitType.Melee));
+        assert(nothing(&replan(&mut game)));
+        // Away from the gates, the same enemy is gone after.
+        game.units[1].pos = Hex.new(1, -3);
+        let plan = replan(&mut game);
+        assert(plan.dest.is_some());
+    });
+}
+
+@test
+fn targets_as_near_break_ties_by_coordinates_whatever_the_order() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        // Two lone Blue workers, each two steps off: the lower coordinates, (0, -2), win,
+        // whichever came first.
+        blue_worker_at(&mut game, Hex.new(0, 2));
+        blue_worker_at(&mut game, Hex.new(0, -2));
+        let plan = replan(&mut game);
+        assert(plan.dest == Option.Some(Hex.new(0, -1)));
+        assert(plan.attack == Option.Some(Hex.new(0, -2)));
+        let first = game.field_workers[0];
+        game.field_workers[0] = game.field_workers[1];
+        game.field_workers[1] = first;
+        let again = replan(&mut game);
+        assert(again.dest == plan.dest && again.attack == plan.attack);
+    });
+}
+
+@test
+fn a_land_unit_chases_no_ship_it_cannot_hit() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // A Blue galley on a lake two hexes off, in sight, and nothing else to go for.
+        let mut game = lone_red();
+        let lake = Hex.new(2, 0);
+        game.grid = HexGrid.new(8, &[(lake, Tile.of(Terrain.Lake))]);
+        red_explores_the_rest(&mut game);
+        game.units.push(Unit.new(2, lake, Team.Blue, UnitType.PatrolGalley));
+        assert(nothing(&replan(&mut game)));
+        // An archer can shoot it from the shore, and does.
+        game.units[0].unit_type = UnitType.Ranged;
+        let plan = replan(&mut game);
+        assert(plan.dest.is_none() && plan.attack == Option.Some(lake));
+    });
+}
+
+@test
+fn a_cornered_scout_fights_back() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // Mountains all around the scout but for one hex, where a Blue melee stands: nowhere to
+        // go.
+        let mut game = lone_red_unit(UnitType.Scout);
+        let blue = Hex.new(1, 0);
+        let around = Hex.new(0, 0).neighbors();
+        let mut walls: Vec[(Hex, Tile)] = Vec.new();
+        for k in 0..6 { if around[k] != blue { walls.push((around[k], MOUNTAINS)); } }
+        game.grid = HexGrid.new(8, &walls);
+        game.units.push(Unit.new(2, blue, Team.Blue, UnitType.Melee));
+        let plan = replan(&mut game);
+        assert(plan.dest.is_none() && plan.attack == Option.Some(blue));
+    });
+}
+
+@test
+fn a_hurt_scout_heads_home() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_scout();
+        let home = Hex.new(-6, 0);
+        game.cities.push(City.new(0, Team.Red, home));
+        // East has never been seen, but the scout is down to a third.
+        forget_red_east_of(&mut game, 3);
+        game.units[0].hp = 20.0;
+        let plan = replan(&mut game);
+        assert(distance_is(plan.dest, home, 3));
+        // Well again, it's off east.
+        game.units[0].hp = game.units[0].max_hp();
+        let plan = replan(&mut game);
+        assert(match plan.dest { Option.Some(d) => d.q > 0, Option.None => false });
+    });
+}
+
+/// Open plains of radius 8, all seen by Red, with a Red city of population 4 at (-5, 0) that has
+/// a worker and a Barracks (so it wants no more troops of its own queue), a funded stockpile and
+/// a scout: a side that can afford to expand.
+fn red_ready_to_expand() -> GameState can {Log} {
+    let mut game = GameState.new();
+    game.grid = HexGrid.new(8, &[(Hex.new(0, 0), Tile.of(Terrain.Plains))]);
+    game.units.clear();
+    game.units.push(Unit.new(1, Hex.new(-5, 2), Team.Red, UnitType.Scout));
+    game.ruins.clear();
+    game.cities.clear();
+    let mut city = City.new(0, Team.Red, Hex.new(-5, 0));
+    city.population = 4;
+    city.barracks = Option.Some(Hex.new(-5, 1));
+    game.cities.push(city);
+    game.auto_assign_city(0);
+    game.fund(Team.Red);
+    red_explores_the_rest(&mut game);
+    game
+}
+
+fn add_red_settler(game: &mut GameState, pos: Hex) -> u32 {
+    let id = 50;
+    game.units.push(Unit.new(id, pos, Team.Red, UnitType.Melee));
+    let _new = game.settlers.insert(id);
+    id
+}
+
+fn unit_index(game: &GameState, id: u32) -> i32 {
+    for u in 0..game.units.len() { if game.units[u].id == id { return u; } }
+    0 - 1
+}
+
+fn first_build_is(game: &GameState, build: Build) -> bool {
+    if game.cities[0].queue.is_empty() { return false; }
+    game.cities[0].queue[0].build == build
+}
+
+@test
+fn a_city_of_four_trains_a_settler_to_expand() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_ready_to_expand();
+        game.plan_ai_turn(Team.Red);
+        assert(first_build_is(&game, Build.Settler));
+        // Smaller, it grows first.
+        let mut game = red_ready_to_expand();
+        game.cities[0].population = AI_SETTLE_POPULATION - 1;
+        game.plan_ai_turn(Team.Red);
+        assert(first_build_is(&game, Build.Grow));
+        // With a settler already out, it doesn't train another.
+        let mut game = red_ready_to_expand();
+        let _id = add_red_settler(&mut game, Hex.new(-4, 0));
+        game.plan_ai_turn(Team.Red);
+        assert(!first_build_is(&game, Build.Settler));
+    });
+}
+
+@test
+fn a_side_without_a_scout_trains_one() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_ready_to_expand();
+        game.units.clear();
+        game.plan_ai_turn(Team.Red);
+        assert(first_build_is(&game, Build.Scout));
+    });
+}
+
+@test
+fn a_settler_walks_to_a_site_and_founds_a_city_there() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_ready_to_expand();
+        let home = game.cities[0].pos;
+        let from = Hex.new(-4, 0);
+        let id = add_red_settler(&mut game, from);
+        let fog = game.side_fog(Team.Red);
+        let known = game.knowledge(fog);
+        let Option.Some(site) = game.ai_city_site(Team.Red, from, &known, false) else { assert(false); return; };
+        assert(site.distance(home) >= MIN_CITY_DISTANCE && site.distance(home) <= AI_SITE_MAX_DISTANCE);
+        game.plan_ai_turn(Team.Red);
+        let Option.Some(step) = game.units[unit_index(&game, id)].planned_move else { assert(false); return; };
+        assert(step.distance(site) < from.distance(site));
+        assert_eq(game.cities.len(), 1);
+
+        // There, it founds the city: one without a worker.
+        let at = unit_index(&game, id);
+        game.units[at].pos = site;
+        game.units[at].planned_move = Option.None;
+        game.plan_ai_turn(Team.Red);
+        assert_eq(game.cities.len(), 2);
+        assert(game.cities[1].pos == site);
+        assert_eq(game.cities[1].workers, 0);
+        assert(!game.settlers.contains(id));
+    });
+}
+
+@test
+fn a_site_refused_for_a_city_unseen_is_given_up() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_ready_to_expand();
+        let home = game.cities[0].pos;
+        let from = Hex.new(-4, 0);
+        let id = add_red_settler(&mut game, from);
+        let fog = game.side_fog(Team.Red);
+        let known = game.knowledge(fog);
+        let Option.Some(site) = game.ai_city_site(Team.Red, from, &known, false) else { assert(false); return; };
+        // A Blue city five hexes past the site, out of Red's sight.
+        let all = game.grid.hex_list();
+        let mut blue: Option[Hex] = Option.None;
+        for k in 0..all.len() {
+            let h = all[k];
+            if h.distance(site) != MIN_CITY_DISTANCE - 1 || h.distance(home) <= 8 { continue; }
+            let better = match blue { Option.None => true, Option.Some(b) => h.q < b.q || (h.q == b.q && h.r < b.r) };
+            if better { blue = Option.Some(h); }
+        }
+        let Option.Some(blue) = blue else { assert(false); return; };
+        game.cities.push(City.new(1, Team.Blue, blue));
+        let at = unit_index(&game, id);
+        game.units[at].pos = site;
+        game.plan_ai_turn(Team.Red);
+        assert_eq(game.cities.len(), 2);
+        let mut refused = false;
+        for r in 0..game.refused_sites.len() { let (side, at) = game.refused_sites[r]; if side == Team.Red && at == site { refused = true; } }
+        assert(refused);
+        assert(game.settlers.contains(id));
+        // It looks elsewhere, not near there.
+        let fog = game.side_fog(Team.Red);
+        let known = game.knowledge(fog);
+        if let Option.Some(next) = game.ai_city_site(Team.Red, site, &known, false) {
+            assert(next.distance(site) > AI_REFUSED_RADIUS);
+        }
+    });
+}
+
+@test
+fn a_first_city_keeps_its_distance_from_another_sides() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = red_ready_to_expand();
+        // Red has no city yet, and its settler stands 3 hexes from Blue's.
+        game.cities.clear();
+        game.cities.push(City.new(0, Team.Blue, Hex.new(3, 0)));
+        let from = Hex.new(0, 0);
+        let id = add_red_settler(&mut game, from);
+        game.plan_ai_turn(Team.Red);
+        for c in 0..game.cities.len() { assert(game.cities[c].team != Team.Red); }
+        let Option.Some(step) = game.units[unit_index(&game, id)].planned_move else { assert(false); return; };
+        assert(step.distance(Hex.new(3, 0)) > from.distance(Hex.new(3, 0)));
+        // Where the rules allow it, it founds its first city at once, with a worker, as a
+        // starting city.
+        let at = unit_index(&game, id);
+        game.units[at].pos = Hex.new(-3, 0);
+        game.plan_ai_turn(Team.Red);
+        let mut found = false;
+        for c in 0..game.cities.len() {
+            if game.cities[c].team == Team.Red { found = game.cities[c].pos == Hex.new(-3, 0) && game.cities[c].workers == 1; }
+        }
+        assert(found);
+    });
+}
+
+@test
+fn a_unit_skips_a_worker_an_ally_already_heads_for() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        // Red 1 at the origin goes onto the worker at (1, 0); Red 2 stands as near it as
+        // another worker the other way, and goes for that one, the lower coordinates
+        // notwithstanding.
+        blue_worker_at(&mut game, Hex.new(1, 0));
+        blue_worker_at(&mut game, Hex.new(5, 0));
+        game.units.push(Unit.new(2, Hex.new(3, 0), Team.Red, UnitType.Melee));
+        game.plan_ai_turn(Team.Red);
+        assert(game.units[0].planned_move == Option.Some(Hex.new(1, 0)));
+        // A melee steps one hex a turn: it closes on the far worker, not the claimed one.
+        assert(game.units[1].planned_move == Option.Some(Hex.new(4, 0)));
+    });
+}

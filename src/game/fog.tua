@@ -6,7 +6,13 @@
 //!   remembered: out of sight, none is known to be anywhere;
 //! - unexplored: never seen, covered by fog.
 //!
-//! A debug setting (F10) turns the fog off. The AI ignores it.
+//! Every side sees and remembers by the same rules, in one of two memories: the player's
+//! (`fog()`, `GameState.memory`, brought up to date every frame by `explore`, which F10 turns
+//! off), and each side's own (`side_fog`, `GameState.side_memory`), which is game state, brought
+//! up to date only as the AI plans that side's turn, and untouched by F10 or by which side this
+//! machine plays. The AI plans on its side's memory and nothing else, so it plays under the same
+//! fog as the player. A `Fog` says which memory it recalls from, so every `known_*` query
+//! answers for either.
 
 use std.collections.Map;
 use std.collections.Set;
@@ -32,6 +38,7 @@ use game.hex.Hex;
 use game.terrain.Terrain;
 use game.unit.Team;
 use game.unit.Unit;
+use game.unit.UnitType;
 
 /// How far a city sees.
 pub const CITY_SIGHT: i32 = 3;
@@ -46,12 +53,22 @@ pub const LOOKOUT_SIGHT: i32 = 2;
 /// `Hex.line_between`).
 const SIGHT_NUDGE: f32 = 0.0001;
 
-/// What the player can see this frame.
+/// What one side can see now, and where it recalls what it saw before.
 pub struct Fog {
     /// Hexes in sight, or `None` with the fog turned off.
     visible: Option[Set[Hex]],
-    /// Whose sight it is: the local side's, whose own units always show.
+    /// Whose sight it is: the side whose own units always show.
     team: Team,
+    /// Which memory holds the hexes out of sight.
+    recall: Recall,
+}
+
+/// Where a `Fog` recalls hexes out of sight from.
+pub enum Recall {
+    /// The player's memory at this machine (`GameState.memory`).
+    Player,
+    /// The side's own memory in the game state (`GameState.side_memory`).
+    Side,
 }
 
 impl Fog {
@@ -99,6 +116,8 @@ pub struct Sighting {
     ruin: bool,
     /// An animal den not yet cleared (`animals.tua`), by the animal it keeps.
     den: Option[UnitType],
+    /// The turn it was seen on (`GameState.turn`): how stale it is.
+    turn: u32,
 }
 
 impl GameState {
@@ -110,18 +129,71 @@ impl GameState {
         fog.sees(hex) && self.empty_city_target(hex, team)
     }
 
+    /// What the player sees this frame, recalling from the player's memory.
     pub fn fog(&self) -> Fog {
-        if self.fog_of_war { Fog { visible: Option.Some(self.visible_hexes()), team: self.local_team } } else { Fog { visible: Option.None, team: self.local_team } }
+        if self.fog_of_war {
+            Fog { visible: Option.Some(self.visible_hexes()), team: self.local_team, recall: Recall.Player }
+        } else {
+            Fog { visible: Option.None, team: self.local_team, recall: Recall.Player }
+        }
+    }
+
+    /// What `team` sees now, recalling from its own memory, which this first brings up to date
+    /// with everything in sight. It depends on nothing but the game (not on F10, nor on the side
+    /// this machine plays). The AI plans each side's turn on it.
+    pub fn side_fog(&mut self, team: Team) -> Fog {
+        let visible = self.side_sight(team);
+        let side = team.index();
+        for h in visible.each() {
+            let sighting = self.sighting(*h);
+            let _old = self.side_memory[side].insert(*h, sighting);
+        }
+        Fog { visible: Option.Some(visible), team, recall: Recall.Side }
     }
 
     /// Whether the player has ever seen `hex` (always, with the fog off).
     pub fn is_explored(&self, hex: Hex) -> bool { !self.fog_of_war || self.memory.has(hex) }
 
+    /// How `hex` looked when `fog`'s side last saw it, if it ever did.
+    pub fn recalled(&self, hex: Hex, fog: &Fog) -> Option[Sighting] {
+        match fog.recall {
+            Recall.Player => self.memory.get(hex),
+            Recall.Side => self.side_memory[fog.team.index()].get(hex),
+        }
+    }
+
+    /// How many hexes `fog`'s side remembers.
+    pub fn recalled_len(&self, fog: &Fog) -> i32 {
+        match fog.recall {
+            Recall.Player => self.memory.len(),
+            Recall.Side => self.side_memory[fog.team.index()].len(),
+        }
+    }
+
+    /// The `i`th hex `fog`'s side remembers and how it looked, in no order that counts.
+    pub fn recalled_at(&self, i: i32, fog: &Fog) -> Option[(Hex, Sighting)] {
+        let (key, seen) = match fog.recall {
+            Recall.Player => (self.memory.key_at(i), self.memory.val_at(i)),
+            Recall.Side => (self.side_memory[fog.team.index()].key_at(i), self.side_memory[fog.team.index()].val_at(i)),
+        };
+        match (key, seen) { (Option.Some(k), Option.Some(v)) => Option.Some((k, v)), _ => Option.None }
+    }
+
+    /// `is_explored` for `fog`'s side: whether it has seen `hex` (always, with the fog off). Its
+    /// memory holds what is in sight too, as seen when it was last brought up to date
+    /// (`explore`, `side_fog`).
+    pub fn explored_by(&self, hex: Hex, fog: &Fog) -> bool { fog.visible.is_none() || self.recalled(hex, fog).is_some() }
+
     /// How far `unit` sees: its type's sight, more from hills or after a turn on lookout.
     pub fn sight(&self, unit: &Unit) -> i32 {
-        let hills = if self.grid.tile(unit.pos).hills { HILLS_SIGHT } else { 0 };
         let lookout = if unit.lookout { LOOKOUT_SIGHT } else { 0 };
-        unit.unit_type.sight() + hills + lookout
+        self.sight_at(unit.unit_type, unit.pos) + lookout
+    }
+
+    /// How far a unit of `unit_type` standing on `hex` sees, lookout aside.
+    pub fn sight_at(&self, unit_type: UnitType, hex: Hex) -> i32 {
+        let hills = if self.grid.tile(hex).hills { HILLS_SIGHT } else { 0 };
+        unit_type.sight() + hills
     }
 
     /// Whether `from` can see `to`: no mountain stands on the line between them. A mountain
@@ -149,22 +221,31 @@ impl GameState {
         }
     }
 
-    /// Every hex the player's units, cities, Barracks, Watchposts and outposts can see now, and
-    /// every tile a player's city works, whatever the range or mountains: an enemy standing on
-    /// one of the player's tiles is always seen. That includes a tile the city was working until
-    /// a cut route took its citizen off it (`remembered_worked`), so an enemy that ends a turn on
-    /// a worked tile doesn't vanish when the city reassigns the citizen.
-    pub fn visible_hexes(&self) -> Set[Hex] {
+    /// Every hex the player's side sees now (`sight_of`), with what the units the player
+    /// commands of another side (the Frontier sandbox's) see.
+    pub fn visible_hexes(&self) -> Set[Hex] { self.sight_of(self.local_team, false) }
+
+    /// Every hex `team` sees now (`sight_of`), from its own units.
+    fn side_sight(&self, team: Team) -> Set[Hex] { self.sight_of(team, true) }
+
+    /// Every hex seen now by the units the player commands (`own_only` false) or by `team`'s
+    /// (`own_only` true), and by `team`'s cities, Barracks, Watchposts, outposts and workers, and
+    /// every tile a city of `team` works, whatever the range or mountains: an enemy standing on
+    /// one of a side's tiles is always seen. That includes a tile the city was working until a
+    /// cut route took its citizen off it (`remembered_worked`), so an enemy that ends a turn on a
+    /// worked tile doesn't vanish when the city reassigns the citizen.
+    fn sight_of(&self, team: Team, own_only: bool) -> Set[Hex] {
         let mut seen: Set[Hex] = Set.new();
         for idx in 0..self.units.len() {
-            if self.is_player_controlled(idx) {
+            let looks = if own_only { self.units[idx].team == team } else { self.is_player_controlled(idx) };
+            if looks {
                 let unit = &self.units[idx];
                 self.look(unit.pos, self.sight(unit), &mut seen);
             }
         }
         for c in 0..self.cities.len() {
             let city = &self.cities[c];
-            if city.team != self.local_team { continue; }
+            if city.team != team { continue; }
             self.look(city.pos, CITY_SIGHT, &mut seen);
             if let Option.Some(barracks) = city.barracks { self.look(barracks, BARRACKS_SIGHT, &mut seen); }
             if let Option.Some(post) = city.placed_site(Building.Watchpost) {
@@ -173,15 +254,15 @@ impl GameState {
             }
         }
         for w in 0..self.field_workers.len() {
-            if self.field_workers[w].team == self.local_team { self.look(self.field_workers[w].pos, WORKER_SIGHT, &mut seen); }
+            if self.field_workers[w].team == team { self.look(self.field_workers[w].pos, WORKER_SIGHT, &mut seen); }
         }
         for k in 0..self.structures.len() {
             let (Option.Some(hex), Option.Some(structure)) = (self.structures.key_at(k), self.structures.val_at(k)) else { continue; };
-            if structure.team == self.local_team && structure.kind == StructureKind.Outpost { self.look(hex, OUTPOST_SIGHT, &mut seen); }
+            if structure.team == team && structure.kind == StructureKind.Outpost { self.look(hex, OUTPOST_SIGHT, &mut seen); }
         }
         for c in 0..self.cities.len() {
             let city = &self.cities[c];
-            if city.team != self.local_team { continue; }
+            if city.team != team { continue; }
             let worked = city.worked_tiles();
             for w in 0..worked.len() { let _new = seen.insert(worked[w]); }
             let remembered = cluster_tiles(&city.remembered);
@@ -190,7 +271,7 @@ impl GameState {
         seen
     }
 
-    /// `hex` as it is right now, for the memory.
+    /// `hex` as it is right now, for a memory.
     fn sighting(&self, hex: Hex) -> Sighting {
         let mut city: Option[SeenBuilding] = Option.None;
         let mut barracks: Option[SeenBuilding] = Option.None;
@@ -216,6 +297,7 @@ impl GameState {
             yields: self.raw_yield(hex),
             ruin: self.ruin_at(hex).is_some(),
             den: match self.den_at(hex) { Option.Some(d) => Option.Some(self.dens[d].kind), Option.None => Option.None },
+            turn: self.turn,
         }
     }
 
@@ -231,7 +313,7 @@ impl GameState {
     /// sight, or an enemy Barracks in sight or remembered.
     pub fn known_enemy_target_at(&self, hex: Hex, team: Team, fog: &Fog) -> bool {
         if fog.sees(hex) { return self.has_enemy_target_at(hex, team); }
-        match self.memory.get(hex) {
+        match self.recalled(hex, fog) {
             Option.Some(seen) => match seen.barracks { Option.Some(b) => b.team != team, Option.None => false },
             Option.None => false,
         }
@@ -240,7 +322,7 @@ impl GameState {
     /// A tile's food and production as the player knows them.
     pub fn known_yield(&self, hex: Hex, fog: &Fog) -> (i32, i32, i32) {
         if !fog.sees(hex) {
-            if let Option.Some(seen) = self.memory.get(hex) { return seen.yields; }
+            if let Option.Some(seen) = self.recalled(hex, fog) { return seen.yields; }
         }
         self.raw_yield(hex)
     }
@@ -251,7 +333,7 @@ impl GameState {
         if fog.sees(hex) {
             return match self.sites.get(hex) { Option.Some(site) => Option.Some(site.kind), Option.None => Option.None };
         }
-        match self.memory.get(hex) {
+        match self.recalled(hex, fog) {
             Option.Some(seen) => match seen.site { Option.Some((kind, _)) => Option.Some(kind), Option.None => Option.None },
             Option.None => Option.None,
         }
@@ -272,7 +354,7 @@ impl GameState {
                 resume if fog.sees(hex) {
                     self.enemy_of_team_at(hex, team).is_some() || self.enemy_city_at(hex, team)
                 } else {
-                    match self.memory.get(hex) {
+                    match self.recalled(hex, fog) {
                         Option.Some(seen) => match seen.city { Option.Some(c) => c.team != team, Option.None => false },
                         Option.None => false,
                     }
@@ -284,7 +366,7 @@ impl GameState {
                 resume river || if fog.sees(to) {
                     self.is_road_hex(to)
                 } else {
-                    match self.memory.get(to) { Option.Some(seen) => seen.road || seen.city.is_some(), Option.None => false }
+                    match self.recalled(to, fog) { Option.Some(seen) => seen.road || seen.city.is_some(), Option.None => false }
                 }
             }
         }
@@ -294,12 +376,12 @@ impl GameState {
     /// one when either side is in sight, else as last seen.
     pub fn known_barrier(&self, a: Hex, b: Hex, fog: &Fog) -> Option[Structure] {
         if fog.sees(a) || fog.sees(b) { return self.barrier(a, b); }
-        match self.remembered_barrier(a, b) { Option.Some(s) => Option.Some(s), Option.None => self.remembered_barrier(b, a) }
+        match self.remembered_barrier(a, b, fog) { Option.Some(s) => Option.Some(s), Option.None => self.remembered_barrier(b, a, fog) }
     }
 
     /// The wall or gate the memory of `from` holds on its edge toward `across`.
-    fn remembered_barrier(&self, from: Hex, across: Hex) -> Option[Structure] {
-        let Option.Some(seen) = self.memory.get(from) else { return Option.None; };
+    fn remembered_barrier(&self, from: Hex, across: Hex, fog: &Fog) -> Option[Structure] {
+        let Option.Some(seen) = self.recalled(from, fog) else { return Option.None; };
         let around = from.neighbors();
         for k in 0..6 { if around[k] == across { return seen.barriers[k]; } }
         Option.None
@@ -314,7 +396,7 @@ impl GameState {
     /// Whether the player knows of a road on `hex`: in sight, or as last seen.
     pub fn known_road(&self, hex: Hex, fog: &Fog) -> bool {
         if fog.sees(hex) { return self.roads.contains(hex); }
-        match self.memory.get(hex) { Option.Some(seen) => seen.road, Option.None => false }
+        match self.recalled(hex, fog) { Option.Some(seen) => seen.road, Option.None => false }
     }
 
     /// The side of the city the player knows on `hex`, if any: in sight, or as last seen.
@@ -323,7 +405,7 @@ impl GameState {
             for c in 0..self.cities.len() { if self.cities[c].pos == hex { return Option.Some(self.cities[c].team); } }
             return Option.None;
         }
-        match self.memory.get(hex) {
+        match self.recalled(hex, fog) {
             Option.Some(seen) => match seen.city { Option.Some(c) => Option.Some(c.team), Option.None => Option.None },
             Option.None => Option.None,
         }
@@ -332,7 +414,7 @@ impl GameState {
     /// Whether the player knows of unclaimed ruins on `hex`: in sight, or as last seen.
     pub fn known_ruin(&self, hex: Hex, fog: &Fog) -> bool {
         if fog.sees(hex) { return self.ruin_at(hex).is_some(); }
-        match self.memory.get(hex) { Option.Some(seen) => seen.ruin, Option.None => false }
+        match self.recalled(hex, fog) { Option.Some(seen) => seen.ruin, Option.None => false }
     }
 
     /// Whether the player knows of a city of another side on `hex`: in sight, or as last seen.
@@ -341,7 +423,7 @@ impl GameState {
             for c in 0..self.cities.len() { if self.cities[c].pos == hex && self.cities[c].team != team { return true; } }
             return false;
         }
-        match self.memory.get(hex) {
+        match self.recalled(hex, fog) {
             Option.Some(seen) => match seen.city { Option.Some(c) => c.team != team, Option.None => false },
             Option.None => false,
         }
@@ -389,7 +471,7 @@ impl GameState {
     /// (for a ship, water). Terrain never changes, so a hex seen once is known for good.
     pub fn known_passable(&self, hex: Hex, naval: bool, fog: &Fog) -> bool {
         if !self.grid.contains(hex) { return false; }
-        if !self.is_explored(hex) { return true; }
+        if !self.explored_by(hex, fog) { return true; }
         if naval { self.grid.terrain(hex).is_water() } else { self.can_enter(hex) }
     }
 

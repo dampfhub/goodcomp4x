@@ -36,7 +36,9 @@ use game.city.amount;
 use game.city.SiteKind;
 use game.scenario.copy_vec;
 use game.terrain.Terrain;
+use std.collections.Set;
 use game.hex.Hex;
+use game.ai.near_a_den;
 use game.hex.edge;
 use game.unit.Team;
 use game.unit.Unit;
@@ -1071,12 +1073,17 @@ impl GameState {
         }
     }
 
-    pub fn plan_ai_workers(&mut self, team: Team) {
+    /// The AI's workers: each city with idle workers and nothing queued improves the tiles it
+    /// works, then puts roads on them, but none within a den's territory (`dens`, `animals.tua`),
+    /// where an animal would attack it.
+    pub fn plan_ai_workers(&mut self, team: Team, dens: &Set[Hex]) {
         for city in 0..self.cities.len() {
             let c = &self.cities[city];
             if c.team != team || c.workers == 0 || !c.worker_jobs.is_empty() { continue; }
             let stock = self.stock(team);
-            let worked = c.worked_tiles();
+            let mut worked: Vec[Hex] = Vec.new();
+            let all = c.worked_tiles();
+            for i in 0..all.len() { if !near_a_den(dens, all[i]) { worked.push(all[i]); } }
             let kinds = [JobKind.Improve, JobKind.Road];
             let mut chosen: Option[WorkerJob] = Option.None;
             for k in 0..2 {
