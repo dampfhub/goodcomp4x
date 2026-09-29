@@ -107,6 +107,11 @@ pub struct Controls {
     box_start: Option[Vec2],
     /// The left button went down placing a worker job: moves while it's held place it too.
     painting_jobs: bool,
+    /// In the classic panels: a queue scrollbar, a building catalog scrollbar or a queue row is
+    /// held, and moves go to it.
+    queue_scroll_dragging: bool,
+    building_scroll_dragging: bool,
+    queue_item_dragging: bool,
     mods: Modifiers,
     closed: bool,
 }
@@ -119,6 +124,9 @@ fn forget_gestures(input: &mut Controls) {
     input.cursor = Option.None;
     input.box_start = Option.None;
     input.painting_jobs = false;
+    input.queue_scroll_dragging = false;
+    input.building_scroll_dragging = false;
+    input.queue_item_dragging = false;
 }
 
 /// Applies one window event to the game, answering what the window should do about it.
@@ -136,6 +144,22 @@ pub fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, sc
         Event.Resized(w, h) => { input.size = vec2(w as f32, h as f32); }
         Event.CursorMoved(x, y) => {
             let pos = vec2(x, y);
+            // A held classic scrollbar or queue row follows the mouse and nothing else does.
+            if !game.imgui_ui && input.queue_scroll_dragging {
+                let _moved = game.drag_queue_scrollbar_at(pos, input.size, true);
+                input.cursor = Option.Some(pos);
+                return WindowRequest.Nothing;
+            }
+            if !game.imgui_ui && input.building_scroll_dragging {
+                let _moved = game.drag_building_scrollbar_at(pos, input.size, true);
+                input.cursor = Option.Some(pos);
+                return WindowRequest.Nothing;
+            }
+            if !game.imgui_ui && input.queue_item_dragging {
+                game.update_queue_drag_at(pos, input.size);
+                input.cursor = Option.Some(pos);
+                return WindowRequest.Nothing;
+            }
             // A left press that moves far enough is a selection box (drawn from `box_start`),
             // not a click; only the middle button pans.
             if let Option.Some(press) = input.left_press {
@@ -161,6 +185,11 @@ pub fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, sc
             Button.Left => {
                 if over_ui { return WindowRequest.Nothing; }
                 if let Option.Some(cursor) = input.cursor {
+                    if !game.imgui_ui {
+                        if game.drag_queue_scrollbar_at(cursor, input.size, false) { input.queue_scroll_dragging = true; return WindowRequest.Nothing; }
+                        if game.drag_building_scrollbar_at(cursor, input.size, false) { input.building_scroll_dragging = true; return WindowRequest.Nothing; }
+                        if !input.mods.shift && !input.mods.control && game.start_queue_drag_at(cursor, input.size) { input.queue_item_dragging = true; return WindowRequest.Nothing; }
+                    }
                     // With a job armed, the press (and any drag) places it on tiles or hex
                     // edges instead of clicking or panning.
                     if game.paint_job_at(cursor, input.size, true) {
@@ -188,6 +217,16 @@ pub fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, sc
         },
         Event.MouseUp(b) => match b {
             Button.Left => {
+                if input.queue_scroll_dragging || input.building_scroll_dragging {
+                    input.queue_scroll_dragging = false;
+                    input.building_scroll_dragging = false;
+                    return WindowRequest.Nothing;
+                }
+                if input.queue_item_dragging {
+                    input.queue_item_dragging = false;
+                    if let Option.Some(at) = input.cursor { game.finish_queue_drag_at(at, input.size); } else { game.cancel_queue_drag(); }
+                    return WindowRequest.Nothing;
+                }
                 if input.painting_jobs {
                     input.painting_jobs = false;
                     return WindowRequest.Nothing;
@@ -213,8 +252,9 @@ pub fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, sc
             Button.Right => {}
         },
         Event.Wheel(steps) => {
+            let over_queue = match input.cursor { Option.Some(c) => game.scroll_queue_at(c, input.size, steps), Option.None => false };
             let over_catalog = match input.cursor { Option.Some(c) => game.scroll_buildings_at(c, input.size, steps), Option.None => false };
-            if !over_catalog && !over_ui { game.camera.zoom(steps); }
+            if !over_queue && !over_catalog && !over_ui { game.camera.zoom(steps); }
         }
         Event.KeyDown(key, repeat) => {
             if !repeat && !keys_taken {
@@ -234,6 +274,10 @@ pub fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, sc
                     Key.Function(11) => {
                         game.imgui_ui = !game.imgui_ui;
                         input.left_press = Option.None;
+                        game.cancel_queue_drag();
+                        input.queue_scroll_dragging = false;
+                        input.building_scroll_dragging = false;
+                        input.queue_item_dragging = false;
                         game.set_notice(if game.imgui_ui { "IMGUI UI (F11 TO COMPARE)" } else { "CLASSIC UI (F11 TO COMPARE)" });
                     }
                     _ => on_key(game, key),
@@ -419,6 +463,9 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
             left_dragging: false,
             box_start: Option.None,
             painting_jobs: false,
+            queue_scroll_dragging: false,
+            building_scroll_dragging: false,
+            queue_item_dragging: false,
             mods: Modifiers { shift: false, control: false, alt: false },
             closed: false,
         };

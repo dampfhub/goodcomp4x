@@ -89,6 +89,10 @@ const TOP_BAR_HEIGHT: f32 = 52.0;
 const QUEUE_TOP_GAP: f32 = 4.0;
 /// A turn strip token's square, the gap between them, the share of the square its picture
 /// fills, and how far its count sits in from the corner.
+const SCROLLBAR_WIDTH: f32 = 12.0;
+const QUEUE_ITEM_HEIGHT: f32 = 48.0;
+const QUEUE_ITEM_GAP: f32 = 4.0;
+const QUEUE_REMOVE_WIDTH: f32 = 34.0;
 const ROSTER_CHIP: f32 = 44.0;
 const ROSTER_CHIP_GAP: f32 = 6.0;
 const ROSTER_TOKEN_SHARE: f32 = 0.8;
@@ -180,12 +184,11 @@ pub enum Target {
     /// City tray: the open city's labor focus.
     Focus(LaborFocus),
     /// City tray: queue a worker, queue a building (or resume choosing its site), confirm a
-    /// finished building, open the Barracks; a queue row's up arrow and X.
+    /// finished building, open the Barracks; a queue row's X.
     BuildWorker,
     Building(Building),
     ConfirmBuilding(Building),
     OpenBarracks,
-    QueueUp(i32),
     QueueRemove(i32),
     /// Worker menu: arm a job, open or close the menu, list a city, rest its idle workers, take
     /// a waiting job off the list, send a worker home, show a worker on the map.
@@ -228,7 +231,6 @@ impl Eq for Target {
             (Target.BuildWorker, Target.BuildWorker) | (Target.OpenBarracks, Target.OpenBarracks) | (Target.OpenCity, Target.OpenCity) => true,
             (Target.Building(a), Target.Building(b)) => a == b,
             (Target.ConfirmBuilding(a), Target.ConfirmBuilding(b)) => a == b,
-            (Target.QueueUp(a), Target.QueueUp(b)) => a == b,
             (Target.QueueRemove(a), Target.QueueRemove(b)) => a == b,
             (Target.BarracksQueueRemove(a), Target.BarracksQueueRemove(b)) => a == b,
             (Target.BarracksBuild(a), Target.BarracksBuild(b)) => a == b,
@@ -294,7 +296,24 @@ pub struct RosterChip { key: RosterKey, icon: ChipIcon, color: Color, selected: 
 
 /// A production queue row: its list and place in it, its text, whether it is the front item
 /// (being built now) and whether it may not be moved.
-pub struct QueueItemSpec { kind: QueueKind, index: i32, label: Str, active: bool, locked: bool }
+pub struct QueueItemSpec { kind: QueueKind, index: i32, label: Str, active: bool, locked: bool, dragging: bool, drop_target: bool }
+
+/// A queue row picked up with the mouse: its list, its place, and the row it is over now.
+pub struct QueueDrag { kind: QueueKind, source: i32, target: Option[i32] }
+
+/// A queue panel's scrollbar: which list, how far it is scrolled, its length and how many
+/// rows are in view.
+pub struct QueueScroll { kind: QueueKind, offset: i32, total: i32, visible: i32 }
+
+/// A queue row as laid out: where it is, where its body ends (the X button takes the rest), and
+/// how it is drawn.
+pub struct QueueRow { kind: QueueKind, index: i32, min: Vec2, max: Vec2, body_max_x: f32, locked: bool, label: Str, active: bool, dragging: bool, drop_target: bool }
+
+/// A scrollbar's track and thumb, as drawn.
+pub struct ScrollShape { track_min: Vec2, track_max: Vec2, thumb_min: Vec2, thumb_max: Vec2 }
+
+/// Where a queue panel's scrollbar is, for dragging it and for the wheel over the panel.
+pub struct QueueScrollRegion { kind: QueueKind, panel_min: Vec2, panel_max: Vec2, track_min: Vec2, track_max: Vec2, thumb_height: f32, max_offset: i32 }
 
 /// A setting row in the settings menu: the setting at its current value.
 pub struct SettingRow { setting: Setting, value: i32 }
@@ -343,6 +362,10 @@ pub enum Shape {
     Bar(Vec2, Vec2, f32),
     /// A turn strip token: an index into `UiLayout.roster_chips`.
     Chip(i32),
+    /// A queue row: an index into `UiLayout.queue_items`.
+    QueueItem(i32),
+    /// A scrollbar: an index into `UiLayout.scrolls`.
+    Scrollbar(i32),
 }
 
 /// A line of text: where its first span starts, at what size, and its spans.
@@ -358,6 +381,9 @@ pub struct UiLayout {
     catalogs: Vec[CatalogRegion],
     /// The turn strip's tokens and the key each one stands for.
     roster_chips: Vec[ChipRegion],
+    queue_items: Vec[QueueRow],
+    scrolls: Vec[ScrollShape],
+    queue_scrollbars: Vec[QueueScrollRegion],
     /// Where the panels go by zone, and what is already placed.
     zones: Dock,
     /// Where the settings menu's shapes and buttons start, while it's open: drawn over
@@ -375,7 +401,7 @@ fn empty_layout() -> UiLayout { layout_for(vec2(100000.0, 100000.0)) }
 
 /// An empty layout over a screen: its panels are docked by zone under the top bar.
 pub fn layout_for(screen: Vec2) -> UiLayout {
-    UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new(), catalogs: Vec.new(), roster_chips: Vec.new(), zones: dock(screen, MARGIN, GAP, TOP_BAR_HEIGHT + QUEUE_TOP_GAP), overlay: Option.None }
+    UiLayout { shapes: Vec.new(), texts: Vec.new(), buttons: Vec.new(), panels: Vec.new(), catalogs: Vec.new(), roster_chips: Vec.new(), queue_items: Vec.new(), scrolls: Vec.new(), queue_scrollbars: Vec.new(), zones: dock(screen, MARGIN, GAP, TOP_BAR_HEIGHT + QUEUE_TOP_GAP), overlay: Option.None }
 }
 
 impl UiLayout {
@@ -453,6 +479,8 @@ impl UiLayout {
                     }
                 }
                 Shape.Chip(k) => { let c = &self.roster_chips[k]; draw_chip(c.min, c.max, c.chip, out); }
+                Shape.QueueItem(k) => draw_queue_row(&self.queue_items[k], out),
+                Shape.Scrollbar(k) => { let s = &self.scrolls[k]; quad(s.track_min, s.track_max, BAR_BG, out); quad(s.thumb_min, s.thumb_max, GOLD_TEXT, out); }
                 Shape.Bar(min, max, fraction) => {
                     quad(min, max, BAR_BG, out);
                     let f = if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction };
@@ -574,7 +602,6 @@ impl GameState {
             Target.Building(building) => self.queue_selected_city_building(building),
             Target.ConfirmBuilding(building) => self.confirm_building(building),
             Target.OpenBarracks => { if let Option.Some(city) = self.selected_city { self.open_barracks(city); } }
-            Target.QueueUp(index) => self.move_selected_city_queue_item(index, true),
             Target.QueueRemove(index) => self.remove_selected_city_queue_item(index),
             Target.BarracksBuild(build) => self.queue_selected_barracks_unit(build),
             Target.BarracksQueueRemove(index) => self.remove_selected_barracks_queue_item(index),
@@ -647,7 +674,19 @@ impl GameState {
         }
         // The order is the priority: the command tray first, then the debug panel, then the
         // turn strip.
-        if shown { let _placed = layout.dock_panel(tray, DockZone.BottomLeft); }
+        if shown {
+            let tray_size = tray.size();
+            let _placed = layout.dock_panel(tray, DockZone.BottomLeft);
+            // The queue takes what room is left above the tray; a longer one scrolls.
+            let visible = queue_items_that_fit(layout.zones.remaining_height(DockZone.BottomLeft, tray_size.x));
+            let mut queue = panel_builder(false);
+            if let Option.Some(city) = self.selected_city {
+                self.city_queue_panel(city, visible, &mut queue);
+            } else if let Option.Some(city) = self.selected_barracks {
+                self.barracks_queue_panel(city, visible, &mut queue);
+            }
+            if !queue.rows.is_empty() { let _queued = layout.dock_panel(queue, DockZone.BottomLeft); }
+        }
         let _debug = layout.dock_panel(self.debug_panel_content(), DockZone.TopLeft);
         if let Option.Some(strip) = self.roster_panel() { let _placed = layout.dock_panel(strip, DockZone.BottomCenter); }
         self.place_settings(screen_size, &mut layout);
@@ -960,10 +999,7 @@ impl GameState {
 
     /// The open city: population, stores and income, growth, its queue, and a card for each
     /// unit, the worker and each building it can build.
-    pub fn city_tray(&self, i: i32, panel: &mut PanelBuilder) { self.city_tray_rows(i, panel, true); }
-
-    /// The open city's tray, with its queue rows or without (the queue panel shows those).
-    pub fn city_tray_rows(&self, i: i32, panel: &mut PanelBuilder, with_queue: bool) {
+    pub fn city_tray(&self, i: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let (food, production) = self.income(i);
         let net_food = food - city.population * 8;
@@ -1019,19 +1055,6 @@ impl GameState {
         panel.gap(GAP);
         panel.text_owned(TextSize.Small, growth_label, DIM_TEXT);
         panel.bar(growth_percent as f32 / 100.0);
-
-        if with_queue && city.queue.len() > 0 {
-            panel.gap(GAP);
-            panel.text(TextSize.Small, "QUEUE", LABEL_TEXT);
-            for q in 0..city.queue.len() {
-                let build = city.queue[q];
-                let label = text(fn() can {Out} { show_i64((q + 1) as i64); Out.put(". "); Out.put(build.name()); });
-                panel.begin_buttons();
-                panel.button(Target.QueueUp(q), &label, "UP", button_state(false, q == 0), false);
-                panel.button(Target.QueueRemove(q), "X", "", ButtonState.Ready, false);
-                panel.end_buttons(true);
-            }
-        }
 
         panel.gap(GAP);
         let ships = self.city_is_coastal(i) && city.placed_site(Building.Harbor).is_some();
@@ -1239,10 +1262,7 @@ impl GameState {
 
     /// The open Barracks: its health, its work group's production, what it's training, its
     /// queue, and a card for each troop.
-    pub fn barracks_tray(&self, i: i32, panel: &mut PanelBuilder) { self.barracks_tray_rows(i, panel, true); }
-
-    /// The open Barracks' tray, with its queue rows or without.
-    pub fn barracks_tray_rows(&self, i: i32, panel: &mut PanelBuilder, with_queue: bool) {
+    pub fn barracks_tray(&self, i: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let Option.Some(tile) = city.barracks else { return; };
         let active = !city.worked.is_empty() && city.worked[0] == tile;
@@ -1264,13 +1284,6 @@ impl GameState {
             }), GOLD_TEXT);
             let fraction = stored as f32 / build.cost() as f32;
             panel.bar(if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction });
-            for q in 0..(if with_queue { city.barracks_queue.len() } else { 0 }) {
-                let queued = city.barracks_queue[q];
-                let label = text(fn() can {Out} { show_i64((q + 1) as i64); Out.put(". "); Out.put(queued.name()); });
-                panel.begin_buttons();
-                panel.button(Target.BarracksQueueRemove(q), &label, "X", ButtonState.Ready, false);
-                panel.end_buttons(true);
-            }
         }
         panel.gap(GAP);
         let front: Option[BuildUnit] = if city.barracks_queue.is_empty() { Option.None } else { Option.Some(city.barracks_queue[0]) };
@@ -1474,7 +1487,7 @@ impl GameState {
                 shortcut = to_owned("CLICK");
                 description = to_owned("FINALIZES THE SELECTED BUILDING SITE.");
             }
-            Target.QueueUp(_) | Target.QueueRemove(_) | Target.BarracksQueueRemove(_) | Target.QueueItem(_, _)
+            Target.QueueRemove(_) | Target.BarracksQueueRemove(_) | Target.QueueItem(_, _)
                 | Target.RosterSelect(_) | Target.RosterAdd(_) | Target.RosterRemove(_) => { return false; }
             Target.OpenInterior => {
                 title = to_owned("CITY INTERIOR");
@@ -1747,7 +1760,7 @@ const CATALOG_ROW: f32 = 30.0;
 const CATALOG_INSET: f32 = 4.0;
 
 /// Where a city's building catalog lies on screen, for the wheel to scroll it.
-pub struct CatalogRegion { city: i32, min: Vec2, max: Vec2, max_offset: i32 }
+pub struct CatalogRegion { city: i32, min: Vec2, max: Vec2, track_min: Vec2, track_max: Vec2, thumb_height: f32, max_offset: i32 }
 
 pub struct Row { kind: RowKind, size: TextSize, value: f32, from: i32, to: i32, offset: i32 }
 
@@ -1759,6 +1772,8 @@ pub struct PanelBuilder {
     settings: Vec[SettingRow],
     queue_items: Vec[QueueItemSpec],
     chips: Vec[RosterChip],
+    /// A scrollbar down the panel's right edge, for a queue longer than its room.
+    scrollbar: Option[QueueScroll],
     /// Where the spans of the line in progress start.
     line_from: i32,
     /// Where the buttons of the row in progress start.
@@ -1768,7 +1783,7 @@ pub struct PanelBuilder {
 }
 
 pub fn panel_builder(faded: bool) -> PanelBuilder {
-    PanelBuilder { rows: Vec.new(), spans: Vec.new(), specs: Vec.new(), settings: Vec.new(), queue_items: Vec.new(), chips: Vec.new(), line_from: 0, buttons_from: 0, faded }
+    PanelBuilder { rows: Vec.new(), spans: Vec.new(), specs: Vec.new(), settings: Vec.new(), queue_items: Vec.new(), chips: Vec.new(), scrollbar: Option.None, line_from: 0, buttons_from: 0, faded }
 }
 
 impl PanelBuilder {
@@ -1872,7 +1887,8 @@ impl PanelBuilder {
             RowKind.Buttons => BUTTON_HEIGHT,
             RowKind.CompactButtons => END_TURN_HEIGHT,
             RowKind.Roster => ROSTER_CHIP,
-            RowKind.Heading | RowKind.Setting | RowKind.QueueItem => 0.0,
+            RowKind.QueueItem => QUEUE_ITEM_HEIGHT,
+            RowKind.Heading | RowKind.Setting => 0.0,
         }
     }
 
@@ -1887,7 +1903,11 @@ impl PanelBuilder {
                 }
                 w
             }
-            RowKind.Gap | RowKind.Bar | RowKind.Heading | RowKind.Setting | RowKind.QueueItem => 0.0,
+            RowKind.Gap | RowKind.Bar | RowKind.Heading | RowKind.Setting => 0.0,
+            RowKind.QueueItem => {
+                let label = &self.queue_items[row.from].label;
+                ui(TextSize.Small).width(label) + 2.0 * BUTTON_PADDING + QUEUE_REMOVE_WIDTH
+            }
             RowKind.Roster => {
                 let n = (row.to - row.from) as f32;
                 n * ROSTER_CHIP + (if n > 1.0 { n - 1.0 } else { 0.0 }) * ROSTER_CHIP_GAP
@@ -1940,7 +1960,8 @@ impl PanelBuilder {
             if w > width { width = w; }
             height = height + self.row_height(self.rows[i]);
         }
-        vec2(width + 2.0 * PADDING, height + 2.0 * PADDING).round()
+        let scroll_extra = if self.scrollbar.is_some() { GAP + SCROLLBAR_WIDTH } else { 0.0 };
+        vec2(width + scroll_extra + 2.0 * PADDING, height + 2.0 * PADDING).round()
     }
 
     fn place_bottom_left(self, min: Vec2, layout: &mut UiLayout) {
@@ -1955,7 +1976,22 @@ impl PanelBuilder {
         layout.panel(min, max, self.faded);
 
         let left = min.x + PADDING;
-        let inner_width = size.x - 2.0 * PADDING;
+        let scroll_extra = if self.scrollbar.is_some() { GAP + SCROLLBAR_WIDTH } else { 0.0 };
+        let inner_width = size.x - 2.0 * PADDING - scroll_extra;
+        if let Option.Some(sc) = self.scrollbar {
+            let track_min = vec2(max.x - PADDING - SCROLLBAR_WIDTH, min.y + PADDING);
+            let track_max = vec2(max.x - PADDING, max.y - PADDING);
+            let track = track_max.y - track_min.y;
+            let mut thumb_height = track * sc.visible as f32 / sc.total as f32;
+            if thumb_height < 24.0 { thumb_height = 24.0; }
+            if thumb_height > track { thumb_height = track; }
+            let max_offset = sc.total - sc.visible;
+            let offset = if sc.offset > max_offset { max_offset } else { sc.offset };
+            let thumb_top = track_max.y - (track - thumb_height) * offset as f32 / max_offset as f32;
+            layout.shapes.push(Shape.Scrollbar(layout.scrolls.len()));
+            layout.scrolls.push(ScrollShape { track_min, track_max, thumb_min: vec2(track_min.x, thumb_top - thumb_height), thumb_max: vec2(track_max.x, thumb_top) });
+            layout.queue_scrollbars.push(QueueScrollRegion { kind: sc.kind, panel_min: min, panel_max: max, track_min, track_max, thumb_height, max_offset });
+        }
         let mut top = max.y - PADDING;
         for r in 0..self.rows.len() {
             let row = self.rows[r];
@@ -1968,7 +2004,25 @@ impl PanelBuilder {
                     for i in row.from..row.to { spans.push(Span { text: copy_str(&self.spans[i].text), color: self.spans[i].color }); }
                     layout.text_row(vec2(left, middle), row.size, spans);
                 }
-                RowKind.Gap | RowKind.Heading | RowKind.Setting | RowKind.QueueItem => {}
+                RowKind.Gap | RowKind.Heading | RowKind.Setting => {}
+                RowKind.QueueItem => {
+                    let item = &self.queue_items[row.from];
+                    let rmin = vec2(left, top - height + QUEUE_ITEM_GAP).round();
+                    let rmax = vec2(left + inner_width, top).round();
+                    let body_max_x = rmax.x - QUEUE_REMOVE_WIDTH;
+                    layout.shapes.push(Shape.QueueItem(layout.queue_items.len()));
+                    layout.queue_items.push(QueueRow { kind: item.kind, index: item.index, min: rmin, max: rmax, body_max_x, locked: item.locked, label: copy_str(&item.label), active: item.active, dragging: item.dragging, drop_target: item.drop_target });
+                    layout.buttons.push(Button {
+                        target: item.kind.remove_target(item.index),
+                        label: to_owned("X"),
+                        hint: to_owned(""),
+                        state: ButtonState.Ready,
+                        armed: false,
+                        faded: self.faded,
+                        min: vec2(body_max_x, rmin.y),
+                        max: rmax,
+                    });
+                }
                 RowKind.Roster => {
                     for i in row.from..row.to {
                         let cmin = vec2(left + (i - row.from) as f32 * (ROSTER_CHIP + ROSTER_CHIP_GAP), top - height).round();
@@ -2011,7 +2065,8 @@ impl PanelBuilder {
         layout.shapes.push(Shape.Panel(region_min, region_max, self.faded));
         let max_offset = total - visible;
         let offset = if row.offset > max_offset { max_offset } else if row.offset < 0 { 0 } else { row.offset };
-        let list_width = width - 2.0 * CATALOG_INSET;
+        let overflow = total > visible;
+        let list_width = width - 2.0 * CATALOG_INSET - if overflow { SCROLLBAR_WIDTH + 4.0 } else { 0.0 };
         for k in 0..visible {
             let spec = &self.specs[row.from + offset + k];
             let y = region_max.y - CATALOG_INSET - k as f32 * (CATALOG_ROW + CATALOG_INSET);
@@ -2026,7 +2081,20 @@ impl PanelBuilder {
                 max: vec2(left + CATALOG_INSET + list_width, y).round(),
             });
         }
-        layout.catalogs.push(CatalogRegion { city: row.value as i32, min: region_min, max: region_max, max_offset });
+        if overflow {
+            let track_min = vec2(region_max.x - 4.0 - SCROLLBAR_WIDTH, region_min.y + 4.0);
+            let track_max = vec2(region_max.x - 4.0, region_max.y - 4.0);
+            let track = track_max.y - track_min.y;
+            let mut thumb_height = track * visible as f32 / total as f32;
+            if thumb_height < 24.0 { thumb_height = 24.0; }
+            if thumb_height > track { thumb_height = track; }
+            let thumb_top = track_max.y - (track - thumb_height) * offset as f32 / max_offset as f32;
+            layout.shapes.push(Shape.Scrollbar(layout.scrolls.len()));
+            layout.scrolls.push(ScrollShape { track_min, track_max, thumb_min: vec2(track_min.x, thumb_top - thumb_height), thumb_max: vec2(track_max.x, thumb_top) });
+            layout.catalogs.push(CatalogRegion { city: row.value as i32, min: region_min, max: region_max, track_min, track_max, thumb_height, max_offset });
+        } else {
+            layout.catalogs.push(CatalogRegion { city: row.value as i32, min: region_min, max: region_max, track_min: region_min, track_max: region_min, thumb_height: 0.0, max_offset: 0 });
+        }
     }
 }
 
@@ -2051,7 +2119,16 @@ fn single_line_button_width(label: &str, hint: &str) -> f32 {
     (ui(TextSize.Body).width(label) + GAP + ui(TextSize.Small).width(hint) + 2.0 * BUTTON_PADDING).ceil()
 }
 
-fn contains(min: Vec2, max: Vec2, point: Vec2) -> bool {
+/// How many queue rows fit in `available_height`: the panel's padding, its heading line and
+/// rows of `QUEUE_ITEM_HEIGHT`; at least one.
+pub fn queue_items_that_fit(available_height: f32) -> i32 {
+    let fixed = 2.0 * PADDING + ui(TextSize.Small).line_height + LINE_GAP;
+    let mut visible = 1;
+    while (fixed + (visible + 1) as f32 * QUEUE_ITEM_HEIGHT).round() <= available_height.round() { visible = visible + 1; }
+    visible
+}
+
+pub fn contains(min: Vec2, max: Vec2, point: Vec2) -> bool {
     point.x >= min.x && point.y >= min.y && point.x <= max.x && point.y <= max.y
 }
 
@@ -2095,6 +2172,20 @@ fn draw_button(button: &Button, hovered: bool, out: &mut Vec[MeshVertex]) {
         label_face.push(vec2(label_left, label_baseline), label, text_color, out);
         hint_face.push(vec2(hint_left, hint_baseline), hint, hint_color, out);
     }
+}
+
+/// A queue row's body: bright while it is being dragged, its border gold at the front of the
+/// queue and lit where a drop would land.
+fn draw_queue_row(row: &QueueRow, out: &mut Vec[MeshVertex]) {
+    let bg = if row.dragging { BUTTON_HOVER_BG } else { BUTTON_BG };
+    let edge = if row.drop_target { ARMED_BORDER_COLOR } else if row.active { GOLD_TEXT } else { BORDER_COLOR };
+    let body_max = vec2(row.body_max_x, row.max.y);
+    draw_box(row.min, body_max, bg, BORDER, edge, out);
+    let face = ui(TextSize.Small);
+    let origin = vec2(row.min.x + BUTTON_PADDING, (row.min.y + row.max.y - face.cap_height) / 2.0);
+    let color = if row.locked { DIM_TEXT } else if row.active { GOLD_TEXT } else { TEXT };
+    let label = &row.label;
+    face.push(origin, label, color, out);
 }
 
 /// A turn strip token: its square (bright while selected), the same picture as on the map, and

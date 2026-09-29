@@ -25,6 +25,7 @@ use game.tests.sandbox;
 use game.settings.SETTINGS;
 use game.settings.Setting;
 use game.ui.ButtonState;
+use game.ui.QueueKind;
 use game.ui.UiLayout;
 use game.ui.layout_for;
 use game.ui.panel_builder;
@@ -917,5 +918,215 @@ fn a_click_on_a_turn_strip_token_in_the_classic_panels_selects_its_units() {
         let before = game.selection().len();
         game.handle_click(at, screen(), ClickMode.Swap);
         assert(game.selection().len() <= before && !game.selection().is_empty());
+    });
+}
+
+// ---- the classic queue panels and scrollbars ------------------------------------------------
+
+fn shows_button(layout: &UiLayout, target: Target) -> bool { layout.button_for(target).is_some() }
+
+fn ui_center(min: Vec2, max: Vec2) -> Vec2 { to_ui(min.add(max).scale(0.5), screen()) }
+
+@test
+fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let first = game.layout(screen());
+        assert(!first.catalogs.is_empty());
+        let region = &first.catalogs[0];
+        assert(region.max_offset > 0);
+        let cursor = ui_center(region.min, region.max);
+        assert(shows_button(&first, Target.Building(Building.Granary)));
+        assert(!shows_button(&first, Target.Building(Building.Railhead)));
+        assert(game.scroll_buildings_at(cursor, screen(), -20.0));
+        let scrolled = game.layout(screen());
+        let Option.Some(k) = scrolled.button_for(Target.Building(Building.Railhead)) else { assert(false); return; };
+        let card = &scrolled.buttons[k];
+        let middle = card.min.add(card.max).scale(0.5);
+        assert(scrolled.button_at(middle) == Option.Some(k));
+        let inside = &scrolled.catalogs[0];
+        assert(contains_point(inside.min, inside.max, middle));
+        assert(!shows_button(&scrolled, Target.Building(Building.Harbor)));
+    });
+}
+
+fn contains_point(min: Vec2, max: Vec2, p: Vec2) -> bool { p.x >= min.x && p.y >= min.y && p.x <= max.x && p.y <= max.y }
+
+@test
+fn the_building_catalog_scrollbar_drags_to_the_end() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        let layout = game.layout(screen());
+        let region = &layout.catalogs[0];
+        // The bottom of the track is the end of the list.
+        let bottom = to_ui(vec2((region.track_min.x + region.track_max.x) / 2.0, region.track_min.y), screen());
+        assert(game.drag_building_scrollbar_at(bottom, screen(), false));
+        assert(game.cities[city].building_scroll == region.max_offset);
+        // A press off the track takes nothing.
+        assert(!game.drag_building_scrollbar_at(vec2(5.0, 5.0), screen(), false));
+    });
+}
+
+@test
+fn city_queue_scroll_keeps_the_box_bounded_and_targets_the_visible_items() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        for _ in 0..8 { game.queue_selected_city_unit(BuildUnit.Melee); }
+        let layout = game.layout(screen());
+        assert(!layout.queue_scrollbars.is_empty());
+        let scroll = &layout.queue_scrollbars[0];
+        assert(scroll.kind == QueueKind.City);
+        assert(scroll.panel_max.y - scroll.panel_min.y < 400.0);
+        assert(scroll.panel_max.y < SCREEN_H - 52.0);
+        // The first rows that fit, then nothing past them.
+        let mut visible = 0;
+        while visible < 8 && shows_button(&layout, Target.QueueRemove(visible)) { visible = visible + 1; }
+        assert(visible >= 2 && visible < 8);
+        assert(!shows_button(&layout, Target.QueueRemove(visible)));
+        let cursor = ui_center(scroll.panel_min, scroll.panel_max);
+        assert(game.scroll_queue_at(cursor, screen(), -1.0));
+        let next = game.layout(screen());
+        assert(shows_button(&next, Target.QueueRemove(1)));
+        assert(shows_button(&next, Target.QueueRemove(visible)));
+        assert(!shows_button(&next, Target.QueueRemove(0)));
+        // Dragging the thumb to the end of the track scrolls to the end.
+        let s = &next.queue_scrollbars[0];
+        let bottom = to_ui(vec2((s.track_min.x + s.track_max.x) / 2.0, s.track_min.y), screen());
+        assert(game.drag_queue_scrollbar_at(bottom, screen(), false));
+        assert(game.city_queue_scroll == 8 - visible);
+        let remove = button_cursor(&game, Target.QueueRemove(7));
+        game.handle_click(remove, screen(), ClickMode.Normal);
+        let Option.Some(open) = game.selected_city else { assert(false); return; };
+        assert(game.cities[open].queue.len() == 7);
+    });
+}
+
+@test
+fn barracks_queue_uses_the_same_scroll_window() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        game.cities[city].barracks = Option.Some(Hex.new(-2, 0));
+        game.open_barracks(city);
+        for _ in 0..12 { game.cities[city].barracks_queue.push(BuildUnit.Melee); }
+        let layout = game.layout(screen());
+        assert(!layout.queue_scrollbars.is_empty());
+        let scroll = &layout.queue_scrollbars[0];
+        assert(scroll.kind == QueueKind.Barracks);
+        let cursor = ui_center(scroll.panel_min, scroll.panel_max);
+        assert(game.scroll_queue_at(cursor, screen(), -2.0));
+        let after = game.layout(screen());
+        assert(shows_button(&after, Target.BarracksQueueRemove(3)));
+        assert(!shows_button(&after, Target.BarracksQueueRemove(0)));
+    });
+}
+
+/// The centre of queue row `index` of `kind`, in window pixels: on its body, clear of the X.
+fn row_cursor(game: &GameState, kind: QueueKind, index: i32) -> Vec2 {
+    let layout = game.layout(screen());
+    for k in 0..layout.queue_items.len() {
+        let row = &layout.queue_items[k];
+        if row.kind == kind && row.index == index {
+            return to_ui(vec2((row.min.x + row.body_max_x) / 2.0, (row.min.y + row.max.y) / 2.0), screen());
+        }
+    }
+    vec2(0.0 - 1.0, 0.0 - 1.0)
+}
+
+@test
+fn classic_queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        game.cities[city].queue.push(Build.Unit(BuildUnit.Melee));
+        game.cities[city].queue.push(Build.Unit(BuildUnit.Ranged));
+        game.cities[city].queue.push(Build.Unit(BuildUnit.Siege));
+        let from = row_cursor(&game, QueueKind.City, 2);
+        let to = row_cursor(&game, QueueKind.City, 0);
+        assert(game.start_queue_drag_at(from, screen()));
+        game.update_queue_drag_at(to, screen());
+        assert(game.queue_drag.is_some());
+        let over = match game.queue_drag { Option.Some(d) => d.target == Option.Some(0), Option.None => false };
+        assert(over);
+        game.finish_queue_drag_at(to, screen());
+        assert(game.cities[city].queue[0] == Build.Unit(BuildUnit.Siege));
+        assert(game.queue_drag.is_none());
+        // The X takes a click of its own: it starts no drag.
+        let x = button_cursor(&game, Target.QueueRemove(1));
+        assert(!game.start_queue_drag_at(x, screen()));
+        game.handle_click(x, screen(), ClickMode.Normal);
+        assert(game.cities[city].queue.len() == 2);
+    });
+}
+
+@test
+fn classic_ready_city_building_cannot_be_dragged_out_of_first_place() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        game.cities[city].queue.push(Build.Building(Building.Workshop));
+        game.cities[city].queue.push(Build.Unit(BuildUnit.Melee));
+        game.cities[city].pending_building = Option.Some(Building.Workshop);
+        assert(!game.start_queue_drag_at(row_cursor(&game, QueueKind.City, 0), screen()));
+        assert(game.start_queue_drag_at(row_cursor(&game, QueueKind.City, 1), screen()));
+        game.finish_queue_drag_at(row_cursor(&game, QueueKind.City, 0), screen());
+        assert(game.cities[city].queue[0] == Build.Building(Building.Workshop));
+    });
+}
+
+@test
+fn classic_barracks_queue_rows_use_the_same_drag_and_remove_targets() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        game.cities[city].barracks = Option.Some(Hex.new(-2, 0));
+        game.open_barracks(city);
+        game.cities[city].barracks_queue.push(BuildUnit.Melee);
+        game.cities[city].barracks_queue.push(BuildUnit.Ranged);
+        assert(game.start_queue_drag_at(row_cursor(&game, QueueKind.Barracks, 1), screen()));
+        game.finish_queue_drag_at(row_cursor(&game, QueueKind.Barracks, 0), screen());
+        assert(game.cities[city].barracks_queue[0] == BuildUnit.Ranged);
+        let x = button_cursor(&game, Target.BarracksQueueRemove(1));
+        assert(!game.start_queue_drag_at(x, screen()));
+        game.handle_click(x, screen(), ClickMode.Normal);
+        assert(game.cities[city].barracks_queue.len() == 1);
+        assert(game.cities[city].barracks_queue[0] == BuildUnit.Ranged);
+    });
+}
+
+@test
+fn queue_row_count_tracks_available_screen_height() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = city_view();
+        for _ in 0..12 { game.queue_selected_city_unit(BuildUnit.Melee); }
+        let mut counts: Vec[i32] = Vec.new();
+        for k in 0..3 {
+            let height = if k == 0 { 820.0 } else if k == 1 { 900.0 } else { 1200.0 };
+            let size = vec2(1600.0, height);
+            let layout = game.layout(size);
+            let mut count = 0;
+            for i in 0..12 { if shows_button(&layout, Target.QueueRemove(i)) { count = count + 1; } }
+            assert(!layout.queue_scrollbars.is_empty());
+            let queue = &layout.queue_scrollbars[0];
+            assert(queue.panel_max.y <= height - 52.0 - 4.0);
+            // The queue panel clears the debug panel.
+            let Option.Some(d) = layout.button_for(Target.Scenario(Scenario.Cities)) else { assert(false); return; };
+            let center = layout.buttons[d].min.add(layout.buttons[d].max).scale(0.5);
+            let mut debug: Option[i32] = Option.None;
+            for p in 0..layout.panels.len() {
+                let r = &layout.panels[p];
+                if contains_point(r.min, r.max, center) { debug = Option.Some(p); }
+            }
+            let Option.Some(p) = debug else { assert(false); return; };
+            let panel = &layout.panels[p];
+            assert(!overlaps(Rect { min: queue.panel_min, max: queue.panel_max }, Rect { min: panel.min, max: panel.max }, 0.0));
+            counts.push(count);
+        }
+        assert(counts[0] >= 1);
+        assert(counts[0] < counts[1]);
+        assert(counts[1] < counts[2]);
     });
 }

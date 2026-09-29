@@ -182,6 +182,8 @@ const ROSTER_CHIP_GAP: f32 = 6.0;
 const ROSTER_TOKEN_SHARE: f32 = 0.8;
 const CHIP_COUNT_INSET: f32 = 3.0;
 const TOOLTIP_WRAP: i32 = 50;
+/// A queue panel's row count when the window scrolls it instead: every row.
+const ALL_ROWS: i32 = 1000000;
 /// The style's vertical item spacing and frame padding, as `measure_panel` counts them for the
 /// settings menu's rows.
 const SPACING_Y: f32 = 6.0;
@@ -904,9 +906,9 @@ pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Opt
     } else if let Option.Some(city) = game.interior_view {
         game.interior_tray(city, &mut tray);
     } else if let Option.Some(city) = game.selected_city {
-        game.city_tray_rows(city, &mut tray, false);
+        game.city_tray(city, &mut tray);
     } else if let Option.Some(city) = game.selected_barracks {
-        game.barracks_tray_rows(city, &mut tray, false);
+        game.barracks_tray(city, &mut tray);
     } else if let Option.Some(idx) = game.selected {
         game.unit_info(idx, &mut tray);
         tray.gap(10.0);
@@ -921,9 +923,9 @@ pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Opt
     let mut queue = panel_builder(false);
     if selection_is_pinned || queue_is_pinned {
     } else if let Option.Some(city) = game.selected_city {
-        game.city_queue_panel(city, &mut queue);
+        game.city_queue_panel(city, ALL_ROWS, &mut queue);
     } else if let Option.Some(city) = game.selected_barracks {
-        game.barracks_queue_panel(city, &mut queue);
+        game.barracks_queue_panel(city, ALL_ROWS, &mut queue);
     }
     let debug = game.debug_panel_content();
     let mut hover = panel_builder(false);
@@ -1256,19 +1258,19 @@ fn pin_panel(game: &GameState, queue_pinned: bool, members: &Vec[i32], pin: Pinn
     match pin.kind {
         PinnedKind.City => {
             let Option.Some(city) = game.pinned_city_index(pin) else { return Option.None; };
-            game.city_tray_rows(city, &mut panel, false);
+            game.city_tray(city, &mut panel);
             if !queue_pinned {
                 let mut queue = panel_builder(false);
-                game.city_queue_panel(city, &mut queue);
+                game.city_queue_panel(city, ALL_ROWS, &mut queue);
                 if has_rows(&queue) { panel.gap(10.0); append_rows(&mut panel, &queue); }
             }
         }
         PinnedKind.Barracks => {
             let Option.Some(city) = game.pinned_city_index(pin) else { return Option.None; };
-            game.barracks_tray_rows(city, &mut panel, false);
+            game.barracks_tray(city, &mut panel);
             if !queue_pinned {
                 let mut queue = panel_builder(false);
-                game.barracks_queue_panel(city, &mut queue);
+                game.barracks_queue_panel(city, ALL_ROWS, &mut queue);
                 if has_rows(&queue) { panel.gap(10.0); append_rows(&mut panel, &queue); }
             }
         }
@@ -1284,11 +1286,11 @@ fn pin_panel(game: &GameState, queue_pinned: bool, members: &Vec[i32], pin: Pinn
         }
         PinnedKind.CityQueue => {
             let Option.Some(city) = game.pinned_city_index(pin) else { return Option.None; };
-            game.city_queue_panel(city, &mut panel);
+            game.city_queue_panel(city, ALL_ROWS, &mut panel);
         }
         PinnedKind.BarracksQueue => {
             let Option.Some(city) = game.pinned_city_index(pin) else { return Option.None; };
-            game.barracks_queue_panel(city, &mut panel);
+            game.barracks_queue_panel(city, ALL_ROWS, &mut panel);
         }
     }
     Option.Some(panel)
@@ -1311,7 +1313,7 @@ fn append_rows(to: &mut PanelBuilder, from: &PanelBuilder) {
             RowKind.QueueItem => {
                 let item = &from.queue_items[row.from];
                 let l = &item.label;
-                to.queue_item(QueueItemSpec { kind: item.kind, index: item.index, label: to_owned(l), active: item.active, locked: item.locked });
+                to.queue_item(QueueItemSpec { kind: item.kind, index: item.index, label: to_owned(l), active: item.active, locked: item.locked, dragging: false, drop_target: false });
             }
             _ => {}
         }

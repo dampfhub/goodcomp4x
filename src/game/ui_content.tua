@@ -3,10 +3,12 @@
 //! hover panel for a city or Barracks. Each is a `PanelBuilder`, like the tray, so the actions
 //! they name go through `activate_target`.
 
+use std.math.Float;
 use std.fmt.Out;
 use std.fmt.show_i64;
 use std.fmt.show_u64;
 use std.fmt.show_f64_fixed;
+use std.linalg.Vec2;
 use std.linalg.vec2;
 use std.str.Str;
 use std.str.eq as str_eq;
@@ -22,7 +24,11 @@ use game.ui.ButtonState;
 use game.ui.ChipIcon;
 use game.ui.PanelBuilder;
 use game.ui.QueueItemSpec;
+use game.ui.QueueDrag;
 use game.ui.QueueKind;
+use game.ui.QueueScroll;
+use game.ui.contains;
+use game.ui.to_ui;
 use game.ui.RosterChip;
 use game.ui.RosterKey;
 use game.ui.Target;
@@ -62,30 +68,45 @@ fn show_turns_at_rate(remaining: i32, per_turn: i32) can {Out} {
 impl GameState {
     // ---- production queues --------------------------------------------------------------
 
-    /// The Barracks' training queue of city `i`; nothing when it is empty.
-    pub fn barracks_queue_panel(&self, i: i32, panel: &mut PanelBuilder) {
+    /// The Barracks' training queue of city `i`, `visible` rows of it from the scroll offset;
+    /// nothing when it is empty.
+    pub fn barracks_queue_panel(&self, i: i32, visible: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if city.barracks_queue.is_empty() { return; }
         let production = self.barracks_income(i);
+        let total = city.barracks_queue.len();
+        let most = if total > visible { total - visible } else { 0 };
+        let offset = if self.barracks_queue_scroll < most { self.barracks_queue_scroll } else { most };
+        if total > visible { panel.scrollbar = Option.Some(QueueScroll { kind: QueueKind.Barracks, offset, total, visible }); }
         panel.text(TextSize.Small, "BARRACKS QUEUE - DRAG TO REORDER", LABEL_TEXT);
-        for index in 0..city.barracks_queue.len() {
+        let drag = match self.queue_drag { Option.Some(d) => d.kind == QueueKind.Barracks, Option.None => false };
+        let last = if total < offset + visible { total } else { offset + visible };
+        for index in offset..last {
             let build = city.barracks_queue[index];
             let remaining = build.cost() - if index == 0 { city.barracks_production } else { 0 };
             let label = text(fn() can {Out} {
                 Out.put(if index == 0 { "> " } else { "  " }); Out.put(build.name()); Out.put(" | "); show_quantity(build.cost());
                 Out.put(" PROD | "); show_turns_at_rate(remaining, production); Out.put(" LEFT");
             });
-            panel.queue_item(QueueItemSpec { kind: QueueKind.Barracks, index, label, active: index == 0, locked: false });
+            let (dragging, drop_target) = self.drag_flags(drag, index);
+            panel.queue_item(QueueItemSpec { kind: QueueKind.Barracks, index, label, active: index == 0, locked: false, dragging, drop_target });
         }
     }
 
-    /// The production queue of city `i`; nothing when it is empty.
-    pub fn city_queue_panel(&self, i: i32, panel: &mut PanelBuilder) {
+    /// The production queue of city `i`, `visible` rows of it from the scroll offset; nothing
+    /// when it is empty.
+    pub fn city_queue_panel(&self, i: i32, visible: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if city.queue.is_empty() { return; }
         let (_, production) = self.income(i);
+        let total = city.queue.len();
+        let most = if total > visible { total - visible } else { 0 };
+        let offset = if self.city_queue_scroll < most { self.city_queue_scroll } else { most };
+        if total > visible { panel.scrollbar = Option.Some(QueueScroll { kind: QueueKind.City, offset, total, visible }); }
         panel.text(TextSize.Small, "CITY QUEUE - DRAG TO REORDER", LABEL_TEXT);
-        for index in 0..city.queue.len() {
+        let drag = match self.queue_drag { Option.Some(d) => d.kind == QueueKind.City, Option.None => false };
+        let last = if total < offset + visible { total } else { offset + visible };
+        for index in offset..last {
             let build = city.queue[index];
             let cost = self.city_build_cost(i, build);
             let remaining = cost - if index == 0 { city.production } else { 0 };
@@ -93,9 +114,120 @@ impl GameState {
                 Out.put(if index == 0 { "> " } else { "  " }); Out.put(build.name()); Out.put(" | "); show_quantity(cost);
                 Out.put(" PROD | "); show_turns_at_rate(remaining, production); Out.put(" LEFT");
             });
-            panel.queue_item(QueueItemSpec { kind: QueueKind.City, index, label, active: index == 0, locked: index == 0 && city.pending_building.is_some() });
+            let (dragging, drop_target) = self.drag_flags(drag, index);
+            panel.queue_item(QueueItemSpec { kind: QueueKind.City, index, label, active: index == 0, locked: index == 0 && city.pending_building.is_some(), dragging, drop_target });
         }
     }
+
+    /// Whether row `index` is the one being dragged and whether a drop on it would land (`drag`:
+    /// the drag is in this row's list).
+    fn drag_flags(&self, drag: bool, index: i32) -> (bool, bool) {
+        if !drag { return (false, false); }
+        match self.queue_drag {
+            Option.Some(d) => (d.source == index, d.target == Option.Some(index) && d.source != index),
+            Option.None => (false, false),
+        }
+    }
+
+    fn set_queue_scroll(&mut self, kind: QueueKind, offset: i32) {
+        match kind {
+            QueueKind.City => { self.city_queue_scroll = offset; }
+            QueueKind.Barracks => { self.barracks_queue_scroll = offset; }
+            // Worker jobs are listed in full; they do not scroll.
+            QueueKind.Workers => {}
+        }
+    }
+
+    /// Moves a queue scrollbar under the pointer; also used while dragging it (`captured`).
+    /// Whether one was under it.
+    pub fn drag_queue_scrollbar_at(&mut self, cursor: Vec2, screen_size: Vec2, captured: bool) -> bool {
+        if self.imgui_ui { return false; }
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        for k in 0..layout.queue_scrollbars.len() {
+            let s = &layout.queue_scrollbars[k];
+            if !(captured || contains(s.track_min, s.track_max, point)) { continue; }
+            let travel = s.track_max.y - s.track_min.y - s.thumb_height;
+            let fraction = if travel > 0.0 { clamp01((s.track_max.y - s.thumb_height / 2.0 - point.y) / travel) } else { 0.0 };
+            self.set_queue_scroll(s.kind, (fraction * s.max_offset as f32).round() as i32);
+            return true;
+        }
+        false
+    }
+
+    /// Moves a city's building catalog scrollbar under the pointer; also used while dragging it.
+    pub fn drag_building_scrollbar_at(&mut self, cursor: Vec2, screen_size: Vec2, captured: bool) -> bool {
+        if self.imgui_ui { return false; }
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        for k in 0..layout.catalogs.len() {
+            let c = &layout.catalogs[k];
+            if c.max_offset <= 0 || !(captured || contains(c.track_min, c.track_max, point)) { continue; }
+            let travel = c.track_max.y - c.track_min.y - c.thumb_height;
+            let fraction = if travel > 0.0 { clamp01((c.track_max.y - c.thumb_height / 2.0 - point.y) / travel) } else { 0.0 };
+            self.cities[c.city].building_scroll = (fraction * c.max_offset as f32).round() as i32;
+            return true;
+        }
+        false
+    }
+
+    /// The wheel over an overflowing queue panel scrolls it: whether it was the panel's.
+    pub fn scroll_queue_at(&mut self, cursor: Vec2, screen_size: Vec2, steps: f32) -> bool {
+        if self.imgui_ui { return false; }
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        for k in 0..layout.queue_scrollbars.len() {
+            let s = &layout.queue_scrollbars[k];
+            if !contains(s.panel_min, s.panel_max, point) { continue; }
+            let current = match s.kind { QueueKind.City => self.city_queue_scroll, QueueKind.Barracks => self.barracks_queue_scroll, QueueKind.Workers => 0 };
+            let delta = steps.abs().ceil() as i32;
+            let moved = if steps > 0.0 { current - delta } else { current + delta };
+            let next = if moved < 0 { 0 } else if moved > s.max_offset { s.max_offset } else { moved };
+            self.set_queue_scroll(s.kind, next);
+            return true;
+        }
+        false
+    }
+
+    /// Captures a queue row's body under the mouse; its X button stays an ordinary click.
+    pub fn start_queue_drag_at(&mut self, cursor: Vec2, screen_size: Vec2) -> bool {
+        if self.imgui_ui || self.is_resolving() { return false; }
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        for k in 0..layout.queue_items.len() {
+            let row = &layout.queue_items[k];
+            if !row.locked && point.x < row.body_max_x && contains(row.min, row.max, point) {
+                self.queue_drag = Option.Some(QueueDrag { kind: row.kind, source: row.index, target: Option.Some(row.index) });
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The row the dragged one is over, if any of its own list.
+    pub fn update_queue_drag_at(&mut self, cursor: Vec2, screen_size: Vec2) {
+        let Option.Some(drag) = self.queue_drag else { return; };
+        let point = to_ui(cursor, screen_size);
+        let layout = self.layout(screen_size);
+        let mut target: Option[i32] = Option.None;
+        for k in 0..layout.queue_items.len() {
+            let row = &layout.queue_items[k];
+            if row.kind == drag.kind && contains(row.min, row.max, point) { target = Option.Some(row.index); }
+        }
+        if let Option.Some(d) = self.queue_drag { self.queue_drag = Option.Some(QueueDrag { kind: d.kind, source: d.source, target }); }
+    }
+
+    /// Drops the dragged row where it is: onto another it moves there, back onto itself it is a
+    /// click.
+    pub fn finish_queue_drag_at(&mut self, cursor: Vec2, screen_size: Vec2) {
+        self.update_queue_drag_at(cursor, screen_size);
+        let Option.Some(drag) = self.queue_drag else { return; };
+        self.queue_drag = Option.None;
+        let Option.Some(target) = drag.target else { return; };
+        if drag.source == target { self.queue_item_clicked(drag.kind, drag.source); } else { self.reorder_queue(drag.kind, drag.source, target); }
+    }
+
+    pub fn cancel_queue_drag(&mut self) { self.queue_drag = Option.None; }
 
     /// A click on queue row `index`, rather than a drag: the camera goes to a worker job's tile
     /// (or edge). City and Barracks rows do nothing.
@@ -425,6 +557,8 @@ impl GameState {
         }
     }
 }
+
+fn clamp01(x: f32) -> f32 { if x < 0.0 { 0.0 } else if x > 1.0 { 1.0 } else { x } }
 
 fn copy_ints(v: &Vec[i32]) -> Vec[i32] {
     let mut out: Vec[i32] = Vec.new();

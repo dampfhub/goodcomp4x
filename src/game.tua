@@ -21,6 +21,7 @@ use game.city.City;
 use game.city.Site;
 use game.city.Building;
 use game.city.Build;
+use game.ui.QueueDrag;
 use game.ui.RosterKey;
 use game.city.BuildUnit;
 use game.workers.Structure;
@@ -126,6 +127,8 @@ pub struct GameState {
     city_queue_scroll: i32,
     /// The unit group whose members the turn strip shows in a second row.
     roster_open: Option[RosterKey],
+    /// A queue row picked up with the mouse in the classic panels, and the row it is over.
+    queue_drag: Option[QueueDrag],
     barracks_queue_scroll: i32,
     hovered_city: Option[i32],
     /// Whether the open city shows each tile's yields (Y toggles it).
@@ -269,6 +272,7 @@ impl GameState {
             placing_building: Option.None,
             city_queue_scroll: 0,
             roster_open: Option.None,
+            queue_drag: Option.None,
             barracks_queue_scroll: 0,
             structures: Map.new(),
             barriers: Map.new(),

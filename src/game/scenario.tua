@@ -220,6 +220,7 @@ impl GameState {
             placing_building: self.placing_building,
             city_queue_scroll: self.city_queue_scroll,
             roster_open: Option.None,
+            queue_drag: Option.None,
             barracks_queue_scroll: self.barracks_queue_scroll,
             structures: copy_map(&self.structures),
             barriers: copy_map(&self.barriers),
