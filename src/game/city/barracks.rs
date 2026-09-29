@@ -8,6 +8,7 @@
 //! panel's lifetime cap counts every one ever trained instead.
 use std::collections::BTreeSet;
 
+use super::supply::troop_supply;
 use super::{BuildUnit, Building};
 use crate::game::GameState;
 use crate::game::hex::Hex;
@@ -94,11 +95,21 @@ impl GameState {
     }
 
     /// Why city `city`'s Barracks can't queue `build` now, if it can't: no
-    /// Barracks, no deposit for it, or the side's cap is used up.
+    /// Barracks, no deposit for it, the side's cap for it is used up, or
+    /// its supply is (`supply_lock`).
     pub(in crate::game) fn barracks_lock(&self, city: usize, build: BuildUnit) -> Option<String> {
         if self.cities[city].barracks.is_none() {
             return Some("BUILD A BARRACKS FIRST".into());
         }
+        let team = self.cities[city].team;
+        self.deposit_lock(city, build)
+            .or_else(|| self.supply_lock(team, troop_supply(build)))
+    }
+
+    /// Why city `city`'s Barracks can't queue `build` for want of a
+    /// deposit, if it's a Cavalry or Armored: none for it, an enemy holds
+    /// it, or the side's cap is used up.
+    pub(in crate::game) fn deposit_lock(&self, city: usize, build: BuildUnit) -> Option<String> {
         let resource = build.required_resource()?;
         if self.barracks_deposits(city, resource).is_empty() {
             return Some(format!("NEEDS {} UNDER THE BARRACKS", resource.name()));

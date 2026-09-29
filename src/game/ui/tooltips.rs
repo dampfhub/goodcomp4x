@@ -87,9 +87,10 @@ impl GameState {
         })
     }
 
-    /// Why `city` can't queue a Scout or Settler (`city_build_issue`), or
-    /// else what the stockpile is short of for it (`shortfall_text`).
-    fn civilian_unavailable(&self, build: Build, city: Option<usize>) -> Option<String> {
+    /// Why `city` can't queue `build` (`city_build_issue`: supply, a
+    /// Scout at a time, a Settler's citizens), or else what the stockpile
+    /// is short of for it (`shortfall_text`).
+    fn city_build_unavailable(&self, build: Build, city: Option<usize>) -> Option<String> {
         city.and_then(|city| self.city_build_issue(city, build))
             .or_else(|| self.shortfall_text(build, city))
     }
@@ -443,11 +444,12 @@ impl GameState {
                     build.name().into(),
                     build.shortcut().to_string(),
                     format!(
-                        "{}. {}",
+                        "{}. {}{}",
                         build.description(),
-                        self.price_text(Build::Unit(build), false, city)
+                        self.price_text(Build::Unit(build), false, city),
+                        self.supply_note(Build::Unit(build))
                     ),
-                    self.shortfall_text(Build::Unit(build), city),
+                    self.city_build_unavailable(Build::Unit(build), city),
                 ),
                 Target::Building(building) => (
                     building.name().into(),
@@ -468,10 +470,11 @@ impl GameState {
                     format!("TRAIN {}", build.name()),
                     "BARRACKS".into(),
                     format!(
-                        "{}. {}{}",
+                        "{}. {}{}{}",
                         build.description(),
                         self.price_text(Build::Unit(build), true, city),
-                        self.special_note(build)
+                        self.special_note(build),
+                        self.supply_note(Build::Unit(build))
                     ),
                     city.and_then(|city| self.barracks_lock(city, build))
                         .or_else(|| self.shortfall_text(Build::Unit(build), city)),
@@ -558,10 +561,11 @@ impl GameState {
                     "SCOUT".into(),
                     SCOUT_SHORTCUT.to_string(),
                     format!(
-                        "SEES FAR, MOVES FAST; NOT A TROOP, SO NO BARRACKS. ONE AT A TIME. {}",
-                        self.price_text(Build::Scout, false, city)
+                        "SEES FAR, MOVES FAST; NOT A TROOP, SO NO BARRACKS. ONE AT A TIME. {}{}",
+                        self.price_text(Build::Scout, false, city),
+                        self.supply_note(Build::Scout)
                     ),
-                    self.civilian_unavailable(Build::Scout, city),
+                    self.city_build_unavailable(Build::Scout, city),
                 ),
                 Target::BuildSettler => (
                     "SETTLER".into(),
@@ -571,7 +575,7 @@ impl GameState {
                          NEEDS POPULATION {SETTLER_MIN_POPULATION}, AND TAKES A CITIZEN WHEN DONE. {}",
                         self.price_text(Build::Settler, false, city)
                     ),
-                    self.civilian_unavailable(Build::Settler, city),
+                    self.city_build_unavailable(Build::Settler, city),
                 ),
                 Target::Grow => (
                     "GROW".into(),

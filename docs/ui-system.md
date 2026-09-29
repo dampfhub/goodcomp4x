@@ -106,8 +106,9 @@ during an undock transition.
 Dock relation detection walks the native dock tree, so it works beside a
 nested Selection+Queue group as well as beside Selection alone.
 Beside the turn number, the status bar (and the classic top bar) shows the
-player's stockpile from `GameState::stockpile_line`, one shared line of
-colored spans, so both presentations read the same. The latest notice
+player's stockpile and supply from `GameState::status_line` (`stockpile_line`
+then `supply_line`), one shared line of colored spans, so both presentations
+read the same. The latest notice
 follows in the room left (classic: between Menu and End Turn; ImGui: the
 rest of the first line, up to End Turn, since Menu and the view controls
 share the second line); a notice too long for it is cut after its last whole word

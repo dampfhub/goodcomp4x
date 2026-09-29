@@ -235,6 +235,15 @@ fn check_invariants(game: &GameState, context: &str) {
             "{context}: the wild holds ruins"
         );
     }
+    // The supply limit (`city/supply.rs`): no training started past its
+    // side's supply, counted as each item started (`work_item`). A side
+    // over it after losing a city or citizens keeps its units, and trains
+    // nothing new until it has room.
+    assert!(
+        game.supply_overruns.is_empty(),
+        "{context}: training started past the side's supply: {:?}",
+        game.supply_overruns
+    );
     let mut ids = HashSet::default();
     let mut occupants: HashMap<_, Vec<Team>> = HashMap::default();
     for (idx, unit) in game.units.iter().enumerate() {
@@ -614,8 +623,9 @@ fn check_founding(game: &GameState, starting: usize, context: &str) {
 }
 
 /// What the stockpile economy bought over a game: troops that appeared (trained, or ruins'
-/// recruits), whether any city grew past the size it started at (or was founded at) and
-/// whether any side built a Barracks. It also checks the Cavalry and Armored cap
+/// recruits), whether any city grew past the size it started at (or was founded at),
+/// whether any side built a Barracks, and whether any side used all its supply
+/// (`city/supply.rs`). It also checks the Cavalry and Armored cap
 /// (`city/barracks.rs`) as the game goes: a side never has more troops drawn from a
 /// resource alive (or, with the lifetime cap, ever trained) than the most its deposits
 /// allowed at any point, since a troop is only queued within the cap of the moment.
@@ -627,6 +637,9 @@ struct EconomyWatch {
     barracks: bool,
     /// The highest cap seen, by `Team::index` and `Resource::index`.
     max_cap: [[usize; 2]; Team::ALL.len()],
+    /// Whether a side's supply (`city/supply.rs`) was ever all used, so
+    /// the limit held something back.
+    supply_full: bool,
 }
 
 impl EconomyWatch {
@@ -638,6 +651,7 @@ impl EconomyWatch {
             grew: false,
             barracks: false,
             max_cap: [[0; 2]; Team::ALL.len()],
+            supply_full: false,
         };
         watch.watch(game, "at start");
         watch
@@ -665,6 +679,10 @@ impl EconomyWatch {
             .iter()
             .any(|c| c.population > self.start_population.get(&c.id).copied().unwrap_or(1));
         self.barracks |= game.cities.iter().any(|c| c.barracks.is_some());
+        self.supply_full |= Team::ALL.into_iter().any(|team| {
+            let cap = game.supply_cap(team);
+            cap > 0 && game.supply_used(team) >= cap
+        });
         for team in Team::ALL {
             for resource in Resource::ALL {
                 let max = &mut self.max_cap[team.index()][resource.index()];
@@ -712,6 +730,8 @@ fn interior_hp_uses_the_source_unit_upgrade() {
 fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
     // Animals killed and dens cleared, over every world.
     let (killed, cleared) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    // Games where a side used all its supply.
+    let supply_full = AtomicUsize::new(0);
     for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
         let mut game = start(scenario, seed);
         let name = format!("{} seed {seed}", scenario.name());
@@ -776,7 +796,12 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
             let special: u32 = game.special_trained.iter().flatten().sum();
             assert!(special > 0, "{name}: no Cavalry or Armored trained");
         }
+        supply_full.fetch_add(usize::from(economy.supply_full), Ordering::Relaxed);
     });
+    // Anti-vacuity: the supply limit holds some side back somewhere.
+    let supply_full = supply_full.into_inner();
+    eprintln!("games where a side used all its supply: {supply_full}");
+    assert!(supply_full > 0, "no side ever used all its supply");
     // Anti-vacuity: the AI hunts, killing animals and clearing dens.
     let (killed, cleared) = (killed.into_inner(), cleared.into_inner());
     eprintln!("worlds: {killed} animals killed, {cleared} dens cleared");

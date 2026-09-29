@@ -11,8 +11,8 @@ use super::{
 use crate::game::GameState;
 use crate::game::city::{
     Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, GATHER_SHORTCUT, GATHER_YIELD,
-    GROW_SHORTCUT, Lane, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, WORKERS_PER_MANAGER,
-    manager_label, resource_icon, stock_icons, turns_icon,
+    GROW_SHORTCUT, Lane, MAX_CITY_POPULATION, SUPPLY_FULL_HINT, UNITS_PER_DEPOSIT,
+    WORKERS_PER_MANAGER, manager_label, resource_icon, stock_icons, turns_icon,
 };
 use crate::game::orders::ClickMode;
 use crate::game::terrain::Resource;
@@ -635,41 +635,37 @@ impl GameState {
             } else {
                 vec![BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
             };
-        panel.text(
-            SMALL,
-            vec![(
-                format!("A BARRACKS TRAINS TROOPS {CITY_TRAINING_SLOWDOWN}× FASTER THAN THE CITY"),
-                DIM_TEXT,
-            )],
-        );
+        // The side's supply, which every troop, ship and Scout card below
+        // uses, on one line with the Barracks' pace.
+        let mut line = self.supply_spans(city.team);
+        line.push((
+            format!(" · A BARRACKS TRAINS TROOPS {CITY_TRAINING_SLOWDOWN}× FASTER THAN THE CITY"),
+            DIM_TEXT,
+        ));
+        panel.text(SMALL, line);
+        // Dimmed, saying why, when the city can't queue one
+        // (`city_build_issue`): a troop, ship or Scout needs supply, a
+        // Settler needs citizens, and a Scout is one at a time.
+        let unit_card = |target, build: Build| {
+            let card = card(target, build.name().into(), build, first == Some(build));
+            match self.city_build_issue(i, build) {
+                Some(why) => ButtonSpec {
+                    hint: why,
+                    state: ButtonState::Disabled,
+                    ..card
+                },
+                None => card,
+            }
+        };
         let unit_buttons: Vec<_> = builds
             .into_iter()
-            .map(|build| {
-                card(
-                    Target::Build(build),
-                    build.name().into(),
-                    Build::Unit(build),
-                    first == Some(Build::Unit(build)),
-                )
-            })
+            .map(|build| unit_card(Target::Build(build), Build::Unit(build)))
             .chain(
                 [
                     (Target::BuildScout, Build::Scout),
                     (Target::BuildSettler, Build::Settler),
                 ]
-                .map(|(target, build)| {
-                    // Dimmed, saying why, when the city can't queue one: a
-                    // Settler needs citizens, and a Scout is one at a time.
-                    let card = card(target, build.name().into(), build, first == Some(build));
-                    match self.city_build_issue(i, build) {
-                        Some(why) => ButtonSpec {
-                            hint: why,
-                            state: ButtonState::Disabled,
-                            ..card
-                        },
-                        None => card,
-                    }
-                }),
+                .map(|(target, build)| unit_card(target, build)),
             )
             .chain([card(
                 Target::BuildWorker,
@@ -963,6 +959,7 @@ impl GameState {
             };
             panel.text(SMALL, vec![line]);
         }
+        panel.text(SMALL, self.supply_tray_line(city.team));
         let status = self.queue_status(i, Lane::Barracks);
         if let Some((name, turns, done)) = self.worked_item(i, Lane::Barracks, &status) {
             panel.text(
@@ -989,16 +986,24 @@ impl GameState {
             builds
                 .into_iter()
                 .map(|build| {
-                    // Locked cards (no deposit, or the cap is used up) are
-                    // dimmed; the tooltip says why. One the side can't pay for
-                    // yet can be queued, and waits.
+                    // Locked cards (no deposit, the deposits' cap or the
+                    // supply used up) are dimmed; the tooltip says why, and
+                    // a card the supply locks says so in place of its price.
+                    // One the side can't pay for yet can be queued, and
+                    // waits.
+                    let lock = self.barracks_lock(i, build);
+                    let supply_full = lock.is_some() && self.deposit_lock(i, build).is_none();
                     ButtonSpec {
                         target: Target::BarracksBuild(build),
                         label: build.name().into(),
-                        hint: cost_hint(build.price(), build.turns()),
+                        hint: if supply_full {
+                            SUPPLY_FULL_HINT.into()
+                        } else {
+                            cost_hint(build.price(), build.turns())
+                        },
                         state: ButtonState::new(
                             city.barracks_queue.first().map(|q| q.build) == Some(build),
-                            self.barracks_lock(i, build).is_some(),
+                            lock.is_some(),
                         ),
                         armed: false,
                     }
