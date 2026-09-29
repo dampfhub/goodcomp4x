@@ -15,10 +15,13 @@ use std::thread;
 
 mod economy;
 
+<<<<<<< HEAD
 use super::city::{
-    Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, MIN_CITY_DISTANCE, Queued,
-    WORKERS_PER_MANAGER,
+    Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, Queued, WORKERS_PER_MANAGER,
 };
+=======
+use super::city::{Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MIN_CITY_DISTANCE, Queued};
+>>>>>>> origin/main
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;

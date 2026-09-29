@@ -543,9 +543,13 @@ every turn end.
 
 ## Cities (`city/`)
 
-- **Founding:** F with a selected settler, at least 3 hexes from any other city; the new city
-  starts at population 1, auto-assigns and opens. The AI founds a city in place, at the start of
-  any resolution where it has a settler and no city, without the 3-hex rule.
+- **Founding** (`city/founding.rs`): F with a selected settler founds a city where it stands:
+  only on passable land (not water), not on ruins, and at least 6 hexes (`MIN_CITY_DISTANCE`)
+  from every other city, any side's, whether you have seen it or not (the refusal says why). The
+  new city starts at population 1 with nothing built, auto-assigns and opens. A side's first city
+  comes with a worker at home, as a starting city does; any other city starts without one.
+  Settlers come from the start (World, Start With: settler; Frontier) or from a city's queue
+  (Settler, below).
 - **Yields:** the city center gives 2 food and 1 wood on its own; each worked tile gives its
   food, wood and metal (see Goods) times its delivery share. No citizen works a city center or a
   tile a placed building stands on (`closed_to_citizens`): such a tile can't be assigned or take
@@ -600,13 +604,13 @@ every turn end.
   feed another. If the stockpile can't feed all of a side's citizens, its food empties and the
   side's largest city (the first on ties) loses a citizen (see Losing a citizen; never below 1).
 - **Growth** is bought: Grow (9, or the city tray's Grow card) queues one more citizen, paid in
-  food when work on it starts: 5 + 5 × (population + the Grows already paid for in that city),
+  food when work on it starts: 10 + 10 × (population + the Grows already paid for in that city),
   so a Grow queued behind another costs a citizen more by the time its turn comes. It takes 2
   turns in the city queue like any build. Nothing grows by itself, and no Grow goes past the
   cap of 28, counting every Grow queued.
 - **Paying and the queue:** anything can be queued, whatever the stockpile holds (the other
   limits stay: a Harbor for ships, a deposit for Cavalry and Armored, the population cap for
-  Grow, a Barracks for its troops). A build is paid in full from the stockpile when work on it
+  Grow, a Barracks for its troops, population 3 for a Settler, one Scout at a time). A build is paid in full from the stockpile when work on it
   starts, not when it is queued. At each turn's economy, after income and upkeep, every queue
   works the first item in it that is already paid for or that the stockpile can pay for then,
   paying for it if it isn't; items before it that the stockpile can't pay for **wait** in place,
@@ -633,15 +637,28 @@ every turn end.
   items all wait doesn't. Buildings and works placed for workers are still paid when placed
   (see Workers).
 - **Gather** (0, or its card beside Grow): free, one turn; when it's done, the side's stockpile
-  gets 2 food, 2 wood and 1 metal. A city that can't pay for anything, or has nothing it wants,
+  gets 1 food, 1 wood and half a metal. A city that can't pay for anything, or has nothing it wants,
   gathers instead of standing idle.
+- **Settlers and Scouts** come from a city's own queue (the town centre, never a Barracks), at
+  their own pace: the half-speed rule for troops in a city center doesn't apply to them, and
+  neither counts as a troop. A **Settler** (S, or its card) is dear and slow: 30 food and 10
+  wood, 6 turns, and it takes one of the city's citizens when it's done (the last tile the city
+  works is given up). Only a city of population 3 or more queues one (the card is dimmed, saying
+  NEEDS POPULATION 3, below that) or works on it: the citizen isn't set aside while it's built,
+  so the city keeps working it until the Settler is done, and a city that drops below 3 (it
+  starved) leaves its Settler waiting in the queue, with its work (and its payment, if paid),
+  its row saying WAITS FOR POP 3, while the queue works the next item; it goes on once the city
+  has 3 again. A finished settler appears beside the city and founds a city (F) by the founding
+  rules above. A **Scout** (4, or its card) is cheap and quick: 2 food and 4 wood, 2 turns. A
+  city queues one Scout at a time (the card is dimmed, saying ONE SCOUT AT A TIME, while one
+  is queued).
 - **Production speeds builds** (the Debug panel's PROD SPEEDUP, off by default): a city's queue
   also gains a quarter turn of work a turn for each point of production (wood and metal) the city
   delivers, and a Barracks for each point delivered to it; the stockpile still gets those goods.
-- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 2/6/0, 2; Ranged
-  2/7/0, 2; Cavalry 3/4/3, 3; Siege 1/8/4, 3; Armored 3/2/7, 3; Patrol Galley 1/10/2, 3; Landing
+- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 3/9/0, 3; Ranged
+  3/11/0, 3; Cavalry 5/6/5, 4; Siege 2/12/6, 4; Armored 5/3/11, 4; Patrol Galley 1/10/2, 3; Landing
   Craft 1/12/2, 4; Bombard Ship 1/12/6, 4; Worker 4/2/0, 2; Grow as above, 2; Gather free, 1. A city center
-  trains land troops at half a Barracks' pace (twice the turns: a Melee takes 4); ships, which
+  trains land troops at half a Barracks' pace (twice the turns: a Melee takes 6); ships, which
   only a city with a Harbor builds, take their own turns. Barracks 0/10/0,
   3; Mill, Canoe House and Watchpost 0/10/0, 3; Workshop 0/10/4, 4; Forge 0/6/8, 4; Stable
   2/12/0, 4; Field Hospital 4/10/4, 4; Cannery 0/12/4, 4; Work Camp 2/10/2, 3; Smelter 0/8/8, 4;
@@ -871,7 +888,7 @@ attacking if that brings it into range. Heading anywhere else than an enemy (rui
 unknown), it attacks any enemy in sight in range of where it ends up. Next to an enemy city it
 holds its ground there, its fighters going in through the gates (see City interiors). It skips hexes a
 teammate already claimed, and units in a contested hex stay and fight. It never uses abilities,
-never builds buildings, and ignores its civilians and any player-controlled AI unit.
+never builds buildings, and ignores any player-controlled AI unit; its settlers go their own way (below).
 An AI scout gathers what its side knows and stays alive, rather than fight:
 - It never ends its move where an enemy it sees could reach and attack it next turn (the enemy's
   move and range by its type, a Cavalry's Charge and a deployed Siege's extra hex included), if
@@ -904,6 +921,24 @@ pay for: an improvement on a tile it works, or else a road there. At a contested
 units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
 
+The AI builds Scouts and expands with Settlers:
+- A side with no scout, alive or queued, trains one, after a city's first worker.
+- **Expanding:** a city of population 4 or more whose side has no settler out or queued, can pay
+  for one this turn and knows a site for a city, trains a Settler before it grows (after the
+  Melee a city without a Barracks still wants). A site is a hex its side has seen that the
+  founding rules allow as far as it knows: open land, no ruins or enemy in sight on it, 6 hexes
+  from its own cities and every enemy city it has seen, and within 10 of its nearest city;
+  searched up to 14 steps on foot, the best by what the land around it (2 hexes) yields as last
+  seen, food counting double, less 2 a step to get there.
+- **Settlers:** each turn a settler picks its site again from where it stands, walks toward it
+  (keeping out of reach of enemies in sight where it can; no escort), and founds there once it
+  stands on it. A site the rules refuse (a city its side hadn't seen stands too near) is
+  remembered, and the side tries nowhere within 2 hexes of it again. A settler that knows no
+  site waits.
+- **First city:** a side with a settler and no city founds at once where the rules allow it,
+  as before, and otherwise walks to the nearest site they allow; knowing none, it founds where
+  it stands anyway.
+
 ## Open questions
 
 Known bugs link to their board item; the rest are design questions nobody has decided yet.
@@ -930,7 +965,7 @@ Known bugs link to their board item; the rest are design questions nobody has de
   move); it doesn't stop when an enemy merely comes into sight, and it can't queue abilities,
   swaps or holds for later turns.
 - The stockpile economy's prices, times, growth cost and the Barracks' 3 troops per deposit are
-  a first pass, and the late game has nothing to spend a growing stockpile on once cities are
-  full (see `rts-economy.md`).
+  a first pass, slowed once for tempo (option B, `rts-economy.md` Round 7), and the late game
+  has nothing to spend a growing stockpile on once cities are full (see `rts-economy.md`).
 - No victory condition; F1-F4 restart a scenario. The Debug panel offers a Naval scenario
   with two coastal cities, prebuilt Harbors and Coastal Batteries, and ships ready to fight.

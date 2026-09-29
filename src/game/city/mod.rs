@@ -26,12 +26,16 @@ use crate::game::fast_hash::HashMap;
 
 pub(in crate::game) use barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 pub use builds::{Build, BuildUnit, Building};
-pub(in crate::game) use builds::{GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, WORKER_SHORTCUT};
+pub(in crate::game) use builds::{
+    GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, SCOUT_SHORTCUT, SETTLER_MIN_POPULATION,
+    SETTLER_SHORTCUT, WORKER_SHORTCUT,
+};
 pub(in crate::game) use economy::{
     FOOD_PER_CITIZEN, Lane, STARTING_STOCK, grow_price, resource_icon, stock_icons, stock_words,
     turns_icon,
 };
 pub use economy::{Queued, Stock};
+pub(in crate::game) use founding::MIN_CITY_DISTANCE;
 pub(super) use interior::CORE_HP;
 pub(super) use interior::Interior;
 pub(in crate::game) use interior::in_bounds as in_interior;
@@ -251,7 +255,9 @@ pub(super) struct City {
 }
 
 impl City {
-    /// A newly founded city: one citizen and one worker.
+    /// A city as a scenario starts it: one citizen and one worker. A city
+    /// founded in play starts without the worker unless it is its side's
+    /// first (`found_city`).
     pub fn new(id: u32, team: Team, pos: Hex) -> Self {
         Self {
             id,

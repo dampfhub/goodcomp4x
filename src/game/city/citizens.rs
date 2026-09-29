@@ -330,7 +330,8 @@ impl GameState {
         self.fill_citizens(city, &routes);
     }
 
-    /// `city` loses a citizen (it starves, or a Settler costs it one). An
+    /// `city` loses a citizen (it starves, `feed_citizens`, or a finished
+    /// Settler takes one, `complete_builds`). An
     /// idle citizen goes first, if it has one; then the last cluster's last
     /// worker, and a manager only once its cluster has no workers left
     /// (`trim_clusters`, on what it works and what it remembers alike). A

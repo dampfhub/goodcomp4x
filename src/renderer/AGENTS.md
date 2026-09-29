@@ -63,3 +63,14 @@ needs no build change; using it needs a pipeline change here.
 - MSAA uses the highest supported count from `PREFERRED_SAMPLES` (16, then 8), falling back to 4.
 - Validation runs only in debug builds (`cfg!(debug_assertions)`). Check `cargo run` output for
   validation errors after any change here.
+
+## Synchronization validation
+
+For shared-target and swapchain changes, enable synchronization validation in a debug
+run. In PowerShell, set `$env:VK_VALIDATION_VALIDATE_SYNC="true"`, then run
+`cargo run -- --screenshot out.png --scenario cities --size 1280x720`.
+Also resize a running debug window and check that neither run logs `SYNC-HAZARD-*`
+or other validation errors. Clear the variable afterwards with
+`Remove-Item Env:VK_VALIDATION_VALIDATE_SYNC`. The incoming render-pass dependency
+orders color attachment writes to the shared MSAA target between frames as well as
+waiting for the acquired swapchain image; UNDEFINED only discards contents.

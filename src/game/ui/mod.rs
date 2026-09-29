@@ -185,6 +185,10 @@ enum Target {
     ClearBarracksQueue,
     /// A worker for the open city's pool.
     BuildWorker,
+    /// A scout from the open city's own queue.
+    BuildScout,
+    /// A settler from the open city's own queue.
+    BuildSettler,
     /// One more citizen for the open city, bought with food.
     Grow,
     /// The open city spends a turn gathering.
@@ -267,6 +271,8 @@ impl Target {
             | Target::ClearCityQueue
             | Target::ClearBarracksQueue
             | Target::BuildWorker
+            | Target::BuildScout
+            | Target::BuildSettler
             | Target::Grow
             | Target::Gather
             | Target::WorkerJob(_)
@@ -701,13 +707,14 @@ impl GameState {
     pub(super) fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) -> bool {
         let point = to_ui(cursor, screen_size);
         let layout = self.layout_with_hover(screen_size, Some(cursor)).0;
-        if self.drag_queue_scrollbar_at(cursor, screen_size, false)
-            || self.drag_building_scrollbar_at(cursor, screen_size, false)
+        // A button (the centered settings menu's, drawn over the panels)
+        // takes the click before a scrollbar or a chip under it.
+        if layout.button_at(point).is_none()
+            && (self.drag_queue_scrollbar_at(cursor, screen_size, false)
+                || self.drag_building_scrollbar_at(cursor, screen_size, false))
         {
             return true;
         }
-        // A button (the centered settings menu's, drawn over the strip) takes
-        // the click before a chip under it.
         if layout.button_at(point).is_none()
             && let Some(key) = layout.roster_chip_at(point)
         {
@@ -746,6 +753,8 @@ impl GameState {
             Target::RosterAdd(id) => self.roster_add(id),
             Target::RosterRemove(id) => self.roster_remove(id),
             Target::BuildWorker => self.queue_selected_city_worker(),
+            Target::BuildScout => self.queue_selected_city_scout(),
+            Target::BuildSettler => self.queue_selected_city_settler(),
             Target::Grow => self.queue_selected_city_growth(),
             Target::Gather => self.queue_selected_city_gather(),
             Target::WorkerJob(kind) => self.arm_worker_job(kind),

@@ -23,9 +23,12 @@ pub const WORK_PER_TURN: i32 = 4;
 pub(in crate::game) const STARTING_STOCK: Stock = Stock::whole(10, 10, 4);
 /// Food each citizen eats a turn.
 pub(in crate::game) const FOOD_PER_CITIZEN: i32 = 8;
-/// Growth costs `GROW_BASE + GROW_PER_CITIZEN * population` whole food.
-const GROW_BASE: i32 = 5;
-const GROW_PER_CITIZEN: i32 = 5;
+/// Growth costs `GROW_BASE + GROW_PER_CITIZEN * population` whole food:
+/// 1 to 7 citizens costs 270 food in all. Tempo tuning (#239): option B
+/// doubled both from 5 (`docs/rts-economy.md`, Round 7).
+const GROW_BASE: i32 = 10;
+/// The part of a Grow's price per citizen the city has (`GROW_BASE`).
+const GROW_PER_CITIZEN: i32 = 10;
 
 /// An item in a city's or a Barracks' queue: the build, whether its side
 /// has paid for it, and the work done on it, in quarter turns. An item is
@@ -389,7 +392,9 @@ impl GameState {
 
     /// Which item of one of `city`'s queues it works with `stock` in the
     /// stockpile: the first that's paid for or that `stock` can pay for,
-    /// with its price if it's still to be paid. Items before it wait.
+    /// with its price if it's still to be paid. Items before it wait, and
+    /// so does a Settler in a city short of citizens (`waits_for_citizens`),
+    /// paid or not.
     pub(in crate::game) fn pick_item(
         &self,
         city: usize,
@@ -397,6 +402,9 @@ impl GameState {
         stock: Stock,
     ) -> Option<(usize, Option<Stock>)> {
         (0..self.lane_len(city, lane)).find_map(|index| {
+            if lane == Lane::City && self.waits_for_citizens(city, index) {
+                return None;
+            }
             if self.lane_item(city, lane, index).0 {
                 return Some((index, None));
             }
@@ -480,13 +488,15 @@ impl GameState {
 
     /// The items of a queue that wait for the stockpile, each with what the
     /// stockpile is short of for it: the unpaid ones ahead of the item it
-    /// works, or all of them when it can pay for none.
+    /// works, or all of them when it can pay for none. A Settler that waits
+    /// for citizens (`waits_for_citizens`) isn't one of them.
     pub(in crate::game) fn waiting_items(&self, lane: LaneForecast) -> Vec<(usize, Stock)> {
         let end = lane
             .worked
             .unwrap_or_else(|| self.lane_len(lane.city, lane.lane));
         (0..end)
             .filter(|&index| !self.lane_item(lane.city, lane.lane, index).0)
+            .filter(|&index| lane.lane != Lane::City || !self.waits_for_citizens(lane.city, index))
             .map(|index| {
                 let price = self.item_price(lane.city, lane.lane, index);
                 (index, lane.stock.shortfall(price))

@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 
 use super::GameState;
 use super::ability::{Ability, CHARGE_EXTRA_MOVE, DEPLOYED_EXTRA_RANGE};
-use super::city::{Build, BuildUnit, Building, City, Lane, Stock};
+use super::city::{Build, BuildUnit, Building, Lane, MIN_CITY_DISTANCE, Stock};
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, Sighting};
 use super::hex::Hex;
@@ -86,6 +86,23 @@ fn within(center: Hex, radius: i32) -> impl Iterator<Item = Hex> {
 /// before it spends on growth.
 const AI_ARMY_PER_CITY: usize = 2;
 
+/// The population from which an AI city trains a Settler to expand.
+const AI_SETTLE_POPULATION: usize = 4;
+/// How far from its side's nearest city an AI settler founds a new one: at
+/// most this many hexes (and at least `MIN_CITY_DISTANCE`, as the rules
+/// say).
+const AI_SITE_MAX_DISTANCE: i32 = 10;
+/// How many steps on foot from a settler (or its city) the AI looks for a
+/// site.
+const AI_SITE_STEPS: i32 = 14;
+/// What each step on foot to a site takes off its value (`site_value`).
+const AI_SITE_STEP_COST: i32 = 2;
+/// How near a site the rules refused (a city its side hadn't seen was too
+/// close) the AI won't try again.
+const AI_REFUSED_RADIUS: i32 = 2;
+/// How far around a site its land counts toward its value.
+const AI_SITE_RADIUS: i32 = 2;
+
 impl GameState {
     /// The teams the AI plays: every team but the player's that still has a
     /// unit or a city, in `Team::ALL` order.
@@ -113,8 +130,28 @@ impl GameState {
     /// by `ai_barracks_site`, paid when placed), and the queue grows; a city
     /// without a Barracks trains Melee itself, slowly, until the side has
     /// `AI_ARMY_PER_CITY` units per city, falling back on growth, and
-    /// gathering when it can't pay for anything.
-    fn plan_ai_cities(&mut self, team: Team, fog: &Fog) {
+    /// gathering when it can't pay for anything. A side with no scout, alive
+    /// or queued, trains one after the worker. A city of
+    /// `AI_SETTLE_POPULATION` or more expands, before it grows: it trains a
+    /// Settler when its side has none out or queued and knows a site for a
+    /// city (`ai_city_site`).
+    fn plan_ai_cities(&mut self, team: Team, known: &Knowledge) {
+        let fog = &known.fog;
+        let queued_anywhere = |game: &GameState, build: Build| {
+            game.cities
+                .iter()
+                .any(|c| c.team == team && c.queue.iter().any(|q| q.build == build))
+        };
+        let mut scouting = queued_anywhere(self, Build::Scout)
+            || self
+                .units
+                .iter()
+                .any(|u| u.team == team && u.unit_type == UnitType::Scout);
+        let mut settling = queued_anywhere(self, Build::Settler)
+            || self
+                .units
+                .iter()
+                .any(|u| u.team == team && self.settlers.contains(&u.id));
         let soldiers = |game: &GameState, kind: Option<UnitType>| {
             game.units
                 .iter()
@@ -180,11 +217,20 @@ impl GameState {
             } else {
                 Vec::new()
             };
-            if c.barracks.is_none() && army < AI_ARMY_PER_CITY * cities.len() {
-                choices.extend([melee, Build::Grow]);
-            } else {
-                choices.push(Build::Grow);
+            if !scouting {
+                choices.push(Build::Scout);
             }
+            if c.barracks.is_none() && army < AI_ARMY_PER_CITY * cities.len() {
+                choices.push(melee);
+            }
+            if !settling
+                && c.population >= AI_SETTLE_POPULATION
+                && spare.covers(Build::Settler.price())
+                && self.ai_city_site(team, c.pos, known, false).is_some()
+            {
+                choices.push(Build::Settler);
+            }
+            choices.push(Build::Grow);
             // With nothing it can pay for, it gathers.
             choices.push(Build::Gather);
             for build in choices {
@@ -198,6 +244,8 @@ impl GameState {
                     self.queue_build(city, build);
                     spare -= price;
                     army += usize::from(build == melee);
+                    scouting |= build == Build::Scout;
+                    settling |= build == Build::Settler;
                     break;
                 }
             }
@@ -257,6 +305,178 @@ impl GameState {
             .copied()
     }
 
+    /// `team`'s settlers found cities, or head for where they will. A
+    /// settler founds where it stands when that's its site (`ai_city_site`)
+    /// and the rules allow it (`founding_issue`); with no city yet, its side
+    /// founds wherever the rules allow, at once, as a starting city. Else it
+    /// walks toward its site, keeping out of the reach of enemies in sight
+    /// where it can. A site the rules refuse (a city its side hadn't seen
+    /// is too near) goes on its side's list (`refused_sites`) and it looks
+    /// again. A settler with no city to found and no site known founds its
+    /// side's first city where it stands, closer than the rules allow if it
+    /// must; any other waits for its side to see more.
+    fn plan_ai_settlers(
+        &mut self,
+        team: Team,
+        known: &Knowledge,
+        floods: &mut HashMap<Hex, Flood>,
+    ) {
+        let settlers: Vec<u32> = self
+            .units
+            .iter()
+            .filter(|u| u.team == team && self.settlers.contains(&u.id))
+            .filter(|u| !self.player_controlled_units.contains(&u.id))
+            .map(|u| u.id)
+            .collect();
+        for id in settlers {
+            let Some(idx) = self.units.iter().position(|u| u.id == id) else {
+                continue;
+            };
+            let pos = self.units[idx].pos;
+            let first = !self.cities.iter().any(|c| c.team == team);
+            if first && self.founding_issue(pos).is_none() {
+                self.found_city(id, team, pos);
+                continue;
+            }
+            let mut site = self.ai_city_site(team, pos, known, first);
+            if site == Some(pos) {
+                if self.founding_issue(pos).is_none() {
+                    self.found_city(id, team, pos);
+                    continue;
+                }
+                self.refused_sites.push((team, pos));
+                site = self.ai_city_site(team, pos, known, first);
+            }
+            let Some(site) = site else {
+                let open_land = self.grid.is_passable(pos)
+                    && !self.grid.terrain(pos).is_water()
+                    && self.ruin_at(pos).is_none();
+                if first && open_land {
+                    self.found_city(id, team, pos);
+                }
+                continue;
+            };
+            let dest = self.settler_step(idx, site, known, floods);
+            self.units[idx].planned_move = (dest != pos).then_some(dest);
+            self.units[idx].planned_attack = None;
+        }
+    }
+
+    /// Where settler `idx` steps toward `site`: of the hexes it can reach
+    /// that no ally has claimed, those no enemy in sight could attack next
+    /// turn (`threat_reach`) if there are any, the nearest `site` on foot.
+    fn settler_step(
+        &self,
+        idx: usize,
+        site: Hex,
+        known: &Knowledge,
+        floods: &mut HashMap<Hex, Flood>,
+    ) -> Hex {
+        let unit = &self.units[idx];
+        let (team, pos) = (unit.team, unit.pos);
+        let fog = &known.fog;
+        let threats: Vec<(Hex, i32)> = self
+            .units
+            .iter()
+            .filter(|enemy| enemy.team != team && fog.sees(enemy.pos))
+            .filter_map(|enemy| Some((enemy.pos, threat_reach(enemy)?)))
+            .collect();
+        let safe = |hex: &Hex| threats.iter().all(|&(at, reach)| at.distance(*hex) > reach);
+        let mut reachable: Vec<Hex> = self
+            .known_reachable_for_domain(pos, unit.stats().move_range, team, fog, false)
+            .into_iter()
+            .filter(|&hex| {
+                hex == pos
+                    || !self
+                        .units
+                        .iter()
+                        .any(|u| u.team == team && u.planned_move == Some(hex))
+            })
+            .collect();
+        reachable.sort_by_key(|h| (h.q, h.r));
+        let safe_hexes: Vec<Hex> = reachable.iter().copied().filter(safe).collect();
+        let options = if safe_hexes.is_empty() {
+            &reachable
+        } else {
+            &safe_hexes
+        };
+        self.step_toward(site, pos, options, known, floods)
+    }
+
+    /// Where a settler of `team` at `from` would found a city, as its side
+    /// knows the map: of the hexes within `AI_SITE_STEPS` steps on foot,
+    /// one it has seen that the rules would allow as far as it knows
+    /// (`known_site`), within `AI_SITE_MAX_DISTANCE` of its nearest city
+    /// unless it has none. With a city, the best by its land
+    /// (`site_value`) less `AI_SITE_STEP_COST` a step; with none (`first`),
+    /// the nearest. Ties by hex coordinates.
+    fn ai_city_site(&self, team: Team, from: Hex, known: &Knowledge, first: bool) -> Option<Hex> {
+        let own: Vec<Hex> = self
+            .cities
+            .iter()
+            .filter(|c| c.team == team)
+            .map(|c| c.pos)
+            .collect();
+        let mut best: Option<(i32, Hex)> = None;
+        let mut steps = 0;
+        self.search_rings(from, known, |ring, _| {
+            for &hex in ring {
+                let near_home = own.iter().any(|c| c.distance(hex) <= AI_SITE_MAX_DISTANCE);
+                if !(first || near_home) || !self.known_site(team, hex, known, &own) {
+                    continue;
+                }
+                let score = if first {
+                    -steps
+                } else {
+                    self.site_value(hex, &known.fog) - AI_SITE_STEP_COST * steps
+                };
+                let better = best.is_none_or(|(top, at)| {
+                    (score, Reverse((hex.q, hex.r))) > (top, Reverse((at.q, at.r)))
+                });
+                if better {
+                    best = Some((score, hex));
+                }
+            }
+            steps += 1;
+            // Stop: far enough, or (for a first city) the nearest found.
+            (steps > AI_SITE_STEPS || (first && best.is_some())).then_some(from)
+        });
+        best.map(|(_, hex)| hex)
+    }
+
+    /// Whether `team` knows of nothing against founding a city on `hex`
+    /// (`founding_issue`, as its side knows the map): seen, open land, no
+    /// ruins or enemy in sight on it, `MIN_CITY_DISTANCE` from its cities
+    /// (`own`) and the enemy cities it knows of, and not near a site the
+    /// rules refused it (`AI_REFUSED_RADIUS`).
+    fn known_site(&self, team: Team, hex: Hex, known: &Knowledge, own: &[Hex]) -> bool {
+        let far = |city: &Hex| city.distance(hex) >= MIN_CITY_DISTANCE;
+        self.explored_by(hex, &known.fog)
+            && self.grid.is_passable(hex)
+            && !self.grid.terrain(hex).is_water()
+            && !known.ruins.contains(&hex)
+            && !known.enemies.contains(&hex)
+            && own.iter().all(far)
+            && known.cities.iter().all(far)
+            && !self
+                .refused_sites
+                .iter()
+                .any(|&(side, at)| side == team && at.distance(hex) <= AI_REFUSED_RADIUS)
+    }
+
+    /// What a city on `hex` would have around it, as `fog`'s side knows the
+    /// land: each seen hex within `AI_SITE_RADIUS`'s food twice, and its
+    /// wood and metal once. Ground never seen counts nothing.
+    fn site_value(&self, hex: Hex, fog: &Fog) -> i32 {
+        within(hex, AI_SITE_RADIUS)
+            .filter(|&h| self.grid.contains(h) && self.explored_by(h, fog))
+            .map(|h| {
+                let (food, wood, metal) = self.known_yield(h, fog);
+                2 * food + wood + metal
+            })
+            .sum()
+    }
+
     /// Each unit goes for the nearest on foot of the enemy units and workers
     /// its side sees, the ruins nobody on its side holds (`ruins.rs`) and the
     /// enemy cities its side has seen (`nearest_ai_target`); with none of
@@ -273,24 +493,14 @@ impl GameState {
     /// (`side_fog`), never the real board: an enemy out of sight isn't
     /// there, and ground never seen is open.
     pub(super) fn plan_ai_turn(&mut self, team: Team) {
-        // The computer founds its first city immediately, before combat orders.
-        if self.cities.iter().all(|c| c.team != team)
-            && let Some(i) = self
-                .units
-                .iter()
-                .position(|u| u.team == team && self.settlers.contains(&u.id))
-        {
-            let unit = self.units.remove(i);
-            self.settlers.remove(&unit.id);
-            let id = self.cities.len() as u32;
-            self.cities.push(City::new(id, team, unit.pos));
-            self.auto_assign_city(self.cities.len() - 1);
-        }
         let fog = self.side_fog(team);
-        self.plan_ai_cities(team, &fog);
-        self.plan_ai_workers(team);
         let known = self.knowledge(fog);
         let mut floods: HashMap<Hex, Flood> = HashMap::default();
+        // Settlers found their cities, or head for a site, before the cities
+        // plan: a city founded now plans its first build this turn.
+        self.plan_ai_settlers(team, &known, &mut floods);
+        self.plan_ai_cities(team, &known);
+        self.plan_ai_workers(team);
         let mut watched = HashSet::default();
         for idx in 0..self.units.len() {
             if self.units[idx].team != team
@@ -815,6 +1025,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::game::city::City;
     use crate::game::hex::HexGrid;
     use crate::game::terrain::Tile;
     use crate::game::unit::{Unit, UnitType};
@@ -1078,5 +1289,170 @@ mod tests {
         game.units[0].hp = game.units[0].max_hp();
         let (dest, _) = replan(&mut game);
         assert!(dest.is_some_and(|d| d.q > 0), "{dest:?}");
+    }
+}
+
+#[cfg(test)]
+mod expansion_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::game::city::City;
+    use crate::game::hex::HexGrid;
+    use crate::game::terrain::Tile;
+
+    /// Open plains of radius 8, all seen by Red, with a Red city of
+    /// population 4 at (-5, 0) that has a worker and a Barracks (so it
+    /// wants no more troops of its own queue), a funded stockpile and a
+    /// scout: a side that can afford to expand.
+    fn red_ready_to_expand() -> GameState {
+        let mut game = GameState::new();
+        game.grid = HexGrid::new(8, [(Hex::new(0, 0), Tile::default())]);
+        game.units = vec![Unit::new(1, Hex::new(-5, 2), Team::Red, UnitType::Scout)];
+        game.ruins.clear();
+        game.cities = vec![City {
+            population: 4,
+            barracks: Some(Hex::new(-5, 1)),
+            ..City::new(0, Team::Red, Hex::new(-5, 0))
+        }];
+        game.auto_assign_city(0);
+        game.fund(Team::Red);
+        let hexes: Vec<Hex> = game.grid.all_hexes().collect();
+        let memory = Arc::make_mut(&mut game.side_memory[Team::Red.index()]);
+        for hex in hexes {
+            memory.entry(hex).or_default();
+        }
+        game
+    }
+
+    fn add_red_settler(game: &mut GameState, pos: Hex) -> u32 {
+        let id = 50;
+        game.units
+            .push(Unit::new(id, pos, Team::Red, UnitType::Melee));
+        game.settlers.insert(id);
+        id
+    }
+
+    fn unit(game: &GameState, id: u32) -> &Unit {
+        game.units.iter().find(|u| u.id == id).expect("still there")
+    }
+
+    #[test]
+    fn a_city_of_four_trains_a_settler_to_expand() {
+        let mut game = red_ready_to_expand();
+        game.plan_ai_turn(Team::Red);
+        assert_eq!(
+            game.cities[0].queue.first().map(|q| q.build),
+            Some(Build::Settler)
+        );
+        // Smaller, it grows first.
+        let mut game = red_ready_to_expand();
+        game.cities[0].population = AI_SETTLE_POPULATION - 1;
+        game.plan_ai_turn(Team::Red);
+        assert_eq!(
+            game.cities[0].queue.first().map(|q| q.build),
+            Some(Build::Grow)
+        );
+        // With a settler already out, it doesn't train another.
+        let mut game = red_ready_to_expand();
+        add_red_settler(&mut game, Hex::new(-4, 0));
+        game.plan_ai_turn(Team::Red);
+        assert_ne!(
+            game.cities[0].queue.first().map(|q| q.build),
+            Some(Build::Settler)
+        );
+    }
+
+    #[test]
+    fn a_side_without_a_scout_trains_one() {
+        let mut game = red_ready_to_expand();
+        game.units.clear();
+        game.plan_ai_turn(Team::Red);
+        assert_eq!(
+            game.cities[0].queue.first().map(|q| q.build),
+            Some(Build::Scout)
+        );
+    }
+
+    #[test]
+    fn a_settler_walks_to_a_site_and_founds_a_city_there() {
+        let mut game = red_ready_to_expand();
+        let home = game.cities[0].pos;
+        let from = Hex::new(-4, 0);
+        let id = add_red_settler(&mut game, from);
+        let fog = game.side_fog(Team::Red);
+        let known = game.knowledge(fog);
+        let site = game
+            .ai_city_site(Team::Red, from, &known, false)
+            .expect("open plains all round");
+        assert!(
+            (MIN_CITY_DISTANCE..=AI_SITE_MAX_DISTANCE).contains(&site.distance(home)),
+            "{site:?}"
+        );
+        game.plan_ai_turn(Team::Red);
+        let step = unit(&game, id).planned_move.expect("it heads off");
+        assert!(step.distance(site) < from.distance(site), "{step:?}");
+        assert_eq!(game.cities.len(), 1);
+
+        // There, it founds the city: one without a worker.
+        let at = game.units.iter().position(|u| u.id == id).unwrap();
+        game.units[at].pos = site;
+        game.units[at].planned_move = None;
+        game.plan_ai_turn(Team::Red);
+        assert_eq!(game.cities.len(), 2);
+        assert_eq!(game.cities[1].pos, site);
+        assert_eq!(game.cities[1].workers, 0);
+        assert!(game.settlers.is_empty());
+    }
+
+    #[test]
+    fn a_site_refused_for_a_city_unseen_is_given_up() {
+        let mut game = red_ready_to_expand();
+        let home = game.cities[0].pos;
+        let from = Hex::new(-4, 0);
+        let id = add_red_settler(&mut game, from);
+        let fog = game.side_fog(Team::Red);
+        let known = game.knowledge(fog);
+        let site = game.ai_city_site(Team::Red, from, &known, false).unwrap();
+        // A Blue city five hexes past the site, out of Red's sight.
+        let blue = game
+            .grid
+            .all_hexes()
+            .filter(|h| h.distance(site) == MIN_CITY_DISTANCE - 1 && h.distance(home) > 8)
+            .min_by_key(|h| (h.q, h.r))
+            .expect("room on the map");
+        game.cities.push(City::new(1, Team::Blue, blue));
+        let at = game.units.iter().position(|u| u.id == id).unwrap();
+        game.units[at].pos = site;
+        game.plan_ai_turn(Team::Red);
+        assert_eq!(game.cities.len(), 2, "not founded");
+        assert!(game.refused_sites.contains(&(Team::Red, site)));
+        assert!(game.settlers.contains(&id));
+        // It looks elsewhere, not near there.
+        let fog = game.side_fog(Team::Red);
+        let known = game.knowledge(fog);
+        if let Some(next) = game.ai_city_site(Team::Red, site, &known, false) {
+            assert!(next.distance(site) > AI_REFUSED_RADIUS, "{next:?}");
+        }
+    }
+
+    #[test]
+    fn a_first_city_keeps_its_distance_from_another_sides() {
+        let mut game = red_ready_to_expand();
+        // Red has no city yet, and its settler stands 3 hexes from Blue's.
+        game.cities = vec![City::new(0, Team::Blue, Hex::new(3, 0))];
+        let from = Hex::new(0, 0);
+        let id = add_red_settler(&mut game, from);
+        game.plan_ai_turn(Team::Red);
+        assert!(game.cities.iter().all(|c| c.team != Team::Red));
+        let step = unit(&game, id).planned_move.expect("it heads away");
+        assert!(step.distance(Hex::new(3, 0)) > from.distance(Hex::new(3, 0)));
+        // Where the rules allow it, it founds its first city at once, with
+        // a worker, as a starting city.
+        let at = game.units.iter().position(|u| u.id == id).unwrap();
+        game.units[at].pos = Hex::new(-3, 0);
+        game.plan_ai_turn(Team::Red);
+        let city = game.cities.iter().find(|c| c.team == Team::Red).unwrap();
+        assert_eq!((city.pos, city.workers), (Hex::new(-3, 0), 1));
     }
 }

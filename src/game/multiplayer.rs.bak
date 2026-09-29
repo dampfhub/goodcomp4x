@@ -20,9 +20,13 @@ use serde::{Deserialize, Serialize};
 use super::GameState;
 use super::camera::Camera;
 use super::city::{
-    Build, BuildUnit, Building, Cluster, MAX_CITY_POPULATION, MAX_MANAGERS, MIN_CITY_DISTANCE,
-    Priorities, Queued, SETTLER_MIN_POPULATION, Stock, WORKERS_PER_MANAGER, cluster_tiles,
-    grow_price, in_interior, managers_for,
+<<<<<<< HEAD
+    Build, BuildUnit, Building, City, Cluster, MAX_CITY_POPULATION, MAX_MANAGERS, Priorities,
+    Queued, Stock, WORKERS_PER_MANAGER, cluster_tiles, grow_price, in_interior, managers_for,
+=======
+    Build, BuildUnit, Building, MAX_CITY_POPULATION, MIN_CITY_DISTANCE, Priorities, Queued,
+    SETTLER_MIN_POPULATION, Stock, grow_price, in_interior,
+>>>>>>> origin/main
 };
 use super::hex::Hex;
 use super::settings::Settings;
@@ -34,7 +38,11 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 19;
+<<<<<<< HEAD
+pub const PROTOCOL_VERSION: u32 = 17;
+=======
+pub const PROTOCOL_VERSION: u32 = 18;
+>>>>>>> origin/main
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -2480,8 +2488,8 @@ mod tests {
             founded_by: Some(settler),
             queue: Vec::new(),
             barracks_queue: Vec::new(),
-            clusters: Vec::new(),
-            remembered: Vec::new(),
+            worked: Vec::new(),
+            remembered_worked: Vec::new(),
             priorities: Priorities::default(),
             worker_jobs: Vec::new(),
             held_workers: 0,

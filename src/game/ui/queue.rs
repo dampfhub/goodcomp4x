@@ -7,7 +7,7 @@ use super::{
     TITLE_ROW_HEIGHT, Target, contains, to_ui,
 };
 use crate::game::GameState;
-use crate::game::city::{Lane, Stock, stock_icons, turns_icon};
+use crate::game::city::{Lane, SETTLER_MIN_POPULATION, Stock, stock_icons, turns_icon};
 use glam::Vec2;
 
 pub(super) fn queue_items_that_fit(available_height: f32) -> usize {
@@ -300,6 +300,14 @@ impl GameState {
         QueueStatus { worked, waiting }
     }
 
+    /// Whether item `index` of one of `city`'s queues is a Settler waiting
+    /// for citizens (`waits_for_citizens`).
+    fn waits_for_citizens_at(&self, city: usize, lane: Lane, index: usize) -> bool {
+        lane == Lane::City
+            && index < self.lane_len(city, lane)
+            && self.waits_for_citizens(city, index)
+    }
+
     /// The name of item `index` of one of `city`'s queues.
     fn item_name(&self, city: usize, lane: Lane, index: usize) -> &'static str {
         match lane {
@@ -333,6 +341,12 @@ impl GameState {
         lane: Lane,
         status: &QueueStatus,
     ) -> Option<String> {
+        if self.waits_for_citizens_at(city, lane, 0) {
+            return Some(format!(
+                "{} WAITS FOR POPULATION {SETTLER_MIN_POPULATION}",
+                self.item_name(city, lane, 0)
+            ));
+        }
         let short = status.head_waits()?;
         Some(format!(
             "{} WAITS FOR {}",
@@ -355,7 +369,9 @@ impl GameState {
         let active = status.worked == Some(index);
         let prefix = if active { "> " } else { "  " };
         let waits = status.waits(index);
+        let citizens = self.waits_for_citizens_at(city, lane, index);
         let mut state = match waits {
+            _ if citizens => format!("WAITS FOR POP {SETTLER_MIN_POPULATION}"),
             Some(short) => format!("WAITS {}", stock_icons(short)),
             None => match self.item_turns_left(city, lane, index) {
                 0 => "READY".into(),
@@ -371,7 +387,7 @@ impl GameState {
             index,
             label: format!("{prefix}{name} | {state}"),
             active,
-            waiting: waits.is_some(),
+            waiting: waits.is_some() || citizens,
             dragging: drag.is_some_and(|drag| drag.source == index),
             drop_target: drag
                 .is_some_and(|drag| drag.target == Some(index) && drag.source != index),

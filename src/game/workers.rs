@@ -312,12 +312,12 @@ impl GameState {
     fn improvement(&self, hex: Hex) -> Option<(i32, i32, &'static str)> {
         let tile = self.grid.tile(hex);
         let (food, production) = tile.yields();
-        if tile.hills {
+        if tile.terrain == Terrain::Snow {
+            None
+        } else if tile.hills {
             Some((food, production + 2, "MINE"))
         } else if tile.feature.is_some() {
             Some((food, production + 1, "LUMBER MILL"))
-        } else if tile.terrain == Terrain::Snow {
-            None
         } else {
             Some((food + 2, production, "FARM"))
         }
@@ -1313,6 +1313,31 @@ mod tests {
         game.placing_job = Some(kind);
         game.place_job_at(hex, None);
         game.placing_job = None;
+    }
+
+    #[test]
+    fn snow_hills_cannot_be_improved() {
+        use crate::game::hex::HexGrid;
+        use crate::game::terrain::Tile;
+
+        let mut game = cities();
+        let hex = bare_tile(&game, 1);
+        game.grid = HexGrid::new(
+            6,
+            [(
+                hex,
+                Tile {
+                    terrain: Terrain::Snow,
+                    hills: true,
+                    feature: None,
+                },
+            )],
+        );
+
+        assert_eq!(
+            game.job_problem(0, WorkerJob::on_tile(hex, JobKind::Improve)),
+            Some("NOTHING GROWS ON SNOW")
+        );
     }
 
     #[test]
