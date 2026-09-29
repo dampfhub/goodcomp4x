@@ -211,6 +211,9 @@ pub struct Unit {
     interior_hp: f32,
     /// A Forge or Stable upgrade earned when this troop was trained.
     training_upgrade: Option[Resource],
+    /// The Horses or Iron deposit a Barracks trained it from, for the cap on such troops
+    /// (`city/barracks.tua`).
+    drawn_from: Option[Resource],
     /// Orders queued for this turn. The attack targets a hex rather than a unit: whichever
     /// enemy stands there when it resolves gets hit.
     planned_move: Option[Hex],
@@ -252,6 +255,7 @@ impl Unit {
             hp: unit_type.stats().max_hp,
             interior_hp: unit_type.stats().max_hp,
             training_upgrade: Option.None,
+            drawn_from: Option.None,
             planned_move: Option.None,
             planned_attack: Option.None,
             ability_queued: false,
@@ -270,6 +274,9 @@ impl Unit {
 
     pub fn is_naval(&self) -> bool { self.unit_type.is_naval() }
 
+    /// A neutral animal: belongs to no side, uses no supply.
+    pub fn is_animal(&self) -> bool { false }
+
     /// A copy of the unit, its queue and its cargo included, for a savestate.
     pub fn snapshot(&self) -> Unit {
         let mut queued: Vec[TurnOrder] = Vec.new();
@@ -284,6 +291,7 @@ impl Unit {
             hp: self.hp,
             interior_hp: self.interior_hp,
             training_upgrade: self.training_upgrade,
+            drawn_from: self.drawn_from,
             planned_move: self.planned_move,
             planned_attack: self.planned_attack,
             ability_queued: self.ability_queued,
@@ -425,6 +433,9 @@ impl Unit {
         self.holding = false;
         self.following_queue = false;
     }
+
+    /// Ends a guard: any order to the unit does.
+    pub fn wake(&mut self) { self.guarding = false; }
 
     /// Clears every order: this turn's, the queue, and a hold.
     pub fn clear_orders(&mut self) {

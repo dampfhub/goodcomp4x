@@ -1,0 +1,165 @@
+//! The military supply limit (#237, `docs/game-rules.md`, Supply): a hard cap on a side's army.
+//! Its cities give supply (`supply_from_cities`), and every troop, ship and scout uses some
+//! (`unit_type_supply`); settlers and workers use none.
+//!
+//! - **Queueing** a unit that uses supply needs room for it: the side's units alive (passengers
+//!   aboard included) and every such item queued, paid or not (`supply_used`), plus it, within
+//!   the cap (`supply_lock`).
+//! - **Starting** one (paying for it, `work_queues`) needs room too, counting only the units
+//!   alive and the items already started (`supply_started`): an item queued before the side lost
+//!   a city or citizens waits in the queue, like one waiting for the stockpile, until there's
+//!   room again. One already started finishes.
+//! - **Over the cap**, nothing else happens: units alive stay, and only new training waits.
+//!
+//! The formula is meant to change: it's `supply_from_cities` and the table in
+//! `unit_type_supply`, nothing else.
+
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.str.Str;
+use game.GameState;
+use game.text;
+use game.city.Build;
+use game.city.BuildUnit;
+use game.city.City;
+use game.city.Lane;
+use game.city.Queued;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+/// Supply each city gives its side, whatever its size: room for the AI's two troops a city
+/// (`AI_ARMY_PER_CITY`) and a scout.
+pub const SUPPLY_PER_CITY: i32 = 3;
+/// Supply each citizen of a city adds.
+pub const SUPPLY_PER_CITIZEN: i32 = 1;
+/// What a card the supply locks says (`supply_lock` adds the numbers).
+pub const SUPPLY_FULL_HINT: str = "SUPPLY FULL";
+
+/// The supply cities of these populations give their side: the one place the formula lives.
+pub fn supply_from_cities(populations: &Vec[i32]) -> i32 {
+    let mut total = 0;
+    for k in 0..populations.len() { total = total + SUPPLY_PER_CITY + SUPPLY_PER_CITIZEN * populations[k]; }
+    total
+}
+
+/// The supply a unit of `kind` uses: 1 for every troop, ship and scout (a settler, which has the
+/// Melee body, is left out by `unit_supply`), none for animals, which belong to no side.
+pub fn unit_type_supply(kind: UnitType) -> i32 {
+    match kind {
+        UnitType.Melee | UnitType.Ranged | UnitType.Cavalry | UnitType.Siege | UnitType.Armored | UnitType.Scout
+        | UnitType.PatrolGalley | UnitType.LandingCraft | UnitType.BombardShip => 1,
+    }
+}
+
+/// The supply what `build` turns out uses: a troop's or ship's, a scout's; none for a settler, a
+/// worker, growth or gathering.
+pub fn build_supply(build: Build) -> i32 {
+    match build {
+        Build.Unit(unit) => unit_type_supply(unit.unit_type()),
+        Build.Scout => unit_type_supply(UnitType.Scout),
+        Build.Settler | Build.Worker | Build.Grow | Build.Gather => 0,
+    }
+}
+
+/// The supply a Barracks troop uses.
+pub fn troop_supply(build: BuildUnit) -> i32 { build_supply(Build.Unit(build)) }
+
+/// The supply `city`'s queued items use: all of them, or only those paid for (started).
+fn city_queued_supply(city: &City, paid_only: bool) -> i32 {
+    let mut total = 0;
+    for k in 0..city.queue.len() {
+        let q = city.queue[k];
+        if !paid_only || q.paid { total = total + build_supply(q.build); }
+    }
+    for k in 0..city.barracks_queue.len() {
+        let q = city.barracks_queue[k];
+        if !paid_only || q.paid { total = total + troop_supply(q.build); }
+    }
+    total
+}
+
+/// The supply the items of a city's two queues use, as a plan carries them.
+pub fn queues_supply(queue: &Vec[Queued[Build]], barracks: &Vec[Queued[BuildUnit]]) -> i32 {
+    let mut total = 0;
+    for k in 0..queue.len() { total = total + build_supply(queue[k].build); }
+    for k in 0..barracks.len() { total = total + troop_supply(barracks[k].build); }
+    total
+}
+
+impl GameState {
+    /// The supply `team` has: what its cities give (`supply_from_cities`), and what a test adds
+    /// (`fund`).
+    pub fn supply_cap(&self, team: Team) -> i32 {
+        let mut populations: Vec[i32] = Vec.new();
+        for i in 0..self.cities.len() { if self.cities[i].team == team { populations.push(self.cities[i].population); } }
+        supply_from_cities(&populations) + self.extra_supply[team.index()]
+    }
+
+    /// The supply `unit` uses, with its passengers: none for a settler.
+    pub fn unit_supply(&self, unit: &Unit) -> i32 {
+        let mut total = if self.settlers.contains(unit.id) || unit.is_animal() { 0 } else { unit_type_supply(unit.unit_type) };
+        for k in 0..unit.cargo.len() { total = total + self.unit_supply(&unit.cargo[k]); }
+        total
+    }
+
+    /// The supply `team`'s units alive use.
+    pub fn units_supply(&self, team: Team) -> i32 {
+        let mut total = 0;
+        for i in 0..self.units.len() { if self.units[i].team == team { total = total + self.unit_supply(&self.units[i]); } }
+        total
+    }
+
+    /// What counts against `team`'s supply: its units alive and everything its queues hold that
+    /// uses supply, paid for or not. The top bar shows it against `supply_cap`, and queueing
+    /// keeps it within.
+    pub fn supply_used(&self, team: Team) -> i32 {
+        let mut total = self.units_supply(team);
+        for i in 0..self.cities.len() { if self.cities[i].team == team { total = total + city_queued_supply(&self.cities[i], false); } }
+        total
+    }
+
+    /// What starting another item counts against: `team`'s units alive and the items its queues
+    /// have started (paid for).
+    pub fn supply_started(&self, team: Team) -> i32 {
+        let mut total = self.units_supply(team);
+        for i in 0..self.cities.len() { if self.cities[i].team == team { total = total + city_queued_supply(&self.cities[i], true); } }
+        total
+    }
+
+    /// The supply `team` may still start items with this turn: its cap less what it has started,
+    /// below zero if it is over the cap.
+    pub fn supply_room(&self, team: Team) -> i64 { (self.supply_cap(team) as i64) - (self.supply_started(team) as i64) }
+
+    /// Why `team` can't queue something using `supply` more now, if it can't: its units and queued
+    /// items with it would pass its cap.
+    pub fn supply_lock(&self, team: Team, supply: i32) -> Option[Str] {
+        let (used, cap) = (self.supply_used(team), self.supply_cap(team));
+        if supply > 0 && used + supply > cap {
+            Option.Some(text(fn() can {Out} { Out.put(SUPPLY_FULL_HINT); Out.put(" ("); show_i64(used as i64); Out.put("/"); show_i64(cap as i64); Out.put(")"); }))
+        } else {
+            Option.None
+        }
+    }
+
+    /// The supply item `index` of one of `city`'s queues uses.
+    pub fn item_supply(&self, city: i32, lane: Lane, index: i32) -> i32 {
+        let c = &self.cities[city];
+        match lane {
+            Lane.City => build_supply(c.queue[index].build),
+            Lane.Barracks => troop_supply(c.barracks_queue[index].build),
+        }
+    }
+
+    /// For a card's tooltip: what the unit it trains uses, and the side's supply now. Empty for a
+    /// build that uses none.
+    pub fn supply_note(&self, build: Build) -> Str {
+        let supply = build_supply(build);
+        if supply == 0 { return text(fn() can {Out} {}); }
+        let team = self.local_team;
+        text(fn() can {Out} {
+            Out.put(" \u{b7} USES "); show_i64(supply as i64); Out.put(" SUPPLY: "); show_i64(self.supply_used(team) as i64);
+            Out.put(" OF "); show_i64(self.supply_cap(team) as i64); Out.put(" USED");
+        })
+    }
+}

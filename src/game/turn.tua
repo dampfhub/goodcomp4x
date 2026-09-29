@@ -19,8 +19,8 @@ use game.AI_TEAM;
 use game.ability.Ability;
 use game.ability.VOLLEY_DAMAGE;
 use game.combat.draws_retaliation;
-use game.combat.roll_damage;
-use game.combat.roll_damage_against;
+use game.combat.damage as blow_damage;
+use game.combat.damage_against;
 use game.combat.show_hp;
 use game.combat.show_note;
 use game.effects.Effect;
@@ -186,7 +186,6 @@ impl GameState {
                 self.units[i].end_turn();
             }
             self.advance_queues();
-            for c in 0..self.cities.len() { self.cities[c].workers_resting = false; }
             let turn = self.turn;
             info(fn() can {Out} { Out.put("=== turn "); show_u64(turn as u64); Out.put(" resolved ==="); });
             self.select_next_or_end_turn(Option.None);
@@ -218,7 +217,7 @@ impl GameState {
                 if better { target = Option.Some(i); }
             }
             let Option.Some(t) = target else { continue; };
-            hits[t] = hits[t] + roll_damage_against(BATTERY_ATTACK, self.units[t].stats().defense);
+            hits[t] = hits[t] + damage_against(BATTERY_ATTACK, self.units[t].stats().defense);
             shots.push(Effect.Shot(site.to_world(), self.units[t].pos.to_world(), Outcome.Hit));
         }
         for s in 0..shots.len() { self.play(shots[s]); }
@@ -565,7 +564,7 @@ impl GameState {
             } else {
                 1.0
             };
-            let hit = shore_scale * engagement.damage_scale * roll_damage(attacker, defender, self.defense_multiplier(defender));
+            let hit = shore_scale * engagement.damage_scale * blow_damage(attacker, defender, self.defense_multiplier(defender));
             damage[d] = damage[d] + hit;
             let verb = if engagement.damage_scale < 1.0 { "volleys" } else { "hits" };
 
@@ -577,7 +576,7 @@ impl GameState {
             let grid = &self.grid;
             let (attacker_fort, defender_fort) = (self.in_fort(attacker), self.in_fort(defender));
             if let Option.Some(back_scale) = retaliation_scale {
-                let back = back_scale * roll_damage(defender, attacker, self.defense_multiplier(attacker));
+                let back = back_scale * blow_damage(defender, attacker, self.defense_multiplier(attacker));
                 damage[a] = damage[a] + back;
                 let verb = if reverse.is_some() { "trades blows with" } else { verb };
                 info(fn() can {Out} {
@@ -602,12 +601,12 @@ impl GameState {
         for h in 0..barracks_hits.len() {
             let (attacker, city, scale) = barracks_hits[h];
             let attack = self.units[attacker].stats().attack;
-            barracks_damage[city] = barracks_damage[city] + scale * roll_damage_against(attack, BARRACKS_DEFENSE);
+            barracks_damage[city] = barracks_damage[city] + scale * damage_against(attack, BARRACKS_DEFENSE);
         }
         for h in 0..battery_hits.len() {
             let (attacker, city, scale) = battery_hits[h];
             let attack = self.units[attacker].stats().attack;
-            battery_damage[city] = battery_damage[city] + scale * roll_damage_against(attack, BATTERY_DEFENSE);
+            battery_damage[city] = battery_damage[city] + scale * damage_against(attack, BATTERY_DEFENSE);
         }
 
         for s in 0..shots.len() { self.play(shots[s]); }
@@ -630,7 +629,6 @@ impl GameState {
             if city.barracks_hp == 0.0 {
                 city.barracks = Option.None;
                 city.barracks_queue.clear();
-                city.barracks_production = 0;
                 // Gone from the map, so the city may build another.
                 handle { city.built.retain(); } with Keep[Building] { keep(b) => { resume *b != Building.Barracks } }
                 if self.selected_barracks == Option.Some(c) { self.selected_barracks = Option.None; }

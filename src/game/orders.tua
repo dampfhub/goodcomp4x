@@ -121,12 +121,6 @@ impl GameState {
             return;
         }
         if self.paint_job_at(cursor, screen_size, false) { return; }
-        // In the worker menu, clicks place the armed job (`paint_job_at`, above); with none
-        // armed, they do nothing.
-        if self.worker_mode {
-            self.set_notice("PICK A JOB TO PLACE FROM THE WORKER MENU - W WHEN DONE");
-            return;
-        }
         let armed = self.ui_click_mode;
         self.ui_click_mode = Option.None;
         let mode = match (mode, armed) {
@@ -307,19 +301,14 @@ impl GameState {
     /// whatever else does. Once nothing does, ends the turn.
     pub fn hold_or_end_turn(&mut self) can {Log} {
         if self.is_resolving() { return; }
-        // In the worker menu: the workers there rest, and the turn moves on.
-        if self.worker_mode {
-            self.sleep_workers();
-            return;
-        }
         if !self.group.is_empty() {
             self.hold_group();
             return;
         }
         let selected_needs_orders = match self.selected { Option.Some(i) => self.needs_orders(i), Option.None => false };
         let selected_holding = match self.selected { Option.Some(i) => self.units[i].holding, Option.None => false };
-        let (units, cities, workers) = self.pending();
-        if selected_needs_orders || selected_holding || units != 0 || cities != 0 || workers != 0 {
+        let (units, cities) = self.pending();
+        if selected_needs_orders || selected_holding || units != 0 || cities != 0 {
             self.hold_selected_unit();
         } else {
             self.end_planning();
@@ -389,9 +378,9 @@ impl GameState {
     }
 
     /// How many of the player's units still need orders, and how many of their cities still
-    /// need something to build. The turn can't end until both are zero; assigning citizens
-    /// never holds it up.
-    pub fn pending(&self) -> (i32, i32, i32) {
+    /// need something to build. The turn can't end until both are zero; assigning citizens and
+    /// idle workers never hold it up.
+    pub fn pending(&self) -> (i32, i32) {
         let mut units = 0;
         for i in 0..self.units.len() {
             if self.is_player_controlled(i) && self.needs_orders(i) { units = units + 1; }
@@ -400,9 +389,7 @@ impl GameState {
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) { cities = cities + 1; }
         }
-        let mut workers = 0;
-        for i in 0..self.cities.len() { workers = workers + self.idle_workers(i) as i32; }
-        (units, cities, workers)
+        (units, cities)
     }
 
     /// Tab: selects the next unit that still needs orders, or just the next unit if they all
@@ -429,16 +416,12 @@ impl GameState {
     /// that needs something to build; failing that, clears the selection and waits for the
     /// player to end the turn.
     pub fn select_next_or_end_turn(&mut self, after: Option[i32]) {
-        // In the turn strip's order: production first, then idle workers, then the units.
+        // In the turn strip's order: production first, then the units.
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) {
                 self.open_city(i);
                 return;
             }
-        }
-        if let Option.Some(city) = self.next_idle_workers() {
-            self.open_worker_menu(city);
-            return;
         }
         if let Option.Some(next) = self.next_unit_needing_orders(after) {
             self.select_and_focus(Option.Some(next));
@@ -450,7 +433,6 @@ impl GameState {
     /// Selects `idx` and glides the camera to it. Used when the game picks the unit, not when
     /// the player clicks one they can already see.
     fn select_and_focus(&mut self, idx: Option[i32]) {
-        if idx.is_some() { self.worker_mode = false; }
         self.selected = idx;
         self.group.clear();
         self.ui_click_mode = Option.None;

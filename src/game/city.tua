@@ -2,9 +2,11 @@
 //!
 //! This module holds the city types, the tuning constants and the city scenarios' setup; each
 //! submodule adds an `impl GameState` block for one concern: `builds` (the build queues,
-//! building sites, completing builds), `citizens` (the manager and its workers, growth, the
-//! economy tick), `logistics` (delivery routes and income), `rail` (Railhead transfers),
-//! `founding` (settlers) and `view` (the city and Barracks views, ending planning).
+//! completing builds), `economy` (the stockpile, paying for queued items), `supply` (the
+//! military supply limit), `barracks` (deposits and training caps), `citizens` (the priority
+//! order, the managers and their workers, the economy tick), `logistics` (delivery routes and
+//! income), `rail` (Railhead transfers), `founding` (settlers) and `view` (the city and Barracks
+//! views, ending planning).
 
 use std.collections.Map;
 use std.core.Eq;
@@ -12,9 +14,9 @@ use std.core.Keep;
 use std.fmt.Out;
 use std.fmt.show_i64;
 use std.fmt.show_u64;
+use std.str.Str;
 use log.Log;
 use game.GameState;
-use game.PLAYER_TEAM;
 use game.text;
 use game.hex.Hex;
 use game.hex.HexGrid;
@@ -43,8 +45,34 @@ pub use game.city.builds.BUILDINGS;
 pub use game.city.builds.PLACEABLE;
 pub use game.city.builds.CITY_UNITS;
 pub use game.city.builds.BARRACKS_UNITS;
-pub use game.city.builds.WORKER_COST;
 pub use game.city.builds.WORKER_SHORTCUT;
+pub use game.city.builds.GROW_SHORTCUT;
+pub use game.city.builds.GATHER_SHORTCUT;
+pub use game.city.builds.SCOUT_SHORTCUT;
+pub use game.city.builds.SETTLER_SHORTCUT;
+pub use game.city.builds.SETTLER_MIN_POPULATION;
+pub use game.city.builds.GATHER_YIELD;
+pub use game.city.economy.Stock;
+pub use game.city.economy.no_stock;
+pub use game.city.economy.RESOURCE_NAMES;
+pub use game.city.economy.WORK_PER_TURN;
+pub use game.city.economy.LaneForecast;
+pub use game.city.economy.QueueForecast;
+pub use game.city.economy.Queued;
+pub use game.city.economy.Lane;
+pub use game.city.economy.STARTING_STOCK;
+pub use game.city.economy.FOOD_PER_CITIZEN;
+pub use game.city.economy.grow_price;
+pub use game.city.economy.stock_words;
+pub use game.city.economy.stock_icons;
+pub use game.city.economy.turns_icon;
+pub use game.city.economy.resource_icon;
+pub use game.city.supply.SUPPLY_FULL_HINT;
+pub use game.city.supply.queues_supply;
+pub use game.city.supply.supply_from_cities;
+pub use game.city.barracks.CITY_TRAINING_SLOWDOWN;
+pub use game.city.barracks.UNITS_PER_DEPOSIT;
+pub use game.city.founding.MIN_CITY_DISTANCE;
 pub use game.city.logistics.Routes;
 pub use game.city.logistics.RouteBoard;
 pub use game.city.logistics.delivered_share;
@@ -53,52 +81,234 @@ pub use game.city.interior.CENTER;
 
 /// Camera zoom the city scenarios start at: most of the radius-six map in view.
 const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
-/// One manager and up to six nearby workers.
-pub const MAX_CITY_POPULATION: i32 = 7;
+/// Workers each manager has at most, on the tiles around it.
+pub const WORKERS_PER_MANAGER: i32 = 6;
+/// Managers a city has at most, each starting a cluster of itself and up to
+/// `WORKERS_PER_MANAGER` workers.
+pub const MAX_MANAGERS: i32 = 4;
+/// A cluster's citizens: its manager and its workers.
+pub const CLUSTER_SIZE: i32 = 7;
+/// Four clusters of a manager and six workers.
+pub const MAX_CITY_POPULATION: i32 = 28;
 pub const BARRACKS_MAX_HP: f32 = 220.0;
 pub const BARRACKS_DEFENSE: f32 = 25.0;
 pub const COASTAL_BATTERY_MAX_HP: f32 = 150.0;
+/// A coastal battery's defense against attacks, fortification included.
+pub const COASTAL_BATTERY_DEFENSE: f32 = 18.0;
 
-/// What a city's auto-assignment favours: food, production, or food while the city is short
-/// of it and production after.
-pub enum LaborFocus { Food, Production, Balanced }
+/// A good a city's citizens bring in, as its priority order ranks them.
+pub enum Good { Food, Wood, Metal }
 
-impl Eq for LaborFocus {
-    fn eq(self, other: LaborFocus) -> bool {
-        match (self, other) {
-            (LaborFocus.Food, LaborFocus.Food) | (LaborFocus.Production, LaborFocus.Production) | (LaborFocus.Balanced, LaborFocus.Balanced) => true,
-            _ => false,
+impl Eq for Good {
+    fn eq(self, other: Good) -> bool { self.index() == other.index() }
+}
+
+/// Every good, in display order.
+pub const GOODS: [Good; 3] = [Good.Food, Good.Wood, Good.Metal];
+
+impl Good {
+    pub fn index(self) -> i32 { match self { Good.Food => 0, Good.Wood => 1, Good.Metal => 2 } }
+
+    pub fn name(self) -> str { match self { Good.Food => "FOOD", Good.Wood => "WOOD", Good.Metal => "METAL" } }
+
+    /// This good's amount in a tile's `(food, wood, metal)`.
+    pub fn of(self, goods: (i32, i32, i32)) -> i32 {
+        let (food, wood, metal) = goods;
+        match self { Good.Food => food, Good.Wood => wood, Good.Metal => metal }
+    }
+}
+
+/// A city's priority order: food, wood and metal, first to last, each once. Auto-assign weighs a
+/// tile's delivered goods by their places (`WEIGHTS`), with food first until the city is fed
+/// (`score`).
+pub struct Priorities { order: [Good; 3] }
+
+impl Eq for Priorities {
+    fn eq(self, other: Priorities) -> bool {
+        self.order[0] == other.order[0] && self.order[1] == other.order[1] && self.order[2] == other.order[2]
+    }
+}
+
+/// The default order: food, wood, metal.
+pub fn default_priorities() -> Priorities { Priorities { order: [Good.Food, Good.Wood, Good.Metal] } }
+
+impl Priorities {
+    pub fn of(first: Good, second: Good, third: Good) -> Priorities { Priorities { order: [first, second, third] } }
+
+    /// Whether this is an order of the three goods, each once (a network plan's may not be).
+    pub fn is_order(self) -> bool {
+        let mut seen = [false, false, false];
+        for k in 0..3 { seen[self.order[k].index()] = true; }
+        seen[0] && seen[1] && seen[2]
+    }
+
+    /// Where `good` stands, 0 first.
+    pub fn rank(self, good: Good) -> i32 {
+        for k in 0..3 { if self.order[k] == good { return k; } }
+        0
+    }
+
+    /// The same order with `good` moved to the front, the others keeping theirs.
+    pub fn with_first(self, good: Good) -> Priorities { self.moved(self.rank(good), 0) }
+
+    /// The same order with the good at `from` taken out and put back at `to` (a chip dragged onto
+    /// another).
+    pub fn moved(self, from: i32, to: i32) -> Priorities {
+        let mut goods = self.order;
+        if from >= 0 && from < 3 && to >= 0 && to < 3 {
+            let moving = goods[from];
+            if from < to {
+                let mut k = from;
+                while k < to { goods[k] = goods[k + 1]; k = k + 1; }
+            } else {
+                let mut k = from;
+                while k > to { goods[k] = goods[k - 1]; k = k - 1; }
+            }
+            goods[to] = moving;
+        }
+        Priorities { order: goods }
+    }
+
+    /// The good in place `place`, 0 first.
+    pub fn at(self, place: i32) -> Good { self.order[place] }
+
+    /// What the first, second and third good count for: the first dominates, and ties go down the
+    /// list.
+    pub fn weight(place: i32) -> i32 { if place == 0 { 9 } else if place == 1 { 3 } else { 1 } }
+
+    /// A tile's worth to auto-assign: its delivered `(food, wood, metal)`, each times its place's
+    /// weight. Until the city is `fed` (the food floor: its tiles' food covers its upkeep and one
+    /// more), food counts as first whatever the order, the others keeping theirs.
+    pub fn score(self, goods: (i32, i32, i32), fed: bool) -> i32 {
+        let order = if fed { self } else { self.with_first(Good.Food) };
+        let mut total = 0;
+        for k in 0..3 { total = total + order.order[k].of(goods) * Priorities.weight(k); }
+        total
+    }
+
+    /// "FOOD > WOOD > METAL".
+    pub fn text(self) -> Str {
+        text(fn() can {Out} {
+            Out.put(self.order[0].name()); Out.put(" > "); Out.put(self.order[1].name()); Out.put(" > "); Out.put(self.order[2].name());
+        })
+    }
+}
+
+/// A manager and the workers it runs, each on a tile beside it. A city's citizens work in up to
+/// `MAX_MANAGERS` of these; a tile belongs to one city and one cluster. The workers fill
+/// `slots` from the front.
+pub struct Cluster {
+    /// On land, and never beside another of its city's managers.
+    manager: Hex,
+    /// Up to `WORKERS_PER_MANAGER`, each beside the manager.
+    slots: [Hex; 6],
+    count: i32,
+}
+
+impl Eq for Cluster {
+    fn eq(self, other: Cluster) -> bool {
+        if self.manager != other.manager || self.count != other.count { return false; }
+        for k in 0..self.count { if self.slots[k] != other.slots[k] { return false; } }
+        true
+    }
+}
+
+impl Cluster {
+    pub fn new(manager: Hex) -> Cluster { Cluster { manager, slots: [manager, manager, manager, manager, manager, manager], count: 0 } }
+
+    /// Its workers' tiles, in the order they were put to work.
+    pub fn workers(&self) -> Vec[Hex] {
+        let mut out: Vec[Hex] = Vec.new();
+        for k in 0..self.count { out.push(self.slots[k]); }
+        out
+    }
+
+    /// Its tiles: the manager's, then its workers'.
+    pub fn tiles(&self) -> Vec[Hex] {
+        let mut out: Vec[Hex] = Vec.new();
+        out.push(self.manager);
+        for k in 0..self.count { out.push(self.slots[k]); }
+        out
+    }
+
+    /// Its citizens: the manager and its workers.
+    pub fn citizens(&self) -> i32 { 1 + self.count }
+
+    pub fn has_worker(&self, hex: Hex) -> bool {
+        for k in 0..self.count { if self.slots[k] == hex { return true; } }
+        false
+    }
+
+    pub fn holds(&self, hex: Hex) -> bool { self.manager == hex || self.has_worker(hex) }
+
+    /// Puts a worker on `hex`, if it has room.
+    pub fn add_worker(&mut self, hex: Hex) {
+        if self.count < WORKERS_PER_MANAGER {
+            self.slots[self.count] = hex;
+            self.count = self.count + 1;
         }
     }
-}
 
-impl LaborFocus {
-    pub fn name(self) -> str {
-        match self { LaborFocus.Food => "FOOD", LaborFocus.Production => "PRODUCTION", LaborFocus.Balanced => "BALANCED" }
+    /// Takes the worker on `hex` off, the others keeping their order.
+    pub fn remove_worker(&mut self, hex: Hex) {
+        let mut at = -1;
+        for k in 0..self.count { if at < 0 && self.slots[k] == hex { at = k; } }
+        if at < 0 { return; }
+        let mut k = at;
+        while k + 1 < self.count { self.slots[k] = self.slots[k + 1]; k = k + 1; }
+        self.count = self.count - 1;
+    }
+
+    /// Takes the last worker off; whether there was one.
+    pub fn pop_worker(&mut self) -> bool {
+        if self.count == 0 { return false; }
+        self.count = self.count - 1;
+        true
     }
 }
 
-/// Every focus, in the order the city tray shows them.
-pub const FOCUSES: [LaborFocus; 3] = [LaborFocus.Food, LaborFocus.Production, LaborFocus.Balanced];
+/// The managers a city of `population` may have (`City.managers_allowed`).
+pub fn managers_for(population: i32) -> i32 {
+    let capped = if population < MAX_CITY_POPULATION { population } else { MAX_CITY_POPULATION };
+    (capped + CLUSTER_SIZE - 1) / CLUSTER_SIZE
+}
+
+/// How cluster `cluster` of `clusters` marks its manager, on the map and in the city tray: M, or
+/// with several clusters M1 to M4.
+pub fn manager_label(cluster: i32, clusters: i32) -> Str {
+    if clusters > 1 { text(fn() can {Out} { Out.put("M"); show_i64((cluster + 1) as i64); }) } else { text(fn() can {Out} { Out.put("M"); }) }
+}
+
+/// Every tile `clusters` work, cluster by cluster.
+pub fn cluster_tiles(clusters: &Vec[Cluster]) -> Vec[Hex] {
+    let mut out: Vec[Hex] = Vec.new();
+    for c in 0..clusters.len() {
+        let tiles = clusters[c].tiles();
+        for k in 0..tiles.len() { out.push(tiles[k]); }
+    }
+    out
+}
 
 pub struct City {
     id: u32,
     team: Team,
     pos: Hex,
     population: i32,
-    food: i32,
-    production: i32,
     barracks_hp: f32,
     coastal_battery_hp: f32,
-    /// The tiles its citizens work. The first is the manager; the rest stand next to it.
-    worked: Vec[Hex],
-    /// Manual tiles displaced by a blocked logistics route. They return when available unless
-    /// the player changes the assignment.
-    remembered_worked: Vec[Hex],
-    focus: LaborFocus,
-    /// The city works the first item, then immediately continues with the following items.
-    /// Buildings and units deliberately share this queue.
-    queue: Vec[Build],
+    /// The tiles its citizens work, as up to `MAX_MANAGERS` clusters (a manager and its
+    /// workers), first to last (`citizens.tua`).
+    clusters: Vec[Cluster],
+    /// The clusters as last assigned (auto-assign, a click, a manager moved): tiles a blocked
+    /// route or a claim displaced come back from here when they're free again, unless the player
+    /// changes the assignment (`reconcile_citizens`).
+    remembered: Vec[Cluster],
+    /// What auto-assign favors for its citizens (`Priorities`).
+    priorities: Priorities,
+    /// Units, workers, Grows and Gathers, each with whether it's paid and the work done on it
+    /// (`Queued`). Each turn the city works the first item that's paid for or that the stockpile
+    /// can pay for (`economy.tua`).
+    queue: Vec[Queued[Build]],
     built: Vec[Building],
     barracks: Option[Hex],
     mill: Option[Hex],
@@ -108,37 +318,35 @@ pub struct City {
     extra_buildings: Map[Building, Hex],
     /// Scroll position in the city tray's building list.
     building_scroll: i32,
-    pending_building: Option[Building],
-    planned_sites: Map[Building, Hex],
-    /// Barracks production is independent of the city's main queue.
-    barracks_queue: Vec[BuildUnit],
-    barracks_production: i32,
+    /// Scroll position in the city tray's list of workers and their jobs.
+    worker_scroll: i32,
+    /// The Barracks' own queue, independent of the city's main queue and worked the same way.
+    barracks_queue: Vec[Queued[BuildUnit]],
     /// A separate tactical board. Adjacent field troops project copies here.
     interior: Interior,
     /// Workers at home, safe and off the map (`workers.tua`).
     workers: u32,
-    /// Jobs waiting for a worker, first to go first.
+    /// Of `workers`, those the player recalled: they stay home, sent out to no job, until
+    /// released (`workers.tua`). Never more than `workers`.
+    held_workers: u32,
+    /// What the city placed on the map, waiting for a worker, first to go first (`workers.tua`).
     worker_jobs: Vec[WorkerJob],
-    /// The player let the workers at home rest this turn (Sleep in the worker menu), so they
-    /// don't wait for orders until the next.
-    workers_resting: bool,
 }
 
 impl City {
-    /// A newly founded city: one citizen and one worker.
+    /// A city as a scenario starts it: one citizen and one worker. A city founded in play starts
+    /// without the worker unless it is its side's first (`found_city`).
     pub fn new(id: u32, team: Team, pos: Hex) -> City {
         City {
             id,
             team,
             pos,
             population: 1,
-            food: 0,
-            production: 0,
             barracks_hp: BARRACKS_MAX_HP,
             coastal_battery_hp: COASTAL_BATTERY_MAX_HP,
-            worked: Vec.new(),
-            remembered_worked: Vec.new(),
-            focus: LaborFocus.Balanced,
+            clusters: Vec.new(),
+            remembered: Vec.new(),
+            priorities: default_priorities(),
             queue: Vec.new(),
             built: Vec.new(),
             barracks: Option.None,
@@ -146,21 +354,47 @@ impl City {
             workshop: Option.None,
             extra_buildings: Map.new(),
             building_scroll: 0,
-            pending_building: Option.None,
-            planned_sites: Map.new(),
+            worker_scroll: 0,
             barracks_queue: Vec.new(),
-            barracks_production: 0,
             interior: interior(),
             workers: 1,
+            held_workers: 0,
             worker_jobs: Vec.new(),
-            workers_resting: false,
         }
     }
 
-    /// Where `building` stands, once finished and confirmed. A Granary has no site.
+    /// Every tile its citizens work, cluster by cluster, each manager before its workers.
+    pub fn worked_tiles(&self) -> Vec[Hex] { cluster_tiles(&self.clusters) }
+
+    /// Whether one of its citizens works `hex`.
+    pub fn works(&self, hex: Hex) -> bool {
+        for c in 0..self.clusters.len() { if self.clusters[c].holds(hex) { return true; } }
+        false
+    }
+
+    /// How many of its citizens work a tile.
+    pub fn working(&self) -> i32 {
+        let mut n = 0;
+        for c in 0..self.clusters.len() { n = n + self.clusters[c].citizens(); }
+        n
+    }
+
+    /// The cluster `hex` is worked in, if one is.
+    pub fn cluster_of(&self, hex: Hex) -> Option[i32] {
+        for c in 0..self.clusters.len() { if self.clusters[c].holds(hex) { return Option.Some(c); } }
+        Option.None
+    }
+
+    /// How many of its citizens can work: all of them, up to the cap.
+    pub fn capacity(&self) -> i32 { min(self.population, MAX_CITY_POPULATION) }
+
+    /// How many managers it may have: one for each `CLUSTER_SIZE` citizens or part of that
+    /// (citizens 1, 8, 15 and 22 start a cluster).
+    pub fn managers_allowed(&self) -> i32 { managers_for(self.population) }
+
+    /// Where `building` stands, once finished. A building not yet built has no site.
     pub fn placed_site(&self, building: Building) -> Option[Hex] {
         match building {
-            Building.Granary => Option.None,
             Building.Barracks => self.barracks,
             Building.Mill => self.mill,
             Building.Workshop => self.workshop,
@@ -168,10 +402,9 @@ impl City {
         }
     }
 
-    /// Puts `building` on `site`. Never called for a Granary, which has no site.
+    /// Puts `building` on `site`.
     pub fn set_placed_site(&mut self, building: Building, site: Hex) {
         match building {
-            Building.Granary => {}
             Building.Barracks => {
                 self.barracks = Option.Some(site);
                 self.barracks_hp = BARRACKS_MAX_HP;
@@ -189,13 +422,11 @@ impl City {
             team: self.team,
             pos: self.pos,
             population: self.population,
-            food: self.food,
-            production: self.production,
             barracks_hp: self.barracks_hp,
             coastal_battery_hp: self.coastal_battery_hp,
-            worked: copy_vec(&self.worked),
-            remembered_worked: copy_vec(&self.remembered_worked),
-            focus: self.focus,
+            clusters: copy_vec(&self.clusters),
+            remembered: copy_vec(&self.remembered),
+            priorities: self.priorities,
             queue: copy_vec(&self.queue),
             built: copy_vec(&self.built),
             barracks: self.barracks,
@@ -203,14 +434,12 @@ impl City {
             workshop: self.workshop,
             extra_buildings: copy_map(&self.extra_buildings),
             building_scroll: self.building_scroll,
-            pending_building: self.pending_building,
-            planned_sites: copy_map(&self.planned_sites),
+            worker_scroll: self.worker_scroll,
             barracks_queue: copy_vec(&self.barracks_queue),
-            barracks_production: self.barracks_production,
             interior: self.interior.snapshot(),
             workers: self.workers,
+            held_workers: self.held_workers,
             worker_jobs: copy_vec(&self.worker_jobs),
-            workers_resting: self.workers_resting,
         }
     }
 }
@@ -256,8 +485,11 @@ pub fn show_amount(quarters: i32) can {Out} {
     if quarters < 0 { Out.put("-"); }
     let q = if quarters < 0 { -quarters } else { quarters };
     show_i64((q / 4) as i64);
-    Out.put(match q % 4 { 0 => ".00", 1 => ".25", 2 => ".50", _ => ".75" });
+    if q % 4 != 0 { Out.put(match q % 4 { 1 => ".25", 2 => ".50", _ => ".75" }); }
 }
+
+/// Quarters as whole units, with decimals only when they aren't whole: "3", "2.25".
+pub fn amount(quarters: i32) -> Str { text(fn() can {Out} { show_amount(quarters); }) }
 
 impl GameState {
     /// The city standing on `hex`, if any.
@@ -300,7 +532,6 @@ impl GameState {
             let (id, team, sign) = sides[s];
             let mut city = City.new(id, team, Hex.new(sign * 4, 0));
             city.population = 2;
-            city.food = 32;
             self.cities.push(city);
             for k in 0..4 {
                 let (q, r, food, production, kind) = sites[k];
@@ -340,12 +571,9 @@ impl GameState {
                 Option.None => if open.len() > 1 { open[1] } else { start },
             };
             if settings.world_start_city {
+                // Every queue starts empty: the AI picks its builds as it plans (`plan_ai_cities`).
                 let id = self.cities.len() as u32;
-                // The AI keeps training melee (`complete_builds`); the player's queue starts
-                // empty.
-                let mut city = City.new(id, team, start);
-                if team != PLAYER_TEAM { city.queue.push(Build.Unit(BuildUnit.Melee)); }
-                self.cities.push(city);
+                self.cities.push(City.new(id, team, start));
                 self.auto_assign_city(self.cities.len() - 1);
             } else {
                 let id = self.take_unit_id();
@@ -385,7 +613,7 @@ impl GameState {
             if team == Team.Red { self.player_controlled_units.insert(id); }
         }
         self.notice = text(fn() can {Out} { Out.put("F FOUND CITY - BOTH STARTING SCOUTS ARE YOURS TO TEST"); });
-        self.selected = self.unit_of_team_at(Hex.new(-4, 0), PLAYER_TEAM);
+        self.selected = self.unit_of_team_at(Hex.new(-4, 0), self.local_team);
     }
 
     /// The next unused unit id.
@@ -403,4 +631,14 @@ impl GameState {
     pub fn remove_unit(&mut self, id: u32) {
         handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume u.id != id } }
     }
+}
+
+/// Tests: one cluster of `tiles`, the first its manager.
+pub fn one_cluster(tiles: &Vec[Hex]) -> Vec[Cluster] {
+    let mut out: Vec[Cluster] = Vec.new();
+    if tiles.is_empty() { return out; }
+    let mut cluster = Cluster.new(tiles[0]);
+    for k in 1..tiles.len() { cluster.add_worker(tiles[k]); }
+    out.push(cluster);
+    out
 }

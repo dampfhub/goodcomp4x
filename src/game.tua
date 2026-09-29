@@ -18,6 +18,9 @@ use log.Log;
 use log.info;
 use game.camera.Camera;
 use game.city.City;
+use game.city.Stock;
+use game.city.STARTING_STOCK;
+use game.city.Queued;
 use game.city.Site;
 use game.city.Building;
 use game.city.Build;
@@ -52,6 +55,8 @@ use game.unit.Unit;
 use game.unit.UnitType;
 
 pub const GRID_RADIUS: i32 = 3;
+/// The side a single-player game gives the player, and the local side until a multiplayer game
+/// says otherwise (`GameState.local_team`).
 pub const PLAYER_TEAM: Team = Team.Blue;
 pub const AI_TEAM: Team = Team.Red;
 
@@ -106,8 +111,45 @@ Terrain:
   Hills (small peaks): +25% defense for the unit standing there.
   Mountains (large snowy peak): impassable.";
 
+/// Every side's starting stockpile.
+fn starting_stockpiles() -> Vec[Stock] {
+    let mut out: Vec[Stock] = Vec.new();
+    for _ in 0..7 { out.push(STARTING_STOCK); }
+    out
+}
+
+/// `n` zeros.
+fn zeros(n: i32) -> Vec[i32] {
+    let mut out: Vec[i32] = Vec.new();
+    for _ in 0..n { out.push(0); }
+    out
+}
+
+/// The one side in `humans`.
+fn humans_of(team: Team) -> Vec[Team] {
+    let mut out: Vec[Team] = Vec.new();
+    out.push(team);
+    out
+}
+
 pub struct GameState {
     cities: Vec[City],
+    /// Each side's food, wood and metal, indexed by `Team.index` (`city/economy.tua`).
+    stockpiles: Vec[Stock],
+    /// Debug setting: a city's production speeds its builds on top of the fixed time
+    /// (`work_rate`). Kept across scenario switches and loads.
+    production_speedup: bool,
+    /// Cavalry and Armored each side's Barracks have trained, at `team * 2 + Resource.index`: what
+    /// the cap counts under `lifetime_special_cap` (`city/barracks.tua`).
+    special_trained: Vec[i32],
+    /// Debug setting: a deposit's cap counts every Cavalry or Armored ever trained from it, not
+    /// those alive. Kept across scenario switches and loads.
+    lifetime_special_cap: bool,
+    /// Tests: each time training started past its side's supply (`city/supply.tua`), which the
+    /// simulation checks never happens.
+    supply_overruns: Vec[Str],
+    /// Tests: supply each side has on top of its cities' (`fund`), by `Team.index`.
+    extra_supply: Vec[i32],
     sites: Map[Hex, Site],
     roads: Set[Hex],
     selected_city: Option[i32],
@@ -119,11 +161,8 @@ pub struct GameState {
     interior_selected: Option[u32],
     /// The exterior camera, kept while the tactical city map is open.
     exterior_camera: Option[Camera],
-    /// City whose manager has been picked up and awaits a destination click.
-    moving_manager: Option[i32],
-    /// City and building whose site is being chosen. Only live while that city's view is open:
-    /// read it through `site_placement`.
-    placing_building: Option[(i32, Building)],
+    /// The city and cluster whose manager has been picked up and awaits a destination click.
+    moving_manager: Option[(i32, i32)],
     city_queue_scroll: i32,
     /// The unit group whose members the turn strip shows in a second row.
     roster_open: Option[RosterKey],
@@ -170,13 +209,9 @@ pub struct GameState {
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec[u32],
     highlight_timer: f32,
-    /// Worker mode (W): reachable tiles are shown, and map clicks place the armed job
-    /// (`workers.tua`).
-    worker_mode: bool,
-    /// The city whose workers and jobs the worker menu lists.
-    worker_menu_city: Option[i32],
-    /// The worker job armed in the worker menu: map clicks and drags place it, on tiles or (a
-    /// wall or gate) on hex edges, until Escape or another pick.
+    /// What the open city is placing for its workers to build (`workers.tua`): map clicks and drags
+    /// place it, on tiles or (a wall or gate) on hex edges, until Escape, another pick or leaving
+    /// the city.
     placing_job: Option[JobKind],
     /// The tile (and, for a wall or gate, the neighbour across the edge) under the cursor while
     /// placing a job, highlighted.
@@ -191,6 +226,14 @@ pub struct GameState {
     settlers: IdSet,
     /// Frontier sandbox units that the player may command despite being Red.
     player_controlled_units: IdSet,
+    /// The side played at this machine: whose orders the input gives, whose fog, stockpile and
+    /// notices show. Blue, unless a multiplayer game seats this player elsewhere.
+    local_team: Team,
+    /// The sides people play, here or across the network; the AI plays the rest (`ai_teams`).
+    humans: Vec[Team],
+    /// Sites where an AI side's settler was refused a city by the rules, so its settlers look
+    /// elsewhere (`plan_ai_settlers`).
+    refused_sites: Vec[(Team, Hex)],
     next_unit_id: u32,
     /// The seed of a generated map (the F4 world), shown in the debug panel.
     map_seed: Option[u32],
@@ -257,6 +300,12 @@ impl GameState {
 
         let mut game = GameState {
             cities: Vec.new(),
+            stockpiles: starting_stockpiles(),
+            production_speedup: false,
+            special_trained: zeros(14),
+            lifetime_special_cap: false,
+            supply_overruns: Vec.new(),
+            extra_supply: zeros(7),
             sites: Map.new(),
             roads: Set.new(),
             selected_city: Option.None,
@@ -269,7 +318,6 @@ impl GameState {
             interior_selected: Option.None,
             exterior_camera: Option.None,
             moving_manager: Option.None,
-            placing_building: Option.None,
             city_queue_scroll: 0,
             roster_open: Option.None,
             queue_drag: Option.None,
@@ -295,12 +343,13 @@ impl GameState {
             recent_actors: Vec.new(),
             highlight_timer: 0.0,
             settlers: IdSet.new(),
-            worker_mode: false,
-            worker_menu_city: Option.None,
             placing_job: Option.None,
             hovered_job: Option.None,
             field_workers: Vec.new(),
             player_controlled_units: IdSet.new(),
+            local_team: PLAYER_TEAM,
+            humans: humans_of(PLAYER_TEAM),
+            refused_sites: Vec.new(),
             next_unit_id: 8,
             map_seed: Option.None,
             ruins: Vec.new(),
@@ -346,7 +395,8 @@ impl GameState {
             let id = game.take_unit_id();
             game.units.push(Unit.new(id, pos, Team.Blue, kind));
         }
-        for c in 0..game.cities.len() { game.cities[c].queue.push(Build.Unit(BuildUnit.Melee)); }
+        // Paid for already, as scenario setup: the queue skips the price.
+        for c in 0..game.cities.len() { game.cities[c].queue.push(Queued.prepaid(Build.Unit(BuildUnit.Melee))); }
         game.open_city_interior(1);
         game.set_notice("SIEGE: FIGHT ON BOTH MAPS (V) - BREACH POST, THEN OCCUPY IT");
         game
@@ -382,8 +432,8 @@ impl GameState {
         game.cities[0].pos = Hex.new(-2, 0);
         game.cities[1].pos = Hex.new(2, 0);
         for c in 0..2 {
-            game.cities[c].worked.clear();
-            game.cities[c].remembered_worked.clear();
+            game.cities[c].clusters.clear();
+            game.cities[c].remembered.clear();
         }
         game.units.clear();
         game.next_unit_id = 0;
@@ -409,7 +459,7 @@ impl GameState {
             }
         }
         for c in 0..game.cities.len() { game.auto_assign_city(c); }
-        game.cities[0].queue.push(Build.Unit(BuildUnit.PatrolGalley));
+        game.cities[0].queue.push(Queued.prepaid(Build.Unit(BuildUnit.PatrolGalley)));
         game.start_on_whole_map();
         game.set_notice("NAVAL TEST: SELECT TROOP THEN CLICK CRAFT TO BOARD; CRAFT THEN SHORE TO LAND");
         game
@@ -426,9 +476,9 @@ impl GameState {
         game.start_on_whole_map();
         // The map is too big to take in at once: start on the player's city or settler.
         let mut home: Option[Hex] = Option.None;
-        for i in 0..game.cities.len() { if home.is_none() && game.cities[i].team == PLAYER_TEAM { home = Option.Some(game.cities[i].pos); } }
+        for i in 0..game.cities.len() { if home.is_none() && game.cities[i].team == game.local_team { home = Option.Some(game.cities[i].pos); } }
         for i in 0..game.units.len() {
-            if home.is_none() && game.units[i].team == PLAYER_TEAM && game.settlers.contains(game.units[i].id) { home = Option.Some(game.units[i].pos); }
+            if home.is_none() && game.units[i].team == game.local_team && game.settlers.contains(game.units[i].id) { home = Option.Some(game.units[i].pos); }
         }
         let at = home.unwrap_or(Hex.new(0, 0));
         game.camera = Camera.new(at.to_world(), game.camera.half_height);
@@ -461,8 +511,14 @@ impl GameState {
     /// Whether the player gives this unit its orders: their own team's, or a sandbox unit
     /// handed to them.
     pub fn is_player_controlled(&self, idx: i32) -> bool {
-        self.units[idx].team == PLAYER_TEAM || self.player_controlled_units.contains(self.units[idx].id)
+        self.units[idx].team == self.local_team || self.player_controlled_units.contains(self.units[idx].id)
     }
+
+    /// Whether people play `team` (here or across the network) rather than the AI.
+    pub fn is_human(&self, team: Team) -> bool { self.humans.contains(team) }
+
+    /// Debug actions are refused in a networked game, where every machine must stay in step.
+    pub fn refuses_debug(&self) -> bool { false }
 
     /// The first unit on `hex` the player controls.
     pub fn controlled_unit_at(&self, hex: Hex) -> Option[i32] {

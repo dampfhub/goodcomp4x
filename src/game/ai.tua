@@ -4,16 +4,41 @@ use std.collections.Deque;
 use std.collections.Map;
 use std.collections.Set;
 use game.GameState;
-use game.PLAYER_TEAM;
 use game.hex.Hex;
+use game.workers.JobKind;
+use game.workers.WorkerJob;
 use game.city.BuildUnit;
+use game.city.Building;
 use game.city.City;
 use game.city.Build;
+use game.city.Lane;
+use game.city.MIN_CITY_DISTANCE;
+use game.city.Stock;
+use game.city.no_stock;
+use game.unit.UnitType;
 use game.unit.Team;
 use game.unit.TEAMS;
 
 /// A distance no reachable hex has.
 const UNREACHED: i32 = 2147483647;
+
+/// Units (scouts and settlers aside) the AI wants for each of its cities before it spends on
+/// growth.
+const AI_ARMY_PER_CITY: i32 = 2;
+/// The population from which an AI city trains a Settler to expand.
+const AI_SETTLE_POPULATION: i32 = 4;
+/// How far from its side's nearest city an AI settler founds a new one: at most this many hexes
+/// (and at least `MIN_CITY_DISTANCE`, as the rules say).
+const AI_SITE_MAX_DISTANCE: i32 = 10;
+/// How many steps on foot from a settler (or its city) the AI looks for a site.
+const AI_SITE_STEPS: i32 = 14;
+/// What each step on foot to a site takes off its value (`site_value`).
+const AI_SITE_STEP_COST: i32 = 2;
+/// How near a site the rules refused (a city its side hadn't seen was too close) the AI won't try
+/// again.
+const AI_REFUSED_RADIUS: i32 = 2;
+/// How far around a site its land counts toward its value.
+const AI_SITE_RADIUS: i32 = 2;
 
 /// Whether `(steps, hex)` sorts before `(best_steps, best)` by steps, then `q`, then `r`.
 fn closer(steps: i32, hex: Hex, best_steps: i32, best: Hex) -> bool {
@@ -29,7 +54,7 @@ impl GameState {
         let mut out: Vec[Team] = Vec.new();
         for k in 0..7 {
             let team = TEAMS[k];
-            if team == PLAYER_TEAM { continue; }
+            if self.is_human(team) { continue; }
             let mut present = false;
             for i in 0..self.units.len() { if self.units[i].team == team { present = true; } }
             for i in 0..self.cities.len() { if self.cities[i].team == team { present = true; } }
@@ -44,15 +69,10 @@ impl GameState {
     /// holds until they're claimed. Units in a contested hex stay and fight. No coordination
     /// beyond not sending two units to the same hex, and no retreating.
     pub fn plan_ai_turn(&mut self, team: Team) {
-        self.found_first_city(team);
-        // A city that has lost every worker trains a new one first.
-        for city in 0..self.cities.len() {
-            let lost_all = {
-                let c = &self.cities[city];
-                c.team == team && c.workers == 0 && self.workers_out(city) == 0 && !c.queue.contains(Build.Worker)
-            };
-            if lost_all { self.cities[city].queue.insert(0, Build.Worker); }
-        }
+        // Settlers found their cities, or head for a site, before the cities plan: a city founded
+        // now plans its first build this turn.
+        self.plan_ai_settlers(team);
+        self.plan_ai_cities(team);
         self.plan_ai_workers(team);
         for idx in 0..self.units.len() {
             let id = self.units[idx].id;
@@ -141,27 +161,290 @@ impl GameState {
         match best { Option.Some(b) => Option.Some(self.units[b].pos), Option.None => Option.None }
     }
 
-    /// With no city yet, `team` founds one where its first settler stands, before its combat
-    /// orders, and starts it on melee.
-    fn found_first_city(&mut self, team: Team) {
+    /// What `team`'s cities and Barracks queue: one item in each empty queue, and only what the side
+    /// can pay for this turn, with what its other queues start (`forecast`'s `spare`), so
+    /// everything it queues is paid and started this turn. A queue whose items all wait for the
+    /// stockpile or for supply (the income it counted on didn't come, or a city or citizens were
+    /// lost) is emptied, which costs nothing, as they're unpaid, and planned again. Nothing is
+    /// queued past the side's supply (`city/supply.tua`): at the cap the Barracks stays idle, and
+    /// the city grows or gathers instead. The Barracks is the military building
+    /// (`city/barracks.tua`): an idle one trains Cavalry or Armored when its deposits allow and
+    /// the side can pay, else Melee, or Ranged for one in three. A city's own queue trains a
+    /// worker first if it has none left; its workers then build a Barracks (sited by
+    /// `ai_barracks_site`, paid when placed), and the queue grows; a city without a Barracks
+    /// trains Melee itself, slowly, until the side has `AI_ARMY_PER_CITY` units per city, falling
+    /// back on growth, and gathering when it can't pay for anything. A side with no scout, alive
+    /// or queued, trains one after the worker. A city of `AI_SETTLE_POPULATION` or more expands,
+    /// before it grows: it trains a Settler when its side has none out or queued and knows a site
+    /// for a city (`ai_city_site`).
+    fn plan_ai_cities(&mut self, team: Team) {
+        let mut scouting = false;
+        let mut settling = false;
         for c in 0..self.cities.len() {
-            if self.cities[c].team == team { return; }
+            if self.cities[c].team != team { continue; }
+            for q in 0..self.cities[c].queue.len() {
+                if self.cities[c].queue[q].build == Build.Scout { scouting = true; }
+                if self.cities[c].queue[q].build == Build.Settler { settling = true; }
+            }
         }
-        let mut settler: Option[i32] = Option.None;
-        for i in 0..self.units.len() {
-            if settler.is_none() && self.units[i].team == team && self.settlers.contains(self.units[i].id) { settler = Option.Some(i); }
+        for u in 0..self.units.len() {
+            if self.units[u].team != team { continue; }
+            if self.units[u].unit_type == UnitType.Scout { scouting = true; }
+            if self.settlers.contains(self.units[u].id) { settling = true; }
         }
-        let Option.Some(i) = settler else { return; };
-        let (unit_id, unit_pos) = (self.units[i].id, self.units[i].pos);
-        self.remove_unit(unit_id);
-        self.settlers.remove(unit_id);
-        let id = self.cities.len() as u32;
-        let mut city = City.new(id, team, unit_pos);
-        city.queue.push(Build.Unit(BuildUnit.Melee));
-        self.cities.push(city);
-        self.auto_assign_city(self.cities.len() - 1);
+        let mut army = self.soldiers(team, Option.None);
+        let mut cities: Vec[i32] = Vec.new();
+        for i in 0..self.cities.len() { if self.cities[i].team == team { cities.push(i); } }
+        let forecast = self.forecast(team);
+        for k in 0..forecast.lanes.len() {
+            let lane = forecast.lanes[k];
+            if lane.worked.is_some() { continue; }
+            while self.lane_len(lane.city, lane.lane) > 0 {
+                let last = self.lane_len(lane.city, lane.lane) - 1;
+                match lane.lane {
+                    Lane.City => { let _gone = self.take_queue_item(lane.city, last); }
+                    Lane.Barracks => { let _gone = self.take_barracks_item(lane.city, last); }
+                }
+            }
+        }
+        // Emptying queues of unpaid items leaves what they start unchanged.
+        let mut spare = forecast.spare;
+        for k in 0..cities.len() {
+            let city = cities[k];
+            let stock = self.stock(team);
+            self.place_ai_barracks(city);
+            // A job is paid when placed.
+            spare = spare.minus(stock.minus(self.stock(team)));
+            if self.cities[city].barracks.is_some() && self.cities[city].barracks_queue.is_empty() {
+                let basic = if self.soldiers(team, Option.Some(UnitType.Ranged)) * 2 < self.soldiers(team, Option.Some(UnitType.Melee)) { BuildUnit.Ranged } else { BuildUnit.Melee };
+                let options = [BuildUnit.Cavalry, BuildUnit.Armored, basic];
+                for o in 0..3 {
+                    let build = options[o];
+                    if self.barracks_lock(city, build).is_none() && spare.covers(build.price()) {
+                        self.queue_barracks(city, build);
+                        spare = spare.minus(build.price());
+                        army = army + 1;
+                        break;
+                    }
+                }
+            }
+            if !self.cities[city].queue.is_empty() { continue; }
+            let melee = Build.Unit(BuildUnit.Melee);
+            let c = &self.cities[city];
+            let mut choices: Vec[Build] = Vec.new();
+            if c.workers == 0 && self.workers_out(city) == 0 { choices.push(Build.Worker); }
+            if !scouting { choices.push(Build.Scout); }
+            if c.barracks.is_none() && army < AI_ARMY_PER_CITY * cities.len() { choices.push(melee); }
+            if !settling && c.population >= AI_SETTLE_POPULATION && spare.covers(Build.Settler.price()) && self.ai_city_site(team, c.pos, false).is_some() {
+                choices.push(Build.Settler);
+            }
+            choices.push(Build.Grow);
+            // With nothing it can pay for, it gathers.
+            choices.push(Build.Gather);
+            for b in 0..choices.len() {
+                let build = choices[b];
+                // Not past the population cap or the side's supply (`city_build_issue`): a troop
+                // or scout waits for room.
+                if (build == Build.Grow && !self.can_grow(city)) || self.city_build_issue(city, build).is_some() { continue; }
+                let price = self.queue_price(city, build);
+                // A free Gather fits even when the Barracks job took more than was spare.
+                if price == no_stock() || spare.covers(price) {
+                    self.queue_build(city, build);
+                    spare = spare.minus(price);
+                    if build == melee { army = army + 1; }
+                    if build == Build.Scout { scouting = true; }
+                    if build == Build.Settler { settling = true; }
+                    break;
+                }
+            }
+        }
     }
 
+    /// How many of `team`'s units are soldiers (of `kind`, if given): not scouts, not settlers.
+    fn soldiers(&self, team: Team, kind: Option[UnitType]) -> i32 {
+        let mut n = 0;
+        for u in 0..self.units.len() {
+            let unit = &self.units[u];
+            if unit.team != team || unit.unit_type == UnitType.Scout || self.settlers.contains(unit.id) { continue; }
+            if let Option.Some(k) = kind { if unit.unit_type != k { continue; } }
+            n = n + 1;
+        }
+        n
+    }
+
+    /// City `city` of the AI, with a worker and no Barracks built or placed, places one for its
+    /// workers to build (`ai_barracks_site`), if its side can pay.
+    fn place_ai_barracks(&mut self, city: i32) {
+        if self.cities[city].barracks.is_some() || self.building_job_queued(city, Building.Barracks) || !self.has_workers(city) { return; }
+        if let Option.Some(site) = self.ai_barracks_site(city) {
+            let job = WorkerJob.on_tile(site, JobKind.Build(Building.Barracks));
+            let team = self.cities[city].team;
+            if self.job_problem(city, job).is_none() && self.tile_job_at(team, site).is_none() {
+                let _short = self.try_queue_job(city, job);
+            }
+        }
+    }
+
+    /// Where city `city` of the AI puts its Barracks: on a Horses or Iron deposit within 3 hexes,
+    /// of a kind its side has none of yet if it can, else on the nearest open, unworked tile
+    /// within 2; ties by distance, then hex coordinates.
+    fn ai_barracks_site(&self, city: i32) -> Option[Hex] {
+        let c = &self.cities[city];
+        let team = c.team;
+        let mut near: Vec[Hex] = Vec.new();
+        let all = self.grid.hex_list();
+        for h in 0..all.len() {
+            let hex = all[h];
+            let d = hex.distance(c.pos);
+            if d >= 1 && d <= 3 && self.ai_site_issue(city, Building.Barracks, hex).is_none() { near.push(hex); }
+        }
+        // Sorted by distance, then coordinates.
+        for i in 1..near.len() {
+            let mut j = i;
+            while j > 0 && closer(near[j].distance(c.pos), near[j], near[j - 1].distance(c.pos), near[j - 1]) {
+                near.swap_at(j, j - 1);
+                j = j - 1;
+            }
+        }
+        for k in 0..near.len() {
+            if let Option.Some(resource) = self.grid.resource(near[k]) {
+                if self.side_deposits(team, resource).is_empty() { return Option.Some(near[k]); }
+            }
+        }
+        for k in 0..near.len() { if self.grid.resource(near[k]).is_some() { return Option.Some(near[k]); } }
+        for k in 0..near.len() {
+            let mut worked = false;
+            for o in 0..self.cities.len() { if self.cities[o].works(near[k]) { worked = true; } }
+            if near[k].distance(c.pos) <= 2 && !worked { return Option.Some(near[k]); }
+        }
+        if near.is_empty() { Option.None } else { Option.Some(near[0]) }
+    }
+
+    /// `team`'s settlers found cities, or head for where they will. A settler founds where it
+    /// stands when that's its site (`ai_city_site`) and the rules allow it (`founding_issue`);
+    /// with no city yet, its side founds wherever the rules allow, at once, as a starting city.
+    /// Else it walks toward its site. A site the rules refuse goes on its side's list
+    /// (`refused_sites`) and it looks again. A settler with no city to found and no site known
+    /// founds its side's first city where it stands; any other waits.
+    fn plan_ai_settlers(&mut self, team: Team) {
+        let mut settlers: Vec[u32] = Vec.new();
+        for u in 0..self.units.len() {
+            let unit = &self.units[u];
+            if unit.team == team && self.settlers.contains(unit.id) && !self.player_controlled_units.contains(unit.id) { settlers.push(unit.id); }
+        }
+        for k in 0..settlers.len() {
+            let id = settlers[k];
+            let mut at: Option[i32] = Option.None;
+            for u in 0..self.units.len() { if at.is_none() && self.units[u].id == id { at = Option.Some(u); } }
+            let Option.Some(idx) = at else { continue; };
+            let pos = self.units[idx].pos;
+            let mut first = true;
+            for c in 0..self.cities.len() { if self.cities[c].team == team { first = false; } }
+            if first && self.founding_issue(pos).is_none() {
+                let _city = self.found_city(id, team, pos);
+                continue;
+            }
+            let mut site = self.ai_city_site(team, pos, first);
+            if site == Option.Some(pos) {
+                if self.founding_issue(pos).is_none() {
+                    let _city = self.found_city(id, team, pos);
+                    continue;
+                }
+                self.refused_sites.push((team, pos));
+                site = self.ai_city_site(team, pos, first);
+            }
+            let Option.Some(target) = site else {
+                let open_land = self.grid.is_passable(pos) && !self.grid.terrain(pos).is_water() && self.ruin_at(pos).is_none();
+                if first && open_land { let _city = self.found_city(id, team, pos); }
+                continue;
+            };
+            let stats = self.units[idx].stats();
+            let reachable = self.reachable_hexes(pos, stats.move_range, team);
+            let to_target = self.steps_to(target, team, &reachable);
+            let mut best: Option[Hex] = Option.None;
+            let mut best_steps = UNREACHED;
+            for hh in reachable.each() {
+                let hex = *hh;
+                if hex != pos && self.claimed_by(team, hex) { continue; }
+                let steps = to_target.get(hex).unwrap_or(UNREACHED);
+                let better = match best { Option.None => true, Option.Some(b) => closer(steps, hex, best_steps, b) };
+                if better { best = Option.Some(hex); best_steps = steps; }
+            }
+            let dest = best.unwrap_or(pos);
+            self.units[idx].planned_move = if dest != pos { Option.Some(dest) } else { Option.None };
+            self.units[idx].planned_attack = Option.None;
+        }
+    }
+
+    /// Where a settler of `team` at `from` would found a city: of the hexes within
+    /// `AI_SITE_STEPS` steps on foot, one the rules would allow, within `AI_SITE_MAX_DISTANCE` of
+    /// its nearest city unless it has none. With a city, the best by its land (`site_value`) less
+    /// `AI_SITE_STEP_COST` a step; with none (`first`), the nearest. Ties by hex coordinates.
+    fn ai_city_site(&self, team: Team, from: Hex, first: bool) -> Option[Hex] {
+        let mut own: Vec[Hex] = Vec.new();
+        for c in 0..self.cities.len() { if self.cities[c].team == team { own.push(self.cities[c].pos); } }
+        let mut best: Option[(i32, Hex)] = Option.None;
+        let mut seen: Set[Hex] = Set.new();
+        let _new = seen.insert(from);
+        let mut ring: Vec[Hex] = Vec.new();
+        ring.push(from);
+        let mut steps = 0;
+        while !ring.is_empty() && steps <= AI_SITE_STEPS {
+            for k in 0..ring.len() {
+                let hex = ring[k];
+                let mut near_home = false;
+                for o in 0..own.len() { if own[o].distance(hex) <= AI_SITE_MAX_DISTANCE { near_home = true; } }
+                if !(first || near_home) || !self.known_site(team, hex, &own) { continue; }
+                let score = if first { -steps } else { self.site_value(hex) - AI_SITE_STEP_COST * steps };
+                let better = match best {
+                    Option.None => true,
+                    Option.Some((top, at)) => score > top || (score == top && (hex.q < at.q || (hex.q == at.q && hex.r < at.r))),
+                };
+                if better { best = Option.Some((score, hex)); }
+            }
+            if first && best.is_some() { break; }
+            let mut next: Vec[Hex] = Vec.new();
+            for k in 0..ring.len() {
+                let around = ring[k].neighbors();
+                for n in 0..6 {
+                    let h = around[n];
+                    if self.grid.contains(h) && self.grid.is_passable(h) && seen.insert(h) { next.push(h); }
+                }
+            }
+            ring = next;
+            steps = steps + 1;
+        }
+        match best { Option.Some((_, hex)) => Option.Some(hex), Option.None => Option.None }
+    }
+
+    /// Whether `team` knows of nothing against founding a city on `hex` (`founding_issue`):
+    /// open land, no ruins on it, `MIN_CITY_DISTANCE` from every city, and not near a site the
+    /// rules refused it (`AI_REFUSED_RADIUS`).
+    fn known_site(&self, team: Team, hex: Hex, own: &Vec[Hex]) -> bool {
+        if !self.grid.is_passable(hex) || self.grid.terrain(hex).is_water() || self.ruin_at(hex).is_some() { return false; }
+        for o in 0..own.len() { if own[o].distance(hex) < MIN_CITY_DISTANCE { return false; } }
+        for c in 0..self.cities.len() { if self.cities[c].pos.distance(hex) < MIN_CITY_DISTANCE { return false; } }
+        for r in 0..self.refused_sites.len() {
+            let (side, at) = self.refused_sites[r];
+            if side == team && at.distance(hex) <= AI_REFUSED_RADIUS { return false; }
+        }
+        true
+    }
+
+    /// What a city on `hex` would have around it: each hex within `AI_SITE_RADIUS`'s food twice,
+    /// and its wood and metal once.
+    fn site_value(&self, hex: Hex) -> i32 {
+        let mut total = 0;
+        for dq in -AI_SITE_RADIUS..=AI_SITE_RADIUS {
+            for dr in -AI_SITE_RADIUS..=AI_SITE_RADIUS {
+                let h = Hex.new(hex.q + dq, hex.r + dr);
+                if h.distance(hex) > AI_SITE_RADIUS || !self.grid.contains(h) { continue; }
+                let (food, wood, metal) = self.raw_yield(h);
+                total = total + 2 * food + wood + metal;
+            }
+        }
+        total
+    }
     /// Whether a unit of `team` is already heading for `hex`.
     fn claimed_by(&self, team: Team, hex: Hex) -> bool {
         for i in 0..self.units.len() {

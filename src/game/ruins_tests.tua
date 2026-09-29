@@ -11,7 +11,7 @@ use std.rand.Rand;
 use log.Log;
 use game.GameState;
 use game.city.City;
-use game.city.LaborFocus;
+use game.city.Stock;
 use game.hex.Hex;
 use game.ruins.RUIN_HOLD_TURNS;
 use game.ruins.RuinReward;
@@ -104,22 +104,20 @@ fn a_settler_does_not_hold_ruins() {
 }
 
 @test
-fn city_rewards_go_to_the_nearest_city() {
+fn goods_rewards_go_to_the_claimants_stockpile() {
     sandbox(fn() can {Log, Rand, Assert} {
         let rewards: [RuinReward; 2] = [RuinReward.Supplies, RuinReward.Harvest];
-        let foods: [i32; 2] = [0, 32];
-        let productions: [i32; 2] = [24, 0];
+        let goods: [Stock; 2] = [Stock.whole(0, 4, 2), Stock.whole(8, 0, 0)];
         for k in 0..2 {
             let mut game = ruins_game(rewards[k]);
             game.cities.push(city(0, Team.Blue, Hex.new(-3, 0)));
-            game.cities.push(city(1, Team.Blue, Hex.new(2, 0)));
             put(&mut game, 1, Hex.new(0, 0), Team.Blue, UnitType.Melee);
+            let (blue, red) = (game.stock(Team.Blue), game.stock(Team.Red));
             end_turns(&mut game, RUIN_HOLD_TURNS);
             assert(game.ruins.is_empty());
-            assert(game.cities[1].food == foods[k]);
-            assert(game.cities[1].production == productions[k]);
-            // The farther city gets nothing.
-            assert(game.cities[0].food == 0);
+            assert(game.stock(Team.Blue) == blue.plus(goods[k]));
+            // Only the claimant gains.
+            assert(game.stock(Team.Red) == red);
         }
     });
 }
@@ -131,7 +129,7 @@ fn the_tooltip_tells_what_ruins_give_and_who_holds_them() {
         let at = Hex.new(0, 0);
         let notes = game.ruin_notes(at);
         assert(notes.len() == 1);
-        assert(has(&notes[0], "HOLD 3 TURNS"));
+        assert(has(&notes[0], "3 WITH A MILITARY UNIT"));
         assert(has(&notes[0], "FOOD"));
         put(&mut game, 1, at, Team.Red, UnitType.Melee);
         end_turns(&mut game, 1);

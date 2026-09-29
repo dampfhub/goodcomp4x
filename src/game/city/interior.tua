@@ -12,10 +12,9 @@ use std.rand.Rand;
 use log.Log;
 use log.info;
 use game.GameState;
-use game.PLAYER_TEAM;
 use game.text;
 use game.camera.Camera;
-use game.combat.roll_damage_against;
+use game.combat.damage_against;
 use game.hex.Hex;
 use game.terrain.Resource;
 use game.unit.Team;
@@ -30,6 +29,9 @@ const CORE_ATTACK: f32 = 12.0;
 const CORE_ATTACK_RANGE: i32 = 2;
 /// The command post, at the middle of the board.
 pub const CENTER: Hex = Hex { q: 0, r: 0 };
+/// How far from a captured city's center a unit of another side is pushed off it
+/// (`push_off_city_center`): to the nearest free hex within this many hexes, or it is lost.
+pub const PUSH_OFF_RANGE: i32 = 2;
 
 pub struct Interior { core_hp: f32, fighters: Vec[InteriorFighter] }
 
@@ -85,7 +87,7 @@ impl GameState {
     pub fn clear_selected_interior_orders(&mut self) {
         let (Option.Some(city), Option.Some(source)) = (self.interior_view, self.interior_selected) else { return; };
         let Option.Some(k) = self.cities[city].interior.index_of(source) else { return; };
-        if self.cities[city].interior.fighters[k].team != PLAYER_TEAM { return; }
+        if self.cities[city].interior.fighters[k].team != self.local_team { return; }
         self.cities[city].interior.fighters[k].planned_move = Option.None;
         self.cities[city].interior.fighters[k].planned_attack = Option.None;
         self.set_notice("INTERIOR ORDERS CLEARED");
@@ -104,7 +106,7 @@ impl GameState {
         if city.is_none() {
             if let Option.Some(hex) = self.hovered_tile {
                 for c in 0..self.cities.len() {
-                    if city.is_none() && self.cities[c].pos == hex && (self.cities[c].team == PLAYER_TEAM || fog.sees(hex)) { city = Option.Some(c); }
+                    if city.is_none() && self.cities[c].pos == hex && (self.cities[c].team == self.local_team || fog.sees(hex)) { city = Option.Some(c); }
                 }
             }
         }
@@ -113,7 +115,7 @@ impl GameState {
                 let at = self.units[unit].pos;
                 for c in 0..self.cities.len() {
                     let x = &self.cities[c];
-                    if x.team != PLAYER_TEAM && !fog.sees(x.pos) { continue; }
+                    if x.team != self.local_team && !fog.sees(x.pos) { continue; }
                     let closer = match city {
                         Option.None => true,
                         Option.Some(b) => {
@@ -152,7 +154,7 @@ impl GameState {
         if let Option.Some(camera) = self.exterior_camera { self.camera = camera; }
         self.exterior_camera = Option.None;
         self.interior_selected = Option.None;
-        self.selected_city = if self.cities[city].team == PLAYER_TEAM { Option.Some(city) } else { Option.None };
+        self.selected_city = if self.cities[city].team == self.local_team { Option.Some(city) } else { Option.None };
         self.hovered_tile = Option.None;
         self.hovered_city = Option.None;
         self.set_notice(if self.selected_city.is_some() { "CITY VIEW: CLICK THE CITY CENTER TO RE-ENTER THE INTERIOR" } else { "EXTERIOR MAP: HOVER THE CITY AND PRESS V TO RE-ENTER" });
@@ -166,7 +168,7 @@ impl GameState {
         let clicked = self.cities[city].interior.fighter_at(tile);
         if let Option.Some(k) = clicked {
             let fighter = self.cities[city].interior.fighters[k];
-            if fighter.team == PLAYER_TEAM {
+            if fighter.team == self.local_team {
                 self.interior_selected = if self.interior_selected != Option.Some(fighter.source_id) { Option.Some(fighter.source_id) } else { Option.None };
                 return;
             }
@@ -181,9 +183,9 @@ impl GameState {
         };
         let fighter = self.cities[city].interior.fighters[k];
         let from = fighter.planned_move.unwrap_or(fighter.pos);
-        let enemy = match clicked { Option.Some(c) => self.cities[city].interior.fighters[c].team != PLAYER_TEAM, Option.None => false };
+        let enemy = match clicked { Option.Some(c) => self.cities[city].interior.fighters[c].team != self.local_team, Option.None => false };
         let core_hp = self.cities[city].interior.core_hp;
-        let core = tile == CENTER && self.cities[city].team != PLAYER_TEAM && core_hp > 0.0;
+        let core = tile == CENTER && self.cities[city].team != self.local_team && core_hp > 0.0;
         let move_range = if fighter.stats().move_range > 1 { fighter.stats().move_range } else { 1 };
         if enemy || core {
             if from.distance(tile) <= fighter.stats().attack_range {
@@ -292,7 +294,7 @@ impl GameState {
         let snapshot = self.cities[city].interior.snapshot();
         for k in 0..snapshot.fighters.len() {
             let fighter = snapshot.fighters[k];
-            if fighter.team == PLAYER_TEAM { continue; }
+            if fighter.team == self.local_team { continue; }
             let mut target: Option[Hex] = Option.None;
             if fighter.team != owner {
                 target = Option.Some(CENTER);
@@ -342,7 +344,7 @@ impl GameState {
     /// City `city`'s board plays its turn: moves, then attacks and the post's own shot, all
     /// simultaneous; a breached post falls to an attacker standing on it; each copy's health
     /// goes back to its source, and a copy that dies takes its source with it.
-    pub fn resolve_one_interior(&mut self, city: i32) can {Log, Rand} {
+    pub fn resolve_one_interior(&mut self, city: i32) can {Log} {
         let owner = self.cities[city].team;
         let before = self.cities[city].interior.snapshot();
         for k in 0..before.fighters.len() {
@@ -370,9 +372,9 @@ impl GameState {
                 if defender.is_none() && snapshot.fighters[o].pos == target && snapshot.fighters[o].team != fighter.team { defender = Option.Some(o); }
             }
             if let Option.Some(d) = defender {
-                damage[d] = damage[d] + roll_damage_against(attack, snapshot.fighters[d].stats().defense);
+                damage[d] = damage[d] + damage_against(attack, snapshot.fighters[d].stats().defense);
             } else if target == CENTER && fighter.team != owner && snapshot.core_hp > 0.0 {
-                core_damage = core_damage + roll_damage_against(attack, CORE_DEFENSE);
+                core_damage = core_damage + damage_against(attack, CORE_DEFENSE);
             }
         }
         if snapshot.core_hp > 0.0 {
@@ -384,12 +386,12 @@ impl GameState {
                 let better = match shot { Option.None => true, Option.Some(b) => f.source_id < snapshot.fighters[b].source_id };
                 if better { shot = Option.Some(k); }
             }
-            if let Option.Some(k) = shot { damage[k] = damage[k] + roll_damage_against(CORE_ATTACK, snapshot.fighters[k].stats().defense); }
+            if let Option.Some(k) = shot { damage[k] = damage[k] + damage_against(CORE_ATTACK, snapshot.fighters[k].stats().defense); }
         }
         let core_left = self.cities[city].interior.core_hp - core_damage;
         self.cities[city].interior.core_hp = if core_left > 0.0 { core_left } else { 0.0 };
         if core_damage > 0.0 && self.cities[city].interior.core_hp <= 0.0 {
-            self.set_notice(if owner == PLAYER_TEAM { "YOUR POST BREACHED - KEEP RED OFF THE CENTER" } else { "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE" });
+            self.set_notice(if owner == self.local_team { "YOUR POST BREACHED - KEEP RED OFF THE CENTER" } else { "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE" });
         }
         let mut casualties: Vec[u32] = Vec.new();
         let mut health_after: Vec[(u32, f32)] = Vec.new();
@@ -424,20 +426,15 @@ impl GameState {
         }
     }
 
-    /// `team` takes city `city` through its interior: the post is rebuilt, what the city was
-    /// making is dropped, and its workers out on the map follow a city of their own side or,
-    /// with none left, the new owner.
     fn capture_city(&mut self, city: i32, team: Team) can {Log} {
         let c = &mut self.cities[city];
         c.team = team;
         c.interior.core_hp = CORE_HP;
         c.queue.clear();
-        c.production = 0;
-        c.pending_building = Option.None;
-        c.planned_sites = Map.new();
         c.barracks_queue.clear();
-        c.barracks_production = 0;
         c.worker_jobs.clear();
+        // Its workers at home serve the new owner, none of them held.
+        c.held_workers = 0;
         let id = c.id;
         self.notice = text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" CAPTURED IN THE INTERIOR"); });
         info(fn() can {Out} { show_u64((id + 1) as u64); Out.put(": "); team.show(); Out.put(" captures its command post"); });
@@ -448,17 +445,91 @@ impl GameState {
                 Option.Some(new_home) => { self.field_workers[w].home = new_home; }
                 Option.None => {
                     // Without a friendly city to return to, an outlying worker follows the
-                    // captured city's new owner.
+                    // captured city's new owner. It isn't recalled (held once home): it takes
+                    // that city's jobs.
                     let worker = &mut self.field_workers[w];
                     worker.team = team;
                     worker.job = Option.None;
                     worker.work_left = Option.None;
                     worker.home = city;
-                    worker.recalled = true;
+                    worker.recalled = false;
                 }
             }
         }
+        self.push_off_city_center(city);
+        // A worker changing sides may share its hex with an old-side unit; capture it
+        // immediately, as by a move.
+        self.capture_workers();
         self.auto_assign_city(city);
+    }
+
+    /// After `city` changes hands, moves every unit not of its new owner (its old owner's, stepped
+    /// onto it as it fell) off its center: to the nearest free hex (`push_off_hex`), or, with
+    /// none, the unit is lost. Lowest id first, so each one pushed takes its hex before the next
+    /// looks.
+    pub fn push_off_city_center(&mut self, city: i32) can {Log} {
+        let (center, owner) = (self.cities[city].pos, self.cities[city].team);
+        let mut ids: Vec[u32] = Vec.new();
+        for u in 0..self.units.len() { if self.units[u].pos == center && self.units[u].team != owner { ids.push(self.units[u].id); } }
+        // Ascending ids.
+        for a in 1..ids.len() {
+            let mut b = a;
+            while b > 0 && ids[b] < ids[b - 1] { ids.swap_at(b, b - 1); b = b - 1; }
+        }
+        for k in 0..ids.len() {
+            let id = ids[k];
+            let mut at: Option[i32] = Option.None;
+            for u in 0..self.units.len() { if at.is_none() && self.units[u].id == id { at = Option.Some(u); } }
+            let Option.Some(index) = at else { continue; };
+            let (team, naval) = (self.units[index].team, self.units[index].is_naval());
+            let city_id = self.cities[city].id;
+            match self.push_off_hex(center, team, naval) {
+                Option.Some(hex) => {
+                    self.units[index].pos = hex;
+                    // Displaced: whatever it was doing there is over.
+                    self.units[index].wake();
+                    self.units[index].clear_orders();
+                    info(fn() can {Out} { Out.put("unit "); show_u64(id as u64); Out.put(" is pushed off city "); show_u64((city_id + 1) as u64); Out.put("'s center to "); hex.show(); });
+                }
+                Option.None => {
+                    let _lost = self.units.remove(index);
+                    let _settler = self.settlers.remove(id);
+                    let _controlled = self.player_controlled_units.remove(id);
+                    info(fn() can {Out} { Out.put("unit "); show_u64(id as u64); Out.put(" is lost: no free hex to push it to off city "); show_u64((city_id + 1) as u64); Out.put("'s center"); });
+                }
+            }
+        }
+        self.discard_interior_copies_of_dead_units();
+    }
+
+    /// Where a unit of `team` (a ship, if `naval`) pushed off the city center `center` goes: the
+    /// nearest hex within `PUSH_OFF_RANGE` it could stand on (land, or water for a ship), with no
+    /// unit, no city center and no other side's worker, ties broken by coordinates. Walls don't
+    /// matter: it's pushed, not walking.
+    fn push_off_hex(&self, center: Hex, team: Team, naval: bool) -> Option[Hex] {
+        let range = PUSH_OFF_RANGE;
+        let mut best: Option[Hex] = Option.None;
+        for dq in -range..=range {
+            for dr in (if -range > -dq - range { -range } else { -dq - range })..=(if range < -dq + range { range } else { -dq + range }) {
+                let hex = Hex.new(center.q + dq, center.r + dr);
+                if hex == center { continue; }
+                let fits = if naval { self.grid.contains(hex) && self.grid.terrain(hex).is_water() } else { self.can_enter(hex) };
+                if !fits || self.is_occupied(hex) { continue; }
+                let mut blocked = false;
+                for c in 0..self.cities.len() { if self.cities[c].pos == hex { blocked = true; } }
+                for w in 0..self.field_workers.len() { if self.field_workers[w].pos == hex && self.field_workers[w].team != team { blocked = true; } }
+                if blocked { continue; }
+                let better = match best {
+                    Option.None => true,
+                    Option.Some(b) => {
+                        let (d, bd) = (center.distance(hex), center.distance(b));
+                        d < bd || (d == bd && (hex.q < b.q || (hex.q == b.q && hex.r < b.r)))
+                    }
+                };
+                if better { best = Option.Some(hex); }
+            }
+        }
+        best
     }
 }
 

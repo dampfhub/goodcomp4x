@@ -59,7 +59,7 @@ fn turn_order_numbers_show_only_while_alt_is_held() {
 /// How many yield rows `game` draws, each pill being the same outline whatever its width.
 fn rows(game: &GameState) -> i32 {
     let mut one: Vec[MeshVertex] = Vec.new();
-    push_yield_row(vec2(0.0, 0.0), 2, 1, &mut one);
+    push_yield_row(vec2(0.0, 0.0), (2, 1, 0), &mut one);
     count_color(&game.build_vertices(), YIELD_ROW_COLOR) / count_color(&one, YIELD_ROW_COLOR)
 }
 
@@ -86,8 +86,8 @@ fn alt_shows_yields_on_every_explored_tile_outside_the_city_view() {
         for h in game.grid.hexes() {
             let hex = *h;
             if !game.grid.terrain(hex).is_workable() || !game.is_explored(hex) { continue; }
-            let (food, production) = game.known_yield(hex, &fog);
-            if food != 0 || production != 0 { yielding = yielding + 1; }
+            let (food, wood, metal) = game.known_yield(hex, &fog);
+            if food != 0 || wood != 0 || metal != 0 { yielding = yielding + 1; }
         }
         assert(yielding > in_reach);
         // A row on every tile that yields.
@@ -95,9 +95,9 @@ fn alt_shows_yields_on_every_explored_tile_outside_the_city_view() {
     });
 }
 
-/// How many distinct heights the icons of `yield_row(amount, 0)` sit at.
+/// How many distinct heights the icons of `yield_row((amount, 0, 0))` sit at.
 fn pip_rows(amount: i32) -> i32 {
-    let row = yield_row(amount, 0);
+    let row = yield_row((amount, 0, 0));
     let mut n = 0;
     for k in 0..row.icons.len() {
         if k == 0 || row.icons[k].at.y != row.icons[k - 1].at.y { n = n + 1; }
@@ -110,7 +110,7 @@ fn abs(x: f32) -> f32 { if x < 0.0 { -x } else { x } }
 @test
 fn yields_up_to_six_are_die_pips_and_more_are_a_number() {
     for amount in 1..=6 {
-        let row = yield_row(amount, 0);
+        let row = yield_row((amount, 0, 0));
         // No number needed.
         assert(row.labels.is_empty());
         assert(row.icons.len() == amount);
@@ -118,39 +118,38 @@ fn yields_up_to_six_are_die_pips_and_more_are_a_number() {
     // 2 side by side.
     assert(pip_rows(2) == 1);
     // 3: one on top, centered over two.
-    let three = yield_row(3, 0);
+    let three = yield_row((3, 0, 0));
     assert(pip_rows(3) == 2);
     assert(abs(three.icons[0].at.x) < 0.00001 && three.icons[0].at.y > three.icons[1].at.y);
     // 4: a square.
-    let four = yield_row(4, 0);
+    let four = yield_row((4, 0, 0));
     assert(pip_rows(4) == 2);
     assert(abs(four.icons[0].at.x + four.icons[1].at.x) < 0.00001);
     // 5: a square with one in the middle.
-    let five = yield_row(5, 0);
+    let five = yield_row((5, 0, 0));
     let mut middle = false;
     for k in 0..5 { if five.icons[k].at.length() < 0.00001 { middle = true; } }
     assert(middle);
     // 6: two rows of three.
-    let six = yield_row(6, 0);
+    let six = yield_row((6, 0, 0));
     assert(pip_rows(6) == 2);
     let mut top = 0;
     for k in 0..6 { if six.icons[k].at.y > 0.0 { top = top + 1; } }
     assert(top == 3);
 
     // Past six, one icon and the number after it.
-    let seven = yield_row(7, 0);
+    let seven = yield_row((7, 0, 0));
     assert(seven.icons.len() == 1);
     assert(seven.labels[0].amount == 7);
     assert(seven.labels[0].at.x > seven.icons[0].at.x);
-    assert(yield_row(0, 0).icons.is_empty());
+    assert(yield_row((0, 0, 0)).icons.is_empty());
 }
 
 @test
-fn a_yield_row_puts_food_left_of_production_and_stays_inside_the_hex() {
-    let cases = [(2, 1), (6, 6), (12, 5), (3, 0), (0, 4)];
-    for c in 0..5 {
-        let (food, production) = cases[c];
-        let row = yield_row(food, production);
+fn a_yield_row_puts_food_left_of_wood_and_metal_and_stays_inside_the_hex() {
+    let cases = [(2, 1, 0), (6, 6, 0), (12, 5, 1), (3, 0, 0), (0, 4, 2), (6, 6, 6), (12, 12, 12)];
+    for c in 0..7 {
+        let row = yield_row(cases[c]);
         let mut rightmost_food = -1000.0;
         let mut leftmost_production = 1000.0;
         for k in 0..row.icons.len() {
@@ -207,17 +206,18 @@ fn a_light_line_marks_where_remembered_hexes_meet_hexes_in_sight() {
 }
 
 @test
-fn worker_mode_tints_the_tiles_in_reach() {
+fn placing_something_tints_the_tiles_in_reach() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.city_scenario();
         game.explore();
         assert(count_color(&game.build_vertices(), WORKER_REACH_TINT) == 0);
-        game.toggle_worker_mode();
+        game.open_city(0);
+        game.arm_worker_job(JobKind.Road);
         let tinted = count_color(&game.build_vertices(), WORKER_REACH_TINT);
         let mut reachable = 0;
         for hh in game.grid.hexes() {
             let h = *hh;
-            if game.is_explored(h) && game.grid.is_passable(h) && game.in_worker_reach(PLAYER_TEAM, h) { reachable = reachable + 1; }
+            if game.is_explored(h) && game.grid.is_passable(h) && game.known_worker_reach(h) { reachable = reachable + 1; }
         }
         assert(reachable > 0);
         // The same fill on each reachable tile.
@@ -231,7 +231,7 @@ fn queued_walls_are_drawn_with_round_ends() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.city_scenario();
         let around = game.cities[0].pos.neighbors();
-        game.cities[0].worker_jobs.push(WorkerJob { hex: around[0], kind: JobKind.Wall, across: Option.Some(around[1]) });
+        game.cities[0].worker_jobs.push(WorkerJob { hex: around[0], kind: JobKind.Wall, across: Option.Some(around[1]), done: 0 });
         // A segment is two triangles; each round end is twelve more.
         assert(count_color(&game.build_vertices(), PLANNED_EDGE_COLOR) == 6 + 2 * 12 * 3);
     });
@@ -242,6 +242,7 @@ fn work_under_way_is_ringed_and_counts_its_turns_left() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.city_scenario();
         game.explore();
+        game.open_city(0);
         let city = game.cities[0].pos;
         // Two hexes out: a turn walking, then at work.
         let mut target: Option[Hex] = Option.None;
@@ -316,18 +317,16 @@ fn a_site_preview_follows_the_cursor_only_in_its_open_city() {
         let mut site: Option[Hex] = Option.None;
         for hh in game.grid.hexes() { if site.is_none() && game.site_available(city, Building.Barracks, *hh) { site = Option.Some(*hh); } }
         let Option.Some(site) = site else { assert(false); return; };
-        game.hovered_tile = Option.Some(site);
-        let plain = game.build_vertices().len();
-        game.placing_building = Option.Some((city, Building.Barracks));
-        game.selected_city = Option.None;
-        // No city open: no preview.
-        assert(game.build_vertices().len() == plain);
         game.selected_city = Option.Some(city);
-        // Its city open: a preview. The open city draws its yields too, so compare against the
-        // open city without placement.
+        // The open city draws its yields too, so compare against the open city without placing.
+        let plain = game.build_vertices().len();
+        game.placing_job = Option.Some(JobKind.Build(Building.Barracks));
+        game.hovered_job = Option.Some((site, Option.None));
+        // Placing: the tile under the cursor is ringed, and the reach lit.
         let with_preview = game.build_vertices().len();
-        game.placing_building = Option.None;
-        assert(with_preview > game.build_vertices().len());
+        game.placing_job = Option.None;
+        game.hovered_job = Option.None;
+        assert(with_preview > plain);
     });
 }
 
@@ -343,14 +342,14 @@ fn only_hovering_the_manager_draws_a_line_and_it_follows_the_route_home() {
         let mut manager: Option[Hex] = Option.None;
         for k in 0..routes.costs.len() {
             let Option.Some(h) = routes.costs.key_at(k) else { continue; };
-            if game.grid.terrain(h).is_water() || game.cities[city].worked.contains(h) || routes.path_from(h).len() < 3 { continue; }
+            if game.grid.terrain(h).is_water() || game.cities[city].works(h) || routes.path_from(h).len() < 3 { continue; }
             let better = match manager { Option.None => true, Option.Some(b) => h.q < b.q || (h.q == b.q && h.r < b.r) };
             if better { manager = Option.Some(h); }
         }
         let Option.Some(manager) = manager else { assert(false); return; };
-        game.cities[city].worked.set(0, manager);
+        game.cities[city].clusters[0].manager = manager;
         // The manager has workers.
-        assert(game.cities[city].worked.len() > 1);
+        assert(game.cities[city].clusters[0].count > 0);
         let path = routes.path_from(manager);
         assert(path[0] == manager && path[path.len() - 1] == game.cities[city].pos);
         for k in 1..path.len() {
@@ -360,13 +359,13 @@ fn only_hovering_the_manager_draws_a_line_and_it_follows_the_route_home() {
         // Not hovering: no route line; hovering another worked tile: none either.
         game.hovered_tile = Option.None;
         assert(count_color(&game.build_vertices(), MANAGER_ROUTE_COLOR) == 0);
-        game.hovered_tile = Option.Some(game.cities[city].worked[1]);
+        game.hovered_tile = Option.Some(game.cities[city].clusters[0].slots[0]);
         assert(count_color(&game.build_vertices(), MANAGER_ROUTE_COLOR) == 0);
         // Hovering the manager: seven dashes along each leg of its route.
         game.hovered_tile = Option.Some(manager);
         assert(count_color(&game.build_vertices(), MANAGER_ROUTE_COLOR) == (path.len() - 1) * 7 * 6);
         // Carrying the manager to a new tile hides the line.
-        game.moving_manager = Option.Some(city);
+        game.moving_manager = Option.Some((city, 0));
         assert(count_color(&game.build_vertices(), MANAGER_ROUTE_COLOR) == 0);
     });
 }

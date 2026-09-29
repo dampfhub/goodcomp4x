@@ -14,8 +14,12 @@ use std.str.Str;
 use std.str.eq as str_eq;
 use std.str.to_owned;
 use game.GameState;
-use game.PLAYER_TEAM;
 use game.city.BARRACKS_MAX_HP;
+use game.city.Lane;
+use game.city.Stock;
+use game.city.SETTLER_MIN_POPULATION;
+use game.city.stock_icons;
+use game.city.turns_icon;
 use game.draw.UnitLook;
 use game.settings.Setting;
 use game.settings.SETTINGS;
@@ -32,6 +36,9 @@ use game.ui.to_ui;
 use game.ui.RosterChip;
 use game.ui.RosterKey;
 use game.ui.Target;
+use game.ui.button_state;
+use game.city.resource_icon;
+use game.city.RESOURCE_NAMES;
 use game.ui.panel_builder;
 use game.unit_icons.UnitIcon;
 use game.unit.UnitType;
@@ -68,57 +75,128 @@ fn show_turns_at_rate(remaining: i32, per_turn: i32) can {Out} {
 impl GameState {
     // ---- production queues --------------------------------------------------------------
 
-    /// The Barracks' training queue of city `i`, `visible` rows of it from the scroll offset;
-    /// nothing when it is empty.
     pub fn barracks_queue_panel(&self, i: i32, visible: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if city.barracks_queue.is_empty() { return; }
-        let production = self.barracks_income(i);
+        let status = self.queue_status(i, Lane.Barracks);
         let total = city.barracks_queue.len();
         let most = if total > visible { total - visible } else { 0 };
         let offset = if self.barracks_queue_scroll < most { self.barracks_queue_scroll } else { most };
         if total > visible { panel.scrollbar = Option.Some(QueueScroll { kind: QueueKind.Barracks, offset, total, visible }); }
-        panel.text(TextSize.Small, "BARRACKS QUEUE - DRAG TO REORDER", LABEL_TEXT);
+        self.queue_title("BARRACKS QUEUE - DRAG TO REORDER", Target.ClearBarracksQueue, panel);
         let drag = match self.queue_drag { Option.Some(d) => d.kind == QueueKind.Barracks, Option.None => false };
         let last = if total < offset + visible { total } else { offset + visible };
         for index in offset..last {
-            let build = city.barracks_queue[index];
-            let remaining = build.cost() - if index == 0 { city.barracks_production } else { 0 };
-            let label = text(fn() can {Out} {
-                Out.put(if index == 0 { "> " } else { "  " }); Out.put(build.name()); Out.put(" | "); show_quantity(build.cost());
-                Out.put(" PROD | "); show_turns_at_rate(remaining, production); Out.put(" LEFT");
-            });
-            let (dragging, drop_target) = self.drag_flags(drag, index);
-            panel.queue_item(QueueItemSpec { kind: QueueKind.Barracks, index, label, active: index == 0, locked: false, dragging, drop_target });
+            let name = city.barracks_queue[index].build.name();
+            let row = self.queue_row(i, Lane.Barracks, index, name, &status, drag, QueueKind.Barracks);
+            panel.queue_item(row);
         }
     }
-
-    /// The production queue of city `i`, `visible` rows of it from the scroll offset; nothing
-    /// when it is empty.
     pub fn city_queue_panel(&self, i: i32, visible: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         if city.queue.is_empty() { return; }
-        let (_, production) = self.income(i);
+        let status = self.queue_status(i, Lane.City);
         let total = city.queue.len();
         let most = if total > visible { total - visible } else { 0 };
         let offset = if self.city_queue_scroll < most { self.city_queue_scroll } else { most };
         if total > visible { panel.scrollbar = Option.Some(QueueScroll { kind: QueueKind.City, offset, total, visible }); }
-        panel.text(TextSize.Small, "CITY QUEUE - DRAG TO REORDER", LABEL_TEXT);
+        self.queue_title("CITY QUEUE - DRAG TO REORDER", Target.ClearCityQueue, panel);
         let drag = match self.queue_drag { Option.Some(d) => d.kind == QueueKind.City, Option.None => false };
         let last = if total < offset + visible { total } else { offset + visible };
         for index in offset..last {
-            let build = city.queue[index];
-            let cost = self.city_build_cost(i, build);
-            let remaining = cost - if index == 0 { city.production } else { 0 };
-            let label = text(fn() can {Out} {
-                Out.put(if index == 0 { "> " } else { "  " }); Out.put(build.name()); Out.put(" | "); show_quantity(cost);
-                Out.put(" PROD | "); show_turns_at_rate(remaining, production); Out.put(" LEFT");
-            });
-            let (dragging, drop_target) = self.drag_flags(drag, index);
-            panel.queue_item(QueueItemSpec { kind: QueueKind.City, index, label, active: index == 0, locked: index == 0 && city.pending_building.is_some(), dragging, drop_target });
+            let name = city.queue[index].build.name();
+            let row = self.queue_row(i, Lane.City, index, name, &status, drag, QueueKind.City);
+            panel.queue_item(row);
         }
     }
 
+    /// A queue panel's title, with its Clear button: every item off, refunded. Dimmed while a
+    /// turn plays out, when the queue can't change.
+    fn queue_title(&self, title: &str, clear: Target, panel: &mut PanelBuilder) {
+        panel.begin_buttons();
+        panel.button(clear, "CLEAR", "", button_state(false, self.is_resolving()), false);
+        panel.end_buttons(true);
+        panel.text(TextSize.Small, title, LABEL_TEXT);
+    }
+
+    /// What one of `city`'s queues does this turn, for the panels. For the player's own cities
+    /// it's `forecast`'s view: the item worked, and which items wait for the stockpile or for
+    /// supply. Other sides' stockpiles aren't the player's to see, so their queues show only
+    /// their first item.
+    pub fn queue_status(&self, city: i32, lane: Lane) -> QueueStatus {
+        let len = self.lane_len(city, lane);
+        if self.cities[city].team == self.local_team {
+            if let Option.Some(forecast) = self.forecast(self.local_team).lane(city, lane) {
+                return QueueStatus { worked: forecast.worked, waiting: self.waiting_items(forecast), supply: self.supply_waiting_items(forecast) };
+            }
+        }
+        QueueStatus { worked: if len > 0 { Option.Some(0) } else { Option.None }, waiting: Vec.new(), supply: Vec.new() }
+    }
+
+    /// Whether item `index` of one of `city`'s queues is a Settler waiting for citizens
+    /// (`waits_for_citizens`).
+    fn waits_for_citizens_at(&self, city: i32, lane: Lane, index: i32) -> bool {
+        lane == Lane.City && index < self.lane_len(city, lane) && self.waits_for_citizens(city, index)
+    }
+
+    /// The name of item `index` of one of `city`'s queues.
+    pub fn item_name(&self, city: i32, lane: Lane, index: i32) -> str {
+        match lane {
+            Lane.City => self.cities[city].queue[index].build.name(),
+            Lane.Barracks => self.cities[city].barracks_queue[index].build.name(),
+        }
+    }
+
+    /// The item one of `city`'s queues works (`status`): its name, the turns it has left and how
+    /// far along it is (0 to 1).
+    pub fn worked_item(&self, city: i32, lane: Lane, status: &QueueStatus) -> Option[(str, i32, f32)] {
+        let Option.Some(index) = status.worked else { return Option.None; };
+        let (_, progress, work) = self.lane_item(city, lane, index);
+        Option.Some((self.item_name(city, lane, index), self.item_turns_left(city, lane, index), clamp01(progress as f32 / work as f32)))
+    }
+
+    /// "MELEE WAITS FOR [wood]3" when the first item of one of `city`'s queues waits for the
+    /// stockpile (`status`).
+    pub fn head_waiting_text(&self, city: i32, lane: Lane, status: &QueueStatus) -> Option[Str] {
+        if self.waits_for_citizens_at(city, lane, 0) {
+            let name = self.item_name(city, lane, 0);
+            return Option.Some(text(fn() can {Out} { Out.put(name); Out.put(" WAITS FOR POPULATION "); show_i64(SETTLER_MIN_POPULATION as i64); }));
+        }
+        // Its side's units and started items leave no room for it: the supply has fallen since it
+        // was queued (`supply_waiting_items`).
+        if status.supply.contains(0) {
+            let name = self.item_name(city, lane, 0);
+            return Option.Some(text(fn() can {Out} { Out.put(name); Out.put(" WAITS FOR SUPPLY: NO ROOM TO START IT"); }));
+        }
+        let Option.Some(short) = status.waits(0) else { return Option.None; };
+        let name = self.item_name(city, lane, 0);
+        let icons = stock_icons(short);
+        Option.Some(text(fn() can {Out} { Out.put(name); Out.put(" WAITS FOR "); Out.put(&icons); }))
+    }
+
+    /// Row `index` of one of `city`'s queues: the item's `name` and the turns it has left, or what
+    /// it waits for. The item the city works is marked.
+    fn queue_row(&self, city: i32, lane: Lane, index: i32, name: str, status: &QueueStatus, drag: bool, kind: QueueKind) -> QueueItemSpec {
+        let active = status.worked == Option.Some(index);
+        let waits = status.waits(index);
+        let citizens = self.waits_for_citizens_at(city, lane, index);
+        let supply = status.supply.contains(index);
+        let saved_note = !active && self.lane_item(city, lane, index).1 > 0;
+        let state: Str = if citizens {
+            text(fn() can {Out} { Out.put("WAITS FOR POP "); show_i64(SETTLER_MIN_POPULATION as i64); })
+        } else if supply {
+            to_owned("WAITS FOR SUPPLY")
+        } else if let Option.Some(short) = waits {
+            let icons = stock_icons(short);
+            text(fn() can {Out} { Out.put("WAITS "); Out.put(&icons); })
+        } else {
+            let turns = self.item_turns_left(city, lane, index);
+            if turns == 0 { to_owned("READY") } else { let clock = turns_icon(turns); text(fn() can {Out} { Out.put(&clock); Out.put(" LEFT"); }) }
+        };
+        let (dragging, drop_target) = self.drag_flags(drag, index);
+        let label = text(fn() can {Out} { Out.put(if active { "> " } else { "  " }); Out.put(name); Out.put(" | "); Out.put(&state); if saved_note { Out.put(" \u{b7} SAVED"); } });
+        QueueItemSpec { kind, index, label, active, locked: false, dragging, drop_target }
+    }
     /// Whether row `index` is the one being dragged and whether a drop on it would land (`drag`:
     /// the drag is in this row's list).
     pub fn drag_flags(&self, drag: bool, index: i32) -> (bool, bool) {
@@ -256,10 +334,6 @@ impl GameState {
         let Option.Some(city) = city else { return; };
         match kind {
             QueueKind.City => {
-                if self.cities[city].pending_building.is_some() && (source == 0 || target == 0) {
-                    self.set_notice("CONFIRM OR REMOVE THE READY BUILDING FIRST");
-                    return;
-                }
                 let n = self.cities[city].queue.len();
                 if source >= 0 && source < n && target >= 0 && target < n {
                     let item = self.cities[city].queue.remove(source);
@@ -304,8 +378,8 @@ impl GameState {
         Option.None
     }
 
-    /// Everything the turn strip lists, in its order: cities with nothing to build, cities with
-    /// idle workers, then the unit groups, settlers first, each group where its first unit
+    /// Everything the turn strip lists, in its order: cities with nothing to build, then the unit
+    /// groups, settlers first, each group where its first unit
     /// comes in unit order. Nothing while a turn plays out or a city interior is open. Each
     /// task's units (a group's; none for a city) come with it.
     pub fn roster_tasks(&self) -> (Vec[RosterKey], Vec[Vec[i32]]) {
@@ -314,9 +388,6 @@ impl GameState {
         if self.is_resolving() || self.interior_view.is_some() { return (keys, members); }
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) { keys.push(RosterKey.Production(self.cities[i].id)); members.push(Vec.new()); }
-        }
-        for i in 0..self.cities.len() {
-            if self.idle_workers(i) > 0 { keys.push(RosterKey.Workers(self.cities[i].id)); members.push(Vec.new()); }
         }
         let mut group_keys: Vec[RosterKey] = Vec.new();
         let mut group_units: Vec[Vec[i32]] = Vec.new();
@@ -340,16 +411,11 @@ impl GameState {
     }
 
     fn chip_for(&self, key: RosterKey, units: &Vec[i32], selection: &Vec[i32]) -> RosterChip {
-        let team_color = PLAYER_TEAM.color();
+        let team_color = self.local_team.color();
         match key {
             RosterKey.Production(id) => {
                 let open = match self.selected_city { Option.Some(i) => self.cities[i].id == id, Option.None => false };
                 RosterChip { key, icon: ChipIcon.City, color: team_color, selected: open, count: 1 }
-            }
-            RosterKey.Workers(id) => {
-                let menu = match self.worker_menu_city { Option.Some(i) => self.cities[i].id == id, Option.None => false };
-                let count = match self.city_index(id) { Option.Some(i) => self.idle_workers(i) as i32, Option.None => 1 };
-                RosterChip { key, icon: ChipIcon.Unit(UnitLook { icon: UnitIcon.Shovel, civilian: true }), color: team_color, selected: self.worker_mode && menu, count }
             }
             RosterKey.Group(_, _) | RosterKey.Unit(_) => {
                 let mut selected = false;
@@ -430,10 +496,6 @@ impl GameState {
                 if let Option.Some(city) = self.city_index(id) { self.open_city(city); }
                 return;
             }
-            RosterKey.Workers(id) => {
-                if let Option.Some(city) = self.city_index(id) { self.open_worker_menu(city); }
-                return;
-            }
             _ => {}
         }
         let units = self.roster_key_units(key);
@@ -467,7 +529,6 @@ impl GameState {
     pub fn roster_hint(&self, key: RosterKey) -> Str {
         match key {
             RosterKey.Production(id) => text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" HAS NOTHING TO BUILD - CLICK: OPEN IT"); }),
-            RosterKey.Workers(id) => text(fn() can {Out} { Out.put("IDLE WORKERS IN CITY "); show_u64((id + 1) as u64); Out.put(" - CLICK: THE WORKER MENU, TO GIVE THEM JOBS OR LET THEM SLEEP"); }),
             RosterKey.Group(_, _) => {
                 let units = self.roster_key_units(key);
                 let role = if units.is_empty() { "" } else { self.unit_role(&self.units[units[0]]).name() };
@@ -508,53 +569,71 @@ impl GameState {
 
     // ---- the hover panel ----------------------------------------------------------------
 
-    /// A city (or its Barracks): population, stores and income, and what it's building.
     pub fn structure_hover_panel(&self, i: i32, barracks: bool, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let (id, team) = (city.id, city.team);
+        let own = team == self.local_team;
         if barracks {
-            let Option.Some(tile) = city.barracks else { return; };
-            let active = !city.worked.is_empty() && city.worked[0] == tile;
-            let production = if active { self.barracks_income(i) } else { 0 };
+            let Option.Some(_) = city.barracks else { return; };
             let hp = city.barracks_hp;
             panel.text_owned(TextSize.Title, text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" BARRACKS"); }), team.color());
-            panel.text_owned(TextSize.Small, text(fn() can {Out} {
-                Out.put("HP "); show_f64_fixed(hp as f64, 0); Out.put("/"); show_f64_fixed(BARRACKS_MAX_HP as f64, 0);
-                Out.put(" \u{b7} "); show_signed_quantity(production); Out.put(" PROD/T");
-            }), GOLD_TEXT);
-            let queue = if city.barracks_queue.is_empty() {
-                to_owned("EMPTY")
-            } else {
-                let build = city.barracks_queue[0];
-                let stored = city.barracks_production;
-                text(fn() can {Out} { Out.put(build.name()); Out.put(" \u{b7} "); show_turns_at_rate(build.cost() - stored, production); Out.put(" LEFT"); })
-            };
-            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("QUEUE: "); Out.put(&queue); }), DIM_TEXT);
-            if !city.barracks_queue.is_empty() {
-                let f = city.barracks_production as f32 / city.barracks_queue[0].cost() as f32;
-                panel.bar(if f < 0.0 { 0.0 } else if f > 1.0 { 1.0 } else { f });
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("HP "); show_f64_fixed(hp as f64, 0); Out.put("/"); show_f64_fixed(BARRACKS_MAX_HP as f64, 0); }), GOLD_TEXT);
+            if own {
+                let status = self.queue_status(i, Lane.Barracks);
+                let line = self.hover_queue_text(self.worked_item(i, Lane.Barracks, &status), city.barracks_queue.is_empty());
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("QUEUE: "); Out.put(&line); }), DIM_TEXT);
+                if let Option.Some((_, _, done)) = self.worked_item(i, Lane.Barracks, &status) { panel.bar(done); }
             }
         } else {
-            let (growth, _, _) = self.growth_status(i);
-            let (_, production) = self.income(i);
+            let population = city.population;
             panel.text_owned(TextSize.Title, text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); }), team.color());
-            panel.text_owned(TextSize.Small, text(fn() can {Out} {
-                Out.put("POP "); show_i64(growth as i64); Out.put("% \u{b7} "); show_signed_quantity(production); Out.put(" PROD/T");
-            }), GOLD_TEXT);
-            panel.bar(growth as f32 / 100.0);
-            let queue = if city.queue.is_empty() {
-                to_owned("EMPTY")
-            } else {
-                let build = city.queue[0];
-                let left = self.city_build_cost(i, build) - city.production;
-                text(fn() can {Out} { Out.put(build.name()); Out.put(" \u{b7} "); show_turns_at_rate(left, production); Out.put(" LEFT"); })
-            };
-            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("QUEUE: "); Out.put(&queue); }), DIM_TEXT);
-            if !city.queue.is_empty() {
-                let f = city.production as f32 / self.city_build_cost(i, city.queue[0]) as f32;
-                panel.bar(if f < 0.0 { 0.0 } else if f > 1.0 { 1.0 } else { f });
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("POPULATION "); show_i64(population as i64); }), GOLD_TEXT);
+            if own {
+                let net = self.net_delivery(i);
+                panel.begin_line();
+                panel.span("DELIVERS ", LABEL_TEXT);
+                for k in 0..3 {
+                    let icon = text(fn() can {Out} { Out.put_char(resource_icon(RESOURCE_NAMES[k])); show_signed_quantity(net.part(k)); Out.put("  "); });
+                    panel.span_owned(icon, TEXT);
+                }
+                panel.end_line(TextSize.Small);
+                let status = self.queue_status(i, Lane.City);
+                let line = self.hover_queue_text(self.worked_item(i, Lane.City, &status), city.queue.is_empty());
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("QUEUE: "); Out.put(&line); }), DIM_TEXT);
+                if let Option.Some((_, _, done)) = self.worked_item(i, Lane.City, &status) { panel.bar(done); }
             }
         }
+    }
+
+    /// A queue's line in the hover panel: the item worked (`worked_item`) and its turns left, or
+    /// why there's none.
+    fn hover_queue_text(&self, worked: Option[(str, i32, f32)], empty: bool) -> Str {
+        match worked {
+            Option.Some((name, turns, _)) => { let clock = turns_icon(turns); text(fn() can {Out} { Out.put(name); Out.put(" \u{b7} "); Out.put(&clock); Out.put(" LEFT"); }) }
+            Option.None => if empty { to_owned("EMPTY") } else { to_owned("NOTHING IT CAN PAY FOR") },
+        }
+    }
+}
+
+/// What a queue does this turn (`GameState.queue_status`).
+pub struct QueueStatus {
+    /// The item its city works, if it can pay for any.
+    worked: Option[i32],
+    /// The items that wait for the stockpile, with what it's short of for each
+    /// (`GameState.waiting_items`).
+    waiting: Vec[(i32, Stock)],
+    /// The items that wait for supply (`GameState.supply_waiting_items`).
+    supply: Vec[i32],
+}
+
+impl QueueStatus {
+    /// What item `index` waits for, if it waits.
+    pub fn waits(&self, index: i32) -> Option[Stock] {
+        for k in 0..self.waiting.len() {
+            let (waiting, short) = self.waiting[k];
+            if waiting == index { return Option.Some(short); }
+        }
+        Option.None
     }
 }
 

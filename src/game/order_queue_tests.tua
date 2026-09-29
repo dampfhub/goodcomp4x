@@ -344,8 +344,8 @@ fn a_queued_unit_does_not_hold_up_the_turn() {
         assert(!g.needs_orders(0));
         g.selected = Option.Some(1);
         g.hold_selected_unit();
-        let (units, cities, workers) = g.pending();
-        assert(units == 0 && cities == 0 && workers == 0);
+        let (units, cities) = g.pending();
+        assert(units == 0 && cities == 0);
 
         // Next turn it follows the queue's second turn and still doesn't wait for orders,
         // while the unit that held does, and the turn starts on it.

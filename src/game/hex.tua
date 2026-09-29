@@ -250,6 +250,13 @@ impl HexGrid {
     pub fn is_passable(&self, hex: Hex) -> bool { self.contains(hex) && self.terrain(hex).is_passable() }
 
     /// Every hex of the grid, column by column.
+    /// Every hex of the grid, as a list.
+    pub fn hex_list(&self) -> Vec[Hex] {
+        let mut out: Vec[Hex] = Vec.new();
+        for h in self.hexes() { out.push(*h); }
+        out
+    }
+
     pub fn hexes(&self) can {View[Hex]} {
         // The bounding box of either shape, filtered down to the shape.
         let (q_max, r_max) = match self.shape {

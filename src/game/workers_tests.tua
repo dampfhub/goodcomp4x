@@ -17,6 +17,10 @@ use game.turn.TurnStep;
 use game.city.Build;
 use game.city.Building;
 use game.city.Site;
+use game.city.Stock;
+use game.hex.HexGrid;
+use game.terrain.Terrain;
+use game.terrain.Tile;
 use game.city.SiteKind;
 use game.hex.Hex;
 use game.hex.edge;
@@ -38,6 +42,8 @@ fn cities() -> GameState can {Log} {
     let mut game = GameState.city_scenario();
     game.units.clear();
     game.selected = Option.None;
+    // Jobs are placed from the open city.
+    game.selected_city = Option.Some(0);
     game.fog_of_war = false;
     game
 }
@@ -97,51 +103,62 @@ fn workers_reach_three_tiles_from_a_city_or_next_to_a_road() {
 }
 
 @test
-fn the_worker_menu_places_jobs_and_ends_with_escape_or_a_selection() {
+fn snow_hills_cannot_be_improved() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let hex = bare_tile(&game, 1);
+        game.grid = HexGrid.new(6, &[(hex, Tile { terrain: Terrain.Snow, hills: true, feature: Option.None })]);
+        let Option.Some(problem) = game.job_problem(0, WorkerJob.on_tile(hex, JobKind.Improve)) else { assert(false); return; };
+        assert(str_eq(problem, "NOTHING GROWS ON SNOW"));
+    });
+}
+
+@test
+fn jobs_are_placed_from_the_open_city_until_escape_or_leaving_it() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.city_scenario();
         game.explore();
-        game.select_city();
-        game.toggle_worker_mode();
-        assert(game.worker_mode);
-        // The city view closes.
-        assert(game.selected_city.is_none());
-        assert(game.selected.is_none());
-        // On the city with idle workers.
-        assert(game.worker_menu_city == Option.Some(0));
+        // No city open: nothing to place from.
+        game.arm_worker_job(JobKind.Road);
+        assert(game.placing_job.is_none());
+        assert(notice_has(&game, "OPEN A CITY FIRST"));
 
-        // R picks roads; Escape puts them down, and again closes the menu.
+        // R picks roads in the open city; Escape puts them down, keeping the city open.
+        game.open_city(0);
         game.arm_worker_job(JobKind.Road);
         assert(game.placing_job == Option.Some(JobKind.Road));
         game.press_escape();
         assert(game.placing_job.is_none());
-        assert(game.worker_mode);
-        game.press_escape();
-        assert(!game.worker_mode);
-        // Escape closed the menu, not more.
-        assert(!game.settings_open);
-
-        // R with the menu closed opens it with roads picked.
+        assert(game.selected_city == Option.Some(0));
+        // Leaving the city stops placing too.
         game.arm_worker_job(JobKind.Road);
-        assert(game.worker_mode);
-        assert(game.placing_job == Option.Some(JobKind.Road));
+        game.leave_city_view();
+        assert(game.placing_job.is_none());
 
-        // Selecting a unit ends it; so does opening a city.
-        let mut unit = 0 - 1;
-        for i in 0..game.units.len() { if unit < 0 && game.units[i].team == PLAYER_TEAM { unit = i; } }
-        let mut one: Vec[i32] = Vec.new();
-        one.push(unit);
-        game.set_selection(one);
-        assert(!game.worker_mode);
-        game.toggle_worker_mode();
-        game.select_city();
-        assert(!game.worker_mode);
+        // A city with no worker places nothing.
+        game.open_city(0);
+        game.cities[0].workers = 0;
+        game.arm_worker_job(JobKind.Road);
+        assert(game.placing_job.is_none());
+        assert(notice_is(&game, "TRAIN A WORKER FIRST - WORKERS BUILD WHAT THE CITY PLACES"));
+    });
+}
 
-        // No city, no workers.
-        let mut game = GameState.new();
-        game.toggle_worker_mode();
-        assert(!game.worker_mode);
-        assert(notice_has(&game, "FOUND A CITY"));
+@test
+fn a_job_is_paid_when_placed_and_refunded_if_taken_off() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let tile = bare_tile(&game, 1);
+        let before = game.stock(PLAYER_TEAM);
+        queue(&mut game, tile, JobKind.Road);
+        assert(game.stock(PLAYER_TEAM) == before.minus(JobKind.Road.price()));
+        game.remove_worker_job(0);
+        assert(game.stock(PLAYER_TEAM) == before);
+        // Short of wood: nothing placed, and the notice says so.
+        game.set_stock(PLAYER_TEAM, Stock.whole(0, 0, 0));
+        queue(&mut game, tile, JobKind.Road);
+        assert(game.cities[0].worker_jobs.is_empty());
+        assert(notice_has(&game, "ROAD - SHORT OF"));
     });
 }
 
@@ -156,28 +173,6 @@ fn a_job_can_not_go_on_an_unexplored_tile() {
         game.placing_job = Option.Some(JobKind.Road);
         assert(!game.place_job_at(unseen, Option.None));
         assert(notice_is(&game, "WORKERS CAN'T WORK AN UNEXPLORED TILE"));
-    });
-}
-
-@test
-fn sleeping_workers_rest_for_the_turn_and_wait_again_the_next() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut game = GameState.city_scenario();
-        handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team != PLAYER_TEAM } }
-        game.cities[0].queue.push(Build.Worker);
-        assert(game.idle_workers(0) == 1);
-        // The turn order comes to them: the worker menu opens.
-        game.select_next_or_end_turn(Option.None);
-        assert(game.worker_mode);
-        game.sleep_workers();
-        assert(game.idle_workers(0) == 0);
-        // Nothing else idle: the menu closes.
-        assert(!game.worker_mode);
-        // End the turn; next turn they wait again.
-        game.end_planning();
-        while game.is_resolving() { game.update(1.0); }
-        assert(!game.cities[0].workers_resting);
-        assert(game.idle_workers(0) == 1);
     });
 }
 
@@ -359,6 +354,163 @@ fn a_recalled_worker_heads_home_and_leaves_its_job_waiting() {
     });
 }
 
+/// Blue's worker two turns into a four-turn fort next to its city, with no other job listed.
+/// Answers the fort's tile.
+fn fort_half_built(game: &mut GameState) -> Hex can {Log, Assert} {
+    let hex = bare_tile(&*game, 1);
+    queue(game, hex, JobKind.Fort);
+    // Out and there in a turn, then two turns of work.
+    let _acted = game.resolve_workers();
+    check(game.field_workers[0].pos == hex);
+    check(game.field_workers[0].work_left == Option.Some(4));
+    let _acted = game.resolve_workers();
+    let _acted = game.resolve_workers();
+    check(game.field_workers[0].work_left == Option.Some(2));
+    let done = match game.field_workers[0].job { Option.Some(j) => j.done, Option.None => 0 };
+    check(done == 2);
+    hex
+}
+
+fn check(ok: bool) can {Assert} { assert(ok); }
+
+@test
+fn no_worker_sets_out_past_an_enemy_on_its_city_center() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let hex = bare_tile(&game, 2);
+        queue(&mut game, hex, JobKind.Improve);
+        // A Red troop left standing on the center (as when the city changed hands under it) would
+        // have captured the worker as it left.
+        let center = game.cities[0].pos;
+        game.units.push(Unit.new(900, center, Team.Red, UnitType.Melee));
+        let _acted = game.resolve_workers();
+        assert(game.field_workers.is_empty());
+        assert(game.cities[0].workers == 1);
+        // The job waits.
+        assert(game.cities[0].worker_jobs.len() == 1);
+        // Once it's gone, the worker goes.
+        game.units.clear();
+        let _acted = game.resolve_workers();
+        assert(game.field_workers.len() == 1);
+        assert(game.cities[0].worker_jobs.is_empty());
+    });
+}
+
+@test
+fn a_recalled_worker_leaves_its_work_on_the_job_and_picks_it_up_again() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let hex = fort_half_built(&mut game);
+        let id = game.field_workers[0].id;
+        game.recall_worker(id);
+        let job = game.cities[0].worker_jobs[0];
+        // The work stays on the job.
+        assert(job.hex == hex && job.done == 2);
+        assert(game.job_turns_left(PLAYER_TEAM, job) == 2);
+        // Home the next turn and held there; released, out and back at the fort the turn after.
+        let _acted = game.resolve_workers();
+        assert(game.cities[0].workers == 1);
+        game.release_worker();
+        let _acted = game.resolve_workers();
+        assert(game.field_workers[0].pos == hex);
+        // Only the rest.
+        assert(game.field_workers[0].work_left == Option.Some(2));
+        let _acted = game.resolve_workers();
+        assert(!game.structures.has(hex));
+        let _acted = game.resolve_workers();
+        let Option.Some(fort) = game.structures.get(hex) else { assert(false); return; };
+        assert(fort.kind == StructureKind.Fort);
+    });
+}
+
+@test
+fn a_recalled_worker_stays_home_until_released() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        let hex = fort_half_built(&mut game);
+        let id = game.field_workers[0].id;
+        game.recall_worker(id);
+        let _acted = game.resolve_workers();
+        assert(game.field_workers.is_empty());
+        assert(game.cities[0].workers == 1 && game.cities[0].held_workers == 1);
+        // Held: it stays home however long its city's jobs wait.
+        for _ in 0..3 {
+            let _acted = game.resolve_workers();
+            assert(game.field_workers.is_empty());
+            assert(game.cities[0].worker_jobs.len() == 1);
+        }
+        // Another worker at home isn't held: it takes the job. Killed, it leaves the job back on
+        // the list.
+        game.cities[0].workers = game.cities[0].workers + 1;
+        let _acted = game.resolve_workers();
+        assert(game.field_workers.len() == 1);
+        assert(game.cities[0].held_workers == 1);
+        let mut ids: Vec[u32] = Vec.new();
+        ids.push(game.field_workers[0].id);
+        game.kill_workers(&ids);
+
+        // Released, it takes the job at the top of the list that turn.
+        game.release_worker();
+        assert(game.cities[0].held_workers == 0);
+        let _acted = game.resolve_workers();
+        assert(game.cities[0].workers == 0);
+        let took = match game.field_workers[0].job { Option.Some(j) => j.hex == hex, Option.None => false };
+        assert(took);
+        // Nothing left to release, and another side's city isn't the player's to release.
+        game.release_worker();
+        assert(game.cities[0].held_workers == 0);
+        game.cities[1].held_workers = 1;
+        game.selected_city = Option.Some(1);
+        game.release_worker();
+        assert(game.cities[1].held_workers == 1);
+    });
+}
+
+@test
+fn another_worker_finishes_a_job_whose_worker_was_killed() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = cities();
+        game.cities[0].workers = 2;
+        let hex = fort_half_built(&mut game);
+        // One stayed home.
+        assert(game.cities[0].workers == 1);
+        let id = game.field_workers[0].id;
+        let mut ids: Vec[u32] = Vec.new();
+        ids.push(id);
+        game.kill_workers(&ids);
+        assert(game.cities[0].worker_jobs[0].done == 2);
+        // The other goes out, and does only the two turns left.
+        let _acted = game.resolve_workers();
+        assert(game.field_workers[0].pos == hex);
+        assert(game.field_workers[0].id != id);
+        assert(game.field_workers[0].work_left == Option.Some(2));
+        let _acted = game.resolve_workers();
+        let _acted = game.resolve_workers();
+        let Option.Some(fort) = game.structures.get(hex) else { assert(false); return; };
+        assert(fort.kind == StructureKind.Fort);
+    });
+}
+
+@test
+fn a_captured_workers_job_keeps_its_work() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, hex, red) = worker_beside_enemy();
+        game.units[red].planned_move = Option.Some(hex);
+        let _acted = game.resolve_step(UnitType.Melee, Phase.Move);
+        // Captured.
+        assert(game.field_workers.is_empty());
+        let job = game.cities[0].worker_jobs[0];
+        assert(job.hex == hex && job.done == 1);
+        // Blue's worker at home takes it on; the Red melee must move off the tile first, or it
+        // would capture that one too.
+        let _gone = game.units.remove(red);
+        for _ in 0..2 { let _acted = game.resolve_workers(); }
+        assert(game.field_workers[0].pos == hex);
+        // Three of four.
+        assert(game.field_workers[0].work_left == Option.Some(3));
+    });
+}
+
 @test
 fn workers_act_after_every_unit() {
     sandbox(fn() can {Log, Rand, Assert} {
@@ -379,7 +531,8 @@ fn workers_act_after_every_unit() {
 fn worker_beside_enemy() -> (GameState, Hex, i32) can {Log} {
     let mut game = cities();
     let hex = bare_tile(&game, 2);
-    game.field_workers.push(FieldWorker { id: 100, team: Team.Blue, home: 0, base: game.cities[0].pos, pos: hex, job: Option.Some(WorkerJob.on_tile(hex, JobKind.Fort)), work_left: Option.Some(3), recalled: false });
+    game.field_workers.push(FieldWorker { id: 100, team: Team.Blue, home: 0, base: game.cities[0].pos, pos: hex, // A turn into the fort's four.
+        job: Option.Some(WorkerJob { hex, kind: JobKind.Fort, across: Option.None, done: 1 }), work_left: Option.Some(3), recalled: false });
     let around = hex.neighbors();
     let mut beside = hex;
     let mut found = false;
@@ -493,8 +646,9 @@ fn walls_around_a_tile_cut_its_goods_off() {
         let mut game = cities();
         let city = game.cities[0].pos;
         let mut tile: Option[Hex] = Option.None;
-        for w in 0..game.cities[0].worked.len() {
-            let h = game.cities[0].worked[w];
+        let worked = game.cities[0].worked_tiles();
+        for w in 0..worked.len() {
+            let h = worked[w];
             if tile.is_none() && h.distance(city) == 1 { tile = Option.Some(h); }
         }
         let Option.Some(tile) = tile else { assert(false); return; };
@@ -549,7 +703,7 @@ fn a_finished_worker_joins_the_city_at_home() {
         let mut game = cities();
         game.selected_city = Option.Some(0);
         game.queue_selected_city_worker();
-        assert(game.cities[0].queue.len() == 1 && game.cities[0].queue[0] == Build.Worker);
+        assert(game.cities[0].queue.len() == 1 && game.cities[0].queue[0].build == Build.Worker && !game.cities[0].queue[0].paid);
         game.debug_complete_current_production();
         assert(game.cities[0].workers == 2);
         assert(game.cities[0].queue.is_empty());

@@ -109,7 +109,7 @@ fn check_invariants(game: &GameState) can {Assert} {
     for c in 0..game.cities.len() {
         let city = &game.cities[c];
         assert(city.population >= 1);
-        assert(city.worked.len() <= city.population);
+        assert(city.working() <= city.population);
     }
 }
 
@@ -311,8 +311,10 @@ fn the_same_seed_replays_the_same_game() {
         for s in 0..SCENARIO_COUNT {
             assert(same(&replayed(SEEDS[0], SCENARIOS[s], 20), &replayed(SEEDS[0], SCENARIOS[s], 20)));
         }
-        // Anti-vacuity: the seed does drive the rolls. The armies meet on turn 2 and are gone
-        // within a few more, so compare right after the first clash.
-        assert(!same(&replayed(1, Scenario.Combat, 2), &replayed(2, Scenario.Combat, 2)));
+        // Anti-vacuity: the seed does drive the game, through the world's map.
+        assert(!same(&replayed(1, Scenario.World, 2), &replayed(2, Scenario.World, 2)));
+        // Combat has no random spread, so the fixed scenarios play the same on any seed. The
+        // armies meet on turn 2 and are gone within a few more: compare right after the clash.
+        assert(same(&replayed(1, Scenario.Combat, 2), &replayed(2, Scenario.Combat, 2)));
     });
 }

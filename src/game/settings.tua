@@ -267,8 +267,6 @@ impl GameState {
         if self.settings_open {
             self.settings_open = false;
         } else if self.exit_structure_menu() {
-        } else if self.worker_mode && self.placing_job.is_none() {
-            self.set_worker_mode(false);
         } else if !self.clear_selection() {
             self.settings_open = true;
         }

@@ -102,6 +102,8 @@ impl GameState {
         next.settings_open = self.settings_open;
         next.fog_of_war = self.fog_of_war;
         next.imgui_ui = self.imgui_ui;
+        next.production_speedup = self.production_speedup;
+        next.lifetime_special_cap = self.lifetime_special_cap;
         *self = next;
     }
 
@@ -141,6 +143,8 @@ impl GameState {
         restored.settings_open = self.settings_open;
         restored.fog_of_war = self.fog_of_war;
         restored.imgui_ui = self.imgui_ui;
+        restored.production_speedup = self.production_speedup;
+        restored.lifetime_special_cap = self.lifetime_special_cap;
         restored.notice = loaded;
         // The snapshot is kept: it moves into the restored game.
         swap(&mut restored.savestate, &mut self.savestate);
@@ -177,6 +181,12 @@ impl GameState {
         }
         GameState {
             cities,
+            stockpiles: copy_vec(&self.stockpiles),
+            production_speedup: self.production_speedup,
+            special_trained: copy_vec(&self.special_trained),
+            lifetime_special_cap: self.lifetime_special_cap,
+            supply_overruns: copy_strs(&self.supply_overruns),
+            extra_supply: copy_vec(&self.extra_supply),
             sites: copy_map(&self.sites),
             roads: copy_set(&self.roads),
             selected_city: self.selected_city,
@@ -217,7 +227,6 @@ impl GameState {
             interior_selected: self.interior_selected,
             exterior_camera: self.exterior_camera,
             moving_manager: self.moving_manager,
-            placing_building: self.placing_building,
             city_queue_scroll: self.city_queue_scroll,
             roster_open: Option.None,
             queue_drag: Option.None,
@@ -225,15 +234,22 @@ impl GameState {
             structures: copy_map(&self.structures),
             barriers: copy_map(&self.barriers),
             settlers: self.settlers.snapshot(),
-            worker_mode: self.worker_mode,
-            worker_menu_city: self.worker_menu_city,
             placing_job: self.placing_job,
             hovered_job: self.hovered_job,
             field_workers: copy_vec(&self.field_workers),
             player_controlled_units: self.player_controlled_units.snapshot(),
+            local_team: self.local_team,
+            humans: copy_vec(&self.humans),
+            refused_sites: copy_vec(&self.refused_sites),
             next_unit_id: self.next_unit_id,
         }
     }
+}
+
+fn copy_strs(strs: &Vec[Str]) -> Vec[Str] {
+    let mut out: Vec[Str] = Vec.new();
+    for i in 0..strs.len() { out.push(copy_str(&strs[i])); }
+    out
 }
 
 fn copy_units(units: &Vec[Unit]) -> Vec[Unit] {

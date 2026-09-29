@@ -42,6 +42,9 @@ impl Eq for Resource {
 }
 
 impl Resource {
+    /// Its place in `Resource` order, for tables indexed by resource.
+    pub fn index(self) -> i32 { match self { Resource.Horses => 0, Resource.Iron => 1 } }
+
     pub fn name(self) -> str {
         match self { Resource.Horses => "HORSES", Resource.Iron => "IRON" }
     }

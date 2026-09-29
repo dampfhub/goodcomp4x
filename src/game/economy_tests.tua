@@ -1,0 +1,391 @@
+//! The stockpile economy: what a turn's income, upkeep and work do to it, when a queued build is
+//! paid for and refunded, how a queue skips what it cannot afford, what the forecast promises,
+//! growth and starvation, and gathering.
+
+use std.collections.Map;
+use std.str.contains;
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.city.Build;
+use game.city.BuildUnit;
+use game.city.City;
+use game.city.GATHER_YIELD;
+use game.city.Lane;
+use game.city.MAX_CITY_POPULATION;
+use game.city.Queued;
+use game.city.Stock;
+use game.city.WORK_PER_TURN;
+use game.city.grow_price;
+use game.city.no_stock;
+use game.city.one_cluster;
+use game.city.stock_icons;
+use game.hex.Hex;
+use game.tests.sandbox;
+use game.unit.Team;
+
+fn notice_has(g: &GameState, want: &str) -> bool {
+    let n = &g.notice;
+    contains(n, want)
+}
+
+fn only_build(g: &GameState, city: i32, build: Build) -> bool {
+    g.cities[city].queue.len() == 1 && g.cities[city].queue[0].build == build
+}
+
+@test
+fn economy_ticks_once_into_the_stockpile_and_preserves_quarters() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.roads.clear();
+        let mut tiles: Vec[Hex] = Vec.new();
+        tiles.push(Hex.new(-1, 0));
+        g.cities[0].clusters = one_cluster(&tiles);
+        // The center's 2 food and 1 wood, and half of the plains' 2 food and 1 wood, which is a
+        // long haul away.
+        assert(g.income(0) == Stock { food: 12, wood: 6, metal: 0 });
+        // The turn waits until the city has something to build, since the stockpile could pay
+        // for something.
+        g.end_planning();
+        assert(!g.is_resolving());
+        g.queue_build(0, Build.Unit(BuildUnit.Siege));
+        // A Siege costs more wood and metal than the scenario starts with.
+        g.add_stock(Team.Blue, BuildUnit.Siege.price());
+        let before = g.stock(Team.Blue);
+        let upkeep = g.upkeep(Team.Blue);
+        g.end_planning();
+        g.update(1.0);
+        assert(g.cities[0].queue[0].progress == WORK_PER_TURN);
+        // Income in, upkeep out, and the Siege paid for as work on it starts.
+        let price = BuildUnit.Siege.price();
+        assert(g.stock(Team.Blue) == Stock { food: before.food + 12 - upkeep - price.food, wood: before.wood + 6 - price.wood, metal: before.metal - price.metal });
+        g.update(10.0);
+        assert(g.cities[0].queue[0].progress == WORK_PER_TURN);
+    });
+}
+
+@test
+fn builds_are_paid_when_work_starts_and_refunded_only_if_paid() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        let start = g.stock(Team.Blue);
+        g.queue_selected_city_unit(BuildUnit.Melee);
+        assert(only_build(&g, 0, Build.Unit(BuildUnit.Melee)));
+        assert(!g.cities[0].queue[0].paid);
+        // Nothing is paid while queued, and taken off unpaid it refunds nothing.
+        assert(g.stock(Team.Blue) == start);
+        g.remove_selected_city_queue_item(0);
+        assert(g.stock(Team.Blue) == start);
+        assert(notice_has(&g, "NOTHING TO REFUND"));
+
+        // The turn's economy pays for it as work on it starts.
+        g.queue_selected_city_unit(BuildUnit.Melee);
+        let expected = g.expected_stock(Team.Blue);
+        let red = g.expected_stock(Team.Red);
+        g.resolve_economy();
+        assert(g.cities[0].queue[0].paid);
+        assert(g.cities[0].queue[0].progress == WORK_PER_TURN);
+        assert(g.stock(Team.Blue) == expected.minus(BuildUnit.Melee.price()));
+        // Only the buyer pays.
+        assert(g.stock(Team.Red) == red);
+        // Taken off paid, it refunds its price; its work is lost.
+        g.remove_selected_city_queue_item(0);
+        assert(g.stock(Team.Blue) == expected);
+        assert(notice_has(&g, "- REFUNDED"));
+
+        // Short of wood, it's queued all the same and waits unpaid; the notice says what for.
+        g.set_stock(Team.Blue, Stock.whole(20, 0, 0));
+        g.queue_selected_city_unit(BuildUnit.Melee);
+        let short = g.expected_stock(Team.Blue).shortfall(BuildUnit.Melee.price());
+        assert(short.wood > 0 && short.food == 0);
+        let icons = stock_icons(short);
+        let waits = text(fn() can {Out} { Out.put("WAITS FOR "); Out.put(&icons); });
+        assert(notice_has(&g, &waits));
+        let expected = g.expected_stock(Team.Blue);
+        g.resolve_economy();
+        assert(g.cities[0].queue[0] == Queued.new(Build.Unit(BuildUnit.Melee)));
+        assert(g.stock(Team.Blue) == expected);
+
+        // Broke, a city still has something to do: gather, for free.
+        g.cities[0].queue.clear();
+        g.set_stock(Team.Blue, no_stock());
+        assert(g.city_needs_build(0));
+        g.queue_selected_city_gather();
+        assert(only_build(&g, 0, Build.Gather));
+        assert(g.stock(Team.Blue) == no_stock());
+        assert(!g.city_needs_build(0));
+    });
+}
+
+@test
+fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        // Wood for a Melee but no metal for the Siege ahead of it.
+        g.set_stock(Team.Blue, Stock.whole(20, 20, 0));
+        let siege = Build.Unit(BuildUnit.Siege);
+        let melee = Build.Unit(BuildUnit.Melee);
+        g.queue_selected_city_unit(BuildUnit.Siege);
+        assert(notice_has(&g, "WAITS FOR"));
+        g.queue_selected_city_unit(BuildUnit.Melee);
+        let forecast = g.forecast(Team.Blue);
+        let Option.Some(lane) = forecast.lane(0, Lane.City) else { assert(false); return; };
+        // The forecast skips to the Melee.
+        assert(lane.worked == Option.Some(1));
+        let short = g.waiting_items(lane);
+        assert(short.len() == 1);
+        assert(short[0].0 == 0);
+        // The Siege waits for metal.
+        assert(short[0].1.metal > 0);
+        assert(g.city_waits_for(&forecast, 0) == Option.Some(short[0].1));
+
+        let expected = g.expected_stock(Team.Blue);
+        g.resolve_economy();
+        // It waits, unpaid.
+        assert(g.cities[0].queue[0] == Queued.new(siege));
+        assert(g.cities[0].queue[1] == Queued.worked(melee, WORK_PER_TURN));
+        assert(g.stock(Team.Blue) == expected.minus(BuildUnit.Melee.price()));
+
+        // Metal arrives: the Siege, first in the queue, is paid for and worked the next turn,
+        // and the Melee keeps the work it had.
+        g.add_stock(Team.Blue, Stock { food: 0, wood: 0, metal: BuildUnit.Siege.price().metal });
+        let expected = g.expected_stock(Team.Blue);
+        g.resolve_economy();
+        assert(g.cities[0].queue[0] == Queued.worked(siege, WORK_PER_TURN));
+        assert(g.cities[0].queue[1] == Queued.worked(melee, WORK_PER_TURN));
+        assert(g.stock(Team.Blue) == expected.minus(BuildUnit.Siege.price()));
+        assert(g.city_waits_for(&g.forecast(Team.Blue), 0).is_none());
+    });
+}
+
+@test
+fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.cities.push(City.new(2, Team.Blue, Hex.new(-2, -3)));
+        let other = g.cities.len() - 1;
+        // Nothing comes in, and enough wood for one Melee: city 0 pays first, its city queue
+        // before its Barracks', and the others wait.
+        g.cities[0].clusters.clear();
+        g.cities[0].population = 1;
+        g.cities[other].clusters.clear();
+        g.cities[other].population = 1;
+        let melee = Build.Unit(BuildUnit.Melee);
+        g.cities[0].barracks = Option.Some(Hex.new(-3, 1));
+        g.queue_barracks(0, BuildUnit.Melee);
+        g.queue_build(0, melee);
+        g.queue_build(other, melee);
+        let income = g.side_income(Team.Blue);
+        let wood = BuildUnit.Melee.price().wood - income.wood;
+        g.set_stock(Team.Blue, Stock { food: 80, wood, metal: 0 });
+        let forecast = g.forecast(Team.Blue);
+        let Option.Some(city_lane) = forecast.lane(0, Lane.City) else { assert(false); return; };
+        let Option.Some(barracks_lane) = forecast.lane(0, Lane.Barracks) else { assert(false); return; };
+        let Option.Some(other_lane) = forecast.lane(other, Lane.City) else { assert(false); return; };
+        assert(city_lane.worked == Option.Some(0));
+        assert(barracks_lane.worked.is_none());
+        assert(other_lane.worked.is_none());
+        // Its Barracks waits.
+        assert(g.city_waits_for(&forecast, 0).is_some());
+        assert(g.city_waits_for(&forecast, other).is_some());
+
+        g.resolve_economy();
+        assert(g.cities[0].queue[0].paid);
+        assert(!g.cities[0].barracks_queue[0].paid);
+        assert(!g.cities[other].queue[0].paid);
+        assert(g.stock(Team.Blue).wood == 0);
+
+        // With wood for one more, the Barracks, next in order, pays.
+        g.set_stock(Team.Blue, Stock { food: g.stock(Team.Blue).food, wood, metal: 0 });
+        g.resolve_economy();
+        assert(g.cities[0].barracks_queue[0].paid);
+        // Still waiting.
+        assert(!g.cities[other].queue[0].paid);
+    });
+}
+
+/// Every item ahead of the one the forecast works waits unpaid; the one it works is paid for or
+/// finished. The forecast is checked against what the economy then does, over queues and
+/// stockpiles varied by a fixed formula.
+@test
+fn the_forecast_is_what_the_economy_then_does() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut base = GameState.city_scenario();
+        base.units.clear();
+        base.cities[0].barracks = Option.Some(Hex.new(-3, 1));
+        let builds = [Build.Unit(BuildUnit.Siege), Build.Grow, Build.Worker, Build.Unit(BuildUnit.Melee)];
+        let troops = [BuildUnit.Ranged, BuildUnit.Siege, BuildUnit.Melee];
+        for seed in 0..40 {
+            let mut game = base.snapshot();
+            for k in 0..(seed % 4 + 1) {
+                game.queue_build(0, builds[(seed * 7 + k * 3) % 4]);
+                game.queue_barracks(0, troops[(seed + k) % 3]);
+            }
+            let wood = (seed % 5) * 3;
+            game.set_stock(Team.Blue, Stock.whole(10, wood, (seed % 3) * 2));
+            let forecast = game.forecast(Team.Blue);
+            let city_len = game.cities[0].queue.len();
+            let barracks_len = game.cities[0].barracks_queue.len();
+            game.resolve_economy();
+            for l in 0..2 {
+                let lane = if l == 0 { Lane.City } else { Lane.Barracks };
+                let Option.Some(predicted) = forecast.lane(0, lane) else { assert(false); return; };
+                let len = if l == 0 { city_len } else { barracks_len };
+                for index in 0..len {
+                    // None: the item finished and left the queue.
+                    let paid: Option[bool] = if l == 0 {
+                        if index < game.cities[0].queue.len() { Option.Some(game.cities[0].queue[index].paid) } else { Option.None }
+                    } else {
+                        if index < game.cities[0].barracks_queue.len() { Option.Some(game.cities[0].barracks_queue[index].paid) } else { Option.None }
+                    };
+                    let ahead = match predicted.worked { Option.None => true, Option.Some(w) => index < w };
+                    if predicted.worked == Option.Some(index) {
+                        assert(paid != Option.Some(false));
+                    } else if ahead {
+                        assert(paid == Option.Some(false));
+                    }
+                }
+            }
+            assert(game.stock(Team.Blue).wood >= 0 && game.stock(Team.Blue).metal >= 0);
+        }
+    });
+}
+
+@test
+fn a_build_takes_its_fixed_turns_whatever_the_city_produces() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut rich = GameState.city_scenario();
+        rich.units.clear();
+        rich.fund(Team.Blue);
+        let mut poor = rich.snapshot();
+        poor.cities[0].clusters.clear();
+        for pass in 0..2 {
+            let g = if pass == 0 { &mut rich } else { &mut poor };
+            g.queue_build(0, Build.Unit(BuildUnit.Melee));
+            let turns = g.city_build_turns(0, Build.Unit(BuildUnit.Melee));
+            for _ in 0..(turns - 1) {
+                g.resolve_economy();
+                assert(g.cities[0].queue.len() == 1);
+            }
+        }
+    });
+}
+
+@test
+fn growth_is_bought_with_food_when_it_starts_and_takes_its_turns() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        let population = g.cities[0].population;
+        let stock = g.stock(Team.Blue);
+        g.set_stock(Team.Blue, Stock { food: 1000, wood: stock.wood, metal: stock.metal });
+        g.queue_selected_city_growth();
+        g.queue_selected_city_growth();
+        // Nothing is paid while queued.
+        assert(g.stock(Team.Blue).food == 1000);
+        // A third would be priced for the bigger city the two ahead make.
+        assert(g.queue_price(0, Build.Grow) == grow_price(population + 2));
+        // The first is paid as work on it starts, at the population now.
+        let food = g.expected_stock(Team.Blue).food;
+        g.resolve_economy();
+        assert(g.cities[0].queue[0].paid && !g.cities[0].queue[1].paid);
+        assert(g.stock(Team.Blue).food == food - grow_price(population).food);
+        // The second, unpaid, refunds nothing taken off.
+        let food = g.stock(Team.Blue).food;
+        g.remove_selected_city_queue_item(1);
+        assert(g.stock(Team.Blue).food == food);
+        assert(g.cities[0].population == population);
+        g.resolve_economy();
+        assert(g.cities[0].population == population + 1);
+        // The citizen works.
+        assert(g.cities[0].working() == population + 1);
+
+        // No Grow past the cap, counting those queued.
+        g.cities[0].population = MAX_CITY_POPULATION - 1;
+        g.queue_selected_city_growth();
+        assert(only_build(&g, 0, Build.Grow));
+        g.queue_selected_city_growth();
+        assert(only_build(&g, 0, Build.Grow));
+        assert(!g.can_grow(0));
+    });
+}
+
+@test
+fn a_grow_is_priced_when_paid_a_citizen_up_for_each_grow_already_paid() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        let population = g.cities[0].population;
+        g.set_stock(Team.Blue, Stock.whole(1000, 10, 4));
+        // A Grow under way, and one dragged ahead of it: the city works the unpaid one first, and
+        // pays for it as the second citizen coming.
+        g.cities[0].queue.clear();
+        g.cities[0].queue.push(Queued.worked(Build.Grow, WORK_PER_TURN));
+        g.cities[0].queue.push(Queued.new(Build.Grow));
+        g.move_selected_city_queue_item(1, true);
+        let food = g.expected_stock(Team.Blue).food;
+        g.resolve_economy();
+        assert(g.cities[0].queue[0].paid && g.cities[0].queue[1].paid);
+        assert(g.cities[0].queue[0].progress == WORK_PER_TURN);
+        // The other keeps its work.
+        assert(g.cities[0].queue[1].progress == WORK_PER_TURN);
+        assert(g.stock(Team.Blue).food == food - grow_price(population + 1).food);
+        // Either taken off refunds the dearer price, leaving the other paid for the population
+        // now.
+        let food = g.stock(Team.Blue).food;
+        g.remove_selected_city_queue_item(1);
+        assert(g.stock(Team.Blue).food == food + grow_price(population + 1).food);
+    });
+}
+
+@test
+fn a_side_that_cannot_feed_its_citizens_starves_its_largest_city() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        let mut big = City.new(2, Team.Blue, Hex.new(-2, -3));
+        big.population = 3;
+        g.cities.push(big);
+        let stock = g.stock(Team.Blue);
+        g.set_stock(Team.Blue, Stock { food: 0, wood: stock.wood, metal: stock.metal });
+        g.feed_citizens();
+        // The stockpile empties; the smaller city keeps its own, the largest loses one, and the
+        // other side ate.
+        assert(g.stock(Team.Blue).food == 0);
+        assert(g.cities[0].population == 2);
+        assert(g.cities[2].population == 2);
+        assert(g.cities[1].population == 2);
+        // Never below one.
+        g.cities[0].population = 1;
+        g.cities[2].population = 1;
+        g.feed_citizens();
+        assert(g.cities[0].population == 1 && g.cities[2].population == 1);
+    });
+}
+
+@test
+fn gathering_is_free_and_fills_the_stockpile_in_a_turn() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.city_scenario();
+        g.units.clear();
+        g.selected_city = Option.Some(0);
+        let start = g.stock(Team.Blue);
+        g.queue_selected_city_gather();
+        assert(g.stock(Team.Blue) == start);
+        assert(g.city_build_turns(0, Build.Gather) == 1);
+        g.cities[0].queue[0] = Queued.worked(Build.Gather, Build.Gather.work());
+        g.complete_builds();
+        assert(g.cities[0].queue.is_empty());
+        assert(g.stock(Team.Blue) == start.plus(GATHER_YIELD));
+    });
+}

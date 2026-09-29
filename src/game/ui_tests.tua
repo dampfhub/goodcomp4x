@@ -12,6 +12,8 @@ use std.test.Assert;
 use log.Log;
 use game.GameState;
 use game.city.Build;
+use game.city.Queued;
+use game.tests.queued_has;
 use game.city.Building;
 use game.city.BuildUnit;
 use game.hex.Hex;
@@ -46,7 +48,7 @@ use game.unit.Team;
 use game.unit.UnitType;
 
 const SCREEN_W: f32 = 1600.0;
-const SCREEN_H: f32 = 900.0;
+const SCREEN_H: f32 = 1080.0;
 
 fn screen() -> Vec2 { vec2(SCREEN_W, SCREEN_H) }
 
@@ -201,13 +203,15 @@ fn build_card_queues_its_unit() {
         let ranged = Target.Build(BuildUnit.Ranged);
         game.handle_click(button_cursor(&game, ranged), screen(), ClickMode.Normal);
         let city = game.selected_city.unwrap_or(0 - 1);
-        assert(game.cities[city].queue.len() == 1 && game.cities[city].queue[0] == Build.Unit(BuildUnit.Ranged));
+        assert(game.cities[city].queue.len() == 1 && game.cities[city].queue[0].build == Build.Unit(BuildUnit.Ranged));
     });
 }
 
 /// The city scenario with the player's city open and the camera settled on it.
 fn city_view() -> GameState can {Log, Rand} {
     let mut game = GameState.city_scenario();
+    // Enough in the stockpile for whatever a test queues.
+    game.fund(Team.Blue);
     game.select_city();
     game.update(10.0);
     game
@@ -308,13 +312,11 @@ fn label_is(label: Str, want: str) -> bool { str_eq(&label, want) }
 fn end_turn_button_names_what_is_waiting() {
     sandbox(fn() can {Log, Rand, Assert} {
         // Production first, then idle workers, then units: the turn's order.
-        assert(label_is(end_turn_label(3, 1, 2), "CHOOSE PRODUCTION"));
-        assert(label_is(end_turn_label(0, 2, 0), "2 CITIES NEED PRODUCTION"));
-        assert(label_is(end_turn_label(3, 0, 1), "WORKER NEEDS A JOB"));
-        assert(label_is(end_turn_label(3, 0, 2), "2 WORKERS NEED JOBS"));
-        assert(label_is(end_turn_label(3, 0, 0), "3 UNITS NEED ORDERS"));
-        assert(label_is(end_turn_label(1, 0, 0), "UNIT NEEDS ORDERS"));
-        assert(label_is(end_turn_label(0, 0, 0), "END TURN"));
+        assert(label_is(end_turn_label(3, 1), "CHOOSE PRODUCTION"));
+        assert(label_is(end_turn_label(0, 2), "2 CITIES NEED PRODUCTION"));
+        assert(label_is(end_turn_label(3, 0), "3 UNITS NEED ORDERS"));
+        assert(label_is(end_turn_label(1, 0), "UNIT NEEDS ORDERS"));
+        assert(label_is(end_turn_label(0, 0), "END TURN"));
 
         let game = GameState.new();
         let layout = game.layout(screen());
@@ -561,12 +563,11 @@ fn play_turn_out(game: &mut GameState) can {Log, Rand, Assert} {
     while game.is_resolving() { game.update(10.0); }
 }
 
-fn queued(game: &GameState, city: i32, building: Building) -> bool { game.cities[city].queue.contains(Build.Building(building)) }
-
 @test
 fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.naval_scenario();
+        game.fund(Team.Blue);
         game.select_city();
         let ships = [BuildUnit.PatrolGalley, BuildUnit.LandingCraft, BuildUnit.BombardShip];
         for k in 0..3 {
@@ -577,123 +578,7 @@ fn harbor_reveals_naval_build_cards_in_the_shared_city_tray() {
         }
         game.handle_click(button_cursor(&game, Target.Build(BuildUnit.LandingCraft)), screen(), ClickMode.Normal);
         let city = game.selected_city.unwrap_or(0 - 1);
-        assert(game.cities[city].queue.contains(Build.Unit(BuildUnit.LandingCraft)));
-    });
-}
-
-@test
-fn ending_the_turn_while_choosing_a_site_leaves_no_preview_on_the_map() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut game = city_view();
-        game.units.clear();
-        let city = game.selected_city.unwrap_or(0 - 1);
-        // Something else to build, so the city isn't left empty-handed.
-        game.queue_selected_city_worker();
-        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
-        assert(game.placing(city, Building.Barracks) && game.site_placement().is_some());
-        play_turn_out(&mut game);
-        assert(game.selected_city.is_none());
-        assert(game.site_placement().is_none());
-        assert(game.placing_building.is_none());
-        // A Barracks with no site is taken back out of the queue.
-        assert(!queued(&game, city, Building.Barracks));
-    });
-}
-
-@test
-fn a_building_finished_with_its_city_closed_picks_its_site_when_reopened() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut game = city_view();
-        game.units.clear();
-        let city = game.selected_city.unwrap_or(0 - 1);
-        // A Barracks queued with no site and not being placed.
-        game.cities[city].queue.push(Build.Building(Building.Barracks));
-        assert(game.exit_structure_menu());
-        game.cities[city].production = Building.Barracks.cost();
-        play_turn_out(&mut game);
-        // Paid for, the Barracks waits for a site.
-        assert(game.cities[city].pending_building == Option.Some(Building.Barracks));
-        // Finishing it during the turn starts no placement with no city open.
-        assert(game.placing_building.is_none());
-        assert(game.site_placement().is_none());
-
-        // Opening the city resumes choosing the site, and the card isn't dead.
-        game.open_city(city);
-        game.update(10.0);
-        assert(game.placing(city, Building.Barracks) && game.site_placement().is_some());
-        assert(!building_card_is(&game, Building.Barracks, ButtonState.Disabled));
-        let site = Hex.new(-2, 0);
-        assert(game.site_available(city, Building.Barracks, site));
-        let _ours = game.city_click(site);
-        game.confirm_building(Building.Barracks);
-        assert(game.cities[city].barracks == Option.Some(site));
-    });
-}
-
-@test
-fn escape_while_choosing_a_site_cancels_the_building() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut game = city_view();
-        game.units.clear();
-        let city = game.selected_city.unwrap_or(0 - 1);
-        assert(building_card_is(&game, Building.Barracks, ButtonState.Ready));
-        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
-        assert(queued(&game, city, Building.Barracks));
-
-        // The first Escape only cancels choosing the site, and the Barracks.
-        assert(game.exit_structure_menu());
-        // The city stays open.
-        assert(game.selected_city == Option.Some(city));
-        assert(game.site_placement().is_none());
-        assert(!queued(&game, city, Building.Barracks));
-        assert(building_card_is(&game, Building.Barracks, ButtonState.Ready));
-
-        // End Turn mid-placement cancels it, and the city, left with nothing to build, asks
-        // for something instead of ending the turn.
-        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
-        game.end_planning();
-        assert(!game.is_resolving());
-        assert(game.selected_city == Option.Some(city));
-        assert(!queued(&game, city, Building.Barracks));
-
-        // Closing the city mid-placement cancels it too.
-        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
-        game.leave_city_view();
-        game.open_city(city);
-        game.update(10.0);
-        assert(!queued(&game, city, Building.Barracks));
-        assert(game.site_placement().is_none());
-        assert(building_card_is(&game, Building.Barracks, ButtonState.Ready));
-
-        // With its site chosen, the card is spent until the Barracks is removed.
-        game.handle_click(button_cursor(&game, Target.Building(Building.Barracks)), screen(), ClickMode.Normal);
-        let _ours = game.city_click(Hex.new(-2, 0));
-        // Nothing to cancel: Escape closes.
-        assert(game.exit_structure_menu());
-        assert(game.selected_city.is_none());
-        // A Barracks with a site stays queued.
-        assert(queued(&game, city, Building.Barracks));
-        game.open_city(city);
-        assert(building_card_is(&game, Building.Barracks, ButtonState.Disabled));
-        let at = game.cities[city].queue.index_of(Build.Building(Building.Barracks));
-        game.remove_selected_city_queue_item(at);
-        assert(building_card_is(&game, Building.Barracks, ButtonState.Ready));
-    });
-}
-
-@test
-fn opening_another_view_drops_the_site_placement() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut game = city_view();
-        game.units.clear();
-        let city = game.selected_city.unwrap_or(0 - 1);
-        game.cities[city].barracks = Option.Some(Hex.new(-2, 0));
-        game.queue_selected_city_building(Building.Mill);
-        assert(game.placing(city, Building.Mill) && game.site_placement().is_some());
-        game.open_barracks(city);
-        assert(game.site_placement().is_none());
-        assert(game.placing_building.is_none());
-        assert(!queued(&game, city, Building.Mill));
+        assert(queued_has(&game.cities[city].queue, Build.Unit(BuildUnit.LandingCraft)));
     });
 }
 
@@ -720,61 +605,12 @@ fn job_button_armed(game: &GameState, kind: JobKind) -> bool {
 }
 
 @test
-fn the_city_panel_opens_the_worker_menu_and_done_closes_it() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut game = GameState.city_scenario();
-        game.select_city();
-        game.handle_click(button_cursor(&game, Target.WorkerMode), screen(), ClickMode.Normal);
-        assert(game.worker_mode);
-        assert(game.selected_city.is_none());
-        game.handle_click(button_cursor(&game, Target.WorkerMode), screen(), ClickMode.Normal);
-        assert(!game.worker_mode);
-    });
-}
-
-@test
-fn the_worker_menu_places_a_picked_job_on_the_map() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let (mut game, hex) = empty_tile_near_blue_city();
-        game.toggle_worker_mode();
-        let layout = game.layout(screen());
-        for k in 0..6 {
-            let Option.Some(i) = layout.button_for(Target.WorkerJob(JOB_KINDS[k])) else { assert(false); return; };
-            let button = &layout.buttons[i];
-            // Every job's button sits inside its panel.
-            let mut inside = false;
-            for p in 0..layout.panels.len() {
-                let r = layout.panels[p];
-                if r.min.x <= button.min.x && r.min.y <= button.min.y && button.max.x <= r.max.x && button.max.y <= r.max.y { inside = true; }
-            }
-            assert(inside);
-        }
-        // With nothing picked, a map click places nothing.
-        game.handle_map_click(hex_cursor(&game, hex), screen(), ClickMode.Normal);
-        assert(game.cities[0].worker_jobs.is_empty());
-        game.handle_click(button_cursor(&game, Target.WorkerJob(JobKind.Road)), screen(), ClickMode.Normal);
-        assert(game.placing_job == Option.Some(JobKind.Road));
-        // The button shows it's picked.
-        assert(job_button_armed(&game, JobKind.Road));
-        game.handle_map_click(hex_cursor(&game, hex), screen(), ClickMode.Normal);
-        assert(game.cities[0].worker_jobs.len() == 1);
-        assert(game.cities[0].worker_jobs[0].hex == hex && game.cities[0].worker_jobs[0].kind == JobKind.Road);
-        // Still picked, for the next one.
-        assert(job_button_armed(&game, JobKind.Road));
-        // Picking it again puts it down.
-        game.handle_click(button_cursor(&game, Target.WorkerJob(JobKind.Road)), screen(), ClickMode.Normal);
-        assert(game.placing_job.is_none());
-    });
-}
-
-@test
 fn a_wall_is_placed_by_dragging_along_hex_edges() {
     sandbox(fn() can {Log, Rand, Assert} {
         let (mut game, hex) = empty_tile_near_blue_city();
-        game.toggle_worker_mode();
-        game.handle_click(button_cursor(&game, Target.WorkerJob(JobKind.Wall)), screen(), ClickMode.Normal);
+        game.open_city(0);
+        game.arm_worker_job(JobKind.Wall);
         assert(game.placing_job == Option.Some(JobKind.Wall));
-        assert(job_button_armed(&game, JobKind.Wall));
 
         // Drag across the midpoints of three of the hex's edges, as the mouse would pass over
         // them.
@@ -797,12 +633,14 @@ fn a_wall_is_placed_by_dragging_along_hex_edges() {
         }
 
         // A press on the panel itself doesn't place anything through it.
-        assert(!game.paint_job_at(button_cursor(&game, Target.WorkerJob(JobKind.Wall)), screen(), true));
+        let tray = game.layout(screen()).panels[0];
+        let on_tray = tray.min.add(tray.max).scale(0.5);
+        assert(!game.paint_job_at(to_ui(on_tray, screen()), screen(), true));
 
         // Escape stops placing but leaves the worker menu open.
         game.press_escape();
         assert(game.placing_job.is_none());
-        assert(game.worker_mode);
+        assert(game.selected_city == Option.Some(0));
         let at = game.camera.world_to_screen(hex.to_world().add(sides[0].to_world()).scale(0.5), screen());
         assert(!game.paint_job_at(at, screen(), false));
     });
@@ -937,17 +775,17 @@ fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
         let region = &first.catalogs[0];
         assert(region.max_offset > 0);
         let cursor = ui_center(region.min, region.max);
-        assert(shows_button(&first, Target.Building(Building.Granary)));
-        assert(!shows_button(&first, Target.Building(Building.Railhead)));
+        assert(shows_button(&first, Target.Building(Building.Mill)));
+        assert(!shows_button(&first, Target.WorkerJob(JOB_KINDS[5])));
         assert(game.scroll_buildings_at(cursor, screen(), -20.0));
         let scrolled = game.layout(screen());
-        let Option.Some(k) = scrolled.button_for(Target.Building(Building.Railhead)) else { assert(false); return; };
+        let Option.Some(k) = scrolled.button_for(Target.WorkerJob(JOB_KINDS[5])) else { assert(false); return; };
         let card = &scrolled.buttons[k];
         let middle = card.min.add(card.max).scale(0.5);
         assert(scrolled.button_at(middle) == Option.Some(k));
         let inside = &scrolled.catalogs[0];
         assert(contains_point(inside.min, inside.max, middle));
-        assert(!shows_button(&scrolled, Target.Building(Building.Harbor)));
+        assert(!shows_button(&scrolled, Target.Building(Building.Mill)));
     });
 }
 
@@ -1011,7 +849,7 @@ fn barracks_queue_uses_the_same_scroll_window() {
         let Option.Some(city) = game.selected_city else { assert(false); return; };
         game.cities[city].barracks = Option.Some(Hex.new(-2, 0));
         game.open_barracks(city);
-        for _ in 0..12 { game.cities[city].barracks_queue.push(BuildUnit.Melee); }
+        for _ in 0..30 { game.cities[city].barracks_queue.push(Queued.new(BuildUnit.Melee)); }
         let layout = game.layout(screen());
         assert(!layout.queue_scrollbars.is_empty());
         let scroll = &layout.queue_scrollbars[0];
@@ -1041,9 +879,9 @@ fn classic_queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = city_view();
         let Option.Some(city) = game.selected_city else { assert(false); return; };
-        game.cities[city].queue.push(Build.Unit(BuildUnit.Melee));
-        game.cities[city].queue.push(Build.Unit(BuildUnit.Ranged));
-        game.cities[city].queue.push(Build.Unit(BuildUnit.Siege));
+        game.cities[city].queue.push(Queued.new(Build.Unit(BuildUnit.Melee)));
+        game.cities[city].queue.push(Queued.new(Build.Unit(BuildUnit.Ranged)));
+        game.cities[city].queue.push(Queued.new(Build.Unit(BuildUnit.Siege)));
         let from = row_cursor(&game, QueueKind.City, 2);
         let to = row_cursor(&game, QueueKind.City, 0);
         assert(game.start_queue_drag_at(from, screen()));
@@ -1052,7 +890,7 @@ fn classic_queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
         let over = match game.queue_drag { Option.Some(d) => d.target == Option.Some(0), Option.None => false };
         assert(over);
         game.finish_queue_drag_at(to, screen());
-        assert(game.cities[city].queue[0] == Build.Unit(BuildUnit.Siege));
+        assert(game.cities[city].queue[0].build == Build.Unit(BuildUnit.Siege));
         assert(game.queue_drag.is_none());
         // The X takes a click of its own: it starts no drag.
         let x = button_cursor(&game, Target.QueueRemove(1));
@@ -1063,37 +901,22 @@ fn classic_queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
 }
 
 @test
-fn classic_ready_city_building_cannot_be_dragged_out_of_first_place() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut game = city_view();
-        let Option.Some(city) = game.selected_city else { assert(false); return; };
-        game.cities[city].queue.push(Build.Building(Building.Workshop));
-        game.cities[city].queue.push(Build.Unit(BuildUnit.Melee));
-        game.cities[city].pending_building = Option.Some(Building.Workshop);
-        assert(!game.start_queue_drag_at(row_cursor(&game, QueueKind.City, 0), screen()));
-        assert(game.start_queue_drag_at(row_cursor(&game, QueueKind.City, 1), screen()));
-        game.finish_queue_drag_at(row_cursor(&game, QueueKind.City, 0), screen());
-        assert(game.cities[city].queue[0] == Build.Building(Building.Workshop));
-    });
-}
-
-@test
 fn classic_barracks_queue_rows_use_the_same_drag_and_remove_targets() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = city_view();
         let Option.Some(city) = game.selected_city else { assert(false); return; };
         game.cities[city].barracks = Option.Some(Hex.new(-2, 0));
         game.open_barracks(city);
-        game.cities[city].barracks_queue.push(BuildUnit.Melee);
-        game.cities[city].barracks_queue.push(BuildUnit.Ranged);
+        game.cities[city].barracks_queue.push(Queued.new(BuildUnit.Melee));
+        game.cities[city].barracks_queue.push(Queued.new(BuildUnit.Ranged));
         assert(game.start_queue_drag_at(row_cursor(&game, QueueKind.Barracks, 1), screen()));
         game.finish_queue_drag_at(row_cursor(&game, QueueKind.Barracks, 0), screen());
-        assert(game.cities[city].barracks_queue[0] == BuildUnit.Ranged);
+        assert(game.cities[city].barracks_queue[0].build == BuildUnit.Ranged);
         let x = button_cursor(&game, Target.BarracksQueueRemove(1));
         assert(!game.start_queue_drag_at(x, screen()));
         game.handle_click(x, screen(), ClickMode.Normal);
         assert(game.cities[city].barracks_queue.len() == 1);
-        assert(game.cities[city].barracks_queue[0] == BuildUnit.Ranged);
+        assert(game.cities[city].barracks_queue[0].build == BuildUnit.Ranged);
     });
 }
 
@@ -1101,14 +924,14 @@ fn classic_barracks_queue_rows_use_the_same_drag_and_remove_targets() {
 fn queue_row_count_tracks_available_screen_height() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = city_view();
-        for _ in 0..12 { game.queue_selected_city_unit(BuildUnit.Melee); }
+        for _ in 0..30 { game.queue_selected_city_unit(BuildUnit.Melee); }
         let mut counts: Vec[i32] = Vec.new();
         for k in 0..3 {
-            let height = if k == 0 { 820.0 } else if k == 1 { 900.0 } else { 1200.0 };
+            let height = if k == 0 { 1300.0 } else if k == 1 { 1500.0 } else { 1800.0 };
             let size = vec2(1600.0, height);
             let layout = game.layout(size);
             let mut count = 0;
-            for i in 0..12 { if shows_button(&layout, Target.QueueRemove(i)) { count = count + 1; } }
+            for i in 0..30 { if shows_button(&layout, Target.QueueRemove(i)) { count = count + 1; } }
             assert(!layout.queue_scrollbars.is_empty());
             let queue = &layout.queue_scrollbars[0];
             assert(queue.panel_max.y <= height - 52.0 - 4.0);
@@ -1144,12 +967,13 @@ fn road_neighbour(game: &GameState, hex: Hex) -> Hex {
 fn worker_jobs_reorder_by_dragging_and_x_removes_one() {
     sandbox(fn() can {Log, Rand, Assert} {
         let (mut game, first) = empty_tile_near_blue_city();
+        game.open_city(0);
         let second = road_neighbour(&game, first);
         assert(second != first);
         game.placing_job = Option.Some(JobKind.Road);
         assert(game.place_job_at(first, Option.None));
         assert(game.place_job_at(second, Option.None));
-        game.toggle_worker_mode();
+        game.open_city(0);
         assert(game.cities[0].worker_jobs[0].hex == first);
         assert(game.start_queue_drag_at(row_cursor(&game, QueueKind.Workers, 1), screen()));
         game.finish_queue_drag_at(row_cursor(&game, QueueKind.Workers, 0), screen());

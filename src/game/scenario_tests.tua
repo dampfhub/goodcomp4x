@@ -200,7 +200,7 @@ fn cities_work_water_but_goods_never_cross_it() {
                 assert(land_beside);
             }
             // The manager stands on land.
-            assert(!game.grid.terrain(game.cities[0].worked[0]).is_water());
+            assert(!game.grid.terrain(game.cities[0].clusters[0].manager).is_water());
             checked = true;
         }
         assert(checked);

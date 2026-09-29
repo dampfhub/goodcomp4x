@@ -1,8 +1,19 @@
 //! Settlers: founding cities. Workers live with their cities (`workers.tua`).
 
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.str.Str;
+use std.str.to_owned;
+use log.Log;
+use log.info;
 use game.GameState;
-use game.PLAYER_TEAM;
+use game.text;
 use game.city.City;
+use game.hex.Hex;
+use game.unit.Team;
+
+/// How close a new city may be to any other, of any side: at least this many hexes apart.
+pub const MIN_CITY_DISTANCE: i32 = 6;
 
 impl GameState {
     /// F or the Found City button: the selected settler becomes a city on its hex.
@@ -13,24 +24,55 @@ impl GameState {
             return;
         };
         let (unit_id, unit_team, pos) = (self.units[index].id, self.units[index].team, self.units[index].pos);
-        if unit_team != PLAYER_TEAM || !self.settlers.contains(unit_id) {
+        if unit_team != self.local_team || !self.settlers.contains(unit_id) {
             self.set_notice("ONLY A SETTLER CAN FOUND A CITY");
             return;
         }
+        if let Option.Some(why) = self.founding_issue(pos) {
+            self.notice = why;
+            return;
+        }
+        self.selected = Option.None;
+        let city = self.found_city(unit_id, unit_team, pos);
+        self.selected_city = Option.Some(city);
+        self.set_notice("CITY FOUNDED - CHOOSE WHAT IT BUILDS");
+    }
+
+    /// Why no city can be founded on `hex`, if none can: only on passable land, not water or ruins,
+    /// not a hex an enemy contests, and at least `MIN_CITY_DISTANCE` hexes from every other city,
+    /// whoever's. A settler stands on its hex, so its side knows the ground; a city it hasn't seen
+    /// still counts.
+    pub fn founding_issue(&self, hex: Hex) -> Option[Str] {
+        if !self.grid.contains(hex) || !self.grid.is_passable(hex) || self.grid.terrain(hex).is_water() {
+            return Option.Some(to_owned("A CITY STANDS ON OPEN LAND"));
+        }
+        if self.ruin_at(hex).is_some() { return Option.Some(to_owned("NOT ON RUINS: CLAIM THEM FIRST")); }
+        // The enemy would be left standing on the new city's center.
+        if self.is_contested(hex) { return Option.Some(to_owned("NOT IN A CONTESTED HEX: DRIVE THE ENEMY OFF FIRST")); }
         for i in 0..self.cities.len() {
-            if self.cities[i].pos.distance(pos) < 3 {
-                self.set_notice("TOO CLOSE TO ANOTHER CITY");
-                return;
+            if self.cities[i].pos.distance(hex) < MIN_CITY_DISTANCE {
+                return Option.Some(text(fn() can {Out} { Out.put("TOO CLOSE TO ANOTHER CITY - CITIES STAND "); show_i64(MIN_CITY_DISTANCE as i64); Out.put(" HEXES APART"); }));
             }
         }
+        Option.None
+    }
+
+    /// Settler `settler` of `team` founds a city on `pos`, where it stands, and is gone. The city
+    /// starts at population 1 and assigns its citizen. Its side's first city comes with a worker,
+    /// as a starting city does; any other starts without one. Answers the city's index.
+    pub fn found_city(&mut self, settler: u32, team: Team, pos: Hex) -> i32 {
+        let mut first = true;
+        for i in 0..self.cities.len() { if self.cities[i].team == team { first = false; } }
+        let mut at: Option[i32] = Option.None;
+        for u in 0..self.units.len() { if at.is_none() && self.units[u].id == settler { at = Option.Some(u); } }
+        if let Option.Some(u) = at { let _settler = self.units.remove(u); }
+        self.settlers.remove(settler);
         let id = self.cities.len() as u32;
-        self.cities.push(City.new(id, unit_team, pos));
-        self.settlers.remove(unit_id);
-        let _settler = self.units.remove(index);
-        self.selected = Option.None;
-        let city = self.cities.len() - 1;
-        self.auto_assign_city(city);
-        self.selected_city = Option.Some(city);
-        self.set_notice("CITY FOUNDED - PRESS 1-4 TO BUILD A UNIT");
+        let mut city = City.new(id, team, pos);
+        city.workers = if first { 1 } else { 0 };
+        self.cities.push(city);
+        let index = self.cities.len() - 1;
+        self.auto_assign_city(index);
+        index
     }
 }

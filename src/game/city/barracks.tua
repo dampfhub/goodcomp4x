@@ -1,0 +1,133 @@
+//! Barracks as the side's military building (`docs/rts-economy.md`): they train troops faster
+//! than a city center (`CITY_TRAINING_SLOWDOWN`), and only they train Cavalry and Armored, which
+//! draw on Horses and Iron deposits: a Barracks on the deposit (or beside a Stable or Forge on or
+//! next to it) can train `UNITS_PER_DEPOSIT` of them per deposit its side holds. By default the
+//! cap counts those alive and queued, so a deposit keeps its worth all game and a lost unit can
+//! be replaced; the Debug panel's lifetime cap counts every one ever trained instead.
+
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.str.Str;
+use game.GameState;
+use game.text;
+use game.city.BuildUnit;
+use game.city.Building;
+use game.city.supply.troop_supply;
+use game.hex.Hex;
+use game.terrain.Resource;
+use game.unit.Team;
+
+/// Cavalry or Armored a side may have per Horses or Iron deposit its Barracks use.
+pub const UNITS_PER_DEPOSIT: i32 = 3;
+/// How many times longer a city center takes to train a land troop than a Barracks.
+pub const CITY_TRAINING_SLOWDOWN: i32 = 2;
+
+/// Puts `hex` into `deposits`, which stays sorted by `(q, r)` and without repeats.
+fn add_sorted(deposits: &mut Vec[Hex], hex: Hex) {
+    let mut at = 0;
+    while at < deposits.len() {
+        let d = deposits[at];
+        if d == hex { return; }
+        if hex.q < d.q || (hex.q == d.q && hex.r < d.r) { break; }
+        at = at + 1;
+    }
+    deposits.insert(at, hex);
+}
+
+impl GameState {
+    /// The deposits of `resource` city `city`'s Barracks draws on: the one under it, and those on
+    /// or next to a Stable (Horses) or Forge (Iron) beside it. Held or not.
+    pub fn barracks_deposits(&self, city: i32, resource: Resource) -> Vec[Hex] {
+        let c = &self.cities[city];
+        let mut deposits: Vec[Hex] = Vec.new();
+        let Option.Some(barracks) = c.barracks else { return deposits; };
+        if self.grid.resource(barracks) == Option.Some(resource) { add_sorted(&mut deposits, barracks); }
+        let support = if resource == Resource.Horses { Building.Stable } else { Building.Forge };
+        if let Option.Some(site) = c.placed_site(support) {
+            if site.distance(barracks) == 1 {
+                if self.grid.contains(site) && self.grid.resource(site) == Option.Some(resource) { add_sorted(&mut deposits, site); }
+                let around = site.neighbors();
+                for k in 0..6 {
+                    if self.grid.contains(around[k]) && self.grid.resource(around[k]) == Option.Some(resource) { add_sorted(&mut deposits, around[k]); }
+                }
+            }
+        }
+        deposits
+    }
+
+    /// The deposits of `resource` `team`'s Barracks draw on, leaving out any an enemy unit stands
+    /// on: taking a deposit takes its units away.
+    pub fn side_deposits(&self, team: Team, resource: Resource) -> Vec[Hex] {
+        let mut deposits: Vec[Hex] = Vec.new();
+        for city in 0..self.cities.len() {
+            if self.cities[city].team != team { continue; }
+            let held = self.barracks_deposits(city, resource);
+            for k in 0..held.len() {
+                if self.enemy_of_team_at(held[k], team).is_none() { add_sorted(&mut deposits, held[k]); }
+            }
+        }
+        deposits
+    }
+
+    /// How many troops needing `resource` `team` may have: `UNITS_PER_DEPOSIT` per deposit it
+    /// holds.
+    pub fn special_cap(&self, team: Team, resource: Resource) -> i32 { UNITS_PER_DEPOSIT * self.side_deposits(team, resource).len() }
+
+    /// What counts against `team`'s cap for `resource`: its Barracks' queued troops needing it,
+    /// and those trained from it that are alive (or, with the lifetime cap, ever trained).
+    pub fn special_used(&self, team: Team, resource: Resource) -> i32 {
+        let mut queued = 0;
+        for i in 0..self.cities.len() {
+            if self.cities[i].team != team { continue; }
+            for k in 0..self.cities[i].barracks_queue.len() {
+                if self.cities[i].barracks_queue[k].build.required_resource() == Option.Some(resource) { queued = queued + 1; }
+            }
+        }
+        let mut trained = 0;
+        if self.lifetime_special_cap {
+            trained = self.special_trained[team.index() * 2 + resource.index()];
+        } else {
+            for u in 0..self.units.len() {
+                if self.units[u].team == team && self.units[u].drawn_from == Option.Some(resource) { trained = trained + 1; }
+            }
+        }
+        queued + trained
+    }
+
+    /// Why city `city`'s Barracks can't queue `build` now, if it can't: no Barracks, no deposit
+    /// for it, the side's cap for it is used up, or its supply is (`supply_lock`).
+    pub fn barracks_lock(&self, city: i32, build: BuildUnit) -> Option[Str] {
+        if self.cities[city].barracks.is_none() { return Option.Some(text(fn() can {Out} { Out.put("BUILD A BARRACKS FIRST"); })); }
+        let team = self.cities[city].team;
+        match self.deposit_lock(city, build) {
+            Option.Some(why) => Option.Some(why),
+            Option.None => self.supply_lock(team, troop_supply(build)),
+        }
+    }
+
+    /// Why city `city`'s Barracks can't queue `build` for want of a deposit, if it's a Cavalry or
+    /// Armored: none for it, an enemy holds it, or the side's cap is used up.
+    pub fn deposit_lock(&self, city: i32, build: BuildUnit) -> Option[Str] {
+        let Option.Some(resource) = build.required_resource() else { return Option.None; };
+        if self.barracks_deposits(city, resource).is_empty() {
+            return Option.Some(text(fn() can {Out} { Out.put("NEEDS "); Out.put(resource.name()); Out.put(" UNDER THE BARRACKS"); }));
+        }
+        let team = self.cities[city].team;
+        let cap = self.special_cap(team, resource);
+        if cap == 0 {
+            return Option.Some(text(fn() can {Out} { Out.put("AN ENEMY HOLDS YOUR "); Out.put(resource.name()); Out.put(" DEPOSIT"); }));
+        }
+        if self.special_used(team, resource) >= cap {
+            return Option.Some(text(fn() can {Out} { Out.put("CAP REACHED: "); show_i64(cap as i64); Out.put(" "); Out.put(build.name()); }));
+        }
+        Option.None
+    }
+
+    /// Debug panel: switches the Cavalry and Armored cap between counting those alive and those
+    /// ever trained.
+    pub fn toggle_lifetime_special_cap(&mut self) {
+        if self.refuses_debug() { return; }
+        self.lifetime_special_cap = !self.lifetime_special_cap;
+        self.set_notice(if self.lifetime_special_cap { "CAVALRY AND ARMORED CAP COUNTS EVERY ONE EVER TRAINED" } else { "CAVALRY AND ARMORED CAP COUNTS THOSE ALIVE" });
+    }
+}

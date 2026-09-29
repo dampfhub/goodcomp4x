@@ -14,9 +14,10 @@ use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.GRID_RADIUS;
 use game.city.Build;
+use game.city.Queued;
 use game.city.Building;
 use game.city.BuildUnit;
-use game.combat.roll_damage;
+use game.combat.damage;
 use game.effects.Effect;
 use game.effects.Outcome;
 use game.hex.Hex;
@@ -163,13 +164,12 @@ fn mountains_block_movement_and_pathing() {
     });
 }
 
-/// What a siege unit at the origin deals to a melee defender at `pos`, rolled from a fresh
-/// stream seeded with 7 so both sides of a comparison roll the same variance.
+/// What a siege unit at the origin deals to a melee defender at `pos`: there is no random spread,
+/// so the same fight always deals the same damage.
 fn damage_taken_at(grid: &HexGrid, pos: Hex) -> f32 {
     let siege = Unit.new(0, Hex.new(0, 0), Team.Blue, UnitType.Siege);
     let defender = Unit.new(1, pos, Team.Red, UnitType.Melee);
-    let mut g = seed(7);
-    handle { roll_damage(&siege, &defender, grid.tile(pos).defense_multiplier()) } with Rand { rand() => { resume g.next() } }
+    damage(&siege, &defender, grid.tile(pos).defense_multiplier())
 }
 
 @test
@@ -489,11 +489,22 @@ pub fn open_neighbor(game: &GameState, hex: Hex) -> Option[Hex] {
     Option.None
 }
 
-/// Whether no unit needs orders, no city needs a build and no worker a job.
-/// `pending() == (0, 0, 0)` has no `Eq` to call: a tuple has no `impl Eq`.
+/// Whether `queue` holds an item of `build`, paid or not.
+pub fn queued_has(queue: &Vec[Queued[Build]], build: Build) -> bool {
+    for k in 0..queue.len() { if queue[k].build == build { return true; } }
+    false
+}
+
+/// Whether the item at `index` of `queue` is `build`.
+pub fn queued_is(queue: &Vec[Queued[Build]], index: i32, build: Build) -> bool {
+    index < queue.len() && queue[index].build == build
+}
+
+/// Whether no unit needs orders and no city needs a build.
+/// `pending() == (0, 0)` has no `Eq` to call: a tuple has no `impl Eq`.
 pub fn nothing_pending(game: &GameState) -> bool {
-    let (units, cities, workers) = game.pending();
-    units == 0 && cities == 0 && workers == 0
+    let (units, cities) = game.pending();
+    units == 0 && cities == 0
 }
 
 fn blue_count(game: &GameState) -> i32 {
@@ -573,9 +584,9 @@ fn turn_waits_for_city_builds_but_not_citizens() {
         let mut game = GameState.city_scenario();
         handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.team != Team.Blue } }
         game.selected = Option.None;
-        // A city with nothing to build, and its worker idle at home.
-        let (units, cities, workers) = game.pending();
-        assert(units == 0 && cities == 1 && workers == 1);
+        // A city with nothing to build; its worker idle at home doesn't hold the turn up.
+        let (units, cities) = game.pending();
+        assert(units == 0 && cities == 1);
 
         // Space opens the city that needs a build instead of ending the turn.
         game.hold_or_end_turn();
@@ -583,14 +594,10 @@ fn turn_waits_for_city_builds_but_not_citizens() {
         assert(game.selected_city == Option.Some(0));
 
         game.queue_selected_city_unit(BuildUnit.Melee);
-        let (units, cities, workers) = game.pending();
-        assert(units == 0 && cities == 0 && workers == 1);
-        // Then the worker menu, where Space lets the worker sleep.
+        let (units, cities) = game.pending();
+        assert(units == 0 && cities == 0);
+        // Space closes the city, and then ends the turn.
         game.hold_or_end_turn();
-        assert(game.worker_mode && !game.is_resolving());
-        game.hold_or_end_turn();
-        assert(!game.worker_mode);
-        assert(nothing_pending(&game));
         game.hold_or_end_turn();
         assert(game.is_resolving());
     });
@@ -692,7 +699,7 @@ fn landing_craft_carries_four_troops_and_lands_one_on_open_shore() {
 fn harbor_produces_a_ship_on_water_and_it_cannot_walk_ashore() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut g = GameState.naval_scenario();
-        g.cities[0].production = BuildUnit.PatrolGalley.cost();
+        g.cities[0].queue[0].progress = BuildUnit.PatrolGalley.work();
         let before = g.units.len();
         g.complete_builds();
         assert(g.units.len() == before + 1);
@@ -705,7 +712,7 @@ fn harbor_produces_a_ship_on_water_and_it_cannot_walk_ashore() {
         let mut all_water = true;
         for h in reachable.each() { if !g.grid.terrain(*h).is_water() { all_water = false; } }
         assert(all_water);
-        assert(!g.cities[0].queue.contains(Build.Unit(BuildUnit.PatrolGalley)));
+        assert(g.cities[0].queue.is_empty());
     });
 }
 

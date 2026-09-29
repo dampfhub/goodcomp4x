@@ -57,6 +57,44 @@ const STONE_LIT: Color = [0.68, 0.65, 0.58, 1.0];
 const STONE_SHADE: Color = [0.20, 0.19, 0.17, 1.0];
 const LEAVES: Color = [0.06, 0.30, 0.05, 1.0];
 const FRUIT: Color = [0.80, 0.08, 0.04, 1.0];
+/// Metal on yield chips and in text: brighter than the Iron deposit's ingot so it reads small.
+const METAL: Color = [0.42, 0.46, 0.52, 1.0];
+const CLOCK_FACE: Color = [0.80, 0.80, 0.74, 1.0];
+
+/// Characters that stand for an icon in UI text: every text renderer (the classic font and the
+/// library UI's) draws the icon in their place, the same pictures as the map's yield chips.
+pub const FOOD_ICON: char = '\u{E000}';
+pub const WOOD_ICON: char = '\u{E001}';
+pub const METAL_ICON: char = '\u{E002}';
+pub const TIME_ICON: char = '\u{E003}';
+
+/// The icon `ch` stands for in UI text, if it's one of the icon characters.
+pub fn inline_icon(ch: char) -> Option[MapIcon] {
+    if ch == FOOD_ICON { Option.Some(MapIcon.Food) }
+    else if ch == WOOD_ICON { Option.Some(MapIcon.Wood) }
+    else if ch == METAL_ICON { Option.Some(MapIcon.Metal) }
+    else if ch == TIME_ICON { Option.Some(MapIcon.Clock) }
+    else { Option.None }
+}
+
+/// Whether `ch` stands for an icon in UI text.
+pub fn is_inline_icon(ch: char) -> bool { inline_icon(ch).is_some() }
+
+/// Draws the icon `ch` stands for in UI space (pixels, Y up), `height` pixels tall, centered on
+/// `center`. `dim` darkens it to sit in disabled text.
+pub fn push_inline_icon(center: Vec2, height: f32, ch: char, dim: bool, out: &mut Vec[MeshVertex]) {
+    let Option.Some(icon) = inline_icon(ch) else { return; };
+    let start = out.len();
+    // The chip icons are laid out about 20 design units tall.
+    push_map_icon(center, icon, height * 5.0 / HEX_SIZE, out);
+    if dim {
+        for k in start..out.len() {
+            out[k].color[0] = out[k].color[0] * 0.3;
+            out[k].color[1] = out[k].color[1] * 0.3;
+            out[k].color[2] = out[k].color[2] * 0.3;
+        }
+    }
+}
 
 pub enum MapIcon {
     /// Horses: a horse's head, facing right.
@@ -71,10 +109,14 @@ pub enum MapIcon {
     Fence,
     /// Lumber mill: three stacked logs.
     Logs,
-    /// Food, on a yield chip: a small wheat stalk.
+    /// Food, on a yield chip and in text: a small wheat stalk.
     Food,
-    /// Production, on a yield chip: a hammer.
-    Production,
+    /// Wood, on a yield chip and in text: a leaning log.
+    Wood,
+    /// Metal, on a yield chip and in text: a small ingot.
+    Metal,
+    /// Turns, in text: a clock face.
+    Clock,
     /// Ruins: two broken columns on a slab.
     Ruins,
     /// Orchard: a fruit tree.
@@ -167,20 +209,33 @@ pub fn push_map_icon(center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec[Mesh
                 pen.ring(&ellipse(vec2(x, y), 1.2, 2.2, 0.0), 1.2, GROWTH_RING, out);
             }
         }
+        // The small resource icons are flat, one color each, thinly edged, so they read at text
+        // size.
         MapIcon.Food => {
-            let stem = points(&[vec2(0.0, 7.0), vec2(0.0, -4.0)]);
-            pen.line(&stem, 3.8, OUTLINE, out);
-            pen.line(&stem, 1.6, WHEAT, out);
-            let rows = [1.0, -3.5];
+            // A wheat ear with no edge: a thin stem and well-spaced kernels, so the gaps between
+            // them survive at text size.
+            pen.line(&points(&[vec2(0.0, 9.5), vec2(0.0, -1.0)]), 1.0, WHEAT, out);
+            let rows = [-0.5, -6.0];
             for r in 0..2 {
-                pen.shape(&ellipse(vec2(-2.2, rows[r]), 1.9, 3.0, -30.0), WHEAT, 1.6, out);
-                pen.shape(&ellipse(vec2(2.2, rows[r]), 1.9, 3.0, 30.0), WHEAT, 1.6, out);
+                pen.shape(&ellipse(vec2(-3.3, rows[r]), 1.6, 2.4, -25.0), WHEAT, 0.0, out);
+                pen.shape(&ellipse(vec2(3.3, rows[r]), 1.6, 2.4, 25.0), WHEAT, 0.0, out);
             }
-            pen.shape(&ellipse(vec2(0.0, -7.0), 1.9, 3.0, 0.0), WHEAT, 1.6, out);
+            pen.shape(&ellipse(vec2(0.0, -9.0), 1.6, 2.4, 0.0), WHEAT, 0.0, out);
         }
-        MapIcon.Production => {
-            pen.shape(&turned(&[vec2(-1.4, -3.0), vec2(1.4, -3.0), vec2(1.4, 9.0), vec2(-1.4, 9.0)], -40.0), WEATHERED_WOOD, 1.6, out);
-            pen.shape(&turned(&[vec2(-5.5, -8.0), vec2(5.5, -8.0), vec2(5.5, -3.0), vec2(-5.5, -3.0)], -40.0), STEEL_LIT, 1.6, out);
+        MapIcon.Wood => {
+            // A plain log, leaning right.
+            let log = points(&[vec2(-3.5, 6.0), vec2(3.5, -6.0)]);
+            pen.line(&log, 6.2, OUTLINE, out);
+            pen.line(&log, 4.0, FRESH_WOOD, out);
+        }
+        MapIcon.Metal => {
+            pen.shape(&points(&[vec2(-8.5, 4.5), vec2(-6.0, -3.5), vec2(6.0, -3.5), vec2(8.5, 4.5)]), METAL, 1.2, out);
+        }
+        MapIcon.Clock => {
+            // An open ring with two hands, all in one color.
+            pen.ring(&ellipse(vec2(0.0, 0.0), 7.5, 7.5, 0.0), 1.0, CLOCK_FACE, out);
+            pen.line(&points(&[vec2(0.0, 0.0), vec2(0.0, -4.5)]), 1.0, CLOCK_FACE, out);
+            pen.line(&points(&[vec2(0.0, 0.0), vec2(3.5, 0.0)]), 1.0, CLOCK_FACE, out);
         }
         MapIcon.Ruins => {
             pen.shape(&points(&[vec2(-16.0, 8.0), vec2(16.0, 8.0), vec2(16.0, 13.0), vec2(-16.0, 13.0)]), STONE_SHADE, 2.5, out);
@@ -210,18 +265,6 @@ pub fn push_map_icon(center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec[Mesh
 fn points(list: &[Vec2]) -> Vec[Vec2] {
     let mut out: Vec[Vec2] = Vec.new();
     for i in 0..list.len() { out.push(list[i]); }
-    out
-}
-
-/// `list` turned by `degrees` about the icon's center (clockwise on screen, as SVG's `rotate`
-/// with Y down).
-fn turned(list: &[Vec2], degrees: f32) -> Vec[Vec2] {
-    let turn = vec2_from_angle(degrees * pi() as f32 / 180.0);
-    let mut out: Vec[Vec2] = Vec.new();
-    for i in 0..list.len() {
-        let p = list[i];
-        out.push(vec2(p.x * turn.x - p.y * turn.y, p.x * turn.y + p.y * turn.x));
-    }
     out
 }
 

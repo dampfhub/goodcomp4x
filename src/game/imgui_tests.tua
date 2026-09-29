@@ -32,7 +32,10 @@ use game.GameState;
 use game.dock.overlaps;
 use game.city.Build;
 use game.city.Building;
-use game.city.LaborFocus;
+use game.city.Good;
+use game.city.Queued;
+use game.tests.queued_has;
+use game.tests.queued_is;
 use game.hex.Hex;
 use game.settings.SETTINGS;
 use game.settings.Setting;
@@ -170,7 +173,7 @@ fn a_click_on_a_panel_button_does_what_the_classic_button_does() {
         let mut r = rig(game);
         assert(r.game.cities[city].queue.is_empty());
         click_target(&mut r, Target.Build(BuildUnit.Melee));
-        assert(r.game.cities[city].queue.contains(Build.Unit(BuildUnit.Melee)));
+        assert(queued_has(&r.game.cities[city].queue, Build.Unit(BuildUnit.Melee)));
     });
 }
 
@@ -369,8 +372,8 @@ fn click_chip(r: &mut Rig, key: RosterKey, shift: bool, ctrl: bool) can {Log, Ra
 @test
 fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
     sandbox(fn() can {Log, Rand, Assert} {
-        // The Cities scenario: Blue's city has nothing queued and a worker idle at home, and
-        // one unit of each military kind.
+        // The Cities scenario: Blue's city has nothing queued, and there is one unit of each
+        // military kind.
         let mut game = GameState.city_scenario();
         let mut city_id: u32 = 0;
         let mut city_at: i32 = 0 - 1;
@@ -378,27 +381,26 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
         assert(city_at >= 0);
         let keys = keys_of(&game);
         assert(keys[0] == RosterKey.Production(city_id));
-        assert(keys[1] == RosterKey.Workers(city_id));
         let blue = blue_units(&game);
-        assert(keys.len() == 2 + blue.len());
+        assert(keys.len() == 1 + blue.len());
         for k in 0..blue.len() {
-            assert(keys[2 + k] == RosterKey.Group(game.units[blue[k]].unit_type, false));
+            assert(keys[1 + k] == RosterKey.Group(game.units[blue[k]].unit_type, false));
         }
         // A settler comes ahead of the military, wherever it is in unit order.
         let last = blue[blue.len() - 1];
         let settler = game.units[last].id;
         let unit_type = game.units[last].unit_type;
         game.settlers.insert(settler);
-        assert(keys_of(&game)[2] == RosterKey.Group(unit_type, true));
+        assert(keys_of(&game)[1] == RosterKey.Group(unit_type, true));
         // The production chip opens the city, and is framed while it is open.
         let mut r = rig(game);
         click_chip(&mut r, RosterKey.Production(city_id), false, false);
         let Option.Some(open) = r.game.selected_city else { assert(false); return; };
         assert(r.game.cities[open].id == city_id);
         let chips = strip(&r.game);
-        assert(chips[0].selected && !chips[1].selected && !chips[2].selected);
+        assert(chips[0].selected && !chips[1].selected);
         // Once it has a build, it leaves the strip.
-        r.game.cities[open].queue.push(Build.Unit(BuildUnit.Melee));
+        r.game.cities[open].queue.push(Queued.new(Build.Unit(BuildUnit.Melee)));
         let after = keys_of(&r.game);
         for k in 0..after.len() {
             let production = match after[k] { RosterKey.Production(_) => true, _ => false };
@@ -494,42 +496,21 @@ fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
         let mut game = GameState.city_scenario();
         game.select_city();
         let Option.Some(city) = game.selected_city else { assert(false); return; };
-        game.cities[city].queue.push(Build.Unit(BuildUnit.Melee));
-        game.cities[city].queue.push(Build.Unit(BuildUnit.Ranged));
-        game.cities[city].queue.push(Build.Unit(BuildUnit.Siege));
+        game.cities[city].queue.push(Queued.new(Build.Unit(BuildUnit.Melee)));
+        game.cities[city].queue.push(Queued.new(Build.Unit(BuildUnit.Ranged)));
+        game.cities[city].queue.push(Queued.new(Build.Unit(BuildUnit.Siege)));
         let mut r = rig(game);
         let Option.Some(from) = row(&r, QueueKind.City, 2) else { assert(false); return; };
         let Option.Some(to) = row(&r, QueueKind.City, 0) else { assert(false); return; };
         drag(&mut r, center(from), center(to));
         // Siege leaps to the front, and the others keep their order behind it.
-        assert(r.game.cities[city].queue[0] == Build.Unit(BuildUnit.Siege));
-        assert(r.game.cities[city].queue[1] == Build.Unit(BuildUnit.Melee));
-        assert(r.game.cities[city].queue[2] == Build.Unit(BuildUnit.Ranged));
+        assert(queued_is(&r.game.cities[city].queue, 0, Build.Unit(BuildUnit.Siege)));
+        assert(queued_is(&r.game.cities[city].queue, 1, Build.Unit(BuildUnit.Melee)));
+        assert(queued_is(&r.game.cities[city].queue, 2, Build.Unit(BuildUnit.Ranged)));
         // The X on a row removes it: pressing it drags nothing.
         click_target(&mut r, Target.QueueRemove(1));
         assert(r.game.cities[city].queue.len() == 2);
-        assert(r.game.cities[city].queue[1] == Build.Unit(BuildUnit.Ranged));
-    });
-}
-
-@test
-fn ready_city_building_cannot_be_dragged_out_of_first_place() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut game = GameState.city_scenario();
-        game.select_city();
-        let Option.Some(city) = game.selected_city else { assert(false); return; };
-        game.cities[city].queue.push(Build.Building(Building.Workshop));
-        game.cities[city].queue.push(Build.Unit(BuildUnit.Melee));
-        game.cities[city].pending_building = Option.Some(Building.Workshop);
-        let mut r = rig(game);
-        let Option.Some(first) = row(&r, QueueKind.City, 0) else { assert(false); return; };
-        let Option.Some(second) = row(&r, QueueKind.City, 1) else { assert(false); return; };
-        // The second row goes onto the first, which is the ready building: nothing moves.
-        drag(&mut r, center(second), center(first));
-        assert(r.game.cities[city].queue[0] == Build.Building(Building.Workshop));
-        // And the ready building itself cannot be picked up.
-        drag(&mut r, center(first), center(second));
-        assert(r.game.cities[city].queue[0] == Build.Building(Building.Workshop));
+        assert(queued_is(&r.game.cities[city].queue, 1, Build.Unit(BuildUnit.Ranged)));
     });
 }
 
@@ -541,16 +522,16 @@ fn barracks_queue_rows_use_the_same_drag_and_remove_targets() {
         let Option.Some(city) = game.selected_city else { assert(false); return; };
         game.cities[city].barracks = Option.Some(Hex.new(-2, 0));
         game.open_barracks(city);
-        game.cities[city].barracks_queue.push(BuildUnit.Melee);
-        game.cities[city].barracks_queue.push(BuildUnit.Ranged);
+        game.cities[city].barracks_queue.push(Queued.new(BuildUnit.Melee));
+        game.cities[city].barracks_queue.push(Queued.new(BuildUnit.Ranged));
         let mut r = rig(game);
         let Option.Some(second) = row(&r, QueueKind.Barracks, 1) else { assert(false); return; };
         let Option.Some(first) = row(&r, QueueKind.Barracks, 0) else { assert(false); return; };
         drag(&mut r, center(second), center(first));
-        assert(r.game.cities[city].barracks_queue[0] == BuildUnit.Ranged);
+        assert(r.game.cities[city].barracks_queue[0].build == BuildUnit.Ranged);
         click_target(&mut r, Target.BarracksQueueRemove(1));
         assert(r.game.cities[city].barracks_queue.len() == 1);
-        assert(r.game.cities[city].barracks_queue[0] == BuildUnit.Ranged);
+        assert(r.game.cities[city].barracks_queue[0].build == BuildUnit.Ranged);
     });
 }
 
@@ -770,8 +751,8 @@ fn a_panel_dragged_into_a_box_is_pinned_and_acts_on_its_own_city() {
         assert(r.st.layout.pinned.len() == 1);
         assert(r.st.layout.pin_visible(pin));
         // (A button near the top: the box is smaller than the city's whole panel.)
-        click_target(&mut r, Target.Focus(LaborFocus.Production));
-        assert(r.game.cities[city].focus == LaborFocus.Production);
+        click_target(&mut r, Target.Priority(Good.Wood));
+        assert(r.game.cities[city].priorities.rank(Good.Wood) == 0);
         assert(r.game.selected_city == Option.Some(city));
         // Removing the box floats what was in it and drops the pin.
         r.st.layout.remove_outer_box(box_id, &mut r.ctx);

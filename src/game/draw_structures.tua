@@ -14,7 +14,6 @@ use std.str.Str;
 use std.str.to_owned;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
-use game.PLAYER_TEAM;
 use game.text;
 use game.city.Build;
 use game.city.Building;
@@ -22,6 +21,8 @@ use game.city.PLACEABLE;
 use game.city.BARRACKS_MAX_HP;
 use game.city.COASTAL_BATTERY_MAX_HP;
 use game.city.delivered_share;
+use game.city.manager_label;
+use game.city.turns_icon;
 use game.fog.Fog;
 use game.font.push_glyph;
 use game.font.push_text;
@@ -105,7 +106,6 @@ pub fn building_badge(building: Building) -> (char, Color) {
         Building.Railhead => ('R', [0.47, 0.68, 0.79, 1.0]),
         Building.Harbor => ('P', [0.34, 0.67, 0.90, 1.0]),
         Building.CoastalBattery => ('D', [0.85, 0.57, 0.28, 1.0]),
-        Building.Granary => ('G', [0.85, 0.70, 0.30, 1.0]),
     }
 }
 
@@ -267,58 +267,61 @@ impl GameState {
         self.push_manager_marks(fog, out);
         self.push_barracks_shares(fog, out);
         self.push_buildings(fog, out);
-        self.push_planned_sites(out);
         for k in 0..self.structures.len() {
             let (Option.Some(h), Option.Some(s)) = (self.structures.key_at(k), self.structures.val_at(k)) else { continue; };
-            if s.team != PLAYER_TEAM && !fog.sees(h) { continue; }
+            if s.team != self.local_team && !fog.sees(h) { continue; }
             push_structure(h.to_world(), s.kind, s.team.color(), out);
         }
         self.push_planned_jobs(out);
         for k in 0..self.barriers.len() {
             let (Option.Some(e), Option.Some(s)) = (self.barriers.key_at(k), self.barriers.val_at(k)) else { continue; };
-            if s.team != PLAYER_TEAM && !fog.sees(e.a) && !fog.sees(e.b) { continue; }
+            if s.team != self.local_team && !fog.sees(e.a) && !fog.sees(e.b) { continue; }
             push_barrier(e.a, e.b, s.kind, s.team.color(), out);
         }
         self.push_hovered_job(out);
         for c in 0..self.cities.len() {
-            if self.cities[c].team == PLAYER_TEAM { push_worker_count(self.cities[c].pos.to_world(), self.cities[c].workers, out); }
+            if self.cities[c].team == self.local_team { push_worker_count(self.cities[c].pos.to_world(), self.cities[c].workers, out); }
         }
     }
 
-    /// Worker mode: the tiles the player's workers can reach are lit, and the rest dimmed, so
-    /// the reach stands out.
+    /// Placing something for a city's workers: the tiles they can reach (as the player knows the
+    /// board) are lit, and the rest dimmed, so the reach stands out.
     pub fn push_worker_reach(&self, out: &mut Vec[MeshVertex]) {
-        if !self.worker_mode { return; }
-        let bases = self.worker_bases(PLAYER_TEAM);
+        if self.placing_job.is_none() { return; }
         for hh in self.grid.hexes() {
             let hex = *hh;
             if !self.is_explored(hex) { continue; }
-            let reach = self.grid.is_passable(hex) && self.in_reach_of(&bases, hex);
+            let reach = self.grid.is_passable(hex) && self.known_worker_reach(hex);
             regular_polygon(hex.to_world(), HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, if reach { WORKER_REACH_TINT } else { OUT_OF_REACH_TINT }, out);
         }
     }
-
-    /// The open or hovered city's manager: an M on its tile, and hovering it traces the way its
-    /// goods travel to the city center, as the player knows the board.
     fn push_manager_marks(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
         let shown = match self.hovered_city { Option.Some(i) => Option.Some(i), Option.None => self.selected_city };
         let Option.Some(i) = shown else { return; };
-        if self.cities[i].team != PLAYER_TEAM && !fog.sees(self.cities[i].pos) { return; }
-        if self.cities[i].worked.is_empty() || self.moving_manager == Option.Some(i) { return; }
-        let manager = self.cities[i].worked[0];
-        let routed = self.routes(i).costs.has(manager);
-        if routed {
-            polygon_outline(manager.to_world(), WORKED_OUTLINE_RADIUS, 0.06, 6, 0.0, MANAGER_MARK_COLOR, out);
-        }
-        push_glyph(manager.to_world(), 0.34, 'M', LABEL_COLOR, out);
-        if self.hovered_tile == Option.Some(manager) {
-            let path = self.known_routes(i, fog).path_from(manager);
-            for k in 1..path.len() {
-                push_dotted_segment(path[k - 1].to_world(), path[k].to_world(), MANAGER_ROUTE_WIDTH, MANAGER_ROUTE_COLOR, out);
+        if self.cities[i].team != self.local_team && !fog.sees(self.cities[i].pos) { return; }
+        let clusters = &self.cities[i].clusters;
+        for k in 0..clusters.len() {
+            if self.is_moving_manager(i, k) { continue; }
+            let manager = clusters[k].manager;
+            let routed = self.routes(i).costs.has(manager);
+            if routed {
+                polygon_outline(manager.to_world(), WORKED_OUTLINE_RADIUS, 0.06, 6, 0.0, MANAGER_MARK_COLOR, out);
+            }
+            // The manager's mark: M, or with several clusters M1 to M4.
+            if clusters.len() > 1 {
+                let label = manager_label(k, clusters.len());
+                push_text_centered(manager.to_world(), 0.34, &label, LABEL_COLOR, out);
+            } else {
+                push_glyph(manager.to_world(), 0.34, 'M', LABEL_COLOR, out);
+            }
+            if self.hovered_tile == Option.Some(manager) {
+                let path = self.known_routes(i, fog).path_from(manager);
+                for p in 1..path.len() {
+                    push_dotted_segment(path[p - 1].to_world(), path[p].to_world(), MANAGER_ROUTE_WIDTH, MANAGER_ROUTE_COLOR, out);
+                }
             }
         }
     }
-
     /// The open Barracks: its own delivery shares, and dotted lines from its work group.
     fn push_barracks_shares(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
         let Option.Some(i) = self.selected_barracks else { return; };
@@ -330,7 +333,7 @@ impl GameState {
             let label = text(fn() can {Out} { show_i64((delivered_share(cost) * 25) as i64); Out.put("%"); });
             push_text(hex.to_world().add(vec2(-0.3, 0.52)), 0.18, &label, BARRACKS_SHARE_COLOR, out);
         }
-        let worked = &self.cities[i].worked;
+        let worked = self.cities[i].worked_tiles();
         for w in 0..worked.len() {
             push_dotted_segment(worked[w].to_world(), barracks.to_world(), 0.06, BARRACKS_SOURCE_COLOR, out);
         }
@@ -342,7 +345,7 @@ impl GameState {
         for c in 0..self.cities.len() {
             let city = &self.cities[c];
             if let Option.Some(hex) = city.barracks {
-                if city.team == PLAYER_TEAM || fog.sees(hex) {
+                if city.team == self.local_team || fog.sees(hex) {
                     push_barracks_marker(hex.to_world(), city.team.color(), out);
                     push_health_bar(hex.to_world(), city.barracks_hp / BARRACKS_MAX_HP, 0.7, out);
                 }
@@ -351,7 +354,7 @@ impl GameState {
                 let building = PLACEABLE[b];
                 if building == Building.Barracks { continue; }
                 let Option.Some(hex) = city.placed_site(building) else { continue; };
-                if city.team != PLAYER_TEAM && !fog.sees(hex) { continue; }
+                if city.team != self.local_team && !fog.sees(hex) { continue; }
                 let (badge, color) = building_badge(building);
                 regular_polygon(hex.to_world(), 0.31, 4, 0.7853982, color, out);
                 push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
@@ -362,28 +365,6 @@ impl GameState {
         }
     }
 
-    /// Planned sites stay visible until confirmation. An active placement also follows the map
-    /// hover before a site has been selected.
-    fn push_planned_sites(&self, out: &mut Vec[MeshVertex]) {
-        for i in 0..self.cities.len() {
-            if self.cities[i].team != PLAYER_TEAM { continue; }
-            for b in 0..14 {
-                let building = PLACEABLE[b];
-                let planned = self.cities[i].planned_sites.get(building);
-                let hovered = match (self.site_placement(), self.hovered_tile) {
-                    (Option.Some((c, placing)), Option.Some(h)) => if c == i && placing == building && self.site_available(i, building, h) { Option.Some(h) } else { Option.None },
-                    _ => Option.None,
-                };
-                let preview = if hovered.is_some() { hovered } else { planned };
-                let Option.Some(hex) = preview else { continue; };
-                let (badge, base) = building_badge(building);
-                let alpha = if self.hovered_tile == Option.Some(hex) { 0.95 } else { 0.55 };
-                polygon_outline(hex.to_world(), WORKED_OUTLINE_RADIUS, 0.09, 6, 0.0, with_alpha(base, alpha), out);
-                regular_polygon(hex.to_world(), 0.31, 4, 0.7853982, with_alpha(base, 0.48), out);
-                push_glyph(hex.to_world(), 0.30, badge, [0.08, 0.05, 0.03, 0.65], out);
-            }
-        }
-    }
 
     /// The player's worker jobs: those under way, a solid ring (or edge) named with the job and,
     /// once the worker is there working, the turns of work left; and those queued, a faded ring
@@ -391,7 +372,7 @@ impl GameState {
     fn push_planned_jobs(&self, out: &mut Vec[MeshVertex]) {
         for w in 0..self.field_workers.len() {
             let worker = self.field_workers[w];
-            if worker.team != PLAYER_TEAM || worker.recalled { continue; }
+            if worker.team != self.local_team || worker.recalled { continue; }
             let Option.Some(job) = worker.job else { continue; };
             let label: Str = match worker.work_left {
                 Option.Some(left) => if worker.pos == job.hex {
@@ -415,7 +396,7 @@ impl GameState {
             push_text_centered(at, PLANNED_JOB_LABEL_HEIGHT, &label, JOB_UNDER_WAY_COLOR, out);
         }
         for c in 0..self.cities.len() {
-            if self.cities[c].team != PLAYER_TEAM { continue; }
+            if self.cities[c].team != self.local_team { continue; }
             let jobs = &self.cities[c].worker_jobs;
             for j in 0..jobs.len() {
                 let job = jobs[j];
@@ -426,7 +407,15 @@ impl GameState {
                 }
                 let center = job.hex.to_world();
                 polygon_outline(center, WORKED_OUTLINE_RADIUS, 0.05, 6, 0.0, PLANNED_JOB_COLOR, out);
-                push_text_centered(center.add(PLANNED_JOB_LABEL_OFFSET), PLANNED_JOB_LABEL_HEIGHT, self.job_name(job), PLANNED_JOB_COLOR, out);
+                // A job partly built (a worker left it) adds the turns of work it has left.
+                let label: Str = if job.done > 0 {
+                    let left = self.job_turns_left(self.local_team, job);
+                    let clock = turns_icon(left as i32);
+                    text(fn() can {Out} { Out.put(self.job_name(job)); Out.put(" "); Out.put(&clock); })
+                } else {
+                    to_owned(self.job_name(job))
+                };
+                push_text_centered(center.add(PLANNED_JOB_LABEL_OFFSET), PLANNED_JOB_LABEL_HEIGHT, &label, PLANNED_JOB_COLOR, out);
             }
         }
     }
@@ -440,7 +429,7 @@ impl GameState {
                 push_rounded_segment(start, end, BARRIER_WIDTH, PLANNED_JOB_COLOR_SOLID, out);
             }
             Option.None => {
-                let fine = self.job_unavailable(hex, kind).is_none() || self.job_taken(PLAYER_TEAM, WorkerJob.on_tile(hex, kind));
+                let fine = self.job_unavailable(hex, kind).is_none() || self.job_taken(self.local_team, WorkerJob.on_tile(hex, kind));
                 polygon_outline(hex.to_world(), WORKED_OUTLINE_RADIUS, 0.07, 6, 0.0, if fine { PLANNED_JOB_COLOR_SOLID } else { BLOCKED_JOB_COLOR }, out);
             }
         }
@@ -456,7 +445,7 @@ impl GameState {
             let mut shared = false;
             for i in 0..self.units.len() { if self.units[i].pos == worker.pos && fog.shows(&self.units[i]) { shared = true; } }
             let (center, scale) = if shared { (worker.pos.to_world().add(WORKER_BESIDE_UNIT), WORKER_BESIDE_SCALE) } else { (worker.pos.to_world(), WORKER_SCALE) };
-            if worker.team == PLAYER_TEAM {
+            if worker.team == self.local_team {
                 if let Option.Some(job) = worker.job {
                     if job.hex != worker.pos { push_dotted_segment(center, job.hex.to_world(), 0.05, PLANNED_JOB_COLOR, out); }
                 }

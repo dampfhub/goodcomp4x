@@ -18,6 +18,7 @@ use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.text;
 use game.city.delivered_share;
+use game.city.PLACEABLE;
 use game.city.CENTER;
 use game.city.CORE_HP;
 use game.font.push_glyph;
@@ -215,7 +216,7 @@ const QUEUE_REPLACE_OUTLINE_RADIUS: f32 = 0.9;
 const QUEUE_REPLACE_OUTLINE_WIDTH: f32 = 0.08;
 const QUEUE_TAG_SCALE: f32 = 0.7;
 
-/// Tile yields: below the unit spot, food then production as die-face pips on a dark
+/// Tile yields: below the unit spot, food, wood then metal as die-face pips on a dark
 /// see-through pill.
 pub const YIELD_ROW_OFFSET: Vec2 = Vec2 { x: 0.0, y: -0.56 };
 /// Distance between neighboring pips, across and up.
@@ -223,8 +224,10 @@ const YIELD_PIP_PITCH: Vec2 = Vec2 { x: 0.11, y: 0.15 };
 const YIELD_ICON_SCALE: f32 = 0.8;
 /// How far a pip icon, at that scale, reaches from its center.
 const YIELD_ICON_HALF: Vec2 = Vec2 { x: 0.05, y: 0.076 };
-/// Space between the food group and the production group.
+/// Space between the groups.
 const YIELD_GROUP_GAP: f32 = 0.08;
+/// The most a row reaches from its center each way: three full groups are shrunk to fit.
+const YIELD_ROW_MAX_HALF_WIDTH: f32 = 0.46;
 const YIELD_ROW_PADDING: Vec2 = Vec2 { x: 0.06, y: 0.035 };
 const YIELD_PIP_CORNER: f32 = 0.1;
 pub const YIELD_ROW_COLOR: Color = [0.005, 0.006, 0.007, 0.85];
@@ -564,19 +567,32 @@ impl GameState {
                     let Option.Some(cost) = routes.costs.val_at(r) else { continue; };
                     // Nothing shows in the fog.
                     if !self.is_explored(h) { continue; }
-                    let label = text(fn() can {Out} { show_i64((delivered_share(cost) * 25) as i64); Out.put("%"); });
+                    let food_share = self.mill_food_share(i, h, cost);
+                    let share = delivered_share(cost);
+                    let label = text(fn() can {Out} {
+                        if food_share == share {
+                            show_i64((food_share * 25) as i64); Out.put("%");
+                        } else {
+                            Out.put("F"); show_i64((food_share * 25) as i64); Out.put(" P"); show_i64((share * 25) as i64);
+                        }
+                    });
                     push_text(h.to_world().add(vec2(-0.3, 0.52)), 0.18, &label, DELIVERY_TEXT_COLOR, out);
                 }
             }
-            let worked = &self.cities[i].worked;
-            for w in 0..worked.len() {
-                let h = worked[w];
-                let color = if routes.costs.has(h) { WORKED_ROUTED_COLOR } else { WORKED_CUT_OFF_COLOR };
-                // A coloured ring on a slightly wider dark one, just inside the hex's fill so
-                // it doesn't blur into the grid lines.
-                let center = h.to_world();
-                polygon_outline(center, WORKED_OUTLINE_RADIUS, WORKED_OUTLINE_RIM_WIDTH, 6, 0.0, WORKED_OUTLINE_RIM_COLOR, out);
-                polygon_outline(center, WORKED_OUTLINE_RADIUS, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
+            // A manager picked up takes its cluster with it until it's placed: none show.
+            let clusters = &self.cities[i].clusters;
+            for k in 0..clusters.len() {
+                if self.is_moving_manager(i, k) { continue; }
+                let tiles = clusters[k].tiles();
+                for w in 0..tiles.len() {
+                    let h = tiles[w];
+                    let color = if routes.costs.has(h) { WORKED_ROUTED_COLOR } else { WORKED_CUT_OFF_COLOR };
+                    // A coloured ring on a slightly wider dark one, just inside the hex's fill so
+                    // it doesn't blur into the grid lines.
+                    let center = h.to_world();
+                    polygon_outline(center, WORKED_OUTLINE_RADIUS, WORKED_OUTLINE_RIM_WIDTH, 6, 0.0, WORKED_OUTLINE_RIM_COLOR, out);
+                    polygon_outline(center, WORKED_OUTLINE_RADIUS, WORKED_OUTLINE_WIDTH, 6, 0.0, color, out);
+                }
             }
         }
         for c in 0..self.cities.len() {
@@ -597,6 +613,29 @@ impl GameState {
     /// it hides it again.
     pub fn set_details(&mut self, held: bool) { self.show_details = held; }
 
+    /// Whether the player knows of a city or placed building on `hex`, which shows no yields
+    /// (`closed_to_citizens`): their own always, anyone's in sight, and a remembered city or
+    /// barracks. City centers keep their chips: their own yield comes in on its own.
+    fn known_building_at_off_center(&self, hex: Hex, fog: &Fog) -> bool {
+        let mut center = false;
+        for c in 0..self.cities.len() { if self.cities[c].pos == hex { center = true; } }
+        if !center && !fog.sees(hex) {
+            if let Option.Some(seen) = self.memory.get(hex) { if seen.city.is_some() { center = true; } }
+        }
+        !center && self.known_building_at(hex, fog)
+    }
+
+    fn known_building_at(&self, hex: Hex, fog: &Fog) -> bool {
+        let mut own = false;
+        for c in 0..self.cities.len() {
+            if self.cities[c].team != self.local_team { continue; }
+            if self.cities[c].pos == hex { own = true; }
+            for b in 0..14 { if self.cities[c].placed_site(PLACEABLE[b]) == Option.Some(hex) { own = true; } }
+        }
+        if own || fog.sees(hex) { return self.closed_to_citizens(hex); }
+        match self.memory.get(hex) { Option.Some(seen) => seen.city.is_some() || seen.barracks.is_some(), Option.None => false }
+    }
+
     /// Yield chips below the unit spot: while Alt is held, on every explored tile that can be
     /// worked; otherwise, while the open city shows its yields, on the tiles within its
     /// economic reach.
@@ -613,12 +652,13 @@ impl GameState {
             if center.x < view_min.x - 1.0 || center.y < view_min.y - 1.0 || center.x > view_max.x + 1.0 || center.y > view_max.y + 1.0 { continue; }
             if !self.grid.terrain(hex).is_workable() || !self.is_explored(hex) { continue; }
             let in_reach = match city {
-                Option.Some(c) => match &routes { &Option.Some(r) => r.costs.has(hex) || self.cities[c].worked.contains(hex), &Option.None => false },
+                Option.Some(c) => match &routes { &Option.Some(r) => r.costs.has(hex) || self.cities[c].works(hex), &Option.None => false },
                 Option.None => false,
             };
             if !in_reach && !self.show_details { continue; }
-            let (food, production) = self.known_yield(hex, &fog);
-            push_yield_row(center.add(YIELD_ROW_OFFSET), food, production, out);
+            if self.known_building_at_off_center(hex, &fog) { continue; }
+            let goods = self.known_yield(hex, &fog);
+            push_yield_row(center.add(YIELD_ROW_OFFSET), goods, out);
         }
     }
 }
@@ -635,6 +675,8 @@ pub struct YieldRow {
     labels: Vec[YieldLabel],
     /// How far the pill reaches each way.
     half: Vec2,
+    /// How much the row was shrunk to fit its hex (1 if it fit).
+    scale: f32,
 }
 
 /// Where the pips for 1 to 6 go, in pip pitches, top row first: a die's faces, but 2 side by
@@ -655,7 +697,7 @@ fn pip_spots(amount: i32) -> Vec[Vec2] {
 
 fn abs_f32(x: f32) -> f32 { if x < 0.0 { -x } else { x } }
 
-/// One yield group (food or production) around its own center.
+/// One yield group (food, wood or metal) around its own center.
 fn yield_group(icon: MapIcon, amount: i32) -> YieldRow {
     let spots = pip_spots(amount);
     if spots.is_empty() {
@@ -667,7 +709,7 @@ fn yield_group(icon: MapIcon, amount: i32) -> YieldRow {
         icons.push(YieldIcon { icon, at: vec2(YIELD_ICON_HALF.x - half_x, 0.0) });
         let mut labels: Vec[YieldLabel] = Vec.new();
         labels.push(YieldLabel { amount, at: vec2(half_x - width / 2.0, 0.0) });
-        return YieldRow { icons, labels, half: vec2(half_x, YIELD_ICON_HALF.y) };
+        return YieldRow { icons, labels, half: vec2(half_x, YIELD_ICON_HALF.y), scale: 1.0 };
     }
     let mut icons: Vec[YieldIcon] = Vec.new();
     let mut reach = vec2(0.0, 0.0);
@@ -676,15 +718,17 @@ fn yield_group(icon: MapIcon, amount: i32) -> YieldRow {
         reach = reach.max(vec2(abs_f32(at.x), abs_f32(at.y)));
         icons.push(YieldIcon { icon, at });
     }
-    YieldRow { icons, labels: Vec.new(), half: reach.add(YIELD_ICON_HALF) }
+    YieldRow { icons, labels: Vec.new(), half: reach.add(YIELD_ICON_HALF), scale: 1.0 }
 }
 
-/// Lays out a tile's food and production groups side by side, centered.
-pub fn yield_row(food: i32, production: i32) -> YieldRow {
+/// Lays out a tile's food, wood and metal groups side by side, centered.
+pub fn yield_row(goods: (i32, i32, i32)) -> YieldRow {
+    let (food, wood, metal) = goods;
     let mut groups: Vec[YieldRow] = Vec.new();
     if food > 0 { groups.push(yield_group(MapIcon.Food, food)); }
-    if production > 0 { groups.push(yield_group(MapIcon.Production, production)); }
-    let mut row = YieldRow { icons: Vec.new(), labels: Vec.new(), half: vec2(0.0, 0.0) };
+    if wood > 0 { groups.push(yield_group(MapIcon.Wood, wood)); }
+    if metal > 0 { groups.push(yield_group(MapIcon.Metal, metal)); }
+    let mut row = YieldRow { icons: Vec.new(), labels: Vec.new(), half: vec2(0.0, 0.0), scale: 1.0 };
     if groups.is_empty() { return row; }
     let mut width = YIELD_GROUP_GAP * (groups.len() - 1) as f32;
     for g in 0..groups.len() { width = width + 2.0 * groups[g].half.x; }
@@ -699,25 +743,32 @@ pub fn yield_row(food: i32, production: i32) -> YieldRow {
         left = left + 2.0 * group.half.x + YIELD_GROUP_GAP;
     }
     row.half = vec2(width / 2.0, tall).add(YIELD_ROW_PADDING);
+    // Three full groups would reach past the hex: shrink the whole row.
+    if row.half.x > YIELD_ROW_MAX_HALF_WIDTH {
+        let shrink = YIELD_ROW_MAX_HALF_WIDTH / row.half.x;
+        for k in 0..row.icons.len() { row.icons[k].at = row.icons[k].at.scale(shrink); }
+        for k in 0..row.labels.len() { row.labels[k].at = row.labels[k].at.scale(shrink); }
+        row.half = row.half.scale(shrink);
+        row.scale = shrink;
+    }
     row
 }
-
-/// A tile's yields on a dark pill: food then production, each laid out like the pips on a
-/// die, or as one icon and a number past six. Nothing for a tile yielding nothing.
-pub fn push_yield_row(center: Vec2, food: i32, production: i32, out: &mut Vec[MeshVertex]) {
-    let row = yield_row(food, production);
+/// A tile's yields on a dark pill: food, wood then metal, each laid out like the pips on a die,
+/// or as one icon and a number past six. Nothing for a tile yielding nothing.
+pub fn push_yield_row(center: Vec2, goods: (i32, i32, i32), out: &mut Vec[MeshVertex]) {
+    let row = yield_row(goods);
     if row.icons.is_empty() { return; }
     polygon(&rounded_rect(center, row.half, YIELD_PIP_CORNER), YIELD_ROW_COLOR, out);
-    for k in 0..row.icons.len() { push_map_icon(center.add(row.icons[k].at), row.icons[k].icon, YIELD_ICON_SCALE, out); }
+    for k in 0..row.icons.len() { push_map_icon(center.add(row.icons[k].at), row.icons[k].icon, YIELD_ICON_SCALE * row.scale, out); }
     for k in 0..row.labels.len() {
         let amount = row.labels[k].amount;
         let digits = text(fn() can {Out} { show_i64(amount as i64); });
-        let width = world_text_width(&digits, YIELD_DIGIT_HEIGHT);
+        let height = YIELD_DIGIT_HEIGHT * row.scale;
+        let width = world_text_width(&digits, height);
         let at = center.add(row.labels[k].at);
-        push_text(at.sub(vec2(width / 2.0, YIELD_DIGIT_HEIGHT / 2.0)), YIELD_DIGIT_HEIGHT, &digits, YIELD_DIGIT_COLOR, out);
+        push_text(at.sub(vec2(width / 2.0, height / 2.0)), height, &digits, YIELD_DIGIT_COLOR, out);
     }
 }
-
 /// The corners of a rectangle with rounded corners of `radius`, centered on `center` and
 /// reaching `half` out each way.
 fn rounded_rect(center: Vec2, half: Vec2, radius: f32) -> Vec[Vec2] {
@@ -1501,7 +1552,7 @@ impl GameState {
         if breached {
             polygon_outline(post, 0.59, 0.07, 6, 0.0, SELECTED_COLOR, &mut out);
             push_centered(post.add(vec2(0.0, 0.13)), 0.16, "0 HP", SELECTED_COLOR, &mut out);
-            let (height, word) = if city.team == PLAYER_TEAM { (0.17, "DEFEND") } else { (0.23, "TAKE") };
+            let (height, word) = if city.team == self.local_team { (0.17, "DEFEND") } else { (0.23, "TAKE") };
             push_centered(post.add(vec2(0.0, -0.14)), height, word, SELECTED_COLOR, &mut out);
         } else {
             push_centered(post.add(vec2(0.0, -0.07)), 0.23, "POST", LABEL_COLOR, &mut out);

@@ -888,7 +888,6 @@ impl GameState {
     /// something to open.
     pub fn open_panel(&mut self, what: &str) -> bool can {Log, Rand} {
         if str_eq(what, "settings") { self.settings_open = true; return true; }
-        if str_eq(what, "workers") { self.toggle_worker_mode(); return self.worker_mode; }
         if str_eq(what, "city") { self.select_city(); return self.selected_city.is_some(); }
         if str_eq(what, "queue") {
             self.select_city();
@@ -930,7 +929,6 @@ impl GameState {
             return text(fn() can {Out} { Out.put("unit-"); show_u64(id as u64); });
         }
         if !self.group.is_empty() { return to_owned("group"); }
-        if self.worker_mode { return to_owned("workers"); }
         to_owned("")
     }
 }
@@ -956,8 +954,6 @@ pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Opt
         game.unit_buttons(idx, &mut tray);
     } else if !game.group.is_empty() {
         game.group_tray(&mut tray);
-    } else if game.worker_mode {
-        game.worker_menu(&mut tray);
     }
     let context = if selection_is_pinned { to_owned("") } else { game.selection_context_text() };
     let reset_selection_scroll = layout.selection_changed(&context);
@@ -1001,8 +997,8 @@ pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Opt
     let settings: Option[PanelBuilder] = if game.settings_open { Option.Some(game.settings_panel_content()) } else { Option.None };
     let resolving = game.is_resolving();
     let turn = if resolving { game.turn } else { game.turn + 1 };
-    let (u, c, w) = game.pending();
-    let end_label = if resolving { to_owned("RESOLVING") } else { end_turn_label(u, c, w) };
+    let (u, c) = game.pending();
+    let end_label = if resolving { to_owned("RESOLVING") } else { end_turn_label(u, c) };
     let notice = game.shown_notice();
     Panels { tray, queue, debug, hover, units, settings, tile_tip, reset_selection_scroll, turn, resolving, end_label, notice }
 }

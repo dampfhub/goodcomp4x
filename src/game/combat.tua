@@ -1,29 +1,27 @@
 //! Civ-style combat math: damage grows exponentially with the gap between an attacker's
-//! attack and the target's defense (boosted by the terrain it stands on), with ±20% variance.
+//! attack and the target's defense (boosted by the terrain it stands on). There is no random
+//! spread: the same fight always deals the same damage, so the attack preview (drawn on the
+//! health bars) calls these same functions.
 
 use std.fmt.show_f64_fixed;
 use std.math.Float;
 use std.math.clamp;
-use std.rand.Rand;
-use std.rand.unit;
 use game.ability.Ability;
 use game.hex.HexGrid;
 use game.unit.Unit;
 
-/// Damage `attacker` deals to `target` in one blow, with `defense_multiplier` the terrain and
-/// fort bonus on the target. The variance is one draw of `Rand`, so a seeded handler makes a
-/// blow reproducible.
-pub fn roll_damage(attacker: &Unit, target: &Unit, defense_multiplier: f32) -> f32 can {Rand} {
+/// Damage `attacker` deals to `target` in one blow, with `defense_multiplier` the terrain and fort
+/// bonus on the target (`GameState.defense_multiplier`).
+pub fn damage(attacker: &Unit, target: &Unit, defense_multiplier: f32) -> f32 {
     let defense = target.stats().defense * defense_multiplier;
-    roll_damage_against(attacker.stats().attack, defense)
+    damage_against(attacker.stats().attack, defense)
 }
 
-/// Damage for attacks involving a static structure. Its listed defense already includes its
+/// Damage an attack of `attack` deals in one blow against `defense`: the one formula every fight
+/// uses, units and structures alike. A structure's listed defense already includes its
 /// fortification, so terrain does not modify it again.
-pub fn roll_damage_against(attack: f32, defense: f32) -> f32 can {Rand} {
-    let base = 30.0 * ((attack - defense) * 0.04).exp();
-    let variance = 0.8 + 0.4 * unit() as f32;
-    clamp(base * variance, 1.0, 100.0)
+pub fn damage_against(attack: f32, defense: f32) -> f32 {
+    clamp(30.0 * ((attack - defense) * 0.04).exp(), 1.0, 100.0)
 }
 
 /// Melee attacks draw retaliation from a surviving defender; ranged ones don't.

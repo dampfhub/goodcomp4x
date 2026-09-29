@@ -30,8 +30,6 @@ use std.str.to_owned;
 use log.Log;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
-use game.city.FOCUSES;
-use game.city.LaborFocus;
 use game.settings.Control;
 use game.settings.MAX_BUTTONS;
 use game.settings.SETTINGS;
@@ -46,7 +44,30 @@ use game.city.PLACEABLE;
 use game.city.CITY_UNITS;
 use game.city.BARRACKS_UNITS;
 use game.city.BARRACKS_MAX_HP;
-use game.city.WORKER_COST;
+use game.city.CITY_TRAINING_SLOWDOWN;
+use game.city.GATHER_SHORTCUT;
+use game.city.GATHER_YIELD;
+use game.city.GROW_SHORTCUT;
+use game.city.Good;
+use game.city.GOODS;
+use game.city.Lane;
+use game.city.MAX_CITY_POPULATION;
+use game.city.RESOURCE_NAMES;
+use game.city.SETTLER_MIN_POPULATION;
+use game.unit.Team;
+use game.city.SCOUT_SHORTCUT;
+use game.city.SETTLER_SHORTCUT;
+use game.city.no_stock;
+use game.city.stock_words;
+use game.city.SUPPLY_FULL_HINT;
+use game.city.Stock;
+use game.city.UNITS_PER_DEPOSIT;
+use game.city.WORKERS_PER_MANAGER;
+use game.city.manager_label;
+use game.city.resource_icon;
+use game.city.stock_icons;
+use game.city.turns_icon;
+use game.terrain.Resource;
 use game.city.WORKER_SHORTCUT;
 use game.city.CORE_HP;
 use game.Role;
@@ -133,6 +154,9 @@ const NOTICE_TEXT: Color = [0.95, 0.85, 0.55, 1.0];
 const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
 const BOOSTED_TEXT: Color = [0.55, 0.92, 0.50, 1.0];
 const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
+const FOOD_TEXT: Color = [0.62, 0.90, 0.40, 1.0];
+const WOOD_TEXT: Color = [0.85, 0.62, 0.36, 1.0];
+const METAL_TEXT: Color = [0.62, 0.74, 0.92, 1.0];
 const SELECTION_BOX_FILL: Color = [0.30, 0.55, 0.95, 0.12];
 const SELECTION_BOX_EDGE: Color = [0.55, 0.75, 1.00, 0.9];
 const SELECTION_BOX_BORDER: f32 = 2.0;
@@ -181,24 +205,31 @@ pub enum Target {
     RosterSelect(RosterKey),
     RosterAdd(RosterKey),
     RosterRemove(RosterKey),
-    /// City tray: the open city's labor focus.
-    Focus(LaborFocus),
-    /// City tray: queue a worker, queue a building (or resume choosing its site), confirm a
-    /// finished building, open the Barracks; a queue row's X.
+    /// City tray: a good of the priority order goes first.
+    Priority(Good),
+    /// City tray: queue a worker, growth, a gather, a scout or a settler; arm a building for
+    /// placing; open the Barracks; a queue row's X; the queues' Clear buttons; stop placing.
     BuildWorker,
+    Grow,
+    Gather,
+    BuildScout,
+    BuildSettler,
     Building(Building),
-    ConfirmBuilding(Building),
     OpenBarracks,
     QueueRemove(i32),
-    /// Worker menu: arm a job, open or close the menu, list a city, rest its idle workers, take
-    /// a waiting job off the list, send a worker home, show a worker on the map.
+    ClearCityQueue,
+    ClearBarracksQueue,
+    CancelPlacing,
+    /// Arm a job (a road, an improvement, a structure) for placing on the map, take a waiting
+    /// job off the list, send a worker home, release a held one, show a worker on the map.
     WorkerJob(JobKind),
-    WorkerMode,
-    WorkerCity(i32),
-    SleepWorkers,
     WorkerJobRemove(i32),
     RecallWorker(u32),
+    ReleaseWorker,
     ShowWorker(u32),
+    /// Debug panel: the economy variants.
+    ToggleProductionSpeedup,
+    ToggleLifetimeSpecialCap,
     /// City interior: open or leave it, clear the selected fighter's orders.
     OpenInterior,
     InteriorClear,
@@ -227,17 +258,17 @@ impl Eq for Target {
                 | (Target.CompleteProduction, Target.CompleteProduction) | (Target.ToggleFog, Target.ToggleFog) => true,
             (Target.SetSetting(a, x), Target.SetSetting(b, y)) => a == b && x == y,
             (Target.CloseSettings, Target.CloseSettings) | (Target.Quit, Target.Quit) => true,
-            (Target.Focus(a), Target.Focus(b)) => a == b,
+            (Target.Priority(a), Target.Priority(b)) => a == b,
             (Target.BuildWorker, Target.BuildWorker) | (Target.OpenBarracks, Target.OpenBarracks) | (Target.OpenCity, Target.OpenCity) => true,
+            (Target.Grow, Target.Grow) | (Target.Gather, Target.Gather) | (Target.BuildScout, Target.BuildScout) | (Target.BuildSettler, Target.BuildSettler) => true,
+            (Target.ClearCityQueue, Target.ClearCityQueue) | (Target.ClearBarracksQueue, Target.ClearBarracksQueue) | (Target.CancelPlacing, Target.CancelPlacing) => true,
+            (Target.ReleaseWorker, Target.ReleaseWorker) | (Target.ToggleProductionSpeedup, Target.ToggleProductionSpeedup) | (Target.ToggleLifetimeSpecialCap, Target.ToggleLifetimeSpecialCap) => true,
             (Target.Building(a), Target.Building(b)) => a == b,
-            (Target.ConfirmBuilding(a), Target.ConfirmBuilding(b)) => a == b,
             (Target.QueueRemove(a), Target.QueueRemove(b)) => a == b,
             (Target.BarracksQueueRemove(a), Target.BarracksQueueRemove(b)) => a == b,
             (Target.BarracksBuild(a), Target.BarracksBuild(b)) => a == b,
             (Target.WorkerJob(a), Target.WorkerJob(b)) => a == b,
-            (Target.WorkerMode, Target.WorkerMode) | (Target.SleepWorkers, Target.SleepWorkers) => true,
             (Target.OpenInterior, Target.OpenInterior) | (Target.InteriorClear, Target.InteriorClear) => true,
-            (Target.WorkerCity(a), Target.WorkerCity(b)) => a == b,
             (Target.WorkerJobRemove(a), Target.WorkerJobRemove(b)) => a == b,
             (Target.RecallWorker(a), Target.RecallWorker(b)) => a == b,
             (Target.ShowWorker(a), Target.ShowWorker(b)) => a == b,
@@ -267,8 +298,6 @@ impl QueueKind {
 pub enum RosterKey {
     /// A city with nothing to build, by its id.
     Production(u32),
-    /// A city with idle workers, by its id.
-    Workers(u32),
     /// The units of one kind that need orders: a unit type, and whether they're settlers (which
     /// use the melee body).
     Group(UnitType, bool),
@@ -280,7 +309,6 @@ impl Eq for RosterKey {
     fn eq(self, other: RosterKey) -> bool {
         match (self, other) {
             (RosterKey.Production(a), RosterKey.Production(b)) => a == b,
-            (RosterKey.Workers(a), RosterKey.Workers(b)) => a == b,
             (RosterKey.Group(a, x), RosterKey.Group(b, y)) => a == b && x == y,
             (RosterKey.Unit(a), RosterKey.Unit(b)) => a == b,
             _ => false,
@@ -326,7 +354,7 @@ pub enum ButtonState {
     Disabled,
 }
 
-fn button_state(queued: bool, disabled: bool) -> ButtonState {
+pub fn button_state(queued: bool, disabled: bool) -> ButtonState {
     if disabled { ButtonState.Disabled } else if queued { ButtonState.Queued } else { ButtonState.Ready }
 }
 
@@ -597,10 +625,19 @@ impl GameState {
             Target.TogglePlayback => self.toggle_instant_playback(),
             Target.SetSetting(setting, value) => self.set_setting(setting, value),
             Target.CloseSettings => self.close_settings(),
-            Target.Focus(focus) => self.set_selected_city_focus(focus),
+            Target.Priority(good) => self.prioritize_selected_city(good),
             Target.BuildWorker => self.queue_selected_city_worker(),
+            Target.Grow => self.queue_selected_city_growth(),
+            Target.Gather => self.queue_selected_city_gather(),
+            Target.BuildScout => self.queue_selected_city_scout(),
+            Target.BuildSettler => self.queue_selected_city_settler(),
             Target.Building(building) => self.queue_selected_city_building(building),
-            Target.ConfirmBuilding(building) => self.confirm_building(building),
+            Target.ClearCityQueue => self.clear_selected_city_queue(),
+            Target.ClearBarracksQueue => self.clear_selected_barracks_queue(),
+            Target.CancelPlacing => { let _stopped = self.stop_placing(); }
+            Target.ReleaseWorker => self.release_worker(),
+            Target.ToggleProductionSpeedup => self.toggle_production_speedup(),
+            Target.ToggleLifetimeSpecialCap => self.toggle_lifetime_special_cap(),
             Target.OpenBarracks => { if let Option.Some(city) = self.selected_city { self.open_barracks(city); } }
             Target.QueueRemove(index) => self.remove_selected_city_queue_item(index),
             Target.BarracksBuild(build) => self.queue_selected_barracks_unit(build),
@@ -609,9 +646,6 @@ impl GameState {
             Target.OpenInterior => self.toggle_city_interior(),
             Target.InteriorClear => self.clear_selected_interior_orders(),
             Target.WorkerJob(kind) => self.arm_worker_job(kind),
-            Target.WorkerMode => self.toggle_worker_mode(),
-            Target.WorkerCity(city) => { self.worker_menu_city = Option.Some(city); }
-            Target.SleepWorkers => self.sleep_workers(),
             Target.WorkerJobRemove(index) => self.remove_worker_job(index),
             Target.RecallWorker(id) => self.recall_worker(id),
             Target.ShowWorker(id) => self.show_worker(id),
@@ -667,8 +701,6 @@ impl GameState {
             self.unit_buttons(idx, &mut tray);
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
-        } else if self.worker_mode {
-            self.worker_menu(&mut tray);
         } else {
             shown = false;
         }
@@ -774,7 +806,7 @@ impl GameState {
         let can_complete = if let Option.Some(city) = self.selected_barracks {
             !self.cities[city].barracks_queue.is_empty()
         } else if let Option.Some(city) = self.selected_city {
-            !self.cities[city].queue.is_empty() && self.cities[city].pending_building.is_none()
+            !self.cities[city].queue.is_empty()
         } else {
             false
         };
@@ -793,7 +825,51 @@ impl GameState {
         panel.begin_buttons();
         panel.button(Target.ToggleFog, if self.fog_of_war { "FOG OF WAR: ON" } else { "FOG OF WAR: OFF" }, "F10", ButtonState.Ready, false);
         panel.end_buttons(true);
+        panel.begin_buttons();
+        panel.button(Target.ToggleProductionSpeedup, if self.production_speedup { "PRODUCTION SPEEDS BUILDS: ON" } else { "PRODUCTION SPEEDS BUILDS: OFF" }, "", ButtonState.Ready, false);
+        panel.end_buttons(true);
+        panel.begin_buttons();
+        panel.button(Target.ToggleLifetimeSpecialCap, if self.lifetime_special_cap { "CAVALRY CAP: EVER TRAINED" } else { "CAVALRY CAP: ALIVE" }, "", ButtonState.Ready, false);
+        panel.end_buttons(true);
         panel
+    }
+
+    /// The player's stockpile and its change a turn (every city's delivery, less the citizens'
+    /// food), then the supply, for the top bar.
+    pub fn status_spans(&self) -> Vec[Span] {
+        let team = self.local_team;
+        let income = self.shown_side_income(team);
+        let change = Stock { food: income.food - self.upkeep(team), wood: income.wood, metal: income.metal };
+        let stock = self.stock(team);
+        let mut spans: Vec[Span] = Vec.new();
+        for k in 0..3 {
+            let lead = if k == 0 { "" } else { "   " };
+            let color = resource_color(k);
+            spans.push(Span { text: text(fn() can {Out} { Out.put(lead); Out.put_char(resource_icon(RESOURCE_NAMES[k])); }), color });
+            spans.push(Span { text: text(fn() can {Out} { show_quantity(stock.part(k)); }), color: TEXT });
+            let delta = change.part(k);
+            let delta_color = if delta > 0 { BOOSTED_TEXT } else if delta < 0 { REDUCED_TEXT } else { DIM_TEXT };
+            spans.push(Span { text: text(fn() can {Out} { Out.put(" "); show_signed_quantity(delta); }), color: delta_color });
+        }
+        spans.push(Span { text: to_owned("   SUPPLY "), color: LABEL_TEXT });
+        let (used, cap) = (self.supply_used(team), self.supply_cap(team));
+        spans.push(Span { text: text(fn() can {Out} { show_i64(used as i64); Out.put("/"); show_i64(cap as i64); }), color: if used >= cap { REDUCED_TEXT } else { TEXT } });
+        spans
+    }
+
+    /// The side's supply for a tray line: what it uses of what its cities give, red once it's
+    /// all used, and what that means.
+    fn supply_tray_line(&self, team: Team) -> Vec[Span] {
+        let (used, cap) = (self.supply_used(team), self.supply_cap(team));
+        let mut line: Vec[Span] = Vec.new();
+        line.push(Span { text: to_owned("SUPPLY "), color: LABEL_TEXT });
+        line.push(Span { text: text(fn() can {Out} { show_i64(used as i64); Out.put("/"); show_i64(cap as i64); }), color: if used >= cap { REDUCED_TEXT } else { TEXT } });
+        if used >= cap {
+            line.push(Span { text: to_owned(" \u{b7} FULL: NO NEW TROOPS, SHIPS OR SCOUTS"), color: REDUCED_TEXT });
+        } else {
+            line.push(Span { text: to_owned(" \u{b7} TROOPS, SHIPS AND SCOUTS USE IT"), color: DIM_TEXT });
+        }
+        line
     }
 
     /// Turn number on the left, the latest notice in the middle, and on the right the End Turn
@@ -803,19 +879,25 @@ impl GameState {
         layout.panel(min, size, false);
         let middle = min.y + TOP_BAR_HEIGHT / 2.0;
 
-        let (units, cities, workers) = self.pending();
+        let (units, cities) = self.pending();
         let turn = if self.is_resolving() { self.turn } else { self.turn + 1 };
         let turn_text = text(fn() can {Out} { Out.put("TURN "); show_u64(turn as u64); });
-        let left_end = MARGIN + ui(TextSize.Title).width(&turn_text);
+        let turn_end = MARGIN + ui(TextSize.Title).width(&turn_text);
         let mut spans: Vec[Span] = Vec.new();
         spans.push(Span { text: turn_text, color: TEXT });
         layout.text_row(vec2(MARGIN, middle), TextSize.Title, spans);
+        // The player's stockpile and supply beside the turn number.
+        let status = self.status_spans();
+        let mut status_width: f32 = 0.0;
+        for k in 0..status.len() { let shown = &status[k].text; status_width = status_width + ui(TextSize.Body).width(shown); }
+        layout.text_row(vec2(turn_end + 2.0 * GAP, middle), TextSize.Body, status);
+        let left_end = turn_end + 2.0 * GAP + status_width;
 
-        let label = if self.is_resolving() { to_owned("RESOLVING") } else { end_turn_label(units, cities, workers) };
+        let label = if self.is_resolving() { to_owned("RESOLVING") } else { end_turn_label(units, cities) };
         let hint = to_owned("SPACE");
         let width = single_line_button_width(&label, &hint);
         let button_min = vec2(size.x - MARGIN - width, middle - END_TURN_HEIGHT / 2.0);
-        let state = if self.is_resolving() { ButtonState.Disabled } else { button_state(units == 0 && cities == 0 && workers == 0, false) };
+        let state = if self.is_resolving() { ButtonState.Disabled } else { button_state(units == 0 && cities == 0, false) };
         let end_turn = Button {
             target: Target.EndTurn,
             label,
@@ -842,6 +924,19 @@ impl GameState {
             }
         }
         layout.buttons.push(end_turn);
+    }
+
+    /// A build card's tooltip: what it is, its price paid when its city starts work on it, and how
+    /// long it takes, and the supply it uses.
+    fn build_tooltip(&self, what: str, build: Build) -> Str {
+        let city = match self.open_barracks_city() { Option.Some(c) => c, Option.None => 0 };
+        let price = match build { Build.Grow => stock_words(self.queue_price(city, Build.Grow)), _ => stock_words(build.price()) };
+        let turns = match build { Build.Unit(_) => if self.selected_barracks.is_some() { build.turns() } else { self.city_build_turns(city, build) }, _ => build.turns() };
+        let supply = self.supply_note(build);
+        text(fn() can {Out} {
+            Out.put(what); Out.put(" COSTS "); Out.put(&price); Out.put(", PAID WHEN THE CITY STARTS WORK ON IT (QUEUE IT ANY TIME; IT WAITS FOR THE STOCKPILE). ");
+            show_i64(turns as i64); Out.put(if turns == 1 { " TURN" } else { " TURNS" }); Out.put(" OF WORK."); Out.put(&supply);
+        })
     }
 
     /// A unit's name, stats as they stand this turn, and anything notable about it. Stats
@@ -997,136 +1092,195 @@ impl GameState {
         panel.end_buttons(false);
     }
 
-    /// The open city: population, stores and income, growth, its queue, and a card for each
-    /// unit, the worker and each building it can build.
     pub fn city_tray(&self, i: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
-        let (food, production) = self.income(i);
-        let net_food = food - city.population * 8;
-        let (growth_percent, _, growth_label) = self.growth_status(i);
-        let (id, population, team, working) = (city.id, city.population, city.team, city.worked.len());
-        let (stored_food, stored_production) = (city.food, city.production);
-        let slots = self.citizen_slots(i);
+        let net = self.net_delivery(i);
+        let (id, population, team) = (city.id, city.population, city.team);
 
         panel.begin_line();
         panel.span_owned(text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); }), team.color());
-        panel.span_owned(text(fn() can {Out} { Out.put("   POPULATION "); show_i64(population as i64); }), DIM_TEXT);
+        panel.span_owned(text(fn() can {Out} { Out.put("   POPULATION "); show_i64(population as i64); Out.put("/"); show_i64(MAX_CITY_POPULATION as i64); }), DIM_TEXT);
         panel.end_line(TextSize.Title);
-        let net_color = if net_food > 0 { BOOSTED_TEXT } else if net_food < 0 { REDUCED_TEXT } else { TEXT };
+        let (working, capacity, managers, allowed) = (city.working(), city.capacity(), city.clusters.len(), city.managers_allowed());
         panel.begin_line();
-        panel.stat("CITIZENS", text(fn() can {Out} { show_i64(working as i64); Out.put(" OF "); show_i64(slots as i64); Out.put(" WORKING"); }), TEXT);
+        panel.stat("CITIZENS", text(fn() can {Out} {
+            show_i64(working as i64); Out.put(" OF "); show_i64(capacity as i64); Out.put(" WORKING \u{b7} ");
+            show_i64(managers as i64); Out.put(" OF "); show_i64(allowed as i64); Out.put(" MANAGERS");
+        }), TEXT);
         panel.end_line(TextSize.Body);
-        panel.begin_line();
-        panel.stat("FOOD", text(fn() can {Out} { show_quantity(stored_food); }), TEXT);
-        panel.span_owned(text(fn() can {Out} { Out.put("   "); show_signed_quantity(net_food); Out.put(" PER TURN"); }), net_color);
-        panel.end_line(TextSize.Body);
-        panel.begin_line();
-        panel.stat("PRODUCTION", text(fn() can {Out} { show_quantity(stored_production); }), TEXT);
-        panel.span_owned(text(fn() can {Out} { Out.put("   "); show_signed_quantity(production); Out.put(" PER TURN"); }), DIM_TEXT);
-        panel.end_line(TextSize.Body);
-        if !city.queue.is_empty() {
-            let build = city.queue[0];
-            let cost = self.city_build_cost(i, build);
-            let spent = if stored_production < cost { stored_production } else { cost };
-            panel.text_owned(TextSize.Small, text(fn() can {Out} {
-                Out.put(build.name()); Out.put(": "); show_quantity(spent); Out.put(" / "); show_quantity(cost); Out.put(" PRODUCTION");
-            }), GOLD_TEXT);
-            let fraction = stored_production as f32 / cost as f32;
-            panel.bar(if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction });
+        // With several clusters, its citizens by cluster: each manager (marked as on the map), how
+        // many workers it runs, and what they deliver. One cluster is the line above.
+        if managers > 1 {
+            for k in 0..managers {
+                let workers = city.clusters[k].count;
+                let picked_up = self.is_moving_manager(i, k);
+                let income = if picked_up { no_stock() } else { self.cluster_income(i, k) };
+                let label = manager_label(k, managers);
+                panel.begin_line();
+                panel.span_owned(text(fn() can {Out} { Out.put(&label); Out.put("  "); }), GOLD_TEXT);
+                panel.span_owned(text(fn() can {Out} { show_i64(workers as i64); Out.put("/"); show_i64(WORKERS_PER_MANAGER as i64); Out.put(" WORKERS   "); }), TEXT);
+                if picked_up {
+                    panel.span("PICKED UP", DIM_TEXT);
+                } else {
+                    for r in 0..3 {
+                        let shown = text(fn() can {Out} { Out.put_char(resource_icon(RESOURCE_NAMES[r])); show_signed_quantity(income.part(r)); Out.put("  "); });
+                        panel.span_owned(shown, resource_color(r));
+                    }
+                }
+                panel.end_line(TextSize.Small);
+            }
         }
+        // What this city adds to the side's stockpile a turn, net of the food its citizens eat.
         panel.begin_line();
-        if city.queue.is_empty() {
-            panel.stat("BUILDING", to_owned("NOTHING - CHOOSE BELOW"), DIM_TEXT);
-        } else {
-            let build = city.queue[0];
-            let cost = self.city_build_cost(i, build);
-            let spent = if stored_production < cost { stored_production } else { cost };
-            panel.stat("BUILDING", text(fn() can {Out} {
-                Out.put(build.name()); Out.put(" ("); show_quantity(spent); Out.put(" OF "); show_quantity(cost); Out.put(")");
-            }), GOLD_TEXT);
+        panel.span("DELIVERS ", LABEL_TEXT);
+        for r in 0..3 {
+            let shown = text(fn() can {Out} { Out.put_char(resource_icon(RESOURCE_NAMES[r])); show_signed_quantity(net.part(r)); Out.put("   "); });
+            panel.span_owned(shown, resource_color(r));
         }
         panel.end_line(TextSize.Body);
-        let focus = city.focus;
-        panel.text(TextSize.Small, "LABOR FOCUS", LABEL_TEXT);
+        let status = self.queue_status(i, Lane.City);
+        let worked = self.worked_item(i, Lane.City, &status);
+        panel.begin_line();
+        match worked {
+            Option.Some((_, 0, _)) => { panel.stat("BUILDING", to_owned("READY - WAITING FOR AN OPEN HEX"), GOLD_TEXT); }
+            Option.Some((name, turns, _)) => {
+                let clock = turns_icon(turns);
+                panel.stat("BUILDING", text(fn() can {Out} { Out.put(name); Out.put(" \u{b7} "); Out.put(&clock); Out.put(" LEFT"); }), GOLD_TEXT);
+            }
+            Option.None => {
+                if city.queue.is_empty() { panel.stat("BUILDING", to_owned("NOTHING - CHOOSE BELOW"), DIM_TEXT); } else { panel.stat("BUILDING", to_owned("NOTHING IT CAN PAY FOR"), REDUCED_TEXT); }
+            }
+        }
+        panel.end_line(TextSize.Body);
+        if let Option.Some((_, _, done)) = worked { panel.bar(done); }
+        if let Option.Some(waiting) = self.head_waiting_text(i, Lane.City, &status) { panel.text_owned(TextSize.Small, waiting, REDUCED_TEXT); }
+        // The priority order: a chip per good, its rank in it; clicking one puts it first.
+        panel.text(TextSize.Small, "PRIORITY - CLICK ONE TO PUT IT FIRST", LABEL_TEXT);
         panel.begin_buttons();
-        for k in 0..3 { panel.button(Target.Focus(FOCUSES[k]), FOCUSES[k].name(), "AUTO", button_state(FOCUSES[k] == focus, false), false); }
+        for rank in 0..3 {
+            let good = city.priorities.at(rank);
+            let label = text(fn() can {Out} { Out.put(good.name()); Out.put(" ("); show_i64((rank + 1) as i64); Out.put(")"); });
+            panel.button(Target.Priority(good), &label, "", ButtonState.Ready, false);
+        }
         panel.end_buttons(true);
 
         panel.gap(GAP);
-        panel.text_owned(TextSize.Small, growth_label, DIM_TEXT);
-        panel.bar(growth_percent as f32 / 100.0);
+        let first: Option[Build] = if city.queue.is_empty() { Option.None } else { Option.Some(city.queue[0].build) };
+        let mut queued_grows = 0;
+        for k in 0..city.queue.len() { if city.queue[k].build == Build.Grow { queued_grows = queued_grows + 1; } }
+        panel.begin_buttons();
+        if self.can_grow(i) {
+            let price = self.queue_price(i, Build.Grow);
+            let cost = cost_hint(price, self.city_build_turns(i, Build.Grow));
+            let hint = text(fn() can {Out} { Out.put_char(GROW_SHORTCUT); Out.put(" \u{b7} "); Out.put(&cost); });
+            let label = text(fn() can {Out} { Out.put("GROW TO "); show_i64((population + queued_grows + 1) as i64); });
+            panel.button(Target.Grow, &label, &hint, button_state(first == Option.Some(Build.Grow), false), false);
+        } else {
+            let hint = text(fn() can {Out} { Out.put_char(GROW_SHORTCUT); Out.put(" \u{b7} FULL"); });
+            panel.button(Target.Grow, "GROW", &hint, ButtonState.Disabled, false);
+        }
+        // Gathering is free: a city can always do it.
+        let gathered = stock_icons(GATHER_YIELD);
+        let gather_turns = turns_icon(Build.Gather.turns());
+        let gather = text(fn() can {Out} { Out.put_char(GATHER_SHORTCUT); Out.put(" \u{b7} +"); Out.put(&gathered); Out.put(" "); Out.put(&gather_turns); });
+        panel.button(Target.Gather, "GATHER", &gather, button_state(first == Option.Some(Build.Gather), false), false);
+        panel.end_buttons(true);
 
         panel.gap(GAP);
+        // The side's supply, which every troop, ship and Scout card below uses, and the Barracks'
+        // pace.
+        let line = self.supply_tray_line(city.team);
+        panel.begin_line();
+        for k in 0..line.len() { panel.span_owned(copy_str(&line[k].text), line[k].color); }
+        panel.end_line(TextSize.Small);
+        panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("A BARRACKS TRAINS TROOPS "); show_i64(CITY_TRAINING_SLOWDOWN as i64); Out.put("X FASTER THAN THE CITY"); }), DIM_TEXT);
         let ships = self.city_is_coastal(i) && city.placed_site(Building.Harbor).is_some();
-        let front: Option[Build] = if city.queue.is_empty() { Option.None } else { Option.Some(city.queue[0]) };
+        // Dimmed, saying why, when the city can't queue one (`city_build_issue`): a troop, ship or
+        // Scout needs supply, a Settler needs citizens, and a Scout is one at a time.
+        let mut cards = 0;
         panel.begin_buttons();
         for b in 0..6 {
-            let build = CITY_UNITS[b];
             if b >= 3 && !ships { continue; }
-            let hint = text(fn() can {Out} { Out.put_char(build.shortcut()); Out.put(" \u{b7} "); show_quantity(build.cost()); Out.put(" PROD"); });
-            panel.button(Target.Build(build), build.name(), &hint, button_state(front == Option.Some(Build.Unit(build)), false), false);
+            let build = CITY_UNITS[b];
+            self.build_card(i, Target.Build(build), build.name(), Build.Unit(build), first, panel);
+            cards = cards + 1;
+            if cards == 3 { panel.end_buttons(false); panel.begin_buttons(); cards = 0; }
         }
-        let worker_hint = text(fn() can {Out} { Out.put_char(WORKER_SHORTCUT); Out.put(" \u{b7} "); show_quantity(WORKER_COST); Out.put(" PROD"); });
-        panel.button(Target.BuildWorker, "WORKER", &worker_hint, button_state(front == Option.Some(Build.Worker), false), false);
+        self.build_card(i, Target.BuildScout, "SCOUT", Build.Scout, first, panel);
+        self.build_card(i, Target.BuildSettler, "SETTLER", Build.Settler, first, panel);
+        self.build_card(i, Target.BuildWorker, "WORKER", Build.Worker, first, panel);
         panel.end_buttons(false);
         panel.gap(GAP);
         panel.begin_buttons();
-        panel.button(Target.ToggleYields, "YIELDS", "Y", button_state(self.show_yields, false), false);
         panel.button(Target.OpenInterior, "CITY INTERIOR", "V", ButtonState.Ready, false);
-        panel.button(Target.WorkerMode, "WORKER JOBS", "W", ButtonState.Ready, false);
+        panel.button(Target.ToggleYields, "YIELDS", "Y", button_state(self.show_yields, false), false);
         panel.end_buttons(false);
         panel.gap(GAP);
-        panel.text(TextSize.Small, "CLICK MANAGER TO MOVE \u{b7} CLICK TILES TO ASSIGN \u{b7} ESC OR SPACE TO EXIT", LABEL_TEXT);
-
-        panel.text(TextSize.Small, "BUILDINGS", LABEL_TEXT);
+        // While placing, map clicks and Escape are placing's: its own lines (below) take this one's
+        // place.
+        if self.placing_job.is_none() {
+            panel.text(TextSize.Small, "CLICK MANAGER TO MOVE \u{b7} CLICK TILES TO ASSIGN \u{b7} ESC OR SPACE TO EXIT", LABEL_TEXT);
+        }
+        if let Option.Some(kind) = self.placing_job {
+            let how = if kind.on_edge() { "CLICK OR DRAG ALONG HEX EDGES" } else if kind.is_building() { "CLICK A LIT TILE" } else { "CLICK OR DRAG OVER LIT TILES" };
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("PLACING "); Out.put(kind.name()); Out.put(": "); Out.put(how); Out.put(" \u{b7} RIGHT-CLICK OR ESC TO CANCEL"); }), GOLD_TEXT);
+            // Its armed card is gold too, and clicking it again also stops, but that's easy to
+            // miss: say it plainly.
+            let cancel = text(fn() can {Out} { Out.put("CANCEL PLACING "); Out.put(kind.name()); });
+            panel.begin_buttons();
+            panel.button(Target.CancelPlacing, &cancel, "", ButtonState.Ready, false);
+            panel.end_buttons(true);
+            panel.text(TextSize.Small, "LIT: WHERE WORKERS REACH, 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD", DIM_TEXT);
+        }
+        // Buildings and works: placed on the map for the city's workers to build.
+        panel.text(TextSize.Small, "BUILDINGS AND WORKS", LABEL_TEXT);
         let scroll = city.building_scroll;
         panel.begin_buttons();
-        for b in 0..15 {
+        for b in 0..14 {
             let building = BUILDINGS[b];
             if city.built.contains(building) || (building.is_naval() && !self.city_is_coastal(i)) { continue; }
-            let hint = text(fn() can {Out} {
-                if building.shortcut() != ' ' { Out.put_char(building.shortcut()); Out.put(" | "); }
-                show_quantity(building.cost()); Out.put(" PROD");
-            });
-            let needs_site = self.needs_site(i, building);
-            let queued = front == Option.Some(Build.Building(building)) || needs_site || self.placing(i, building) && self.selected_city == Option.Some(i);
-            let waiting = (city.pending_building == Option.Some(building) || city.queue.contains(Build.Building(building))) && !needs_site;
-            panel.button(Target.Building(building), building.name(), &hint, button_state(queued, waiting), false);
+            // Gold while placed (or being placed), dimmed while it can't be
+            // (`job_kind_unavailable`).
+            let kind = JobKind.Build(building);
+            let placed = self.building_job_queued(i, building);
+            let state = button_state(placed || self.placing_job == Option.Some(kind), !placed && self.job_kind_unavailable(i, kind).is_some());
+            let hint = cost_hint(building.price(), building.turns());
+            panel.button(Target.Building(building), building.name(), &hint, state, false);
+        }
+        for k in 0..6 {
+            let kind = JOB_KINDS[k];
+            let state = button_state(self.placing_job == Option.Some(kind), self.placing_job != Option.Some(kind) && self.job_kind_unavailable(i, kind).is_some());
+            let hint = cost_hint(kind.price(), kind.turns() as i32);
+            panel.button(Target.WorkerJob(kind), kind.name(), &hint, state, false);
         }
         panel.end_catalog(i, scroll);
-        if let Option.Some(tile) = city.barracks {
-            let active = !city.worked.is_empty() && city.worked[0] == tile;
+        panel.gap(GAP);
+        self.city_workers(i, panel);
+        if city.barracks.is_some() {
+            let status = self.queue_status(i, Lane.Barracks);
             panel.gap(GAP);
-            panel.text(TextSize.Small, if active { "BARRACKS: MANAGER ACTIVE" } else { "BARRACKS: MOVE MANAGER ONTO BARRACKS" }, if active { BOOSTED_TEXT } else { REDUCED_TEXT });
+            match self.worked_item(i, Lane.Barracks, &status) {
+                Option.Some((name, _, _)) => panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("BARRACKS: TRAINING "); Out.put(name); }), GOLD_TEXT),
+                Option.None => {
+                    if city.barracks_queue.is_empty() { panel.text(TextSize.Small, "BARRACKS: IDLE - TRAIN TROOPS THERE", GOLD_TEXT); } else { panel.text(TextSize.Small, "BARRACKS: NOTHING IT CAN PAY FOR", REDUCED_TEXT); }
+                }
+            }
             panel.begin_buttons();
             panel.button(Target.OpenBarracks, "SEE BARRACKS", "CLICK", ButtonState.Ready, false);
             panel.end_buttons(false);
         }
-        for b in 0..14 {
-            let building = PLACEABLE[b];
-            let Option.Some(site) = city.planned_sites.get(building) else {
-                if self.needs_site(i, building) {
-                    let how = if self.placing(i, building) { "CLICK AN OPEN TILE ON THE MAP" } else { "CLICK ITS CARD TO CHOOSE ONE" };
-                    panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(building.name()); Out.put(" NEEDS A SITE"); }), GOLD_TEXT);
-                    panel.text(TextSize.Small, how, DIM_TEXT);
-                }
-                continue;
-            };
-            let ready = front == Option.Some(Build.Building(building)) && stored_production >= self.city_build_cost(i, Build.Building(building));
-            let status = if ready { " READY: SITE (" } else { " PLANNED: SITE (" };
-            panel.text_owned(TextSize.Small, text(fn() can {Out} {
-                Out.put(building.name()); Out.put(status); show_i64(site.q as i64); Out.put(", "); show_i64(site.r as i64); Out.put(")");
-            }), GOLD_TEXT);
-            panel.text(TextSize.Small, "CLICK ITS MAP BADGE TO MOVE THE SITE", DIM_TEXT);
-            if ready {
-                let label = text(fn() can {Out} { Out.put("CONFIRM "); Out.put(building.name()); });
-                panel.begin_buttons();
-                panel.button(Target.ConfirmBuilding(building), &label, "CLICK", ButtonState.Ready, false);
-                panel.end_buttons(false);
-            }
-        }
     }
 
+    /// A build card in the city tray: its price and turns as its hint (or, dimmed, why the city
+    /// can't queue it: `city_build_issue`), gold while it heads the queue.
+    fn build_card(&self, i: i32, target: Target, label: &str, build: Build, first: Option[Build], panel: &mut PanelBuilder) {
+        let price = self.queue_price(i, build);
+        let hint = cost_hint(price, self.city_build_turns(i, build));
+        match self.city_build_issue(i, build) {
+            Option.Some(why) => panel.button(target, label, &why, ButtonState.Disabled, false),
+            Option.None => panel.button(target, label, &hint, button_state(first == Option.Some(build), false), false),
+        }
+    }
     /// City `i`'s interior: the command post's health, the troops on the board, the selected
     /// one, and what to do next.
     pub fn interior_tray(&self, i: i32, panel: &mut PanelBuilder) {
@@ -1172,25 +1326,35 @@ impl GameState {
         panel.end_buttons(true);
     }
 
-    /// City `i`'s workers: how many are home and out, what those out are doing (a button showing
-    /// each on the map, and Recall), and the jobs waiting for them (X removes one).
     fn city_workers(&self, i: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
-        let (home, out) = (city.workers, self.workers_out(i));
-        panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("WORKERS: "); show_u64(home as u64); Out.put(" HOME, "); show_i64(out as i64); Out.put(" OUT"); }), LABEL_TEXT);
+        let (home, out, held) = (city.workers, self.workers_out(i), city.held_workers);
+        panel.text_owned(TextSize.Small, text(fn() can {Out} {
+            Out.put("WORKERS: "); show_u64(home as u64);
+            Out.put(" HOME");
+            if held > 0 { Out.put(" ("); show_u64(held as u64); Out.put(" HELD)"); }
+            Out.put(", "); show_i64(out as i64); Out.put(" OUT");
+        }), LABEL_TEXT);
+        // Recalled workers stay home until released, one a click.
+        if city.held_workers > 0 && city.team == self.local_team {
+            panel.begin_buttons();
+            panel.button(Target.ReleaseWorker, if held == 1 { "HELD AT HOME - RELEASE" } else { "HELD AT HOME - RELEASE ONE" }, "", ButtonState.Ready, false);
+            panel.end_buttons(true);
+        }
         for w in 0..self.field_workers.len() {
             let worker = self.field_workers[w];
             if worker.home != i { continue; }
             let doing = match (worker.job, worker.work_left) {
                 (Option.Some(job), Option.Some(left)) => {
                     let title = self.job_title(job);
-                    text(fn() can {Out} { Out.put(&title); Out.put(" \u{b7} "); show_u64(left as u64); Out.put("T"); })
+                    let clock = turns_icon(left as i32);
+                    text(fn() can {Out} { Out.put(&title); Out.put(" \u{b7} "); Out.put(&clock); })
                 }
                 (Option.Some(job), Option.None) => {
                     let title = self.job_title(job);
                     text(fn() can {Out} { Out.put("TO "); Out.put(&title); })
                 }
-                (Option.None, _) => to_owned(if worker.recalled { "RECALLED, WALKING HOME" } else { "WALKING HOME" }),
+                (Option.None, _) => to_owned(if worker.recalled { "RECALLED, WALKING HOME TO STAY" } else { "WALKING HOME" }),
             };
             panel.begin_buttons();
             panel.button(Target.ShowWorker(worker.id), &doing, "", ButtonState.Ready, false);
@@ -1198,113 +1362,83 @@ impl GameState {
             panel.end_buttons(true);
         }
         if city.worker_jobs.is_empty() { return; }
-        panel.text(TextSize.Small, "WORKER JOBS", LABEL_TEXT);
+        panel.text(TextSize.Small, "PLACED, WAITING FOR A WORKER - DRAG TO REORDER", LABEL_TEXT);
         let dragging_jobs = match self.queue_drag { Option.Some(d) => d.kind == QueueKind.Workers, Option.None => false };
         for j in 0..city.worker_jobs.len() {
             let job = city.worker_jobs[j];
             let title = self.job_title(job);
-            let label = text(fn() can {Out} { Out.put(&title); Out.put(" \u{b7} "); show_u64(job.kind.turns() as u64); Out.put("T"); });
+            let total = self.job_turns(city.team, job);
+            // A job a worker left partway keeps its work: "2 OF 4 DONE".
+            let total_clock = turns_icon(total as i32);
+            let turns = if job.done > 0 {
+                let done = total - self.job_turns_left(city.team, job);
+                text(fn() can {Out} { show_u64(done as u64); Out.put(" OF "); Out.put(&total_clock); Out.put(" DONE"); })
+            } else {
+                turns_icon(total as i32)
+            };
+            let label = text(fn() can {Out} { Out.put(&title); Out.put(" \u{b7} "); Out.put(&turns); });
             let (dragging, drop_target) = self.drag_flags(dragging_jobs, j);
             panel.queue_item(QueueItemSpec { kind: QueueKind.Workers, index: j, label, active: false, locked: false, dragging, drop_target });
         }
     }
-
-    /// The worker menu (W): the only way to give workers orders. Its job buttons arm a job to
-    /// place on the map; it lists a city's workers (with Recall) and waiting jobs (X removes
-    /// one), with a button per city when there are several; Sleep rests that city's idle
-    /// workers this turn, and Done closes it.
-    pub fn worker_menu(&self, panel: &mut PanelBuilder) {
-        panel.text(TextSize.Title, "WORKERS", TEXT);
-        let how = match self.placing_job {
-            Option.Some(kind) => {
-                let place = if kind.on_edge() { "S: CLICK OR DRAG ALONG HEX EDGES \u{b7} ESC TO STOP" } else { "S: CLICK OR DRAG OVER LIT TILES \u{b7} ESC TO STOP" };
-                text(fn() can {Out} { Out.put("PLACING "); Out.put(kind.name()); Out.put(place); })
-            }
-            Option.None => to_owned("PICK A JOB, THEN PLACE IT ON THE MAP."),
-        };
-        panel.text_owned(TextSize.Small, how, LABEL_TEXT);
-        panel.text(TextSize.Small, "LIT: WHERE WORKERS REACH, 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD", DIM_TEXT);
-        for row in 0..2 {
-            panel.begin_buttons();
-            for k in 0..3 {
-                let kind = JOB_KINDS[row * 3 + k];
-                let key = match kind { JobKind.Road => "R \u{b7} ", JobKind.Improve => "I \u{b7} ", _ => "" };
-                let hint = text(fn() can {Out} { Out.put(key); show_u64(kind.turns() as u64); Out.put("T"); });
-                panel.button(Target.WorkerJob(kind), kind.name(), &hint, ButtonState.Ready, self.placing_job == Option.Some(kind));
-            }
-            panel.end_buttons(true);
-        }
-        let mut cities: Vec[i32] = Vec.new();
-        for i in 0..self.cities.len() { if self.cities[i].team == PLAYER_TEAM { cities.push(i); } }
-        if cities.len() > 1 {
-            panel.gap(GAP);
-            panel.begin_buttons();
-            for k in 0..cities.len() {
-                let i = cities[k];
-                let (id, idle) = (self.cities[i].id, self.idle_workers(i));
-                let label = text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); });
-                let hint = if idle == 0 { to_owned("") } else { text(fn() can {Out} { show_u64(idle as u64); Out.put(" IDLE"); }) };
-                panel.button(Target.WorkerCity(i), &label, &hint, button_state(self.worker_menu_city == Option.Some(i), false), false);
-            }
-            panel.end_buttons(true);
-        }
-        if let Option.Some(city) = self.worker_menu_city {
-            panel.gap(GAP);
-            self.city_workers(city, panel);
-        }
-        panel.gap(GAP);
-        let idle = match self.worker_menu_city { Option.Some(i) => self.idle_workers(i), Option.None => 0 };
-        panel.begin_buttons();
-        panel.button(Target.SleepWorkers, "SLEEP", "SPACE", button_state(false, idle == 0), false);
-        panel.button(Target.WorkerMode, "DONE", "W", ButtonState.Ready, false);
-        panel.end_buttons(true);
-    }
-
-    /// The open Barracks: its health, its work group's production, what it's training, its
-    /// queue, and a card for each troop.
     pub fn barracks_tray(&self, i: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let Option.Some(tile) = city.barracks else { return; };
-        let active = !city.worked.is_empty() && city.worked[0] == tile;
-        let barracks_production = if active { self.barracks_income(i) } else { 0 };
         let (id, team, hp) = (city.id, city.team, city.barracks_hp);
         panel.text_owned(TextSize.Title, text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" BARRACKS"); }), team.color());
+        let on = match self.grid.resource(tile) { Option.Some(r) => r.name(), Option.None => "OPEN GROUND" };
+        panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("ON "); Out.put(on); Out.put(" \u{b7} TRAINS TROOPS TWICE AS FAST AS THE CITY"); }), DIM_TEXT);
         panel.begin_line();
         panel.stat("HP", text(fn() can {Out} { show_rounded(hp); Out.put("/"); show_rounded(BARRACKS_MAX_HP); }), GOLD_TEXT);
         panel.end_line(TextSize.Body);
-        panel.text_owned(TextSize.Small, text(fn() can {Out} {
-            Out.put(if active { "MANAGER ACTIVE" } else { "NEEDS MANAGER" }); Out.put(" \u{b7} "); show_signed_quantity(barracks_production); Out.put(" PROD/T");
-        }), if active { BOOSTED_TEXT } else { REDUCED_TEXT });
-        if !city.barracks_queue.is_empty() {
-            let build = city.barracks_queue[0];
-            let stored = city.barracks_production;
-            let spent = if stored < build.cost() { stored } else { build.cost() };
-            panel.text_owned(TextSize.Small, text(fn() can {Out} {
-                Out.put("TRAINING "); Out.put(build.name()); Out.put(": "); show_quantity(spent); Out.put(" / "); show_quantity(build.cost()); Out.put(" PROD");
-            }), GOLD_TEXT);
-            let fraction = stored as f32 / build.cost() as f32;
-            panel.bar(if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction });
+        // Each deposit kind: how many troops it still allows, or why none.
+        let kinds = [(Resource.Horses, BuildUnit.Cavalry), (Resource.Iron, BuildUnit.Armored)];
+        for k in 0..2 {
+            let (resource, unit) = kinds[k];
+            if self.barracks_deposits(i, resource).is_empty() {
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(unit.name()); Out.put(": LOCKED - PUT A BARRACKS ON "); Out.put(resource.name()); }), REDUCED_TEXT);
+            } else {
+                let cap = self.special_cap(team, resource);
+                let used = self.special_used(team, resource);
+                let left = if cap > used { cap - used } else { 0 };
+                let deposits = cap / UNITS_PER_DEPOSIT;
+                panel.text_owned(TextSize.Small, text(fn() can {Out} {
+                    Out.put(unit.name()); Out.put(": "); show_i64(left as i64); Out.put(" OF "); show_i64(cap as i64); Out.put(" LEFT (");
+                    show_i64(deposits as i64); Out.put(" "); Out.put(resource.name()); Out.put(" DEPOSIT"); Out.put(if deposits == 1 { "" } else { "S" });
+                    Out.put(" X "); show_i64(UNITS_PER_DEPOSIT as i64); Out.put(")");
+                }), if left > 0 { BOOSTED_TEXT } else { GOLD_TEXT });
+            }
         }
+        let line = self.supply_tray_line(team);
+        panel.begin_line();
+        for k in 0..line.len() { panel.span_owned(copy_str(&line[k].text), line[k].color); }
+        panel.end_line(TextSize.Small);
+        let status = self.queue_status(i, Lane.Barracks);
+        if let Option.Some((name, turns, done)) = self.worked_item(i, Lane.Barracks, &status) {
+            let clock = turns_icon(turns);
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("TRAINING "); Out.put(name); Out.put(" \u{b7} "); Out.put(&clock); Out.put(" LEFT"); }), GOLD_TEXT);
+            panel.bar(done);
+        }
+        if let Option.Some(waiting) = self.head_waiting_text(i, Lane.Barracks, &status) { panel.text_owned(TextSize.Small, waiting, REDUCED_TEXT); }
         panel.gap(GAP);
-        let front: Option[BuildUnit] = if city.barracks_queue.is_empty() { Option.None } else { Option.Some(city.barracks_queue[0]) };
+        let front: Option[BuildUnit] = if city.barracks_queue.is_empty() { Option.None } else { Option.Some(city.barracks_queue[0].build) };
         panel.begin_buttons();
         for b in 0..5 {
             let build = BARRACKS_UNITS[b];
+            // Locked cards (no deposit, the deposits' cap or the supply used up) are dimmed; the
+            // tooltip says why, and a card the supply locks says so in place of its price. One the
+            // side can't pay for yet can be queued, and waits.
+            let lock = self.barracks_lock(i, build);
+            let supply_full = lock.is_some() && self.deposit_lock(i, build).is_none();
+            let hint = if supply_full { to_owned(SUPPLY_FULL_HINT) } else { cost_hint(build.price(), build.turns()) };
             let label = text(fn() can {Out} { Out.put("TRAIN "); Out.put(build.name()); });
-            let hint = text(fn() can {Out} {
-                match build.required_resource() {
-                    Option.Some(resource) => { Out.put(resource.name()); Out.put(" \u{b7} "); show_quantity(build.cost()); }
-                    Option.None => { show_quantity(build.cost()); Out.put(" PROD"); }
-                }
-            });
-            panel.button(Target.BarracksBuild(build), &label, &hint, button_state(front == Option.Some(build), !self.barracks_can_train(i, build)), false);
+            panel.button(Target.BarracksBuild(build), &label, &hint, button_state(front == Option.Some(build), lock.is_some()), false);
         }
         panel.end_buttons(false);
         panel.begin_buttons();
         panel.button(Target.OpenCity, "OPEN CITY", "CLICK", ButtonState.Ready, false);
         panel.end_buttons(false);
     }
-
     /// Everything about a map hex: terrain, what it yields, and what's on it.
     pub fn tile_tooltip(&self, hex: Hex, panel: &mut PanelBuilder) {
         let tile = self.grid.tile(hex);
@@ -1321,10 +1455,11 @@ impl GameState {
             panel.text(TextSize.Small, "IMPASSABLE", DIM_TEXT);
             return;
         }
-        let (food, production) = self.raw_yield(hex);
+        let (food, wood, metal) = self.raw_yield(hex);
         panel.begin_line();
-        panel.stat("FOOD", text(fn() can {Out} { show_i64(food as i64); }), BOOSTED_TEXT);
-        panel.stat("PRODUCTION", text(fn() can {Out} { show_i64(production as i64); }), GOLD_TEXT);
+        panel.stat("FOOD", text(fn() can {Out} { show_i64(food as i64); }), FOOD_TEXT);
+        panel.stat("WOOD", text(fn() can {Out} { show_i64(wood as i64); }), WOOD_TEXT);
+        panel.stat("METAL", text(fn() can {Out} { show_i64(metal as i64); }), METAL_TEXT);
         panel.end_line(TextSize.Small);
 
         if city.is_some() {
@@ -1352,7 +1487,7 @@ impl GameState {
         }
         if self.roads.contains(hex) { panel.text(TextSize.Small, "DIRT ROAD: GOODS MOVE THROUGH MORE CHEAPLY", DIM_TEXT); }
         for c in 0..self.cities.len() {
-            if self.cities[c].worked.contains(hex) {
+            if self.cities[c].works(hex) {
                 let id = self.cities[c].id;
                 panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("WORKED BY CITY "); show_u64((id + 1) as u64); }), DIM_TEXT);
                 break;
@@ -1452,20 +1587,76 @@ impl GameState {
             Target.Build(build) => {
                 title = to_owned(build.name());
                 shortcut = text(fn() can {Out} { Out.put_char(build.shortcut()); });
-                description = text(fn() can {Out} {
-                    Out.put(build.description()); Out.put(". COSTS "); show_quantity(build.cost());
-                    Out.put(" PRODUCTION; THE CITY SPENDS ITS STORED PRODUCTION AND PLACES THE UNIT NEXT TO ITSELF ONCE THERE'S ENOUGH.");
-                });
+                description = self.build_tooltip(build.description(), Build.Unit(build));
             }
             Target.Building(building) => {
                 title = to_owned(building.name());
                 shortcut = if building.shortcut() == ' ' { to_owned("CITY BUILD MENU") } else { text(fn() can {Out} { Out.put_char(building.shortcut()); }) };
-                description = text(fn() can {Out} { Out.put(building.description()); Out.put(" COSTS "); show_quantity(building.cost()); Out.put(" PRODUCTION. ONE PER CITY."); });
+                let price = stock_words(building.price());
+                description = text(fn() can {Out} {
+                    Out.put(building.description()); Out.put(" PLACE IT ON THE MAP FOR YOUR WORKERS TO BUILD: "); Out.put(&price);
+                    Out.put(" WHEN PLACED, GIVEN BACK IF IT'S TAKEN OFF THE LIST. ONE PER CITY.");
+                });
+                if let Option.Some(city) = self.selected_city {
+                    if let Option.Some(why) = self.job_kind_unavailable(city, JobKind.Build(building)) { unavailable = Option.Some(why); }
+                }
             }
             Target.BarracksBuild(build) => {
                 title = text(fn() can {Out} { Out.put("TRAIN "); Out.put(build.name()); });
                 shortcut = to_owned("BARRACKS");
-                description = text(fn() can {Out} { Out.put(build.description()); Out.put(" COSTS "); show_quantity(build.cost()); Out.put(" PRODUCTION FROM THE ACTIVE MANAGER'S WORK GROUP."); });
+                description = self.build_tooltip(build.description(), Build.Unit(build));
+                if let Option.Some(city) = self.open_barracks_city() { unavailable = self.barracks_lock(city, build); }
+            }
+            Target.Grow => {
+                title = to_owned("GROW");
+                shortcut = text(fn() can {Out} { Out.put_char(GROW_SHORTCUT); });
+                description = self.build_tooltip("ONE MORE CITIZEN, BOUGHT WITH FOOD, MORE EACH TIME.", Build.Grow);
+            }
+            Target.Gather => {
+                title = to_owned("GATHER");
+                shortcut = text(fn() can {Out} { Out.put_char(GATHER_SHORTCUT); });
+                let yields = stock_words(GATHER_YIELD);
+                description = text(fn() can {Out} { Out.put("THE CITY SPENDS A TURN GATHERING: FREE, AND "); Out.put(&yields); Out.put(" GO TO THE STOCKPILE. A CITY CAN ALWAYS DO IT."); });
+            }
+            Target.BuildScout => {
+                title = to_owned("SCOUT");
+                shortcut = text(fn() can {Out} { Out.put_char(SCOUT_SHORTCUT); });
+                description = self.build_tooltip("FAST AND FAR-SIGHTED, FOR EXPLORING. A CITY QUEUES ONE AT A TIME.", Build.Scout);
+                if let Option.Some(city) = self.selected_city { unavailable = self.city_build_issue(city, Build.Scout); }
+            }
+            Target.BuildSettler => {
+                title = to_owned("SETTLER");
+                shortcut = text(fn() can {Out} { Out.put_char(SETTLER_SHORTCUT); });
+                description = self.build_tooltip("FOUNDS A CITY, AND TAKES ONE OF THIS CITY'S CITIZENS WITH IT.", Build.Settler);
+                if let Option.Some(city) = self.selected_city { unavailable = self.city_build_issue(city, Build.Settler); }
+            }
+            Target.Priority(good) => {
+                title = text(fn() can {Out} { Out.put(good.name()); Out.put(" FIRST"); });
+                shortcut = to_owned("CLICK");
+                description = to_owned("THE CITY'S CITIZENS WORK THE TILES THAT DELIVER THE MOST OF THE FIRST GOOD, THEN THE SECOND, THEN THE THIRD. UNTIL THE CITY IS FED, FOOD COMES FIRST WHATEVER THE ORDER.");
+            }
+            Target.ClearCityQueue | Target.ClearBarracksQueue => {
+                title = to_owned("CLEAR");
+                shortcut = to_owned("CLICK");
+                description = to_owned("TAKES EVERY ITEM OFF THIS QUEUE, GIVING BACK WHAT THE PAID ONES COST.");
+            }
+            Target.CancelPlacing => {
+                title = to_owned("CANCEL PLACING");
+                shortcut = to_owned("ESC");
+                description = to_owned("STOPS PLACING: NOTHING IS PLACED OR PAID.");
+            }
+            Target.ReleaseWorker => {
+                title = to_owned("RELEASE");
+                shortcut = to_owned("CLICK");
+                description = to_owned("A HELD WORKER TAKES JOBS AGAIN, GOING OUT AT THE END OF THIS TURN.");
+            }
+            Target.ToggleProductionSpeedup => {
+                title = to_owned("PRODUCTION SPEEDS BUILDS");
+                description = to_owned("DEBUG: A CITY'S PRODUCTION ADDS TO ITS QUEUES' WORK EACH TURN, ON TOP OF THE FIXED TIME.");
+            }
+            Target.ToggleLifetimeSpecialCap => {
+                title = to_owned("CAVALRY AND ARMORED CAP");
+                description = to_owned("DEBUG: WHETHER A DEPOSIT'S CAP COUNTS THOSE ALIVE, OR EVERY ONE EVER TRAINED.");
             }
             Target.OpenBarracks => {
                 title = to_owned("SEE BARRACKS");
@@ -1480,12 +1671,7 @@ impl GameState {
             Target.BuildWorker => {
                 title = to_owned("WORKER");
                 shortcut = text(fn() can {Out} { Out.put_char(WORKER_SHORTCUT); });
-                description = text(fn() can {Out} { Out.put("JOINS THE CITY'S WORKERS, WHO GO OUT TO BUILD WHAT YOU ORDER FROM A TILE. "); show_quantity(WORKER_COST); Out.put(" PRODUCTION."); });
-            }
-            Target.ConfirmBuilding(building) => {
-                title = text(fn() can {Out} { Out.put("CONFIRM "); Out.put(building.name()); });
-                shortcut = to_owned("CLICK");
-                description = to_owned("FINALIZES THE SELECTED BUILDING SITE.");
+                description = self.build_tooltip("JOINS THE CITY'S WORKERS, WHO GO OUT TO BUILD WHAT THE CITY PLACES ON THE MAP.", Build.Worker);
             }
             Target.QueueRemove(_) | Target.BarracksQueueRemove(_) | Target.QueueItem(_, _)
                 | Target.RosterSelect(_) | Target.RosterAdd(_) | Target.RosterRemove(_) => { return false; }
@@ -1518,24 +1704,12 @@ impl GameState {
                 title = to_owned(kind.name());
                 shortcut = to_owned(match kind { JobKind.Road => "R", JobKind.Improve => "I", _ => "CLICK" });
                 let turns = kind.turns();
+                let price = stock_words(kind.price());
                 description = text(fn() can {Out} {
-                    Out.put(kind.description()); Out.put(" "); show_u64(turns as u64); Out.put(if turns == 1 { " TURN" } else { " TURNS" }); Out.put(" OF WORK ONCE A WORKER GETS THERE.");
+                    Out.put(kind.description()); Out.put(" COSTS "); Out.put(&price); Out.put(" WHEN PLACED, GIVEN BACK IF IT'S TAKEN OFF THE LIST. ");
+                    show_u64(turns as u64); Out.put(if turns == 1 { " TURN" } else { " TURNS" }); Out.put(" OF WORK ONCE A WORKER GETS THERE.");
                 });
-            }
-            Target.WorkerMode => {
-                title = to_owned("WORKERS");
-                shortcut = to_owned("W");
-                description = to_owned("THE WORKER MENU: PICK A JOB, THEN PLACE IT ON THE MAP WHERE YOUR WORKERS REACH.");
-            }
-            Target.WorkerCity(city) => {
-                let id = if city >= 0 && city < self.cities.len() { self.cities[city].id + 1 } else { 0 };
-                title = text(fn() can {Out} { Out.put("CITY "); show_u64(id as u64); });
-                description = to_owned("LIST THIS CITY'S WORKERS AND JOBS.");
-            }
-            Target.SleepWorkers => {
-                title = to_owned("SLEEP");
-                shortcut = to_owned("SPACE");
-                description = to_owned("THIS CITY'S IDLE WORKERS REST THIS TURN, AND THE TURN MOVES ON.");
+                if let Option.Some(city) = self.selected_city { unavailable = self.job_kind_unavailable(city, kind); }
             }
             Target.Scenario(scenario) => {
                 title = text(fn() can {Out} { Out.put(scenario.name()); Out.put(" SCENARIO"); });
@@ -1578,14 +1752,6 @@ impl GameState {
                     unavailable = Option.Some(text(fn() can {Out} { Out.put("ALREADY "); Out.put(&shown); }));
                 }
             }
-            Target.Focus(focus) => {
-                title = text(fn() can {Out} { Out.put(focus.name()); Out.put(" FOCUS"); });
-                description = to_owned(match focus {
-                    LaborFocus.Food => "CITIZENS WORK THE TILES THAT FEED THE CITY MOST.",
-                    LaborFocus.Production => "CITIZENS WORK THE TILES THAT BUILD FASTEST.",
-                    LaborFocus.Balanced => "CITIZENS WORK FOR FOOD WHILE THE CITY IS SHORT OF IT, AND FOR PRODUCTION AFTER.",
-                });
-            }
             Target.CloseSettings => {
                 title = to_owned("CLOSE SETTINGS");
                 shortcut = to_owned("ESC");
@@ -1617,8 +1783,8 @@ impl GameState {
                 title = to_owned("END TURN");
                 shortcut = to_owned("SPACE");
                 description = to_owned("RESOLVES EVERYONE'S ORDERS AND COLLECTS CITY INCOME. FIRST EVERY UNIT NEEDS ORDERS (SPACE HOLDS ONE AS IT IS, G GUARDS IT FOR GOOD) AND EVERY CITY NEEDS SOMETHING TO BUILD. CITIZENS CAN BE MOVED AT ANY TIME.");
-                let (units, cities, workers) = self.pending();
-                if units + cities + workers > 0 { unavailable = Option.Some(text(fn() can {Out} { show_pending(units, cities, workers); Out.put(": CLICKING SELECTS ONE"); })); }
+                let (units, cities) = self.pending();
+                if units + cities > 0 { unavailable = Option.Some(text(fn() can {Out} { show_pending(units, cities); Out.put(": CLICKING SELECTS ONE"); })); }
             }
         }
         panel.begin_line();
@@ -1726,6 +1892,23 @@ impl GameState {
         best
     }
 }
+
+/// A price in short form for a build card's hint: each resource's icon and whole amount, zeros
+/// left out, or FREE.
+fn price_hint(price: Stock) -> Str {
+    let icons = stock_icons(price);
+    if icons.is_empty() { to_owned("FREE") } else { icons }
+}
+
+/// A build card's hint: its price and, after the clock icon, its turns.
+fn cost_hint(price: Stock, turns: i32) -> Str {
+    let cost = price_hint(price);
+    let clock = turns_icon(turns);
+    text(fn() can {Out} { Out.put(&cost); Out.put(" "); Out.put(&clock); })
+}
+
+/// Each resource's color, by `Stock.part` index.
+fn resource_color(index: i32) -> Color { if index == 0 { FOOD_TEXT } else if index == 1 { WOOD_TEXT } else { METAL_TEXT } }
 
 /// A button before it's placed.
 pub struct ButtonSpec { target: Target, label: Str, hint: Str, state: ButtonState, armed: bool }
@@ -1892,7 +2075,7 @@ impl PanelBuilder {
         }
     }
 
-    fn row_width(&self, row: Row) -> f32 {
+    pub fn row_width(&self, row: Row) -> f32 {
         match row.kind {
             RowKind.Text => {
                 let face = ui(row.size);
@@ -2237,23 +2420,17 @@ fn show_signed_quantity(quarters: i32) can {Out} {
     show_quantity(quarters);
 }
 
-/// The End Turn button's label: the next thing the turn is waiting on, in the turn's order
-/// (production, then idle workers, then units), or "END TURN" once nothing is.
-pub fn end_turn_label(units: i32, cities: i32, workers: i32) -> Str {
+pub fn end_turn_label(units: i32, cities: i32) -> Str {
     if cities == 1 { return to_owned("CHOOSE PRODUCTION"); }
     if cities > 1 { return text(fn() can {Out} { show_i64(cities as i64); Out.put(" CITIES NEED PRODUCTION"); }); }
-    if workers == 1 { return to_owned("WORKER NEEDS A JOB"); }
-    if workers > 1 { return text(fn() can {Out} { show_i64(workers as i64); Out.put(" WORKERS NEED JOBS"); }); }
     if units == 0 { return to_owned("END TURN"); }
     if units == 1 { return to_owned("UNIT NEEDS ORDERS"); }
     text(fn() can {Out} { show_i64(units as i64); Out.put(" UNITS NEED ORDERS"); })
 }
-
-/// What the turn is waiting on, like "2 UNITS AND 1 CITY NEED ORDERS"; nothing once nothing is.
-fn show_pending(units: i32, cities: i32, workers: i32) can {Out} {
+fn show_pending(units: i32, cities: i32) can {Out} {
     let mut first = true;
-    let parts = [(units, " UNIT", " UNITS"), (cities, " CITY", " CITIES"), (workers, " WORKER", " WORKERS")];
-    for k in 0..3 {
+    let parts = [(units, " UNIT", " UNITS"), (cities, " CITY", " CITIES")];
+    for k in 0..2 {
         let (count, one, many) = parts[k];
         if count == 0 { continue; }
         if !first { Out.put(" AND "); }
@@ -2261,9 +2438,8 @@ fn show_pending(units: i32, cities: i32, workers: i32) can {Out} {
         Out.put(if count == 1 { one } else { many });
         first = false;
     }
-    if units + cities + workers > 0 { Out.put(if units + cities + workers == 1 { " NEEDS ORDERS" } else { " NEED ORDERS" }); }
+    if units + cities > 0 { Out.put(if units + cities == 1 { " NEEDS ORDERS" } else { " NEED ORDERS" }); }
 }
-
 fn show_turns(turns: u32) can {Out} {
     show_u64(turns as u64);
     Out.put(if turns == 1 { " TURN" } else { " TURNS" });

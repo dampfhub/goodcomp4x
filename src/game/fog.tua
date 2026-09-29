@@ -14,7 +14,6 @@ use std.fmt.Out;
 use std.math.max;
 use std.math.min;
 use game.GameState;
-use game.PLAYER_TEAM;
 use game.Step;
 use game.reachable_by;
 use game.text;
@@ -23,6 +22,7 @@ use game.city.Routes;
 use game.city.SiteKind;
 use game.city.Building;
 use game.city.BARRACKS_MAX_HP;
+use game.city.cluster_tiles;
 use game.workers.Structure;
 use game.workers.StructureKind;
 use game.workers.OUTPOST_SIGHT;
@@ -50,6 +50,8 @@ const SIGHT_NUDGE: f32 = 0.0001;
 pub struct Fog {
     /// Hexes in sight, or `None` with the fog turned off.
     visible: Option[Set[Hex]],
+    /// Whose sight it is: the local side's, whose own units always show.
+    team: Team,
 }
 
 impl Fog {
@@ -58,11 +60,14 @@ impl Fog {
         match &self.visible { &Option.Some(v) => v.contains(hex), &Option.None => true }
     }
 
-    /// Whether to show `unit`: the player's own always, others in sight.
-    pub fn shows(&self, unit: &Unit) -> bool { unit.team == PLAYER_TEAM || self.sees(unit.pos) }
+    /// Whether to show `unit`: the local side's own always, others in sight.
+    pub fn shows(&self, unit: &Unit) -> bool { unit.team == self.team || self.sees(unit.pos) }
 
     /// Whether to show a worker out on the map, by the same rule.
-    pub fn shows_worker(&self, worker: &FieldWorker) -> bool { worker.team == PLAYER_TEAM || self.sees(worker.pos) }
+    pub fn shows_worker(&self, worker: &FieldWorker) -> bool { worker.team == self.team || self.sees(worker.pos) }
+
+    /// Whose sight it is.
+    pub fn team(&self) -> Team { self.team }
 }
 
 /// A city or Barracks as the player last saw it.
@@ -72,9 +77,8 @@ pub struct SeenBuilding {
     id: u32,
     /// Share of full health, 0 to 1.
     health: f32,
-    /// For a city: its population, and whether it has a granary.
+    /// For a city: its population.
     population: i32,
-    granary: bool,
 }
 
 /// A hex as the player last saw it. Only what can change is kept; the ground itself never does.
@@ -89,15 +93,15 @@ pub struct Sighting {
     structure: Option[Structure],
     /// Walls and gates on the hex's edges, by neighbour direction (`Hex.neighbors` order).
     barriers: [Option[Structure]; 6],
-    /// The tile's food and production, with any improvement or city.
-    yields: (i32, i32),
+    /// The tile's food, wood and metal, with any improvement or city.
+    yields: (i32, i32, i32),
     /// Unclaimed ruins (`ruins.tua`).
     ruin: bool,
 }
 
 impl GameState {
     pub fn fog(&self) -> Fog {
-        if self.fog_of_war { Fog { visible: Option.Some(self.visible_hexes()) } } else { Fog { visible: Option.None } }
+        if self.fog_of_war { Fog { visible: Option.Some(self.visible_hexes()), team: self.local_team } } else { Fog { visible: Option.None, team: self.local_team } }
     }
 
     /// Whether the player has ever seen `hex` (always, with the fog off).
@@ -150,7 +154,7 @@ impl GameState {
         }
         for c in 0..self.cities.len() {
             let city = &self.cities[c];
-            if city.team != PLAYER_TEAM { continue; }
+            if city.team != self.local_team { continue; }
             self.look(city.pos, CITY_SIGHT, &mut seen);
             if let Option.Some(barracks) = city.barracks { self.look(barracks, BARRACKS_SIGHT, &mut seen); }
             if let Option.Some(post) = city.placed_site(Building.Watchpost) {
@@ -159,17 +163,19 @@ impl GameState {
             }
         }
         for w in 0..self.field_workers.len() {
-            if self.field_workers[w].team == PLAYER_TEAM { self.look(self.field_workers[w].pos, WORKER_SIGHT, &mut seen); }
+            if self.field_workers[w].team == self.local_team { self.look(self.field_workers[w].pos, WORKER_SIGHT, &mut seen); }
         }
         for k in 0..self.structures.len() {
             let (Option.Some(hex), Option.Some(structure)) = (self.structures.key_at(k), self.structures.val_at(k)) else { continue; };
-            if structure.team == PLAYER_TEAM && structure.kind == StructureKind.Outpost { self.look(hex, OUTPOST_SIGHT, &mut seen); }
+            if structure.team == self.local_team && structure.kind == StructureKind.Outpost { self.look(hex, OUTPOST_SIGHT, &mut seen); }
         }
         for c in 0..self.cities.len() {
             let city = &self.cities[c];
-            if city.team != PLAYER_TEAM { continue; }
-            for w in 0..city.worked.len() { let _new = seen.insert(city.worked[w]); }
-            for w in 0..city.remembered_worked.len() { let _new = seen.insert(city.remembered_worked[w]); }
+            if city.team != self.local_team { continue; }
+            let worked = city.worked_tiles();
+            for w in 0..worked.len() { let _new = seen.insert(worked[w]); }
+            let remembered = cluster_tiles(&city.remembered);
+            for w in 0..remembered.len() { let _new = seen.insert(remembered[w]); }
         }
         seen
     }
@@ -181,10 +187,10 @@ impl GameState {
         for c in 0..self.cities.len() {
             let x = &self.cities[c];
             if city.is_none() && x.pos == hex {
-                city = Option.Some(SeenBuilding { team: x.team, id: x.id, health: 1.0, population: x.population, granary: x.built.contains(Building.Granary) });
+                city = Option.Some(SeenBuilding { team: x.team, id: x.id, health: 1.0, population: x.population });
             }
             if barracks.is_none() && x.barracks == Option.Some(hex) {
-                barracks = Option.Some(SeenBuilding { team: x.team, id: x.id, health: x.barracks_hp / BARRACKS_MAX_HP, population: 0, granary: false });
+                barracks = Option.Some(SeenBuilding { team: x.team, id: x.id, health: x.barracks_hp / BARRACKS_MAX_HP, population: 0 });
             }
         }
         let site = match self.sites.get(hex) { Option.Some(s) => Option.Some((s.kind, s.team)), Option.None => Option.None };
@@ -221,7 +227,7 @@ impl GameState {
     }
 
     /// A tile's food and production as the player knows them.
-    pub fn known_yield(&self, hex: Hex, fog: &Fog) -> (i32, i32) {
+    pub fn known_yield(&self, hex: Hex, fog: &Fog) -> (i32, i32, i32) {
         if !fog.sees(hex) {
             if let Option.Some(seen) = self.memory.get(hex) { return seen.yields; }
         }

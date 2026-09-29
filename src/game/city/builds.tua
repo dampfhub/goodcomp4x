@@ -1,27 +1,38 @@
-//! Builds: the city queue (units and buildings), building sites and confirmation, the Barracks
-//! queue, and completing builds.
+//! Builds: the city queue (units, workers, growth), the Barracks queue, and completing builds.
+//! What builds cost and how the stockpile pays for them is in `economy.tua`; buildings with a
+//! site are placed on the map and built by workers (`workers.tua`).
 
 use std.collections.Key;
 use std.core.Eq;
 use std.fmt.Out;
 use std.fmt.Show;
+use std.fmt.show_i64;
+use std.str.Str;
 use log.Log;
 use log.info;
 use game.GameState;
-use game.PLAYER_TEAM;
 use game.text;
-use game.city.BARRACKS_MAX_HP;
-use game.city.COASTAL_BATTERY_MAX_HP;
-use game.city.show_amount;
+use game.city.amount;
+use game.city.Lane;
+use game.city.MAX_CITY_POPULATION;
+use game.city.MIN_CITY_DISTANCE;
+use game.city.Queued;
+use game.city.Stock;
+use game.city.no_stock;
+use game.city.stock_icons;
+use game.city.turns_icon;
+use game.city.economy.WORK_PER_TURN;
+use game.city.barracks.CITY_TRAINING_SLOWDOWN;
+use game.city.supply.build_supply;
 use game.hex.Hex;
 use game.terrain.Resource;
 use game.terrain.Terrain;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
+use game.workers.JobKind;
 
 pub enum Building {
-    Granary,
     Barracks,
     Mill,
     Workshop,
@@ -38,9 +49,9 @@ pub enum Building {
     CoastalBattery,
 }
 
-/// Every building, in the order the city tray lists them.
-pub const BUILDINGS: [Building; 15] = [
-    Building.Granary,
+/// Every building, in the order the city tray lists them. Every building stands on a site on the
+/// map, which the city's workers build it on (`workers.tua`).
+pub const BUILDINGS: [Building; 14] = [
     Building.Barracks,
     Building.Mill,
     Building.Workshop,
@@ -57,23 +68,8 @@ pub const BUILDINGS: [Building; 15] = [
     Building.CoastalBattery,
 ];
 
-/// Every building that stands on a site of its own: all but the Granary.
-pub const PLACEABLE: [Building; 14] = [
-    Building.Barracks,
-    Building.Mill,
-    Building.Workshop,
-    Building.CanoeHouse,
-    Building.Forge,
-    Building.Stable,
-    Building.Watchpost,
-    Building.FieldHospital,
-    Building.Cannery,
-    Building.WorkCamp,
-    Building.Smelter,
-    Building.Railhead,
-    Building.Harbor,
-    Building.CoastalBattery,
-];
+/// Every building that stands on a site of its own: all of them.
+pub const PLACEABLE: [Building; 14] = BUILDINGS;
 
 impl Eq for Building {
     fn eq(self, other: Building) -> bool { self.index() == other.index() }
@@ -92,27 +88,25 @@ impl Building {
     /// Where it stands in `BUILDINGS`.
     pub fn index(self) -> i32 {
         match self {
-            Building.Granary => 0,
-            Building.Barracks => 1,
-            Building.Mill => 2,
-            Building.Workshop => 3,
-            Building.CanoeHouse => 4,
-            Building.Forge => 5,
-            Building.Stable => 6,
-            Building.Watchpost => 7,
-            Building.FieldHospital => 8,
-            Building.Cannery => 9,
-            Building.WorkCamp => 10,
-            Building.Smelter => 11,
-            Building.Railhead => 12,
-            Building.Harbor => 13,
-            Building.CoastalBattery => 14,
+            Building.Barracks => 0,
+            Building.Mill => 1,
+            Building.Workshop => 2,
+            Building.CanoeHouse => 3,
+            Building.Forge => 4,
+            Building.Stable => 5,
+            Building.Watchpost => 6,
+            Building.FieldHospital => 7,
+            Building.Cannery => 8,
+            Building.WorkCamp => 9,
+            Building.Smelter => 10,
+            Building.Railhead => 11,
+            Building.Harbor => 12,
+            Building.CoastalBattery => 13,
         }
     }
 
     pub fn name(self) -> str {
         match self {
-            Building.Granary => "GRANARY",
             Building.Barracks => "BARRACKS",
             Building.Mill => "MILL",
             Building.Workshop => "WORKSHOP",
@@ -130,27 +124,37 @@ impl Building {
         }
     }
 
-    pub fn cost(self) -> i32 {
+    /// What placing it takes from the side's stockpile (`economy.tua`).
+    pub fn price(self) -> Stock {
+        let (food, wood, metal) = match self {
+            Building.Barracks => (0, 10, 0),
+            Building.Mill | Building.CanoeHouse | Building.Watchpost => (0, 10, 0),
+            Building.Workshop => (0, 10, 4),
+            Building.Forge => (0, 6, 8),
+            Building.Stable => (2, 12, 0),
+            Building.FieldHospital => (4, 10, 4),
+            Building.Cannery => (0, 12, 4),
+            Building.WorkCamp => (2, 10, 2),
+            Building.Smelter => (0, 8, 8),
+            Building.Railhead => (0, 12, 12),
+            Building.Harbor => (0, 14, 0),
+            Building.CoastalBattery => (0, 8, 10),
+        };
+        Stock.whole(food, wood, metal)
+    }
+
+    /// Turns of work it takes once a worker stands on its site.
+    pub fn turns(self) -> i32 {
         match self {
-            Building.Granary => 48,
-            Building.Barracks => 64,
-            Building.Mill => 60,
-            Building.Workshop => 80,
-            Building.CanoeHouse => 64,
-            Building.Forge | Building.Stable => 80,
-            Building.Watchpost => 64,
-            Building.FieldHospital | Building.Cannery => 96,
-            Building.WorkCamp => 72,
-            Building.Smelter => 96,
-            Building.Railhead => 120,
-            Building.Harbor => 80,
-            Building.CoastalBattery => 96,
+            Building.Barracks | Building.Mill | Building.CanoeHouse | Building.Watchpost | Building.WorkCamp => 3,
+            Building.Workshop | Building.Forge | Building.Stable | Building.FieldHospital | Building.Cannery
+            | Building.Smelter | Building.Harbor | Building.CoastalBattery => 4,
+            Building.Railhead => 5,
         }
     }
 
     pub fn shortcut(self) -> char {
         match self {
-            Building.Granary => '4',
             Building.Barracks => '5',
             Building.Mill => '6',
             Building.Workshop => '7',
@@ -160,48 +164,67 @@ impl Building {
 
     pub fn description(self) -> str {
         match self {
-            Building.Granary => "+2 FOOD PER TURN.",
-            Building.Barracks => "PLACED ON ANY OPEN LAND TILE. WITH THE MANAGER THERE, ITS WORK GROUP TRAINS TROOPS.",
-            Building.Mill => "ADJACENT WORKED TILES DELIVER ALL FOOD IF THEY CAN REACH THE CITY.",
-            Building.Workshop => "ADJACENT PLACED BUILDINGS CAN BE CONFIRMED AT HALF PRODUCTION.",
-            Building.CanoeHouse => "ON A RIVERBANK: ITS CONNECTED RIVER CARRIES GOODS LIKE A ROAD.",
-            Building.Forge => "ON OR NEXT TO IRON, BESIDE BARRACKS: TRAINS TOUGHER ARMORED TROOPS.",
-            Building.Stable => "ON OR NEXT TO HORSES, BESIDE BARRACKS: TRAINS FASTER CAVALRY.",
-            Building.Watchpost => "SEES 4 HEXES, OR 5 FROM HILLS, THROUGH ORDINARY SIGHT LINES.",
-            Building.FieldHospital => "HEALS TWO NEARBY FRIENDLY TROOPS EACH TURN, INSIDE AND OUT.",
-            Building.Cannery => "COLLECTS FOOD FROM THREE REMOTE IMPROVEMENTS WITHIN 3 HEXES.",
-            Building.WorkCamp => "CONNECTED WORKERS START AND END NEARBY JOBS HERE, NOT AT THE CITY.",
-            Building.Smelter => "COLLECTS PRODUCTION FROM THREE REMOTE MINES WITHIN 3 HEXES.",
-            Building.Railhead => "A CITY-ROAD LINK LETS TROOPS BY THE CITY MOVE HERE IN ONE TURN.",
-            Building.Harbor => "ON A COASTAL LAND TILE: TRAINS SHIPS INTO ADJACENT WATER.",
-            Building.CoastalBattery => "ON COASTAL LAND: FIRES AT HOSTILE SHIPS WITHIN 2 TILES.",
+            Building.Barracks => "TRAINS TROOPS TWICE AS FAST. ON OPEN LAND; ON HORSES OR IRON, ALSO CAVALRY OR ARMORED.",
+            Building.Mill => "ADJACENT WORKED TILES DELIVER ALL THEIR FOOD.",
+            Building.Workshop => "ADJACENT BUILDINGS TAKE HALF THE TURNS.",
+            Building.CanoeHouse => "ON A RIVERBANK: THE RIVER CARRIES GOODS LIKE A ROAD.",
+            Building.Forge => "NEXT TO IRON AND A BARRACKS: TOUGHER ARMORED.",
+            Building.Stable => "NEXT TO HORSES AND A BARRACKS: FASTER CAVALRY.",
+            Building.Watchpost => "SEES 4 HEXES, 5 FROM HILLS.",
+            Building.FieldHospital => "HEALS 2 NEARBY TROOPS A TURN.",
+            Building.Cannery => "COLLECTS FOOD FROM 3 IMPROVEMENTS WITHIN 3 HEXES.",
+            Building.WorkCamp => "NEARBY JOBS START FROM HERE.",
+            Building.Smelter => "COLLECTS METAL FROM 3 MINES WITHIN 3 HEXES.",
+            Building.Railhead => "TROOPS BY THE CITY REACH IT IN ONE TURN, ALONG A ROAD.",
+            Building.Harbor => "ON THE COAST: TRAINS SHIPS.",
+            Building.CoastalBattery => "ON THE COAST: FIRES AT SHIPS WITHIN 2.",
         }
     }
-
-    pub fn is_placeable(self) -> bool { self != Building.Granary }
 
     /// A Harbor or Coastal Battery: only coastal cities build these.
     pub fn is_naval(self) -> bool { self == Building.Harbor || self == Building.CoastalBattery }
 }
 
-/// What a worker costs, and its key.
-pub const WORKER_COST: i32 = 32;
-pub const WORKER_SHORTCUT: char = '8';
-
 /// One item of a city's queue.
 pub enum Build {
     Unit(BuildUnit),
-    Building(Building),
     /// A worker for the city's pool (`workers.tua`).
     Worker,
+    /// One more citizen, bought with food (`economy.grow_price`).
+    Grow,
+    /// The city spends a turn gathering: free, and `GATHER_YIELD` goes to the stockpile when it's
+    /// done. Something a city can always do.
+    Gather,
+    /// A settler, to found a city (`founding.tua`): dear and slow, and it takes one of the city's
+    /// citizens when it's done. Only a city of at least `SETTLER_MIN_POPULATION` works on it or
+    /// finishes it; below that it waits in the queue, keeping its work.
+    Settler,
+    /// A scout: cheap and quick, and a city queues one at a time.
+    Scout,
 }
+
+/// The Worker, Grow and Gather cards' keys.
+pub const WORKER_SHORTCUT: char = '8';
+pub const GROW_SHORTCUT: char = '9';
+pub const GATHER_SHORTCUT: char = '0';
+/// The Scout and Settler cards' keys.
+pub const SCOUT_SHORTCUT: char = '4';
+pub const SETTLER_SHORTCUT: char = 'S';
+/// The citizens a city needs to work on a Settler, which takes one of them when it's done: a city
+/// never settles itself below two.
+pub const SETTLER_MIN_POPULATION: i32 = 3;
+/// What a turn of gathering (`Build.Gather`) brings in, in quarters: 1 food, 1 wood and half a
+/// metal. Tempo tuning (#239): option B halved it from 2 food, 2 wood, 1 metal. The half metal is
+/// kept (Round 6 measured none): a city with no metal tile gets metal only from gathering, and
+/// without it the Cities scenario could never afford a Cavalry (`docs/rts-economy.md`, Round 7).
+pub const GATHER_YIELD: Stock = Stock { food: 4, wood: 4, metal: 2 };
 
 impl Eq for Build {
     fn eq(self, other: Build) -> bool {
         match (self, other) {
             (Build.Unit(a), Build.Unit(b)) => a == b,
-            (Build.Building(a), Build.Building(b)) => a == b,
-            (Build.Worker, Build.Worker) => true,
+            (Build.Worker, Build.Worker) | (Build.Grow, Build.Grow) | (Build.Gather, Build.Gather) => true,
+            (Build.Settler, Build.Settler) | (Build.Scout, Build.Scout) => true,
             _ => false,
         }
     }
@@ -211,19 +234,57 @@ impl Build {
     pub fn name(self) -> str {
         match self {
             Build.Unit(u) => u.name(),
-            Build.Building(b) => b.name(),
             Build.Worker => "WORKER",
+            Build.Grow => "GROW",
+            Build.Gather => "GATHER",
+            Build.Settler => "SETTLER",
+            Build.Scout => "SCOUT",
         }
     }
 
-    pub fn cost(self) -> i32 {
+    /// Its price, except a Grow's, which depends on the city (`GameState.queue_price`). A Settler
+    /// also takes a citizen when it's done (`complete_builds`).
+    pub fn price(self) -> Stock {
         match self {
-            Build.Unit(u) => u.cost(),
-            Build.Building(b) => b.cost(),
-            Build.Worker => WORKER_COST,
+            Build.Unit(u) => u.price(),
+            Build.Worker => Stock.whole(4, 2, 0),
+            Build.Settler => Stock.whole(30, 10, 0),
+            Build.Scout => Stock.whole(2, 4, 0),
+            Build.Grow | Build.Gather => no_stock(),
+        }
+    }
+
+    pub fn turns(self) -> i32 {
+        match self {
+            Build.Unit(u) => u.turns(),
+            Build.Worker | Build.Grow | Build.Scout => 2,
+            Build.Gather => 1,
+            Build.Settler => 6,
+        }
+    }
+
+    /// Work it needs, in quarter turns.
+    pub fn work(self) -> i32 { self.turns() * WORK_PER_TURN }
+
+    /// The unit it turns out, if it's one: a troop or ship, a settler (a civilian with the Melee
+    /// body) or a scout.
+    pub fn unit_type(self) -> Option[UnitType] {
+        match self {
+            Build.Unit(unit) => Option.Some(unit.unit_type()),
+            Build.Settler => Option.Some(UnitType.Melee),
+            Build.Scout => Option.Some(UnitType.Scout),
+            Build.Worker | Build.Grow | Build.Gather => Option.None,
         }
     }
 }
+
+/// Turns a Melee or Ranged takes at a Barracks (twice that in a city center). Tempo tuning
+/// (#239): option B raised it from 2 (`docs/rts-economy.md`, Round 7).
+pub const LIGHT_TROOP_TURNS: i32 = 3;
+/// Turns a Cavalry, Siege or Armored takes at a Barracks (twice that in a city center). Tempo
+/// tuning (#239): option B raised it from 3; the Patrol Galley, which shared it, keeps 3
+/// (`docs/rts-economy.md`, Round 7).
+pub const HEAVY_TROOP_TURNS: i32 = 4;
 
 /// A unit a city or a Barracks can train.
 pub enum BuildUnit { Melee, Ranged, Cavalry, Siege, Armored, PatrolGalley, LandingCraft, BombardShip }
@@ -266,25 +327,43 @@ impl BuildUnit {
         }
     }
 
-    /// Production it takes, in quarters.
-    pub fn cost(self) -> i32 {
+    /// What queuing it takes from the side's stockpile (`economy.tua`). Tempo tuning (#239): option
+    /// B raised the land troops' prices x1.5, rounding halves up, from Melee 2/6/0, Ranged 2/7/0,
+    /// Cavalry 3/4/3, Siege 1/8/4 and Armored 3/2/7 (`docs/rts-economy.md`, Round 7). Ships are
+    /// unchanged.
+    pub fn price(self) -> Stock {
+        let (food, wood, metal) = match self {
+            BuildUnit.Melee => (3, 9, 0),
+            BuildUnit.Ranged => (3, 11, 0),
+            BuildUnit.Cavalry => (5, 6, 5),
+            BuildUnit.Siege => (2, 12, 6),
+            BuildUnit.Armored => (5, 3, 11),
+            BuildUnit.PatrolGalley => (1, 10, 2),
+            BuildUnit.LandingCraft => (1, 12, 2),
+            BuildUnit.BombardShip => (1, 12, 6),
+        };
+        Stock.whole(food, wood, metal)
+    }
+
+    /// Turns it takes at the head of the queue; a city center takes `CITY_TRAINING_SLOWDOWN` times
+    /// as long for a land troop.
+    pub fn turns(self) -> i32 {
         match self {
-            BuildUnit.Melee => 48,
-            BuildUnit.Ranged => 56,
-            BuildUnit.Cavalry => 64,
-            BuildUnit.Siege => 72,
-            BuildUnit.Armored => 80,
-            BuildUnit.PatrolGalley => 72,
-            BuildUnit.LandingCraft => 88,
-            BuildUnit.BombardShip => 104,
+            BuildUnit.Melee | BuildUnit.Ranged => LIGHT_TROOP_TURNS,
+            BuildUnit.Cavalry | BuildUnit.Siege | BuildUnit.Armored => HEAVY_TROOP_TURNS,
+            BuildUnit.PatrolGalley => 3,
+            BuildUnit.LandingCraft | BuildUnit.BombardShip => 4,
         }
     }
+
+    /// Work it needs, in quarter turns.
+    pub fn work(self) -> i32 { self.turns() * WORK_PER_TURN }
 
     pub fn description(self) -> str {
         match self {
             BuildUnit.Melee => "TOUGH CLOSE FIGHTER",
             BuildUnit.Ranged => "FIRES FROM 2 TILES",
-            BuildUnit.Cavalry => "FAST FLANKER, NEEDS HORSES",
+            BuildUnit.Cavalry => "FAST FLANKER",
             BuildUnit.Siege => "LONG RANGE, SLOW",
             BuildUnit.Armored => "HEAVY IRON INFANTRY",
             BuildUnit.PatrolGalley => "FAST COASTAL FIGHTER; STRONG AGAINST SHIPS",
@@ -311,14 +390,30 @@ impl BuildUnit {
     }
 }
 
-/// Whether debug completion limited to `only` leaves out city `city`'s lane (`barracks` for
-/// its Barracks).
+/// What taking one item off a queue gave back, for its notice.
+fn refund_word(paid: bool) -> str { if paid { "REFUNDED" } else { "UNPAID, NOTHING TO REFUND" } }
+
+/// What clearing a queue of `count` items, `paid` of them paid for, gave back, for its notice.
+fn cleared_words(count: i32, paid: i32) -> Str {
+    text(fn() can {Out} {
+        if paid == 0 {
+            show_i64(count as i64); Out.put(" UNPAID, NOTHING TO REFUND");
+        } else if paid == count {
+            show_i64(count as i64); Out.put(" REFUNDED");
+        } else {
+            show_i64(paid as i64); Out.put(" PAID OF "); show_i64(count as i64); Out.put(" REFUNDED");
+        }
+    })
+}
+
+/// Whether debug completion limited to `only` leaves out city `city`'s lane (`barracks` for its
+/// Barracks).
 fn skips_lane(only: Option[(i32, bool)], city: i32, barracks: bool) -> bool {
     match only { Option.Some((c, b)) => c != city || b != barracks, Option.None => false }
 }
 
 /// A unit finishing this turn, and the hex it comes out on.
-struct Spawn { team: Team, pos: Hex, kind: UnitType, upgrade: Option[Resource] }
+struct Spawn { team: Team, pos: Hex, kind: UnitType, upgrade: Option[Resource], drawn: Option[Resource], settler: bool }
 
 impl GameState {
     /// Whether `hex` is sea: on the grid, and coast or ocean.
@@ -336,14 +431,21 @@ impl GameState {
     /// A city's center must touch sea water to support naval construction.
     pub fn city_is_coastal(&self, city: i32) -> bool { self.touches_sea(self.cities[city].pos) }
 
+    /// The open city, if it's the local side's and the turn isn't playing out: what a queueing
+    /// action acts on. Says why not, in the notice, when no city is open.
+    fn open_city_for(&mut self, what: str) -> Option[i32] {
+        if self.is_resolving() { return Option.None; }
+        let Option.Some(city) = self.selected_city else {
+            self.notice = text(fn() can {Out} { Out.put("OPEN A CITY WITH C BEFORE CHOOSING A "); Out.put(what); });
+            return Option.None;
+        };
+        if self.cities[city].team != self.local_team { return Option.None; }
+        Option.Some(city)
+    }
+
     /// 1-3 or a unit card: what the open city trains next, at the end of its queue.
     pub fn queue_selected_city_unit(&mut self, build: BuildUnit) {
-        if self.is_resolving() { return; }
-        let Option.Some(city) = self.selected_city else {
-            self.set_notice("OPEN A CITY WITH C BEFORE CHOOSING A BUILD");
-            return;
-        };
-        if self.cities[city].team != PLAYER_TEAM { return; }
+        let Option.Some(city) = self.open_city_for("BUILD") else { return; };
         let naval = build.unit_type().is_naval();
         if naval && !self.city_is_coastal(city) {
             self.set_notice("ONLY COASTAL CITIES CAN BUILD SHIPS");
@@ -357,122 +459,151 @@ impl GameState {
             self.notice = text(fn() can {Out} { Out.put(build.name()); Out.put(" TRAINS AT A BARRACKS ON "); Out.put(resource.name()); });
             return;
         }
-        // A city only retains production while it has an active build.
-        if self.cities[city].queue.is_empty() { self.cities[city].production = 0; }
-        self.cities[city].queue.push(Build.Unit(build));
-        self.notice = text(fn() can {Out} {
-            Out.put("BUILDING "); Out.put(build.name()); Out.put(" - COST "); show_amount(build.cost()); Out.put(" PRODUCTION");
-        });
+        if let Option.Some(why) = self.city_build_issue(city, Build.Unit(build)) {
+            self.notice = text(fn() can {Out} { Out.put(build.name()); Out.put(": "); Out.put(&why); });
+            return;
+        }
+        self.queue_in_city(city, Build.Unit(build));
+    }
+
+    /// Queues `build` in the player's `city`, unpaid (`queue_build`), and says what it costs, or
+    /// what it waits for.
+    fn queue_in_city(&mut self, city: i32, build: Build) {
+        let price = self.queue_price(city, build);
+        self.queue_build(city, build);
+        let index = self.cities[city].queue.len() - 1;
+        let turns = self.city_build_turns(city, build);
+        self.notice = self.queued_notice(city, Lane.City, index, price, turns);
+    }
+
+    /// The notice for item `index`, just queued in one of `city`'s queues at `price`: what it
+    /// costs and takes, paid when work starts, or what the stockpile is short of if it waits
+    /// (`waiting_items`).
+    fn queued_notice(&self, city: i32, lane: Lane, index: i32, price: Stock, turns: i32) -> Str {
+        let name = match lane {
+            Lane.City => self.cities[city].queue[index].build.name(),
+            Lane.Barracks => self.cities[city].barracks_queue[index].build.name(),
+        };
+        let forecast = self.forecast(self.cities[city].team);
+        if let Option.Some(f) = forecast.lane(city, lane) {
+            let waiting = self.waiting_items(f);
+            for k in 0..waiting.len() {
+                let (at, short) = waiting[k];
+                if at == index {
+                    let icons = stock_icons(short);
+                    return text(fn() can {Out} { Out.put("QUEUED "); Out.put(name); Out.put(" - WAITS FOR "); Out.put(&icons); });
+                }
+            }
+        }
+        let cost = stock_icons(price);
+        let clock = turns_icon(turns);
+        text(fn() can {Out} {
+            Out.put("QUEUED "); Out.put(name); Out.put(" - ");
+            if !cost.is_empty() { Out.put(&cost); Out.put(" "); }
+            Out.put(&clock);
+        })
+    }
+
+    /// 9 or the Grow card: one more citizen, bought with food.
+    pub fn queue_selected_city_growth(&mut self) {
+        let Option.Some(city) = self.open_city_for("BUILD") else { return; };
+        if !self.can_grow(city) {
+            self.notice = text(fn() can {Out} { Out.put("A CITY HOLDS AT MOST "); show_i64(MAX_CITY_POPULATION as i64); Out.put(" CITIZENS"); });
+            return;
+        }
+        self.queue_in_city(city, Build.Grow);
+    }
+
+    /// Whether another Grow fits: the city's population plus the Grows already queued stays under
+    /// the cap.
+    pub fn can_grow(&self, city: i32) -> bool {
+        let c = &self.cities[city];
+        let mut queued = 0;
+        for k in 0..c.queue.len() { if c.queue[k].build == Build.Grow { queued = queued + 1; } }
+        c.population + queued < MAX_CITY_POPULATION
     }
 
     /// 8 or the Worker button: a worker for the open city's pool.
     pub fn queue_selected_city_worker(&mut self) {
-        if self.is_resolving() { return; }
-        let Option.Some(city) = self.selected_city else {
-            self.set_notice("OPEN A CITY WITH C BEFORE CHOOSING A BUILD");
-            return;
-        };
-        if self.cities[city].team != PLAYER_TEAM { return; }
-        if self.cities[city].queue.is_empty() { self.cities[city].production = 0; }
-        self.cities[city].queue.push(Build.Worker);
-        self.notice = text(fn() can {Out} { Out.put("BUILDING A WORKER - COST "); show_amount(WORKER_COST); Out.put(" PRODUCTION"); });
+        let Option.Some(city) = self.open_city_for("BUILD") else { return; };
+        self.queue_in_city(city, Build.Worker);
     }
 
-    /// 4-7 or a building card: the open city queues `building`, and chooses its site next.
-    pub fn queue_selected_city_building(&mut self, building: Building) {
-        if self.is_resolving() { return; }
-        let Option.Some(city) = self.selected_city else {
-            self.set_notice("OPEN A CITY WITH C BEFORE CHOOSING A BUILDING");
+    /// 4 or the Scout card: a scout from the open city's own queue.
+    pub fn queue_selected_city_scout(&mut self) { self.queue_selected_city_civilian(Build.Scout); }
+
+    /// S or the Settler card: a settler from the open city's own queue.
+    pub fn queue_selected_city_settler(&mut self) { self.queue_selected_city_civilian(Build.Settler); }
+
+    /// A scout or a settler from the open city's own queue, if it may queue one
+    /// (`city_build_issue`).
+    fn queue_selected_city_civilian(&mut self, build: Build) {
+        let Option.Some(city) = self.open_city_for("BUILD") else { return; };
+        if let Option.Some(why) = self.city_build_issue(city, build) {
+            self.notice = text(fn() can {Out} { Out.put(build.name()); Out.put(": "); Out.put(&why); });
             return;
-        };
+        }
+        self.queue_in_city(city, build);
+    }
+
+    /// Why `city` can't queue `build` now: a Settler needs `SETTLER_MIN_POPULATION` citizens, a
+    /// city queues one Scout at a time, and a troop, ship or Scout needs room in its side's
+    /// supply (`supply_lock`).
+    pub fn city_build_issue(&self, city: i32, build: Build) -> Option[Str] {
+        let c = &self.cities[city];
+        match build {
+            Build.Settler => {
+                if c.population < SETTLER_MIN_POPULATION {
+                    return Option.Some(text(fn() can {Out} { Out.put("NEEDS POPULATION "); show_i64(SETTLER_MIN_POPULATION as i64); }));
+                }
+            }
+            Build.Scout => {
+                for k in 0..c.queue.len() {
+                    if c.queue[k].build == Build.Scout { return Option.Some(text(fn() can {Out} { Out.put("ONE SCOUT AT A TIME"); })); }
+                }
+            }
+            _ => {}
+        }
+        self.supply_lock(c.team, build_supply(build))
+    }
+
+    /// Whether item `index` of `city`'s own queue waits for citizens: a Settler, in a city below
+    /// `SETTLER_MIN_POPULATION`. The queue works the next item meanwhile, and the Settler keeps
+    /// its work.
+    pub fn waits_for_citizens(&self, city: i32, index: i32) -> bool {
+        let c = &self.cities[city];
+        c.queue[index].build == Build.Settler && c.population < SETTLER_MIN_POPULATION
+    }
+
+    /// A building card: arms the building for placing on the map, for the city's workers to
+    /// build there (`workers.tua`).
+    pub fn queue_selected_city_building(&mut self, building: Building) {
+        let Option.Some(city) = self.open_city_for("BUILDING") else { return; };
         if building.is_naval() && !self.city_is_coastal(city) {
             self.set_notice("ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS");
             return;
         }
-        if self.cities[city].team != PLAYER_TEAM { return; }
         if self.cities[city].built.contains(building) {
             self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" ALREADY EXISTS IN THIS CITY"); });
             return;
         }
-        if self.cities[city].pending_building == Option.Some(building) || self.cities[city].queue.contains(Build.Building(building)) {
-            // Queued or finished without a site (the view was left before one was chosen):
-            // the card resumes choosing it.
-            if self.needs_site(city, building) {
-                self.placing_building = Option.Some((city, building));
-                self.notice = text(fn() can {Out} { Out.put("CHOOSE A "); Out.put(building.name()); Out.put(" SITE - CLICK A VALID TILE"); });
-            } else {
-                self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" IS ALREADY QUEUED IN THIS CITY"); });
-            }
-            return;
-        }
-        if self.cities[city].queue.is_empty() { self.cities[city].production = 0; }
-        self.cities[city].queue.push(Build.Building(building));
-        // Site choice is part of queuing every placeable building, even when other work is
-        // ahead of it.
-        if building.is_placeable() {
-            self.placing_building = Option.Some((city, building));
-            self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" STARTED - CLICK A VALID TILE TO CHOOSE ITS SITE"); });
-            return;
-        }
-        self.notice = text(fn() can {Out} {
-            Out.put("BUILDING "); Out.put(building.name()); Out.put(" - COST "); show_amount(building.cost()); Out.put(" PRODUCTION");
-        });
+        self.arm_worker_job(JobKind.Build(building));
     }
 
-    /// The building whose site the player is choosing, while its city's view is open.
-    /// Placement belongs to that view: with no city open, or another one, nothing follows the
-    /// cursor and map clicks don't place it.
-    pub fn site_placement(&self) -> Option[(i32, Building)] {
-        let Option.Some((city, building)) = self.placing_building else { return Option.None; };
-        if self.selected_city == Option.Some(city) { Option.Some((city, building)) } else { Option.None }
+    /// 0 or the Gather card: the open city spends a turn gathering.
+    pub fn queue_selected_city_gather(&mut self) {
+        let Option.Some(city) = self.open_city_for("BUILD") else { return; };
+        self.queue_in_city(city, Build.Gather);
     }
 
-    /// Whether the player is choosing city `city`'s site for `building`.
-    pub fn placing(&self, city: i32, building: Building) -> bool {
-        match self.placing_building { Option.Some((c, b)) => c == city && b == building, Option.None => false }
-    }
-
-    /// Stops choosing a building site. A building queued without a site is taken back out of
-    /// the queue, since it can't be built without one (a finished one waits for its site
-    /// instead). Returns whether a site was being chosen.
-    pub fn abandon_site_placement(&mut self) -> bool {
-        let Option.Some((city, building)) = self.placing_building else { return false; };
-        self.placing_building = Option.None;
-        let unsited = self.cities[city].placed_site(building).is_none()
-            && !self.cities[city].planned_sites.has(building)
-            && self.cities[city].pending_building != Option.Some(building);
-        let index = self.cities[city].queue.index_of(Build.Building(building));
-        if unsited && index >= 0 {
-            let _removed = self.cities[city].queue.remove(index);
-            if index == 0 { self.cities[city].production = 0; }
-            self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" CANCELLED - NO SITE CHOSEN"); });
-        }
-        true
-    }
-
-    /// A placeable building queued in (or finished by) `city` that has no site yet, so it
-    /// can't be confirmed until one is chosen.
-    pub fn needs_site(&self, city: i32, building: Building) -> bool {
-        let c = &self.cities[city];
-        building.is_placeable()
-            && c.placed_site(building).is_none()
-            && !c.planned_sites.has(building)
-            && (c.pending_building == Option.Some(building) || c.queue.contains(Build.Building(building)))
-    }
-
-    /// The first reason a building cannot use this site. The one source of truth for previews,
-    /// placement clicks and final confirmation.
-    pub fn site_issue(&self, city: i32, building: Building, hex: Hex) -> Option[str] {
+    /// The first reason `building` can't stand on `hex` for city `city`: the rules of its site
+    /// (workers' reach and exploration aside, which `job_problem` and `job_unavailable` check).
+    pub fn ai_site_issue(&self, city: i32, building: Building, hex: Hex) -> Option[str] {
         if !self.grid.is_passable(hex) { return Option.Some("NEEDS AN OPEN LAND TILE"); }
-        if !self.is_explored(hex) && !self.fog().sees(hex) { return Option.Some("NEEDS AN EXPLORED TILE"); }
         for i in 0..self.cities.len() {
             let c = &self.cities[i];
             let mut claimed = c.pos == hex;
             for k in 0..14 { if c.placed_site(PLACEABLE[k]) == Option.Some(hex) { claimed = true; } }
-            for k in 0..c.planned_sites.len() {
-                let (Option.Some(kind), Option.Some(site)) = (c.planned_sites.key_at(k), c.planned_sites.val_at(k)) else { continue; };
-                if site == hex && (i != city || kind != building) { claimed = true; }
-            }
             if claimed { return Option.Some("SITE IS ALREADY CLAIMED BY A CITY OR BUILDING"); }
         }
         if building.is_naval() && !self.city_is_coastal(city) { return Option.Some("NEEDS A CITY CENTER ON THE COAST"); }
@@ -499,7 +630,9 @@ impl GameState {
         Option.None
     }
 
-    pub fn site_available(&self, city: i32, building: Building, hex: Hex) -> bool { self.site_issue(city, building, hex).is_none() }
+    /// Whether `building` may stand on `hex` for city `city`, by its site's rules alone
+    /// (`ai_site_issue`).
+    pub fn site_available(&self, city: i32, building: Building, hex: Hex) -> bool { self.ai_site_issue(city, building, hex).is_none() }
 
     /// Whether `resource` is on `hex` or next to it.
     pub fn resource_near(&self, hex: Hex, resource: Resource) -> bool {
@@ -509,8 +642,8 @@ impl GameState {
         false
     }
 
-    /// Whether city `city`'s Barracks has a Forge (iron) or Stable (horses) beside it, on or
-    /// next to its resource.
+    /// Whether city `city`'s Barracks has a Forge (iron) or Stable (horses) beside it, on or next
+    /// to its resource.
     fn barracks_support(&self, city: i32, resource: Resource) -> bool {
         let c = &self.cities[city];
         let kind = if resource == Resource.Iron { Building.Forge } else { Building.Stable };
@@ -522,7 +655,7 @@ impl GameState {
     }
 
     /// Whether a Workshop of `team` stands next to `site`.
-    fn workshop_discount(&self, team: Team, site: Hex) -> bool {
+    pub fn beside_workshop(&self, team: Team, site: Hex) -> bool {
         for i in 0..self.cities.len() {
             if self.cities[i].team != team { continue; }
             if let Option.Some(workshop) = self.cities[i].workshop {
@@ -532,61 +665,30 @@ impl GameState {
         false
     }
 
-    /// What `build` costs city `city`: half for a placeable building sited beside a Workshop.
-    pub fn city_build_cost(&self, city: i32, build: Build) -> i32 {
-        if let Build.Building(building) = build {
-            if building.is_placeable() {
-                let discounted = match self.cities[city].planned_sites.get(building) {
-                    Option.Some(site) => self.workshop_discount(self.cities[city].team, site),
-                    Option.None => false,
-                };
-                return if discounted { (building.cost() + 1) / 2 } else { building.cost() };
-            }
+    /// Work `build` needs in `city`'s own queue: its own, and for a land troop
+    /// `CITY_TRAINING_SLOWDOWN` times a Barracks' (`barracks.tua`).
+    pub fn city_build_work(&self, _city: i32, build: Build) -> i32 {
+        match build {
+            Build.Unit(unit) => if unit.unit_type().is_naval() { build.work() } else { unit.work() * CITY_TRAINING_SLOWDOWN },
+            _ => build.work(),
         }
-        build.cost()
     }
 
-    /// The Confirm button on a finished building: it goes up on its chosen site.
-    pub fn confirm_building(&mut self, building: Building) {
-        if !building.is_placeable() { return; }
-        let Option.Some(city) = self.selected_city else { return; };
-        let Option.Some(site) = self.cities[city].planned_sites.get(building) else {
-            self.notice = text(fn() can {Out} { Out.put("CHOOSE A "); Out.put(building.name()); Out.put(" SITE ON THE MAP FIRST"); });
-            return;
-        };
-        if let Option.Some(reason) = self.site_issue(city, building, site) {
-            self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" SITE INVALID: "); Out.put(reason); });
-            return;
-        }
-        let at_front = !self.cities[city].queue.is_empty() && self.cities[city].queue[0] == Build.Building(building);
-        if !at_front || self.cities[city].production < self.city_build_cost(city, Build.Building(building)) {
-            self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" IS STILL UNDER CONSTRUCTION"); });
-            return;
-        }
-        self.cities[city].pending_building = Option.None;
-        let _done = self.cities[city].queue.remove(0);
-        self.cities[city].production = 0;
-        self.cities[city].set_placed_site(building, site);
-        if building == Building.CoastalBattery { self.cities[city].coastal_battery_hp = COASTAL_BATTERY_MAX_HP; }
-        let _site = self.cities[city].planned_sites.remove(building);
-        self.cities[city].built.push(building);
-        self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" FINALIZED"); });
-    }
+    /// Turns `build` takes in `city`'s own queue (`city_build_work`).
+    pub fn city_build_turns(&self, city: i32, build: Build) -> i32 { (self.city_build_work(city, build) + WORK_PER_TURN - 1) / WORK_PER_TURN }
 
-    /// A Barracks card: the open Barracks (or city) trains `build` next, at the end of its
-    /// queue.
+    /// A Barracks card: the open Barracks (or city) trains `build` next, at the end of its queue.
     pub fn queue_selected_barracks_unit(&mut self, build: BuildUnit) {
+        if self.is_resolving() { return; }
         let Option.Some(city) = self.open_barracks_city() else { return; };
-        if self.cities[city].team != PLAYER_TEAM || self.cities[city].barracks.is_none() { return; }
-        if let Option.Some(resource) = build.required_resource() {
-            if !self.barracks_can_train(city, build) {
-                self.notice = text(fn() can {Out} { Out.put(build.name()); Out.put(" NEEDS "); Out.put(resource.name()); Out.put(" AT BARRACKS OR AN ADJACENT SUPPORT BUILDING"); });
-                return;
-            }
+        if self.cities[city].team != self.local_team || self.cities[city].barracks.is_none() { return; }
+        if let Option.Some(reason) = self.barracks_lock(city, build) {
+            self.notice = text(fn() can {Out} { Out.put(build.name()); Out.put(": "); Out.put(&reason); });
+            return;
         }
-        if self.cities[city].barracks_queue.is_empty() { self.cities[city].barracks_production = 0; }
-        self.cities[city].barracks_queue.push(build);
-        self.notice = text(fn() can {Out} { Out.put("BARRACKS TRAINING "); Out.put(build.name()); Out.put(" - NEEDS MANAGER ON BARRACKS"); });
+        self.queue_barracks(city, build);
+        let index = self.cities[city].barracks_queue.len() - 1;
+        self.notice = self.queued_notice(city, Lane.Barracks, index, build.price(), build.turns());
     }
 
     /// The city whose Barracks queue the Barracks cards act on: the open Barracks, or else the
@@ -595,86 +697,86 @@ impl GameState {
         if self.selected_barracks.is_some() { self.selected_barracks } else { self.selected_city }
     }
 
-    /// Whether city `city`'s Barracks can train `build`: any troop, and a horse or iron troop
-    /// when the Barracks stands on that resource or has its support building.
+    /// Whether city `city`'s Barracks can train `build` at all: it has one, and a deposit for a
+    /// troop that needs Horses or Iron (`barracks.tua`), whatever the cap.
     pub fn barracks_can_train(&self, city: i32, build: BuildUnit) -> bool {
-        let Option.Some(tile) = self.cities[city].barracks else { return false; };
+        if self.cities[city].barracks.is_none() { return false; }
         match build.required_resource() {
             Option.None => true,
-            Option.Some(resource) => self.grid.resource(tile) == Option.Some(resource) || self.barracks_support(city, resource),
+            Option.Some(resource) => !self.barracks_deposits(city, resource).is_empty(),
         }
     }
 
-    /// Reopens placement for a queued or completed building before confirmation.
-    pub fn change_selected_building_site(&mut self, building: Building) {
-        let Option.Some(city) = self.selected_city else { return; };
-        let c = &self.cities[city];
-        if c.team != PLAYER_TEAM || !building.is_placeable() || c.placed_site(building).is_some() || !c.planned_sites.has(building) { return; }
-        self.placing_building = Option.Some((city, building));
-        self.notice = text(fn() can {Out} { Out.put("CHANGE "); Out.put(building.name()); Out.put(" SITE - CLICK A NEW VALID TILE"); });
-    }
-
-    /// F9: completes only the active queue in the currently open structure.
+    /// F9: completes only the active queue in the currently open structure: the item it works now
+    /// (`pick_item`), paid for if it wasn't.
     pub fn debug_complete_current_production(&mut self) can {Log} {
-        if self.is_resolving() { return; }
-        if let Option.Some(city) = self.selected_barracks {
-            if self.cities[city].barracks_queue.is_empty() { return; }
-            let build = self.cities[city].barracks_queue[0];
-            self.cities[city].barracks_production = build.cost();
-            self.complete_builds_for(Option.Some((city, true)));
-            let waiting = !self.cities[city].barracks_queue.is_empty() && self.cities[city].barracks_queue[0] == build;
-            if waiting {
-                self.set_notice("DEBUG: PRODUCTION READY - NO OPEN SPAWN TILE");
-            } else {
-                self.notice = text(fn() can {Out} { Out.put("DEBUG: "); Out.put(build.name()); Out.put(" TRAINING COMPLETED"); });
-            }
-        } else if let Option.Some(city) = self.selected_city {
-            if self.cities[city].queue.is_empty() || self.cities[city].pending_building.is_some() { return; }
-            let build = self.cities[city].queue[0];
-            self.cities[city].production = self.city_build_cost(city, build);
-            self.complete_builds_for(Option.Some((city, false)));
-            let ready = match build { Build.Building(b) => self.cities[city].pending_building == Option.Some(b), _ => false };
-            let waiting = !self.cities[city].queue.is_empty() && self.cities[city].queue[0] == build;
-            if ready {
-                self.notice = text(fn() can {Out} { Out.put("DEBUG: "); Out.put(build.name()); Out.put(" READY - CONFIRM ITS SITE"); });
-            } else if waiting {
-                self.set_notice("DEBUG: PRODUCTION READY - NO OPEN SPAWN TILE");
-            } else {
-                self.notice = text(fn() can {Out} { Out.put("DEBUG: "); Out.put(build.name()); Out.put(" PRODUCTION COMPLETED"); });
-            }
-        }
+        if self.refuses_debug() || self.is_resolving() { return; }
+        let (city, lane) = match (self.selected_barracks, self.selected_city) {
+            (Option.Some(city), _) => (city, Lane.Barracks),
+            (Option.None, Option.Some(city)) => (city, Lane.City),
+            (Option.None, Option.None) => { return; }
+        };
+        let team = self.cities[city].team;
+        let room = self.supply_room(team);
+        let Option.Some((index, price)) = self.pick_item(city, lane, self.stock(team), room) else {
+            if self.lane_len(city, lane) > 0 { self.set_notice("DEBUG: NOTHING QUEUED THE STOCKPILE AND SUPPLY ALLOW"); }
+            return;
+        };
+        let name = match lane {
+            Lane.City => self.cities[city].queue[index].build.name(),
+            Lane.Barracks => self.cities[city].barracks_queue[index].build.name(),
+        };
+        let (_, _, needed) = self.lane_item(city, lane, index);
+        self.work_item(city, lane, index, price, needed);
+        let before = self.lane_len(city, lane);
+        self.complete_builds_for(Option.Some((city, lane == Lane.Barracks)));
+        let stuck = self.lane_len(city, lane) == before;
+        self.notice = text(fn() can {Out} {
+            if stuck { Out.put("DEBUG: PRODUCTION READY - NO OPEN SPAWN TILE"); return; }
+            Out.put("DEBUG: "); Out.put(name);
+            Out.put(if lane == Lane.Barracks { " TRAINING COMPLETED" } else { " PRODUCTION COMPLETED" });
+        });
     }
 
     /// A queue row's up or down arrow (or a drag): swaps it with its neighbour.
     pub fn move_selected_city_queue_item(&mut self, index: i32, up: bool) {
+        if self.is_resolving() { return; }
         let Option.Some(city) = self.selected_city else { return; };
-        let pending = self.cities[city].pending_building.is_some();
         let other = if up { index - 1 } else { index + 1 };
-        if index < 0 || other < 0 || other >= self.cities[city].queue.len() || index >= self.cities[city].queue.len() { return; }
-        if pending && (index == 0 || other == 0) {
-            self.set_notice("CONFIRM OR REMOVE THE READY BUILDING FIRST");
-            return;
-        }
+        let n = self.cities[city].queue.len();
+        if index < 0 || index >= n || other < 0 || other >= n { return; }
         self.cities[city].queue.swap_at(index, other);
         self.set_notice("CITY QUEUE REORDERED");
     }
 
-    /// A queue row's X: takes it out of the city's queue.
+    /// A city queue row's X, or Backspace for the head: takes it off, refunded if it was paid for.
+    /// Not while a turn plays out, like queueing.
     pub fn remove_selected_city_queue_item(&mut self, index: i32) {
+        if self.is_resolving() { return; }
         let Option.Some(city) = self.selected_city else { return; };
         if index < 0 || index >= self.cities[city].queue.len() { return; }
-        let removed = self.cities[city].queue.remove(index);
-        if index == 0 {
-            self.cities[city].production = 0;
-            self.cities[city].pending_building = Option.None;
+        let paid = self.cities[city].queue[index].paid;
+        let removed = self.take_queue_item(city, index);
+        self.notice = text(fn() can {Out} { Out.put("REMOVED "); Out.put(removed.name()); Out.put(" FROM CITY QUEUE - "); Out.put(refund_word(paid)); });
+    }
+
+    /// The city queue's Clear button: takes every item off, each through `take_queue_item` as its
+    /// X would, so the stockpile ends as it would after removing them one by one (Grows included:
+    /// what one refunds depends only on how many are paid for, not on the order).
+    pub fn clear_selected_city_queue(&mut self) {
+        if self.is_resolving() { return; }
+        let Option.Some(city) = self.selected_city else { return; };
+        let count = self.cities[city].queue.len();
+        if count == 0 { return; }
+        let mut paid = 0;
+        for k in 0..count { if self.cities[city].queue[k].paid { paid = paid + 1; } }
+        while self.cities[city].queue.len() > 0 {
+            let last = self.cities[city].queue.len() - 1;
+            let _gone = self.take_queue_item(city, last);
         }
-        if let Build.Building(building) = removed {
-            if building.is_placeable() {
-                if self.placing(city, building) { self.placing_building = Option.None; }
-                let _site = self.cities[city].planned_sites.remove(building);
-            }
-        }
-        self.notice = text(fn() can {Out} { Out.put("REMOVED "); Out.put(removed.name()); Out.put(" FROM CITY QUEUE"); });
+        self.city_queue_scroll = 0;
+        let words = cleared_words(count, paid);
+        self.notice = text(fn() can {Out} { Out.put("CLEARED THE CITY QUEUE - "); Out.put(&words); });
     }
 
     /// A Barracks queue row's arrow: swaps it with its neighbour.
@@ -687,13 +789,33 @@ impl GameState {
         self.set_notice("BARRACKS QUEUE REORDERED");
     }
 
-    /// A Barracks queue row's X.
+    /// A Barracks queue row's X: takes it off, refunded if it was paid for. Not while a turn plays
+    /// out.
     pub fn remove_selected_barracks_queue_item(&mut self, index: i32) {
+        if self.is_resolving() { return; }
         let Option.Some(city) = self.open_barracks_city() else { return; };
         if index < 0 || index >= self.cities[city].barracks_queue.len() { return; }
-        let removed = self.cities[city].barracks_queue.remove(index);
-        if index == 0 { self.cities[city].barracks_production = 0; }
-        self.notice = text(fn() can {Out} { Out.put("REMOVED "); Out.put(removed.name()); Out.put(" FROM BARRACKS QUEUE"); });
+        let paid = self.cities[city].barracks_queue[index].paid;
+        let removed = self.take_barracks_item(city, index);
+        self.notice = text(fn() can {Out} { Out.put("REMOVED "); Out.put(removed.name()); Out.put(" FROM BARRACKS QUEUE - "); Out.put(refund_word(paid)); });
+    }
+
+    /// The Barracks queue's Clear button: takes every troop off, each through
+    /// `take_barracks_item` as its X would.
+    pub fn clear_selected_barracks_queue(&mut self) {
+        if self.is_resolving() { return; }
+        let Option.Some(city) = self.open_barracks_city() else { return; };
+        let count = self.cities[city].barracks_queue.len();
+        if count == 0 { return; }
+        let mut paid = 0;
+        for k in 0..count { if self.cities[city].barracks_queue[k].paid { paid = paid + 1; } }
+        while self.cities[city].barracks_queue.len() > 0 {
+            let last = self.cities[city].barracks_queue.len() - 1;
+            let _gone = self.take_barracks_item(city, last);
+        }
+        self.barracks_queue_scroll = 0;
+        let words = cleared_words(count, paid);
+        self.notice = text(fn() can {Out} { Out.put("CLEARED THE BARRACKS QUEUE - "); Out.put(&words); });
     }
 
     /// Queue hotkeys operate on the city line currently being produced.
@@ -703,119 +825,147 @@ impl GameState {
 
     pub fn complete_builds(&mut self) can {Log} { self.complete_builds_for(Option.None); }
 
-    /// Every city (and Barracks) whose production covers the first item of its queue finishes
-    /// it. `only` limits debug completion to one city's production lane (`true` for its
-    /// Barracks).
+    /// Every city (and Barracks) whose queue's first finished item is ready comes out. `only`
+    /// limits debug completion to one city's production lane (`true` for its Barracks).
     fn complete_builds_for(&mut self, only: Option[(i32, bool)]) can {Log} {
         let mut spawn: Vec[Spawn] = Vec.new();
         for i in 0..self.cities.len() {
             if skips_lane(only, i, false) { continue; }
-            if self.cities[i].queue.is_empty() && self.cities[i].team != PLAYER_TEAM {
-                self.cities[i].queue.push(Build.Unit(BuildUnit.Melee));
+            // The first finished item: the one worked this turn, or one finished before and held
+            // for want of an open hex (or, a Settler, of citizens).
+            let mut found: Option[i32] = Option.None;
+            for index in 0..self.cities[i].queue.len() {
+                let (paid, progress, work) = self.lane_item(i, Lane.City, index);
+                if found.is_none() && paid && progress >= work && !self.waits_for_citizens(i, index) { found = Option.Some(index); }
             }
-            if self.cities[i].queue.is_empty() { continue; }
-            let build = self.cities[i].queue[0];
-            if self.cities[i].pending_building.is_some() || self.cities[i].production < self.city_build_cost(i, build) { continue; }
+            let Option.Some(index) = found else { continue; };
+            let build = self.cities[i].queue[index].build;
+            let team = self.cities[i].team;
+            let id = self.cities[i].id;
             match build {
-                Build.Building(Building.Granary) => {
-                    self.cities[i].production = 0;
-                    let _done = self.cities[i].queue.remove(0);
-                    self.cities[i].built.push(Building.Granary);
-                    self.set_notice("GRANARY COMPLETE - +2 FOOD PER TURN");
-                    continue;
-                }
-                Build.Building(building) => {
-                    self.cities[i].pending_building = Option.Some(building);
-                    // Placement starts here only in the open city (F9); a turn's completion
-                    // leaves it for when the city is next opened (`open_city`).
-                    if self.selected_city == Option.Some(i) && self.needs_site(i, building) {
-                        self.placing_building = Option.Some((i, building));
+                Build.Gather => {
+                    let _done = self.cities[i].queue.remove(index);
+                    self.add_stock(team, GATHER_YIELD);
+                    if team == self.local_team {
+                        let icons = stock_icons(GATHER_YIELD);
+                        self.notice = text(fn() can {Out} { Out.put("CITY "); show_i64((id + 1) as i64); Out.put(" GATHERED "); Out.put(&icons); });
                     }
-                    self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" COMPLETE - CHOOSE A SITE, THEN CONFIRM"); });
                     continue;
                 }
                 Build.Worker => {
-                    self.cities[i].production = self.cities[i].production - build.cost();
-                    let _done = self.cities[i].queue.remove(0);
+                    let _done = self.cities[i].queue.remove(index);
                     self.cities[i].workers = self.cities[i].workers + 1;
-                    let team = self.cities[i].team;
                     info(fn() can {Out} { team.show(); Out.put(" city completed a worker"); });
-                    if team == PLAYER_TEAM { self.set_notice("WORKER READY - PRESS W TO GIVE IT A JOB"); }
+                    if team == self.local_team { self.set_notice("WORKER READY - PLACE ROADS, IMPROVEMENTS AND BUILDINGS FROM THE CITY"); }
                     continue;
                 }
-                Build.Unit(unit) => {
-                    let naval = unit.unit_type().is_naval();
-                    let mut origin = self.cities[i].pos;
-                    if naval {
-                        let harbor = self.cities[i].placed_site(Building.Harbor);
-                        if !self.city_is_coastal(i) || harbor.is_none() {
-                            self.cities[i].production = build.cost();
-                            continue;
-                        }
-                        origin = harbor.unwrap_or(origin);
+                Build.Grow => {
+                    let _done = self.cities[i].queue.remove(index);
+                    // Starving can't take it over the cap, but a Grow bought before the cap was
+                    // reached could.
+                    let grown = self.cities[i].population + 1;
+                    self.cities[i].population = if grown < MAX_CITY_POPULATION { grown } else { MAX_CITY_POPULATION };
+                    let population = self.cities[i].population;
+                    info(fn() can {Out} { team.show(); Out.put(" city "); show_i64((id + 1) as i64); Out.put(" grew to "); show_i64(population as i64); });
+                    if team == self.local_team {
+                        self.notice = text(fn() can {Out} { Out.put("CITY "); show_i64((id + 1) as i64); Out.put(" GREW TO "); show_i64(population as i64); });
                     }
-                    let around = origin.neighbors();
-                    let mut open: Option[Hex] = Option.None;
-                    for k in 0..6 {
-                        let fits = if naval { self.is_open_naval_spawn(around[k], &spawn) } else { self.is_open_spawn(around[k], &spawn) };
-                        if open.is_none() && fits { open = Option.Some(around[k]); }
-                    }
-                    let Option.Some(pos) = open else {
-                        // The city holds the finished unit until a hex opens, and banks nothing
-                        // more meanwhile: a bank would let the rest of the queue come out one
-                        // unit a turn once one did.
-                        self.cities[i].production = build.cost();
-                        continue;
-                    };
-                    self.cities[i].production = self.cities[i].production - build.cost();
-                    let _done = self.cities[i].queue.remove(0);
-                    spawn.push(Spawn { team: self.cities[i].team, pos, kind: unit.unit_type(), upgrade: Option.None });
+                    continue;
+                }
+                _ => {}
+            }
+            // A finished unit waits, done, until a hex opens for it. Work never passes what an
+            // item needs, so none is banked for the rest of the queue: a bank would let the rest
+            // come out one unit a turn once one did (#54).
+            let naval = match build { Build.Unit(unit) => unit.unit_type().is_naval(), _ => false };
+            let mut origin = self.cities[i].pos;
+            if naval {
+                if !self.city_is_coastal(i) { continue; }
+                let Option.Some(harbor) = self.cities[i].placed_site(Building.Harbor) else { continue; };
+                origin = harbor;
+            }
+            let around = origin.neighbors();
+            let mut open: Option[Hex] = Option.None;
+            for k in 0..6 {
+                let fits = if naval { self.is_open_naval_spawn(around[k], team, &spawn) } else { self.is_open_spawn(around[k], team, &spawn) };
+                if open.is_none() && fits { open = Option.Some(around[k]); }
+            }
+            let Option.Some(pos) = open else { continue; };
+            let _done = self.cities[i].queue.remove(index);
+            let kind = build.unit_type().unwrap_or(UnitType.Melee);
+            let settler = build == Build.Settler;
+            spawn.push(Spawn { team, pos, kind, upgrade: Option.None, drawn: Option.None, settler });
+            if settler {
+                // The settler takes one of the city's citizens with it.
+                let _lost = self.remove_citizen(i);
+                info(fn() can {Out} { team.show(); Out.put(" city "); show_i64((id + 1) as i64); Out.put(" completed a settler"); });
+                if team == self.local_team {
+                    self.notice = text(fn() can {Out} {
+                        Out.put("CITY "); show_i64((id + 1) as i64); Out.put(" TRAINED A SETTLER - F FOUNDS A CITY "); show_i64(MIN_CITY_DISTANCE as i64); Out.put(" HEXES FROM ANY OTHER");
+                    });
                 }
             }
         }
         for i in 0..self.cities.len() {
             if skips_lane(only, i, true) { continue; }
-            if self.cities[i].barracks_queue.is_empty() { continue; }
-            let build = self.cities[i].barracks_queue[0];
-            if self.cities[i].barracks_production < build.cost() { continue; }
+            let mut found: Option[i32] = Option.None;
+            for index in 0..self.cities[i].barracks_queue.len() {
+                let (paid, progress, work) = self.lane_item(i, Lane.Barracks, index);
+                if found.is_none() && paid && progress >= work { found = Option.Some(index); }
+            }
+            let Option.Some(index) = found else { continue; };
+            let build = self.cities[i].barracks_queue[index].build;
             let Option.Some(barracks) = self.cities[i].barracks else { continue; };
+            let team = self.cities[i].team;
             let around = barracks.neighbors();
             let mut open: Option[Hex] = Option.None;
-            for k in 0..6 { if open.is_none() && self.is_open_spawn(around[k], &spawn) { open = Option.Some(around[k]); } }
+            for k in 0..6 { if open.is_none() && self.is_open_spawn(around[k], team, &spawn) { open = Option.Some(around[k]); } }
             let Option.Some(pos) = open else { continue; };
-            self.cities[i].barracks_production = 0;
-            let _done = self.cities[i].barracks_queue.remove(0);
+            let _done = self.cities[i].barracks_queue.remove(index);
             let upgrade = match build.required_resource() {
                 Option.Some(resource) => if self.barracks_support(i, resource) { Option.Some(resource) } else { Option.None },
                 Option.None => Option.None,
             };
-            spawn.push(Spawn { team: self.cities[i].team, pos, kind: build.unit_type(), upgrade });
+            let drawn = build.required_resource();
+            if let Option.Some(resource) = drawn { self.special_trained[team.index() * 2 + resource.index()] = self.special_trained[team.index() * 2 + resource.index()] + 1; }
+            spawn.push(Spawn { team, pos, kind: build.unit_type(), upgrade, drawn, settler: false });
         }
         for s in 0..spawn.len() {
             let finished = spawn[s];
             let id = self.take_unit_id();
             let mut unit = Unit.new(id, finished.pos, finished.team, finished.kind);
             unit.training_upgrade = finished.upgrade;
+            unit.drawn_from = finished.drawn;
             unit.hp = unit.max_hp();
             unit.interior_hp = unit.max_hp();
             self.units.push(unit);
+            if finished.settler { let _new = self.settlers.insert(id); }
             info(fn() can {Out} { finished.team.show(); Out.put(" city completed "); finished.kind.show(); });
         }
     }
 
-    /// Whether a finished ship can appear on `hex`: sea, with no unit on it and none already
-    /// finishing there this turn.
-    fn is_open_naval_spawn(&self, hex: Hex, spawn: &Vec[Spawn]) -> bool {
-        if !self.is_sea(hex) || self.is_occupied(hex) { return false; }
+    /// Whether a finished ship can appear on `hex`: sea, with no unit on it, no enemy civilians
+    /// and none already finishing there this turn.
+    fn is_open_naval_spawn(&self, hex: Hex, team: Team, spawn: &Vec[Spawn]) -> bool {
+        if !self.is_sea(hex) || self.is_occupied(hex) || !self.spawn_clear_of_enemy_civilians(hex, team) { return false; }
         for s in 0..spawn.len() { if spawn[s].pos == hex { return false; } }
         true
     }
 
-    /// Whether a finished unit can appear on `hex`: passable, with no unit on it and none
-    /// already finishing there this turn (a barracks beside its city shares hexes with it).
-    fn is_open_spawn(&self, hex: Hex, spawn: &Vec[Spawn]) -> bool {
-        if !self.grid.is_passable(hex) || self.is_occupied(hex) { return false; }
+    /// Land spawns avoid enemy centers and all field workers, units and hexes already finishing
+    /// there this turn (a barracks beside its city shares hexes with it).
+    fn is_open_spawn(&self, hex: Hex, team: Team, spawn: &Vec[Spawn]) -> bool {
+        if !self.grid.is_passable(hex) || self.is_occupied(hex) || !self.spawn_clear_of_enemy_civilians(hex, team) { return false; }
+        for w in 0..self.field_workers.len() { if self.field_workers[w].pos == hex { return false; } }
         for s in 0..spawn.len() { if spawn[s].pos == hex { return false; } }
+        true
+    }
+
+    /// A spawn may not materialize on an enemy city center or an uncaptured enemy field worker,
+    /// even though neither counts as a unit occupant.
+    pub fn spawn_clear_of_enemy_civilians(&self, hex: Hex, team: Team) -> bool {
+        for i in 0..self.cities.len() { if self.cities[i].pos == hex && self.cities[i].team != team { return false; } }
+        for w in 0..self.field_workers.len() { if self.field_workers[w].pos == hex && self.field_workers[w].team != team { return false; } }
         true
     }
 }

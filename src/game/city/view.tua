@@ -1,16 +1,21 @@
 //! City and Barracks views: opening and leaving them, map clicks while one is open, and ending
 //! planning (which waits on cities with nothing to build).
 
-use std.core.Keep;
 use std.fmt.Out;
+use std.fmt.show_i64;
 use std.fmt.show_u64;
 use log.Log;
 use game.GameState;
-use game.PLAYER_TEAM;
 use game.text;
-use game.city.Build;
+use game.city.CLUSTER_SIZE;
+use game.city.Cluster;
+use game.city.FOOD_PER_CITIZEN;
+use game.city.MAX_MANAGERS;
+use game.city.Stock;
+use game.city.no_stock;
 use game.scenario.copy_vec;
 use game.hex.Hex;
+use game.unit.Team;
 
 impl GameState {
     /// Y or the Yields button: shows or hides tile yields around the open city.
@@ -21,6 +26,46 @@ impl GameState {
         if self.show_yields { self.selected_city } else { Option.None }
     }
 
+    /// The city whose delivery shares (the percentages) the map shows: `yields_city`, or with
+    /// yields off, the open city's while something is being placed for its workers and Alt is
+    /// held.
+    pub fn shares_city(&self) -> Option[i32] {
+        match self.yields_city() {
+            Option.Some(city) => Option.Some(city),
+            Option.None => if self.placing_job.is_some() && self.show_details { self.selected_city } else { Option.None },
+        }
+    }
+
+    /// Whether cluster `cluster` of `city`'s manager is the one picked up.
+    pub fn is_moving_manager(&self, city: i32, cluster: i32) -> bool {
+        match self.moving_manager { Option.Some((c, k)) => c == city && k == cluster, Option.None => false }
+    }
+
+    /// What `city` delivers a turn as the UI shows it: `income`, less the cluster of a manager
+    /// picked up (its workers leave the map with it until it's placed). A carried manager is
+    /// always put back before a turn resolves, so the economy itself never sees this.
+    pub fn shown_income(&self, city: i32) -> Stock {
+        let income = self.income(city);
+        match self.moving_manager {
+            Option.Some((i, cluster)) => if i == city { income.minus(self.cluster_income(city, cluster)) } else { income },
+            Option.None => income,
+        }
+    }
+
+    /// What `city` adds to its side's stockpile a turn, as the UI shows it: `shown_income`, with
+    /// the food its citizens eat taken off.
+    pub fn net_delivery(&self, city: i32) -> Stock {
+        let income = self.shown_income(city);
+        Stock { food: income.food - self.cities[city].population * FOOD_PER_CITIZEN, wood: income.wood, metal: income.metal }
+    }
+
+    /// `side_income` as the UI shows it (`shown_income` for each city).
+    pub fn shown_side_income(&self, team: Team) -> Stock {
+        let mut sum = no_stock();
+        for i in 0..self.cities.len() { if self.cities[i].team == team { sum = sum.plus(self.shown_income(i)); } }
+        sum
+    }
+
     /// C: opens a city that needs something to build, or else the first of the player's cities.
     pub fn select_city(&mut self) {
         if self.is_resolving() { return; }
@@ -29,24 +74,19 @@ impl GameState {
             if city.is_none() && self.city_needs_build(i) { city = Option.Some(i); }
         }
         for i in 0..self.cities.len() {
-            if city.is_none() && self.cities[i].team == PLAYER_TEAM { city = Option.Some(i); }
+            if city.is_none() && self.cities[i].team == self.local_team { city = Option.Some(i); }
         }
         if let Option.Some(i) = city { self.open_city(i); }
     }
 
     /// Opens city `i`'s view and glides the camera to it.
     pub fn open_city(&mut self, i: i32) {
-        self.worker_mode = false;
         self.close_city_interior();
         if self.selected_city != Option.Some(i) {
             self.city_queue_scroll = 0;
-            // Site placement belongs to the open city. A building that finished while the view
-            // was closed, with no site chosen yet, picks its site now.
-            let _was = self.abandon_site_placement();
-            self.placing_building = match self.cities[i].pending_building {
-                Option.Some(building) => if self.needs_site(i, building) { Option.Some((i, building)) } else { Option.None },
-                Option.None => Option.None,
-            };
+            // Placing belongs to the open city.
+            self.placing_job = Option.None;
+            self.hovered_job = Option.None;
         }
         self.selected_city = Option.Some(i);
         self.selected_barracks = Option.None;
@@ -56,17 +96,18 @@ impl GameState {
         self.camera.focus_on(self.cities[i].pos.to_world());
         if self.city_needs_build(i) {
             let id = self.cities[i].id;
-            self.notice = text(fn() can {Out} { Out.put("CHOOSE WHAT CITY "); show_u64((id + 1) as u64); Out.put(" BUILDS - 1-4"); });
+            self.notice = text(fn() can {Out} { Out.put("CHOOSE WHAT CITY "); show_u64((id + 1) as u64); Out.put(" BUILDS - 0-9"); });
         } else {
             self.set_notice("CLICK TILES TO ASSIGN - A AUTO ASSIGN - ESC OR SPACE TO EXIT");
         }
     }
 
-    /// One of the player's cities with nothing queued to build. The turn waits for these, as
-    /// it does for units without orders.
+    /// One of the player's cities with nothing queued to build. The turn waits for these, as it
+    /// does for units without orders. A player city with an empty queue holds up the turn: it can
+    /// always gather (`Build.Gather`), even when its side can't pay for anything.
     pub fn city_needs_build(&self, i: i32) -> bool {
         let city = &self.cities[i];
-        city.team == PLAYER_TEAM && city.queue.is_empty()
+        city.team == self.local_team && city.queue.is_empty()
     }
 
     pub fn leave_city_view(&mut self) {
@@ -74,24 +115,33 @@ impl GameState {
         self.selected_city = Option.None;
         self.selected_barracks = Option.None;
         self.moving_manager = Option.None;
-        let _was = self.abandon_site_placement();
+        self.placing_job = Option.None;
+        self.hovered_job = Option.None;
     }
 
     /// Escape and Space dismiss city or building management without issuing a unit order or
-    /// opening the settings menu. While a building site is being chosen, the first press only
-    /// cancels that (and the unsited building) and keeps the city open.
+    /// opening the settings menu. While something is being placed for the city's workers, the
+    /// first press only stops that and keeps the city open (`stop_placing`).
     pub fn exit_structure_menu(&mut self) -> bool {
         if self.interior_view.is_some() {
             self.close_city_interior();
             return true;
         }
         if self.selected_city.is_none() && self.selected_barracks.is_none() { return false; }
-        if self.site_placement().is_some() {
-            let _was = self.abandon_site_placement();
-            return true;
-        }
+        if self.stop_placing() { return true; }
         self.leave_city_view();
         self.set_notice("PLANNING - C CITY - SPACE HOLD OR END TURN");
+        true
+    }
+
+    /// The city tray's Cancel Placing button, and the first Escape while placing: stops placing
+    /// what the open city was placing for its workers, with nothing placed or paid. Answers
+    /// whether anything was being placed.
+    pub fn stop_placing(&mut self) -> bool {
+        let Option.Some(kind) = self.placing_job else { return false; };
+        self.placing_job = Option.None;
+        self.hovered_job = Option.None;
+        self.notice = text(fn() can {Out} { Out.put("STOPPED PLACING "); Out.put(kind.name()); });
         true
     }
 
@@ -101,7 +151,8 @@ impl GameState {
         let Option.Some(barracks) = self.cities[city].barracks else { return; };
         if self.selected_barracks != Option.Some(city) { self.barracks_queue_scroll = 0; }
         self.selected_city = Option.None;
-        let _was = self.abandon_site_placement();
+        self.placing_job = Option.None;
+        self.hovered_job = Option.None;
         self.selected_barracks = Option.Some(city);
         self.selected = Option.None;
         self.group.clear();
@@ -116,9 +167,9 @@ impl GameState {
     }
 
     /// A map click the city views take. A structure menu owns every map click until its
-    /// explicit exit: with nothing open, clicking one of the player's Barracks or cities opens
-    /// it; with a city open, the click places a building being sited, picks up or puts down the
-    /// manager, or assigns or releases a citizen. Answers whether the click was theirs.
+    /// explicit exit: with nothing open, clicking one of the player's Barracks or cities opens it;
+    /// with a city open, the click picks up or puts down a manager, or assigns or releases a
+    /// citizen. Answers whether the click was theirs.
     pub fn city_click(&mut self, hex: Hex) -> bool {
         if self.interior_view.is_some() {
             self.interior_click(hex);
@@ -130,101 +181,95 @@ impl GameState {
         }
         let Option.Some(i) = self.selected_city else {
             for c in 0..self.cities.len() {
-                if self.cities[c].barracks == Option.Some(hex) && self.cities[c].team == PLAYER_TEAM {
+                if self.cities[c].barracks == Option.Some(hex) && self.cities[c].team == self.local_team {
                     self.open_barracks(c);
                     return true;
                 }
             }
             for c in 0..self.cities.len() {
-                if self.cities[c].pos == hex && self.cities[c].team == PLAYER_TEAM {
+                if self.cities[c].pos == hex && self.cities[c].team == self.local_team {
                     self.open_city(c);
                     return true;
                 }
             }
             return false;
         };
-        if let Option.Some((_, building)) = self.site_placement() {
-            if let Option.Some(reason) = self.site_issue(i, building, hex) {
-                self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(" "); Out.put(reason); });
-                return true;
-            }
-            let _old = self.cities[i].planned_sites.insert(building, hex);
-            self.placing_building = Option.None;
-            let cost = self.city_build_cost(i, Build.Building(building));
-            if self.cities[i].pending_building == Option.Some(building) && self.cities[i].production < cost {
-                self.cities[i].pending_building = Option.None;
-            }
-            let at_front = !self.cities[i].queue.is_empty() && self.cities[i].queue[0] == Build.Building(building);
-            let ready = self.cities[i].pending_building == Option.Some(building) || (at_front && self.cities[i].production >= cost);
-            let tail = if ready { " SITE SELECTED - CLICK CONFIRM IN THE CITY TRAY" } else { " SITE SELECTED - CONSTRUCTION CONTINUES" };
-            self.notice = text(fn() can {Out} { Out.put(building.name()); Out.put(tail); });
-            return true;
-        }
         if hex == self.cities[i].pos {
             self.open_city_interior(i);
             return true;
         }
-        // City management owns map clicks: it is dismissed with Escape or Space before units are
-        // selected, so citizens may be assigned onto a unit's tile without the unit taking the
-        // click. A tile never seen can't be worked.
+        // City management owns map clicks, so citizens may be assigned onto a unit's tile. A tile
+        // never seen can't be worked.
         if !self.is_explored(hex) {
             self.set_notice("UNEXPLORED - SCOUT IT FIRST");
             return true;
         }
-        if self.moving_manager == Option.Some(i) {
-            let manager_here = !self.cities[i].worked.is_empty() && self.cities[i].worked[0] == hex;
-            if manager_here {
-                self.moving_manager = Option.None;
-                self.set_notice("MANAGER MOVE CANCELLED");
-            } else if self.may_be_manager(i, hex) {
-                self.moving_manager = Option.None;
-                self.move_manager(i, hex);
-            } else {
-                self.set_notice("MANAGER NEEDS A REACHABLE, UNCLAIMED TILE");
+        if let Option.Some((mc, cluster)) = self.moving_manager {
+            if mc == i {
+                if self.cities[i].clusters[cluster].manager == hex {
+                    self.moving_manager = Option.None;
+                    self.set_notice("MANAGER MOVE CANCELLED");
+                } else if self.closed_to_citizens(hex) {
+                    self.set_notice("A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT");
+                } else if self.may_be_manager(i, cluster, hex) {
+                    self.moving_manager = Option.None;
+                    self.move_manager(i, cluster, hex);
+                } else {
+                    self.set_notice("MANAGER NEEDS A REACHABLE, UNCLAIMED LAND TILE CLEAR OF THE OTHER MANAGERS");
+                }
+                return true;
             }
-            return true;
         }
-        let at = self.cities[i].worked.index_of(hex);
-        if at == 0 {
-            self.moving_manager = Option.Some(i);
-            self.set_notice("MANAGER PICKED UP - CLICK A DESTINATION");
-        } else if at > 0 {
-            let _gone = self.cities[i].worked.remove(at);
-            handle { self.cities[i].remembered_worked.retain(); } with Keep[Hex] { keep(h) => { resume *h != hex } }
+        if let Option.Some(cluster) = self.cities[i].cluster_of(hex) {
+            if self.cities[i].clusters[cluster].manager == hex {
+                self.moving_manager = Option.Some((i, cluster));
+                self.set_notice("MANAGER PICKED UP - CLICK A DESTINATION");
+                return true;
+            }
+            self.cities[i].clusters[cluster].remove_worker(hex);
+            for r in 0..self.cities[i].remembered.len() { self.cities[i].remembered[r].remove_worker(hex); }
             self.set_notice("CITIZEN UNASSIGNED");
-        } else if !self.may_assign(i, hex) {
-            self.set_notice("CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN ADJACENT TILE TO ASSIGN");
+        } else if self.closed_to_citizens(hex) {
+            self.set_notice("A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT");
+        } else if !self.is_open(i, hex) {
+            self.set_notice("CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE BESIDE A MANAGER TO ASSIGN");
         } else if !self.routes(i).costs.has(hex) {
             self.set_notice("NO OPEN ROUTE WITHIN LOGISTICS BUDGET");
-        } else if !self.may_manage_or_work(i, hex) {
-            self.set_notice("THE FIRST CITIZEN MANAGES THE OTHERS AND MUST WORK LAND");
-        } else if self.cities[i].worked.len() >= self.citizen_slots(i) {
+        } else if self.cities[i].working() >= self.cities[i].capacity() {
             self.set_notice("ALL CITIZENS BUSY - RELEASE A WORKED TILE FIRST");
-        } else {
-            self.cities[i].worked.push(hex);
-            self.cities[i].remembered_worked = copy_vec(&self.cities[i].worked);
+        } else if let Option.Some(cluster) = self.cluster_with_room(i, hex) {
+            self.cities[i].clusters[cluster].add_worker(hex);
+            self.cities[i].remembered = copy_vec(&self.cities[i].clusters);
             self.set_notice("CITIZEN ASSIGNED");
+        } else if self.cities[i].clusters.len() >= self.cities[i].managers_allowed() {
+            let have = self.cities[i].clusters.len();
+            self.notice = text(fn() can {Out} {
+                if have >= MAX_MANAGERS {
+                    Out.put("A CITY HAS AT MOST "); show_i64(MAX_MANAGERS as i64); Out.put(" MANAGERS - CLICK A TILE BESIDE ONE");
+                } else {
+                    Out.put("ANOTHER MANAGER AT "); show_i64((have * CLUSTER_SIZE + 1) as i64); Out.put(" CITIZENS - CLICK A TILE BESIDE A MANAGER WITH ROOM");
+                }
+            });
+        } else if !self.clear_of_managers(i, hex, Option.None) {
+            self.set_notice("A MANAGER WORKS LAND, NOT BESIDE ANOTHER MANAGER");
+        } else {
+            self.cities[i].clusters.push(Cluster.new(hex));
+            self.cities[i].remembered = copy_vec(&self.cities[i].clusters);
+            self.set_notice("MANAGER ASSIGNED - A NEW CLUSTER");
         }
         true
     }
 
-    /// Space (once nothing needs orders) or the End Turn button: resolves the turn, unless a
-    /// city needs something to build, in which case that city is opened instead. Units still
-    /// waiting for orders hold.
+    /// Space (once nothing needs orders) or the End Turn button: resolves the turn, unless a city
+    /// needs something to build, in which case that city is opened instead. Units still waiting
+    /// for orders hold.
     pub fn end_planning(&mut self) can {Log} {
         if self.is_resolving() { return; }
-        // A building left without a site comes out of its queue first, so a city it leaves
-        // with nothing to build is asked for something.
-        let _was = self.abandon_site_placement();
         for i in 0..self.units.len() {
             if self.is_player_controlled(i) && self.needs_orders(i) { self.units[i].holding = true; }
         }
-        // Idle workers rest, as unfinished units hold.
-        for c in 0..self.cities.len() {
-            if self.cities[c].team == PLAYER_TEAM && self.cities[c].worker_jobs.is_empty() { self.cities[c].workers_resting = true; }
-        }
-        self.worker_mode = false;
         self.placing_job = Option.None;
+        self.hovered_job = Option.None;
         for i in 0..self.cities.len() {
             if self.city_needs_build(i) {
                 self.open_city(i);
@@ -232,10 +277,22 @@ impl GameState {
             }
         }
         for i in 0..self.cities.len() {
-            if self.cities[i].team != PLAYER_TEAM { self.auto_assign_city(i); }
+            if !self.is_human(self.cities[i].team) { self.auto_assign_city(i); }
         }
-        self.selected_city = Option.None;
+        self.close_views_on_end_turn();
         self.set_notice("RESOLVING ORDERS");
         self.resolve_turn();
+    }
+
+    /// What ending the turn lets go of: the city and Barracks views close, a manager being moved or
+    /// a queue row being dragged is let go, and so is the unit selection (`resolve_turn` drops it
+    /// too, as indices shift). A city interior stays open (a Siege begins inside one).
+    pub fn close_views_on_end_turn(&mut self) {
+        self.selected_city = Option.None;
+        self.selected_barracks = Option.None;
+        self.moving_manager = Option.None;
+        self.queue_drag = Option.None;
+        self.selected = Option.None;
+        self.group.clear();
     }
 }

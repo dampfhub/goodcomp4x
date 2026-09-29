@@ -19,6 +19,7 @@ use game.draw.edge_fade;
 use game.draw.push_cloud_banks;
 use game.PLAYER_TEAM;
 use game.city.Site;
+use game.city.one_cluster;
 use game.city.SiteKind;
 use game.hex.Hex;
 use game.hex.HexGrid;
@@ -214,18 +215,18 @@ fn yields_out_of_sight_are_as_last_seen() {
         let mut game = behind_the_mountain();
         glance_at(&mut game, 0, HIDDEN);
         let Option.Some(memory) = game.memory.get(HIDDEN) else { assert(false); return; };
-        let (seen_food, seen_production) = memory.yields;
+        let (seen_food, seen_wood, seen_metal) = memory.yields;
         // Red farms the hex while nobody's looking.
         let _old = game.sites.insert(HIDDEN, Site { team: Team.Red, food: 9, production: 9, kind: SiteKind.Farm });
         let fog = game.fog();
-        let (raw_food, raw_production) = game.raw_yield(HIDDEN);
-        assert(raw_food != seen_food || raw_production != seen_production);
-        let (known_food, known_production) = game.known_yield(HIDDEN, &fog);
-        assert(known_food == seen_food && known_production == seen_production);
+        let (raw_food, raw_wood, raw_metal) = game.raw_yield(HIDDEN);
+        assert(raw_food != seen_food || raw_wood != seen_wood || raw_metal != seen_metal);
+        let (known_food, known_wood, known_metal) = game.known_yield(HIDDEN, &fog);
+        assert(known_food == seen_food && known_wood == seen_wood && known_metal == seen_metal);
         let near = Hex.new(0, 1);
-        let (a, b) = game.known_yield(near, &fog);
-        let (c, d) = game.raw_yield(near);
-        assert(a == c && b == d);
+        let (a, b, c) = game.known_yield(near, &fog);
+        let (d, e, f) = game.raw_yield(near);
+        assert(a == d && b == e && c == f);
     });
 }
 
@@ -528,10 +529,10 @@ fn worked_tile_behind_the_mountain() -> (GameState, i32, Hex) can {Log, Assert} 
     let worked = Hex.new(5, 0);
     game.cities[0].pos = origin;
     game.cities[0].population = 1;
-    game.cities[0].worked.clear();
-    game.cities[0].worked.push(worked);
-    game.cities[0].remembered_worked.clear();
-    game.cities[0].remembered_worked.push(worked);
+    let mut tiles: Vec[Hex] = Vec.new();
+    tiles.push(worked);
+    game.cities[0].clusters = one_cluster(&tiles);
+    game.cities[0].remembered = one_cluster(&tiles);
     check_found(game.routes(0).costs.get(worked) == Option.Some(6));
     (game, 0, worked)
 }
@@ -556,13 +557,13 @@ fn a_worked_tile_is_in_sight_past_range_and_mountains() {
         // The turn ends, and the cut-off citizen moves elsewhere; the enemy stays in sight on
         // the tile it took.
         game.resolve_economy();
-        assert(!game.cities[city].worked.contains(worked));
+        assert(!game.cities[city].works(worked));
         let fog = game.fog();
         assert(fog.sees(worked) && fog.shows(&game.units[0]));
 
         // Once the player assigns citizens elsewhere, which forgets that tile, it's out of
         // sight again.
-        game.cities[city].remembered_worked = copy_vec(&game.cities[city].worked);
+        game.cities[city].remembered = copy_vec(&game.cities[city].clusters);
         assert(!game.fog().shows(&game.units[0]));
     });
 }
@@ -581,8 +582,14 @@ fn an_unseen_enemy_on_a_route_hex_still_cuts_goods() {
         let fog = game.fog();
         assert(fog.sees(worked) && !fog.sees(blocker));
         assert(!fog.shows(&game.units[0]));
-        assert(!game.routes(city).costs.has(worked));
+        // The goods detour south of the mountain, through the marsh at (2, 1) and (3, 1): two
+        // hexes off the road, so a quarter arrives.
+        let routes = game.routes(city);
+        assert(routes.costs.get(worked) == Option.Some(8));
+        assert(routes.toward_origin.get(worked) == Option.Some(Hex.new(4, 0)));
+        assert(routes.toward_origin.get(Hex.new(4, 0)) == Option.Some(Hex.new(3, 1)));
+        assert(routes.toward_origin.get(Hex.new(3, 1)) == Option.Some(Hex.new(2, 1)));
         let now = game.income(city);
-        assert(now.0 < full.0 || (now.0 == full.0 && now.1 < full.1));
+        assert(now.food + now.production() < full.food + full.production());
     });
 }

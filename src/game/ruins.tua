@@ -12,10 +12,10 @@ use std.str.Str;
 use log.Log;
 use log.info;
 use game.GameState;
-use game.PLAYER_TEAM;
 use game.text;
-use game.city.City;
-use game.city.show_amount;
+use game.city.Stock;
+use game.city.stock_words;
+use game.city.turns_icon;
 use game.hex.Hex;
 use game.unit.Team;
 use game.unit.Unit;
@@ -23,18 +23,18 @@ use game.unit.UnitType;
 
 /// Turn ends a side must hold ruins through to claim them.
 pub const RUIN_HOLD_TURNS: u32 = 3;
-/// Production the Supplies reward adds to the nearest city, in quarters (half a melee unit).
-const SUPPLIES_PRODUCTION: i32 = 24;
-/// Food the Harvest reward adds to the nearest city, in quarters.
-const HARVEST_FOOD: i32 = 32;
+/// What the Supplies reward adds to the claimant's stockpile.
+const SUPPLIES: Stock = Stock { food: 0, wood: 16, metal: 8 };
+/// What the Harvest reward adds to the claimant's stockpile.
+const HARVEST: Stock = Stock { food: 32, wood: 0, metal: 0 };
 
 /// What claiming ruins gives.
 pub enum RuinReward {
     /// A cavalry unit joins the claimant beside the ruins.
     Recruits,
-    /// Production for the claimant's city nearest the ruins.
+    /// Wood and metal for the claimant's stockpile.
     Supplies,
-    /// Food for the claimant's city nearest the ruins.
+    /// Food for the claimant's stockpile.
     Harvest,
 }
 
@@ -45,8 +45,8 @@ impl RuinReward {
     pub fn describe(self) can {Out} {
         match self {
             RuinReward.Recruits => Out.put("A CAVALRY UNIT"),
-            RuinReward.Supplies => { Out.put("+"); show_amount(SUPPLIES_PRODUCTION); Out.put(" PRODUCTION IN THE NEAREST CITY"); }
-            RuinReward.Harvest => { Out.put("+"); show_amount(HARVEST_FOOD); Out.put(" FOOD IN THE NEAREST CITY"); }
+            RuinReward.Supplies => { let goods = stock_words(SUPPLIES); Out.put("+"); Out.put(&goods); Out.put(" FOR THE STOCKPILE"); }
+            RuinReward.Harvest => { let goods = stock_words(HARVEST); Out.put("+"); Out.put(&goods); Out.put(" FOR THE STOCKPILE"); }
         }
     }
 }
@@ -65,11 +65,6 @@ pub fn ruin(pos: Hex, reward: RuinReward) -> Ruin { Ruin { pos, reward, holder: 
 /// Who holds a hex: nobody, one side alone, or several (contested).
 enum Holding { Empty, Held(Team), Contested }
 
-/// `Blue CITY 2`, as a notice names a city.
-fn show_city(city: &City) can {Out} {
-    Out.put(city.team.name()); Out.put(" CITY "); show_u64((city.id + 1) as u64);
-}
-
 impl GameState {
     /// The index of the ruins on `hex`, if any are left.
     pub fn ruin_at(&self, hex: Hex) -> Option[i32] {
@@ -83,8 +78,9 @@ impl GameState {
         let mut notes: Vec[Str] = Vec.new();
         let Option.Some(i) = self.ruin_at(hex) else { return notes; };
         let reward = self.ruins[i].reward;
+        let clock = turns_icon(RUIN_HOLD_TURNS as i32);
         notes.push(text(fn() can {Out} {
-            Out.put("RUINS: HOLD "); show_u64(RUIN_HOLD_TURNS as u64); Out.put(" TURNS WITH A MILITARY UNIT FOR "); reward.describe();
+            Out.put("RUINS: HOLD "); Out.put(&clock); Out.put(" WITH A MILITARY UNIT FOR "); reward.describe();
         }));
         if let Option.Some(team) = self.ruins[i].holder {
             let held = self.ruins[i].held;
@@ -102,7 +98,7 @@ impl GameState {
         let mut contested = false;
         for i in 0..self.units.len() {
             let u = &self.units[i];
-            if u.pos != hex || self.settlers.contains(u.id) { continue; }
+            if u.pos != hex || self.settlers.contains(u.id) || u.is_animal() { continue; }
             match first {
                 Option.None => { first = Option.Some(u.team); }
                 Option.Some(t) => { if t != u.team { contested = true; } }
@@ -140,38 +136,26 @@ impl GameState {
         }
     }
 
-    /// Gives `ruin`'s holder its reward. A city reward goes to the side's city nearest the
-    /// ruins; a side without a city gets the Recruits instead, and Recruits with no room beside
-    /// the ruins give nothing.
+    /// Gives `ruin`'s holder its reward. Goods go to the side's stockpile; a side without a city
+    /// gets the Recruits instead, and Recruits with no room beside the ruins give nothing.
     fn claim_ruin(&mut self, ruin: &Ruin) can {Log} {
         let Option.Some(team) = ruin.holder else { return; };
-        let mut city: Option[i32] = Option.None;
-        for i in 0..self.cities.len() {
-            if self.cities[i].team != team { continue; }
-            let nearer = match city {
-                Option.None => true,
-                Option.Some(c) => self.cities[i].pos.distance(ruin.pos) < self.cities[c].pos.distance(ruin.pos),
-            };
-            if nearer { city = Option.Some(i); }
-        }
-        let reward = if city.is_none() { RuinReward.Recruits } else { ruin.reward };
-        let what = match (reward, city) {
-            (RuinReward.Supplies, Option.Some(c)) => {
-                self.cities[c].production = self.cities[c].production + SUPPLIES_PRODUCTION;
-                let named = &self.cities[c];
-                text(fn() can {Out} { Out.put("+"); show_amount(SUPPLIES_PRODUCTION); Out.put(" PRODUCTION IN "); show_city(named); })
+        let mut has_city = false;
+        for i in 0..self.cities.len() { if self.cities[i].team == team { has_city = true; } }
+        let reward = if has_city { ruin.reward } else { RuinReward.Recruits };
+        let what = match reward {
+            RuinReward.Supplies | RuinReward.Harvest => {
+                let goods = if reward == RuinReward.Supplies { SUPPLIES } else { HARVEST };
+                self.add_stock(team, goods);
+                let words = stock_words(goods);
+                text(fn() can {Out} { Out.put("+"); Out.put(&words); Out.put(" FOR THE STOCKPILE"); })
             }
-            (RuinReward.Harvest, Option.Some(c)) => {
-                self.cities[c].food = self.cities[c].food + HARVEST_FOOD;
-                let named = &self.cities[c];
-                text(fn() can {Out} { Out.put("+"); show_amount(HARVEST_FOOD); Out.put(" FOOD IN "); show_city(named); })
-            }
-            _ => {
+            RuinReward.Recruits => {
                 let around = ruin.pos.neighbors();
                 let mut spot: Option[Hex] = Option.None;
                 for k in 0..7 {
                     let h = if k < 6 { around[k] } else { ruin.pos };
-                    if spot.is_none() && self.grid.is_passable(h) && !self.is_occupied(h) { spot = Option.Some(h); }
+                    if spot.is_none() && self.grid.is_passable(h) && !self.is_occupied(h) && self.spawn_clear_of_enemy_civilians(h, team) { spot = Option.Some(h); }
                 }
                 match spot {
                     Option.Some(s) => {
@@ -189,7 +173,7 @@ impl GameState {
         info(fn() can {Out} {
             team.show(); Out.put(" claims the ruins at ("); show_i64(pos.q as i64); Out.put(", "); show_i64(pos.r as i64); Out.put("): "); Out.put(said);
         });
-        if team == PLAYER_TEAM {
+        if team == self.local_team {
             self.notice = text(fn() can {Out} { Out.put("RUINS CLAIMED - "); Out.put(said); });
         } else {
             self.notice = text(fn() can {Out} { Out.put(team.name()); Out.put(" CLAIMED THE RUINS"); });
