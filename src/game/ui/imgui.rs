@@ -2992,7 +2992,7 @@ impl GameState {
             .retain(|pin, _| layout.pinned.contains(pin));
         let pending = self.pending();
         let turn = self.shown_turn();
-        let mut stockpile = self.stockpile_line();
+        let mut stockpile = self.status_line();
         if let Some((first, _)) = stockpile.first_mut() {
             first.insert_str(0, "   ");
         }
@@ -3004,7 +3004,8 @@ impl GameState {
                 let end_width = 220.0;
                 let turn_color = self.turn_number_color(ui.style_color(StyleColor::Text));
                 rich_text(ui, &format!("TURN {turn}"), turn_color);
-                // The player's stockpile, then the notice in what's left.
+                // The player's stockpile and supply, then the notice in
+                // what's left.
                 for (text, color) in &stockpile {
                     ui.same_line_with_spacing(0.0, 0.0);
                     rich_text(ui, text, *color);

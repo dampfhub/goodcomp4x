@@ -93,6 +93,14 @@ pub struct GameState {
     /// trained from it, not those alive. Kept across scenario switches and
     /// loads.
     lifetime_special_cap: bool,
+    /// Tests: each time training started past its side's supply
+    /// (`city/supply.rs`), which `simulation.rs` checks never happens.
+    #[cfg(test)]
+    supply_overruns: Vec<String>,
+    /// Tests: supply each side has on top of its cities' (`fund`), by
+    /// `Team::index`.
+    #[cfg(test)]
+    extra_supply: [u32; Team::ALL.len()],
     sites: crate::game::fast_hash::HashMap<Hex, city::Site>,
     roads: HashSet<Hex>,
     selected_city: Option<usize>,
@@ -275,6 +283,10 @@ impl GameState {
             production_speedup: false,
             special_trained: [[0; 2]; Team::ALL.len()],
             lifetime_special_cap: false,
+            #[cfg(test)]
+            supply_overruns: Vec::new(),
+            #[cfg(test)]
+            extra_supply: [0; Team::ALL.len()],
             sites: crate::game::fast_hash::HashMap::default(),
             roads: HashSet::default(),
             selected_city: None,

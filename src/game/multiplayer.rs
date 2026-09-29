@@ -22,7 +22,7 @@ use super::camera::Camera;
 use super::city::{
     Build, BuildUnit, Building, Cluster, MAX_CITY_POPULATION, MAX_MANAGERS, MIN_CITY_DISTANCE,
     Priorities, Queued, SETTLER_MIN_POPULATION, Stock, WORKERS_PER_MANAGER, cluster_tiles,
-    grow_price, in_interior, managers_for,
+    grow_price, in_interior, managers_for, queues_supply, supply_from_cities,
 };
 use super::hex::Hex;
 use super::settings::{ANIMALS_MANY, Settings};
@@ -34,7 +34,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 27;
+pub const PROTOCOL_VERSION: u32 = 28;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -1125,6 +1125,40 @@ impl GameState {
                     resource.name()
                 ));
             }
+        }
+        // Supply (`city/supply.rs`): what its units left and its queues
+        // use stays within what its cities give, or at least it queued no
+        // more than it had (a side over the cap keeps what it had queued).
+        let queued_before: u32 = start
+            .cities
+            .iter()
+            .filter(|c| c.team == team)
+            .map(|c| queues_supply(&c.queue, &c.barracks_queue))
+            .sum();
+        let queued_now: u32 = plan
+            .cities
+            .iter()
+            .map(|c| queues_supply(&c.queue, &c.barracks_queue))
+            .sum();
+        let units: u32 = plan
+            .units
+            .iter()
+            .filter_map(|u| start.units.iter().find(|body| body.id == u.id))
+            .map(|body| start.unit_supply(body))
+            .sum();
+        // Its cities as the turn began, and any it founded since, with one
+        // citizen each.
+        let founded = plan
+            .cities
+            .iter()
+            .filter(|city| !start.cities.iter().any(|c| c.pos == city.pos))
+            .count();
+        let cap = start.supply_cap(team) + supply_from_cities(std::iter::repeat_n(1, founded));
+        if queued_now > queued_before && units + queued_now > cap {
+            return bad(format!(
+                "MORE TROOPS THAN ITS SUPPLY ALLOWS ({}/{cap})",
+                units + queued_now
+            ));
         }
         // Workers out on the map: its own, with jobs on the map.
         for worker in &plan.workers {
@@ -2496,6 +2530,48 @@ mod tests {
             ];
         }
         city
+    }
+
+    #[test]
+    fn a_plan_queues_no_more_than_its_supply_allows() {
+        let (mut host, mut guest) = pair();
+        let city = city_of(&guest, GUEST_SEAT);
+        guest.open_city(city);
+        // Up to its supply, as the city's cards allow, and no more.
+        let cap = guest.supply_cap(GUEST_SEAT);
+        for _ in 0..cap {
+            guest.queue_selected_city_unit(BuildUnit::Melee);
+        }
+        assert_eq!(guest.supply_used(GUEST_SEAT), cap);
+        let plan = guest.team_plan(GUEST_SEAT);
+        assert_eq!(host.check_plan(&plan), Ok(()));
+        let refused = |host: &GameState, plan: &TeamPlan| {
+            let why = host.check_plan(plan).expect_err("refused");
+            assert!(why.contains("THAN ITS SUPPLY ALLOWS"), "{why}");
+        };
+        for build in [Build::Unit(BuildUnit::Melee), Build::Scout] {
+            let mut past = plan.clone();
+            past.cities[0].queue.insert(0, Queued::new(build));
+            refused(&host, &past);
+        }
+        // A Worker uses none.
+        let mut worker = plan.clone();
+        worker.cities[0].queue.push(Queued::new(Build::Worker));
+        assert_eq!(host.check_plan(&worker), Ok(()));
+        // Over it as the turn began (it had more citizens when it queued
+        // them), a side keeps what it had queued, or takes some off, but
+        // adds nothing.
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        start.cities[city].queue = plan.cities[0].queue.clone();
+        start.cities[city]
+            .queue
+            .push(Queued::new(Build::Unit(BuildUnit::Ranged)));
+        let mut kept = plan.clone();
+        kept.cities[0].queue = start.cities[city].queue.clone();
+        assert_eq!(host.check_plan(&kept), Ok(()));
+        assert_eq!(host.check_plan(&plan), Ok(()));
+        kept.cities[0].queue.push(Queued::new(Build::Scout));
+        refused(&host, &kept);
     }
 
     #[test]

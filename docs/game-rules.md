@@ -695,6 +695,20 @@ hostile to every side, and no side's AI plays it (World maps only).
 - **Food and upkeep:** each citizen eats 2 food a turn from the stockpile, so one city's farms can
   feed another. If the stockpile can't feed all of a side's citizens, its food empties and the
   side's largest city (the first on ties) loses a citizen (see Losing a citizen; never below 1).
+- **Supply** (`city/supply.rs`): a hard cap on a side's army. Each city gives its side 3
+  supply, and each of its citizens 1 more (a city of 4 gives 7). Every troop and ship alive,
+  and every Scout, uses 1, passengers aboard a Landing Craft included; Settlers and workers
+  use none. What counts against the cap is the side's units alive plus every troop, ship or
+  Scout in its queues, paid for or not. Nothing that uses supply can be queued past the cap,
+  in a city's queue or a Barracks' (its card is dimmed and says SUPPLY FULL, its tooltip the
+  numbers). An item already queued also needs room when work on it would start: counting only
+  the units alive and the items already started, it waits in place, unpaid, while the side has
+  no room (its row says WAITS FOR SUPPLY) and the queue works the next item, like an item the
+  stockpile can't pay for. One already started finishes. So losing a city or citizens (starving,
+  a Settler) can leave a side over its cap: its units stay, and only new training stops until
+  it has room again. The Cavalry and Armored deposit cap still applies too. The top bar shows
+  the side's supply used and available (SUPPLY 5/7), red once it's all used; the city tray, the
+  Barracks panel and each troop's and Scout's tooltip show it too.
 - **Growth** is bought: Grow (9, or the city tray's Grow card) queues one more citizen, paid in
   food when work on it starts: 10 + 10 × (population + the Grows already paid for in that city),
   so a Grow queued behind another costs a citizen more by the time its turn comes. It takes 2
@@ -702,7 +716,8 @@ hostile to every side, and no side's AI plays it (World maps only).
   cap of 28, counting every Grow queued.
 - **Paying and the queue:** anything can be queued, whatever the stockpile holds (the other
   limits stay: a Harbor for ships, a deposit for Cavalry and Armored, the population cap for
-  Grow, a Barracks for its troops, population 3 for a Settler, one Scout at a time). A build is paid in full from the stockpile when work on it
+  Grow, a Barracks for its troops, population 3 for a Settler, one Scout at a time, and
+  supply for troops, ships and Scouts). A build is paid in full from the stockpile when work on it
   starts, not when it is queued. At each turn's economy, after income and upkeep, every queue
   works the first item in it that is already paid for or that the stockpile can pay for then,
   paying for it if it isn't; items before it that the stockpile can't pay for **wait** in place,
@@ -922,7 +937,8 @@ hostile to every side, and no side's AI plays it (World maps only).
 
 - Panels dock in four corner zones and never overlap (`docs/ui-system.md`).
 - **Top bar:** turn number, your stockpile (food, wood and metal, by icon, each with its change a turn:
-  every city's delivery, less the citizens' food), the latest notice, and the End Turn button, whose label names what is
+  every city's delivery, less the citizens' food), your supply (SUPPLY used/available, red
+  once it's all used), the latest notice, and the End Turn button, whose label names what is
   still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
   TURN.
 - **Command tray** (bottom-left): with a city open, it shows population (n / 28), its citizens working and its managers, with several clusters a line per cluster (its manager's mark, workers and what they deliver), what the city delivers net
@@ -934,7 +950,7 @@ hostile to every side, and no side's AI plays it (World maps only).
   the production list (units, buildings not yet built, and works for its workers, each with its
   price and turns), what the barracks is training with See Barracks, and its workers and placed
   jobs; the queue docks above it. With a barracks open, what it stands on, each deposit
-  kind's Cavalry or Armored left (or why none), its five train cards and Open City, queue above. With a unit selected: stats (boosted values green, reduced
+  kind's Cavalry or Armored left (or why none), the side's supply, its five train cards (dimmed, saying SUPPLY FULL, when it's all used) and Open City, queue above. With a unit selected: stats (boosted values green, reduced
   red), notes, and buttons Move, Attack, Swap, then its ability (or Found City), then Hold,
   Guard, Alert (troops that can go on alert only; a siege not set up shows it dimmed), Clear
   Orders and Disband (press twice: the first press asks to confirm). The classic tray lays the
@@ -1006,8 +1022,9 @@ What a scout sees goes into its side's memory, which every AI decision plans on.
 AI cities auto-assign citizens
 at every end of planning. An AI queue gets one item when empty, and only one its side can pay for
 this turn, counting the turn's income and what its other queues start, so it's paid and started
-that turn; a queue whose items all wait anyway is emptied (they're unpaid, so nothing is lost)
-and planned again. An AI city with an empty queue trains a worker first when it has none. With a worker,
+that turn; a queue whose items all wait anyway (for the stockpile, or for supply) is emptied
+(they're unpaid, so nothing is lost) and planned again. It queues no troop, ship or Scout past
+its supply: at the cap its Barracks stays idle and its cities grow or gather instead. An AI city with an empty queue trains a worker first when it has none. With a worker,
 it places a Barracks for its workers to build, paid like the player's: on a Horses or Iron
 deposit within 3 hexes (a kind it has none of first), else on the nearest open unworked tile
 within 2. Its queue otherwise grows the city. A city without a Barracks trains Melee itself,

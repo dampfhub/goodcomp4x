@@ -10,6 +10,7 @@ mod founding;
 mod interior;
 mod logistics;
 mod rail;
+mod supply;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -40,6 +41,7 @@ pub(super) use interior::CORE_HP;
 pub(super) use interior::Interior;
 pub(in crate::game) use interior::in_bounds as in_interior;
 pub(super) use logistics::{Routes, delivered_share};
+pub(in crate::game) use supply::{SUPPLY_FULL_HINT, queues_supply, supply_from_cities};
 
 /// Camera zoom the city scenarios start at: most of the radius-six map in view.
 const SCENARIO_VIEW_HALF_HEIGHT: f32 = 12.0;
