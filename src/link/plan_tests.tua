@@ -8,6 +8,9 @@ use std.rand.seed;
 use std.str.Str;
 use std.str.contains;
 use std.str.to_owned;
+use std.str.push_char;
+use std.str.eq as str_eq;
+use std.rand.Xoshiro256;
 use std.test.assert;
 use std.test.Assert;
 use log.Log;
@@ -27,7 +30,10 @@ use game.hex.Hex;
 use game.hex.HexGrid;
 use game.multiplayer.HOST_SEAT;
 use game.multiplayer.NetRole;
+use game.plan.CityPlan;
 use game.plan.TeamPlan;
+use game.city.default_priorities;
+use game.terrain.Tile;
 use game.plan.MAX_PLAN_LIST;
 use game.plan.plan_bytes;
 use game.plan.plan_of;
@@ -38,6 +44,7 @@ use game.unit.Unit;
 use game.unit.UnitType;
 use game.workers.FieldWorker;
 use game.workers.JobKind;
+use game.workers.JOB_KINDS;
 use game.workers.WorkerJob;
 use link.table.Lobby;
 use link.table.lobby;
@@ -48,6 +55,8 @@ fn city_of(game: &GameState, team: Team) -> i32 {
     for i in 0..game.cities.len() { if game.cities[i].team == team { return i; } }
     0 - 1
 }
+
+fn notice_is(g: &GameState, want: &str) -> bool { let n = &g.notice; str_eq(n, want) }
 
 fn reason(r: Result[(), Str]) -> Str { match r { Result.Err(w) => w, Result.Ok(u) => to_owned("") } }
 
@@ -278,4 +287,703 @@ fn a_plan_for_another_side_gets_its_sender_dropped_before_the_sequencer_hears_of
         assert(t.host.checksum() == t.games[next].checksum());
         assert(t.host.lockstep.desync.is_none());
     });
+}
+
+/// The guest's city with queues part paid for and under way, as earlier turns' economies leave
+/// them, the same on both machines as this turn's planning begins; the city's index.
+fn paid_queues(t: &mut Lobby) -> i32 {
+    let city = city_of(&t.games[0], GUEST_SEAT);
+    // Beside the city, on no tile its citizens work.
+    let pos = t.games[0].cities[city].pos;
+    let around = pos.neighbors();
+    let mut barracks = pos;
+    for k in 0..6 {
+        if barracks == pos && t.games[0].grid.is_passable(around[k]) && !t.games[0].cities[city].works(around[k]) { barracks = around[k]; }
+    }
+    set_paid_queues(&mut t.games[0], city, barracks);
+    if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start { set_paid_queues(&mut *s, city, barracks); }
+    city
+}
+
+fn set_paid_queues(game: &mut GameState, city: i32, barracks: Hex) {
+    let c = &mut game.cities[city];
+    c.barracks = Option.Some(barracks);
+    c.queue.clear();
+    c.queue.push(Queued.worked(Build.Unit(BuildUnit.Melee), 4));
+    c.queue.push(Queued.prepaid(Build.Grow));
+    c.queue.push(Queued.new(Build.Worker));
+    c.queue.push(Queued.prepaid(Build.Grow));
+    c.queue.push(Queued.new(Build.Unit(BuildUnit.Siege)));
+    c.barracks_queue.clear();
+    c.barracks_queue.push(Queued.new(BuildUnit.Ranged));
+    c.barracks_queue.push(Queued.worked(BuildUnit.Melee, 2));
+}
+
+@test
+fn a_plan_queues_no_more_than_its_supply_allows() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let city = city_of(&t.games[0], GUEST_SEAT);
+        t.games[0].open_city(city);
+        // Up to its supply, as the city's cards allow, and no more.
+        let cap = t.games[0].supply_cap(GUEST_SEAT);
+        for _ in 0..cap { t.games[0].queue_selected_city_unit(BuildUnit.Melee); }
+        assert(t.games[0].supply_used(GUEST_SEAT) == cap);
+        let plan = t.games[0].team_plan(GUEST_SEAT);
+        assert(passes(t.host.check_plan(&plan)));
+        for k in 0..2 {
+            let mut past = copy_plan(&plan);
+            past.cities[0].queue.insert(0, Queued.new(if k == 0 { Build.Unit(BuildUnit.Melee) } else { Build.Scout }));
+            assert(refused_with(&t.host, &past, "THAN ITS SUPPLY ALLOWS"));
+        }
+        // A Worker uses none.
+        let mut worker = copy_plan(&plan);
+        worker.cities[0].queue.push(Queued.new(Build.Worker));
+        assert(passes(t.host.check_plan(&worker)));
+        // Over it as the turn began (it had more citizens when it queued them), a side keeps what
+        // it had queued, or takes some off, but adds nothing.
+        if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start {
+            s.cities[city].queue.clear();
+            for k in 0..plan.cities[0].queue.len() { s.cities[city].queue.push(plan.cities[0].queue[k]); }
+            s.cities[city].queue.push(Queued.new(Build.Unit(BuildUnit.Ranged)));
+        }
+        let mut kept = copy_plan(&plan);
+        kept.cities[0].queue.push(Queued.new(Build.Unit(BuildUnit.Ranged)));
+        assert(passes(t.host.check_plan(&kept)));
+        assert(passes(t.host.check_plan(&plan)));
+        kept.cities[0].queue.push(Queued.new(Build.Scout));
+        assert(refused_with(&t.host, &kept, "THAN ITS SUPPLY ALLOWS"));
+    });
+}
+
+@test
+fn scouts_and_settlers_go_in_the_plan_by_the_city_rules() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let city = city_of(&t.games[0], GUEST_SEAT);
+        t.games[0].open_city(city);
+        t.games[0].queue_selected_city_scout();
+        let plan = t.games[0].team_plan(GUEST_SEAT);
+        assert(plan.cities[0].queue.len() == 1 && plan.cities[0].queue[0].build == Build.Scout);
+        assert(passes(t.host.check_plan(&plan)));
+        // A second Scout, or a Settler in a city too small for one.
+        let mut two = copy_plan(&plan);
+        two.cities[0].queue.push(Queued.new(Build.Scout));
+        assert(refused_with(&t.host, &two, "A BUILD IT CAN'T MAKE"));
+        let mut settler = copy_plan(&plan);
+        settler.cities[0].queue.push(Queued.new(Build.Settler));
+        assert(refused_with(&t.host, &settler, "A BUILD IT CAN'T MAKE"));
+        // Grown to 3 as the turn began, it may.
+        if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start { s.cities[city].population = SETTLER_MIN_POPULATION; }
+        assert(passes(t.host.check_plan(&settler)));
+        // One it had queued may stay, waiting, whatever its population.
+        if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start {
+            s.cities[city].queue.clear();
+            s.cities[city].queue.push(Queued.new(Build.Settler));
+            s.cities[city].population = 1;
+        }
+        let mut kept = copy_plan(&plan);
+        kept.cities[0].queue.clear();
+        kept.cities[0].queue.push(Queued.new(Build.Settler));
+        assert(passes(t.host.check_plan(&kept)));
+    });
+}
+
+@test
+fn planning_keeps_what_was_paid_and_pays_for_nothing() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let city = paid_queues(&mut t);
+        let good = t.games[0].team_plan(GUEST_SEAT);
+        assert(passes(t.host.check_plan(&good)));
+        let c = plan_city(&good, t.games[0].cities[city].pos);
+        // Paying as it queues: the Siege marked paid, with or without its price off the stockpile.
+        let mut plan = copy_plan(&good);
+        plan.cities[c].queue[4].paid = true;
+        assert(refused(&t.host, &plan));
+        plan.stock = plan.stock.minus(BuildUnit.Siege.price());
+        assert(refused(&t.host, &plan));
+        // Work it didn't do, on a paid item or an unpaid one.
+        let mut plan = copy_plan(&good);
+        plan.cities[c].queue[0].progress = plan.cities[c].queue[0].progress + 4;
+        assert(refused(&t.host, &plan));
+        let mut plan = copy_plan(&good);
+        plan.cities[c].barracks_queue[0].progress = 1;
+        assert(refused(&t.host, &plan));
+        // A paid item kept but unpaid, keeping its work.
+        let mut plan = copy_plan(&good);
+        plan.cities[c].queue[0].paid = false;
+        assert(refused(&t.host, &plan));
+        // A paid item copied.
+        let mut plan = copy_plan(&good);
+        let copied = plan.cities[c].queue[1];
+        plan.cities[c].queue.push(copied);
+        assert(refused(&t.host, &plan));
+        // A refund for an unpaid item taken off.
+        let mut plan = copy_plan(&good);
+        plan.cities[c].queue.remove(2);
+        plan.stock = plan.stock.plus(Build.Worker.price());
+        assert(refused(&t.host, &plan));
+        // Taken off paid, the Melee refunds its price, and a paid Grow the dearer Grow's: the
+        // checks take both, and nothing more.
+        t.games[0].open_city(city);
+        t.games[0].remove_selected_city_queue_item(0);
+        t.games[0].remove_selected_city_queue_item(0);
+        let plan = t.games[0].team_plan(GUEST_SEAT);
+        assert(passes(t.host.check_plan(&plan)));
+        let population = t.games[0].cities[city].population;
+        let want = good.stock.plus(BuildUnit.Melee.price()).plus(grow_price(population + 1));
+        assert(plan.stock == want);
+        let mut greedy = copy_plan(&plan);
+        greedy.stock.food = greedy.stock.food + 1;
+        assert(refused(&t.host, &greedy));
+    });
+}
+
+/// Whatever the player does to its queues, the plan passes; and any tampering with what's paid,
+/// the work done or the stockpile on top of that is refused.
+@test
+fn no_plan_pays_early_or_gets_a_build_for_free() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let city = paid_queues(&mut t);
+        t.games[0].fund(GUEST_SEAT);
+        if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start { s.fund(GUEST_SEAT); }
+        let mut rng = seed(11);
+        let base = t.games[0].snapshot();
+        for round in 0..60 {
+            let mut game = base.snapshot();
+            game.open_city(city);
+            let moves = (rng.next() % 8) as i32;
+            for _ in 0..moves {
+                let len = game.cities[city].queue.len();
+                let troops = game.cities[city].barracks_queue.len();
+                let pick = (rng.next() % 9) as i32;
+                if pick == 0 { game.queue_selected_city_unit(BuildUnit.Melee); }
+                else if pick == 1 { game.queue_selected_city_growth(); }
+                else if pick == 2 { game.queue_selected_city_worker(); }
+                else if pick == 3 { game.queue_selected_city_gather(); }
+                else if pick == 4 { game.queue_selected_barracks_unit(BuildUnit.Siege); }
+                else if pick == 5 && len > 0 { game.remove_selected_city_queue_item((rng.next() % len as u64) as i32); }
+                else if pick == 6 && troops > 0 { game.remove_selected_barracks_queue_item((rng.next() % troops as u64) as i32); }
+                else if pick == 7 && len > 1 { game.move_selected_city_queue_item(1 + (rng.next() % (len - 1) as u64) as i32, true); }
+                else if pick == 8 { game.clear_selected_city_queue(); }
+            }
+            let plan = game.team_plan(GUEST_SEAT);
+            assert(passes(t.host.check_plan(&plan)));
+            let c = plan_city(&plan, game.cities[city].pos);
+            let mut tampered = copy_plan(&plan);
+            let n = tampered.cities[c].queue.len();
+            let mut unpaid: Vec[i32] = Vec.new();
+            let mut paid: Vec[i32] = Vec.new();
+            for i in 0..n { if tampered.cities[c].queue[i].paid { paid.push(i); } else { unpaid.push(i); } }
+            let how = (rng.next() % 5) as i32;
+            if how == 0 && !unpaid.is_empty() {
+                let i = unpaid[(rng.next() % unpaid.len() as u64) as i32];
+                tampered.cities[c].queue[i].paid = true;
+                if rng.next() % 2 == 0 { tampered.stock = tampered.stock.minus(tampered.cities[c].queue[i].build.price()); }
+            } else if how == 1 && n > 0 {
+                let i = (rng.next() % n as u64) as i32;
+                tampered.cities[c].queue[i].progress = tampered.cities[c].queue[i].progress + 1 + (rng.next() % 7) as i32;
+            } else if how == 2 && !paid.is_empty() {
+                let copied = tampered.cities[c].queue[paid[(rng.next() % paid.len() as u64) as i32]];
+                tampered.cities[c].queue.push(copied);
+            } else if how == 3 && !paid.is_empty() {
+                let i = paid[(rng.next() % paid.len() as u64) as i32];
+                tampered.cities[c].queue[i].paid = false;
+                tampered.cities[c].queue[i].progress = 0;
+            } else {
+                let kind = (rng.next() % 3) as i32;
+                tampered.stock = tampered.stock.plus(Stock { food: if kind == 0 { 1 } else { 0 }, wood: if kind == 1 { 1 } else { 0 }, metal: if kind == 2 { 1 } else { 0 } });
+            }
+            assert(refused(&t.host, &tampered));
+            let _r = round;
+        }
+    });
+}
+
+@test
+fn a_plan_releases_held_workers_but_never_holds_more() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let city = city_of(&t.games[0], GUEST_SEAT);
+        // The guest's worker came home recalled: held, on both machines.
+        assert(t.games[0].cities[city].workers == 1);
+        t.games[0].cities[city].held_workers = 1;
+        if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start { s.cities[city].held_workers = 1; }
+        let held = t.games[0].team_plan(GUEST_SEAT);
+        assert(passes(t.host.check_plan(&held)));
+        t.games[0].selected_city = Option.Some(city);
+        t.games[0].release_worker();
+        let released = t.games[0].team_plan(GUEST_SEAT);
+        assert(passes(t.host.check_plan(&released)));
+        // Holding one more than came home.
+        let mut plan = copy_plan(&held);
+        let c = plan_city(&plan, t.games[0].cities[city].pos);
+        plan.cities[c].held_workers = 2;
+        assert(refused_with(&t.host, &plan, "WORKERS IT DIDN'T HOLD"));
+        // The release carries to a game that applies it.
+        let mut applied = match &t.host.lockstep.turn_start { &Option.Some(s) => s.snapshot(), &Option.None => GameState.new() };
+        applied.apply_plan(&released);
+        assert(applied.cities[city].held_workers == 0);
+    });
+}
+
+@test
+fn a_plan_keeps_a_jobs_work_but_never_adds_any() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let city = city_of(&t.games[0], GUEST_SEAT);
+        let pos = t.games[0].cities[city].pos;
+        let around = pos.neighbors();
+        let mut hex = pos;
+        for k in 0..6 { if hex == pos && t.games[0].grid.is_passable(around[k]) { hex = around[k]; } }
+        // A guest worker two turns into a fort by its city, on both machines.
+        let job = WorkerJob { hex: hex, kind: JobKind.Fort, across: Option.None, done: 2 };
+        let worker = FieldWorker { id: 9000, team: GUEST_SEAT, home: city, base: pos, pos: hex, job: Option.Some(job), work_left: Option.Some(2), recalled: false };
+        t.games[0].field_workers.push(worker);
+        if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start { s.field_workers.push(worker); }
+        // Recalled, its job goes back on the list with the work kept.
+        t.games[0].recall_worker(9000);
+        let recalled = t.games[0].team_plan(GUEST_SEAT);
+        let c = plan_city(&recalled, pos);
+        let mut listed: Vec[u32] = Vec.new();
+        for k in 0..recalled.cities.len() { for j in 0..recalled.cities[k].worker_jobs.len() { listed.push(recalled.cities[k].worker_jobs[j].done); } }
+        assert(listed.len() == 1 && listed[0] == 2);
+        assert(passes(t.host.check_plan(&recalled)));
+        // More work than was done.
+        let mut plan = copy_plan(&recalled);
+        plan.cities[c].worker_jobs[0].done = 3;
+        assert(refused_with(&t.host, &plan, "WORK IT DIDN'T DO"));
+        // The work copied: the worker keeps the job, and it's listed too.
+        let mut plan = copy_plan(&recalled);
+        for w in 0..plan.workers.len() {
+            if plan.workers[w].id == 9000 {
+                plan.workers[w].job = Option.Some(job);
+                plan.workers[w].work_left = Option.Some(2);
+                plan.workers[w].recalled = false;
+            }
+        }
+        assert(refused_with(&t.host, &plan, "WORK IT DIDN'T DO"));
+        // Work on a job nobody worked.
+        let mut plan = copy_plan(&recalled);
+        plan.cities[c].worker_jobs[0].hex = pos.neighbors()[3];
+        assert(refused_with(&t.host, &plan, "WORK IT DIDN'T DO"));
+    });
+}
+
+@test
+fn a_citys_priority_order_crosses_the_wire_and_applies() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let city = city_of(&t.games[0], GUEST_SEAT);
+        t.games[0].selected_city = Option.Some(city);
+        let order = Priorities.of(Good.Metal, Good.Food, Good.Wood);
+        t.games[0].set_selected_city_priorities(order);
+        let plan = t.games[0].team_plan(GUEST_SEAT);
+        let arrived = copy_plan(&plan);
+        assert(passes(t.host.check_plan(&arrived)));
+        let mut applied = match &t.host.lockstep.turn_start { &Option.Some(s) => s.snapshot(), &Option.None => GameState.new() };
+        applied.apply_plan(&arrived);
+        assert(applied.cities[city].priorities == order);
+        assert(applied.cities[city].clusters.len() == t.games[0].cities[city].clusters.len());
+    });
+}
+
+@test
+fn a_citys_clusters_pass_the_checks_only_within_the_rules() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let city = city_of(&t.games[0], GUEST_SEAT);
+        // Grown to nine on both machines: two managers.
+        t.games[0].cities[city].population = 9;
+        t.games[0].auto_assign_city(city);
+        if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start { s.cities[city].population = 9; }
+        assert(t.games[0].cities[city].clusters.len() == 2);
+        let good = t.games[0].team_plan(GUEST_SEAT);
+        assert(passes(t.host.check_plan(&good)));
+        let c = plan_city(&good, t.games[0].cities[city].pos);
+        // Five clusters: past the cap.
+        let mut plan = copy_plan(&good);
+        for i in 0..3 { plan.cities[c].clusters.push(Cluster.new(Hex.new(i * 3, 9))); }
+        assert(refused_with(&t.host, &plan, "PAST THE CAP"));
+        // A manager with seven workers.
+        let mut plan = copy_plan(&good);
+        let m = plan.cities[c].clusters[0].manager;
+        let mut full = Cluster.new(m);
+        let ring = m.neighbors();
+        for k in 0..6 { full.add_worker(ring[k]); }
+        full.count = 7;
+        plan.cities[c].clusters[0] = full;
+        assert(refused(&t.host, &plan));
+        // A third manager at nine citizens.
+        let mut plan = copy_plan(&good);
+        let spare = plan.cities[c].clusters[1].slots[0];
+        plan.cities[c].clusters[1].remove_worker(spare);
+        plan.cities[c].clusters.push(Cluster.new(spare));
+        assert(refused_with(&t.host, &plan, "CITY AT"));
+        // Two managers side by side.
+        let mut plan = copy_plan(&good);
+        let beside = plan.cities[c].clusters[0].slots[0];
+        plan.cities[c].clusters[0].remove_worker(beside);
+        plan.cities[c].clusters[1].manager = beside;
+        assert(refused(&t.host, &plan));
+        // A tile worked twice.
+        let mut plan = copy_plan(&good);
+        let twice = plan.cities[c].clusters[0].slots[0];
+        let last = plan.cities[c].clusters[0].count - 1;
+        plan.cities[c].clusters[0].slots[last] = twice;
+        assert(refused_with(&t.host, &plan, "TILES IT CAN'T WORK"));
+        // The sound plan applies as sent.
+        let mut applied = match &t.host.lockstep.turn_start { &Option.Some(s) => s.snapshot(), &Option.None => GameState.new() };
+        applied.apply_plan(&good);
+        assert(applied.cities[city].clusters.len() == 2);
+    });
+}
+
+/// An open map with existing cities far from the two adjacent founding sites: a host and a guest
+/// on it, each in its own game.
+fn founding_pair() -> (GameState, GameState) can {Log} {
+    let mut host = GameState.new();
+    let no_tiles: [(Hex, Tile); 0] = [];
+    host.grid = HexGrid.new(12, &no_tiles);
+    host.units.clear();
+    host.cities.clear();
+    host.cities.push(City.new(0, HOST_SEAT, Hex.new(0 - 10, 0)));
+    host.cities.push(City.new(1, GUEST_SEAT, Hex.new(10, 0)));
+    let mut guest = host.snapshot();
+    let mut humans: Vec[Team] = Vec.new();
+    humans.push(HOST_SEAT);
+    humans.push(GUEST_SEAT);
+    let mut humans2: Vec[Team] = Vec.new();
+    humans2.push(HOST_SEAT);
+    humans2.push(GUEST_SEAT);
+    host.seat_players(NetRole.Host, HOST_SEAT, humans);
+    guest.seat_players(NetRole.Guest, GUEST_SEAT, humans2);
+    host.lockstep.seated.push(HOST_SEAT);
+    host.lockstep.seated.push(GUEST_SEAT);
+    (host, guest)
+}
+
+/// A settler of \`team\` with id \`id\` on \`pos\` as \`game\`'s turn began.
+fn settler_at_start(game: &mut GameState, id: u32, team: Team, pos: Hex) {
+    if let &mut Option.Some(s) = &mut game.lockstep.turn_start {
+        s.units.push(Unit.new(id, pos, team, UnitType.Melee));
+        let _new = s.settlers.insert(id);
+    }
+}
+
+/// A city a plan founds on \`pos\` with settler \`settler\`.
+fn founded(pos: Hex, settler: u32) -> CityPlan {
+    CityPlan {
+        pos: pos, founded_by: Option.Some(settler), queue: Vec.new(), barracks_queue: Vec.new(), clusters: Vec.new(),
+        remembered: Vec.new(), priorities: default_priorities(), worker_jobs: Vec.new(), held_workers: 0,
+    }
+}
+
+fn start_copy(game: &GameState) -> GameState can {Log} {
+    match &game.lockstep.turn_start { &Option.Some(s) => s.snapshot(), &Option.None => GameState.new() }
+}
+
+@test
+fn a_plan_founds_cities_only_by_the_founding_rules() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut host, guest) = founding_pair();
+        let (site, near) = (Hex.new(0, 0), Hex.new(1, 0));
+        // A hex two from Red's city, which the rules refuse.
+        let own = guest.cities[city_of(&guest, GUEST_SEAT)].pos;
+        let mut too_close = own;
+        for q in -12..12 { for r in -12..12 {
+            let h = Hex.new(q, r);
+            if too_close == own && guest.grid.contains(h) && h.distance(own) == 2 && guest.grid.is_passable(h) && !guest.is_occupied(h) { too_close = h; }
+        } }
+        settler_at_start(&mut host, 900, GUEST_SEAT, site);
+        settler_at_start(&mut host, 901, GUEST_SEAT, near);
+        settler_at_start(&mut host, 902, GUEST_SEAT, too_close);
+        let good = guest.team_plan(GUEST_SEAT);
+        let mut plan = copy_plan(&good);
+        plan.cities.push(founded(site, 900));
+        assert(passes(host.check_plan(&plan)));
+        // Two too near each other, or one too near a city.
+        let mut both = copy_plan(&good);
+        both.cities.push(founded(site, 900));
+        both.cities.push(founded(near, 901));
+        assert(refused_with(&host, &both, "WHERE NONE CAN BE FOUNDED"));
+        let mut close = copy_plan(&good);
+        close.cities.push(founded(too_close, 902));
+        assert(refused_with(&host, &close, "WHERE NONE CAN BE FOUNDED"));
+        // Founded, the city has no worker: its side has a city already.
+        let mut game = start_copy(&host);
+        game.apply_plan(&plan);
+        let mut found = 0 - 1;
+        for i in 0..game.cities.len() { if game.cities[i].pos == site { found = i; } }
+        assert(found >= 0);
+        assert(game.cities[found].team == GUEST_SEAT && game.cities[found].workers == 0);
+        assert(!game.settlers.contains(900));
+    });
+}
+
+@test
+fn a_city_founded_too_near_one_another_plan_founded_first_is_not() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut host, guest) = founding_pair();
+        let (site, near) = (Hex.new(0, 0), Hex.new(1, 0));
+        // Both sides found this turn, each where the rules allowed as the turn began; Blue's plan
+        // applies first.
+        settler_at_start(&mut host, 900, HOST_SEAT, site);
+        settler_at_start(&mut host, 901, GUEST_SEAT, near);
+        let mut game = start_copy(&host);
+        let mut blue = host.team_plan(HOST_SEAT);
+        blue.cities.push(founded(site, 900));
+        let mut red = guest.team_plan(GUEST_SEAT);
+        red.cities.push(founded(near, 901));
+        game.apply_plan(&blue);
+        game.apply_plan(&red);
+        let mut blue_city = false;
+        let mut red_city = false;
+        for i in 0..game.cities.len() {
+            if game.cities[i].pos == site && game.cities[i].team == HOST_SEAT { blue_city = true; }
+            if game.cities[i].pos == near { red_city = true; }
+        }
+        assert(blue_city && !red_city);
+        // Red's settler stays, to found elsewhere.
+        assert(game.settlers.contains(901));
+        let mut stays = false;
+        for i in 0..game.units.len() { if game.units[i].id == 901 { stays = true; } }
+        assert(stays);
+    });
+}
+
+/// A melee troop of the guest's beside its scout, on both machines, from the turn's start.
+fn add_melee(t: &mut Lobby) -> u32 {
+    let mut scout = 0 - 1;
+    for i in 0..t.games[0].units.len() {
+        if t.games[0].units[i].team == GUEST_SEAT && t.games[0].units[i].unit_type == UnitType.Scout { scout = i; }
+    }
+    let around = t.games[0].units[scout].pos.neighbors();
+    let mut open = t.games[0].units[scout].pos;
+    for k in 0..6 {
+        let h = around[k];
+        let mut free = t.games[0].grid.is_passable(h) && !t.games[0].is_occupied(h);
+        for c in 0..t.games[0].cities.len() { if t.games[0].cities[c].pos == h { free = false; } }
+        if open == t.games[0].units[scout].pos && free { open = h; }
+    }
+    let id = t.games[0].next_unit_id;
+    t.host.units.push(Unit.new(id, open, GUEST_SEAT, UnitType.Melee));
+    t.host.next_unit_id = id + 1;
+    t.games[0].units.push(Unit.new(id, open, GUEST_SEAT, UnitType.Melee));
+    t.games[0].next_unit_id = id + 1;
+    t.host.begin_lockstep_turn();
+    t.games[0].begin_lockstep_turn();
+    id
+}
+
+@test
+fn an_alert_goes_in_the_plan_only_for_its_own_troops_that_can() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        let id = add_melee(&mut t);
+        let melee = t.games[0].units.len() - 1;
+        let mut one: Vec[i32] = Vec.new();
+        one.push(melee);
+        t.games[0].set_selection(one);
+        t.games[0].toggle_alert();
+        assert(t.games[0].units[melee].alert);
+        let plan = t.games[0].team_plan(GUEST_SEAT);
+        let mut listed = false;
+        for i in 0..plan.units.len() { if plan.units[i].id == id && plan.units[i].alert { listed = true; } }
+        assert(listed);
+        assert(passes(t.host.check_plan(&plan)));
+        let mut applied = start_copy(&t.host);
+        applied.apply_plan(&plan);
+        let mut on = false;
+        for i in 0..applied.units.len() { if applied.units[i].id == id && applied.units[i].alert { on = true; } }
+        assert(on);
+        // Not a scout.
+        let mut scout_id = 0;
+        for i in 0..t.games[0].units.len() {
+            if t.games[0].units[i].team == GUEST_SEAT && t.games[0].units[i].unit_type == UnitType.Scout { scout_id = t.games[0].units[i].id; }
+        }
+        let mut alert_scout = copy_plan(&plan);
+        for i in 0..alert_scout.units.len() { if alert_scout.units[i].id == scout_id { alert_scout.units[i].alert = true; } }
+        assert(refused_with(&t.host, &alert_scout, "CAN'T GO ON ALERT"));
+        // Not a unit of another side's.
+        let mut foreign = copy_plan(&plan);
+        let mut stolen = t.host.team_plan(HOST_SEAT);
+        stolen.units[0].alert = true;
+        foreign.units.push(stolen.units.remove(0));
+        assert(refused(&t.host, &foreign));
+        // Not a settler, though it's a melee body.
+        if let &mut Option.Some(s) = &mut t.host.lockstep.turn_start { let _new = s.settlers.insert(id); }
+        assert(refused_with(&t.host, &plan, "CAN'T GO ON ALERT"));
+    });
+}
+
+/// The bytes of a welcome for a two-person game (seat Red), with \`edit\` applied.
+fn welcome_with(t: &Lobby, at: i32, value: u8) -> Vec[u8] {
+    let mut bytes = t.host.welcome_bytes(GUEST_SEAT);
+    bytes.set(at, value);
+    bytes
+}
+
+fn joins(bytes: &Vec[u8]) -> bool can {Log} {
+    match GameState.join_game(&bytes.buf) { Result.Ok(g) => true, Result.Err(w) => false }
+}
+
+@test
+fn a_welcome_that_doesnt_add_up_is_refused() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let t = pair();
+        // The welcome as the host wrote it joins; each field altered does not.
+        assert(joins(&t.host.welcome_bytes(GUEST_SEAT)));
+        // Layout for two players: version (4 bytes), seat, count, the sides, the seed (4), the
+        // AI sides, start city, animals, two debug flags.
+        assert(!joins(&welcome_with(&t, 4, 0)));   // the seat is the host's own
+        assert(!joins(&welcome_with(&t, 4, 7)));   // the seat is the wild's
+        assert(!joins(&welcome_with(&t, 6, 1)));   // the host is not first
+        assert(!joins(&welcome_with(&t, 7, 7)));   // the wild plays
+        assert(!joins(&welcome_with(&t, 5, 1)));   // one person is no game
+        assert(!joins(&welcome_with(&t, 5, 9)));   // more people than sides
+        assert(!joins(&welcome_with(&t, 12, 99))); // more AI than sides
+        assert(!joins(&welcome_with(&t, 12, 0)));  // no side for each person
+        assert(!joins(&welcome_with(&t, 14, 9)));  // more animals than the setting allows
+        assert(!joins(&welcome_with(&t, 0, 0)));   // another version
+        // A welcome cut short, or with a byte too many.
+        let mut short = t.host.welcome_bytes(GUEST_SEAT);
+        short.truncate(short.len() - 1);
+        assert(!joins(&short));
+        let mut long = t.host.welcome_bytes(GUEST_SEAT);
+        long.push(0);
+        assert(!joins(&long));
+    });
+}
+
+@test
+fn a_dropped_guest_says_why() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = pair();
+        t.games[0].host_refused("RED'S PLAN: UNIT 3");
+        assert(notice_is(&t.games[0], "THE HOST DROPPED YOU: RED'S PLAN: UNIT 3"));
+        // Only so much of a reason, and only what the fonts draw.
+        let mut long = to_owned("\n");
+        for _ in 0..500 { push_char(&mut long, 'X'); }
+        t.games[0].host_refused(&long);
+        let mut want = to_owned("THE HOST DROPPED YOU: ");
+        for _ in 0..120 { push_char(&mut want, 'X'); }
+        assert(notice_is(&t.games[0], &want));
+    });
+}
+
+/// A hex within \`reach\` of \`from\` on \`grid\`, drawn by \`g\`.
+fn near(grid: &HexGrid, from: Hex, reach: i32, g: &mut Xoshiro256) -> Hex {
+    let mut close: Vec[Hex] = Vec.new();
+    for q in -reach..(reach + 1) { for r in -reach..(reach + 1) {
+        let h = Hex.new(from.q + q, from.r + r);
+        if grid.contains(h) && h.distance(from) <= reach { close.push(h); }
+    } }
+    close[(g.next() % close.len() as u64) as i32]
+}
+
+/// Plans a hostile peer could send that pass every check never crash either machine: hundreds
+/// of random orders, builds, tiles and jobs, each applied and resolved.
+@test
+fn no_plan_that_passes_the_checks_crashes_the_game() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let t = pair();
+        let good = t.games[0].team_plan(GUEST_SEAT);
+        let start = start_copy(&t.host);
+        let builds = [Build.Unit(BuildUnit.Melee), Build.Unit(BuildUnit.Ranged), Build.Unit(BuildUnit.Siege), Build.Unit(BuildUnit.PatrolGalley), Build.Worker, Build.Grow, Build.Gather, Build.Scout, Build.Settler];
+        let mut rng = seed(7);
+        let mut accepted = 0;
+        let mut tried = 0;
+        while tried < 250 {
+            tried = tried + 1;
+            let mut plan = copy_plan(&good);
+            for u in 0..plan.units.len() {
+                let mut pos = Hex.new(0, 0);
+                for k in 0..start.units.len() { if start.units[k].id == plan.units[u].id { pos = start.units[k].pos; } }
+                if rng.next() % 2 == 0 { plan.units[u].planned_move = Option.Some(near(&start.grid, pos, 2, &mut rng)); }
+                if rng.next() % 5 < 2 { plan.units[u].planned_attack = Option.Some(near(&start.grid, plan.units[u].planned_move.unwrap_or(pos), 3, &mut rng)); }
+                if rng.next() % 5 == 0 { plan.units[u].planned_unload = Option.Some(near(&start.grid, pos, 2, &mut rng)); }
+                if rng.next() % 5 == 0 { plan.units[u].planned_board = Option.Some(good.units[(rng.next() % good.units.len() as u64) as i32].id); }
+                if rng.next() % 10 < 3 {
+                    let mut from = plan.units[u].planned_move.unwrap_or(pos);
+                    let steps = 1 + (rng.next() % 3) as i32;
+                    for _ in 0..steps {
+                        let move_to = near(&start.grid, from, 2, &mut rng);
+                        let attack = if rng.next() % 2 == 0 { Option.Some(near(&start.grid, move_to, 2, &mut rng)) } else { Option.None };
+                        plan.units[u].queued.push(TurnOrder { from: from, move_to: Option.Some(move_to), attack: attack });
+                        from = move_to;
+                    }
+                }
+                plan.units[u].holding = rng.next() % 5 == 0;
+                plan.units[u].guarding = rng.next() % 5 == 0;
+                plan.units[u].alert = rng.next() % 10 == 0;
+                plan.units[u].following_queue = rng.next() % 10 < 3;
+                plan.units[u].ability_queued = rng.next() % 10 < 3;
+            }
+            for c in 0..plan.cities.len() {
+                plan.cities[c].queue.clear();
+                let n = (rng.next() % 4) as i32;
+                for _ in 0..n {
+                    plan.cities[c].queue.push(Queued { build: builds[(rng.next() % 9) as i32], paid: rng.next() % 10 == 0, progress: if rng.next() % 10 == 0 { 4 } else { 0 } });
+                }
+                plan.cities[c].worker_jobs.clear();
+                let jobs = (rng.next() % 4) as i32;
+                for _ in 0..jobs {
+                    let hex = near(&start.grid, plan.cities[c].pos, 4, &mut rng);
+                    let kind = JOB_KINDS[(rng.next() % 6) as i32];
+                    let across = if kind.on_edge() { Option.Some(hex.neighbors()[(rng.next() % 6) as i32]) } else { Option.None };
+                    plan.cities[c].worker_jobs.push(WorkerJob { hex: hex, kind: kind, across: across, done: 0 });
+                }
+            }
+            // Keep the books balanced, so the plan gets through when the side can pay for it.
+            plan.stock = balanced_stock(&start, &good, &plan);
+            if refused(&t.host, &plan) { continue; }
+            accepted = accepted + 1;
+            let mut game = start.snapshot();
+            game.apply_plan(&plan);
+            game.apply_plan(&t.host.team_plan(HOST_SEAT));
+            game.resolve_turn();
+            while game.is_resolving() { game.update(1.0); }
+        }
+        assert(accepted > 20);
+    });
+}
+
+/// What the plan's stockpile must be for its books to balance against \`good\`'s: what \`good\` held
+/// and had paid for, less what \`plan\` has paid for.
+fn balanced_stock(start: &GameState, good: &TeamPlan, plan: &TeamPlan) -> Stock {
+    let mut had = good.stock;
+    for c in 0..good.cities.len() {
+        let mut population = 1;
+        for k in 0..start.cities.len() { if start.cities[k].pos == good.cities[c].pos { population = start.cities[k].population; } }
+        had = had.plus(paid_for(population, &good.cities[c]));
+    }
+    for w in 0..good.workers.len() { if let Option.Some(j) = good.workers[w].job { had = had.plus(j.kind.price()); } }
+    let mut spent = Stock.whole(0, 0, 0);
+    for c in 0..plan.cities.len() {
+        let mut population = 1;
+        for k in 0..start.cities.len() { if start.cities[k].pos == plan.cities[c].pos { population = start.cities[k].population; } }
+        spent = spent.plus(paid_for(population, &plan.cities[c]));
+    }
+    for w in 0..plan.workers.len() { if let Option.Some(j) = plan.workers[w].job { spent = spent.plus(j.kind.price()); } }
+    had.minus(spent)
+}
+
+/// What \`city\`'s paid items and placed jobs cost (a Grow at the price its place in the queue gets).
+fn paid_for(population: i32, city: &CityPlan) -> Stock {
+    let mut total = Stock.whole(0, 0, 0);
+    let mut grows = 0;
+    for i in 0..city.queue.len() {
+        if !city.queue[i].paid { continue; }
+        let price = match city.queue[i].build {
+            Build.Grow => { grows = grows + 1; grow_price(population + grows - 1) }
+            other => other.price(),
+        };
+        total = total.plus(price);
+    }
+    for i in 0..city.barracks_queue.len() { if city.barracks_queue[i].paid { total = total.plus(city.barracks_queue[i].build.price()); } }
+    for i in 0..city.worker_jobs.len() { total = total.plus(city.worker_jobs[i].kind.price()); }
+    total
 }

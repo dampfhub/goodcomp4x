@@ -188,6 +188,14 @@ impl Peer {
     /// Sends what the game has to say (its plan, a checksum) and applies the bundles that have
     /// arrived and can be. A bundle the checks cannot trust fails the peer.
     pub fn pump(&mut self, now: i64, game: &mut GameState) can {Log, Rand} {
+        self.flush(now, game);
+        self.apply(now, game);
+    }
+
+    /// Sends what the game has said since the last time (its plan, taking it back, a checksum).
+    /// This comes before the host's messages are handed to the core: what the game did, it did
+    /// against the turn it was in, so the core must hear of it before a bundle moves it on.
+    pub fn flush(&mut self, now: i64, game: &mut GameState) {
         if !self.is_playing() || !self.st.has_game { return; }
         let outs = game.take_outbox();
         for i in 0..outs.len() {
@@ -214,6 +222,12 @@ impl Peer {
                 }
             }
         }
+    }
+
+    /// Applies the bundles that have arrived and can be. A bundle the checks cannot trust fails the
+    /// peer.
+    pub fn apply(&mut self, now: i64, game: &mut GameState) can {Log, Rand} {
+        if !self.is_playing() || !self.st.has_game { return; }
         while game.bundle_ready() {
             match game.apply_waiting_bundle() {
                 Result.Ok(applied) => {}

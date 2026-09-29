@@ -4,12 +4,14 @@
 //! (`table.tua`).
 
 use std.rand.Rand;
+use std.rand.seed;
 use std.str.Str;
 use std.str.to_owned;
 use game.settings.default_settings;
 use std.str.contains;
 use std.str.eq as str_eq;
 use std.test.assert;
+use std.test.assert_eq;
 use std.test.Assert;
 use log.Log;
 use game.GameState;
@@ -394,5 +396,98 @@ fn a_guest_who_leaves_mid_game_hands_their_side_to_the_ai() {
         t.exchange();
         assert(t.host.checksum() == t.games[0].checksum());
         assert(t.host.lockstep.desync.is_none());
+    });
+}
+
+/// A bundle a machine refuses whole, saying why, without changing its game: one without the host's
+/// plan, one for a side no person plays, one with two plans for a side, one without its own.
+@test
+fn a_guest_refuses_a_bundle_that_does_not_add_up() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = lobby(2, 4, 4242);
+        end_turn_building(&mut t.games[0], Option.None);
+        let own = t.games[0].team_plan(GUEST_SEAT);
+        let blue = t.host.team_plan(HOST_SEAT);
+        let green = t.games[1].team_plan(Team.Green);
+        let before = t.games[0].checksum();
+        // Without the host's plan.
+        assert(!bundle_of(&mut t.games[0], &own, &green));
+        // A plan for a side that has no person: an AI side.
+        let mut ai = t.host.team_plan(HOST_SEAT);
+        ai.team = t.host.ai_teams()[0];
+        let bytes_ai = bytes_of(&ai);
+        let mut plans: Vec[Vec[u8]] = Vec.new();
+        plans.push(bytes_of(&blue));
+        plans.push(bytes_of(&own));
+        plans.push(bytes_ai);
+        t.games[0].receive_bundle(0, plans);
+        assert(!applied(t.games[0].apply_waiting_bundle()));
+        // Two plans for one side.
+        let mut plans: Vec[Vec[u8]] = Vec.new();
+        plans.push(bytes_of(&blue));
+        plans.push(bytes_of(&own));
+        plans.push(bytes_of(&own));
+        t.games[0].receive_bundle(0, plans);
+        assert(!applied(t.games[0].apply_waiting_bundle()));
+        // Without its own.
+        let mut plans: Vec[Vec[u8]] = Vec.new();
+        plans.push(bytes_of(&blue));
+        plans.push(bytes_of(&green));
+        t.games[0].receive_bundle(0, plans);
+        assert(!applied(t.games[0].apply_waiting_bundle()));
+        assert(t.games[0].checksum() == before);
+        assert(t.games[0].waiting_for_peers());
+    });
+}
+
+/// \`a\` and \`b\` (with the host's own plan first) as one bundle for turn 0; whether \`game\` took it.
+fn bundle_of(game: &mut GameState, a: &TeamPlan, b: &TeamPlan) -> bool can {Log, Rand} {
+    let mut plans: Vec[Vec[u8]] = Vec.new();
+    plans.push(bytes_of(a));
+    plans.push(bytes_of(b));
+    game.receive_bundle(0, plans);
+    applied(game.apply_waiting_bundle())
+}
+
+/// However the two players interleave ending turns, taking them back and the messages arriving,
+/// every honest message is taken and every machine plays the same turn.
+@test
+fn no_order_of_ending_and_taking_back_turns_confuses_the_sequencer() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        let mut rng = seed(11);
+        for trial in 0..14 {
+            let turn = t.host.turn;
+            let events = 4 + (rng.next() % 12) as i32;
+            for _ in 0..events {
+                let e = (rng.next() % 6) as i32;
+                if e == 0 && !t.games[0].is_resolving() {
+                    let unit = unit_of(&t.games[0], GUEST_SEAT);
+                    let around = t.games[0].units[unit].pos.neighbors();
+                    t.games[0].units[unit].planned_move = Option.Some(around[(rng.next() % 6) as i32]);
+                    t.games[0].submit_plan();
+                } else if e == 1 { t.games[0].take_back_turn(); }
+                else if e == 2 && !t.host.is_resolving() { t.host.submit_plan(); }
+                else if e == 3 { t.host.take_back_turn(); }
+                else if e == 4 { t.exchange(); }
+                else if e == 5 && t.host.is_playing_out() { play_out(&mut t.host); }
+            }
+            // Whatever is left arrives, and whoever has not ended the turn does, until it played out.
+            for _ in 0..8 {
+                if t.host.turn == turn + 1 && t.games[0].turn == turn + 1 && !t.host.is_playing_out() && !t.games[0].is_playing_out() { break; }
+                if !t.games[0].is_resolving() && t.games[0].turn == turn { t.games[0].submit_plan(); }
+                if !t.host.is_resolving() && t.host.turn == turn { t.host.submit_plan(); }
+                t.exchange();
+                play_out(&mut t.host);
+                play_out(&mut t.games[0]);
+                t.exchange();
+            }
+            assert(t.host.turn == turn + 1 && t.games[0].turn == turn + 1);
+            assert(t.host.checksum() == t.games[0].checksum());
+            assert(t.host.lockstep.desync.is_none() && t.games[0].lockstep.desync.is_none());
+            assert(t.is_alive(0));
+            assert(t.peer_rejected(0) == 0 && t.hub.last_reject == 0);
+            let _n = trial;
+        }
     });
 }

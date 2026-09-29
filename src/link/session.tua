@@ -446,6 +446,12 @@ impl Session {
     fn guest_pump(&mut self, now: i64, game: &mut GameState) can {Net, Entropy, Log, Rand} {
         let taken = replace(&mut self.peer, Option.None);
         let Option.Some(mut peer) = taken else { return; };
+        // What the player did comes first: it was done against the turn it was in.
+        peer.flush(now, game);
+        let early = peer.take_out();
+        if self.meta[0].live && self.chans.has(0) {
+            for m in 0..early.len() { self.send_payload(0, &early[m].buf); }
+        }
         let evs = poll_events(&mut self.drv, now);
         for i in 0..evs.len() {
             let id = ConnId { slot: evs[i].slot, gen: evs[i].gen };
@@ -491,7 +497,8 @@ impl Session {
             *game = next;
         }
         if let Option.Some(why) = peer.failure() { self.fail(&why); }
-        peer.pump(now, game);
+        peer.apply(now, game);
+        peer.flush(now, game);
         let out = peer.take_out();
         if self.meta[0].live && self.chans.has(0) {
             for m in 0..out.len() { self.send_payload(0, &out[m].buf); }

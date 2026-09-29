@@ -84,18 +84,20 @@ impl Lobby {
             self.hub.pump(self.now, &mut self.host);
             for i in 0..self.peers.len() {
                 if !self.alive[i] { continue; }
+                // What the player did comes first: it was done against the turn it was in.
+                self.peers[i].flush(self.now, &mut self.games[i]);
+                let up = self.peers[i].take_out();
+                for k in 0..up.len() {
+                    self.hub.on_payload(self.now, self.ids[i], &up[k].buf, &mut self.host);
+                    moved = true;
+                }
                 let down = self.hub.take_out(self.ids[i]);
                 for k in 0..down.len() {
                     self.peers[i].on_payload(self.now, &down[k].buf, &mut self.games[i]);
                     moved = true;
                 }
                 if let Option.Some(joined) = self.peers[i].take_joined() { self.games[i] = joined; moved = true; }
-                self.peers[i].pump(self.now, &mut self.games[i]);
-                let up = self.peers[i].take_out();
-                for k in 0..up.len() {
-                    self.hub.on_payload(self.now, self.ids[i], &up[k].buf, &mut self.host);
-                    moved = true;
-                }
+                self.peers[i].apply(self.now, &mut self.games[i]);
             }
             let kicks = self.hub.take_kicks();
             for k in 0..kicks.len() {
@@ -111,6 +113,9 @@ impl Lobby {
         let bytes = match plan_bytes(plan) { Option.Some(b) => b, Option.None => Vec.new() };
         self.peers[i].send_raw_input(self.now, &bytes.buf);
     }
+
+    /// How many messages from the host guest `i` refused as malformed or out of order.
+    pub fn peer_rejected(&self, i: i32) -> i32 { self.peers[i].rejected() }
 
     /// Whether guest `i` is still connected to the host.
     pub fn is_alive(&self, i: i32) -> bool { self.alive[i] }

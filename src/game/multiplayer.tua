@@ -607,7 +607,7 @@ impl GameState {
     // ---- ending, taking back and applying a turn -----------------------------------------------
 
     /// Remembers the game as this turn's planning begins, for the plans to be applied to.
-    fn begin_lockstep_turn(&mut self) {
+    pub fn begin_lockstep_turn(&mut self) {
         // Troops beside a city stand in its interior from the start of the turn, the same on
         // every machine, so a player can order them there without the game changing on their
         // machine alone.

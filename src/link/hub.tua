@@ -64,6 +64,8 @@ pub struct Hub {
     kicks: Vec[i32],
     /// Per guest slot: the seat it plays (a `TEAMS` index) or -1.
     seat: Vec[i32],
+    /// Why the sequencer last rejected a guest (`lockstep.host.REJECT_`), or 0.
+    last_reject: i32,
 }
 
 fn copy_slice(b: &[u8]) -> Vec[u8] {
@@ -114,7 +116,8 @@ fn note_host(e: &HostEvent, events: &mut Vec[HubEvent]) {
         }
         &HostEvent.Rejected(g, why) => {
             let gi = g + 0;
-            events.push(HubEvent { kind: EV_REJECTED, a: gi as i64, b: 0, c: 0 });
+            let w = why + 0;
+            events.push(HubEvent { kind: EV_REJECTED, a: gi as i64, b: w as i64, c: 0 });
         }
         &HostEvent.Joined(g, t) => { }
         &HostEvent.Closed(t, n) => { }
@@ -141,7 +144,7 @@ fn queue_for(io: &mut HubIo, g: i32, bytes: &[u8]) -> i32 {
 /// A hub for a game of `players` people, the host's player seated and joined.
 pub fn open_hub(players: i32, now: i64, game: &mut GameState) -> Hub can {Log, Rand} {
     let core = open_host(host_config(0, NEVER, false, 1, players, players, 1000000));
-    let mut hub = Hub { core: core, local: open_local_peer(), io: new_io(), events: Vec.new(), kicks: Vec.new(), seat: no_seats() };
+    let mut hub = Hub { core: core, local: open_local_peer(), io: new_io(), events: Vec.new(), kicks: Vec.new(), seat: no_seats(), last_reject: 0 };
     let id = hub.core_connect(now);
     hub.io.local_id = id;
     hub.io.ids.set(id % MAX_GUESTS, id);
@@ -237,6 +240,7 @@ impl Hub {
                 game.note_desync(e.a as u32, team);
             } else if e.kind == EV_REJECTED {
                 let g = e.a as i32;
+                self.last_reject = e.b as i32;
                 self.kicks.push(g);
                 self.core_disconnect(now, g);
             }
@@ -296,12 +300,8 @@ impl Hub {
         while moved && rounds < 64 {
             moved = false;
             rounds = rounds + 1;
-            let inbox = take_all(&mut self.io.to_local);
-            for i in 0..inbox.len() {
-                self.local.on_payload(now, &inbox[i].buf, game);
-                moved = true;
-            }
-            self.local.pump(now, game);
+            // What the host's player did comes first: it was done against the turn it was in.
+            self.local.flush(now, game);
             let sent = self.local.take_out();
             for i in 0..sent.len() {
                 let id = self.io.local_id;
@@ -309,6 +309,12 @@ impl Hub {
                 moved = true;
             }
             self.settle(now, game);
+            let inbox = take_all(&mut self.io.to_local);
+            for i in 0..inbox.len() {
+                self.local.on_payload(now, &inbox[i].buf, game);
+                moved = true;
+            }
+            self.local.apply(now, game);
             // A side whose plan the checks refused is dropped: its player broke the rules.
             let refused = take_refused(game);
             for i in 0..refused.len() {
