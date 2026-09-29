@@ -49,6 +49,7 @@ pub fn unit_type_supply(kind: UnitType) -> i32 {
     match kind {
         UnitType.Melee | UnitType.Ranged | UnitType.Cavalry | UnitType.Siege | UnitType.Armored | UnitType.Scout
         | UnitType.PatrolGalley | UnitType.LandingCraft | UnitType.BombardShip => 1,
+        UnitType.Wolf | UnitType.Bear => 0,
     }
 }
 

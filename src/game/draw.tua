@@ -123,6 +123,7 @@ const CLOUD_WANDER: f32 = 0.12;
 /// ...over about this many seconds, each puff at its own pace.
 const CLOUD_BILLOW_PERIOD: f32 = 14.0;
 const RUIN_RIM_COLOR: Color = [0.62, 0.58, 0.50, 1.0];
+const DEN_RIM_COLOR: Color = [0.36, 0.20, 0.09, 1.0];
 const LANDMARK_RIM_WIDTH: f32 = 0.05;
 /// Where the pips counting a ruin's hold start, from the hex's center, and their size.
 const RUIN_PIPS: Vec2 = Vec2 { x: -0.06, y: -0.7 };
@@ -347,6 +348,7 @@ impl GameState {
                 push_map_icon(center.add(LANDMARK_SPOT), MapIcon.special(special), LANDMARK_SCALE, &mut out);
             }
             self.push_known_ruin(hex, &fog, &mut out);
+            self.push_known_den(hex, &fog, &mut out);
         }
         self.push_rivers(&mut out);
 
@@ -853,6 +855,20 @@ impl GameState {
 
     /// Ruins on `hex` as the player knows them: in sight, with a pip for each turn their holder
     /// has held them, in its color; out of sight, as last seen, without.
+    /// An animal den on `hex` as the player knows it (`animals.tua`): in sight, or out of sight
+    /// as last seen. A dark rim and a paw print.
+    fn push_known_den(&self, hex: Hex, fog: &Fog, out: &mut Vec[MeshVertex]) {
+        let known = if fog.sees(hex) {
+            self.den_at(hex).is_some()
+        } else {
+            match self.memory.get(hex) { Option.Some(seen) => seen.den.is_some(), Option.None => false }
+        };
+        if !known { return; }
+        let center = hex.to_world();
+        polygon_outline(center, HEX_SIZE * 0.92 - LANDMARK_RIM_WIDTH / 2.0, LANDMARK_RIM_WIDTH, 6, 0.0, DEN_RIM_COLOR, out);
+        push_map_icon(center.add(LANDMARK_SPOT), MapIcon.Paw, LANDMARK_SCALE, out);
+    }
+
     fn push_known_ruin(&self, hex: Hex, fog: &Fog, out: &mut Vec[MeshVertex]) {
         if !self.known_ruin(hex, fog) { return; }
         let center = hex.to_world();

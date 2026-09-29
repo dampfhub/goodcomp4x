@@ -354,7 +354,7 @@ impl GameState {
                 site = self.ai_city_site(team, pos, first);
             }
             let Option.Some(target) = site else {
-                let open_land = self.grid.is_passable(pos) && !self.grid.terrain(pos).is_water() && self.ruin_at(pos).is_none();
+                let open_land = self.grid.is_passable(pos) && !self.grid.terrain(pos).is_water() && self.ruin_at(pos).is_none() && self.den_at(pos).is_none();
                 if first && open_land { let _city = self.found_city(id, team, pos); }
                 continue;
             };

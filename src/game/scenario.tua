@@ -207,6 +207,7 @@ impl GameState {
             settings: self.settings.copy(),
             map_seed: self.map_seed,
             ruins: copy_vec(&self.ruins),
+            dens: copy_vec(&self.dens),
             fog_of_war: self.fog_of_war,
             imgui_ui: self.imgui_ui,
             ui_captured: false,

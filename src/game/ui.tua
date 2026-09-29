@@ -745,7 +745,7 @@ impl GameState {
         let mut panel = panel_builder(false);
         panel.text(TextSize.Title, "SETTINGS", TEXT);
         let mut group = "";
-        for k in 0..5 {
+        for k in 0..6 {
             let setting = SETTINGS[k];
             let heading = setting.group();
             if !str_eq(&heading, &group) {
@@ -1498,6 +1498,10 @@ impl GameState {
         if let Option.Some(site) = self.sites.get(hex) {
             panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(site.team.name()); Out.put(" "); Out.put(site.kind.name()); }), DIM_TEXT);
         }
+        let ruin_notes = self.ruin_notes(hex);
+        for k in 0..ruin_notes.len() { panel.text_owned(TextSize.Small, copy_str(&ruin_notes[k]), DIM_TEXT); }
+        let den_notes = self.den_notes(hex, false);
+        for k in 0..den_notes.len() { panel.text_owned(TextSize.Small, copy_str(&den_notes[k]), DIM_TEXT); }
         if self.roads.contains(hex) { panel.text(TextSize.Small, "DIRT ROAD: GOODS MOVE THROUGH MORE CHEAPLY", DIM_TEXT); }
         for c in 0..self.cities.len() {
             if self.cities[c].works(hex) {

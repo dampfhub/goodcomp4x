@@ -1,0 +1,301 @@
+//! Animals: dens, territory, hunting, bounties and how many dens a world has.
+
+use std.core.Keep;
+use std.str.find;
+use std.str.eq as str_eq;
+use std.test.assert;
+use std.test.Assert;
+use std.rand.Rand;
+use log.Log;
+use game.GameState;
+use game.animals.DEN_RETURN_TURNS;
+use game.animals.DEN_SPOILS;
+use game.animals.TERRITORY_RADIUS;
+use game.animals.bounty;
+use game.city.City;
+use game.hex.Hex;
+use game.hex.HexGrid;
+use game.settings.ANIMALS_FEW;
+use game.settings.ANIMALS_MANY;
+use game.settings.ANIMALS_OFF;
+use game.settings.default_settings;
+use game.terrain.Terrain;
+use game.terrain.Tile;
+use game.tests.sandbox;
+use game.turn.Phase;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+use game.workers.FieldWorker;
+use game.workers.JobKind;
+use game.workers.WorkerJob;
+
+fn has(line: &Str, part: &str) -> bool { find(line, part).is_some() }
+
+/// An open radius-6 map with no cities, a wolf den at (0, 0) with its wolf at home, and nothing
+/// else.
+fn wolf_den() -> GameState can {Log} {
+    let mut game = GameState.new();
+    game.units.clear();
+    game.grid = HexGrid.new(6, &[(Hex.new(0, 0), Tile { terrain: Terrain.Plains, hills: true, feature: Option.None })]);
+    let mut sites: Vec[Hex] = Vec.new();
+    sites.push(Hex.new(0, 0));
+    game.make_dens(&sites);
+    game.fog_of_war = false;
+    game
+}
+
+/// The index of the (first) animal.
+fn animal(game: &GameState) -> i32 {
+    for i in 0..game.units.len() { if game.units[i].is_animal() { return i; } }
+    0 - 1
+}
+
+fn animal_count(game: &GameState) -> i32 {
+    let mut n = 0;
+    for i in 0..game.units.len() { if game.units[i].is_animal() { n = n + 1; } }
+    n
+}
+
+fn add(game: &mut GameState, pos: Hex, team: Team, kind: UnitType) -> u32 {
+    let id = game.next_unit_id;
+    game.next_unit_id = game.next_unit_id + 1;
+    game.units.push(Unit.new(id, pos, team, kind));
+    id
+}
+
+fn keep_animals(game: &mut GameState) can {Log} {
+    handle { game.units.retain(); } with Keep[Unit] { keep(u) => { resume u.is_animal() } }
+}
+
+/// Resolves a turn with no orders from anyone but the animals.
+fn play(game: &mut GameState) can {Log, Rand} {
+    game.selected = Option.None;
+    game.settings.instant_playback = true;
+    game.resolve_turn();
+    game.update(0.0);
+}
+
+@test
+fn a_den_keeps_its_animal_at_home() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let game = wolf_den();
+        let w = animal(&game);
+        assert(game.units[w].team == Team.Wild);
+        assert(game.units[w].unit_type == UnitType.Wolf);
+        assert(game.units[w].pos == Hex.new(0, 0) && game.units[w].home == Option.Some(Hex.new(0, 0)));
+        let Option.Some(d) = game.den_at(Hex.new(0, 0)) else { assert(false); return; };
+        assert(str_eq(game.dens[d].name(), "WOLF DEN"));
+        assert(!game.ai_teams().contains(Team.Wild));
+    });
+}
+
+@test
+fn an_animal_attacks_an_intruder_and_goes_home_after() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = wolf_den();
+        let scout = add(&mut game, Hex.new(3, 0), Team.Blue, UnitType.Scout);
+        play(&mut game);
+        // A wolf moves two: next to the scout, and bites.
+        let w = animal(&game);
+        assert(game.units[w].pos.distance(Hex.new(3, 0)) == 1);
+        let mut bitten = true;
+        for i in 0..game.units.len() { if game.units[i].id == scout && game.units[i].hp >= game.units[i].max_hp() { bitten = false; } }
+        assert(bitten);
+        // With the scout gone, it heads home.
+        keep_animals(&mut game);
+        play(&mut game);
+        play(&mut game);
+        assert(game.units[animal(&game)].pos == Hex.new(0, 0));
+    });
+}
+
+@test
+fn a_troop_on_alert_fires_at_an_animal_in_range() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = wolf_den();
+        // At the edge of the wolf's territory, out of range until it comes.
+        let _id = add(&mut game, Hex.new(-3, 0), Team.Blue, UnitType.Ranged);
+        let archer = game.units.len() - 1;
+        game.go_on_alert(archer);
+        assert(game.alert_target(archer).is_none());
+        play(&mut game);
+        // Wolves move before archers shoot: it came, and was shot (and maybe finished off,
+        // biting the archer).
+        let w = animal(&game);
+        assert(w < 0 || game.units[w].hp < game.units[w].max_hp());
+        let mut a = 0 - 1;
+        for i in 0..game.units.len() { if !game.units[i].is_animal() { a = i; } }
+        // And it stayed on alert.
+        assert(game.units[a].pos == Hex.new(-3, 0));
+        assert(game.units[a].alert);
+    });
+}
+
+@test
+fn an_animal_stays_in_its_territory() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = wolf_den();
+        // Just past its territory: it goes to the edge and waits there.
+        let _id = add(&mut game, Hex.new(5, 0), Team.Blue, UnitType.Melee);
+        for _ in 0..3 {
+            play(&mut game);
+            let w = animal(&game);
+            assert(game.units[w].pos.distance(Hex.new(0, 0)) <= TERRITORY_RADIUS);
+        }
+        // Out of reach: never attacked.
+        let mut blue = 0 - 1;
+        for i in 0..game.units.len() { if !game.units[i].is_animal() { blue = i; } }
+        assert(game.units[blue].hp == game.units[blue].max_hp());
+    });
+}
+
+@test
+fn an_animal_never_attacks_a_city_or_whoever_is_in_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = wolf_den();
+        game.cities.clear();
+        game.cities.push(City.new(0, Team.Blue, Hex.new(2, 0)));
+        game.auto_assign_city(0);
+        let id = add(&mut game, Hex.new(2, 0), Team.Blue, UnitType.Scout);
+        let population = game.cities[0].population;
+        for _ in 0..3 { play(&mut game); }
+        // Safe in its city.
+        let mut safe = false;
+        for i in 0..game.units.len() { if game.units[i].id == id && game.units[i].hp == game.units[i].max_hp() { safe = true; } }
+        assert(safe);
+        assert(game.cities[0].team == Team.Blue);
+        assert(game.cities[0].population == population);
+        assert(game.units[animal(&game)].pos != Hex.new(2, 0));
+    });
+}
+
+@test
+fn an_animal_kills_a_worker_rather_than_capture_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = wolf_den();
+        game.cities.clear();
+        game.cities.push(City.new(0, Team.Blue, Hex.new(-5, 0)));
+        let hex = Hex.new(2, 0);
+        let base = game.cities[0].pos;
+        game.field_workers.push(FieldWorker { id: 100, team: Team.Blue, home: 0, base, pos: hex, job: Option.Some(WorkerJob.on_tile(hex, JobKind.Fort)), work_left: Option.Some(3), recalled: false });
+        let at_home = game.cities[0].workers;
+        play(&mut game);
+        // The worker is dead, not captured, nor home.
+        let mut alive = false;
+        for w in 0..game.field_workers.len() { if game.field_workers[w].id == 100 { alive = true; } }
+        assert(!alive);
+        assert(game.cities[0].workers == at_home);
+    });
+}
+
+@test
+fn the_side_that_kills_an_animal_gets_its_bounty() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = wolf_den();
+        game.units[0].hp = 1.0;
+        let _id = add(&mut game, Hex.new(1, 0), Team.Red, UnitType.Melee);
+        let red = game.units.len() - 1;
+        game.units[red].planned_attack = Option.Some(Hex.new(0, 0));
+        let blue = game.stock(Team.Blue);
+        let before = game.stock(Team.Red);
+        let _acted = game.resolve_step(UnitType.Melee, Phase.Attack);
+        assert(animal_count(&game) == 0);
+        assert(game.stock(Team.Red) == before.plus(bounty(UnitType.Wolf)));
+        // Only the hunter gains.
+        assert(game.stock(Team.Blue) == blue);
+    });
+}
+
+@test
+fn standing_on_a_den_clears_it_for_its_spoils() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = wolf_den();
+        // The wolf is out; a settler on the den doesn't clear it.
+        game.units[0].pos = Hex.new(3, 0);
+        let settler = add(&mut game, Hex.new(0, 0), Team.Blue, UnitType.Melee);
+        game.settlers.insert(settler);
+        let before = game.stock(Team.Blue);
+        game.resolve_dens();
+        assert(game.dens.len() == 1);
+        assert(game.stock(Team.Blue) == before);
+        // A scout does, and the wolf keeps to its old territory.
+        let _was = game.settlers.remove(settler);
+        let last = game.units.len() - 1;
+        game.units[last].unit_type = UnitType.Scout;
+        game.resolve_dens();
+        assert(game.dens.is_empty());
+        assert(game.stock(Team.Blue) == before.plus(DEN_SPOILS));
+        assert(game.units[animal(&game)].home == Option.Some(Hex.new(0, 0)));
+    });
+}
+
+@test
+fn a_den_has_another_animal_some_turns_after_one_dies() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = wolf_den();
+        game.units.clear();
+        for turn in 1..=DEN_RETURN_TURNS {
+            game.resolve_dens();
+            assert(game.units.is_empty());
+            let Option.Some(d) = game.den_at(Hex.new(0, 0)) else { assert(false); return; };
+            assert(game.dens[d].returns_in == Option.Some(DEN_RETURN_TURNS + 1 - turn));
+        }
+        // Due, but a settler stands on the den: it waits for it to leave.
+        let settler = add(&mut game, Hex.new(0, 0), Team.Blue, UnitType.Melee);
+        game.settlers.insert(settler);
+        game.resolve_dens();
+        let Option.Some(d) = game.den_at(Hex.new(0, 0)) else { assert(false); return; };
+        assert(game.dens[d].returns_in == Option.Some(0));
+        game.units.clear();
+        game.resolve_dens();
+        let w = animal(&game);
+        assert(game.units[w].pos == Hex.new(0, 0) && game.units[w].unit_type == UnitType.Wolf);
+        let Option.Some(d) = game.den_at(Hex.new(0, 0)) else { assert(false); return; };
+        assert(game.dens[d].returns_in.is_none());
+    });
+}
+
+@test
+fn the_animals_setting_picks_how_many_dens_a_world_has() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut settings = default_settings();
+        settings.world_ai = 3;
+        settings.world_animals = ANIMALS_OFF;
+        let off = GameState.world_scenario_with(11, &settings);
+        assert(off.dens.is_empty());
+        assert(animal_count(&off) == 0);
+        settings.world_animals = ANIMALS_FEW;
+        let few = GameState.world_scenario_with(11, &settings);
+        // One a side.
+        assert(few.dens.len() == 4);
+        settings.world_animals = ANIMALS_MANY;
+        let many = GameState.world_scenario_with(11, &settings);
+        // Two a side.
+        assert(many.dens.len() == 8);
+        // The same first few.
+        for k in 0..4 { assert(many.dens[k].pos == few.dens[k].pos); }
+        // An animal a den.
+        assert(animal_count(&few) == few.dens.len());
+        assert(animal_count(&many) == many.dens.len());
+    });
+}
+
+@test
+fn the_tooltip_tells_what_a_den_keeps_and_gives() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = wolf_den();
+        let notes = game.den_notes(Hex.new(0, 0), false);
+        assert(notes.len() == 2);
+        assert(has(&notes[0], "WOLF DEN: ITS WOLF PACK ATTACKS"));
+        assert(has(&notes[1], "CLEAR IT") && has(&notes[1], "FOOD"));
+        game.units.clear();
+        game.resolve_dens();
+        let notes = game.den_notes(Hex.new(0, 0), false);
+        assert(notes.len() == 3);
+        assert(has(&notes[2], "ANOTHER WOLF PACK IN 8 TURNS"));
+        // Out of sight, only what was seen: nothing, before anyone looked.
+        assert(game.den_notes(Hex.new(0, 0), true).is_empty());
+        assert(game.den_notes(Hex.new(1, 0), false).is_empty());
+    });
+}

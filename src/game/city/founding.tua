@@ -47,6 +47,7 @@ impl GameState {
             return Option.Some(to_owned("A CITY STANDS ON OPEN LAND"));
         }
         if self.ruin_at(hex).is_some() { return Option.Some(to_owned("NOT ON RUINS: CLAIM THEM FIRST")); }
+        if self.den_at(hex).is_some() { return Option.Some(to_owned("NOT ON A DEN: CLEAR IT FIRST")); }
         // The enemy would be left standing on the new city's center.
         if self.is_contested(hex) { return Option.Some(to_owned("NOT IN A CONTESTED HEX: DRIVE THE ENEMY OFF FIRST")); }
         for i in 0..self.cities.len() {

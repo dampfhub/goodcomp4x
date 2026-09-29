@@ -102,8 +102,9 @@ fn the_world_starts_every_side_with_a_city_and_a_scout() {
             // 4 to 6 AI sides, by the seed, and the player.
             let sides = 1 + 4 + (seed % 3) as i32;
             assert(game.cities.len() == sides);
-            // A scout each.
-            assert(game.units.len() == sides);
+            // A scout each, and a den each by default.
+            assert(side_units(&game) == sides);
+            assert(game.dens.len() == sides);
             assert(game.settlers.len() == 0);
             for k in 0..sides {
                 let team = TEAMS[k];
@@ -141,7 +142,7 @@ fn the_world_can_start_with_settlers_and_a_chosen_number_of_ai() {
         assert(game.cities.is_empty());
         // The player's and two AI settlers, and a scout each.
         assert(game.settlers.len() == 3);
-        assert(game.units.len() == 6);
+        assert(side_units(&game) == 6);
         let Option.Some(selected) = game.selected else { assert(false); return; };
         // The player's settler.
         assert(game.settlers.contains(game.units[selected].id));
@@ -162,12 +163,20 @@ fn world_settings_carry_into_the_next_world() {
     });
 }
 
+/// How many of the units belong to a side, not the wild.
+fn side_units(game: &GameState) -> i32 {
+    let mut n = 0;
+    for u in 0..game.units.len() { if game.units[u].team.is_side() { n = n + 1; } }
+    n
+}
+
 @test
 fn every_world_starts_its_scouts_on_hills() {
     sandbox(fn() can {Log, Rand, Assert} {
         for seed in 0..6 {
             let game = GameState.world_scenario(seed as u32);
             for u in 0..game.units.len() {
+                if game.units[u].is_animal() { continue; }
                 let hills = game.grid.tile(game.units[u].pos).hills;
                 let scout = game.units[u].unit_type == UnitType.Scout;
                 assert(hills == scout);

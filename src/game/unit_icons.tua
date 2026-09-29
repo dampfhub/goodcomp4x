@@ -42,6 +42,10 @@ pub enum UnitIcon {
     Flag,
     /// Worker: a shovel.
     Shovel,
+    /// Wolf pack: a wolf's head, face on, ears up.
+    WolfHead,
+    /// Bear: a bear's head, face on, with round ears.
+    BearHead,
 }
 
 impl Eq for UnitIcon {
@@ -60,6 +64,8 @@ impl UnitIcon {
             UnitType.PatrolGalley => UnitIcon.Galley,
             UnitType.LandingCraft => UnitIcon.LandingCraft,
             UnitType.BombardShip => UnitIcon.BombardShip,
+            UnitType.Wolf => UnitIcon.WolfHead,
+            UnitType.Bear => UnitIcon.BearHead,
         }
     }
 
@@ -67,15 +73,17 @@ impl UnitIcon {
         match self {
             UnitIcon.Sword => 0, UnitIcon.Bow => 1, UnitIcon.HorseHead => 2, UnitIcon.Catapult => 3,
             UnitIcon.Spyglass => 4, UnitIcon.Shield => 5, UnitIcon.Galley => 6, UnitIcon.LandingCraft => 7,
-            UnitIcon.BombardShip => 8, UnitIcon.Flag => 9, UnitIcon.Shovel => 10,
+            UnitIcon.BombardShip => 8, UnitIcon.Flag => 9, UnitIcon.Shovel => 10, UnitIcon.WolfHead => 11,
+            UnitIcon.BearHead => 12,
         }
     }
 }
 
 /// Every pictogram, in declaration order.
-pub const ICONS: [UnitIcon; 11] = [
+pub const ICONS: [UnitIcon; 13] = [
     UnitIcon.Sword, UnitIcon.Bow, UnitIcon.HorseHead, UnitIcon.Catapult, UnitIcon.Spyglass, UnitIcon.Shield,
     UnitIcon.Galley, UnitIcon.LandingCraft, UnitIcon.BombardShip, UnitIcon.Flag, UnitIcon.Shovel,
+    UnitIcon.WolfHead, UnitIcon.BearHead,
 ];
 
 /// Draws `icon` in `color` centered on a token of `radius` at `center`.
@@ -167,6 +175,17 @@ pub fn push_pictogram(center: Vec2, radius: f32, icon: UnitIcon, color: Color, o
             pen.rect(-8.0, -21.0, 16.0, 4.0, out);
             pen.rect(-2.0, -17.0, 4.0, 18.0, out);
             pen.polygon(&[vec2(-8.0, 1.0), vec2(8.0, 1.0), vec2(8.0, 13.0), vec2(0.0, 21.0), vec2(-8.0, 13.0)], out);
+        }
+        UnitIcon.WolfHead => {
+            pen.polygon(&[
+                vec2(-20.0, -27.0), vec2(-11.0, -15.0), vec2(11.0, -15.0), vec2(20.0, -27.0), vec2(25.0, -5.0),
+                vec2(16.0, 7.0), vec2(6.0, 27.0), vec2(-6.0, 27.0), vec2(-16.0, 7.0), vec2(-25.0, -5.0),
+            ], out);
+        }
+        UnitIcon.BearHead => {
+            pen.circle(-15.0, -15.0, 8.0, out);
+            pen.circle(15.0, -15.0, 8.0, out);
+            pen.circle(0.0, 2.0, 22.0, out);
         }
     }
 }

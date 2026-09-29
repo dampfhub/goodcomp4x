@@ -10,7 +10,7 @@ use game.unit_icons.push_pictogram;
 @test
 fn every_pictogram_stays_inside_its_token() {
     let (center, radius) = (vec2(3.0, -2.0), 0.5);
-    for k in 0..11 {
+    for k in 0..13 {
         let mut out: Vec[MeshVertex] = Vec.new();
         push_pictogram(center, radius, ICONS[k], [0.0, 0.0, 0.0, 0.0], &mut out);
         // Something is drawn, inside the token and clear of its outline.

@@ -1,0 +1,364 @@
+//! Animals: aggressive neutral units that guard dens, to make the early map dangerous. They
+//! belong to the wild (`Team.Wild`), which is no side: no cities, stockpile, fog or plan, and
+//! hostile to every side.
+//!
+//! `mapgen.tua` places the dens of a world (on forest, jungle and hills, away from every
+//! start), and each den keeps one animal: a wolf pack or a bear (`UnitType.Wolf`,
+//! `UnitType.Bear`). An animal is territorial: it never leaves the hexes within
+//! `TERRITORY_RADIUS` of its den (`Unit.home`). As its own move step begins it goes for the
+//! nearest unit or worker out on the map within its territory, and with none there heads home;
+//! as its attack step begins it attacks whoever is in reach. It never attacks or enters a
+//! city, and never captures anything (a worker it reaches, it kills). It decides on the real
+//! board as the step begins: its "plan" is a rule of the game, not a side's planning. Ties
+//! break by hex coordinates.
+//!
+//! Hunting pays: the side that kills an animal gets food (`bounty`), and a side that stands a
+//! unit (not a settler) on a den at a turn's end clears it for food and metal (`DEN_SPOILS`).
+//! Until then, a den whose animal died has another there `DEN_RETURN_TURNS` turns later
+//! (`resolve_dens`). How many dens a world has is the Animals setting.
+
+use std.fmt.Out;
+use std.fmt.show_u64;
+use std.str.Str;
+use log.Log;
+use log.info;
+use game.GameState;
+use game.reachable_by;
+use game.Step;
+use game.text;
+use game.city.Stock;
+use game.city.stock_words;
+use game.hex.Hex;
+use game.unit.Team;
+use game.unit.TEAMS;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+/// How far from its den an animal goes: it stays within this many hexes.
+pub const TERRITORY_RADIUS: i32 = 3;
+/// Turns after its animal dies that a den has another.
+pub const DEN_RETURN_TURNS: u32 = 8;
+/// What clearing a den gives the side that clears it: 6 food and 2 metal.
+pub const DEN_SPOILS: Stock = Stock { food: 24, wood: 0, metal: 8 };
+
+/// What killing an animal of `kind` gives the side that kills it.
+pub fn bounty(kind: UnitType) -> Stock {
+    match kind {
+        UnitType.Bear => Stock.whole(5, 0, 0),
+        _ => Stock.whole(3, 0, 0),
+    }
+}
+
+/// An animal's den (`mapgen.tua` places them).
+pub struct Den {
+    pos: Hex,
+    /// The animal it keeps.
+    kind: UnitType,
+    /// With its animal dead: the turn ends until another is there (at 1, the next; at 0, as
+    /// soon as nothing stands on the den).
+    returns_in: Option[u32],
+}
+
+impl Den {
+    /// The den's name, for tooltips and notices.
+    pub fn name(&self) -> str { den_name(self.kind) }
+}
+
+/// The name of a den keeping `kind`.
+fn den_name(kind: UnitType) -> str {
+    match kind { UnitType.Bear => "BEAR DEN", _ => "WOLF DEN" }
+}
+
+/// The name of an animal of `kind`.
+fn animal_name(kind: UnitType) -> str {
+    match kind { UnitType.Bear => "BEAR", _ => "WOLF PACK" }
+}
+
+/// One blow's worth of hunting: which animal was hit, by which side, and for how much.
+pub struct Hunt { animal: i32, team: Team, dealt: f32 }
+
+impl GameState {
+    /// The index of the den on `hex`, if there is one.
+    pub fn den_at(&self, hex: Hex) -> Option[i32] {
+        for d in 0..self.dens.len() { if self.dens[d].pos == hex { return Option.Some(d); } }
+        Option.None
+    }
+
+    /// The tile tooltip's lines about a den on `hex`: what it keeps, what clearing it gives, and
+    /// when a dead animal's successor comes. Out of sight (`remembered`), only that it was there
+    /// when last seen.
+    pub fn den_notes(&self, hex: Hex, remembered: bool) -> Vec[Str] {
+        let mut notes: Vec[Str] = Vec.new();
+        if remembered {
+            if let Option.Some(seen) = self.memory.get(hex) {
+                if let Option.Some(kind) = seen.den {
+                    let name = den_name(kind);
+                    notes.push(text(fn() can {Out} { Out.put(name); Out.put(", AS LAST SEEN"); }));
+                }
+            }
+            return notes;
+        }
+        let Option.Some(d) = self.den_at(hex) else { return notes; };
+        let (kind, returns_in) = (self.dens[d].kind, self.dens[d].returns_in);
+        let animal = animal_name(kind);
+        let name = self.dens[d].name();
+        notes.push(text(fn() can {Out} {
+            Out.put(name); Out.put(": ITS "); Out.put(animal); Out.put(" ATTACKS WHOEVER COMES WITHIN ");
+            show_u64(TERRITORY_RADIUS as u64); Out.put(" HEXES");
+        }));
+        let spoils = stock_words(DEN_SPOILS);
+        notes.push(text(fn() can {Out} { Out.put("END A TURN ON IT WITH A UNIT TO CLEAR IT: +"); Out.put(&spoils); Out.put(" FOR THE STOCKPILE"); }));
+        if let Option.Some(turns) = returns_in {
+            let shown = if turns > 1 { turns } else { 1 };
+            notes.push(text(fn() can {Out} { Out.put("ANOTHER "); Out.put(animal); Out.put(" IN "); show_u64(shown as u64); Out.put(" TURNS"); }));
+        }
+        notes
+    }
+
+    /// Makes a den on each of `sites`, wolves and bears in turn, each with its animal at home.
+    pub fn make_dens(&mut self, sites: &Vec[Hex]) {
+        for i in 0..sites.len() {
+            let kind = if i % 2 == 0 { UnitType.Wolf } else { UnitType.Bear };
+            self.dens.push(Den { pos: sites[i], kind, returns_in: Option.None });
+            let last = self.dens.len() - 1;
+            let _placed = self.spawn_animal(last);
+        }
+    }
+
+    /// At a turn's end, before the economy: a den with a side's unit (not a settler) on it is
+    /// cleared, and gone, and the side gets `DEN_SPOILS`; its animal, if alive, keeps to its
+    /// territory. A den whose animal has died counts down `DEN_RETURN_TURNS` and then has
+    /// another, once nothing stands on it.
+    pub fn resolve_dens(&mut self) can {Log} {
+        let mut d = 0;
+        while d < self.dens.len() {
+            let pos = self.dens[d].pos;
+            let mut clearer: Option[Team] = Option.None;
+            for u in 0..self.units.len() {
+                let unit = &self.units[u];
+                if clearer.is_none() && unit.pos == pos && unit.team.is_side() && !self.settlers.contains(unit.id) { clearer = Option.Some(unit.team); }
+            }
+            if let Option.Some(team) = clearer {
+                let den = self.dens.remove(d);
+                self.add_stock(team, DEN_SPOILS);
+                let spoils = stock_words(DEN_SPOILS);
+                let name = den.name();
+                info(fn() can {Out} { team.show(); Out.put(" clears the "); Out.put(name); Out.put(": +"); Out.put(&spoils); Out.put(" FOR THE STOCKPILE"); });
+                if team == self.local_team {
+                    self.notice = text(fn() can {Out} { Out.put(name); Out.put(" CLEARED: +"); Out.put(&spoils); Out.put(" FOR THE STOCKPILE"); });
+                }
+                continue;
+            }
+            let mut alive = false;
+            for u in 0..self.units.len() { if self.units[u].home == Option.Some(pos) { alive = true; } }
+            let returns_in = match self.dens[d].returns_in {
+                Option.None => if alive { Option.None } else { Option.Some(DEN_RETURN_TURNS) },
+                Option.Some(turns) => if turns > 1 {
+                    Option.Some(turns - 1)
+                } else if self.spawn_animal(d) {
+                    Option.None
+                } else {
+                    Option.Some(0)
+                },
+            };
+            self.dens[d].returns_in = returns_in;
+            d = d + 1;
+        }
+    }
+
+    /// After an attack step's damage lands, before the dead are removed (`resolve_attacks`):
+    /// each animal the step killed goes to the side whose blows on it (`hunts`) did the most
+    /// damage this step, the earliest in `TEAMS` on a tie, and that side gets its bounty.
+    pub fn reward_hunts(&mut self, hunts: &Vec[Hunt]) can {Log} {
+        let mut kills: Vec[(i32, Team)] = Vec.new();
+        for h in 0..hunts.len() {
+            let idx = hunts[h].animal;
+            if self.units[idx].is_alive() { continue; }
+            let mut seen = false;
+            for k in 0..kills.len() { if kills[k].0 == idx { seen = true; } }
+            if seen { continue; }
+            let mut best: Option[(Team, f32)] = Option.None;
+            for t in 0..7 {
+                let team = TEAMS[t];
+                let mut dealt = 0.0;
+                let mut any = false;
+                for j in 0..hunts.len() {
+                    if hunts[j].animal == idx && hunts[j].team == team { dealt = dealt + hunts[j].dealt; any = true; }
+                }
+                if !any { continue; }
+                let better = match best { Option.None => true, Option.Some((_, most)) => dealt > most };
+                if better { best = Option.Some((team, dealt)); }
+            }
+            if let Option.Some((team, _)) = best { kills.push((idx, team)); }
+        }
+        for k in 0..kills.len() {
+            let (idx, team) = kills[k];
+            let kind = self.units[idx].unit_type;
+            self.reward_kill(team, kind);
+        }
+    }
+
+    /// An animal of `kind` killed by `team`: the side gets its `bounty`.
+    fn reward_kill(&mut self, team: Team, kind: UnitType) can {Log} {
+        let goods = bounty(kind);
+        self.add_stock(team, goods);
+        let spoils = stock_words(goods);
+        let name = animal_name(kind);
+        info(fn() can {Out} { team.show(); Out.put(" kills the "); Out.put(name); Out.put(": +"); Out.put(&spoils); Out.put(" FOR THE STOCKPILE"); });
+        if team == self.local_team {
+            self.notice = text(fn() can {Out} { Out.put(name); Out.put(" KILLED: +"); Out.put(&spoils); Out.put(" FOR THE STOCKPILE"); });
+        }
+    }
+
+    /// Den `den`'s animal appears on it, if nothing stands there.
+    fn spawn_animal(&mut self, den: i32) -> bool {
+        let pos = self.dens[den].pos;
+        let kind = self.dens[den].kind;
+        if self.is_occupied(pos) { return false; }
+        for w in 0..self.field_workers.len() { if self.field_workers[w].pos == pos { return false; } }
+        let id = self.next_unit_id;
+        self.next_unit_id = self.next_unit_id + 1;
+        let mut animal = Unit.new(id, pos, Team.Wild, kind);
+        animal.home = Option.Some(pos);
+        self.units.push(animal);
+        true
+    }
+
+    /// Whether `hex` is in the territory of animal `idx` (within `TERRITORY_RADIUS` of its den).
+    fn in_territory(&self, idx: i32, hex: Hex) -> bool {
+        let unit = &self.units[idx];
+        unit.home.unwrap_or(unit.pos).distance(hex) <= TERRITORY_RADIUS
+    }
+
+    /// Whether an animal may attack whoever stands on `hex`: never on a city center, nor out on
+    /// the water.
+    fn animal_may_attack(&self, hex: Hex) -> bool {
+        self.city_at(hex).is_none() && self.grid.contains(hex) && !self.grid.terrain(hex).is_water()
+    }
+
+    /// As the move step of `kind` begins: each animal of that kind goes for the nearest unit or
+    /// worker in its territory it may attack (`animal_may_attack`), as close as it can get
+    /// within its territory; with none there, it heads home. It won't step onto a worker (it
+    /// kills them, it doesn't capture them), a city, or a hex another animal is heading for
+    /// this step; staying put wins a tie, then the lowest (q, r).
+    pub fn plan_animal_moves(&mut self, kind: UnitType) {
+        for idx in 0..self.units.len() {
+            let unit = &self.units[idx];
+            if !unit.is_animal() || unit.unit_type != kind || self.rival_of(idx).is_some() { continue; }
+            let pos = unit.pos;
+            let home = unit.home.unwrap_or(pos);
+            let range = unit.stats().move_range;
+            // The nearest prey (a unit or worker of anyone else) in its territory.
+            let mut prey: Option[Hex] = Option.None;
+            for u in 0..self.units.len() {
+                let other = &self.units[u];
+                if !other.is_animal() { prey = self.nearer_prey(idx, prey, other.pos); }
+            }
+            for w in 0..self.field_workers.len() { prey = self.nearer_prey(idx, prey, self.field_workers[w].pos); }
+            let goal = prey.unwrap_or(home);
+            let options = handle { reachable_by(pos, range) } with Step {
+                open(from, to) => {
+                    let mut worker_there = false;
+                    for w in 0..self.field_workers.len() { if self.field_workers[w].pos == to { worker_there = true; } }
+                    resume self.in_territory(idx, to) && self.can_step(from, to, Team.Wild) && !self.is_occupied(to) && !worker_there
+                }
+            };
+            let mut best: Option[Hex] = Option.None;
+            for h in options.each() {
+                let hex = *h;
+                if hex != pos && self.claimed_by_animal(hex) { continue; }
+                let better = match best {
+                    Option.None => true,
+                    Option.Some(b) => {
+                        let (dh, db) = (hex.distance(goal), b.distance(goal));
+                        if dh != db { dh < db }
+                        else if (hex != pos) != (b != pos) { hex == pos }
+                        else if hex.q != b.q { hex.q < b.q }
+                        else { hex.r < b.r }
+                    }
+                };
+                if better { best = Option.Some(hex); }
+            }
+            let dest = best.unwrap_or(pos);
+            self.units[idx].planned_move = if dest != pos { Option.Some(dest) } else { Option.None };
+        }
+    }
+
+    /// `prey` or `hex`, whichever is nearer animal `idx` (ties by (q, r)), if `hex` is a hex it
+    /// may go for: in its territory and one it may attack.
+    fn nearer_prey(&self, idx: i32, prey: Option[Hex], hex: Hex) -> Option[Hex] {
+        if !self.in_territory(idx, hex) || !self.animal_may_attack(hex) { return prey; }
+        let pos = self.units[idx].pos;
+        match prey {
+            Option.None => Option.Some(hex),
+            Option.Some(held) => {
+                let (dh, dp) = (hex.distance(pos), held.distance(pos));
+                let nearer = if dh != dp { dh < dp } else if hex.q != held.q { hex.q < held.q } else { hex.r < held.r };
+                if nearer { Option.Some(hex) } else { prey }
+            }
+        }
+    }
+
+    /// Whether another animal is heading for `hex` this step.
+    fn claimed_by_animal(&self, hex: Hex) -> bool {
+        for u in 0..self.units.len() {
+            if self.units[u].is_animal() && self.units[u].planned_move == Option.Some(hex) { return true; }
+        }
+        false
+    }
+
+    /// As the attack step of `kind` begins: each animal of that kind attacks what's in its reach
+    /// (`animal_target`), if anything is.
+    pub fn plan_animal_attacks(&mut self, kind: UnitType) {
+        for idx in 0..self.units.len() {
+            if self.units[idx].is_animal() && self.units[idx].unit_type == kind {
+                self.units[idx].planned_attack = self.animal_target(idx);
+            }
+        }
+    }
+
+    /// Where animal `idx` attacks: the nearest unit in its reach it may attack
+    /// (`animal_may_attack`, `attack_target_legal`), the weakest (fewest HP) of those as near,
+    /// then by (q, r); with none, the nearest worker out on the map, on a hex with nothing else
+    /// to hit (no barracks or battery takes the blow). Anyone in reach, in its territory or not.
+    pub fn animal_target(&self, idx: i32) -> Option[Hex] {
+        let animal = &self.units[idx];
+        let pos = animal.pos;
+        let range = animal.stats().attack_range;
+        let mut best: Option[i32] = Option.None;
+        for u in 0..self.units.len() {
+            let other = &self.units[u];
+            if other.is_animal() || other.pos.distance(pos) > range || !self.animal_may_attack(other.pos) { continue; }
+            if !self.attack_target_legal(idx, other.pos, false) { continue; }
+            let better = match best {
+                Option.None => true,
+                Option.Some(b) => {
+                    let held = &self.units[b];
+                    let (da, db) = (pos.distance(other.pos), pos.distance(held.pos));
+                    if da != db { da < db }
+                    else if other.hp != held.hp { other.hp < held.hp }
+                    else if other.pos.q != held.pos.q { other.pos.q < held.pos.q }
+                    else if other.pos.r != held.pos.r { other.pos.r < held.pos.r }
+                    else { other.id < held.id }
+                }
+            };
+            if better { best = Option.Some(u); }
+        }
+        if let Option.Some(u) = best { return Option.Some(self.units[u].pos); }
+        let mut worker: Option[Hex] = Option.None;
+        for w in 0..self.field_workers.len() {
+            let hex = self.field_workers[w].pos;
+            if hex.distance(pos) > range || !self.animal_may_attack(hex) { continue; }
+            if self.enemy_barracks_at(hex, Team.Wild).is_some() || self.enemy_coastal_battery_at(hex, Team.Wild).is_some() { continue; }
+            let nearer = match worker {
+                Option.None => true,
+                Option.Some(held) => {
+                    let (dh, dw) = (hex.distance(pos), held.distance(pos));
+                    if dh != dw { dh < dw } else if hex.q != held.q { hex.q < held.q } else { hex.r < held.r }
+                }
+            };
+            if nearer { worker = Option.Some(hex); }
+        }
+        worker
+    }
+}

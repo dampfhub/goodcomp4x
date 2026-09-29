@@ -609,8 +609,8 @@ fn the_settings_menu_shows_every_setting_under_its_heading() {
             _ => {}
         }
     }
-    assert(listed.len() == 5);
-    for k in 0..5 { assert(listed[k] == SETTINGS[k]); }
+    assert(listed.len() == 6);
+    for k in 0..6 { assert(listed[k] == SETTINGS[k]); }
     // A setting button's tooltip names what it sets, and says when it already is.
     let mut p = panel_builder(false);
     assert(game.tooltip(Target.SetSetting(Setting.TurnPlayback, 1), &mut p));

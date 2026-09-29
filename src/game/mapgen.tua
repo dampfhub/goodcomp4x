@@ -92,7 +92,18 @@ pub struct GeneratedMap {
     /// Ruins to fight over, each about as far on foot from the two starts nearest it and close
     /// to none.
     ruins: Vec[Hex],
+    /// Sites for animal dens, `MAX_DENS_PER_SIDE` a side (fewer if the land runs out), in the
+    /// order to take them: any first few are spread across the map too.
+    dens: Vec[Hex],
 }
+
+/// The most animal dens a world has for each side: its Animals setting takes all of them, or
+/// fewer (`animals.tua`).
+pub const MAX_DENS_PER_SIDE: i32 = 2;
+/// How near a start a den may be, in hexes.
+pub const DEN_START_DISTANCE: i32 = 5;
+/// How near each other dens may be, in hexes.
+const DEN_GAP: i32 = 6;
 
 /// Builds a world map for `sides` players from `seed`.
 pub fn generate(seed: u32, sides: i32) -> GeneratedMap {
@@ -111,11 +122,12 @@ pub fn generate(seed: u32, sides: i32) -> GeneratedMap {
         for i in 0..starts.len() { distances.push(walking_distances(&grid, starts[i])); }
         let ruins = place_ruins(&grid, &starts, &distances, spacing, &mut rng);
         place_specials(&mut grid, &starts, &distances, &ruins, spacing, &mut rng);
-        return GeneratedMap { grid, starts, ruins };
+        let dens = place_dens(&grid, &starts, &distances, &ruins, &mut rng);
+        return GeneratedMap { grid, starts, ruins, dens };
     }
     let mut starts: Vec[Hex] = Vec.new();
     for i in 0..sides { starts.push(Hex.new(4 * i - 8, 0)); }
-    GeneratedMap { grid: HexGrid.shaped(shape, &[(Hex.new(0, 0), Tile.of(Terrain.Plains))]), starts, ruins: Vec.new() }
+    GeneratedMap { grid: HexGrid.shaped(shape, &[(Hex.new(0, 0), Tile.of(Terrain.Plains))]), starts, ruins: Vec.new(), dens: Vec.new() }
 }
 
 /// The value of `hex` in a map filled for every hex of the grid.
@@ -859,6 +871,28 @@ fn place_ruins(grid: &HexGrid, starts: &Vec[Hex], distances: &Vec[Map[Hex, i32]]
     let wanted = starts.len() + rng.below(2);
     let gap = max((spacing * 0.6) as i32, 4);
     pick_spread(options, wanted, gap, starts, rng)
+}
+
+/// Animal dens: up to `MAX_DENS_PER_SIDE` a side, on forest, jungle or hills that every start can
+/// walk to, at least `DEN_START_DISTANCE` from every start, off the map's edge, clear of
+/// resources, special tiles and ruins, and `DEN_GAP` apart. In a random order, so the first few
+/// of them are spread over the map as well as all of them.
+fn place_dens(grid: &HexGrid, starts: &Vec[Hex], distances: &Vec[Map[Hex, i32]], ruins: &Vec[Hex], rng: &mut Rng) -> Vec[Hex] {
+    let mut options: Vec[Spot] = Vec.new();
+    for hh in grid.hexes() {
+        let h = *hh;
+        let tile = grid.tile(h);
+        if !(grid.is_passable(h) && (tile.hills || tile.feature.is_some()) && grid.edge_distance(h) >= 1 && grid.resource(h).is_none() && grid.special(h).is_none()) { continue; }
+        let mut clear = true;
+        for r in 0..ruins.len() { if ruins[r].distance(h) < 2 { clear = false; } }
+        for s in 0..starts.len() { if starts[s].distance(h) < DEN_START_DISTANCE { clear = false; } }
+        for m in 0..distances.len() { if !distances[m].has(h) { clear = false; } }
+        if clear { options.push(Spot { hex: h, uneven: 0 }); }
+    }
+    // All as good: `pick_spread` puts them in a random order.
+    let wanted = MAX_DENS_PER_SIDE * starts.len();
+    let none: Vec[Hex] = Vec.new();
+    pick_spread(options, wanted, DEN_GAP, &none, rng)
 }
 
 /// Special tiles (`Special`): about one per side, of every kind in turn, between the starts

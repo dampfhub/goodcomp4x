@@ -26,11 +26,11 @@ fn inside_hex(p: Vec2, radius: f32) -> bool {
 fn every_map_icon_stays_in_its_corner() {
     // The unit token's reach: radius 0.36 plus half its outline.
     let token = 0.39 * HEX_SIZE;
-    for k in 0..9 {
+    for k in 0..10 {
         let icon = MAP_ICONS[k];
         let (spot, scale) = match icon {
             MapIcon.HorseHead | MapIcon.Ingot => (RESOURCE_SPOT, 1.0),
-            MapIcon.Ruins | MapIcon.FruitTree | MapIcon.StoneBlocks => (LANDMARK_SPOT, LANDMARK_SCALE),
+            MapIcon.Ruins | MapIcon.FruitTree | MapIcon.StoneBlocks | MapIcon.Paw => (LANDMARK_SPOT, LANDMARK_SCALE),
             _ => (IMPROVEMENT_SPOT, 1.0),
         };
         let mut out: Vec[MeshVertex] = Vec.new();

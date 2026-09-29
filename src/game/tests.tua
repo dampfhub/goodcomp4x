@@ -320,10 +320,12 @@ fn simultaneous_attacks_all_land_before_anyone_is_removed() {
 fn order_badges_follow_the_resolution_order() {
     assert(step_rank(UnitType.Scout, Phase.Move) == 1);
     assert(step_rank(UnitType.Cavalry, Phase.Move) == 2);
-    assert(step_rank(UnitType.Siege, Phase.Move) == 5);
+    assert(step_rank(UnitType.Siege, Phase.Move) == 7);
     assert(step_rank(UnitType.Ranged, Phase.Attack) == 1);
     assert(step_rank(UnitType.Scout, Phase.Attack) == 2);
-    assert(step_rank(UnitType.Siege, Phase.Attack) == 5);
+    assert(step_rank(UnitType.Siege, Phase.Attack) == 7);
+    assert(step_rank(UnitType.Wolf, Phase.Move) == 3);
+    assert(step_rank(UnitType.Bear, Phase.Attack) == 6);
 }
 
 /// Every unit type has a rank in both phases, so a badge never reads 0.

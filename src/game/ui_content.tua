@@ -549,7 +549,7 @@ impl GameState {
         let mut panel = panel_builder(false);
         panel.text(TextSize.Title, "SETTINGS", TEXT);
         let mut group = "";
-        for k in 0..5 {
+        for k in 0..6 {
             let setting = SETTINGS[k];
             let heading = setting.group();
             if !str_eq(heading, group) {

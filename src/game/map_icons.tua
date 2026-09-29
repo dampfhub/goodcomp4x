@@ -59,6 +59,7 @@ const STONE: Color = [0.42, 0.40, 0.36, 1.0];
 const STONE_LIT: Color = [0.68, 0.65, 0.58, 1.0];
 const STONE_SHADE: Color = [0.20, 0.19, 0.17, 1.0];
 const LEAVES: Color = [0.06, 0.30, 0.05, 1.0];
+const FUR: Color = [0.30, 0.17, 0.08, 1.0];
 const FRUIT: Color = [0.80, 0.08, 0.04, 1.0];
 /// Metal on yield chips and in text: brighter than the Iron deposit's ingot so it reads small.
 const METAL: Color = [0.42, 0.46, 0.52, 1.0];
@@ -136,6 +137,8 @@ pub enum MapIcon {
     FruitTree,
     /// Quarry: three cut stone blocks.
     StoneBlocks,
+    /// An animal den: a paw print.
+    Paw,
 }
 
 impl MapIcon {
@@ -153,9 +156,9 @@ impl MapIcon {
 }
 
 /// Every map icon, and where it's drawn: `(icon, spot, scale)`.
-pub const MAP_ICONS: [MapIcon; 9] = [
+pub const MAP_ICONS: [MapIcon; 10] = [
     MapIcon.HorseHead, MapIcon.Ingot, MapIcon.Wheat, MapIcon.OreCart, MapIcon.Fence, MapIcon.Logs,
-    MapIcon.Ruins, MapIcon.FruitTree, MapIcon.StoneBlocks,
+    MapIcon.Ruins, MapIcon.FruitTree, MapIcon.StoneBlocks, MapIcon.Paw,
 ];
 
 /// Draws `icon` centered on `center`, `scale` times its usual size.
@@ -270,6 +273,11 @@ pub fn push_map_icon(center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec[Mesh
                 pen.shape(&points(&[vec2(x, y), vec2(x + 13.0, y), vec2(x + 13.0, y + 10.0), vec2(x, y + 10.0)]), STONE, 2.5, out);
                 pen.shape(&points(&[vec2(x, y), vec2(x + 13.0, y), vec2(x + 13.0, y + 3.0), vec2(x, y + 3.0)]), STONE_LIT, 0.0, out);
             }
+        }
+        MapIcon.Paw => {
+            pen.shape(&ellipse(vec2(0.0, 5.0), 8.5, 7.0, 0.0), FUR, 2.5, out);
+            let toes = [vec2(-10.0, -4.0), vec2(-4.0, -10.0), vec2(4.0, -10.0), vec2(10.0, -4.0)];
+            for k in 0..4 { pen.shape(&ellipse(toes[k], 3.4, 3.8, 0.0), FUR, 2.0, out); }
         }
     }
 }

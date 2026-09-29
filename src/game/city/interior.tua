@@ -213,7 +213,7 @@ impl GameState {
             let mut adjacent: Vec[i32] = Vec.new();
             for i in 0..self.units.len() {
                 let unit = &self.units[i];
-                if unit.pos.distance(pos) == 1 && !unit.is_naval() && !self.settlers.contains(unit.id) { adjacent.push(i); }
+                if unit.pos.distance(pos) == 1 && !unit.is_naval() && !self.settlers.contains(unit.id) && !unit.is_animal() { adjacent.push(i); }
             }
             let mut ids: Set[i64] = Set.new();
             for a in 0..adjacent.len() { let _new = ids.insert(self.units[adjacent[a]].id as i64); }

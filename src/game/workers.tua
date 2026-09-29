@@ -1021,6 +1021,13 @@ impl GameState {
                 w = w + 1;
                 continue;
             };
+            // An animal captures nobody: the worker is killed.
+            if self.units[captor].is_animal() {
+                let mut ids: Vec[u32] = Vec.new();
+                ids.push(worker.id);
+                self.kill_workers(&ids);
+                continue;
+            }
             let captor_team = self.units[captor].team;
             let _gone = self.field_workers.remove(w);
             self.return_job(worker);

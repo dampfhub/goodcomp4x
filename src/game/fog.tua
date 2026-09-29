@@ -97,6 +97,8 @@ pub struct Sighting {
     yields: (i32, i32, i32),
     /// Unclaimed ruins (`ruins.tua`).
     ruin: bool,
+    /// An animal den not yet cleared (`animals.tua`), by the animal it keeps.
+    den: Option[UnitType],
 }
 
 impl GameState {
@@ -213,6 +215,7 @@ impl GameState {
             barriers,
             yields: self.raw_yield(hex),
             ruin: self.ruin_at(hex).is_some(),
+            den: match self.den_at(hex) { Option.Some(d) => Option.Some(self.dens[d].kind), Option.None => Option.None },
         }
     }
 

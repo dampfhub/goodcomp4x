@@ -583,6 +583,11 @@ impl GameState {
             let id = self.take_unit_id();
             self.units.push(Unit.new(id, scout, team, UnitType.Scout));
         }
+        // As many dens as the Animals setting asks for, each with its animal: one a side, or two.
+        let wanted = settings.world_animals * (1 + ai);
+        let mut sites: Vec[Hex] = Vec.new();
+        for k in 0..map.dens.len() { if k < wanted { sites.push(map.dens[k]); } }
+        self.make_dens(&sites);
         let founding = if settings.world_start_city { "C OPENS YOUR CITY" } else { "F FOUNDS A CITY" };
         self.notice = text(fn() can {Out} {
             Out.put("WORLD SEED "); show_u64(seed as u64); Out.put(" - "); show_u64(ai as u64); Out.put(" AI - "); Out.put(founding); Out.put(" - F4 FOR A NEW MAP");

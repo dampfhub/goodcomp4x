@@ -40,6 +40,9 @@ pub struct Settings {
     /// Each side in the next world starts with its city already founded, rather than a
     /// settler to found it with.
     world_start_city: bool,
+    /// Animal dens in the next world (`animals.tua`): `ANIMALS_OFF`, one a side (`ANIMALS_FEW`)
+    /// or two a side (`ANIMALS_MANY`).
+    world_animals: i32,
 }
 
 impl Eq for Settings {
@@ -49,18 +52,24 @@ impl Eq for Settings {
             && self.cloud_fog == other.cloud_fog
             && self.world_ai == other.world_ai
             && self.world_start_city == other.world_start_city
+            && self.world_animals == other.world_animals
     }
 }
 
 /// `Settings.world_ai` for 4 to 6 AI players, picked by the map's seed.
 pub const WORLD_AI_BY_SEED: i32 = 0;
 
+/// `Settings.world_animals`: no animals, one den a side, or two.
+pub const ANIMALS_OFF: i32 = 0;
+pub const ANIMALS_FEW: i32 = 1;
+pub const ANIMALS_MANY: i32 = 2;
+
 pub fn default_settings() -> Settings {
-    Settings { instant_playback: true, max_queued_turns: 6, cloud_fog: true, world_ai: WORLD_AI_BY_SEED, world_start_city: true }
+    Settings { instant_playback: true, max_queued_turns: 6, cloud_fog: true, world_ai: WORLD_AI_BY_SEED, world_start_city: true, world_animals: ANIMALS_FEW }
 }
 
 /// One of the `Settings`, as the settings menu shows and changes it.
-pub enum Setting { TurnPlayback, MaxQueuedTurns, FogStyle, WorldAi, WorldStart }
+pub enum Setting { TurnPlayback, MaxQueuedTurns, FogStyle, WorldAi, WorldStart, WorldAnimals }
 
 /// How the settings menu changes a `Setting`.
 pub enum Control {
@@ -78,7 +87,7 @@ pub const MAX_BUTTONS: i32 = 3;
 
 /// Every setting, in the order the menu lists them. Settings of one `group` are listed
 /// together, under its heading.
-pub const SETTINGS: [Setting; 5] = [Setting.TurnPlayback, Setting.MaxQueuedTurns, Setting.FogStyle, Setting.WorldAi, Setting.WorldStart];
+pub const SETTINGS: [Setting; 6] = [Setting.TurnPlayback, Setting.MaxQueuedTurns, Setting.FogStyle, Setting.WorldAi, Setting.WorldStart, Setting.WorldAnimals];
 
 impl Setting {
     /// Its name in the saved settings file (`to_text`). Old files use these, so a setting keeps
@@ -90,6 +99,7 @@ impl Setting {
             Setting.FogStyle => "fog",
             Setting.WorldAi => "world_ai",
             Setting.WorldStart => "world_start",
+            Setting.WorldAnimals => "world_animals",
         }
     }
 
@@ -101,6 +111,7 @@ impl Setting {
             Setting.FogStyle => "FOG",
             Setting.WorldAi => "AI PLAYERS",
             Setting.WorldStart => "START WITH",
+            Setting.WorldAnimals => "ANIMALS",
         }
     }
 
@@ -109,7 +120,7 @@ impl Setting {
         match self {
             Setting.TurnPlayback | Setting.MaxQueuedTurns => "TURNS",
             Setting.FogStyle => "MAP",
-            Setting.WorldAi | Setting.WorldStart => "NEXT WORLD (F4)",
+            Setting.WorldAi | Setting.WorldStart | Setting.WorldAnimals => "NEXT WORLD (F4)",
         }
     }
 
@@ -118,7 +129,7 @@ impl Setting {
         match self {
             Setting.TurnPlayback => Control.Toggle,
             Setting.MaxQueuedTurns => Control.Slider,
-            Setting.FogStyle | Setting.WorldAi | Setting.WorldStart => Control.Choice,
+            Setting.FogStyle | Setting.WorldAi | Setting.WorldStart | Setting.WorldAnimals => Control.Choice,
         }
     }
 
@@ -130,6 +141,7 @@ impl Setting {
             Setting.FogStyle => "HOW UNEXPLORED LAND IS HIDDEN: UNDER CLOUDS, OR A FLAT GREY.",
             Setting.WorldAi => "HOW MANY AI PLAYERS THE NEXT WORLD (F4) HAS. THE MAP GROWS WITH THEM. BY MAP PICKS 4 TO 6 FROM THE MAP'S SEED.",
             Setting.WorldStart => "WHETHER EVERY SIDE IN THE NEXT WORLD (F4) STARTS WITH ITS CITY, OR A SETTLER TO FOUND IT WITH.",
+            Setting.WorldAnimals => "ANIMAL DENS IN THE NEXT WORLD (F4): NONE, ONE OR TWO A SIDE.",
         }
     }
 
@@ -141,6 +153,7 @@ impl Setting {
             Setting.FogStyle => (0, 1),
             Setting.WorldAi => (0, 6),
             Setting.WorldStart => (0, 1),
+            Setting.WorldAnimals => (ANIMALS_OFF, ANIMALS_MANY),
         }
     }
 
@@ -156,6 +169,7 @@ impl Setting {
                 if value == WORLD_AI_BY_SEED { to_owned("4-6 BY MAP") } else { text(fn() can {Out} { show_i64(value as i64); }) }
             }
             Setting.WorldStart => to_owned(if value == 1 { "CITY" } else { "SETTLER" }),
+            Setting.WorldAnimals => to_owned(if value == ANIMALS_OFF { "OFF" } else if value == ANIMALS_FEW { "FEW" } else { "MANY" }),
         }
     }
 }
@@ -176,6 +190,7 @@ impl Settings {
             Setting.FogStyle => flag(self.cloud_fog),
             Setting.WorldAi => self.world_ai,
             Setting.WorldStart => flag(self.world_start_city),
+            Setting.WorldAnimals => self.world_animals,
         }
     }
 
@@ -187,6 +202,7 @@ impl Settings {
             Setting.FogStyle => { self.cloud_fog = value == 1; }
             Setting.WorldAi => { self.world_ai = value; }
             Setting.WorldStart => { self.world_start_city = value == 1; }
+            Setting.WorldAnimals => { self.world_animals = value; }
         }
     }
 
@@ -194,7 +210,7 @@ impl Settings {
     /// `key` and value.
     pub fn to_text(&self) -> Str {
         let mut out = to_owned("");
-        for i in 0..5 {
+        for i in 0..6 {
             let setting = SETTINGS[i];
             let value = self.get(setting);
             let line = text(fn() can {Out} { Out.put(setting.key()); Out.put(" "); show_i64(value as i64); Out.put("\n"); });
@@ -221,6 +237,7 @@ impl Settings {
             cloud_fog: self.cloud_fog,
             world_ai: self.world_ai,
             world_start_city: self.world_start_city,
+            world_animals: self.world_animals,
         }
     }
 }
@@ -233,7 +250,7 @@ pub fn settings_from_text(content: &str) -> Settings {
         let Option.Some(kv) = key_and_values(*line) else { continue; };
         let mut found: Option[Setting] = Option.None;
         let key = &kv.key;
-        for i in 0..5 { if str_eq(SETTINGS[i].key(), key) { found = Option.Some(SETTINGS[i]); } }
+        for i in 0..6 { if str_eq(SETTINGS[i].key(), key) { found = Option.Some(SETTINGS[i]); } }
         let Option.Some(setting) = found else { continue; };
         if kv.values.is_empty() { continue; }
         let first = &kv.values[0];

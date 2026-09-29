@@ -34,6 +34,7 @@ use game.hex.Edge;
 use game.effects.Playing;
 use game.scenario.Scenario;
 use game.ruins.Ruin;
+use game.animals.Den;
 use game.fog.Sighting;
 use game.settings.default_settings as fresh_settings;
 use game.settings.Settings;
@@ -239,6 +240,8 @@ pub struct GameState {
     map_seed: Option[u32],
     /// Ruins not yet claimed (`ruins.tua`), in the order the map made them.
     ruins: Vec[Ruin],
+    /// Animal dens not yet cleared (`animals.tua`), in the order the map made them.
+    dens: Vec[Den],
     /// Debug setting (F10): hide what the player's side can't see (`fog.tua`). Kept across
     /// scenario switches and loads.
     fog_of_war: bool,
@@ -353,6 +356,7 @@ impl GameState {
             next_unit_id: 8,
             map_seed: Option.None,
             ruins: Vec.new(),
+            dens: Vec.new(),
             fog_of_war: true,
             imgui_ui: false,
             ui_captured: false,
@@ -671,6 +675,8 @@ impl Role {
                 UnitType.PatrolGalley => "PATROL GALLEY",
                 UnitType.LandingCraft => "LANDING CRAFT",
                 UnitType.BombardShip => "BOMBARD SHIP",
+                UnitType.Wolf => "WOLF PACK",
+                UnitType.Bear => "BEAR",
             },
         }
     }
