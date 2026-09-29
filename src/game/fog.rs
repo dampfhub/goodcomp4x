@@ -693,7 +693,7 @@ pub(super) mod tests {
     /// A lone Blue city at the origin in marsh, working one tile five hexes
     /// east that a mountain at (3, 0) hides from it. Only a road around the
     /// mountain, through (4, -1), brings its goods home.
-    fn worked_tile_behind_the_mountain() -> (GameState, usize, Hex) {
+    pub(in crate::game) fn worked_tile_behind_the_mountain() -> (GameState, usize, Hex) {
         let mut game = GameState::city_scenario();
         game.units.clear();
         game.sites.clear();
