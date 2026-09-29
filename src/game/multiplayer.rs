@@ -3546,6 +3546,8 @@ mod tests {
         // look inside their cities too, which must change nothing.
         for _ in 0..4 {
             let (mut host, mut guests) = table(2);
+            // The seed is random: shown if the game goes wrong, to replay it.
+            eprintln!("map seed {:?}", host.map_seed);
             for _ in 0..40 {
                 for game in std::iter::once(&mut host).chain(guests.iter_mut()) {
                     let team = game.local_team;

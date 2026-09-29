@@ -13,9 +13,9 @@
 //!    map) is sea. The biggest landmass stays; other land sinks, unless it's
 //!    a small island of at most `MAX_ISLAND` hexes.
 //! 2. Mountain ranges (`raise_ranges`) where plates of crust push together:
-//!    long chains one hex wide along most of the borders between plates,
-//!    only about 5% of the land, broken by passes (one where ranges meet),
-//!    off the shore.
+//!    short chains one hex wide along the borders between plates, with gaps
+//!    between, broken by passes (and one where ranges meet), off the shore;
+//!    only about 4% of the land.
 //! 3. Hills (`roll_hills`): foothills along the ranges, and rolling uplands.
 //!    Hills are a modifier, so whatever ground the climate gives them stays
 //!    hilly.
@@ -63,19 +63,31 @@ use super::terrain::{Feature, Resource, Special, Terrain, Tile};
 
 /// Sides the smallest world is sized for: fewer still get this much room.
 const MIN_WORLD_SIDES: usize = 3;
-/// How many sides share the area of the base world (61 by about 36 hexes):
-/// each side gets `1 / SIDES_PER_BASE_WORLD` of it, so the map grows in
-/// proportion to the number of sides.
-const SIDES_PER_BASE_WORLD: f32 = 2.5;
+/// Decent city sites 8 hexes apart that a side's share of the land holds on
+/// average (`preview.rs` counts them). A city reaches tiles up to 4 hexes
+/// off, so cities 8 apart barely share any. Neighbors contest part of a
+/// side's share, so this leaves room for 3-5 cities comfortably, and more
+/// where the land is good.
+const CITY_SITES_PER_SIDE: f32 = 8.0;
+/// Hexes of map (land and sea, about half each) for each decent city site
+/// 8 apart, as measured over many maps.
+const HEXES_PER_CITY_SITE: f32 = 150.0;
+/// Hexes of map for each side.
+const HEXES_PER_SIDE: f32 = CITY_SITES_PER_SIDE * HEXES_PER_CITY_SITE;
+/// The world's columns over its rows (30 by 18 before worlds were sized by
+/// city sites): about 1.4 times as wide as tall on screen.
+const WORLD_ASPECT: f32 = 30.0 / 18.0;
 
-/// The world's size for `sides` players: the base 61 columns by about 36
-/// rows for two and a half of them, growing in area with every side so each
-/// has about as much land (six get about 93 by 57).
+/// The world's size for `sides` players: `HEXES_PER_SIDE` for each (six get
+/// about 111 by 67 hexes).
 pub fn world_shape(sides: usize) -> Shape {
-    let scale = (sides.max(MIN_WORLD_SIDES) as f32 / SIDES_PER_BASE_WORLD).sqrt();
+    let hexes = sides.max(MIN_WORLD_SIDES) as f32 * HEXES_PER_SIDE;
+    // `cols` either side of the middle and `rows` above and below: about
+    // 2 cols by 2 rows hexes.
+    let rows = (hexes / (4.0 * WORLD_ASPECT)).sqrt();
     Shape::Rectangle {
-        cols: (30.0 * scale).round() as i32,
-        rows: (18.0 * scale).round() as i32,
+        cols: (rows * WORLD_ASPECT).round() as i32,
+        rows: rows.round() as i32,
     }
 }
 
@@ -318,20 +330,27 @@ fn sea_distance(draft: &Draft) -> HashMap<Hex, i32> {
 const HEXES_PER_PLATE: usize = 150;
 /// The chance that two plates meeting push together and raise a range.
 const RANGE_CHANCE: f32 = 0.65;
-/// The chance that a hex along a range stays open, as a pass.
-const PASS_CHANCE: f32 = 0.1;
+/// The chance that a hex along a range stays open, as a pass: about one in
+/// five, so ranges rarely run far without a way through.
+const PASS_CHANCE: f32 = 0.2;
+/// How unevenly a ridge wears down along its length: noise this strong,
+/// against the 0 to 1 of how hard its plates push, breaks every border into
+/// short ranges where it runs high, and gaps between.
+const WEAR: f32 = 1.5;
+/// The size of the wear's bumps, in world units: a few hexes.
+const WEAR_SCALE: f32 = 2.0;
 
 /// Stage 2, mountain ranges, where plates of crust push together. The map is
-/// split among plates (a dozen or so on the smallest map), each the hexes
-/// nearest its center, warped so the borders between them curve. About two
-/// in three borders rise, each by its own amount, and the hexes along a
-/// border (one hex wide, on one side of it) are the ridge: the rising
-/// borders first, the others only where those fall short. Only the highest
-/// 4.8-6.8% of the land (varying per map) becomes mountains, so ridges come
-/// in long, thin chains that break off where they're lowest; a hex here and
-/// there stays open as a pass, as does the hex where three ranges meet, and
-/// ranges keep a hex back from the shore. A lone peak or two may rise
-/// elsewhere.
+/// split among plates (a dozen or more), each the hexes nearest its center,
+/// warped so the borders between them curve. About two in three borders
+/// rise, each by its own amount, and the hexes along a border (one hex wide,
+/// on one side of it) are the ridge: the rising borders first, the others
+/// only where those fall short. Only the highest 4.8-6.8% of the land
+/// (varying per map) is ridge, and a ridge wears down unevenly (`WEAR`), so
+/// ranges come in short, thin chains with gaps between. About one hex in
+/// five stays open as a pass, as does the hex where three ranges meet, so
+/// about 4% of the land ends up mountains; ranges keep a hex back from the
+/// shore. A lone peak or two may rise elsewhere.
 fn raise_ranges(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) {
     let (warp_x, warp_y, wear) = (Noise(rng.next()), Noise(rng.next()), Noise(rng.next()));
     let extent = draft.extent;
@@ -388,7 +407,7 @@ fn raise_ranges(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) {
                 .fold(f32::NEG_INFINITY, f32::max);
             height
                 .is_finite()
-                .then(|| (h, height + 0.3 * wear.fbm(h.to_world() / 3.0)))
+                .then(|| (h, height + WEAR * wear.fbm(h.to_world() / WEAR_SCALE)))
         })
         .collect();
     ridge.sort_by(|a, b| {

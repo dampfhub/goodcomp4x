@@ -93,16 +93,19 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 - **Cities:** the same three hills; mountains at (0,±2), (0,±3), (0,±4); Horses at (-2,0) and
   (2,0); Iron at (-2,1) and (2,-1).
 - **Frontier:** hills at (-1,2) and (1,-2); mountains at (0,±3).
-- **World generation** (`mapgen.rs`): a rectangle whose area grows in proportion
-  to the number of sides (about 61 hexes wide by 36 tall per two and a half sides, so about 93 by
-  57 for six; never smaller than for three), generated from a `u32` seed
+- **World generation** (`mapgen.rs`): a rectangle of about 1,200 hexes per side, so about 111
+  hexes wide by 67 tall for six (never smaller than for three). That's room on each side's share
+  of the land for about 8 decent city sites 8 hexes apart, so a side fits 3-5 cities
+  comfortably even with its neighbors contesting some, and more where the land is good.
+  Generated from a `u32` seed
   with its own RNG, so a seed and side count always rebuild the same map, on every machine (the
   seed shows in the debug panel; `--seed N` on the command line picks one). A Pangea: 42-52%
   sea, one continent plus islets of at most 12 hexes, built in stages:
-  - **Mountains** are about 5% of the land, in ranges: long chains one hex wide where plates of
+  - **Mountains** are about 4% of the land, in ranges: short chains one hex wide where plates of
     crust meet (the map is split among a dozen or more warped plates, and about two in three of
-    their borders rise). A range stays a hex back from the shore, breaks off where it runs low, and
-    has an open hex (a pass, on hills) about one in ten; where three ranges meet, the hex they meet
+    their borders rise). A ridge wears down unevenly, so a border rises as several short ranges
+    with gaps between (most under 10 hexes long). A range stays a hex back from the shore and has
+    an open hex (a pass, on hills) about one in five; where three ranges meet, the hex they meet
     on is a pass too. A lone peak or two may stand apart.
     Mountains never wall land off: if a range cuts off a stretch of open land, the mountains on
     the shortest way out become hills.

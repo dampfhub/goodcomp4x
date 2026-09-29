@@ -7,7 +7,9 @@
 //!   `cargo test --release map_previews -- --ignored`.
 //! - `map_stats` prints measurements over many seeds (`MAPGEN_SEEDS`, by
 //!   default `0..50`): terrain shares, mountain clusters and
-//!   their shape, rivers, start spacing on foot and start yields:
+//!   their shape, range lengths and how far mountains make walking around
+//!   them, rivers, start spacing on foot and start yields, world sizes and
+//!   the decent city sites each side's share of the land holds:
 //!   `cargo test --release map_stats -- --ignored --nocapture`.
 //!
 //! A map has as many sides as the world scenario gives that seed by default.
@@ -214,6 +216,82 @@ fn spread(values: impl Iterator<Item = i32>) -> f32 {
     hi as f32 / lo.max(1) as f32
 }
 
+/// The spacings `map_stats` packs city sites at. The rules allow cities
+/// `MIN_CITY_DISTANCE` (6) apart, but founded cities mostly stand 7-8 apart,
+/// so their land doesn't overlap much.
+const SITE_SPACINGS: [i32; 2] = [7, 8];
+/// A decent city site scores at least this share of its map's mean start
+/// (`start_score`: food, production and fresh water within two hexes).
+const DECENT_SITE_SHARE: f32 = 0.75;
+
+/// How many cities fit on the land the starts can walk to (`reach`), each
+/// on a decent site and at least `spacing` from every other: the starts
+/// first, then the best sites greedily. Any site the rules allow counts
+/// (`founding_issue`: open land, no ruins or den on it).
+pub fn city_sites(map: &GeneratedMap, reach: &HashMap<Hex, i32>, spacing: i32) -> usize {
+    let grid = &map.grid;
+    let mean_start = map
+        .starts
+        .iter()
+        .map(|&s| start_score(grid, s))
+        .sum::<i32>() as f32
+        / map.starts.len() as f32;
+    let mut sites: Vec<(i32, Hex)> = reach
+        .keys()
+        .copied()
+        .filter(|h| !map.ruins.contains(h) && !map.dens.contains(h))
+        .map(|h| (start_score(grid, h), h))
+        .filter(|&(score, _)| score as f32 >= DECENT_SITE_SHARE * mean_start)
+        .collect();
+    sites.sort_by_key(|&(score, h)| (std::cmp::Reverse(score), h.q, h.r));
+    let mut cities = map.starts.clone();
+    for (_, h) in sites {
+        if cities.iter().all(|c| c.distance(h) >= spacing) {
+            cities.push(h);
+        }
+    }
+    cities.len()
+}
+
+/// Origins per map for the mountains' detour (`mountain_detours`).
+const DETOUR_ORIGINS: usize = 24;
+/// Pairs nearer than this, in hexes, aren't counted in the detour.
+const DETOUR_MIN_DISTANCE: i32 = 8;
+
+/// How much farther mountains make walking across the land the starts can
+/// walk to (`reach`): for pairs of hexes at least `DETOUR_MIN_DISTANCE`
+/// apart, from `DETOUR_ORIGINS` origins spread over it, the steps on foot
+/// over the steps if mountains could be crossed (water still can't).
+fn mountain_detours(grid: &HexGrid, reach: &HashMap<Hex, i32>) -> Vec<f32> {
+    let mut land: Vec<Hex> = reach.keys().copied().collect();
+    land.sort_by_key(|h| (h.q, h.r));
+    let over_mountains = |origin: Hex| {
+        let mut steps = HashMap::from_iter([(origin, 0)]);
+        let mut queue = VecDeque::from([origin]);
+        while let Some(hex) = queue.pop_front() {
+            let next = steps[&hex] + 1;
+            for n in hex.neighbors() {
+                if grid.contains(n) && !grid.terrain(n).is_water() && !steps.contains_key(&n) {
+                    steps.insert(n, next);
+                    queue.push_back(n);
+                }
+            }
+        }
+        steps
+    };
+    let mut ratios = Vec::new();
+    for i in 0..DETOUR_ORIGINS {
+        let origin = land[i * land.len() / DETOUR_ORIGINS];
+        let (walk, over) = (walking_distances(grid, origin), over_mountains(origin));
+        for (&h, &steps) in &walk {
+            if h.distance(origin) >= DETOUR_MIN_DISTANCE {
+                ratios.push(steps as f32 / over[&h] as f32);
+            }
+        }
+    }
+    ratios
+}
+
 #[test]
 #[ignore = "prints measurements over many seeds"]
 fn map_stats() {
@@ -227,6 +305,10 @@ fn map_stats() {
     let (mut from_lakes, mut to_sea, mut to_lake) = (0usize, 0usize, 0usize);
     let (mut nearest, mut scores, mut yields) = (Vec::new(), Vec::new(), Vec::new());
     let mut generating = std::time::Duration::ZERO;
+    let (mut land_per_side, mut sites, mut detours) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut range_lengths, mut longest_ranges) = (Vec::new(), Vec::new());
+    let mut map_hexes = Vec::new();
+
     for &seed in &seeds {
         let started = std::time::Instant::now();
         let (map, rivers) = generate_with_rivers(seed, default_sides(seed));
@@ -255,6 +337,12 @@ fn map_stats() {
             .max_by_key(Vec::len)
             .unwrap();
         let reach = walking_distances(grid, map.starts[0]);
+        let sides = map.starts.len() as f32;
+        map_hexes.push(all.len() as f32 / sides);
+        land_per_side.push(reach.len() as f32 / sides);
+        sites.push(SITE_SPACINGS.map(|spacing| city_sites(&map, &reach, spacing) as f32 / sides));
+        detours.extend(mountain_detours(grid, &reach));
+
         cut_off += continent
             .iter()
             .filter(|&&h| grid.is_passable(h) && !reach.contains_key(&h))
@@ -262,6 +350,15 @@ fn map_stats() {
         for cluster in components(&all, |h| grid.terrain(h) == Terrain::Mountains) {
             clusters.push(cluster_shape(&cluster));
         }
+        let lengths: Vec<i32> = components(&all, |h| grid.terrain(h) == Terrain::Mountains)
+            .iter()
+            .map(|c| cluster_shape(c))
+            .filter(|c| c.0 >= 4)
+            .map(|c| c.1)
+            .collect();
+        longest_ranges.push(lengths.iter().copied().max().unwrap_or(0) as f32);
+        range_lengths.extend(lengths.iter().map(|&l| l as f32));
+
         crowded += crowded_mountains(grid);
         river_edges += grid.rivers().count();
         for river in rivers {
@@ -353,4 +450,43 @@ fn map_stats() {
             worst(v)
         );
     }
+    let least = |v: &[f32]| v.iter().copied().fold(f32::MAX, f32::min);
+    let sizes: Vec<String> = (3..=7)
+        .map(|sides| match world_shape(sides) {
+            Shape::Rectangle { cols, rows } => {
+                format!("{sides}: {}x{}", 2 * cols + 1, 2 * rows + 1)
+            }
+            shape => format!("{sides}: {shape:?}"),
+        })
+        .collect();
+    println!("world size by sides (columns x rows): {}", sizes.join(", "));
+    println!(
+        "per side: {:.0} hexes of map, {:.0} of land the starts can walk to (least {:.0})",
+        mean(&map_hexes),
+        mean(&land_per_side),
+        least(&land_per_side),
+    );
+    for (i, spacing) in SITE_SPACINGS.iter().enumerate() {
+        let per_side: Vec<f32> = sites.iter().map(|s| s[i]).collect();
+        println!(
+            "decent city sites per side, {spacing} apart: mean {:.1}, least {:.1}, most {:.1}",
+            mean(&per_side),
+            least(&per_side),
+            worst(&per_side),
+        );
+    }
+    println!(
+        "ranges (clusters of 4+): length mean {:.1}; longest per map mean {:.1}, most {}",
+        mean(&range_lengths),
+        mean(&longest_ranges),
+        worst(&longest_ranges),
+    );
+    let longer = detours.iter().filter(|&&r| r >= 1.25).count();
+    println!(
+        "walking detour from mountains ({DETOUR_MIN_DISTANCE}+ hexes apart): mean {:.3}, \
+         {:.1}% of pairs 25%+ farther, worst {:.2}",
+        mean(&detours),
+        100.0 * longer as f32 / detours.len() as f32,
+        worst(&detours),
+    );
 }

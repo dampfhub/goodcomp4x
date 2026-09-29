@@ -933,9 +933,11 @@ fn ai_against_ai_combat_ends_with_fewer_units() {
 /// map their sides have seen by the end, for which the AI's scouts (`plan_ai_scout`) must
 /// beat what they did when they fought like any troop: 24 turns, and 11% of the map (seeds
 /// 0 to 15). Scouts that keep out of reach and go where their side hasn't seen live nearly to
-/// the end (38 turns) and see half as much again (16%).
+/// the end (38 turns) and see half as much again (16%). Worlds then had about 870 hexes a
+/// side; at 1,200 (#330) the same scouting covers a smaller share of the map, 11% over 16 or
+/// 32 seeds (about a sixth more hexes than the 13% of the smaller maps), so the bar is 10%.
 const SCOUT_MIN_LIFE: f64 = 30.0;
-const SCOUT_MIN_SEEN: f64 = 0.12;
+const SCOUT_MIN_SEEN: f64 = 0.10;
 
 #[test]
 fn ai_sides_find_each_other_through_the_fog() {
