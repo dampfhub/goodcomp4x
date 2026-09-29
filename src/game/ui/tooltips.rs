@@ -171,41 +171,53 @@ impl GameState {
                 (format!("   {METAL_ICON}{metal}"), METAL_TEXT),
             ],
         ));
+        // Another side's economy (what a city delivers, what its queues
+        // work) depends on tiles, routes and plans the player can't see: of
+        // its city or Barracks, only what's in sight (population, health),
+        // or what the memory kept of it.
+        let pop_line = |population: usize| {
+            let text = format!("POP {population}/{MAX_CITY_POPULATION}");
+            (SMALL, vec![(text, GOLD_TEXT)])
+        };
+        let hp_line = |hp: f32| {
+            let text = format!("HP {hp:.0}/{:.0}", crate::game::city::BARRACKS_MAX_HP);
+            (SMALL, vec![(text, GOLD_TEXT)])
+        };
         if let Some(city) = city {
-            let city_index = self.cities.iter().position(|c| c.pos == hex).unwrap();
-            let queue = self.queue_word(city_index, Lane::City, "NOTHING");
-            lines.push((
-                SMALL,
-                vec![(
-                    format!(
-                        "POP {}/{MAX_CITY_POPULATION} · DELIVERS {}",
-                        city.population,
-                        price_hint(self.net_delivery(city_index))
-                    ),
-                    GOLD_TEXT,
-                )],
-            ));
-            lines.push((SMALL, vec![(format!("BUILDING {queue}"), DIM_TEXT)]));
+            if city.team == self.local_team {
+                let city_index = self.cities.iter().position(|c| c.pos == hex).unwrap();
+                let queue = self.queue_word(city_index, Lane::City, "NOTHING");
+                lines.push((
+                    SMALL,
+                    vec![(
+                        format!(
+                            "POP {}/{MAX_CITY_POPULATION} · DELIVERS {}",
+                            city.population,
+                            price_hint(self.net_delivery(city_index))
+                        ),
+                        GOLD_TEXT,
+                    )],
+                ));
+                lines.push((SMALL, vec![(format!("BUILDING {queue}"), DIM_TEXT)]));
+            } else {
+                lines.push(pop_line(city.population));
+            }
+        } else if let (None, Some(seen)) = (barracks, seen_city) {
+            lines.push(pop_line(seen.population));
         }
         if let Some(city) = barracks {
-            let index = self
-                .cities
-                .iter()
-                .position(|c| std::ptr::eq(c, city))
-                .unwrap();
-            let queue = self.queue_word(index, Lane::Barracks, "EMPTY");
-            lines.push((
-                SMALL,
-                vec![(
-                    format!(
-                        "HP {:.0}/{:.0}",
-                        city.barracks_hp,
-                        crate::game::city::BARRACKS_MAX_HP,
-                    ),
-                    GOLD_TEXT,
-                )],
-            ));
-            lines.push((SMALL, vec![(format!("TRAINING: {queue}"), DIM_TEXT)]));
+            lines.push(hp_line(city.barracks_hp));
+            if city.team == self.local_team {
+                let index = self
+                    .cities
+                    .iter()
+                    .position(|c| std::ptr::eq(c, city))
+                    .unwrap();
+                let queue = self.queue_word(index, Lane::Barracks, "EMPTY");
+                lines.push((SMALL, vec![(format!("TRAINING: {queue}"), DIM_TEXT)]));
+            }
+        } else if let (None, None, Some(seen)) = (city, seen_city, seen_barracks) {
+            lines.push(hp_line(seen.health * crate::game::city::BARRACKS_MAX_HP));
         }
 
         let mut notes = Vec::new();
@@ -227,7 +239,9 @@ impl GameState {
                     }
                     .into(),
                 ),
-                Building::Smelter => notes.push(format!(
+                // Another side's Smelter makes what its city's worked tiles
+                // and routes give it: not known.
+                Building::Smelter if owner.team == self.local_team => notes.push(format!(
                     "{} METAL A TURN",
                     signed_quantity(self.smelter_income(city_index))
                 )),
@@ -893,6 +907,225 @@ impl GameState {
                 "DROPS ALL ITS ORDERS AND QUEUED TURNS.".into(),
                 None,
             ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::builder::{PanelBuilder, Row};
+    use super::super::text::price_hint;
+    use crate::game::GameState;
+    use crate::game::city::{Build, BuildUnit, Building, Lane, Queued, Site};
+    use crate::game::hex::Hex;
+    use crate::game::unit::{Team, Unit, UnitType};
+
+    /// The words of a tile's tooltip and, for a city or Barracks, its
+    /// hover panel: what the player is shown of `hex`.
+    fn shown(game: &GameState, hex: Hex) -> Vec<String> {
+        let mut words: Vec<String> = game
+            .tile_tooltip_lines(hex)
+            .into_iter()
+            .map(|(_, line)| line.into_iter().map(|(s, _)| s).collect())
+            .collect();
+        let structure = game.cities.iter().enumerate().find_map(|(i, c)| {
+            (c.pos == hex)
+                .then_some((i, false))
+                .or_else(|| (c.barracks == Some(hex)).then_some((i, true)))
+        });
+        if let Some((city, barracks)) = structure {
+            let mut panel = PanelBuilder::default();
+            game.structure_hover_panel(city, barracks, &mut panel);
+            words.extend(panel.rows.into_iter().filter_map(|row| match row {
+                Row::Text(_, line) => Some(line.into_iter().map(|(s, _)| s).collect()),
+                _ => None,
+            }));
+        }
+        words
+    }
+
+    /// The Cities scenario with no units, Red's city given a Smelter and a
+    /// Barracks beside it and a mine for the Smelter, and a Blue Scout that
+    /// sees the city, Smelter and Barracks but neither the mine nor a tile
+    /// the city works. Returns the game, Red's city, the Smelter, the
+    /// Barracks, the mine and the worked tile out of sight.
+    fn enemy_city_half_in_sight() -> (GameState, usize, Hex, Hex, Hex, Hex) {
+        let mut base = GameState::city_scenario();
+        base.units.clear();
+        base.selected = None;
+        base.selected_city = None;
+        base.memory.clear();
+        let red = base
+            .cities
+            .iter()
+            .position(|c| c.team == Team::Red)
+            .unwrap();
+        let pos = base.cities[red].pos;
+        let open = |game: &GameState, h: Hex| {
+            game.grid.contains(h)
+                && game.grid.terrain(h).is_workable()
+                && !game.sites.contains_key(&h)
+                && !game.cities.iter().any(|c| c.pos == h || c.works(h))
+        };
+        let hexes: Vec<Hex> = base.grid.all_hexes().collect();
+        let near: Vec<Hex> = pos
+            .neighbors()
+            .into_iter()
+            .filter(|&h| open(&base, h))
+            .collect();
+        for (smelter, barracks) in near.iter().flat_map(|&s| near.iter().map(move |&b| (s, b))) {
+            if smelter == barracks {
+                continue;
+            }
+            for &scout in &hexes {
+                if !open(&base, scout) || scout == smelter || scout == barracks {
+                    continue;
+                }
+                let mut game = base.clone();
+                game.cities[red].set_placed_site(Building::Smelter, smelter);
+                game.cities[red].set_placed_site(Building::Barracks, barracks);
+                game.units
+                    .push(Unit::new(50, scout, Team::Blue, UnitType::Scout));
+                game.explore();
+                let fog = game.fog();
+                if ![pos, smelter, barracks].iter().all(|&h| fog.sees(h)) {
+                    continue;
+                }
+                let Some(worked) = game.cities[red].worked().find(|&h| !fog.sees(h)) else {
+                    continue;
+                };
+                let routes = game.routes_from(Team::Red, smelter);
+                let Some(mine) = hexes.iter().copied().find(|&h| {
+                    open(&game, h)
+                        && !fog.sees(h)
+                        && (1..=3).contains(&smelter.distance(h))
+                        && routes.costs.contains_key(&h)
+                }) else {
+                    continue;
+                };
+                game.sites.insert(
+                    mine,
+                    Site {
+                        team: Team::Red,
+                        food: 0,
+                        production: 4,
+                        label: "MINE",
+                    },
+                );
+                assert!(game.smelter_income(red) > 0);
+                return (game, red, smelter, barracks, mine, worked);
+            }
+        }
+        panic!("no place for a Scout that sees Red's city but not all its tiles");
+    }
+
+    #[test]
+    fn an_enemy_citys_tooltips_do_not_change_with_what_the_player_cant_see() {
+        let (game, red, smelter, barracks, mine, worked) = enemy_city_half_in_sight();
+        let pos = game.cities[red].pos;
+        let read = |game: &GameState| [pos, smelter, barracks].map(|h| shown(game, h));
+        let before = read(&game);
+        let real = |game: &GameState| {
+            (
+                game.net_delivery(red),
+                game.smelter_income(red),
+                game.queue_word(red, Lane::City, "NOTHING"),
+                game.queue_word(red, Lane::Barracks, "EMPTY"),
+            )
+        };
+        // What the player can see still shows.
+        let pop = format!("POP {}/", game.cities[red].population);
+        assert!(before[0].iter().any(|s| s.starts_with(&pop)), "{before:?}");
+        assert!(before[2].iter().any(|s| s.starts_with("HP ")), "{before:?}");
+
+        // An unseen Green unit on the worked tile, another on the mine: goods
+        // from neither get through.
+        let mut blocked = game.clone();
+        for (id, hex) in [(60, worked), (61, mine)] {
+            blocked
+                .units
+                .push(Unit::new(id, hex, Team::Green, UnitType::Melee));
+        }
+        // The worked tile out of sight yields more.
+        let mut richer = game.clone();
+        richer.sites.insert(
+            worked,
+            Site {
+                team: Team::Red,
+                food: 9,
+                production: 9,
+                label: "FARM",
+            },
+        );
+        // Red queues something in each queue.
+        let mut queued = game.clone();
+        queued.cities[red]
+            .queue
+            .push(Queued::prepaid(Build::Unit(BuildUnit::Melee)));
+        queued.cities[red]
+            .barracks_queue
+            .push(Queued::prepaid(BuildUnit::Ranged));
+
+        let (delivers, smelts, building, training) = real(&game);
+        let (blocked_delivers, blocked_smelts, ..) = real(&blocked);
+        assert_ne!(blocked_delivers, delivers);
+        assert_ne!(blocked_smelts, smelts);
+        assert_ne!(real(&richer).0, delivers);
+        let (.., queued_building, queued_training) = real(&queued);
+        assert_ne!(queued_building, building);
+        assert_ne!(queued_training, training);
+        for (name, hidden) in [("blocked", blocked), ("richer", richer), ("queued", queued)] {
+            assert_eq!(read(&hidden), before, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_enemy_city_out_of_sight_shows_the_population_it_was_seen_with() {
+        let (mut game, red, _, barracks, ..) = enemy_city_half_in_sight();
+        let pos = game.cities[red].pos;
+        let population = game.cities[red].population;
+        // The Scout leaves; the city grows and its Barracks is hurt.
+        game.units.clear();
+        game.explore();
+        assert!(!game.fog().sees(pos) && !game.fog().sees(barracks));
+        game.cities[red].population += 3;
+        game.cities[red].barracks_hp /= 2.0;
+        let city = shown(&game, pos);
+        let pop = format!("POP {population}/");
+        assert!(city.iter().any(|s| s.starts_with(&pop)), "{city:?}");
+        let max = crate::game::city::BARRACKS_MAX_HP;
+        let hp = format!("HP {max:.0}/{max:.0}");
+        let seen = shown(&game, barracks);
+        assert!(seen.iter().any(|s| s == &hp), "{seen:?}");
+    }
+
+    #[test]
+    fn the_players_own_city_tooltips_still_show_its_economy() {
+        let (mut game, red, smelter, barracks, ..) = enemy_city_half_in_sight();
+        // The same city, now the player's.
+        game.local_team = Team::Red;
+        game.cities[red]
+            .queue
+            .push(Queued::prepaid(Build::Unit(BuildUnit::Melee)));
+        let city = shown(&game, game.cities[red].pos);
+        let delivers = format!("DELIVERS {}", price_hint(game.net_delivery(red)));
+        for expected in [delivers.as_str(), "BUILDING ", "QUEUE: "] {
+            assert!(
+                city.iter().any(|s| s.contains(expected)),
+                "{expected} {city:?}"
+            );
+        }
+        let smelts = shown(&game, smelter);
+        assert!(
+            smelts.iter().any(|s| s.ends_with("METAL A TURN")),
+            "{smelts:?}"
+        );
+        let trains = shown(&game, barracks);
+        for expected in ["TRAINING: ", "QUEUE: "] {
+            assert!(
+                trains.iter().any(|s| s.contains(expected)),
+                "{expected} {trains:?}"
+            );
         }
     }
 }
