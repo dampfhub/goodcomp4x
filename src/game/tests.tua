@@ -13,6 +13,8 @@ use log.Log;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.GRID_RADIUS;
+use game.city.Build;
+use game.city.Building;
 use game.city.BuildUnit;
 use game.combat.roll_damage;
 use game.effects.Effect;
@@ -674,5 +676,46 @@ fn landing_craft_carries_four_troops_and_lands_one_on_open_shore() {
         assert(g.units[0].cargo.len() == 3);
         assert(g.units[2].id == 92);
         assert(g.units[2].pos == Hex.new(-2, 1));
+    });
+}
+
+@test
+fn harbor_produces_a_ship_on_water_and_it_cannot_walk_ashore() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.naval_scenario();
+        g.cities[0].production = BuildUnit.PatrolGalley.cost();
+        let before = g.units.len();
+        g.complete_builds();
+        assert(g.units.len() == before + 1);
+        let ship = g.units.len() - 1;
+        assert(g.units[ship].unit_type == UnitType.PatrolGalley);
+        assert(g.grid.terrain(g.units[ship].pos).is_water());
+        let fog = g.fog();
+        let reachable = g.known_reachable_for_domain(g.units[ship].pos, 3, Team.Blue, &fog, true);
+        assert(!reachable.is_empty());
+        let mut all_water = true;
+        for h in reachable.each() { if !g.grid.terrain(*h).is_water() { all_water = false; } }
+        assert(all_water);
+        assert(!g.cities[0].queue.contains(Build.Unit(BuildUnit.PatrolGalley)));
+    });
+}
+
+@test
+fn coastal_battery_hits_ships_and_can_be_destroyed() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut g = GameState.naval_scenario();
+        g.units.clear();
+        g.units.push(Unit.new(300, Hex.new(-1, 0), Team.Red, UnitType.PatrolGalley));
+        let initial = g.units[0].hp;
+        g.resolve_coastal_batteries();
+        assert(g.units[0].hp < initial);
+        g.units.clear();
+        let Option.Some(site) = g.cities[1].placed_site(Building.CoastalBattery) else { assert(false); return; };
+        let mut ship = Unit.new(301, Hex.new(1, 0), Team.Blue, UnitType.BombardShip);
+        ship.planned_attack = Option.Some(site);
+        g.units.push(ship);
+        g.cities[1].coastal_battery_hp = 1.0;
+        let _acted = g.resolve_step(UnitType.BombardShip, Phase.Attack);
+        assert(g.cities[1].placed_site(Building.CoastalBattery).is_none());
     });
 }
