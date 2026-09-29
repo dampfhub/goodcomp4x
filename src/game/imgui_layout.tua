@@ -699,6 +699,16 @@ impl ImGuiLayoutState {
             }
             self.debug_attached = false;
         }
+        // The first frame adopts the layer the layout was saved in: nothing moves, and a panel
+        // the library docked when it loaded stays there.
+        if old_scope.is_none() {
+            self.debug_layout_scope = Option.Some(desired);
+            self.pending_debug_box = match desired {
+                BoxScope.View(v) => { let id = self.debug_view_boxes[v.index()]; if id == 0 { Option.None } else { Option.Some(id) } }
+                BoxScope.Outer => Option.None,
+            };
+            return;
+        }
         let same_scope = match old_scope { Option.Some(s) => s == desired, Option.None => false };
         if same_scope { return; }
         if let Option.Some(scope) = old_scope {

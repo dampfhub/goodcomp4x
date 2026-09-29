@@ -693,3 +693,38 @@ fn hovering_an_enemy_city_or_barracks_out_of_sight_shows_no_live_panel() {
         assert(inspecting(&mut r));
     });
 }
+
+@test
+fn a_panel_dragged_onto_the_maps_drop_target_docks_and_stays_docked() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut r = rig(GameState.city_scenario());
+        r.st.input.mods = Mods { ctrl: true, shift: false, alt: false };
+        frames(&mut r, 2);
+        let Option.Some(start) = r.ctx.window_rect("Debug") else { assert(false); return; };
+        assert(!r.ctx.is_docked("Debug"));
+        // The dock space is everything under the status bar; its central node offers a target on
+        // each side of its centre, the left one a square and a gap away.
+        let space_center = vec2(SCREEN_W / 2.0, (52.0 + SCREEN_H) / 2.0);
+        let left_target = vec2(space_center.x - 26.0, space_center.y);
+        let title = vec2(start.min.x + 40.0, start.min.y + 10.0);
+        drag(&mut r, title, left_target);
+        frames(&mut r, 3);
+        assert(r.ctx.is_docked("Debug"));
+        assert(r.st.layout.windows[DEBUG].docked);
+        // Docked, it fills its node: a quarter of the space, from the left edge.
+        let Option.Some(docked) = r.ctx.window_rect("Debug") else { assert(false); return; };
+        assert(docked.min.x < 20.0);
+        assert(docked.max.x - docked.min.x > SCREEN_W * 0.2 && docked.max.x - docked.min.x < SCREEN_W * 0.3);
+        // A new session brings it back docked.
+        r.st.layout.settle();
+        let layout_text = r.st.layout.to_text();
+        let windows = r.ctx.save_settings();
+        let (ctx2, _real) = context(Option.Some(windows));
+        let mut again = Rig { game: GameState.city_scenario(), ctx: ctx2, st: ui_state(layout_from_text(&layout_text), screen()) };
+        again.game.imgui_ui = true;
+        frames(&mut again, 4);
+        assert(again.ctx.is_docked("Debug"));
+        let Option.Some(back) = again.ctx.window_rect("Debug") else { assert(false); return; };
+        assert(back.min.x == docked.min.x && back.min.y == docked.min.y && back.max.x == docked.max.x);
+    });
+}
