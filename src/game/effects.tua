@@ -11,6 +11,7 @@ use std.linalg.vec2;
 use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.text;
+use game.hex.Hex;
 use game.draw.attack_arc_points;
 use game.draw.push_arrow;
 use game.font.push_text;
@@ -66,8 +67,16 @@ impl Effect {
 pub struct Playing { animation: Effect, age: f32 }
 
 impl GameState {
-    /// Starts `animation` playing.
-    pub fn play(&mut self, animation: Effect) { self.effects.push(Playing { animation, age: 0.0 }); }
+    /// Starts `animation` playing, but only when the local player can see it: a shot needs both
+    /// ends in sight, a damage number its own hex.
+    pub fn play(&mut self, animation: Effect) {
+        let fog = self.fog();
+        let visible = match animation {
+            Effect.Shot(from, to, _) => fog.sees(Hex.from_world(from)) && fog.sees(Hex.from_world(to)),
+            Effect.Damage(at, _, _) => fog.sees(Hex.from_world(at)),
+        };
+        if visible { self.effects.push(Playing { animation, age: 0.0 }); }
+    }
 
     /// Moves every effect `dt` seconds on, dropping finished ones.
     pub fn age_effects(&mut self, dt: f32) {

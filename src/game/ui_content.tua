@@ -569,6 +569,22 @@ impl GameState {
 
     // ---- the hover panel ----------------------------------------------------------------
 
+    /// The panel of the city or Barracks on `hex`, if the player may see it: their own, or one
+    /// in sight. Shared by every presentation, so none shows more than another.
+    pub fn structure_inspect_panel(&self, hex: Hex) -> Option[PanelBuilder] {
+        let fog = self.fog();
+        for i in 0..self.cities.len() {
+            if !(self.cities[i].team == self.local_team || fog.sees(hex)) { continue; }
+            let barracks = self.cities[i].barracks == Option.Some(hex);
+            if self.cities[i].pos == hex || barracks {
+                let mut panel = panel_builder(false);
+                self.structure_hover_panel(i, self.cities[i].pos != hex, &mut panel);
+                return Option.Some(panel);
+            }
+        }
+        Option.None
+    }
+
     pub fn structure_hover_panel(&self, i: i32, barracks: bool, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let (id, team) = (city.id, city.team);

@@ -69,6 +69,10 @@ use game.city.resource_icon;
 use game.city.stock_icons;
 use game.city.turns_icon;
 use game.terrain.Resource;
+use game.fog.LOOKOUT_SIGHT;
+use game.fog.SeenBuilding;
+use game.fog.Sighting;
+use game.city.SiteKind;
 use game.city.WORKER_SHORTCUT;
 use game.city.CORE_HP;
 use game.Role;
@@ -982,6 +986,23 @@ impl GameState {
             panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("+"); show_rounded(bonus); Out.put("% DEFENSE FROM TERRAIN"); }), DIM_TEXT);
         }
         if unit.deployed { panel.text(TextSize.Small, "DEPLOYED: +1 RANGE, CANNOT MOVE", DIM_TEXT); }
+        // Instructions, and what a landing craft carries, are the player's own units' alone.
+        if self.is_player_controlled(idx) {
+            if unit.unit_type == UnitType.LandingCraft {
+                let carried = unit.cargo.len();
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("CARGO "); show_i64(carried as i64); Out.put("/4 - CLICK ADJACENT LAND TO UNLOAD"); }), DIM_TEXT);
+            } else if !unit.is_naval() {
+                panel.text(TextSize.Small, "CLICK AN ADJACENT LANDING CRAFT TO BOARD", DIM_TEXT);
+            }
+        }
+        if unit.lookout {
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("LOOKOUT: +"); show_i64(LOOKOUT_SIGHT as i64); Out.put(" SIGHT"); }), DIM_TEXT);
+        }
+        match unit.training_upgrade {
+            Option.Some(Resource.Iron) => { panel.text(TextSize.Small, "FORGED ARMOR: +20% HP, +15% DEFENSE", DIM_TEXT); }
+            Option.Some(Resource.Horses) => { panel.text(TextSize.Small, "STABLE TRAINING: +1 MOVE", DIM_TEXT); }
+            Option.None => {}
+        }
         if self.rival_of(idx).is_some() { panel.text(TextSize.Small, "CONTESTED: FIGHTING FOR THIS HEX", DIM_TEXT); }
         if self.is_player_controlled(idx) {
             let names = [(unit.planned_move.is_some(), "MOVE"), (unit.planned_attack.is_some(), "ATTACK"), (unit.holding, "HOLD"), (unit.guarding, "GUARD"), (unit.alert, "ALERT")];
@@ -1321,7 +1342,10 @@ impl GameState {
             Option.Some(k) => {
                 let fighter = interior.fighters[k];
                 panel.gap(GAP);
-                panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(Role.Troop(fighter.unit_type).name()); Out.put("  "); show_rounded(fighter.hp); Out.put(" HP"); }), BOOSTED_TEXT);
+                // A fighter is a copy of a troop outside, named as the troop is.
+                let mut name = "TROOP";
+                for u in 0..self.units.len() { if self.units[u].id == fighter.source_id { name = self.unit_role(&self.units[u]).name(); } }
+                panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(name); Out.put("  "); show_rounded(fighter.hp); Out.put(" HP"); }), BOOSTED_TEXT);
                 panel.text(TextSize.Small, "GREEN: MOVE  RED: ATTACK", LABEL_TEXT);
             }
             Option.None => panel.text(TextSize.Small, "CLICK A BLUE TROOP ON THE MAP", LABEL_TEXT),
@@ -1469,35 +1493,136 @@ impl GameState {
 
     /// Everything about a map hex: terrain, what it yields, and what's on it.
     pub fn tile_tooltip(&self, hex: Hex, panel: &mut PanelBuilder) {
+        if !self.is_explored(hex) {
+            panel.text(TextSize.Body, "UNEXPLORED", DIM_TEXT);
+            return;
+        }
+        let fog = self.fog();
+        let seen_now = fog.sees(hex);
+        let memory: Option[Sighting] = if seen_now { Option.None } else { self.recalled(hex, &fog) };
         let tile = self.grid.tile(hex);
         let terrain = tile.terrain;
-        let city = self.city_at(hex);
-        match city {
-            Option.Some(c) => {
-                let (team, id) = (self.cities[c].team, self.cities[c].id);
-                panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(team.name()); Out.put(" CITY "); show_u64((id + 1) as u64); }), team.color());
+        // Of another side's city, Barracks or building, only what is in sight (or, out of it,
+        // what the memory kept) is known.
+        let mut city: Option[i32] = Option.None;
+        let mut barracks: Option[i32] = Option.None;
+        let mut placed: Option[(i32, Building)] = Option.None;
+        for c in 0..self.cities.len() {
+            if !(seen_now || self.cities[c].team == self.local_team) { continue; }
+            if city.is_none() && self.cities[c].pos == hex { city = Option.Some(c); }
+            if barracks.is_none() && self.cities[c].barracks == Option.Some(hex) { barracks = Option.Some(c); }
+            for b in 0..14 {
+                let building = PLACEABLE[b];
+                if placed.is_none() && building != Building.Barracks && self.cities[c].placed_site(building) == Option.Some(hex) { placed = Option.Some((c, building)); }
             }
-            Option.None => panel.text_owned(TextSize.Body, tile.name(), TEXT),
+        }
+        let mut seen_city: Option[SeenBuilding] = Option.None;
+        let mut seen_barracks: Option[SeenBuilding] = Option.None;
+        if let Option.Some(seen) = memory {
+            if let Option.Some(c) = seen.city { if c.team != self.local_team { seen_city = Option.Some(c); } }
+            if let Option.Some(b) = seen.barracks { if b.team != self.local_team { seen_barracks = Option.Some(b); } }
+        }
+        if let Option.Some(c) = city {
+            let (team, id) = (self.cities[c].team, self.cities[c].id);
+            panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(team.name()); Out.put(" CITY "); show_u64((id + 1) as u64); }), team.color());
+        } else if let Option.Some(c) = barracks {
+            let team = self.cities[c].team;
+            panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(team.name()); Out.put(" BARRACKS"); }), team.color());
+        } else if let Option.Some(seen) = seen_city {
+            panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(seen.team.name()); Out.put(" CITY "); show_u64((seen.id + 1) as u64); }), seen.team.color());
+        } else if let Option.Some(seen) = seen_barracks {
+            panel.text_owned(TextSize.Body, text(fn() can {Out} { Out.put(seen.team.name()); Out.put(" BARRACKS"); }), seen.team.color());
+        } else if let Option.Some((c, building)) = placed {
+            panel.text(TextSize.Body, building.name(), self.cities[c].team.color());
+        } else {
+            panel.text_owned(TextSize.Body, tile.name(), TEXT);
         }
         if self.hovered_tile == Option.Some(hex) { self.attack_preview_lines(panel); }
-        if !terrain.is_passable() {
+        if !terrain.is_workable() {
             panel.text(TextSize.Small, "IMPASSABLE", DIM_TEXT);
             return;
         }
-        let (food, wood, metal) = self.raw_yield(hex);
+        let (food, wood, metal) = self.known_yield(hex, &fog);
         panel.begin_line();
         panel.stat("FOOD", text(fn() can {Out} { show_i64(food as i64); }), FOOD_TEXT);
         panel.stat("WOOD", text(fn() can {Out} { show_i64(wood as i64); }), WOOD_TEXT);
         panel.stat("METAL", text(fn() can {Out} { show_i64(metal as i64); }), METAL_TEXT);
         panel.end_line(TextSize.Small);
 
+        // Another side's economy (what a city delivers, what its queues work) hangs on tiles,
+        // routes and plans the player can't see: of its city or Barracks, only what's in sight
+        // (population, health), or what the memory kept of it.
+        if let Option.Some(c) = city {
+            let population = self.cities[c].population;
+            if self.cities[c].team == self.local_team {
+                let delivers = price_hint(self.net_delivery(c));
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("POP "); show_i64(population as i64); Out.put("/"); show_i64(MAX_CITY_POPULATION as i64); Out.put(" \u{b7} DELIVERS "); Out.put(&delivers); }), GOLD_TEXT);
+                let queue = self.queue_word(c, Lane.City, "NOTHING");
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("BUILDING "); Out.put(queue); }), DIM_TEXT);
+            } else {
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("POP "); show_i64(population as i64); Out.put("/"); show_i64(MAX_CITY_POPULATION as i64); }), GOLD_TEXT);
+            }
+        } else if barracks.is_none() {
+            if let Option.Some(seen) = seen_city {
+                let population = seen.population;
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("POP "); show_i64(population as i64); Out.put("/"); show_i64(MAX_CITY_POPULATION as i64); }), GOLD_TEXT);
+            }
+        }
+        if let Option.Some(c) = barracks {
+            let hp = self.cities[c].barracks_hp;
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("HP "); show_f64_fixed(hp as f64, 0); Out.put("/"); show_f64_fixed(BARRACKS_MAX_HP as f64, 0); }), GOLD_TEXT);
+            if self.cities[c].team == self.local_team {
+                let queue = self.queue_word(c, Lane.Barracks, "EMPTY");
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("TRAINING: "); Out.put(queue); }), DIM_TEXT);
+            }
+        } else if city.is_none() && seen_city.is_none() {
+            if let Option.Some(seen) = seen_barracks {
+                let hp = seen.health * BARRACKS_MAX_HP;
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("HP "); show_f64_fixed(hp as f64, 0); Out.put("/"); show_f64_fixed(BARRACKS_MAX_HP as f64, 0); }), GOLD_TEXT);
+            }
+        }
+
         if city.is_some() {
             panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(terrain.name()); Out.put(" CITY CENTER"); }), DIM_TEXT);
+        }
+        if self.grid.has_fresh_water(hex) { panel.text(TextSize.Small, "FRESH WATER +1 FOOD", DIM_TEXT); }
+        if let Option.Some((owner, building)) = placed {
+            panel.text(TextSize.Small, building.description(), DIM_TEXT);
+            if building == Building.CoastalBattery {
+                let hp = self.cities[owner].coastal_battery_hp;
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("BATTERY "); show_f64_fixed(hp as f64, 0); Out.put("/150 HP"); }), DIM_TEXT);
+            }
+            if building == Building.WorkCamp {
+                let connected = self.known_routes(owner, &fog).costs.has(hex);
+                panel.text(TextSize.Small, if connected { "CONNECTED" } else { "CUT OFF FROM ITS CITY" }, DIM_TEXT);
+            } else if building == Building.Smelter && self.cities[owner].team == self.local_team {
+                // Another side's Smelter makes what its city's worked tiles and routes give it:
+                // not known.
+                let income = self.smelter_income(owner);
+                panel.text_owned(TextSize.Small, text(fn() can {Out} { show_signed_quantity(income); Out.put(" METAL A TURN"); }), DIM_TEXT);
+            } else if building == Building.Railhead {
+                let open = self.known_rail_connected(owner, &fog);
+                panel.text(TextSize.Small, if open { "RAIL LINK OPEN" } else { "RAIL LINK CUT: NEEDS A ROAD TO THE CITY" }, DIM_TEXT);
+            }
         }
         if tile.defense_multiplier() != 1.0 {
             let bonus = (tile.defense_multiplier() - 1.0) * 100.0;
             panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("+"); show_rounded(bonus); Out.put("% DEFENSE FOR UNITS HERE"); }), DIM_TEXT);
         }
+        // What the memory kept out of sight, else what is there.
+        let mut site: Option[(SiteKind, Team)] = Option.None;
+        let mut road = false;
+        match memory {
+            Option.Some(seen) => { site = seen.site; road = seen.road; }
+            Option.None => {
+                if let Option.Some(s) = self.sites.get(hex) { site = Option.Some((s.kind, s.team)); }
+                road = self.roads.contains(hex);
+            }
+        }
+        if let Option.Some((kind, team)) = site {
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(team.name()); Out.put(" "); Out.put(kind.name()); }), DIM_TEXT);
+        }
+        if road { panel.text(TextSize.Small, "DIRT ROAD: GOODS MOVE THROUGH MORE CHEAPLY", DIM_TEXT); }
         if let Option.Some(resource) = self.grid.resource(hex) {
             panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(resource.name()); Out.put(" RESOURCE"); }), DIM_TEXT);
         }
@@ -1511,15 +1636,12 @@ impl GameState {
                 Out.put(" WHEN WORKED");
             }), DIM_TEXT);
         }
-        if let Option.Some(site) = self.sites.get(hex) {
-            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(site.team.name()); Out.put(" "); Out.put(site.kind.name()); }), DIM_TEXT);
-        }
         let ruin_notes = self.ruin_notes(hex);
         for k in 0..ruin_notes.len() { panel.text_owned(TextSize.Small, copy_str(&ruin_notes[k]), DIM_TEXT); }
-        let den_notes = self.den_notes(hex, false);
+        let den_notes = self.den_notes(hex, memory.is_some());
         for k in 0..den_notes.len() { panel.text_owned(TextSize.Small, copy_str(&den_notes[k]), DIM_TEXT); }
-        if self.roads.contains(hex) { panel.text(TextSize.Small, "DIRT ROAD: GOODS MOVE THROUGH MORE CHEAPLY", DIM_TEXT); }
         for c in 0..self.cities.len() {
+            if !(seen_now || self.cities[c].team == self.local_team) { continue; }
             if self.cities[c].works(hex) {
                 let id = self.cities[c].id;
                 panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("WORKED BY CITY "); show_u64((id + 1) as u64); }), DIM_TEXT);
@@ -1529,7 +1651,6 @@ impl GameState {
         if let Option.Some(open) = self.selected_city {
             if self.cities[open].pos != hex {
                 let id = self.cities[open].id;
-                let fog = self.fog();
                 let note = match self.known_routes(open, &fog).costs.get(hex) {
                     Option.Some(cost) => text(fn() can {Out} { show_i64((delivered_share(cost) * 25) as i64); Out.put("% REACHES CITY "); show_u64((id + 1) as u64); }),
                     Option.None => text(fn() can {Out} { Out.put("OUT OF CITY "); show_u64((id + 1) as u64); Out.put("'S REACH"); }),
@@ -1539,7 +1660,7 @@ impl GameState {
         }
         let mut here: Vec[i32] = Vec.new();
         for i in 0..self.units.len() {
-            if self.units[i].pos == hex { here.push(i); }
+            if self.units[i].pos == hex && fog.shows(&self.units[i]) { here.push(i); }
         }
         if !here.is_empty() {
             let names = text(fn() can {Out} {
@@ -1554,7 +1675,17 @@ impl GameState {
             });
             panel.text_owned(TextSize.Small, names, DIM_TEXT);
         }
-        if self.is_contested(hex) { panel.text(TextSize.Small, "CONTESTED", DIM_TEXT); }
+        if seen_now && self.is_contested(hex) { panel.text(TextSize.Small, "CONTESTED", DIM_TEXT); }
+    }
+
+    /// What one of `city`'s queues works, by name, for a tile's tooltip: `empty` if it holds
+    /// nothing.
+    pub fn queue_word(&self, city: i32, lane: Lane, empty: str) -> str {
+        let status = self.queue_status(city, lane);
+        match self.worked_item(city, lane, &status) {
+            Option.Some((name, _, _)) => name,
+            Option.None => if self.lane_len(city, lane) == 0 { empty } else { "NOTHING IT CAN PAY FOR" },
+        }
     }
 
     /// The tile tooltip, just below and right of the cursor (`point`, in UI pixels), kept inside

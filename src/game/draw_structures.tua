@@ -260,6 +260,22 @@ fn push_worker_token(center: Vec2, scale: f32, color: Color, out: &mut Vec[MeshV
     push_pictogram(center, radius * CIVILIAN_TOKEN_SIZE * 0.7, WORKER_SHOVEL, color, out);
 }
 
+/// Another side's job on the ground: its ring (or edge) and name in `color`.
+pub fn push_seen_job(job: WorkerJob, name: str, color: Color, out: &mut Vec[MeshVertex]) {
+    let at = match job.across {
+        Option.Some(across) => {
+            let (start, end) = edge_corners(job.hex, across);
+            push_rounded_segment(start, end, BARRIER_WIDTH * 0.6, color, out);
+            start.add(end).scale(0.5).add(PLANNED_JOB_LABEL_OFFSET.scale(0.5))
+        }
+        Option.None => {
+            polygon_outline(job.hex.to_world(), WORKED_OUTLINE_RADIUS, 0.06, 6, 0.0, color, out);
+            job.hex.to_world().add(PLANNED_JOB_LABEL_OFFSET)
+        }
+    };
+    push_text_centered(at, PLANNED_JOB_LABEL_HEIGHT, name, color, out);
+}
+
 impl GameState {
     /// Everything this module draws that sits under the units: buildings, planned sites, the
     /// manager's mark, structures, walls and gates, worker jobs and worker mode's reach.
@@ -273,6 +289,7 @@ impl GameState {
             push_structure(h.to_world(), s.kind, s.team.color(), out);
         }
         self.push_planned_jobs(out);
+        self.push_others_construction(fog, out);
         for k in 0..self.barriers.len() {
             let (Option.Some(e), Option.Some(s)) = (self.barriers.key_at(k), self.barriers.val_at(k)) else { continue; };
             if s.team != self.local_team && !fog.sees(e.a) && !fog.sees(e.b) { continue; }
@@ -303,7 +320,11 @@ impl GameState {
         for k in 0..clusters.len() {
             if self.is_moving_manager(i, k) { continue; }
             let manager = clusters[k].manager;
-            let routed = self.routes(i).costs.has(manager);
+            // Of another side's city, only a manager in sight shows, and not whether its goods
+            // arrive: its routes aren't known.
+            let own = self.cities[i].team == fog.team();
+            if !own && !fog.sees(manager) { continue; }
+            let routed = !own || self.routes(i).costs.has(manager);
             if routed {
                 polygon_outline(manager.to_world(), WORKED_OUTLINE_RADIUS, 0.06, 6, 0.0, MANAGER_MARK_COLOR, out);
             }
@@ -416,6 +437,27 @@ impl GameState {
                     to_owned(self.job_name(job))
                 };
                 push_text_centered(center.add(PLANNED_JOB_LABEL_OFFSET), PLANNED_JOB_LABEL_HEIGHT, &label, PLANNED_JOB_COLOR, out);
+            }
+        }
+    }
+
+    /// Other sides' construction the player knows of: like the player's own jobs under way, a
+    /// ring on the tile (or the edge, for a wall or gate) named with the job, but in the
+    /// builder's color and without the turns left, which would give away its Workshop. A worker
+    /// in sight shows what it is at work on; out of sight, the memory shows it as last seen.
+    fn push_others_construction(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
+        for w in 0..self.field_workers.len() {
+            if !fog.sees(self.field_workers[w].pos) { continue; }
+            if let Option.Some(seen) = self.others_construction(&self.field_workers[w]) { push_seen_job(seen.job, self.job_name(seen.job), seen.team.color(), out); }
+        }
+        if !self.fog_of_war { return; }
+        for i in 0..self.memory.len() {
+            let (Option.Some(hex), Option.Some(sighting)) = (self.memory.key_at(i), self.memory.val_at(i)) else { continue; };
+            if fog.sees(hex) { continue; }
+            for k in 0..3 {
+                if let Option.Some(seen) = sighting.construction[k] {
+                    if seen.team != self.local_team { push_seen_job(seen.job, self.job_name(seen.job), seen.team.color(), out); }
+                }
             }
         }
     }

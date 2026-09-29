@@ -14,6 +14,7 @@ use renderer.pipelines.MeshVertex;
 use game.GameState;
 use game.draw.CLOUD_SPACING;
 use game.draw.MOVE_RANGE_COLOR;
+use game.draw.CONTESTED_COLOR;
 use game.mesh.Color;
 use game.draw.edge_fade;
 use game.draw.push_cloud_banks;
@@ -37,6 +38,12 @@ use game.tests.sandbox;
 use game.unit.Team;
 use game.unit.Unit;
 use game.unit.UnitType;
+use game.city.Building;
+use game.workers.FieldWorker;
+use game.workers.JobKind;
+use game.workers.WorkerJob;
+use game.draw_structures.JOB_UNDER_WAY_COLOR;
+use game.draw_structures.push_seen_job;
 
 /// A world from `seed` with the player alone on it, with a settler (first) and a scout: the AI
 /// sides' units and cities are taken away.
@@ -591,5 +598,260 @@ fn an_unseen_enemy_on_a_route_hex_still_cuts_goods() {
         assert(routes.toward_origin.get(Hex.new(3, 1)) == Option.Some(Hex.new(2, 1)));
         let now = game.income(city);
         assert(now.food + now.production() < full.food + full.production());
+    });
+}
+
+/// The scene with a fight over the hidden hex or not.
+fn fight_scene(fight: bool) -> Vec[MeshVertex] can {Log, Assert} {
+    let mut game = behind_the_mountain();
+    glance_at(&mut game, 0, HIDDEN);
+    if fight {
+        game.units.push(Unit.new(2, HIDDEN, Team.Red, UnitType.Melee));
+        game.units.push(Unit.new(3, HIDDEN, Team.Green, UnitType.Melee));
+        check_found(game.is_contested(HIDDEN));
+    }
+    game.build_vertices()
+}
+
+@test
+fn a_fight_out_of_sight_leaves_its_hex_uncolored() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        assert(same_scene(&fight_scene(true), &fight_scene(false)));
+        // In sight, the fight shows.
+        let mut game = behind_the_mountain();
+        let near = Hex.new(0, 1);
+        game.units.push(Unit.new(2, near, Team.Red, UnitType.Melee));
+        game.units[0].pos = near;
+        game.selected = Option.None;
+        game.explore();
+        assert(count_color(&game.build_vertices(), CONTESTED_COLOR) > 0);
+    });
+}
+
+/// The hex next to `hidden` with the lowest coordinates that is in sight (`seen`) or not, and
+/// passable.
+fn next_to_hidden(game: &GameState, seen: bool) -> Hex can {Assert} {
+    let fog = game.fog();
+    let around = HIDDEN.neighbors();
+    let mut best = HIDDEN;
+    let mut found = false;
+    for k in 0..6 {
+        let h = around[k];
+        if fog.sees(h) != seen || !game.grid.terrain(h).is_passable() { continue; }
+        if !found || h.q < best.q || (h.q == best.q && h.r < best.r) { best = h; found = true; }
+    }
+    check_found(found);
+    best
+}
+
+/// Three Red units, one in sight beside the hidden hex, one on it and one unseen beside it.
+fn red_beside_the_hidden_hex() -> GameState can {Log, Assert} {
+    let mut game = behind_the_mountain();
+    glance_at(&mut game, 0, HIDDEN);
+    let near = next_to_hidden(&game, true);
+    let unseen = next_to_hidden(&game, false);
+    game.units.push(Unit.new(2, near, Team.Red, UnitType.Melee));
+    game.units.push(Unit.new(3, HIDDEN, Team.Red, UnitType.Melee));
+    game.units.push(Unit.new(4, unseen, Team.Red, UnitType.Melee));
+    game
+}
+
+@test
+fn another_sides_moves_show_only_in_sight_at_both_ends() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // A Red unit in sight next to the hex behind the mountain, and two Red units out of
+        // sight: what they plan out of sight draws nothing.
+        let quiet = red_beside_the_hidden_hex().build_vertices();
+
+        // Into the hidden hex, and two unseen units swapping places.
+        let mut moving = red_beside_the_hidden_hex();
+        let unseen = moving.units[3].pos;
+        moving.units[1].planned_move = Option.Some(HIDDEN);
+        moving.units[2].planned_move = Option.Some(unseen);
+        moving.units[3].planned_move = Option.Some(HIDDEN);
+        assert(moving.swap_partner(2).is_some());
+        assert(same_scene(&moving.build_vertices(), &quiet));
+
+        // A move in sight at both ends still shows its ghost.
+        let mut moving = red_beside_the_hidden_hex();
+        let near = moving.units[1].pos;
+        let toward = Hex.new(0, 1);
+        moving.units[1].planned_move = Option.Some(toward);
+        assert(moving.fog().sees(toward) && moving.fog().sees(near));
+        assert(!same_scene(&moving.build_vertices(), &quiet));
+    });
+}
+
+/// The city of `worked_tile_behind_the_mountain`, now Red's and working `worked`, seen by two
+/// Blue scouts: one west of its center, one by the tile it works east of the mountain. With
+/// `cut`, Green out of their sight stands on both hexes that start the road home, so no goods
+/// arrive. Answers whether `worked` is in sight and the scene with the city hovered.
+fn hovered_red_city(worked: Hex, cut: bool) -> (bool, Vec[MeshVertex]) can {Log, Assert} {
+    let (mut game, city, _tile) = worked_tile_behind_the_mountain();
+    game.cities[city].team = Team.Red;
+    let mut tiles: Vec[Hex] = Vec.new();
+    tiles.push(worked);
+    game.cities[city].clusters = one_cluster(&tiles);
+    game.cities[city].remembered = one_cluster(&tiles);
+    game.units.push(Unit.new(50, Hex.new(-3, 0), Team.Blue, UnitType.Scout));
+    game.units.push(Unit.new(51, Hex.new(6, 1), Team.Blue, UnitType.Scout));
+    let first = Hex.new(1, 0);
+    let second = Hex.new(1, -1);
+    if cut {
+        game.units.push(Unit.new(52, first, Team.Green, UnitType.Melee));
+        game.units.push(Unit.new(53, second, Team.Green, UnitType.Melee));
+    }
+    game.explore();
+    let fog = game.fog();
+    check_found(fog.sees(game.cities[city].pos));
+    check_found(!fog.sees(first) && !fog.sees(second));
+    let arrives = game.routes(city).costs.has(worked);
+    check_found(arrives != cut || !fog.sees(worked));
+    game.hovered_city = Option.Some(city);
+    game.hovered_tile = Option.Some(game.cities[city].pos);
+    (fog.sees(worked), game.build_vertices())
+}
+
+@test
+fn a_hovered_enemy_city_rings_only_its_tiles_in_sight_and_not_their_routes() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (seen, in_sight) = hovered_red_city(Hex.new(5, 0), false);
+        assert(seen);
+        let (_s, cut_off) = hovered_red_city(Hex.new(5, 0), true);
+        assert(same_scene(&cut_off, &in_sight));
+
+        let (seen, out_of_sight) = hovered_red_city(Hex.new(0, 5), false);
+        assert(!seen && !same_scene(&out_of_sight, &in_sight));
+        let (_s, elsewhere) = hovered_red_city(Hex.new(0, -5), false);
+        assert(same_scene(&elsewhere, &out_of_sight));
+        let (_s, cut_unseen) = hovered_red_city(Hex.new(0, 5), true);
+        assert(same_scene(&cut_unseen, &out_of_sight));
+    });
+}
+
+/// A worker of `team` at `job`'s tile: at work on it, or just arrived.
+fn worker_at(team: Team, job: WorkerJob, working: bool) -> FieldWorker {
+    FieldWorker { id: 77, team, home: 0, base: job.hex, pos: job.hex, job: Option.Some(job), work_left: if working { Option.Some(2) } else { Option.None }, recalled: false }
+}
+
+/// The jobs of other sides the memory keeps of `hex`, and the first one's side.
+fn remembered_jobs(game: &GameState, hex: Hex) -> (i32, Option[Team]) {
+    let Option.Some(seen) = game.memory.get(hex) else { return (0 - 1, Option.None); };
+    let mut n = 0;
+    let mut team: Option[Team] = Option.None;
+    for k in 0..3 {
+        if let Option.Some(job) = seen.construction[k] {
+            if n == 0 { team = Option.Some(job.team); }
+            n = n + 1;
+        }
+    }
+    (n, team)
+}
+
+@test
+fn the_memory_keeps_other_sides_construction_but_not_their_plans() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        let job = WorkerJob.on_tile(HIDDEN, JobKind.Build(Building.Barracks));
+        // Just arrived, not yet at work: nothing on the ground.
+        game.field_workers.push(worker_at(Team.Red, job, false));
+        glance_at(&mut game, 0, HIDDEN);
+        let (n, _) = remembered_jobs(&game, HIDDEN);
+        assert(n == 0);
+        // At work: remembered with its side, and nothing else.
+        game.field_workers.clear();
+        game.field_workers.push(worker_at(Team.Red, job, true));
+        glance_at(&mut game, 0, HIDDEN);
+        let (n, team) = remembered_jobs(&game, HIDDEN);
+        assert(n == 1 && team == Option.Some(Team.Red));
+        // Finished out of sight: still as last seen.
+        game.field_workers.clear();
+        game.explore();
+        let (n, _) = remembered_jobs(&game, HIDDEN);
+        assert(n == 1);
+        // The player's own jobs are drawn from the board, not remembered (and a worker of theirs
+        // sees its tile).
+        game.field_workers.push(worker_at(PLAYER_TEAM, job, true));
+        game.explore();
+        assert(game.fog().sees(HIDDEN));
+        let (n, _) = remembered_jobs(&game, HIDDEN);
+        assert(n == 0);
+    });
+}
+
+/// Vertices of `color` for a job's ring (or edge) and its name: what another side's construction
+/// adds.
+fn construction_vertices(job: WorkerJob, name: str, color: Color) -> i32 {
+    let mut out: Vec[MeshVertex] = Vec.new();
+    push_seen_job(job, name, color, &mut out);
+    count_color(&out, color)
+}
+
+@test
+fn another_sides_construction_in_sight_shows_in_its_color_named_without_turns() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        game.camera.center = vec2(0.0, 0.0);
+        let near = Hex.new(0, 1);
+        assert(game.fog().sees(near));
+        let red = Team.Red.color();
+
+        // Red's worker just arrived shows only itself; at work, its Barracks going up too: a
+        // red ring named BARRACKS, no turns left.
+        let barracks = WorkerJob.on_tile(near, JobKind.Build(Building.Barracks));
+        game.field_workers.push(worker_at(Team.Red, barracks, false));
+        let idle = count_color(&game.build_vertices(), red);
+        game.field_workers.clear();
+        game.field_workers.push(worker_at(Team.Red, barracks, true));
+        assert(count_color(&game.build_vertices(), red) - idle == construction_vertices(barracks, "BARRACKS", red));
+        assert(count_color(&game.build_vertices(), JOB_UNDER_WAY_COLOR) == 0);
+
+        // A wall on one of the tile's edges: the edge, named.
+        let wall = WorkerJob { hex: near, kind: JobKind.Wall, across: Option.Some(Hex.new(1, 1)), done: 0 };
+        game.field_workers.clear();
+        game.field_workers.push(worker_at(Team.Red, wall, false));
+        let idle = count_color(&game.build_vertices(), red);
+        game.field_workers.clear();
+        game.field_workers.push(worker_at(Team.Red, wall, true));
+        assert(count_color(&game.build_vertices(), red) - idle == construction_vertices(wall, "WALL", red));
+
+        // The player's own job is drawn as before, in bright gold with its turns left, and not
+        // in team color.
+        let blue = game.local_team.color();
+        game.field_workers.clear();
+        game.field_workers.push(worker_at(game.local_team, barracks, false));
+        let idle = count_color(&game.build_vertices(), blue);
+        game.field_workers.clear();
+        game.field_workers.push(worker_at(game.local_team, barracks, true));
+        assert(count_color(&game.build_vertices(), blue) == idle);
+        assert(count_color(&game.build_vertices(), JOB_UNDER_WAY_COLOR) > 0);
+    });
+}
+
+@test
+fn another_sides_construction_out_of_sight_shows_only_as_last_seen() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = behind_the_mountain();
+        game.camera.center = vec2(0.0, 0.0);
+        let red = Team.Red.color();
+        let job = WorkerJob.on_tile(HIDDEN, JobKind.Fort);
+
+        // Never seen: nothing of it shows.
+        let before = game.build_vertices();
+        game.field_workers.push(worker_at(Team.Red, job, true));
+        game.explore();
+        assert(same_scene(&game.build_vertices(), &before));
+
+        // Seen at work, then out of sight: it stays as last seen, even once the worker has gone.
+        glance_at(&mut game, 0, HIDDEN);
+        let shown = construction_vertices(job, "FORT", red);
+        assert(count_color(&game.build_vertices(), red) == shown);
+        game.field_workers.clear();
+        game.explore();
+        assert(count_color(&game.build_vertices(), red) == shown);
+
+        // Seen again with nobody at work there: gone.
+        glance_at(&mut game, 0, HIDDEN);
+        assert(count_color(&game.build_vertices(), red) == 0);
     });
 }

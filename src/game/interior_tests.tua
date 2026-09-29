@@ -8,6 +8,9 @@ use std.core.Keep;
 use std.rand.Rand;
 use std.rand.seed;
 use std.str.contains;
+use std.str.eq as str_eq;
+use std.str.Str;
+use std.str.to_owned;
 use std.test.assert;
 use std.test.Assert;
 use log.Log;
@@ -16,6 +19,7 @@ use game.PLAYER_TEAM;
 use game.city.BARRACKS_MAX_HP;
 use game.city.CENTER;
 use game.city.CORE_HP;
+use game.city.interior.InteriorFighter;
 use game.city.interior.in_bounds;
 use game.effects.Effect;
 use game.effects.Outcome;
@@ -35,6 +39,17 @@ fn unit_index(g: &GameState, id: u32) -> i32 {
 
 fn copy_of(g: &GameState, city: i32, source: u32) -> i32 {
     match g.cities[city].interior.index_of(source) { Option.Some(k) => k, Option.None => 0 - 1 }
+}
+
+/// The notice, copied.
+fn notice_of(g: &GameState) -> Str {
+    let n = &g.notice;
+    to_owned(n)
+}
+
+fn same_text(a: &Str, want: str) -> bool {
+    let view = a;
+    str_eq(view, want)
 }
 
 fn notice_has(g: &GameState, want: str) -> bool {
@@ -208,7 +223,60 @@ fn breaching_post_announces_the_capture_step() {
         game.cities[1].interior.fighters[k].planned_attack = Option.Some(CENTER);
         game.resolve_one_interior(1);
         assert(game.cities[1].interior.core_hp == 0.0);
-        assert(notice_has(&game, "POST BREACHED"));
+        assert(same_text(&notice_of(&game), "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE"));
+    });
+}
+
+/// The siege of Red's city 2 by Blue, with the player on Green, which sees only what a scout on
+/// `watch` sees: the post breached, then Blue onto the center. What the player was told of each.
+fn a_siege_watched_by_green(watch: Option[Hex]) -> (Str, Str) can {Log, Rand} {
+    let mut game = GameState.siege_scenario();
+    game.local_team = Team.Green;
+    if let Option.Some(pos) = watch { game.units.push(Unit.new(90, pos, Team.Green, UnitType.Scout)); }
+    game.notice = to_owned("");
+    game.cities[1].interior.core_hp = 1.0;
+    let k = copy_of(&game, 1, 1);
+    game.cities[1].interior.fighters[k].planned_attack = Option.Some(CENTER);
+    game.resolve_one_interior(1);
+    let breach = notice_of(&game);
+    game.notice = to_owned("");
+    handle { game.cities[1].interior.fighters.retain(); } with Keep[InteriorFighter] { keep(f) => { resume f.team != Team.Red } }
+    let k = copy_of(&game, 1, 1);
+    game.cities[1].interior.fighters[k].pos = CENTER;
+    game.resolve_one_interior(1);
+    (breach, notice_of(&game))
+}
+
+@test
+fn only_a_city_the_player_owns_or_sees_makes_news() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (breach, capture) = a_siege_watched_by_green(Option.None);
+        assert(same_text(&breach, "") && same_text(&capture, ""));
+        let city = GameState.siege_scenario().cities[1].pos;
+        let (breach, capture) = a_siege_watched_by_green(Option.Some(city.neighbors()[0]));
+        assert(same_text(&breach, "RED CITY 2'S POST BREACHED"));
+        assert(same_text(&capture, "BLUE CAPTURED RED CITY 2"));
+    });
+}
+
+/// The siege's city 2 with its post down and only Blue's fighters left inside, one of them on
+/// the center, played from `side`'s: the notice its capture leaves.
+fn capture_notice(side: Team) -> Str can {Log, Rand} {
+    let mut game = GameState.siege_scenario();
+    game.local_team = side;
+    game.cities[1].interior.core_hp = 0.0;
+    handle { game.cities[1].interior.fighters.retain(); } with Keep[InteriorFighter] { keep(f) => { resume f.team != Team.Red } }
+    game.cities[1].interior.fighters[0].pos = CENTER;
+    game.resolve_one_interior(1);
+    notice_of(&game)
+}
+
+@test
+fn the_players_own_city_lost_or_taken_is_worded_by_side() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        assert(same_text(&capture_notice(Team.Blue), "CITY 2 CAPTURED IN THE INTERIOR"));
+        // Played from Red's side, the same capture is a loss.
+        assert(same_text(&capture_notice(Team.Red), "CITY 2 LOST: BLUE TOOK ITS COMMAND POST"));
     });
 }
 
@@ -364,6 +432,8 @@ fn hitting_an_empty_enemy_barracks_is_a_hit_not_a_miss() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.city_scenario();
         game.units.clear();
+        // This test checks the attack outcome, so keep its distant shot visible.
+        game.fog_of_war = false;
         let barracks = game.cities[1].pos.neighbors()[0];
         game.cities[1].barracks = Option.Some(barracks);
         game.units.push(Unit.new(902, Hex.new(barracks.q, barracks.r + 2), Team.Blue, UnitType.Ranged));

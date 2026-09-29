@@ -1,0 +1,61 @@
+//! Which attack animations play: only those the local player can see.
+
+use std.rand.Rand;
+use std.test.assert;
+use std.test.assert_eq;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.effects.Effect;
+use game.hex.Hex;
+use game.tests.sandbox;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+/// Red's melee attacks Green's next to it; with `witness`, a Blue scout beside them sees it.
+fn ai_fight(witness: bool) -> GameState can {Log} {
+    let mut game = GameState.new();
+    game.units.clear();
+    let from = Hex.new(0, 0);
+    let to = Hex.new(1, 0);
+    let mut attacker = Unit.new(90, from, Team.Red, UnitType.Melee);
+    attacker.planned_attack = Option.Some(to);
+    game.units.push(attacker);
+    game.units.push(Unit.new(91, to, Team.Green, UnitType.Melee));
+    if witness { game.units.push(Unit.new(92, Hex.new(1, -1), Team.Blue, UnitType.Scout)); }
+    game
+}
+
+/// The fight played out: attacker 0 resolves its attack.
+fn played(game: GameState) -> GameState can {Log, Rand} {
+    let mut game = game;
+    let mut attackers: Vec[i32] = Vec.new();
+    attackers.push(0);
+    game.resolve_attacks(&attackers);
+    game
+}
+
+@test
+fn ai_fights_only_play_effects_when_the_player_can_see_them() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let before = ai_fight(false);
+        assert(!before.fog().sees(Hex.new(0, 0)) && !before.fog().sees(Hex.new(1, 0)));
+        let hidden = played(before);
+        assert(hidden.effects.is_empty());
+        let seen = ai_fight(true);
+        assert(seen.fog().sees(Hex.new(0, 0)) && seen.fog().sees(Hex.new(1, 0)));
+        let visible = played(seen);
+        let mut shots = 0;
+        let mut damage = 0;
+        for i in 0..visible.effects.len() {
+            match visible.effects[i].animation {
+                Effect.Shot(_, _, _) => { shots = shots + 1; }
+                Effect.Damage(_, _, _) => { damage = damage + 1; }
+            }
+        }
+        assert(shots > 0);
+        assert(damage > 0);
+        assert_eq(hidden.effects.len(), 0);
+    });
+}

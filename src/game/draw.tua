@@ -20,6 +20,7 @@ use game.text;
 use game.city.BARRACKS_MAX_HP;
 use game.city.COASTAL_BATTERY_MAX_HP;
 use game.city.Building;
+use game.city.Routes;
 use game.city.delivered_share;
 use game.combat.AttackPreview;
 use game.combat.Hurt;
@@ -139,7 +140,7 @@ const MOUNTAIN_COLOR: Color = [0.13, 0.12, 0.12, 1.0];
 const MOUNTAIN_PEAK_COLOR: Color = [0.44, 0.42, 0.42, 1.0];
 const SNOW_COLOR: Color = [0.90, 0.92, 0.95, 1.0];
 pub const SELECTED_COLOR: Color = [0.80, 0.78, 0.30, 1.0];
-const CONTESTED_COLOR: Color = [0.55, 0.32, 0.10, 1.0];
+pub const CONTESTED_COLOR: Color = [0.55, 0.32, 0.10, 1.0];
 pub const MOVE_RANGE_COLOR: Color = [0.24, 0.42, 0.26, 1.0];
 const ATTACK_RANGE_COLOR: Color = [0.45, 0.22, 0.22, 1.0];
 const ATTACK_RANGE_EMPTY_COLOR: Color = [0.36, 0.24, 0.20, 1.0];
@@ -416,10 +417,13 @@ impl GameState {
     fn push_order_markers(&self, fog: &Fog, out: &mut Vec[MeshVertex]) {
         let n = self.units.len();
         // Units drawn with plain markers: not swapping, not planning later turns, and shown.
+        // Another side's move shows only in sight at both ends: its units carry their moves
+        // while a turn plays out.
         let mut swapping: Vec[bool] = Vec.new();
         for i in 0..n {
             let unit = &self.units[i];
-            swapping.push(self.swap_partner(i).is_some() || unit.plans_later_turns() || !fog.shows(unit));
+            let unseen_move = match unit.planned_move { Option.Some(dest) => unit.team != fog.team() && !fog.sees(dest), Option.None => false };
+            swapping.push(self.swap_partner(i).is_some() || unit.plans_later_turns() || !fog.shows(unit) || unseen_move);
         }
 
         // Where each moving unit's ghost is drawn, for its attack arc. Groups by target hex in
@@ -448,7 +452,7 @@ impl GameState {
 
         for idx in 0..n {
             if let Option.Some(partner) = self.swap_partner(idx) {
-                if partner > idx {
+                if partner > idx && fog.shows(&self.units[idx]) && fog.shows(&self.units[partner]) {
                     let color = with_alpha(self.units[idx].team.color(), SWAP_LINK_ALPHA);
                     segment(self.units[idx].pos.to_world(), self.units[partner].pos.to_world(), SWAP_LINK_WIDTH, color, out);
                 }
@@ -538,10 +542,11 @@ impl GameState {
         }
         if in_group { return SELECTED_COLOR; }
         let &Option.Some(sel) = selection else {
-            return if self.is_contested(hex) { CONTESTED_COLOR } else { base };
+            return if fog.sees(hex) && self.is_contested(hex) { CONTESTED_COLOR } else { base };
         };
         if sel.pos == hex { return SELECTED_COLOR; }
-        if self.is_contested(hex) { return CONTESTED_COLOR; }
+        // Only in sight: out of it, no unit is known to be anywhere.
+        if fog.sees(hex) && self.is_contested(hex) { return CONTESTED_COLOR; }
         if sel.swapping {
             let swappable = sel.pos.distance(hex) == 1 && self.controlled_unit_at(hex).is_some();
             return if swappable { MOVE_RANGE_COLOR } else { base };
@@ -592,7 +597,12 @@ impl GameState {
         }
         let shown = match self.hovered_city { Option.Some(i) => Option.Some(i), Option.None => self.selected_city };
         if let Option.Some(i) = shown {
+            // Delivery labels show routes as the player knows them; the worked-tile rings below
+            // show whether goods really arrive. Of another side's city, only the tiles it works
+            // in sight show, and not whether their goods arrive: its routes aren't known.
+            let own = self.cities[i].team == fog.team();
             let routes = self.known_routes(i, &fog);
+            let real: Option[Routes] = if own { Option.Some(self.routes(i)) } else { Option.None };
             if self.yields_city() == Option.Some(i) {
                 for r in 0..routes.costs.len() {
                     let Option.Some(h) = routes.costs.key_at(r) else { continue; };
@@ -618,7 +628,9 @@ impl GameState {
                 let tiles = clusters[k].tiles();
                 for w in 0..tiles.len() {
                     let h = tiles[w];
-                    let color = if routes.costs.has(h) { WORKED_ROUTED_COLOR } else { WORKED_CUT_OFF_COLOR };
+                    if !own && !fog.sees(h) { continue; }
+                    let arrives = match &real { &Option.Some(r) => r.costs.has(h), &Option.None => true };
+                    let color = if arrives { WORKED_ROUTED_COLOR } else { WORKED_CUT_OFF_COLOR };
                     // A coloured ring on a slightly wider dark one, just inside the hex's fill so
                     // it doesn't blur into the grid lines.
                     let center = h.to_world();

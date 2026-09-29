@@ -39,6 +39,7 @@ fn blank() -> Sighting {
         city: Option.None, barracks: Option.None, site: Option.None, road: false, structure: Option.None,
         barriers: [Option.None, Option.None, Option.None, Option.None, Option.None, Option.None],
         yields: (0, 0, 0), ruin: false, den: Option.None, turn: 0,
+        construction: [Option.None, Option.None, Option.None],
     }
 }
 

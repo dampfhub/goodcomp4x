@@ -34,6 +34,7 @@ use game.workers.StructureKind;
 use game.workers.OUTPOST_SIGHT;
 use game.workers.WORKER_SIGHT;
 use game.workers.FieldWorker;
+use game.workers.WorkerJob;
 use game.hex.Hex;
 use game.terrain.Terrain;
 use game.unit.Team;
@@ -118,6 +119,20 @@ pub struct Sighting {
     den: Option[UnitType],
     /// The turn it was seen on (`GameState.turn`): how stale it is.
     turn: u32,
+    /// What other sides' workers standing here were building: on the tile, or a wall or gate on
+    /// one of its edges. The first `SEEN_JOBS` of them.
+    construction: [Option[SeenJob]; 3],
+}
+
+/// How many jobs of other sides a hex's `Sighting` keeps.
+pub const SEEN_JOBS: i32 = 3;
+
+/// Another side's construction: a job one of its workers is at work on (standing at it, with
+/// work left). Only what's on the ground: not the jobs it has queued or is walking to, nor how
+/// long the work will take. Its name is `job_name`'s.
+pub struct SeenJob {
+    job: WorkerJob,
+    team: Team,
 }
 
 impl GameState {
@@ -271,6 +286,29 @@ impl GameState {
         seen
     }
 
+    /// The jobs of other sides' workers at work on `hex`.
+    fn construction_at(&self, hex: Hex) -> [Option[SeenJob]; 3] {
+        let mut out: [Option[SeenJob]; 3] = [Option.None, Option.None, Option.None];
+        let mut n = 0;
+        for w in 0..self.field_workers.len() {
+            if self.field_workers[w].pos != hex || n >= SEEN_JOBS { continue; }
+            if let Option.Some(seen) = self.others_construction(&self.field_workers[w]) {
+                out[n] = Option.Some(seen);
+                n = n + 1;
+            }
+        }
+        out
+    }
+
+    /// The job `worker` is at work on, if it belongs to another side than the player's: what the
+    /// player may see of it.
+    pub fn others_construction(&self, worker: &FieldWorker) -> Option[SeenJob] {
+        if worker.team == self.local_team || worker.recalled || worker.work_left.is_none() { return Option.None; }
+        let Option.Some(job) = worker.job else { return Option.None; };
+        if job.hex != worker.pos { return Option.None; }
+        Option.Some(SeenJob { job, team: worker.team })
+    }
+
     /// `hex` as it is right now, for a memory.
     fn sighting(&self, hex: Hex) -> Sighting {
         let mut city: Option[SeenBuilding] = Option.None;
@@ -298,6 +336,7 @@ impl GameState {
             ruin: self.ruin_at(hex).is_some(),
             den: match self.den_at(hex) { Option.Some(d) => Option.Some(self.dens[d].kind), Option.None => Option.None },
             turn: self.turn,
+            construction: self.construction_at(hex),
         }
     }
 

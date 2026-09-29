@@ -560,7 +560,7 @@ impl GameState {
     /// of the step and damage lands at the end, so a unit killed this step still gets its own
     /// attack off. An attack hits whichever enemy occupies the target hex now, not necessarily
     /// the one there at planning time. A unit in a contested hex fights its rival instead.
-    fn resolve_attacks(&mut self, attackers: &Vec[i32]) can {Log, Rand} {
+    pub fn resolve_attacks(&mut self, attackers: &Vec[i32]) can {Log, Rand} {
         let mut engagements: Vec[Engagement] = Vec.new();
         // Workers the step kills, by id.
         let mut killed_workers: Vec[u32] = Vec.new();

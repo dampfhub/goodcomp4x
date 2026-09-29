@@ -969,17 +969,11 @@ pub fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Opt
     let mut tile_tip: Option[PanelBuilder] = Option.None;
     if let Option.Some(hex) = game.hovered_tile {
         // A structure's live panel is only for one the player can see now: their own, or one in
-        // sight.
-        let fog = game.fog();
-        let mut structure = false;
-        for i in 0..game.cities.len() {
-            let known = game.cities[i].team == PLAYER_TEAM || fog.sees(hex);
-            if !structure && game.cities[i].pos == hex && known { game.structure_hover_panel(i, false, &mut hover); structure = true; }
-        }
-        for i in 0..game.cities.len() {
-            let known = game.cities[i].team == PLAYER_TEAM || fog.sees(hex);
-            if !structure && game.cities[i].barracks == Option.Some(hex) && known { game.structure_hover_panel(i, true, &mut hover); structure = true; }
-        }
+        // sight (`structure_inspect_panel`).
+        let structure = match game.structure_inspect_panel(hex) {
+            Option.Some(panel) => { hover = panel; true }
+            Option.None => false,
+        };
         if !structure {
             if let Option.Some(c) = cursor {
                 if let Option.Some(idx) = game.unit_at_screen(c, size) {

@@ -1,0 +1,241 @@
+//! What the tile tooltip and the structure hover panel tell of another side's city and Barracks:
+//! only what is in sight, or what the memory kept, never what hangs on tiles, routes and plans
+//! the player can't see.
+
+use std.rand.Rand;
+use std.collections.Map;
+use std.str.Str;
+use std.str.eq as str_eq;
+use std.str.to_owned;
+use std.str.contains;
+use std.str.starts_with;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use std.fmt.Out;
+use std.fmt.show_i64;
+use game.GameState;
+use game.text;
+use game.city.Build;
+use game.city.BuildUnit;
+use game.city.Building;
+use game.city.Lane;
+use game.city.Queued;
+use game.city.Site;
+use game.city.SiteKind;
+use game.hex.Hex;
+use game.tests.sandbox;
+use game.ui.PanelBuilder;
+use game.ui.panel_builder;
+use game.unit.Team;
+use game.unit.Unit;
+use game.unit.UnitType;
+
+/// Every span of text the panel shows, in order.
+fn words_of(panel: &PanelBuilder) -> Vec[Str] {
+    let mut out: Vec[Str] = Vec.new();
+    for k in 0..panel.spans.len() { let t = &panel.spans[k].text; out.push(to_owned(t)); }
+    out
+}
+
+/// The words of a tile's tooltip and, for a city or Barracks, its hover panel: what the player
+/// is shown of `hex`.
+fn shown(game: &GameState, hex: Hex) -> Vec[Str] {
+    let mut panel = panel_builder(false);
+    game.tile_tooltip(hex, &mut panel);
+    let mut words = words_of(&panel);
+    let mut structure: Option[(i32, bool)] = Option.None;
+    for c in 0..game.cities.len() {
+        if structure.is_none() && game.cities[c].pos == hex { structure = Option.Some((c, false)); }
+        if structure.is_none() && game.cities[c].barracks == Option.Some(hex) { structure = Option.Some((c, true)); }
+    }
+    if let Option.Some((city, barracks)) = structure {
+        let mut hover = panel_builder(false);
+        game.structure_hover_panel(city, barracks, &mut hover);
+        let more = words_of(&hover);
+        for k in 0..more.len() { let w = &more[k]; words.push(to_owned(w)); }
+    }
+    words
+}
+
+fn same_words(a: &Vec[Str], b: &Vec[Str]) -> bool {
+    if a.len() != b.len() { return false; }
+    for k in 0..a.len() {
+        let x = &a[k];
+        let y = &b[k];
+        if !str_eq(x, y) { return false; }
+    }
+    true
+}
+
+fn any_starts(words: &Vec[Str], prefix: str) -> bool {
+    let mut found = false;
+    for k in 0..words.len() { let w = &words[k]; if starts_with(w, prefix) { found = true; } }
+    found
+}
+
+fn any_starts_with(words: &Vec[Str], prefix: &Str) -> bool {
+    let mut found = false;
+    for k in 0..words.len() { let w = &words[k]; if starts_with(w, prefix) { found = true; } }
+    found
+}
+
+fn same_str(a: str, b: str) -> bool { str_eq(a, b) }
+
+fn any_contains(words: &Vec[Str], part: str) -> bool {
+    let mut found = false;
+    for k in 0..words.len() { let w = &words[k]; if contains(w, part) { found = true; } }
+    found
+}
+
+/// Whether `h` is a workable hex nothing is built on and no city works or stands on.
+fn open(game: &GameState, h: Hex) -> bool {
+    if !game.grid.contains(h) || !game.grid.terrain(h).is_workable() || game.sites.get(h).is_some() { return false; }
+    for c in 0..game.cities.len() { if game.cities[c].pos == h || game.cities[c].works(h) { return false; } }
+    true
+}
+
+/// What the fixture found: the game, Red's city, its Smelter, its Barracks, a mine for the
+/// Smelter and a worked tile out of sight.
+struct Half { game: GameState, red: i32, smelter: Hex, barracks: Hex, mine: Hex, worked: Hex, found: bool }
+
+/// The Cities scenario with no units, Red's city given a Smelter and a Barracks beside it and a
+/// mine for the Smelter, and a Blue Scout that sees the city, Smelter and Barracks but neither
+/// the mine nor a tile the city works.
+fn enemy_city_half_in_sight() -> Half can {Log} {
+    let mut base = GameState.city_scenario();
+    base.units.clear();
+    base.selected = Option.None;
+    base.selected_city = Option.None;
+    base.memory = Map.new();
+    let mut red = 0 - 1;
+    for c in 0..base.cities.len() { if red < 0 && base.cities[c].team == Team.Red { red = c; } }
+    let pos = base.cities[red].pos;
+    let hexes = base.grid.hex_list();
+    let mut near: Vec[Hex] = Vec.new();
+    let around = pos.neighbors();
+    for k in 0..6 { if open(&base, around[k]) { near.push(around[k]); } }
+    for s in 0..near.len() {
+        for b in 0..near.len() {
+            if s == b { continue; }
+            let (smelter, barracks) = (near[s], near[b]);
+            for h in 0..hexes.len() {
+                let scout = hexes[h];
+                if !open(&base, scout) || scout == smelter || scout == barracks { continue; }
+                let mut game = base.snapshot();
+                game.cities[red].set_placed_site(Building.Smelter, smelter);
+                game.cities[red].set_placed_site(Building.Barracks, barracks);
+                game.units.push(Unit.new(50, scout, Team.Blue, UnitType.Scout));
+                game.explore();
+                let fog = game.fog();
+                if !(fog.sees(pos) && fog.sees(smelter) && fog.sees(barracks)) { continue; }
+                let worked_tiles = game.cities[red].worked_tiles();
+                let mut worked: Option[Hex] = Option.None;
+                for w in 0..worked_tiles.len() { if worked.is_none() && !fog.sees(worked_tiles[w]) { worked = Option.Some(worked_tiles[w]); } }
+                let Option.Some(worked) = worked else { continue; };
+                let routes = game.routes_from(Team.Red, smelter);
+                let mut mine: Option[Hex] = Option.None;
+                for m in 0..hexes.len() {
+                    let d = smelter.distance(hexes[m]);
+                    if mine.is_none() && open(&game, hexes[m]) && !fog.sees(hexes[m]) && d >= 1 && d <= 3 && routes.costs.has(hexes[m]) { mine = Option.Some(hexes[m]); }
+                }
+                let Option.Some(mine) = mine else { continue; };
+                let _old = game.sites.insert(mine, Site { team: Team.Red, food: 0, production: 4, kind: SiteKind.Mine });
+                if game.smelter_income(red) <= 0 { continue; }
+                return Half { game, red, smelter, barracks, mine, worked, found: true };
+            }
+        }
+    }
+    Half { game: base, red, smelter: pos, barracks: pos, mine: pos, worked: pos, found: false }
+}
+
+@test
+fn an_enemy_citys_tooltips_do_not_change_with_what_the_player_cant_see() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let fixture = enemy_city_half_in_sight();
+        assert(fixture.found);
+        let game = fixture.game;
+        let (red, smelter, barracks, mine, worked) = (fixture.red, fixture.smelter, fixture.barracks, fixture.mine, fixture.worked);
+        let pos = game.cities[red].pos;
+        let before_city = shown(&game, pos);
+        let before_smelter = shown(&game, smelter);
+        let before_barracks = shown(&game, barracks);
+        // What the player can see still shows.
+        assert(any_starts(&before_city, "POP "));
+        assert(any_starts(&before_barracks, "HP "));
+
+        // An unseen Green unit on the worked tile, another on the mine: goods from neither get
+        // through.
+        let mut blocked = game.snapshot();
+        blocked.units.push(Unit.new(60, worked, Team.Green, UnitType.Melee));
+        blocked.units.push(Unit.new(61, mine, Team.Green, UnitType.Melee));
+        // The worked tile out of sight yields more.
+        let mut richer = game.snapshot();
+        let _old = richer.sites.insert(worked, Site { team: Team.Red, food: 9, production: 9, kind: SiteKind.Farm });
+        // Red queues something in each queue.
+        let mut queued = game.snapshot();
+        queued.cities[red].queue.push(Queued.prepaid(Build.Unit(BuildUnit.Melee)));
+        queued.cities[red].barracks_queue.push(Queued.prepaid(BuildUnit.Ranged));
+
+        // Each does change what is real, or the test would prove nothing.
+        assert(blocked.net_delivery(red) != game.net_delivery(red));
+        assert(blocked.smelter_income(red) != game.smelter_income(red));
+        assert(richer.net_delivery(red) != game.net_delivery(red));
+        assert(!same_str(queued.queue_word(red, Lane.City, "NOTHING"), game.queue_word(red, Lane.City, "NOTHING")));
+        assert(!same_str(queued.queue_word(red, Lane.Barracks, "EMPTY"), game.queue_word(red, Lane.Barracks, "EMPTY")));
+        for k in 0..3 {
+            let hidden = if k == 0 { &blocked } else if k == 1 { &richer } else { &queued };
+            assert(same_words(&shown(hidden, pos), &before_city));
+            assert(same_words(&shown(hidden, smelter), &before_smelter));
+            assert(same_words(&shown(hidden, barracks), &before_barracks));
+        }
+    });
+}
+
+@test
+fn an_enemy_city_out_of_sight_shows_the_population_it_was_seen_with() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let fixture = enemy_city_half_in_sight();
+        assert(fixture.found);
+        let mut game = fixture.game;
+        let (red, barracks) = (fixture.red, fixture.barracks);
+        let pos = game.cities[red].pos;
+        let population = game.cities[red].population;
+        // The Scout leaves; the city grows and its Barracks is hurt.
+        game.units.clear();
+        game.explore();
+        assert(!game.fog().sees(pos) && !game.fog().sees(barracks));
+        game.cities[red].population = game.cities[red].population + 3;
+        game.cities[red].barracks_hp = game.cities[red].barracks_hp / 2.0;
+        let city = shown(&game, pos);
+        let want = text_of_pop(population);
+        assert(any_starts_with(&city, &want));
+        let seen = shown(&game, barracks);
+        assert(any_starts(&seen, "HP 150/150") || any_starts(&seen, "HP "));
+    });
+}
+
+fn text_of_pop(population: i32) -> Str {
+    text(fn() can {Out} { Out.put("POP "); show_i64(population as i64); Out.put("/"); })
+}
+
+@test
+fn the_players_own_city_tooltips_still_show_its_economy() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let fixture = enemy_city_half_in_sight();
+        assert(fixture.found);
+        let mut game = fixture.game;
+        let (red, smelter, barracks) = (fixture.red, fixture.smelter, fixture.barracks);
+        // The same city, now the player's.
+        game.local_team = Team.Red;
+        game.cities[red].queue.push(Queued.prepaid(Build.Unit(BuildUnit.Melee)));
+        let city = shown(&game, game.cities[red].pos);
+        assert(any_contains(&city, "DELIVERS "));
+        assert(any_contains(&city, "BUILDING "));
+        assert(any_contains(&city, "QUEUE: "));
+        let smelts = shown(&game, smelter);
+        assert(any_contains(&smelts, "METAL A TURN"));
+        let trains = shown(&game, barracks);
+        assert(any_contains(&trains, "TRAINING: "));
+    });
+}

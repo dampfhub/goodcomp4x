@@ -390,9 +390,9 @@ impl GameState {
         }
         let core_left = self.cities[city].interior.core_hp - core_damage;
         self.cities[city].interior.core_hp = if core_left > 0.0 { core_left } else { 0.0 };
-        if core_damage > 0.0 && self.cities[city].interior.core_hp <= 0.0 {
-            self.set_notice(if owner == self.local_team { "YOUR POST BREACHED - KEEP RED OFF THE CENTER" } else { "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE" });
-        }
+        let breached = core_damage > 0.0 && self.cities[city].interior.core_hp <= 0.0;
+        let mut player_inside = false;
+        for k in 0..snapshot.fighters.len() { if snapshot.fighters[k].team == self.local_team { player_inside = true; } }
         let mut casualties: Vec[u32] = Vec.new();
         let mut health_after: Vec[(u32, f32)] = Vec.new();
         for k in 0..self.cities[city].interior.fighters.len() {
@@ -412,7 +412,31 @@ impl GameState {
                 if conqueror.is_none() && fighters[k].pos == CENTER && fighters[k].team != owner { conqueror = Option.Some(fighters[k].team); }
             }
         }
-        if let Option.Some(team) = conqueror { self.capture_city(city, team); }
+        // News of a city's interior reaches the player only from their own city or one in sight.
+        let player = self.local_team;
+        let id = self.cities[city].id + 1;
+        let hears = owner == player || self.fog().sees(self.cities[city].pos);
+        if breached && hears {
+            self.notice = if owner == player {
+                text(fn() can {Out} { Out.put("YOUR POST BREACHED - KEEP THE ENEMY OFF THE CENTER"); })
+            } else if player_inside {
+                text(fn() can {Out} { Out.put("ENEMY POST BREACHED - MOVE A "); Out.put(player.name()); Out.put(" TROOP ONTO THE CENTER TO CAPTURE"); })
+            } else {
+                text(fn() can {Out} { Out.put(owner.name()); Out.put(" CITY "); show_u64(id as u64); Out.put("'S POST BREACHED"); })
+            };
+        }
+        if let Option.Some(team) = conqueror {
+            if team == player {
+                self.notice = text(fn() can {Out} { Out.put("CITY "); show_u64(id as u64); Out.put(" CAPTURED IN THE INTERIOR"); });
+            } else if hears {
+                self.notice = if owner == player {
+                    text(fn() can {Out} { Out.put("CITY "); show_u64(id as u64); Out.put(" LOST: "); Out.put(team.name()); Out.put(" TOOK ITS COMMAND POST"); })
+                } else {
+                    text(fn() can {Out} { Out.put(team.name()); Out.put(" CAPTURED "); Out.put(owner.name()); Out.put(" CITY "); show_u64(id as u64); })
+                };
+            }
+            self.capture_city(city, team);
+        }
         for h in 0..health_after.len() {
             let (source, hp) = health_after[h];
             for i in 0..self.units.len() { if self.units[i].id == source { self.units[i].interior_hp = hp; } }
@@ -436,7 +460,6 @@ impl GameState {
         // Its workers at home serve the new owner, none of them held.
         c.held_workers = 0;
         let id = c.id;
-        self.notice = text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" CAPTURED IN THE INTERIOR"); });
         info(fn() can {Out} { show_u64((id + 1) as u64); Out.put(": "); team.show(); Out.put(" captures its command post"); });
         for w in 0..self.field_workers.len() {
             if self.field_workers[w].home != city { continue; }
