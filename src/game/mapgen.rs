@@ -13,8 +13,8 @@
 //!    map) is sea. The biggest landmass stays; other land sinks, unless it's
 //!    a small island of at most `MAX_ISLAND` hexes.
 //! 2. Mountain ranges (`raise_ranges`) where plates of crust push together:
-//!    long chains one hex wide along some of the borders between plates,
-//!    only 2.5-4% of the land, broken by passes, off the shore.
+//!    long chains one hex wide along most of the borders between plates,
+//!    only about 4-5% of the land, broken by passes, off the shore.
 //! 3. Hills (`roll_hills`): foothills along the ranges, and rolling uplands.
 //!    Hills are a modifier, so whatever ground the climate gives them stays
 //!    hilly.
@@ -24,7 +24,8 @@
 //!    up, so all of a landmass's open ground is connected.
 //! 6. Rivers (`carve_rivers`) run along hex edges, downhill, from a lake or
 //!    the mountains and their foothills to the sea, a lake, or another river;
-//!    never back into the lake they left.
+//!    never back into the lake they left. One stuck in a dip ends in a pool,
+//!    a new lake of one hex, where one fits.
 //! 7. Climate (`set_climate`): temperature falls toward the top and bottom
 //!    of the map and by mountains; moisture comes from noise, fresh water and
 //!    the sea, less far inland. Together they pick the ground: snow, tundra,
@@ -165,7 +166,7 @@ fn shape_world(shape: Shape, rng: &mut Rng) -> (Tiles, Vec<River>) {
     roll_hills(&mut draft, &inland, rng);
     fill_lakes(&mut draft, &inland, rng);
     open_passes(&mut draft);
-    let rivers = carve_rivers(&draft, &inland, rng);
+    let rivers = carve_rivers(&mut draft, &inland, rng);
     mark_coasts(&mut draft);
     set_climate(&mut draft, &inland, &river_edges(&rivers), rng);
     (draft.tiles, rivers)
@@ -315,16 +316,17 @@ fn sea_distance(draft: &Draft) -> HashMap<Hex, i32> {
 /// Hexes of map per plate of crust (`raise_ranges`).
 const HEXES_PER_PLATE: usize = 150;
 /// The chance that two plates meeting push together and raise a range.
-const RANGE_CHANCE: f32 = 0.5;
+const RANGE_CHANCE: f32 = 0.65;
 /// The chance that a hex along a range stays open, as a pass.
 const PASS_CHANCE: f32 = 0.1;
 
 /// Stage 2, mountain ranges, where plates of crust push together. The map is
 /// split among plates (a dozen or so on the smallest map), each the hexes
-/// nearest its center, warped so the borders between them curve. About half the
-/// borders rise, each by its own amount, and the hexes along a rising border
-/// (one hex wide, on one side of it) are the ridge. Only the highest 2.5-4%
-/// of the land (varying per map) becomes mountains, so ridges come in long,
+/// nearest its center, warped so the borders between them curve. About two
+/// in three borders rise, each by its own amount, and the hexes along a
+/// border (one hex wide, on one side of it) are the ridge: the rising
+/// borders first, the others only where those fall short. Only the highest
+/// 4-6% of the land (varying per map) becomes mountains, so ridges come in long,
 /// thin chains that break off where they're lowest; a hex here and there
 /// stays open as a pass, and ranges keep a hex back from the shore. A lone
 /// peak or two may rise elsewhere.
@@ -338,15 +340,16 @@ fn raise_ranges(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) {
             extent * Vec2::new(2.0 * x - 1.0, 2.0 * y - 1.0)
         })
         .collect();
-    // How hard each pair of plates pushes together, or -1 where it doesn't.
+    // How hard each pair of plates pushes together: 0 to 1 where they rise,
+    // below 0 where they don't, so those borders only take up the ridge if
+    // the rising ones are too short for the share.
     let mut push = vec![-1.0f32; plates * plates];
     for a in 0..plates {
         for b in a + 1..plates {
             let (rises, height) = (rng.unit() < RANGE_CHANCE, rng.unit());
-            if rises {
-                push[a * plates + b] = height;
-                push[b * plates + a] = height;
-            }
+            let height = if rises { height } else { height - 1.0 };
+            push[a * plates + b] = height;
+            push[b * plates + a] = height;
         }
     }
     let plate: HashMap<Hex, usize> = draft
@@ -368,8 +371,8 @@ fn raise_ranges(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) {
         .collect();
 
     let land = draft.land();
-    // The ridge: hexes on the lower-numbered plate's side of a rising
-    // border, highest first.
+    // The ridge: hexes on the lower-numbered plate's side of a border,
+    // highest first.
     let mut ridge: Vec<(Hex, f32)> = land
         .iter()
         .filter(|&&h| inland[&h] >= 2)
@@ -380,15 +383,17 @@ fn raise_ranges(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) {
                 .into_iter()
                 .filter(|&n| draft.on_map(n) && plate[&n] > own)
                 .map(|n| push[own * plates + plate[&n]])
-                .fold(-1.0f32, f32::max);
-            (height >= 0.0).then(|| (h, height + 0.3 * wear.fbm(h.to_world() / 3.0)))
+                .fold(f32::NEG_INFINITY, f32::max);
+            height
+                .is_finite()
+                .then(|| (h, height + 0.3 * wear.fbm(h.to_world() / 3.0)))
         })
         .collect();
     ridge.sort_by(|a, b| {
         b.1.total_cmp(&a.1)
             .then((a.0.q, a.0.r).cmp(&(b.0.q, b.0.r)))
     });
-    let share = 0.025 + 0.015 * rng.unit();
+    let share = 0.04 + 0.02 * rng.unit();
     let wanted = (land.len() as f32 * share) as usize;
     for &(h, _) in ridge.iter().take(wanted) {
         let pass = rng.unit() < PASS_CHANCE;
@@ -629,6 +634,9 @@ fn drains_into(
     }
 }
 
+/// Hexes of land per river (`carve_rivers`).
+const LAND_PER_RIVER: usize = 45;
+
 /// The most edges a river on a map `extent` wide (see `Draft`) runs along:
 /// about half the map's width in hexes.
 fn longest_river(extent: Vec2) -> usize {
@@ -642,10 +650,12 @@ fn longest_river(extent: Vec2) -> usize {
 /// flows out of each) or in the mountains and their foothills, and flows
 /// until it reaches the sea, a lake, or another river, which it joins; so
 /// rivers merge but never split. A river never runs back into the lake it
-/// left, directly or down other rivers and lakes. One that would get stuck in
-/// a dip, run on longer than suits the map, or stay under three edges long
-/// isn't made.
-fn carve_rivers(draft: &Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) -> Vec<River> {
+/// left, directly or down other rivers and lakes. One that gets stuck in a
+/// dip fills it as a pool, a new lake of one hex (`pool_site`), where one
+/// fits; one that can't, or would run on longer than suits the map, or stay
+/// under three edges long, isn't made. About one river per `LAND_PER_RIVER`
+/// hexes of land, their sources at least three hexes apart.
+fn carve_rivers(draft: &mut Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) -> Vec<River> {
     let lift = Noise(rng.next());
     let height: HashMap<Hex, f32> = draft
         .hexes
@@ -667,13 +677,11 @@ fn carve_rivers(draft: &Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) -> Vec
     let on_map = |c: &Corner| c.iter().all(|&h| draft.on_map(h));
     let corner_height = |c: &Corner| c.iter().map(|h| height[h]).sum::<f32>() / 3.0;
     let mut lake_of: HashMap<Hex, usize> = HashMap::default();
-    for (i, lake) in components(&draft.hexes, |h| draft.is_lake(h))
-        .into_iter()
-        .enumerate()
-    {
-        lake_of.extend(lake.into_iter().map(|h| (h, i)));
+    let mut lakes = 0;
+    for lake in components(&draft.hexes, |h| draft.is_lake(h)) {
+        lake_of.extend(lake.into_iter().map(|h| (h, lakes)));
+        lakes += 1;
     }
-    let touches_lake = |c: &Corner, lake: usize| c.iter().any(|h| lake_of.get(h) == Some(&lake));
 
     // Sources: corners on a lake's shore, between two land hexes, and
     // corners of mountains and foothills with no water and some open land.
@@ -705,22 +713,31 @@ fn carve_rivers(draft: &Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) -> Vec
     rng.shuffle(&mut sources);
 
     let land = draft.hexes.iter().filter(|&&h| draft.is_land(h)).count();
-    let wanted = land / 90 + rng.below(3);
+    let wanted = land / LAND_PER_RIVER + rng.below(3);
     let longest = longest_river(draft.extent);
     let mut rivers: Vec<River> = Vec::new();
     let mut mouths: Vec<Mouth> = Vec::new();
     let mut on_river: HashMap<Corner, usize> = HashMap::default();
+    // Every hex a river's corners touch.
+    let mut by_river: HashSet<Hex> = HashSet::default();
     let mut outflow: HashMap<usize, usize> = HashMap::default();
+    let mut pools: Vec<Hex> = Vec::new();
     for (source, lake) in sources {
         if rivers.len() >= wanted {
             break;
         }
         if lake.is_some_and(|l| outflow.contains_key(&l))
             || on_river.contains_key(&source)
-            || rivers.iter().any(|r| r[0][0].distance(source[0]) < 4)
+            || rivers.iter().any(|r| r[0][0].distance(source[0]) < 3)
+            // By a pool a river left earlier, which isn't its lake.
+            || source
+                .iter()
+                .any(|h| lake_of.get(h).is_some_and(|&l| Some(l) != lake))
         {
             continue;
         }
+        let touches_lake =
+            |c: &Corner, lake: usize| c.iter().any(|h| lake_of.get(h) == Some(&lake));
         let mut path = vec![source];
         let mouth = loop {
             let here = *path.last().expect("a path starts at its source");
@@ -750,15 +767,30 @@ fn carve_rivers(draft: &Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) -> Vec
                 None => break None,
             }
         };
-        let Some(mouth) = mouth else {
+        // Stuck in a dip: the river fills it, as a pool.
+        let pool = if mouth.is_none() && path.len() <= longest {
+            pool_site(draft, &path, &height, &lake_of, &by_river).map(|(site, keep)| {
+                path.truncate(keep);
+                site
+            })
+        } else {
+            None
+        };
+        let Some(mouth) = mouth.or(pool.map(|_| Mouth::Lake(lakes))) else {
             continue;
         };
         if path.len() < 4 || lake.is_some_and(|l| drains_into(mouth, l, &mouths, &outflow)) {
             continue;
         }
+        if let Some(h) = pool {
+            lake_of.insert(h, lakes);
+            lakes += 1;
+            pools.push(h);
+        }
         let id = rivers.len();
         for &c in &path {
             on_river.entry(c).or_insert(id);
+            by_river.extend(c);
         }
         if let Some(l) = lake {
             outflow.insert(l, id);
@@ -766,7 +798,36 @@ fn carve_rivers(draft: &Draft, inland: &HashMap<Hex, i32>, rng: &mut Rng) -> Vec
         rivers.push(path);
         mouths.push(mouth);
     }
+    for h in pools {
+        draft.set(h, Tile::from(Terrain::Lake));
+    }
     rivers
+}
+
+/// Where a river stuck in a dip at the end of `path` can end in a new pool
+/// of one hex, and how many of its corners it keeps, up to the first that
+/// touches the pool: one of the hexes at its last corner, the lowest that
+/// fits. A pool is open land ringed by open land (so it touches no other
+/// water and cuts nothing off) that no river runs by yet, and the river
+/// stays at least three edges long.
+fn pool_site(
+    draft: &Draft,
+    path: &[Corner],
+    height: &HashMap<Hex, f32>,
+    lake_of: &HashMap<Hex, usize>,
+    by_river: &HashSet<Hex>,
+) -> Option<(Hex, usize)> {
+    let open = |h: Hex| draft.is_open(h) && !lake_of.contains_key(&h);
+    let mut sites = *path.last()?;
+    sites.sort_by(|a, b| height[a].total_cmp(&height[b]));
+    sites.into_iter().find_map(|site| {
+        let keep = path.iter().position(|c| c.contains(&site))? + 1;
+        let fits = keep >= 4
+            && open(site)
+            && site.neighbors().into_iter().all(open)
+            && !by_river.contains(&site);
+        fits.then_some((site, keep))
+    })
 }
 
 /// What's left of the sea is coast next to land, open ocean beyond.
