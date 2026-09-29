@@ -833,3 +833,30 @@ fn debug_docked_beside_a_kind_of_selection_comes_back_with_that_kind() {
         assert(r.ctx.dock_node(d).parent == r.ctx.dock_node(sel).parent);
     });
 }
+
+@test
+fn selection_and_queue_docked_as_a_pair_stay_a_pair_across_a_closed_city() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        game.queue_selected_city_unit(BuildUnit.Melee);
+        game.queue_selected_city_unit(BuildUnit.Ranged);
+        let mut r = rig(game);
+        r.ctx.dock_into("Selection", GAME_SPACE, Dir.Left, 0.5);
+        frames(&mut r, 3);
+        assert(r.ctx.dock_beside("Production Queue", "Selection", Dir.Up, 0.3));
+        frames(&mut r, 4);
+        assert(r.ctx.is_docked("Selection") && r.ctx.is_docked("Production Queue"));
+        // The city closes: both panels are gone for a while; then it opens again.
+        r.game.leave_city_view();
+        frames(&mut r, 5);
+        r.game.select_city();
+        frames(&mut r, 6);
+        assert(r.ctx.is_docked("Selection") && r.ctx.is_docked("Production Queue"));
+        let Option.Some(q) = r.ctx.dock_node_of("Production Queue") else { assert(false); return; };
+        let Option.Some(sel) = r.ctx.dock_node_of("Selection") else { assert(false); return; };
+        // Still siblings, the queue above the selection.
+        assert(r.ctx.dock_node(q).parent == r.ctx.dock_node(sel).parent);
+        assert(r.ctx.dock_node(q).rect.max.y <= r.ctx.dock_node(sel).rect.min.y);
+    });
+}
