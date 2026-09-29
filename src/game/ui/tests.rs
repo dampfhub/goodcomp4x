@@ -1009,6 +1009,51 @@ fn yields_show_only_for_the_open_city_and_toggle() {
 }
 
 #[test]
+fn a_menu_button_over_a_scrollbar_takes_the_click() {
+    // The centered settings menu is drawn over the city's panels, the
+    // production catalogue's scrollbar among them: where they overlap, the
+    // button is clicked and the catalogue doesn't scroll.
+    let mut game = city_view();
+    game.handle_click(
+        button_cursor(&game, Target::OpenSettings),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    let layout = game.layout(SCREEN);
+    let track = layout
+        .building_scrollbars
+        .iter()
+        .find(|region| region.max_offset > 0)
+        .expect("the catalogue scrolls");
+    let scroll = game.cities[0].building_scroll;
+    // Where a button and the scrollbar overlap, at a height where the bare
+    // scrollbar would scroll the catalogue.
+    let (button, point) = layout
+        .buttons
+        .iter()
+        .find_map(|button| {
+            let min = button.min.max(track.track_min);
+            let max = button.max.min(track.track_max);
+            let point = (min + max) / 2.0;
+            let mut probe = game.clone();
+            let scrolls = probe.drag_building_scrollbar_at(to_ui(point, SCREEN), SCREEN, false)
+                && probe.cities[0].building_scroll != scroll;
+            (min.x < max.x && min.y < max.y && scrolls).then_some((button.target, point))
+        })
+        .expect("a menu button over the scrollbar");
+    assert_eq!(layout.button_at(point).map(|b| b.target), Some(button));
+    let yields = game.show_yields;
+    game.handle_click(to_ui(point, SCREEN), SCREEN, ClickMode::Normal);
+    assert_eq!(
+        game.cities[0].building_scroll, scroll,
+        "the catalogue kept still"
+    );
+    if button == Target::ToggleYields {
+        assert_ne!(game.show_yields, yields, "the button was clicked");
+    }
+}
+
+#[test]
 fn resting_on_a_tile_shows_its_tooltip_after_a_delay() {
     let mut game = GameState::new();
     let cursor = hex_cursor(&game, Hex::new(0, 1));
