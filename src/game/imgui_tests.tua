@@ -8,6 +8,10 @@ use std.linalg.Vec2;
 use std.linalg.vec2;
 use std.rand.Rand;
 use std.str.Str;
+use std.str.eq as str_eq;
+use std.str.find;
+use std.str.push;
+use std.str.to_owned;
 use std.test.assert;
 use std.test.assert_eq;
 use std.test.Assert;
@@ -25,6 +29,18 @@ use ui.input.Mods;
 use ui_win32.next_frame;
 use game.GameState;
 use game.city.Build;
+use game.city.Building;
+use game.hex.Hex;
+use game.settings.SETTINGS;
+use game.settings.Setting;
+use game.ui.PanelBuilder;
+use game.ui.RosterKey;
+use game.ui.RowKind;
+use game.ui.TILE_TOOLTIP_DELAY;
+use game.ui.panel_builder;
+use game.unit.UnitType;
+use game.imgui_layout.INSPECT;
+use game.imgui_layout.is_zero;
 use game.city.BuildUnit;
 use game.font.ui_atlas;
 use game.imgui.UiState;
@@ -199,27 +215,6 @@ fn end_turn_in_the_status_bar_selects_what_the_turn_waits_on() {
 }
 
 @test
-fn dragging_a_queue_row_onto_another_reorders_the_queue() {
-    sandbox(fn() can {Log, Rand, Assert} {
-        let mut game = GameState.city_scenario();
-        game.select_city();
-        let Option.Some(city) = game.selected_city else { assert(false); return; };
-        game.queue_selected_city_unit(BuildUnit.Melee);
-        game.queue_selected_city_unit(BuildUnit.Ranged);
-        game.queue_selected_city_unit(BuildUnit.Siege);
-        assert(game.cities[city].queue.len() == 3);
-        let mut r = rig(game);
-        let Option.Some(last) = seen_rect(&r, Target.QueueItem(QueueKind.City, 2)) else { assert(false); return; };
-        let Option.Some(middle) = seen_rect(&r, Target.QueueItem(QueueKind.City, 1)) else { assert(false); return; };
-        drag(&mut r, center(last), center(middle));
-        // Siege now sits second, ahead of Ranged.
-        assert(r.game.cities[city].queue.len() == 3);
-        assert(r.game.cities[city].queue[1] == Build.Unit(BuildUnit.Siege));
-        assert(r.game.cities[city].queue[2] == Build.Unit(BuildUnit.Ranged));
-    });
-}
-
-@test
 fn the_settings_menu_changes_settings_with_its_controls() {
     sandbox(fn() can {Log, Rand, Assert} {
         let mut game = GameState.city_scenario();
@@ -327,4 +322,331 @@ fn pinned_city_action_uses_its_own_city_after_selection_closes() {
         assert(game.selected_city == Option.Some(city));
         assert(!game.cities[city].queue.is_empty());
     });
+}
+
+// ---- the turn strip -------------------------------------------------------------------------
+
+/// What the turn strip shows now: each chip's key, whether it is framed and its count.
+struct Chip { key: RosterKey, selected: bool, count: i32 }
+
+fn strip(game: &GameState) -> Vec[Chip] {
+    let mut out: Vec[Chip] = Vec.new();
+    if let Option.Some(panel) = game.roster_panel() {
+        for k in 0..panel.chips.len() {
+            let c = panel.chips[k];
+            out.push(Chip { key: c.key, selected: c.selected, count: c.count });
+        }
+    }
+    out
+}
+
+fn keys_of(game: &GameState) -> Vec[RosterKey] {
+    let mut out: Vec[RosterKey] = Vec.new();
+    let chips = strip(game);
+    for k in 0..chips.len() { out.push(chips[k].key); }
+    out
+}
+
+fn blue_units(game: &GameState) -> Vec[i32] {
+    let mut out: Vec[i32] = Vec.new();
+    for i in 0..game.units.len() { if game.is_player_controlled(i) { out.push(i); } }
+    out
+}
+
+/// A click on the chip standing for `key`, with the modifiers held.
+fn click_chip(r: &mut Rig, key: RosterKey, shift: bool, ctrl: bool) can {Log, Rand, Assert} {
+    r.st.input.mods = Mods { ctrl, shift, alt: false };
+    frames(r, 2);
+    click_target(r, Target.RosterSelect(key));
+    r.st.input.mods = Mods { ctrl: false, shift: false, alt: false };
+    frames(r, 2);
+}
+
+@test
+fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        // The Cities scenario: Blue's city has nothing queued and a worker idle at home, and
+        // one unit of each military kind.
+        let mut game = GameState.city_scenario();
+        let mut city_id: u32 = 0;
+        let mut city_at: i32 = 0 - 1;
+        for i in 0..game.cities.len() { if city_at < 0 && game.cities[i].team == Team.Blue { city_at = i; city_id = game.cities[i].id; } }
+        assert(city_at >= 0);
+        let keys = keys_of(&game);
+        assert(keys[0] == RosterKey.Production(city_id));
+        assert(keys[1] == RosterKey.Workers(city_id));
+        let blue = blue_units(&game);
+        assert(keys.len() == 2 + blue.len());
+        for k in 0..blue.len() {
+            assert(keys[2 + k] == RosterKey.Group(game.units[blue[k]].unit_type, false));
+        }
+        // A settler comes ahead of the military, wherever it is in unit order.
+        let last = blue[blue.len() - 1];
+        let settler = game.units[last].id;
+        let unit_type = game.units[last].unit_type;
+        game.settlers.insert(settler);
+        assert(keys_of(&game)[2] == RosterKey.Group(unit_type, true));
+        // The production chip opens the city, and is framed while it is open.
+        let mut r = rig(game);
+        click_chip(&mut r, RosterKey.Production(city_id), false, false);
+        let Option.Some(open) = r.game.selected_city else { assert(false); return; };
+        assert(r.game.cities[open].id == city_id);
+        let chips = strip(&r.game);
+        assert(chips[0].selected && !chips[1].selected && !chips[2].selected);
+        // Once it has a build, it leaves the strip.
+        r.game.cities[open].queue.push(Build.Unit(BuildUnit.Melee));
+        let after = keys_of(&r.game);
+        for k in 0..after.len() {
+            let production = match after[k] { RosterKey.Production(_) => true, _ => false };
+            assert(!production);
+        }
+    });
+}
+
+@test
+fn a_group_chip_counts_its_units_and_opens_a_row_of_them() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let blue = blue_units(&game);
+        // Three melee and one siege.
+        for k in 0..3 { game.units[blue[k]].unit_type = UnitType.Melee; }
+        game.units[blue[3]].unit_type = UnitType.Siege;
+        game.set_selection(Vec.new());
+        let melee = RosterKey.Group(UnitType.Melee, false);
+        let siege = RosterKey.Group(UnitType.Siege, false);
+        let chips = strip(&game);
+        assert(chips.len() == 2);
+        assert(chips[0].key == melee && !chips[0].selected && chips[0].count == 3);
+        assert(chips[1].key == siege && !chips[1].selected && chips[1].count == 1);
+        let mut r = rig(game);
+        // Clicking a group selects all of it and lists its units one by one.
+        click_chip(&mut r, melee, false, false);
+        let picked = r.game.selection();
+        assert(picked.len() == 3 && picked[0] == blue[0] && picked[1] == blue[1] && picked[2] == blue[2]);
+        let row = strip(&r.game);
+        assert(row.len() == 5);
+        for k in 0..3 {
+            assert(row[2 + k].key == RosterKey.Unit(r.game.units[blue[k]].id));
+            assert(row[2 + k].selected);
+        }
+        let first = RosterKey.Unit(r.game.units[blue[0]].id);
+        let third = RosterKey.Unit(r.game.units[blue[2]].id);
+        // From the row: Ctrl-click takes one out, a plain click picks one.
+        click_chip(&mut r, first, false, true);
+        let two = r.game.selection();
+        assert(two.len() == 2 && two[0] == blue[1] && two[1] == blue[2]);
+        assert(!strip(&r.game)[2].selected);
+        click_chip(&mut r, third, false, false);
+        let one = r.game.selection();
+        assert(one.len() == 1 && one[0] == blue[2]);
+        // The row stays while one of its units is selected.
+        assert(strip(&r.game).len() == 5);
+        // Shift-clicking another group adds all of it; Ctrl-clicking takes it out.
+        click_chip(&mut r, siege, true, false);
+        let added = r.game.selection();
+        assert(added.len() == 2 && added[0] == blue[2] && added[1] == blue[3]);
+        click_chip(&mut r, siege, false, true);
+        let removed = r.game.selection();
+        assert(removed.len() == 1 && removed[0] == blue[2]);
+        // Selecting something else closes the row.
+        click_chip(&mut r, siege, false, false);
+        let only = r.game.selection();
+        assert(only.len() == 1 && only[0] == blue[3]);
+        let keys = keys_of(&r.game);
+        assert(keys.len() == 2 && keys[0] == melee && keys[1] == siege);
+        // Nothing got orders.
+        for i in 0..r.game.units.len() { assert(!r.game.units[i].has_queue()); }
+    });
+}
+
+@test
+fn a_unit_with_orders_leaves_its_group() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.new();
+        let blue = blue_units(&game);
+        for k in 0..blue.len() { game.units[blue[k]].unit_type = UnitType.Melee; }
+        let melee = RosterKey.Group(UnitType.Melee, false);
+        assert(strip(&game)[0].count == blue.len());
+        let mut one: Vec[i32] = Vec.new();
+        one.push(blue[0]);
+        game.set_selection(one);
+        game.hold_selected_unit();
+        let chips = strip(&game);
+        assert(chips[0].key == melee);
+        assert(chips[0].count == blue.len() - 1);
+    });
+}
+
+// ---- queues, hover and the settings menu -------------------------------------------------------
+
+fn row(r: &Rig, kind: QueueKind, index: i32) -> Option[Rect] { seen_rect(r, Target.QueueItem(kind, index)) }
+
+@test
+fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        game.cities[city].queue.push(Build.Unit(BuildUnit.Melee));
+        game.cities[city].queue.push(Build.Unit(BuildUnit.Ranged));
+        game.cities[city].queue.push(Build.Unit(BuildUnit.Siege));
+        let mut r = rig(game);
+        let Option.Some(from) = row(&r, QueueKind.City, 2) else { assert(false); return; };
+        let Option.Some(to) = row(&r, QueueKind.City, 0) else { assert(false); return; };
+        drag(&mut r, center(from), center(to));
+        // Siege leaps to the front, and the others keep their order behind it.
+        assert(r.game.cities[city].queue[0] == Build.Unit(BuildUnit.Siege));
+        assert(r.game.cities[city].queue[1] == Build.Unit(BuildUnit.Melee));
+        assert(r.game.cities[city].queue[2] == Build.Unit(BuildUnit.Ranged));
+        // The X on a row removes it: pressing it drags nothing.
+        click_target(&mut r, Target.QueueRemove(1));
+        assert(r.game.cities[city].queue.len() == 2);
+        assert(r.game.cities[city].queue[1] == Build.Unit(BuildUnit.Ranged));
+    });
+}
+
+@test
+fn ready_city_building_cannot_be_dragged_out_of_first_place() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        game.cities[city].queue.push(Build.Building(Building.Workshop));
+        game.cities[city].queue.push(Build.Unit(BuildUnit.Melee));
+        game.cities[city].pending_building = Option.Some(Building.Workshop);
+        let mut r = rig(game);
+        let Option.Some(first) = row(&r, QueueKind.City, 0) else { assert(false); return; };
+        let Option.Some(second) = row(&r, QueueKind.City, 1) else { assert(false); return; };
+        // The second row goes onto the first, which is the ready building: nothing moves.
+        drag(&mut r, center(second), center(first));
+        assert(r.game.cities[city].queue[0] == Build.Building(Building.Workshop));
+        // And the ready building itself cannot be picked up.
+        drag(&mut r, center(first), center(second));
+        assert(r.game.cities[city].queue[0] == Build.Building(Building.Workshop));
+    });
+}
+
+@test
+fn barracks_queue_rows_use_the_same_drag_and_remove_targets() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        let Option.Some(city) = game.selected_city else { assert(false); return; };
+        game.cities[city].barracks = Option.Some(Hex.new(-2, 0));
+        game.open_barracks(city);
+        game.cities[city].barracks_queue.push(BuildUnit.Melee);
+        game.cities[city].barracks_queue.push(BuildUnit.Ranged);
+        let mut r = rig(game);
+        let Option.Some(second) = row(&r, QueueKind.Barracks, 1) else { assert(false); return; };
+        let Option.Some(first) = row(&r, QueueKind.Barracks, 0) else { assert(false); return; };
+        drag(&mut r, center(second), center(first));
+        assert(r.game.cities[city].barracks_queue[0] == BuildUnit.Ranged);
+        click_target(&mut r, Target.BarracksQueueRemove(1));
+        assert(r.game.cities[city].barracks_queue.len() == 1);
+        assert(r.game.cities[city].barracks_queue[0] == BuildUnit.Ranged);
+    });
+}
+
+@test
+fn resting_on_a_tile_shows_its_tooltip_after_a_delay() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut r = rig(GameState.new());
+        let cursor = hex_cursor(&r.game, Hex.new(0, 1));
+        move_to(&mut r, cursor);
+        r.game.update_hover(Option.Some(cursor), screen(), 0.0);
+        frames(&mut r, 2);
+        let before = r.st.out.vtx.len();
+        r.game.update_hover(Option.Some(cursor), screen(), TILE_TOOLTIP_DELAY);
+        assert(r.game.hovered_tile == Option.Some(Hex.new(0, 1)));
+        frames(&mut r, 2);
+        assert(r.st.out.vtx.len() > before);
+        // Moving to another hex starts the wait over.
+        let elsewhere = hex_cursor(&r.game, Hex.new(1, 1));
+        r.game.update_hover(Option.Some(elsewhere), screen(), 0.1);
+        assert(r.game.hover_seconds == 0.0);
+    });
+}
+
+fn hex_cursor(game: &GameState, hex: Hex) -> Vec2 {
+    let camera = &game.camera;
+    let offset = hex.to_world().sub(camera.center).scale(1.0 / camera.half_height);
+    let ndc = vec2(offset.x * SCREEN_H / SCREEN_W, 0.0 - offset.y);
+    vec2((ndc.x + 1.0) / 2.0 * SCREEN_W, (ndc.y + 1.0) / 2.0 * SCREEN_H)
+}
+
+/// Whether the Inspect panel has been shown in `r`.
+fn inspecting(r: &Rig) -> bool { !is_zero(r.st.layout.windows[INSPECT].size) }
+
+@test
+fn hovering_an_enemy_out_of_sight_shows_nothing() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let game = GameState.new();
+        let mut enemy_at = Hex.new(0, 0);
+        let mut found = false;
+        for i in 0..game.units.len() { if !found && game.units[i].team == Team.Red { enemy_at = game.units[i].pos; found = true; } }
+        assert(found);
+        // The combat map starts with Red unseen.
+        assert(!game.fog().sees(enemy_at));
+        let mut r = rig(game);
+        let cursor = hex_cursor(&r.game, enemy_at);
+        move_to(&mut r, cursor);
+        r.game.update_hover(Option.Some(cursor), screen(), 0.0);
+        frames(&mut r, 3);
+        assert(!inspecting(&r));
+        // In sight, the same hover describes it.
+        r.game.fog_of_war = false;
+        frames(&mut r, 3);
+        assert(inspecting(&r));
+    });
+}
+
+@test
+fn the_settings_menu_shows_every_setting_under_its_heading() {
+  sandbox(fn() can {Log, Rand, Assert} {
+    let game = GameState.new();
+    let panel = game.settings_panel_content();
+    // Each heading once, then its settings at their current values, in `SETTINGS`'s order.
+    let mut listed: Vec[Setting] = Vec.new();
+    for r in 0..panel.rows.len() {
+        let row = panel.rows[r];
+        match row.kind {
+            RowKind.Setting => {
+                let s = &panel.settings[row.from];
+                assert(s.value == game.settings.get(s.setting));
+                listed.push(s.setting);
+            }
+            _ => {}
+        }
+    }
+    assert(listed.len() == 5);
+    for k in 0..5 { assert(listed[k] == SETTINGS[k]); }
+    // A setting button's tooltip names what it sets, and says when it already is.
+    let mut p = panel_builder(false);
+    assert(game.tooltip(Target.SetSetting(Setting.TurnPlayback, 1), &mut p));
+    assert(rows_show(&p, "INSTANT PLAYBACK"));
+    assert(rows_show(&p, "ALREADY ON"));
+    let mut other = panel_builder(false);
+    assert(game.tooltip(Target.SetSetting(Setting.TurnPlayback, 0), &mut other));
+    assert(rows_show(&other, "OFF"));
+    assert(!rows_show(&other, "ALREADY"));
+    let mut past = panel_builder(false);
+    assert(game.tooltip(Target.SetSetting(Setting.MaxQueuedTurns, 0), &mut past));
+    assert(rows_show(&past, "ALREADY 6 TURNS"));
+  });
+}
+
+/// Whether any line of `panel` contains `needle`.
+fn rows_show(panel: &PanelBuilder, needle: &str) -> bool {
+    for r in 0..panel.rows.len() {
+        let row = panel.rows[r];
+        match row.kind {
+            RowKind.Text => {
+                let mut line = to_owned("");
+                for i in row.from..row.to { let t = &panel.spans[i].text; push(&mut line, t); }
+                if find(&line, needle).is_some() { return true; }
+            }
+            _ => {}
+        }
+    }
+    false
 }

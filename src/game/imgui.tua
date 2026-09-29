@@ -728,6 +728,7 @@ fn render_rows(game: &GameState, panel: &PanelBuilder, scope: Option[PinnedPanel
                 same_line();
                 let red = push_color(StyleColor.Button, lc([0.23, 0.13, 0.13, 1.0]));
                 if small_button("X##remove") { push_action(actions, scope, item.kind.remove_target(item.index)); }
+                actions.push(Action.Seen(item.kind.remove_target(item.index), item_rect()));
                 red.pop();
                 sc.end();
             }
@@ -928,12 +929,17 @@ fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Option[
     let mut hover = panel_builder(false);
     let mut tile_tip: Option[PanelBuilder] = Option.None;
     if let Option.Some(hex) = game.hovered_tile {
+        // A structure's live panel is only for one the player can see now: their own, or one in
+        // sight.
+        let fog = game.fog();
         let mut structure = false;
         for i in 0..game.cities.len() {
-            if !structure && game.cities[i].pos == hex { game.structure_hover_panel(i, false, &mut hover); structure = true; }
+            let known = game.cities[i].team == PLAYER_TEAM || fog.sees(hex);
+            if !structure && game.cities[i].pos == hex && known { game.structure_hover_panel(i, false, &mut hover); structure = true; }
         }
         for i in 0..game.cities.len() {
-            if !structure && game.cities[i].barracks == Option.Some(hex) { game.structure_hover_panel(i, true, &mut hover); structure = true; }
+            let known = game.cities[i].team == PLAYER_TEAM || fog.sees(hex);
+            if !structure && game.cities[i].barracks == Option.Some(hex) && known { game.structure_hover_panel(i, true, &mut hover); structure = true; }
         }
         if !structure {
             if let Option.Some(c) = cursor {

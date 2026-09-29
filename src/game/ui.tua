@@ -1498,9 +1498,17 @@ impl GameState {
                 };
                 if self.savestate.is_none() { unavailable = Option.Some(to_owned("NOTHING SAVED YET")); }
             }
-            Target.SetSetting(setting, _) => {
+            Target.SetSetting(setting, value) => {
+                let current = self.settings.get(setting);
+                let (low, high) = setting.range();
+                let valid = value >= low && value <= high;
                 title = to_owned(setting.name());
+                if valid { shortcut = setting.value_text(value); }
                 description = to_owned(setting.description());
+                if !valid || value == current {
+                    let shown = setting.value_text(current);
+                    unavailable = Option.Some(text(fn() can {Out} { Out.put("ALREADY "); Out.put(&shown); }));
+                }
             }
             Target.Focus(focus) => {
                 title = text(fn() can {Out} { Out.put(focus.name()); Out.put(" FOCUS"); });
@@ -1511,9 +1519,8 @@ impl GameState {
                 });
             }
             Target.CloseSettings => {
-                title = to_owned("CLOSE");
+                title = to_owned("CLOSE SETTINGS");
                 shortcut = to_owned("ESC");
-                description = to_owned("CLOSES THE SETTINGS. THEY'RE KEPT FOR THE NEXT TIME THE GAME STARTS.");
             }
             Target.Quit => {
                 title = to_owned("QUIT");
@@ -1638,8 +1645,10 @@ impl GameState {
         let point = self.camera.screen_to_world(cursor, screen_size);
         let mut best: Option[i32] = Option.None;
         let mut best_distance: f32 = 0.0;
+        let fog = self.fog();
         for i in 0..self.units.len() {
-            if self.units[i].pos != hex { continue; }
+            // A unit out of sight is not there to hover.
+            if self.units[i].pos != hex || !fog.shows(&self.units[i]) { continue; }
             let d = self.unit_layout(i).0.distance(point);
             if best.is_none() || d < best_distance {
                 best = Option.Some(i);
