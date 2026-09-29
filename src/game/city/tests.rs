@@ -409,6 +409,8 @@ fn economy_ticks_once_into_the_stockpile_and_preserves_quarters() {
     g.end_planning();
     assert!(!g.is_resolving());
     g.queue_build(0, Build::Unit(BuildUnit::Siege));
+    // A Siege costs more wood and metal than the scenario starts with.
+    g.stockpiles[Team::Blue.index()] += BuildUnit::Siege.price();
     let before = g.stock(Team::Blue);
     let upkeep = g.upkeep(Team::Blue);
     g.end_planning();

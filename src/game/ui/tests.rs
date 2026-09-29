@@ -1246,11 +1246,11 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
     game.open_city(0);
     let melee = find_button(&game, Target::Build(BuildUnit::Melee));
     assert_eq!(melee.state, ButtonState::Ready);
-    let price = format!("{FOOD_ICON}2 {WOOD_ICON}6");
+    let price = format!("{FOOD_ICON}3 {WOOD_ICON}9");
     assert!(melee.hint.contains(&price), "{}", melee.hint);
     // The city center takes twice a Barracks' turns.
     assert!(
-        melee.hint.ends_with(&format!("{TIME_ICON}4")),
+        melee.hint.ends_with(&format!("{TIME_ICON}6")),
         "{}",
         melee.hint
     );
@@ -2167,10 +2167,10 @@ fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
         tooltip.contains("NEEDS IRON UNDER THE BARRACKS"),
         "{tooltip}"
     );
-    // A Barracks trains at its own pace: a Melee's card shows its 2 turns.
+    // A Barracks trains at its own pace: a Melee's card shows its 3 turns.
     let melee = find_button(&game, Target::BarracksBuild(BuildUnit::Melee));
     assert!(
-        melee.hint.ends_with(&format!("{TIME_ICON}2")),
+        melee.hint.ends_with(&format!("{TIME_ICON}3")),
         "{}",
         melee.hint
     );

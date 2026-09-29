@@ -124,6 +124,9 @@ more citizens and everything else that eats it (troops, workers).
 Basic troops are food and wood, so an early army needs no hills; metal is what advanced troops,
 ships and some buildings are gated by. Workers cost food: they are people.
 
+Round 7 (option B) has since raised the land troops' prices and turns, the Grow price and cut the
+Gather yield; its table has the current values, and `game-rules.md` all of them.
+
 ## Variant: production speeds builds
 
 Debug panel toggle **PROD SPEEDUP** (beside fog of war; off by default; kept across scenario
