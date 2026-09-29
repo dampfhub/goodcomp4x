@@ -117,6 +117,7 @@ use vulkan.hl.ring.destroy_frames;
 use vulkan.hl.ring.acquire;
 use vulkan.hl.ring.abandon;
 use vulkan.hl.ring.frame_image_index;
+use vulkan.hl.ring.frame_slot;
 use vulkan.hl.ring.frame_code;
 use vulkan.hl.ring.submit_frame;
 use vulkan.hl.ring.present;
@@ -155,6 +156,7 @@ use win32.open_hidden_window;
 use win32.set_icons;
 use win32.toggle_fullscreen;
 use win32.client_size;
+use win32.window_dpi;
 use win32.destroy_window;
 use win32.events.Event;
 use win32.events.Events;
@@ -167,8 +169,16 @@ use renderer.pipelines.MeshPush;
 use renderer.pipelines.MeshSet0;
 use renderer.pipelines.create_mesh;
 use renderer.pipelines.destroy_mesh;
+use ui.atlas.FontAtlas;
+use ui.draw.DrawData;
+use ui.draw.draw_data;
+use ui_vulkan.UiRender;
+use ui_vulkan.with_renderer;
+use ui_vulkan.create_overlay;
 
 const FRAMES_IN_FLIGHT: u32 = 2;
+/// The most UI vertices one frame draws (three per triangle); a frame's past this is not drawn.
+const UI_MAX_VERTICES: u32 = 262144;
 /// The background, in linear colour.
 const CLEAR_COLOR: [f32; 4] = [0.06, 0.06, 0.08, 1.0];
 /// The most vertices one frame draws; a frame's vertices past this are not drawn. The whole
@@ -245,14 +255,16 @@ pub enum WindowRequest {
 }
 
 /// What the program draws, and what it hears. `input` is one of the window's events, in the
-/// order they arrived, and answers what the window should do about it. `frame` fills
-/// `vertices` and `batches` for a frame whose target is `width` by `height` pixels, `dt`
-/// seconds after the previous one; both arrive empty. It answers whether to keep running.
+/// order they arrived, with the window's physical pixels per logical pixel, and answers what
+/// the window should do about it. `frame` fills `vertices` and `batches` for a frame whose
+/// target is `width` by `height` pixels, `dt` seconds after the previous one; both arrive
+/// empty. `ui` holds the previous frame's UI draw data, to be replaced by this frame's: it is
+/// drawn in the same render pass after every batch. It answers whether to keep running.
 /// `capture`, asked of a hidden window's frame after `frame`, answers whether to read that
 /// frame back; `captured` hands over its pixels, RGBA from the top-left, once it is drawn.
 pub effect Scene {
-    fn input(e: Event) -> WindowRequest;
-    fn frame(width: u32, height: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool;
+    fn input(e: Event, scale: f32) -> WindowRequest;
+    fn frame(width: u32, height: u32, dt: f32, scale: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch], ui: &mut DrawData) -> bool;
     fn capture() -> bool;
     fn captured(width: u32, height: u32, rgba: &Vec[u8]);
 }
@@ -261,9 +273,10 @@ pub effect Scene {
 /// the seconds since the previous frame.
 fn pace(run: &mut Run, win: &mut Window) -> f32 can {Scene, Clock} {
     let mut toggles = 0;
+    let scale = window_dpi(&*win) as f32 / 96.0;
     let dt = handle { next_frame(&mut run.pace, win) } with Events {
         event(e) => {
-            match Scene.input(e) { WindowRequest.ToggleFullscreen => { toggles = toggles + 1; } WindowRequest.Nothing => {} }
+            match Scene.input(e, scale) { WindowRequest.ToggleFullscreen => { toggles = toggles + 1; } WindowRequest.Nothing => {} }
             resume
         }
     };
@@ -284,14 +297,14 @@ fn give_up_acquired(pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlig
 
 /// The per-run state the frame loop reads and reports: the frame budget (0 for none), the
 /// frames drawn, why the loop stopped (0 while running), and the pacer.
-struct Run { budget: i32, drawn: i32, stop: i32, pace: Pacer, vertices: Vec[MeshVertex], batches: Vec[DrawBatch], hidden: bool, icon_refresh_at: Option[i64] }
+struct Run { budget: i32, drawn: i32, stop: i32, pace: Pacer, vertices: Vec[MeshVertex], batches: Vec[DrawBatch], ui: DrawData, hidden: bool, icon_refresh_at: Option[i64] }
 
 /// How long after the window shows its icons are set again: Windows doesn't always redraw the
 /// taskbar button with icons set as the window is created.
 const ICON_REFRESH_NANOS: i64 = 1000000000;
 
 /// Draws one frame through the ring and hands the idle ring back.
-fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], rb: &Readback, a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
+fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], rb: &Readback, a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock, UiRender[Bgra8Srgb, NoFormat]} {
     let dt = pace(run, win);
     let w = swapchain_width(sc);
     let h = swapchain_height(sc);
@@ -299,7 +312,8 @@ fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[B
     if size[0] != w || size[1] != h { run.stop = VK_ERROR_OUT_OF_DATE_KHR; return ring; }
     run.vertices.clear();
     run.batches.clear();
-    if !Scene.frame(w, h, dt, &mut run.vertices, &mut run.batches) { run.stop = STOP_DONE; return ring; }
+    let scale = window_dpi(&*win) as f32 / 96.0;
+    if !Scene.frame(w, h, dt, scale, &mut run.vertices, &mut run.batches, &mut run.ui) { run.stop = STOP_DONE; return ring; }
     let capturing = run.hidden && readback_fits(rb, sc) && Scene.capture();
     let n = if (run.vertices.len() as u32) > MAX_VERTICES { MAX_VERTICES } else { run.vertices.len() as u32 };
     let acquired = acquire(pool, t, sc, ring);
@@ -325,6 +339,7 @@ fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[B
                 cmd_draw(&mut draw, count, 1, batch.first, 0);
             }
         }
+        UiRender.draw(&mut draw, &run.ui, frame_slot(&acquired), w, h);
         let mut rec2 = cmd_end_render_pass(draw);
         if capturing { cmd_read_back(&mut rec2, sc, &swapchain_image(sc, index), rb); }
         let exec = end(pool, rec2);
@@ -365,7 +380,7 @@ fn refresh_icons(win: &mut Window, icons: &Icons) {
 }
 
 /// Draws frames through the ring until one reports a reason to stop.
-fn draw_frames(q: &mut Queue, win: &mut Window, icons: &Icons, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], rb: &Readback, a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock} {
+fn draw_frames(q: &mut Queue, win: &mut Window, icons: &Icons, sc: &Swapchain, pass: &RenderPass[Bgra8Srgb, NoFormat], fbs: &Framebuffers, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], rb: &Readback, a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Scene, Clock, UiRender[Bgra8Srgb, NoFormat]} {
     let mut r = ring;
     while run.stop == 0 {
         r = draw_one(q, win, sc, pass, fbs, mesh, set, sb, rb, a, pool, t, r, run);
@@ -393,7 +408,7 @@ fn wait_while_minimized(win: &mut Window, run: &mut Run) can {Scene, Clock} {
 /// the pass draws into at that size. Frames are drawn until the program stops or the generation
 /// goes out of date; then the device is idled, the generation torn down, and the next one begun
 /// over the same ring.
-fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, icons: &Icons, surface: &Surface, pass: &RenderPass[Bgra8Srgb, NoFormat], samples: u32, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Vk, Scene, Clock} {
+fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, icons: &Icons, surface: &Surface, pass: &RenderPass[Bgra8Srgb, NoFormat], samples: u32, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], a: &mut Allocator, pool: &mut CommandPool, t: &mut Timeline, ring: FramesInFlight[RingIdle], run: &mut Run) -> FramesInFlight[RingIdle] can {VkError, Gpu, Vk, Scene, Clock, UiRender[Bgra8Srgb, NoFormat]} {
     wait_while_minimized(win, run);
     let mut raw: RingWords = consume_frames(ring);
     run.stop = 0;
@@ -433,9 +448,22 @@ fn generation(pd: PhysicalDevice, q: &mut Queue, win: &mut Window, icons: &Icons
     }
 }
 
-fn run_on_device(family: u32, title: &str, spec: WindowPlace, icons: &Icons, atlas: &Atlas, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} {
+/// The frames of a run with the UI renderer in scope: `with_renderer` owns its own atlas
+/// texture and vertex buffer (through `ui_alloc`, which it keeps for its extent) and hands the
+/// queue and command pool back, so the frame loop draws the UI in the pass's last subpass.
+fn frames_with_ui(pd: PhysicalDevice, q: &mut Queue, pool: &mut CommandPool, ui_alloc: &mut Allocator, ui_atlas: &FontAtlas, win: &mut Window, icons: &Icons, surface: &Surface, pass: &RenderPass[Bgra8Srgb, NoFormat], samples: u32, mesh: &Mesh[Bgra8Srgb, NoFormat], set: &MeshSet0, sb: &mut StreamVertexBuffer[MeshVertex], alloc: &mut Allocator, t: &mut Timeline, run: &mut Run) -> i32 can {VkError, Gpu, Vk, Scene, Clock} {
+    with_renderer(create_overlay(pass), ui_alloc, q, pool, ui_atlas, FRAMES_IN_FLIGHT, UI_MAX_VERTICES,
+        fn(q2: &mut Queue, pool2: &mut CommandPool) -> i32 can {UiRender[Bgra8Srgb, NoFormat], VkError, Gpu, Vk, Scene, Clock} {
+            let ring = create_frames(FRAMES_IN_FLIGHT);
+            let ring2 = generation(pd, q2, win, icons, surface, pass, samples, mesh, set, sb, alloc, pool2, t, ring, run);
+            destroy_frames(pool2, t, ring2);
+            0
+        })
+}
+
+fn run_on_device(family: u32, title: &str, spec: WindowPlace, icons: &Icons, atlas: &Atlas, ui_atlas: &FontAtlas, frames: i32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} {
     let (width, height) = (spec.width, spec.height);
-    let mut run = Run { budget: frames, drawn: 0, stop: 0, pace: pacer(TARGET_FPS), vertices: Vec.new(), batches: Vec.new(), hidden: spec.hidden, icon_refresh_at: Option.None };
+    let mut run = Run { budget: frames, drawn: 0, stop: 0, pace: pacer(TARGET_FPS), vertices: Vec.new(), batches: Vec.new(), ui: draw_data(), hidden: spec.hidden, icon_refresh_at: Option.None };
     let rc = handle { handle {
         let mut q = get_queue(family, 0);
         let pd = first_physical_device();
@@ -482,10 +510,9 @@ fn run_on_device(family: u32, title: &str, spec: WindowPlace, icons: &Icons, atl
         mesh.write_atlas(&set, &texture, &texture_view, &sampler);
         let mut sb = mesh.create_stream_buffer(&mut alloc, FRAMES_IN_FLIGHT, MAX_VERTICES);
         defer { destroy_stream_vertex_buffer(&mut alloc, sb); }
-        let ring = create_frames(FRAMES_IN_FLIGHT);
-        let ring2 = generation(pd, &mut q, &mut win, icons, &surface, &pass, samples, &mesh, &set, &mut sb, &mut alloc, &mut pool, &mut t, ring, &mut run);
-        destroy_frames(&mut pool, &mut t, ring2);
-        0
+        let mut ui_alloc = create_allocator(pd);
+        defer { destroy_allocator(ui_alloc); }
+        frames_with_ui(pd, &mut q, &mut pool, &mut ui_alloc, ui_atlas, &mut win, icons, &surface, &pass, samples, &mesh, &set, &mut sb, &mut alloc, &mut t, &mut run)
     } with VkError { fail(c) => { abort c } }
     } with Win32Error { fail(c) => { abort HL_ERROR_NOT_FOUND } };
     if rc != 0 { VkError.fail(rc) }
@@ -510,12 +537,12 @@ fn report_validation(ring: &mut MessageRing) can {Log} {
 }
 
 /// Opens a window titled `title` where `spec` places it, with `icons`, and draws the program's
-/// `Scene` into it, with `atlas` bound for its textured vertices to sample,
+/// `Scene` into it, with `atlas` bound for its textured vertices to sample and `ui_atlas` for the UI drawn over it,
 /// until the program stops, or for `frames` frames when that is positive; `validate` runs
 /// under the Khronos validation layer, logs what it reported at `warn`, and fails when it
 /// reported anything. The exit code:
 /// 0, or `100 - code` for a negative `VkResult` or library code.
-pub fn run(title: &str, spec: WindowPlace, icons: &Icons, atlas: &Atlas, frames: i32, validate: bool) -> i32 can {Scene, Clock, Log} {
+pub fn run(title: &str, spec: WindowPlace, icons: &Icons, atlas: &Atlas, ui_atlas: &FontAtlas, frames: i32, validate: bool) -> i32 can {Scene, Clock, Log} {
     handle {
         with_instance(true, validate, fn() -> i32 can {VkError, Vk, Scene, Clock, Log} {
             if validate && !validation_layer_present() { VkError.fail(HL_ERROR_NO_LAYER) }
@@ -528,7 +555,7 @@ pub fn run(title: &str, spec: WindowPlace, icons: &Icons, atlas: &Atlas, frames:
                 let family = graphics_queue_family(pd);
                 if !win32_presentation_supported(pd, family) { VkError.fail(HL_ERROR_NOT_FOUND) }
                 out = with_device(pd, family, NO_QUEUE_FAMILY, true,
-                    fn(dev: &Device, f: u32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} { run_on_device(f, title, spec, icons, atlas, frames) });
+                    fn(dev: &Device, f: u32) -> i32 can {VkError, Gpu, Vk, Scene, Clock, Log} { run_on_device(f, title, spec, icons, atlas, ui_atlas, frames) });
                 0
             } with VkError { fail(c) => { abort c } };
             if rc != 0 { VkError.fail(rc) }

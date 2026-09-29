@@ -1,0 +1,58 @@
+//! Panel docking: corner placement, stacking, wrapping and the bottom-center strip.
+
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.test.assert;
+use game.dock.DockZone;
+use game.dock.dock;
+use game.dock.overlaps;
+
+fn is_at(p: Vec2, x: f32, y: f32) -> bool { p.x == x && p.y == y }
+
+@test
+fn a_bottom_center_panel_centers_then_steps_aside_then_up() {
+    let screen = vec2(1600.0, 900.0);
+    // Alone, it sits in the middle of the bottom edge.
+    let mut alone = dock(screen, 16.0, 8.0, 60.0);
+    let Option.Some(strip) = alone.place(vec2(300.0, 90.0), DockZone.BottomCenter) else { assert(false); return; };
+    assert(is_at(strip.min, 650.0, 16.0));
+    // Beside a wide tray at the bottom-left, it moves over just enough.
+    let mut beside = dock(screen, 16.0, 8.0, 60.0);
+    let Option.Some(tray) = beside.place(vec2(800.0, 200.0), DockZone.BottomLeft) else { assert(false); return; };
+    let Option.Some(next) = beside.place(vec2(300.0, 90.0), DockZone.BottomCenter) else { assert(false); return; };
+    assert(is_at(next.min, tray.max.x + 8.0, 16.0));
+    // With no room beside it, it goes above.
+    let mut above = dock(screen, 16.0, 8.0, 60.0);
+    let Option.Some(wide) = above.place(vec2(1400.0, 200.0), DockZone.BottomLeft) else { assert(false); return; };
+    let Option.Some(top) = above.place(vec2(300.0, 90.0), DockZone.BottomCenter) else { assert(false); return; };
+    assert(top.min.y == wide.max.y + 8.0);
+    assert(!overlaps(top, wide, 0.0));
+}
+
+@test
+fn panels_stack_and_wrap_without_intersecting() {
+    let mut d = dock(vec2(900.0, 700.0), 20.0, 10.0, 60.0);
+    let Option.Some(tray) = d.place(vec2(300.0, 350.0), DockZone.BottomLeft) else { assert(false); return; };
+    assert(is_at(tray.min, 20.0, 20.0));
+    assert(d.remaining_height(DockZone.BottomLeft, 240.0) == 260.0);
+    let Option.Some(queue) = d.place(vec2(240.0, 240.0), DockZone.BottomLeft) else { assert(false); return; };
+    assert(is_at(queue.min, 20.0, 380.0));
+    let Option.Some(debug) = d.place(vec2(260.0, 180.0), DockZone.TopLeft) else { assert(false); return; };
+    assert(debug.min.x >= tray.max.x + 10.0);
+    assert(!overlaps(debug, tray, 0.0));
+    assert(!overlaps(debug, queue, 0.0));
+    let Option.Some(hover) = d.place(vec2(180.0, 130.0), DockZone.TopRight) else { assert(false); return; };
+    assert(!overlaps(hover, debug, 0.0));
+    let Option.Some(footer) = d.place(vec2(150.0, 90.0), DockZone.BottomRight) else { assert(false); return; };
+    assert(!overlaps(footer, tray, 0.0));
+    assert(!overlaps(footer, queue, 0.0));
+    assert(!overlaps(footer, debug, 0.0));
+    assert(!overlaps(footer, hover, 0.0));
+}
+
+@test
+fn oversized_panels_report_no_fit() {
+    let mut d = dock(vec2(500.0, 400.0), 20.0, 10.0, 50.0);
+    assert(d.place(vec2(470.0, 100.0), DockZone.BottomLeft).is_none());
+    assert(d.place(vec2(100.0, 340.0), DockZone.TopRight).is_none());
+}

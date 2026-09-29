@@ -53,6 +53,9 @@ use icon.icon;
 use game.GameState;
 use renderer.Atlas;
 use game.font.atlas;
+use game.font.ui_atlas;
+use ui.atlas.FontAtlas;
+use ui.draw.DrawData;
 use game.city.Building;
 use game.workers.JobKind;
 use game.city.BuildUnit;
@@ -326,6 +329,12 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
     if let &Option.Some(path) = &options.screenshot { shot = Option.Some(screenshot(to_owned(&path), Clock.now_nanos())); }
     let mut built: Option[Atlas] = Option.None;
     let failed = handle { built = Option.Some(atlas()); 0 } with FontError { fail(code) => { abort code } };
+    let mut built_ui: Option[FontAtlas] = Option.None;
+    let failed_ui = handle { built_ui = Option.Some(ui_atlas()); 0 } with FontError { fail(code) => { abort code } };
+    let ui_font = match built_ui {
+        Option.Some(a) => a,
+        Option.None => { error(fn() can {Out} { Out.put("the UI font could not be rasterized"); }); return failed_ui; }
+    };
     let atlas = match built {
         Option.Some(a) => a,
         Option.None => { error(fn() can {Out} { Out.put("the built-in font could not be rasterized"); }); return failed; }
@@ -352,10 +361,10 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
             mods: Modifiers { shift: false, control: false, alt: false },
             closed: false,
         };
-        let rc = handle { run(TITLE, spec, &icons, &atlas, frames, validate) } with Scene {
+        let rc = handle { run(TITLE, spec, &icons, &atlas, &ui_font, frames, validate) } with Scene {
             // A screenshot shows the scenario as it starts, whatever the mouse and keyboard do.
-            input(e) => { resume if hidden { WindowRequest.Nothing } else { on_event(&mut game, &mut input, e) } }
-            frame(w, h, dt, vertices, batches) => { resume on_frame(&mut game, &input, &mut shot, w, h, dt, vertices, batches) }
+            input(e, scale) => { resume if hidden { WindowRequest.Nothing } else { on_event(&mut game, &mut input, e) } }
+            frame(w, h, dt, scale, vertices, batches, ui) => { resume on_frame(&mut game, &input, &mut shot, w, h, dt, vertices, batches) }
             capture() => { resume match &shot { &Option.Some(s) => s.capture_this_frame(), &Option.None => false } }
             captured(w, h, rgba) => {
                 if let &mut Option.Some(s) = &mut shot { let _ok = s.captured(w, h, rgba); }

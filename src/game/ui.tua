@@ -153,6 +153,9 @@ pub enum Target {
     SaveState,
     LoadState,
     TogglePlayback,
+    /// Debug panel: finish the open city's or Barracks' current build, and toggle the fog of war.
+    CompleteProduction,
+    ToggleFog,
     /// City tray: the open city's labor focus.
     Focus(LaborFocus),
     /// City tray: queue a worker, queue a building (or resume choosing its site), confirm a
@@ -192,7 +195,8 @@ impl Eq for Target {
             (Target.Build(a), Target.Build(b)) => a == b,
             (Target.Scenario(a), Target.Scenario(b)) => a == b,
             (Target.ToggleYields, Target.ToggleYields) | (Target.EndTurn, Target.EndTurn) | (Target.SaveState, Target.SaveState)
-                | (Target.LoadState, Target.LoadState) | (Target.TogglePlayback, Target.TogglePlayback) => true,
+                | (Target.LoadState, Target.LoadState) | (Target.TogglePlayback, Target.TogglePlayback)
+                | (Target.CompleteProduction, Target.CompleteProduction) | (Target.ToggleFog, Target.ToggleFog) => true,
             (Target.SetSetting(a, x), Target.SetSetting(b, y)) => a == b && x == y,
             (Target.CloseSettings, Target.CloseSettings) | (Target.Quit, Target.Quit) => true,
             (Target.Focus(a), Target.Focus(b)) => a == b,
@@ -416,6 +420,12 @@ impl GameState {
         let Option.Some(i) = layout.button_at(point) else { return layout.covers(point); };
         let (target, state) = (layout.buttons[i].target, layout.buttons[i].state);
         if state == ButtonState.Disabled { return true; }
+        self.activate_target(target);
+        true
+    }
+
+    /// What pressing a button does: the same from a classic button and a library widget.
+    pub fn activate_target(&mut self, target: Target) can {Log, Rand} {
         match target {
             Target.Unit(action) => match action {
                 UnitAction.Move => self.choose_move_action(),
@@ -457,8 +467,9 @@ impl GameState {
             Target.RecallWorker(id) => self.recall_worker(id),
             Target.ShowWorker(id) => self.show_worker(id),
             Target.Quit => self.request_quit(),
+            Target.CompleteProduction => self.debug_complete_current_production(),
+            Target.ToggleFog => self.toggle_fog(),
         }
-        true
     }
 
     /// Tracks which map hex the cursor is over (ignoring the UI) and how long it has rested
@@ -568,21 +579,43 @@ impl GameState {
     }
 
     /// Testing tools, top-left under the top bar and see-through so they don't read as game
-    /// UI: the scenario pages (the current one gold; pressing it again restarts it) and the
-    /// savestate.
+    /// UI: the scenario pages (the current one gold; pressing it again restarts it), the
+    /// savestate, finishing a build, the playback pacing and the fog.
     fn debug_panel(&self, size: Vec2, layout: &mut UiLayout) {
+        self.debug_panel_content().place_top_left(vec2(MARGIN, size.y - TOP_BAR_HEIGHT - MARGIN), layout);
+    }
+
+    /// The debug panel's rows, shared by both presentations.
+    pub fn debug_panel_content(&self) -> PanelBuilder {
         let mut panel = panel_builder(true);
         panel.text(TextSize.Small, "DEBUG", fade(LABEL_TEXT, true));
         panel.begin_buttons();
-        for i in 0..SCENARIO_COUNT {
+        for i in 0..4 {
             let scenario = SCENARIOS[i];
             panel.button(Target.Scenario(scenario), scenario.name(), scenario.key(), button_state(scenario == self.scenario, false), false);
         }
         panel.end_buttons(true);
+        if let Option.Some(seed) = self.map_seed {
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("MAP SEED "); show_u64(seed as u64); }), fade(DIM_TEXT, true));
+        }
         panel.gap(GAP);
         panel.begin_buttons();
+        for i in 4..SCENARIO_COUNT {
+            let scenario = SCENARIOS[i];
+            panel.button(Target.Scenario(scenario), scenario.name(), scenario.key(), button_state(scenario == self.scenario, false), false);
+        }
         panel.button(Target.SaveState, "SAVE", "F6", button_state(false, self.is_resolving()), false);
         panel.button(Target.LoadState, "LOAD", "F7", button_state(false, self.savestate.is_none()), false);
+        panel.end_buttons(true);
+        let can_complete = if let Option.Some(city) = self.selected_barracks {
+            !self.cities[city].barracks_queue.is_empty()
+        } else if let Option.Some(city) = self.selected_city {
+            !self.cities[city].queue.is_empty() && self.cities[city].pending_building.is_none()
+        } else {
+            false
+        };
+        panel.begin_buttons();
+        panel.button(Target.CompleteProduction, "COMPLETE PRODUCTION", "F9", button_state(false, self.is_resolving() || !can_complete), false);
         panel.end_buttons(true);
         if self.savestate.is_some() {
             let saved = text(fn() can {Out} { Out.put("SAVED: "); self.show_saved(); });
@@ -593,7 +626,10 @@ impl GameState {
         panel.begin_buttons();
         panel.button(Target.TogglePlayback, playback, "F8", ButtonState.Ready, false);
         panel.end_buttons(true);
-        panel.place_top_left(vec2(MARGIN, size.y - TOP_BAR_HEIGHT - MARGIN), layout);
+        panel.begin_buttons();
+        panel.button(Target.ToggleFog, if self.fog_of_war { "FOG OF WAR: ON" } else { "FOG OF WAR: OFF" }, "F10", ButtonState.Ready, false);
+        panel.end_buttons(true);
+        panel
     }
 
     /// Turn number on the left, the latest notice in the middle, and on the right the End Turn
@@ -1403,6 +1439,15 @@ impl GameState {
                 title = to_owned("QUIT");
                 description = to_owned("CLOSES THE GAME.");
             }
+            Target.CompleteProduction => {
+                title = to_owned("COMPLETE PRODUCTION");
+                shortcut = to_owned("F9");
+                description = to_owned("INSTANTLY FINISHES THE CURRENT CITY BUILD OR BARRACKS UNIT FOR TESTING.");
+            }
+            Target.ToggleFog => {
+                title = to_owned("FOG OF WAR");
+                shortcut = to_owned("F10");
+            }
             Target.TogglePlayback => {
                 title = to_owned("PLAYBACK");
                 shortcut = to_owned("F8");
@@ -1567,63 +1612,63 @@ pub struct PanelBuilder {
     faded: bool,
 }
 
-fn panel_builder(faded: bool) -> PanelBuilder {
+pub fn panel_builder(faded: bool) -> PanelBuilder {
     PanelBuilder { rows: Vec.new(), spans: Vec.new(), specs: Vec.new(), line_from: 0, buttons_from: 0, faded }
 }
 
 impl PanelBuilder {
     /// A line of one span.
-    fn text(&mut self, size: TextSize, t: &str, color: Color) {
+    pub fn text(&mut self, size: TextSize, t: &str, color: Color) {
         self.begin_line();
         self.span(t, color);
         self.end_line(size);
     }
 
-    fn text_owned(&mut self, size: TextSize, t: Str, color: Color) {
+    pub fn text_owned(&mut self, size: TextSize, t: Str, color: Color) {
         self.begin_line();
         self.span_owned(t, color);
         self.end_line(size);
     }
 
-    fn begin_line(&mut self) { self.line_from = self.spans.len(); }
+    pub fn begin_line(&mut self) { self.line_from = self.spans.len(); }
 
-    fn span(&mut self, t: &str, color: Color) { self.spans.push(Span { text: to_owned(t), color }); }
+    pub fn span(&mut self, t: &str, color: Color) { self.spans.push(Span { text: to_owned(t), color }); }
 
-    fn span_owned(&mut self, t: Str, color: Color) { self.spans.push(Span { text: t, color }); }
+    pub fn span_owned(&mut self, t: Str, color: Color) { self.spans.push(Span { text: t, color }); }
 
     /// A "LABEL value" pair on the line in progress: the label dim, the value in its own
     /// colour, three spaces before every pair but the first.
-    fn stat(&mut self, label: str, value: Str, color: Color) {
+    pub fn stat(&mut self, label: str, value: Str, color: Color) {
         let first = self.spans.len() == self.line_from;
         self.span_owned(text(fn() can {Out} { if !first { Out.put("   "); } Out.put(label); Out.put(" "); }), LABEL_TEXT);
         self.span_owned(value, color);
     }
 
-    fn end_line(&mut self, size: TextSize) {
+    pub fn end_line(&mut self, size: TextSize) {
         let to = self.spans.len();
         self.rows.push(Row { kind: RowKind.Text, size, value: 0.0, from: self.line_from, to, offset: 0 });
     }
 
-    fn gap(&mut self, height: f32) { self.rows.push(Row { kind: RowKind.Gap, size: TextSize.Small, value: height, from: 0, to: 0, offset: 0 }); }
+    pub fn gap(&mut self, height: f32) { self.rows.push(Row { kind: RowKind.Gap, size: TextSize.Small, value: height, from: 0, to: 0, offset: 0 }); }
 
     /// A progress bar across the panel, `fraction` full.
-    fn bar(&mut self, fraction: f32) { self.rows.push(Row { kind: RowKind.Bar, size: TextSize.Small, value: fraction, from: 0, to: 0, offset: 0 }); }
+    pub fn bar(&mut self, fraction: f32) { self.rows.push(Row { kind: RowKind.Bar, size: TextSize.Small, value: fraction, from: 0, to: 0, offset: 0 }); }
 
-    fn begin_buttons(&mut self) { self.buttons_from = self.specs.len(); }
+    pub fn begin_buttons(&mut self) { self.buttons_from = self.specs.len(); }
 
-    fn button(&mut self, target: Target, label: &str, hint: &str, state: ButtonState, armed: bool) {
+    pub fn button(&mut self, target: Target, label: &str, hint: &str, state: ButtonState, armed: bool) {
         self.specs.push(ButtonSpec { target, label: to_owned(label), hint: to_owned(hint), state, armed });
     }
 
     /// Ends a row of equally wide buttons; `compact` ones are one line each.
-    fn end_buttons(&mut self, compact: bool) {
+    pub fn end_buttons(&mut self, compact: bool) {
         let kind = if compact { RowKind.CompactButtons } else { RowKind.Buttons };
         let to = self.specs.len();
         self.rows.push(Row { kind, size: TextSize.Small, value: 0.0, from: self.buttons_from, to, offset: 0 });
     }
 
     /// Ends city `city`'s building catalog, scrolled to `offset`.
-    fn end_catalog(&mut self, city: i32, offset: i32) {
+    pub fn end_catalog(&mut self, city: i32, offset: i32) {
         let to = self.specs.len();
         self.rows.push(Row { kind: RowKind.Catalog, size: TextSize.Small, value: city as f32, from: self.buttons_from, to, offset });
     }
@@ -1695,7 +1740,7 @@ impl PanelBuilder {
     }
 
     /// The panel's size, padding included.
-    fn size(&self) -> Vec2 {
+    pub fn size(&self) -> Vec2 {
         let mut width: f32 = 0.0;
         let mut height: f32 = 0.0;
         for i in 0..self.rows.len() {

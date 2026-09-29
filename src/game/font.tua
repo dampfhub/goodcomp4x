@@ -29,6 +29,8 @@ use game.glyphs.PLACED;
 use game.glyphs.characters;
 use game.glyphs.hack_ops;
 use game.mesh.Color;
+use ui.atlas.FontAtlas;
+use ui.atlas.atlas_builder;
 
 /// The pixel sizes UI text is drawn at.
 pub enum TextSize { Small, Body, Title }
@@ -180,4 +182,19 @@ pub fn atlas() -> Atlas can {FontError} {
         }
     }
     Atlas { width, height: ATLAS_HEIGHT, levels: mip_chain(&pixels, width, ATLAS_HEIGHT, MIP_LEVELS) }
+}
+
+/// The pixel sizes of the UI library's fonts, by `FontId` index: `TextSize.Small`, `Body` and
+/// `Title`.
+pub const UI_FONT_PX: [f32; 3] = [15.0, 18.0, 22.0];
+
+/// The glyphs of the UI library's fonts: the same outlines as `atlas`, rasterized at the
+/// three UI sizes into the library's own atlas (`ui.atlas`).
+pub fn ui_atlas() -> FontAtlas can {FontError} {
+    let ops = hack_ops();
+    let font = subset_font(HACK_FACE, &HACK_GLYPHS, &ops);
+    let cs = characters();
+    let mut builder = atlas_builder(ATLAS_WIDTH);
+    for k in 0..3 { let _id = builder.add(&font, &cs, UI_FONT_PX[k]); }
+    builder.finish()
 }

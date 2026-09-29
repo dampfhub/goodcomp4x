@@ -1,0 +1,1279 @@
+//! Where the library UI's panels go: the six panel slots, their automatic zone layout (`plan`),
+//! and what the player did to it (moved, resized, docked, collapsed, boxed), kept between
+//! frames and between sessions as text.
+//!
+//! Windows follow collision-free zones until the player drags a title bar or resize grip;
+//! a window the player placed is an obstacle for the remaining ones. Positions here are in
+//! logical pixels with the origin at the top-left (the library's); `Dock` works Y-up, so
+//! `plan` converts.
+
+use std.core.Eq;
+use std.core.Keep;
+use std.fmt.Out;
+use std.fmt.show_f64_fixed;
+use std.fmt.show_u64;
+use std.linalg.Rect;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.str.Str;
+use std.str.eq as str_eq;
+use std.str.parse_f64;
+use std.str.parse_i64;
+use std.str.find;
+use std.str.lines;
+use std.str.len as str_len;
+use std.str.byte_at;
+use std.str.sub;
+use std.str.Span;
+use game.text;
+use std.str.to_owned;
+use ui.Dir;
+use ui.context.Context;
+use ui.context.WindowFlags;
+use ui.context.NO_FLAGS;
+use ui.context.NO_MOVE;
+use ui.context.NO_RESIZE;
+use ui.context.NO_TITLE_BAR;
+use ui.dock.Split;
+use ui.dock.DockId;
+use game.dock.DockZone;
+use game.dock.dock;
+use persist.KeyValues;
+use persist.key_and_values;
+
+pub const PANEL_MARGIN: f32 = 14.0;
+pub const PANEL_GAP: f32 = 8.0;
+pub const STATUS_HEIGHT: f32 = 52.0;
+/// Height of a progress bar row (`RowKind.Bar`).
+pub const BAR_HEIGHT: f32 = 12.0;
+/// The settings menu's width, before a narrow screen takes some off.
+pub const SETTINGS_WIDTH: f32 = 460.0;
+pub const COLLAPSED_HEIGHT: f32 = 30.0;
+pub const SLOT_COUNT: i32 = 6;
+pub const SELECTION: i32 = 0;
+pub const QUEUE: i32 = 1;
+pub const DEBUG: i32 = 2;
+pub const INSPECT: i32 = 3;
+pub const UNITS: i32 = 4;
+pub const SETTINGS: i32 = 5;
+/// Each slot's window title, by slot. A new panel that isn't static chrome (like the status
+/// bar) gets a slot here, so it can be dragged, docked, resized and put in a box like the rest.
+pub const SLOT_TITLES: [str; 6] = ["Selection", "Production Queue", "Debug", "Inspect", "Units", "Settings"];
+/// The order `plan` places automatic panels in: earlier ones get the space nearest their
+/// zone's corner. The settings menu isn't docked: it's centered.
+pub const PLAN_ORDER: [i32; 6] = [SELECTION, QUEUE, SETTINGS, DEBUG, INSPECT, UNITS];
+
+/// The dock space every docked panel lives in, below the status bar.
+pub const GAME_SPACE: str = "GameDockspace";
+
+/// Which set of panel placements applies: the selection decides.
+pub enum ViewScope { Default, City, Troop }
+
+pub const VIEWS: [ViewScope; 3] = [ViewScope.Default, ViewScope.City, ViewScope.Troop];
+
+impl ViewScope {
+    pub fn label(self) -> str {
+        match self { ViewScope.Default => "DEFAULT", ViewScope.City => "CITY / BUILDING", ViewScope.Troop => "TROOP" }
+    }
+
+    /// Its place in `VIEWS`.
+    pub fn index(self) -> i32 { match self { ViewScope.Default => 0, ViewScope.City => 1, ViewScope.Troop => 2 } }
+
+    fn text(self) -> str { match self { ViewScope.Default => "default", ViewScope.City => "city", ViewScope.Troop => "troop" } }
+}
+
+fn view_from_text(t: &str) -> Option[ViewScope] {
+    for k in 0..3 {
+        if str_eq(t, VIEWS[k].text()) { return Option.Some(VIEWS[k]); }
+    }
+    Option.None
+}
+
+/// The layer a box belongs to: shared by every view, or one view's own.
+pub enum BoxScope { Outer, View(ViewScope) }
+
+impl Eq for BoxScope {
+    fn eq(self, other: BoxScope) -> bool {
+        match (self, other) {
+            (BoxScope.Outer, BoxScope.Outer) => true,
+            (BoxScope.View(a), BoxScope.View(b)) => a.index() == b.index(),
+            _ => false,
+        }
+    }
+}
+
+fn scope_text(scope: BoxScope) -> str {
+    match scope { BoxScope.Outer => "outer", BoxScope.View(v) => v.text() }
+}
+
+fn scope_from_text(t: &str) -> Option[BoxScope] {
+    if str_eq(t, "outer") { return Option.Some(BoxScope.Outer); }
+    match view_from_text(t) { Option.Some(v) => Option.Some(BoxScope.View(v)), Option.None => Option.None }
+}
+
+/// What a pinned panel stands for.
+pub enum PinnedKind { City, Barracks, Unit, Group, CityQueue, BarracksQueue }
+
+impl PinnedKind {
+    fn index(self) -> i32 {
+        match self { PinnedKind.City => 0, PinnedKind.Barracks => 1, PinnedKind.Unit => 2, PinnedKind.Group => 3, PinnedKind.CityQueue => 4, PinnedKind.BarracksQueue => 5 }
+    }
+}
+
+/// A panel kept open in a box after its selection closed: a kind, and the id of the city or
+/// unit (or the hash of a group's ids) it is about.
+pub struct PinnedPanel { kind: PinnedKind, city_id: u32 }
+
+impl Eq for PinnedPanel {
+    fn eq(self, other: PinnedPanel) -> bool { self.kind.index() == other.kind.index() && self.city_id == other.city_id }
+}
+
+impl PinnedPanel {
+    /// The window's title; the part after `###` is its identity.
+    pub fn title(self) -> Str {
+        let id = self.city_id;
+        match self.kind {
+            PinnedKind.City => text_of(fn() can {Out} { Out.put("City "); show_u64((id + 1) as u64); Out.put("###PinnedCity-"); show_u64(id as u64); }),
+            PinnedKind.Barracks => text_of(fn() can {Out} { Out.put("Barracks "); show_u64((id + 1) as u64); Out.put("###PinnedBarracks-"); show_u64(id as u64); }),
+            PinnedKind.Unit => text_of(fn() can {Out} { Out.put("Unit "); show_u64(id as u64); Out.put("###PinnedUnit-"); show_u64(id as u64); }),
+            PinnedKind.Group => text_of(fn() can {Out} { Out.put("Group###PinnedGroup-"); show_u64(id as u64); }),
+            PinnedKind.CityQueue => text_of(fn() can {Out} { Out.put("City "); show_u64((id + 1) as u64); Out.put(" Queue###PinnedCityQueue-"); show_u64(id as u64); }),
+            PinnedKind.BarracksQueue => text_of(fn() can {Out} { Out.put("Barracks "); show_u64((id + 1) as u64); Out.put(" Queue###PinnedBarracksQueue-"); show_u64(id as u64); }),
+        }
+    }
+}
+
+fn text_of(body: affine fn() can {Out}) -> Str { text(body) }
+
+/// Where a panel is and how the player left it: its place and size now, the place and size it
+/// last had while floating (a docked panel is sized by its dock), and whether the player
+/// placed it, docked it or collapsed it.
+pub struct WindowGeometry {
+    pos: Vec2,
+    size: Vec2,
+    floating_size: Vec2,
+    floating_pos: Vec2,
+    manual: bool,
+    docked: bool,
+    collapsed: bool,
+    /// Recomputed every frame, so not saved.
+    content_height: f32,
+}
+
+pub fn no_geometry() -> WindowGeometry {
+    WindowGeometry {
+        pos: vec2(0.0, 0.0), size: vec2(0.0, 0.0), floating_size: vec2(0.0, 0.0), floating_pos: vec2(0.0, 0.0),
+        manual: false, docked: false, collapsed: false, content_height: 0.0,
+    }
+}
+
+pub fn is_zero(v: Vec2) -> bool { v.x == 0.0 && v.y == 0.0 }
+
+pub fn same(a: Vec2, b: Vec2) -> bool { a.x == b.x && a.y == b.y }
+
+/// Whether two owned strings hold the same text.
+pub fn copy_text(a: &Str) -> Str { to_owned(a) }
+
+pub fn same_text(a: &Str, b: &Str) -> bool { str_eq(a, b) }
+
+/// Whether an owned string holds `b`.
+pub fn text_is(a: &Str, b: &str) -> bool { str_eq(a, b) }
+
+fn clamp_f(x: f32, lo: f32, hi: f32) -> f32 { if x < lo { lo } else if x > hi { hi } else { x } }
+
+fn max_f(a: f32, b: f32) -> f32 { if a > b { a } else { b } }
+
+fn min_f(a: f32, b: f32) -> f32 { if a < b { a } else { b } }
+
+fn clamp_v(v: Vec2, lo: Vec2, hi: Vec2) -> Vec2 { vec2(clamp_f(v.x, lo.x, hi.x), clamp_f(v.y, lo.y, hi.y)) }
+
+/// A box the player made: a window holding a dock space of its own.
+pub struct OuterBox { id: u32, dock_id: u32, scope: BoxScope, geometry: WindowGeometry }
+
+impl OuterBox {
+    /// The window's title; the part after `###` is its identity.
+    pub fn title(&self) -> Str {
+        let id = self.id;
+        let label = match self.scope { BoxScope.Outer => "OUTER", BoxScope.View(v) => v.label() };
+        text_of(fn() can {Out} { Out.put(label); Out.put(" BOX "); show_u64(id as u64); Out.put("###OuterBox-"); show_u64(id as u64); })
+    }
+
+    /// The name of the dock space inside the box.
+    pub fn space(&self) -> Str {
+        let id = self.id;
+        text_of(fn() can {Out} { Out.put("BoxSpace-"); show_u64(id as u64); })
+    }
+}
+
+/// How one panel sits beside another in a dock: the side, the share of the pair it takes, and
+/// whether it sat beside a whole group rather than the window itself.
+pub struct QueueDockRelation { direction: Option[Dir], fraction: f32, anchor_group: bool }
+
+fn opposite(d: Option[Dir]) -> Option[Dir] {
+    match d {
+        Option.Some(Dir.Left) => Option.Some(Dir.Right),
+        Option.Some(Dir.Right) => Option.Some(Dir.Left),
+        Option.Some(Dir.Up) => Option.Some(Dir.Down),
+        Option.Some(Dir.Down) => Option.Some(Dir.Up),
+        Option.None => Option.None,
+    }
+}
+
+/// The node `n` of `ctx`'s dock tree.
+fn node_parent(ctx: &Context, n: i32) -> i32 { ctx.dock_node(DockId { index: n }).parent }
+
+/// Whether `ancestor` is `node` or above it.
+fn node_contains(ctx: &Context, ancestor: i32, node: i32) -> bool {
+    let mut current = node;
+    while current >= 0 {
+        if current == ancestor { return true; }
+        current = node_parent(ctx, current);
+    }
+    false
+}
+
+/// The window `title`'s dock node, or -1.
+fn node_of(ctx: &Context, title: &str) -> i32 {
+    match ctx.dock_node_of(title) { Option.Some(n) => n.index, Option.None => 0 - 1 }
+}
+
+/// How `other` sits beside `anchor`, when both are docked in one tree with a shared parent:
+/// walking up from both leaves also recognizes a panel docked beside an existing pair.
+pub fn dock_relation(ctx: &Context, anchor: &str, other: &str) -> Option[QueueDockRelation] {
+    let a = node_of(ctx, anchor);
+    let b = node_of(ctx, other);
+    if a < 0 || b < 0 { return Option.None; }
+    if a == b { return Option.Some(QueueDockRelation { direction: Option.None, fraction: 0.5, anchor_group: false }); }
+    let mut a_branch = a;
+    let mut b_branch = b;
+    while node_parent(ctx, a_branch) >= 0 && !node_contains(ctx, node_parent(ctx, a_branch), b) { a_branch = node_parent(ctx, a_branch); }
+    while node_parent(ctx, b_branch) >= 0 && !node_contains(ctx, node_parent(ctx, b_branch), a) { b_branch = node_parent(ctx, b_branch); }
+    let parent = node_parent(ctx, a_branch);
+    if parent < 0 || parent != node_parent(ctx, b_branch) { return Option.None; }
+    let an = ctx.dock_node(DockId { index: a_branch });
+    let bn = ctx.dock_node(DockId { index: b_branch });
+    let horizontal = match ctx.dock_node(DockId { index: parent }).split { Split.Horizontal => true, _ => false };
+    let (direction, fraction) = if horizontal {
+        (if bn.rect.min.x > an.rect.min.x { Dir.Right } else { Dir.Left }, (bn.rect.max.x - bn.rect.min.x) / max_f(1.0, (an.rect.max.x - an.rect.min.x) + (bn.rect.max.x - bn.rect.min.x)))
+    } else {
+        (if bn.rect.min.y > an.rect.min.y { Dir.Down } else { Dir.Up }, (bn.rect.max.y - bn.rect.min.y) / max_f(1.0, (an.rect.max.y - an.rect.min.y) + (bn.rect.max.y - bn.rect.min.y)))
+    };
+    Option.Some(QueueDockRelation { direction: Option.Some(direction), fraction: clamp_f(fraction, 0.15, 0.85), anchor_group: a_branch != a })
+}
+
+/// A panel's window flags: movable and resizable only while arranging (Ctrl held), and titled
+/// then or when collapsed.
+pub fn panel_chrome(arranging: bool, collapsed: bool) -> WindowFlags {
+    if arranging { return NO_FLAGS; }
+    let mut flags = NO_RESIZE.plus(NO_MOVE);
+    if !collapsed { flags = flags.plus(NO_TITLE_BAR); }
+    flags
+}
+
+/// Rows of text saved and read back: the layout's own lines.
+pub struct GeometryEntry { key: Str, geometry: WindowGeometry }
+
+/// A pinned panel with the value a table holds for it.
+pub struct PinGeometry { pin: PinnedPanel, geometry: WindowGeometry }
+pub struct PinBox { pin: PinnedPanel, box_id: u32 }
+pub struct PinFrames { pin: PinnedPanel, frames: i32 }
+pub struct GroupIds { id: u32, members: Vec[u32] }
+
+/// Panel placements: automatic until the player drags a title bar or resize grip.
+pub struct ImGuiLayoutState {
+    windows: [WindowGeometry; 6],
+    active_view: ViewScope,
+    editing_outer: bool,
+    debug_layout_scope: Option[BoxScope],
+    /// Debug's placement by view (`ViewScope.index`); `debug_view_set` says which are held.
+    debug_view_geometry: [WindowGeometry; 3],
+    debug_view_set: [bool; 3],
+    debug_view_overrides: [bool; 3],
+    debug_outer_geometry: WindowGeometry,
+    debug_outer_start: Option[(Vec2, Vec2)],
+    /// The box Debug sits in, by view; 0 for none (box ids start at 1).
+    debug_view_boxes: [u32; 3],
+    pending_debug_box: Option[u32],
+    pending_view_reset: Option[ViewScope],
+    selection_context: Str,
+    selection_geometry_context: Str,
+    selection_geometries: Vec[GeometryEntry],
+    selection_geometry_changed: bool,
+    defer_geometry: bool,
+    dragging_last_frame: bool,
+    pair_visible: bool,
+    queue_dock_relation: Option[QueueDockRelation],
+    queue_restore_attempts: i32,
+    pinned: Vec[PinnedPanel],
+    pinned_geometry: Vec[PinGeometry],
+    pinned_box: Vec[PinBox],
+    pinned_outside_frames: Vec[PinFrames],
+    pinned_groups: Vec[GroupIds],
+    pending_pin_dock: Vec[PinBox],
+    outer_boxes: Vec[OuterBox],
+    next_outer_box_id: u32,
+    last_selection_outer_box: Option[u32],
+    last_queue_outer_box: Option[u32],
+    debug_context: Option[Str],
+    debug_context_relations: Vec[ContextRelation],
+    debug_restore_attempts: i32,
+    debug_attached: bool,
+    debug_reposition: bool,
+    debug_outer_relation: Option[PinRelation],
+}
+
+pub struct ContextRelation { context: Str, relation: QueueDockRelation }
+
+pub fn context_relation_of(context: &str, relation: QueueDockRelation) -> ContextRelation { ContextRelation { context: to_owned(context), relation } }
+
+pub struct PinRelation { pin: PinnedPanel, relation: QueueDockRelation }
+
+pub fn layout_state() -> ImGuiLayoutState {
+    ImGuiLayoutState {
+        windows: [no_geometry(); 6],
+        active_view: ViewScope.Default,
+        editing_outer: false,
+        debug_layout_scope: Option.None,
+        debug_view_geometry: [no_geometry(); 3],
+        debug_view_set: [false; 3],
+        debug_view_overrides: [false; 3],
+        debug_outer_geometry: no_geometry(),
+        debug_outer_start: Option.None,
+        debug_view_boxes: [0; 3],
+        pending_debug_box: Option.None,
+        pending_view_reset: Option.None,
+        selection_context: to_owned(""),
+        selection_geometry_context: to_owned(""),
+        selection_geometries: Vec.new(),
+        selection_geometry_changed: false,
+        defer_geometry: false,
+        dragging_last_frame: false,
+        pair_visible: false,
+        queue_dock_relation: Option.None,
+        queue_restore_attempts: 0,
+        pinned: Vec.new(),
+        pinned_geometry: Vec.new(),
+        pinned_box: Vec.new(),
+        pinned_outside_frames: Vec.new(),
+        pinned_groups: Vec.new(),
+        pending_pin_dock: Vec.new(),
+        outer_boxes: Vec.new(),
+        next_outer_box_id: 0,
+        last_selection_outer_box: Option.None,
+        last_queue_outer_box: Option.None,
+        debug_context: Option.None,
+        debug_context_relations: Vec.new(),
+        debug_restore_attempts: 0,
+        debug_attached: false,
+        debug_reposition: false,
+        debug_outer_relation: Option.None,
+    }
+}
+
+fn geometry_rect(viewport: Vec2, g: WindowGeometry) -> Rect {
+    Rect { min: vec2(g.pos.x, viewport.y - g.pos.y - g.size.y), max: vec2(g.pos.x + g.size.x, viewport.y - g.pos.y) }
+}
+
+impl ImGuiLayoutState {
+    // ---- per-view Debug placements ------------------------------------------------------
+
+    /// Asks for the active view's Debug placement to be inherited from Default again; false
+    /// unless a contextual view is being edited.
+    pub fn request_reset_active_view(&mut self) -> bool {
+        if self.editing_outer || self.active_view.index() == 0 { return false; }
+        self.pending_view_reset = Option.Some(self.active_view);
+        true
+    }
+
+    pub fn clear_view_debug_override(&mut self, view: ViewScope) {
+        let v = view.index();
+        self.debug_view_overrides[v] = false;
+        self.debug_view_set[v] = false;
+        self.debug_view_geometry[v] = no_geometry();
+        self.debug_view_boxes[v] = 0;
+        let contexts: [str; 2] = match view {
+            ViewScope.Default => ["", ""],
+            ViewScope.City => ["city", "barracks"],
+            ViewScope.Troop => ["unit", "group"],
+        };
+        for k in 0..2 {
+            if str_eq(contexts[k], "") { continue; }
+            self.remove_context_relation(contexts[k]);
+        }
+    }
+
+    fn remove_context_relation(&mut self, context: &str) {
+        handle { self.debug_context_relations.retain(); } with Keep[ContextRelation] { keep(e) => { resume !text_is(&e.context, context) } }
+    }
+
+    pub fn has_context_relation(&self, context: &str) -> bool {
+        for k in 0..self.debug_context_relations.len() {
+            if text_is(&self.debug_context_relations[k].context, context) { return true; }
+        }
+        false
+    }
+
+    fn set_context_relation(&mut self, context: &str, relation: QueueDockRelation) {
+        self.remove_context_relation(context);
+        self.debug_context_relations.push(ContextRelation { context: to_owned(context), relation });
+    }
+
+    fn context_relation(&self, context: &str) -> Option[QueueDockRelation] {
+        for k in 0..self.debug_context_relations.len() {
+            let e = &self.debug_context_relations[k];
+            if text_is(&e.context, context) {
+                return Option.Some(QueueDockRelation { direction: e.relation.direction, fraction: e.relation.fraction, anchor_group: e.relation.anchor_group });
+            }
+        }
+        Option.None
+    }
+
+    /// Debug's placement for `view`: its own once the player customized it, else Default's.
+    pub fn debug_geometry_for_view(&self, view: ViewScope) -> WindowGeometry {
+        let v = view.index();
+        if v == 0 || self.debug_view_overrides[v] {
+            if self.debug_view_set[v] { self.debug_view_geometry[v] } else { no_geometry() }
+        } else if self.debug_view_set[0] {
+            self.debug_view_geometry[0]
+        } else if self.debug_view_set[v] {
+            self.debug_view_geometry[v]
+        } else {
+            no_geometry()
+        }
+    }
+
+    pub fn set_debug_view_geometry(&mut self, view: ViewScope, g: WindowGeometry) {
+        self.debug_view_geometry[view.index()] = g;
+        self.debug_view_set[view.index()] = true;
+    }
+
+    // ---- boxes and pins -----------------------------------------------------------------
+
+    pub fn box_visible(&self, outer: &OuterBox) -> bool {
+        match outer.scope {
+            BoxScope.Outer => true,
+            BoxScope.View(v) => v.index() == self.active_view.index(),
+        }
+    }
+
+    fn box_index(&self, id: u32) -> Option[i32] {
+        for k in 0..self.outer_boxes.len() {
+            if self.outer_boxes[k].id == id { return Option.Some(k); }
+        }
+        Option.None
+    }
+
+    fn box_id_visible(&self, id: u32) -> bool {
+        match self.box_index(id) { Option.Some(k) => self.box_visible(&self.outer_boxes[k]), Option.None => false }
+    }
+
+    fn pin_box_id(&self, pin: PinnedPanel) -> Option[u32] {
+        for k in 0..self.pinned_box.len() {
+            if self.pinned_box[k].pin == pin { return Option.Some(self.pinned_box[k].box_id); }
+        }
+        Option.None
+    }
+
+    pub fn is_pinned(&self, pin: PinnedPanel) -> bool {
+        for k in 0..self.pinned.len() {
+            if self.pinned[k] == pin { return true; }
+        }
+        false
+    }
+
+    pub fn pin_visible(&self, pin: PinnedPanel) -> bool {
+        match self.pin_box_id(pin) { Option.Some(id) => self.box_id_visible(id), Option.None => false }
+    }
+
+    fn pin_geometry_index(&self, pin: PinnedPanel) -> Option[i32] {
+        for k in 0..self.pinned_geometry.len() {
+            if self.pinned_geometry[k].pin == pin { return Option.Some(k); }
+        }
+        Option.None
+    }
+
+    /// The geometry recorded for `pin`, made when it has none yet.
+    pub fn pin_geometry(&mut self, pin: PinnedPanel) -> WindowGeometry {
+        match self.pin_geometry_index(pin) {
+            Option.Some(k) => self.pinned_geometry[k].geometry,
+            Option.None => { self.pinned_geometry.push(PinGeometry { pin, geometry: no_geometry() }); no_geometry() }
+        }
+    }
+
+    pub fn set_pin_geometry(&mut self, pin: PinnedPanel, g: WindowGeometry) {
+        match self.pin_geometry_index(pin) {
+            Option.Some(k) => { self.pinned_geometry[k].geometry = g; }
+            Option.None => { self.pinned_geometry.push(PinGeometry { pin, geometry: g }); }
+        }
+    }
+
+    fn forget_pin(&mut self, pin: PinnedPanel) {
+        handle { self.pinned.retain(); } with Keep[PinnedPanel] { keep(p) => { resume *p != pin } }
+        handle { self.pinned_geometry.retain(); } with Keep[PinGeometry] { keep(e) => { resume e.pin != pin } }
+        handle { self.pinned_box.retain(); } with Keep[PinBox] { keep(e) => { resume e.pin != pin } }
+        handle { self.pinned_outside_frames.retain(); } with Keep[PinFrames] { keep(e) => { resume e.pin != pin } }
+        match pin.kind {
+            PinnedKind.Group => {
+                handle { self.pinned_groups.retain(); } with Keep[GroupIds] { keep(e) => { resume e.id != pin.city_id } }
+            }
+            _ => {}
+        }
+    }
+
+    /// Pins `pin`, docked into box `box_id`, and floats its window out of wherever it is.
+    pub fn capture_panel(&mut self, pin: PinnedPanel, box_id: u32, ctx: &mut Context, title: &str) {
+        if self.is_pinned(pin) { return; }
+        self.pinned.push(pin);
+        self.pinned_box.push(PinBox { pin, box_id });
+        self.pinned_outside_frames.push(PinFrames { pin, frames: 0 });
+        self.pending_pin_dock.push(PinBox { pin, box_id });
+        ctx.undock(title);
+    }
+
+    /// Drops the pins whose windows have been out of every visible box for more than three
+    /// frames.
+    pub fn track_captured_panels(&mut self, ctx: &Context) {
+        let mut remove: Vec[PinnedPanel] = Vec.new();
+        for k in 0..self.pinned.len() {
+            let pin = self.pinned[k];
+            if !self.pin_visible(pin) { continue; }
+            let title = pin.title();
+            match self.outer_box_for_window(ctx, &title) {
+                Option.Some(box_id) => {
+                    for j in 0..self.pinned_box.len() { if self.pinned_box[j].pin == pin { self.pinned_box[j].box_id = box_id; } }
+                    for j in 0..self.pinned_outside_frames.len() { if self.pinned_outside_frames[j].pin == pin { self.pinned_outside_frames[j].frames = 0; } }
+                }
+                Option.None => {
+                    if !self.defer_geometry {
+                        for j in 0..self.pinned_outside_frames.len() {
+                            if self.pinned_outside_frames[j].pin == pin {
+                                self.pinned_outside_frames[j].frames = self.pinned_outside_frames[j].frames + 1;
+                                if self.pinned_outside_frames[j].frames > 3 { remove.push(pin); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for k in 0..remove.len() { self.forget_pin(remove[k]); }
+    }
+
+    pub fn remove_outer_box(&mut self, box_id: u32, ctx: &mut Context) {
+        for slot in 0..SLOT_COUNT {
+            let title = SLOT_TITLES[slot];
+            match self.outer_box_for_window(&*ctx, title) {
+                Option.Some(id) => {
+                    if id == box_id {
+                        ctx.undock(title);
+                        if slot == DEBUG { self.debug_reposition = true; }
+                    }
+                }
+                Option.None => {}
+            }
+        }
+        let mut captured: Vec[PinnedPanel] = Vec.new();
+        for k in 0..self.pinned_box.len() {
+            if self.pinned_box[k].box_id == box_id { captured.push(self.pinned_box[k].pin); }
+        }
+        for k in 0..captured.len() {
+            let pin = captured[k];
+            let title = pin.title();
+            ctx.undock(&title);
+            self.forget_pin(pin);
+        }
+        handle { self.pending_pin_dock.retain(); } with Keep[PinBox] { keep(e) => { resume e.box_id != box_id } }
+        for v in 0..3 { if self.debug_view_boxes[v] == box_id { self.debug_view_boxes[v] = 0; } }
+        if self.pending_debug_box == Option.Some(box_id) { self.pending_debug_box = Option.None; }
+        handle { self.outer_boxes.retain(); } with Keep[OuterBox] { keep(b) => { resume b.id != box_id } }
+        if self.last_selection_outer_box == Option.Some(box_id) { self.last_selection_outer_box = Option.None; }
+        if self.last_queue_outer_box == Option.Some(box_id) { self.last_queue_outer_box = Option.None; }
+    }
+
+    /// Floats every pinned panel again, and the Selection and Queue panels out of boxes.
+    pub fn clear_captured_panels(&mut self, ctx: &mut Context) {
+        for k in 0..self.pinned.len() {
+            let title = self.pinned[k].title();
+            ctx.undock(&title);
+        }
+        for t in 0..2 {
+            let title = SLOT_TITLES[t];
+            if self.outer_box_for_window(&*ctx, title).is_some() { ctx.undock(title); }
+        }
+        self.pinned.clear();
+        self.pinned_geometry.clear();
+        self.pinned_box.clear();
+        self.pinned_outside_frames.clear();
+        self.pinned_groups.clear();
+        self.pending_pin_dock.clear();
+    }
+
+    /// A new box of the layer being edited, where nothing else is.
+    pub fn create_box(&mut self, viewport: Vec2) {
+        self.next_outer_box_id = self.next_outer_box_id + 1;
+        let scope = if self.editing_outer { BoxScope.Outer } else { BoxScope.View(self.active_view) };
+        let size = vec2(380.0, 280.0).min(vec2(viewport.x - 2.0 * PANEL_MARGIN, viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN));
+        let mut d = dock(viewport, PANEL_MARGIN, PANEL_GAP, STATUS_HEIGHT + PANEL_MARGIN);
+        for k in 0..SLOT_COUNT {
+            let g = self.windows[k];
+            if is_zero(g.size) { continue; }
+            d.reserve(geometry_rect(viewport, g));
+        }
+        for k in 0..self.outer_boxes.len() {
+            if !self.box_visible(&self.outer_boxes[k]) { continue; }
+            let g = self.outer_boxes[k].geometry;
+            if is_zero(g.size) { continue; }
+            d.reserve(geometry_rect(viewport, g));
+        }
+        let pos = match d.place(size, DockZone.BottomRight) {
+            Option.Some(r) => vec2(r.min.x, viewport.y - r.max.y),
+            Option.None => vec2(max_f(viewport.x - size.x - PANEL_MARGIN, PANEL_MARGIN), STATUS_HEIGHT + PANEL_MARGIN),
+        };
+        let mut g = no_geometry();
+        g.pos = pos;
+        g.size = size;
+        g.floating_pos = pos;
+        g.floating_size = size;
+        g.manual = true;
+        self.outer_boxes.push(OuterBox { id: self.next_outer_box_id, dock_id: 0, scope, geometry: g });
+    }
+
+    /// The box whose dock space holds the window `title`, when that box is visible.
+    pub fn outer_box_for_window(&self, ctx: &Context, title: &str) -> Option[u32] {
+        let node = node_of(ctx, title);
+        if node < 0 { return Option.None; }
+        for k in 0..self.outer_boxes.len() {
+            let outer = &self.outer_boxes[k];
+            if !self.box_visible(outer) { continue; }
+            let space = outer.space();
+            match ctx.dock_root(&space) {
+                Option.Some(root) => { if node_contains(ctx, root.index, node) { return Option.Some(outer.id); } }
+                Option.None => {}
+            }
+        }
+        Option.None
+    }
+
+    // ---- switching views ----------------------------------------------------------------
+
+    /// The layer Debug is placed in: the shared one when it is edited or Debug sits in an outer
+    /// box, else the active view's.
+    fn desired_scope(&self, ctx: &Context, view: ViewScope) -> BoxScope {
+        if self.editing_outer { return BoxScope.Outer; }
+        match self.outer_box_for_window(ctx, "Debug") {
+            Option.Some(id) => {
+                match self.box_index(id) {
+                    Option.Some(k) => { if self.outer_boxes[k].scope == BoxScope.Outer { return BoxScope.Outer; } }
+                    Option.None => {}
+                }
+            }
+            Option.None => {}
+        }
+        BoxScope.View(view)
+    }
+
+    /// Changes the active view, saving Debug's placement in the layer it leaves and restoring
+    /// the one it enters.
+    pub fn switch_layout_scope(&mut self, ctx: &mut Context, view: ViewScope) {
+        let previous_view = self.active_view;
+        let old_debug_box = self.outer_box_for_window(&*ctx, "Debug");
+        let old_scope = self.debug_layout_scope;
+        let desired = self.desired_scope(&*ctx, view);
+        self.active_view = view;
+        let old_is_view = match old_scope { Option.Some(BoxScope.View(v)) => v.index() == view.index(), _ => false };
+        if previous_view.index() == view.index() && old_is_view && !self.defer_geometry {
+            match old_debug_box {
+                Option.Some(id) => { self.debug_view_boxes[view.index()] = id; }
+                Option.None => { if self.pending_debug_box.is_none() { self.debug_view_boxes[view.index()] = 0; } }
+            }
+        }
+        if previous_view.index() != view.index() {
+            for k in 0..self.pinned.len() {
+                let pin = self.pinned[k];
+                if let Option.Some(box_id) = self.pin_box_id(pin) {
+                    if self.pin_visible(pin) && !self.pin_pending(pin) { self.pending_pin_dock.push(PinBox { pin, box_id }); }
+                }
+            }
+            self.debug_attached = false;
+        }
+        let same_scope = match old_scope { Option.Some(s) => s == desired, Option.None => false };
+        if same_scope { return; }
+        if let Option.Some(scope) = old_scope {
+            let old = self.windows[DEBUG];
+            match scope {
+                BoxScope.Outer => { self.debug_outer_geometry = old; }
+                BoxScope.View(v) => {
+                    self.set_debug_view_geometry(v, old);
+                    if let Option.Some(id) = old_debug_box {
+                        if let Option.Some(k) = self.box_index(id) {
+                            if self.outer_boxes[k].scope == BoxScope.View(v) { self.debug_view_boxes[v.index()] = id; }
+                        }
+                    }
+                }
+            }
+        }
+        match desired {
+            BoxScope.Outer => {
+                if is_zero(self.debug_outer_geometry.floating_pos) { self.debug_outer_geometry = self.windows[DEBUG]; }
+                self.debug_outer_start = Option.Some((self.debug_outer_geometry.floating_pos, self.debug_outer_geometry.floating_size));
+            }
+            BoxScope.View(_) => {
+                let was_outer = match old_scope { Option.Some(BoxScope.Outer) => true, _ => false };
+                if was_outer {
+                    if let Option.Some((start_pos, start_size)) = self.debug_outer_start {
+                        self.debug_outer_start = Option.None;
+                        if !same(self.debug_outer_geometry.floating_pos, start_pos) || !same(self.debug_outer_geometry.floating_size, start_size) {
+                            for k in 0..3 {
+                                let mut g = self.debug_outer_geometry;
+                                g.docked = false;
+                                self.set_debug_view_geometry(VIEWS[k], g);
+                                self.debug_view_boxes[k] = 0;
+                            }
+                            self.debug_view_overrides = [false; 3];
+                        }
+                    }
+                }
+            }
+        }
+        if ctx.is_docked("Debug") {
+            let mut shared_outer = false;
+            if let Option.Some(id) = self.outer_box_for_window(&*ctx, "Debug") {
+                if let Option.Some(k) = self.box_index(id) { if self.outer_boxes[k].scope == BoxScope.Outer { shared_outer = true; } }
+            }
+            if !shared_outer { ctx.undock("Debug"); }
+        }
+        let mut restored = match desired {
+            BoxScope.Outer => self.debug_outer_geometry,
+            BoxScope.View(v) => self.debug_geometry_for_view(v),
+        };
+        restored.docked = false;
+        if !is_zero(restored.floating_pos) {
+            restored.pos = restored.floating_pos;
+            restored.size = restored.floating_size;
+            restored.manual = true;
+        }
+        self.windows[DEBUG] = restored;
+        self.debug_reposition = true;
+        self.debug_layout_scope = Option.Some(desired);
+        self.pending_debug_box = match desired {
+            BoxScope.View(v) => { let id = self.debug_view_boxes[v.index()]; if id == 0 { Option.None } else { Option.Some(id) } }
+            BoxScope.Outer => Option.None,
+        };
+    }
+
+    fn pin_pending(&self, pin: PinnedPanel) -> bool {
+        for k in 0..self.pending_pin_dock.len() {
+            if self.pending_pin_dock[k].pin == pin { return true; }
+        }
+        false
+    }
+
+    /// Carries out a queued reset of the active view's Debug placement to Default's.
+    pub fn apply_pending_view_reset(&mut self, ctx: &mut Context) {
+        let Option.Some(view) = self.pending_view_reset else { return; };
+        self.pending_view_reset = Option.None;
+        self.clear_view_debug_override(view);
+        let scoped = match self.debug_layout_scope { Option.Some(BoxScope.View(v)) => v.index() == view.index(), _ => false };
+        if self.active_view.index() != view.index() || !scoped { return; }
+        if ctx.is_docked("Debug") { ctx.undock("Debug"); }
+        let mut inherited = self.debug_geometry_for_view(view);
+        inherited.docked = false;
+        inherited.pos = inherited.floating_pos;
+        inherited.size = inherited.floating_size;
+        self.windows[DEBUG] = inherited;
+        self.pending_debug_box = Option.None;
+        self.debug_attached = false;
+        self.debug_restore_attempts = 0;
+        self.debug_reposition = true;
+    }
+
+    /// Puts Debug back beside the panel it was released from, or floats it.
+    fn release_debug_from_context(&mut self, ctx: &mut Context) {
+        if !ctx.is_docked("Debug") { return; }
+        if let Option.Some(held) = self.debug_outer_relation {
+            if self.is_pinned(held.pin) {
+                let title = held.pin.title();
+                if let Option.Some(dir) = held.relation.direction {
+                    let _ok = ctx.dock_beside("Debug", &title, dir, held.relation.fraction);
+                    return;
+                }
+            }
+        }
+        ctx.undock("Debug");
+        self.debug_reposition = true;
+    }
+
+    /// Keeps Debug docked where the player put it for the kind of thing selected.
+    pub fn maintain_debug_scope(&mut self, ctx: &mut Context, context: Option[Str]) {
+        if self.outer_box_for_window(&*ctx, "Debug").is_some() {
+            self.debug_context_relations.clear();
+            self.debug_context = context;
+            self.debug_attached = false;
+            self.debug_restore_attempts = 0;
+            return;
+        }
+        let changed = !option_text_same(&self.debug_context, &context);
+        if changed {
+            if self.debug_attached { self.release_debug_from_context(ctx); }
+            self.debug_attached = false;
+            self.debug_restore_attempts = match &context {
+                &Option.Some(c) => if self.has_context_relation(&c) { 2 } else { 0 },
+                &Option.None => 0,
+            };
+            self.debug_context = context;
+            return;
+        }
+        let Option.Some(kind) = context else {
+            self.debug_outer_relation = Option.None;
+            for k in 0..self.pinned.len() {
+                let pin = self.pinned[k];
+                let title = pin.title();
+                if let Option.Some(relation) = dock_relation(&*ctx, &title, "Debug") {
+                    self.debug_outer_relation = Option.Some(PinRelation { pin, relation });
+                    break;
+                }
+            }
+            return;
+        };
+        if let Option.Some(relation) = dock_relation(&*ctx, "Selection", "Debug") {
+            self.set_context_relation(&kind, relation);
+            self.debug_restore_attempts = 0;
+            self.debug_attached = true;
+            return;
+        }
+        if self.debug_restore_attempts > 0 {
+            if let Option.Some(relation) = self.context_relation(&kind) {
+                if let Option.Some(dir) = relation.direction {
+                    let _ok = ctx.dock_beside("Debug", "Selection", dir, relation.fraction);
+                }
+            }
+            self.debug_restore_attempts = self.debug_restore_attempts - 1;
+        } else if self.debug_attached {
+            // An explicit undock while this menu is open replaces its remembered layout.
+            self.remove_context_relation(&kind);
+            self.debug_attached = false;
+        }
+    }
+
+    /// Keeps the Selection and Queue panels docked as a pair while both show.
+    pub fn maintain_queue_dock(&mut self, ctx: &mut Context, pair_visible: bool) {
+        if !pair_visible {
+            self.pair_visible = false;
+            return;
+        }
+        if !self.pair_visible && self.queue_dock_relation.is_some() { self.queue_restore_attempts = 2; }
+        self.pair_visible = true;
+        if let Option.Some(relation) = dock_relation(&*ctx, "Selection", "Production Queue") {
+            self.queue_dock_relation = Option.Some(relation);
+            self.queue_restore_attempts = 0;
+            return;
+        }
+        if self.queue_restore_attempts == 0 {
+            if !self.defer_geometry { self.queue_dock_relation = Option.None; }
+            return;
+        }
+        let mut restore: Option[(Dir, f32)] = Option.None;
+        if let &Option.Some(relation) = &self.queue_dock_relation {
+            if let Option.Some(d) = relation.direction { restore = Option.Some((d, relation.fraction)); }
+        }
+        let Option.Some((dir, fraction)) = restore else { return; };
+        let selection_docked = ctx.is_docked("Selection");
+        let queue_docked = ctx.is_docked("Production Queue");
+        // The same request a successful drag makes, to restore a split after its windows
+        // disappeared for a while.
+        if queue_docked && !selection_docked {
+            let _ok = ctx.dock_beside("Selection", "Production Queue", opposite_dir(dir), 1.0 - fraction);
+        } else {
+            let _ok = ctx.dock_beside("Production Queue", "Selection", dir, fraction);
+        }
+        self.queue_restore_attempts = self.queue_restore_attempts - 1;
+    }
+
+    // ---- observing the windows ----------------------------------------------------------
+
+    /// What the library says of the panel in `slot` between frames: whether it is docked and
+    /// where it stands.
+    pub fn sync_window(&mut self, slot: i32, ctx: &Context, title: &str) {
+        let Option.Some(rect) = ctx.window_rect(title) else { return; };
+        let docked = ctx.is_docked(title);
+        if self.windows[slot].docked && !docked { self.windows[slot].manual = true; }
+        self.windows[slot].docked = docked;
+        self.windows[slot].pos = rect.min;
+        if !self.windows[slot].collapsed {
+            self.windows[slot].size = rect.max.sub(rect.min);
+            if slot == DEBUG && self.debug_reposition && !docked {
+                let remembered = self.windows[slot].floating_pos;
+                if !is_zero(remembered) {
+                    self.windows[slot].pos = remembered;
+                    self.windows[slot].size = self.windows[slot].floating_size;
+                    self.windows[slot].manual = true;
+                }
+            } else if !(docked || (slot == DEBUG && self.defer_geometry)) {
+                self.windows[slot].floating_size = self.windows[slot].size;
+                self.windows[slot].floating_pos = self.windows[slot].pos;
+            }
+        }
+    }
+
+    /// Notes what the selection is now: whether it changed (so the panel scrolls to its top),
+    /// and swaps in the placement the player gave that kind of selection.
+    pub fn selection_changed(&mut self, context: &str) -> bool {
+        let kind = context_kind(context);
+        let geometry_changed = !same_text(&self.selection_geometry_context, &kind);
+        self.selection_geometry_changed = self.selection_geometry_changed || geometry_changed;
+        if geometry_changed {
+            if !self.selection_geometry_context.is_empty() {
+                let key = copy_text(&self.selection_geometry_context);
+                let saved = self.windows[SELECTION];
+                self.store_selection_geometry(key, saved);
+            }
+            let docked = self.windows[SELECTION].docked;
+            let mut restored = match self.selection_geometry(&kind) { Option.Some(g) => g, Option.None => no_geometry() };
+            // This is still one window; docking belongs to it, while floating dimensions belong
+            // to the selected kind.
+            if restored.docked && !docked {
+                // The dock may have been removed while the split was inactive: place this as a
+                // normal floater for the restoration frame, not over Queue.
+                restored.manual = false;
+                restored.pos = vec2(0.0, 0.0);
+                restored.size = restored.floating_size;
+            }
+            restored.docked = docked;
+            self.windows[SELECTION] = restored;
+            self.selection_geometry_context = kind;
+        }
+        if text_is(&self.selection_context, context) {
+            false
+        } else {
+            self.selection_context = to_owned(context);
+            true
+        }
+    }
+
+    fn selection_geometry(&self, kind: &str) -> Option[WindowGeometry] {
+        for k in 0..self.selection_geometries.len() {
+            if text_is(&self.selection_geometries[k].key, kind) { return Option.Some(self.selection_geometries[k].geometry); }
+        }
+        Option.None
+    }
+
+    pub fn store_selection_geometry(&mut self, key: Str, g: WindowGeometry) {
+        for k in 0..self.selection_geometries.len() {
+            if same_text(&self.selection_geometries[k].key, &key) {
+                self.selection_geometries[k].geometry = g;
+                return;
+            }
+        }
+        self.selection_geometries.push(GeometryEntry { key, geometry: g });
+    }
+
+    pub fn has_selection_geometry(&self, kind: &str) -> bool { self.selection_geometry(kind).is_some() }
+
+    /// Starts a frame: while arranging with the button held the library owns the geometry, and
+    /// a press on a floating panel's title bar or resize grip makes it the player's.
+    pub fn begin_frame(&mut self, arranging: bool, button_down: bool, clicked: bool, mouse: Vec2) {
+        let dragging = arranging && button_down;
+        self.defer_geometry = dragging || self.dragging_last_frame;
+        self.dragging_last_frame = dragging;
+        if !arranging || !clicked { return; }
+        for slot in 0..SLOT_COUNT {
+            let w = self.windows[slot];
+            if is_zero(w.size) || w.docked { continue; }
+            let rel = mouse.sub(w.pos);
+            let title = rel.x >= 0.0 && rel.x < w.size.x && rel.y >= 0.0 && rel.y < 30.0;
+            let grip = rel.x >= w.size.x - 20.0 && rel.x <= w.size.x && rel.y >= w.size.y - 20.0 && rel.y <= w.size.y;
+            if title || grip {
+                self.windows[slot].manual = true;
+                if slot == DEBUG {
+                    if let Option.Some(BoxScope.View(v)) = self.debug_layout_scope {
+                        if v.index() != 0 { self.debug_view_overrides[v.index()] = true; }
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // ---- sizes and places ---------------------------------------------------------------
+
+    /// The size panel `slot` should take: what the player set, what its dock gave it, what its
+    /// content asked for last frame, or what was measured.
+    pub fn size(&self, slot: i32, measured: Vec2, viewport: Vec2) -> Vec2 {
+        let w = self.windows[slot];
+        let preferred = if w.docked && !is_zero(w.size) {
+            w.size
+        } else if w.manual {
+            if !is_zero(w.floating_size) { w.floating_size } else { w.size }
+        } else if w.content_height > 0.0 {
+            let observed = max_f(w.content_height, 60.0);
+            vec2(measured.x, if slot == QUEUE { min_f(observed, measured.y) } else { observed })
+        } else {
+            measured
+        };
+        let preferred = if w.collapsed { vec2(preferred.x, COLLAPSED_HEIGHT) } else { preferred };
+        preferred.min(vec2(viewport.x - PANEL_MARGIN * 2.0, viewport.y - STATUS_HEIGHT - PANEL_MARGIN * 2.0))
+    }
+
+    /// Where each panel goes, and its size (shrunk when a zone is short of room): panels the
+    /// player placed or docked stay, every other one takes the first free space in its zone.
+    pub fn plan(&self, viewport: Vec2, sizes: &mut [Option[Vec2]; 6]) -> [Option[Vec2]; 6] {
+        let mut positions: [Option[Vec2]; 6] = [Option.None; 6];
+        let mut d = dock(viewport, PANEL_MARGIN, PANEL_GAP, STATUS_HEIGHT + PANEL_MARGIN);
+        for k in 0..self.pinned_geometry.len() {
+            let pin = self.pinned_geometry[k].pin;
+            let g = self.pinned_geometry[k].geometry;
+            let counts = match self.pin_box_id(pin) { Option.Some(_) => self.pin_visible(pin), Option.None => true };
+            if !counts || is_zero(g.size) { continue; }
+            d.reserve(geometry_rect(viewport, g));
+        }
+        for k in 0..self.outer_boxes.len() {
+            if !self.box_visible(&self.outer_boxes[k]) { continue; }
+            let g = self.outer_boxes[k].geometry;
+            if is_zero(g.size) { continue; }
+            d.reserve(geometry_rect(viewport, g));
+        }
+        for slot in 0..SLOT_COUNT {
+            let Option.Some(size) = sizes[slot] else { continue; };
+            if self.windows[slot].docked {
+                let pos = self.windows[slot].pos;
+                positions[slot] = Option.Some(pos);
+                d.reserve(Rect { min: vec2(pos.x, viewport.y - pos.y - size.y), max: vec2(pos.x + size.x, viewport.y - pos.y) });
+                continue;
+            }
+            if self.windows[slot].manual {
+                let hi = viewport.sub(size).sub(vec2(PANEL_MARGIN, PANEL_MARGIN)).max(vec2(PANEL_MARGIN, PANEL_MARGIN));
+                let pos = clamp_v(self.windows[slot].pos, vec2(PANEL_MARGIN, STATUS_HEIGHT + PANEL_MARGIN), hi);
+                positions[slot] = Option.Some(pos);
+                d.reserve(Rect { min: vec2(pos.x, viewport.y - pos.y - size.y), max: vec2(pos.x + size.x, viewport.y - pos.y) });
+            }
+        }
+        let steps: [f32; 5] = [1.0, 0.85, 0.65, 0.45, 0.25];
+        let widths: [f32; 5] = [1.0, 0.95, 0.85, 0.7, 0.55];
+        for o in 0..SLOT_COUNT {
+            let slot = PLAN_ORDER[o];
+            if positions[slot].is_some() { continue; }
+            let Option.Some(size) = sizes[slot] else { continue; };
+            // The settings menu opens in the middle of the screen, over the map, and takes no
+            // room from the docked panels.
+            if slot == SETTINGS {
+                let top = STATUS_HEIGHT + PANEL_MARGIN;
+                positions[slot] = Option.Some(viewport.sub(size).scale(0.5).max(vec2(PANEL_MARGIN, top)).round());
+                continue;
+            }
+            let zone = if slot == SELECTION || slot == QUEUE || slot == INSPECT { DockZone.BottomLeft } else if slot == UNITS { DockZone.BottomCenter } else { DockZone.TopRight };
+            for hs in 0..5 {
+                for ws in 0..5 {
+                    if positions[slot].is_some() { break; }
+                    let candidate = vec2(max_f(size.x * widths[ws], 210.0), max_f(size.y * steps[hs], 80.0));
+                    if let Option.Some(r) = d.place(candidate, zone) {
+                        sizes[slot] = Option.Some(candidate);
+                        positions[slot] = Option.Some(vec2(r.min.x, viewport.y - r.max.y));
+                    }
+                }
+                if positions[slot].is_some() { break; }
+            }
+        }
+        positions
+    }
+
+    /// Whether the position given panel `slot` is imposed (`Always`) or a first suggestion the
+    /// player may move from.
+    pub fn always_place(&self, slot: i32, viewport: Vec2) -> bool {
+        let w = self.windows[slot];
+        if !w.manual { return true; }
+        let hi = viewport.sub(w.size).sub(vec2(PANEL_MARGIN, PANEL_MARGIN));
+        w.pos.x < PANEL_MARGIN || w.pos.y < STATUS_HEIGHT + PANEL_MARGIN || w.pos.x > hi.x || w.pos.y > hi.y
+    }
+
+    /// Notes what the panel in `slot` looks like this frame, from inside its window.
+    pub fn record(&mut self, slot: i32, pos: Vec2, size: Vec2, docked: bool, collapsed: bool, cursor_y: f32, padding_y: f32, title_height: Option[f32]) {
+        if self.windows[slot].docked && !docked { self.windows[slot].manual = true; }
+        self.windows[slot].pos = pos;
+        self.windows[slot].collapsed = collapsed;
+        if !collapsed { self.windows[slot].size = size; }
+        self.windows[slot].docked = docked;
+        if !docked && !(slot == DEBUG && (self.debug_reposition || self.defer_geometry)) && !collapsed {
+            self.windows[slot].floating_size = self.windows[slot].size;
+            self.windows[slot].floating_pos = self.windows[slot].pos;
+        }
+        self.windows[slot].content_height = panel_content_height(cursor_y, padding_y, title_height);
+    }
+}
+
+fn option_text_same(a: &Option[Str], b: &Option[Str]) -> bool {
+    match a {
+        &Option.Some(x) => match b { &Option.Some(y) => str_eq(&x, &y), &Option.None => false },
+        &Option.None => match b { &Option.Some(_) => false, &Option.None => true },
+    }
+}
+
+fn opposite_dir(d: Dir) -> Dir {
+    match d { Dir.Left => Dir.Right, Dir.Right => Dir.Left, Dir.Up => Dir.Down, Dir.Down => Dir.Up }
+}
+
+/// The kind of a selection context: `city-3` is `city`.
+pub fn context_kind(context: &str) -> Str {
+    match find(context, "-") {
+        Option.Some(at) => to_owned(sub(context, Span { lo: 0, hi: at })),
+        Option.None => to_owned(context),
+    }
+}
+
+/// The content height a panel reports: the cursor's place and the bottom padding, less the
+/// title bar when the ctrl chrome showed one, so automatic placement never changes a panel's
+/// outer rectangle just for the chrome.
+pub fn panel_content_height(cursor_y: f32, padding_y: f32, title_height: Option[f32]) -> f32 {
+    cursor_y + padding_y - match title_height { Option.Some(h) => h, Option.None => 0.0 }
+}
+
+// ---- saved layout -----------------------------------------------------------------------
+
+fn put_f(v: f32) can {Out} { show_f64_fixed(v as f64, 3); }
+
+fn put_flag(b: bool) can {Out} { Out.put(if b { "1" } else { "0" }); }
+
+/// A panel's saved geometry: position, size, floating position and size, and whether it's
+/// placed by the player, docked and collapsed.
+fn put_geometry(g: WindowGeometry) can {Out} {
+    put_f(g.pos.x); Out.put(" "); put_f(g.pos.y); Out.put(" ");
+    put_f(g.size.x); Out.put(" "); put_f(g.size.y); Out.put(" ");
+    put_f(g.floating_pos.x); Out.put(" "); put_f(g.floating_pos.y); Out.put(" ");
+    put_f(g.floating_size.x); Out.put(" "); put_f(g.floating_size.y); Out.put(" ");
+    put_flag(g.manual); Out.put(" "); put_flag(g.docked); Out.put(" "); put_flag(g.collapsed);
+}
+
+fn number_at(values: &Vec[Str], i: i32) -> Option[u32] {
+    if i >= values.len() { return Option.None; }
+    let v = &values[i];
+    match parse_i64(v) { Option.Some(n) => if n >= 0 && n <= 4294967295 { Option.Some(n as u32) } else { Option.None }, Option.None => Option.None }
+}
+
+/// The geometry the eleven values from `from` on describe.
+fn geometry_at(values: &Vec[Str], from: i32) -> Option[WindowGeometry] {
+    if values.len() < from + 11 { return Option.None; }
+    let mut nums: [f32; 11] = [0.0; 11];
+    for k in 0..11 {
+        let v = &values[from + k];
+        match parse_f64(v) {
+            Option.Some(x) => { if x != x || x > 1000000000.0 || x < -1000000000.0 { return Option.None; } nums[k] = x as f32; }
+            Option.None => { return Option.None; }
+        }
+    }
+    let mut g = no_geometry();
+    g.pos = vec2(nums[0], nums[1]);
+    g.size = vec2(nums[2], nums[3]);
+    g.floating_pos = vec2(nums[4], nums[5]);
+    g.floating_size = vec2(nums[6], nums[7]);
+    g.manual = nums[8] != 0.0;
+    g.docked = nums[9] != 0.0;
+    g.collapsed = nums[10] != 0.0;
+    Option.Some(g)
+}
+
+impl ImGuiLayoutState {
+    /// The layout as text: a line per panel, per box, and per saved placement of the Debug
+    /// panel and the Selection panel.
+    pub fn to_text(&self) -> Str {
+        text(fn() can {Out} {
+            for slot in 0..SLOT_COUNT {
+                Out.put("window "); show_u64(slot as u64); Out.put(" "); put_geometry(self.windows[slot]); Out.put("\n");
+            }
+            for k in 0..self.outer_boxes.len() {
+                let b = &self.outer_boxes[k];
+                Out.put("box "); show_u64(b.id as u64); Out.put(" "); Out.put(scope_text(b.scope)); Out.put(" "); put_geometry(b.geometry); Out.put("\n");
+            }
+            Out.put("next_box "); show_u64(self.next_outer_box_id as u64); Out.put("\n");
+            if let Option.Some(id) = self.last_selection_outer_box { Out.put("selection_box "); show_u64(id as u64); Out.put("\n"); }
+            if let Option.Some(id) = self.last_queue_outer_box { Out.put("queue_box "); show_u64(id as u64); Out.put("\n"); }
+            if self.debug_outer_geometry.manual || self.debug_outer_geometry.docked {
+                Out.put("debug_outer "); put_geometry(self.debug_outer_geometry); Out.put("\n");
+            }
+            for v in 0..3 {
+                let name = VIEWS[v].text();
+                // Only a placement the player chose: one the layout made is made again, and
+                // restoring it would pin the panel (`switch_layout_scope`).
+                if self.debug_view_set[v] && (self.debug_view_geometry[v].manual || self.debug_view_geometry[v].docked) {
+                    Out.put("debug_view "); Out.put(name); Out.put(" "); put_geometry(self.debug_view_geometry[v]); Out.put("\n");
+                }
+                if self.debug_view_overrides[v] { Out.put("debug_override "); Out.put(name); Out.put("\n"); }
+                if self.debug_view_boxes[v] != 0 { Out.put("debug_box "); Out.put(name); Out.put(" "); show_u64(self.debug_view_boxes[v] as u64); Out.put("\n"); }
+            }
+            for k in 0..self.selection_geometries.len() {
+                let e = &self.selection_geometries[k];
+                let key = &e.key;
+                if !key.is_empty() && !has_space(key) {
+                    Out.put("selection "); Out.put(key); Out.put(" "); put_geometry(e.geometry); Out.put("
+");
+                }
+            }
+        })
+    }
+}
+
+fn has_space(s: &str) -> bool {
+    let n = str_len(s);
+    let mut i = 0;
+    while i < n {
+        match byte_at(s, i) { Option.Some(b) => { if b == 32 || b == 9 || b == 10 { return true; } } Option.None => {} }
+        i = i + 1;
+    }
+    false
+}
+
+/// A layout read back from `to_text`'s text. Lines it doesn't understand are skipped, so an old
+/// or damaged file still gives a usable layout.
+pub fn layout_from_text(text: &str) -> ImGuiLayoutState {
+    let mut layout = layout_state();
+    for line in lines(text) {
+        let Option.Some(kv) = key_and_values(*line) else { continue; };
+        let key = &kv.key;
+        let values = &kv.values;
+        if str_eq(key, "window") {
+            if let Option.Some(slot) = number_at(values, 0) {
+                if let Option.Some(g) = geometry_at(values, 1) {
+                    if slot < 6 { layout.windows[slot as i32] = g; }
+                }
+            }
+        } else if str_eq(key, "box") {
+            if let Option.Some(id) = number_at(values, 0) {
+                if values.len() > 1 {
+                    let scope_word = &values[1];
+                    if let Option.Some(scope) = scope_from_text(scope_word) {
+                        if let Option.Some(g) = geometry_at(values, 2) {
+                            layout.outer_boxes.push(OuterBox { id, dock_id: 0, scope, geometry: g });
+                        }
+                    }
+                }
+            }
+        } else if str_eq(key, "next_box") {
+            layout.next_outer_box_id = match number_at(values, 0) { Option.Some(n) => n, Option.None => 0 };
+        } else if str_eq(key, "selection_box") {
+            layout.last_selection_outer_box = number_at(values, 0);
+        } else if str_eq(key, "queue_box") {
+            layout.last_queue_outer_box = number_at(values, 0);
+        } else if str_eq(key, "debug_outer") {
+            if let Option.Some(g) = geometry_at(values, 0) { layout.debug_outer_geometry = g; }
+        } else if str_eq(key, "debug_view") || str_eq(key, "debug_override") || str_eq(key, "debug_box") {
+            if values.is_empty() { continue; }
+            let view_word = &values[0];
+            let Option.Some(view) = view_from_text(view_word) else { continue; };
+            if str_eq(key, "debug_view") {
+                if let Option.Some(g) = geometry_at(values, 1) { layout.set_debug_view_geometry(view, g); }
+            } else if str_eq(key, "debug_override") {
+                layout.debug_view_overrides[view.index()] = true;
+            } else if let Option.Some(id) = number_at(values, 1) {
+                layout.debug_view_boxes[view.index()] = id;
+            }
+        } else if str_eq(key, "selection") {
+            if !values.is_empty() {
+                if let Option.Some(g) = geometry_at(values, 1) { layout.store_selection_geometry(copy_text(&values[0]), g); }
+            }
+        }
+    }
+    // Box ids come from the counter: never hand out one already used.
+    let mut highest: u32 = 0;
+    for k in 0..layout.outer_boxes.len() {
+        if layout.outer_boxes[k].id + 1 > highest { highest = layout.outer_boxes[k].id + 1; }
+    }
+    if highest > layout.next_outer_box_id { layout.next_outer_box_id = highest; }
+    layout
+}

@@ -1,0 +1,193 @@
+//! Geometry-only docking for screen-space panels. Callers provide measured panel sizes;
+//! placement is shared by rendering and hit testing. Rectangles are in UI pixels with the
+//! origin at the bottom-left and Y up.
+
+use std.linalg.Rect;
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.math.Float;
+
+/// Where a panel starts: the named corner.
+pub enum DockZone {
+    BottomLeft,
+    BottomRight,
+    TopLeft,
+    TopRight,
+    /// The middle of the bottom edge, sliding sideways to the nearest free spot before
+    /// stacking upward (`Dock.place`).
+    BottomCenter,
+}
+
+impl DockZone {
+    fn left(self) -> bool { match self { DockZone.BottomLeft | DockZone.TopLeft => true, _ => false } }
+
+    fn bottom(self) -> bool { match self { DockZone.BottomLeft | DockZone.BottomRight | DockZone.BottomCenter => true, _ => false } }
+
+    fn is_center(self) -> bool { match self { DockZone.BottomCenter => true, _ => false } }
+}
+
+/// A rectangle from its corners.
+pub fn area(min: Vec2, max: Vec2) -> Rect { Rect { min, max } }
+
+/// Whether `a` and `b` overlap once each is grown by `gap`.
+pub fn overlaps(a: Rect, b: Rect, gap: f32) -> bool {
+    a.min.x < b.max.x + gap && a.max.x + gap > b.min.x && a.min.y < b.max.y + gap && a.max.y + gap > b.min.y
+}
+
+fn overlaps_horizontally(a: Rect, b: Rect, gap: f32) -> bool {
+    a.min.x < b.max.x + gap && a.max.x + gap > b.min.x
+}
+
+fn fmax(a: f32, b: f32) -> f32 { if a > b { a } else { b } }
+
+fn fmin(a: f32, b: f32) -> f32 { if a < b { a } else { b } }
+
+/// Tracks panels already placed inside a screen's safe area. Each zone starts in its named
+/// corner, stacks vertically, then wraps to another column if that column runs out of room.
+/// All zones share collision information.
+pub struct Dock {
+    screen: Vec2,
+    margin: f32,
+    gap: f32,
+    top_reserved: f32,
+    panels: Vec[Rect],
+}
+
+pub fn dock(screen: Vec2, margin: f32, gap: f32, top_reserved: f32) -> Dock {
+    Dock { screen, margin, gap, top_reserved, panels: Vec.new() }
+}
+
+impl Dock {
+    /// Reserves a window the user moved, so automatically placed windows avoid it.
+    pub fn reserve(&mut self, r: Rect) { self.panels.push(r); }
+
+    fn top(&self) -> f32 { self.screen.y - self.top_reserved }
+
+    /// Vertical room remaining in the anchor column for a panel of `width`.
+    pub fn remaining_height(&self, zone: DockZone, width: f32) -> f32 {
+        let x = if zone.is_center() {
+            (self.screen.x - width) / 2.0
+        } else if zone.left() {
+            self.margin
+        } else {
+            self.screen.x - self.margin - width
+        };
+        let probe = Rect { min: vec2(x, self.margin), max: vec2(x + width, self.top()) };
+        if zone.bottom() {
+            let mut bottom = self.margin;
+            for i in 0..self.panels.len() {
+                let r = self.panels[i];
+                if overlaps_horizontally(r, probe, self.gap) { bottom = fmax(bottom, r.max.y + self.gap); }
+            }
+            fmax(self.top() - bottom, 0.0)
+        } else {
+            let mut top = self.top();
+            for i in 0..self.panels.len() {
+                let r = self.panels[i];
+                if overlaps_horizontally(r, probe, self.gap) { top = fmin(top, r.min.y - self.gap); }
+            }
+            fmax(top - self.margin, 0.0)
+        }
+    }
+
+    fn blocker(&self, candidate: Rect) -> Option[Rect] {
+        for i in 0..self.panels.len() {
+            if overlaps(candidate, self.panels[i], self.gap) { return Option.Some(self.panels[i]); }
+        }
+        Option.None
+    }
+
+    /// Finds a non-overlapping place for an arbitrary measured panel; `None` only when the
+    /// panel cannot fit inside the screen's safe area.
+    pub fn place(&mut self, size: Vec2, zone: DockZone) -> Option[Rect] {
+        let size = size.round();
+        if size.x > self.screen.x - 2.0 * self.margin || size.y > self.top() - self.margin { return Option.None; }
+        if zone.is_center() { return self.place_bottom_center(size); }
+        let mut x = if zone.left() { self.margin } else { self.screen.x - self.margin - size.x };
+        // Every vertical move passes a panel and every wrap passes a column.
+        let n = self.panels.len() + 1;
+        for _ in 0..n * n + 1 {
+            let mut y = if zone.bottom() { self.margin } else { self.top() - size.y };
+            loop {
+                let candidate = Rect { min: vec2(x, y), max: vec2(x + size.x, y + size.y) };
+                if candidate.min.y < self.margin || candidate.max.y > self.top() { break; }
+                match self.blocker(candidate) {
+                    Option.None => {
+                        self.panels.push(candidate);
+                        return Option.Some(candidate);
+                    }
+                    Option.Some(b) => {
+                        y = if zone.bottom() { b.max.y + self.gap } else { b.min.y - self.gap - size.y };
+                    }
+                }
+            }
+            let column = Rect { min: vec2(x, self.margin), max: vec2(x + size.x, self.top()) };
+            let mut any = false;
+            let mut edge = if zone.left() { x } else { x + size.x };
+            for i in 0..self.panels.len() {
+                let r = self.panels[i];
+                if overlaps_horizontally(column, r, self.gap) {
+                    any = true;
+                    edge = if zone.left() { fmax(edge, r.max.x) } else { fmin(edge, r.min.x) };
+                }
+            }
+            if !any { return Option.None; }
+            x = if zone.left() { edge + self.gap } else { edge - self.gap - size.x };
+            if x < self.margin || x + size.x > self.screen.x - self.margin { return Option.None; }
+        }
+        Option.None
+    }
+
+    /// `DockZone.BottomCenter`: the free spot in the lowest row that has one, as near the middle
+    /// of the screen as it can be: centered if nothing's there, or else just beside whatever is
+    /// in the way.
+    fn place_bottom_center(&mut self, size: Vec2) -> Option[Rect] {
+        let middle = ((self.screen.x - size.x) / 2.0).round();
+        let lowest = self.margin;
+        let highest = self.screen.x - self.margin - size.x;
+        let mut y = self.margin;
+        while y + size.y <= self.top() {
+            let mut xs: Vec[f32] = Vec.new();
+            xs.push(middle);
+            for i in 0..self.panels.len() {
+                let r = self.panels[i];
+                xs.push(r.max.x + self.gap);
+                xs.push(r.min.x - self.gap - size.x);
+            }
+            // The candidates nearest the middle first: repeated selection, stable on ties.
+            let mut done: Vec[bool] = Vec.new();
+            for _ in 0..xs.len() { done.push(false); }
+            for _ in 0..xs.len() {
+                let mut best: i32 = 0 - 1;
+                let mut best_d: f32 = 0.0;
+                for k in 0..xs.len() {
+                    if done[k] || xs[k] < lowest || xs[k] > highest { continue; }
+                    let d = (xs[k] - middle).abs();
+                    if best < 0 || d < best_d { best = k; best_d = d; }
+                }
+                if best < 0 { break; }
+                done[best] = true;
+                let x = xs[best];
+                let candidate = Rect { min: vec2(x, y), max: vec2(x + size.x, y + size.y) };
+                if self.blocker(candidate).is_none() {
+                    self.panels.push(candidate);
+                    return Option.Some(candidate);
+                }
+            }
+            // Nothing free in this row: try just above the lowest panel in it.
+            let band = Rect { min: vec2(self.margin, y), max: vec2(self.screen.x - self.margin, y + size.y) };
+            let mut next: f32 = 1000000000.0;
+            let mut found = false;
+            for i in 0..self.panels.len() {
+                let r = self.panels[i];
+                if overlaps(r, band, 0.0) {
+                    found = true;
+                    next = fmin(next, r.max.y + self.gap);
+                }
+            }
+            if !found { return Option.None; }
+            y = next;
+        }
+        Option.None
+    }
+}
