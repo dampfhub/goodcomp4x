@@ -2426,6 +2426,41 @@ impl ImGuiScreen {
         self.frame(game, Some(at), false);
     }
 
+    /// Captures `game`'s selection panel in a new outer box, as dragging it
+    /// there with Ctrl held does, and lets it dock.
+    fn capture_selection(&mut self, game: &mut GameState) {
+        self.layout.add_outer_box(self.size);
+        self.settle(game);
+        self.layout.capture_selection(game);
+        self.settle(game);
+        assert_eq!(self.layout.captured(), 1, "the panel stays in its box");
+    }
+
+    /// The tooltip of each button ImGui draws for `target`, as a line of
+    /// text, with the mouse on it.
+    fn tooltips(&mut self, game: &mut GameState, target: Target) -> Vec<String> {
+        self.settle(game);
+        let drawn: Vec<Vec2> = imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+            drawn
+                .iter()
+                .filter(|(drawn, ..)| *drawn == target)
+                .map(|&(_, min, max)| (Vec2::from(min) + Vec2::from(max)) / 2.0)
+                .collect()
+        });
+        drawn
+            .into_iter()
+            .map(|at| {
+                self.frame(game, Some(at), false);
+                imgui::SHOWN_TOOLTIPS.with_borrow_mut(Vec::clear);
+                self.frame(game, Some(at), false);
+                imgui::SHOWN_TOOLTIPS
+                    .with_borrow_mut(std::mem::take)
+                    .concat()
+                    .join(" ")
+            })
+            .collect()
+    }
+
     /// Whether ImGui keeps a mouse press at `at` from the map (`App` then
     /// doesn't pass it on).
     fn captures_mouse_at(&mut self, game: &mut GameState, at: Vec2) -> bool {
@@ -2433,6 +2468,69 @@ impl ImGuiScreen {
         self.frame(game, Some(at), false);
         self.context.io().want_capture_mouse
     }
+}
+
+/// The player's units, by index.
+fn player_units(game: &GameState) -> Vec<usize> {
+    (0..game.units.len())
+        .filter(|&i| game.units[i].team == PLAYER_TEAM)
+        .collect()
+}
+
+#[test]
+fn imgui_captured_unit_tooltips_describe_that_unit() {
+    let mut game = GameState::new();
+    let units = player_units(&game);
+    let (other, captured) = (units[0], units[1]);
+    game.units[captured].ability_cooldown = 2;
+    game.set_selection(vec![captured]);
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    let ability = Target::Unit(UnitAction::Ability);
+    // Nothing selected: the captured panel's buttons still say what they
+    // would do for its unit.
+    game.set_selection(Vec::new());
+    let tips = screen.tooltips(&mut game, ability);
+    assert_eq!(tips.len(), 1, "{tips:?}");
+    assert!(tips[0].contains("READY IN"), "{tips:?}");
+    // Another unit selected: each panel describes its own.
+    game.set_selection(vec![other]);
+    let tips = screen.tooltips(&mut game, ability);
+    assert_eq!(tips.len(), 2, "{tips:?}");
+    assert_eq!(
+        tips.iter().filter(|tip| tip.contains("READY IN")).count(),
+        1,
+        "{tips:?}"
+    );
+}
+
+#[test]
+fn imgui_captured_unit_button_selects_its_unit() {
+    let mut game = GameState::city_scenario();
+    let unit = player_units(&game)[0];
+    game.set_selection(vec![unit]);
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    game.select_city();
+    screen.click(&mut game, Target::Unit(UnitAction::Move));
+    assert_eq!(game.selected, Some(unit));
+    assert_eq!(game.selected_city, None, "the city view closes");
+    assert_eq!(game.ui_click_mode, Some(ClickMode::Move));
+}
+
+#[test]
+fn imgui_captured_panels_clear_when_a_key_switches_the_scenario() {
+    let mut game = GameState::city_scenario();
+    game.select_city();
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    // What F2 does: not a Debug panel button.
+    game.switch_scenario(Scenario::Cities);
+    screen.settle(&mut game);
+    assert_eq!(screen.layout.captured(), 0);
+    // The box stays, and takes the new game's panel.
+    game.select_city();
+    screen.capture_selection(&mut game);
 }
 
 /// A map tile near the open city where a click lands on the map, not a

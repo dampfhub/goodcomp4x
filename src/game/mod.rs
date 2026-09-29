@@ -145,6 +145,11 @@ pub struct GameState {
     scenario: Scenario,
     /// A snapshot of the game saved for testing (F6), restored by F7.
     savestate: Option<Box<GameState>>,
+    /// Counts the games this one replaced: a scenario switch, a load (F7)
+    /// and a network game each take one more than the game before. What
+    /// keeps city or unit ids between frames (ImGui's captured panels)
+    /// checks it, since every new game reuses them.
+    generation: u32,
     /// Attack animations playing out, with how many seconds each has run.
     effects: Vec<(effects::Effect, f32)>,
     /// The player's options (`settings.rs`). Kept across scenario switches
@@ -291,6 +296,7 @@ impl GameState {
             map_seed: None,
             scenario: Scenario::Combat,
             savestate: None,
+            generation: 0,
             effects: Vec::new(),
             settings: settings::Settings::default(),
             settings_open: false,
