@@ -55,7 +55,10 @@ pub use scenario::Scenario;
 pub use settings::Settings;
 use terrain::Tile;
 use turn::Step;
-pub use ui::{ImGuiLayoutState, NetMenu, NetRequest, selection_box, style_imgui, ui_projection};
+pub use ui::{
+    ImGuiLayoutState, MIN_WINDOW_SIZE, NetMenu, NetRequest, selection_box, style_imgui,
+    ui_projection,
+};
 pub use unit::Team;
 use unit::{Unit, UnitType};
 use unit_icons::UnitIcon;

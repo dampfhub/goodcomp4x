@@ -157,7 +157,7 @@ impl GameState {
             food: income.food - self.upkeep(self.local_team),
             ..income
         };
-        stock_spans(self.stock(self.local_team), change)
+        stock_spans(self.stock(self.local_team), Some(change))
     }
 
     /// `team`'s supply (`city/supply.rs`): what it uses of what its cities
@@ -198,6 +198,14 @@ impl GameState {
     /// (`supply_line`).
     pub(super) fn status_line(&self) -> Line {
         let mut line = self.stockpile_line();
+        line.extend(self.supply_line());
+        line
+    }
+
+    /// `status_line` without the stockpile's change a turn, for an ImGui
+    /// status bar too narrow for all of it.
+    pub(super) fn brief_status_line(&self) -> Line {
+        let mut line = stock_spans(self.stock(self.local_team), None);
         line.extend(self.supply_line());
         line
     }

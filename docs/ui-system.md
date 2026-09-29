@@ -147,7 +147,14 @@ icons. ImGui buttons with icons are drawn blank with the lines laid over
 them; a dimmed button dims its icons too.
 On its second line, after Menu, the ImGui status bar names the active
 **Default**, **City / Building**, or **Troop** view (VIEW: ...), followed by
-its layout controls. **EDIT VIEW** means panel placement and **+ BOX** belong to that view;
+its layout controls, on a line of their own below the first line's text.
+Nothing on either line overlaps at any window width the game allows (at least
+`MIN_WINDOW_SIZE`, `ui/mod.rs`, in logical pixels): as room runs out the stockpile drops
+its change a turn (`brief_status_line`), then whatever of it still won't fit
+before End Turn, along with the notice; the view's name shortens to the bare
+name and then goes, left to the layer button's tooltip.
+`imgui_status_bar_keeps_its_parts_apart_at_every_width` sweeps the widths.
+**EDIT VIEW** means panel placement and **+ BOX** belong to that view;
 switching to **EDIT OUTER** creates boxes shared by all views and makes a moved
 floating Debug panel use the same placement everywhere. A view box is hidden
 outside its view, while its docked panels and layout remain available when

@@ -225,7 +225,13 @@ const NOTICE_GAP: f32 = 16.0;
 /// Where the tooltip holding a shortened notice in full wraps.
 const NOTICE_TOOLTIP_WIDTH: f32 = 480.0;
 const PANEL_GAP: f32 = 8.0;
-const STATUS_HEIGHT: f32 = 52.0;
+pub(super) const STATUS_HEIGHT: f32 = 52.0;
+/// Where the status bar's second line starts (Menu), and the room after
+/// Menu, before the view's layout controls.
+const STATUS_MENU_X: f32 = 15.0;
+const STATUS_MENU_GAP: f32 = 24.0;
+/// Room before the notice, after the stockpile.
+const STATUS_NOTICE_GAP: f32 = 24.0;
 /// The top status bar is a fixed strip: its second row of small buttons
 /// reaches a few pixels past `STATUS_HEIGHT` with the window padding, which
 /// must not turn into a scrollbar.
@@ -3802,36 +3808,67 @@ impl GameState {
             .retain(|pin, _| layout.pinned.contains(pin));
         let pending = self.pending();
         let turn = self.shown_turn();
+        // The stockpile and supply beside the turn number: all of it, or
+        // without the stockpile's change a turn when that won't fit.
+        let status_lines = [self.status_line(), self.brief_status_line()].map(|mut line| {
+            if let Some((first, _)) = line.first_mut() {
+                first.insert_str(0, "   ");
+            }
+            line
+        });
         // The status bar's buttons act on no unit or city.
         let no_subject = Subject::default();
-        let mut stockpile = self.status_line();
-        if let Some((first, _)) = stockpile.first_mut() {
-            first.insert_str(0, "   ");
-        }
         ui.window("Status")
             .flags(STATUS_FLAGS)
             .position([0.0, 0.0], Condition::Always)
             .size([viewport.x, STATUS_HEIGHT], Condition::Always)
             .build(|| {
                 let end_width = 220.0;
-                let turn_color = self.turn_number_color(ui.style_color(StyleColor::Text));
-                rich_text(ui, &format!("TURN {turn}"), turn_color);
-                // The player's stockpile and supply, then the notice in
-                // what's left.
-                for (text, color) in &stockpile {
-                    ui.same_line_with_spacing(0.0, 0.0);
-                    rich_text(ui, text, *color);
-                }
-                ui.same_line_with_spacing(0.0, 24.0);
-                // The notice has the rest of the line, up to End Turn,
-                // shortened to what fits; hovering shows all of it.
+                // Everything else on either line stops short of End Turn.
                 let end_x = (viewport.x - end_width).max(8.0);
                 let limit = end_x - NOTICE_GAP;
+                let turn_color = self.turn_number_color(ui.style_color(StyleColor::Text));
+                rich_text(ui, &format!("TURN {turn}"), turn_color);
+                let mut first_bottom = ui.item_rect_max()[1];
+                // The player's stockpile and supply, as much as fits (all
+                // of it in any window the game allows), then the notice in
+                // what's left. Each goes on the line only if drawn: a
+                // `same_line` with nothing after it would take Menu's line
+                // up to this one.
+                let line_width = |line: &Line| -> f32 {
+                    line.iter().map(|(text, _)| rich_width(ui, text)).sum()
+                };
+                let left = ui.window_pos()[0];
+                let mut x = ui.item_rect_max()[0] - left;
+                let stockpile = status_lines
+                    .iter()
+                    .find(|line| x + line_width(line) <= limit)
+                    .unwrap_or(&status_lines[1]);
+                let mut cut = false;
+                for (text, color) in stockpile {
+                    if x + rich_width(ui, text) > limit {
+                        cut = true;
+                        break;
+                    }
+                    ui.same_line_with_spacing(0.0, 0.0);
+                    rich_text(ui, text, *color);
+                    first_bottom = first_bottom.max(ui.item_rect_max()[1]);
+                    x = ui.item_rect_max()[0] - left;
+                }
+                // The notice has the rest of the line, up to End Turn,
+                // shortened to what fits (none if the stockpile was cut);
+                // hovering shows all of it.
                 let notice = self.shown_notice();
-                let room = limit - ui.cursor_pos()[0];
+                let room = if cut {
+                    0.0
+                } else {
+                    limit - x - STATUS_NOTICE_GAP
+                };
                 let shown = fit_text(notice, room, |t| rich_width(ui, t));
                 if !shown.is_empty() {
+                    ui.same_line_with_spacing(0.0, STATUS_NOTICE_GAP);
                     rich_text(ui, &shown, NOTICE_TEXT);
+                    first_bottom = first_bottom.max(ui.item_rect_max()[1]);
                     note_shown_notice(&shown, ui.item_rect_min(), ui.item_rect_max(), limit);
                     if shown != notice && ui.is_item_hovered() {
                         ui.tooltip(|| {
@@ -3840,9 +3877,31 @@ impl GameState {
                         });
                     }
                 }
-                // The second line: Menu, then the view's layout controls,
-                // so the notice above has the width of the bar.
-                ui.set_cursor_pos([15.0, 27.0]);
+                // The second line, below the first: Menu, then the view's
+                // layout controls, so the notice above has the width of
+                // the bar. The view's name goes first when there's room,
+                // shortened or left to the layer button's tooltip when
+                // there isn't.
+                let spacing = ui.clone_style().item_spacing[0];
+                let pad = ui.clone_style().frame_padding[0];
+                let button_width = |label: &str| ui.calc_text_size(label)[0] + 2.0 * pad;
+                let layer = if layout.editing_outer {
+                    "EDIT OUTER"
+                } else {
+                    "EDIT VIEW"
+                };
+                let reset = layout.active_view != ViewScope::Default && !layout.editing_outer;
+                let mut controls = STATUS_MENU_X + button_width("MENU") + STATUS_MENU_GAP;
+                controls += button_width(layer) + spacing + button_width("+ BOX");
+                if reset {
+                    controls += spacing + button_width("RESET");
+                }
+                let name = layout.active_view.label();
+                let view = [format!("VIEW: {name}"), name.to_string()]
+                    .into_iter()
+                    .find(|view| controls + ui.calc_text_size(view)[0] + spacing <= limit);
+                let second_line = (first_bottom - ui.window_pos()[1] + 2.0).ceil();
+                ui.set_cursor_pos([STATUS_MENU_X, second_line]);
                 if ui.small_button("MENU") {
                     actions.push(Action::Button(None, Target::OpenSettings));
                 }
@@ -3853,26 +3912,33 @@ impl GameState {
                         self.subject_tooltip_lines(Target::OpenSettings, "MENU", no_subject);
                     show_tooltip(ui, &lines);
                 }
-                ui.same_line_with_spacing(0.0, 24.0);
-                let view = format!("VIEW: {}", layout.active_view.label());
-                ui.text(&view);
-                note_status_control(ui, &view);
-                ui.same_line();
-                let layer = if layout.editing_outer {
-                    "EDIT OUTER"
-                } else {
-                    "EDIT VIEW"
-                };
+                ui.same_line_with_spacing(0.0, STATUS_MENU_GAP);
+                if let Some(view) = &view {
+                    ui.text(view);
+                    note_status_control(ui, view);
+                    ui.same_line();
+                }
                 if ui.small_button(layer) {
                     actions.push(Action::ToggleLayoutLayer);
                 }
                 note_status_control(ui, layer);
+                if ui.is_item_hovered() {
+                    ui.tooltip_text(if layout.editing_outer {
+                        format!(
+                            "Arranging the boxes every view shares. Click: arrange the {name} view"
+                        )
+                    } else {
+                        format!(
+                            "Arranging the {name} view. Click: arrange the boxes every view shares"
+                        )
+                    });
+                }
                 ui.same_line();
                 if ui.small_button("+ BOX") {
                     actions.push(Action::CreateBox);
                 }
                 note_status_control(ui, "+ BOX");
-                if layout.active_view != ViewScope::Default && !layout.editing_outer {
+                if reset {
                     ui.same_line();
                     if ui.small_button("RESET") {
                         layout.request_reset_active_view();

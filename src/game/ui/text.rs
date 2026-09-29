@@ -33,19 +33,21 @@ pub(super) fn resource_color(name: &str) -> Color {
     }
 }
 
-/// A stockpile with its change a turn, each resource's icon, amount and
-/// change: changes green, red or dim.
-pub(super) fn stock_spans(stock: Stock, change: Stock) -> Line {
+/// A stockpile, with its change a turn if given: each resource's icon,
+/// amount and change, changes green, red or dim.
+pub(super) fn stock_spans(stock: Stock, change: Option<Stock>) -> Line {
     let mut line = Vec::new();
-    for (i, ((name, amount), (_, delta))) in
-        stock.parts().into_iter().zip(change.parts()).enumerate()
-    {
+    for (i, (name, amount)) in stock.parts().into_iter().enumerate() {
         let separator = if i == 0 { "" } else { "   " };
         line.push((
             format!("{separator}{}", resource_icon(name)),
             resource_color(name),
         ));
         line.push((quantity(amount), TEXT));
+        let Some(change) = change else {
+            continue;
+        };
+        let delta = change.parts()[i].1;
         let delta_color = match delta.signum() {
             1 => BOOSTED_TEXT,
             -1 => REDUCED_TEXT,
