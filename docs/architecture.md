@@ -56,7 +56,8 @@ World and classic UI vertices are rebuilt from `GameState` each frame, into buff
 keeps between frames (a busy map is over 100k vertices, and filling fresh memory each frame cost
 as much as building it). Per-hex layers draw only hexes the camera may show (`may_show`,
 `draw.rs`); map icons and unit pictograms are triangulated once and then placed
-(`mesh::place`). ImGui retains window
+(`mesh::place`). Barrier edges and route labels are emitted in coordinate order so
+shared wall posts keep a stable painter order. ImGui retains window
 layout state so the player's panel positions survive view changes.
 The turn transition (`transition.rs`) is presentation only: as `update` resolves steps it
 notes where each unit and worker the player sees is drawn (`before_steps`), and afterwards
