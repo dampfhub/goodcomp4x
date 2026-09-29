@@ -24,7 +24,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Clear Orders button | Clear the selected unit's (or group's) orders, queue, hold, guard and alert, like Ctrl-right-click |
 | G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
 | E / Alert button | Alert: stay put, be skipped every turn, and in its attack step attack the nearest enemy in range, until given another order (E again takes it off). Melee, cavalry, armored, ranged, and siege once set up (Q first); with a group, every member that can |
-| Delete / Disband button, twice | Remove the selected unit for good (the first press asks to confirm; a loaded Landing Craft takes its passengers with it, and the first press says how many) |
+| Delete / Disband button, twice | Remove the selected unit for good (the first press asks to confirm, until the turn ends; a loaded Landing Craft takes its passengers with it, and the first press says how many) |
 | Tab | Look at the next unit without holding this one; leave the city or barracks view |
 | Left-drag a box on the map | Select every one of your units inside it (two or more become a group) |
 | Shift-left-drag a box | Add the units inside it to the selection |
@@ -101,7 +101,7 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | Control | Action |
 | --- | --- |
 | Space with nothing left to do | End the turn |
-| End Turn button | Hold every unfinished unit, then end the turn (or open a city that still needs a build) |
+| End Turn button | Hold every unfinished unit, then end the turn, closing the city or Barracks view (or open a city that still needs a build) |
 | End Turn button while it waits (network game: WAITING FOR ..., TAKE BACK) | Take the turn back, to change your orders and end it again; too late once the host has every plan |
 
 The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE

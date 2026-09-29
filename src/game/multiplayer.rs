@@ -480,7 +480,7 @@ impl GameState {
         if let Some(home) = home {
             self.camera = Camera::new(home.to_world(), self.camera.half_height);
         }
-        self.select_next_or_end_turn(None);
+        self.select_next_needing_attention(None);
     }
 
     /// The turns resolved so far.

@@ -375,7 +375,13 @@ impl GameState {
                 self.auto_assign_city(i);
             }
         }
+        // The city and Barracks views close, and a manager being moved or a
+        // queue row being dragged is let go, as the turn resolves. A city
+        // interior stays open (a Siege begins inside one).
         self.selected_city = None;
+        self.selected_barracks = None;
+        self.moving_manager = None;
+        self.queue_drag = None;
         self.notice = "RESOLVING ORDERS".into();
         self.resolve_turn();
     }

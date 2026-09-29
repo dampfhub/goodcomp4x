@@ -293,7 +293,13 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   still waiting (a city needing a build, then a unit, settlers first, as the turn strip lists
   them) and ends the turn once nothing is. A unit done with its orders moves on the same way, and
   so does the start of every turn and of a new world. The End Turn button (`end_planning`) holds
-  every unfinished unit, opens a city if one still needs a build, and otherwise ends the turn.
+  every unfinished unit, opens a city if one still needs a build, and otherwise ends the turn,
+  closing the city or Barracks view (a city interior stays open; a network game keeps views open
+  while it waits for the others) and letting go of a manager
+  being moved. Nothing armed while planning outlives the turn: an action armed for the next map
+  click (M, X, Swap), a Disband waiting to be confirmed or a click waiting to be repeated to
+  replace a queue. With nothing left to order, a unit done with its orders lets go of the
+  selection (and any armed action); it never ends the turn itself.
   Input, including UI clicks, is ignored while a turn plays out.
 
 ## Order queues (`order_queue.rs`)
