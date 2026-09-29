@@ -56,9 +56,11 @@ const REMEMBERED_BORDER_COLOR: Color = [
 const RUIN_PIPS: Vec2 = Vec2::new(-0.06, -0.7);
 const RUIN_PIP_RADIUS: f32 = 0.05;
 const RUIN_PIP_GAP: f32 = 0.13;
-/// Thin rims inside hexes worth scouting for: special tiles and ruins.
+/// Thin rims inside hexes worth scouting for: special tiles and ruins, and
+/// animal dens.
 const SPECIAL_RIM_COLOR: Color = [0.95, 0.66, 0.12, 1.0];
 const RUIN_RIM_COLOR: Color = [0.62, 0.58, 0.50, 1.0];
+const DEN_RIM_COLOR: Color = [0.36, 0.20, 0.09, 1.0];
 const LANDMARK_RIM_WIDTH: f32 = 0.05;
 /// Distance between cloud banks, in world units (a hex is 1 from center to corner).
 const CLOUD_SPACING: f32 = 2.8;
@@ -418,6 +420,7 @@ impl GameState {
                 map_icons::push_map_icon_scaled(spot, icon, LANDMARK_SCALE, &mut out);
             }
             self.push_known_ruin(hex, &fog, &mut out);
+            self.push_known_den(hex, &fog, &mut out);
         }
         push_rivers(
             &self.grid,
@@ -690,6 +693,21 @@ impl GameState {
             let fill = if i < ruin.held { color } else { BORDER_COLOR };
             mesh::regular_polygon(pip, RUIN_PIP_RADIUS + 0.012, 6, 0.0, BORDER_COLOR, out);
             mesh::regular_polygon(pip, RUIN_PIP_RADIUS, 6, 0.0, fill, out);
+        }
+    }
+
+    /// An animal den on `hex` as the player knows it (`animals.rs`): in
+    /// sight, or out of sight as last seen. A dark rim and a paw print.
+    fn push_known_den(&self, hex: Hex, fog: &Fog, out: &mut Vec<Vertex>) {
+        let known = if fog.sees(hex) {
+            self.den_at(hex).is_some()
+        } else {
+            self.memory.get(&hex).is_some_and(|seen| seen.den.is_some())
+        };
+        if known {
+            push_landmark_rim(hex.to_world(), DEN_RIM_COLOR, out);
+            let spot = hex.to_world() + LANDMARK_SPOT;
+            map_icons::push_map_icon_scaled(spot, MapIcon::Paw, LANDMARK_SCALE, out);
         }
     }
 

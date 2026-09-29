@@ -269,6 +269,7 @@ impl GameState {
             notes.push(format!("{} {}", special.name(), gains.join(" ")));
         }
         notes.extend(self.ruin_notes(hex, memory.is_some()));
+        notes.extend(self.den_notes(hex, memory.is_some()));
         if let Some(worker) = self.cities.iter().filter(visible).find(|c| c.works(hex)) {
             notes.push(format!("WORKED BY CITY {}", worker.id + 1));
         }

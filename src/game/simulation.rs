@@ -15,6 +15,7 @@ use std::thread;
 
 mod economy;
 
+use super::animals::TERRITORY_RADIUS;
 use super::city::{
     Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, MIN_CITY_DISTANCE, Queued,
     WORKERS_PER_MANAGER,
@@ -229,6 +230,10 @@ fn check_invariants(game: &GameState, context: &str) {
             ruin.held > 0,
             "{context}: ruins with a count but no holder, or the reverse"
         );
+        assert!(
+            ruin.holder.is_none_or(Team::is_side),
+            "{context}: the wild holds ruins"
+        );
     }
     let mut ids = HashSet::default();
     let mut occupants: HashMap<_, Vec<Team>> = HashMap::default();
@@ -306,6 +311,39 @@ fn check_invariants(game: &GameState, context: &str) {
             !unit.alert || (game.can_go_on_alert(idx) && !unit.has_turn_orders()),
             "{context}: {unit} is on alert but can't be"
         );
+        // Animals are the wild's alone, and each stays in its territory.
+        assert_eq!(
+            unit.is_animal(),
+            unit.unit_type.is_animal(),
+            "{context}: {unit} is an animal of a side, or the wild's troop"
+        );
+        assert_eq!(
+            unit.is_animal(),
+            unit.home.is_some(),
+            "{context}: {unit} has a den but isn't an animal, or the reverse"
+        );
+        if let Some(home) = unit.home {
+            assert!(
+                unit.pos.distance(home) <= TERRITORY_RADIUS,
+                "{context}: {unit} is {} hexes from its den",
+                unit.pos.distance(home)
+            );
+            assert!(
+                game.cities.iter().all(|c| c.pos != unit.pos),
+                "{context}: {unit} stands in a city"
+            );
+        }
+    }
+    for den in &game.dens {
+        assert!(
+            game.grid.is_passable(den.pos) && den.kind.is_animal(),
+            "{context}: a den of {:?} on impassable ground",
+            den.kind
+        );
+        assert!(
+            game.cities.iter().all(|c| c.pos != den.pos),
+            "{context}: a city on a den"
+        );
     }
     for worker in &game.field_workers {
         assert!(
@@ -381,6 +419,7 @@ fn check_invariants(game: &GameState, context: &str) {
     }
     let mut all_worked_tiles = HashSet::default();
     for city in &game.cities {
+        assert!(city.team.is_side(), "{context}: a city of the wild");
         assert!(
             (1..=MAX_CITY_POPULATION).contains(&city.population),
             "{context}: city {} has population {}",
@@ -484,6 +523,10 @@ fn check_invariants(game: &GameState, context: &str) {
             assert!(
                 source.team == fighter.team && source.pos.distance(city.pos) == 1,
                 "{context}: interior fighter lacks adjacent source"
+            );
+            assert!(
+                !source.is_animal(),
+                "{context}: an animal in a city's interior"
             );
         }
     }
@@ -592,7 +635,7 @@ impl EconomyWatch {
 
     fn watch(&mut self, game: &GameState, context: &str) {
         for unit in &game.units {
-            if self.seen.insert(unit.id) && !game.settlers.contains(&unit.id) {
+            if self.seen.insert(unit.id) && !game.settlers.contains(&unit.id) && !unit.is_animal() {
                 self.trained += 1;
             }
             if let Some(resource) = unit.drawn_from {
@@ -663,6 +706,12 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
         check_invariants(&game, &format!("{name} at start"));
         let starting = game.cities.len();
         let ruins_at_start = game.ruins.len();
+        let animals: Vec<u32> = game
+            .units
+            .iter()
+            .filter(|u| u.is_animal())
+            .map(|u| u.id)
+            .collect();
         let mut economy = EconomyWatch::new(&game);
         for turn in 1..=TURNS {
             let ruins_before = game.ruins.len();
@@ -687,6 +736,16 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 game.ruins.len() < ruins_at_start,
                 "{name}: no ruins claimed in {TURNS} turns ({ruins_at_start} on the map)"
             );
+        }
+        // Anti-vacuity: the world's animals fight: one of them was hurt, or died.
+        if scenario == Scenario::World {
+            let fought = animals.iter().any(|&id| {
+                game.units
+                    .iter()
+                    .find(|u| u.id == id)
+                    .is_none_or(|u| u.hp < u.max_hp())
+            });
+            assert!(fought, "{name}: no animal fought in {TURNS} turns");
         }
         // Anti-vacuity: with cities, the AI buys both troops and growth from its stockpile.
         if matches!(scenario, Scenario::Cities | Scenario::World) {

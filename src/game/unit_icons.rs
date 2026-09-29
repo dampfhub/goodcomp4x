@@ -41,6 +41,10 @@ pub(super) enum UnitIcon {
     Flag,
     /// Worker: a shovel.
     Shovel,
+    /// Wolf pack: a wolf's head, face on, ears up.
+    WolfHead,
+    /// Bear: a bear's head, face on, with round ears.
+    BearHead,
 }
 
 impl UnitIcon {
@@ -55,6 +59,8 @@ impl UnitIcon {
             UnitType::PatrolGalley => Self::Galley,
             UnitType::LandingCraft => Self::LandingCraft,
             UnitType::BombardShip => Self::BombardShip,
+            UnitType::Wolf => Self::WolfHead,
+            UnitType::Bear => Self::BearHead,
         }
     }
 }
@@ -200,6 +206,23 @@ fn build_pictogram(icon: UnitIcon, out: &mut Vec<Vertex>) {
                 (-8.0, 13.0),
             ]);
         }
+        UnitIcon::WolfHead => pen.polygon(&[
+            (-20.0, -27.0),
+            (-11.0, -15.0),
+            (11.0, -15.0),
+            (20.0, -27.0),
+            (25.0, -5.0),
+            (16.0, 7.0),
+            (6.0, 27.0),
+            (-6.0, 27.0),
+            (-16.0, 7.0),
+            (-25.0, -5.0),
+        ]),
+        UnitIcon::BearHead => {
+            pen.circle(-15.0, -15.0, 8.0);
+            pen.circle(15.0, -15.0, 8.0);
+            pen.circle(0.0, 2.0, 22.0);
+        }
     }
 }
 
@@ -291,7 +314,7 @@ impl Pen<'_> {
 mod tests {
     use super::*;
 
-    const ICONS: [UnitIcon; 11] = [
+    const ICONS: [UnitIcon; 13] = [
         UnitIcon::Sword,
         UnitIcon::Bow,
         UnitIcon::HorseHead,
@@ -303,6 +326,8 @@ mod tests {
         UnitIcon::BombardShip,
         UnitIcon::Flag,
         UnitIcon::Shovel,
+        UnitIcon::WolfHead,
+        UnitIcon::BearHead,
     ];
 
     #[test]

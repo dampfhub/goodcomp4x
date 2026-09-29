@@ -18,7 +18,8 @@ behavior.
 | `turn.rs` | `RESOLUTION_ORDER` and `Step` (unit steps, then the workers'), `update(dt)`, simultaneous step resolution (moves, attacks, and units on alert firing: `alert_target`), coastal battery fire and ship boarding |
 | `combat.rs` | damage formula, retaliation, combat log helpers |
 | `ability.rs` | the abilities and their tuning constants |
-| `unit.rs` | `Team`, `UnitType`, base stats, `Unit` and its state-aware `stats()` |
+| `unit.rs` | `Team` (the sides, and `Team::Wild`, the animals' owner, which is no side), `UnitType`, base stats, `Unit` and its state-aware `stats()` |
+| `animals.rs` | animals (wolf packs, bears) and their dens: territorial behaviour, decided as each animal step begins (`plan_animal_moves`, `plan_animal_attacks`) |
 | `ai.rs` | the AI, playing every side but the player's (`ai_teams`) |
 | `multiplayer.rs` | network play in lockstep (`docs/multiplayer.md`): the `Message`s, a side's `TeamPlan` (`team_plan`, `apply_plan`), hosting a world and seating players (`host_game`, `welcome`, `join_game`, `open_seats`, `seat_left`), `receive` and `check_plan` (every message checked before it touches the game), `checksum` |
 | `city/mod.rs` | `City` (its citizens as `Cluster`s: a manager and its workers), `Site`, `Good` and `Priorities` (a city's priority order), city tuning constants (barracks HP and defense, the population cap as `MAX_MANAGERS` clusters of `CLUSTER_SIZE`), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
@@ -36,7 +37,7 @@ behavior.
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, and tiles, rivers, resources and specials in flat arrays over the shape's bounding box); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `fast_hash.rs` | the `HashMap` and `HashSet` the game uses: std's, with a fast fixed hasher (rustc's) for its small keys |
 | `perf.rs` | tests only: `perf_report` (ignored; run with `--release -- --ignored --nocapture`) times a frame's and a turn's stages on a busy world |
-| `mapgen.rs`, `mapgen/` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map, on every machine), a function per stage (its module comment lists them): land and sea, mountain ranges, hills, lakes, passes, rivers, climate; then balanced starts for any number of sides, horses and iron by each start, and special tiles and ruins on contested ground. `mapgen/tests.rs` holds its tests (a golden hash pins two seeds' maps); `mapgen/preview.rs` (tests only) draws whole maps as PNGs and measures many (`map_previews`, `map_stats`, run by hand) |
+| `mapgen.rs`, `mapgen/` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map, on every machine), a function per stage (its module comment lists them): land and sea, mountain ranges, hills, lakes, passes, rivers, climate; then balanced starts for any number of sides, horses and iron by each start, special tiles and ruins on contested ground, and animal dens away from every start. `mapgen/tests.rs` holds its tests (a golden hash pins two seeds' maps); `mapgen/preview.rs` (tests only) draws whole maps as PNGs and measures many (`map_previews`, `map_stats`, run by hand) |
 | `ruins.rs` | ruins: holding them for `RUIN_HOLD_TURNS` claims a reward (`resolve_ruins`, at each turn's end before the economy) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes (this machine's view), each side's own memory (`side_fog`, game state, which the AI plans on), and the `known_*` queries that answer for either (`Fog` says which) |
 | `scenario.rs` | scenarios (F1-F4, F12, Debug Naval), savestate (F6/F7), instant playback (F8) |
@@ -74,6 +75,11 @@ behavior.
   that changes the plan refuses while `is_resolving` (true then, and while a turn plays out),
   and one that only looks (selecting, opening a view) refuses only while `is_playing_out`.
 
+- `Team::Wild` owns the animals (`animals.rs`) and is no side: it isn't in `Team::ALL`, has no
+  seat, stockpile, fog or plan, and `Team::index` must never be asked of it (arrays by side are
+  `Team::ALL`'s length). Code that gives something to "the unit's side" (a reward, a capture,
+  holding ruins, a city interior) must skip animals (`Unit::is_animal`), and anything a network
+  message names as a side must be one (`Team::is_side`).
 - `units` holds living units only. Dead units are removed with `retain` at the end of an attack
   step, which shifts indices, so code that spans a removal uses unit `id`s, not indices.
   `selected` and `group` are cleared before a turn resolves for the same reason.

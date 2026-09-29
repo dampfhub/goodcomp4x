@@ -42,6 +42,10 @@
 //! 11. Contested ground: ruins, and special tiles that yield more, go where
 //!     two starts are about as far on foot, well away from both, so no side
 //!     has them to itself.
+//! 12. Animal dens (`place_dens`): on forest, jungle and hills, at least
+//!     `DEN_START_DISTANCE` from every start, spread apart, in a random
+//!     order; the world takes as many as its Animals setting asks for, from
+//!     the first (`animals.rs`).
 //!
 //! A new kind of thing on the map is a stage of its own after the ones it
 //! depends on, called from `generate` if it needs the starts.
@@ -90,7 +94,19 @@ pub struct GeneratedMap {
     /// Ruins to fight over, each about as far on foot from the two starts
     /// nearest it and close to none.
     pub ruins: Vec<Hex>,
+    /// Sites for animal dens, `MAX_DENS_PER_SIDE` a side (fewer if the land
+    /// runs out), in the order to take them: any first few are spread
+    /// across the map too.
+    pub dens: Vec<Hex>,
 }
+
+/// The most animal dens a world has for each side: its Animals setting
+/// takes all of them, or fewer (`animals.rs`).
+pub const MAX_DENS_PER_SIDE: usize = 2;
+/// How near a start a den may be, in hexes.
+pub const DEN_START_DISTANCE: i32 = 5;
+/// How near each other dens may be, in hexes.
+const DEN_GAP: i32 = 6;
 
 /// Builds a world map for `sides` players from `seed`.
 pub fn generate(seed: u32, sides: usize) -> GeneratedMap {
@@ -116,10 +132,12 @@ fn generate_with_rivers(seed: u32, sides: usize) -> (GeneratedMap, Vec<River>) {
             .collect();
         let ruins = place_ruins(&grid, &starts, &distances, spacing, &mut rng);
         place_specials(&mut grid, &starts, &distances, &ruins, spacing, &mut rng);
+        let dens = place_dens(&grid, &starts, &distances, &ruins, &mut rng);
         let map = GeneratedMap {
             grid,
             starts,
             ruins,
+            dens,
         };
         return (map, rivers);
     }
@@ -127,6 +145,7 @@ fn generate_with_rivers(seed: u32, sides: usize) -> (GeneratedMap, Vec<River>) {
         grid: HexGrid::shaped(shape, [(Hex::new(0, 0), Terrain::Plains)]),
         starts: (0..sides as i32).map(|i| Hex::new(4 * i - 8, 0)).collect(),
         ruins: Vec::new(),
+        dens: Vec::new(),
     };
     (map, Vec::new())
 }
@@ -1220,6 +1239,38 @@ fn place_specials(
     {
         grid.set_special(hex, Special::ALL[(first + i) % Special::ALL.len()]);
     }
+}
+
+/// Animal dens: up to `MAX_DENS_PER_SIDE` a side, on forest, jungle or
+/// hills that every start can walk to, at least `DEN_START_DISTANCE` from
+/// every start, off the map's edge, clear of resources, special tiles and
+/// ruins, and `DEN_GAP` apart. In a random order, so the first few of them
+/// are spread over the map as well as all of them.
+fn place_dens(
+    grid: &HexGrid,
+    starts: &[Hex],
+    distances: &[HashMap<Hex, i32>],
+    ruins: &[Hex],
+    rng: &mut Rng,
+) -> Vec<Hex> {
+    let options: Vec<(Hex, i32)> = grid
+        .all_hexes()
+        .filter(|&h| {
+            let tile = grid.tile(h);
+            grid.is_passable(h)
+                && (tile.hills || tile.feature.is_some())
+                && grid.edge_distance(h) >= 1
+                && grid.resource(h).is_none()
+                && grid.special(h).is_none()
+                && ruins.iter().all(|r| r.distance(h) >= 2)
+                && starts.iter().all(|s| s.distance(h) >= DEN_START_DISTANCE)
+                && distances.iter().all(|map| map.contains_key(&h))
+        })
+        .map(|h| (h, 0))
+        .collect();
+    // All as good: `pick_spread` puts them in a random order.
+    let wanted = MAX_DENS_PER_SIDE * starts.len();
+    pick_spread(options, wanted, DEN_GAP, &[], rng)
 }
 
 /// Whether every side starting at `site` sees the same: the settler and

@@ -27,14 +27,20 @@ pub(super) enum Phase {
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
-const RESOLUTION_ORDER: [(UnitType, Phase); 18] = [
+/// - Animals (`animals.rs`) act beside their like: wolves after cavalry,
+///   bears after melee.
+const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
+    (UnitType::Wolf, Phase::Move),
     (UnitType::Melee, Phase::Move),
+    (UnitType::Bear, Phase::Move),
     (UnitType::Ranged, Phase::Attack),
     (UnitType::Scout, Phase::Attack),
     (UnitType::Cavalry, Phase::Attack),
+    (UnitType::Wolf, Phase::Attack),
     (UnitType::Melee, Phase::Attack),
+    (UnitType::Bear, Phase::Attack),
     (UnitType::Ranged, Phase::Move),
     (UnitType::Siege, Phase::Move),
     (UnitType::Siege, Phase::Attack),
@@ -294,6 +300,13 @@ impl GameState {
 
     /// Resolves one step, returning the ids of the units that acted in it.
     pub(super) fn resolve_step(&mut self, unit_type: UnitType, phase: Phase) -> Vec<u32> {
+        // Animals decide as their step begins, on the board as it is then.
+        if unit_type.is_animal() {
+            match phase {
+                Phase::Move => self.plan_animal_moves(unit_type),
+                Phase::Attack => self.plan_animal_attacks(unit_type),
+            }
+        }
         let of_type = |i: &usize| self.units[*i].unit_type == unit_type;
         let actors: Vec<usize> = match phase {
             Phase::Move => {

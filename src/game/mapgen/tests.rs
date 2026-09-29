@@ -14,6 +14,8 @@ fn a_seed_always_builds_the_same_map() {
     assert_eq!(fingerprint(&a), fingerprint(&b));
     assert_eq!(a.starts, b.starts);
     assert_eq!(a.ruins, b.ruins);
+    assert_eq!(a.dens, b.dens);
+    assert!(!a.dens.is_empty());
     let extras = |map: &GeneratedMap| -> Vec<_> {
         map.grid
             .all_hexes()
@@ -295,6 +297,9 @@ struct Totals {
     in_ranges: usize,
     /// Mountains with four or more mountains around them.
     crowded: usize,
+    /// Dens placed, and the most there could have been.
+    dens: usize,
+    den_room: usize,
 }
 
 /// Checks the rules every generated world keeps (rivers, mountains,
@@ -309,6 +314,7 @@ fn check_worlds(seeds: std::ops::Range<u32>) {
         check_rivers(seed, &map, &rivers, &mut totals);
         check_mountains(seed, &map, &mut totals);
         check_starts(seed, &map);
+        check_dens(seed, &map, &mut totals);
     }
     assert!(
         totals.rivers >= 8 * maps,
@@ -325,6 +331,8 @@ fn check_worlds(seeds: std::ops::Range<u32>) {
         mountains,
         in_ranges,
         crowded,
+        dens,
+        den_room,
         ..
     } = totals;
     assert!(
@@ -334,6 +342,11 @@ fn check_worlds(seeds: std::ops::Range<u32>) {
     assert!(
         (crowded as f32) < 0.02 * mountains as f32,
         "{crowded} of {mountains} mountains are in blobs"
+    );
+    // Nearly always as many as the most a world takes.
+    assert!(
+        dens as f32 >= 0.95 * den_room as f32,
+        "only {dens} of {den_room} dens found room"
     );
 }
 
@@ -522,6 +535,47 @@ fn check_starts(seed: u32, map: &GeneratedMap) {
     );
 }
 
+/// Animal dens keep their rules: on forest, jungle or hills every start can
+/// walk to, `DEN_START_DISTANCE` from every start, off the edge, clear of
+/// resources, special tiles and ruins, `DEN_GAP` apart; at least one a side,
+/// for the fewest a world takes. Counts them into `totals`.
+fn check_dens(seed: u32, map: &GeneratedMap, totals: &mut Totals) {
+    let grid = &map.grid;
+    let reach = walking_distances(grid, map.starts[0]);
+    assert!(
+        map.dens.len() >= map.starts.len(),
+        "seed {seed}: {} dens for {} sides",
+        map.dens.len(),
+        map.starts.len()
+    );
+    assert!(map.dens.len() <= MAX_DENS_PER_SIDE * map.starts.len());
+    for (i, &den) in map.dens.iter().enumerate() {
+        let tile = grid.tile(den);
+        assert!(
+            grid.is_passable(den) && (tile.hills || tile.feature.is_some()),
+            "seed {seed}: a den on {tile:?}"
+        );
+        assert!(reach.contains_key(&den), "seed {seed}: a den out of reach");
+        assert!(
+            grid.edge_distance(den) >= 1,
+            "seed {seed}: a den on the edge"
+        );
+        assert!(grid.resource(den).is_none() && grid.special(den).is_none());
+        assert!(map.ruins.iter().all(|r| r.distance(den) >= 2));
+        for start in &map.starts {
+            assert!(
+                start.distance(den) >= DEN_START_DISTANCE,
+                "seed {seed}: a den {} from a start",
+                start.distance(den)
+            );
+        }
+        for other in &map.dens[..i] {
+            assert!(other.distance(den) >= DEN_GAP, "seed {seed}: dens crowd");
+        }
+    }
+    totals.dens += map.dens.len();
+    totals.den_room += MAX_DENS_PER_SIDE * map.starts.len();
+}
 /// A hash of everything a map holds, the same on every machine and build.
 fn golden_hash(map: &GeneratedMap) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -548,7 +602,7 @@ fn golden_hash(map: &GeneratedMap) -> u64 {
             add(i64::from(v));
         }
     }
-    for h in map.starts.iter().chain(&map.ruins) {
+    for h in map.starts.iter().chain(&map.ruins).chain(&map.dens) {
         add(i64::from(h.q));
         add(i64::from(h.r));
     }
@@ -564,7 +618,7 @@ fn golden_maps_stay_the_same() {
     let hashes = [golden_hash(&generate(7, 5)), golden_hash(&generate(42, 7))];
     assert_eq!(
         hashes,
-        [5492001281877236396, 2707533525798665061],
+        [11607816629019504290, 4137227220886610193],
         "the maps changed: if on purpose, update the hashes and bump PROTOCOL_VERSION"
     );
 }

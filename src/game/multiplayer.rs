@@ -34,7 +34,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -432,6 +432,7 @@ impl GameState {
                 unique.dedup();
                 if humans.len() < 2
                     || humans.len() > MAX_PLAYERS
+                    || !humans.iter().all(|t| t.is_side())
                     || unique.len() != humans.len()
                     || humans[0] != HOST_SEAT
                     || *seat == HOST_SEAT
@@ -1540,9 +1541,9 @@ impl GameState {
 
     /// A fingerprint of the game's state, the same on every machine that
     /// resolved the same turns the same way: units, cities, the stockpiles,
-    /// workers, what's built on the map and how much of it each side's own
-    /// memory holds (`side_fog`, which the AI plans on). Views (camera, the
-    /// player's fog memory, panels) aren't in it.
+    /// workers, what's built on the map, the animals' dens and how much of
+    /// it each side's own memory holds (`side_fog`, which the AI plans on).
+    /// Views (camera, the player's fog memory, panels) aren't in it.
     pub fn checksum(&self) -> u64 {
         let mut h = DefaultHasher::new();
         self.turn.hash(&mut h);
@@ -1551,7 +1552,7 @@ impl GameState {
         for u in units {
             (u.id, u.team, u.pos, u.hp.to_bits(), u.interior_hp.to_bits()).hash(&mut h);
             (u.ability_cooldown, u.deployed, u.cargo.len()).hash(&mut h);
-            u.alert.hash(&mut h);
+            (u.alert, u.home).hash(&mut h);
         }
         for c in &self.cities {
             (c.id, c.team, c.pos, c.population, c.workers).hash(&mut h);
@@ -1600,6 +1601,9 @@ impl GameState {
             .collect();
         structures.sort_by_key(|(hex, ..)| (hex.q, hex.r));
         structures.hash(&mut h);
+        for den in &self.dens {
+            den.pos.hash(&mut h);
+        }
         for memory in &self.side_memory {
             memory.len().hash(&mut h);
         }
@@ -2841,6 +2845,27 @@ mod tests {
         let blue = host.units.iter().find(|u| u.team == HOST_SEAT).unwrap();
         plan.units[0].id = blue.id;
         refused(&mut host, plan);
+        // Orders for an animal, as one of its own or added, and a plan for
+        // the wild, which is no side.
+        let animal = host
+            .units
+            .iter()
+            .find(|u| u.is_animal())
+            .expect("animals")
+            .id;
+        let mut plan = good.clone();
+        plan.units[0].id = animal;
+        refused(&mut host, plan);
+        let mut plan = good.clone();
+        let mut order = plan.units[0].clone();
+        order.id = animal;
+        order.planned_move = None;
+        plan.units.push(order);
+        let why = refused(&mut host, plan);
+        assert!(why.contains(&format!("UNIT {}", animal)), "{why}");
+        let mut plan = good.clone();
+        plan.team = Team::Wild;
+        refused(&mut host, plan);
         // A plan for the host's side.
         let mut plan = good.clone();
         plan.team = HOST_SEAT;
@@ -3274,6 +3299,16 @@ mod tests {
         assert!(tweak(&|m| if let Message::Welcome { humans, .. } = m {
             humans.push(Team::Red);
         }));
+        // The wild is no side: nobody plays it.
+        assert!(tweak(&|m| if let Message::Welcome { humans, .. } = m {
+            humans.push(Team::Wild);
+        }));
+        assert!(tweak(
+            &|m| if let Message::Welcome { seat, humans, .. } = m {
+                humans[1] = Team::Wild;
+                *seat = Team::Wild;
+            }
+        ));
         assert!(tweak(&|m| if let Message::Welcome { world_ai, .. } = m {
             *world_ai = 99;
         }));
