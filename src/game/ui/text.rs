@@ -127,6 +127,39 @@ pub(super) fn turns_text(turns: u32) -> String {
     crate::game::city::turns_icon(turns as i32)
 }
 
+/// `text` if it fits in `max_width` (as `measure` measures a string);
+/// otherwise as many of its words as fit with "…" after them (a word cut
+/// short only when not even the first fits), or nothing if not even the
+/// ellipsis does. Both presentations' top bars fit the notice with it.
+pub(super) fn fit_text(text: &str, max_width: f32, measure: impl Fn(&str) -> f32) -> String {
+    if measure(text) <= max_width {
+        return text.to_string();
+    }
+    let with_ellipsis = |end: usize| {
+        // No dangling separator (" - ", ",", ":") before the ellipsis.
+        let kept = text[..end].trim_end_matches(|c: char| c.is_whitespace() || "-·,;:".contains(c));
+        format!("{kept}…")
+    };
+    // The longest cut at a char boundary that fits: widths only grow with
+    // the text, so search the boundaries.
+    let ends: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let longest = ends.partition_point(|&end| measure(&with_ellipsis(end)) <= max_width);
+    if longest == 0 {
+        return String::new();
+    }
+    let cut = ends[longest - 1];
+    // Back to the end of the last whole word, if there is one.
+    let word_end = if text[cut..].starts_with(char::is_whitespace) {
+        Some(cut)
+    } else {
+        text[..cut].rfind(char::is_whitespace)
+    };
+    match word_end {
+        Some(end) if !text[..end].trim().is_empty() => with_ellipsis(end),
+        _ => with_ellipsis(cut),
+    }
+}
+
 /// Splits `text` into lines of at most `max_chars`, breaking between words.
 pub(super) fn wrap(text: &str, max_chars: usize) -> Vec<String> {
     let mut lines = Vec::new();

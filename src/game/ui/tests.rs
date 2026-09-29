@@ -1,5 +1,7 @@
 use super::builder::{ButtonSpec, Row, classic_rows, flat_rows};
-use super::text::{end_turn_label, price_hint, quantity, signed_quantity, stock_spans, wrap};
+use super::text::{
+    end_turn_label, fit_text, price_hint, quantity, signed_quantity, stock_spans, wrap,
+};
 use super::*;
 
 use crate::game::PLAYER_TEAM;
@@ -3752,4 +3754,89 @@ fn a_settler_waiting_for_citizens_says_so_in_its_row_and_the_tray() {
     }))
     .join(" ");
     assert!(text.contains("SETTLER WAITS FOR POPULATION 3"), "{text}");
+}
+
+#[test]
+fn fit_text_keeps_whole_words_and_ends_in_an_ellipsis() {
+    // A monospaced measure: 10 px a char.
+    let measure = |t: &str| t.chars().count() as f32 * 10.0;
+    let text = "CLICK TILES TO ASSIGN - A AUTO ASSIGN";
+    assert_eq!(fit_text(text, 1000.0, measure), text, "fits as it is");
+    assert_eq!(fit_text(text, 120.0, measure), "CLICK TILES…");
+    // A separator left dangling goes.
+    assert_eq!(fit_text(text, 240.0, measure), "CLICK TILES TO ASSIGN…");
+    // A word cut short only when not even the first fits.
+    assert_eq!(fit_text(text, 40.0, measure), "CLI…");
+    assert_eq!(fit_text(text, 10.0, measure), "…");
+    assert_eq!(fit_text(text, 5.0, measure), "");
+    // Every fitted text fits.
+    for width in (0..400).step_by(7) {
+        let fitted = fit_text(text, width as f32, measure);
+        assert!(measure(&fitted) <= width as f32, "{fitted:?} in {width}");
+    }
+}
+
+/// The longest notice the game gives (`city_click`, `city/view.rs`).
+const LONG_NOTICE: &str = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE BESIDE A MANAGER TO ASSIGN";
+
+/// Whether `shown` is `notice`, or its first whole words then "…".
+fn whole_words_of(shown: &str, notice: &str) -> bool {
+    let Some(kept) = shown.strip_suffix('…') else {
+        return shown == notice;
+    };
+    !kept.is_empty() && notice.starts_with(kept) && notice[kept.len()..].starts_with([' ', ';'])
+}
+
+#[test]
+fn classic_shortens_a_long_notice_rather_than_hiding_it() {
+    let screen = Vec2::new(1280.0, 720.0);
+    let mut game = city_view();
+    game.notice = LONG_NOTICE.into();
+    let layout = game.layout(screen);
+    let (origin, shown) = layout
+        .shapes
+        .iter()
+        .find_map(|shape| match shape {
+            Shape::Text { origin, line, .. } if line.iter().all(|(_, c)| *c == NOTICE_TEXT) => {
+                Some((*origin, line_strings([line.clone()]).concat()))
+            }
+            _ => None,
+        })
+        .expect("the notice shows");
+    assert!(whole_words_of(&shown, LONG_NOTICE), "{shown}");
+    assert!(shown.ends_with('…'), "too long for 1280 px: {shown}");
+    let end = origin.x + crate::game::font::ui(BODY).width(&shown);
+    let end_turn = layout
+        .buttons
+        .iter()
+        .find(|b| b.target == Target::EndTurn)
+        .unwrap();
+    assert!(end <= end_turn.min.x, "clear of End Turn");
+    // With room, all of it.
+    let wide = game.layout(Vec2::new(2400.0, 900.0));
+    assert!(wide.shapes.iter().any(|shape| matches!(
+        shape,
+        Shape::Text { line, .. } if line_strings([line.clone()]).concat() == LONG_NOTICE
+    )));
+}
+
+#[test]
+fn imgui_shortens_a_long_notice_at_a_word_before_the_view_label() {
+    let mut game = city_view();
+    game.notice = LONG_NOTICE.into();
+    let mut screen = ImGuiScreen::with_size(Vec2::new(1280.0, 720.0));
+    screen.settle(&mut game);
+    let (shown, end, view) = imgui::SHOWN_NOTICE.take();
+    assert!(whole_words_of(&shown, LONG_NOTICE), "{shown}");
+    assert!(shown.ends_with('…'), "too long for 1280 px: {shown}");
+    assert!(end <= view, "clear of the VIEW label: {end} > {view}");
+    // One ImGui context at a time.
+    drop(screen);
+    let mut screen = ImGuiScreen::with_size(Vec2::new(2400.0, 900.0));
+    screen.settle(&mut game);
+    assert_eq!(
+        imgui::SHOWN_NOTICE.take().0,
+        LONG_NOTICE,
+        "with room, all of it"
+    );
 }
