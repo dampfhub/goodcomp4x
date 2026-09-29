@@ -786,7 +786,9 @@ fn the_queue_keeps_its_room_on_a_narrow_screen() {
         let mut game = GameState.city_scenario();
         game.select_city();
         for _ in 0..5 { game.queue_selected_city_unit(BuildUnit.Melee); }
-        let mut r = rig(game);
+        game.imgui_ui = true;
+        let (ctx, _real) = context(Option.None);
+        let mut r = Rig { game, ctx, st: ui_state(layout_state(), vec2(1067.0, 600.0)) };
         // 1600 by 900 pixels at 150%: a 1067 by 600 screen, too narrow for a second column.
         let cursor = r.st.input.mouse;
         for _ in 0..6 { run_ui(&mut r.game, &mut r.ctx, &mut r.st, screen(), 1.5, 0.016, cursor); }
