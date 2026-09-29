@@ -160,7 +160,7 @@ impl GameState {
                     format!(
                         "POP {}/{MAX_CITY_POPULATION} · DELIVERS {}",
                         city.population,
-                        price_hint(self.income(city_index))
+                        price_hint(self.net_delivery(city_index))
                     ),
                     GOLD_TEXT,
                 )],

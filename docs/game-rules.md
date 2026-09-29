@@ -832,8 +832,9 @@ every turn end.
   every city's delivery, less the citizens' food), the latest notice, and the End Turn button, whose label names what is
   still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
   TURN.
-- **Command tray** (bottom-left): with a city open, it shows population (n / 28), its citizens working and its managers, with several clusters a line per cluster (its manager's mark, workers and what they deliver), what the city delivers
-  and its citizens eat, the current build and its turns left, the priority chips (food, wood and
+- **Command tray** (bottom-left): with a city open, it shows population (n / 28), its citizens working and its managers, with several clusters a line per cluster (its manager's mark, workers and what they deliver), what the city delivers net
+  of the food its citizens eat (a cluster whose manager is picked up counts for nothing until it's
+  placed, here and in the top bar), the current build and its turns left, the priority chips (food, wood and
   metal icons, each with its rank), the Grow card
   (9), unit cards (1-3) and the Worker card (8), each with its price and turns (never dimmed for
   the price: what the stockpile can't pay for yet waits in the queue), the Yields button,

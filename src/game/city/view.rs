@@ -1,9 +1,11 @@
 //! City and Barracks views: opening and leaving them, map clicks while one is
 //! open, and ending planning (which waits on cities with nothing to build).
-use super::{CLUSTER_SIZE, Cluster, MAX_MANAGERS};
+use super::economy::Stock;
+use super::{CLUSTER_SIZE, Cluster, FOOD_PER_CITIZEN, MAX_MANAGERS};
 use crate::game::GameState;
 use crate::game::hex::Hex;
 use crate::game::multiplayer::WAITING_NOTICE;
+use crate::game::unit::Team;
 use glam::Vec2;
 
 impl GameState {
@@ -24,6 +26,36 @@ impl GameState {
         self.yields_city().or(self
             .selected_city
             .filter(|_| self.placing_job.is_some() && self.show_details))
+    }
+
+    /// What `city` delivers a turn as the UI shows it: `income`, less the
+    /// cluster of a manager picked up (its workers leave the map with it
+    /// until it's placed). A carried manager is always put back before a
+    /// turn resolves, so the economy itself never sees this.
+    pub(in crate::game) fn shown_income(&self, city: usize) -> Stock {
+        let income = self.income(city);
+        match self.moving_manager {
+            Some((i, cluster)) if i == city => income - self.cluster_income(city, cluster),
+            _ => income,
+        }
+    }
+
+    /// What `city` adds to its side's stockpile a turn, as the UI shows
+    /// it: `shown_income`, with the food its citizens eat taken off.
+    pub(in crate::game) fn net_delivery(&self, city: usize) -> Stock {
+        let income = self.shown_income(city);
+        Stock {
+            food: income.food - self.cities[city].population as i32 * FOOD_PER_CITIZEN,
+            ..income
+        }
+    }
+
+    /// `side_income` as the UI shows it (`shown_income` for each city).
+    pub(in crate::game) fn shown_side_income(&self, team: Team) -> Stock {
+        (0..self.cities.len())
+            .filter(|&i| self.cities[i].team == team)
+            .map(|i| self.shown_income(i))
+            .fold(Stock::default(), |sum, income| sum + income)
     }
 
     /// C: opens a city that needs something to build, or else the first of
