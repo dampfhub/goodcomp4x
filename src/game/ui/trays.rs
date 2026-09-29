@@ -12,8 +12,8 @@ use super::{
 use crate::game::GameState;
 use crate::game::city::{
     Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, FOOD_PER_CITIZEN, GATHER_SHORTCUT,
-    GATHER_YIELD, GROW_SHORTCUT, LaborFocus, Lane, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT,
-    resource_icon, stock_icons, turns_icon,
+    GATHER_YIELD, GROW_SHORTCUT, Lane, MAX_CITY_POPULATION, UNITS_PER_DEPOSIT, resource_icon,
+    stock_icons, turns_icon,
 };
 use crate::game::orders::ClickMode;
 use crate::game::terrain::Resource;
@@ -517,16 +517,28 @@ impl GameState {
         if let Some(waiting) = self.head_waiting_text(i, Lane::City, &status) {
             panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
         }
-        panel.text(SMALL, vec![("LABOR FOCUS".into(), LABEL_TEXT)]);
-        panel.compact_buttons(
-            LaborFocus::ALL
+        // The priority order: a chip per good, its rank in its corner. The
+        // chip being dragged (classic) is gold, and the one it would land
+        // on framed.
+        panel.text(
+            SMALL,
+            vec![("PRIORITY - DRAG TO REORDER".into(), LABEL_TEXT)],
+        );
+        let drag = self
+            .queue_drag
+            .filter(|drag| drag.kind == QueueKind::Priority);
+        panel.reorder_buttons(
+            QueueKind::Priority,
+            city.priorities
+                .0
                 .into_iter()
-                .map(|focus| ButtonSpec {
-                    target: Target::Focus(focus),
-                    label: focus.name().into(),
-                    hint: "AUTO".into(),
-                    state: ButtonState::new(city.focus == focus, false),
-                    armed: false,
+                .enumerate()
+                .map(|(rank, good)| ButtonSpec {
+                    target: Target::Priority(good),
+                    label: format!("{} ({})", good.name(), rank + 1),
+                    hint: String::new(),
+                    state: ButtonState::new(drag.is_some_and(|d| d.source == rank), false),
+                    armed: drag.is_some_and(|d| d.target == Some(rank) && d.source != rank),
                 })
                 .collect(),
         );
@@ -614,6 +626,25 @@ impl GameState {
                     first == Some(Build::Unit(build)),
                 )
             })
+            .chain(
+                [
+                    (Target::BuildScout, Build::Scout),
+                    (Target::BuildSettler, Build::Settler),
+                ]
+                .map(|(target, build)| {
+                    // Dimmed, saying why, when the city can't queue one: a
+                    // Settler needs citizens, and a Scout is one at a time.
+                    let card = card(target, build.name().into(), build, first == Some(build));
+                    match self.city_build_issue(i, build) {
+                        Some(why) => ButtonSpec {
+                            hint: why,
+                            state: ButtonState::Disabled,
+                            ..card
+                        },
+                        None => card,
+                    }
+                }),
+            )
             .chain([card(
                 Target::BuildWorker,
                 "WORKER".into(),

@@ -192,6 +192,10 @@ pub struct GameState {
     transition: transition::Transition,
     /// Unit ids that may found a city. They use the melee placeholder body for now.
     settlers: HashSet<u32>,
+    /// Sites where an AI side's settler was refused a city by the rules
+    /// (a city it hadn't seen stood too near), so its settlers look
+    /// elsewhere (`plan_ai_settlers`). Game state, like its memory.
+    refused_sites: Vec<(Team, Hex)>,
     /// The turn strip's group whose units it lists one by one, while one of
     /// them is selected (`ui/roster.rs`).
     roster_open: Option<ui::RosterKey>,
@@ -306,6 +310,7 @@ impl GameState {
             cloud_time: 0.0,
             transition: transition::Transition::default(),
             settlers: HashSet::default(),
+            refused_sites: Vec::new(),
             ruins: Vec::new(),
             roster_open: None,
             field_workers: Vec::new(),
@@ -318,6 +323,11 @@ impl GameState {
         };
         game.select_next_or_end_turn(None);
         game
+    }
+
+    #[cfg(test)]
+    pub(crate) fn map_seed(&self) -> Option<u32> {
+        self.map_seed
     }
 
     pub fn city_scenario() -> Self {

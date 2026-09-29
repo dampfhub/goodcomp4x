@@ -50,9 +50,11 @@ UNIT CAP) are off in a network game.
 Every machine runs the whole game (`src/game/multiplayer.rs`). Turns are simultaneous, so a
 player's planning stays on their machine until they end it. Then their side's **plan**
 (`TeamPlan`) goes to the host: their units' orders and queues, their cities' queues, citizens
-and focus, their placed jobs and recalled workers, their troops' orders inside city interiors,
+and priority order, their placed jobs and recalled workers, their troops' orders inside city interiors,
 and their stockpile; a unit missing from it was disbanded, and a city new since the turn began
-was founded by the settler that stood there. Once the host has every human side's plan, it
+was founded by the settler that stood there. A city founded too near one another side's plan
+founded earlier in side order (each was checked only against the turn's start) isn't founded,
+and its settler stays. Once the host has every human side's plan, it
 sends them all to every guest (`Resolve`). Each machine applies them, in side order, to a copy of
 the game as it stood when the turn's planning began (`turn_start`), keeps its own view (camera,
 fog memory, settings), and resolves the turn. The same plans on the same game resolve the same
@@ -143,7 +145,9 @@ can watch or change what's sent. What's in place:
   work and the paid items the city had, each once, with the work it had (no item marked paid,
   none copied, none refunded without being taken off); the work kept on a worker job can't be
   added (or copied onto another job), only kept or cleared; a city queues only what it can train (no Cavalry
-  or Armored, ships only with a Harbor, no growing past the cap), a Barracks no more Cavalry or
+  or Armored, ships only with a Harbor, no growing past the cap, one Scout at a time, and no new
+  Settler below population 3), and founds only where the founding rules allow (open land, no
+  ruins, 6 hexes from every city, those it founds that turn included), a Barracks no more Cavalry or
   Armored than its deposits allow; citizens work only tiles in their city's reach, never a city
   or a building; workers out on the map can only be recalled, and workers held at home only
   released.

@@ -55,6 +55,24 @@ struct DrawRange {
     count: u32,
 }
 
+/// All draw offsets must fit Vulkan's u32 vertex indices before any allocation.
+fn pack_batches(batches: &[DrawBatch]) -> Result<(Vec<DrawRange>, usize)> {
+    let mut ranges = Vec::with_capacity(batches.len());
+    let mut used = 0u32;
+    for batch in batches {
+        let count = u32::try_from(batch.vertices.len()).context("batch exceeds u32 vertices")?;
+        ranges.push(DrawRange {
+            view_proj: batch.view_proj,
+            first: used,
+            count,
+        });
+        used = used
+            .checked_add(count)
+            .context("frame exceeds u32 vertices")?;
+    }
+    Ok((ranges, used as usize))
+}
+
 /// The imgui backend rotates meshes only for non-empty draw data. Track its
 /// next mesh independently from the Vulkan frame slot, which rotates on every
 /// submitted frame (including classic-UI frames with no ImGui vertices).
@@ -456,17 +474,7 @@ impl Renderer {
     /// room; the caller has already waited on this slot's fence, so the GPU is
     /// done with the old one.
     unsafe fn write_vertices(&mut self, batches: &[DrawBatch]) -> Result<Vec<DrawRange>> {
-        let mut ranges = Vec::with_capacity(batches.len());
-        let mut used = 0;
-        for batch in batches {
-            let count = batch.vertices.len();
-            ranges.push(DrawRange {
-                view_proj: batch.view_proj,
-                first: used as u32,
-                count: count as u32,
-            });
-            used += count;
-        }
+        let (ranges, used) = pack_batches(batches)?;
         if used == 0 {
             return Ok(ranges);
         }
@@ -852,6 +860,45 @@ unsafe fn create_vertex_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_packing_preserves_empty_batches_offsets_and_transforms() {
+        let vertex = Vertex {
+            pos: [0.0; 3],
+            color: [1.0; 4],
+            uv: SOLID_UV,
+        };
+        let vertices = [vertex; 6];
+        let transform = Mat4::from_scale(glam::Vec3::splat(2.0));
+        let batches = [
+            DrawBatch {
+                vertices: &vertices[..3],
+                view_proj: Mat4::IDENTITY,
+            },
+            DrawBatch {
+                vertices: &[],
+                view_proj: transform,
+            },
+            DrawBatch {
+                vertices: &vertices,
+                view_proj: transform,
+            },
+        ];
+        let (ranges, used) = pack_batches(&batches).unwrap();
+        assert_eq!(used, 9);
+        assert_eq!(
+            ranges
+                .iter()
+                .map(|r| (r.first, r.count))
+                .collect::<Vec<_>>(),
+            [(0, 3), (3, 0), (3, 6)]
+        );
+        assert_eq!(ranges[0].view_proj, Mat4::IDENTITY);
+        assert_eq!(ranges[2].view_proj, transform);
+        let (ranges, used) = pack_batches(&[]).unwrap();
+        assert!(ranges.is_empty());
+        assert_eq!(used, 0);
+    }
 
     #[test]
     fn imgui_mesh_slot_waits_for_the_other_frame_after_odd_empty_frames() {
