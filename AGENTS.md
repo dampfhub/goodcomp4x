@@ -95,6 +95,18 @@ agent. Check `list --open` before filing something new.
 ## Commits and PRs
 
 - One PR per change, using the PR template: what changed, how it was verified, what it closes.
+- After creating a PR or pushing any update, start monitoring its CI immediately
+  (`gh pr checks <number> --watch --interval 10`, or equivalent live checks). Keep
+  monitoring while doing other work, and inspect failures as they appear. Fix their
+  cause, rerun the relevant local checks, push, and watch again until every required
+  check succeeds for the latest pushed commit. Confirm the PR head SHA still matches
+  the commit checked before reporting completion; a passing older run is not evidence.
+  Do not leave a failing or pending PR for the user to discover. If an external blocker
+  prevents success, report the failing check, evidence, and blocker explicitly. An
+  intentionally skipped draft-only merge job is expected; do not mark a draft ready
+  just to run it. If the PR merges, also watch the resulting CI on `main` through success
+  before marking its board issue Done. Track unrelated failures on the board and resolve
+  or explicitly report them; do not retry repeatedly just to get a green run.
 - A PR merges itself: CI's `merge` job merges it once `rust`, `msrv` and `tools` pass, deletes
   its branch, then runs CI on `main`. To keep a PR open (for review, or while still working), open it as a draft
   (`gh pr create --draft`, or `gh pr ready --undo <#>`); marking it ready runs CI and merges it.
