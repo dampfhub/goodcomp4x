@@ -626,6 +626,25 @@ impl GameState {
                     first == Some(Build::Unit(build)),
                 )
             })
+            .chain(
+                [
+                    (Target::BuildScout, Build::Scout),
+                    (Target::BuildSettler, Build::Settler),
+                ]
+                .map(|(target, build)| {
+                    // Dimmed, saying why, when the city can't queue one: a
+                    // Settler needs citizens, and a Scout is one at a time.
+                    let card = card(target, build.name().into(), build, first == Some(build));
+                    match self.city_build_issue(i, build) {
+                        Some(why) => ButtonSpec {
+                            hint: why,
+                            state: ButtonState::Disabled,
+                            ..card
+                        },
+                        None => card,
+                    }
+                }),
+            )
             .chain([card(
                 Target::BuildWorker,
                 "WORKER".into(),

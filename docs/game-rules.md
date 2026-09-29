@@ -543,9 +543,13 @@ every turn end.
 
 ## Cities (`city/`)
 
-- **Founding:** F with a selected settler, at least 3 hexes from any other city; the new city
-  starts at population 1, auto-assigns and opens. The AI founds a city in place, at the start of
-  any resolution where it has a settler and no city, without the 3-hex rule.
+- **Founding** (`city/founding.rs`): F with a selected settler founds a city where it stands:
+  only on passable land (not water), not on ruins, and at least 6 hexes (`MIN_CITY_DISTANCE`)
+  from every other city, any side's, whether you have seen it or not (the refusal says why). The
+  new city starts at population 1 with nothing built, auto-assigns and opens. A side's first city
+  comes with a worker at home, as a starting city does; any other city starts without one.
+  Settlers come from the start (World, Start With: settler; Frontier) or from a city's queue
+  (Settler, below).
 - **Yields:** the city center gives 2 food and 1 wood on its own; each worked tile gives its
   food, wood and metal (see Goods) times its delivery share. No citizen works a city center or a
   tile a placed building stands on (`closed_to_citizens`): such a tile can't be assigned or take
@@ -592,7 +596,7 @@ every turn end.
   cap of 7, counting every Grow queued.
 - **Paying and the queue:** anything can be queued, whatever the stockpile holds (the other
   limits stay: a Harbor for ships, a deposit for Cavalry and Armored, the population cap for
-  Grow, a Barracks for its troops). A build is paid in full from the stockpile when work on it
+  Grow, a Barracks for its troops, population 3 for a Settler, one Scout at a time). A build is paid in full from the stockpile when work on it
   starts, not when it is queued. At each turn's economy, after income and upkeep, every queue
   works the first item in it that is already paid for or that the stockpile can pay for then,
   paying for it if it isn't; items before it that the stockpile can't pay for **wait** in place,
@@ -621,6 +625,19 @@ every turn end.
 - **Gather** (0, or its card beside Grow): free, one turn; when it's done, the side's stockpile
   gets 1 food, 1 wood and half a metal. A city that can't pay for anything, or has nothing it wants,
   gathers instead of standing idle.
+- **Settlers and Scouts** come from a city's own queue (the town centre, never a Barracks), at
+  their own pace: the half-speed rule for troops in a city center doesn't apply to them, and
+  neither counts as a troop. A **Settler** (S, or its card) is dear and slow: 30 food and 10
+  wood, 6 turns, and it takes one of the city's citizens when it's done (the last tile the city
+  works is given up). Only a city of population 3 or more queues one (the card is dimmed, saying
+  NEEDS POPULATION 3, below that) or works on it: the citizen isn't set aside while it's built,
+  so the city keeps working it until the Settler is done, and a city that drops below 3 (it
+  starved) leaves its Settler waiting in the queue, with its work (and its payment, if paid),
+  its row saying WAITS FOR POP 3, while the queue works the next item; it goes on once the city
+  has 3 again. A finished settler appears beside the city and founds a city (F) by the founding
+  rules above. A **Scout** (4, or its card) is cheap and quick: 2 food and 4 wood, 2 turns. A
+  city queues one Scout at a time (the card is dimmed, saying ONE SCOUT AT A TIME, while one
+  is queued).
 - **Production speeds builds** (the Debug panel's PROD SPEEDUP, off by default): a city's queue
   also gains a quarter turn of work a turn for each point of production (wood and metal) the city
   delivers, and a Barracks for each point delivered to it; the stockpile still gets those goods.
@@ -857,7 +874,7 @@ attacking if that brings it into range. Heading anywhere else than an enemy (rui
 unknown), it attacks any enemy in sight in range of where it ends up. Next to an enemy city it
 holds its ground there, its fighters going in through the gates (see City interiors). It skips hexes a
 teammate already claimed, and units in a contested hex stay and fight. It never uses abilities,
-never builds buildings, and ignores its civilians and any player-controlled AI unit.
+never builds buildings, and ignores any player-controlled AI unit; its settlers go their own way (below).
 An AI scout gathers what its side knows and stays alive, rather than fight:
 - It never ends its move where an enemy it sees could reach and attack it next turn (the enemy's
   move and range by its type, a Cavalry's Charge and a deployed Siege's extra hex included), if
@@ -889,6 +906,24 @@ else Melee, or Ranged for every two Melee. An AI city with a worker at home and 
 pay for: an improvement on a tile it works, or else a road there. At a contested friendly city gate, AI
 units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
+
+The AI builds Scouts and expands with Settlers:
+- A side with no scout, alive or queued, trains one, after a city's first worker.
+- **Expanding:** a city of population 4 or more whose side has no settler out or queued, can pay
+  for one this turn and knows a site for a city, trains a Settler before it grows (after the
+  Melee a city without a Barracks still wants). A site is a hex its side has seen that the
+  founding rules allow as far as it knows: open land, no ruins or enemy in sight on it, 6 hexes
+  from its own cities and every enemy city it has seen, and within 10 of its nearest city;
+  searched up to 14 steps on foot, the best by what the land around it (2 hexes) yields as last
+  seen, food counting double, less 2 a step to get there.
+- **Settlers:** each turn a settler picks its site again from where it stands, walks toward it
+  (keeping out of reach of enemies in sight where it can; no escort), and founds there once it
+  stands on it. A site the rules refuse (a city its side hadn't seen stands too near) is
+  remembered, and the side tries nowhere within 2 hexes of it again. A settler that knows no
+  site waits.
+- **First city:** a side with a settler and no city founds at once where the rules allow it,
+  as before, and otherwise walks to the nearest site they allow; knowing none, it founds where
+  it stands anyway.
 
 ## Open questions
 

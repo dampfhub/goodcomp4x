@@ -2159,3 +2159,164 @@ fn placing_and_manager_clicks_are_not_taken_by_unit_tokens() {
     assert_eq!(g.selected, None);
     assert_eq!(g.interior_view, Some(0));
 }
+
+#[test]
+fn settlers_and_scouts_have_their_prices_and_the_city_queue_trains_them_at_full_pace() {
+    assert_eq!(Build::Settler.price(), Stock::whole(30, 10, 0));
+    assert_eq!(Build::Settler.turns(), 6);
+    assert_eq!(Build::Scout.price(), Stock::whole(2, 4, 0));
+    assert_eq!(Build::Scout.turns(), 2);
+    let g = GameState::city_scenario();
+    // Not troops: a city center isn't slower at them than a Barracks.
+    for build in [Build::Settler, Build::Scout] {
+        assert_eq!(g.city_build_turns(0, build), build.turns(), "{build:?}");
+    }
+}
+
+#[test]
+fn a_settler_needs_a_city_of_three_and_a_city_queues_one_scout_at_a_time() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.selected_city = Some(0);
+    assert_eq!(g.cities[0].population, 2);
+    g.queue_selected_city_settler();
+    assert!(g.cities[0].queue.is_empty());
+    assert_eq!(
+        g.notice,
+        format!("SETTLER: NEEDS POPULATION {SETTLER_MIN_POPULATION}")
+    );
+    g.cities[0].population = SETTLER_MIN_POPULATION;
+    g.queue_selected_city_settler();
+    assert_eq!(builds(&g.cities[0].queue), [Build::Settler]);
+
+    g.queue_selected_city_scout();
+    g.queue_selected_city_scout();
+    assert_eq!(builds(&g.cities[0].queue), [Build::Settler, Build::Scout]);
+    assert_eq!(g.notice, "SCOUT: ONE SCOUT AT A TIME");
+}
+
+#[test]
+fn a_finished_settler_takes_a_citizen_and_a_scout_takes_none() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.cities[0].population = 3;
+    g.auto_assign_city(0);
+    assert_eq!(g.cities[0].worked.len(), 3);
+    g.cities[0].queue = vec![Queued::worked(Build::Settler, Build::Settler.work())];
+    g.complete_builds();
+    assert!(g.cities[0].queue.is_empty());
+    assert_eq!(g.cities[0].population, 2, "the settler took a citizen");
+    assert_eq!(g.cities[0].worked.len(), 2);
+    let settler = g.units.last().unwrap();
+    assert!(g.settlers.contains(&settler.id));
+    assert_eq!(settler.team, Team::Blue);
+    assert_eq!(settler.pos.distance(g.cities[0].pos), 1);
+
+    g.cities[0].queue = vec![Queued::worked(Build::Scout, Build::Scout.work())];
+    g.complete_builds();
+    let scout = g.units.last().unwrap();
+    assert_eq!(scout.unit_type, UnitType::Scout);
+    assert!(!g.settlers.contains(&scout.id));
+    assert_eq!(g.cities[0].population, 2);
+}
+
+#[test]
+fn a_settler_below_the_population_it_needs_waits_and_keeps_its_work() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.fund(Team::Blue);
+    // Paid and half done when the city starved down to two.
+    let half = Build::Settler.work() / 2;
+    g.cities[0].queue = vec![
+        Queued::worked(Build::Settler, half),
+        Queued::new(Build::Gather),
+    ];
+    assert!(g.waits_for_citizens(0, 0));
+    let forecast = g.forecast(Team::Blue);
+    let lane = forecast.lane(0, Lane::City).unwrap();
+    assert_eq!(lane.worked, Some(1), "the queue works what comes next");
+    assert!(
+        g.waiting_items(lane).is_empty(),
+        "not waiting for the stockpile"
+    );
+    g.work_queues(&[(WORK_PER_TURN, WORK_PER_TURN), (0, 0)]);
+    assert_eq!(g.cities[0].queue[0], Queued::worked(Build::Settler, half));
+    // Even finished, it waits for the citizen it takes.
+    g.cities[0].queue[0].progress = Build::Settler.work();
+    g.complete_builds();
+    assert_eq!(builds(&g.cities[0].queue), [Build::Settler]);
+    assert!(g.settlers.is_empty());
+    // With a third citizen, out it comes.
+    g.cities[0].population = 3;
+    g.complete_builds();
+    assert!(g.cities[0].queue.is_empty());
+    assert_eq!(g.settlers.len(), 1);
+    assert_eq!(g.cities[0].population, 2);
+}
+
+/// The Cities scenario with a Blue settler selected on `pos`, and nothing
+/// else on the map.
+fn settler_on(pos: Hex) -> GameState {
+    let mut g = GameState::city_scenario();
+    g.units = vec![Unit::new(900, pos, Team::Blue, UnitType::Melee)];
+    g.settlers.insert(900);
+    g.selected = Some(0);
+    g
+}
+
+#[test]
+fn a_city_is_founded_six_hexes_from_any_other_and_without_a_worker() {
+    assert_eq!(MIN_CITY_DISTANCE, 6);
+    // Blue's city stands at (-4, 0), Red's at (4, 0).
+    let (blue, red) = (Hex::new(-4, 0), Hex::new(4, 0));
+    for (pos, near) in [(Hex::new(-4, 5), blue), (Hex::new(4, -5), red)] {
+        assert_eq!(pos.distance(near), MIN_CITY_DISTANCE - 1);
+        let mut g = settler_on(pos);
+        g.found_city_selected();
+        assert_eq!(g.cities.len(), 2, "{pos:?}: too close");
+        assert!(g.notice.contains("TOO CLOSE"), "{}", g.notice);
+        assert_eq!(g.settlers.len(), 1);
+    }
+    for (pos, near) in [(Hex::new(-4, 6), blue), (Hex::new(4, -6), red)] {
+        assert_eq!(pos.distance(near), MIN_CITY_DISTANCE);
+        let mut g = settler_on(pos);
+        g.found_city_selected();
+        assert_eq!(g.cities.len(), 3, "{pos:?}: {}", g.notice);
+        let city = &g.cities[2];
+        assert_eq!((city.pos, city.team, city.population), (pos, Team::Blue, 1));
+        assert_eq!(city.workers, 0, "a new city starts without a worker");
+        assert!(g.settlers.is_empty() && g.units.is_empty());
+        assert_eq!(g.selected_city, Some(2));
+    }
+}
+
+#[test]
+fn a_side_s_first_city_comes_with_a_worker() {
+    let mut g = GameState::frontier_scenario();
+    g.found_city_selected();
+    assert_eq!(g.cities.len(), 1);
+    assert_eq!(g.cities[0].workers, 1);
+}
+
+#[test]
+fn no_city_is_founded_on_water_or_ruins() {
+    use crate::game::ruins::{Ruin, RuinReward};
+    use crate::game::terrain::Terrain;
+    let coast = Hex::new(0, 6);
+    let mut g = lone_city_on(|h| {
+        if h == coast {
+            Tile {
+                terrain: Terrain::Coast,
+                hills: false,
+                feature: None,
+            }
+        } else {
+            Tile::default()
+        }
+    });
+    g.ruins = vec![Ruin::new(Hex::new(6, 0), RuinReward::ALL[0])];
+    for pos in [coast, Hex::new(6, 0)] {
+        assert!(g.founding_issue(pos).is_some(), "{pos:?}");
+    }
+    assert_eq!(g.founding_issue(Hex::new(-6, 0)), None);
+}
