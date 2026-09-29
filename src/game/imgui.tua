@@ -41,7 +41,7 @@ use ui.button_sized;
 use ui.small_button;
 use ui.invisible_button;
 use ui.checkbox;
-use ui.slider_i32;
+use ui.slider_i32_text;
 use ui.combo;
 use ui.selectable;
 use ui.separator;
@@ -377,6 +377,38 @@ fn setting_label_width(panel: &PanelBuilder) -> f32 can {Ui} {
     widest + 18.0
 }
 
+/// How wide the settings menu wants to be: room for its label column and the widest control
+/// beside it (a row of equally wide choice buttons, the widest text setting them all), and at
+/// least `SETTINGS_WIDTH`.
+fn settings_width(panel: &PanelBuilder) -> f32 can {Ui} {
+    let labels = setting_label_width(panel);
+    let f = push_font(font_of(TextSize.Body));
+    let mut widest: f32 = 200.0;
+    for k in 0..panel.settings.len() {
+        let setting = panel.settings[k].setting;
+        let (low, high) = setting.range();
+        let count = high - low + 1;
+        match setting.control() {
+            Control.Choice => {
+                if count <= MAX_BUTTONS {
+                    // The buttons are equally wide: the widest text sets them all.
+                    let mut longest: f32 = 0.0;
+                    for to in low..=high {
+                        let shown = setting.value_text(to);
+                        let w = text_size(&shown).x + 20.0;
+                        if w > longest { longest = w; }
+                    }
+                    let row = longest * count as f32 + 7.0 * (count - 1) as f32;
+                    if row > widest { widest = row; }
+                }
+            }
+            _ => {}
+        }
+    }
+    f.pop();
+    max_f(SETTINGS_WIDTH, labels + widest + 2.0 * 12.0 + 8.0)
+}
+
 /// How wide the turn strip wants to be: its widest row of chips, plus the allowance for padding
 /// and border `measure_panel` takes off.
 fn roster_width(panel: &PanelBuilder) -> f32 {
@@ -511,7 +543,8 @@ fn render_setting(setting: Setting, value: i32, label_width: f32, scope: Option[
             let mut to = value;
             next_item_width(width);
             let label = text(fn() can {Out} { Out.put("##setting-"); Out.put(setting.name()); });
-            if slider_i32(&label, &mut to, low, high) && to != value { push_action(actions, scope, Target.SetSetting(setting, to)); }
+            let shown = setting.value_text(value);
+            if slider_i32_text(&label, &mut to, low, high, &shown) && to != value { push_action(actions, scope, Target.SetSetting(setting, to)); }
             actions.push(Action.Seen(Target.SetSetting(setting, high), item_rect()));
             if item_hovered(0) { setting_tooltip(setting); }
         }
@@ -1119,7 +1152,7 @@ fn frame_body(game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, 
     }
     if let &Option.Some(settings) = &panels.settings {
         // Wide enough for a label column and a control beside it.
-        let width = min_f(SETTINGS_WIDTH, max_width);
+        let width = min_f(settings_width(&settings), max_width);
         measured[SETTINGS] = Option.Some(vec2(width, min_f(measure_panel(&settings, width), available)));
     }
     let mut sizes: [Option[Vec2]; 6] = [Option.None; 6];
