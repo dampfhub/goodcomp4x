@@ -137,11 +137,15 @@ pub struct App {
     /// The window's size when last neither maximized nor fullscreen, to
     /// open at next time.
     normal_size: Option<PhysicalSize<u32>>,
+    /// A command-line size applies for this run without changing saved window preferences.
+    explicit_size: bool,
+    saved_maximized: bool,
 }
 
 /// What `LAYOUT_FILE` says about the window, beside the ImGui layout
 /// (`ImGuiLayoutState::from_text` skips these lines): the presentation, the
 /// window's size and whether it's maximized.
+#[derive(Debug, PartialEq, Eq)]
 struct SavedWindow {
     imgui: bool,
     size: Option<PhysicalSize<u32>>,
@@ -173,6 +177,46 @@ impl SavedWindow {
         }
         saved
     }
+
+    fn to_text(&self) -> String {
+        let mut text = format!(
+            "presentation {}\n",
+            if self.imgui { "imgui" } else { "classic" }
+        );
+        if let Some(size) = self.size {
+            text += &format!("window_size {} {}\n", size.width, size.height);
+        }
+        text += &format!("maximized {}\n", u8::from(self.maximized));
+        text
+    }
+}
+
+/// Choose a size and centered position. Saved sizes are bounded by the current
+/// monitor; an explicit --size stays exact, including for screenshots.
+fn initial_window_rect(
+    screen: PhysicalSize<u32>,
+    origin: PhysicalPosition<i32>,
+    requested: Option<PhysicalSize<u32>>,
+    saved: Option<PhysicalSize<u32>>,
+) -> (PhysicalSize<u32>, PhysicalPosition<i32>) {
+    let size = requested.unwrap_or_else(|| {
+        saved.map_or_else(
+            || {
+                PhysicalSize::new(
+                    (screen.width as f32 * WINDOW_SCREEN_FRACTION) as u32,
+                    (screen.height as f32 * WINDOW_SCREEN_FRACTION) as u32,
+                )
+            },
+            |size| PhysicalSize::new(size.width.min(screen.width), size.height.min(screen.height)),
+        )
+    });
+    let offset_x = i32::try_from(screen.width.saturating_sub(size.width) / 2).unwrap_or(i32::MAX);
+    let offset_y = i32::try_from(screen.height.saturating_sub(size.height) / 2).unwrap_or(i32::MAX);
+    let position = PhysicalPosition::new(
+        origin.x.saturating_add(offset_x),
+        origin.y.saturating_add(offset_y),
+    );
+    (size, position)
 }
 
 /// The settings saved from the last session, or the defaults.
@@ -182,18 +226,26 @@ pub fn saved_settings() -> Settings {
 
 impl App {
     pub fn new(options: Options, network: Option<(Session, GameState)>) -> Self {
+        Self::new_with_load(options, network, persist::read)
+    }
+
+    fn new_with_load(
+        options: Options,
+        network: Option<(Session, GameState)>,
+        read: impl Fn(&str) -> Option<String>,
+    ) -> Self {
         let screenshot = options.screenshot.map(Screenshot::new);
         let remember = screenshot.is_none();
-        let load = |name| if remember { persist::read(name) } else { None };
+        let load = |name| if remember { read(name) } else { None };
         let settings =
             load(SETTINGS_FILE).map_or_else(Settings::default, |text| Settings::from_text(&text));
         let layout = load(LAYOUT_FILE).unwrap_or_default();
         let saved = SavedWindow::from_text(&layout);
+        let explicit_size = options.size.is_some();
         let requested_size = options
             .size
             .or(screenshot.as_ref().map(|_| screenshot::DEFAULT_SIZE))
-            .map(|(width, height)| PhysicalSize::new(width, height))
-            .or(saved.size);
+            .map(|(width, height)| PhysicalSize::new(width, height));
         let (network, game) = match network {
             Some((session, game)) => (Some(session), Some(game)),
             None => (None, None),
@@ -243,8 +295,10 @@ impl App {
             failure: None,
             remember,
             imgui_ini: load(IMGUI_FILE),
-            start_maximized: remember && saved.maximized,
-            normal_size: requested_size,
+            start_maximized: remember && !explicit_size && saved.maximized,
+            normal_size: saved.size,
+            explicit_size,
+            saved_maximized: saved.maximized,
         }
     }
 
@@ -268,15 +322,16 @@ impl App {
         }
         self.save_settings_if_changed();
         self.save_net_menu();
-        let mut layout = format!(
-            "presentation {}\n",
-            if self.use_imgui { "imgui" } else { "classic" }
-        );
-        if let Some(size) = self.normal_size {
-            layout += &format!("window_size {} {}\n", size.width, size.height);
-        }
-        let maximized = self.window.as_ref().is_some_and(Window::is_maximized);
-        layout += &format!("maximized {}\n", u8::from(maximized));
+        let saved = SavedWindow {
+            imgui: self.use_imgui,
+            size: self.normal_size,
+            maximized: if self.explicit_size {
+                self.saved_maximized
+            } else {
+                self.window.as_ref().is_some_and(Window::is_maximized)
+            },
+        };
+        let mut layout = saved.to_text();
         layout += &self.imgui_layout.to_text();
         persist::write(LAYOUT_FILE, &layout);
         if let Some(imgui) = &mut self.imgui {
@@ -579,7 +634,11 @@ impl ApplicationHandler for App {
         // there's room for the map and the UI.
         let mut attributes = Window::default_attributes()
             .with_title("Hex Combat Sandbox")
-            .with_inner_size(self.requested_size.unwrap_or(DEFAULT_WINDOW_SIZE))
+            .with_inner_size(
+                self.requested_size
+                    .or(self.normal_size)
+                    .unwrap_or(DEFAULT_WINDOW_SIZE),
+            )
             .with_window_icon(Some(icon::icon(WINDOW_ICON_SIZE)))
             // Created hidden and shown once it exists (below), so its icons are
             // set before the taskbar button is made. A screenshot needs no
@@ -594,14 +653,8 @@ impl ApplicationHandler for App {
         }
         if let Some(monitor) = event_loop.primary_monitor() {
             let (screen, origin) = (monitor.size(), monitor.position());
-            let size = self.requested_size.unwrap_or(PhysicalSize::new(
-                (screen.width as f32 * WINDOW_SCREEN_FRACTION) as u32,
-                (screen.height as f32 * WINDOW_SCREEN_FRACTION) as u32,
-            ));
-            let position = PhysicalPosition::new(
-                origin.x + (screen.width as i32 - size.width as i32) / 2,
-                origin.y + (screen.height as i32 - size.height as i32) / 2,
-            );
+            let (size, position) =
+                initial_window_rect(screen, origin, self.requested_size, self.normal_size);
             attributes = attributes.with_inner_size(size).with_position(position);
         }
         let window = event_loop
@@ -743,7 +796,7 @@ impl ApplicationHandler for App {
                     .window
                     .as_ref()
                     .is_some_and(|w| !w.is_maximized() && w.fullscreen().is_none());
-                if normal && !self.minimized {
+                if normal && !self.minimized && !self.explicit_size {
                     self.normal_size = Some(size);
                 }
                 if let Some(renderer) = &mut self.renderer {
@@ -1132,4 +1185,61 @@ fn is_input(event: &WindowEvent) -> bool {
             | WindowEvent::KeyboardInput { .. }
             | WindowEvent::ModifiersChanged(_)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_window_round_trips() {
+        let saved = SavedWindow {
+            imgui: false,
+            size: Some(PhysicalSize::new(1280, 720)),
+            maximized: true,
+        };
+        assert_eq!(SavedWindow::from_text(&saved.to_text()), saved);
+    }
+
+    #[test]
+    fn oversized_saved_window_stays_inside_monitor() {
+        let screen = PhysicalSize::new(800, 600);
+        let origin = PhysicalPosition::new(100, 50);
+        let (size, position) =
+            initial_window_rect(screen, origin, None, Some(PhysicalSize::new(2000, 1200)));
+        assert_eq!(size, screen);
+        assert!(position.x >= origin.x && position.y >= origin.y);
+        assert!(position.x + size.width as i32 <= origin.x + screen.width as i32);
+        assert!(position.y + size.height as i32 <= origin.y + screen.height as i32);
+    }
+
+    #[test]
+    fn explicit_size_ignores_saved_maximized_window_without_replacing_preferences() {
+        let options = Options {
+            size: Some((1280, 720)),
+            ..Options::default()
+        };
+        let app = App::new_with_load(options, None, |name| {
+            (name == LAYOUT_FILE).then(|| "window_size 1024 768\nmaximized 1\n".into())
+        });
+        assert_eq!(app.requested_size, Some(PhysicalSize::new(1280, 720)));
+        assert_eq!(app.normal_size, Some(PhysicalSize::new(1024, 768)));
+        assert!(app.explicit_size);
+        assert!(app.saved_maximized);
+        assert!(!app.start_maximized);
+    }
+
+    #[test]
+    fn screenshot_defaults_to_1600_by_900_without_loading_persisted_state() {
+        let options = Options {
+            scenario: Scenario::World,
+            seed: Some(42),
+            screenshot: Some("test.png".into()),
+            ..Options::default()
+        };
+        let app = App::new_with_load(options, None, |_| panic!("screenshot must not load state"));
+        assert_eq!(app.requested_size, Some(PhysicalSize::new(1600, 900)));
+        assert!(!app.remember);
+        assert_eq!(app.game.map_seed(), Some(42));
+    }
 }

@@ -249,7 +249,8 @@ of players are kept between sessions (`network.txt`); the join code isn't.
 Settings are also kept between sessions, saved as soon as one changes. On quitting, the game
 also saves the window's size (and whether it's maximized), the UI presentation (F11), and the
 ImGui panels as you arranged them: where each is, its size, which are docked or collapsed, and
-the boxes. The next session opens the same way. They're kept in `%APPDATA%\riskofcivlike`
+the boxes. The next session opens the same way. An explicit `--size` sets only this run's window size;
+it does not replace the saved size or maximized state. They're kept in `%APPDATA%\riskofcivlike`
 (`~/.config/riskofcivlike` elsewhere); delete that folder to start over from the defaults.
 Screenshot mode (`--screenshot`) ignores it.
 

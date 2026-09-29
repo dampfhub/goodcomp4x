@@ -320,6 +320,11 @@ impl GameState {
         game
     }
 
+    #[cfg(test)]
+    pub(crate) fn map_seed(&self) -> Option<u32> {
+        self.map_seed
+    }
+
     pub fn city_scenario() -> Self {
         let mut game = Self::new();
         game.scenario = Scenario::Cities;
